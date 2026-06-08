@@ -9,6 +9,8 @@
     "typecheck": "tsc --noEmit",
     "validate-manifests": "npx tsx scripts/validate-manifests.ts",
     "new-extension": "npx tsx scripts/new-extension.ts",
+    "build-index": "npx tsx scripts/build-index.ts",
+    "install-extensions": "npx tsx scripts/install.ts",
     "test": "vitest run",
     "changeset": "changeset",
     "version-packages": "changeset version",

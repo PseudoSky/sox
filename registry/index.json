@@ -1,0 +1,77 @@
+[
+  {
+    "id": "echo",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "Echo Agent",
+    "description": "A stub agent that echoes inputs back using two stub tools",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/echo-agent",
+    "checksum": "sha256:8885a27f83162f386bebaba6525cb2dfc7f95d895984406f1c4d742679e411c3",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "requires": {
+      "tool_calling": true
+    }
+  },
+  {
+    "id": "status",
+    "type": "command",
+    "version": "0.1.0",
+    "title": "Status Command",
+    "description": "Slash-invoked command that reports the current environment status deterministically, no LLM calls",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/commands/status-command",
+    "checksum": "sha256:d431c6ee5fdd40fd74d592c8ab6682fc14c894e887e057bca7b3b02a18bed559",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    }
+  },
+  {
+    "id": "audit",
+    "type": "hook",
+    "version": "0.1.0",
+    "title": "Audit Hook",
+    "description": "Binds PreToolUse lifecycle event and logs tool invocations to a file for auditing",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/hooks/audit-hook",
+    "checksum": "sha256:25f18b4517475c9727b00eee872d5510d85e0e87b97920d4a9660a6da213ce60",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    }
+  },
+  {
+    "id": "hello-server",
+    "type": "mcp-server",
+    "version": "0.1.0",
+    "title": "Hello Server",
+    "description": "A minimal hello-server MCP server demonstrating the mcp-server extension scaffold with stdio transport and one stub tool",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/mcp-servers/hello-server",
+    "checksum": "sha256:f96da689c02a9d48ad9eb5a4a89450c618bfaa60c2e87d08a566d7be3683d947",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    }
+  },
+  {
+    "id": "greeting",
+    "type": "prompt",
+    "version": "0.1.0",
+    "title": "Greeting Prompt",
+    "description": "A parameterized greeting prompt that addresses users by name and context",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/prompts/greeting-prompt",
+    "checksum": "sha256:bfb78ff8ee1b14f86078c0e78054ef9e468dfd3fca82802cb974fede92f9e771",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    }
+  },
+  {
+    "id": "hello-world",
+    "type": "skill",
+    "version": "0.1.0",
+    "title": "Hello World",
+    "description": "A minimal hello-world skill demonstrating the extension scaffold",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/hello-world",
+    "checksum": "sha256:47a13e4c9e3a65b924cda16369c044198c26c2b0f08014c8b5364eb51f594537",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    }
+  }
+]
