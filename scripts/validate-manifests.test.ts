@@ -448,3 +448,260 @@ describe('validate-manifests — P7 G-D runtime-language contract', () => {
     expect(result.ok).toBe(true);
   });
 });
+
+// ─── P8 — G-A service lifecycle block ────────────────────────────────────────
+// Tests for the optional `lifecycle{}` block (architecture-v2.md §G-A).
+//
+// Host supervisor sub-contract (documented here; no supervisor is built in this repo
+// — the loader is a host contract, spec-only):
+//   - start:     if lifecycle.background:true the host keeps the process alive across calls
+//               (supervised); else lazy per-call spawn (v1 behavior for absent lifecycle).
+//   - singleton: host holds a per-scope-key file lock (id+scope); extension no longer
+//               self-manages OS advisory locks (formalizes the memoryd.lock workaround).
+//   - stop:      SIGTERM → wait stop_timeout_ms → SIGKILL. Fired on host shutdown,
+//               extension disable (cascade enabled:false), or version change.
+//   - health:    host probes per health.type every interval_ms; on timeout_ms miss ×
+//               restart policy the host restarts (exponential backoff). Advisory to host.
+//   - back-compat: manifests without `lifecycle` keep exact v1 request/response semantics.
+//
+// Validation rules (what this repo enforces):
+//   Rule 1: lifecycle present => type in {mcp-server, agent} (FAIL for command/hook/skill/prompt)
+//   Rule 2: health.type in {socket, command} => health.endpoint required
+//   Rule 3: lifecycle absent => no restriction, v1 back-compat guaranteed
+
+describe('validate-manifests — P8 G-A service lifecycle block', () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = makeTempRepo();
+  });
+
+  afterEach(() => {
+    removeDirRecursive(tmpRoot);
+  });
+
+  /** Helper: write a manifest with arbitrary extra fields */
+  function makeExtensionWithFields(
+    root: string,
+    typeDir: string,
+    id: string,
+    extra: Record<string, unknown>,
+  ): void {
+    const extDir = path.join(root, 'extensions', typeDir, id);
+    fs.mkdirSync(path.join(extDir, 'src'), { recursive: true });
+
+    let type: string;
+    if (typeDir === 'mcp-servers') type = 'mcp-server';
+    else if (typeDir === 'agents') type = 'agent';
+    else if (typeDir === 'skills') type = 'skill';
+    else if (typeDir === 'prompts') type = 'prompt';
+    else if (typeDir === 'hooks') type = 'hook';
+    else type = 'command';
+
+    const manifest = {
+      $schema: 'https://your-registry/schemas/extension/v1.json',
+      id,
+      version: '0.1.0',
+      type,
+      title: `${id} title`,
+      description: `${id} description`,
+      compatibility: { host: '>=1.0.0 <2.0.0' },
+      license: 'MIT',
+      entrypoint: type === 'prompt' ? undefined : 'dist/index.js',
+      ...extra,
+    };
+    fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
+    fs.writeFileSync(
+      path.join(extDir, 'package.json'),
+      JSON.stringify({ name: `@sox/extension-${id}`, version: '0.1.0' }, null, 2),
+    );
+    fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
+    fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
+  }
+
+  // ─── PASS: mcp-server with lifecycle is valid ─────────────────────────────
+
+  it('passes when an mcp-server declares lifecycle.background:true (singleton daemon)', () => {
+    makeExtensionWithFields(tmpRoot, 'mcp-servers', 'memory-server', {
+      lifecycle: {
+        background: true,
+        singleton: true,
+        health: { type: 'stdio-ping', interval_ms: 5000, timeout_ms: 2000 },
+        stop_timeout_ms: 5000,
+      },
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+
+  // PASS: agent with lifecycle is valid
+  it('passes when an agent declares lifecycle with health.type:stdio-ping', () => {
+    makeExtensionWithFields(tmpRoot, 'agents', 'memory-orchestrator', {
+      lifecycle: {
+        background: true,
+        singleton: true,
+        health: { type: 'stdio-ping' },
+      },
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+
+  // PASS: mcp-server with socket health and endpoint is valid
+  it('passes when mcp-server declares health.type:socket with endpoint', () => {
+    makeExtensionWithFields(tmpRoot, 'mcp-servers', 'socket-server', {
+      lifecycle: {
+        background: true,
+        health: { type: 'socket', endpoint: '/tmp/server.sock', interval_ms: 3000 },
+      },
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+
+  // PASS: mcp-server with command health and endpoint is valid
+  it('passes when mcp-server declares health.type:command with endpoint', () => {
+    makeExtensionWithFields(tmpRoot, 'mcp-servers', 'cmd-health-server', {
+      lifecycle: {
+        background: true,
+        health: { type: 'command', endpoint: 'curl -f http://localhost:8080/health' },
+      },
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+
+  // ─── FAIL: lifecycle on a command-type manifest must be rejected ───────────
+
+  it('errors when a command-type manifest declares lifecycle (Rule 1)', () => {
+    makeExtensionWithFields(tmpRoot, 'commands', 'my-util', {
+      lifecycle: { background: true },
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(result.ok).toBe(false);
+    const lifecycleError = errors.find(
+      (e) => e.message.includes('lifecycle') && e.message.includes('mcp-server'),
+    );
+    expect(lifecycleError).toBeDefined();
+  });
+
+  // FAIL: lifecycle on hook
+  it('errors when a hook-type manifest declares lifecycle (Rule 1)', () => {
+    makeExtensionWithFields(tmpRoot, 'hooks', 'my-hook', {
+      lifecycle: { background: false },
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(result.ok).toBe(false);
+    const lifecycleError = errors.find((e) => e.message.includes('lifecycle'));
+    expect(lifecycleError).toBeDefined();
+  });
+
+  // FAIL: lifecycle on skill
+  it('errors when a skill-type manifest declares lifecycle (Rule 1)', () => {
+    makeExtensionWithFields(tmpRoot, 'skills', 'my-skill', {
+      lifecycle: { singleton: true },
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(result.ok).toBe(false);
+    expect(errors.some((e) => e.message.includes('lifecycle'))).toBe(true);
+  });
+
+  // ─── FAIL: health.type:socket without endpoint must fail ─────────────────
+
+  it('errors when health.type:socket is declared without endpoint (Rule 2)', () => {
+    makeExtensionWithFields(tmpRoot, 'mcp-servers', 'no-endpoint-server', {
+      lifecycle: {
+        background: true,
+        health: { type: 'socket' }, // missing endpoint!
+      },
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(result.ok).toBe(false);
+    const endpointError = errors.find(
+      (e) => e.message.includes('endpoint') && e.message.includes('socket'),
+    );
+    expect(endpointError).toBeDefined();
+  });
+
+  // FAIL: health.type:command without endpoint must fail
+  it('errors when health.type:command is declared without endpoint (Rule 2)', () => {
+    makeExtensionWithFields(tmpRoot, 'mcp-servers', 'no-cmd-endpoint-server', {
+      lifecycle: {
+        background: true,
+        health: { type: 'command' }, // missing endpoint!
+      },
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(result.ok).toBe(false);
+    const endpointError = errors.find(
+      (e) => e.message.includes('endpoint') && e.message.includes('command'),
+    );
+    expect(endpointError).toBeDefined();
+  });
+
+  // ─── BACK-COMPAT: v1 manifests without lifecycle still validate ───────────
+
+  it('passes for all v1 manifests without lifecycle (back-compat Rule 3)', () => {
+    // All five v1 extension types without lifecycle — should all pass.
+    // ids must not end with their type name (validateSingleManifest Check 2).
+    makeExtension(tmpRoot, 'agents', 'legacy-orchestrator');  // not ending with '-agent'
+    makeExtension(tmpRoot, 'skills', 'legacy-summarizer');    // not ending with '-skill'
+    makeExtension(tmpRoot, 'mcp-servers', 'legacy-tools');    // not ending with '-mcp-server'
+    makeExtension(tmpRoot, 'hooks', 'pre-tool-use');          // not ending with '-hook'
+    makeExtension(tmpRoot, 'commands', 'shell-runner');       // not ending with '-command'
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+
+  // BACK-COMPAT: lifecycle absent => no restriction for any type
+  it('passes for a v1 command manifest with no lifecycle field (no restriction)', () => {
+    makeExtensionWithFields(tmpRoot, 'commands', 'shell-util', {
+      // no lifecycle field — v1 back-compat
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+
+  // PASS: health.type:stdio-ping (default) without endpoint is valid
+  it('passes when health.type:stdio-ping is declared without endpoint (endpoint not needed)', () => {
+    makeExtensionWithFields(tmpRoot, 'mcp-servers', 'ping-server', {
+      lifecycle: {
+        background: true,
+        health: { type: 'stdio-ping', interval_ms: 2000 },
+      },
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+});

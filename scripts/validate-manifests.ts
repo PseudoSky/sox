@@ -26,6 +26,21 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+/** G-A: lifecycle block sub-types */
+interface LifecycleHealth {
+  type?: 'stdio-ping' | 'socket' | 'command' | undefined;
+  endpoint?: string | undefined;
+  interval_ms?: number | undefined;
+  timeout_ms?: number | undefined;
+}
+
+interface LifecycleBlock {
+  background?: boolean | undefined;
+  singleton?: boolean | undefined;
+  health?: LifecycleHealth | undefined;
+  stop_timeout_ms?: number | undefined;
+}
+
 interface ExtensionManifest {
   $schema: string;
   id: string;
@@ -40,6 +55,8 @@ interface ExtensionManifest {
   order?: number | undefined;
   /** G-D: optional runtime contract. Absent => 'node' (back-compat). */
   runtime?: 'node' | 'stdio-any' | undefined;
+  /** G-A: optional lifecycle block for host-supervised long-running extensions. */
+  lifecycle?: LifecycleBlock | undefined;
   requires?: {
     tool_calling?: boolean | undefined;
     structured_output?: boolean | undefined;
@@ -190,7 +207,7 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
     return diags;
   }
 
-  const { id, type, version, runtime, requires } = manifest;
+  const { id, type, version, runtime, requires, lifecycle } = manifest;
 
   // Check 1: id format
   if (!ID_PATTERN.test(id)) {
@@ -273,6 +290,39 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
           `provider calls require the Node/TS provider abstraction; set runtime:'node' or drop the requires.`,
         severity: 'error',
       });
+    }
+  }
+
+  // Check 7 (G-A): lifecycle block — host-owned supervision for background extensions.
+  // Rule 1: lifecycle is only valid for type in {mcp-server, agent}.
+  // Rule 2: health.type in {socket, command} requires health.endpoint.
+  // Absent lifecycle => v1 request/response behavior (no daemon) — fully back-compat.
+  if (lifecycle !== undefined) {
+    const lifecycleAllowedTypes = new Set(['mcp-server', 'agent']);
+    if (!lifecycleAllowedTypes.has(type)) {
+      diags.push({
+        path: manifestPath,
+        message:
+          `lifecycle block is only meaningful for type in {mcp-server, agent} (got "${type}"). ` +
+          `The lifecycle block formalizes host-owned supervision of long-running processes; ` +
+          `types like command/hook/skill/prompt are request-response and must not declare lifecycle.`,
+        severity: 'error',
+      });
+    }
+
+    // Rule 2: health.endpoint is required when health.type is 'socket' or 'command'
+    const health = lifecycle.health;
+    if (health !== undefined) {
+      const healthType = health.type ?? 'stdio-ping';
+      if ((healthType === 'socket' || healthType === 'command') && health.endpoint === undefined) {
+        diags.push({
+          path: manifestPath,
+          message:
+            `lifecycle.health.endpoint is required when lifecycle.health.type is "${healthType}". ` +
+            `Provide a socket path (for type:"socket") or command string (for type:"command").`,
+          severity: 'error',
+        });
+      }
     }
   }
 

@@ -81,6 +81,54 @@
       "enum": ["node", "stdio-any"],
       "default": "node",
       "description": "Author-declared runtime contract. 'node' = TS/Node, can call the provider abstraction. 'stdio-any' = language-agnostic stdio process; MUST NOT declare provider requires. Absent => 'node' (back-compat: all v1 extensions are Node)."
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Host-owned process supervision for long-running extensions. Optional; absent => v1 request/response behavior (no daemon). Only meaningful for type in {mcp-server, agent}.",
+      "properties": {
+        "background": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true the host keeps the process alive across calls (supervised) instead of lazy per-call spawn."
+        },
+        "singleton": {
+          "type": "boolean",
+          "default": true,
+          "description": "At most one host-supervised instance per scope key. Host holds the lock — replaces the extension's own OS advisory lock."
+        },
+        "health": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "How the host probes liveness. Absent => process-alive only.",
+          "properties": {
+            "type": {
+              "enum": ["stdio-ping", "socket", "command"],
+              "default": "stdio-ping"
+            },
+            "endpoint": {
+              "type": "string",
+              "description": "Socket path or command; required when type in {socket, command}."
+            },
+            "interval_ms": {
+              "type": "integer",
+              "minimum": 250,
+              "default": 5000
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 100,
+              "default": 2000
+            }
+          }
+        },
+        "stop_timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 5000,
+          "description": "Grace period on SIGTERM before SIGKILL."
+        }
+      }
     }
   },
   "allOf": [
@@ -97,6 +145,10 @@
       "then": { "properties": { "requires": {
         "properties": { "structured_output": { "const": false },
                         "tool_calling":      { "const": false } } } } }
+    },
+    {
+      "if":   { "required": ["lifecycle"] },
+      "then": { "properties": { "type": { "enum": ["mcp-server", "agent"] } } }
     }
   ]
 }
