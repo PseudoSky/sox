@@ -1,0 +1,38 @@
+[
+  {
+    "id": "happy-path-basic",
+    "description": "Basic input produces expected output prefix",
+    "input": { "input": "hello" },
+    "expected": { "result": "Processed: hello" },
+    "layer": 2
+  },
+  {
+    "id": "happy-path-empty",
+    "description": "Empty string input produces expected output prefix",
+    "input": { "input": "" },
+    "expected": { "result": "Processed: " },
+    "layer": 2
+  },
+  {
+    "id": "happy-path-unicode",
+    "description": "Unicode input is preserved verbatim",
+    "input": { "input": "こんにちは" },
+    "expected": { "result": "Processed: こんにちは" },
+    "layer": 2
+  },
+  {
+    "id": "output-shape",
+    "description": "Output must have exactly { result: string } with no extra keys",
+    "input": { "input": "shape-test" },
+    "expected_keys": ["result"],
+    "expected_key_count": 1,
+    "layer": 2
+  },
+  {
+    "id": "idempotent",
+    "description": "Calling run twice with same input yields identical output (idempotency)",
+    "input": { "input": "idempotent-test" },
+    "expected": { "result": "Processed: idempotent-test" },
+    "layer": 2
+  }
+]
