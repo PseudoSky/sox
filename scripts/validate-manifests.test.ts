@@ -291,3 +291,160 @@ describe('validate-manifests — P2 dedup + secret lint', () => {
     expect(errors.some((e) => e.message.includes('bad_id'))).toBe(true);
   });
 });
+
+// ─── P7 — G-D runtime-language contract ──────────────────────────────────────
+// Tests for the optional `runtime` field (architecture-v2.md §G-D).
+// Rule: runtime:'stdio-any' MUST NOT declare requires.structured_output:true
+//       or requires.tool_calling:true (those require the Node/TS provider layer).
+//       Absent `runtime` defaults to 'node' — all v1 manifests remain valid.
+
+describe('validate-manifests — P7 G-D runtime-language contract', () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = makeTempRepo();
+  });
+
+  afterEach(() => {
+    removeDirRecursive(tmpRoot);
+  });
+
+  /** Helper: write a manifest with arbitrary extra fields */
+  function makeExtensionWithFields(
+    root: string,
+    typeDir: string,
+    id: string,
+    extra: Record<string, unknown>,
+  ): void {
+    const extDir = path.join(root, 'extensions', typeDir, id);
+    fs.mkdirSync(path.join(extDir, 'src'), { recursive: true });
+
+    let type: string;
+    if (typeDir === 'mcp-servers') type = 'mcp-server';
+    else if (typeDir === 'agents') type = 'agent';
+    else if (typeDir === 'skills') type = 'skill';
+    else if (typeDir === 'prompts') type = 'prompt';
+    else if (typeDir === 'hooks') type = 'hook';
+    else type = 'command';
+
+    const manifest = {
+      $schema: 'https://your-registry/schemas/extension/v1.json',
+      id,
+      version: '0.1.0',
+      type,
+      title: `${id} title`,
+      description: `${id} description`,
+      compatibility: { host: '>=1.0.0 <2.0.0' },
+      license: 'MIT',
+      entrypoint: 'dist/index.js',
+      ...extra,
+    };
+    fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
+    fs.writeFileSync(
+      path.join(extDir, 'package.json'),
+      JSON.stringify({ name: `@sox/extension-${id}`, version: '0.1.0' }, null, 2),
+    );
+    fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
+    fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
+  }
+
+  // FAIL case: stdio-any with structured_output:true must be rejected
+  it('errors when runtime:stdio-any declares requires.structured_output:true', () => {
+    makeExtensionWithFields(tmpRoot, 'mcp-servers', 'my-server', {
+      runtime: 'stdio-any',
+      requires: { structured_output: true },
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(result.ok).toBe(false);
+    const runtimeError = errors.find(
+      (e) => e.message.includes('stdio-any') && e.message.includes('provider'),
+    );
+    expect(runtimeError).toBeDefined();
+  });
+
+  // FAIL case: stdio-any with tool_calling:true must be rejected
+  it('errors when runtime:stdio-any declares requires.tool_calling:true', () => {
+    makeExtensionWithFields(tmpRoot, 'mcp-servers', 'my-tool-server', {
+      runtime: 'stdio-any',
+      requires: { tool_calling: true },
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(result.ok).toBe(false);
+    const runtimeError = errors.find(
+      (e) => e.message.includes('stdio-any') && e.message.includes('provider'),
+    );
+    expect(runtimeError).toBeDefined();
+  });
+
+  // PASS case: stdio-any with no provider requires is valid
+  it('passes when runtime:stdio-any declares no provider requires', () => {
+    makeExtensionWithFields(tmpRoot, 'mcp-servers', 'stdio-server', {
+      runtime: 'stdio-any',
+      // no requires block — valid for a language-agnostic stdio server
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+
+  // PASS case: stdio-any with requires that explicitly set false is valid
+  it('passes when runtime:stdio-any declares requires with all false values', () => {
+    makeExtensionWithFields(tmpRoot, 'mcp-servers', 'stdio-safe-server', {
+      runtime: 'stdio-any',
+      requires: { tool_calling: false, structured_output: false },
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+
+  // PASS case: runtime:'node' with provider requires is valid
+  it('passes when runtime:node declares requires.structured_output:true', () => {
+    // Note: id must not end with its type name — use a name that does not end with '-agent'
+    makeExtensionWithFields(tmpRoot, 'agents', 'node-runtime-assistant', {
+      runtime: 'node',
+      requires: { structured_output: true, tool_calling: true },
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+
+  // BACK-COMPAT: manifests with no `runtime` field still validate (defaults to 'node')
+  it('passes for v1 manifests with no runtime field (back-compat default:node)', () => {
+    // makeExtension creates manifests without a runtime field (mimics all existing v1 manifests)
+    // ids must not end with their type name
+    makeExtension(tmpRoot, 'agents', 'legacy-assistant');
+    makeExtension(tmpRoot, 'skills', 'legacy-analyzer');
+    makeExtension(tmpRoot, 'mcp-servers', 'legacy-tools');
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+
+  // BACK-COMPAT: existing extension dirs without runtime still validate
+  it('passes for a v1 manifest with requires but no runtime field (implicit node)', () => {
+    // No runtime field — implicitly 'node', so provider requires are fine
+    // id must not end with type name 'agent'
+    makeExtensionWithFields(tmpRoot, 'agents', 'v1-assistant', {
+      requires: { structured_output: true, tool_calling: true },
+    });
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+});

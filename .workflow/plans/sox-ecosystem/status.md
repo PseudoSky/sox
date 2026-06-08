@@ -1,10 +1,11 @@
 ---
 slug: sox-ecosystem
-state: complete
+state: executing
 created: 2026-06-07
-last_event: 2026-06-07T21:40:00Z
+last_event: 2026-06-07T22:16:00Z
 canonical_roi: qualitative-only
 provisional_roi: high
+reopened: 2026-06-07T22:05:00Z
 ---
 
 # Engagement: sox-ecosystem
@@ -42,6 +43,10 @@ Research basis remains `~/.claude/plugins/workflow/memory/research/extension-eco
 
 2026-06-07T21:30:00Z executing — phase P5-rest complete (executor: typescript-pro)
 2026-06-07T21:40:00Z complete — phase P6 complete (executor: typescript-pro)
+- 2026-06-07T22:05:00Z reopened → suggested — workflow-architect (v2 increment: close the 5 first-tenant gaps G-A..G-E surfaced by the sox-memory tenant; gap recommendations in sox-memory/design.md §8 act as the "suggestions" for this increment; planner to produce architecture-v2.md + integration phases)
+- 2026-06-07T23:59:00Z planned — workflow-planner (v2 gap-closure: architecture-v2.md + integration phases)
+
+2026-06-07T22:16:00Z executing — phase P7 complete (executor: typescript-pro)
 
 ## Blockers (resolved)
 - 2026-06-07T21:54:35Z **P5.5 eval-harness research gate — CLEARED.** workflow-researcher landed the

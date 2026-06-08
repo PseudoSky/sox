@@ -226,6 +226,10 @@ function makeExtensionJson(type: ExtensionType, id: string, title: string, descr
     compatibility: { host: '>=1.0.0 <2.0.0' },
     license: 'MIT',
     author: '',
+    // G-D: runtime contract. 'node' = TS/Node (can call the provider abstraction).
+    // 'stdio-any' = language-agnostic stdio process; MUST NOT declare provider requires.
+    // Absent defaults to 'node'; kept explicit here so authors see the contract at creation.
+    runtime: 'node',
   };
 
   if (type !== 'prompt') {

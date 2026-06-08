@@ -75,6 +75,12 @@
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$",
       "description": "Populated by CI at publish time; verified on install."
+    },
+    "runtime": {
+      "type": "string",
+      "enum": ["node", "stdio-any"],
+      "default": "node",
+      "description": "Author-declared runtime contract. 'node' = TS/Node, can call the provider abstraction. 'stdio-any' = language-agnostic stdio process; MUST NOT declare provider requires. Absent => 'node' (back-compat: all v1 extensions are Node)."
     }
   },
   "allOf": [
@@ -85,6 +91,12 @@
     {
       "if": { "properties": { "type": { "enum": ["agent", "skill", "mcp-server", "command"] } } },
       "then": { "required": ["entrypoint"] }
+    },
+    {
+      "if": { "properties": { "runtime": { "const": "stdio-any" } } },
+      "then": { "properties": { "requires": {
+        "properties": { "structured_output": { "const": false },
+                        "tool_calling":      { "const": false } } } } }
     }
   ]
 }

@@ -38,6 +38,13 @@ interface ExtensionManifest {
   entrypoint?: string | undefined;
   author?: string | undefined;
   order?: number | undefined;
+  /** G-D: optional runtime contract. Absent => 'node' (back-compat). */
+  runtime?: 'node' | 'stdio-any' | undefined;
+  requires?: {
+    tool_calling?: boolean | undefined;
+    structured_output?: boolean | undefined;
+    min_context_tokens?: number | undefined;
+  } | undefined;
   [key: string]: unknown;
 }
 
@@ -183,7 +190,7 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
     return diags;
   }
 
-  const { id, type, version } = manifest;
+  const { id, type, version, runtime, requires } = manifest;
 
   // Check 1: id format
   if (!ID_PATTERN.test(id)) {
@@ -250,6 +257,23 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
     }
   } else {
     diags.push({ path: packagePath, message: 'package.json not found', severity: 'error' });
+  }
+
+  // Check 6 (G-D): runtime:'stdio-any' cannot declare provider capabilities.
+  // Provider calls require the Node/TS provider abstraction; set runtime:'node' or drop the requires.
+  if (runtime === 'stdio-any') {
+    const providerFlags: string[] = [];
+    if (requires?.structured_output === true) providerFlags.push('structured_output:true');
+    if (requires?.tool_calling === true) providerFlags.push('tool_calling:true');
+    if (providerFlags.length > 0) {
+      diags.push({
+        path: manifestPath,
+        message:
+          `runtime:'stdio-any' cannot declare provider capabilities (${providerFlags.join(', ')}) — ` +
+          `provider calls require the Node/TS provider abstraction; set runtime:'node' or drop the requires.`,
+        severity: 'error',
+      });
+    }
   }
 
   return diags;
