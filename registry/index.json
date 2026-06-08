@@ -15,6 +15,64 @@
     }
   },
   {
+    "id": "memory-organizer",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "Memory Organizer",
+    "description": "Deterministic-first organize loop's LLM step: batched relation extraction, importance scoring, contradiction detection, reflection synthesis. Invoked by memoryd; never on the read path.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/memory-organizer",
+    "checksum": "sha256:18b51f7516d684ce5e6f5d6f1eb4e66ce89ddeb6cb91023f1088b14b8fcb902d",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "requires": {
+      "structured_output": true,
+      "min_context_tokens": 16384
+    }
+  },
+  {
+    "id": "sox-memory-bundle",
+    "type": "bundle",
+    "version": "0.1.0",
+    "title": "sox-memory (graph memory subsystem)",
+    "description": "The four memory extensions as one independently-versioned product.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle",
+    "checksum": "sha256:33859f16a842268beeef9db01477bb8ca77e9dd0b8cf62b1f1960159d3b340fb",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "members": [
+      {
+        "id": "memory-server",
+        "version": "^0.1.0"
+      },
+      {
+        "id": "memory-organizer",
+        "version": "^0.1.0"
+      },
+      {
+        "id": "memory-flush",
+        "version": "^0.1.0"
+      },
+      {
+        "id": "memory-cli",
+        "version": "^0.1.0"
+      }
+    ]
+  },
+  {
+    "id": "memory-cli",
+    "type": "command",
+    "version": "0.1.0",
+    "title": "Memory CLI",
+    "description": "memory init|import|status|list|promote — store lifecycle, graphify import, scope-promotion approval. Deterministic.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/commands/memory-cli",
+    "checksum": "sha256:7c2cd0cdf7f33bad601b3dd1abbe247c84d08483fc7a6e5db16dc2ca81446173",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    }
+  },
+  {
     "id": "status",
     "type": "command",
     "version": "0.1.0",
@@ -39,6 +97,18 @@
     }
   },
   {
+    "id": "memory-flush",
+    "type": "hook",
+    "version": "0.1.0",
+    "title": "Memory Session Flush",
+    "description": "On SessionEnd: persists working memory, enqueues episodes, nudges memoryd. Also binds ScopePromotionProposed to run the promotion approval/policy step.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/hooks/memory-flush",
+    "checksum": "sha256:4d4ba76d95f410ccdb4c80db98bd4e8ce722dcebe78f2f3bd560470ab57edbd8",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    }
+  },
+  {
     "id": "hello-server",
     "type": "mcp-server",
     "version": "0.1.0",
@@ -48,6 +118,22 @@
     "checksum": "sha256:f96da689c02a9d48ad9eb5a4a89450c618bfaa60c2e87d08a566d7be3683d947",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
+    }
+  },
+  {
+    "id": "memory-server",
+    "type": "mcp-server",
+    "version": "0.1.0",
+    "title": "Agent Memory Server",
+    "description": "7 memory_* tools over a single-file SQLite graph store: hybrid recall (<50ms, zero LLM), write-enqueue, session state, communities, invalidation.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/mcp-servers/memory-server",
+    "checksum": "sha256:34a3c8cc810df7262fe1f3e1fc521863cb9db404b3c1cfeab4961a7960f192b4",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "requires": {
+      "structured_output": true,
+      "min_context_tokens": 8192
     }
   },
   {

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v1.json",
+  "id": "memory-organizer",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "Memory Organizer",
+  "description": "Deterministic-first organize loop's LLM step: batched relation extraction, importance scoring, contradiction detection, reflection synthesis. Invoked by memoryd; never on the read path.",
+  "compatibility": { "host": ">=1.0.0 <2.0.0" },
+  "entrypoint": "dist/index.js",
+  "license": "MIT",
+  "runtime": "node",
+  "requires": { "structured_output": true, "min_context_tokens": 16384 },
+  "dependencies": [{ "id": "memory-server", "version": "^0.1.0" }],
+  "capabilities": ["memory.organize"],
+  "tags": ["memory", "organizer"]
+}

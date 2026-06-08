@@ -1,0 +1,14 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v1.json",
+  "id": "memory-cli",
+  "version": "0.1.0",
+  "type": "command",
+  "title": "Memory CLI",
+  "description": "memory init|import|status|list|promote — store lifecycle, graphify import, scope-promotion approval. Deterministic.",
+  "compatibility": { "host": ">=1.0.0 <2.0.0" },
+  "entrypoint": "dist/index.js",
+  "license": "MIT",
+  "runtime": "node",
+  "dependencies": [{ "id": "memory-server", "version": "^0.1.0" }],
+  "tags": ["memory", "cli"]
+}

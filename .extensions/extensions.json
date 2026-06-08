@@ -1,0 +1,10 @@
+{
+  "install": [
+    { "id": "sox-memory-bundle", "version": "^0.1.0" }
+  ],
+  "config": {
+    "memory-server":    { "db_engine": "sqlite-vec", "recall_ceiling_ms": 50, "embed_model": "nomic-embed-text-v1.5" },
+    "memory-organizer": { "batch_max": 50, "reflection_importance_trigger": 150 },
+    "memory-cli":       { "promotion": { "auto_approve": false, "min_occurrences": 3, "min_age_days": 60, "approver_scope": "user" } }
+  }
+}

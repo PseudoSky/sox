@@ -1,0 +1,26 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v1.json",
+  "id": "memory-server",
+  "version": "0.1.0",
+  "type": "mcp-server",
+  "title": "Agent Memory Server",
+  "description": "7 memory_* tools over a single-file SQLite graph store: hybrid recall (<50ms, zero LLM), write-enqueue, session state, communities, invalidation.",
+  "compatibility": { "host": ">=1.0.0 <2.0.0" },
+  "entrypoint": "dist/index.js",
+  "license": "MIT",
+  "runtime": "node",
+  "requires": { "structured_output": true, "min_context_tokens": 8192 },
+  "lifecycle": {
+    "background": true,
+    "singleton": true,
+    "health": {
+      "type": "socket",
+      "endpoint": "~/.memory/memoryd.sock",
+      "interval_ms": 5000,
+      "timeout_ms": 2000
+    },
+    "stop_timeout_ms": 5000
+  },
+  "capabilities": ["memory.read", "memory.write", "memory.session"],
+  "tags": ["memory", "rag", "graph", "sqlite"]
+}

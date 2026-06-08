@@ -3,17 +3,14 @@
   "id": "sox-memory-bundle",
   "version": "0.1.0",
   "type": "bundle",
-  "title": "SOX Memory Bundle",
-  "description": "Atomic install of the full SOX memory subsystem (server, organizer, recall skill, promote hook). Install this one id to get all four memory extensions pinned together.",
-  "compatibility": {
-    "host": ">=1.0.0 <2.0.0"
-  },
+  "title": "sox-memory (graph memory subsystem)",
+  "description": "The four memory extensions as one independently-versioned product.",
+  "compatibility": { "host": ">=1.0.0 <2.0.0" },
   "license": "MIT",
-  "author": "sox-ecosystem",
   "members": [
-    { "id": "memory-server", "version": "^0.1.0" },
+    { "id": "memory-server",    "version": "^0.1.0" },
     { "id": "memory-organizer", "version": "^0.1.0" },
-    { "id": "memory-recall", "version": "^0.1.0" },
-    { "id": "memory-promote", "version": "^0.1.0" }
+    { "id": "memory-flush",     "version": "^0.1.0" },
+    { "id": "memory-cli",       "version": "^0.1.0" }
   ]
 }
