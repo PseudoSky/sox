@@ -238,3 +238,49 @@ This is Layer 2 (no LLM judge) and is deterministic — fully within scope. Laye
 | UC-3 Publish → remote install | PARTIAL (npm dry-run; mechanism proven) |
 | UC-4 Config cascade override | PASS |
 | UC-5 Duplicate-ID blocked | PASS |
+
+---
+
+## v2 gap-closure
+
+Phase: P11 — v2 end-to-end verification (closing phase)
+Date: 2026-06-07
+Executor: typescript-pro
+
+### Suite summary
+
+```
+pnpm vitest run            → 7 test files, 131 tests, ALL PASS
+pnpm run validate-manifests → EXIT 0 (7 extension(s) validated)
+```
+
+The 110 original v1 tests (P0–P10) are all green. The 21 new P11 v2-e2e tests cover each gap end-to-end.
+
+### Per-gap pass/fail
+
+| Gap | Description | Status | Evidence |
+|---|---|---|---|
+| **G-A** | Long-running service lifecycle — `lifecycle{}` block on mcp-server/agent | **PASS** | `validate-manifests.test.ts > P8 G-A service lifecycle block` (11 tests); `v2-e2e.test.ts > G-A: lifecycle block` (4 tests). mcp-server with `lifecycle.background:true` validates; command/hook/skill with lifecycle rejected; v1 manifests (no lifecycle) unchanged. |
+| **G-B** | Bundle meta-package — `bundle` type expands to members post-cascade | **PASS** | `install.test.ts > P9: G-B bundle expansion` (5 tests); `validate-manifests.test.ts > P9 G-B bundle type` (7 tests); `v2-e2e.test.ts > G-B: bundle installs atomically` (2 tests). `sox-memory-bundle` installs → exactly 4 members; cycle detected and rejected; cascade arrays-replace rule (`cascade.ts`) byte-unchanged. |
+| **G-C** | Scope-promotion event + approval-locus rule (documentation only) | **PASS** | `v2-e2e.test.ts > G-C: scope-promotion event documented` (4 tests). `docs/scope-promotion.md` exists; `ScopePromotionProposed` event defined; approval-locus rule present (`to_scope owner approves`); per-identity-not-a-5th-scope rule present; no promotion schema added. |
+| **G-D** | Runtime-language contract — `runtime:stdio-any` blocks provider-requires | **PASS** | `validate-manifests.test.ts > P7 G-D runtime-language contract` (7 tests); `v2-e2e.test.ts > G-D: runtime:stdio-any + provider-requires is rejected` (4 tests). `runtime:stdio-any` + `requires.structured_output:true` → rejected; `runtime:stdio-any` + no provider requires → accepted; v1 manifests (no runtime field) → implicit `node`, still valid. |
+| **G-E** | Requires-redundancy advisory — warn not error; ok:true | **PASS** | `validate-manifests.test.ts > P10 G-E requires-granularity advisory` (8 tests); `v2-e2e.test.ts > G-E: requires-redundancy advisory` (3 tests). When extension X has `dependencies:[D]` and `X.requires` deep-equals `D.requires`: advisory is `warn`, `ok:true`, CI-non-blocking. v1 manifests with no dependencies emit no advisory. |
+
+### Back-compatibility proof
+
+```
+pnpm run validate-manifests   → EXIT 0 (7 extensions validated: 6 v1 + sox-memory-bundle)
+pnpm vitest run               → 131 tests, 0 failures
+git diff scripts/cascade.ts   → (empty — cascade arrays-replace rule untouched)
+git diff scripts/install.ts   → (no cascade merge-mode change; only bundle expansion added)
+```
+
+All six v1 extension manifests (agents/echo-agent, skills/hello-world, mcp-servers/hello-server, prompts/greeting-prompt, hooks/audit-hook, commands/status-command) validate and install unchanged. No required fields were added; no existing semantics were changed. Every new field (`runtime`, `lifecycle`, `members`) is optional with a back-compat default (`node`, absent, absent).
+
+### Adversarial checks
+
+- `cascade.ts` arrays-replace invariant (I5): verified unchanged by `git diff` (empty diff).
+- Lifecycle type-scope restriction: command/hook/skill with `lifecycle` → rejected (error). Test: `G-A FAIL: command-type with lifecycle is rejected`.
+- Bundle cycle guard: bundle A members B, bundle B members A → rejected. Test: `P9: G-B bundle expansion > rejects a direct bundle cycle`.
+- `stdio-any` provider-requires: `runtime:stdio-any` + `structured_output:true` → rejected (error). Test: `G-D FAIL: runtime:stdio-any with requires.structured_output:true is rejected`.
+- G-E advisory severity: advisory is `warn`, never `error`; `ok:true` even when advisory fires. Test: `G-E: redundant requires emits warn, not error; ok remains true`.
