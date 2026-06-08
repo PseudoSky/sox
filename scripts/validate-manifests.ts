@@ -47,6 +47,13 @@ interface BundleMember {
   version: string;
 }
 
+/** G-E: capability-declaration granularity — requires block shape */
+interface RequiresBlock {
+  tool_calling?: boolean | undefined;
+  structured_output?: boolean | undefined;
+  min_context_tokens?: number | undefined;
+}
+
 interface ExtensionManifest {
   $schema: string;
   id: string;
@@ -63,11 +70,9 @@ interface ExtensionManifest {
   runtime?: 'node' | 'stdio-any' | undefined;
   /** G-A: optional lifecycle block for host-supervised long-running extensions. */
   lifecycle?: LifecycleBlock | undefined;
-  requires?: {
-    tool_calling?: boolean | undefined;
-    structured_output?: boolean | undefined;
-    min_context_tokens?: number | undefined;
-  } | undefined;
+  requires?: RequiresBlock | undefined;
+  /** Runtime dependencies: ids of extensions this extension depends on at runtime. */
+  dependencies?: string[] | undefined;
   /** G-B: bundle members. Required iff type=='bundle'. Orthogonal to 'dependencies'. */
   members?: BundleMember[] | undefined;
   [key: string]: unknown;
@@ -132,6 +137,25 @@ const SECRET_PATTERNS: RegExp[] = [
  * Determine if a string value looks like a literal secret (not an ${ENV} ref).
  * Returns true if the value matches a known API-key pattern.
  */
+/**
+ * G-E: Deep-equality check for two `requires` blocks.
+ * Used to detect redundant capability declarations when an extension spawns another.
+ */
+function requiresDeepEqual(
+  a: RequiresBlock | undefined,
+  b: RequiresBlock | undefined,
+): boolean {
+  // Both absent — trivially equal (but also trivially non-informative; caller guards this)
+  if (a === undefined && b === undefined) return true;
+  // One absent, one present — not equal
+  if (a === undefined || b === undefined) return false;
+  return (
+    (a.tool_calling ?? false) === (b.tool_calling ?? false) &&
+    (a.structured_output ?? false) === (b.structured_output ?? false) &&
+    (a.min_context_tokens ?? 0) === (b.min_context_tokens ?? 0)
+  );
+}
+
 function looksLikeSecret(value: string): boolean {
   // ${ENV_VAR} refs are allowed
   if (/^\$\{[A-Z0-9_]+\}$/.test(value)) return false;
@@ -415,6 +439,59 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
 }
 
 /**
+ * G-E (P10): Advisory check — warn when extension X declares `requires` identical to
+ * a dependency D's `requires`. This is redundant but safe: both may independently
+ * install and must carry their own truth. The warn is NEVER an error (CI-non-blocking).
+ *
+ * Detection: for any extension X with dependencies:[D] where X.requires deep-equals
+ * D.requires, emit the warn. (~25 LOC per architecture-v2.md §G-E.)
+ *
+ * Rule: extension A spawning extension B may both declare provider requires. Redundancy
+ * is acceptable and is the safe default; keep it if the extension is installable standalone.
+ */
+function checkRequiresRedundancy(
+  manifests: Array<{ dir: string; manifest: ExtensionManifest }>,
+): Diagnostic[] {
+  const diags: Diagnostic[] = [];
+  const idToManifest = new Map<string, ExtensionManifest>();
+  for (const { manifest } of manifests) {
+    idToManifest.set(manifest.id, manifest);
+  }
+
+  for (const { dir, manifest } of manifests) {
+    const { id, requires, dependencies } = manifest;
+    // Only check when X has a non-trivial requires block and at least one dependency
+    if (!Array.isArray(dependencies) || dependencies.length === 0) continue;
+    if (requires === undefined) continue;
+    // Skip if requires is entirely empty / all-false — not informative to warn
+    const hasAnyRequires =
+      requires.tool_calling === true ||
+      requires.structured_output === true ||
+      (requires.min_context_tokens !== undefined && requires.min_context_tokens > 0);
+    if (!hasAnyRequires) continue;
+
+    for (const depId of dependencies) {
+      const dep = idToManifest.get(depId);
+      if (dep === undefined) continue; // dep not in registry — skip
+      if (!requiresDeepEqual(requires, dep.requires)) continue;
+
+      // Emit the advisory (warn, never error — architecture-v2.md §G-E)
+      const manifestPath = `${dir}/extension.json`;
+      diags.push({
+        path: manifestPath,
+        message:
+          `extension "${id}" declares requires identical to its dependency "${depId}"; ` +
+          `this is redundant but safe. Keep it if "${id}" is installable standalone; ` +
+          `otherwise it may be dropped. (G-E advisory)`,
+        severity: 'warn',
+      });
+    }
+  }
+
+  return diags;
+}
+
+/**
  * P2: Check three uniqueness invariants across all extension manifests.
  *   1. Unique id per registry (no two extensions with the same id)
  *   2. ≤1 entry per id in any single scope's install[]
@@ -610,6 +687,10 @@ export function validateManifests(root: string): { ok: boolean; errors: Diagnost
   // P2: Scope config checks (dedup + secret-in-config)
   const scopeErrors = checkScopeConfigs(root, manifests);
   allErrors.push(...scopeErrors);
+
+  // P10 G-E: Advisory — redundant requires (warn, never error; CI-non-blocking)
+  const requiresAdvisories = checkRequiresRedundancy(manifests);
+  allErrors.push(...requiresAdvisories);
 
   const errors = allErrors.filter((d) => d.severity === 'error');
 

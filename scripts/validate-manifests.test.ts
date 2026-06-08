@@ -908,3 +908,261 @@ describe('validate-manifests — P9 G-B bundle type', () => {
     expect(result.ok).toBe(true);
   });
 });
+
+// ─── P10 — G-E requires-granularity advisory ─────────────────────────────────
+// Tests for the redundant-requires advisory (architecture-v2.md §G-E).
+//
+// Rule: when extension X has dependencies:[D] and X.requires deep-equals D.requires,
+// emit a `warn`-severity advisory. This is NEVER an error — CI stays green.
+// A bundle does NOT aggregate requires (bundles have no runtime — G-B).
+//
+// Acceptance (from migration.md §Phase 10):
+//   (a) Advisory is emitted as severity `warn` (never `error`)
+//   (b) validateManifests still reports ok:true when the only issue is redundant requires
+//   (c) No schema, cascade.ts, or install.ts change is involved
+//   (d) Back-compat: v1 manifests with no dependencies / no requires emit no advisory
+
+describe('validate-manifests — P10 G-E requires-granularity advisory', () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = makeTempRepo();
+  });
+
+  afterEach(() => {
+    removeDirRecursive(tmpRoot);
+  });
+
+  /** Write a manifest with full control over all fields including dependencies */
+  function makeExtensionFull(
+    root: string,
+    typeDir: string,
+    id: string,
+    extra: Record<string, unknown>,
+  ): void {
+    const extDir = path.join(root, 'extensions', typeDir, id);
+    fs.mkdirSync(path.join(extDir, 'src'), { recursive: true });
+
+    let type: string;
+    if (typeDir === 'mcp-servers') type = 'mcp-server';
+    else if (typeDir === 'agents') type = 'agent';
+    else if (typeDir === 'skills') type = 'skill';
+    else if (typeDir === 'prompts') type = 'prompt';
+    else if (typeDir === 'hooks') type = 'hook';
+    else type = 'command';
+
+    const manifest = {
+      $schema: 'https://your-registry/schemas/extension/v1.json',
+      id,
+      version: '0.1.0',
+      type,
+      title: `${id} title`,
+      description: `${id} description`,
+      compatibility: { host: '>=1.0.0 <2.0.0' },
+      license: 'MIT',
+      entrypoint: 'dist/index.js',
+      ...extra,
+    };
+    fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
+    fs.writeFileSync(
+      path.join(extDir, 'package.json'),
+      JSON.stringify({ name: `@sox/extension-${id}`, version: '0.1.0' }, null, 2),
+    );
+    fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
+    fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
+  }
+
+  // ─── CORE ACCEPTANCE: advisory is warn, not error; ok remains true ────────
+
+  it('emits a WARN (not error) when spawner requires deep-equals its dependency requires', () => {
+    // Simulates memory-organizer (spawner) and memory-server (spawned dep) both
+    // declaring identical requires — the exact scenario from architecture-v2.md §G-E.
+    const sharedRequires = { structured_output: true, tool_calling: true };
+
+    // The dependency (e.g. memory-server) declares requires
+    makeExtensionFull(tmpRoot, 'mcp-servers', 'memory-server', {
+      requires: sharedRequires,
+    });
+
+    // The spawner (e.g. memory-organizer) declares the identical requires
+    makeExtensionFull(tmpRoot, 'agents', 'memory-organizer', {
+      requires: sharedRequires,
+      dependencies: ['memory-server'],
+    });
+
+    const result = validateManifests(tmpRoot);
+
+    // CRITICAL: ok must be true — the advisory MUST NOT block CI
+    expect(result.ok).toBe(true);
+
+    // The advisory must be present and severity must be 'warn'
+    const advisory = result.errors.find(
+      (d) =>
+        d.severity === 'warn' &&
+        d.message.includes('memory-organizer') &&
+        d.message.includes('memory-server') &&
+        d.message.includes('G-E advisory'),
+    );
+    expect(advisory).toBeDefined();
+    expect(advisory?.severity).toBe('warn');
+
+    // No errors at all
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+  });
+
+  // ─── advisory message contains the expected guidance ─────────────────────
+
+  it('advisory message recommends keeping requires if extension is installable standalone', () => {
+    const sharedRequires = { structured_output: true };
+
+    makeExtensionFull(tmpRoot, 'mcp-servers', 'dep-server', {
+      requires: sharedRequires,
+    });
+    makeExtensionFull(tmpRoot, 'agents', 'spawner-assistant', {
+      requires: sharedRequires,
+      dependencies: ['dep-server'],
+    });
+
+    const result = validateManifests(tmpRoot);
+    const advisory = result.errors.find(
+      (d) => d.severity === 'warn' && d.message.includes('G-E advisory'),
+    );
+    expect(advisory).toBeDefined();
+    // Message must reference the 'standalone' guidance per architecture-v2.md §G-E
+    expect(advisory?.message).toContain('standalone');
+    expect(advisory?.message).toContain('redundant but safe');
+  });
+
+  // ─── NO advisory when requires differ ────────────────────────────────────
+
+  it('does NOT emit advisory when spawner requires differs from dependency requires', () => {
+    // Server declares structured_output; spawner declares tool_calling — different
+    makeExtensionFull(tmpRoot, 'mcp-servers', 'data-server', {
+      requires: { structured_output: true, tool_calling: false },
+    });
+    makeExtensionFull(tmpRoot, 'agents', 'data-organizer', {
+      requires: { structured_output: false, tool_calling: true },
+      dependencies: ['data-server'],
+    });
+
+    const result = validateManifests(tmpRoot);
+    expect(result.ok).toBe(true);
+
+    const advisory = result.errors.find(
+      (d) => d.severity === 'warn' && d.message.includes('G-E advisory'),
+    );
+    expect(advisory).toBeUndefined();
+  });
+
+  // ─── NO advisory when extension has no dependencies ───────────────────────
+
+  it('does NOT emit advisory when extension has no dependencies field', () => {
+    makeExtensionFull(tmpRoot, 'mcp-servers', 'standalone-server', {
+      requires: { structured_output: true, tool_calling: true },
+      // no dependencies field
+    });
+
+    const result = validateManifests(tmpRoot);
+    expect(result.ok).toBe(true);
+    const advisory = result.errors.find(
+      (d) => d.severity === 'warn' && d.message.includes('G-E advisory'),
+    );
+    expect(advisory).toBeUndefined();
+  });
+
+  // ─── NO advisory when extension has no requires ───────────────────────────
+
+  it('does NOT emit advisory when extension has no requires block', () => {
+    makeExtensionFull(tmpRoot, 'mcp-servers', 'provider-free-server', {
+      // no requires block
+    });
+    makeExtensionFull(tmpRoot, 'agents', 'provider-free-organizer', {
+      // no requires block either
+      dependencies: ['provider-free-server'],
+    });
+
+    const result = validateManifests(tmpRoot);
+    expect(result.ok).toBe(true);
+    const advisory = result.errors.find(
+      (d) => d.severity === 'warn' && d.message.includes('G-E advisory'),
+    );
+    expect(advisory).toBeUndefined();
+  });
+
+  // ─── NO advisory when dependency is not in the local registry ─────────────
+
+  it('does NOT emit advisory when the dependency id is not in the local registry', () => {
+    // Spawner depends on an extension that is not registered locally (external dep)
+    makeExtensionFull(tmpRoot, 'agents', 'external-caller', {
+      requires: { structured_output: true },
+      dependencies: ['external-service-not-in-registry'],
+    });
+
+    const result = validateManifests(tmpRoot);
+    expect(result.ok).toBe(true);
+    // No advisory — dep not resolvable locally
+    const advisory = result.errors.find(
+      (d) => d.severity === 'warn' && d.message.includes('G-E advisory'),
+    );
+    expect(advisory).toBeUndefined();
+  });
+
+  // ─── BACK-COMPAT: v1 manifests (no dependencies) emit no advisory ─────────
+
+  it('passes all v1 manifests (no dependencies field) without any G-E advisory', () => {
+    // All existing v1 manifests: no dependencies field → no advisory → ok:true unchanged
+    makeExtension(tmpRoot, 'agents', 'v1-orchestrator');
+    makeExtension(tmpRoot, 'skills', 'v1-summarizer');
+    makeExtension(tmpRoot, 'mcp-servers', 'v1-tools');
+    makeExtension(tmpRoot, 'hooks', 'v1-pre-tool');
+    makeExtension(tmpRoot, 'commands', 'v1-shell-runner');
+
+    const result = validateManifests(tmpRoot);
+    expect(result.ok).toBe(true);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+    const advisories = result.errors.filter(
+      (d) => d.severity === 'warn' && d.message.includes('G-E advisory'),
+    );
+    expect(advisories).toHaveLength(0);
+  });
+
+  // ─── min_context_tokens is included in deep-equality comparison ──────────
+
+  it('emits advisory when min_context_tokens also matches between spawner and dep', () => {
+    const sharedRequires = { structured_output: true, min_context_tokens: 32000 };
+
+    makeExtensionFull(tmpRoot, 'mcp-servers', 'big-context-server', {
+      requires: sharedRequires,
+    });
+    makeExtensionFull(tmpRoot, 'agents', 'big-context-orchestrator', {
+      requires: sharedRequires,
+      dependencies: ['big-context-server'],
+    });
+
+    const result = validateManifests(tmpRoot);
+    expect(result.ok).toBe(true);
+    const advisory = result.errors.find(
+      (d) => d.severity === 'warn' && d.message.includes('G-E advisory'),
+    );
+    expect(advisory).toBeDefined();
+  });
+
+  it('does NOT emit advisory when min_context_tokens differs (not deep-equal)', () => {
+    makeExtensionFull(tmpRoot, 'mcp-servers', 'ctx-server', {
+      requires: { structured_output: true, min_context_tokens: 16000 },
+    });
+    makeExtensionFull(tmpRoot, 'agents', 'ctx-organizer', {
+      requires: { structured_output: true, min_context_tokens: 32000 }, // differs
+      dependencies: ['ctx-server'],
+    });
+
+    const result = validateManifests(tmpRoot);
+    expect(result.ok).toBe(true);
+    const advisory = result.errors.find(
+      (d) => d.severity === 'warn' && d.message.includes('G-E advisory'),
+    );
+    expect(advisory).toBeUndefined();
+  });
+});
