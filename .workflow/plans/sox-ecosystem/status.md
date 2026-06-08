@@ -2,7 +2,7 @@
 slug: sox-ecosystem
 state: executing
 created: 2026-06-07
-last_event: 2026-06-07T20:48:00Z
+last_event: 2026-06-07T21:22:00Z
 canonical_roi: qualitative-only
 provisional_roi: high
 ---
@@ -37,6 +37,8 @@ Research basis remains `~/.claude/plugins/workflow/memory/research/extension-eco
 - (none)
 
 2026-06-07T20:48:00Z executing — phase P0 complete (executor: typescript-pro)
+2026-06-07T23:55:00Z executing — phase P5a complete (executor: typescript-pro)
+2026-06-07T21:22:00Z executing — phases P1+P2+P4+P3 complete (executor: typescript-pro)
 
 ## Blockers (resolved)
 - 2026-06-07T21:54:35Z **P5.5 eval-harness research gate — CLEARED.** workflow-researcher landed the
