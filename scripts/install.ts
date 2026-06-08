@@ -408,13 +408,16 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
   const existingLock = loadLockfile(lockPath);
 
   // ── Cascade resolution: load all scopes and merge ────────────────────────────
-  const allScopeConfigs = await loadScopeCascade(
-    opts.scope,
-    scopeConfig,
-    root,
+  // When configPath is explicitly provided (test/override scenario), use single-scope mode
+  // to avoid loading from global default paths.
+  const singleScopeOnly = opts.configPath !== undefined;
+  const allScopeConfigs = await loadScopeCascade({
+    scope: opts.scope,
+    primaryConfig: scopeConfig,
+    singleScopeOnly,
     existingLock,
-    opts.mode,
-  );
+    mode: opts.mode,
+  });
   const cascadedConfig = cascade(allScopeConfigs as CascadeScopeConfig[]);
 
   // ── Determine strict_capabilities ──────────────────────────────────────────
@@ -565,15 +568,17 @@ interface ScopeConfigWithMeta extends ScopeConfig {
   extendsPin?: LockfileExtendsPin | undefined;
 }
 
-async function loadScopeCascade(
-  scope: Scope,
-  primaryConfig: ScopeConfig,
-  root: string,
-  existingLock: Lockfile | null,
-  mode: InstallMode,
-): Promise<ScopeConfigWithMeta[]> {
-  // Suppress unused variable warning — root is used for consistency with the interface
-  void root;
+interface CascadeOpts {
+  scope: Scope;
+  primaryConfig: ScopeConfig;
+  /** When true, only load the primaryConfig (don't load other scope defaults). */
+  singleScopeOnly: boolean;
+  existingLock: Lockfile | null;
+  mode: InstallMode;
+}
+
+async function loadScopeCascade(opts: CascadeOpts): Promise<ScopeConfigWithMeta[]> {
+  const { scope, primaryConfig, singleScopeOnly, existingLock, mode } = opts;
   const configs: ScopeConfigWithMeta[] = [];
 
   // Load org baseline if `extends` is present (Gap 4)
@@ -604,7 +609,15 @@ async function loadScopeCascade(
     configs.push({ ...orgConfig, extendsUrl: url, extendsPin });
   }
 
-  // Load all scopes from widest to the requested scope
+  if (singleScopeOnly) {
+    // Single-scope mode (used when configPath is explicitly provided):
+    // Only use the primaryConfig — don't load from other default scope paths.
+    configs.push(primaryConfig);
+    return configs;
+  }
+
+  // Full cascade mode: load all scopes from widest to the requested scope
+  // using default paths (for CLI usage without configPath override)
   const scopeOrder: Scope[] = ['org', 'user', 'project', 'local'];
   const scopeIndex = scopeOrder.indexOf(scope);
 
@@ -754,28 +767,34 @@ function resolveActiveProvider(configs: ScopeConfigWithMeta[]): string | undefin
   return undefined;
 }
 
-// ─── CLI entry point ──────────────────────────────────────────────────────────
+// ─── CLI entry point — only runs when invoked directly, not when imported ──────
 
-const args = process.argv.slice(2);
-const scopeArg = args.find((a) => a.startsWith('--scope='))?.slice('--scope='.length) as
-  | Scope
-  | undefined;
-const frozen = args.includes('--frozen-lockfile');
-const update = args.includes('--update');
+// Detect if this module is the main entry point (Node16 ESM)
+const isMain = process.argv[1] !== undefined && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'));
+const isMainFallback = process.argv[1]?.includes('install');
 
-if (!scopeArg) {
-  console.error('install: ERROR --scope=<org|user|project|local> is required');
-  process.exit(1);
-}
+if (isMain || (isMainFallback && !process.env['VITEST'])) {
+  const args = process.argv.slice(2);
+  const scopeArg = args.find((a) => a.startsWith('--scope='))?.slice('--scope='.length) as
+    | Scope
+    | undefined;
+  const frozen = args.includes('--frozen-lockfile');
+  const update = args.includes('--update');
 
-const mode: InstallMode = frozen ? 'frozen' : update ? 'update' : 'default';
-
-install({ scope: scopeArg, mode })
-  .then((resolved) => {
-    const count = Object.keys(resolved).length;
-    console.log(`install: done — ${count} extension(s) resolved`);
-  })
-  .catch((e: unknown) => {
-    console.error(`install: FATAL ${String(e)}`);
+  if (!scopeArg) {
+    console.error('install: ERROR --scope=<org|user|project|local> is required');
     process.exit(1);
-  });
+  }
+
+  const mode: InstallMode = frozen ? 'frozen' : update ? 'update' : 'default';
+
+  install({ scope: scopeArg, mode })
+    .then((resolved) => {
+      const count = Object.keys(resolved).length;
+      console.log(`install: done — ${count} extension(s) resolved`);
+    })
+    .catch((e: unknown) => {
+      console.error(`install: FATAL ${String(e)}`);
+      process.exit(1);
+    });
+}
