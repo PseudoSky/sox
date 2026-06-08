@@ -733,9 +733,18 @@ function buildResolvedSetFromInstallList(
 function findLocalExtension(root: string, id: string): string | null {
   const typeDirs = ['agents', 'skills', 'mcp-servers', 'prompts', 'hooks', 'commands'];
   for (const typeDir of typeDirs) {
-    const extPath = path.join(root, 'extensions', typeDir, id);
-    if (fs.existsSync(extPath) && fs.existsSync(path.join(extPath, 'extension.json'))) {
-      return extPath;
+    const typePath = path.join(root, 'extensions', typeDir);
+    if (!fs.existsSync(typePath)) continue;
+    for (const dirEntry of fs.readdirSync(typePath)) {
+      const extPath = path.join(typePath, dirEntry);
+      const manifestPath = path.join(extPath, 'extension.json');
+      if (!fs.existsSync(manifestPath)) continue;
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { id?: string };
+        if (manifest.id === id) return extPath;
+      } catch (_e) {
+        // Skip malformed manifests
+      }
     }
   }
   return null;
