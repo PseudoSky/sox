@@ -468,6 +468,219 @@ describe('P4: checksum verification', () => {
   });
 });
 
+// ─── P4 Tests — npm CDN source + frozen/update flow ──────────────────────────
+
+describe('P4: registry publish + remote install simulation', () => {
+  let root: string;
+  let server: http.Server;
+  let serverPort: number;
+  let artifactContent: Buffer;
+
+  beforeEach(async () => {
+    root = makeTempRoot();
+    artifactContent = Buffer.from('// @sox/extension-hello-world v0.2.0\nexport const id = "hello-world";\n');
+
+    await new Promise<void>((resolve) => {
+      server = http.createServer((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/javascript' });
+        res.end(artifactContent);
+      });
+      server.listen(0, '127.0.0.1', () => {
+        serverPort = (server.address() as { port: number }).port;
+        resolve();
+      });
+    });
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    removeDirRecursive(root);
+  });
+
+  it('resolves semver ^0.2.0 from registry, fetches from CDN, verifies sha256', async () => {
+    const crypto = await import('node:crypto');
+    const realChecksum =
+      'sha256:' + crypto.createHash('sha256').update(artifactContent).digest('hex');
+
+    // Build registry index with npm-CDN-style source
+    const registryDir = path.join(root, 'registry');
+    fs.mkdirSync(registryDir, { recursive: true });
+    const indexEntry = {
+      id: 'hello-world',
+      type: 'skill',
+      version: '0.2.0',
+      title: 'Hello World',
+      description: 'test',
+      source: `http://127.0.0.1:${serverPort}/dist/index.js`,
+      checksum: realChecksum,
+      compatibility: { host: '>=1.0.0 <2.0.0' },
+    };
+    fs.writeFileSync(path.join(registryDir, 'index.json'), JSON.stringify([indexEntry], null, 2));
+
+    const { configPath, lockfilePath } = makeUserConfig(root, {
+      install: [{ id: 'hello-world', version: '^0.2.0' }],
+    });
+
+    // First install — should resolve ^0.2.0 → 0.2.0, fetch from CDN, verify sha256
+    const resolved = await install({
+      scope: 'user',
+      mode: 'default',
+      configPath,
+      lockfilePath,
+      root,
+    });
+
+    expect(Object.keys(resolved)).toContain('hello-world');
+    expect(resolved['hello-world']?.checksum).toBe(realChecksum);
+
+    // Verify lockfile was written
+    const lock = JSON.parse(fs.readFileSync(lockfilePath, 'utf8'));
+    expect(lock['resolved']['hello-world@0.2.0']).toBeDefined();
+    expect(lock['resolved']['hello-world@0.2.0']['checksum']).toBe(realChecksum);
+
+    // --frozen-lockfile: should succeed without re-fetching
+    const lock1 = fs.readFileSync(lockfilePath, 'utf8');
+    await install({ scope: 'user', mode: 'frozen', configPath, lockfilePath, root });
+    const lock2 = fs.readFileSync(lockfilePath, 'utf8');
+    expect(lock1).toBe(lock2); // byte-identical
+  });
+
+  it('rejects a tampered CDN artifact (wrong checksum in registry)', async () => {
+    // Tamper the checksum in the registry index (but serve real content from CDN)
+    const tamperedChecksum = 'sha256:' + 'b'.repeat(64);
+
+    const registryDir = path.join(root, 'registry');
+    fs.mkdirSync(registryDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(registryDir, 'index.json'),
+      JSON.stringify([{
+        id: 'hello-world',
+        type: 'skill',
+        version: '0.2.0',
+        title: 'Hello World',
+        description: 'test',
+        source: `http://127.0.0.1:${serverPort}/dist/index.js`,
+        checksum: tamperedChecksum, // wrong — doesn't match real content
+        compatibility: { host: '>=1.0.0 <2.0.0' },
+      }], null, 2),
+    );
+
+    // Use real checksum in config to verify tamper detection works in the other direction
+    // Actually: checksum in registry index is what install.ts passes as expectedChecksum
+    // So when the fetched content has realChecksum but expectedChecksum is tamperedChecksum → mismatch
+    const { configPath, lockfilePath } = makeUserConfig(root, {
+      install: [{ id: 'hello-world', version: '^0.2.0' }],
+    });
+
+    let didFail = false;
+    const originalExit = process.exit;
+    process.exit = ((_code?: unknown) => {
+      didFail = true;
+      throw new Error('process.exit: checksum mismatch');
+    }) as typeof process.exit;
+
+    try {
+      await install({ scope: 'user', mode: 'default', configPath, lockfilePath, root });
+    } catch (_e) {
+      // Expected
+    } finally {
+      process.exit = originalExit;
+    }
+
+    expect(didFail).toBe(true);
+  });
+
+  it('--frozen-lockfile exits non-zero when a required extension is absent from lockfile', async () => {
+    // Create a lockfile that does NOT have the requested extension
+    const lockfilePath = path.join(root, 'test.lock');
+    const emptyLock = { lockfileVersion: 1, resolved: {} };
+    fs.writeFileSync(lockfilePath, JSON.stringify(emptyLock, null, 2));
+
+    const registryDir = path.join(root, 'registry');
+    fs.mkdirSync(registryDir, { recursive: true });
+    const crypto = await import('node:crypto');
+    const realChecksum =
+      'sha256:' + crypto.createHash('sha256').update(artifactContent).digest('hex');
+    fs.writeFileSync(
+      path.join(registryDir, 'index.json'),
+      JSON.stringify([{
+        id: 'hello-world',
+        type: 'skill',
+        version: '0.2.0',
+        title: 'Hello World',
+        description: 'test',
+        source: `http://127.0.0.1:${serverPort}/dist/index.js`,
+        checksum: realChecksum,
+        compatibility: { host: '>=1.0.0 <2.0.0' },
+      }], null, 2),
+    );
+
+    const { configPath } = makeUserConfig(root, {
+      install: [{ id: 'hello-world', version: '^0.2.0' }],
+    });
+
+    // --frozen-lockfile with no 'hello-world' in lockfile → should fail
+    let didFail = false;
+    const originalExit = process.exit;
+    process.exit = ((_code?: unknown) => {
+      didFail = true;
+      throw new Error('process.exit: missing in frozen lock');
+    }) as typeof process.exit;
+
+    try {
+      await install({ scope: 'user', mode: 'frozen', configPath, lockfilePath, root });
+    } catch (_e) {
+      // Expected
+    } finally {
+      process.exit = originalExit;
+    }
+
+    expect(didFail).toBe(true);
+  });
+
+  it('--update re-resolves and rewrites the lockfile', async () => {
+    const crypto = await import('node:crypto');
+    const realChecksum =
+      'sha256:' + crypto.createHash('sha256').update(artifactContent).digest('hex');
+
+    const registryDir = path.join(root, 'registry');
+    fs.mkdirSync(registryDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(registryDir, 'index.json'),
+      JSON.stringify([{
+        id: 'hello-world',
+        type: 'skill',
+        version: '0.2.0',
+        title: 'Hello World',
+        description: 'test',
+        source: `http://127.0.0.1:${serverPort}/dist/index.js`,
+        checksum: realChecksum,
+        compatibility: { host: '>=1.0.0 <2.0.0' },
+      }], null, 2),
+    );
+
+    const { configPath, lockfilePath } = makeUserConfig(root, {
+      install: [{ id: 'hello-world', version: '^0.2.0' }],
+    });
+
+    // First install
+    await install({ scope: 'user', mode: 'default', configPath, lockfilePath, root });
+    const lock1 = fs.readFileSync(lockfilePath, 'utf8');
+
+    // --update should re-resolve (same version since registry unchanged)
+    await install({ scope: 'user', mode: 'update', configPath, lockfilePath, root });
+    const lock2 = fs.readFileSync(lockfilePath, 'utf8');
+
+    // Both locks should have the same content (same resolution)
+    const l1 = JSON.parse(lock1);
+    const l2 = JSON.parse(lock2);
+    expect(l2['resolved']['hello-world@0.2.0']).toBeDefined();
+    expect(l2['resolved']['hello-world@0.2.0']['checksum']).toBe(
+      l1['resolved']['hello-world@0.2.0']['checksum'],
+    );
+  });
+});
+
 // ─── semverSatisfies unit tests ───────────────────────────────────────────────
 
 describe('semverSatisfies', () => {
