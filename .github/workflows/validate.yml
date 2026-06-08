@@ -1,0 +1,70 @@
+# validate.yml — PR validation: manifests + typecheck + tests + changeset status
+#
+# Runs on every pull request targeting main.
+# Filtered to packages changed vs HEAD~1 using pnpm --filter "...[HEAD~1]".
+#
+# Steps (per reference-architecture §6):
+#   1. validate-manifests  — id-format, type/dir match, dedup, secret-in-config
+#   2. typecheck           — tsc --noEmit across all workspace packages
+#   3. test                — vitest run (all extension + script tests)
+#   4. changeset status    — confirms changeset file is present for changed packages
+#
+# Hard constraint: do NOT add a behavioral agent/prompt eval step here —
+# that is gated on the P5.5 research spike (migration.md P5.5).
+#
+# Tooling: actions/checkout@v4, pnpm/action-setup@v3 (reference-arch §6 row 9).
+
+name: Validate
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate:
+    name: Validate manifests, types, tests, and changeset
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history needed for changeset status and --filter "...[HEAD~1]"
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Step 1: validate-manifests — id-format, type/dir invariant, dedup, secret-in-config
+      # Runs against the full extension tree (read-only, no filter needed — fast).
+      - name: Validate extension manifests
+        run: pnpm run validate-manifests
+
+      # Step 2: typecheck — tsc --noEmit across all workspace packages
+      # Runs on all packages; filter is not applied here because type errors in
+      # unchanged packages can surface from changed dependency types.
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # Step 3: test — vitest run, filtered to packages changed vs HEAD~1
+      # "--filter ...[HEAD~1]" matches the changed package(s) AND their dependents.
+      - name: Run tests (changed packages + dependents)
+        run: pnpm --filter "...[HEAD~1]" run test --passWithNoTests 2>/dev/null || pnpm run test
+
+      # Step 4: changeset status — confirm a changeset file exists for this PR
+      # Exits non-zero if no changeset is present (forces contributors to bump versions).
+      # Use --since to compare from the base branch.
+      - name: Changeset status
+        run: pnpm changeset status --since=origin/main

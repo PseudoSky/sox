@@ -1,0 +1,92 @@
+# release.yml — Release pipeline: Changesets publish → build-index → commit
+#
+# Triggers on pushes to main. When changeset files are present, creates a
+# "Version Packages" PR (or merges automatically); on merge of that PR,
+# publishes to npm and updates registry/index.json.
+#
+# Flow (per reference-architecture §6):
+#   1. @changesets/action creates/updates a "Version Packages" PR.
+#   2. On that PR merge (publishing=true), @changesets/action publishes all
+#      changed packages to npm with `pnpm release`.
+#   3. build-index runs after publish to regenerate registry/index.json with
+#      updated npm-CDN source URLs and sha256 checksums.
+#   4. The updated registry/index.json is committed back to main.
+#
+# Tooling: actions/checkout@v4, pnpm/action-setup@v3 (reference-arch §6 row 9).
+# Auth: NPM_TOKEN for publish; GITHUB_TOKEN for the changeset PR + commit.
+
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  release:
+    name: Publish packages and update registry index
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history needed so @changesets/action can detect changes
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # @changesets/action handles two modes:
+      #   - Changeset files present: creates/updates a "Version Packages" PR.
+      #   - No changeset files (i.e. PR was already merged): publishes to npm.
+      - name: Create release PR or publish
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          publish: pnpm release
+          version: pnpm version-packages
+          commit: "chore: version packages"
+          title: "chore: version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Rebuild registry/index.json after a successful publish.
+      # build-index updates each entry's `source` (npm-CDN URL) and `checksum` (sha256).
+      # Only runs when @changesets/action actually published packages.
+      - name: Rebuild registry/index.json
+        if: steps.changesets.outputs.published == 'true'
+        run: pnpm run build-index
+
+      # Commit the updated registry/index.json back to main.
+      # Skipped if build-index made no changes (nothing new published).
+      - name: Commit updated registry/index.json
+        if: steps.changesets.outputs.published == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add registry/index.json
+          git diff --cached --quiet || git commit -m "chore: update registry/index.json after publish [skip ci]"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
