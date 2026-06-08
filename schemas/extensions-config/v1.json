@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://your-registry/schemas/extensions-config/v1.json",
+  "title": "Scoped extensions config v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "extends": {
+      "type": "string",
+      "format": "uri",
+      "description": "Org baseline URL. Fetched, then this scope merges on top. Pinned by sha256 in lockfile (Gap 4)."
+    },
+    "strict_capabilities": {
+      "type": "boolean",
+      "default": false,
+      "description": "If true, a capability mismatch hard-blocks install instead of warning (Gap 5)."
+    },
+    "providers": {
+      "type": "object",
+      "description": "Provider connection blocks. User/local scope only — NEVER in committed project config. API keys are ${ENV} refs only.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "base_url": { "type": "string", "format": "uri" },
+          "api_key": {
+            "type": "string",
+            "pattern": "^(\\$\\{[A-Z0-9_]+\\}|ollama)$",
+            "description": "Env-var reference ${VAR} or the literal 'ollama' sentinel. Literal secrets are a lint error."
+          }
+        }
+      }
+    },
+    "install": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+          "version": { "type": "string", "description": "semver range or workspace:* for monorepo-local." },
+          "enabled": { "type": "boolean", "default": true },
+          "source": { "type": "string", "description": "Optional explicit source override (npm:, file://, https://)." }
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "description": "Per-extension config keyed by extension id. Deep-merged across scopes.",
+      "additionalProperties": { "type": "object" }
+    },
+    "enabled": {
+      "type": "object",
+      "description": "Per-extension enable/disable override keyed by id. Narrowest scope wins.",
+      "additionalProperties": { "type": "boolean" }
+    },
+    "private": {
+      "type": "boolean",
+      "default": false,
+      "description": "If true, this scope's extensions are excluded from registry publication and global dedup."
+    }
+  }
+}

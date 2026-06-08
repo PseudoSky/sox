@@ -1,0 +1,14 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v1.json",
+  "id": "hello-world",
+  "version": "0.1.0",
+  "type": "skill",
+  "title": "Hello World",
+  "description": "A minimal hello-world skill demonstrating the extension scaffold",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "",
+  "entrypoint": "dist/index.js"
+}

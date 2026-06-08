@@ -1,0 +1,28 @@
+{
+  "name": "sox-ecosystem",
+  "version": "1.0.0",
+  "description": "LLM extension ecosystem monorepo — agents, skills, mcp-servers, prompts, hooks, commands",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.11.1",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "validate-manifests": "npx tsx scripts/validate-manifests.ts",
+    "new-extension": "npx tsx scripts/new-extension.ts",
+    "test": "vitest run",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "2.31.0",
+    "@types/node": "22.19.20",
+    "ajv": "8.20.0",
+    "dotenv": "17.4.2",
+    "jsonc-parser": "3.3.1",
+    "tsx": "4.22.4",
+    "typescript": "6.0.3",
+    "vitest": "4.1.8",
+    "zod": "4.4.3"
+  }
+}
