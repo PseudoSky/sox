@@ -1,0 +1,13 @@
+{
+  "name": "@sox/extension-greeting-prompt",
+  "version": "0.1.0",
+  "description": "A parameterized greeting prompt that addresses users by name and context",
+  "files": [
+    "prompt.md",
+    "extension.json"
+  ],
+  "scripts": {
+    "typecheck": "echo \"No TypeScript source for prompt type\""
+  },
+  "license": "MIT"
+}

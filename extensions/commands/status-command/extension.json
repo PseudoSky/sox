@@ -1,0 +1,14 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v1.json",
+  "id": "status",
+  "version": "0.1.0",
+  "type": "command",
+  "title": "Status Command",
+  "description": "Slash-invoked command that reports the current environment status deterministically, no LLM calls",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "",
+  "entrypoint": "dist/index.js"
+}

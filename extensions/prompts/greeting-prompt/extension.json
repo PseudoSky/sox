@@ -1,0 +1,13 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v1.json",
+  "id": "greeting",
+  "version": "0.1.0",
+  "type": "prompt",
+  "title": "Greeting Prompt",
+  "description": "A parameterized greeting prompt that addresses users by name and context",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": ""
+}

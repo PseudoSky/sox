@@ -36,6 +36,16 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
 
+  extensions/agents/echo-agent: {}
+
+  extensions/commands/status-command: {}
+
+  extensions/hooks/audit-hook: {}
+
+  extensions/mcp-servers/hello-server: {}
+
+  extensions/prompts/greeting-prompt: {}
+
   extensions/skills/hello-world: {}
 
 packages:

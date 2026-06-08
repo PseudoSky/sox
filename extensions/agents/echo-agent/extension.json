@@ -1,0 +1,17 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v1.json",
+  "id": "echo",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "Echo Agent",
+  "description": "A stub agent that echoes inputs back using two stub tools",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "entrypoint": "dist/index.js",
+  "license": "MIT",
+  "author": "",
+  "requires": {
+    "tool_calling": true
+  }
+}

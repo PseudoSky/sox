@@ -1,0 +1,14 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v1.json",
+  "id": "hello-server",
+  "version": "0.1.0",
+  "type": "mcp-server",
+  "title": "Hello Server",
+  "description": "A minimal hello-server MCP server demonstrating the mcp-server extension scaffold with stdio transport and one stub tool",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "",
+  "entrypoint": "dist/index.js"
+}
