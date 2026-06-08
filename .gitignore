@@ -5,3 +5,6 @@ dist/
 .extensions/extensions.local.json
 *.lock
 !pnpm-lock.yaml
+# sox-memory temp test dirs
+.tmp-mvp/
+.tmp-test/

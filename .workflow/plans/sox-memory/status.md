@@ -2,7 +2,7 @@
 slug: sox-memory
 state: executing
 created: 2026-06-07
-last_event: 2026-06-07T23:03:00Z
+last_event: 2026-06-08T04:25:00Z
 canonical_roi: high (first-tenant proof; v2 swaps drop ~160 LOC of workaround, −9%)
 parent: sox-ecosystem
 ---
@@ -19,6 +19,7 @@ extensions (mcp-server + agent + hook + command), conformant to the fixed ecosys
 - 2026-06-07 planned — 6-phase resumable build plan (P0 install bundle → P5 publish), each with a deterministic acceptance check
 - 2026-06-07 planned — workflow-planner (v2 re-plan: workarounds → native ecosystem primitives)
 - 2026-06-07T23:03:00Z executing — phase P0 complete (executor: typescript-pro)
+- 2026-06-08T04:25:00Z executing — phase P1 complete (executor: typescript-pro)
 
 ## Deliverables
 - design.md — extensions/manifests/bundle, SQLite DDL, 7 MCP tool contracts, daemon model, federation, build-vs-reuse, gap resolutions, conformance+gap report (§8)

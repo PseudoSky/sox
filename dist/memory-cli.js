@@ -1,67 +1,62 @@
+#!/usr/bin/env node
 /**
- * Memory CLI — memory init|import|status|list|promote
- * Deterministic: no LLM calls, predictable output.
+ * sox-memory CLI entry point.
+ * Usage: node dist/memory-cli <command> [options]
  *
- * Usage:
- *   memory init [--scope project|user|org|local] [--path DIR]
- *   memory status [--path DIR]
- *   memory list [--path DIR]
+ * Commands:
+ *   init [--scope project|user|org|local] [--path DIR]   Create .memory/<scope>.db
+ *   status [--path DIR]                                   Show store info
+ *   list [--path DIR]                                     List recent memories
  */
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
-import { openDb, initScope } from '../../../mcp-servers/memory-server/src/db.js';
+import { openDb, initScope } from './memory-lib.js';
 
-export type ScopeKind = 'project' | 'user' | 'org' | 'local';
+const VALID_SCOPES = ['project', 'user', 'org', 'local'];
 
-const VALID_SCOPES: ScopeKind[] = ['project', 'user', 'org', 'local'];
-
-function dbFileName(scope: ScopeKind): string {
+function dbFileName(scope) {
   return `${scope}.db`;
 }
 
-function defaultBasePath(scope: ScopeKind): string {
-  if (scope === 'user') return path.join(process.env['HOME'] ?? '~', '.memory');
+function defaultBasePath(scope) {
+  if (scope === 'user') return path.join(process.env.HOME ?? '~', '.memory');
   return '.memory';
 }
 
-interface ParsedArgs {
-  command: string;
-  scope: ScopeKind;
-  basePath: string;
-  rest: string[];
-}
-
-function parseArgs(argv: string[]): ParsedArgs {
-  // argv starts AFTER `node dist/memory-cli`
+function parseArgs(argv) {
+  // argv is process.argv slice starting after the script name
   const command = argv[0] ?? 'help';
-  let scope: ScopeKind = 'project';
+  let scope = 'project';
   let basePath = '';
-  const rest: string[] = [];
+  const rest = [];
 
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--scope') {
       const s = argv[++i];
-      if (!VALID_SCOPES.includes(s as ScopeKind)) {
+      if (!VALID_SCOPES.includes(s)) {
         console.error(`Invalid scope: ${s}. Valid: ${VALID_SCOPES.join(', ')}`);
         process.exit(1);
       }
-      scope = s as ScopeKind;
+      scope = s;
     } else if (arg === '--path') {
       basePath = argv[++i] ?? '';
     } else {
-      rest.push(arg ?? '');
+      rest.push(arg);
     }
   }
 
-  if (!basePath) basePath = defaultBasePath(scope);
+  if (!basePath) {
+    // --path sets the BASE directory; .memory/ is created inside it
+    basePath = process.cwd();
+  }
 
   return { command, scope, basePath, rest };
 }
 
-function cmdInit(scope: ScopeKind, basePath: string): void {
+function cmdInit(scope, basePath) {
   const memoryDir = path.resolve(basePath, '.memory');
   fs.mkdirSync(memoryDir, { recursive: true });
 
@@ -70,12 +65,8 @@ function cmdInit(scope: ScopeKind, basePath: string): void {
 
   const db = openDb(dbPath);
 
-  // Generate a stable scope_id (idempotent: reuse if already present)
-  const existing = db
-    .prepare('SELECT scope_id FROM memory_scope WHERE scope = ?')
-    .get(scope) as { scope_id: string } | undefined;
-
-  const scopeId = existing?.scope_id ?? crypto.randomUUID();
+  const existingRow = db.prepare('SELECT scope_id FROM memory_scope WHERE scope = ?').get(scope);
+  const scopeId = existingRow?.scope_id ?? crypto.randomUUID();
   const meta = initScope(db, scope, scopeId);
 
   db.close();
@@ -88,40 +79,37 @@ function cmdInit(scope: ScopeKind, basePath: string): void {
   console.log(`  embed_dim:   ${meta.embed_dim}`);
   console.log(`  created_at:  ${meta.created_at}`);
 
-  // Write registry entry at ~/.memory/registry.json
-  const registryPath = path.join(process.env['HOME'] ?? '', '.memory', 'registry.json');
-  let registry: Record<string, string> = {};
+  // Write registry entry
+  const registryPath = path.join(process.env.HOME ?? '', '.memory', 'registry.json');
+  let registry = {};
   try {
-    registry = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as Record<string, string>;
+    registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
   } catch {
     // First init
   }
   registry[scope] = dbPath;
   fs.mkdirSync(path.dirname(registryPath), { recursive: true });
   fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2));
+  console.log(`Registry updated: ${registryPath}`);
 }
 
-function cmdStatus(basePath: string): void {
+function cmdStatus(basePath) {
   const memoryDir = path.resolve(basePath, '.memory');
   if (!fs.existsSync(memoryDir)) {
-    console.log('No .memory directory found at', memoryDir);
+    console.log(`No .memory directory found at ${memoryDir}`);
     return;
   }
-  const dbs = fs.readdirSync(memoryDir).filter((f) => f.endsWith('.db'));
+  const dbs = fs.readdirSync(memoryDir).filter(f => f.endsWith('.db'));
   if (dbs.length === 0) {
-    console.log('No databases found in', memoryDir);
+    console.log(`No databases found in ${memoryDir}`);
     return;
   }
   for (const dbFile of dbs) {
     const dbPath = path.join(memoryDir, dbFile);
     try {
       const db = openDb(dbPath);
-      const meta = db.prepare('SELECT * FROM memory_scope').get() as
-        | { scope: string; embed_model: string; created_at: string }
-        | undefined;
-      const nodeCount = (
-        db.prepare('SELECT COUNT(*) as c FROM node').get() as { c: number }
-      ).c;
+      const meta = db.prepare('SELECT * FROM memory_scope').get();
+      const nodeCount = db.prepare('SELECT COUNT(*) as c FROM node').get().c;
       console.log(`${dbFile}: scope=${meta?.scope ?? '?'} nodes=${nodeCount} model=${meta?.embed_model ?? '?'}`);
       db.close();
     } catch (e) {
@@ -130,22 +118,20 @@ function cmdStatus(basePath: string): void {
   }
 }
 
-function cmdList(basePath: string): void {
+function cmdList(basePath) {
   const memoryDir = path.resolve(basePath, '.memory');
   if (!fs.existsSync(memoryDir)) {
-    console.log('No .memory directory found at', memoryDir);
+    console.log(`No .memory directory found at ${memoryDir}`);
     return;
   }
-  const dbs = fs.readdirSync(memoryDir).filter((f) => f.endsWith('.db'));
+  const dbs = fs.readdirSync(memoryDir).filter(f => f.endsWith('.db'));
   for (const dbFile of dbs) {
     const dbPath = path.join(memoryDir, dbFile);
     try {
       const db = openDb(dbPath);
-      const nodes = db
-        .prepare(
-          `SELECT uid, kind, content, t_created FROM node WHERE t_invalid IS NULL ORDER BY t_created DESC LIMIT 20`,
-        )
-        .all() as { uid: string; kind: string; content: string | null; t_created: string }[];
+      const nodes = db.prepare(
+        `SELECT uid, kind, content, t_created FROM node WHERE t_invalid IS NULL ORDER BY t_created DESC LIMIT 20`
+      ).all();
       console.log(`\n=== ${dbFile} (${nodes.length} recent) ===`);
       for (const n of nodes) {
         const snippet = (n.content ?? '').slice(0, 80);
@@ -158,7 +144,8 @@ function cmdList(basePath: string): void {
   }
 }
 
-export function runCli(argv: string[]): void {
+function main() {
+  const argv = process.argv.slice(2);
   const { command, scope, basePath } = parseArgs(argv);
 
   switch (command) {
@@ -171,7 +158,6 @@ export function runCli(argv: string[]): void {
     case 'list':
       cmdList(basePath);
       break;
-    case 'help':
     default:
       console.log(`sox-memory CLI
 Commands:
@@ -182,6 +168,4 @@ Commands:
   }
 }
 
-// Module is loaded; CLI entry is via dist/memory-cli.js or direct node invocation.
-// Export runCli for programmatic use.
-
+main();
