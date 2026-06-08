@@ -95,6 +95,8 @@ export interface IndexEntry {
     structured_output?: boolean | undefined;
     min_context_tokens?: number | undefined;
   } | undefined;
+  /** G-B: present for bundle type; the members this bundle expands to at install time */
+  members?: Array<{ id: string; version: string }> | undefined;
 }
 
 export interface ExtensionManifest {
@@ -113,6 +115,8 @@ export interface ExtensionManifest {
   } | undefined;
   checksum?: string | undefined;
   private?: boolean | undefined;
+  /** G-B: bundle members. Required iff type=='bundle'. Orthogonal to 'dependencies'. */
+  members?: Array<{ id: string; version: string }> | undefined;
 }
 
 // ─── Scope path resolution ────────────────────────────────────────────────────
@@ -427,7 +431,11 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
   const activeProvider = opts.overrideProvider ?? resolveActiveProvider(allScopeConfigs);
 
   // ── Build install list from cascade ─────────────────────────────────────────
-  const entriesToInstall = buildInstallList(scopeConfig, cascadedConfig);
+  // NOTE: cascade.ts arrays-replace rule is NOT changed. Expansion is post-cascade (G-B design).
+  const rawEntries = buildInstallList(scopeConfig, cascadedConfig);
+  // G-B: expand any bundle entries to their members AFTER cascade resolution.
+  // The cascade sees bundle ids as opaque install entries; expansion resolves them here.
+  const entriesToInstall = expandBundles(rawEntries, registryIndex, root);
 
   if (opts.mode === 'frozen') {
     const existingLockForFrozen = existingLock;
@@ -640,6 +648,151 @@ async function loadScopeCascade(opts: CascadeOpts): Promise<ScopeConfigWithMeta[
   return configs;
 }
 
+// ─── G-B: Bundle expansion ────────────────────────────────────────────────────
+//
+// IMPORTANT: Bundle expansion happens AFTER cascade resolution. The cascade's
+// arrays-replace rule (I5) is intentionally untouched — cascade.ts is
+// byte-unchanged. Expansion is purely post-cascade and install-time-only.
+// A bundle is NEVER passed to the host loader; by the time the loader runs,
+// all bundles are expanded away into their member install entries.
+//
+// Expansion algorithm (G-B §"Composition with the cascade"):
+//   1. Run cascade normally on the install list (including any bundle ids).
+//   2. Expand each bundle id to its members (recursively, cycle-guarded).
+//   3. Member-level explicit install entries override bundle-expanded ones by id
+//      (mirrors buildInstallList's existing supplement logic).
+
+const BUNDLE_MAX_DEPTH = 10;
+
+/**
+ * Resolve the members array for a bundle id.
+ * Checks the registry index first, then falls back to local disk.
+ */
+function resolveBundleMembers(
+  bundleId: string,
+  registryIndex: IndexEntry[],
+  root: string,
+): Array<{ id: string; version: string }> | null {
+  // Check registry index first (most common path)
+  const indexEntry = registryIndex.find((e) => e.id === bundleId && e.type === 'bundle');
+  if (indexEntry?.members !== undefined && indexEntry.members.length > 0) {
+    return indexEntry.members;
+  }
+
+  // Fall back to local disk manifest
+  const localPath = findLocalExtension(root, bundleId);
+  if (localPath) {
+    const manifestPath = path.join(localPath, 'extension.json');
+    if (fs.existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as ExtensionManifest;
+        if (manifest.type === 'bundle' && Array.isArray(manifest.members) && manifest.members.length > 0) {
+          return manifest.members;
+        }
+      } catch (_e) {
+        // Fall through — will return null
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Expand all bundle entries in the install list into their member entries.
+ * Expansion is post-cascade and cycle-guarded (depth + visited set).
+ * Member-level explicit entries in the original list override bundle-expanded ones.
+ *
+ * CONTRACT: cascade.ts arrays-replace rule is NOT changed — this function runs
+ * after cascade resolution and does not alter cascade merge semantics (I5 preserved).
+ */
+function expandBundles(
+  entries: ResolvedInstallEntry[],
+  registryIndex: IndexEntry[],
+  root: string,
+): ResolvedInstallEntry[] {
+  // Collect explicit (non-bundle) entries keyed by id — these override expansions
+  const explicitIds = new Set<string>();
+  for (const entry of entries) {
+    const members = resolveBundleMembers(entry.id, registryIndex, root);
+    if (members === null) {
+      // Not a bundle (or bundle not found) — it's explicit
+      explicitIds.add(entry.id);
+    }
+  }
+
+  const result: ResolvedInstallEntry[] = [];
+  const seenIds = new Set<string>();
+
+  function expandEntry(
+    entry: ResolvedInstallEntry,
+    depth: number,
+    ancestorChain: ReadonlySet<string>,
+  ): void {
+    if (depth > BUNDLE_MAX_DEPTH) {
+      console.warn(`install: bundle expansion depth exceeded for "${entry.id}" — skipping`);
+      return;
+    }
+
+    const members = resolveBundleMembers(entry.id, registryIndex, root);
+    if (members === null) {
+      // Not a bundle — include directly (if not already seen)
+      if (!seenIds.has(entry.id)) {
+        seenIds.add(entry.id);
+        result.push(entry);
+      }
+      return;
+    }
+
+    // This entry is a bundle — expand to members
+    // Cycle detection: if this bundle id is already in the ancestor chain, reject
+    if (ancestorChain.has(entry.id)) {
+      const chain = Array.from(ancestorChain).join(' → ');
+      throw new Error(
+        `install: bundle cycle detected: ${chain} → ${entry.id}. ` +
+          `Bundles must not reference each other cyclically.`,
+      );
+    }
+
+    const newChain = new Set(ancestorChain);
+    newChain.add(entry.id);
+
+    for (const member of members) {
+      // If the member id was an explicit entry in the original list, skip the
+      // bundle-expanded version (the explicit entry already owns the slot).
+      if (explicitIds.has(member.id) && !ancestorChain.has(member.id)) {
+        continue;
+      }
+      // Recurse in case the member is itself a bundle (bundles-of-bundles, depth-guarded)
+      expandEntry(
+        {
+          id: member.id,
+          version: member.version,
+          enabled: entry.enabled,
+          source: undefined,
+        },
+        depth + 1,
+        newChain,
+      );
+    }
+  }
+
+  for (const entry of entries) {
+    expandEntry(entry, 0, new Set());
+  }
+
+  // Add back any explicit non-bundle entries that were skipped because a bundle already
+  // claimed their slot — explicit entries always win (supplement semantics).
+  for (const entry of entries) {
+    if (explicitIds.has(entry.id) && !seenIds.has(entry.id)) {
+      seenIds.add(entry.id);
+      result.push(entry);
+    }
+  }
+
+  return result;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 interface ResolvedInstallEntry {
@@ -731,7 +884,8 @@ function buildResolvedSetFromInstallList(
 }
 
 function findLocalExtension(root: string, id: string): string | null {
-  const typeDirs = ['agents', 'skills', 'mcp-servers', 'prompts', 'hooks', 'commands'];
+  // G-B: include 'bundles' so bundle manifests can be resolved locally
+  const typeDirs = ['agents', 'skills', 'mcp-servers', 'prompts', 'hooks', 'commands', 'bundles'];
   for (const typeDir of typeDirs) {
     const typePath = path.join(root, 'extensions', typeDir);
     if (!fs.existsSync(typePath)) continue;

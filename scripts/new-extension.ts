@@ -18,7 +18,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
 
-const VALID_TYPES = ['agent', 'skill', 'mcp-server', 'prompt', 'hook', 'command'] as const;
+// G-B: 'bundle' is the one new type in v2. It is install-time-only and has no entrypoint.
+// A bundle is a named, independently-versioned set of members; the installer expands it.
+const VALID_TYPES = ['agent', 'skill', 'mcp-server', 'prompt', 'hook', 'command', 'bundle'] as const;
 type ExtensionType = (typeof VALID_TYPES)[number];
 
 const DIR_MAP: Record<ExtensionType, string> = {
@@ -28,6 +30,7 @@ const DIR_MAP: Record<ExtensionType, string> = {
   prompt: 'prompts',
   hook: 'hooks',
   command: 'commands',
+  bundle: 'bundles',
 };
 
 function validateId(id: string, type: ExtensionType): string | null {
@@ -41,7 +44,9 @@ function validateId(id: string, type: ExtensionType): string | null {
 }
 
 function contentFileFor(type: ExtensionType): string {
-  return type === 'prompt' ? 'prompt.md' : 'src/index.ts';
+  if (type === 'prompt') return 'prompt.md';
+  if (type === 'bundle') return ''; // bundles have no content file
+  return 'src/index.ts';
 }
 
 function makeContentFile(type: ExtensionType, id: string, title: string, description: string): string {
@@ -212,6 +217,11 @@ function makeContentFile(type: ExtensionType, id: string, title: string, descrip
         `  }`,
         `}`,
       ].join('\n');
+
+    case 'bundle':
+      // A bundle has no content file — it is manifest-only (extension.json + package.json).
+      // This case returns an empty string; scaffold() skips writing a content file for bundles.
+      return '';
   }
 }
 
@@ -226,17 +236,28 @@ function makeExtensionJson(type: ExtensionType, id: string, title: string, descr
     compatibility: { host: '>=1.0.0 <2.0.0' },
     license: 'MIT',
     author: '',
+  };
+
+  if (type === 'bundle') {
+    // G-B: bundle has no entrypoint (no runtime — expanded away at install time) and no runtime field.
+    // Populate a placeholder members array; authors fill in the actual member ids+versions.
+    // 'dependencies' and 'members' are orthogonal: 'members' is a packaging relation.
+    base['members'] = [
+      { id: 'example-member-a', version: '^0.1.0' },
+      { id: 'example-member-b', version: '^0.1.0' },
+    ];
+  } else {
     // G-D: runtime contract. 'node' = TS/Node (can call the provider abstraction).
     // 'stdio-any' = language-agnostic stdio process; MUST NOT declare provider requires.
     // Absent defaults to 'node'; kept explicit here so authors see the contract at creation.
-    runtime: 'node',
-  };
+    base['runtime'] = 'node';
 
-  if (type !== 'prompt') {
-    base['entrypoint'] = 'dist/index.js';
-  }
-  if (type === 'hook') {
-    base['order'] = 100;
+    if (type !== 'prompt') {
+      base['entrypoint'] = 'dist/index.js';
+    }
+    if (type === 'hook') {
+      base['order'] = 100;
+    }
   }
 
   return JSON.stringify(base, null, 2);
@@ -286,6 +307,23 @@ async function scaffold(
   if (fs.existsSync(dir)) {
     console.error(`ERROR: Directory already exists: ${dir}`);
     process.exit(1);
+  }
+
+  // G-B: bundle has a smaller footprint — no entrypoint and no behavior tests.
+  // It is manifest-only: extension.json + package.json (+ CHANGELOG.md).
+  // This relaxes I6's four-files-per-extension downward for the install-time-only type.
+  if (type === 'bundle') {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'extension.json'), makeExtensionJson(type, id, title, description));
+    fs.writeFileSync(path.join(dir, 'package.json'), makePackageJson(id));
+    fs.writeFileSync(path.join(dir, 'CHANGELOG.md'), '# Changelog\n\n## 0.1.0\n\n- Initial release\n');
+
+    console.log(`Created bundle "${id}" at extensions/bundles/${id}/`);
+    console.log('  extension.json  (edit members[] to list the extensions this bundle ships)');
+    console.log('  package.json');
+    console.log('  CHANGELOG.md');
+    console.log('NOTE: a bundle has no entrypoint — it is expanded to its members at install time.');
+    return;
   }
 
   const contentFile = contentFileFor(type);

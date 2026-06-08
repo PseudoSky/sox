@@ -19,7 +19,7 @@
     },
     "type": {
       "type": "string",
-      "enum": ["agent", "skill", "mcp-server", "prompt", "hook", "command"]
+      "enum": ["agent", "skill", "mcp-server", "prompt", "hook", "command", "bundle"]
     },
     "title": { "type": "string", "minLength": 1 },
     "description": { "type": "string", "minLength": 1 },
@@ -129,6 +129,19 @@
           "description": "Grace period on SIGTERM before SIGKILL."
         }
       }
+    },
+    "members": {
+      "type": "array",
+      "description": "Bundle members. Required iff type=='bundle'. Each is an independently-published extension pinned by semver range. 'dependencies' and 'members' are orthogonal: dependencies is a runtime/keystone relation; members is a packaging relation.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "version"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+          "version": { "type": "string", "description": "semver range, e.g. ^0.1.0" }
+        }
+      }
     }
   },
   "allOf": [
@@ -149,6 +162,10 @@
     {
       "if":   { "required": ["lifecycle"] },
       "then": { "properties": { "type": { "enum": ["mcp-server", "agent"] } } }
+    },
+    {
+      "if":   { "properties": { "type": { "const": "bundle" } } },
+      "then": { "required": ["members"], "not": { "required": ["entrypoint"] } }
     }
   ]
 }

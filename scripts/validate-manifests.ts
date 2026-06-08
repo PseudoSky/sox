@@ -41,6 +41,12 @@ interface LifecycleBlock {
   stop_timeout_ms?: number | undefined;
 }
 
+/** G-B: bundle member entry */
+interface BundleMember {
+  id: string;
+  version: string;
+}
+
 interface ExtensionManifest {
   $schema: string;
   id: string;
@@ -62,6 +68,8 @@ interface ExtensionManifest {
     structured_output?: boolean | undefined;
     min_context_tokens?: number | undefined;
   } | undefined;
+  /** G-B: bundle members. Required iff type=='bundle'. Orthogonal to 'dependencies'. */
+  members?: BundleMember[] | undefined;
   [key: string]: unknown;
 }
 
@@ -98,9 +106,11 @@ const DIR_TO_TYPE: Record<string, string> = {
   prompts: 'prompt',
   hooks: 'hook',
   commands: 'command',
+  // G-B: bundles are install-time-only; they expand to members and are never host-loaded.
+  bundles: 'bundle',
 };
 
-const VALID_TYPES = new Set(['agent', 'skill', 'mcp-server', 'prompt', 'hook', 'command']);
+const VALID_TYPES = new Set(['agent', 'skill', 'mcp-server', 'prompt', 'hook', 'command', 'bundle']);
 const ID_PATTERN = /^[a-z][a-z0-9-]*$/;
 
 /**
@@ -207,7 +217,7 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
     return diags;
   }
 
-  const { id, type, version, runtime, requires, lifecycle } = manifest;
+  const { id, type, version, runtime, requires, lifecycle, members } = manifest;
 
   // Check 1: id format
   if (!ID_PATTERN.test(id)) {
@@ -218,8 +228,11 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
     });
   }
 
-  // Check 2: id must not end with type name
-  if (id.endsWith(`-${type}`) || id === type) {
+  // Check 2: id must not end with type name (e.g. 'my-skill-skill' is redundant).
+  // Exception: 'bundle' — naming a bundle with a '-bundle' suffix is intentional and
+  // natural (e.g. 'sox-memory-bundle'). The rule is about tautological redundancy
+  // (type 'skill' id 'my-analyzer-skill'), not descriptive suffixes for install-time-only types.
+  if (type !== 'bundle' && (id.endsWith(`-${type}`) || id === type)) {
     diags.push({
       path: manifestPath,
       message: `id "${id}" must not end with its type name "${type}"`,
@@ -322,6 +335,78 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
             `Provide a socket path (for type:"socket") or command string (for type:"command").`,
           severity: 'error',
         });
+      }
+    }
+  }
+
+  // Check 8 (G-B): bundle-specific invariants.
+  // A bundle is install-time-only: it expands to members at install time and is NEVER host-loaded.
+  // It must have members, must NOT have an entrypoint, and members must be well-formed.
+  if (type === 'bundle') {
+    // Rule 1: bundle must have a non-empty members array
+    if (!Array.isArray(members) || members.length === 0) {
+      diags.push({
+        path: manifestPath,
+        message:
+          `bundle "${id}" must declare a non-empty "members" array. ` +
+          `A bundle is a named, independently-versioned set of extensions that the installer expands.`,
+        severity: 'error',
+      });
+    }
+
+    // Rule 2: bundle must NOT have an entrypoint (it has no runtime)
+    if (manifest['entrypoint'] !== undefined) {
+      diags.push({
+        path: manifestPath,
+        message:
+          `bundle "${id}" must not declare "entrypoint" — a bundle has no runtime and is expanded ` +
+          `away at install time before the host loader runs. Remove "entrypoint".`,
+        severity: 'error',
+      });
+    }
+
+    // Rule 3: validate each member entry
+    if (Array.isArray(members) && members.length > 0) {
+      const memberIds = new Set<string>();
+      for (const member of members) {
+        if (typeof member.id !== 'string' || !/^[a-z][a-z0-9-]*$/.test(member.id)) {
+          diags.push({
+            path: manifestPath,
+            message:
+              `bundle "${id}" has a member with invalid id "${String(member.id)}" — ` +
+              `member ids must match ^[a-z][a-z0-9-]*$.`,
+            severity: 'error',
+          });
+        } else if (member.id === id) {
+          // Rule 4: no self-reference
+          diags.push({
+            path: manifestPath,
+            message:
+              `bundle "${id}" lists itself as a member — self-reference is not allowed. ` +
+              `Remove the self-referencing member entry.`,
+            severity: 'error',
+          });
+        } else if (memberIds.has(member.id)) {
+          // Rule 5: no duplicate member ids
+          diags.push({
+            path: manifestPath,
+            message:
+              `bundle "${id}" has duplicate member id "${member.id}". ` +
+              `Each member id must appear at most once in a bundle's members array.`,
+            severity: 'error',
+          });
+        } else {
+          memberIds.add(member.id);
+        }
+
+        if (typeof member.version !== 'string' || member.version.length === 0) {
+          diags.push({
+            path: manifestPath,
+            message:
+              `bundle "${id}" member "${String(member.id)}" must declare a "version" semver range (e.g. "^0.1.0").`,
+            severity: 'error',
+          });
+        }
       }
     }
   }

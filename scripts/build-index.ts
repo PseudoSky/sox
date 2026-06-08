@@ -37,6 +37,8 @@ interface ExtensionManifest {
   };
   tags?: string[];
   capabilities?: string[];
+  /** G-B: bundle members. Present iff type=='bundle'. Indexed like any extension. */
+  members?: Array<{ id: string; version: string }>;
 }
 
 export interface IndexEntry {
@@ -52,6 +54,8 @@ export interface IndexEntry {
   compatibility: { host: string };
   /** Populated only if the entry has requires fields */
   requires?: ExtensionManifest['requires'];
+  /** G-B: populated for bundle type; the members this bundle expands to at install time */
+  members?: ExtensionManifest['members'];
 }
 
 const DIR_TO_TYPE: Record<string, string> = {
@@ -61,6 +65,8 @@ const DIR_TO_TYPE: Record<string, string> = {
   prompts: 'prompt',
   hooks: 'hook',
   commands: 'command',
+  // G-B: bundles are indexed like any extension; they are expanded at install time.
+  bundles: 'bundle',
 };
 
 function computeFileChecksum(filePath: string): string {
@@ -196,6 +202,11 @@ export function buildIndex(opts: { root: string }): IndexEntry[] {
 
     if (manifest.requires && Object.keys(manifest.requires).length > 0) {
       entry.requires = manifest.requires;
+    }
+
+    // G-B: include members for bundle type so the install client can expand without re-reading disk
+    if (manifest.type === 'bundle' && Array.isArray(manifest.members) && manifest.members.length > 0) {
+      entry.members = manifest.members;
     }
 
     entries.push(entry);

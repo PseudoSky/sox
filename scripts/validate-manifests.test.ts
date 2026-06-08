@@ -705,3 +705,206 @@ describe('validate-manifests — P8 G-A service lifecycle block', () => {
     expect(result.ok).toBe(true);
   });
 });
+
+// ─── P9 — G-B bundle type validation ─────────────────────────────────────────
+// Tests for the 'bundle' extension type (architecture-v2.md §G-B).
+//
+// A bundle is install-time-only: it expands to its members in install.ts
+// AFTER cascade resolution. The cascade arrays-replace rule (I5) is unchanged.
+//
+// Validation rules:
+//   Rule 1: bundle MUST have a non-empty members array
+//   Rule 2: bundle MUST NOT have an entrypoint (no runtime — expanded away at install)
+//   Rule 3: each member id must match ^[a-z][a-z0-9-]*$
+//   Rule 4: no self-reference (member.id === bundle.id)
+//   Rule 5: no duplicate member ids within the same bundle
+//   Back-compat: all v1 (non-bundle) manifests validate unchanged
+
+describe('validate-manifests — P9 G-B bundle type', () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = makeTempRepo();
+  });
+
+  afterEach(() => {
+    removeDirRecursive(tmpRoot);
+  });
+
+  /** Write a well-formed bundle manifest to bundles/<id>/extension.json */
+  function makeBundle(
+    root: string,
+    id: string,
+    members: Array<{ id: string; version: string }>,
+    extra: Record<string, unknown> = {},
+  ): void {
+    const extDir = path.join(root, 'extensions', 'bundles', id);
+    fs.mkdirSync(extDir, { recursive: true });
+
+    const manifest = {
+      $schema: 'https://your-registry/schemas/extension/v1.json',
+      id,
+      version: '0.1.0',
+      type: 'bundle',
+      title: `${id} title`,
+      description: `${id} description`,
+      compatibility: { host: '>=1.0.0 <2.0.0' },
+      license: 'MIT',
+      members,
+      ...extra,
+    };
+    fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
+    fs.writeFileSync(
+      path.join(extDir, 'package.json'),
+      JSON.stringify({ name: `@sox/extension-${id}`, version: '0.1.0' }, null, 2),
+    );
+    fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
+  }
+
+  // ─── PASS: valid bundle with correct members ───────────────────────────────
+
+  it('passes for a valid bundle with non-empty members and no entrypoint', () => {
+    makeBundle(tmpRoot, 'sox-memory-bundle', [
+      { id: 'memory-server', version: '^0.1.0' },
+      { id: 'memory-organizer', version: '^0.1.0' },
+      { id: 'memory-recall', version: '^0.1.0' },
+      { id: 'memory-promote', version: '^0.1.0' },
+    ]);
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+
+  // PASS: example bundle from extensions/bundles/sox-memory-bundle validates
+  it('passes for the real sox-memory-bundle example fixture', () => {
+    // The actual fixture lives at extensions/bundles/sox-memory-bundle/
+    // We point validateManifests at the repo root which contains it.
+    // This test ensures the example bundle is well-formed.
+    const repoRoot = path.resolve(__dirname, '..');
+    const bundleDir = path.join(repoRoot, 'extensions', 'bundles', 'sox-memory-bundle');
+    // Only run if the fixture exists (it should after P9)
+    if (!fs.existsSync(bundleDir)) return;
+
+    const result = validateManifests(repoRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    // Filter out errors from the real repo extensions (only check bundle-related ones)
+    const bundleErrors = errors.filter((e) => e.path.includes('sox-memory-bundle'));
+    expect(bundleErrors).toHaveLength(0);
+  });
+
+  // ─── FAIL: bundle with no members must be rejected (Rule 1) ──────────────
+
+  it('errors when a bundle declares an empty members array (Rule 1)', () => {
+    makeBundle(tmpRoot, 'empty-bundle', []);
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(result.ok).toBe(false);
+    const membersError = errors.find(
+      (e) => e.message.includes('members') && e.message.includes('non-empty'),
+    );
+    expect(membersError).toBeDefined();
+  });
+
+  it('errors when a bundle has no members field at all (Rule 1)', () => {
+    const extDir = path.join(tmpRoot, 'extensions', 'bundles', 'no-members-bundle');
+    fs.mkdirSync(extDir, { recursive: true });
+    const manifest = {
+      $schema: 'https://your-registry/schemas/extension/v1.json',
+      id: 'no-members-bundle',
+      version: '0.1.0',
+      type: 'bundle',
+      title: 'No Members',
+      description: 'no members field',
+      compatibility: { host: '>=1.0.0 <2.0.0' },
+      license: 'MIT',
+      // no 'members' field
+    };
+    fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
+    fs.writeFileSync(
+      path.join(extDir, 'package.json'),
+      JSON.stringify({ name: '@sox/extension-no-members-bundle', version: '0.1.0' }, null, 2),
+    );
+    fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(result.ok).toBe(false);
+    const membersError = errors.find((e) => e.message.includes('members'));
+    expect(membersError).toBeDefined();
+  });
+
+  // ─── FAIL: bundle with entrypoint must be rejected (Rule 2) ──────────────
+
+  it('errors when a bundle declares an entrypoint (Rule 2 — bundles have no runtime)', () => {
+    makeBundle(
+      tmpRoot,
+      'bundle-with-entry',
+      [{ id: 'some-member', version: '^0.1.0' }],
+      { entrypoint: 'dist/index.js' },
+    );
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(result.ok).toBe(false);
+    const entrypointError = errors.find(
+      (e) => e.message.includes('entrypoint') && e.message.includes('bundle'),
+    );
+    expect(entrypointError).toBeDefined();
+  });
+
+  // ─── FAIL: self-reference member (Rule 4) ─────────────────────────────────
+
+  it('errors when a bundle lists itself as a member (Rule 4 — self-reference)', () => {
+    makeBundle(tmpRoot, 'self-ref-bundle', [
+      { id: 'self-ref-bundle', version: '^0.1.0' }, // self!
+      { id: 'other-member', version: '^0.1.0' },
+    ]);
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(result.ok).toBe(false);
+    const selfRefError = errors.find(
+      (e) => e.message.includes('self-reference') || e.message.includes('itself'),
+    );
+    expect(selfRefError).toBeDefined();
+  });
+
+  // ─── FAIL: duplicate member ids (Rule 5) ─────────────────────────────────
+
+  it('errors when a bundle has duplicate member ids (Rule 5)', () => {
+    makeBundle(tmpRoot, 'dup-members-bundle', [
+      { id: 'member-a', version: '^0.1.0' },
+      { id: 'member-a', version: '^0.2.0' }, // duplicate!
+      { id: 'member-b', version: '^0.1.0' },
+    ]);
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(result.ok).toBe(false);
+    const dupError = errors.find(
+      (e) => e.message.includes('duplicate') && e.message.includes('member'),
+    );
+    expect(dupError).toBeDefined();
+  });
+
+  // ─── BACK-COMPAT: v1 (non-bundle) manifests still validate unchanged ──────
+
+  it('passes for all v1 extension types alongside a bundle (back-compat)', () => {
+    // All v1 types validate unchanged — adding bundle type does not break them
+    makeExtension(tmpRoot, 'agents', 'my-orchestrator');
+    makeExtension(tmpRoot, 'skills', 'my-analyzer');
+    makeExtension(tmpRoot, 'mcp-servers', 'my-tools');
+    makeBundle(tmpRoot, 'my-bundle', [
+      { id: 'my-orchestrator', version: '^0.1.0' },
+      { id: 'my-analyzer', version: '^0.1.0' },
+    ]);
+
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    expect(errors).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+});
