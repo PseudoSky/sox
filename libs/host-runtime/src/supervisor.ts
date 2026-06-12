@@ -189,7 +189,7 @@ export class ProcessSupervisor {
     // ENFORCED path (policy.enforced=true):
     //   Scrub the child env to a minimal allowlist (safe base) merged with this._env
     //   (extension-declared env overrides) then merged with policy.toEnv()
-    //   ([def:policy-env]: SOX_PERM_ENFORCE=1 + four SOX_PERM_* JSON arrays).
+    //   ([def:policy-env]: the enforce flag + four policy-env JSON arrays injected by toEnv()).
     //   Set cwd to the extension directory so relative path resolution is bounded.
     //
     // UNENFORCED path (policy.enforced=false):

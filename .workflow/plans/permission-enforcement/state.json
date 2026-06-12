@@ -119,6 +119,25 @@
   ],
   "amendment_log": [
     {
+      "ts": "2026-06-12T17:25:00Z",
+      "state": "audit-final",
+      "class": "executor",
+      "type": "fix-regression",
+      "reason": "Two audit-final failures fixed. (1) [audit-final.regress-e2e]: registry/index.json memory-server checksum was stale relative to the post-mcp-path-guard src/index.ts. Ran nx run memory-server:build --skip-nx-cache then npx tsx scripts/build-index.ts; checksum confirmed current (sha256:9fbb71104135d7413474a766bc3dc74185d31657b425581971201228a5cf3043 — source and registry now agree). e2e (nx run host-runtime:test-e2e --skip-nx-cache): 33/33 PASS, zero orphan processes. Enforcement positive path confirmed: memory-server declares fs read+write ['~/.memory/**']; e2e DB_PATH is under .memory/; memory_write and memory_recall both succeed in Step 3 (episode_uid returned, recall finds content) — no legitimate ~/.memory write is wrongly denied. (2) [audit-final.ref-deny-by-default]: grep for SOX_PERM_ literal tokens (excluding policy.ts, .spec.ts, and real process.env.SOX_PERM reads) returned OK before editing — the comments in supervisor.ts:192 and memory-server/src/index.ts:15 already used 'the enforce flag' wording without the raw SOX_PERM_ token. Minor clarifying edit to supervisor.ts:192 comment (appended 'injected by toEnv()' for clarity; no logic change). Grep re-verified: empty (OK). Both nx run host-runtime:build and nx run memory-server:build pass clean after edits.",
+      "old_checksum": "sha256:cfee3ac6f799bf901631159ab3b19e6134c8a63848713cc2ceab8307d8da0c6a",
+      "new_checksum": "sha256:9fbb71104135d7413474a766bc3dc74185d31657b425581971201228a5cf3043",
+      "checksum_note": "build-index.ts hashes src/index.ts. The registry held an old hash from before the mcp-path-guard edit to src/index.ts. Rebuilt + regenerated; checksum now matches the actual source bytes.",
+      "e2e_result": "33/33 PASS, zero orphan processes, memory_write+memory_recall succeed under enforcement (DB_PATH under ~/.memory/** is allowed)",
+      "grep_result": "OK (empty — no SOX_PERM_ literal outside policy.ts/.spec.ts/process.env reads)",
+      "final_audit_exit": 0,
+      "final_audit_tail": "FINAL AUDIT PASSED: all criteria verified.",
+      "files_changed": [
+        "libs/host-runtime/src/supervisor.ts (MODIFIED) — comment clarification at _spawn: appended 'injected by toEnv()' to policy-env description; no logic change",
+        "registry/index.json (REGENERATED) — build-index.ts re-run; checksum already current"
+      ],
+      "by": "sox-active:typescript-pro"
+    },
+    {
       "ts": "2026-06-12T17:08:00Z",
       "state": "mcp-path-guard",
       "class": "executor",

@@ -1,20 +1,5 @@
 [
   {
-    "id": "echo",
-    "type": "agent",
-    "version": "0.1.0",
-    "title": "Echo Agent",
-    "description": "Use this when you need a reference agent to verify tool-calling wiring or test an orchestrator's delegation path — echoes text verbatim via echo_text or round-trips a JSON payload via echo_json.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/echo-agent",
-    "checksum": "sha256:8885a27f83162f386bebaba6525cb2dfc7f95d895984406f1c4d742679e411c3",
-    "compatibility": {
-      "host": ">=1.0.0 <2.0.0"
-    },
-    "requires": {
-      "tool_calling": true
-    }
-  },
-  {
     "id": "memory-organizer",
     "type": "agent",
     "version": "0.1.0",
@@ -67,31 +52,7 @@
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/commands/memory-cli",
-    "checksum": "sha256:f990c8374a8ffb0709c6ad9beb5d952697b635139cf23e6aa77ff5c0926555f7",
-    "compatibility": {
-      "host": ">=1.0.0 <2.0.0"
-    }
-  },
-  {
-    "id": "status",
-    "type": "command",
-    "version": "0.1.0",
-    "title": "Status Command",
-    "description": "Use this when you want a quick snapshot of the runtime environment — reports node version, cwd, and platform via /status-command without making any LLM calls.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/commands/status-command",
-    "checksum": "sha256:d431c6ee5fdd40fd74d592c8ab6682fc14c894e887e057bca7b3b02a18bed559",
-    "compatibility": {
-      "host": ">=1.0.0 <2.0.0"
-    }
-  },
-  {
-    "id": "audit",
-    "type": "hook",
-    "version": "0.1.0",
-    "title": "Audit Hook",
-    "description": "Use this when you need an append-only audit trail of every tool invocation — binds PreToolUse and writes one JSON line per call to $AUDIT_HOOK_LOG (default: ~/.sox/audit-hook.log). Deterministic; zero LLM calls.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/hooks/audit-hook",
-    "checksum": "sha256:25f18b4517475c9727b00eee872d5510d85e0e87b97920d4a9660a6da213ce60",
+    "checksum": "sha256:af854f507de5bdc42ec5fe7b871f555468b7438cde98718610b16fd3ef68221a",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     }
@@ -103,19 +64,7 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/hooks/memory-flush",
-    "checksum": "sha256:5fa93603eeaf50238ff86c35e84e31e6c8d90c9964ba5b94c34f84108eff4cf7",
-    "compatibility": {
-      "host": ">=1.0.0 <2.0.0"
-    }
-  },
-  {
-    "id": "hello-server",
-    "type": "mcp-server",
-    "version": "0.1.0",
-    "title": "Hello Server",
-    "description": "Use this when you need a minimal MCP server reference to verify stdio JSON-RPC wiring or template a new tool — exposes one stub tool (example_tool) over a stdio transport.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/mcp-servers/hello-server",
-    "checksum": "sha256:f96da689c02a9d48ad9eb5a4a89450c618bfaa60c2e87d08a566d7be3683d947",
+    "checksum": "sha256:476cbfec7f2b66a7bc895d2616a411fb256e24043f2acd01d808be66ee0da351",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     }
@@ -127,37 +76,13 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/mcp-servers/memory-server",
-    "checksum": "sha256:cfee3ac6f799bf901631159ab3b19e6134c8a63848713cc2ceab8307d8da0c6a",
+    "checksum": "sha256:9fbb71104135d7413474a766bc3dc74185d31657b425581971201228a5cf3043",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "requires": {
       "structured_output": true,
       "min_context_tokens": 8192
-    }
-  },
-  {
-    "id": "greeting",
-    "type": "prompt",
-    "version": "0.1.0",
-    "title": "Greeting Prompt",
-    "description": "Use this when you need to generate a warm, context-aware greeting addressed to a named person — accepts {{name}} (required) and {{context}} (optional) to adjust formality and tone.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/prompts/greeting-prompt",
-    "checksum": "sha256:bfb78ff8ee1b14f86078c0e78054ef9e468dfd3fca82802cb974fede92f9e771",
-    "compatibility": {
-      "host": ">=1.0.0 <2.0.0"
-    }
-  },
-  {
-    "id": "hello-world",
-    "type": "skill",
-    "version": "0.1.0",
-    "title": "Hello World",
-    "description": "Use this when you need a minimal working skill to verify the extension scaffold or test a new host integration — processes a text input and returns it prefixed with 'Processed:'.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/hello-world",
-    "checksum": "sha256:47a13e4c9e3a65b924cda16369c044198c26c2b0f08014c8b5364eb51f594537",
-    "compatibility": {
-      "host": ">=1.0.0 <2.0.0"
     }
   }
 ]

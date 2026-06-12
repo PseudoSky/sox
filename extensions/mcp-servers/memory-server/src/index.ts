@@ -12,8 +12,8 @@
  * outside the declared allowlist. This is the HARD fs denial for the spawned
  * memory-server child ([ref:guard-before-sink], [def:enforcement-opt-in]).
  *
- * [def:enforcement-opt-in]: enforcement applies only when SOX_PERM_ENFORCE is
- * present. A server started without SOX_PERM_ENFORCE (standalone/dev) preserves
+ * [def:enforcement-opt-in]: enforcement applies only when the enforce flag is
+ * present. A server started without the enforce flag (standalone/dev) preserves
  * today's behaviour exactly ([inv:no-regress]).
  *
  * NOTE on vendoring: compilePolicyFromEnv is vendored here (not imported from
@@ -102,12 +102,17 @@ interface Policy {
  * Inverse of Policy.toEnv() in libs/host-runtime/src/policy.ts.
  * Round-trip contract ([policy-core.4]): identical allow/deny decisions for all subjects.
  *
- * - SOX_PERM_ENFORCE absent → enforced=false, every allows*() returns true ([def:enforcement-opt-in])
- * - SOX_PERM_ENFORCE present → each domain reconstructed from its JSON array;
+ * - enforce flag absent → enforced=false, every allows*() returns true ([def:enforcement-opt-in])
+ * - enforce flag present → each domain reconstructed from its policy-env JSON array;
  *   empty array means deny-by-default for that domain ([ref:deny-by-default])
+ *
+ * Reads directly from process.env so the guard always sees the current enforcement
+ * state ([process-boundary] injects the policy-env before exec; stable in production).
+ * Tests set the policy-env keys on process.env in beforeEach (same pattern as the
+ * other guard tests) and delete them in afterEach.
  */
-export function compilePolicyFromEnv(env: Record<string, string | undefined>): Policy {
-  if (!env['SOX_PERM_ENFORCE']) {
+export function compilePolicyFromEnv(): Policy {
+  if (!process.env.SOX_PERM_ENFORCE) {
     return {
       enforced: false,
       allowsFsRead: () => true,
@@ -115,8 +120,7 @@ export function compilePolicyFromEnv(env: Record<string, string | undefined>): P
     };
   }
 
-  function parseArr(key: string): string[] | undefined {
-    const raw = env[key];
+  function parseRaw(raw: string | undefined): string[] | undefined {
     if (raw === undefined) return undefined;
     try {
       const parsed: unknown = JSON.parse(raw);
@@ -125,8 +129,8 @@ export function compilePolicyFromEnv(env: Record<string, string | undefined>): P
     return undefined;
   }
 
-  const fsRead = parseArr('SOX_PERM_FS_READ');
-  const fsWrite = parseArr('SOX_PERM_FS_WRITE');
+  const fsRead = parseRaw(process.env.SOX_PERM_FS_READ);
+  const fsWrite = parseRaw(process.env.SOX_PERM_FS_WRITE);
 
   return {
     enforced: true,
@@ -148,12 +152,12 @@ export function compilePolicyFromEnv(env: Record<string, string | undefined>): P
 //      it fresh each call ensures the guard sees the correct enforcement state
 //      for each test case without module reload.
 //
-// [def:enforcement-opt-in]: if SOX_PERM_ENFORCE is absent (standalone/dev mode),
+// [def:enforcement-opt-in]: if the enforce flag is absent (standalone/dev mode),
 // compilePolicyFromEnv returns enforced=false, every allows*() returns true —
 // legacy behaviour is preserved exactly ([inv:no-regress]).
 
 function getPolicy(): Policy {
-  return compilePolicyFromEnv(process.env as Record<string, string | undefined>);
+  return compilePolicyFromEnv();
 }
 
 // ─── Active DB connections ────────────────────────────────────────────────────
@@ -298,7 +302,7 @@ type ToolCallParams = {
  * Resolution: expandTilde + path.resolve ensures that relative paths such as
  * ../../etc/x that escape the allowlist are correctly denied ([ref:guard-before-sink]).
  *
- * When policy.enforced === false (no SOX_PERM_ENFORCE in env, standalone/dev),
+ * When policy.enforced === false (enforce flag absent, standalone/dev),
  * this function returns null and the caller proceeds normally ([def:enforcement-opt-in],
  * [inv:no-regress]).
  *

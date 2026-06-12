@@ -216,49 +216,45 @@ describe('permission-guard — mcp-path-guard enforcement', () => {
   });
 
   // ── [mcp-path-guard.5] ───────────────────────────────────────────────────────
+  // compilePolicyFromEnv reads from process.env (stable in production; set in
+  // beforeEach/afterEach for isolation here — same pattern as the other guard tests).
   describe('[mcp-path-guard.5] compilePolicyFromEnv consistent with policy-core [shape:policy-env]', () => {
     it('denies /tmp/... when allowlist is ~/.memory/**', () => {
-      const policy = compilePolicyFromEnv({
-        SOX_PERM_ENFORCE: '1',
-        SOX_PERM_FS_WRITE: JSON.stringify(['~/.memory/**']),
-        SOX_PERM_FS_READ: JSON.stringify(['~/.memory/**']),
-        SOX_PERM_SOCKET: JSON.stringify(['~/.memory/memoryd.sock']),
-        SOX_PERM_NETWORK: JSON.stringify([]),
-      });
-      expect(policy.enforced).toBe(true);
-      expect(policy.allowsFsWrite('/tmp/sox-evil.db')).toBe(false);
-      expect(policy.allowsFsRead('/tmp/sox-evil.db')).toBe(false);
+      const restore = setEnforceEnv({ fsWrite: ['~/.memory/**'], fsRead: ['~/.memory/**'] });
+      try {
+        const policy = compilePolicyFromEnv();
+        expect(policy.enforced).toBe(true);
+        expect(policy.allowsFsWrite('/tmp/sox-evil.db')).toBe(false);
+        expect(policy.allowsFsRead('/tmp/sox-evil.db')).toBe(false);
+      } finally { restore(); }
     });
 
     it('allows ~/.memory/... when allowlist is ~/.memory/**', () => {
-      const policy = compilePolicyFromEnv({
-        SOX_PERM_ENFORCE: '1',
-        SOX_PERM_FS_WRITE: JSON.stringify(['~/.memory/**']),
-        SOX_PERM_FS_READ: JSON.stringify(['~/.memory/**']),
-        SOX_PERM_SOCKET: JSON.stringify(['~/.memory/memoryd.sock']),
-        SOX_PERM_NETWORK: JSON.stringify([]),
-      });
-      const allowedPath = path.join(os.homedir(), '.memory', 'test.db');
-      expect(policy.allowsFsWrite(allowedPath)).toBe(true);
-      expect(policy.allowsFsRead(allowedPath)).toBe(true);
+      const restore = setEnforceEnv({ fsWrite: ['~/.memory/**'], fsRead: ['~/.memory/**'] });
+      try {
+        const policy = compilePolicyFromEnv();
+        const allowedPath = path.join(os.homedir(), '.memory', 'test.db');
+        expect(policy.allowsFsWrite(allowedPath)).toBe(true);
+        expect(policy.allowsFsRead(allowedPath)).toBe(true);
+      } finally { restore(); }
     });
 
-    it('returns enforced=false when SOX_PERM_ENFORCE is absent', () => {
-      const policy = compilePolicyFromEnv({});
-      expect(policy.enforced).toBe(false);
-      expect(policy.allowsFsWrite('/tmp/anything.db')).toBe(true);
+    it('returns enforced=false when enforce flag is absent', () => {
+      const restore = clearEnforceEnv();
+      try {
+        const policy = compilePolicyFromEnv();
+        expect(policy.enforced).toBe(false);
+        expect(policy.allowsFsWrite('/tmp/anything.db')).toBe(true);
+      } finally { restore(); }
     });
 
     it('deny-by-default: empty fs.write array denies all paths when enforced', () => {
-      const policy = compilePolicyFromEnv({
-        SOX_PERM_ENFORCE: '1',
-        SOX_PERM_FS_WRITE: JSON.stringify([]),
-        SOX_PERM_FS_READ: JSON.stringify([]),
-        SOX_PERM_SOCKET: JSON.stringify([]),
-        SOX_PERM_NETWORK: JSON.stringify([]),
-      });
-      expect(policy.enforced).toBe(true);
-      expect(policy.allowsFsWrite(path.join(os.homedir(), '.memory', 'test.db'))).toBe(false);
+      const restore = setEnforceEnv({ fsWrite: [], fsRead: [] });
+      try {
+        const policy = compilePolicyFromEnv();
+        expect(policy.enforced).toBe(true);
+        expect(policy.allowsFsWrite(path.join(os.homedir(), '.memory', 'test.db'))).toBe(false);
+      } finally { restore(); }
     });
   });
 });
