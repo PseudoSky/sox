@@ -1,8 +1,8 @@
 ---
 slug: nx-migration
-state: planned
+state: complete
 created: 2026-06-11
-last_event: 2026-06-11T12:00:00Z
+last_event: 2026-06-12T02:00:00Z
 canonical_roi: qualitative-only
 parent: sox-ecosystem
 ---
@@ -31,3 +31,5 @@ extensions of every type can be added rapidly.
 ## Blockers (resolved)
 - (none)
 - 2026-06-11T13:00:00Z replanning — legacy migration.md DEPRECATED → migration.legacy.md (fails plan-state-machine gap-check: missing dag.json/state.json/README/final-review). Re-dispatched workflow-planner with the exact skill path to author the conforming dag.json/state.json/references.json/contexts/ + README([dod.N])/final-review.md; gate = gap-check.js --discover.
+- 2026-06-11T13:30:00Z executing — orchestrated all 14 states (typescript-pro executors; checkpoint-branch → … → done)
+- 2026-06-12T02:00:00Z complete — all 14 states done; FINAL DoD audit green (architect-verified, exit 0); 344 tests; C7 reach-in zero; nx build+lint 13/13. D5 scope met (A1, A12, B1–B4, C7 + no regressions). Non-goals C6 + memory-depth remain out.

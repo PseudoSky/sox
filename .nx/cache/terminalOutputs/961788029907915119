@@ -1,0 +1,22 @@
+> vitest run --config libs/manifest/vitest.config.ts
+
+
+ RUN  v4.1.8 /Users/nix/dev/ai/sox-ecosystem
+
+
+ Test Files  1 passed (1)
+      Tests  108 passed (108)
+   Start at  22:52:40
+   Duration  152ms (transform 40ms, setup 0ms, import 52ms, tests 9ms, environment 0ms)
+
+> vitest run scripts/validate-manifests.test.ts
+
+
+ RUN  v4.1.8 /Users/nix/dev/ai/sox-ecosystem
+
+
+ Test Files  1 passed (1)
+      Tests  110 passed (110)
+   Start at  22:52:40
+   Duration  519ms (transform 95ms, setup 0ms, import 131ms, tests 306ms, environment 0ms)
+

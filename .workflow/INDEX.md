@@ -9,19 +9,21 @@ roi_scale: { low: 1, med: 2, high: 3, critical: 5 }
 
 > Relevancy note: `.workflow/` at repo root; commit history exists (P0→P6 + P7→P11). `canonical_roi`
 > is `qualitative-only` (greenfield, no baseline), so relevancy stays `qual` by design.
-> `provisional_roi` is `high`. One open engagement (`nx-migration`, planned); four complete. DEFECT-1
-> (hook error-isolation) is RESOLVED (`fireIsolated()`, framework-contract-completion phase PA).
+> `provisional_roi` is `high`. One open engagement (`permission-enforcement`, planned — closes the last
+> DoD item C6); five complete. The nx migration met the DoD to **22/23**; C6 is now planned. Memory
+> semantic depth remains the explicit non-goal / next frontier.
 
 ## Open   (sorted by relevancy desc)
 
 | Slug | Objective | State | ROI | Churn | Relevancy | Updated |
 |---|---|---|---|---|---|---|
-| [nx-migration](#nx-migration) | Adopt Nx for the infra layer + self-host `sox` as extension #0 → born-conformant authoring + scaled build (enables rapidly adding many extensions of every type) | planned | high (prov) | n/a | qual | 2026-06-11 |
+| [permission-enforcement](#permission-enforcement) | Close the last DoD item — runtime enforcement of declared `permissions` (C6) + consolidate the migration's duplicate `scripts/host/` | planned | high (prov) | n/a | qual | 2026-06-12 |
 
 ## Closed   (chronological, newest first)
 
 | Slug | Objective | State | ROI | Closed |
 |---|---|---|---|---|
+| [nx-migration](#nx-migration) | Adopted Nx + self-hosted `sox` as extension #0 — born-conformant authoring (all types) + scaled build; **14 states green, DoD met (architect-verified)** | complete | high (prov) | 2026-06-12 |
 | [framework-contract-completion](#framework-contract-completion) | Built the runtime the framework lacked — framework build subsystem + host runtime + enforced per-type contracts; **10 phases green, 256→377 tests** | complete | critical (prov) | 2026-06-08 |
 | [consumer-interface-standard](#consumer-interface-standard) | Affordance layer — host CLI + multi-scope lifecycle + self-description contract + DX-conformance CI; **8 phases green, 131→256 tests** | complete | critical (prov) | 2026-06-08 |
 | [sox-memory](#sox-memory) | First ecosystem tenant — agent graph-memory subsystem, built on native v2 primitives; **all 6 phases green** | complete | high (prov) | 2026-06-08 |
@@ -31,20 +33,25 @@ roi_scale: { low: 1, med: 2, high: 3, critical: 5 }
 
 ## Open engagements (detail)
 
-### nx-migration
-- **Objective:** Adopt Nx for the undifferentiated monorepo/build/generator layer (keep the novel layer custom); make `sox` a **literal self-hosted extension #0**; deliver born-conformant authoring + a scaled build so many extensions of every type can be added rapidly.
-- **Decision record:** [`docs/decisions/0001-nx-and-self-hosting.md`](../docs/decisions/0001-nx-and-self-hosting.md) (D1–D5, contract flexes, cardinality, what stays custom). **Strategy:** [`docs/plans/nx-self-hosting-migration.md`](../docs/plans/nx-self-hosting-migration.md). **Bar:** `DOD.md`.
-- **Plan summary** (conforming **plan-state-machine** directory — `dag.json`/`state.json` + `contexts/` + `README`(`[dod.1–10]`)/`final-review.md`; **`gap-check --discover` green, exit 0**, oracle grep+gitnexus): **14 slug-keyed states** — checkpoint-branch → nx-init → manifest-lib → authoring-lib → *audit-foundation* → engine-libs → sox-extension → *audit-engine* → type-discovery → memory-core → migrate-rest → ci-release → *audit-final* → done. Execution model: `typescript-pro` executors, parallel where the DAG allows, founder reviewer, resumable hand-off (automatic-dispatch=no). *(Legacy single-file plan retained as `migration.legacy.md`, deprecated.)*
-- **Tooling:** gitnexus indexed this repo (2,977 symbols); the 3 code-moving phases (P4/P7/P8) require `gitnexus impact`/`context` before moving + `detect-changes` after.
-- **Scope (D5):** makes A1, A12, B1–B4, C7 pass + no regressions; **C6 + memory semantic depth explicitly out.**
-- **Complexity:** Full repo dev stop: NO (branch). Additive only: NO (P0 retires nothing but later phases relocate/extract code + flip release tooling). Plan-time deterministic: PARTIAL (nx wiring deterministic; per-type discovery + real-corpus templating are authored).
-- **Risks:** porting must carry this session's fixes forward (P0 checkpoint first — *all changes still uncommitted*); bootstrap ordering (manifest→authoring→engine libs→sox); contract flexes may deepen at P6 discovery.
-- **Related plans:** builds on [`framework-contract-completion`](#framework-contract-completion) (runtime), [`consumer-interface-standard`](#consumer-interface-standard) (CLI), [`sox-memory`](#sox-memory) (first tenant, becomes the memory-core extraction).
-- **Files:** [README](./plans/nx-migration/README.md) · [dag.json](./plans/nx-migration/dag.json) · [state.json](./plans/nx-migration/state.json) · [state-machine](./plans/nx-migration/state-machine.md) · [final-review](./plans/nx-migration/final-review.md) · [status](./plans/nx-migration/status.md) · [session](./plans/nx-migration/session.md) · deprecated: `migration.legacy.md`
+### permission-enforcement
+- **Objective:** Close the final open DoD requirement — **C6: declared `permissions` enforced at runtime, not merely validated** — on the nx foundation (`feat/nx-migration`).
+- **Plan** (conforming plan-state-machine; **`gap-check --discover` green, exit 0**): **8 states** — consolidate-legacy → policy-core → *audit-foundation* → {process-boundary ∥ inproc-policy} → mcp-path-guard → *audit-enforcement* → *audit-final* → done.
+- **DoD:** positive (declared access works) **AND the required negative check** — undeclared fs/socket access is **blocked, verified against reality** (spawn the real server, attempt a forbidden `db_path`, assert denied + file absent); no regressions. Per-type: **HARD** for spawned types (mcp-server/shell/python — process env-scrub + fs allowlist before the sink), **SOFT** (declare + audit, no OS isolation — declared non-goal) for in-process/declarative. Reviewer = founder.
+- **Bonus cleanup:** `consolidate-legacy` removes the **duplicate legacy `scripts/host/`** the nx migration left behind (gitnexus-verified supersession by `libs/host-runtime`) — a migration loose end the DoD audit didn't catch.
+- **Execution:** `typescript-pro` executors, resumable hand-off (automatic-dispatch=no). Builds on `feat/nx-migration` (not merged to `main`).
+- **Files:** [README](./plans/permission-enforcement/README.md) · [dag.json](./plans/permission-enforcement/dag.json) · [state.json](./plans/permission-enforcement/state.json) · [state-machine](./plans/permission-enforcement/state-machine.md) · [final-review](./plans/permission-enforcement/final-review.md) · [status](./plans/permission-enforcement/status.md) · [session](./plans/permission-enforcement/session.md)
 
 ---
 
 ## Closed engagements (detail)
+
+### nx-migration
+- **Objective:** Adopt Nx for the undifferentiated monorepo/build/generator layer (novel layer stays custom); make `sox` a **literal self-hosted extension #0**; deliver born-conformant authoring + scaled build so many extensions of every type can be added rapidly.
+- **Outcome:** **complete (2026-06-12).** All **14 plan-state-machine states** green on branch `feat/nx-migration` (base tag `pre-nx-baseline`); **DoD met to the D5 scope, architect-verified** (final audit exit 0, 344 tests, C7 reach-in zero, `nx build,lint` 13/13). Highlights: nx workspace + module-boundary lint; `libs/manifest` with the contract flexes (entrypoint-optional, runtime node/shell/python/declarative, install-target); `libs/authoring` pure `scaffold()` core (nx-free) + `@sox/nx` thin generators + **born-conformance & byte-identical parity gates**; engine libs ported with **A12 flag-parser fixed** + session fixes carried forward from the baseline tag; `apps/sox` = conformant `command` extension #0; **`libs/memory-core` extracted, cross-extension reach-in eliminated (C7)**; CI on `nx affected` + `nx release --dry-run` + commitlint; per-type docs + `docs/per-type-shapes.md`. type-discovery confirmed the real corpus is declarative/multi-runtime — the flexes already covered it (no schema change).
+- **Process notes:** two audit gates initially failed on a *systemic audit-script bug* (absolute `/.tmp-*` from unset `$ROOT` + ids ending in type name) — caught by the architect's **independent** audit runs, fixed as `fix-guard` amendments (assertions preserved). The `ci-release` executor crashed mid-state and was recovered from partial on-disk work.
+- **Decision/strategy:** [`docs/decisions/0001-nx-and-self-hosting.md`](../docs/decisions/0001-nx-and-self-hosting.md) · [`docs/plans/nx-self-hosting-migration.md`](../docs/plans/nx-self-hosting-migration.md). **Bar:** `DOD.md`.
+- **Out of scope (next frontier):** **C6** runtime permission enforcement; memory semantic depth (embeddings/LLM organizer). All work uncommitted to `main` — lives on `feat/nx-migration`, pending review/merge.
+- **Artifacts:** [README](./plans/nx-migration/README.md) · [dag.json](./plans/nx-migration/dag.json) · [state.json](./plans/nx-migration/state.json) · [state-machine](./plans/nx-migration/state-machine.md) · [final-review](./plans/nx-migration/final-review.md) · [status](./plans/nx-migration/status.md) · [session](./plans/nx-migration/session.md) · deprecated: `migration.legacy.md`
 
 ### framework-contract-completion
 - **Objective:** Implement the framework contracts the per-type guideline set proved missing — the build → activation → consumption → eventing seam — so an installed extension of any type actually runs and tenants can no longer diverge silently.

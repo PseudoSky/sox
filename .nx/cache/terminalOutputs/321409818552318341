@@ -1,0 +1,11 @@
+> vitest run --config packages/sox-nx/vitest.config.ts
+
+
+ RUN  v4.1.8 /Users/nix/dev/ai/sox-ecosystem/packages/sox-nx
+
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+   Start at  20:40:40
+   Duration  262ms (transform 28ms, setup 0ms, import 165ms, tests 5ms, environment 0ms)
+

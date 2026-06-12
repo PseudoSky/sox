@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "C6 \u2014 Runtime Permission Enforcement",
   "dag": "dag.json",
-  "current_state": "audit-final",
+  "current_state": "done",
   "states": {
     "consolidate-legacy": {
       "status": "done",
@@ -40,9 +40,9 @@
       "done_ts": "2026-06-12T19:05:00Z"
     },
     "audit-final": {
-      "status": "pending",
-      "started_ts": null,
-      "done_ts": null
+      "status": "done",
+      "started_ts": "2026-06-12T20:00:00Z",
+      "done_ts": "2026-06-12T20:30:00Z"
     }
   },
   "transition_log": [
@@ -115,6 +115,14 @@
         "libs/host-runtime/src/supervisor-policy.spec.ts (NEW) \u2014 32 tests covering [process-boundary.1-6] with vi.mock(node:child_process) spawn interception"
       ],
       "acceptance_criteria": "[process-boundary.1] OK (SOX_PERM_ENFORCE=1+4 JSON arrays in child env), [process-boundary.2] OK (sentinel absent from scrubbed env; PATH/HOME preserved), [process-boundary.3] OK (unenforced: {...process.env,...env}, cwd=undefined byte-identical), [process-boundary.4] OK (cwd=path.dirname(entrypointPath) when enforced), [process-boundary.5] OK (all session-fix behaviors preserved; e2e 33/33 zero orphans), [process-boundary.6] OK (policy() accessor returns compiled Policy)"
+    },
+    {
+      "ts": "2026-06-12T20:30:00Z",
+      "from": "audit-final",
+      "to": "done",
+      "by": "workflow-architect",
+      "guard_result": "audit_c6.py --phase final exit 0 (architect-verified, independent run). 4 spawn points enforced: supervisor _spawn (e2e), runtime-cli exec (e2e negative denied+no-file), apps/sox exec (architect independent probe denied+no-file), in-proc adapters SOFT. nx run-many build/lint/test all exit 0; test-e2e 35/35 zero orphans.",
+      "note": "Machine half of [dod.5] green. Human half (founder approval) requested before engagement status->complete."
     }
   ],
   "amendment_log": [
@@ -123,13 +131,13 @@
       "state": "audit-final",
       "class": "executor",
       "type": "fix-regression",
-      "reason": "FOURTH C6 enforcement hole closed: apps/sox/src/main.ts (the canonical extension-#0 CLI, compiled to dist/apps/sox/main.js) contained its own independent cmdExec implementation whose fresh-spawn fallback path was unenforced — it read the manifest as `{ entrypoint?: string }` (never reading permissions) and spawned with `env: { ...process.env }` (no policy injected). This is a DUPLICATE of the runtime-cli.ts C6 hole that was closed in the prior amendment. Decision: MIRROR (not delegate). Delegating to runtime-cli.ts cmdExec would require non-trivial refactoring (different flag structures, different registrar/fallback logic). Mirroring is the low-risk, complete fix. FIX 1: widened manifest type to include `permissions?: PermissionsBlock`; imported `compilePolicy` and `PermissionsBlock` from `@sox/host-runtime` (already a dependency); built `execEnv` exactly as runtime-cli does (enforced path: scrub to allowlist + NODE_* then merge policy.toEnv() last; unenforced path: { ...process.env } byte-identical [inv:no-regress]); passed `execEnv` to spawn. Added TODO C7 note for future de-duplication. FIX 2: new audit check `[audit-final.exec-path-enforced.apps-sox]` added to phase_final — structural grep that apps/sox/src/main.ts contains compilePolicy(, policy.toEnv(), and execEnv — ensures BOTH exec implementations (runtime-cli + apps/sox) are gate-checked by the final audit. REALITY PROOF (through compiled apps/sox exec): `node dist/apps/sox/main.js exec --runtime-file=<tmp> --id=memory-server --tool=memory_write --args={db_path:<evil>}` returned `{isError:true,content:[{type:text,text:\"permission denied: db_path /var/.../apps-sox-c6-evil-<pid>.db outside declared fs allowlist\"}]}` AND evil file does NOT exist on disk. Final audit exit 0 including new check. current_state kept as audit-final.",
+      "reason": "FOURTH C6 enforcement hole closed: apps/sox/src/main.ts (the canonical extension-#0 CLI, compiled to dist/apps/sox/main.js) contained its own independent cmdExec implementation whose fresh-spawn fallback path was unenforced \u2014 it read the manifest as `{ entrypoint?: string }` (never reading permissions) and spawned with `env: { ...process.env }` (no policy injected). This is a DUPLICATE of the runtime-cli.ts C6 hole that was closed in the prior amendment. Decision: MIRROR (not delegate). Delegating to runtime-cli.ts cmdExec would require non-trivial refactoring (different flag structures, different registrar/fallback logic). Mirroring is the low-risk, complete fix. FIX 1: widened manifest type to include `permissions?: PermissionsBlock`; imported `compilePolicy` and `PermissionsBlock` from `@sox/host-runtime` (already a dependency); built `execEnv` exactly as runtime-cli does (enforced path: scrub to allowlist + NODE_* then merge policy.toEnv() last; unenforced path: { ...process.env } byte-identical [inv:no-regress]); passed `execEnv` to spawn. Added TODO C7 note for future de-duplication. FIX 2: new audit check `[audit-final.exec-path-enforced.apps-sox]` added to phase_final \u2014 structural grep that apps/sox/src/main.ts contains compilePolicy(, policy.toEnv(), and execEnv \u2014 ensures BOTH exec implementations (runtime-cli + apps/sox) are gate-checked by the final audit. REALITY PROOF (through compiled apps/sox exec): `node dist/apps/sox/main.js exec --runtime-file=<tmp> --id=memory-server --tool=memory_write --args={db_path:<evil>}` returned `{isError:true,content:[{type:text,text:\"permission denied: db_path /var/.../apps-sox-c6-evil-<pid>.db outside declared fs allowlist\"}]}` AND evil file does NOT exist on disk. Final audit exit 0 including new check. current_state kept as audit-final.",
       "current_state_unchanged": "audit-final",
       "files_changed": [
-        "apps/sox/src/main.ts (MODIFIED) — import compilePolicy + PermissionsBlock from @sox/host-runtime; cmdExec fresh-spawn path now builds execEnv (enforced: scrub+policy.toEnv(); unenforced: {...process.env}); manifest type widened to include permissions?: PermissionsBlock; TODO C7 de-duplicate note added",
-        ".workflow/plans/permission-enforcement/scripts/audit_c6.py (MODIFIED) — new check [audit-final.exec-path-enforced.apps-sox]: structural grep that apps/sox/src/main.ts calls compilePolicy( AND policy.toEnv() AND uses execEnv; existing checks intact and unweakened"
+        "apps/sox/src/main.ts (MODIFIED) \u2014 import compilePolicy + PermissionsBlock from @sox/host-runtime; cmdExec fresh-spawn path now builds execEnv (enforced: scrub+policy.toEnv(); unenforced: {...process.env}); manifest type widened to include permissions?: PermissionsBlock; TODO C7 de-duplicate note added",
+        ".workflow/plans/permission-enforcement/scripts/audit_c6.py (MODIFIED) \u2014 new check [audit-final.exec-path-enforced.apps-sox]: structural grep that apps/sox/src/main.ts calls compilePolicy( AND policy.toEnv() AND uses execEnv; existing checks intact and unweakened"
       ],
-      "enforcement_proof": "node dist/apps/sox/main.js exec → isError:true 'permission denied: db_path /var/.../apps-sox-c6-evil-<pid>.db outside declared fs allowlist'; evil file does NOT exist on disk (apps/sox exec path confirmed enforced through compiled artifact)",
+      "enforcement_proof": "node dist/apps/sox/main.js exec \u2192 isError:true 'permission denied: db_path /var/.../apps-sox-c6-evil-<pid>.db outside declared fs allowlist'; evil file does NOT exist on disk (apps/sox exec path confirmed enforced through compiled artifact)",
       "final_audit_exit": 0,
       "final_audit_tail": "FINAL AUDIT PASSED: all criteria verified.",
       "by": "sox-active:typescript-pro"
@@ -139,12 +147,12 @@
       "state": "audit-final",
       "class": "planner",
       "type": "premise-correction",
-      "reason": "CRITICAL premise correction: the supervisor _spawn was NOT the single spawn point for C6 enforcement. sox exec maintained its own fresh-spawn path in cmdExec (runtime-cli.ts ~line 419) that never compiled the manifest policy or injected policy.toEnv() — the spawned child received no SOX_PERM_ENFORCE in its env, so checkDbPathPolicy returned null (no enforcement). This was confirmed by evidence: DB_PATH in the e2e was under TMP_DIR (outside ~/.memory/**) yet memory_write succeeded, proving exec was unenforced. Three fixes applied: (1) FIX 1 [process-boundary.exec]: In cmdExec, before the fresh-spawn, read the manifest's permissions block, call compilePolicy(), and inject policy.toEnv() into the child env — mirroring the supervisor _spawn enforced path exactly (scrubbed base + policy.toEnv(); unenforced path byte-identical [inv:no-regress]). (2) FIX 2 [e2e-exec-path]: DB_PATH moved to ~/.memory/sox-e2e-{pid}.db (inside the declared allowlist) so the positive write succeeds under enforcement; teardown deletes the pid-scoped file. Negative assertion added (Step 3b): memory_write to EVIL_DB_PATH (os.tmpdir()) via the real sox exec must return isError:true AND the file must not exist on disk — end-to-end proof of [dod.2] through the production exec path. e2e result: 35/35 PASS (was 33; +2 new negative assertions). (3) FIX 3 [audit-final.exec-path-enforced]: Two new audit checks added — structural (grep that runtime-cli.ts exec path calls compilePolicy + policy.toEnv()) and regress-e2e (grep that e2e source includes EVIL_DB_PATH + [dod.2] + no-file assertion). current_state kept as audit-final; no state regressed.",
+      "reason": "CRITICAL premise correction: the supervisor _spawn was NOT the single spawn point for C6 enforcement. sox exec maintained its own fresh-spawn path in cmdExec (runtime-cli.ts ~line 419) that never compiled the manifest policy or injected policy.toEnv() \u2014 the spawned child received no SOX_PERM_ENFORCE in its env, so checkDbPathPolicy returned null (no enforcement). This was confirmed by evidence: DB_PATH in the e2e was under TMP_DIR (outside ~/.memory/**) yet memory_write succeeded, proving exec was unenforced. Three fixes applied: (1) FIX 1 [process-boundary.exec]: In cmdExec, before the fresh-spawn, read the manifest's permissions block, call compilePolicy(), and inject policy.toEnv() into the child env \u2014 mirroring the supervisor _spawn enforced path exactly (scrubbed base + policy.toEnv(); unenforced path byte-identical [inv:no-regress]). (2) FIX 2 [e2e-exec-path]: DB_PATH moved to ~/.memory/sox-e2e-{pid}.db (inside the declared allowlist) so the positive write succeeds under enforcement; teardown deletes the pid-scoped file. Negative assertion added (Step 3b): memory_write to EVIL_DB_PATH (os.tmpdir()) via the real sox exec must return isError:true AND the file must not exist on disk \u2014 end-to-end proof of [dod.2] through the production exec path. e2e result: 35/35 PASS (was 33; +2 new negative assertions). (3) FIX 3 [audit-final.exec-path-enforced]: Two new audit checks added \u2014 structural (grep that runtime-cli.ts exec path calls compilePolicy + policy.toEnv()) and regress-e2e (grep that e2e source includes EVIL_DB_PATH + [dod.2] + no-file assertion). current_state kept as audit-final; no state regressed.",
       "current_state_unchanged": "audit-final",
       "files_changed": [
-        "libs/host-runtime/src/runtime-cli.ts (MODIFIED) — added compilePolicy import + PermissionsBlock import; cmdExec builds execEnv: enforced path scrubs env + injects policy.toEnv(); unenforced path byte-identical to pre-state [inv:no-regress]",
-        "tools/test-e2e-lifecycle.js (MODIFIED) — DB_PATH moved to ~/.memory/sox-e2e-{pid}.db (inside allowlist); EVIL_DB_PATH added for negative test; Step 3b negative enforcement test added; cleanup deletes both pid-scoped files; e2e count 33→35 PASS",
-        ".workflow/plans/permission-enforcement/scripts/audit_c6.py (MODIFIED) — two new checks: [audit-final.exec-path-enforced.structural] (grep compilePolicy+toEnv in runtime-cli.ts) and [audit-final.exec-path-enforced.regress-e2e] (grep EVIL_DB_PATH+[dod.2]+no-file in e2e); existing checks intact and unweakened"
+        "libs/host-runtime/src/runtime-cli.ts (MODIFIED) \u2014 added compilePolicy import + PermissionsBlock import; cmdExec builds execEnv: enforced path scrubs env + injects policy.toEnv(); unenforced path byte-identical to pre-state [inv:no-regress]",
+        "tools/test-e2e-lifecycle.js (MODIFIED) \u2014 DB_PATH moved to ~/.memory/sox-e2e-{pid}.db (inside allowlist); EVIL_DB_PATH added for negative test; Step 3b negative enforcement test added; cleanup deletes both pid-scoped files; e2e count 33\u219235 PASS",
+        ".workflow/plans/permission-enforcement/scripts/audit_c6.py (MODIFIED) \u2014 two new checks: [audit-final.exec-path-enforced.structural] (grep compilePolicy+toEnv in runtime-cli.ts) and [audit-final.exec-path-enforced.regress-e2e] (grep EVIL_DB_PATH+[dod.2]+no-file in e2e); existing checks intact and unweakened"
       ],
       "e2e_result": "35/35 PASS (was 33); +2 new negative enforcement assertions (Step 3b): isError:true returned for evil path, file does NOT exist on disk",
       "final_audit_exit": 0,
@@ -157,17 +165,17 @@
       "state": "audit-final",
       "class": "executor",
       "type": "fix-regression",
-      "reason": "Two audit-final failures fixed. (1) [audit-final.regress-e2e]: registry/index.json memory-server checksum was stale relative to the post-mcp-path-guard src/index.ts. Ran nx run memory-server:build --skip-nx-cache then npx tsx scripts/build-index.ts; checksum confirmed current (sha256:9fbb71104135d7413474a766bc3dc74185d31657b425581971201228a5cf3043 — source and registry now agree). e2e (nx run host-runtime:test-e2e --skip-nx-cache): 33/33 PASS, zero orphan processes. Enforcement positive path confirmed: memory-server declares fs read+write ['~/.memory/**']; e2e DB_PATH is under .memory/; memory_write and memory_recall both succeed in Step 3 (episode_uid returned, recall finds content) — no legitimate ~/.memory write is wrongly denied. (2) [audit-final.ref-deny-by-default]: grep for SOX_PERM_ literal tokens (excluding policy.ts, .spec.ts, and real process.env.SOX_PERM reads) returned OK before editing — the comments in supervisor.ts:192 and memory-server/src/index.ts:15 already used 'the enforce flag' wording without the raw SOX_PERM_ token. Minor clarifying edit to supervisor.ts:192 comment (appended 'injected by toEnv()' for clarity; no logic change). Grep re-verified: empty (OK). Both nx run host-runtime:build and nx run memory-server:build pass clean after edits.",
+      "reason": "Two audit-final failures fixed. (1) [audit-final.regress-e2e]: registry/index.json memory-server checksum was stale relative to the post-mcp-path-guard src/index.ts. Ran nx run memory-server:build --skip-nx-cache then npx tsx scripts/build-index.ts; checksum confirmed current (sha256:9fbb71104135d7413474a766bc3dc74185d31657b425581971201228a5cf3043 \u2014 source and registry now agree). e2e (nx run host-runtime:test-e2e --skip-nx-cache): 33/33 PASS, zero orphan processes. Enforcement positive path confirmed: memory-server declares fs read+write ['~/.memory/**']; e2e DB_PATH is under .memory/; memory_write and memory_recall both succeed in Step 3 (episode_uid returned, recall finds content) \u2014 no legitimate ~/.memory write is wrongly denied. (2) [audit-final.ref-deny-by-default]: grep for SOX_PERM_ literal tokens (excluding policy.ts, .spec.ts, and real process.env.SOX_PERM reads) returned OK before editing \u2014 the comments in supervisor.ts:192 and memory-server/src/index.ts:15 already used 'the enforce flag' wording without the raw SOX_PERM_ token. Minor clarifying edit to supervisor.ts:192 comment (appended 'injected by toEnv()' for clarity; no logic change). Grep re-verified: empty (OK). Both nx run host-runtime:build and nx run memory-server:build pass clean after edits.",
       "old_checksum": "sha256:cfee3ac6f799bf901631159ab3b19e6134c8a63848713cc2ceab8307d8da0c6a",
       "new_checksum": "sha256:9fbb71104135d7413474a766bc3dc74185d31657b425581971201228a5cf3043",
       "checksum_note": "build-index.ts hashes src/index.ts. The registry held an old hash from before the mcp-path-guard edit to src/index.ts. Rebuilt + regenerated; checksum now matches the actual source bytes.",
       "e2e_result": "33/33 PASS, zero orphan processes, memory_write+memory_recall succeed under enforcement (DB_PATH under ~/.memory/** is allowed)",
-      "grep_result": "OK (empty — no SOX_PERM_ literal outside policy.ts/.spec.ts/process.env reads)",
+      "grep_result": "OK (empty \u2014 no SOX_PERM_ literal outside policy.ts/.spec.ts/process.env reads)",
       "final_audit_exit": 0,
       "final_audit_tail": "FINAL AUDIT PASSED: all criteria verified.",
       "files_changed": [
-        "libs/host-runtime/src/supervisor.ts (MODIFIED) — comment clarification at _spawn: appended 'injected by toEnv()' to policy-env description; no logic change",
-        "registry/index.json (REGENERATED) — build-index.ts re-run; checksum already current"
+        "libs/host-runtime/src/supervisor.ts (MODIFIED) \u2014 comment clarification at _spawn: appended 'injected by toEnv()' to policy-env description; no logic change",
+        "registry/index.json (REGENERATED) \u2014 build-index.ts re-run; checksum already current"
       ],
       "by": "sox-active:typescript-pro"
     },

@@ -22,3 +22,12 @@ ADR + strategy doc). Architect owns INDEX rebuild after the plan returns.
 - workflow-planner (given the EXACT skill path it read directly) authored the conforming directory: README([dod.1–10]), dag.json/state.json (14 slug-keyed states), references.json (7 [ref:] idioms), state-machine.md, final-review.md, contexts/_shared.md + 14 state contexts, scripts/gap-check.js + audit_nx_migration.py + guards/.
 - 14 states: checkpoint-branch→nx-init→manifest-lib→authoring-lib→audit-foundation→engine-libs→sox-extension→audit-engine→type-discovery→memory-core→migrate-rest→ci-release→audit-final→done. Execution model: typescript-pro executors, parallel where DAG allows, founder reviewer, automatic-dispatch=no (resumable hand-off).
 - GATE: architect ran `gap-check.js --discover` (planner couldn't — no Bash) → PASSED, exit 0, 0 warnings, oracle=grep+gitnexus. Plan genuinely conforms.
+
+## 2026-06-12 — EXECUTION COMPLETE (all 14 states; DoD met)
+Orchestrated the full plan serially; architect independently ran every audit gate.
+- Phases: checkpoint-branch → nx-init → manifest-lib → authoring-lib → [audit-foundation✓] → engine-libs → sox-extension → [audit-engine✓ after fix-guard] → type-discovery → memory-core → migrate-rest → ci-release(recovered after crash) → [audit-final✓ after fix-guard] → done.
+- Two audit gates initially failed on a SYSTEMIC audit-script bug (absolute `/.tmp-*` from unset $ROOT in subprocess + ids ending in type name) — caught by the architect's independent runs, fixed as fix-guard amendments (assertions preserved), re-verified green by the architect. NOT product failures.
+- ci-release executor crashed mid-state (socket); recovered from partial on-disk work (nx release dry-run fixed: 3 config bugs; CI on nx affected; commitlint; reality-gate e2e re-homed; per-type docs).
+- type-discovery confirmed the corpus is declarative/multi-runtime (agents/skills=markdown, hooks=shell, mcp=@modelcontextprotocol/sdk, command=node/python) — contract flexes already covered it (no schema change).
+- Independent final verification: audit-final exit 0; pnpm test 344; C7 reach-in zero; nx build+lint 13/13; state machine current_state=done, all states done.
+- All work committed on branch feat/nx-migration (tag pre-nx-baseline at the base).

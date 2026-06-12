@@ -1,0 +1,2 @@
+> tsc --project extensions/agents/memory-organizer/tsconfig.json
+

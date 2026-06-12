@@ -1,0 +1,2 @@
+> tsc --project extensions/hooks/memory-flush/tsconfig.json
+

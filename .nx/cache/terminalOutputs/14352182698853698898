@@ -1,0 +1,2 @@
+> tsc --project packages/sox-nx/tsconfig.lib.json
+

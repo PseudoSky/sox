@@ -1,0 +1,11 @@
+
+Linting "sox-memory-bundle"...
+[0m
+[4m/Users/nix/dev/ai/sox-ecosystem/scripts/host-delivery.test.ts[24m
+  [2m332:5[22m  [31merror[39m  Definition for rule '@typescript-eslint/no-non-null-assertion' was not found  [2m@typescript-eslint/no-non-null-assertion[22m
+  [2m334:5[22m  [31merror[39m  Definition for rule '@typescript-eslint/no-non-null-assertion' was not found  [2m@typescript-eslint/no-non-null-assertion[22m
+
+[31m[1m✖ 2 problems (2 errors, 0 warnings)[22m[39m
+[0m
+✖ 2 problems (2 errors, 0 warnings)
+

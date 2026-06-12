@@ -1,0 +1,4 @@
+> tsc --project libs/authoring/tsconfig.lib.json --dry-run
+
+error TS5023: Unknown compiler option '--dry-run'.
+Warning: command "tsc --project libs/authoring/tsconfig.lib.json --dry-run" exited with non-zero status code

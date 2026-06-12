@@ -1,0 +1,11 @@
+> vitest run --config extensions/mcp-servers/memory-server/vitest.config.ts
+
+
+ RUN  v4.1.8 /Users/nix/dev/ai/sox-ecosystem
+
+
+ Test Files  2 passed (2)
+      Tests  14 passed (14)
+   Start at  17:26:30
+   Duration  313ms (transform 153ms, setup 0ms, import 204ms, tests 148ms, environment 0ms)
+

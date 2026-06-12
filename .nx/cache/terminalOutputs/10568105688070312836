@@ -1,0 +1,17 @@
+> vitest run --config libs/manifest/vitest.config.ts --dry-run
+
+file:///Users/nix/dev/ai/sox-ecosystem/node_modules/.pnpm/vitest@4.1.8_@types+node@22.19.20_vite@8.0.16_@types+node@22.19.20_esbuild@0.28.0_jiti@2.6.1_tsx@4.22.4_yaml@2.9.0_/node_modules/vitest/dist/chunks/cac.C9xsMMkH.js:406
+          throw new CACError(`Unknown option \`${name.length > 1 ? `--${name}` : `-${name}`}\``);
+                ^
+
+CACError: Unknown option `--dryRun`
+    at Command.checkUnknownOptions [90m(file:///Users/nix/dev/ai/sox-ecosystem/[39mnode_modules/[4m.pnpm[24m/vitest@4.1.8_@types+node@22.19.20_vite@8.0.16_@types+node@22.19.20_esbuild@0.28.0_jiti@2.6.1_tsx@4.22.4_yaml@2.9.0_/node_modules/[4mvitest[24m/dist/chunks/cac.C9xsMMkH.js:406:17[90m)[39m
+    at CAC.runMatchedCommand [90m(file:///Users/nix/dev/ai/sox-ecosystem/[39mnode_modules/[4m.pnpm[24m/vitest@4.1.8_@types+node@22.19.20_vite@8.0.16_@types+node@22.19.20_esbuild@0.28.0_jiti@2.6.1_tsx@4.22.4_yaml@2.9.0_/node_modules/[4mvitest[24m/dist/chunks/cac.C9xsMMkH.js:606:13[90m)[39m
+    at CAC.parse [90m(file:///Users/nix/dev/ai/sox-ecosystem/[39mnode_modules/[4m.pnpm[24m/vitest@4.1.8_@types+node@22.19.20_vite@8.0.16_@types+node@22.19.20_esbuild@0.28.0_jiti@2.6.1_tsx@4.22.4_yaml@2.9.0_/node_modules/[4mvitest[24m/dist/chunks/cac.C9xsMMkH.js:547:12[90m)[39m
+    at [90mfile:///Users/nix/dev/ai/sox-ecosystem/[39mnode_modules/[4m.pnpm[24m/vitest@4.1.8_@types+node@22.19.20_vite@8.0.16_@types+node@22.19.20_esbuild@0.28.0_jiti@2.6.1_tsx@4.22.4_yaml@2.9.0_/node_modules/[4mvitest[24m/dist/cli.js:11:13
+[90m    at ModuleJob.run (node:internal/modules/esm/module_job:377:25)[39m
+[90m    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:671:26)[39m
+[90m    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)[39m
+
+Node.js v24.11.1
+Warning: command "vitest run --config libs/manifest/vitest.config.ts --dry-run" exited with non-zero status code

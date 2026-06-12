@@ -1,0 +1,10 @@
+> vitest run --config libs/memory-core/vitest.config.ts
+
+
+ RUN  v4.1.8 /Users/nix/dev/ai/sox-ecosystem
+
+No test files found, exiting with code 0
+
+include: /Users/nix/dev/ai/sox-ecosystem/libs/memory-core/src/**/*.spec.ts, /Users/nix/dev/ai/sox-ecosystem/libs/memory-core/src/**/*.test.ts
+exclude:  **/node_modules/**, **/.git/**
+

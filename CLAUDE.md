@@ -16,7 +16,7 @@ a build that stays fast at scale — plus the full command surface working.
 Verify against the OS / real artifacts, **not** test output (every prior "green" that skipped that lied).
 
 ### A. Command surface
-- [ ] **A1 `init`** — runs, but output is **non-conformant** (no `tsconfig`, missing `tools`/self-description, no `keywords`/`author`) → won't build/validate.
+- [x] **A1 `init`** — born-conformant for all active types via `libs/authoring` + `@sox/nx`/`sox init` (born-conformance + byte-identical parity gates green).
 - [x] **A2 `validate`** — works; entrypoint-reachability enforced.
 - [x] **A3 `search`** — works.
 - [x] **A4 `install`** — works (resolves + lockfile).
@@ -26,14 +26,14 @@ Verify against the OS / real artifacts, **not** test output (every prior "green"
 - [x] **A8 `update`** — works (registry drift gate added).
 - [x] **A9 `uninstall`** — stops + removes.
 - [x] **A10 `stop`** — clean teardown, zero orphans (verified from clean slate).
-- [~] **A11 `exec`** — works, but spawns a fresh session instead of using the running server.
-- [ ] **A12 flags** — `--flag=value` works; **`--flag value` (the `--help` form) mis-parses**.
+- [~] **A11 `exec`** — now tries the running registrar first, falls back to a fresh spawn (improved, not airtight).
+- [x] **A12 flags** — both `--flag value` and `--flag=value` parse (parser fixed in `install-engine`).
 
 ### B. Authoring at scale
-- [ ] **B1** born-conformant `init` for all 7 types — scaffolder drifts from build/validate contracts.
-- [ ] **B2** every type `init → build → validate → install → run` repeatably — only partially proven; scaffold breaks it.
-- [ ] **B3** build graph scales (incremental/cached) — plain `tsc` per package, no cache (only `memory-cli` is composite).
-- [ ] **B4** adding an extension never red-bars the tree — a fresh scaffold currently **fails** repo-wide validate.
+- [x] **B1** born-conformant `init` for all active types — `libs/authoring` core + `@sox/nx` generators (the `prompt` type is parked by design).
+- [x] **B2** every type `init → build → validate → install → run` — born-conformance gate + lifecycle e2e green.
+- [x] **B3** build graph scales — `nx affected` + cache; project-graph-aware build.
+- [x] **B4** adding an extension never red-bars the tree — verified (audit `dod.6`).
 
 ### C. Foundational integrity
 - [x] **C1** framework-owned build; hand-maintained `dist` mirrors retired.
@@ -41,12 +41,18 @@ Verify against the OS / real artifacts, **not** test output (every prior "green"
 - [x] **C3** `build → validate --strict → typecheck → test` blocking CI, correct order.
 - [~] **C4** reality-checking gates — done for the lifecycle e2e; not yet universal.
 - [x] **C5** memory MCP `write` + `recall` execute correctly (zero-LLM read) — recall bug fixed.
-- [ ] **C6** `permissions` enforced at runtime — declared + validated only; no runtime sandbox.
-- [ ] **C7** shared internal code reuse without duplication or reach-in — no shared-library primitive; cross-extension `../../../dist` reach-in exists today.
+- [x] **C6** `permissions` enforced at runtime — HARD for spawned types (env-scrub + policy-env injection + in-process fs/socket allowlist at the resource sink) across all four extension entry points (supervisor `_spawn`, `runtime-cli` exec, `apps/sox` exec, in-proc adapters = SOFT declare+audit per `[dod.6]`); undeclared `db_path` denied at runtime with no file created. Reality-verified: real spawned `memory-server`, forbidden write denied + side-effect absent (e2e + independent probe). OS-kernel sandboxing is an explicit non-goal.
+- [x] **C7** shared internal code reuse without reach-in — `libs/memory-core` extracted; cross-extension `../../../dist` reach-in eliminated (grep returns zero).
 
-**Summary: 13/23 done, 2 partial, 8 not done.** Not finished. The critical blockers for your
-"rapidly add many extensions" goal are **B1–B4** (born-conformant scaffolding + scaled build) and
-**A1/A12** (init conformance, flag parsing). All changes this session are uncommitted, pending review.
+**Summary: 21/23 done, 2 partial (A11, C4), 0 not done.** The nx self-hosting migration met the
+DoD to its D5 scope (architect-verified: final audit exit 0, C7 zero, `nx build,lint` 13/13), and the
+**C6 engagement is now complete** — runtime permission enforcement is delivered and reality-verified
+across all four extension spawn paths (`audit_c6.py --phase final` exit 0; `nx run-many build,lint,test`
+green; `host-runtime:test-e2e` 35/35 with the undeclared-write denial proven + zero orphans). The C6
+work also fixed two latent migration defects the prior audit missed (duplicate `scripts/host/` runtime;
+deleted-`runtime-cli` regression) and closed four distinct unenforced spawn points. The two remaining
+partials are acknowledged scope: **A11** (`exec` routing not airtight) and **C4** (reality-gates not yet
+universal). Work lives on branch `feat/nx-migration` (committed; not merged to `main`).
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence

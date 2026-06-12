@@ -1,0 +1,11 @@
+> vitest run --config libs/host-runtime/vitest.config.ts
+
+
+ RUN  v4.1.8 /Users/nix/dev/ai/sox-ecosystem
+
+
+ Test Files  4 passed (4)
+      Tests  99 passed (99)
+   Start at  17:40:15
+   Duration  195ms (transform 229ms, setup 0ms, import 291ms, tests 31ms, environment 0ms)
+

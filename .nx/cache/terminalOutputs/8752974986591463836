@@ -1,0 +1,12 @@
+
+Linting "memory-server"...
+[0m
+[4m/Users/nix/dev/ai/sox-ecosystem/extensions/mcp-servers/memory-server/src/embed.ts[24m
+  [2m50:7[22m  [31merror[39m  Definition for rule '@typescript-eslint/no-non-null-assertion' was not found  [2m@typescript-eslint/no-non-null-assertion[22m
+  [2m58:5[22m  [31merror[39m  Definition for rule '@typescript-eslint/no-non-null-assertion' was not found  [2m@typescript-eslint/no-non-null-assertion[22m
+  [2m63:5[22m  [31merror[39m  Definition for rule '@typescript-eslint/no-non-null-assertion' was not found  [2m@typescript-eslint/no-non-null-assertion[22m
+
+[31m[1m✖ 3 problems (3 errors, 0 warnings)[22m[39m
+[0m
+✖ 3 problems (3 errors, 0 warnings)
+

@@ -1,0 +1,16 @@
+{
+  "deny-by-default": {
+    "anchor": "libs/host-runtime/src/policy.ts:compilePolicy",
+    "rule": "Every permission decision routes through a Policy method (allowsFsRead/allowsFsWrite/allowsSocket/allowsNetwork). When a permission domain is declared (present in the block), any target not matched by a declared pattern in that domain returns false; an absent domain or absent block returns true (legacy compat). No ad-hoc comparison against SOX_PERM_* env values or raw permission arrays exists outside policy.ts.",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:deny-by-default]",
+    "audit_check": "[audit-final.ref-deny-by-default]"
+  },
+  "guard-before-sink": {
+    "anchor": "extensions/mcp-servers/memory-server/src/index.ts:handleToolCall",
+    "rule": "Every code path that opens or creates an OS resource from a caller-supplied path first calls the Policy guard and returns a denial (isError result, no side effect) when the policy denies. The guard precedes the resource sink (getDb/openDb), never follows it — so a denied call creates no file or directory.",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:guard-before-sink]",
+    "audit_check": "[audit-final.ref-guard-before-sink]"
+  }
+}

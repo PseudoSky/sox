@@ -1,0 +1,3 @@
+> echo 'sox-memory-bundle: no build step (declarative bundle)' --dry-run
+
+sox-memory-bundle: no build step (declarative bundle) --dry-run
