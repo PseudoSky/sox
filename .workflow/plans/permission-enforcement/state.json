@@ -20,9 +20,9 @@
       "done_ts": "2026-06-12T17:35:00Z"
     },
     "process-boundary": {
-      "status": "pending",
-      "started_ts": null,
-      "done_ts": null
+      "status": "done",
+      "started_ts": "2026-06-12T17:40:00Z",
+      "done_ts": "2026-06-12T18:05:00Z"
     },
     "inproc-policy": {
       "status": "pending",
@@ -69,6 +69,19 @@
         "libs/host-runtime/src/index.ts (MODIFIED) — exports compilePolicy, compilePolicyFromEnv, Policy"
       ],
       "acceptance_criteria": "[policy-core.1] OK (compilePolicy+compilePolicyFromEnv importable from dist/index.js), [policy-core.2] OK (vitest deny-by-default), [policy-core.3] OK (vitest legacy compat), [policy-core.4] OK (vitest toEnv/fromEnv round-trip), [policy-core.5] OK (vitest ~/+** glob), [policy-core.6] OK (policy.ts imports only node:* and local ./)"
+    },
+    {
+      "ts": "2026-06-12T18:05:00Z",
+      "from": "process-boundary",
+      "to": "(parallel: inproc-policy running concurrently)",
+      "by": "sox-active:typescript-pro",
+      "guard_result": "PASS (nx run host-runtime:test: 99/99 tests green; nx run host-runtime:test-e2e: 33/33 PASS, zero orphan processes)",
+      "test_delta": "host-runtime test suite: 51→99 (+48 tests: 16 inproc-policy.spec.ts from parallel agent already present + 32 my supervisor-policy.spec.ts = 48 new); all 51 pre-existing tests still green",
+      "artifacts": [
+        "libs/host-runtime/src/supervisor.ts (MODIFIED) — constructor stores permissions + compilePolicy once; policy() read-only accessor added; _spawn gated on policy.enforced: enforced→scrubbed env+policy.toEnv()+cwd restriction; unenforced→byte-identical pre-state",
+        "libs/host-runtime/src/supervisor-policy.spec.ts (NEW) — 32 tests covering [process-boundary.1-6] with vi.mock(node:child_process) spawn interception"
+      ],
+      "acceptance_criteria": "[process-boundary.1] OK (SOX_PERM_ENFORCE=1+4 JSON arrays in child env), [process-boundary.2] OK (sentinel absent from scrubbed env; PATH/HOME preserved), [process-boundary.3] OK (unenforced: {...process.env,...env}, cwd=undefined byte-identical), [process-boundary.4] OK (cwd=path.dirname(entrypointPath) when enforced), [process-boundary.5] OK (all session-fix behaviors preserved; e2e 33/33 zero orphans), [process-boundary.6] OK (policy() accessor returns compiled Policy)"
     }
   ],
   "amendment_log": [

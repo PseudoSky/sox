@@ -6,12 +6,23 @@
  *   - supervisor.stop() sets _stopping=true preventing restarts (stop-via-supervisor)
  *   - supervisor restart logic (enable-reactivation via _respawn on unexpected exit)
  *   - expandTilde (Gap A5 fix)
+ *
+ * [process-boundary] — Spawned-child bounding:
+ *   When opts.permissions is declared (policy.enforced=true):
+ *     - Child env is SCRUBBED to a minimal allowlist (PATH, HOME, LANG, TZ, NODE_*)
+ *       then merged with this._env then merged with policy.toEnv() [def:policy-env].
+ *     - Child cwd is set to the extension directory (dirname of entrypointPath).
+ *   When NO permissions block is declared (policy.enforced=false):
+ *     - Child env is { ...process.env, ...this._env } — byte-identical to pre-state.
+ *     - Child cwd is inherited (undefined) — byte-identical to pre-state.
+ *   [inv:no-regress]: the non-enforced path is BYTE-IDENTICAL to the pre-state spawn.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as net from 'node:net';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { compilePolicy, type Policy } from './policy.js';
 
 export interface LifecycleHealth {
   type?: 'stdio-ping' | 'socket' | 'command' | undefined;
@@ -71,6 +82,7 @@ export class ProcessSupervisor {
   private readonly _env: Record<string, string>;
   private readonly _lifecycle: LifecycleBlock;
   private readonly _onRestart: ((n: number) => void) | undefined;
+  private readonly _policy: Policy;
 
   private _proc: ChildProcess | null = null;
   private _healthy = false;
@@ -85,6 +97,18 @@ export class ProcessSupervisor {
     this._env = opts.env ?? {};
     this._lifecycle = opts.lifecycle;
     this._onRestart = opts.onRestart;
+    // [process-boundary] Compile policy once at construction.
+    // compilePolicy(undefined) → enforced=false (legacy compat, [inv:no-regress]).
+    // compilePolicy(perms)     → enforced=true  ([def:enforcement-opt-in]).
+    this._policy = compilePolicy(opts.permissions);
+  }
+
+  /**
+   * policy — read-only accessor so mcp.ts / tests can assert the wired policy.
+   * [process-boundary.6]
+   */
+  policy(): Policy {
+    return this._policy;
   }
 
   async start(): Promise<void> {
@@ -160,9 +184,57 @@ export class ProcessSupervisor {
   }
 
   private async _spawn(): Promise<void> {
+    // [process-boundary] Build child env + cwd based on whether a policy is enforced.
+    //
+    // ENFORCED path (policy.enforced=true):
+    //   Scrub the child env to a minimal allowlist (safe base) merged with this._env
+    //   (extension-declared env overrides) then merged with policy.toEnv()
+    //   ([def:policy-env]: SOX_PERM_ENFORCE=1 + four SOX_PERM_* JSON arrays).
+    //   Set cwd to the extension directory so relative path resolution is bounded.
+    //
+    // UNENFORCED path (policy.enforced=false):
+    //   BYTE-IDENTICAL to pre-state: { ...process.env, ...this._env }, cwd undefined.
+    //   [inv:no-regress], [def:enforcement-opt-in].
+    let spawnEnv: NodeJS.ProcessEnv;
+    let spawnCwd: string | undefined;
+
+    if (this._policy.enforced) {
+      // Minimal base env allowlist — conservative; covers Node.js native module
+      // loading (NODE_OPTIONS, NODE_PATH, NODE_MODULE), locale (LANG, LC_ALL, TZ),
+      // and shell fundamentals (PATH, HOME, USER, LOGNAME).
+      // Footgun note: scrubbing NODE_OPTIONS breaks native add-ons (e.g.
+      // better-sqlite3 native loader); we keep all NODE_* vars to avoid that.
+      const allowedKeys = new Set([
+        'PATH',
+        'HOME',
+        'USER',
+        'LOGNAME',
+        'LANG',
+        'LC_ALL',
+        'LC_CTYPE',
+        'TZ',
+      ]);
+      const baseEnv: Record<string, string> = {};
+      for (const [k, v] of Object.entries(process.env)) {
+        if (v !== undefined && (allowedKeys.has(k) || k.startsWith('NODE_'))) {
+          baseEnv[k] = v;
+        }
+      }
+      // Extension-declared env overrides go on top of the scrubbed base.
+      // Policy env ([def:policy-env]) goes last so it cannot be shadowed.
+      spawnEnv = { ...baseEnv, ...this._env, ...this._policy.toEnv() };
+      // Restrict cwd to the extension directory (dirname of entrypointPath).
+      spawnCwd = path.dirname(this._entrypointPath);
+    } else {
+      // [inv:no-regress] BYTE-IDENTICAL to pre-state spawn options.
+      spawnEnv = { ...process.env, ...this._env };
+      spawnCwd = undefined;
+    }
+
     this._proc = spawn(process.execPath, [this._entrypointPath, ...this._args], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, ...this._env },
+      env: spawnEnv,
+      ...(spawnCwd !== undefined ? { cwd: spawnCwd } : {}),
     });
 
     this._proc.stdout?.on('data', (_d: Buffer) => {
