@@ -1,9 +1,22 @@
 /**
  * libs/host-runtime/src/adapters/agent.ts — Agent and skill in-process adapter.
- * Ported from the pre-nx host runtime. Imports adjusted for lib paths.
+ *
+ * Enforcement level: SOFT — declaration + activation policy + audit log;
+ * no OS isolation (shared address space) — see [dod.6].
+ * [def:inproc-types] [inv:per-type] [ref:deny-by-default]
+ *
+ * At activation time, the declared permissions block is compiled into a
+ * queryable Policy and attached to the handle. Callers may use the handle's
+ * checkFs/checkSocket/checkNetwork methods (from InprocPolicyHandle) to make
+ * policy-checked, audit-logged access decisions. No hard OS enforcement is
+ * possible for in-process imports (shared address space, [dod.6]).
  */
 
 import type { PermissionsBlock } from '../supervisor.js';
+import { compilePolicy } from '../policy.js';
+import type { Policy } from '../policy.js';
+import { makeInprocHandle } from '../audit-log.js';
+import type { InprocPolicyHandle } from '../audit-log.js';
 
 export interface AgentAdapterOptions {
   key: string;
@@ -11,22 +24,27 @@ export interface AgentAdapterOptions {
   permissions?: PermissionsBlock | undefined;
 }
 
-export interface AgentAdapterHandle {
+export interface AgentAdapterHandle extends InprocPolicyHandle {
   key: string;
   module: Record<string, unknown>;
   permissions: PermissionsBlock | undefined;
+  policy: Policy;
   type: 'agent';
   invoke(input: Record<string, unknown>): Promise<unknown>;
 }
 
 export async function activateAgent(opts: AgentAdapterOptions): Promise<AgentAdapterHandle> {
+  const policy = compilePolicy(opts.permissions);
+
   if (opts.permissions) {
     console.log(
-      `[agent-adapter] Activating "${opts.key}" — permissions declared (P4 record / P5 enforce):`,
+      `[agent-adapter] Activating "${opts.key}" — permissions declared (SOFT enforcement: policy attached, audit log active):`,
       JSON.stringify(opts.permissions),
     );
   } else {
-    console.log(`[agent-adapter] Activating "${opts.key}" — no declared permissions`);
+    console.log(
+      `[agent-adapter] Activating "${opts.key}" — no declared permissions (policy.enforced=false, unconstrained)`,
+    );
   }
 
   const mod = await import(opts.entrypointPath) as Record<string, unknown>;
@@ -49,12 +67,18 @@ export async function activateAgent(opts: AgentAdapterOptions): Promise<AgentAda
     return invokeFn(input);
   };
 
+  const policyHandle = makeInprocHandle(opts.key, 'agent', policy);
+
   return {
     key: opts.key,
     module: mod,
     permissions: opts.permissions,
+    policy,
     type: 'agent',
     invoke,
+    checkFs: policyHandle.checkFs.bind(policyHandle),
+    checkSocket: policyHandle.checkSocket.bind(policyHandle),
+    checkNetwork: policyHandle.checkNetwork.bind(policyHandle),
   };
 }
 
@@ -73,22 +97,27 @@ export interface SkillAdapterOptions {
   permissions?: PermissionsBlock | undefined;
 }
 
-export interface SkillAdapterHandle {
+export interface SkillAdapterHandle extends InprocPolicyHandle {
   key: string;
   module: Record<string, unknown>;
   permissions: PermissionsBlock | undefined;
+  policy: Policy;
   type: 'skill';
   run(input: Record<string, unknown>): Promise<unknown>;
 }
 
 export async function activateSkill(opts: SkillAdapterOptions): Promise<SkillAdapterHandle> {
+  const policy = compilePolicy(opts.permissions);
+
   if (opts.permissions) {
     console.log(
-      `[skill-adapter] Activating "${opts.key}" — permissions declared (P4 record / P5 enforce):`,
+      `[skill-adapter] Activating "${opts.key}" — permissions declared (SOFT enforcement: policy attached, audit log active):`,
       JSON.stringify(opts.permissions),
     );
   } else {
-    console.log(`[skill-adapter] Activating "${opts.key}" — no declared permissions`);
+    console.log(
+      `[skill-adapter] Activating "${opts.key}" — no declared permissions (policy.enforced=false, unconstrained)`,
+    );
   }
 
   const mod = await import(opts.entrypointPath) as Record<string, unknown>;
@@ -102,11 +131,17 @@ export async function activateSkill(opts: SkillAdapterOptions): Promise<SkillAda
 
   const runFn = mod['run'] as (input: unknown) => Promise<unknown>;
 
+  const policyHandle = makeInprocHandle(opts.key, 'skill', policy);
+
   return {
     key: opts.key,
     module: mod,
     permissions: opts.permissions,
+    policy,
     type: 'skill',
     run: (input) => runFn(input),
+    checkFs: policyHandle.checkFs.bind(policyHandle),
+    checkSocket: policyHandle.checkSocket.bind(policyHandle),
+    checkNetwork: policyHandle.checkNetwork.bind(policyHandle),
   };
 }

@@ -25,9 +25,9 @@
       "done_ts": "2026-06-12T18:05:00Z"
     },
     "inproc-policy": {
-      "status": "pending",
-      "started_ts": null,
-      "done_ts": null
+      "status": "done",
+      "started_ts": "2026-06-12T18:10:00Z",
+      "done_ts": "2026-06-12T18:30:00Z"
     },
     "mcp-path-guard": {
       "status": "pending",
@@ -69,6 +69,23 @@
         "libs/host-runtime/src/index.ts (MODIFIED) — exports compilePolicy, compilePolicyFromEnv, Policy"
       ],
       "acceptance_criteria": "[policy-core.1] OK (compilePolicy+compilePolicyFromEnv importable from dist/index.js), [policy-core.2] OK (vitest deny-by-default), [policy-core.3] OK (vitest legacy compat), [policy-core.4] OK (vitest toEnv/fromEnv round-trip), [policy-core.5] OK (vitest ~/+** glob), [policy-core.6] OK (policy.ts imports only node:* and local ./)"
+    },
+    {
+      "ts": "2026-06-12T18:30:00Z",
+      "from": "inproc-policy",
+      "to": "(done — parallel with process-boundary, both complete)",
+      "by": "sox-active:typescript-pro",
+      "guard_result": "PASS (nx run host-runtime:test --skip-nx-cache: 99/99 tests green; nx run host-runtime:build: clean TypeScript compile)",
+      "test_delta": "host-runtime test suite: 51→99 (+48 tests: 16 new in inproc-policy.spec.ts covering [inproc-policy.1-5])",
+      "artifacts": [
+        "libs/host-runtime/src/audit-log.ts (NEW) — auditAccess/getAuditLog/clearAuditLog/makeInprocHandle; AuditEntry/AuditDecision/InprocPolicyHandle types; in-memory log with timestamp",
+        "libs/host-runtime/src/adapters/agent.ts (MODIFIED) — SOFT header note + [dod.6] ref; compilePolicy at activation; policy field + checkFs/checkSocket/checkNetwork on AgentAdapterHandle+SkillAdapterHandle",
+        "libs/host-runtime/src/adapters/hook.ts (MODIFIED) — SOFT header note + [dod.6] ref + [inv:carry-fixes] note; compilePolicy at activation; policy field + checkFs/checkSocket/checkNetwork on HookAdapterHandle; fireIsolated untouched",
+        "libs/host-runtime/src/adapters/command.ts (MODIFIED) — SOFT header note + [dod.6] ref; compilePolicy at activation; policy field + checkFs/checkSocket/checkNetwork on CommandAdapterHandle",
+        "libs/host-runtime/src/index.ts (MODIFIED) — added audit-log export block (auditAccess/getAuditLog/clearAuditLog/makeInprocHandle + types)",
+        "libs/host-runtime/src/inproc-policy.spec.ts (NEW) — 16 tests covering [inproc-policy.1] policy on handles, [inproc-policy.2] auditAccess records decisions, [inproc-policy.3] SOFT header grep parity, [inproc-policy.4] legacy compat enforced=false, [inproc-policy.5] checkFs/checkSocket/fireIsolated"
+      ],
+      "acceptance_criteria": "[inproc-policy.1] OK (compilePolicy attached as .policy on all 4 handle types; vitest), [inproc-policy.2] OK (auditAccess records extensionId/type/domain/target/decision/timestamp; clearAuditLog isolation; vitest), [inproc-policy.3] OK (grep -l SOFT all 3 adapters; grep -c SOFT non-zero all 3; [dod.6] ref present), [inproc-policy.4] OK (compilePolicy(undefined)→enforced=false, all allows* return true; vitest), [inproc-policy.5] OK (checkFs/checkSocket log+return; fireIsolated exists on HookLoader; 99/99 total test suite green)"
     },
     {
       "ts": "2026-06-12T18:05:00Z",

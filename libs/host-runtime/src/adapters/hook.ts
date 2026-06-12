@@ -1,10 +1,23 @@
 /**
  * libs/host-runtime/src/adapters/hook.ts — Hook adapter.
- * Ported from the pre-nx host runtime. Imports adjusted for lib paths.
+ *
+ * Enforcement level: SOFT — declaration + activation policy + audit log;
+ * no OS isolation (shared address space) — see [dod.6].
+ * [def:inproc-types] [inv:per-type] [ref:deny-by-default]
+ *
+ * At activation time, the declared permissions block is compiled into a
+ * queryable Policy and attached to the handle. The fireIsolated dispatch
+ * mechanism ([def:session-fixes] DEFECT-1 fix) is preserved unchanged on the
+ * HookLoader — this adapter only extends the activation path, never the
+ * dispatch/isolation logic. [inv:carry-fixes]
  */
 
 import type { HookLoader, HookHandler } from '../hook-loader.js';
 import type { PermissionsBlock } from '../supervisor.js';
+import { compilePolicy } from '../policy.js';
+import type { Policy } from '../policy.js';
+import { makeInprocHandle } from '../audit-log.js';
+import type { InprocPolicyHandle } from '../audit-log.js';
 
 export interface HookAdapterOptions {
   key: string;
@@ -14,21 +27,26 @@ export interface HookAdapterOptions {
   hookLoader: HookLoader;
 }
 
-export interface HookAdapterHandle {
+export interface HookAdapterHandle extends InprocPolicyHandle {
   key: string;
   registeredEvents: string[];
   permissions: PermissionsBlock | undefined;
+  policy: Policy;
   type: 'hook';
 }
 
 export async function activateHook(opts: HookAdapterOptions): Promise<HookAdapterHandle> {
+  const policy = compilePolicy(opts.permissions);
+
   if (opts.permissions) {
     console.log(
-      `[hook-adapter] Activating "${opts.key}" — permissions declared (P4 record / P5 enforce):`,
+      `[hook-adapter] Activating "${opts.key}" — permissions declared (SOFT enforcement: policy attached, audit log active):`,
       JSON.stringify(opts.permissions),
     );
   } else {
-    console.log(`[hook-adapter] Activating "${opts.key}" — no declared permissions`);
+    console.log(
+      `[hook-adapter] Activating "${opts.key}" — no declared permissions (policy.enforced=false, unconstrained)`,
+    );
   }
 
   const mod = await import(opts.entrypointPath) as Record<string, unknown>;
@@ -57,11 +75,17 @@ export async function activateHook(opts: HookAdapterOptions): Promise<HookAdapte
     console.log(`[hook-adapter] "${opts.key}" registered for event "${eventName}"`);
   }
 
+  const policyHandle = makeInprocHandle(opts.key, 'hook', policy);
+
   return {
     key: opts.key,
     registeredEvents: events,
     permissions: opts.permissions,
+    policy,
     type: 'hook',
+    checkFs: policyHandle.checkFs.bind(policyHandle),
+    checkSocket: policyHandle.checkSocket.bind(policyHandle),
+    checkNetwork: policyHandle.checkNetwork.bind(policyHandle),
   };
 }
 

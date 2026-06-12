@@ -42,6 +42,10 @@ export type {
 export { compilePolicy, compilePolicyFromEnv } from './policy.js';
 export type { Policy } from './policy.js';
 
+// ─── Audit log (inproc-policy SOFT enforcement) ───────────────────────────────
+export { auditAccess, getAuditLog, clearAuditLog, makeInprocHandle } from './audit-log.js';
+export type { AuditEntry, AuditDecision, ExtensionType, AccessDomain, InprocPolicyHandle } from './audit-log.js';
+
 // ─── Loader ───────────────────────────────────────────────────────────────────
 export { loadFromLockfile, resolveExtensionDir } from './loader.js';
 export type {
