@@ -2,11 +2,11 @@
   "schema_version": 2,
   "title": "nx-migration",
   "dag": "dag.json",
-  "current_state": "manifest-lib",
+  "current_state": "authoring-lib",
   "states": {
     "checkpoint-branch": { "status": "done", "started_ts": "2026-06-12T01:00:00Z", "done_ts": "2026-06-12T01:03:47Z" },
     "nx-init": { "status": "done", "started_ts": "2026-06-11T20:06:00Z", "done_ts": "2026-06-11T20:13:00Z" },
-    "manifest-lib": { "status": "pending", "started_ts": null, "done_ts": null },
+    "manifest-lib": { "status": "done", "started_ts": "2026-06-11T20:15:00Z", "done_ts": "2026-06-11T20:30:00Z" },
     "authoring-lib": { "status": "pending", "started_ts": null, "done_ts": null },
     "audit-foundation": { "status": "pending", "started_ts": null, "done_ts": null },
     "engine-libs": { "status": "pending", "started_ts": null, "done_ts": null },
@@ -33,6 +33,13 @@
       "ts": "2026-06-11T20:13:00Z",
       "guard_exit": 0,
       "note": "nx@22.7.5 installed (devDep only); nx.json with target defaults+named inputs+cache+release; eslint.config.js with @nx/enforce-module-boundaries (type:extension/lib/app); commitlint.config.js; tsconfig.base.json paths:{}; pnpm-workspace.yaml extended with apps/**+libs/**+packages/**; 380 tests green"
+    },
+    {
+      "from": "manifest-lib",
+      "to": "authoring-lib",
+      "ts": "2026-06-11T20:30:00Z",
+      "guard_exit": 0,
+      "note": "libs/manifest created: validate(raw)->{ok,errors[]}, Manifest interface, ManifestSchema (inlined CJS); [flex:entrypoint-optional] entrypoint not in required[]; [flex:runtime-expanded] runtime={node,shell,python,declarative,stdio-any}; [flex:install-target] optional install-target field; 108 spec tests; scripts/validate-manifests.ts untouched (44 tests green); 380 total tests green; tagged type:lib, zero devkit imports"
     }
   ],
   "amendment_log": []
