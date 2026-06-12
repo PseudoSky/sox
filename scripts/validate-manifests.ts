@@ -46,6 +46,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Ajv } from 'ajv';
+// [ref:manifest-single-source] — delegate structural validation to libs/manifest
+import { validate as libsValidate } from '@sox/manifest';
 
 /** G-A: lifecycle block sub-types */
 interface LifecycleHealth {
@@ -253,8 +255,9 @@ const DIR_TO_TYPE: Record<string, string> = {
   bundles: 'bundle',
 };
 
-const VALID_TYPES = new Set(['agent', 'skill', 'mcp-server', 'prompt', 'hook', 'command', 'bundle']);
-const ID_PATTERN = /^[a-z][a-z0-9-]*$/;
+// Note: VALID_TYPES and ID_PATTERN checks are delegated to libs/manifest validate()
+// ([ref:manifest-single-source]). Only VALID_HOOK_EVENTS is kept here for P3 enum validation
+// (which is not part of libs/manifest's validate() surface — P3 is validate-manifests specific).
 
 /**
  * Regex patterns for detecting literal API keys (secret-in-config lint).
@@ -417,9 +420,11 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
   const packagePath = path.join(extDir, 'package.json');
 
   let manifest: ExtensionManifest;
+  let rawManifest: Record<string, unknown>;
   try {
     const raw = fs.readFileSync(manifestPath, 'utf8');
-    manifest = JSON.parse(raw) as ExtensionManifest;
+    rawManifest = JSON.parse(raw) as Record<string, unknown>;
+    manifest = rawManifest as ExtensionManifest;
   } catch (e) {
     diags.push({
       path: manifestPath,
@@ -429,42 +434,26 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
     return diags;
   }
 
+  // [ref:manifest-single-source] Delegate structural schema validation to libs/manifest.
+  // Covers: id format, type enum, runtime enum, id-must-not-end-with-type,
+  // runtime:stdio-any+provider constraint, lifecycle block rules, bundle member rules,
+  // permissions structural, entrypoint string format.
+  //
+  // Note: libs/manifest treats `description: ''` as a structural error, but validate-manifests
+  // handles empty description at the DX advisory layer (checkDxConformance, severity:'warn').
+  // Filter that specific error here so the DX layer has sole authority over description quality.
+  const libsResult = libsValidate(rawManifest);
+  for (const msg of libsResult.errors) {
+    if (msg === 'description must be a non-empty string') continue; // handled by DX layer
+    diags.push({ path: manifestPath, message: msg, severity: 'error' });
+  }
+
   const {
-    id, type, version, runtime, requires, lifecycle, members, config_schema, permissions,
+    id, type, version, config_schema,
     events, invocation, tools, parameters, template_engine, run_interface,
   } = manifest;
 
-  // Check 1: id format
-  if (!ID_PATTERN.test(id)) {
-    diags.push({
-      path: manifestPath,
-      message: `id "${id}" must match ^[a-z][a-z0-9-]*$ (got "${id}")`,
-      severity: 'error',
-    });
-  }
-
-  // Check 2: id must not end with type name (e.g. 'my-skill-skill' is redundant).
-  // Exception: 'bundle' — naming a bundle with a '-bundle' suffix is intentional and
-  // natural (e.g. 'sox-memory-bundle'). The rule is about tautological redundancy
-  // (type 'skill' id 'my-analyzer-skill'), not descriptive suffixes for install-time-only types.
-  if (type !== 'bundle' && (id.endsWith(`-${type}`) || id === type)) {
-    diags.push({
-      path: manifestPath,
-      message: `id "${id}" must not end with its type name "${type}"`,
-      severity: 'error',
-    });
-  }
-
-  // Check 3: type must be valid
-  if (!VALID_TYPES.has(type)) {
-    diags.push({
-      path: manifestPath,
-      message: `type "${type}" is not in the closed enum [${Array.from(VALID_TYPES).join(', ')}]`,
-      severity: 'error',
-    });
-  }
-
-  // Check 4: type/dir match
+  // Check 4: type/dir match (validate-manifests specific — not in libs/manifest)
   const typeDir = path.basename(path.dirname(extDir));
   const expectedType = DIR_TO_TYPE[typeDir];
   if (expectedType === undefined) {
@@ -481,7 +470,7 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
     });
   }
 
-  // Check 5: version sync
+  // Check 5: version sync (validate-manifests specific — not in libs/manifest)
   if (fs.existsSync(packagePath)) {
     let pkg: PackageJson;
     try {
@@ -504,55 +493,8 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
     diags.push({ path: packagePath, message: 'package.json not found', severity: 'error' });
   }
 
-  // Check 6 (G-D): runtime:'stdio-any' cannot declare provider capabilities.
-  // Provider calls require the Node/TS provider abstraction; set runtime:'node' or drop the requires.
-  if (runtime === 'stdio-any') {
-    const providerFlags: string[] = [];
-    if (requires?.structured_output === true) providerFlags.push('structured_output:true');
-    if (requires?.tool_calling === true) providerFlags.push('tool_calling:true');
-    if (providerFlags.length > 0) {
-      diags.push({
-        path: manifestPath,
-        message:
-          `runtime:'stdio-any' cannot declare provider capabilities (${providerFlags.join(', ')}) — ` +
-          `provider calls require the Node/TS provider abstraction; set runtime:'node' or drop the requires.`,
-        severity: 'error',
-      });
-    }
-  }
-
-  // Check 7 (G-A): lifecycle block — host-owned supervision for background extensions.
-  // Rule 1: lifecycle is only valid for type in {mcp-server, agent}.
-  // Rule 2: health.type in {socket, command} requires health.endpoint.
-  // Absent lifecycle => v1 request/response behavior (no daemon) — fully back-compat.
-  if (lifecycle !== undefined) {
-    const lifecycleAllowedTypes = new Set(['mcp-server', 'agent']);
-    if (!lifecycleAllowedTypes.has(type)) {
-      diags.push({
-        path: manifestPath,
-        message:
-          `lifecycle block is only meaningful for type in {mcp-server, agent} (got "${type}"). ` +
-          `The lifecycle block formalizes host-owned supervision of long-running processes; ` +
-          `types like command/hook/skill/prompt are request-response and must not declare lifecycle.`,
-        severity: 'error',
-      });
-    }
-
-    // Rule 2: health.endpoint is required when health.type is 'socket' or 'command'
-    const health = lifecycle.health;
-    if (health !== undefined) {
-      const healthType = health.type ?? 'stdio-ping';
-      if ((healthType === 'socket' || healthType === 'command') && health.endpoint === undefined) {
-        diags.push({
-          path: manifestPath,
-          message:
-            `lifecycle.health.endpoint is required when lifecycle.health.type is "${healthType}". ` +
-            `Provide a socket path (for type:"socket") or command string (for type:"command").`,
-          severity: 'error',
-        });
-      }
-    }
-  }
+  // Checks 6 (G-D runtime:stdio-any), 7 (G-A lifecycle), and 10 (PB permissions)
+  // are delegated to libsValidate() above ([ref:manifest-single-source]).
 
   // Check 9 (PB): config_schema structural validation.
   // If the manifest declares a config_schema, it must be a non-null object (a JSON Schema fragment).
@@ -585,138 +527,8 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
     }
   }
 
-  // Check 10 (PB): permissions block structural validation.
-  // Optional. When present must be a well-formed object matching the permissions schema.
-  // fs.read/write and socket.paths must be string arrays; network.outbound must be a string array.
-  // ENFORCEMENT NOTE for P4/P5: honour these declared bounds at runtime (Gaps F5/A6).
-  if (permissions !== undefined) {
-    if (typeof permissions !== 'object' || permissions === null || Array.isArray(permissions)) {
-      diags.push({
-        path: manifestPath,
-        message:
-          `PB: extension "${id}" permissions must be an object (got ${Array.isArray(permissions) ? 'array' : typeof permissions}).`,
-        severity: 'error',
-      });
-    } else {
-      const { fs: fsPerm, network, socket } = permissions as PermissionsBlock;
-      // Validate fs sub-block
-      if (fsPerm !== undefined) {
-        for (const key of ['read', 'write'] as const) {
-          const val = fsPerm[key];
-          if (val !== undefined) {
-            if (!Array.isArray(val) || val.some((v) => typeof v !== 'string')) {
-              diags.push({
-                path: manifestPath,
-                message:
-                  `PB: extension "${id}" permissions.fs.${key} must be a string array (e.g. ["~/.memory/**"]).`,
-                severity: 'error',
-              });
-            }
-          }
-        }
-      }
-      // Validate network sub-block
-      if (network !== undefined) {
-        const val = network.outbound;
-        if (val !== undefined) {
-          if (!Array.isArray(val) || val.some((v) => typeof v !== 'string')) {
-            diags.push({
-              path: manifestPath,
-              message:
-                `PB: extension "${id}" permissions.network.outbound must be a string array (e.g. ["api.openai.com"]).`,
-              severity: 'error',
-            });
-          }
-        }
-      }
-      // Validate socket sub-block
-      if (socket !== undefined) {
-        const val = socket.paths;
-        if (val !== undefined) {
-          if (!Array.isArray(val) || val.some((v) => typeof v !== 'string')) {
-            diags.push({
-              path: manifestPath,
-              message:
-                `PB: extension "${id}" permissions.socket.paths must be a string array (e.g. ["~/.memory/memoryd.sock"]).`,
-              severity: 'error',
-            });
-          }
-        }
-      }
-    }
-  }
-
-  // Check 8 (G-B): bundle-specific invariants.
-  // A bundle is install-time-only: it expands to members at install time and is NEVER host-loaded.
-  // It must have members, must NOT have an entrypoint, and members must be well-formed.
-  if (type === 'bundle') {
-    // Rule 1: bundle must have a non-empty members array
-    if (!Array.isArray(members) || members.length === 0) {
-      diags.push({
-        path: manifestPath,
-        message:
-          `bundle "${id}" must declare a non-empty "members" array. ` +
-          `A bundle is a named, independently-versioned set of extensions that the installer expands.`,
-        severity: 'error',
-      });
-    }
-
-    // Rule 2: bundle must NOT have an entrypoint (it has no runtime)
-    if (manifest['entrypoint'] !== undefined) {
-      diags.push({
-        path: manifestPath,
-        message:
-          `bundle "${id}" must not declare "entrypoint" — a bundle has no runtime and is expanded ` +
-          `away at install time before the host loader runs. Remove "entrypoint".`,
-        severity: 'error',
-      });
-    }
-
-    // Rule 3: validate each member entry
-    if (Array.isArray(members) && members.length > 0) {
-      const memberIds = new Set<string>();
-      for (const member of members) {
-        if (typeof member.id !== 'string' || !/^[a-z][a-z0-9-]*$/.test(member.id)) {
-          diags.push({
-            path: manifestPath,
-            message:
-              `bundle "${id}" has a member with invalid id "${String(member.id)}" — ` +
-              `member ids must match ^[a-z][a-z0-9-]*$.`,
-            severity: 'error',
-          });
-        } else if (member.id === id) {
-          // Rule 4: no self-reference
-          diags.push({
-            path: manifestPath,
-            message:
-              `bundle "${id}" lists itself as a member — self-reference is not allowed. ` +
-              `Remove the self-referencing member entry.`,
-            severity: 'error',
-          });
-        } else if (memberIds.has(member.id)) {
-          // Rule 5: no duplicate member ids
-          diags.push({
-            path: manifestPath,
-            message:
-              `bundle "${id}" has duplicate member id "${member.id}". ` +
-              `Each member id must appear at most once in a bundle's members array.`,
-            severity: 'error',
-          });
-        } else {
-          memberIds.add(member.id);
-        }
-
-        if (typeof member.version !== 'string' || member.version.length === 0) {
-          diags.push({
-            path: manifestPath,
-            message:
-              `bundle "${id}" member "${String(member.id)}" must declare a "version" semver range (e.g. "^0.1.0").`,
-            severity: 'error',
-          });
-        }
-      }
-    }
-  }
+  // Check 10 (PB permissions) and Check 8 (G-B bundle structural) are delegated
+  // to libsValidate() above ([ref:manifest-single-source]).
 
   // P3: Per-type self-description checks — REQUIRED (error). Flipped from P2 warn-only after
   // all 11 manifests were retrofitted. A manifest of a given type MUST declare its contract.
@@ -867,33 +679,23 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
 
   // P0 entrypoint-reachability gate.
   // For every non-bundle manifest that declares an `entrypoint`, assert the resolved
-  // built path exists. This is the framework-owned build contract: `pnpm -r build`
+  // built path exists on disk. This is the framework-owned build contract: `pnpm -r build`
   // must have run before validation so that each package's compiler output is present.
+  // The string-format check is delegated to libsValidate() ([ref:manifest-single-source]).
   // Severity: error — a declared entrypoint that does not exist post-build means the
   // extension cannot be loaded by the host runtime.
-  if (type !== 'bundle' && manifest['entrypoint'] !== undefined) {
-    const entrypoint = manifest['entrypoint'];
-    if (typeof entrypoint !== 'string' || entrypoint.trim() === '') {
+  const entrypointRaw = manifest['entrypoint'];
+  if (type !== 'bundle' && typeof entrypointRaw === 'string' && entrypointRaw.trim() !== '') {
+    const resolvedEntrypoint = path.resolve(extDir, entrypointRaw);
+    if (!fs.existsSync(resolvedEntrypoint)) {
       diags.push({
         path: manifestPath,
         message:
-          `entrypoint must be a non-empty string (got ${JSON.stringify(entrypoint)}). ` +
-          `Set entrypoint to the relative path from the extension root to the compiled entry ` +
-          `(e.g. "dist/index.js").`,
+          `entrypoint "${entrypointRaw}" resolves to "${resolvedEntrypoint}" which does not exist. ` +
+          `Run "pnpm -r build" to compile extension packages before validating. ` +
+          `(P0 entrypoint-reachability gate)`,
         severity: 'error',
       });
-    } else {
-      const resolvedEntrypoint = path.resolve(extDir, entrypoint);
-      if (!fs.existsSync(resolvedEntrypoint)) {
-        diags.push({
-          path: manifestPath,
-          message:
-            `entrypoint "${entrypoint}" resolves to "${resolvedEntrypoint}" which does not exist. ` +
-            `Run "pnpm -r build" to compile extension packages before validating. ` +
-            `(P0 entrypoint-reachability gate)`,
-          severity: 'error',
-        });
-      }
     }
   }
 
@@ -1326,6 +1128,7 @@ function checkDxConformance(
  * Validate a single extension directory directly (not via the extensions/<typeDir>/<id> layout).
  * Used by tests and the scaffolder acceptance check where the ext dir is the root arg.
  * Skips Check 4 (type/dir match) since there is no conventional parent type directory.
+ * Structural schema validation is delegated to libs/manifest ([ref:manifest-single-source]).
  */
 function validateSingleExtensionDir(
   extDir: string,
@@ -1335,9 +1138,11 @@ function validateSingleExtensionDir(
   const manifestPath = path.join(extDir, 'extension.json');
 
   let manifest: ExtensionManifest;
+  let rawManifest: Record<string, unknown>;
   try {
     const raw = fs.readFileSync(manifestPath, 'utf8');
-    manifest = JSON.parse(raw) as ExtensionManifest;
+    rawManifest = JSON.parse(raw) as Record<string, unknown>;
+    manifest = rawManifest as ExtensionManifest;
   } catch (e) {
     allErrors.push({
       path: manifestPath,
@@ -1347,34 +1152,25 @@ function validateSingleExtensionDir(
     return { ok: false, errors: allErrors };
   }
 
-  const { id, type, version, runtime, requires, lifecycle } = manifest;
-
-  if (!ID_PATTERN.test(id)) {
-    allErrors.push({
-      path: manifestPath,
-      message: `id "${id}" must match ^[a-z][a-z0-9-]*$ (got "${id}")`,
-      severity: 'error',
-    });
+  // [ref:manifest-single-source] Delegate structural schema validation to libs/manifest.
+  // Covers: id format, type enum, runtime enum, id-must-not-end-with-type,
+  // runtime:stdio-any+provider constraint, lifecycle block rules, bundle member rules,
+  // permissions structural, entrypoint string format.
+  //
+  // Note: libs/manifest treats `description: ''` as a structural error, but validate-manifests
+  // handles empty description at the DX advisory layer (checkDxConformance, severity:'warn').
+  // Filter that specific error here so the DX layer has sole authority over description quality.
+  const libsResult = libsValidate(rawManifest);
+  for (const msg of libsResult.errors) {
+    if (msg === 'description must be a non-empty string') continue; // handled by DX layer
+    allErrors.push({ path: manifestPath, message: msg, severity: 'error' });
   }
 
-  if (type !== 'bundle' && (id.endsWith(`-${type}`) || id === type)) {
-    allErrors.push({
-      path: manifestPath,
-      message: `id "${id}" must not end with its type name "${type}"`,
-      severity: 'error',
-    });
-  }
-
-  if (!VALID_TYPES.has(type)) {
-    allErrors.push({
-      path: manifestPath,
-      message: `type "${type}" is not in the closed enum [${Array.from(VALID_TYPES).join(', ')}]`,
-      severity: 'error',
-    });
-  }
+  const { type, version } = manifest;
 
   // Skip Check 4 (type/dir match) — no conventional layout in single-dir mode.
 
+  // Check 5: version sync (validate-manifests specific — not in libs/manifest)
   const packagePath = path.join(extDir, 'package.json');
   if (fs.existsSync(packagePath)) {
     try {
@@ -1397,63 +1193,25 @@ function validateSingleExtensionDir(
     allErrors.push({ path: packagePath, message: 'package.json not found', severity: 'error' });
   }
 
-  if (runtime === 'stdio-any') {
-    const providerFlags: string[] = [];
-    if (requires?.structured_output === true) providerFlags.push('structured_output:true');
-    if (requires?.tool_calling === true) providerFlags.push('tool_calling:true');
-    if (providerFlags.length > 0) {
-      allErrors.push({
-        path: manifestPath,
-        message:
-          `runtime:'stdio-any' cannot declare provider capabilities (${providerFlags.join(', ')}) — ` +
-          `provider calls require the Node/TS provider abstraction; set runtime:'node' or drop the requires.`,
-        severity: 'error',
-      });
-    }
-  }
-
-  if (lifecycle !== undefined) {
-    const lifecycleAllowedTypes = new Set(['mcp-server', 'agent']);
-    if (!lifecycleAllowedTypes.has(type)) {
-      allErrors.push({
-        path: manifestPath,
-        message:
-          `lifecycle block is only meaningful for type in {mcp-server, agent} (got "${type}"). ` +
-          `Remove the lifecycle block or change the type.`,
-        severity: 'error',
-      });
-    }
-  }
-
   // P4: DX-conformance advisory checks (fail-open by default; errors under --strict)
   const dxDiags = checkDxConformance(extDir, manifest, opts);
   allErrors.push(...dxDiags);
 
   // P0 entrypoint-reachability gate (single-dir mode).
-  // Mirror of the gate in validateSingleManifest — applies in both collection and single-dir paths.
-  if (type !== 'bundle' && manifest['entrypoint'] !== undefined) {
-    const entrypoint = manifest['entrypoint'];
-    if (typeof entrypoint !== 'string' || entrypoint.trim() === '') {
+  // The string-format check is delegated to libsValidate() ([ref:manifest-single-source]).
+  // Only the disk-existence check is unique to validate-manifests.
+  const entrypointRaw = manifest['entrypoint'];
+  if (type !== 'bundle' && typeof entrypointRaw === 'string' && entrypointRaw.trim() !== '') {
+    const resolvedEntrypoint = path.resolve(extDir, entrypointRaw);
+    if (!fs.existsSync(resolvedEntrypoint)) {
       allErrors.push({
         path: manifestPath,
         message:
-          `entrypoint must be a non-empty string (got ${JSON.stringify(entrypoint)}). ` +
-          `Set entrypoint to the relative path from the extension root to the compiled entry ` +
-          `(e.g. "dist/index.js").`,
+          `entrypoint "${entrypointRaw}" resolves to "${resolvedEntrypoint}" which does not exist. ` +
+          `Run "pnpm -r build" to compile extension packages before validating. ` +
+          `(P0 entrypoint-reachability gate)`,
         severity: 'error',
       });
-    } else {
-      const resolvedEntrypoint = path.resolve(extDir, entrypoint);
-      if (!fs.existsSync(resolvedEntrypoint)) {
-        allErrors.push({
-          path: manifestPath,
-          message:
-            `entrypoint "${entrypoint}" resolves to "${resolvedEntrypoint}" which does not exist. ` +
-            `Run "pnpm -r build" to compile extension packages before validating. ` +
-            `(P0 entrypoint-reachability gate)`,
-          severity: 'error',
-        });
-      }
     }
   }
 
