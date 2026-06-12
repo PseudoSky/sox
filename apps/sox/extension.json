@@ -1,0 +1,18 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "sox",
+  "version": "1.0.0",
+  "type": "command",
+  "title": "sox CLI",
+  "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
+  "runtime": "node",
+  "entrypoint": "dist/apps/sox/main.js",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "keywords": ["sox", "cli", "extension-manager"],
+  "invocation": {
+    "protocol": "stdio"
+  }
+}

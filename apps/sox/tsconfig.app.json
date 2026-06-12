@@ -4,7 +4,7 @@
     "module": "CommonJS",
     "moduleResolution": "node10",
     "ignoreDeprecations": "6.0",
-    "outDir": "./dist",
+    "outDir": "../../dist/apps/sox",
     "rootDir": "./src",
     "declaration": true,
     "declarationMap": false,

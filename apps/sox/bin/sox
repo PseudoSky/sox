@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+// sox CLI entry point — resolves to dist/apps/sox/main.js
+// [ref:self-hosted-extension-zero]: extension #0 bin wrapper
+require('../../../dist/apps/sox/main.js');

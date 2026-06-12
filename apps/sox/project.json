@@ -8,17 +8,19 @@
   "targets": {
     "build": {
       "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/apps/sox/dist"],
+      "outputs": ["{workspaceRoot}/dist/apps/sox"],
       "options": {
-        "command": "tsc --project apps/sox/tsconfig.app.json",
+        "command": "tsc --project apps/sox/tsconfig.app.json && echo '{\"type\":\"commonjs\"}' > dist/apps/sox/package.json && node apps/sox/scripts/rewrite-paths.cjs",
         "cwd": "."
       },
       "cache": true,
       "inputs": [
         "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/tsconfig.app.json"
+        "{projectRoot}/tsconfig.app.json",
+        "{projectRoot}/extension.json",
+        "{projectRoot}/scripts/rewrite-paths.cjs"
       ],
-      "dependsOn": ["install-engine:build", "host-runtime:build"]
+      "dependsOn": ["install-engine:build", "host-runtime:build", "manifest:build", "authoring:build"]
     },
     "lint": {
       "executor": "@nx/eslint:lint",

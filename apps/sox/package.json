@@ -1,0 +1,18 @@
+{
+  "name": "@sox/cli",
+  "version": "1.0.0",
+  "description": "sox CLI — LLM extension ecosystem command-line interface (extension #0)",
+  "private": true,
+  "main": "../../dist/apps/sox/main.js",
+  "bin": {
+    "sox": "./bin/sox"
+  },
+  "dependencies": {
+    "@sox/authoring": "workspace:*",
+    "@sox/host-runtime": "workspace:*",
+    "@sox/install-engine": "workspace:*",
+    "@sox/manifest": "workspace:*",
+    "@sox/registry": "workspace:*"
+  },
+  "license": "MIT"
+}
