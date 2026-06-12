@@ -32,15 +32,53 @@
     }
   },
   "release": {
-    "projects": ["libs/*", "packages/*", "apps/*", "extensions/*/*"],
     "releaseTagPattern": "{projectName}@{version}",
     "changelog": {
-      "projectChangelogs": true
+      "projectChangelogs": true,
+      "automaticFromRef": true
     },
     "version": {
       "conventionalCommits": true,
+      "fallbackCurrentVersionResolver": "disk",
       "generatorOptions": {
         "currentVersionResolver": "git-tag"
+      }
+    },
+    "groups": {
+      "core": {
+        "projects": ["libs/authoring", "libs/host-runtime", "libs/install-engine", "libs/manifest", "libs/registry", "packages/*", "apps/*"],
+        "releaseTagPattern": "{projectName}@{version}",
+        "version": {
+          "conventionalCommits": true,
+          "fallbackCurrentVersionResolver": "disk",
+          "generatorOptions": {
+            "currentVersionResolver": "git-tag"
+          }
+        },
+        "changelog": {
+          "projectChangelogs": true
+        }
+      },
+      "memory-extensions": {
+        "projects": [
+          "memory-server",
+          "memory-organizer",
+          "memory-flush",
+          "memory-cli",
+          "sox-memory-bundle",
+          "memory-core"
+        ],
+        "releaseTagPattern": "memory-{projectName}@{version}",
+        "version": {
+          "conventionalCommits": true,
+          "fallbackCurrentVersionResolver": "disk",
+          "generatorOptions": {
+            "currentVersionResolver": "git-tag"
+          }
+        },
+        "changelog": {
+          "projectChangelogs": true
+        }
       }
     }
   },

@@ -33,6 +33,19 @@
       "options": {
         "lintFilePatterns": ["libs/host-runtime/**/*.ts"]
       }
+    },
+    "test-e2e": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node tools/test-e2e-lifecycle.js",
+        "cwd": "."
+      },
+      "cache": false,
+      "dependsOn": ["build"],
+      "inputs": [
+        "{workspaceRoot}/tools/test-e2e-lifecycle.js",
+        "{workspaceRoot}/libs/host-runtime/dist/**"
+      ]
     }
   }
 }

@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# .husky/commit-msg — enforce conventional commits via commitlint (D3)
+# Runs on every git commit. References nx-init commitlint.config.js.
+npx --no -- commitlint --edit "$1"
