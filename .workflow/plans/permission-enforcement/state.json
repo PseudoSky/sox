@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "title": "C6 — Runtime Permission Enforcement",
+  "title": "C6 \u2014 Runtime Permission Enforcement",
   "dag": "dag.json",
-  "current_state": "process-boundary",
+  "current_state": "mcp-path-guard",
   "states": {
     "consolidate-legacy": {
       "status": "done",
@@ -51,9 +51,9 @@
       "from": "consolidate-legacy",
       "to": "policy-core",
       "by": "sox-active:typescript-pro",
-      "guard_result": "PASS (dir gone, nx build 13/13, nx lint 13/13, nx test 5/7 projects — 2 pre-existing 'no test files' failures in memory-core+authoring unchanged from baseline commit e29624c)",
-      "test_delta": "root vitest: 344→258 (-86 tests, 14→11 files): host-runtime.test.ts (-40), host-delivery.test.ts (-23), host-event-bus.test.ts (-23); all 86 covered by libs/host-runtime/src/host-runtime.spec.ts canonical suite (19 tests green); nx run-many -t test: 273 tests unchanged",
-      "supersession_evidence": "gitnexus + grep: scripts/host/ imported ONLY by 3 legacy test files (host-runtime.test.ts, host-delivery.test.ts, host-event-bus.test.ts). scripts/host/runtime-cli.ts: subprocess-spawned by bin/sox (legacy CLI, not a module import, outside all nx targets) and tools/test-e2e-lifecycle.js (test-e2e target, not nx run-many -t test). apps/sox/src/main.ts imports @sox/host-runtime (NOT scripts/host/). bin/sox has zero module imports of scripts/host/. No nx build/lint/test target covers scripts/host/ or bin/sox. All symbols confirmed in libs/host-runtime: ProcessSupervisor, loadFromLockfile, McpRegistrar, activateHook, activateAgent, activateSkill, activateCommand, HostEventBus, PromptRenderer (prompt-renderer superseded — only importer was host-delivery.test.ts).",
+      "guard_result": "PASS (dir gone, nx build 13/13, nx lint 13/13, nx test 5/7 projects \u2014 2 pre-existing 'no test files' failures in memory-core+authoring unchanged from baseline commit e29624c)",
+      "test_delta": "root vitest: 344\u2192258 (-86 tests, 14\u219211 files): host-runtime.test.ts (-40), host-delivery.test.ts (-23), host-event-bus.test.ts (-23); all 86 covered by libs/host-runtime/src/host-runtime.spec.ts canonical suite (19 tests green); nx run-many -t test: 273 tests unchanged",
+      "supersession_evidence": "gitnexus + grep: scripts/host/ imported ONLY by 3 legacy test files (host-runtime.test.ts, host-delivery.test.ts, host-event-bus.test.ts). scripts/host/runtime-cli.ts: subprocess-spawned by bin/sox (legacy CLI, not a module import, outside all nx targets) and tools/test-e2e-lifecycle.js (test-e2e target, not nx run-many -t test). apps/sox/src/main.ts imports @sox/host-runtime (NOT scripts/host/). bin/sox has zero module imports of scripts/host/. No nx build/lint/test target covers scripts/host/ or bin/sox. All symbols confirmed in libs/host-runtime: ProcessSupervisor, loadFromLockfile, McpRegistrar, activateHook, activateAgent, activateSkill, activateCommand, HostEventBus, PromptRenderer (prompt-renderer superseded \u2014 only importer was host-delivery.test.ts).",
       "acceptance_criteria": "[consolidate-legacy.1] OK, [consolidate-legacy.2] OK, [consolidate-legacy.3] OK (prose comments only, no import statements), [consolidate-legacy.4] OK, [consolidate-legacy.5] OK (273 nx tests unchanged), [consolidate-legacy.6] OK (13/13 build, 13/13 lint)"
     },
     {
@@ -61,31 +61,31 @@
       "from": "policy-core",
       "to": "audit-foundation",
       "by": "sox-active:typescript-pro",
-      "guard_result": "PASS (nx run host-runtime:test: 51 tests green — 19 pre-existing + 32 new policy.spec.ts; nx run host-runtime:build: clean; python3 audit_c6.py --phase foundation: exit 0 FOUNDATION AUDIT PASSED)",
-      "test_delta": "host-runtime test suite: 19→51 (+32 tests in policy.spec.ts covering [policy-core.2]-[policy-core.5]); all pre-existing 19 tests still green",
+      "guard_result": "PASS (nx run host-runtime:test: 51 tests green \u2014 19 pre-existing + 32 new policy.spec.ts; nx run host-runtime:build: clean; python3 audit_c6.py --phase foundation: exit 0 FOUNDATION AUDIT PASSED)",
+      "test_delta": "host-runtime test suite: 19\u219251 (+32 tests in policy.spec.ts covering [policy-core.2]-[policy-core.5]); all pre-existing 19 tests still green",
       "artifacts": [
-        "libs/host-runtime/src/policy.ts (NEW) — compilePolicy/compilePolicyFromEnv/Policy; expandTilde reused from supervisor.ts; dependency-free glob matcher; toEnv/fromEnv round-trip",
-        "libs/host-runtime/src/policy.spec.ts (NEW) — 32 tests: legacy compat, deny-by-default, tilde+glob, round-trip, absent-domain",
-        "libs/host-runtime/src/index.ts (MODIFIED) — exports compilePolicy, compilePolicyFromEnv, Policy"
+        "libs/host-runtime/src/policy.ts (NEW) \u2014 compilePolicy/compilePolicyFromEnv/Policy; expandTilde reused from supervisor.ts; dependency-free glob matcher; toEnv/fromEnv round-trip",
+        "libs/host-runtime/src/policy.spec.ts (NEW) \u2014 32 tests: legacy compat, deny-by-default, tilde+glob, round-trip, absent-domain",
+        "libs/host-runtime/src/index.ts (MODIFIED) \u2014 exports compilePolicy, compilePolicyFromEnv, Policy"
       ],
       "acceptance_criteria": "[policy-core.1] OK (compilePolicy+compilePolicyFromEnv importable from dist/index.js), [policy-core.2] OK (vitest deny-by-default), [policy-core.3] OK (vitest legacy compat), [policy-core.4] OK (vitest toEnv/fromEnv round-trip), [policy-core.5] OK (vitest ~/+** glob), [policy-core.6] OK (policy.ts imports only node:* and local ./)"
     },
     {
       "ts": "2026-06-12T18:30:00Z",
       "from": "inproc-policy",
-      "to": "(done — parallel with process-boundary, both complete)",
+      "to": "(done \u2014 parallel with process-boundary, both complete)",
       "by": "sox-active:typescript-pro",
       "guard_result": "PASS (nx run host-runtime:test --skip-nx-cache: 99/99 tests green; nx run host-runtime:build: clean TypeScript compile)",
-      "test_delta": "host-runtime test suite: 51→99 (+48 tests: 16 new in inproc-policy.spec.ts covering [inproc-policy.1-5])",
+      "test_delta": "host-runtime test suite: 51\u219299 (+48 tests: 16 new in inproc-policy.spec.ts covering [inproc-policy.1-5])",
       "artifacts": [
-        "libs/host-runtime/src/audit-log.ts (NEW) — auditAccess/getAuditLog/clearAuditLog/makeInprocHandle; AuditEntry/AuditDecision/InprocPolicyHandle types; in-memory log with timestamp",
-        "libs/host-runtime/src/adapters/agent.ts (MODIFIED) — SOFT header note + [dod.6] ref; compilePolicy at activation; policy field + checkFs/checkSocket/checkNetwork on AgentAdapterHandle+SkillAdapterHandle",
-        "libs/host-runtime/src/adapters/hook.ts (MODIFIED) — SOFT header note + [dod.6] ref + [inv:carry-fixes] note; compilePolicy at activation; policy field + checkFs/checkSocket/checkNetwork on HookAdapterHandle; fireIsolated untouched",
-        "libs/host-runtime/src/adapters/command.ts (MODIFIED) — SOFT header note + [dod.6] ref; compilePolicy at activation; policy field + checkFs/checkSocket/checkNetwork on CommandAdapterHandle",
-        "libs/host-runtime/src/index.ts (MODIFIED) — added audit-log export block (auditAccess/getAuditLog/clearAuditLog/makeInprocHandle + types)",
-        "libs/host-runtime/src/inproc-policy.spec.ts (NEW) — 16 tests covering [inproc-policy.1] policy on handles, [inproc-policy.2] auditAccess records decisions, [inproc-policy.3] SOFT header grep parity, [inproc-policy.4] legacy compat enforced=false, [inproc-policy.5] checkFs/checkSocket/fireIsolated"
+        "libs/host-runtime/src/audit-log.ts (NEW) \u2014 auditAccess/getAuditLog/clearAuditLog/makeInprocHandle; AuditEntry/AuditDecision/InprocPolicyHandle types; in-memory log with timestamp",
+        "libs/host-runtime/src/adapters/agent.ts (MODIFIED) \u2014 SOFT header note + [dod.6] ref; compilePolicy at activation; policy field + checkFs/checkSocket/checkNetwork on AgentAdapterHandle+SkillAdapterHandle",
+        "libs/host-runtime/src/adapters/hook.ts (MODIFIED) \u2014 SOFT header note + [dod.6] ref + [inv:carry-fixes] note; compilePolicy at activation; policy field + checkFs/checkSocket/checkNetwork on HookAdapterHandle; fireIsolated untouched",
+        "libs/host-runtime/src/adapters/command.ts (MODIFIED) \u2014 SOFT header note + [dod.6] ref; compilePolicy at activation; policy field + checkFs/checkSocket/checkNetwork on CommandAdapterHandle",
+        "libs/host-runtime/src/index.ts (MODIFIED) \u2014 added audit-log export block (auditAccess/getAuditLog/clearAuditLog/makeInprocHandle + types)",
+        "libs/host-runtime/src/inproc-policy.spec.ts (NEW) \u2014 16 tests covering [inproc-policy.1] policy on handles, [inproc-policy.2] auditAccess records decisions, [inproc-policy.3] SOFT header grep parity, [inproc-policy.4] legacy compat enforced=false, [inproc-policy.5] checkFs/checkSocket/fireIsolated"
       ],
-      "acceptance_criteria": "[inproc-policy.1] OK (compilePolicy attached as .policy on all 4 handle types; vitest), [inproc-policy.2] OK (auditAccess records extensionId/type/domain/target/decision/timestamp; clearAuditLog isolation; vitest), [inproc-policy.3] OK (grep -l SOFT all 3 adapters; grep -c SOFT non-zero all 3; [dod.6] ref present), [inproc-policy.4] OK (compilePolicy(undefined)→enforced=false, all allows* return true; vitest), [inproc-policy.5] OK (checkFs/checkSocket log+return; fireIsolated exists on HookLoader; 99/99 total test suite green)"
+      "acceptance_criteria": "[inproc-policy.1] OK (compilePolicy attached as .policy on all 4 handle types; vitest), [inproc-policy.2] OK (auditAccess records extensionId/type/domain/target/decision/timestamp; clearAuditLog isolation; vitest), [inproc-policy.3] OK (grep -l SOFT all 3 adapters; grep -c SOFT non-zero all 3; [dod.6] ref present), [inproc-policy.4] OK (compilePolicy(undefined)\u2192enforced=false, all allows* return true; vitest), [inproc-policy.5] OK (checkFs/checkSocket log+return; fireIsolated exists on HookLoader; 99/99 total test suite green)"
     },
     {
       "ts": "2026-06-12T18:05:00Z",
@@ -93,10 +93,10 @@
       "to": "(parallel: inproc-policy running concurrently)",
       "by": "sox-active:typescript-pro",
       "guard_result": "PASS (nx run host-runtime:test: 99/99 tests green; nx run host-runtime:test-e2e: 33/33 PASS, zero orphan processes)",
-      "test_delta": "host-runtime test suite: 51→99 (+48 tests: 16 inproc-policy.spec.ts from parallel agent already present + 32 my supervisor-policy.spec.ts = 48 new); all 51 pre-existing tests still green",
+      "test_delta": "host-runtime test suite: 51\u219299 (+48 tests: 16 inproc-policy.spec.ts from parallel agent already present + 32 my supervisor-policy.spec.ts = 48 new); all 51 pre-existing tests still green",
       "artifacts": [
-        "libs/host-runtime/src/supervisor.ts (MODIFIED) — constructor stores permissions + compilePolicy once; policy() read-only accessor added; _spawn gated on policy.enforced: enforced→scrubbed env+policy.toEnv()+cwd restriction; unenforced→byte-identical pre-state",
-        "libs/host-runtime/src/supervisor-policy.spec.ts (NEW) — 32 tests covering [process-boundary.1-6] with vi.mock(node:child_process) spawn interception"
+        "libs/host-runtime/src/supervisor.ts (MODIFIED) \u2014 constructor stores permissions + compilePolicy once; policy() read-only accessor added; _spawn gated on policy.enforced: enforced\u2192scrubbed env+policy.toEnv()+cwd restriction; unenforced\u2192byte-identical pre-state",
+        "libs/host-runtime/src/supervisor-policy.spec.ts (NEW) \u2014 32 tests covering [process-boundary.1-6] with vi.mock(node:child_process) spawn interception"
       ],
       "acceptance_criteria": "[process-boundary.1] OK (SOX_PERM_ENFORCE=1+4 JSON arrays in child env), [process-boundary.2] OK (sentinel absent from scrubbed env; PATH/HOME preserved), [process-boundary.3] OK (unenforced: {...process.env,...env}, cwd=undefined byte-identical), [process-boundary.4] OK (cwd=path.dirname(entrypointPath) when enforced), [process-boundary.5] OK (all session-fix behaviors preserved; e2e 33/33 zero orphans), [process-boundary.6] OK (policy() accessor returns compiled Policy)"
     }
@@ -107,7 +107,7 @@
       "state": "consolidate-legacy",
       "class": "executor",
       "type": "expand-reservation",
-      "reason": "Two latent issues made consolidate-legacy not actually green under nx run-many -t test and audit_c6.py --phase foundation. (1) memory-core and authoring have zero co-located test files by design (coverage lives in consumers: memory-core covered by extension integration tests; authoring covered by packages/sox-nx/src/generators/extension/extension.spec.ts byte-identical parity gate). Added passWithNoTests:true to libs/authoring/vitest.config.ts and libs/memory-core/vitest.config.ts — standard nx+vitest pattern; no fake tests added. (2) Nine source files in libs/host-runtime/src/ (supervisor.ts, loader.ts, registrar.ts, event-bus.ts, index.ts, runtime.ts, adapters/agent.ts, adapters/hook.ts, adapters/command.ts, adapters/mcp.ts) contained dangling provenance comments referencing the literal path scripts/host/ (e.g. 'Ported from scripts/host/supervisor.ts'). These are comment-only rewrites to 'Ported from the pre-nx host runtime'. Additionally, apps/sox/dist/ was a stale untracked pre-nx hand-maintained dist artifact (314 lines, untracked by git, predating the nx migration) not generated by any nx build target — deleted. After rebuilding, the audit grep over scripts/extensions/libs/apps/bin (excluding .md) returns empty. Guard result: exit 0 for all four arms (test/build/lint/scripts-host-gone). Foundation audit: all [consolidate-legacy.*] checks pass; [policy-core.*] failures are expected (policy.ts not yet created).",
+      "reason": "Two latent issues made consolidate-legacy not actually green under nx run-many -t test and audit_c6.py --phase foundation. (1) memory-core and authoring have zero co-located test files by design (coverage lives in consumers: memory-core covered by extension integration tests; authoring covered by packages/sox-nx/src/generators/extension/extension.spec.ts byte-identical parity gate). Added passWithNoTests:true to libs/authoring/vitest.config.ts and libs/memory-core/vitest.config.ts \u2014 standard nx+vitest pattern; no fake tests added. (2) Nine source files in libs/host-runtime/src/ (supervisor.ts, loader.ts, registrar.ts, event-bus.ts, index.ts, runtime.ts, adapters/agent.ts, adapters/hook.ts, adapters/command.ts, adapters/mcp.ts) contained dangling provenance comments referencing the literal path scripts/host/ (e.g. 'Ported from scripts/host/supervisor.ts'). These are comment-only rewrites to 'Ported from the pre-nx host runtime'. Additionally, apps/sox/dist/ was a stale untracked pre-nx hand-maintained dist artifact (314 lines, untracked by git, predating the nx migration) not generated by any nx build target \u2014 deleted. After rebuilding, the audit grep over scripts/extensions/libs/apps/bin (excluding .md) returns empty. Guard result: exit 0 for all four arms (test/build/lint/scripts-host-gone). Foundation audit: all [consolidate-legacy.*] checks pass; [policy-core.*] failures are expected (policy.ts not yet created).",
       "files_changed": [
         "libs/authoring/vitest.config.ts",
         "libs/memory-core/vitest.config.ts",
@@ -122,7 +122,9 @@
         "libs/host-runtime/src/adapters/command.ts",
         "libs/host-runtime/src/adapters/mcp.ts"
       ],
-      "deleted": ["apps/sox/dist/ (untracked stale pre-nx artifact, 314 lines, not a git-tracked file)"],
+      "deleted": [
+        "apps/sox/dist/ (untracked stale pre-nx artifact, 314 lines, not a git-tracked file)"
+      ],
       "by": "sox-active:typescript-pro"
     },
     {
@@ -130,8 +132,17 @@
       "state": "consolidate-legacy",
       "class": "planner",
       "type": "insert-state",
-      "reason": "The nx migration (commit e29624c) ported the host runtime into libs/host-runtime but left a duplicate live copy under scripts/host/ — two ProcessSupervisor symbols, two loadFromLockfile flows, duplicate activate* adapters and McpRegistrar. C6 must enforce declared permissions ONCE in the single canonical runtime. Inserted consolidate-legacy as the new root state to delete the superseded scripts/host/** tree (and scripts/host-runtime.test.ts, scripts/host-delivery.test.ts) so libs/host-runtime is the sole runtime; re-wired policy-core and audit-foundation depends_on onto it. This also resolves the gap-check --discover duplicate caller-mapping FAILs (the deleted symbols then exist only in libs/host-runtime + doc prose). docs/architecture-audit-v2.md is reserved read_only (prose mentions only).",
-      "files_synced": ["dag.json", "state.json", "state-machine.md", "contexts/consolidate-legacy.md", "contexts/process-boundary.md", "contexts/inproc-policy.md", "scripts/audit_c6.py", "README.md"],
+      "reason": "The nx migration (commit e29624c) ported the host runtime into libs/host-runtime but left a duplicate live copy under scripts/host/ \u2014 two ProcessSupervisor symbols, two loadFromLockfile flows, duplicate activate* adapters and McpRegistrar. C6 must enforce declared permissions ONCE in the single canonical runtime. Inserted consolidate-legacy as the new root state to delete the superseded scripts/host/** tree (and scripts/host-runtime.test.ts, scripts/host-delivery.test.ts) so libs/host-runtime is the sole runtime; re-wired policy-core and audit-foundation depends_on onto it. This also resolves the gap-check --discover duplicate caller-mapping FAILs (the deleted symbols then exist only in libs/host-runtime + doc prose). docs/architecture-audit-v2.md is reserved read_only (prose mentions only).",
+      "files_synced": [
+        "dag.json",
+        "state.json",
+        "state-machine.md",
+        "contexts/consolidate-legacy.md",
+        "contexts/process-boundary.md",
+        "contexts/inproc-policy.md",
+        "scripts/audit_c6.py",
+        "README.md"
+      ],
       "prior_ref": "HEAD",
       "by": "sox-active:workflow-planner"
     },
@@ -140,13 +151,13 @@
       "state": "consolidate-legacy",
       "class": "executor",
       "type": "fix-regression",
-      "reason": "Deletion of scripts/host/runtime-cli.ts introduced a real regression: bin/sox start/stop/exec (3 sites) and tools/test-e2e-lifecycle.js (host-runtime:test-e2e nx target) all spawned that deleted file via 'npx tsx scripts/host/runtime-cli.ts'. The consolidate guard (nx run-many -t test) did not catch this because test-e2e is a separate nx target not covered by run-many -t test. Fix: recreate the CLI as libs/host-runtime/src/runtime-cli.ts (canonical artifact, imports from ./runtime.js/./loader.js/./registrar.js), compiled to libs/host-runtime/dist/runtime-cli.js by the existing host-runtime build target (tsc src/**). Re-point all 3 bin/sox spawner sites and tools/test-e2e-lifecycle.js to spawn: process.execPath + [libs/host-runtime/dist/runtime-cli.js, verb, ...args] — no npx, no tsx, compiled artifact only. Approach chosen: recreate (not reuse apps/sox) because apps/sox exposes no start/stop/status/exec CLI verbs; the compiled dist entry is the minimal, cleanest diff. Proof: nx run host-runtime:test-e2e = 33/33 PASS, zero orphan processes after stop. All four consolidate guards: (1) test ! -d scripts/host = PASS, (2) nx run-many -t test = PASS, (3) nx run-many -t build = PASS (13/13), (4) nx run-many -t lint = PASS (13/13). audit_c6.py --phase foundation = exit 0 FOUNDATION AUDIT PASSED.",
+      "reason": "Deletion of scripts/host/runtime-cli.ts introduced a real regression: bin/sox start/stop/exec (3 sites) and tools/test-e2e-lifecycle.js (host-runtime:test-e2e nx target) all spawned that deleted file via 'npx tsx scripts/host/runtime-cli.ts'. The consolidate guard (nx run-many -t test) did not catch this because test-e2e is a separate nx target not covered by run-many -t test. Fix: recreate the CLI as libs/host-runtime/src/runtime-cli.ts (canonical artifact, imports from ./runtime.js/./loader.js/./registrar.js), compiled to libs/host-runtime/dist/runtime-cli.js by the existing host-runtime build target (tsc src/**). Re-point all 3 bin/sox spawner sites and tools/test-e2e-lifecycle.js to spawn: process.execPath + [libs/host-runtime/dist/runtime-cli.js, verb, ...args] \u2014 no npx, no tsx, compiled artifact only. Approach chosen: recreate (not reuse apps/sox) because apps/sox exposes no start/stop/status/exec CLI verbs; the compiled dist entry is the minimal, cleanest diff. Proof: nx run host-runtime:test-e2e = 33/33 PASS, zero orphan processes after stop. All four consolidate guards: (1) test ! -d scripts/host = PASS, (2) nx run-many -t test = PASS, (3) nx run-many -t build = PASS (13/13), (4) nx run-many -t lint = PASS (13/13). audit_c6.py --phase foundation = exit 0 FOUNDATION AUDIT PASSED.",
       "files_changed": [
-        "libs/host-runtime/src/runtime-cli.ts (NEW) — canonical CLI entry, verb dispatch start/stop/status/exec, imports from ./runtime.js",
-        "bin/sox (MODIFIED) — start site ~1152: npx tsx scripts/host/runtime-cli.ts → node libs/host-runtime/dist/runtime-cli.js",
-        "bin/sox (MODIFIED) — stop site ~1251: same re-point",
-        "bin/sox (MODIFIED) — exec site ~1347: same re-point",
-        "tools/test-e2e-lifecycle.js (MODIFIED) — line ~250: npx tsx scripts/host/runtime-cli.ts → node libs/host-runtime/dist/runtime-cli.js"
+        "libs/host-runtime/src/runtime-cli.ts (NEW) \u2014 canonical CLI entry, verb dispatch start/stop/status/exec, imports from ./runtime.js",
+        "bin/sox (MODIFIED) \u2014 start site ~1152: npx tsx scripts/host/runtime-cli.ts \u2192 node libs/host-runtime/dist/runtime-cli.js",
+        "bin/sox (MODIFIED) \u2014 stop site ~1251: same re-point",
+        "bin/sox (MODIFIED) \u2014 exec site ~1347: same re-point",
+        "tools/test-e2e-lifecycle.js (MODIFIED) \u2014 line ~250: npx tsx scripts/host/runtime-cli.ts \u2192 node libs/host-runtime/dist/runtime-cli.js"
       ],
       "dist_entry": "libs/host-runtime/dist/runtime-cli.js",
       "e2e_result": "33/33 PASS, zero orphan processes, supervisor exited cleanly",
@@ -157,7 +168,7 @@
       "state": "consolidate-legacy",
       "class": "executor",
       "type": "expand-artifacts",
-      "reason": "scripts/host/ contained 3 files beyond the 8 in original mutates: event-bus.ts, prompt-renderer.ts, runtime-cli.ts. (1) event-bus.ts: superseded by libs/host-runtime/src/event-bus.ts; only importer was scripts/host-event-bus.test.ts (legacy test, deleted). (2) prompt-renderer.ts: NOT in libs/host-runtime (no canonical equivalent); only importer was scripts/host-delivery.test.ts (legacy test, deleted) — gitnexus confirmed 'Called by: host-delivery.test.ts' only. (3) runtime-cli.ts: subprocess-spawned (not module-imported) by bin/sox (legacy hand-maintained CLI, outside all nx build/lint/test targets) and tools/test-e2e-lifecycle.js (test-e2e target, not nx run-many -t test); libs/host-runtime exports startRuntime/stopRuntime which apps/sox (canonical compiled CLI) uses directly; deleting runtime-cli.ts breaks only bin/sox runtime subprocess (not any nx target). Additionally, scripts/host-event-bus.test.ts was a third legacy test file importing scripts/host/event-bus.js, not in original mutates list. All 3 additional files deleted; dag.json artifacts updated in lockstep.",
+      "reason": "scripts/host/ contained 3 files beyond the 8 in original mutates: event-bus.ts, prompt-renderer.ts, runtime-cli.ts. (1) event-bus.ts: superseded by libs/host-runtime/src/event-bus.ts; only importer was scripts/host-event-bus.test.ts (legacy test, deleted). (2) prompt-renderer.ts: NOT in libs/host-runtime (no canonical equivalent); only importer was scripts/host-delivery.test.ts (legacy test, deleted) \u2014 gitnexus confirmed 'Called by: host-delivery.test.ts' only. (3) runtime-cli.ts: subprocess-spawned (not module-imported) by bin/sox (legacy hand-maintained CLI, outside all nx build/lint/test targets) and tools/test-e2e-lifecycle.js (test-e2e target, not nx run-many -t test); libs/host-runtime exports startRuntime/stopRuntime which apps/sox (canonical compiled CLI) uses directly; deleting runtime-cli.ts breaks only bin/sox runtime subprocess (not any nx target). Additionally, scripts/host-event-bus.test.ts was a third legacy test file importing scripts/host/event-bus.js, not in original mutates list. All 3 additional files deleted; dag.json artifacts updated in lockstep.",
       "added_to_mutates": [
         "scripts/host/event-bus.ts",
         "scripts/host/prompt-renderer.ts",
@@ -165,7 +176,7 @@
         "scripts/host/runtime.ts",
         "scripts/host-event-bus.test.ts"
       ],
-      "note": "runtime.ts was in scripts/host/ (part of the tree) but not listed in original mutates either — included in the full tree deletion. dag.json artifacts updated to reflect actual deleted set.",
+      "note": "runtime.ts was in scripts/host/ (part of the tree) but not listed in original mutates either \u2014 included in the full tree deletion. dag.json artifacts updated to reflect actual deleted set.",
       "by": "sox-active:typescript-pro"
     }
   ]
