@@ -1,0 +1,418 @@
+/**
+ * libs/host-runtime/src/runtime.ts — sox host runtime manager.
+ *
+ * Ported from scripts/host/runtime.ts. Imports adapted for lib-relative paths.
+ * [def:session-fixes] stop-via-supervisor: supervisor.stop() prevents restart on teardown.
+ */
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import { loadFromLockfile, type LoaderResult } from './loader.js';
+import { McpRegistrar } from './registrar.js';
+import type { McpAdapterHandle } from './adapters/mcp.js';
+
+export interface RuntimeEntry {
+  key: string;
+  id: string;
+  type: string;
+  scope: string;
+  source: string;
+  pid: number | null;
+  running: boolean;
+  activatedAt: string;
+  healthEndpoint?: string | undefined;
+}
+
+export interface RuntimeRecord {
+  version: 1;
+  scope: string;
+  startedAt: string;
+  entries: RuntimeEntry[];
+  supervisorPid?: number | undefined;
+}
+
+export interface StartRuntimeOptions {
+  scope: string;
+  lockfilePath: string;
+  configPath: string;
+  runtimeFilePath: string;
+  root: string;
+  env?: Record<string, string> | undefined;
+  overrideHealthToStdioPing?: boolean | undefined;
+}
+
+export interface StopRuntimeOptions {
+  scope: string;
+  runtimeFilePath: string;
+  id?: string | undefined;
+}
+
+const _activeRuntimes = new Map<string, {
+  loaderResult: LoaderResult;
+  registrar: McpRegistrar;
+}>();
+
+export async function startRuntime(opts: StartRuntimeOptions): Promise<RuntimeRecord> {
+  const existing = _activeRuntimes.get(opts.runtimeFilePath);
+  if (existing) {
+    console.log(`[runtime] Already started for ${opts.scope} (idempotent — returning existing runtime)`);
+    return readRuntimeRecord(opts.runtimeFilePath) ?? buildEmptyRecord(opts.scope);
+  }
+
+  const enabledOverrides = readEnabledOverrides(opts.configPath);
+  const sourceMap = readLockfileSourceMap(opts.lockfilePath);
+  const loaderEnv = opts.env ?? {};
+
+  const loaderResult = await loadFromLockfile({
+    lockfilePath: opts.lockfilePath,
+    root: opts.root,
+    env: loaderEnv,
+    enabledOverrides,
+    overrideMcpHealthToStdioPing: opts.overrideHealthToStdioPing ?? true,
+  });
+
+  console.log(
+    `[runtime] Activated ${loaderResult.activated.length} extension(s), ` +
+    `skipped ${loaderResult.skipped.length}, errors ${loaderResult.errors.length}`,
+  );
+
+  const registrar = new McpRegistrar();
+
+  for (const handle of loaderResult.activated) {
+    if (handle.type === 'mcp-server') {
+      const mcpHandle = handle as McpAdapterHandle;
+      const pid = mcpHandle.supervisor.pid();
+      if (pid !== null) {
+        try {
+          const proc = getProcessFromSupervisor(mcpHandle.supervisor);
+          if (proc) {
+            await registrar.register(mcpHandle.key, proc);
+          }
+        } catch (e) {
+          console.warn(`[runtime] Failed to register ${mcpHandle.key} with MCP registrar: ${String(e)}`);
+        }
+      }
+    }
+  }
+
+  const now = new Date().toISOString();
+  const entries: RuntimeEntry[] = [];
+
+  for (const handle of loaderResult.activated) {
+    const key = handle.key;
+    const baseId = key.includes('@') ? key.slice(0, key.lastIndexOf('@')) : key;
+    const source = sourceMap[key] ?? sourceMap[`${baseId}@`] ?? '';
+
+    let pid: number | null = null;
+    let running = false;
+
+    if (handle.type === 'mcp-server') {
+      const mcpHandle = handle as McpAdapterHandle;
+      pid = mcpHandle.supervisor.pid();
+      running = mcpHandle.supervisor.isHealthy() || pid !== null;
+    } else {
+      running = true;
+    }
+
+    entries.push({
+      key,
+      id: baseId,
+      type: handle.type,
+      scope: opts.scope,
+      source,
+      pid,
+      running,
+      activatedAt: now,
+    });
+  }
+
+  const record: RuntimeRecord = {
+    version: 1,
+    scope: opts.scope,
+    startedAt: now,
+    entries,
+    supervisorPid: process.pid,
+  };
+
+  writeRuntimeRecord(opts.runtimeFilePath, record);
+  _activeRuntimes.set(opts.runtimeFilePath, { loaderResult, registrar });
+
+  console.log(`[runtime] Runtime record written to ${opts.runtimeFilePath}`);
+  return record;
+}
+
+export async function stopRuntime(opts: StopRuntimeOptions): Promise<void> {
+  const active = _activeRuntimes.get(opts.runtimeFilePath);
+  const record = readRuntimeRecord(opts.runtimeFilePath);
+
+  if (!active && !record) {
+    console.log(`[runtime] No active runtime for ${opts.scope}`);
+    return;
+  }
+
+  if (active) {
+    const { loaderResult, registrar } = active;
+
+    for (const handle of loaderResult.activated) {
+      const baseId = handle.key.includes('@')
+        ? handle.key.slice(0, handle.key.lastIndexOf('@'))
+        : handle.key;
+
+      if (opts.id && baseId !== opts.id && handle.key !== opts.id) continue;
+
+      if (handle.type === 'mcp-server') {
+        const mcpHandle = handle as McpAdapterHandle;
+        try {
+          registrar.deregister(handle.key);
+          await mcpHandle.supervisor.stop();
+          console.log(`[runtime] Stopped ${handle.key}`);
+        } catch (e) {
+          console.warn(`[runtime] Error stopping ${handle.key}: ${String(e)}`);
+        }
+      }
+    }
+
+    if (!opts.id) {
+      _activeRuntimes.delete(opts.runtimeFilePath);
+    }
+  }
+
+  if (record) {
+    if (opts.id) {
+      for (const entry of record.entries) {
+        if (entry.id === opts.id || entry.key === opts.id) {
+          entry.running = false;
+          entry.pid = null;
+        }
+      }
+    } else {
+      for (const entry of record.entries) {
+        entry.running = false;
+        entry.pid = null;
+      }
+    }
+    writeRuntimeRecord(opts.runtimeFilePath, record);
+  }
+}
+
+export async function stopExtension(runtimeFilePath: string, id: string): Promise<boolean> {
+  const active = _activeRuntimes.get(runtimeFilePath);
+  if (!active) {
+    const record = readRuntimeRecord(runtimeFilePath);
+    if (!record) return false;
+
+    const entry = record.entries.find((e) => e.id === id || e.key === id);
+    if (!entry || !entry.running) return false;
+
+    if (entry.pid !== null) {
+      try {
+        process.kill(entry.pid, 'SIGTERM');
+        console.log(`[runtime] Sent SIGTERM to pid ${entry.pid} for ${id}`);
+        entry.running = false;
+        entry.pid = null;
+        writeRuntimeRecord(runtimeFilePath, record);
+        return true;
+      } catch (e) {
+        console.warn(`[runtime] Could not kill pid ${String(entry.pid)}: ${String(e)}`);
+        entry.running = false;
+        entry.pid = null;
+        writeRuntimeRecord(runtimeFilePath, record);
+        return false;
+      }
+    }
+    return false;
+  }
+
+  const { loaderResult, registrar } = active;
+  for (const handle of loaderResult.activated) {
+    const baseId = handle.key.includes('@') ? handle.key.slice(0, handle.key.lastIndexOf('@')) : handle.key;
+    if (baseId !== id && handle.key !== id) continue;
+
+    if (handle.type === 'mcp-server') {
+      const mcpHandle = handle as McpAdapterHandle;
+      try {
+        registrar.deregister(handle.key);
+        await mcpHandle.supervisor.stop();
+        console.log(`[runtime] Stopped ${handle.key}`);
+        const record = readRuntimeRecord(runtimeFilePath);
+        if (record) {
+          const entry = record.entries.find((e) => e.id === id || e.key === handle.key);
+          if (entry) { entry.running = false; entry.pid = null; }
+          writeRuntimeRecord(runtimeFilePath, record);
+        }
+        return true;
+      } catch (e) {
+        console.warn(`[runtime] Error stopping ${handle.key}: ${String(e)}`);
+      }
+    }
+  }
+  return false;
+}
+
+export async function reconcileRuntime(
+  runtimeFilePath: string,
+  configPath: string,
+): Promise<string[]> {
+  const active = _activeRuntimes.get(runtimeFilePath);
+  if (!active) return [];
+
+  const shouldRun = readShouldRunSet(configPath);
+  const record = readRuntimeRecord(runtimeFilePath);
+  const stopped: string[] = [];
+
+  for (const handle of active.loaderResult.activated) {
+    const baseId = handle.key.includes('@')
+      ? handle.key.slice(0, handle.key.lastIndexOf('@'))
+      : handle.key;
+    if (shouldRun.has(baseId)) continue;
+
+    if (handle.type === 'mcp-server') {
+      const mcpHandle = handle as McpAdapterHandle;
+      try {
+        active.registrar.deregister(handle.key);
+        await mcpHandle.supervisor.stop();
+      } catch (e) {
+        console.warn(`[runtime] reconcile: error stopping ${handle.key}: ${String(e)}`);
+      }
+    }
+    if (record) {
+      const entry = record.entries.find((e) => e.id === baseId || e.key === handle.key);
+      if (entry) {
+        entry.running = false;
+        entry.pid = null;
+      }
+    }
+    stopped.push(baseId);
+  }
+
+  if (record) writeRuntimeRecord(runtimeFilePath, record);
+  return stopped;
+}
+
+function readShouldRunSet(configPath: string): Set<string> {
+  const set = new Set<string>();
+  if (!fs.existsSync(configPath)) return set;
+  try {
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
+      install?: Array<{ id: string; enabled?: boolean }>;
+    };
+    for (const e of raw.install ?? []) {
+      if (e.enabled !== false) set.add(e.id);
+    }
+  } catch {
+    /* ignore malformed config */
+  }
+  return set;
+}
+
+export function getRuntimeRecord(runtimeFilePath: string): RuntimeRecord | null {
+  return readRuntimeRecord(runtimeFilePath);
+}
+
+export function getRegistrar(runtimeFilePath: string): McpRegistrar | null {
+  return _activeRuntimes.get(runtimeFilePath)?.registrar ?? null;
+}
+
+function readRuntimeRecord(filePath: string): RuntimeRecord | null {
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8')) as RuntimeRecord;
+  } catch {
+    return null;
+  }
+}
+
+function writeRuntimeRecord(filePath: string, record: RuntimeRecord): void {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(filePath, JSON.stringify(record, null, 2) + '\n', 'utf8');
+}
+
+function buildEmptyRecord(scope: string): RuntimeRecord {
+  return {
+    version: 1,
+    scope,
+    startedAt: new Date().toISOString(),
+    entries: [],
+  };
+}
+
+function readEnabledOverrides(configPath: string): Record<string, boolean> {
+  if (!fs.existsSync(configPath)) return {};
+  try {
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
+      install?: Array<{ id: string; enabled?: boolean }>;
+    };
+    const overrides: Record<string, boolean> = {};
+    for (const entry of raw.install ?? []) {
+      if (entry.enabled === false) {
+        overrides[entry.id] = false;
+      }
+    }
+    return overrides;
+  } catch {
+    return {};
+  }
+}
+
+function readLockfileSourceMap(lockfilePath: string): Record<string, string> {
+  if (!fs.existsSync(lockfilePath)) return {};
+  try {
+    const lock = JSON.parse(fs.readFileSync(lockfilePath, 'utf8')) as {
+      resolved?: Record<string, { source: string }>;
+    };
+    const map: Record<string, string> = {};
+    for (const [key, entry] of Object.entries(lock.resolved ?? {})) {
+      map[key] = entry.source;
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+
+function getProcessFromSupervisor(
+  supervisor: import('./supervisor.js').ProcessSupervisor,
+): import('node:child_process').ChildProcess | null {
+  const internal = supervisor as unknown as { _proc: import('node:child_process').ChildProcess | null };
+  return internal['_proc'];
+}
+
+export function runtimeFilePathFromLockfile(lockfilePath: string): string {
+  return path.join(path.dirname(lockfilePath), 'runtime.json');
+}
+
+export function getRuntimeFilePath(scopeLockfilePath: string): string {
+  const envOverride = process.env['SOX_RUNTIME_FILE'];
+  if (envOverride) return path.resolve(envOverride);
+  return runtimeFilePathFromLockfile(scopeLockfilePath);
+}
+
+export function getScopePaths(
+  scope: string,
+  root: string,
+): { config: string; lockfile: string } {
+  const homedir = os.homedir();
+  switch (scope) {
+    case 'user':
+      return {
+        config: path.join(homedir, '.config', 'extensions', 'extensions.json'),
+        lockfile: path.join(homedir, '.config', 'extensions', 'extensions.lock'),
+      };
+    case 'project':
+      return {
+        config: path.join(root, '.extensions', 'extensions.json'),
+        lockfile: path.join(root, '.extensions', 'extensions.lock'),
+      };
+    case 'local':
+      return {
+        config: path.join(root, '.extensions', 'extensions.local.json'),
+        lockfile: path.join(root, '.extensions', 'extensions.local.lock'),
+      };
+    default:
+      throw new Error(`[runtime] Unknown scope '${scope}'. Valid: user, project, local`);
+  }
+}

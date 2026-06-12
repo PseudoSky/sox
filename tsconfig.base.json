@@ -29,7 +29,10 @@
     "baseUrl": ".",
     "paths": {
       "@sox/manifest": ["libs/manifest/dist/index.js"],
-      "@sox/authoring": ["libs/authoring/dist/index.js"]
+      "@sox/authoring": ["libs/authoring/dist/index.js"],
+      "@sox/install-engine": ["libs/install-engine/dist/index.js"],
+      "@sox/host-runtime": ["libs/host-runtime/dist/index.js"],
+      "@sox/registry": ["libs/registry/dist/index.js"]
     }
   },
   "include": ["scripts/**/*.ts", "extensions/**/*.ts"],

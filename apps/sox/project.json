@@ -1,0 +1,30 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "sox",
+  "projectType": "application",
+  "root": "apps/sox",
+  "sourceRoot": "apps/sox/src",
+  "tags": ["type:app"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": ["{workspaceRoot}/apps/sox/dist"],
+      "options": {
+        "command": "tsc --project apps/sox/tsconfig.app.json",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.app.json"
+      ],
+      "dependsOn": ["install-engine:build", "host-runtime:build"]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": ["apps/sox/**/*.ts"]
+      }
+    }
+  }
+}

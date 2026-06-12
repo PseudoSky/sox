@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "node10",
+    "ignoreDeprecations": "6.0",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "declaration": true,
+    "declarationMap": false,
+    "sourceMap": true,
+    "esModuleInterop": true,
+    "paths": {
+      "@sox/manifest": ["libs/manifest/dist/index.d.ts"],
+      "@sox/authoring": ["libs/authoring/dist/index.d.ts"],
+      "@sox/install-engine": ["libs/install-engine/dist/index.d.ts"],
+      "@sox/host-runtime": ["libs/host-runtime/dist/index.d.ts"],
+      "@sox/registry": ["libs/registry/dist/index.d.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules"]
+}
