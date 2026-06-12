@@ -5,13 +5,158 @@
  *
  * P1 MVP: memory_write (in-process) + memory_recall (hybrid vec+FTS+temporal)
  * Remaining tools: session state, invalidate, search_entities, get_community (stubs for P1)
+ *
+ * [mcp-path-guard] C6 enforcement: a policy guard runs BEFORE the resource sink
+ * (getDb → openDb) in handleToolCall. The guard reads [def:policy-env] injected
+ * by the supervisor ([process-boundary]) and denies any caller-supplied db_path
+ * outside the declared allowlist. This is the HARD fs denial for the spawned
+ * memory-server child ([ref:guard-before-sink], [def:enforcement-opt-in]).
+ *
+ * [def:enforcement-opt-in]: enforcement applies only when SOX_PERM_ENFORCE is
+ * present. A server started without SOX_PERM_ENFORCE (standalone/dev) preserves
+ * today's behaviour exactly ([inv:no-regress]).
+ *
+ * NOTE on vendoring: compilePolicyFromEnv is vendored here (not imported from
+ * @sox/host-runtime) because the spawned memory-server is a standalone CommonJS
+ * process — @sox/host-runtime is a private workspace package not available in
+ * node_modules at the child's runtime. The implementation matches [shape:policy-env]
+ * and the policy-core round-trip contract ([policy-core.4]) exactly; the
+ * permission-guard.spec.ts [mcp-path-guard.5] tests verify parity.
  */
 
 import { createInterface } from 'node:readline';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import { openDb } from './db.js';
 import { memoryWrite } from './write.js';
 import { memoryRecall } from './recall.js';
 import Database from 'better-sqlite3';
+
+// ─── Vendored compilePolicyFromEnv — matches [shape:policy-env] ───────────────
+//
+// This is a minimal, dependency-free re-implementation of the policy-core
+// contract ([shape:policy]) sufficient for the spawned child. It is parity-tested
+// against the host-runtime version in permission-guard.spec.ts [mcp-path-guard.5].
+
+/** Expand a leading ~/ to the user's home directory. */
+function expandTilde(p: string): string {
+  if (p === '~' || p.startsWith('~/')) {
+    return os.homedir() + p.slice(1);
+  }
+  return p;
+}
+
+/**
+ * Build a regex from a glob pattern.
+ * - `~/` prefix expanded via expandTilde
+ * - `**` matches across path separators
+ * - `*` matches within a segment (no `/`)
+ */
+function globToRegex(pattern: string): RegExp {
+  const expanded = expandTilde(pattern);
+  let regexStr = '';
+  let i = 0;
+  while (i < expanded.length) {
+    if (expanded[i] === '*' && expanded[i + 1] === '*') {
+      regexStr += '.*';
+      i += 2;
+      if (expanded[i] === '/') i++;
+    } else if (expanded[i] === '*') {
+      regexStr += '[^/]*';
+      i++;
+    } else {
+      const ch = expanded[i] as string;
+      regexStr += /[.+^${}()|[\]\\]/.test(ch) ? `\\${ch}` : ch;
+      i++;
+    }
+  }
+  return new RegExp(`^${regexStr}$`);
+}
+
+/** Test whether absPath matches the glob pattern. */
+function matchGlob(pattern: string, absPath: string): boolean {
+  return globToRegex(pattern).test(absPath);
+}
+
+/** Normalize a path subject: expand ~/ and resolve to absolute. */
+function normalizePath(p: string): string {
+  return path.resolve(expandTilde(p));
+}
+
+/** Check whether absPath is permitted by patterns (deny-by-default when patterns present). */
+function isPathAllowed(patterns: string[] | undefined, subject: string): boolean {
+  if (patterns === undefined) return true;       // domain absent → unconstrained
+  const norm = normalizePath(subject);
+  return patterns.some((p) => matchGlob(p, norm));
+}
+
+/** Minimal Policy — [shape:policy] */
+interface Policy {
+  enforced: boolean;
+  allowsFsRead(absPath: string): boolean;
+  allowsFsWrite(absPath: string): boolean;
+}
+
+/**
+ * Rebuild a Policy from [shape:policy-env] environment variables.
+ * Inverse of Policy.toEnv() in libs/host-runtime/src/policy.ts.
+ * Round-trip contract ([policy-core.4]): identical allow/deny decisions for all subjects.
+ *
+ * - SOX_PERM_ENFORCE absent → enforced=false, every allows*() returns true ([def:enforcement-opt-in])
+ * - SOX_PERM_ENFORCE present → each domain reconstructed from its JSON array;
+ *   empty array means deny-by-default for that domain ([ref:deny-by-default])
+ */
+export function compilePolicyFromEnv(env: Record<string, string | undefined>): Policy {
+  if (!env['SOX_PERM_ENFORCE']) {
+    return {
+      enforced: false,
+      allowsFsRead: () => true,
+      allowsFsWrite: () => true,
+    };
+  }
+
+  function parseArr(key: string): string[] | undefined {
+    const raw = env[key];
+    if (raw === undefined) return undefined;
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed as string[];
+    } catch { /* malformed — treat as unconstrained */ }
+    return undefined;
+  }
+
+  const fsRead = parseArr('SOX_PERM_FS_READ');
+  const fsWrite = parseArr('SOX_PERM_FS_WRITE');
+
+  return {
+    enforced: true,
+    allowsFsRead: (absPath: string) => isPathAllowed(fsRead, absPath),
+    allowsFsWrite: (absPath: string) => isPathAllowed(fsWrite, absPath),
+  };
+}
+
+// ─── Policy accessor ──────────────────────────────────────────────────────────
+//
+// The policy is read from process.env on each guard invocation rather than cached
+// once at module load time. This serves two purposes:
+//
+//   1. In production (spawned server): process.env is stable — the supervisor
+//      injects [def:policy-env] before exec and never mutates it afterward
+//      ([process-boundary]). The result is functionally identical to a cached policy.
+//
+//   2. In tests: process.env is set per-test in beforeEach/afterEach, so reading
+//      it fresh each call ensures the guard sees the correct enforcement state
+//      for each test case without module reload.
+//
+// [def:enforcement-opt-in]: if SOX_PERM_ENFORCE is absent (standalone/dev mode),
+// compilePolicyFromEnv returns enforced=false, every allows*() returns true —
+// legacy behaviour is preserved exactly ([inv:no-regress]).
+
+function getPolicy(): Policy {
+  return compilePolicyFromEnv(process.env as Record<string, string | undefined>);
+}
+
+// ─── Active DB connections ────────────────────────────────────────────────────
 
 // Active DB connections keyed by dbPath
 const dbCache = new Map<string, Database.Database>();
@@ -146,11 +291,56 @@ type ToolCallParams = {
   arguments?: Record<string, unknown>;
 };
 
-function handleToolCall(name: string, args: Record<string, unknown>): unknown {
+/**
+ * [mcp-path-guard] Policy guard: resolve db_path to absolute, then check the
+ * compiled policy BEFORE calling getDb/openDb (the resource sink).
+ *
+ * Resolution: expandTilde + path.resolve ensures that relative paths such as
+ * ../../etc/x that escape the allowlist are correctly denied ([ref:guard-before-sink]).
+ *
+ * When policy.enforced === false (no SOX_PERM_ENFORCE in env, standalone/dev),
+ * this function returns null and the caller proceeds normally ([def:enforcement-opt-in],
+ * [inv:no-regress]).
+ *
+ * Returns: a permission-denied tool result on denial, or null if the path is allowed.
+ */
+function checkDbPathPolicy(dbPath: string): { isError: true; content: Array<{ type: string; text: string }> } | null {
+  const p = getPolicy();
+  if (!p.enforced) return null;
+
+  // Resolve to absolute: expand ~/ then resolve relative components.
+  // This ensures that relative paths like ../../etc/x that escape the allowlist
+  // are correctly denied ([ref:guard-before-sink]).
+  const resolvedPath = path.resolve(expandTilde(dbPath));
+
+  // Check both read and write — the db_path grants full file access
+  if (!p.allowsFsWrite(resolvedPath) || !p.allowsFsRead(resolvedPath)) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: 'text',
+          text: `permission denied: db_path ${resolvedPath} outside declared fs allowlist`,
+        },
+      ],
+    };
+  }
+
+  return null;
+}
+
+export function handleToolCall(name: string, args: Record<string, unknown>): unknown {
   const dbPath = args['db_path'] as string | undefined;
   if (!dbPath) {
     return { isError: true, content: [{ type: 'text', text: 'db_path is required' }] };
   }
+
+  // [ref:guard-before-sink]: policy guard runs BEFORE getDb/openDb.
+  // openDb does mkdirSync then opens — so the guard must precede the sink so
+  // that no directory or file is created at an undeclared path on denial.
+  // ([mcp-path-guard.1], [mcp-path-guard.3])
+  const denied = checkDbPathPolicy(dbPath);
+  if (denied) return denied;
 
   const db = getDb(dbPath);
 
