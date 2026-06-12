@@ -6,5 +6,6 @@ export default defineConfig({
     include: [resolve(__dirname, 'src/**/*.spec.ts'), resolve(__dirname, 'src/**/*.test.ts')],
     globals: false,
     environment: 'node',
+    passWithNoTests: true,
   },
 });

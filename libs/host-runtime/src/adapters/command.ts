@@ -1,6 +1,6 @@
 /**
  * libs/host-runtime/src/adapters/command.ts — Command verb registration adapter.
- * Ported from scripts/host/adapters/command.ts. Imports adjusted for lib paths.
+ * Ported from the pre-nx host runtime. Imports adjusted for lib paths.
  */
 
 import type { PermissionsBlock } from '../supervisor.js';

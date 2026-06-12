@@ -1,7 +1,7 @@
 /**
  * libs/host-runtime/src/event-bus.ts — Host-side lifecycle event bus.
  *
- * Ported from scripts/host/event-bus.ts.
+ * Ported from the pre-nx host runtime.
  * [def:session-fixes] fireIsolated dispatch (DEFECT-1 closure) carried forward.
  *
  * All events fire through HookLoader.fireIsolated() — NOT the legacy fire().

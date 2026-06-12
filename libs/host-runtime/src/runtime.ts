@@ -1,7 +1,7 @@
 /**
  * libs/host-runtime/src/runtime.ts — sox host runtime manager.
  *
- * Ported from scripts/host/runtime.ts. Imports adapted for lib-relative paths.
+ * Ported from the pre-nx host runtime. Imports adapted for lib-relative paths.
  * [def:session-fixes] stop-via-supervisor: supervisor.stop() prevents restart on teardown.
  */
 

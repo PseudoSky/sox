@@ -1,7 +1,7 @@
 /**
  * libs/host-runtime/src/index.ts
  *
- * Re-homes the host loader/supervisor/registrar/event-bus from scripts/host/
+ * Re-homes the host loader/supervisor/registrar/event-bus from the pre-nx runtime
  * into a pure nx lib. No @nx/devkit imports.
  *
  * [def:session-fixes] carried forward:

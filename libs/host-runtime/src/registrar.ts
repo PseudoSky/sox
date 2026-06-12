@@ -1,7 +1,7 @@
 /**
  * libs/host-runtime/src/registrar.ts — MCP host-side registrar.
  *
- * Ported from scripts/host/registrar.ts. No logic changes.
+ * Ported from the pre-nx host runtime. No logic changes.
  */
 
 import { type ChildProcess } from 'node:child_process';

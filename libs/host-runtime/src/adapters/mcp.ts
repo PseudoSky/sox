@@ -1,6 +1,6 @@
 /**
  * libs/host-runtime/src/adapters/mcp.ts — MCP-server adapter.
- * Ported from scripts/host/adapters/mcp.ts. Imports adjusted for lib paths.
+ * Ported from the pre-nx host runtime. Imports adjusted for lib paths.
  */
 
 import { ProcessSupervisor, type LifecycleBlock, type PermissionsBlock } from '../supervisor.js';

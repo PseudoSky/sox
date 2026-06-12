@@ -1,7 +1,7 @@
 /**
  * libs/host-runtime/src/supervisor.ts — Host process supervisor.
  *
- * Ported from scripts/host/supervisor.ts.
+ * Ported from the pre-nx host runtime.
  * [def:session-fixes] enable-reactivation + stop-via-supervisor carried forward:
  *   - supervisor.stop() sets _stopping=true preventing restarts (stop-via-supervisor)
  *   - supervisor restart logic (enable-reactivation via _respawn on unexpected exit)

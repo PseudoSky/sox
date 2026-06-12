@@ -1,6 +1,6 @@
 /**
  * libs/host-runtime/src/adapters/hook.ts — Hook adapter.
- * Ported from scripts/host/adapters/hook.ts. Imports adjusted for lib paths.
+ * Ported from the pre-nx host runtime. Imports adjusted for lib paths.
  */
 
 import type { HookLoader, HookHandler } from '../hook-loader.js';

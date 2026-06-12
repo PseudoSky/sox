@@ -1,6 +1,6 @@
 /**
  * libs/host-runtime/src/adapters/agent.ts — Agent and skill in-process adapter.
- * Ported from scripts/host/adapters/agent.ts. Imports adjusted for lib paths.
+ * Ported from the pre-nx host runtime. Imports adjusted for lib paths.
  */
 
 import type { PermissionsBlock } from '../supervisor.js';

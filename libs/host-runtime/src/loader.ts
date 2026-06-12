@@ -1,7 +1,7 @@
 /**
  * libs/host-runtime/src/loader.ts — Host-runtime unified loader.
  *
- * Ported from scripts/host/loader.ts. Imports adapted for lib-relative paths.
+ * Ported from the pre-nx host runtime. Imports adapted for lib-relative paths.
  * The validateConfigAgainstSchema import is stubbed — the full manifest validation
  * lives in scripts/validate-manifests.ts (not yet migrated to a lib).
  * In this lib, we skip config_schema validation when the function is unavailable.
