@@ -34,6 +34,9 @@ export function resetProviderCallCount(): void {
  * Uses a seeded hash projection: each dimension is the sum of
  * per-token scalar projections for that dimension index.
  * Produces normalized Float32Array for use with sqlite-vec FLOAT[768].
+ *
+ * Float32Array index access returns `number` (not `number | undefined`)
+ * so no null-assertion or nullish coalescing is needed.
  */
 export function embedText(text: string): Float32Array {
   const normalized = text.toLowerCase().replace(/[^\w\s]/g, ' ').trim();
@@ -47,21 +50,18 @@ export function embedText(text: string): Float32Array {
       // Each dimension gets a contribution from this token via a seeded projection
       const seed = ((d * 0x9e3779b9 + h1) >>> 0) as number;
       const val = ((seed ^ h2) / 0x80000000) - 1.0; // in [-1, 1]
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      vec[d] = (vec[d]! + val / Math.max(tokens.length, 1));
+      vec[d] = (vec[d] as number) + val / Math.max(tokens.length, 1);
     }
   }
 
   // L2 normalize
   let norm = 0;
   for (let d = 0; d < EMBED_DIM; d++) {
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    norm += vec[d]! * vec[d]!;
+    norm += (vec[d] as number) * (vec[d] as number);
   }
   norm = Math.sqrt(norm) || 1;
   for (let d = 0; d < EMBED_DIM; d++) {
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    vec[d] = vec[d]! / norm;
+    vec[d] = (vec[d] as number) / norm;
   }
 
   return vec;

@@ -4,10 +4,8 @@
  * Re-exports all symbols from the compiled memory-server package sub-modules.
  * This is the single import point that replaces the hand-maintained root-level mirror (now deleted).
  *
- * Importers should use:
- *   import { openDb, memoryWrite, ... } from '@sox/extension-memory-server/lib';
- * or via relative path (for tools/):
- *   import { ... } from '../extensions/mcp-servers/memory-server/dist/lib.js';
+ * Importers should use @sox/memory-core instead (nx migration C7).
+ * This barrel re-exports from libs/memory-core for backward compatibility only.
  */
 
 // Database connection + scope init

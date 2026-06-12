@@ -1,0 +1,30 @@
+{
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "name": "memory-server",
+  "projectType": "library",
+  "root": "extensions/mcp-servers/memory-server",
+  "sourceRoot": "extensions/mcp-servers/memory-server/src",
+  "tags": ["type:extension"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": ["{workspaceRoot}/extensions/mcp-servers/memory-server/dist"],
+      "options": {
+        "command": "tsc --project extensions/mcp-servers/memory-server/tsconfig.json",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.json"
+      ],
+      "dependsOn": ["memory-core:build"]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": ["extensions/mcp-servers/memory-server/src/**/*.ts"]
+      }
+    }
+  }
+}

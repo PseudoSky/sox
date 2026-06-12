@@ -259,7 +259,7 @@ async function handleScopePromotionProposed(payload: ScopePromotionPayload): Pro
     try {
       // Dynamically import applyPromotion and rejectPromotion from the dist lib
       // (avoids a circular dependency while keeping the logic in the lib — R3 preserved)
-      const { applyPromotion } = await import('../../../mcp-servers/memory-server/dist/lib.js' as string);
+      const { applyPromotion } = await import('@sox/memory-core');
 
       let applied = 0;
       let failed = 0;

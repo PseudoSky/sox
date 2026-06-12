@@ -8,11 +8,11 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
-  "devDependencies": {
-    "@sox/extension-memory-server": "workspace:*"
+  "dependencies": {
+    "@sox/memory-core": "workspace:*"
   },
   "license": "MIT"
 }

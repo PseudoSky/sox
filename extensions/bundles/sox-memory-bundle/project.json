@@ -1,0 +1,25 @@
+{
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "name": "sox-memory-bundle",
+  "projectType": "library",
+  "root": "extensions/bundles/sox-memory-bundle",
+  "sourceRoot": "extensions/bundles/sox-memory-bundle",
+  "tags": ["type:extension"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": [],
+      "options": {
+        "command": "echo 'sox-memory-bundle: no build step (declarative bundle)'",
+        "cwd": "."
+      },
+      "cache": false
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": []
+      }
+    }
+  }
+}

@@ -11,5 +11,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@sox/memory-core": "workspace:*"
+  },
   "license": "MIT"
 }

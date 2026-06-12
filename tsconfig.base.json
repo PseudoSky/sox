@@ -26,6 +26,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "outDir": "dist",
+    "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
       "@sox/manifest": ["libs/manifest/dist/index.js"],
@@ -33,7 +34,7 @@
       "@sox/install-engine": ["libs/install-engine/dist/index.js"],
       "@sox/host-runtime": ["libs/host-runtime/dist/index.js"],
       "@sox/registry": ["libs/registry/dist/index.js"],
-      "@sox/memory-core": ["libs/memory-core/dist/index.js"]
+      "@sox/memory-core": ["libs/memory-core/dist/index.d.ts"]
     }
   },
   "include": ["scripts/**/*.ts", "extensions/**/*.ts"],

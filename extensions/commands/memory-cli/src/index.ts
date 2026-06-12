@@ -20,8 +20,8 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
-import { openDb, initScope } from '../../../mcp-servers/memory-server/src/db.js';
-import { writeRegistry } from '../../../mcp-servers/memory-server/src/recall.js';
+import { openDb, initScope } from '@sox/memory-core';
+import { writeRegistry } from '@sox/memory-core';
 
 export type ScopeKind = 'project' | 'user' | 'org' | 'local';
 
