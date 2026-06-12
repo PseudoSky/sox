@@ -1,0 +1,38 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "memory-core",
+  "projectType": "library",
+  "root": "libs/memory-core",
+  "sourceRoot": "libs/memory-core/src",
+  "tags": ["type:lib"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": ["{workspaceRoot}/libs/memory-core/dist"],
+      "options": {
+        "command": "tsc --project libs/memory-core/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/memory-core/dist/package.json",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.lib.json"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config libs/memory-core/vitest.config.ts",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": ["{projectRoot}/src/**/*.ts"]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": ["libs/memory-core/**/*.ts"]
+      }
+    }
+  }
+}

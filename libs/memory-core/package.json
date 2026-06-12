@@ -1,0 +1,15 @@
+{
+  "name": "@sox/memory-core",
+  "version": "0.1.0",
+  "description": "Shared internal library for the sox-memory subsystem (db, schema, embed, recall, write, memoryd, extensions)",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  }
+}
