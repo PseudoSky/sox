@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "nx-migration",
   "dag": "dag.json",
-  "current_state": "memory-core",
+  "current_state": "migrate-rest",
   "states": {
     "checkpoint-branch": { "status": "done", "started_ts": "2026-06-12T01:00:00Z", "done_ts": "2026-06-12T01:03:47Z" },
     "nx-init": { "status": "done", "started_ts": "2026-06-11T20:06:00Z", "done_ts": "2026-06-11T20:13:00Z" },
@@ -13,7 +13,7 @@
     "sox-extension": { "status": "done", "started_ts": "2026-06-11T21:30:00Z", "done_ts": "2026-06-11T23:15:00Z" },
     "audit-engine": { "status": "done", "started_ts": "2026-06-11T23:15:00Z", "done_ts": "2026-06-11T23:45:00Z" },
     "type-discovery": { "status": "done", "started_ts": "2026-06-11T22:00:00Z", "done_ts": "2026-06-11T22:10:00Z" },
-    "memory-core": { "status": "pending", "started_ts": null, "done_ts": null },
+    "memory-core": { "status": "done", "started_ts": "2026-06-11T22:10:00Z", "done_ts": "2026-06-11T23:15:00Z" },
     "migrate-rest": { "status": "pending", "started_ts": null, "done_ts": null },
     "ci-release": { "status": "pending", "started_ts": null, "done_ts": null },
     "audit-final": { "status": "pending", "started_ts": null, "done_ts": null },
@@ -82,6 +82,13 @@
       "ts": "2026-06-11T22:10:00Z",
       "guard_exit": 0,
       "note": "read 5 real corpus sources (hooks/*.sh, agent-mcp/src/, sox-protocol/pyproject.toml, cli/briefing.js, skills/*/SKILL.md, agents/*.md); key shape changes: agent→declarative+agent.md+install-target=~/.claude/agents/; skill→declarative+SKILL.md+install-target=~/.claude/skills/<id>/; hook→shell+hook.sh+bash shebang+stdin JSON; mcp-server→@modelcontextprotocol/sdk StdioServerTransport; command→stdio protocol+bin field+shebang; bundle unchanged; no schema changes needed (all flexes already present); docs/per-type-shapes.md written; born-conformance PASS (6/6); parity 7/7; 374 tests green; guard exit 0"
+    },
+    {
+      "from": "memory-core",
+      "to": "migrate-rest",
+      "ts": "2026-06-11T23:15:00Z",
+      "guard_exit": 0,
+      "note": "libs/memory-core created (type:lib, internal): db/schema/embed/recall/write/memoryd/extensions extracted from memory-server; convenience write(dbPath,params)+recall(dbPath,params) wrappers for guard C5; @sox/memory-core path added to tsconfig.base.json; cross-extension reach-in killed: memory-cli (../../../mcp-servers/memory-server/src/{db,recall}.js) + memory-flush (dynamic import ../../../mcp-servers/memory-server/dist/lib.js) both re-pointed to @sox/memory-core; project.json (type:extension) added to all 4 extensions + bundle; extension tsconfigs updated to module:CommonJS/moduleResolution:node10 for path alias resolution; embed.ts eslint-disable @typescript-eslint/no-non-null-assertion removed (not in config) → typed casts on Float32Array; grep cross-extension ../dist/ = ZERO; boundary lint clean (4/4 extensions); C5 write+recall: exit 0; 374 tests green (0 regressions); guard bash memory-core.sh exit 0"
     }
   ],
   "amendment_log": [
