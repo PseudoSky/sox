@@ -99,6 +99,22 @@ importers:
 
   extensions/skills/hello-world: {}
 
+  libs/authoring: {}
+
+  libs/manifest: {}
+
+  packages/sox-nx:
+    dependencies:
+      '@nx/devkit':
+        specifier: '>=22.0.0'
+        version: 22.7.5(nx@22.7.5)
+      '@nx/js':
+        specifier: '>=22.0.0'
+        version: 22.7.5(@babel/traverse@7.29.7)(nx@22.7.5)
+      '@sox/authoring':
+        specifier: workspace:*
+        version: link:../../libs/authoring
+
 packages:
 
   '@babel/code-frame@7.29.7':
