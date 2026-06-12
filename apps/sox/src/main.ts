@@ -30,7 +30,9 @@ import {
   resolveExtensionDir,
   McpClient,
   reconcileRuntime,
+  compilePolicy,
 } from '@sox/host-runtime';
+import type { PermissionsBlock } from '@sox/host-runtime';
 
 // ─── Entry ────────────────────────────────────────────────────────────────────
 
@@ -832,14 +834,48 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
     process.exit(1);
   }
 
+  // [process-boundary.exec] — Compile policy from the manifest's permissions block
+  // and inject it into the child env, mirroring the supervisor's enforced spawn path.
+  // This closes the C6 enforcement gap for the apps/sox canonical CLI exec path.
+  // TODO C7: de-duplicate exec with runtime-cli (apps/sox and runtime-cli each hold a copy)
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
     entrypoint?: string;
+    permissions?: PermissionsBlock;
   };
   if (!manifest.entrypoint) {
     process.stderr.write(
       `sox exec: no entrypoint in manifest at ${manifestPath}\n`,
     );
     process.exit(1);
+  }
+
+  const policy = compilePolicy(manifest.permissions);
+
+  let execEnv: NodeJS.ProcessEnv;
+  if (policy.enforced) {
+    // Scrub child env to the same minimal allowlist as supervisor._spawn enforced path.
+    const allowedKeys = new Set([
+      'PATH',
+      'HOME',
+      'USER',
+      'LOGNAME',
+      'LANG',
+      'LC_ALL',
+      'LC_CTYPE',
+      'TZ',
+    ]);
+    const baseEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v !== undefined && (allowedKeys.has(k) || k.startsWith('NODE_'))) {
+        baseEnv[k] = v;
+      }
+    }
+    // policy.toEnv() injects the enforce flag + 4 policy JSON arrays ([def:policy-env]).
+    // Goes last so it cannot be shadowed by any parent env var.
+    execEnv = { ...baseEnv, ...policy.toEnv() };
+  } else {
+    // [inv:no-regress] — No permissions block: byte-identical to pre-state.
+    execEnv = { ...process.env };
   }
 
   const entrypointPath = path.resolve(extDir, manifest.entrypoint);
@@ -854,7 +890,7 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
 
   const child = spawn(process.execPath, [entrypointPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env },
+    env: execEnv,
   });
 
   const client = new McpClient(child);

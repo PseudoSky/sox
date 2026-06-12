@@ -505,6 +505,28 @@ def phase_final() -> None:
         expect_ok=True,
     )
 
+    # ── [audit-final.exec-path-enforced.apps-sox] — canonical CLI (extension-#0) ──
+    #
+    # apps/sox/src/main.ts holds a SECOND, independent cmdExec implementation whose
+    # fresh-spawn fallback was unenforced (env: { ...process.env }, no policy injected).
+    # This structural check proves that apps/sox now mirrors the runtime-cli enforcement
+    # pattern: compilePolicy( is called on the manifest permissions, and execEnv is built
+    # and passed to spawn — so a future regression dropping the injection is immediately caught.
+    check(
+        "audit-final.exec-path-enforced.apps-sox",
+        "apps/sox/src/main.ts exec spawn must compile the policy and inject execEnv — "
+        "grep that apps/sox/src/main.ts calls compilePolicy( AND uses execEnv/toEnv() "
+        "so the canonical CLI (extension-#0) is gate-checked alongside runtime-cli",
+        "node -e \""
+        "const s=require('node:fs').readFileSync('apps/sox/src/main.ts','utf8');"
+        "const hasCompile=s.includes('compilePolicy(');"
+        "const hasToEnv=s.includes('policy.toEnv()');"
+        "const hasExecEnv=s.includes('execEnv');"
+        "if(hasCompile && hasToEnv && hasExecEnv)console.log('OK');"
+        "else process.exit(1)\"",
+        expect_ok=True,
+    )
+
     # ── [dod.5] reviewer gate (machine half) ──
     check(
         "dod.5",

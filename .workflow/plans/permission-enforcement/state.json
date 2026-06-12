@@ -119,6 +119,22 @@
   ],
   "amendment_log": [
     {
+      "ts": "2026-06-12T17:50:00Z",
+      "state": "audit-final",
+      "class": "executor",
+      "type": "fix-regression",
+      "reason": "FOURTH C6 enforcement hole closed: apps/sox/src/main.ts (the canonical extension-#0 CLI, compiled to dist/apps/sox/main.js) contained its own independent cmdExec implementation whose fresh-spawn fallback path was unenforced — it read the manifest as `{ entrypoint?: string }` (never reading permissions) and spawned with `env: { ...process.env }` (no policy injected). This is a DUPLICATE of the runtime-cli.ts C6 hole that was closed in the prior amendment. Decision: MIRROR (not delegate). Delegating to runtime-cli.ts cmdExec would require non-trivial refactoring (different flag structures, different registrar/fallback logic). Mirroring is the low-risk, complete fix. FIX 1: widened manifest type to include `permissions?: PermissionsBlock`; imported `compilePolicy` and `PermissionsBlock` from `@sox/host-runtime` (already a dependency); built `execEnv` exactly as runtime-cli does (enforced path: scrub to allowlist + NODE_* then merge policy.toEnv() last; unenforced path: { ...process.env } byte-identical [inv:no-regress]); passed `execEnv` to spawn. Added TODO C7 note for future de-duplication. FIX 2: new audit check `[audit-final.exec-path-enforced.apps-sox]` added to phase_final — structural grep that apps/sox/src/main.ts contains compilePolicy(, policy.toEnv(), and execEnv — ensures BOTH exec implementations (runtime-cli + apps/sox) are gate-checked by the final audit. REALITY PROOF (through compiled apps/sox exec): `node dist/apps/sox/main.js exec --runtime-file=<tmp> --id=memory-server --tool=memory_write --args={db_path:<evil>}` returned `{isError:true,content:[{type:text,text:\"permission denied: db_path /var/.../apps-sox-c6-evil-<pid>.db outside declared fs allowlist\"}]}` AND evil file does NOT exist on disk. Final audit exit 0 including new check. current_state kept as audit-final.",
+      "current_state_unchanged": "audit-final",
+      "files_changed": [
+        "apps/sox/src/main.ts (MODIFIED) — import compilePolicy + PermissionsBlock from @sox/host-runtime; cmdExec fresh-spawn path now builds execEnv (enforced: scrub+policy.toEnv(); unenforced: {...process.env}); manifest type widened to include permissions?: PermissionsBlock; TODO C7 de-duplicate note added",
+        ".workflow/plans/permission-enforcement/scripts/audit_c6.py (MODIFIED) — new check [audit-final.exec-path-enforced.apps-sox]: structural grep that apps/sox/src/main.ts calls compilePolicy( AND policy.toEnv() AND uses execEnv; existing checks intact and unweakened"
+      ],
+      "enforcement_proof": "node dist/apps/sox/main.js exec → isError:true 'permission denied: db_path /var/.../apps-sox-c6-evil-<pid>.db outside declared fs allowlist'; evil file does NOT exist on disk (apps/sox exec path confirmed enforced through compiled artifact)",
+      "final_audit_exit": 0,
+      "final_audit_tail": "FINAL AUDIT PASSED: all criteria verified.",
+      "by": "sox-active:typescript-pro"
+    },
+    {
       "ts": "2026-06-12T18:00:00Z",
       "state": "audit-final",
       "class": "planner",
