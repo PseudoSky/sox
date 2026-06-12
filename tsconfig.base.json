@@ -25,7 +25,8 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "outDir": "dist"
+    "outDir": "dist",
+    "paths": {}
   },
   "include": ["scripts/**/*.ts", "extensions/**/*.ts"],
   "exclude": ["node_modules", "dist"]
