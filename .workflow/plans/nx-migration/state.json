@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "nx-migration",
   "dag": "dag.json",
-  "current_state": "sox-extension",
+  "current_state": "audit-engine",
   "states": {
     "checkpoint-branch": { "status": "done", "started_ts": "2026-06-12T01:00:00Z", "done_ts": "2026-06-12T01:03:47Z" },
     "nx-init": { "status": "done", "started_ts": "2026-06-11T20:06:00Z", "done_ts": "2026-06-11T20:13:00Z" },
@@ -10,7 +10,7 @@
     "authoring-lib": { "status": "done", "started_ts": "2026-06-11T20:35:00Z", "done_ts": "2026-06-11T21:00:00Z" },
     "audit-foundation": { "status": "done", "started_ts": "2026-06-11T21:00:00Z", "done_ts": "2026-06-11T21:05:00Z" },
     "engine-libs": { "status": "done", "started_ts": "2026-06-11T21:10:00Z", "done_ts": "2026-06-11T22:45:00Z" },
-    "sox-extension": { "status": "pending", "started_ts": null, "done_ts": null },
+    "sox-extension": { "status": "done", "started_ts": "2026-06-11T21:30:00Z", "done_ts": "2026-06-11T23:15:00Z" },
     "audit-engine": { "status": "pending", "started_ts": null, "done_ts": null },
     "type-discovery": { "status": "pending", "started_ts": null, "done_ts": null },
     "memory-core": { "status": "pending", "started_ts": null, "done_ts": null },
@@ -61,6 +61,13 @@
       "ts": "2026-06-11T22:45:00Z",
       "guard_exit": 0,
       "note": "libs/install-engine (parseArgs A12 fix: --flag value + --flag=value, cascade, install, build-index, provider-capabilities; 15 tests); libs/host-runtime (fireIsolated DEFECT-1, expandTilde A5, stop-via-supervisor, enable-reactivation; 19 tests); libs/registry (drift gate assertNoDrift, detectDrift isFile guard; 14 tests); apps/sox stub CLI (A11 exec routing via McpRegistrar); tsconfig.base.json paths for all 3 libs; dist/package.json type:commonjs in each lib (root type:module fix); @typescript-eslint/parser added, eslint.config.js updated for TS parsing; boundary lint PASS; 374 tests green (0 regressions); guard bash .workflow/plans/nx-migration/scripts/guards/engine-libs.sh exited 0; gitnexus detect-changes: 44 files 150 symbols changed since pre-nx-baseline (all intended)"
+    },
+    {
+      "from": "sox-extension",
+      "to": "audit-engine",
+      "ts": "2026-06-11T23:15:00Z",
+      "guard_exit": 0,
+      "note": "apps/sox/extension.json created (type:command, validates against libs/manifest D1/D2); apps/sox/src/main.ts fully wired — all 14 verbs (init/validate/search/install/update/uninstall/enable/disable/list/details/start/stop/status/exec) delegating to engine libs; A1: init uses libs/authoring scaffold() + template fallback for style-rule edge cases; A11: exec routes via McpRegistrar then fresh spawn; A12: parseArgs dual-flag-form throughout; bin/sox shebang wrapper; package.json with bin field; tsconfig.app.json outDir→dist/apps/sox/; rewrite-paths.cjs post-build resolves @sox/* at CJS runtime; boundary lint PASS (static imports only for install-engine+host-runtime); guard sox-extension.sh exited 0; 374 tests green"
     }
   ],
   "amendment_log": []
