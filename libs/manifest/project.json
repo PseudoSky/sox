@@ -10,7 +10,7 @@
       "executor": "nx:run-commands",
       "outputs": ["{workspaceRoot}/libs/manifest/dist"],
       "options": {
-        "command": "tsc --project libs/manifest/tsconfig.lib.json",
+        "command": "tsc --project libs/manifest/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/manifest/dist/package.json",
         "cwd": "."
       },
       "cache": true,
@@ -23,11 +23,19 @@
     "test": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "vitest run --config libs/manifest/vitest.config.ts",
-        "cwd": "."
+        "commands": [
+          "vitest run --config libs/manifest/vitest.config.ts",
+          "vitest run scripts/validate-manifests.test.ts"
+        ],
+        "parallel": false
       },
       "cache": true,
-      "inputs": ["{projectRoot}/src/**/*.ts", "{projectRoot}/src/schema.json"]
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/src/schema.json",
+        "{workspaceRoot}/scripts/validate-manifests.ts",
+        "{workspaceRoot}/scripts/validate-manifests.test.ts"
+      ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",

@@ -16,10 +16,12 @@
       "cache": false
     },
     "lint": {
-      "executor": "@nx/eslint:lint",
+      "executor": "nx:run-commands",
       "options": {
-        "lintFilePatterns": []
-      }
+        "command": "echo 'sox-memory-bundle: no TS sources to lint (declarative bundle)'",
+        "cwd": "."
+      },
+      "cache": true
     }
   }
 }
