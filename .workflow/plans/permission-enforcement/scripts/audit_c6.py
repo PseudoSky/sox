@@ -458,8 +458,51 @@ def phase_final() -> None:
     )
     check(
         "audit-final.regress-e2e",
-        "the lifecycle e2e must still pass under enforcement",
+        "the lifecycle e2e must still pass under enforcement — now includes the negative "
+        "exec enforcement assertion ([dod.2] through the real sox exec path)",
         "nx run host-runtime:test-e2e",
+    )
+
+    # ── [audit-final.exec-path-enforced] — the SECOND spawn point is enforced ──
+    #
+    # The _REALITY_DRIVER above drives the child directly with hand-set env —
+    # it exercises enforcement correctness but NOT the exec code path. The C6 hole
+    # was that sox exec's fresh-spawn never injected policy.toEnv(), so SOX_PERM_ENFORCE
+    # was unset in the child and enforcement was absent. This check proves BOTH:
+    #
+    #   (a) STRUCTURAL: runtime-cli.ts exec path merges policy.toEnv() into the child
+    #       env — a static grep that a future regression dropping the injection is caught.
+    #   (b) REGRESS-E2E: the e2e test-e2e target (above) now includes the negative exec
+    #       assertion [dod.2], meaning a broken exec enforcement immediately red-bars the
+    #       gate without requiring the human to notice a missing runtime check.
+    #
+    # Both sub-checks must pass for [audit-final.exec-path-enforced] to be green.
+    check(
+        "audit-final.exec-path-enforced.structural",
+        "runtime-cli.ts exec spawn must merge policy.toEnv() — grep that the exec path "
+        "calls compilePolicy + policy.toEnv() so a future regression dropping it is caught "
+        "([process-boundary.exec] closed the C6 second-spawn-point hole)",
+        "node -e \""
+        "const s=require('node:fs').readFileSync('libs/host-runtime/src/runtime-cli.ts','utf8');"
+        "const hasCompile=s.includes('compilePolicy(');"
+        "const hasToEnv=s.includes('policy.toEnv()');"
+        "const hasExecEnv=s.includes('execEnv');"
+        "if(hasCompile && hasToEnv && hasExecEnv)console.log('OK');"
+        "else process.exit(1)\"",
+        expect_ok=True,
+    )
+    check(
+        "audit-final.exec-path-enforced.regress-e2e",
+        "the lifecycle e2e includes the negative exec enforcement assertion — EVIL_DB_PATH "
+        "denial + no-file proof through the real sox exec path ([dod.2] exec path)",
+        "node -e \""
+        "const s=require('node:fs').readFileSync('tools/test-e2e-lifecycle.js','utf8');"
+        "const hasEvil=s.includes('EVIL_DB_PATH');"
+        "const hasDod2=s.includes('[dod.2]');"
+        "const hasNoFile=s.includes('evil db_path NOT created on disk');"
+        "if(hasEvil && hasDod2 && hasNoFile)console.log('OK');"
+        "else process.exit(1)\"",
+        expect_ok=True,
     )
 
     # ── [dod.5] reviewer gate (machine half) ──

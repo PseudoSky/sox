@@ -119,6 +119,24 @@
   ],
   "amendment_log": [
     {
+      "ts": "2026-06-12T18:00:00Z",
+      "state": "audit-final",
+      "class": "planner",
+      "type": "premise-correction",
+      "reason": "CRITICAL premise correction: the supervisor _spawn was NOT the single spawn point for C6 enforcement. sox exec maintained its own fresh-spawn path in cmdExec (runtime-cli.ts ~line 419) that never compiled the manifest policy or injected policy.toEnv() — the spawned child received no SOX_PERM_ENFORCE in its env, so checkDbPathPolicy returned null (no enforcement). This was confirmed by evidence: DB_PATH in the e2e was under TMP_DIR (outside ~/.memory/**) yet memory_write succeeded, proving exec was unenforced. Three fixes applied: (1) FIX 1 [process-boundary.exec]: In cmdExec, before the fresh-spawn, read the manifest's permissions block, call compilePolicy(), and inject policy.toEnv() into the child env — mirroring the supervisor _spawn enforced path exactly (scrubbed base + policy.toEnv(); unenforced path byte-identical [inv:no-regress]). (2) FIX 2 [e2e-exec-path]: DB_PATH moved to ~/.memory/sox-e2e-{pid}.db (inside the declared allowlist) so the positive write succeeds under enforcement; teardown deletes the pid-scoped file. Negative assertion added (Step 3b): memory_write to EVIL_DB_PATH (os.tmpdir()) via the real sox exec must return isError:true AND the file must not exist on disk — end-to-end proof of [dod.2] through the production exec path. e2e result: 35/35 PASS (was 33; +2 new negative assertions). (3) FIX 3 [audit-final.exec-path-enforced]: Two new audit checks added — structural (grep that runtime-cli.ts exec path calls compilePolicy + policy.toEnv()) and regress-e2e (grep that e2e source includes EVIL_DB_PATH + [dod.2] + no-file assertion). current_state kept as audit-final; no state regressed.",
+      "current_state_unchanged": "audit-final",
+      "files_changed": [
+        "libs/host-runtime/src/runtime-cli.ts (MODIFIED) — added compilePolicy import + PermissionsBlock import; cmdExec builds execEnv: enforced path scrubs env + injects policy.toEnv(); unenforced path byte-identical to pre-state [inv:no-regress]",
+        "tools/test-e2e-lifecycle.js (MODIFIED) — DB_PATH moved to ~/.memory/sox-e2e-{pid}.db (inside allowlist); EVIL_DB_PATH added for negative test; Step 3b negative enforcement test added; cleanup deletes both pid-scoped files; e2e count 33→35 PASS",
+        ".workflow/plans/permission-enforcement/scripts/audit_c6.py (MODIFIED) — two new checks: [audit-final.exec-path-enforced.structural] (grep compilePolicy+toEnv in runtime-cli.ts) and [audit-final.exec-path-enforced.regress-e2e] (grep EVIL_DB_PATH+[dod.2]+no-file in e2e); existing checks intact and unweakened"
+      ],
+      "e2e_result": "35/35 PASS (was 33); +2 new negative enforcement assertions (Step 3b): isError:true returned for evil path, file does NOT exist on disk",
+      "final_audit_exit": 0,
+      "final_audit_tail": "FINAL AUDIT PASSED: all criteria verified.",
+      "enforcement_proof": "Step 3b output: '[enforcement] tool returned isError:true: permission denied: db_path /var/folders/yg/.../sox-e2e-evil-{pid}.db outside declared fs allowlist' AND '[enforcement] confirmed: ...sox-e2e-evil-{pid}.db does NOT exist after denied write'",
+      "by": "sox-active:typescript-pro"
+    },
+    {
       "ts": "2026-06-12T17:25:00Z",
       "state": "audit-final",
       "class": "executor",

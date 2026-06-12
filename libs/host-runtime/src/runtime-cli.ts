@@ -28,6 +28,8 @@ import {
   getRuntimeFilePath,
   getScopePaths,
 } from './runtime.js';
+import { compilePolicy } from './policy.js';
+import type { PermissionsBlock } from './supervisor.js';
 
 // __dirname is available because tsconfig.lib.json compiles to CommonJS.
 // dist/runtime-cli.js lives at libs/host-runtime/dist/, so three levels up is the repo root.
@@ -345,6 +347,25 @@ function cmdStatus(flags: Record<string, string>): void {
  *
  * Uses the runtime record to find the extension's entrypoint, spawns a fresh
  * MCP session (stdio), calls the tool, prints the result as JSON, and exits.
+ *
+ * [process-boundary.exec] — Policy env injected into the exec spawn so that a
+ * fresh-spawned child self-enforces identically to the supervised child.
+ *
+ * ENFORCED path (manifest declares permissions block):
+ *   Compile the policy from the manifest's permissions (same compilePolicy used
+ *   by the supervisor in supervisor.ts _spawn). Inject policy.toEnv() into the
+ *   child env, mirroring the supervisor's enforced path ([def:policy-env]).
+ *   Child env is scrubbed to the same minimal allowlist (PATH/HOME/USER/LOGNAME/
+ *   LANG/LC_ALL/LC_CTYPE/TZ/NODE_*) then merged with policy.toEnv() — identical
+ *   to supervisor._spawn enforced path. [ref:guard-before-sink] is satisfied
+ *   because checkDbPathPolicy in the child reads the enforce flag from env ([def:policy-env]).
+ *
+ * UNENFORCED path (no permissions block):
+ *   env is { ...process.env } — byte-identical to today ([inv:no-regress], legacy
+ *   compat; dev / standalone invocations are NOT restricted).
+ *
+ * NOTE: routing exec to the already-running supervised child (proper A11) is
+ * out of scope here — this only closes the C6 hole in the existing fresh-spawn.
  */
 async function cmdExec(flags: Record<string, string>): Promise<void> {
   const runtimeFilePath = flags['runtime-file'] ?? process.env['SOX_RUNTIME_FILE'] ?? '';
@@ -416,9 +437,45 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
   const { spawn } = await import('node:child_process');
   const { McpClient } = await import('./registrar.js');
 
+  // [process-boundary.exec] — Compile policy from the manifest's permissions block
+  // and inject it into the child env, mirroring the supervisor's enforced spawn path.
+  // This closes the C6 enforcement gap: sox exec fresh-spawn is now policy-bound.
+  const manifestFull = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+    entrypoint?: string;
+    permissions?: PermissionsBlock;
+  };
+  const policy = compilePolicy(manifestFull.permissions);
+
+  let execEnv: NodeJS.ProcessEnv;
+  if (policy.enforced) {
+    // Scrub child env to the same minimal allowlist as supervisor._spawn enforced path.
+    const allowedKeys = new Set([
+      'PATH',
+      'HOME',
+      'USER',
+      'LOGNAME',
+      'LANG',
+      'LC_ALL',
+      'LC_CTYPE',
+      'TZ',
+    ]);
+    const baseEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v !== undefined && (allowedKeys.has(k) || k.startsWith('NODE_'))) {
+        baseEnv[k] = v;
+      }
+    }
+    // policy.toEnv() injects the enforce flag + 4 policy JSON arrays ([def:policy-env]).
+    // Goes last so it cannot be shadowed by any parent env var.
+    execEnv = { ...baseEnv, ...policy.toEnv() };
+  } else {
+    // [inv:no-regress] — No permissions block: byte-identical to pre-state.
+    execEnv = { ...process.env };
+  }
+
   const child = spawn(process.execPath, [entrypointPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env },
+    env: execEnv,
   });
 
   child.stderr?.on('data', (_d: Buffer) => {

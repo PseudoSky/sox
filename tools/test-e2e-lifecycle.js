@@ -32,7 +32,18 @@ const NODE = process.execPath;
 const TMP_DIR = path.join(os.tmpdir(), `sox-e2e-${process.pid}-${Date.now()}`);
 const EXTENSIONS_DIR = path.join(TMP_DIR, '.extensions');
 const RUNTIME_FILE = path.join(EXTENSIONS_DIR, 'runtime.json');
-const DB_PATH = path.join(TMP_DIR, '.memory', 'e2e-test.db');
+
+// [process-boundary.exec] C6 enforcement: DB_PATH must be INSIDE the declared allowlist
+// (memory-server declares fs.{read,write}: ["~/.memory/**"]) so the positive write succeeds
+// under enforcement. Previously DB_PATH was under TMP_DIR which is OUTSIDE the allowlist —
+// that write only succeeded because exec enforcement was absent (the C6 hole). Now that
+// enforcement is in place the allowed path must be within ~/.memory/**.
+// We use a pid-scoped name to avoid collisions with concurrent tests. Teardown deletes it.
+const DB_PATH = path.join(os.homedir(), '.memory', `sox-e2e-${process.pid}.db`);
+
+// Negative (evil) path: clearly outside the allowlist. Used to prove exec enforcement.
+// Must NOT exist after a denied memory_write call ([dod.2] through the real exec path).
+const EVIL_DB_PATH = path.join(os.tmpdir(), `sox-e2e-evil-${process.pid}.db`);
 
 // Custom config with ONLY memory-server
 const CUSTOM_CONFIG = {
@@ -110,6 +121,16 @@ function cleanup() {
   // Remove temp dir
   try {
     fs.rmSync(TMP_DIR, { recursive: true, force: true });
+  } catch { /* ignore */ }
+
+  // Remove the allowed DB we wrote into ~/.memory (pid-scoped; no other test entry polluted)
+  try {
+    if (fs.existsSync(DB_PATH)) fs.rmSync(DB_PATH, { force: true });
+  } catch { /* ignore */ }
+
+  // Remove the evil DB if it somehow got created (should not exist — denial means no file)
+  try {
+    if (fs.existsSync(EVIL_DB_PATH)) fs.rmSync(EVIL_DB_PATH, { force: true });
   } catch { /* ignore */ }
 }
 
@@ -202,14 +223,18 @@ async function waitForRunning(extId, timeoutMs = 15000) {
 async function main() {
   console.log('=== sox e2e lifecycle test ===');
   console.log(`TMP_DIR: ${TMP_DIR}`);
-  console.log(`DB_PATH: ${DB_PATH}`);
   console.log('');
 
   // ── Setup: create temp dir + custom config ────────────────────────────────
   fs.mkdirSync(EXTENSIONS_DIR, { recursive: true });
-  fs.mkdirSync(path.join(TMP_DIR, '.memory'), { recursive: true });
+  // Ensure ~/.memory exists so the allowed DB path is writable (memory-server creates
+  // the DB file itself, but the parent dir must exist or openDb/mkdirSync handles it;
+  // we create it here to be explicit about the allowed-path precondition).
+  fs.mkdirSync(path.join(os.homedir(), '.memory'), { recursive: true });
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(CUSTOM_CONFIG, null, 2) + '\n', 'utf8');
   console.log('Setup: temp dir + config created');
+  console.log(`DB_PATH (allowed, inside ~/.memory/**): ${DB_PATH}`);
+  console.log(`EVIL_DB_PATH (denied, outside allowlist): ${EVIL_DB_PATH}`);
 
   // ═══════════════════════════════════════════════════════════════════════════
   // Step 1: sox install memory-server -s project (into temp scope)
@@ -379,6 +404,73 @@ async function main() {
       console.error('Could not parse recall output:', recallResult.stdout);
       assert(false, `memory_recall output is valid JSON: ${String(e)}`);
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Step 3b: NEGATIVE enforcement test via the REAL sox exec path ([dod.2])
+  //
+  // [process-boundary.exec] closed the C6 hole: exec now injects policy.toEnv()
+  // so the spawned child receives SOX_PERM_ENFORCE + the allowlist. A write to
+  // EVIL_DB_PATH (outside ~/.memory/**) MUST:
+  //   (a) return isError in the tool result OR cause exec to exit non-zero, AND
+  //   (b) NOT create the file on disk.
+  //
+  // This is the end-to-end reality proof that enforcement flows through the real
+  // production exec path (not just the hand-wired _REALITY_DRIVER in audit_c6.py).
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\nStep 3b: negative enforcement test — evil db_path MUST be denied via sox exec');
+
+  // Ensure no stale evil file from a previous run.
+  try { if (fs.existsSync(EVIL_DB_PATH)) fs.rmSync(EVIL_DB_PATH, { force: true }); } catch { /* ignore */ }
+
+  const evilWriteArgs = JSON.stringify({
+    content: 'This write MUST be denied by C6 permission enforcement.',
+    db_path: EVIL_DB_PATH,
+    importance: 1,
+  });
+
+  const evilWriteResult = runSox([
+    'exec',
+    '-s', 'project',
+    `--runtime-file=${RUNTIME_FILE}`,
+    `--id=memory-server`,
+    `--tool=memory_write`,
+    `--args=${evilWriteArgs}`,
+  ]);
+
+  // The denied call must signal failure: either a non-zero exit (exec error) OR
+  // an isError:true result in the tool output. Both indicate enforcement.
+  let evilDenied = false;
+  if (evilWriteResult.status !== 0) {
+    // exec itself exited non-zero — enforcement at the transport level.
+    evilDenied = true;
+    console.log(`  [enforcement] sox exec exited ${evilWriteResult.status} (denied at exec level)`);
+  } else {
+    // exec exited 0 — check whether the tool returned isError:true.
+    try {
+      const out = JSON.parse(evilWriteResult.stdout.trim());
+      if (out?.isError === true) {
+        evilDenied = true;
+        console.log(`  [enforcement] tool returned isError:true: ${out?.content?.[0]?.text ?? '(no text)'}`);
+      } else {
+        console.error('  evil write stdout:', evilWriteResult.stdout);
+      }
+    } catch {
+      console.error('  could not parse evil write output:', evilWriteResult.stdout);
+    }
+  }
+  assert(evilDenied,
+    `[dod.2] memory_write to evil path denied (exit=${evilWriteResult.status}, stdout=${evilWriteResult.stdout.slice(0, 120)})`);
+
+  // The evil file MUST NOT exist on disk — no side effect from the denied call.
+  const evilFileExists = fs.existsSync(EVIL_DB_PATH);
+  assert(!evilFileExists,
+    `[dod.2] evil db_path NOT created on disk after denied write (file must not exist: ${EVIL_DB_PATH})`);
+
+  if (!evilFileExists) {
+    console.log(`  [enforcement] confirmed: ${EVIL_DB_PATH} does NOT exist after denied write`);
+  } else {
+    console.error(`  [enforcement] FAIL: ${EVIL_DB_PATH} EXISTS after denied write — enforcement hole`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
