@@ -2,9 +2,9 @@
   "schema_version": 2,
   "title": "nx-migration",
   "dag": "dag.json",
-  "current_state": "checkpoint-branch",
+  "current_state": "nx-init",
   "states": {
-    "checkpoint-branch": { "status": "pending", "started_ts": null, "done_ts": null },
+    "checkpoint-branch": { "status": "done", "started_ts": "2026-06-12T01:00:00Z", "done_ts": "2026-06-12T01:03:47Z" },
     "nx-init": { "status": "pending", "started_ts": null, "done_ts": null },
     "manifest-lib": { "status": "pending", "started_ts": null, "done_ts": null },
     "authoring-lib": { "status": "pending", "started_ts": null, "done_ts": null },
@@ -19,6 +19,14 @@
     "audit-final": { "status": "pending", "started_ts": null, "done_ts": null },
     "done": { "status": "pending", "started_ts": null, "done_ts": null }
   },
-  "transition_log": [],
+  "transition_log": [
+    {
+      "from": "checkpoint-branch",
+      "to": "nx-init",
+      "ts": "2026-06-12T01:03:47Z",
+      "guard_exit": 0,
+      "note": "branch feat/nx-migration created, tag pre-nx-baseline=db04a1f, 380 tests green"
+    }
+  ],
   "amendment_log": []
 }
