@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "type": "bundle",
   "title": "sox-memory (graph memory subsystem)",
-  "description": "The four memory extensions as one independently-versioned product.",
+  "description": "Use this when you want the full sox-memory graph-memory subsystem installed in one command — expands to memory-server (7 MCP tools, SQLite graph store), memory-organizer (LLM organizer agent), memory-flush (SessionEnd hook), and memory-cli (store lifecycle commands).",
+  "keywords": ["memory", "bundle", "graph", "rag", "sqlite", "subsystem"],
+  "author": "sox-ecosystem",
   "compatibility": { "host": ">=1.0.0 <2.0.0" },
   "license": "MIT",
   "members": [
@@ -12,5 +14,6 @@
     { "id": "memory-organizer", "version": "^0.1.0" },
     { "id": "memory-flush",     "version": "^0.1.0" },
     { "id": "memory-cli",       "version": "^0.1.0" }
-  ]
+  ],
+  "permissions": {}
 }

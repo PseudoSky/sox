@@ -22,7 +22,11 @@
       "enum": ["agent", "skill", "mcp-server", "prompt", "hook", "command", "bundle"]
     },
     "title": { "type": "string", "minLength": 1 },
-    "description": { "type": "string", "minLength": 1 },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "description": "DUAL-PURPOSE: (1) human-readable one-line summary shown in UIs and catalogs; (2) LLM invocation guidance — write as 'Use this when X' or 'Handles Y so the host doesn't have to'. Do NOT use marketing copy. Long-form prose belongs in README/SKILL.md (P3). This field is the primary signal a catalog or orchestrating agent uses to decide whether to invoke this extension."
+    },
     "compatibility": {
       "type": "object",
       "additionalProperties": false,
@@ -38,7 +42,32 @@
       "type": "string",
       "description": "Resolved at install. Required for behavioral types; omitted for prompt (host convention: prompt.md)."
     },
-    "author": { "type": "string" },
+    "keywords": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Discovery tags for catalog search and LLM tool-selection. Short, lowercase, hyphenated preferred (e.g. 'memory', 'code-review'). Optional — absent extensions are not penalized in P2; required enforcement is deferred to P5/P6 strict mode."
+    },
+    "author": {
+      "oneOf": [
+        { "type": "string" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name"],
+          "properties": {
+            "name": { "type": "string" },
+            "email": { "type": "string", "format": "email" },
+            "url": { "type": "string", "format": "uri" }
+          }
+        }
+      ],
+      "description": "Extension author. String form ('Name <email>') or structured object with name, optional email and url."
+    },
+    "homepage": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of the extension's documentation or project home page."
+    },
     "license": { "type": "string" },
     "requires": {
       "type": "object",
@@ -65,11 +94,20 @@
           "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
           "version": { "type": "string" }
         }
-      }
+      },
+      "description": "Runtime dependencies: extension ids + semver ranges this extension requires to be installed. Enforced at install time (Gap F2): the installer must verify each declared dependency is present and satisfies the declared version range before activating this extension."
     },
     "capabilities": { "type": "array", "items": { "type": "string" } },
-    "tags": { "type": "array", "items": { "type": "string" } },
-    "repository": { "type": "string", "format": "uri" },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Coarse-grained classification labels (e.g. 'productivity', 'coding'). Complements keywords. Optional."
+    },
+    "repository": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of the extension's source repository (e.g. https://github.com/org/repo)."
+    },
     "private": { "type": "boolean", "default": false },
     "checksum": {
       "type": "string",
@@ -140,6 +178,175 @@
         "properties": {
           "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
           "version": { "type": "string", "description": "semver range, e.g. ^0.1.0" }
+        }
+      }
+    },
+    "events": {
+      "type": "array",
+      "description": "P2 — HOOK self-description. Lifecycle events this hook binds to. OPTIONAL-FIRST in P2 (warn when absent); flipped to required in P3. Each entry must be a known host lifecycle event name. Closed enum prevents binding to non-existent events. Seeded from current usage: audit-hook binds PreToolUse; memory-flush binds SessionEnd + ScopePromotionProposed.",
+      "items": {
+        "type": "string",
+        "enum": [
+          "PreToolUse",
+          "PostToolUse",
+          "SessionEnd",
+          "ScopePromotionProposed",
+          "Stop"
+        ]
+      },
+      "minItems": 1
+    },
+    "invocation": {
+      "type": "object",
+      "description": "P2 — AGENT and COMMAND self-description. Declares the invocation protocol and handler interface so a host can discover capability without executing code. OPTIONAL-FIRST in P2 (warn when absent); flipped to required in P3. Resolves the observed divergence: agent tools[]+execute vs organizeItems(); command run(input) vs runCli(argv).",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "enum": ["function-export", "stdio", "ipc", "http"],
+          "description": "Transport by which the host calls this extension. 'function-export' = host imports the entrypoint module and calls an exported function (most Node extensions). 'stdio' = the host spawns a subprocess and communicates over stdin/stdout. 'ipc' = Node IPC channel. 'http' = HTTP endpoint."
+        },
+        "handler": {
+          "type": "string",
+          "description": "The exported function or method name the host calls. For protocol='function-export' this is the exact export name (e.g. 'run', 'execute', 'handler', 'organizeItems'). This resolves the run/runCli and tools[]/organizeItems divergence."
+        },
+        "input_schema": {
+          "type": "object",
+          "description": "JSON Schema (draft-07 subset) describing the input passed to the handler. For agents: the task descriptor shape. For commands: the argv/input shape. OPTIONAL — absent means untyped input (legacy).",
+          "additionalProperties": true
+        },
+        "output_schema": {
+          "type": "object",
+          "description": "JSON Schema (draft-07 subset) describing the value returned by the handler. OPTIONAL — absent means untyped output (legacy).",
+          "additionalProperties": true
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "description": "P2 — MCP-SERVER self-description. Machine-readable tool descriptors at rest in the manifest, mirroring the tools the server advertises at runtime via tools/list. OPTIONAL-FIRST in P2 (warn when absent); flipped to required in P3. Enables static capability discovery without spawning the server.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "description"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Tool name as returned by tools/list. Must be stable (clients cache by name)."
+          },
+          "description": {
+            "type": "string",
+            "description": "Human- and LLM-readable description. Dual-purpose: shown in UIs and used by the orchestrator to decide whether to invoke the tool. Write as 'Use this when X' or 'Fetches Y from Z'."
+          },
+          "inputSchema": {
+            "type": "object",
+            "description": "JSON Schema for the tool's input. Mirrors the inputSchema field in the MCP tools/list response. OPTIONAL — absent means the tool accepts any input.",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "parameters": {
+      "type": "array",
+      "description": "P2 — PROMPT self-description. Declares the template parameters this prompt requires. OPTIONAL-FIRST in P2 (warn when absent); flipped to required in P3. Enables a host to validate parameter completeness before rendering without parsing prompt.md.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Parameter name as used in the template body (e.g. 'name' for {{name}})."
+          },
+          "type": {
+            "type": "string",
+            "enum": ["string", "number", "boolean", "array", "object"],
+            "description": "Parameter value type. Defaults to 'string' if absent."
+          },
+          "required": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether this parameter must be supplied by the caller. Defaults to true."
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable description of what this parameter controls."
+          }
+        }
+      }
+    },
+    "template_engine": {
+      "type": "string",
+      "enum": ["handlebars", "jinja2", "mustache", "simple", "none"],
+      "description": "P2 — PROMPT self-description. Declares the substitution engine the prompt.md template requires so the host can render it without guessing. OPTIONAL-FIRST in P2 (warn when absent for prompt type); flipped to required in P3. 'simple' = {{key}} literal replacement only."
+    },
+    "run_interface": {
+      "type": "object",
+      "description": "P2 — SKILL self-description. Declares the `run` function's input and output schema. OPTIONAL-FIRST in P2 (warn when absent); flipped to required in P3. Enables orchestrators to validate skill invocation at rest without loading the module.",
+      "additionalProperties": false,
+      "properties": {
+        "input_schema": {
+          "type": "object",
+          "description": "JSON Schema (draft-07 subset) describing the SkillInput shape passed to run(). OPTIONAL — absent means untyped.",
+          "additionalProperties": true
+        },
+        "output_schema": {
+          "type": "object",
+          "description": "JSON Schema (draft-07 subset) describing the SkillOutput shape returned by run(). OPTIONAL — absent means untyped.",
+          "additionalProperties": true
+        }
+      }
+    },
+    "config_schema": {
+      "type": "object",
+      "description": "PB — JSON Schema (draft-07 subset) for the scope-resolved config block supplied to this extension at install time. The installer validates the resolved config against this schema before activation; a config that violates the schema fails validation (closes Gap F3). OPTIONAL — absent means the extension accepts any config object (same as before PB). ENFORCEMENT NOTE for P4/P5: the permission bounds declared in 'permissions' (e.g. fs.paths) must also be enforced at runtime (sandbox db_path to declared paths — Gap F5); this field ships the DECLARATION; the host wires the enforcement.",
+      "additionalProperties": true
+    },
+    "permissions": {
+      "type": "object",
+      "description": "PB — Resource/permission declaration. Declares the fs, network, and socket resources this extension may access. OPTIONAL — absent means no declared resource bounds (legacy behaviour preserved). ENFORCEMENT NOTE for P4/P5: the host runtime must honour these declared bounds (sandboxing, policy checks — Gaps F5/A6); this phase ships the DECLARATION; the host wires the enforcement. Do NOT leave this unimplemented once declared — coordinate with P4/P5.",
+      "additionalProperties": false,
+      "properties": {
+        "fs": {
+          "type": "object",
+          "description": "Filesystem access declarations. Absent => no declared fs access.",
+          "additionalProperties": false,
+          "properties": {
+            "read": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Glob patterns or absolute paths the extension may read. Use '~/' prefix for home-relative paths."
+            },
+            "write": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Glob patterns or absolute paths the extension may write/create/delete."
+            }
+          }
+        },
+        "network": {
+          "type": "object",
+          "description": "Network access declarations. Absent => no declared network access.",
+          "additionalProperties": false,
+          "properties": {
+            "outbound": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Hostnames or URL prefixes the extension may connect to (e.g. 'api.openai.com', 'https://api.anthropic.com/')."
+            }
+          }
+        },
+        "socket": {
+          "type": "object",
+          "description": "Unix domain socket access declarations. Absent => no declared socket access.",
+          "additionalProperties": false,
+          "properties": {
+            "paths": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Unix domain socket paths the extension may bind or connect to (e.g. '~/.memory/memoryd.sock')."
+            }
+          }
         }
       }
     }

@@ -55,7 +55,11 @@ importers:
 
   extensions/bundles/sox-memory-bundle: {}
 
-  extensions/commands/memory-cli: {}
+  extensions/commands/memory-cli:
+    devDependencies:
+      '@sox/extension-memory-server':
+        specifier: workspace:*
+        version: link:../../mcp-servers/memory-server
 
   extensions/commands/status-command: {}
 

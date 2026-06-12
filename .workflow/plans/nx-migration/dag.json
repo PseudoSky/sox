@@ -1,0 +1,156 @@
+{
+  "schema_version": 2,
+  "title": "nx-migration",
+  "spec_sources": [
+    "docs/decisions/0001-nx-and-self-hosting.md",
+    "docs/plans/nx-self-hosting-migration.md",
+    "DOD.md"
+  ],
+  "executor": "sox-active:typescript-pro",
+  "phases": ["checkpoint", "foundation", "engine", "convergence"],
+  "terminal": "done",
+  "nodes": {
+    "checkpoint-branch": {
+      "kind": "work",
+      "phase": "checkpoint",
+      "depends_on": [],
+      "guard": "bash .workflow/plans/nx-migration/scripts/guards/checkpoint-branch.sh",
+      "artifacts": [".workflow/plans/nx-migration/scripts/guards/checkpoint-branch.sh"],
+      "context": "contexts/checkpoint-branch.md",
+      "notes": "Legacy P0. All work is uncommitted incl. this session's fixes — commit ALL of it, tag pre-nx-baseline, branch feat/nx-migration. No code changes beyond committing what exists. Resumability of every later state depends on the tag. The guard captures $? directly and re-runs pnpm test to prove nothing regressed by the commit.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "nx-init": {
+      "kind": "work",
+      "phase": "foundation",
+      "depends_on": ["checkpoint-branch"],
+      "guard": "bash .workflow/plans/nx-migration/scripts/guards/nx-init.sh",
+      "artifacts": ["nx.json", "tsconfig.base.json", "eslint.config.js", "commitlint.config.js", "pnpm-workspace.yaml", "package.json"],
+      "context": "contexts/nx-init.md",
+      "notes": "Legacy P1. nx init + configure: target defaults (@nx/js:tsc), named inputs, module-boundary lint (type:extension/type:lib/type:app), cache, nx release + commitlint. Nx is dev-time only (inv:nx-dev-only) — add to root devDependencies ONLY. Do NOT move existing extensions/scripts here (that is engine/convergence). Existing test suite must stay green."
+    },
+    "manifest-lib": {
+      "kind": "work",
+      "phase": "foundation",
+      "depends_on": ["nx-init"],
+      "guard": "bash .workflow/plans/nx-migration/scripts/guards/manifest-lib.sh",
+      "artifacts": ["libs/manifest/src/index.ts", "libs/manifest/src/schema.json", "libs/manifest/src/manifest.spec.ts", "libs/manifest/project.json"],
+      "context": "contexts/manifest-lib.md",
+      "notes": "Legacy P2. libs/manifest = single source of truth for validate() + schema, with the 3 contract flexes [shape:manifest-flexes]. Port the existing scripts/validate-manifests behavior; do NOT delete scripts/validate-manifests.ts yet (thin-wrapped in migrate-rest). libs/manifest has NO @nx/devkit dep (pure lib). Ordering: this MUST precede authoring-lib."
+    },
+    "authoring-lib": {
+      "kind": "work",
+      "phase": "foundation",
+      "depends_on": ["manifest-lib"],
+      "guard": "bash .workflow/plans/nx-migration/scripts/guards/authoring-lib.sh",
+      "artifacts": ["libs/authoring/src/index.ts", "libs/authoring/src/writer.ts", "libs/authoring/src/templates", "libs/authoring/project.json", "packages/sox-nx/src/generators/extension", "packages/sox-nx/src/generators/library", "packages/sox-nx/project.json", "tools/born-conformance.js", "extensions/agents/echo-agent", "extensions/skills/hello-world", "extensions/mcp-servers/hello-server", "extensions/hooks/audit-hook", "extensions/prompts/greeting-prompt", "extensions/commands/status-command"],
+      "context": "contexts/authoring-lib.md",
+      "notes": "Legacy P3. libs/authoring = pure scaffold(opts)->FileSet (inv:nx-free-core); @sox/nx = thin adapters; born-conformance gate (scaffold->build->validate per type); scaffold-parity test (inv:scaffold-parity). D4: DELETE the 6 demo extensions (they become generated fixtures) — they appear in artifacts because this state removes them. prompt is parked (no generator). Carry scripts/new-extension.ts logic forward, fix its gaps (missing tsconfig, keywords/author)."
+    },
+    "audit-foundation": {
+      "kind": "audit",
+      "phase": "foundation",
+      "depends_on": ["checkpoint-branch", "nx-init", "manifest-lib", "authoring-lib"],
+      "guard": "python3 .workflow/plans/nx-migration/scripts/audit_nx_migration.py --phase foundation",
+      "artifacts": ["scripts/audit_nx_migration.py"],
+      "context": "contexts/audit-foundation.md",
+      "notes": "Mandatory hold point. Verifies every checkpoint-branch/nx-init/manifest-lib/authoring-lib criterion against the real repo before the engine phase. No deferrable items. The audit script is read-only; fixes happen in source."
+    },
+    "engine-libs": {
+      "kind": "work",
+      "phase": "engine",
+      "depends_on": ["audit-foundation"],
+      "guard": "bash .workflow/plans/nx-migration/scripts/guards/engine-libs.sh",
+      "artifacts": ["libs/install-engine/src", "libs/install-engine/project.json", "libs/host-runtime/src", "libs/host-runtime/project.json", "libs/registry/src", "libs/registry/project.json", "apps/sox/src", "apps/sox/project.json"],
+      "context": "contexts/engine-libs.md",
+      "notes": "Legacy P4. CODE-MOVING STATE — run gitnexus impact/context on every symbol BEFORE moving, gitnexus detect-changes AFTER. Re-home scripts/{install,cascade,build-index,host/*,provider-capabilities} into 3 nx libs carrying [def:session-fixes] forward (inv:fix-carry-forward) — NEVER re-grab pre-fix code. Fix the flag parser (A12, [ref:dual-flag-form]) + exec routing while re-homing the CLI. apps/sox is a stub shell here; behavior wired in sox-extension. Do NOT delete scripts/ originals.",
+      "changes": {
+        "deletes": [],
+        "resigns": [],
+        "renames": []
+      }
+    },
+    "sox-extension": {
+      "kind": "work",
+      "phase": "engine",
+      "depends_on": ["engine-libs"],
+      "guard": "bash .workflow/plans/nx-migration/scripts/guards/sox-extension.sh",
+      "artifacts": ["apps/sox/extension.json", "apps/sox/src/main.ts", "apps/sox/package.json", "apps/sox/bin/sox"],
+      "context": "contexts/sox-extension.md",
+      "notes": "Legacy P5. Wire apps/sox = literal extension #0 (D1/D2, [ref:self-hosted-extension-zero]). Its own extension.json (type:command) MUST validate against libs/manifest. All verbs delegate to engine libs; init uses libs/authoring scaffold() (A1); exec via running server (A11). A12 both flag forms flow through the live CLI."
+    },
+    "audit-engine": {
+      "kind": "audit",
+      "phase": "engine",
+      "depends_on": ["engine-libs", "sox-extension"],
+      "guard": "python3 .workflow/plans/nx-migration/scripts/audit_nx_migration.py --phase engine",
+      "artifacts": ["scripts/audit_nx_migration.py"],
+      "context": "contexts/audit-engine.md",
+      "notes": "Mandatory hold point. Re-runs the foundation phase then verifies engine-libs + sox-extension criteria (A12 parser, fixes carried forward, self-hosting validation) against the real repo. No deferrable items."
+    },
+    "type-discovery": {
+      "kind": "work",
+      "phase": "convergence",
+      "depends_on": ["audit-engine"],
+      "guard": "bash .workflow/plans/nx-migration/scripts/guards/type-discovery.sh",
+      "artifacts": ["libs/authoring/src/templates", "libs/manifest/src/schema.json", "docs/per-type-shapes.md"],
+      "context": "contexts/type-discovery.md",
+      "notes": "Legacy P6. Bounded discovery: read SHAPE per type from the real corpus (NOT ingestion). Refine libs/authoring templates + confirm/adjust libs/manifest flexes (additive/backward-compatible only). born-conformance + scaffold-parity must stay green. Note: this state and authoring-lib both touch libs/authoring/src/templates and libs/manifest/src/schema.json, but they run strictly sequentially (authoring-lib → audit-foundation → ... → type-discovery), never in parallel, so no merge protocol is needed."
+    },
+    "memory-core": {
+      "kind": "work",
+      "phase": "convergence",
+      "depends_on": ["type-discovery"],
+      "guard": "bash .workflow/plans/nx-migration/scripts/guards/memory-core.sh",
+      "artifacts": ["libs/memory-core/src", "libs/memory-core/project.json", "extensions/mcp-servers/memory-server", "extensions/agents/memory-organizer", "extensions/hooks/memory-flush", "extensions/commands/memory-cli", "extensions/bundles/sox-memory-bundle"],
+      "context": "contexts/memory-core.md",
+      "notes": "Legacy P7. CODE-MOVING STATE — gitnexus impact/context BEFORE extracting each shared module, gitnexus detect-changes AFTER (confirm only the 4 memory extensions are affected). Extract shared db/schema/embed/recall/write into libs/memory-core (C7). Re-point every cross-extension ../**/dist/ reach-in to libs/memory-core ([ref:no-cross-extension-reachin]); module-boundary lint must be clean. C5 (memory_write+memory_recall) must still work. libs/memory-core is internal (not published).",
+      "changes": {
+        "deletes": [],
+        "resigns": [],
+        "renames": []
+      }
+    },
+    "migrate-rest": {
+      "kind": "work",
+      "phase": "convergence",
+      "depends_on": ["memory-core"],
+      "guard": "bash .workflow/plans/nx-migration/scripts/guards/migrate-rest.sh",
+      "artifacts": ["scripts/validate-manifests.ts"],
+      "context": "contexts/migrate-rest.md",
+      "notes": "Legacy P8. CODE-MOVING STATE — gitnexus impact/context before relocating each extension, detect-changes after. Add project.json + type:extension tags so every remaining extension is in the nx graph; validate every manifest against libs/manifest. Thin-wrap scripts/validate-manifests.ts to import libs/manifest validate() ([ref:manifest-single-source]) — ALL 44 tests must stay green. nx run-many -t build,lint clean across ALL projects. (project.json files are created broadly; the single shared-with-other-states mutation is scripts/validate-manifests.ts, hence it is the declared artifact — see context Reservations for the full per-extension project.json scope.)",
+      "changes": {
+        "deletes": [],
+        "resigns": [],
+        "renames": []
+      }
+    },
+    "ci-release": {
+      "kind": "work",
+      "phase": "convergence",
+      "depends_on": ["migrate-rest"],
+      "guard": "bash .workflow/plans/nx-migration/scripts/guards/ci-release.sh",
+      "artifacts": [".github/workflows/ci.yml", ".husky/commit-msg", "docs/guidelines", "scripts/scaffolder.test.ts"],
+      "context": "contexts/ci-release.md",
+      "notes": "Legacy P9. CI runs nx affected -t build,lint,test,validate; nx release replaces Changesets (D3); commitlint pre-commit hook; reality-gate tests (process-table) re-homed as nx targets (NOT deleted); per-type docs/guidelines/<type>.md for all 6 active types. DELETE scripts/scaffolder.test.ts (replaced by born-conformance gate) — it is in artifacts because this state removes it. No previously-green test removed."
+    },
+    "audit-final": {
+      "kind": "audit",
+      "phase": "convergence",
+      "depends_on": ["type-discovery", "memory-core", "migrate-rest", "ci-release"],
+      "guard": "python3 .workflow/plans/nx-migration/scripts/audit_nx_migration.py --phase final",
+      "artifacts": ["scripts/audit_nx_migration.py"],
+      "context": "contexts/audit-final.md",
+      "notes": "Legacy P10 = the final audit. Operationalizes every [dod.N] and every [ref:] into positive/negative/live-data checks against REALITY ([def:reality-check]) from a clean slate. No deferrable items. On green, the founder accepts and this state's executor sets state: complete (terminal done)."
+    },
+    "done": {
+      "kind": "audit",
+      "phase": "convergence",
+      "depends_on": ["audit-final"],
+      "guard": "python3 .workflow/plans/nx-migration/scripts/audit_nx_migration.py --phase final",
+      "artifacts": ["scripts/audit_nx_migration.py"],
+      "context": "contexts/done.md",
+      "notes": "Terminal sentinel. Reached only after audit-final exits 0 and the founder accepts. No work; the guard re-asserts the final audit so the terminal state is itself verifiable. state: complete is set here."
+    }
+  }
+}

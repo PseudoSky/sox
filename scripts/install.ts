@@ -57,6 +57,8 @@ export interface LockfileEntry {
   source: string;
   checksum: string;
   resolved_at: string;
+  /** PC: bundle provenance — id of the bundle this member was expanded from, if any. */
+  bundle_id?: string | undefined;
 }
 
 export interface LockfileExtendsPin {
@@ -530,11 +532,16 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
       const resolvedVersion = indexEntry?.version ?? entry.version ?? '0.0.0';
       const actualKey = `${entry.id}@${resolvedVersion}`;
 
-      newResolved[actualKey] = {
+      // PC: record bundle provenance in lockfile if this member came from a bundle expansion
+      const lockEntry: LockfileEntry = {
         source: resolvedSource,
         checksum,
         resolved_at: new Date().toISOString(),
       };
+      if (entry.bundleId !== undefined) {
+        lockEntry.bundle_id = entry.bundleId;
+      }
+      newResolved[actualKey] = lockEntry;
 
       console.log(`install: resolved ${actualKey} from ${resolvedSource} (${checksum})`);
     } catch (e) {
@@ -703,6 +710,13 @@ function resolveBundleMembers(
  * Expansion is post-cascade and cycle-guarded (depth + visited set).
  * Member-level explicit entries in the original list override bundle-expanded ones.
  *
+ * PC: version-conflict policy — when two bundles both declare the same member id
+ * with DIFFERENT version specs, the conflict is OPERATOR-VISIBLE (console.warn) and
+ * first-seen wins (warn-first policy). Previously this was silent first-seen dedup (Gap A3).
+ *
+ * PC: bundle provenance — each expanded member carries the originating bundle id in
+ * `bundleId` so the lockfile can record it (row #3 bundle-id → Defined).
+ *
  * CONTRACT: cascade.ts arrays-replace rule is NOT changed — this function runs
  * after cascade resolution and does not alter cascade merge semantics (I5 preserved).
  */
@@ -723,11 +737,15 @@ function expandBundles(
 
   const result: ResolvedInstallEntry[] = [];
   const seenIds = new Set<string>();
+  // PC: track member version specs and which bundle first claimed each member,
+  // so we can emit an operator-visible warning when two bundles disagree.
+  const seenMemberVersionSpec = new Map<string, { version: string | undefined; bundleId: string }>();
 
   function expandEntry(
     entry: ResolvedInstallEntry,
     depth: number,
     ancestorChain: ReadonlySet<string>,
+    _currentBundleId: string | undefined,
   ): void {
     if (depth > BUNDLE_MAX_DEPTH) {
       console.warn(`install: bundle expansion depth exceeded for "${entry.id}" — skipping`);
@@ -756,6 +774,8 @@ function expandBundles(
 
     const newChain = new Set(ancestorChain);
     newChain.add(entry.id);
+    // The bundle being expanded is `entry.id` at this depth
+    const thisBundleId = entry.id;
 
     for (const member of members) {
       // If the member id was an explicit entry in the original list, skip the
@@ -763,22 +783,44 @@ function expandBundles(
       if (explicitIds.has(member.id) && !ancestorChain.has(member.id)) {
         continue;
       }
+
+      // PC: version-conflict detection — operator-visible warn when two bundles
+      // declare the same member with different version specs (Gap A3, warn-first policy).
+      if (seenIds.has(member.id)) {
+        const prior = seenMemberVersionSpec.get(member.id);
+        if (prior !== undefined && prior.version !== member.version) {
+          console.warn(
+            `install: BUNDLE VERSION CONFLICT for member "${member.id}": ` +
+              `bundle "${prior.bundleId}" requires version "${prior.version ?? 'any'}", ` +
+              `but bundle "${thisBundleId}" requires version "${member.version ?? 'any'}". ` +
+              `First-seen wins (bundle "${prior.bundleId}" version "${prior.version ?? 'any'}" is used). ` +
+              `Resolve by pinning "${member.id}" as an explicit install entry, or aligning bundle versions.`,
+          );
+        }
+        // Either no conflict (same version) or conflict already warned — skip (first-seen wins)
+        continue;
+      }
+
       // Recurse in case the member is itself a bundle (bundles-of-bundles, depth-guarded)
+      // PC: record the version spec and originating bundle before recursing
+      seenMemberVersionSpec.set(member.id, { version: member.version, bundleId: thisBundleId });
       expandEntry(
         {
           id: member.id,
           version: member.version,
           enabled: entry.enabled,
           source: undefined,
+          bundleId: thisBundleId,
         },
         depth + 1,
         newChain,
+        thisBundleId,
       );
     }
   }
 
   for (const entry of entries) {
-    expandEntry(entry, 0, new Set());
+    expandEntry(entry, 0, new Set(), undefined);
   }
 
   // Add back any explicit non-bundle entries that were skipped because a bundle already
@@ -800,6 +842,8 @@ interface ResolvedInstallEntry {
   version: string | undefined;
   enabled: boolean;
   source: string | undefined;
+  /** PC: bundle provenance — id of the bundle this entry was expanded from, if any. */
+  bundleId?: string | undefined;
 }
 
 function buildInstallList(
@@ -943,6 +987,8 @@ if (isMain || (isMainFallback && !process.env['VITEST'])) {
     | undefined;
   const frozen = args.includes('--frozen-lockfile');
   const update = args.includes('--update');
+  const configPathArg = args.find((a) => a.startsWith('--config='))?.slice('--config='.length);
+  const lockfilePathArg = args.find((a) => a.startsWith('--lockfile='))?.slice('--lockfile='.length);
 
   if (!scopeArg) {
     console.error('install: ERROR --scope=<org|user|project|local> is required');
@@ -951,7 +997,12 @@ if (isMain || (isMainFallback && !process.env['VITEST'])) {
 
   const mode: InstallMode = frozen ? 'frozen' : update ? 'update' : 'default';
 
-  install({ scope: scopeArg, mode })
+  install({
+    scope: scopeArg,
+    mode,
+    ...(configPathArg !== undefined ? { configPath: configPathArg } : {}),
+    ...(lockfilePathArg !== undefined ? { lockfilePath: lockfilePathArg } : {}),
+  })
     .then((resolved) => {
       const count = Object.keys(resolved).length;
       console.log(`install: done — ${count} extension(s) resolved`);

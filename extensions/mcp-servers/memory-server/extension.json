@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "type": "mcp-server",
   "title": "Agent Memory Server",
-  "description": "7 memory_* tools over a single-file SQLite graph store: hybrid recall (<50ms, zero LLM), write-enqueue, session state, communities, invalidation.",
+  "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
+  "keywords": ["memory", "rag", "graph", "sqlite", "recall", "session", "federation"],
+  "author": "sox-ecosystem",
   "compatibility": { "host": ">=1.0.0 <2.0.0" },
   "entrypoint": "dist/index.js",
   "license": "MIT",
@@ -22,5 +24,129 @@
     "stop_timeout_ms": 5000
   },
   "capabilities": ["memory.read", "memory.write", "memory.session"],
-  "tags": ["memory", "rag", "graph", "sqlite"]
+  "tags": ["memory", "rag", "graph", "sqlite"],
+  "tools": [
+    {
+      "name": "memory_write",
+      "description": "Write a memory episode to the store. Returns {episode_uid}. Enqueues organize; never blocks on LLM.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "content":    { "type": "string", "description": "The content to memorize" },
+          "db_path":    { "type": "string", "description": "Path to the .db file" },
+          "session_id": { "type": "string" },
+          "t_occurred": { "type": "string", "description": "ISO timestamp when this occurred" },
+          "agent_id":   { "type": "string" },
+          "source":     { "type": "string", "enum": ["message", "tool_output", "observation", "document", "reflection", "import"] },
+          "importance": { "type": "number", "minimum": 1, "maximum": 10 }
+        },
+        "required": ["content", "db_path"]
+      }
+    },
+    {
+      "name": "memory_recall",
+      "description": "Recall memories using hybrid vec+BM25+temporal search. <50ms, zero LLM. Returns ranked results.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query":        { "type": "string", "description": "The query to recall" },
+          "db_path":      { "type": "string", "description": "Path to the .db file" },
+          "scope":        { "type": "string", "description": "Scope name (project/user/org/local)" },
+          "agent_id":     { "type": "string" },
+          "as_of":        { "type": "string", "description": "ISO timestamp for point-in-time recall" },
+          "token_budget": { "type": "number", "default": 4000 },
+          "depth":        { "type": "number", "default": 1 },
+          "limit":        { "type": "number", "default": 10 }
+        },
+        "required": ["query", "db_path"]
+      }
+    },
+    {
+      "name": "memory_search_entities",
+      "description": "Search for entities by name/type. Returns matching entity nodes.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query":       { "type": "string" },
+          "db_path":     { "type": "string" },
+          "entity_type": { "type": "string" },
+          "limit":       { "type": "number", "default": 10 }
+        },
+        "required": ["query", "db_path"]
+      }
+    },
+    {
+      "name": "memory_get_session_state",
+      "description": "Get session working memory state.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": { "type": "string" },
+          "db_path":    { "type": "string" }
+        },
+        "required": ["session_id", "db_path"]
+      }
+    },
+    {
+      "name": "memory_save_session_state",
+      "description": "Save session working memory state.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": { "type": "string" },
+          "state":      { "type": "object" },
+          "db_path":    { "type": "string" }
+        },
+        "required": ["session_id", "state", "db_path"]
+      }
+    },
+    {
+      "name": "memory_get_community",
+      "description": "Get community node for an entity.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "entity_uid": { "type": "string" },
+          "db_path":    { "type": "string" },
+          "level":      { "type": "number", "default": 0 }
+        },
+        "required": ["entity_uid", "db_path"]
+      }
+    },
+    {
+      "name": "memory_invalidate",
+      "description": "Invalidate a claim (bi-temporal: sets t_invalid, never deletes).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "claim_uid":       { "type": "string" },
+          "reason":          { "type": "string" },
+          "db_path":         { "type": "string" },
+          "t_transition":    { "type": "string" },
+          "replacement_uid": { "type": "string" }
+        },
+        "required": ["claim_uid", "reason", "db_path"]
+      }
+    }
+  ],
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "required": ["db_path"],
+    "properties": {
+      "db_path": { "type": "string", "description": "Absolute path to the SQLite memory store file (e.g. ~/.memory/memory.db). ENFORCEMENT NOTE P4/P5: host must sandbox writes to this path (Gap F5 — unsandboxed db_path)." },
+      "sock_path": { "type": "string", "description": "Unix socket path for memoryd IPC (default: ~/.memory/memoryd.sock)." },
+      "vec_dimensions": { "type": "integer", "minimum": 64, "maximum": 4096, "description": "Embedding vector dimensions (default: 1536 for text-embedding-3-small)." },
+      "token_budget": { "type": "integer", "minimum": 256, "description": "Default token budget for memory_recall responses (default: 4000)." }
+    }
+  },
+  "permissions": {
+    "fs": {
+      "read":  ["~/.memory/**"],
+      "write": ["~/.memory/**"]
+    },
+    "socket": {
+      "paths": ["~/.memory/memoryd.sock"]
+    }
+  }
 }

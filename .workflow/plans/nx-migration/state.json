@@ -1,0 +1,24 @@
+{
+  "schema_version": 2,
+  "title": "nx-migration",
+  "dag": "dag.json",
+  "current_state": "checkpoint-branch",
+  "states": {
+    "checkpoint-branch": { "status": "pending", "started_ts": null, "done_ts": null },
+    "nx-init": { "status": "pending", "started_ts": null, "done_ts": null },
+    "manifest-lib": { "status": "pending", "started_ts": null, "done_ts": null },
+    "authoring-lib": { "status": "pending", "started_ts": null, "done_ts": null },
+    "audit-foundation": { "status": "pending", "started_ts": null, "done_ts": null },
+    "engine-libs": { "status": "pending", "started_ts": null, "done_ts": null },
+    "sox-extension": { "status": "pending", "started_ts": null, "done_ts": null },
+    "audit-engine": { "status": "pending", "started_ts": null, "done_ts": null },
+    "type-discovery": { "status": "pending", "started_ts": null, "done_ts": null },
+    "memory-core": { "status": "pending", "started_ts": null, "done_ts": null },
+    "migrate-rest": { "status": "pending", "started_ts": null, "done_ts": null },
+    "ci-release": { "status": "pending", "started_ts": null, "done_ts": null },
+    "audit-final": { "status": "pending", "started_ts": null, "done_ts": null },
+    "done": { "status": "pending", "started_ts": null, "done_ts": null }
+  },
+  "transition_log": [],
+  "amendment_log": []
+}

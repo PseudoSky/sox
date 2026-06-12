@@ -42,6 +42,33 @@ function removeDirRecursive(dir: string): void {
   if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
 }
 
+/** Build the P3 self-description fields for a given extension type. */
+function p3SelfDescription(type: string): Record<string, unknown> {
+  switch (type) {
+    case 'hook':
+      return { events: ['PreToolUse'] };
+    case 'agent':
+    case 'command':
+      return { invocation: { protocol: 'function-export', handler: 'run' } };
+    case 'mcp-server':
+      return { tools: [{ name: 'stub_tool', description: 'use this when you need the stub tool' }] };
+    case 'prompt':
+      return {
+        template_engine: 'handlebars',
+        parameters: [{ name: 'context', type: 'string', required: false, description: 'Context' }],
+      };
+    case 'skill':
+      return {
+        run_interface: {
+          input_schema: { type: 'object', properties: { input: { type: 'string' } }, required: ['input'] },
+          output_schema: { type: 'object', properties: { result: { type: 'string' } }, required: ['result'] },
+        },
+      };
+    default:
+      return {};
+  }
+}
+
 /**
  * Create a minimal behavioral extension in a temp root.
  */
@@ -72,6 +99,8 @@ function makeExtension(
     compatibility: { host: '>=1.0.0 <2.0.0' },
     license: 'MIT',
     entrypoint: 'dist/index.js',
+    // P3: include required self-description fields by default
+    ...p3SelfDescription(type),
     ...extra,
   };
 
@@ -82,6 +111,11 @@ function makeExtension(
   );
   fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
   fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
+  // P0 entrypoint-reachability: create dist/index.js stub so the gate passes in tests
+  if (type !== 'prompt') {
+    fs.mkdirSync(path.join(extDir, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(extDir, 'dist', 'index.js'), '// stub compiled output\n');
+  }
 }
 
 /**

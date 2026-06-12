@@ -4,12 +4,26 @@
   "version": "0.1.0",
   "type": "hook",
   "title": "Audit Hook",
-  "description": "Binds PreToolUse lifecycle event and logs tool invocations to a file for auditing",
+  "description": "Use this when you need an append-only audit trail of every tool invocation — binds PreToolUse and writes one JSON line per call to $AUDIT_HOOK_LOG (default: ~/.sox/audit-hook.log). Deterministic; zero LLM calls.",
+  "keywords": ["audit", "logging", "PreToolUse", "observability", "reference"],
+  "author": "sox-ecosystem",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
   "license": "MIT",
-  "author": "",
   "entrypoint": "dist/index.js",
-  "order": 100
+  "order": 100,
+  "events": ["PreToolUse"],
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "log_path": { "type": "string", "description": "Absolute path for the append-only audit log file (default: ~/.sox/audit-hook.log). Overrides $AUDIT_HOOK_LOG env." }
+    }
+  },
+  "permissions": {
+    "fs": {
+      "write": ["~/.sox/audit-hook.log", "${AUDIT_HOOK_LOG}"]
+    }
+  }
 }

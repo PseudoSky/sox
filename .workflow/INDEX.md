@@ -7,69 +7,73 @@ roi_scale: { low: 1, med: 2, high: 3, critical: 5 }
 
 # Workflow plans — sox-ecosystem
 
-> Relevancy note: `.workflow/` is at the repo root (`/Users/nix/dev/ai/sox-ecosystem`). The
-> relevancy tool can't compute a churn-decayed score yet — the repo has **no commits**
-> (`git log` empty on a fresh `main`). `canonical_roi` is `qualitative-only`; the optimizer set
-> `provisional_roi: high`. Shown as `qual`/`high(prov)`. Recompute once commit history exists.
+> Relevancy note: `.workflow/` at repo root; commit history exists (P0→P6 + P7→P11). `canonical_roi`
+> is `qualitative-only` (greenfield, no baseline), so relevancy stays `qual` by design.
+> `provisional_roi` is `high`. One open engagement (`nx-migration`, planned); four complete. DEFECT-1
+> (hook error-isolation) is RESOLVED (`fireIsolated()`, framework-contract-completion phase PA).
 
 ## Open   (sorted by relevancy desc)
 
 | Slug | Objective | State | ROI | Churn | Relevancy | Updated |
 |---|---|---|---|---|---|---|
-| [sox-ecosystem](#sox-ecosystem) | Buildable plan for an LLM-extension ecosystem (evolving the live SOX plugin stack) | planned | high (prov) | n/a | qual | 2026-06-07 |
-| [sox-memory](#sox-memory) | First ecosystem tenant — agent graph-memory subsystem packaged/scoped/versioned entirely as ecosystem extensions | planned | high (prov) | n/a | qual | 2026-06-07 |
+| [nx-migration](#nx-migration) | Adopt Nx for the infra layer + self-host `sox` as extension #0 → born-conformant authoring + scaled build (enables rapidly adding many extensions of every type) | planned | high (prov) | n/a | qual | 2026-06-11 |
 
 ## Closed   (chronological, newest first)
 
 | Slug | Objective | State | ROI | Closed |
 |---|---|---|---|---|
-| _(none)_ | | | | |
+| [framework-contract-completion](#framework-contract-completion) | Built the runtime the framework lacked — framework build subsystem + host runtime + enforced per-type contracts; **10 phases green, 256→377 tests** | complete | critical (prov) | 2026-06-08 |
+| [consumer-interface-standard](#consumer-interface-standard) | Affordance layer — host CLI + multi-scope lifecycle + self-description contract + DX-conformance CI; **8 phases green, 131→256 tests** | complete | critical (prov) | 2026-06-08 |
+| [sox-memory](#sox-memory) | First ecosystem tenant — agent graph-memory subsystem, built on native v2 primitives; **all 6 phases green** | complete | high (prov) | 2026-06-08 |
+| [sox-ecosystem](#sox-ecosystem) | LLM-extension ecosystem — v1 built + v2 gap-closure built & verified | complete | high (prov) | 2026-06-07 |
 
 ---
 
 ## Open engagements (detail)
 
-### sox-ecosystem
-- **Objective:** Turn the agreed `extension-ecosystem-design` research into a concrete, buildable, resumable plan for a monorepo hosting six independently-versioned LLM-extension types (agent, skill, mcp-server, prompt, hook, command) — now reconciled with the live SOX plugin ecosystem the repo already inherits.
-- **Topics:** extension ecosystem, monorepo (pnpm), manifest schema (`extension.json`), multi-scope install + config cascade, provider abstraction (LiteLLM / Vercel AI SDK), registry-as-protocol, independent versioning (Changesets), scaffold-first authoring, dedup lint, plugin→extension migration.
-- **Plan summary (v2):** 8-phase resumable build (P0 skeleton → P5 all-six-types → **P5.5 eval-harness research gate** → P6 verification + optional registry server). Reframed as *partly a migration*: the live `plugin.json` + `installed_plugins.json` user/project scope system is treated as a working prototype to evolve, not reinvent. Each phase carries a deterministic acceptance check mapped to MVP use cases UC-1..UC-5, a standalone executor prompt, and a status-update step. Core owned glue **730 LOC**; **~1010 incl.** two optional/deferred modules; eval-harness LOC excluded pending P5.5. (v1 research-only plan archived as `migration.v1.md`.)
-- **Live-analysis deltas driving v2 (analysis.md §4):** ALIGNED — plugin-scope system prototypes the cascade; type vocabulary already correct; research-memory hierarchy mirrors registry discovery. DIVERGENT (gaps the build closes, in optimizer rank order) — (1) monolithic plugin versioning → independent Changesets [keystone]; (2) immutable slug `id` + dedup invariants; (3) `validate-manifests.ts` CI lint; (4) scaffold generator; (5) npm+git registry replacing the local-file marketplace; (6) collapse the `sox-active`/`sox-cto-system` 5-agent shadow-copy; (7) declared hook `order`.
-- **Complexity:**
-  - Full repo dev stop required: NO (greenfield source; nothing live to halt — live SOX cleanup is out-of-scope/advisory)
-  - Isolated workspace: YES (this repo)
-  - Additive only: MOSTLY (new repo scaffolding; the shadow-copy collapse #6 is the one consolidation, flagged separately)
-  - Plan-time deterministic changes: YES (three JSON Schemas + dir tree fixed at plan time)
-- **Related plans:** [`sox-memory`](#sox-memory) — first tenant; consumes this plan's contract unchanged and feeds back 5 additive gaps (service type, bundle primitive, scope-promotion, runtime statement, capability-decl granularity).
-- **Risks:**
-  - MED: `extension.json` ↔ `package.json` version drift (mitigation: pre-publish sync + CI check).
-  - MED: supply-chain on remote `source` + org `extends` (mitigation: sha256 pin, fail-closed unless `--update`).
-  - ~~MED: eval-harness designed without an evidence base~~ → **RESOLVED 2026-06-07.** The P5.5 research gate is cleared — workflow-researcher landed [`eval-harness-for-llm-extensions.md`](file://~/.claude/plugins/workflow/memory/research/extension-ecosystem-design/eval-harness-for-llm-extensions.md) (3-layer pyramid; promptfoo PR-gate + nightly judge sweep). P6 eval work is now unblocked.
-  - LOW: capability false-negatives on long-tail local models (mitigation: advisory-warn default; hard-block opt-in via `strict_capabilities`).
-  - LOW: cascade-merge array ambiguity (decision: arrays replace, not concat — documented in the resolver contract).
-- **Gap resolutions (locked, unchanged from v1):** (1) npm+registry primary, `.mcpb` optional export; (2) hook order via integer `order` field (default 100), ties by `id`; (3) Terraform two-endpoint server validated but deferred to ~5k-entry trigger; (4) `extends` pinned `{url,sha256,resolved_at}`, fail-closed; (5) capability advisory-warn default, hard-block via `strict_capabilities`.
-- **Provenance:** `analysis.md` + `suggestions.md` are **live** workflow-analyzer/optimizer runs (architect seeds preserved as `*.seed.md`); `migration.md` is planner v2 (v1 preserved as `migration.v1.md`).
-- **Files:** [analysis](./plans/sox-ecosystem/analysis.md) · [suggestions](./plans/sox-ecosystem/suggestions.md) · [migration](./plans/sox-ecosystem/migration.md) · [status](./plans/sox-ecosystem/status.md) · [session](./plans/sox-ecosystem/session.md) · seeds: [analysis.seed](./plans/sox-ecosystem/analysis.seed.md) · [suggestions.seed](./plans/sox-ecosystem/suggestions.seed.md) · [migration.v1](./plans/sox-ecosystem/migration.v1.md)
-
-### sox-memory
-- **Objective:** Design the agent graph-memory subsystem as the **first tenant** of sox-ecosystem — packaged, scoped, versioned, and installed entirely through the ecosystem's own primitives; the first real workload that proves them.
-- **Topics:** mcp-server/agent/hook/command extensions, single-file SQLite (sqlite-vec + FTS5) graph store, bi-temporal edges, 7 memory_* MCP tools, organizer daemon (hybrid IPC), cross-scope RRF federation, scope-promotion policy, graphify import bridge, provider-abstraction-only LLM locus, Changesets/install/lockfile packaging.
-- **Plan summary:** 6-phase resumable build (P0 install bundle into skeleton → P1 MVP single-project store + hybrid recall <50ms → P2 daemon + organizer LLM locus + bi-temporal → P3 multi-scope RRF federation → P4 promotion + graphify + communities → P5 conformance hardening + publish), each with a deterministic acceptance check. Build ≈1,780 LOC on top of reused ecosystem tooling.
-- **Complexity:**
-  - Full repo dev stop required: NO (additive tenant on a greenfield ecosystem)
-  - Isolated workspace: YES (this repo; `.memory/` stores out-of-tree)
-  - Additive only: YES (four new extensions; no ecosystem source changes required to ship)
-  - Plan-time deterministic changes: YES (DDL, 7 tool contracts, manifests fixed at plan time)
-- **Related plans:** [`sox-ecosystem`](#sox-ecosystem) — parent/contract (tenant-of).
-- **Risks:**
-  - MED: runtime port — research costed Python; ecosystem mandates Node/TS for provider-touching code (+~80 LOC NER substitution). Resolved (G-D), but a real conformance cost.
-  - LOW: sqlite-vec brute-force ceiling at scale (mitigation: libSQL DiskANN switch wired at >50K rows / p95>35ms).
-  - LOW: graphify `graph.json` is an undocumented format (mitigation: version-defensive fail-loud bridge).
-- **Gap resolutions (locked):** (1) DB scale switch 50K/35ms; (2) IPC hybrid table+socket doorbell; (3) scope-promotion config policy + `memory promote` approval; (4) graphify version-defensive import; (5) single LLM locus in memory-organizer via ecosystem provider.
-- **Ecosystem feedback (first-tenant gaps):** G-A service/daemon lifecycle type · G-B bundle/meta-package primitive · G-C scope-promotion (narrow→wide data movement) · G-D explicit runtime-language contract · G-E capability-decl granularity when one extension spawns another.
-- **Files:** [design](./plans/sox-memory/design.md) · [migration](./plans/sox-memory/migration.md) · [status](./plans/sox-memory/status.md) · [session](./plans/sox-memory/session.md)
+### nx-migration
+- **Objective:** Adopt Nx for the undifferentiated monorepo/build/generator layer (keep the novel layer custom); make `sox` a **literal self-hosted extension #0**; deliver born-conformant authoring + a scaled build so many extensions of every type can be added rapidly.
+- **Decision record:** [`docs/decisions/0001-nx-and-self-hosting.md`](../docs/decisions/0001-nx-and-self-hosting.md) (D1–D5, contract flexes, cardinality, what stays custom). **Strategy:** [`docs/plans/nx-self-hosting-migration.md`](../docs/plans/nx-self-hosting-migration.md). **Bar:** `DOD.md`.
+- **Plan summary** (conforming **plan-state-machine** directory — `dag.json`/`state.json` + `contexts/` + `README`(`[dod.1–10]`)/`final-review.md`; **`gap-check --discover` green, exit 0**, oracle grep+gitnexus): **14 slug-keyed states** — checkpoint-branch → nx-init → manifest-lib → authoring-lib → *audit-foundation* → engine-libs → sox-extension → *audit-engine* → type-discovery → memory-core → migrate-rest → ci-release → *audit-final* → done. Execution model: `typescript-pro` executors, parallel where the DAG allows, founder reviewer, resumable hand-off (automatic-dispatch=no). *(Legacy single-file plan retained as `migration.legacy.md`, deprecated.)*
+- **Tooling:** gitnexus indexed this repo (2,977 symbols); the 3 code-moving phases (P4/P7/P8) require `gitnexus impact`/`context` before moving + `detect-changes` after.
+- **Scope (D5):** makes A1, A12, B1–B4, C7 pass + no regressions; **C6 + memory semantic depth explicitly out.**
+- **Complexity:** Full repo dev stop: NO (branch). Additive only: NO (P0 retires nothing but later phases relocate/extract code + flip release tooling). Plan-time deterministic: PARTIAL (nx wiring deterministic; per-type discovery + real-corpus templating are authored).
+- **Risks:** porting must carry this session's fixes forward (P0 checkpoint first — *all changes still uncommitted*); bootstrap ordering (manifest→authoring→engine libs→sox); contract flexes may deepen at P6 discovery.
+- **Related plans:** builds on [`framework-contract-completion`](#framework-contract-completion) (runtime), [`consumer-interface-standard`](#consumer-interface-standard) (CLI), [`sox-memory`](#sox-memory) (first tenant, becomes the memory-core extraction).
+- **Files:** [README](./plans/nx-migration/README.md) · [dag.json](./plans/nx-migration/dag.json) · [state.json](./plans/nx-migration/state.json) · [state-machine](./plans/nx-migration/state-machine.md) · [final-review](./plans/nx-migration/final-review.md) · [status](./plans/nx-migration/status.md) · [session](./plans/nx-migration/session.md) · deprecated: `migration.legacy.md`
 
 ---
 
 ## Closed engagements (detail)
 
-_(none)_
+### framework-contract-completion
+- **Objective:** Implement the framework contracts the per-type guideline set proved missing — the build → activation → consumption → eventing seam — so an installed extension of any type actually runs and tenants can no longer diverge silently.
+- **Outcome:** **complete (2026-06-08).** All 10 phases green; **256 → 377 tests.** The framework now owns the runtime it previously lacked. **P0** framework build subsystem (per-package `tsconfig` + `pnpm -r build` emitting every `dist/index.js`) + entrypoint-reachability gate → **P1** retired the hand-maintained `dist/` mirrors and repointed all importers to generated output (closing the #4 linchpin; reverses `docs/cli-build-decision.md`) → **P2/P3** per-type manifest self-description (`events`/`invocation`/`tools`/`parameters`/`run_interface`) added optional-first, all 11 retrofitted with source-accurate content, then enforced (error-severity) → **P4** host runtime (`scripts/host/`: lockfile loader + productized supervisor + per-type adapters) → **P5** consumption side (MCP registrar doing `initialize`+`tools/list` → agent surface; prompt renderer; real `bin/sox` `enable`/`disable`/`search`/`update`; config-schema validation enforced at activation) → **P6** host event bus dispatching via `fireIsolated()`. **Parallel:** PA `fireIsolated()` (**DEFECT-1 resolved**) · PB `config_schema`+`permissions` (11 retrofitted) · PC bundle member-existence + version-conflict signal + lockfile provenance.
+- **Capstone proof:** the *built* `extensions/mcp-servers/memory-server/dist/index.js` (framework-generated, not `src` via `tsx`) runs and returns all 7 `memory_*` tools over MCP — the declared entrypoint now resolves to a real artifact AND executes. `installed → running` is closed.
+- **Residual (noted, not blocking):** full OS-level runtime sandboxing of `permissions.{fs,network,socket}` is logged/advisory at activation; hard process-boundary isolation deferred to a future phase. All changes uncommitted, pending review.
+- **Provenance:** guideline set (`docs/guidelines/*.md`, template-driven) + `docs/architecture-audit.md` → workflow-analyzer (consolidated 12×7 matrix) → workflow-optimizer → workflow-planner (10-phase) → typescript-pro executors (PA/PB/PC parallel, P0→P6 serial with a verified P0→P1 checkpoint).
+- **Related plans:** [`consumer-interface-standard`](#consumer-interface-standard) — the CLI front-door this runtime sits beneath; [`sox-memory`](#sox-memory) — first tenant, now actually runnable via the generated build.
+- **Artifacts:** [analysis](./plans/framework-contract-completion/analysis.md) · [suggestions](./plans/framework-contract-completion/suggestions.md) · [migration](./plans/framework-contract-completion/migration.md) · [status](./plans/framework-contract-completion/status.md) · [session](./plans/framework-contract-completion/session.md) · target: `docs/guidelines/` · gap: `docs/architecture-audit.md`
+
+### consumer-interface-standard
+- **Objective:** Define and enforce a consumer-interface standard — ship installs across global/user/project scopes for the full extension lifecycle (create, search, install, configure, usage), with every extension made to conform through the schema, scaffolder, linter, and CI.
+- **Outcome:** **complete (2026-06-08).** All 8 phases green; the ecosystem now has a front door. **P0** src↔dist build decision (hand-maintained mirror, no bundler) + `bin/sox` → **P1** Tier-1 verbs (install/uninstall/list/validate/details) wrapping the proven engine + named scopes (`-s user|project|local`) → **P2** manifest self-description fields (`keywords`/`homepage`/structured `author`/dual-purpose `description`), optional-first so all 11 manifests stayed valid → **P3** scaffolder emits per-type README/SKILL/CLAUDE + `sox init` → **P4** doc-lint (4 DX rules) as warnings → **P5** retrofit all 11 extensions (11 READMEs + 5 type-docs + manifest fields) → **P6** CI flipped to `validate --strict` (fail-closed) + scope-provenance (`list --json`, `details installed-in:`). **P7** (independent) added 22 tests exercising the real 4-scope cascade, bundle-member collision, and hook isolation. **Test suite 131 → 256, all green.**
+- **Carry-forward defect:** **DEFECT-1** — `HookLoader.fire()` aborts the hook chain on the first throwing hook (later hooks silently skipped); falsified by a pinned `KNOWN-DEFECT` test in P7, recorded at `docs/engine-defects-found.md`. Needs a follow-on engagement (a `fireIsolated()` variant) — this is the multi-tenant collision risk previously flagged as conjecture, now proven.
+- **Provenance:** workflow-analyzer (coverage map) + workflow-researcher (global memory `extension-consumer-interface/`) → workflow-optimizer (ranked suggestions) → workflow-planner (8-phase migration) → typescript-pro executors (P7 parallel, P0→P6 serial). All changes uncommitted, pending review.
+- **Related plans:** [`sox-ecosystem`](#sox-ecosystem) — parent (engine now fronted by the CLI); [`sox-memory`](#sox-memory) — its 4 extensions among the 11 retrofitted in P5.
+- **Artifacts:** [analysis](./plans/consumer-interface-standard/analysis.md) · [suggestions](./plans/consumer-interface-standard/suggestions.md) · [migration](./plans/consumer-interface-standard/migration.md) · [status](./plans/consumer-interface-standard/status.md) · [session](./plans/consumer-interface-standard/session.md) · research: `~/.claude/plugins/workflow/memory/research/extension-consumer-interface/` · defects: `docs/engine-defects-found.md`
+
+### sox-memory
+- **Objective:** The agent graph-memory subsystem as the **first tenant** of sox-ecosystem — packaged, scoped, versioned, installed entirely through the ecosystem's own primitives, consuming the built v2 primitives natively (bundle / lifecycle / promotion event / runtime).
+- **Outcome:** **complete (2026-06-08).** All 6 phases built and green; final `state: complete`. P0 bundle install → P1 MVP SQLite store + hybrid recall → P2 host-supervised `memoryd` daemon + organizer LLM-locus + bi-temporal → P3 multi-scope RRF federation (p95 **5.8ms**) → P4 scope promotion via native `ScopePromotionProposed` + version-defensive graphify + communities → P5 conformance hardening + scale-switch + Changesets 0.1.0 dry-run. Full 11-check regression green; `validate-manifests` passes incl. v2 bundle/lifecycle/runtime checks + G-E advisory; G1 scale-switch advisory proven at 60k rows (post-switch p95 ≈7ms).
+  - **Resume note:** P2 was interrupted (killed shell); resumed by orchestrator — root-caused a missing node-validity predicate in `recall.ts` graph expansion (invalidated nodes leaked via live `SUPERSEDES` edge), fixed in src + hand-maintained `dist/`. v2 swaps dropped ~160 LOC of workaround (−9%): native `bundle` type (G-B), `lifecycle{}` host supervision (G-A), `ScopePromotionProposed` event (G-C), `runtime:"node"` lint (G-D), `requires` advisory (G-E).
+  - **Open follow-ups (not defects, uncommitted):** (1) `dist/*.js` are hand-maintained mirrors of `src/` — no bundler; `pnpm -r build` compiles to a *separate* `dist/extensions/**` tree, so the two must be kept in sync by hand. (2) File-ownership blur: promotion-application logic (`applyPromotion`) is invoked from `memory-flush` though it logically belongs to `memory-cli` (introduced in P4 to avoid circular imports; passes validation). (3) libSQL DiskANN switch is *criterion-wired only* — migration execution is a deliberate post-0.1.0 follow-on. (4) Live npm publish pending a token (proven via dry-run). **All changes are uncommitted, pending user review.**
+- **Related plans:** [`sox-ecosystem`](#sox-ecosystem) — parent/contract; v1+v2 built, primitives consumed here.
+- **Artifacts:** [design](./plans/sox-memory/design.md) · [migration](./plans/sox-memory/migration.md) · [status](./plans/sox-memory/status.md) · [session](./plans/sox-memory/session.md) · prior: `design.v1.md`, `migration.v1.md`
+
+### sox-ecosystem
+- **Objective:** Plan AND build a monorepo hosting independently-versioned LLM-extension types with multi-scope install/cascade, provider abstraction, registry-as-protocol, Changesets versioning, scaffold-first authoring, dedup-lint CI — then close the gaps its first tenant surfaced.
+- **Outcome:** **complete (2026-06-07).** **v1:** 8-phase plan executed by a 6-stage parallel workflow → 11 commits, ~2,200 LOC, 69/69 tests; all 5 original gaps resolved; P5.5 eval gate cleared. **v2 gap-closure:** designed in `architecture-v2.md`, executed serial P7→P11 → **131 tests total** (was 110); G-A `lifecycle{}` block, G-B `bundle` type (enum 6→7), G-C `ScopePromotionProposed` event + `config.promotion` + `docs/scope-promotion.md`, G-D `runtime` field + lint, G-E `requires` redundancy advisory. **`cascade.ts` byte-unchanged**; all v1 manifests still validate/install (back-compat held). `VERIFICATION.md` covers both.
+  - One open follow-up (not a defect): UC-3 *live* npm publish pending a token (proven via local-server tests). Gap 3 (registry HTTP server) deferred (~5k-entry trigger).
+- **Provenance:** live analyzer/optimizer runs (seeds `*.seed.md`); planner v1 (`migration.v1.md`) → v2 (`migration.md` + Section 6) + `architecture-v2.md`.
+- **Artifacts:** [migration](./plans/sox-ecosystem/migration.md) · [architecture-v2](./plans/sox-ecosystem/architecture-v2.md) · [analysis](./plans/sox-ecosystem/analysis.md) · [suggestions](./plans/sox-ecosystem/suggestions.md) · [status](./plans/sox-ecosystem/status.md) · [session](./plans/sox-ecosystem/session.md) · [VERIFICATION.md](./VERIFICATION.md)

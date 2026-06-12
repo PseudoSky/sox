@@ -105,6 +105,9 @@ export class HookLoader {
    * Fire all hooks bound to `event` in sorted order (order ASC, id ASC).
    * Each hook executes sequentially (awaited). A hook throwing causes the
    * sequence to abort — callers should wrap in try/catch if isolation is needed.
+   *
+   * Back-compat: semantics unchanged. Use `fireIsolated()` when one hook must
+   * not prevent later hooks from executing.
    */
   async fire(event: string, ctx: Omit<HookContext, 'event'>): Promise<void> {
     const hooks = this.hooksFor(event);
@@ -113,6 +116,42 @@ export class HookLoader {
     for (const hook of hooks) {
       await hook.handler(fullCtx);
     }
+  }
+
+  /**
+   * Fire all hooks bound to `event` with per-hook error isolation.
+   *
+   * Unlike `fire()`, a throwing hook does NOT abort the chain — the error is
+   * caught, recorded in the result array, and execution continues with the next
+   * hook. This closes DEFECT-1 (docs/engine-defects-found.md): a single buggy
+   * hook can no longer silently suppress all later hooks in the same event.
+   *
+   * Returns a result array, one entry per registered hook (in execution order):
+   *   - `undefined`           — hook completed successfully
+   *   - `{ id, error }`       — hook threw; `id` is the hook's manifest id
+   *
+   * Callers may inspect the results to surface or aggregate hook errors without
+   * losing subsequent hook execution.
+   */
+  async fireIsolated(
+    event: string,
+    ctx: Omit<HookContext, 'event'>,
+  ): Promise<Array<{ id: string; error: unknown } | undefined>> {
+    const hooks = this.hooksFor(event);
+    const fullCtx: HookContext = { event, ...ctx };
+    const results: Array<{ id: string; error: unknown } | undefined> = [];
+
+    for (const hook of hooks) {
+      try {
+        await hook.handler(fullCtx);
+        results.push(undefined);
+      } catch (e) {
+        results.push({ id: hook.manifest.id, error: e });
+        // Continue to next hook regardless of this one's failure
+      }
+    }
+
+    return results;
   }
 
   /**

@@ -11,7 +11,7 @@
  * No LLM calls; embedding is the local hash-based embedder.
  */
 
-import { openDb, memoryWrite } from '../dist/memory-lib.js';
+import { openDb, memoryWrite } from '../extensions/mcp-servers/memory-server/dist/lib.js';
 
 const TOPICS = [
   'machine learning', 'neural networks', 'deep learning', 'transformer architecture',

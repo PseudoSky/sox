@@ -46,6 +46,7 @@ CREATE INDEX IF NOT EXISTS ix_node_agent      ON node(agent_id);
 CREATE INDEX IF NOT EXISTS ix_node_session    ON node(session_id);
 CREATE INDEX IF NOT EXISTS ix_node_validity   ON node(t_invalid) WHERE t_invalid IS NULL;
 CREATE INDEX IF NOT EXISTS ix_node_importance ON node(importance);
+CREATE INDEX IF NOT EXISTS ix_node_temporal   ON node(t_invalid, t_created DESC) WHERE t_invalid IS NULL;
 
 -- edges (bi-temporal)
 CREATE TABLE IF NOT EXISTS edge (
@@ -81,6 +82,16 @@ CREATE TABLE IF NOT EXISTS organizer_queue (
   attempts   INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_q_open ON organizer_queue(done_at, priority, seq) WHERE done_at IS NULL;
+
+-- scope-promotion candidates (internal detail; surfaced via host ScopePromotionProposed event)
+CREATE TABLE IF NOT EXISTS promotion_queue (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  node_uid      TEXT NOT NULL, from_scope TEXT NOT NULL, to_scope TEXT NOT NULL,
+  occurrences   INTEGER NOT NULL, first_seen TEXT NOT NULL, age_days INTEGER NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending','proposed','approved','rejected','applied')),
+  decided_by    TEXT, decided_at TEXT
+);
 `;
 
 /** FTS5 content table trigger for auto-sync */

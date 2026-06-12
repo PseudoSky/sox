@@ -4,10 +4,33 @@
   "version": "0.1.0",
   "type": "prompt",
   "title": "Greeting Prompt",
-  "description": "A parameterized greeting prompt that addresses users by name and context",
+  "description": "Use this when you need to generate a warm, context-aware greeting addressed to a named person — accepts {{name}} (required) and {{context}} (optional) to adjust formality and tone.",
+  "keywords": ["greeting", "prompt", "template", "onboarding", "reference"],
+  "author": "sox-ecosystem",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
   "license": "MIT",
-  "author": ""
+  "template_engine": "handlebars",
+  "parameters": [
+    {
+      "name": "name",
+      "type": "string",
+      "required": true,
+      "description": "The name of the person to greet"
+    },
+    {
+      "name": "context",
+      "type": "string",
+      "required": false,
+      "description": "Optional context about the greeting situation (e.g. morning standup, onboarding)"
+    }
+  ],
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {},
+    "description": "Greeting prompt has no runtime configuration — template variables (name, context) are supplied at render time."
+  },
+  "permissions": {}
 }

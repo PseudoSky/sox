@@ -4,7 +4,7 @@
     "type": "agent",
     "version": "0.1.0",
     "title": "Echo Agent",
-    "description": "A stub agent that echoes inputs back using two stub tools",
+    "description": "Use this when you need a reference agent to verify tool-calling wiring or test an orchestrator's delegation path — echoes text verbatim via echo_text or round-trips a JSON payload via echo_json.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/echo-agent",
     "checksum": "sha256:8885a27f83162f386bebaba6525cb2dfc7f95d895984406f1c4d742679e411c3",
     "compatibility": {
@@ -19,9 +19,9 @@
     "type": "agent",
     "version": "0.1.0",
     "title": "Memory Organizer",
-    "description": "Deterministic-first organize loop's LLM step: batched relation extraction, importance scoring, contradiction detection, reflection synthesis. Invoked by memoryd; never on the read path.",
+    "description": "Use this when memoryd needs to promote raw episodes into structured graph knowledge — runs batched relation extraction, importance scoring (1–10), contradiction detection, and reflection synthesis via LLM. Invoked by memoryd on the write path; never called on the read path.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/memory-organizer",
-    "checksum": "sha256:18b51f7516d684ce5e6f5d6f1eb4e66ce89ddeb6cb91023f1088b14b8fcb902d",
+    "checksum": "sha256:2d286127386fa753bb4ea5de320aa9035b47466b02fdab0a9f9003a4bfb86fc4",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -35,9 +35,9 @@
     "type": "bundle",
     "version": "0.1.0",
     "title": "sox-memory (graph memory subsystem)",
-    "description": "The four memory extensions as one independently-versioned product.",
+    "description": "Use this when you want the full sox-memory graph-memory subsystem installed in one command — expands to memory-server (7 MCP tools, SQLite graph store), memory-organizer (LLM organizer agent), memory-flush (SessionEnd hook), and memory-cli (store lifecycle commands).",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle",
-    "checksum": "sha256:33859f16a842268beeef9db01477bb8ca77e9dd0b8cf62b1f1960159d3b340fb",
+    "checksum": "sha256:8a4fbab762c16bc2df57710ac23399c1a7152d3a1fc9c345179635a1f37a44a5",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -65,9 +65,9 @@
     "type": "command",
     "version": "0.1.0",
     "title": "Memory CLI",
-    "description": "memory init|import|status|list|promote — store lifecycle, graphify import, scope-promotion approval. Deterministic.",
+    "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/commands/memory-cli",
-    "checksum": "sha256:7c2cd0cdf7f33bad601b3dd1abbe247c84d08483fc7a6e5db16dc2ca81446173",
+    "checksum": "sha256:f990c8374a8ffb0709c6ad9beb5d952697b635139cf23e6aa77ff5c0926555f7",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     }
@@ -77,7 +77,7 @@
     "type": "command",
     "version": "0.1.0",
     "title": "Status Command",
-    "description": "Slash-invoked command that reports the current environment status deterministically, no LLM calls",
+    "description": "Use this when you want a quick snapshot of the runtime environment — reports node version, cwd, and platform via /status-command without making any LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/commands/status-command",
     "checksum": "sha256:d431c6ee5fdd40fd74d592c8ab6682fc14c894e887e057bca7b3b02a18bed559",
     "compatibility": {
@@ -89,7 +89,7 @@
     "type": "hook",
     "version": "0.1.0",
     "title": "Audit Hook",
-    "description": "Binds PreToolUse lifecycle event and logs tool invocations to a file for auditing",
+    "description": "Use this when you need an append-only audit trail of every tool invocation — binds PreToolUse and writes one JSON line per call to $AUDIT_HOOK_LOG (default: ~/.sox/audit-hook.log). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/hooks/audit-hook",
     "checksum": "sha256:25f18b4517475c9727b00eee872d5510d85e0e87b97920d4a9660a6da213ce60",
     "compatibility": {
@@ -101,9 +101,9 @@
     "type": "hook",
     "version": "0.1.0",
     "title": "Memory Session Flush",
-    "description": "On SessionEnd: persists working memory, enqueues episodes, nudges memoryd. Also binds ScopePromotionProposed to run the promotion approval/policy step.",
+    "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/hooks/memory-flush",
-    "checksum": "sha256:4d4ba76d95f410ccdb4c80db98bd4e8ce722dcebe78f2f3bd560470ab57edbd8",
+    "checksum": "sha256:5fa93603eeaf50238ff86c35e84e31e6c8d90c9964ba5b94c34f84108eff4cf7",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     }
@@ -113,7 +113,7 @@
     "type": "mcp-server",
     "version": "0.1.0",
     "title": "Hello Server",
-    "description": "A minimal hello-server MCP server demonstrating the mcp-server extension scaffold with stdio transport and one stub tool",
+    "description": "Use this when you need a minimal MCP server reference to verify stdio JSON-RPC wiring or template a new tool — exposes one stub tool (example_tool) over a stdio transport.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/mcp-servers/hello-server",
     "checksum": "sha256:f96da689c02a9d48ad9eb5a4a89450c618bfaa60c2e87d08a566d7be3683d947",
     "compatibility": {
@@ -125,9 +125,9 @@
     "type": "mcp-server",
     "version": "0.1.0",
     "title": "Agent Memory Server",
-    "description": "7 memory_* tools over a single-file SQLite graph store: hybrid recall (<50ms, zero LLM), write-enqueue, session state, communities, invalidation.",
+    "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/mcp-servers/memory-server",
-    "checksum": "sha256:34a3c8cc810df7262fe1f3e1fc521863cb9db404b3c1cfeab4961a7960f192b4",
+    "checksum": "sha256:cfee3ac6f799bf901631159ab3b19e6134c8a63848713cc2ceab8307d8da0c6a",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -141,7 +141,7 @@
     "type": "prompt",
     "version": "0.1.0",
     "title": "Greeting Prompt",
-    "description": "A parameterized greeting prompt that addresses users by name and context",
+    "description": "Use this when you need to generate a warm, context-aware greeting addressed to a named person — accepts {{name}} (required) and {{context}} (optional) to adjust formality and tone.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/prompts/greeting-prompt",
     "checksum": "sha256:bfb78ff8ee1b14f86078c0e78054ef9e468dfd3fca82802cb974fede92f9e771",
     "compatibility": {
@@ -153,7 +153,7 @@
     "type": "skill",
     "version": "0.1.0",
     "title": "Hello World",
-    "description": "A minimal hello-world skill demonstrating the extension scaffold",
+    "description": "Use this when you need a minimal working skill to verify the extension scaffold or test a new host integration — processes a text input and returns it prefixed with 'Processed:'.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/hello-world",
     "checksum": "sha256:47a13e4c9e3a65b924cda16369c044198c26c2b0f08014c8b5364eb51f594537",
     "compatibility": {

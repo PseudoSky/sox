@@ -666,7 +666,136 @@ Each gap is DECIDED. The live analysis ratified every v1 decision; **no override
 
 ---
 
+## Section 6 — v2 gap-closure phases (P7+)
+
+Appended by workflow-planner (v2 gap-closure increment). These phases implement the design in
+`.workflow/plans/sox-ecosystem/architecture-v2.md`, which closes the five first-tenant gaps G-A..G-E
+surfaced by the `sox-memory` tenant (`.workflow/plans/sox-memory/design.md` §8). **P0–P6 are built and
+green and are NOT rewritten.** Every change here is additive and back-compatible: every v1 extension
+MUST still validate and install unchanged after each phase (the acceptance check enforces this).
+Core v2 LOC budget ≈ 175 (see architecture-v2.md §8). Phases are independently acceptable; order is by
+dependency where one exists (P9 bundle depends on the enum delta; otherwise independent).
+
+> **Cross-phase hard constraint (applies to every P7+ phase):** do NOT modify the locked v1 merge
+> rule in `scripts/cascade.ts` (arrays-replace, lines 11–16). Do NOT change any v1 manifest's
+> behavior. Do NOT touch `.workflow/INDEX.md` (the architect owns it). Every new schema field is
+> OPTIONAL with a back-compat default. Run `pnpm test` and `pnpm run validate` (validate-manifests)
+> after your change and confirm all pre-existing tests still pass.
+
+### Phase 7 — G-D runtime-language contract (smallest, no new type)
+
+**Phase ID:** P7
+**Phase goal:** Make the Node/TS-required-for-provider-touching rule explicit and machine-checked via an optional `runtime` field.
+**Inputs:** `architecture-v2.md` §G-D; `schemas/extension/v1.json`; `scripts/validate-manifests.ts`; `scripts/new-extension.ts`.
+**Outputs:** `schemas/extension/v1.json` (+`runtime` property, +1 `allOf` conditional); `scripts/validate-manifests.ts` (+cross-field check + test); `scripts/new-extension.ts` (default `runtime:"node"` + README note).
+**Verification (deterministic):** (a) `pnpm test` green incl. a new test asserting a `stdio-any` manifest with `requires.structured_output:true` FAILS validation and a `stdio-any` manifest with no provider requires PASSES; (b) every existing extension manifest (none declaring `runtime`) still validates (defaults to `node`); (c) all P0–P6 tests still green.
+
+**Phase prompt:**
+
+> You are a TypeScript ecosystem-tooling engineer. A greenfield LLM extension ecosystem repo at `/Users/nix/dev/ai/sox-ecosystem` is built and green through phase P6 (six extension types, install client, cascade, validate-manifests, registry). You are adding ONE optional manifest field to make an implicit runtime rule explicit. Read first, in order: `/Users/nix/dev/ai/sox-ecosystem/.workflow/plans/sox-ecosystem/architecture-v2.md` section "G-D"; `/Users/nix/dev/ai/sox-ecosystem/schemas/extension/v1.json`; `/Users/nix/dev/ai/sox-ecosystem/scripts/validate-manifests.ts`; `/Users/nix/dev/ai/sox-ecosystem/scripts/new-extension.ts`.
+>
+> Your task: (1) Add the optional `runtime` property to `schemas/extension/v1.json` exactly as specified in architecture-v2.md §G-D (enum `["node","stdio-any"]`, default `"node"`), plus the `allOf` conditional that forces `requires.structured_output` and `requires.tool_calling` to `false` when `runtime=="stdio-any"`. (2) Add to `validate-manifests.ts` a friendly diagnostic mirroring that rule (error severity) with the message from §G-D. (3) Make `new-extension.ts` default `runtime:"node"` in generated manifests and note the rule in the generated README. (4) Add Vitest tests for both the pass and fail cases.
+>
+> Skills/tools you need: Node fs, ajv (already a dep), Vitest. Files to read first: listed above.
+> Success criteria (binary): `pnpm test` passes; a test proves `stdio-any`+provider-requires is rejected and `stdio-any`+no-requires is accepted; all manifests lacking `runtime` still validate; P0–P6 tests unchanged and green.
+> Hard constraints: `runtime` MUST be optional with default `"node"` (no v1 manifest may break). Do NOT change `cascade.ts` or `install.ts`. Do NOT touch `.workflow/INDEX.md`. Schema stays v1.
+>
+> **Mandatory completion step.** Before exiting, append one line to `.workflow/plans/sox-ecosystem/status.md` under `## State transitions`:
+> `<ISO timestamp> executing — phase P7 complete (executor: <your role>)`
+> Update frontmatter: `state: executing`, `last_event: <ISO timestamp>`. *(Not the final phase — leave state at `executing`.)*
+
+### Phase 8 — G-A long-running service lifecycle (additive lifecycle block)
+
+**Phase ID:** P8
+**Phase goal:** Add an optional `lifecycle{}` block so the host owns supervision/health/singleton for background extensions, with zero change to v1 request/response behavior.
+**Inputs:** `architecture-v2.md` §G-A; `schemas/extension/v1.json`; `scripts/validate-manifests.ts`; `.workflow/plans/sox-memory/design.md` §2.4 (the `memoryd` workaround this formalizes).
+**Outputs:** `schemas/extension/v1.json` (+`lifecycle` property, +1 `allOf` scoping it to `{mcp-server,agent}`); `scripts/validate-manifests.ts` (+checks: lifecycle ⇒ type∈{mcp-server,agent}; socket/command health ⇒ endpoint required; +tests); a host-loader supervisor sub-contract documented in `architecture-v2.md` §G-A (already written — confirm it matches the schema you ship).
+**Verification (deterministic):** (a) `pnpm test` green incl. tests that a `lifecycle` on a `command`-type manifest FAILS, a `lifecycle` on an `mcp-server` PASSES, and `health.type:"socket"` without `endpoint` FAILS; (b) every existing manifest (no `lifecycle`) still validates; (c) `install.ts`/`cascade.ts` are byte-unchanged (grep-confirm no diff); (d) P0–P6 tests green.
+
+**Phase prompt:**
+
+> You are a TypeScript ecosystem-tooling engineer. The repo at `/Users/nix/dev/ai/sox-ecosystem` is built and green through P7. You are adding an OPTIONAL `lifecycle{}` block to the extension manifest so the host (not the extension) supervises long-running background processes — formalizing the lazy-spawned singleton daemon the first tenant (`sox-memory`) ships inside its MCP server. Read first, in order: `/Users/nix/dev/ai/sox-ecosystem/.workflow/plans/sox-ecosystem/architecture-v2.md` section "G-A"; `/Users/nix/dev/ai/sox-ecosystem/schemas/extension/v1.json`; `/Users/nix/dev/ai/sox-ecosystem/scripts/validate-manifests.ts`; `/Users/nix/dev/ai/sox-ecosystem/.workflow/plans/sox-memory/design.md` lines 307–331 (the `memoryd` daemon model).
+>
+> Your task: (1) Add the `lifecycle` object property to `schemas/extension/v1.json` exactly per architecture-v2.md §G-A (sub-keys `background`, `singleton`, `health{type,endpoint,interval_ms,timeout_ms}`, `stop_timeout_ms`, all with the stated defaults; `additionalProperties:false`). (2) Add the `allOf` conditional restricting `lifecycle` to `type ∈ {mcp-server, agent}`. (3) Add `validate-manifests.ts` diagnostics: lifecycle present ⇒ type in that set; `health.type ∈ {socket,command}` ⇒ `health.endpoint` required. (4) Add Vitest tests for each pass/fail case. Do NOT implement a host supervisor (the loader is a host contract, spec-only in this repo) — the supervisor sub-contract is documented in architecture-v2.md §G-A; just confirm your schema matches it.
+>
+> Skills/tools you need: Node fs, ajv, Vitest. Files to read first: listed above.
+> Success criteria (binary): `pnpm test` passes with the three new fail/pass cases; manifests without `lifecycle` still validate; `git diff --stat` shows NO change to `scripts/install.ts` or `scripts/cascade.ts`; P0–P6 tests green.
+> Hard constraints: `lifecycle` MUST be optional (no v1 manifest breaks). Do NOT add a 7th type. Do NOT modify `cascade.ts`/`install.ts`. Do NOT touch `.workflow/INDEX.md`. Schema stays v1.
+>
+> **Mandatory completion step.** Before exiting, append one line to `.workflow/plans/sox-ecosystem/status.md` under `## State transitions`:
+> `<ISO timestamp> executing — phase P8 complete (executor: <your role>)`
+> Update frontmatter: `state: executing`, `last_event: <ISO timestamp>`. *(Not the final phase — leave state at `executing`.)*
+
+### Phase 9 — G-B bundle meta-package primitive (the one new type)
+
+**Phase ID:** P9
+**Phase goal:** Add a `bundle` type that expands to install entries at install time, giving atomic, single-versioned add of a multi-extension product WITHOUT changing the arrays-replace cascade rule.
+**Inputs:** `architecture-v2.md` §G-B; `schemas/extension/v1.json`; `scripts/install.ts` (`buildInstallList`, lines 652–689; resolution loop ~455–490); `scripts/validate-manifests.ts` (`DIR_TO_TYPE`); `scripts/build-index.ts`; `.workflow/plans/sox-memory/design.md` §1.2 (the four-member memory bundle this enables).
+**Outputs:** `schemas/extension/v1.json` (+`bundle` enum member, +`members` property, +`allOf` requiring members & forbidding entrypoint for bundles); `scripts/install.ts` (+post-cascade bundle expansion with cycle guard, +tests); `scripts/validate-manifests.ts` (+`bundles→bundle` in `DIR_TO_TYPE`, +bundle checks, +tests); `scripts/build-index.ts` (+index bundles); a `extensions/bundles/sox-memory-bundle/` example bundle manifest (id+package.json, no entrypoint) used as the install-expansion test fixture.
+**Verification (deterministic):** (a) `pnpm test` green incl. a test that installing a config with one `bundle` install entry RESOLVES to its N members (using the example bundle fixture), and a cycle (bundle A members B, B members A) is rejected; (b) `validate-manifests` rejects a bundle with no `members`, a bundle with an `entrypoint`, and a bundle with a duplicate/self member; (c) every existing (non-bundle) manifest validates and installs unchanged; (d) `scripts/cascade.ts` is byte-unchanged (grep/diff-confirm); (e) P0–P6 tests green.
+
+**Phase prompt:**
+
+> You are a TypeScript ecosystem-tooling engineer. The repo at `/Users/nix/dev/ai/sox-ecosystem` is built and green through P8. You are adding the ONLY new extension type of the v2 increment: `bundle` — a named, independently-versioned set of extensions that the install client EXPANDS into its members. The cascade's arrays-replace rule must NOT change; expansion happens AFTER cascade resolution. Read first, in order: `/Users/nix/dev/ai/sox-ecosystem/.workflow/plans/sox-ecosystem/architecture-v2.md` section "G-B" (and §7 model-coherence on why this is the only enum growth); `/Users/nix/dev/ai/sox-ecosystem/schemas/extension/v1.json`; `/Users/nix/dev/ai/sox-ecosystem/scripts/install.ts` (read `buildInstallList` ~652–689 and the resolution loop ~455–490); `/Users/nix/dev/ai/sox-ecosystem/scripts/validate-manifests.ts` (the `DIR_TO_TYPE` map ~70–77); `/Users/nix/dev/ai/sox-ecosystem/scripts/build-index.ts`; `/Users/nix/dev/ai/sox-ecosystem/.workflow/plans/sox-memory/design.md` lines 121–147 (the four-member memory bundle).
+>
+> Your task: (1) Extend the `type` enum in `schemas/extension/v1.json` with `"bundle"`, add the `members` array property, and add the `allOf` conditional (bundle ⇒ requires `members`, forbids `entrypoint`) exactly per §G-B. (2) In `install.ts`, after cascade resolution and as part of building the install list, expand any resolved id whose manifest has `type:"bundle"` into its `members` (resolve each member against the registry like any id); guard against cycles and depth; member-level explicit install entries override bundle-expanded ones by id (mirror the existing supplement logic). (3) In `validate-manifests.ts`, add `bundles:'bundle'` to `DIR_TO_TYPE` and add bundle checks (non-empty members, no entrypoint, valid member id format, no self-reference, no duplicate member ids). (4) In `build-index.ts`, include `bundles/` in the dir scan so bundles are indexed. (5) Create an example `extensions/bundles/sox-memory-bundle/extension.json` (+ `package.json`, no entrypoint, no behavior tests) listing the four memory members, used as the expansion test fixture. (6) Add Vitest tests for expansion, cycle rejection, and each validate check.
+>
+> Skills/tools you need: Node fs/crypto, ajv, Vitest. Files to read first: listed above.
+> Success criteria (binary): `pnpm test` passes incl. expansion + cycle-rejection + bundle-validation tests; a non-bundle manifest still installs/validates unchanged; `git diff --stat` shows NO change to `scripts/cascade.ts`; the example bundle expands to exactly its four members in the install test; P0–P6 tests green.
+> Hard constraints: do NOT change the arrays-replace rule in `cascade.ts` (cite this constraint in a code comment near the expansion). A bundle MUST NOT have an entrypoint or reach the host loader. Expansion is install-time-only and cycle-guarded. Do NOT touch `.workflow/INDEX.md`. Schema stays v1 (enum growth is additive).
+>
+> **Mandatory completion step.** Before exiting, append one line to `.workflow/plans/sox-ecosystem/status.md` under `## State transitions`:
+> `<ISO timestamp> executing — phase P9 complete (executor: <your role>)`
+> Update frontmatter: `state: executing`, `last_event: <ISO timestamp>`. *(Not the final phase — leave state at `executing`.)*
+
+### Phase 10 — G-C scope-promotion pattern + generic host event, and G-E requires-granularity advisory
+
+**Phase ID:** P10
+**Phase goal:** Land the two documentation-plus-advisory gaps: a generic `ScopePromotionProposed` host-event spec + `config.promotion` convention (G-C, no schema change), and a redundancy advisory for per-extension `requires` (G-E).
+**Inputs:** `architecture-v2.md` §G-C and §G-E; `scripts/validate-manifests.ts`; `schemas/extensions-config/v1.json` (confirm `config` is already open — no change needed).
+**Outputs:** `scripts/validate-manifests.ts` (+G-E `warn`-severity advisory when an extension's `requires` deep-equals a dependency's `requires`, +test asserting it is `warn` not `error`); a documented `ScopePromotionProposed` event + `config.promotion` convention + the "per-identity partitioning is not a 5th scope" rule written into a new `docs/scope-promotion.md` (or appended to architecture-v2.md if no docs dir) — documentation only, no schema/cascade/install change.
+**Verification (deterministic):** (a) `pnpm test` green incl. a test that the G-E advisory is emitted as severity `warn` (CI-non-blocking) for a manifest whose `requires` matches its dependency's, and that validate-manifests still exits 0 in that case; (b) NO schema file changed (grep/diff-confirm `schemas/` unchanged); (c) `cascade.ts` and `install.ts` byte-unchanged; (d) the promotion doc exists and states the approval-locus rule (to_scope owner approves; org may auto-approve) and the per-identity-not-a-5th-scope rule; (e) P0–P9 tests green.
+
+**Phase prompt:**
+
+> You are a TypeScript ecosystem-tooling engineer and technical writer. The repo at `/Users/nix/dev/ai/sox-ecosystem` is built and green through P9. You are landing two LOW-footprint gap closures that are mostly documentation + one advisory lint — NO schema, cascade, or install behavior change. Read first, in order: `/Users/nix/dev/ai/sox-ecosystem/.workflow/plans/sox-ecosystem/architecture-v2.md` sections "G-C" and "G-E"; `/Users/nix/dev/ai/sox-ecosystem/scripts/validate-manifests.ts`; `/Users/nix/dev/ai/sox-ecosystem/schemas/extensions-config/v1.json` (confirm `config` is already `additionalProperties:object` — it is; do NOT add a `promotion` schema property).
+>
+> Your task: (1) G-E: add to `validate-manifests.ts` a `warn`-severity advisory that fires when an extension X with `dependencies:[D]` has `requires` deep-equal to D's `requires`, using the message in §G-E. It MUST be `warn` (never `error`) so it does not block CI. Add a Vitest test asserting the warn is emitted AND `validateManifests` still reports `ok:true`. (2) G-C: write `docs/scope-promotion.md` (create `docs/` if absent) documenting, per §G-C: the generic `ScopePromotionProposed` host event (payload + contract + that the host exposes `proposePromotion(...)` and a default enqueue/log handler), the `config.promotion` convention shape (NOT a schema field), the approval-locus rule (to_scope owner approves; org baseline may auto-approve via a bound hook; default human-in-the-loop), and the rule that per-identity (agent/user) data partitioning is a tenant concern and NOT a 5th install scope. Do NOT implement a host event bus (the loader is a host contract); this is a spec/doc + the lint only.
+>
+> Skills/tools you need: Node fs, Vitest, Markdown. Files to read first: listed above.
+> Success criteria (binary): `pnpm test` passes incl. the G-E warn-not-error test (validate still exits 0); `git diff --stat` shows NO change under `schemas/`, and none to `cascade.ts`/`install.ts`; `docs/scope-promotion.md` exists and contains the approval-locus rule and the per-identity-not-a-scope rule; P0–P9 tests green.
+> Hard constraints: G-E must be `warn`, never `error`. Do NOT add a `promotion` property to any schema. Do NOT change `cascade.ts`/`install.ts`. Do NOT touch `.workflow/INDEX.md`.
+>
+> **Mandatory completion step.** Before exiting, append one line to `.workflow/plans/sox-ecosystem/status.md` under `## State transitions`:
+> `<ISO timestamp> executing — phase P10 complete (executor: <your role>)`
+> Update frontmatter: `state: executing`, `last_event: <ISO timestamp>`. *(Not the final phase — leave state at `executing`.)*
+
+### Phase 11 — v2 end-to-end verification (closing phase)
+
+**Phase ID:** P11
+**Phase goal:** Prove the whole v2 increment is coherent and back-compatible: all five gaps closed, all v1 extensions still validate/install unchanged, full suite green.
+**Inputs:** all of P7–P10 outputs; `architecture-v2.md` (the whole design); the v1 P6 end-to-end test from `migration.md` Section 3 Phase 6.
+**Outputs:** a v2 end-to-end test (`scripts/__tests__/v2-e2e` or equivalent) that installs the `sox-memory-bundle`, asserts it expands to four members, asserts a `lifecycle`-bearing mcp-server validates, asserts a `runtime:"stdio-any"` provider-caller is rejected, and asserts the G-E advisory is a warn; a short conformance note appended to `architecture-v2.md` confirming each of G-A..G-E is implemented as designed.
+**Verification (deterministic):** (a) `pnpm test` fully green (P0–P11); (b) `pnpm run validate` (validate-manifests) exits 0 across the whole `extensions/` tree including the example bundle; (c) the v2-e2e test passes all five gap assertions; (d) running the v1 P6 end-to-end flow still passes unchanged (back-compat proof).
+
+**Phase prompt:**
+
+> You are a TypeScript verification engineer. The repo at `/Users/nix/dev/ai/sox-ecosystem` has had phases P7–P10 land the v2 gap-closure (runtime field, lifecycle block, bundle type, promotion docs + requires advisory). Your job is the FINAL phase: prove the increment is coherent and fully back-compatible. Read first, in order: `/Users/nix/dev/ai/sox-ecosystem/.workflow/plans/sox-ecosystem/architecture-v2.md` (entire); `/Users/nix/dev/ai/sox-ecosystem/.workflow/plans/sox-ecosystem/migration.md` Section 3 Phase 6 (the v1 end-to-end definition); the test files added in P7–P10.
+>
+> Your task: (1) Write a v2 end-to-end test that, against the example `sox-memory-bundle`, asserts: installing the bundle resolves to exactly its four members; an mcp-server manifest carrying `lifecycle.background:true` validates; a manifest with `runtime:"stdio-any"` + `requires.structured_output:true` is REJECTED; the G-E redundancy advisory is emitted as `warn` and validate still exits 0. (2) Re-run the v1 P6 end-to-end flow and confirm it still passes unchanged (back-compat proof). (3) Append a short "v2 conformance" note to `architecture-v2.md` confirming G-A..G-E are each implemented as designed, citing the test names.
+>
+> Skills/tools you need: the full install/validate toolchain from P0–P10, Vitest. Files to read first: listed above.
+> Success criteria (binary): `pnpm test` fully green (P0–P11); `pnpm run validate` exits 0 across the whole tree incl. the bundle; the v2-e2e test passes all five gap assertions; the v1 P6 flow passes unchanged.
+> Hard constraints: do NOT modify P0–P10 implementation to make tests pass — if a test reveals a defect, fix the defect and note it. Do NOT change `cascade.ts`'s arrays-replace rule. Do NOT touch `.workflow/INDEX.md`. This is the FINAL phase.
+>
+> **Mandatory completion step.** Before exiting, append one line to `.workflow/plans/sox-ecosystem/status.md` under `## State transitions`:
+> `<ISO timestamp> complete — phase P11 complete (executor: <your role>)`
+> Update frontmatter: `state: complete`, `last_event: <ISO timestamp>`. *(This IS the final phase — set `state: complete`.)*
+
+---
+
 ## Changelog
 
+- 2026-06-07 — **workflow-planner v2 gap-closure** wrote `architecture-v2.md` (full design closing G-A..G-E) and appended Section 6 (phases P7–P11) implementing it. Decisions: G-A additive `lifecycle{}` block (rejected 7th `service` type); G-B new `bundle` type expanded post-cascade (rejected append merge-mode, arrays-replace preserved); G-C documented pattern + generic `ScopePromotionProposed` event + `config.promotion` convention (rejected first-class cascade promotion); G-D optional `runtime` field + targeted lint (rejected doc-only and universal-Node); G-E per-extension `requires` + redundancy `warn` advisory (rejected keystone aggregation). v2 core ≈ 175 LOC additive on top of v1's ~730. Bent invariants: G-B grows the type enum (6→7) and introduces a two-level version pin — the only deliberate model changes; all else strictly additive. P0–P6 unchanged.
 - 2026-06-07 — **workflow-planner v2** reconciled the plan with the LIVE `workflow-analyzer` run (`analysis.md`) and `workflow-optimizer` ranked suggestions (`suggestions.md`). Changes (Section 0): D1 reframed the build as *partly a migration* of the proven `plugin.json`/`installed_plugins.json` scope system (analysis §4 ALIGNED 1–3); D2 tagged every phase with the `analysis.md` §4 divergence + `suggestions.md` rank it closes; D3 added the live-only 5-agent shadow-copy finding as an explicit P2 dedup fixture + an out-of-scope live-cleanup note; D4 inserted **P5.5**, a `workflow-researcher` eval-harness research gate (no finding exists in memory; no harness is designed here), and gated any P6 eval work on it; D5 confirmed **zero overrides** of v1's Section-5 gap calls or Section-2 budget — the live analysis only *strengthened* them. Phase count 7 → **8** (added P5.5). Core glue budget unchanged at 730 LOC (~1010 incl. optional `registry-server.ts` + `pack-mcpb.ts`); any eval-harness LOC is OUTSIDE this budget pending P5.5. canonical_roi = qualitative-only.
 - 2026-06-07 — (v1) workflow-planner created migration.md from the agreed `extension-ecosystem-design` research. 7 phases (P0–P6). All 5 gaps resolved. Backed up at `migration.v1.md`.

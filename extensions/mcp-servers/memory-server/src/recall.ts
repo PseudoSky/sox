@@ -1,17 +1,26 @@
 /**
  * memory_recall — deterministic hot path, <50ms, zero LLM/provider calls.
+ * federatedRecall — cross-scope RRF union (design.md §2.7).
  *
- * Algorithm (design.md §2.3):
+ * Algorithm per-store (design.md §2.3):
  *   1. query-embed (local hash embedding, zero provider calls)
  *   2. parallel: vec0 KNN + FTS5 BM25 + temporal filter
- *   3. graph expand depth-1 over live edges (recursive CTE)
+ *   3. graph expand depth-1 over live edges (project store only in federation)
  *   4. RRF (k=60) fusion
  *   5. recency × importance rerank (decay 0.995/h)
  *   6. assemble within token_budget
+ *
+ * Federation (design.md §2.7):
+ *   score = scope_weight(scope) · Σ 1/(k+rank), k=60
+ *   weights: project=1.0, user=0.6, org=0.4, local=1.0
+ *   agent_id match ×1.25 boost; cross-store content-hash dedup; SUPERSEDES suppression.
  */
 
 import Database from 'better-sqlite3';
+import * as path from 'node:path';
+import * as fs from 'node:fs';
 import { embedText, vecToJson, getProviderCallCount } from './embed.js';
+import { openDbReadOnly } from './db.js';
 
 export interface RecallParams {
   query: string;
@@ -32,6 +41,8 @@ export interface RecallResult {
   scope: string;
   provenance: string[];
   importance: number;
+  content_hash: string | null;
+  agent_id: string | null;
 }
 
 export interface RecallResponse {
@@ -82,6 +93,7 @@ interface NodeRow {
   t_valid: string | null;
   t_invalid: string | null;
   agent_id: string | null;
+  content_hash: string | null;
 }
 
 /**
@@ -153,11 +165,12 @@ export function memoryRecall(
   }
 
   // 2c. Temporal filter: recently created nodes (recency signal)
+  // NOTE: validityPred and agentFilter use the alias "n", so the table must be aliased as n here.
   const temporalRows = db
     .prepare<[number], { rowid: number; t_created: string }>(
-      `SELECT rowid, t_created FROM node
+      `SELECT n.rowid, n.t_created FROM node n
        WHERE ${validityPred} ${agentFilter}
-       ORDER BY t_created DESC LIMIT ?`,
+       ORDER BY n.t_created DESC LIMIT ?`,
     )
     .all(KNN_LIMIT) as { rowid: number; t_created: string }[];
 
@@ -192,7 +205,7 @@ export function memoryRecall(
   const rowidList = [...allRowids].join(',');
   const nodes = db
     .prepare<[], NodeRow>(
-      `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id
+      `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash
        FROM node WHERE rowid IN (${rowidList})`,
     )
     .all();
@@ -242,10 +255,13 @@ export function memoryRecall(
   const expandedNew = [...expandedRowids].filter((id) => !alreadyRanked.has(id));
   let expandedNodes: NodeRow[] = [];
   if (expandedNew.length > 0) {
+    const nodeValidPred = as_of
+      ? `(t_valid IS NULL OR t_valid <= '${as_of.replace(/'/g, "''")}') AND (t_invalid IS NULL OR t_invalid > '${as_of.replace(/'/g, "''")}')`
+      : 't_invalid IS NULL';
     expandedNodes = db
       .prepare<[], NodeRow>(
-        `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id
-         FROM node WHERE rowid IN (${expandedNew.join(',')})`,
+        `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash
+         FROM node WHERE rowid IN (${expandedNew.join(',')}) AND ${nodeValidPred}`,
       )
       .all();
   }
@@ -269,6 +285,8 @@ export function memoryRecall(
       scope,
       provenance,
       importance: node.importance,
+      content_hash: node.content_hash ?? null,
+      agent_id: node.agent_id ?? null,
     });
     return true;
   };
@@ -297,4 +315,280 @@ export function memoryRecall(
   const providerCallCount = afterCount - beforeCount; // must be 0
 
   return { results, provider_call_count: providerCallCount };
+}
+
+// ── Federation (design.md §2.7) ───────────────────────────────────────────────
+
+/**
+ * Scope RRF weights (design.md §2.1).
+ * project=1.0, user=0.6, org=0.4, local=1.0
+ */
+export const SCOPE_WEIGHTS: Record<string, number> = {
+  project: 1.0,
+  user: 0.6,
+  org: 0.4,
+  local: 1.0,
+};
+
+export interface StoreDescriptor {
+  scope: string;
+  dbPath: string;
+}
+
+export interface FederatedRecallResponse {
+  results: RecallResult[];
+  provider_call_count: number;
+}
+
+/**
+ * Registry path and helpers.
+ */
+const REGISTRY_PATH = path.join(process.env['HOME'] ?? '/tmp', '.memory', 'registry.json');
+
+export function readRegistry(): Record<string, string> {
+  try {
+    return JSON.parse(fs.readFileSync(REGISTRY_PATH, 'utf8')) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+export function writeRegistry(scope: string, dbPath: string): void {
+  let registry: Record<string, string> = {};
+  try { registry = JSON.parse(fs.readFileSync(REGISTRY_PATH, 'utf8')) as Record<string, string>; } catch { /* ok */ }
+  registry[scope] = dbPath;
+  fs.mkdirSync(path.dirname(REGISTRY_PATH), { recursive: true });
+  fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2));
+}
+
+/**
+ * Discover all installed memory stores (design.md §2.1).
+ * Walk cwd → home collecting .memory/*.db + registry.json entries.
+ */
+export function discoverStores(requestedScopes?: string[]): StoreDescriptor[] {
+  const scopes = requestedScopes ?? ['project', 'user', 'org'];
+  const found = new Map<string, StoreDescriptor>(); // dbPath → descriptor
+
+  const cwd = process.cwd();
+  const home = process.env['HOME'] ?? '/';
+  const dirs: string[] = [];
+
+  let cur = cwd;
+  while (true) {
+    dirs.push(cur);
+    if (cur === home) break;
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  if (!dirs.includes(home)) dirs.push(home);
+
+  for (const dir of dirs) {
+    const memDir = path.join(dir, '.memory');
+    if (!fs.existsSync(memDir)) continue;
+    try {
+      const files = fs.readdirSync(memDir).filter((f) => f.endsWith('.db'));
+      for (const f of files) {
+        const scopeName = f.replace('.db', '');
+        if (!scopes.includes(scopeName)) continue;
+        const dbPath = path.join(memDir, f);
+        if (!found.has(dbPath) && fs.existsSync(dbPath)) {
+          found.set(dbPath, { scope: scopeName, dbPath });
+        }
+      }
+    } catch { /* permission error */ }
+  }
+
+  const registry = readRegistry();
+  for (const [scope, dbPath] of Object.entries(registry)) {
+    if (!scopes.includes(scope)) continue;
+    if (!dbPath || !fs.existsSync(dbPath)) continue;
+    const resolved = path.resolve(dbPath);
+    if (!found.has(resolved)) {
+      found.set(resolved, { scope, dbPath: resolved });
+    }
+  }
+
+  return [...found.values()];
+}
+
+// Connection cache: dbPath → read-only Database connection.
+// Keeps connections alive across multiple federatedRecall calls (warm page cache).
+const _connCache = new Map<string, Database.Database>();
+
+export function getFederationConnection(dbPath: string): Database.Database | null {
+  if (!_connCache.has(dbPath)) {
+    try {
+      const db = openDbReadOnly(dbPath);
+      _connCache.set(dbPath, db);
+    } catch { return null; }
+  }
+  return _connCache.get(dbPath) ?? null;
+}
+
+export function closeFederationConnections(): void {
+  for (const [, db] of _connCache) {
+    try { db.close(); } catch { /* ignore */ }
+  }
+  _connCache.clear();
+}
+
+/**
+ * Run per-store hybrid pipeline using a pre-opened connection.
+ * Zero LLM calls.
+ */
+function recallFromOpenDb(
+  db: Database.Database,
+  scope: string,
+  params: RecallParams,
+): RecallResult[] {
+  try {
+    const res = memoryRecall(db, scope, params);
+    return res.results;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Collect SUPERSEDES targets from a pre-opened DB.
+ */
+function collectSupersededFromDb(db: Database.Database, suppressed: Set<string>): void {
+  try {
+    const rows = db.prepare(
+      `SELECT n_dst.uid AS superseded_uid
+       FROM edge e
+       JOIN node n_dst ON n_dst.rowid = e.dst
+       WHERE e.rel = 'SUPERSEDES' AND e.t_expired IS NULL`,
+    ).all() as Array<{ superseded_uid: string }>;
+    for (const r of rows) {
+      if (r.superseded_uid) suppressed.add(r.superseded_uid);
+    }
+  } catch { /* ignore */ }
+}
+
+/**
+ * Federated recall across multiple scopes (design.md §2.7).
+ *
+ * Algorithm:
+ *   1. WAL fan-out per-store hybrid pipeline (cached connections).
+ *   2. scope-weight: score = SCOPE_WEIGHTS[scope] × raw_score
+ *   3. agent_id match ×1.25 boost (applied post-recall, not as SQL filter)
+ *   4. content-hash dedup: highest scope-weight wins
+ *   5. SUPERSEDES suppression (cross-store)
+ *   6. Sort by weighted score, assemble within token_budget
+ *
+ * Invariant R1: zero LLM/provider calls.
+ */
+export function federatedRecall(
+  stores: StoreDescriptor[],
+  params: RecallParams,
+): FederatedRecallResponse {
+  if (!stores || stores.length === 0) {
+    return { results: [], provider_call_count: 0 };
+  }
+
+  const beforeCount = getProviderCallCount();
+
+  const { agent_id, token_budget = 4000, limit = 10 } = params;
+
+  // Use cached connections (warm page cache, amortize open cost).
+  interface OpenConn { scope: string; db: Database.Database | null }
+  const openConns: OpenConn[] = stores.map(({ scope, dbPath }) => ({
+    scope,
+    db: getFederationConnection(dbPath),
+  }));
+
+  // 1. Collect SUPERSEDES targets.
+  const suppressedUids = new Set<string>();
+  for (const { db } of openConns) {
+    if (db) collectSupersededFromDb(db, suppressedUids);
+  }
+
+  // 2. Per-store recall.
+  //    agent_id is NOT forwarded as SQL filter — boost applied post-recall.
+  const storeParams: RecallParams = { ...params, agent_id: undefined };
+  const allStoreResults: Array<{ scope: string; results: RecallResult[] }> = [];
+  for (const { scope, db } of openConns) {
+    if (!db) continue;
+    const results = recallFromOpenDb(db, scope, storeParams);
+    allStoreResults.push({ scope, results });
+  }
+
+  // 3. Merge with scope weighting + agent_id boost
+  interface Candidate {
+    result: RecallResult;
+    weightedScore: number;
+    contentHash: string | null;
+    scope: string;
+  }
+  const candidateMap = new Map<string, Candidate>();
+
+  for (const { scope, results } of allStoreResults) {
+    const weight = SCOPE_WEIGHTS[scope] ?? 1.0;
+
+    for (const r of results) {
+      let weighted = weight * (r.score ?? 0);
+      if (agent_id && r.agent_id === agent_id) {
+        weighted *= 1.25;
+      }
+
+      const existing = candidateMap.get(r.uid);
+      if (!existing || weighted > existing.weightedScore) {
+        candidateMap.set(r.uid, {
+          result: { ...r, scope },
+          weightedScore: weighted,
+          contentHash: r.content_hash ?? null,
+          scope,
+        });
+      }
+    }
+  }
+
+  // 4. Content-hash dedup: keep the highest scope-weight entry per hash
+  const hashMap = new Map<string, string>(); // hash → winning uid
+  for (const [uid, cand] of candidateMap) {
+    const h = cand.contentHash;
+    if (!h) continue;
+    const winnerUid = hashMap.get(h);
+    if (!winnerUid) {
+      hashMap.set(h, uid);
+    } else {
+      const winnerWeight = SCOPE_WEIGHTS[candidateMap.get(winnerUid)?.scope ?? ''] ?? 0;
+      const candWeight = SCOPE_WEIGHTS[cand.scope] ?? 0;
+      if (candWeight > winnerWeight) {
+        hashMap.set(h, uid);
+      }
+    }
+  }
+  const dupLosers = new Set<string>();
+  for (const [h, winnerUid] of hashMap) {
+    for (const [uid, cand] of candidateMap) {
+      if (cand.contentHash === h && uid !== winnerUid) {
+        dupLosers.add(uid);
+      }
+    }
+  }
+  for (const uid of dupLosers) candidateMap.delete(uid);
+
+  // 5. SUPERSEDES suppression
+  for (const uid of suppressedUids) candidateMap.delete(uid);
+
+  // 6. Sort + assemble within token_budget
+  const sorted = [...candidateMap.values()].sort((a, b) => b.weightedScore - a.weightedScore);
+
+  const results: RecallResult[] = [];
+  let tokenCount = 0;
+  for (const cand of sorted) {
+    if (results.length >= limit) break;
+    const r = cand.result;
+    const text = [r.content, r.uid].filter(Boolean).join(' ');
+    const tokens = Math.ceil((text || '').length / 4);
+    if (tokenCount + tokens > token_budget && results.length > 0) break;
+    tokenCount += tokens;
+    results.push({ ...r, score: cand.weightedScore });
+  }
+
+  const afterCount = getProviderCallCount();
+  return { results, provider_call_count: afterCount - beforeCount };
 }

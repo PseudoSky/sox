@@ -4,11 +4,32 @@
   "version": "0.1.0",
   "type": "command",
   "title": "Memory CLI",
-  "description": "memory init|import|status|list|promote — store lifecycle, graphify import, scope-promotion approval. Deterministic.",
+  "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
+  "keywords": ["memory", "cli", "init", "status", "registry", "scope"],
+  "author": "sox-ecosystem",
   "compatibility": { "host": ">=1.0.0 <2.0.0" },
   "entrypoint": "dist/index.js",
   "license": "MIT",
   "runtime": "node",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "runCli",
+    "description": "Call runCli(argv: string[]) where argv starts after 'node <entry>'. Subcommands: init, status, list, registry. All are deterministic; zero LLM calls."
+  },
   "dependencies": [{ "id": "memory-server", "version": "^0.1.0" }],
-  "tags": ["memory", "cli"]
+  "tags": ["memory", "cli"],
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "db_path": { "type": "string", "description": "Path to the SQLite memory store file (e.g. ~/.memory/memory.db)." },
+      "scope": { "type": "string", "enum": ["user", "project", "org", "local"], "description": "Default scope for memory operations." }
+    }
+  },
+  "permissions": {
+    "fs": {
+      "read":  ["~/.memory/**", "${MEMORY_DB_DIR}/**"],
+      "write": ["~/.memory/**", "${MEMORY_DB_DIR}/**"]
+    }
+  }
 }

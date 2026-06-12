@@ -4,13 +4,34 @@
   "version": "0.1.0",
   "type": "agent",
   "title": "Memory Organizer",
-  "description": "Deterministic-first organize loop's LLM step: batched relation extraction, importance scoring, contradiction detection, reflection synthesis. Invoked by memoryd; never on the read path.",
+  "description": "Use this when memoryd needs to promote raw episodes into structured graph knowledge — runs batched relation extraction, importance scoring (1–10), contradiction detection, and reflection synthesis via LLM. Invoked by memoryd on the write path; never called on the read path.",
+  "keywords": ["memory", "organizer", "graph", "relation-extraction", "importance-scoring"],
+  "author": "sox-ecosystem",
   "compatibility": { "host": ">=1.0.0 <2.0.0" },
   "entrypoint": "dist/index.js",
   "license": "MIT",
   "runtime": "node",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "organizeItems",
+    "description": "Call organizeItems(items: OrganizerItem[], db: Database) → Promise<OrganizerResult[]>. Invoked by memoryd on the write path; never called on the read path."
+  },
   "requires": { "structured_output": true, "min_context_tokens": 16384 },
   "dependencies": [{ "id": "memory-server", "version": "^0.1.0" }],
   "capabilities": ["memory.organize"],
-  "tags": ["memory", "organizer"]
+  "tags": ["memory", "organizer"],
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "provider_url": { "type": "string", "description": "Base URL of the LLM provider (e.g. https://api.anthropic.com/v1). Falls back to env MEMORY_PROVIDER_URL." },
+      "provider_key": { "type": "string", "description": "API key for the LLM provider. Use ${MEMORY_PROVIDER_KEY} env ref." },
+      "batch_size": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Number of episodes processed per organizer batch (default: 10)." }
+    }
+  },
+  "permissions": {
+    "network": {
+      "outbound": ["${MEMORY_PROVIDER_HOST}"]
+    }
+  }
 }

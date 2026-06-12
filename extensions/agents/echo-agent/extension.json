@@ -4,14 +4,27 @@
   "version": "0.1.0",
   "type": "agent",
   "title": "Echo Agent",
-  "description": "A stub agent that echoes inputs back using two stub tools",
+  "description": "Use this when you need a reference agent to verify tool-calling wiring or test an orchestrator's delegation path — echoes text verbatim via echo_text or round-trips a JSON payload via echo_json.",
+  "keywords": ["example", "scaffold", "reference", "echo", "tool-calling"],
+  "author": "sox-ecosystem",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
   "entrypoint": "dist/index.js",
   "license": "MIT",
-  "author": "",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "tools",
+    "description": "Exposes an array of Tool objects (echo_text, echo_json) consumed by the host orchestrator via the tool-calling protocol."
+  },
   "requires": {
     "tool_calling": true
-  }
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {},
+    "description": "Echo agent accepts no configuration — it is a zero-config reference extension."
+  },
+  "permissions": {}
 }

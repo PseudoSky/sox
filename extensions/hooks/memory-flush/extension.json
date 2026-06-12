@@ -4,12 +4,32 @@
   "version": "0.1.0",
   "type": "hook",
   "title": "Memory Session Flush",
-  "description": "On SessionEnd: persists working memory, enqueues episodes, nudges memoryd. Also binds ScopePromotionProposed to run the promotion approval/policy step.",
+  "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
+  "keywords": ["memory", "session", "lifecycle", "flush", "promotion", "SessionEnd"],
+  "author": "sox-ecosystem",
   "compatibility": { "host": ">=1.0.0 <2.0.0" },
   "entrypoint": "dist/index.js",
   "license": "MIT",
   "runtime": "node",
   "order": 100,
+  "events": ["SessionEnd", "ScopePromotionProposed"],
   "dependencies": [{ "id": "memory-server", "version": "^0.1.0" }],
-  "tags": ["memory", "lifecycle"]
+  "tags": ["memory", "lifecycle"],
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "db_path": { "type": "string", "description": "Path to the SQLite memory store file used by the flush hook (e.g. ~/.memory/memory.db)." },
+      "promotion_policy": { "type": "string", "enum": ["auto", "manual", "disabled"], "description": "Scope promotion approval policy (default: manual)." }
+    }
+  },
+  "permissions": {
+    "fs": {
+      "read":  ["~/.memory/**"],
+      "write": ["~/.memory/**"]
+    },
+    "socket": {
+      "paths": ["~/.memory/memoryd.sock"]
+    }
+  }
 }

@@ -4,11 +4,32 @@
   "version": "0.1.0",
   "type": "mcp-server",
   "title": "Hello Server",
-  "description": "A minimal hello-server MCP server demonstrating the mcp-server extension scaffold with stdio transport and one stub tool",
+  "description": "Use this when you need a minimal MCP server reference to verify stdio JSON-RPC wiring or template a new tool — exposes one stub tool (example_tool) over a stdio transport.",
+  "keywords": ["example", "scaffold", "reference", "mcp", "stdio"],
+  "author": "sox-ecosystem",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
   "license": "MIT",
-  "author": "",
-  "entrypoint": "dist/index.js"
+  "entrypoint": "dist/index.js",
+  "tools": [
+    {
+      "name": "example_tool",
+      "description": "A stub tool for hello-server — accepts a query and returns a fixed stub response. Use only in tests or scaffold verification.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" }
+        },
+        "required": ["query"]
+      }
+    }
+  ],
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {},
+    "description": "Hello server is a zero-config reference stub."
+  },
+  "permissions": {}
 }

@@ -1,0 +1,51 @@
+{
+  "nx-free-authoring-core": {
+    "anchor": "libs/authoring/src/index.ts:scaffold",
+    "rule": "libs/authoring/src/**/*.ts contains zero imports of '@nx/devkit' or any '@nx/*' package — the scaffold(opts)->FileSet core is pure so `sox init` works without nx installed",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:nx-free-authoring-core]",
+    "audit_check": "[audit-final.ref-nx-free-authoring-core]"
+  },
+  "scaffold-parity": {
+    "anchor": "packages/sox-nx/src/generators/extension/extension.spec.ts",
+    "rule": "a passing test asserts scaffold() called directly (sox init path) and via @sox/nx:extension emit byte-identical FileSet output for identical inputs — the two authoring paths can never drift",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:scaffold-parity]",
+    "audit_check": "[audit-final.ref-scaffold-parity]"
+  },
+  "nx-never-runtime-dep": {
+    "anchor": "package.json",
+    "rule": "no extension or lib package.json lists 'nx' or any '@nx/*' under 'dependencies' — nx appears only under the root devDependencies",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:nx-never-runtime-dep]",
+    "audit_check": "[audit-final.ref-nx-never-runtime-dep]"
+  },
+  "manifest-single-source": {
+    "anchor": "libs/manifest/src/index.ts:validate",
+    "rule": "validate(manifest) is exported only from libs/manifest; scripts/validate-manifests.ts imports it rather than re-implementing schema logic — one source of truth for 'conformant'",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:manifest-single-source]",
+    "audit_check": "[audit-final.ref-manifest-single-source]"
+  },
+  "no-cross-extension-reachin": {
+    "anchor": "extensions/mcp-servers/memory-server/src/recall.ts",
+    "rule": "no file under extensions/ imports another extension's built output via a relative '../**/dist/' path — shared code is imported from a libs/* internal library and the @nx/enforce-module-boundaries rule forbids extension->extension edges",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:no-cross-extension-reachin]",
+    "audit_check": "[audit-final.ref-no-cross-extension-reachin]"
+  },
+  "dual-flag-form": {
+    "anchor": "libs/install-engine/src/index.ts:parseArgs",
+    "rule": "the CLI argument parser accepts BOTH `--flag value` and `--flag=value` forms for every flag, matching the documented --help output (A12)",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:dual-flag-form]",
+    "audit_check": "[audit-final.ref-dual-flag-form]"
+  },
+  "self-hosted-extension-zero": {
+    "anchor": "apps/sox/extension.json",
+    "rule": "apps/sox ships its own extension.json with type 'command' that validates against libs/manifest's validate() — sox is a literal conformant extension #0 (D1/D2)",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:self-hosted-extension-zero]",
+    "audit_check": "[audit-final.ref-self-hosted-extension-zero]"
+  }
+}

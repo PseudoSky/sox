@@ -16,7 +16,7 @@
  * The top-1 hit is any record whose content contains the query topic.
  */
 
-import { openDb, memoryRecall, resetProviderCallCount, getProviderCallCount } from '../dist/memory-lib.js';
+import { openDb, memoryRecall, resetProviderCallCount, getProviderCallCount } from '../extensions/mcp-servers/memory-server/dist/lib.js';
 
 const TOPICS = [
   'machine learning', 'neural networks', 'deep learning', 'transformer architecture',

@@ -38,3 +38,25 @@ statement, capability-decl granularity).
 **Decisions/cross-links:** related to parent `sox-ecosystem` (tenant-of). Proceeded as a separate
 engagement with cross-link rather than merge — the user explicitly framed it as a distinct first-tenant
 deliverable building on the fixed ecosystem contract.
+
+## 2026-06-07T (resume) — orchestrator turn
+
+User killed the P2 executor shell mid-implementation. Recovery diagnosis (architect):
+- P0/P1 committed (42bff0e); P2 code on disk + compiled, uncommitted; status.md NOT advanced (executor died before mandatory completion step).
+- P2 acceptance: test-organize.js fails (true exit 1) at one assertion — current recall returns the INVALIDATED old claim.
+- Root cause: recall.ts graph depth-1 expansion. Edge filter (line 234) is correct, so the live SUPERSEDES edge (new→old) is followed; but the expanded-NODE fetch (lines 247-248) lacks a node-validity predicate, so the invalidated neighbor is re-added. Vector (114) + FTS (227) paths already filter; expansion was missed.
+- dist/memory-lib.js is a HAND-MAINTAINED pre-compiled mirror (no build script). Fix must land in BOTH src/recall.ts and dist/memory-lib.js.
+- test-daemon-crash.js not yet run.
+
+Dispatch: typescript-pro to resume + complete P2 (fix expansion validity filter in both files, run both P2 tests to green, then append P2-complete transition to status.md).
+
+## 2026-06-08T04:46Z — orchestrator: P2 resumed to green
+Dispatched typescript-pro (executor). Fix: added node-validity predicate to recall.ts graph-expansion node fetch (was missing; vector+FTS paths already had it). Applied in BOTH src/recall.ts and hand-maintained dist/memory-lib.js. test-organize.js exit 0 (ALL ASSERTIONS PASSED); test-daemon-crash.js exit 0 (15/15 writes recovered, singleton re-established, no ~/.memory/memoryd.lock — R6 held). No second bug. status.md advanced: P2 complete @ 2026-06-08T04:46:32Z. INDEX.md rebuilt (relevancy tool v1.0.3; v1.0.4 has a broken section-matter dep — used 1.0.3). Changes left uncommitted for review. Next: P3 (multi-scope RRF federation).
+
+## 2026-06-08 — orchestrator: loop P3→P5, engagement COMPLETE
+Continued the plan to completion, dispatching each phase to typescript-pro serially with resume-guard (re-verify prior acceptance before building).
+- P3 (federation): green @ 05:15Z. p95 5.8ms over 3×50k, scope-weighted RRF, agent_id ×1.25 boost, no 5th scope. src+dist synced.
+- P4 (promotion/graphify/communities): green @ 05:30Z. Native ScopePromotionProposed via host-event-shim (same pattern as P2 supervisor-shim); no bespoke channel (assertion d). Graphify fail-loud on unknown shape. Communities + 2 tools; LLM summary in organizer only (R3).
+- P5 (conformance/publish/scale): green @ 07:45Z → state: COMPLETE. Full 11-check regression green. validate-manifests passes incl v2 checks. G1 scale-switch advisory proven at 60k (post-switch p95 ~7ms). strict_capabilities hard-block verified. Changesets 0.1.0 dry-run (no live publish). pnpm -r build fixed (3 strict-mode src fixes) → compiles to separate dist/extensions tree, doesn't touch hand-maintained dist/memory-lib.js.
+Documented drift (not defects): (1) hand-maintained dist vs pnpm build tree must stay in sync; (2) memory-flush invokes applyPromotion (logically memory-cli's); (3) libSQL switch criterion-wired only; (4) live npm publish needs token.
+INDEX.md rebuilt: sox-memory moved Open→Closed (newest). No open engagements remain. All changes uncommitted, pending user review.

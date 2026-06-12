@@ -1,0 +1,1368 @@
+#!/usr/bin/env node
+/**
+ * bin/sox — sox-ecosystem host CLI
+ *
+ * Phase P0: skeleton — --help and --version work; unknown verb exits non-zero.
+ * Phase P1: Tier-1 verbs — install / uninstall / list / validate / details.
+ *           Named-scope vocabulary: -s, --scope <user|project|local>  (default: user)
+ *
+ * Build discipline: hand-maintained ESM JS (see docs/cli-build-decision.md).
+ * This file is directly runnable under Node ≥18 ESM without a compile step.
+ *
+ * Engine coupling:
+ *   - validate  → spawns `npx tsx scripts/validate-manifests.ts`
+ *   - install   → spawns `npx tsx scripts/install.ts --scope=<scope>`
+ *   - uninstall → mutates scope config JSON directly (install.ts has no uninstall export)
+ *   - list      → reads lockfiles + config JSON for each scope (no engine spawn)
+ *   - details   → reads registry/index.json (no engine spawn)
+ */
+
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve, join } from 'node:path';
+import { homedir } from 'node:os';
+import { spawnSync, spawn } from 'node:child_process';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const ROOT = resolve(__dirname, '..');
+
+// ── Version resolution ───────────────────────────────────────────────────────
+
+function readVersion() {
+  try {
+    const pkgPath = resolve(ROOT, 'package.json');
+    const raw = readFileSync(pkgPath, 'utf8');
+    /** @type {{ version: string }} */
+    const pkg = JSON.parse(raw);
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+const VERSION = readVersion();
+
+// ── Scope vocabulary ─────────────────────────────────────────────────────────
+
+/** CLI-exposed scope names (subset of engine scopes; 'org' is internal-only). */
+const CLI_SCOPES = new Set(['user', 'project', 'local']);
+
+/**
+ * Returns { config, lockfile } paths for a given scope.
+ * Mirrors install.ts getScopePath() — kept in sync manually (build decision B).
+ * @param {string} scope
+ */
+function getScopePaths(scope) {
+  switch (scope) {
+    case 'user':
+      return {
+        config: join(homedir(), '.config', 'extensions', 'extensions.json'),
+        lockfile: join(homedir(), '.config', 'extensions', 'extensions.lock'),
+      };
+    case 'project':
+      return {
+        config: join(ROOT, '.extensions', 'extensions.json'),
+        lockfile: join(ROOT, '.extensions', 'extensions.lock'),
+      };
+    case 'local':
+      return {
+        config: join(ROOT, '.extensions', 'extensions.local.json'),
+        lockfile: join(ROOT, '.extensions', 'extensions.local.lock'),
+      };
+    default:
+      process.stderr.write(`sox: unknown scope '${scope}'. Valid scopes: user, project, local\n`);
+      process.exit(1);
+  }
+}
+
+// ── Help text ────────────────────────────────────────────────────────────────
+
+const HELP = `\
+sox — sox-ecosystem extension lifecycle manager
+
+Usage:
+  sox <verb> [options]
+
+Verbs:
+  install [<id>]         Install extensions for a given scope
+  uninstall <id>         Remove an installed extension from a scope (stops if running)
+  list                   List installed extensions and their running state
+  validate [<path>]      Validate extension manifests (delegates to engine)
+  details <id>           Show details for a named extension (includes running state)
+  init <type> <id>       Scaffold a new extension (alias: new)
+  enable <id>            Enable an installed extension in a scope
+  disable <id>           Disable an installed extension in a scope (stops if running)
+  search [<query>]       Search the extension registry
+  update [<id>]          Update pinned extension hashes (re-runs install --update)
+  start                  Start the host runtime (spawns background extensions)
+  stop [<id>]            Stop the host runtime or a specific running extension
+
+Scope options:
+  -s, --scope <scope>    Scope to operate on: user | project | local  (default: user)
+
+Runtime options (start / stop / list / details):
+  --runtime-file <path>  Override runtime record file path
+                         (default: <lockfile-dir>/runtime.json or SOX_RUNTIME_FILE env)
+  --root <path>          Override repo root for scope path resolution
+
+Global options:
+  --help, -h             Show this help text
+  --version, -V          Print version and exit
+
+Examples:
+  sox install -s user
+  sox install hello-world -s project
+  sox start -s project
+  sox stop -s project
+  sox list
+  sox validate
+  sox details hello-world
+  sox disable hello-world -s project
+  sox uninstall hello-world -s user
+
+sox v${VERSION}  |  https://github.com/sox-ecosystem
+`;
+
+const INSTALL_HELP = `\
+sox install — Install extensions for a scope
+
+Usage:
+  sox install [<id>] [-s <scope>]
+
+Options:
+  -s, --scope <scope>    Scope: user | project | local  (default: user)
+  --frozen               Use frozen-lockfile mode
+  --update               Update pinned hashes
+  --help, -h             Show this help
+
+Examples:
+  sox install -s user
+  sox install hello-world -s project
+`;
+
+// ── Scope paths with custom root ─────────────────────────────────────────────
+
+/**
+ * Returns { config, lockfile } paths for a given scope, with an optional root override.
+ * When root is provided (e.g. from --root flag), uses that root for project/local scopes.
+ * @param {string} scope
+ * @param {string} [rootOverride]
+ */
+function getScopePathsWithRoot(scope, rootOverride) {
+  const effectiveRoot = rootOverride ?? ROOT;
+  switch (scope) {
+    case 'user':
+      return {
+        config: join(homedir(), '.config', 'extensions', 'extensions.json'),
+        lockfile: join(homedir(), '.config', 'extensions', 'extensions.lock'),
+      };
+    case 'project':
+      return {
+        config: join(effectiveRoot, '.extensions', 'extensions.json'),
+        lockfile: join(effectiveRoot, '.extensions', 'extensions.lock'),
+      };
+    case 'local':
+      return {
+        config: join(effectiveRoot, '.extensions', 'extensions.local.json'),
+        lockfile: join(effectiveRoot, '.extensions', 'extensions.local.lock'),
+      };
+    default:
+      process.stderr.write(`sox: unknown scope '${scope}'. Valid scopes: user, project, local\n`);
+      process.exit(1);
+  }
+}
+
+// ── Argument parsing helpers ─────────────────────────────────────────────────
+
+/**
+ * Parse -s / --scope from an argv array.
+ * Returns { scope, rest } where rest is argv without the scope flags.
+ * @param {string[]} argv
+ * @param {string} defaultScope
+ */
+function parseScope(argv, defaultScope = 'user') {
+  let scope = defaultScope;
+  const rest = [];
+  let i = 0;
+  while (i < argv.length) {
+    const arg = argv[i];
+    if ((arg === '-s' || arg === '--scope') && i + 1 < argv.length) {
+      scope = argv[i + 1];
+      i += 2;
+    } else if (arg !== undefined && arg.startsWith('--scope=')) {
+      scope = arg.slice('--scope='.length);
+      i++;
+    } else {
+      rest.push(arg);
+      i++;
+    }
+  }
+  if (!CLI_SCOPES.has(scope)) {
+    process.stderr.write(`sox: invalid scope '${scope}'. Valid scopes: user, project, local\n`);
+    process.exit(1);
+  }
+  return { scope, rest };
+}
+
+// ── Runtime record helpers ───────────────────────────────────────────────────
+
+/**
+ * Derive the runtime record file path for a given lockfile path.
+ * Respects SOX_RUNTIME_FILE env var and --runtime-file CLI flag.
+ * @param {string} lockfilePath
+ * @param {string|undefined} runtimeFileOverride
+ */
+function getRuntimeFilePath(lockfilePath, runtimeFileOverride) {
+  if (runtimeFileOverride) return runtimeFileOverride;
+  if (process.env['SOX_RUNTIME_FILE']) return process.env['SOX_RUNTIME_FILE'];
+  return join(dirname(lockfilePath), 'runtime.json');
+}
+
+/**
+ * Load the runtime record for a scope.
+ * @param {string} lockfilePath
+ * @param {string|undefined} runtimeFileOverride
+ * @returns {{ entries: Array<{ id: string, key: string, type: string, scope: string, source: string, pid: number|null, running: boolean, activatedAt: string }> }|null}
+ */
+function loadRuntimeRecord(lockfilePath, runtimeFileOverride) {
+  const runtimePath = getRuntimeFilePath(lockfilePath, runtimeFileOverride);
+  return loadJSON(runtimePath);
+}
+
+/**
+ * Find a runtime entry by id across all scope runtime files.
+ * @param {string} id
+ * @param {string|undefined} runtimeFileOverride
+ */
+function findRuntimeEntry(id, runtimeFileOverride) {
+  for (const scope of ['user', 'project', 'local']) {
+    const { lockfile: lockPath } = getScopePaths(scope);
+    const record = loadRuntimeRecord(lockPath, runtimeFileOverride);
+    if (!record || !Array.isArray(record.entries)) continue;
+    const entry = record.entries.find((/** @type {any} */ e) => e.id === id || e.key === id);
+    if (entry) return { entry, scope, runtimePath: getRuntimeFilePath(lockPath, runtimeFileOverride) };
+  }
+  return null;
+}
+
+/**
+ * Parse --root=<path> and --runtime-file=<path> from argv.
+ * Returns { root, runtimeFile, rest } where rest excludes these flags.
+ * @param {string[]} argv
+ */
+function parseRuntimeFlags(argv) {
+  let root = /** @type {string|undefined} */ (undefined);
+  let runtimeFile = /** @type {string|undefined} */ (undefined);
+  const rest = [];
+  let i = 0;
+  while (i < argv.length) {
+    const arg = argv[i];
+    if ((arg === '--root') && i + 1 < argv.length) {
+      root = argv[i + 1];
+      i += 2;
+    } else if (arg !== undefined && arg.startsWith('--root=')) {
+      root = arg.slice('--root='.length);
+      i++;
+    } else if ((arg === '--runtime-file') && i + 1 < argv.length) {
+      runtimeFile = argv[i + 1];
+      i += 2;
+    } else if (arg !== undefined && arg.startsWith('--runtime-file=')) {
+      runtimeFile = arg.slice('--runtime-file='.length);
+      i++;
+    } else {
+      rest.push(arg);
+      i++;
+    }
+  }
+  return { root, runtimeFile, rest };
+}
+
+/** Is a pid alive? (signal 0 = existence check) */
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+/** Sleep ~ms synchronously (bin/sox is written in a synchronous style). */
+function sleepMs(ms) {
+  spawnSync(process.execPath, ['-e', `setTimeout(function(){}, ${ms})`]);
+}
+
+/**
+ * Stop a running extension reliably, cooperating with the supervisor so it is NOT restarted.
+ * The CALLER must update the config FIRST (disable → enabled:false; uninstall → remove the
+ * entry) so that a SIGHUP reconcile in the supervisor sees the new should-run set.
+ *
+ * - Supervisor alive  → SIGHUP it (reconcile stops the now-unwanted child in-process, no
+ *   restart), then poll the child pid until gone; SIGKILL as a last resort.
+ * - No live supervisor → kill the child pid directly (nothing will restart it).
+ * @param {string} id
+ * @param {string} runtimeFilePath
+ */
+function stopExtensionReliably(id, runtimeFilePath) {
+  const record = loadJSON(runtimeFilePath);
+  if (!record || !Array.isArray(record.entries)) return;
+  const entry = record.entries.find((/** @type {any} */ e) => e.id === id || e.key === id);
+  if (!entry || !entry.running || entry.pid === null || entry.pid === undefined) return;
+
+  const childPid = entry.pid;
+  const supPid = typeof record.supervisorPid === 'number' ? record.supervisorPid : null;
+
+  if (supPid !== null && pidAlive(supPid)) {
+    process.stdout.write(`sox: signaling supervisor (pid=${supPid}) to reconcile...\n`);
+    try { process.kill(supPid, 'SIGHUP'); } catch (e) {
+      process.stderr.write(`sox: SIGHUP to supervisor failed: ${String(e)}\n`);
+    }
+    let gone = false;
+    for (let i = 0; i < 30; i++) { // up to ~6s
+      if (!pidAlive(childPid)) { gone = true; break; }
+      sleepMs(200);
+    }
+    if (!gone) {
+      process.stderr.write(`sox: ${id} (pid=${childPid}) still alive after reconcile — SIGKILL\n`);
+      try { process.kill(childPid, 'SIGKILL'); } catch { /* gone */ }
+    }
+  } else {
+    try {
+      process.kill(childPid, 'SIGTERM');
+      sleepMs(400);
+      if (pidAlive(childPid)) { try { process.kill(childPid, 'SIGKILL'); } catch { /* gone */ } }
+    } catch (e) {
+      process.stderr.write(`sox: could not stop ${id} (pid=${childPid}): ${String(e)}\n`);
+    }
+  }
+
+  // Update the runtime record (re-read in case the supervisor rewrote it).
+  const fresh = loadJSON(runtimeFilePath);
+  if (fresh && Array.isArray(fresh.entries)) {
+    const fe = fresh.entries.find((/** @type {any} */ e) => e.id === id || e.key === id);
+    if (fe) { fe.running = false; fe.pid = null; }
+    writeJSON(runtimeFilePath, fresh);
+  }
+}
+
+// ── Registry helpers ─────────────────────────────────────────────────────────
+
+function loadRegistry() {
+  const indexPath = join(ROOT, 'registry', 'index.json');
+  if (!existsSync(indexPath)) return [];
+  try {
+    return JSON.parse(readFileSync(indexPath, 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+function loadJSON(filePath) {
+  if (!existsSync(filePath)) return null;
+  try {
+    return JSON.parse(readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function writeJSON(filePath, data) {
+  const dir = dirname(filePath);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', 'utf8');
+}
+
+// ── Verb: validate ───────────────────────────────────────────────────────────
+
+/**
+ * Delegates entirely to scripts/validate-manifests.ts via npx tsx.
+ * Propagates the engine's exit code unchanged.
+ *
+ * P4: Supports --strict flag: advisory DX-conformance warnings become errors.
+ *   Default mode  — fail-open (exit 0 even when advisory issues are present).
+ *   --strict mode — fail-closed (exit non-zero if any advisory issue is found).
+ *   Note: --strict is NOT wired into CI yet (that flip is Phase 6, post-P5 retrofit).
+ *
+ * @param {string[]} argv  remaining args after 'validate'
+ */
+function cmdValidate(argv) {
+  // Filter out --help early (show our own if needed)
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(
+      `sox validate — Validate extension manifests\n\n` +
+        `Usage:\n  sox validate [--strict] [<path>]\n\n` +
+        `Flags:\n` +
+        `  --strict   Promote DX-conformance warnings to errors (fail-closed).\n` +
+        `             Default mode is fail-open: advisory issues emit warnings, exit 0.\n\n` +
+        `Delegates to scripts/validate-manifests.ts. Exits 0 on clean, non-zero on errors.\n`,
+    );
+    process.exit(0);
+  }
+
+  // P4: pass --strict through to the engine if present
+  const strict = argv.includes('--strict');
+
+  // Path argument (optional; exclude flag args)
+  const pathArg = argv.find((a) => !a.startsWith('-'));
+  const engineArgs = [
+    ...(strict ? ['--strict'] : []),
+    ...(pathArg !== undefined ? [pathArg] : [ROOT]),
+  ];
+
+  const result = spawnSync(
+    'npx',
+    ['tsx', join(ROOT, 'scripts', 'validate-manifests.ts'), ...engineArgs],
+    { stdio: 'inherit', cwd: ROOT },
+  );
+
+  if (result.error) {
+    process.stderr.write(`sox validate: failed to spawn engine: ${result.error.message}\n`);
+    process.exit(1);
+  }
+
+  process.exit(result.status ?? 1);
+}
+
+// ── Verb: install ────────────────────────────────────────────────────────────
+
+/**
+ * Wraps scripts/install.ts via npx tsx.
+ * Accepts an optional extension id (ignored at engine level for now — engine installs
+ * the full config; single-id install is a future P1+ refinement).
+ * @param {string[]} argv  remaining args after 'install'
+ */
+function cmdInstall(argv) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(INSTALL_HELP);
+    process.exit(0);
+  }
+
+  const { root: rootFlag, runtimeFile: _runtimeFileFlag, rest: argv1 } = parseRuntimeFlags(argv);
+  const { scope, rest } = parseScope(argv1, 'user');
+
+  const frozen = rest.includes('--frozen');
+  const update = rest.includes('--update');
+
+  // Support --config=<path> and --lockfile=<path> for custom scope paths (e.g. e2e tests)
+  const configFlag = rest.find((a) => a.startsWith('--config='));
+  const lockfileFlag = rest.find((a) => a.startsWith('--lockfile='));
+
+  // If root is provided, derive default paths from root-relative scope paths
+  const effectiveScopePaths = rootFlag ? getScopePathsWithRoot(scope, rootFlag) : null;
+
+  const engineArgs = [`--scope=${scope}`];
+  if (frozen) engineArgs.push('--frozen-lockfile');
+  if (update) engineArgs.push('--update');
+  if (configFlag) {
+    engineArgs.push(configFlag);
+  } else if (effectiveScopePaths) {
+    engineArgs.push(`--config=${effectiveScopePaths.config}`);
+  }
+  if (lockfileFlag) {
+    engineArgs.push(lockfileFlag);
+  } else if (effectiveScopePaths) {
+    engineArgs.push(`--lockfile=${effectiveScopePaths.lockfile}`);
+  }
+
+  const result = spawnSync(
+    'npx',
+    ['tsx', join(ROOT, 'scripts', 'install.ts'), ...engineArgs],
+    { stdio: 'inherit', cwd: ROOT },
+  );
+
+  if (result.error) {
+    process.stderr.write(`sox install: failed to spawn engine: ${result.error.message}\n`);
+    process.exit(1);
+  }
+
+  process.exit(result.status ?? 1);
+}
+
+// ── Verb: uninstall ──────────────────────────────────────────────────────────
+
+/**
+ * Removes an extension entry from a scope's extensions.json config and lockfile.
+ * If the extension is running, stops it first.
+ * @param {string[]} argv  remaining args after 'uninstall'
+ */
+function cmdUninstall(argv) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(
+      `sox uninstall — Remove an extension from a scope config\n\nUsage:\n  sox uninstall <id> [-s <scope>] [--runtime-file <path>] [--root <path>]\n\nOptions:\n  -s, --scope <scope>        Scope: user | project | local  (default: user)\n  --runtime-file <path>      Override runtime record path\n  --root <path>              Override repo root for path resolution\n`,
+    );
+    process.exit(0);
+  }
+
+  const { root: rootFlag, runtimeFile: runtimeFileFlag, rest: argv1 } = parseRuntimeFlags(argv);
+  const { scope, rest } = parseScope(argv1, 'user');
+
+  const id = rest.find((a) => !a.startsWith('-'));
+  if (!id) {
+    process.stderr.write(`sox uninstall: extension id is required\nUsage: sox uninstall <id> [-s <scope>]\n`);
+    process.exit(1);
+  }
+
+  const { config: configPath, lockfile: lockfilePath } = getScopePathsWithRoot(scope, rootFlag);
+  const config = loadJSON(configPath);
+
+  if (config === null) {
+    process.stderr.write(`sox uninstall: no config found at ${configPath} — nothing to remove\n`);
+    process.exit(1);
+  }
+
+  if (!Array.isArray(config.install)) {
+    process.stderr.write(`sox uninstall: no install[] in ${configPath} — '${id}' not installed\n`);
+    process.exit(1);
+  }
+
+  // Remove from config FIRST so a supervisor SIGHUP reconcile treats it as no-longer-wanted,
+  // THEN stop it reliably (no restart, no orphan).
+  const runtimeFilePath = getRuntimeFilePath(lockfilePath, runtimeFileFlag);
+  const before = config.install.length;
+  config.install = config.install.filter((/** @type {{ id: string }} */ e) => e.id !== id);
+  const after = config.install.length;
+
+  if (before === after) {
+    process.stderr.write(`sox uninstall: extension '${id}' not found in ${scope} scope config\n`);
+    process.exit(1);
+  }
+
+  writeJSON(configPath, config);
+
+  stopExtensionReliably(id, runtimeFilePath);
+
+  // Also remove from lockfile if present
+  const lockfile = loadJSON(lockfilePath);
+  if (lockfile && typeof lockfile.resolved === 'object') {
+    const keysToRemove = Object.keys(lockfile.resolved).filter((k) => {
+      const baseKey = k.includes('@') ? k.slice(0, k.lastIndexOf('@')) : k;
+      return baseKey === id || k === id;
+    });
+    if (keysToRemove.length > 0) {
+      for (const k of keysToRemove) {
+        delete lockfile.resolved[k];
+      }
+      writeJSON(lockfilePath, lockfile);
+      process.stdout.write(`sox: removed '${id}' from lockfile (${lockfilePath})\n`);
+    }
+  }
+
+  process.stdout.write(`sox: uninstalled '${id}' from ${scope} scope (${configPath})\n`);
+  process.exit(0);
+}
+
+// ── Verb: list ───────────────────────────────────────────────────────────────
+
+/**
+ * Reads the resolved/lock state from all visible scope lockfiles and prints a table.
+ * Also shows running state from runtime records.
+ * P6: --json mode emits a JSON array where every entry carries mandatory `scope` and `source`
+ * keys (answering "which scope did this come from?" — §2.2 anti-silent-shadowing).
+ * @param {string[]} argv  remaining args after 'list'
+ */
+function cmdList(argv) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(
+      `sox list — List installed extensions across all scopes\n\n` +
+      `Usage:\n  sox list [--json] [--runtime-file <path>] [--root <path>]\n\n` +
+      `Options:\n` +
+      `  --json                Emit a JSON array; each entry carries id, scope, source, running, pid.\n` +
+      `  --runtime-file <path> Override runtime record path.\n` +
+      `  --root <path>         Override repo root for scope path resolution.\n\n` +
+      `Reads lockfiles for user, project, and local scopes and prints a summary table.\n` +
+      `scope, source, and running state are always shown (§2.2 provenance).\n`,
+    );
+    process.exit(0);
+  }
+
+  const { root: rootFlag, runtimeFile: runtimeFileFlag, rest: argv1 } = parseRuntimeFlags(argv);
+  const jsonMode = argv1.includes('--json');
+
+  const rows = [];
+
+  for (const scope of ['user', 'project', 'local']) {
+    const { lockfile: lockPath } = getScopePathsWithRoot(scope, rootFlag);
+    const lock = loadJSON(lockPath);
+    if (!lock || typeof lock.resolved !== 'object') continue;
+
+    // Load runtime record for this scope to get running state
+    const runtimeRecord = loadRuntimeRecord(lockPath, runtimeFileFlag);
+    const runtimeEntries = /** @type {Array<{id:string,key:string,running:boolean,pid:number|null}>} */ (
+      Array.isArray(runtimeRecord?.entries) ? runtimeRecord.entries : []
+    );
+
+    for (const [key, entry] of Object.entries(lock.resolved)) {
+      // Find running state from runtime record
+      const baseId = key.includes('@') ? key.slice(0, key.lastIndexOf('@')) : key;
+      const runtimeEntry = runtimeEntries.find((e) => e.key === key || e.id === baseId);
+      const running = runtimeEntry?.running ?? false;
+      const pid = runtimeEntry?.pid ?? null;
+
+      rows.push({
+        id: key,
+        scope,
+        source: (/** @type {any} */ (entry)).source ?? null,
+        resolved_at: (/** @type {any} */ (entry)).resolved_at ?? null,
+        running,
+        pid,
+      });
+    }
+  }
+
+  // ── JSON output (--json) ──────────────────────────────────────────────────
+  if (jsonMode) {
+    // Always return an array; empty array when nothing installed.
+    // Every entry carries mandatory `scope` and `source` (§2.2 provenance) plus running state.
+    process.stdout.write(JSON.stringify(rows, null, 2) + '\n');
+    process.exit(0);
+  }
+
+  // ── Human table output ────────────────────────────────────────────────────
+  if (rows.length === 0) {
+    process.stdout.write('sox list: no extensions installed in any scope\n');
+    process.exit(0);
+  }
+
+  const COL_ID = 36;
+  const COL_SCOPE = 10;
+  const COL_STATUS = 10;
+  const COL_PID = 8;
+  const COL_SOURCE = 48;
+
+  function pad(s, n) {
+    const str = String(s ?? '—');
+    return str.length >= n ? str.slice(0, n - 1) + '…' : str.padEnd(n);
+  }
+
+  const header =
+    pad('EXTENSION', COL_ID) +
+    pad('SCOPE', COL_SCOPE) +
+    pad('STATUS', COL_STATUS) +
+    pad('PID', COL_PID) +
+    pad('SOURCE', COL_SOURCE) +
+    '\n';
+  const sep = '─'.repeat(COL_ID + COL_SCOPE + COL_STATUS + COL_PID + COL_SOURCE) + '\n';
+
+  let out = header + sep;
+  for (const row of rows) {
+    const status = row.running ? 'RUNNING' : 'stopped';
+    const pidStr = row.pid !== null ? String(row.pid) : '—';
+    out +=
+      pad(row.id, COL_ID) +
+      pad(row.scope, COL_SCOPE) +
+      pad(status, COL_STATUS) +
+      pad(pidStr, COL_PID) +
+      pad(row.source, COL_SOURCE) +
+      '\n';
+  }
+
+  process.stdout.write(out);
+  process.exit(0);
+}
+
+// ── Verb: enable ─────────────────────────────────────────────────────────────
+
+/**
+ * Enable an installed extension in a scope config.
+ * Sets enabled: true for the matching install[] entry.
+ * Wires the CommandRegistry dispatch surface (P5 delivery).
+ * @param {string[]} argv  remaining args after 'enable'
+ */
+function cmdEnable(argv) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(
+      `sox enable — Enable an installed extension in a scope\n\n` +
+      `Usage:\n  sox enable <id> [-s <scope>]\n\n` +
+      `Options:\n` +
+      `  -s, --scope <scope>    Scope: user | project | local  (default: user)\n\n` +
+      `Marks the extension as enabled in the scope config.\n` +
+      `Run 'sox install' after enabling to activate the extension in the runtime.\n`,
+    );
+    process.exit(0);
+  }
+
+  const { root: rootFlag, runtimeFile: runtimeFileFlag, rest: argv1 } = parseRuntimeFlags(argv);
+  const { scope, rest } = parseScope(argv1, 'user');
+
+  const id = rest.find((a) => !a.startsWith('-'));
+  if (!id) {
+    process.stderr.write(`sox enable: extension id is required\nUsage: sox enable <id> [-s <scope>]\n`);
+    process.exit(1);
+  }
+
+  const { config: configPath, lockfile: lockfilePath } = getScopePathsWithRoot(scope, rootFlag);
+  const config = loadJSON(configPath);
+
+  if (config === null) {
+    process.stderr.write(`sox enable: no config found at ${configPath} — extension '${id}' not installed\n`);
+    process.exit(1);
+  }
+
+  if (!Array.isArray(config.install)) {
+    process.stderr.write(`sox enable: no install[] in ${configPath} — '${id}' not installed\n`);
+    process.exit(1);
+  }
+
+  const entry = config.install.find((/** @type {{ id: string }} */ e) => e.id === id);
+  if (!entry) {
+    process.stderr.write(`sox enable: extension '${id}' not found in ${scope} scope config\n`);
+    process.exit(1);
+  }
+
+  const alreadyEnabled = entry.enabled === true || entry.enabled === undefined;
+  entry.enabled = true;
+  writeJSON(configPath, config);
+  process.stdout.write(
+    alreadyEnabled
+      ? `sox: '${id}' already enabled in ${scope} scope\n`
+      : `sox: enabled '${id}' in ${scope} scope\n`,
+  );
+
+  // Symmetry with disable: if the host runtime is running for this scope, restart it so the
+  // newly-enabled extension is actually ACTIVATED — not merely flagged. (disable stops the
+  // process; enable must bring it back.) Clean restart = stop (signals supervisor) then start.
+  const runtimeFilePath = getRuntimeFilePath(lockfilePath, runtimeFileFlag);
+  const rec = loadJSON(runtimeFilePath);
+  const supPid = rec && typeof rec.supervisorPid === 'number' ? rec.supervisorPid : null;
+  if (supPid !== null && pidAlive(supPid)) {
+    process.stdout.write(`sox: host running — restarting '${scope}' runtime to activate '${id}'...\n`);
+    const self = process.argv[1];
+    const common = ['-s', scope];
+    if (rootFlag) common.push('--root', rootFlag);
+    if (runtimeFileFlag) common.push('--runtime-file', runtimeFileFlag);
+    spawnSync(process.execPath, [self, 'stop', ...common], { stdio: 'inherit' });
+    spawnSync(process.execPath, [self, 'start', ...common], { stdio: 'inherit' });
+  } else {
+    process.stdout.write(`sox: (host not running for '${scope}' — run 'sox start' to activate)\n`);
+  }
+  process.exit(0);
+}
+
+// ── Verb: disable ────────────────────────────────────────────────────────────
+
+/**
+ * Disable an installed extension in a scope config.
+ * Sets enabled: false for the matching install[] entry.
+ * If the extension is running, stops it first.
+ * @param {string[]} argv  remaining args after 'disable'
+ */
+function cmdDisable(argv) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(
+      `sox disable — Disable an installed extension in a scope\n\n` +
+      `Usage:\n  sox disable <id> [-s <scope>] [--runtime-file <path>] [--root <path>]\n\n` +
+      `Options:\n` +
+      `  -s, --scope <scope>        Scope: user | project | local  (default: user)\n` +
+      `  --runtime-file <path>      Override runtime record path\n` +
+      `  --root <path>              Override repo root for path resolution\n\n` +
+      `Marks the extension as disabled in the scope config.\n` +
+      `If the extension is currently running, it is stopped first.\n`,
+    );
+    process.exit(0);
+  }
+
+  const { root: rootFlag, runtimeFile: runtimeFileFlag, rest: argv1 } = parseRuntimeFlags(argv);
+  const { scope, rest } = parseScope(argv1, 'user');
+
+  const id = rest.find((a) => !a.startsWith('-'));
+  if (!id) {
+    process.stderr.write(`sox disable: extension id is required\nUsage: sox disable <id> [-s <scope>]\n`);
+    process.exit(1);
+  }
+
+  const { config: configPath, lockfile: lockfilePath } = getScopePathsWithRoot(scope, rootFlag);
+  const config = loadJSON(configPath);
+
+  if (config === null) {
+    process.stderr.write(`sox disable: no config found at ${configPath} — extension '${id}' not installed\n`);
+    process.exit(1);
+  }
+
+  if (!Array.isArray(config.install)) {
+    process.stderr.write(`sox disable: no install[] in ${configPath} — '${id}' not installed\n`);
+    process.exit(1);
+  }
+
+  const entry = config.install.find((/** @type {{ id: string }} */ e) => e.id === id);
+  if (!entry) {
+    process.stderr.write(`sox disable: extension '${id}' not found in ${scope} scope config\n`);
+    process.exit(1);
+  }
+
+  // Update config FIRST so a supervisor SIGHUP reconcile sees the new should-run set,
+  // THEN stop reliably (cooperates with the supervisor — no restart, no orphan).
+  const alreadyDisabled = entry.enabled === false;
+  entry.enabled = false;
+  writeJSON(configPath, config);
+
+  const runtimeFilePath = getRuntimeFilePath(lockfilePath, runtimeFileFlag);
+  stopExtensionReliably(id, runtimeFilePath);
+
+  process.stdout.write(
+    alreadyDisabled
+      ? `sox: '${id}' already disabled in ${scope} scope (ensured stopped)\n`
+      : `sox: disabled '${id}' in ${scope} scope\n`,
+  );
+  process.exit(0);
+}
+
+// ── Verb: search ─────────────────────────────────────────────────────────────
+
+/**
+ * Search the registry for extensions matching a query.
+ * @param {string[]} argv  remaining args after 'search'
+ */
+function cmdSearch(argv) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(
+      `sox search — Search the extension registry\n\n` +
+      `Usage:\n  sox search <query> [--json]\n\n` +
+      `Options:\n` +
+      `  --json   Emit results as a JSON array\n\n` +
+      `Searches registry/index.json by id, title, description, and keywords.\n` +
+      `Returns all extensions whose fields contain the query string (case-insensitive).\n`,
+    );
+    process.exit(0);
+  }
+
+  const jsonMode = argv.includes('--json');
+  const query = argv.find((a) => !a.startsWith('-'));
+
+  const registry = loadRegistry();
+
+  /** @type {unknown[]} */
+  let results;
+  if (!query) {
+    results = registry;
+  } else {
+    const q = query.toLowerCase();
+    results = registry.filter((/** @type {Record<string, unknown>} */ entry) => {
+      const id = String(entry['id'] ?? '').toLowerCase();
+      const title = String(entry['title'] ?? '').toLowerCase();
+      const description = String(entry['description'] ?? '').toLowerCase();
+      const keywords = Array.isArray(entry['keywords'])
+        ? entry['keywords'].join(' ').toLowerCase()
+        : '';
+      return (
+        id.includes(q) ||
+        title.includes(q) ||
+        description.includes(q) ||
+        keywords.includes(q)
+      );
+    });
+  }
+
+  if (jsonMode) {
+    process.stdout.write(JSON.stringify(results, null, 2) + '\n');
+    process.exit(0);
+  }
+
+  if (results.length === 0) {
+    process.stdout.write(
+      query
+        ? `sox search: no extensions found matching '${query}'\n`
+        : `sox search: registry is empty\n`,
+    );
+    process.exit(0);
+  }
+
+  const COL_ID = 36;
+  const COL_TYPE = 14;
+  const COL_DESC = 56;
+
+  function pad(s, n) {
+    const str = String(s ?? '—');
+    return str.length >= n ? str.slice(0, n - 1) + '…' : str.padEnd(n);
+  }
+
+  const header = pad('EXTENSION', COL_ID) + pad('TYPE', COL_TYPE) + pad('DESCRIPTION', COL_DESC) + '\n';
+  const sep = '─'.repeat(COL_ID + COL_TYPE + COL_DESC) + '\n';
+  let out = header + sep;
+  for (const entry of results) {
+    const e = /** @type {Record<string, unknown>} */ (entry);
+    out += pad(e['id'], COL_ID) + pad(e['type'], COL_TYPE) + pad(e['description'], COL_DESC) + '\n';
+  }
+  process.stdout.write(out);
+  process.exit(0);
+}
+
+// ── Verb: update ─────────────────────────────────────────────────────────────
+
+/**
+ * Update pinned extension hashes — delegates to sox install --update.
+ * @param {string[]} argv  remaining args after 'update'
+ */
+function cmdUpdate(argv) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(
+      `sox update — Update installed extensions to their latest resolved versions\n\n` +
+      `Usage:\n  sox update [<id>] [-s <scope>]\n\n` +
+      `Options:\n` +
+      `  -s, --scope <scope>    Scope: user | project | local  (default: user)\n\n` +
+      `Re-runs install in update mode (--update), refreshing pinned hashes.\n` +
+      `If <id> is specified, only that extension is targeted (passed to engine).\n`,
+    );
+    process.exit(0);
+  }
+
+  const { scope, rest } = parseScope(argv, 'user');
+  const id = rest.find((a) => !a.startsWith('-'));
+  const engineArgs = [`--scope=${scope}`, '--update'];
+  if (id) engineArgs.push(`--id=${id}`);
+
+  const result = spawnSync(
+    'npx',
+    ['tsx', join(ROOT, 'scripts', 'install.ts'), ...engineArgs],
+    { stdio: 'inherit', cwd: ROOT },
+  );
+
+  if (result.error) {
+    process.stderr.write(`sox update: failed to spawn engine: ${result.error.message}\n`);
+    process.exit(1);
+  }
+
+  process.exit(result.status ?? 1);
+}
+
+// ── Verb: init / new ─────────────────────────────────────────────────────────
+
+/**
+ * Wraps scripts/new-extension.ts via npx tsx.
+ * Passes all remaining args through unchanged so flag semantics live in new-extension.ts.
+ * Usage: sox init <type> <id> [--description "..."] [--author "..."] [--keywords "..."] [--out <dir>]
+ * @param {string[]} argv  remaining args after 'init' or 'new'
+ */
+function cmdInit(argv) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(
+      `sox init — Scaffold a new extension\n\n` +
+      `Usage:\n  sox init <type> <id> [options]\n  sox new  <type> <id> [options]\n\n` +
+      `Types: agent | skill | mcp-server | prompt | hook | command | bundle\n\n` +
+      `Options:\n` +
+      `  --description <text>   Pre-fill extension.json description (write as "use this when X")\n` +
+      `  --author <name>        Pre-fill extension.json author field\n` +
+      `  --keywords <k1,k2>     Pre-fill extension.json keywords array (comma-separated)\n` +
+      `  --out <dir>            Write the new extension into <dir>/<id>/ instead of extensions/<type>/\n` +
+      `  --title <title>        Explicit title (defaults to id)\n` +
+      `  --help, -h             Show this help\n\n` +
+      `Examples:\n` +
+      `  sox init skill summariser --description "use this when summarising long docs" --author "Jane"\n` +
+      `  sox new  agent reviewer  --description "use this when reviewing code" --keywords "code,review"\n`,
+    );
+    process.exit(0);
+  }
+
+  const result = spawnSync(
+    'npx',
+    ['tsx', join(ROOT, 'scripts', 'new-extension.ts'), ...argv],
+    { stdio: 'inherit', cwd: ROOT },
+  );
+
+  if (result.error) {
+    process.stderr.write(`sox init: failed to spawn scaffolder: ${result.error.message}\n`);
+    process.exit(1);
+  }
+
+  process.exit(result.status ?? 1);
+}
+
+// ── Verb: details ────────────────────────────────────────────────────────────
+
+/**
+ * Renders the registry/index.json entry for a named extension.
+ * P6: Adds scope provenance — shows which installed scope(s) contain this extension
+ * (answering "which scope did this come from?" — §2.2 anti-silent-shadowing).
+ * Also shows running state from the runtime record.
+ * Exits non-zero on unknown id.
+ * @param {string[]} argv  remaining args after 'details'
+ */
+function cmdDetails(argv) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(
+      `sox details — Show details for a named extension\n\n` +
+      `Usage:\n  sox details <id> [--runtime-file <path>] [--root <path>]\n\n` +
+      `Looks up the extension in registry/index.json and prints its manifest fields.\n` +
+      `Also shows scope provenance and running state.\n` +
+      `Exits non-zero if the id is not found.\n`,
+    );
+    process.exit(0);
+  }
+
+  const { root: rootFlag, runtimeFile: runtimeFileFlag, rest: argv1 } = parseRuntimeFlags(argv);
+  const id = argv1.find((a) => !a.startsWith('-'));
+  if (!id) {
+    process.stderr.write(`sox details: extension id is required\nUsage: sox details <id>\n`);
+    process.exit(1);
+  }
+
+  const registry = loadRegistry();
+  const entry = registry.find((/** @type {{ id: string }} */ e) => e.id === id);
+
+  if (!entry) {
+    process.stderr.write(`sox details: unknown extension '${id}'\nRun 'sox list' to see installed extensions.\n`);
+    process.exit(1);
+  }
+
+  // ── Scope provenance: find which installed scopes contain this id (§2.2) ──
+  /** @type {Array<{ scope: string; source: string; resolved_at: string; running: boolean; pid: number|null }>} */
+  const installedIn = [];
+  for (const scope of ['user', 'project', 'local']) {
+    const { lockfile: lockPath } = getScopePathsWithRoot(scope, rootFlag);
+    const lock = loadJSON(lockPath);
+    if (!lock || typeof lock.resolved !== 'object') continue;
+
+    // Load runtime record for running state
+    const runtimeRecord = loadRuntimeRecord(lockPath, runtimeFileFlag);
+    const runtimeEntries = /** @type {Array<{id:string,key:string,running:boolean,pid:number|null}>} */ (
+      Array.isArray(runtimeRecord?.entries) ? runtimeRecord.entries : []
+    );
+
+    for (const [key, lockEntry] of Object.entries(lock.resolved)) {
+      // Match by base id (strip @version suffix if present)
+      const baseKey = key.includes('@') ? key.slice(0, key.lastIndexOf('@')) : key;
+      if (key === id || baseKey === id) {
+        const runtimeEntry = runtimeEntries.find((e) => e.key === key || e.id === baseKey);
+        installedIn.push({
+          scope,
+          source: (/** @type {any} */ (lockEntry)).source ?? '—',
+          resolved_at: (/** @type {any} */ (lockEntry)).resolved_at ?? '—',
+          running: runtimeEntry?.running ?? false,
+          pid: runtimeEntry?.pid ?? null,
+        });
+      }
+    }
+  }
+
+  // ── Render the entry fields ───────────────────────────────────────────────
+  const lines = [
+    `id:          ${entry.id}`,
+    `type:        ${entry.type}`,
+    `version:     ${entry.version}`,
+    `title:       ${entry.title}`,
+    `description: ${entry.description}`,
+    `source:      ${entry.source}`,
+    `checksum:    ${entry.checksum}`,
+    `host:        ${entry.compatibility?.host ?? '—'}`,
+  ];
+
+  // P2 self-description fields — rendered when present, silently omitted when absent
+  if (entry.author) {
+    const authorStr =
+      typeof entry.author === 'object' && entry.author !== null
+        ? [entry.author.name, entry.author.email ? `<${entry.author.email}>` : undefined, entry.author.url ? `(${entry.author.url})` : undefined]
+            .filter(Boolean)
+            .join(' ')
+        : String(entry.author);
+    lines.push(`author:      ${authorStr}`);
+  }
+  if (entry.homepage) {
+    lines.push(`homepage:    ${entry.homepage}`);
+  }
+  if (entry.repository) {
+    lines.push(`repository:  ${entry.repository}`);
+  }
+  if (Array.isArray(entry.keywords) && entry.keywords.length > 0) {
+    lines.push(`keywords:    ${entry.keywords.join(', ')}`);
+  }
+  if (Array.isArray(entry.tags) && entry.tags.length > 0) {
+    lines.push(`tags:        ${entry.tags.join(', ')}`);
+  }
+
+  if (entry.requires) {
+    const reqs = Object.entries(entry.requires)
+      .map(([k, v]) => `${k}=${String(v)}`)
+      .join(', ');
+    lines.push(`requires:    ${reqs}`);
+  }
+
+  if (Array.isArray(entry.members) && entry.members.length > 0) {
+    const members = entry.members.map((/** @type {{ id: string, version: string }} */ m) => `${m.id}@${m.version}`).join(', ');
+    lines.push(`members:     ${members}`);
+  }
+
+  // P6 scope provenance block — always emitted (even if empty, to make "not installed" explicit)
+  if (installedIn.length > 0) {
+    lines.push(`installed-in:`);
+    for (const p of installedIn) {
+      const runStr = p.running ? `RUNNING pid=${String(p.pid)}` : 'stopped';
+      lines.push(`  scope=${p.scope}  status=${runStr}  source=${p.source}  resolved_at=${p.resolved_at}`);
+    }
+  } else {
+    lines.push(`installed-in: (not installed in any scope)`);
+  }
+
+  process.stdout.write(lines.join('\n') + '\n');
+  process.exit(0);
+}
+
+// ── Verb: start ──────────────────────────────────────────────────────────────
+
+/**
+ * Start the host runtime for a scope.
+ * Calls loadFromLockfile, activates all installed+enabled extensions via adapters/supervisor,
+ * persists a runtime record, and keeps the supervisor alive in a background process.
+ *
+ * Idempotent: if the runtime is already started (runtime record exists with running entries),
+ * prints a warning and exits 0 without double-spawning.
+ *
+ * @param {string[]} argv  remaining args after 'start'
+ */
+function cmdStart(argv) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(
+      `sox start — Start the host runtime for a scope\n\n` +
+      `Usage:\n  sox start [-s <scope>] [--runtime-file <path>] [--root <path>]\n\n` +
+      `Options:\n` +
+      `  -s, --scope <scope>        Scope: user | project | local  (default: user)\n` +
+      `  --runtime-file <path>      Override runtime record path\n` +
+      `  --root <path>              Override repo root for path resolution\n\n` +
+      `Activates all installed+enabled extensions for the scope, spawns mcp-server processes,\n` +
+      `and persists a runtime record. Idempotent: starting twice doesn't double-spawn.\n`,
+    );
+    process.exit(0);
+  }
+
+  const { root: rootFlag, runtimeFile: runtimeFileFlag, rest: argv1 } = parseRuntimeFlags(argv);
+  const { scope, rest } = parseScope(argv1, 'user');
+  void rest; // unused positional args
+
+  const { config: configPath, lockfile: lockfilePath } = getScopePathsWithRoot(scope, rootFlag);
+  const runtimeFilePath = getRuntimeFilePath(lockfilePath, runtimeFileFlag);
+  const effectiveRoot = rootFlag ?? ROOT;
+
+  // Idempotency check: if runtime record has running entries, bail early
+  const existingRecord = loadJSON(runtimeFilePath);
+  if (existingRecord && Array.isArray(existingRecord.entries)) {
+    const runningEntries = existingRecord.entries.filter((/** @type {any} */ e) => e.running);
+    if (runningEntries.length > 0) {
+      process.stdout.write(
+        `sox: runtime already started for '${scope}' scope ` +
+        `(${runningEntries.length} running extension(s)) — use 'sox stop' first to restart\n`,
+      );
+      for (const e of runningEntries) {
+        const pid = e.pid !== null ? ` pid=${String(e.pid)}` : '';
+        process.stdout.write(`  [RUNNING] ${String(e.key)} (${String(e.type)})${pid}\n`);
+      }
+      process.exit(0);
+    }
+  }
+
+  // Spawn runtime-cli.ts as a DETACHED background process so it can supervise children
+  // after bin/sox exits. We write its PID to the runtime record on completion.
+  const cliArgs = [
+    'tsx',
+    join(ROOT, 'scripts', 'host', 'runtime-cli.ts'),
+    'start',
+    `--scope=${scope}`,
+    `--root=${effectiveRoot}`,
+    `--lockfile=${lockfilePath}`,
+    `--config=${configPath}`,
+    `--runtime-file=${runtimeFilePath}`,
+  ];
+
+  // Spawn detached so the supervisor outlives bin/sox
+  const child = spawn('npx', cliArgs, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+    cwd: ROOT,
+    env: { ...process.env, SOX_RUNTIME_FILE: runtimeFilePath },
+  });
+
+  // Collect startup output until we see "runtime supervisor running" or error
+  let output = '';
+  let settled = false;
+
+  child.stdout?.on('data', (/** @type {Buffer} */ d) => {
+    const chunk = d.toString();
+    output += chunk;
+    process.stdout.write(chunk);
+    if (!settled && (chunk.includes('runtime supervisor running') || chunk.includes('runtime started'))) {
+      settled = true;
+      // Unref so bin/sox exits while the supervisor keeps running
+      child.unref();
+      process.exit(0);
+    }
+  });
+
+  child.stderr?.on('data', (/** @type {Buffer} */ d) => {
+    const chunk = d.toString();
+    output += chunk;
+    process.stderr.write(chunk);
+  });
+
+  child.on('error', (err) => {
+    process.stderr.write(`sox start: failed to spawn runtime: ${err.message}\n`);
+    process.exit(1);
+  });
+
+  child.on('exit', (code) => {
+    if (!settled) {
+      if (code !== 0) {
+        process.stderr.write(`sox start: runtime-cli exited with code ${String(code)}\n`);
+        process.exit(code ?? 1);
+      }
+      process.exit(0);
+    }
+  });
+
+  // Timeout after 30s
+  setTimeout(() => {
+    if (!settled) {
+      process.stderr.write(`sox start: timed out waiting for runtime to start\n`);
+      process.stdout.write(`Last output:\n${output}\n`);
+      child.kill('SIGKILL');
+      process.exit(1);
+    }
+  }, 30000);
+}
+
+// ── Verb: stop ───────────────────────────────────────────────────────────────
+
+/**
+ * Stop the host runtime for a scope (or a single extension).
+ * Reads the runtime record, sends SIGTERM to running PIDs, updates the record.
+ *
+ * @param {string[]} argv  remaining args after 'stop'
+ */
+function cmdStop(argv) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(
+      `sox stop — Stop the host runtime for a scope\n\n` +
+      `Usage:\n  sox stop [-s <scope>] [<id>] [--runtime-file <path>] [--root <path>]\n\n` +
+      `Options:\n` +
+      `  -s, --scope <scope>        Scope: user | project | local  (default: user)\n` +
+      `  <id>                       Stop only this extension (by id)\n` +
+      `  --runtime-file <path>      Override runtime record path\n` +
+      `  --root <path>              Override repo root for path resolution\n\n` +
+      `Reads the runtime record and sends SIGTERM to running processes.\n` +
+      `Respects stop_timeout_ms from the manifest lifecycle.\n`,
+    );
+    process.exit(0);
+  }
+
+  const { root: rootFlag, runtimeFile: runtimeFileFlag, rest: argv1 } = parseRuntimeFlags(argv);
+  const { scope, rest } = parseScope(argv1, 'user');
+  const id = rest.find((a) => !a.startsWith('-'));
+
+  const { lockfile: lockfilePath } = getScopePathsWithRoot(scope, rootFlag);
+  const runtimeFilePath = getRuntimeFilePath(lockfilePath, runtimeFileFlag);
+
+  // Invoke runtime-cli.ts stop (handles PID killing + record update)
+  const cliArgs = [
+    'tsx',
+    join(ROOT, 'scripts', 'host', 'runtime-cli.ts'),
+    'stop',
+    `--scope=${scope}`,
+    `--lockfile=${lockfilePath}`,
+    `--runtime-file=${runtimeFilePath}`,
+    ...(id ? [`--id=${id}`] : []),
+  ];
+
+  const result = spawnSync('npx', cliArgs, {
+    stdio: 'inherit',
+    cwd: ROOT,
+    env: { ...process.env, SOX_RUNTIME_FILE: runtimeFilePath },
+  });
+
+  if (result.error) {
+    process.stderr.write(`sox stop: failed to invoke runtime-cli: ${result.error.message}\n`);
+    process.exit(1);
+  }
+
+  process.exit(result.status ?? 0);
+}
+
+// ── Argument parsing (top-level) ─────────────────────────────────────────────
+
+const args = process.argv.slice(2);
+
+/** @param {string[]} argv */
+function parseTopLevel(argv) {
+  if (argv.length === 0) {
+    process.stdout.write(HELP);
+    process.exit(0);
+  }
+
+  const first = argv[0];
+
+  if (first === '--help' || first === '-h') {
+    process.stdout.write(HELP);
+    process.exit(0);
+  }
+
+  if (first === '--version' || first === '-V') {
+    process.stdout.write(`${VERSION}\n`);
+    process.exit(0);
+  }
+
+  const rest = argv.slice(1);
+
+  switch (first) {
+    case 'install':
+      cmdInstall(rest);
+      break;
+    case 'uninstall':
+      cmdUninstall(rest);
+      break;
+    case 'list':
+      cmdList(rest);
+      break;
+    case 'validate':
+      cmdValidate(rest);
+      break;
+    case 'details':
+      cmdDetails(rest);
+      break;
+    case 'init':
+    case 'new':
+      cmdInit(rest);
+      break;
+    case 'update':
+      cmdUpdate(rest);
+      break;
+    case 'enable':
+      cmdEnable(rest);
+      break;
+    case 'disable':
+      cmdDisable(rest);
+      break;
+    case 'search':
+      cmdSearch(rest);
+      break;
+    case 'start':
+      cmdStart(rest);
+      break;
+    case 'stop':
+      cmdStop(rest);
+      break;
+    case 'exec': {
+      // sox exec --id=<ext-id> --tool=<tool> --args='<json>' [--runtime-file=<path>] [--root=<path>]
+      const { root: execRootFlag, runtimeFile: execRuntimeFileFlag, rest: execRest } = parseRuntimeFlags(rest);
+      const { scope: execScope } = parseScope(execRest, 'user');
+      const { lockfile: execLockfile } = getScopePathsWithRoot(execScope, execRootFlag);
+      const execRuntimeFile = getRuntimeFilePath(execLockfile, execRuntimeFileFlag);
+      const allFlags = rest.filter((a) => a.startsWith('--'));
+      const execResult = spawnSync(
+        'npx',
+        [
+          'tsx',
+          join(ROOT, 'scripts', 'host', 'runtime-cli.ts'),
+          'exec',
+          `--runtime-file=${execRuntimeFile}`,
+          ...allFlags.filter((f) => !f.startsWith('--runtime-file=') && !f.startsWith('--root=') && !f.startsWith('--scope')),
+        ],
+        { stdio: 'inherit', cwd: ROOT, env: { ...process.env, SOX_RUNTIME_FILE: execRuntimeFile } },
+      );
+      if (execResult.error) {
+        process.stderr.write(`sox exec: failed to spawn runtime-cli: ${execResult.error.message}\n`);
+        process.exit(1);
+      }
+      process.exit(execResult.status ?? 0);
+      break;
+    }
+    default:
+      // Unknown verb — clean non-zero, no stack trace
+      process.stderr.write(`sox: unknown verb '${first}'\nRun 'sox --help' for usage.\n`);
+      process.exit(1);
+  }
+}
+
+parseTopLevel(args);
