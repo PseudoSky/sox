@@ -38,6 +38,10 @@ export type {
   SupervisedProcess,
 } from './supervisor.js';
 
+// ─── Policy ───────────────────────────────────────────────────────────────────
+export { compilePolicy, compilePolicyFromEnv } from './policy.js';
+export type { Policy } from './policy.js';
+
 // ─── Loader ───────────────────────────────────────────────────────────────────
 export { loadFromLockfile, resolveExtensionDir } from './loader.js';
 export type {

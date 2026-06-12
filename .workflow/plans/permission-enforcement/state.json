@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "C6 — Runtime Permission Enforcement",
   "dag": "dag.json",
-  "current_state": "policy-core",
+  "current_state": "audit-foundation",
   "states": {
     "consolidate-legacy": {
       "status": "done",
@@ -10,9 +10,9 @@
       "done_ts": "2026-06-12T06:30:00Z"
     },
     "policy-core": {
-      "status": "pending",
-      "started_ts": null,
-      "done_ts": null
+      "status": "done",
+      "started_ts": "2026-06-12T16:29:00Z",
+      "done_ts": "2026-06-12T16:40:00Z"
     },
     "audit-foundation": {
       "status": "pending",
@@ -55,6 +55,20 @@
       "test_delta": "root vitest: 344→258 (-86 tests, 14→11 files): host-runtime.test.ts (-40), host-delivery.test.ts (-23), host-event-bus.test.ts (-23); all 86 covered by libs/host-runtime/src/host-runtime.spec.ts canonical suite (19 tests green); nx run-many -t test: 273 tests unchanged",
       "supersession_evidence": "gitnexus + grep: scripts/host/ imported ONLY by 3 legacy test files (host-runtime.test.ts, host-delivery.test.ts, host-event-bus.test.ts). scripts/host/runtime-cli.ts: subprocess-spawned by bin/sox (legacy CLI, not a module import, outside all nx targets) and tools/test-e2e-lifecycle.js (test-e2e target, not nx run-many -t test). apps/sox/src/main.ts imports @sox/host-runtime (NOT scripts/host/). bin/sox has zero module imports of scripts/host/. No nx build/lint/test target covers scripts/host/ or bin/sox. All symbols confirmed in libs/host-runtime: ProcessSupervisor, loadFromLockfile, McpRegistrar, activateHook, activateAgent, activateSkill, activateCommand, HostEventBus, PromptRenderer (prompt-renderer superseded — only importer was host-delivery.test.ts).",
       "acceptance_criteria": "[consolidate-legacy.1] OK, [consolidate-legacy.2] OK, [consolidate-legacy.3] OK (prose comments only, no import statements), [consolidate-legacy.4] OK, [consolidate-legacy.5] OK (273 nx tests unchanged), [consolidate-legacy.6] OK (13/13 build, 13/13 lint)"
+    },
+    {
+      "ts": "2026-06-12T16:40:00Z",
+      "from": "policy-core",
+      "to": "audit-foundation",
+      "by": "sox-active:typescript-pro",
+      "guard_result": "PASS (nx run host-runtime:test: 51 tests green — 19 pre-existing + 32 new policy.spec.ts; nx run host-runtime:build: clean; python3 audit_c6.py --phase foundation: exit 0 FOUNDATION AUDIT PASSED)",
+      "test_delta": "host-runtime test suite: 19→51 (+32 tests in policy.spec.ts covering [policy-core.2]-[policy-core.5]); all pre-existing 19 tests still green",
+      "artifacts": [
+        "libs/host-runtime/src/policy.ts (NEW) — compilePolicy/compilePolicyFromEnv/Policy; expandTilde reused from supervisor.ts; dependency-free glob matcher; toEnv/fromEnv round-trip",
+        "libs/host-runtime/src/policy.spec.ts (NEW) — 32 tests: legacy compat, deny-by-default, tilde+glob, round-trip, absent-domain",
+        "libs/host-runtime/src/index.ts (MODIFIED) — exports compilePolicy, compilePolicyFromEnv, Policy"
+      ],
+      "acceptance_criteria": "[policy-core.1] OK (compilePolicy+compilePolicyFromEnv importable from dist/index.js), [policy-core.2] OK (vitest deny-by-default), [policy-core.3] OK (vitest legacy compat), [policy-core.4] OK (vitest toEnv/fromEnv round-trip), [policy-core.5] OK (vitest ~/+** glob), [policy-core.6] OK (policy.ts imports only node:* and local ./)"
     }
   ],
   "amendment_log": [
