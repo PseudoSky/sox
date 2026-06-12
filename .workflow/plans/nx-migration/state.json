@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "nx-migration",
   "dag": "dag.json",
-  "current_state": "type-discovery",
+  "current_state": "memory-core",
   "states": {
     "checkpoint-branch": { "status": "done", "started_ts": "2026-06-12T01:00:00Z", "done_ts": "2026-06-12T01:03:47Z" },
     "nx-init": { "status": "done", "started_ts": "2026-06-11T20:06:00Z", "done_ts": "2026-06-11T20:13:00Z" },
@@ -12,7 +12,7 @@
     "engine-libs": { "status": "done", "started_ts": "2026-06-11T21:10:00Z", "done_ts": "2026-06-11T22:45:00Z" },
     "sox-extension": { "status": "done", "started_ts": "2026-06-11T21:30:00Z", "done_ts": "2026-06-11T23:15:00Z" },
     "audit-engine": { "status": "done", "started_ts": "2026-06-11T23:15:00Z", "done_ts": "2026-06-11T23:45:00Z" },
-    "type-discovery": { "status": "pending", "started_ts": null, "done_ts": null },
+    "type-discovery": { "status": "done", "started_ts": "2026-06-11T22:00:00Z", "done_ts": "2026-06-11T22:10:00Z" },
     "memory-core": { "status": "pending", "started_ts": null, "done_ts": null },
     "migrate-rest": { "status": "pending", "started_ts": null, "done_ts": null },
     "ci-release": { "status": "pending", "started_ts": null, "done_ts": null },
@@ -75,6 +75,13 @@
       "ts": "2026-06-11T23:45:00Z",
       "guard_exit": 0,
       "note": "fix-guard: [sox-extension.4] used absolute /.tmp-audit-soxext path (read-only fs root, $ROOT unset in subprocess) + invalid id 'smoke-hook' (ends with type name 'hook'); corrected to $(pwd)/.tmp-audit-soxext (writable repo-relative) + id 'event-probe'; same assertion intact: sox init → scaffolds hook → validate() against libs/manifest. Guard re-run: ENGINE AUDIT PASSED, exit 0. No real product failure surfaced. All [audit-engine.1-2] + [engine-libs.1-5] + [sox-extension.1-5] + all foundation criteria confirmed."
+    },
+    {
+      "from": "type-discovery",
+      "to": "memory-core",
+      "ts": "2026-06-11T22:10:00Z",
+      "guard_exit": 0,
+      "note": "read 5 real corpus sources (hooks/*.sh, agent-mcp/src/, sox-protocol/pyproject.toml, cli/briefing.js, skills/*/SKILL.md, agents/*.md); key shape changes: agent→declarative+agent.md+install-target=~/.claude/agents/; skill→declarative+SKILL.md+install-target=~/.claude/skills/<id>/; hook→shell+hook.sh+bash shebang+stdin JSON; mcp-server→@modelcontextprotocol/sdk StdioServerTransport; command→stdio protocol+bin field+shebang; bundle unchanged; no schema changes needed (all flexes already present); docs/per-type-shapes.md written; born-conformance PASS (6/6); parity 7/7; 374 tests green; guard exit 0"
     }
   ],
   "amendment_log": [
