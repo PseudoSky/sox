@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "C6 — Runtime Permission Enforcement",
   "dag": "dag.json",
-  "current_state": "audit-foundation",
+  "current_state": "process-boundary",
   "states": {
     "consolidate-legacy": {
       "status": "done",
@@ -15,9 +15,9 @@
       "done_ts": "2026-06-12T16:40:00Z"
     },
     "audit-foundation": {
-      "status": "pending",
-      "started_ts": null,
-      "done_ts": null
+      "status": "done",
+      "started_ts": "2026-06-12T17:30:00Z",
+      "done_ts": "2026-06-12T17:35:00Z"
     },
     "process-boundary": {
       "status": "pending",
