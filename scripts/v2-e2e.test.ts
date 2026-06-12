@@ -553,15 +553,16 @@ describe('P11 v2-e2e — BACK-COMPAT: all v1 extensions validate + the bundle va
     expect(result.ok).toBe(true);
   });
 
-  it('v1 extension types (agent/skill/mcp-server/prompt/hook/command) each have a manifest', () => {
-    // Confirm the six v1 types are still present on disk (none deleted).
+  it('active extension types (agent/mcp-server/hook/command/bundle) each have a manifest', () => {
+    // D4 (authoring-lib): the 6 demo extensions were deleted as part of the nx-migration.
+    // The born-conformance gate (tools/born-conformance.js) is the new fixture source.
+    // This test now confirms the real production extensions (memory subsystem) are present.
     const expectedDirs: Array<[string, string]> = [
-      ['agents', 'echo-agent'],
-      ['skills', 'hello-world'],
-      ['mcp-servers', 'hello-server'],
-      ['prompts', 'greeting-prompt'],
-      ['hooks', 'audit-hook'],
-      ['commands', 'status-command'],
+      ['agents', 'memory-organizer'],
+      ['mcp-servers', 'memory-server'],
+      ['hooks', 'memory-flush'],
+      ['commands', 'memory-cli'],
+      ['bundles', 'sox-memory-bundle'],
     ];
 
     for (const [typeDir, id] of expectedDirs) {
@@ -574,7 +575,7 @@ describe('P11 v2-e2e — BACK-COMPAT: all v1 extensions validate + the bundle va
       );
       expect(
         fs.existsSync(manifestPath),
-        `v1 manifest missing: extensions/${typeDir}/${id}/extension.json`,
+        `manifest missing: extensions/${typeDir}/${id}/extension.json`,
       ).toBe(true);
     }
   });

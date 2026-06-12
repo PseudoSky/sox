@@ -1,0 +1,22 @@
+{
+  "name": "@sox/nx",
+  "version": "0.1.0",
+  "description": "Nx plugin for sox — thin generator adapters over libs/authoring",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "dependencies": {
+    "@sox/authoring": "workspace:*"
+  },
+  "peerDependencies": {
+    "@nx/devkit": ">=22.0.0",
+    "@nx/js": ">=22.0.0"
+  }
+}

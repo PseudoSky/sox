@@ -482,15 +482,14 @@ export function resolveExtensionDir(source: string, _root: string): string | nul
     if (p.startsWith('~')) {
       p = path.join(os.homedir(), p.slice(1));
     }
-    // If it's a directory, use it directly; if it's a file, use its parent
-    if (fs.existsSync(p) && fs.statSync(p).isDirectory()) {
-      return p;
+    // After suffix stripping, if the path has a known file extension it's a file;
+    // use its parent. Otherwise treat it as a directory path directly (no stat
+    // required — the extension dir may not be on disk in test/dry-run contexts).
+    const FILE_EXTS = ['.ts', '.js', '.cjs', '.mjs'];
+    if (FILE_EXTS.some((ext) => p.endsWith(ext))) {
+      return path.dirname(p);
     }
-    const parent = path.dirname(p);
-    if (fs.existsSync(parent) && fs.statSync(parent).isDirectory()) {
-      return parent;
-    }
-    return p; // Let the caller decide if it's missing
+    return p;
   }
 
   if (path.isAbsolute(source)) {

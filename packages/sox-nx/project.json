@@ -1,0 +1,52 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "sox-nx",
+  "projectType": "library",
+  "root": "packages/sox-nx",
+  "sourceRoot": "packages/sox-nx/src",
+  "tags": ["type:lib"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": ["{workspaceRoot}/packages/sox-nx/dist"],
+      "options": {
+        "command": "tsc --project packages/sox-nx/tsconfig.lib.json",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.lib.json"
+      ],
+      "dependsOn": ["authoring:build"]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config packages/sox-nx/vitest.config.ts",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{workspaceRoot}/libs/authoring/dist/**"
+      ],
+      "dependsOn": ["build"]
+    },
+    "born-conformance": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node tools/born-conformance.js",
+        "cwd": "."
+      },
+      "cache": false,
+      "dependsOn": ["authoring:build", "manifest:build"]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": ["packages/sox-nx/**/*.ts"]
+      }
+    }
+  }
+}

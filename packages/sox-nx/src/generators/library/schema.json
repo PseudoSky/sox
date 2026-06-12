@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/schema",
+  "$id": "LibraryGenerator",
+  "title": "Library",
+  "description": "Create a new sox library with type:lib tag.",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Library name",
+      "$default": { "$source": "argv", "index": 0 }
+    },
+    "directory": {
+      "type": "string",
+      "description": "Directory (defaults to libs/<name>)"
+    },
+    "tags": {
+      "type": "string",
+      "description": "Additional tags (type:lib is always added)"
+    },
+    "publishable": {
+      "type": "boolean",
+      "default": false
+    },
+    "buildable": {
+      "type": "boolean",
+      "default": true
+    },
+    "unitTestRunner": {
+      "type": "string",
+      "enum": ["vitest", "jest", "none"],
+      "default": "vitest"
+    }
+  },
+  "required": ["name"]
+}

@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/schema",
+  "$id": "ExtensionGenerator",
+  "title": "Extension",
+  "description": "Scaffold a new sox extension using the libs/authoring core.",
+  "type": "object",
+  "properties": {
+    "type": {
+      "type": "string",
+      "description": "Extension type (one of agent|skill|mcp-server|hook|command|bundle)",
+      "enum": ["agent", "skill", "mcp-server", "hook", "command", "bundle"],
+      "$default": { "$source": "argv", "index": 0 }
+    },
+    "id": {
+      "type": "string",
+      "description": "Extension id (kebab-case, matches ^[a-z][a-z0-9-]*$)",
+      "$default": { "$source": "argv", "index": 1 }
+    },
+    "title": {
+      "type": "string",
+      "description": "Human-readable title (defaults to id)"
+    },
+    "description": {
+      "type": "string",
+      "description": "One-line description"
+    },
+    "author": {
+      "type": "string",
+      "description": "Author name or 'Name <email>'"
+    },
+    "keywords": {
+      "type": "string",
+      "description": "Comma-separated keywords"
+    },
+    "directory": {
+      "type": "string",
+      "description": "Output directory (defaults to extensions/<type-dir>/<id>)"
+    }
+  },
+  "required": ["type", "id"]
+}

@@ -26,7 +26,11 @@
     "declarationMap": true,
     "sourceMap": true,
     "outDir": "dist",
-    "paths": {}
+    "baseUrl": ".",
+    "paths": {
+      "@sox/manifest": ["libs/manifest/dist/index.js"],
+      "@sox/authoring": ["libs/authoring/dist/index.js"]
+    }
   },
   "include": ["scripts/**/*.ts", "extensions/**/*.ts"],
   "exclude": ["node_modules", "dist"]
