@@ -2,10 +2,10 @@
   "schema_version": 2,
   "title": "nx-migration",
   "dag": "dag.json",
-  "current_state": "nx-init",
+  "current_state": "manifest-lib",
   "states": {
     "checkpoint-branch": { "status": "done", "started_ts": "2026-06-12T01:00:00Z", "done_ts": "2026-06-12T01:03:47Z" },
-    "nx-init": { "status": "pending", "started_ts": null, "done_ts": null },
+    "nx-init": { "status": "done", "started_ts": "2026-06-11T20:06:00Z", "done_ts": "2026-06-11T20:13:00Z" },
     "manifest-lib": { "status": "pending", "started_ts": null, "done_ts": null },
     "authoring-lib": { "status": "pending", "started_ts": null, "done_ts": null },
     "audit-foundation": { "status": "pending", "started_ts": null, "done_ts": null },
@@ -26,6 +26,13 @@
       "ts": "2026-06-12T01:03:47Z",
       "guard_exit": 0,
       "note": "branch feat/nx-migration created, tag pre-nx-baseline=db04a1f, 380 tests green"
+    },
+    {
+      "from": "nx-init",
+      "to": "manifest-lib",
+      "ts": "2026-06-11T20:13:00Z",
+      "guard_exit": 0,
+      "note": "nx@22.7.5 installed (devDep only); nx.json with target defaults+named inputs+cache+release; eslint.config.js with @nx/enforce-module-boundaries (type:extension/lib/app); commitlint.config.js; tsconfig.base.json paths:{}; pnpm-workspace.yaml extended with apps/**+libs/**+packages/**; 380 tests green"
     }
   ],
   "amendment_log": []
