@@ -1,66 +1,94 @@
 /**
- * Skill template — scaffolds a run(input) → output skill extension.
+ * Skill template — scaffolds a declarative markdown skill extension.
+ *
+ * Real shape (from ~/dev/ai/claude-agents/categories/workflow/skills/):
+ *   - Skills are SKILL.md files with YAML frontmatter (name, description).
+ *   - Runtime: declarative — no process spawned; host reads and injects the
+ *     SKILL.md at invocation time.
+ *   - Entrypoint: SKILL.md (the markdown invocation guide).
+ *   - install-target: ~/.claude/skills/<id>/ (host discovery location).
+ *   - No src/, no tsconfig, no build step required.
  *
  * Files:
- *   extension.json   (born-conformant manifest: type=skill, runtime=node)
- *   package.json
- *   tsconfig.json
- *   src/index.ts     (run(SkillInput) → SkillOutput stub)
+ *   extension.json   (born-conformant manifest: type=skill, runtime=declarative,
+ *                     entrypoint=SKILL.md, install-target=~/.claude/skills/<id>/)
+ *   package.json     (minimal — no build scripts)
+ *   SKILL.md         (YAML frontmatter + markdown invocation guide — the real shape)
  *   CHANGELOG.md
  *   README.md
- *   SKILL.md         (LLM invocation guidance for skills)
  *
  * [inv:nx-free-core] — no nx-packages imports.
  */
 
 import type { FileSet } from '../../index.js';
 import type { TemplateOpts } from '../_shared.js';
-import { manifestJson, packageJson, tsconfigJson, changelogMd, readmeMd } from '../_shared.js';
+import { manifestJson, changelogMd, readmeMd } from '../_shared.js';
 
 export function skillTemplate(opts: TemplateOpts): FileSet {
+  // Minimal package.json — declarative skills have no build step
+  const skillPkg = JSON.stringify(
+    {
+      name: `@sox/extension-${opts.id}`,
+      version: '0.1.0',
+      description: opts.description,
+      private: true,
+      license: 'MIT',
+      ...(opts.author !== undefined && opts.author !== '' ? { author: opts.author } : {}),
+      ...(opts.keywords !== undefined && opts.keywords.length > 0 ? { keywords: opts.keywords } : {}),
+    },
+    null,
+    2,
+  );
+
   return {
     'extension.json': manifestJson(opts, {
-      runtime: 'node',
-      entrypoint: 'dist/index.js',
-      run_interface: {
-        input_schema: {
-          type: 'object',
-          properties: {
-            input: { type: 'string', description: 'Input to process' },
-          },
-          required: ['input'],
-        },
-        output_schema: {
-          type: 'object',
-          properties: {
-            result: { type: 'string', description: 'Processed output' },
-          },
-          required: ['result'],
-        },
-      },
+      // [flex:runtime-expanded] — declarative: no process, host injects the SKILL.md
+      runtime: 'declarative',
+      // [flex:entrypoint-optional] — present but points to the markdown skill file
+      entrypoint: 'SKILL.md',
+      // [flex:install-target] — where the host discovers this skill
+      'install-target': `~/.claude/skills/${opts.id}/`,
     }),
 
-    'package.json': packageJson(opts),
+    'package.json': skillPkg,
 
-    'tsconfig.json': tsconfigJson(),
-
-    'src/index.ts': [
-      `// Skill: ${opts.title}`,
-      `// ${opts.description}`,
+    // The canonical skill definition — YAML frontmatter + markdown body.
+    // Matches the real shape from claude-agents/categories/workflow/skills/*/SKILL.md
+    'SKILL.md': [
+      `---`,
+      `name: ${opts.id}`,
+      `description: ${opts.description}`,
+      `---`,
       ``,
-      `export interface SkillInput {`,
-      `  /** Input to process */`,
-      `  input: string;`,
-      `}`,
+      `# ${opts.title}`,
       ``,
-      `export interface SkillOutput {`,
-      `  result: string;`,
-      `}`,
+      `<!-- markdownlint-disable MD013 -->`,
       ``,
-      `export async function run(input: SkillInput): Promise<SkillOutput> {`,
-      `  // TODO: implement skill logic`,
-      `  return { result: \`Processed: \${input.input}\` };`,
-      `}`,
+      `${opts.description}`,
+      ``,
+      `## When to use this skill`,
+      ``,
+      `<!-- Describe the conditions under which to invoke this skill. -->`,
+      ``,
+      `## When NOT to use this skill`,
+      ``,
+      `<!-- Describe situations where this skill should NOT be used. -->`,
+      ``,
+      `## Input contract`,
+      ``,
+      `<!-- Describe the inputs this skill expects (prose or schema). -->`,
+      ``,
+      `## Output contract`,
+      ``,
+      `<!-- Describe the output this skill produces (prose or schema). -->`,
+      ``,
+      `## Examples`,
+      ``,
+      `<!-- Provide one or two concrete examples of invocation and result. -->`,
+      ``,
+      `## Skill id`,
+      ``,
+      `\`${opts.id}\``,
     ].join('\n'),
 
     'CHANGELOG.md': changelogMd(),
@@ -68,19 +96,12 @@ export function skillTemplate(opts: TemplateOpts): FileSet {
     'README.md': readmeMd(opts, [
       '## When to use',
       '',
-      `<!-- Describe the conditions under which to invoke this skill. -->`,
+      `<!-- Describe when to invoke this skill. -->`,
       '',
-      '## Inputs',
+      '## Runtime',
       '',
-      '| Field   | Type   | Required | Description |',
-      '| ------- | ------ | -------- | ----------- |',
-      '| `input` | string | yes      | The text or data to process |',
-      '',
-      '## Outputs',
-      '',
-      '| Field    | Type   | Description           |',
-      '| -------- | ------ | --------------------- |',
-      '| `result` | string | The processed output  |',
+      '`declarative` — the host reads `SKILL.md` and injects it at invocation time.',
+      `Install places \`SKILL.md\` at \`~/.claude/skills/${opts.id}/\`.`,
       '',
       '## Usage',
       '',
@@ -88,44 +109,5 @@ export function skillTemplate(opts: TemplateOpts): FileSet {
       `sox install ${opts.id}`,
       '```',
     ]),
-
-    'SKILL.md': [
-      `# Skill: ${opts.title}`,
-      ``,
-      `## Invocation guidance`,
-      ``,
-      `**When to invoke:** ${opts.description}`,
-      ``,
-      `**Do NOT invoke when:**`,
-      ``,
-      `<!-- Describe situations where this skill should NOT be used. -->`,
-      ``,
-      `## Input contract`,
-      ``,
-      `\`\`\`typescript`,
-      `interface SkillInput {`,
-      `  input: string; // The text or data to process`,
-      `}`,
-      `\`\`\``,
-      ``,
-      `## Output contract`,
-      ``,
-      `\`\`\`typescript`,
-      `interface SkillOutput {`,
-      `  result: string; // The processed output`,
-      `}`,
-      `\`\`\``,
-      ``,
-      `## Examples`,
-      ``,
-      `\`\`\`json`,
-      `{ "input": "example input" }`,
-      `// → { "result": "Processed: example input" }`,
-      `\`\`\``,
-      ``,
-      `## Skill id`,
-      ``,
-      `\`${opts.id}\``,
-    ].join('\n'),
   };
 }

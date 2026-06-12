@@ -1,11 +1,22 @@
 /**
- * Command template — scaffolds a slash-command extension.
+ * Command template — scaffolds a CLI command extension.
+ *
+ * Real shape (from ~/dev/ai/claude-agents/tools/cli/ and
+ *              ~/dev/ai/sox-protocol/packages/python/):
+ *   - Node variant: ES module with #!/usr/bin/env node entry; uses Commander
+ *     or plain process.argv; exports a `run(input)` function for programmatic use.
+ *   - Python variant: pyproject.toml + [project.scripts] entry point (separate
+ *     template path; this scaffolds the node default).
+ *   - runtime: node (default); use runtime: python for Python-based commands.
+ *   - invocation: stdio protocol — args from process.argv, output to stdout.
+ *   - Commands are deterministic: no LLM calls inside the handler.
  *
  * Files:
- *   extension.json   (born-conformant manifest: type=command, runtime=node)
- *   package.json
+ *   extension.json   (born-conformant manifest: type=command, runtime=node,
+ *                     invocation.protocol=stdio)
+ *   package.json     (with bin field pointing to dist/index.js)
  *   tsconfig.json
- *   src/index.ts     (run(input) stub)
+ *   src/index.ts     (#!/usr/bin/env node stub with run() + CLI entry)
  *   CHANGELOG.md
  *   README.md
  *
@@ -14,29 +25,55 @@
 
 import type { FileSet } from '../../index.js';
 import type { TemplateOpts } from '../_shared.js';
-import { manifestJson, packageJson, tsconfigJson, changelogMd, readmeMd } from '../_shared.js';
+import { manifestJson, tsconfigJson, changelogMd, readmeMd } from '../_shared.js';
 
 export function commandTemplate(opts: TemplateOpts): FileSet {
+  // package.json with bin field for direct CLI invocation
+  const cmdPkg = JSON.stringify(
+    {
+      name: `@sox/extension-${opts.id}`,
+      version: '0.1.0',
+      description: opts.description,
+      private: true,
+      main: 'dist/index.js',
+      types: 'dist/index.d.ts',
+      bin: { [opts.id]: 'dist/index.js' },
+      files: ['dist'],
+      scripts: {
+        build: 'tsc --project tsconfig.json',
+        typecheck: 'tsc --noEmit --project tsconfig.json',
+        test: 'vitest run',
+      },
+      license: 'MIT',
+      ...(opts.author !== undefined && opts.author !== '' ? { author: opts.author } : {}),
+      ...(opts.keywords !== undefined && opts.keywords.length > 0 ? { keywords: opts.keywords } : {}),
+    },
+    null,
+    2,
+  );
+
   return {
     'extension.json': manifestJson(opts, {
       runtime: 'node',
       entrypoint: 'dist/index.js',
       invocation: {
-        protocol: 'function-export',
+        // stdio: args arrive via process.argv; output goes to stdout.
+        // Real CLI commands (briefing.js, program.js) use this pattern.
+        protocol: 'stdio',
         handler: 'run',
       },
     }),
 
-    'package.json': packageJson(opts),
+    'package.json': cmdPkg,
 
     'tsconfig.json': tsconfigJson(),
 
     'src/index.ts': [
+      `#!/usr/bin/env node`,
       `// Command: ${opts.title}`,
       `// ${opts.description}`,
-      `// Slash-invoked, deterministic shell operation — no LLM calls.`,
-      ``,
-      `import { execSync } from 'node:child_process';`,
+      `// Deterministic CLI operation — no LLM calls.`,
+      `// Args arrive via process.argv; output goes to stdout.`,
       ``,
       `export interface CommandInput {`,
       `  args: string[];`,
@@ -48,19 +85,21 @@ export function commandTemplate(opts: TemplateOpts): FileSet {
       `}`,
       ``,
       `/**`,
-      ` * Command handler — invoked via slash command /${opts.id}`,
-      ` * Deterministic: no LLM calls, predictable output.`,
+      ` * run() — programmatic entry point for /${opts.id} command.`,
+      ` * Deterministic: no LLM calls, predictable output for identical inputs.`,
       ` */`,
       `export function run(input: CommandInput): CommandOutput {`,
-      `  try {`,
-      `    const stdout = execSync(\`echo "Command ${opts.id}: \${input.args.join(' ')}"\`, {`,
-      `      encoding: 'utf8',`,
-      `      timeout: 5000,`,
-      `    });`,
-      `    return { stdout: stdout.trim(), exitCode: 0 };`,
-      `  } catch (e) {`,
-      `    return { stdout: String(e), exitCode: 1 };`,
-      `  }`,
+      `  // TODO: implement command logic`,
+      `  const result = \`${opts.id}: \${input.args.join(' ')}\`;`,
+      `  return { stdout: result, exitCode: 0 };`,
+      `}`,
+      ``,
+      `// CLI entry — only runs when executed directly (node dist/index.js ...)`,
+      `if (process.argv[1]?.endsWith('index.js') || process.argv[1]?.endsWith('${opts.id}')) {`,
+      `  const args = process.argv.slice(2);`,
+      `  const out = run({ args });`,
+      `  process.stdout.write(out.stdout + '\\n');`,
+      `  process.exit(out.exitCode);`,
       `}`,
     ].join('\n'),
 
@@ -73,14 +112,24 @@ export function commandTemplate(opts: TemplateOpts): FileSet {
       '',
       '## Invocation',
       '',
+      '```bash',
+      `# Via sox`,
+      `sox exec ${opts.id} [args...]`,
+      '',
+      `# Direct`,
+      `${opts.id} [args...]`,
       '```',
-      `/${opts.id} [args...]`,
-      '```',
+      '',
+      '## Runtime',
+      '',
+      '`node` (default). For a Python command, set `runtime: python` in `extension.json`',
+      'and replace `src/index.ts` + `tsconfig.json` with a `pyproject.toml` +',
+      '`[project.scripts]` entry.',
       '',
       '## Constraints',
       '',
       '- Deterministic: no LLM calls inside the command handler.',
-      '- Exits non-zero on failure; stdout is the result.',
+      '- Exit non-zero on failure; output to stdout.',
       '',
       '## Usage',
       '',

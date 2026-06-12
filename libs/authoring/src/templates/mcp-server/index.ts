@@ -1,11 +1,19 @@
 /**
- * MCP-server template — scaffolds a stdio JSON-RPC MCP server extension.
+ * MCP-server template — scaffolds a stdio MCP server extension.
+ *
+ * Real shape (from ~/dev/node/adhd/packages/ai/agent-mcp):
+ *   - Uses @modelcontextprotocol/sdk with StdioServerTransport (not raw readline).
+ *   - Entry: src/index.ts with #!/usr/bin/env node shebang.
+ *   - Registers handlers via server.setRequestHandler(ListToolsRequestSchema, ...)
+ *     and server.setRequestHandler(CallToolRequestSchema, ...).
+ *   - lifecycle: background=true, singleton=true (one process per install).
+ *   - runtime: node, transport: stdio.
  *
  * Files:
  *   extension.json   (born-conformant manifest: type=mcp-server, runtime=node, lifecycle)
- *   package.json
+ *   package.json     (includes @modelcontextprotocol/sdk dep)
  *   tsconfig.json
- *   src/index.ts     (readline JSON-RPC stdio stub)
+ *   src/index.ts     (@modelcontextprotocol/sdk StdioServerTransport stub)
  *   CHANGELOG.md
  *   README.md
  *   CLAUDE.md        (LLM tool-call guidance)
@@ -15,9 +23,35 @@
 
 import type { FileSet } from '../../index.js';
 import type { TemplateOpts } from '../_shared.js';
-import { manifestJson, packageJson, tsconfigJson, changelogMd, readmeMd } from '../_shared.js';
+import { manifestJson, tsconfigJson, changelogMd, readmeMd } from '../_shared.js';
 
 export function mcpServerTemplate(opts: TemplateOpts): FileSet {
+  // Custom package.json includes @modelcontextprotocol/sdk dependency
+  const mcpPkg = JSON.stringify(
+    {
+      name: `@sox/extension-${opts.id}`,
+      version: '0.1.0',
+      description: opts.description,
+      private: true,
+      main: 'dist/index.js',
+      types: 'dist/index.d.ts',
+      files: ['dist'],
+      scripts: {
+        build: 'tsc --project tsconfig.json',
+        typecheck: 'tsc --noEmit --project tsconfig.json',
+        test: 'vitest run',
+      },
+      dependencies: {
+        '@modelcontextprotocol/sdk': '>=1.0.0',
+      },
+      license: 'MIT',
+      ...(opts.author !== undefined && opts.author !== '' ? { author: opts.author } : {}),
+      ...(opts.keywords !== undefined && opts.keywords.length > 0 ? { keywords: opts.keywords } : {}),
+    },
+    null,
+    2,
+  );
+
   return {
     'extension.json': manifestJson(opts, {
       runtime: 'node',
@@ -45,45 +79,63 @@ export function mcpServerTemplate(opts: TemplateOpts): FileSet {
       ],
     }),
 
-    'package.json': packageJson(opts),
+    'package.json': mcpPkg,
 
     'tsconfig.json': tsconfigJson(),
 
     'src/index.ts': [
+      `#!/usr/bin/env node`,
       `// MCP Server: ${opts.title}`,
       `// ${opts.description}`,
-      `// Transport: stdio (JSON-RPC lines)`,
+      `// Transport: stdio — uses @modelcontextprotocol/sdk StdioServerTransport`,
+      `// Real shape reference: @adhd/agent-mcp (~/dev/node/adhd/packages/ai/agent-mcp)`,
       ``,
-      `import { createInterface } from 'node:readline';`,
+      `import { Server } from '@modelcontextprotocol/sdk/server/index.js';`,
+      `import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';`,
+      `import {`,
+      `  CallToolRequestSchema,`,
+      `  ListToolsRequestSchema,`,
+      `} from '@modelcontextprotocol/sdk/types.js';`,
       ``,
-      `const tools = [`,
-      `  {`,
-      `    name: 'example_tool',`,
-      `    description: 'A stub tool for ${opts.id}',`,
-      `    inputSchema: {`,
-      `      type: 'object',`,
-      `      properties: { query: { type: 'string' } },`,
-      `      required: ['query'],`,
+      `const server = new Server(`,
+      `  { name: '${opts.id}', version: '0.1.0' },`,
+      `  { capabilities: { tools: {} } },`,
+      `);`,
+      ``,
+      `server.setRequestHandler(ListToolsRequestSchema, async () => ({`,
+      `  tools: [`,
+      `    {`,
+      `      name: 'example_tool',`,
+      `      description: 'A stub tool for ${opts.id}',`,
+      `      inputSchema: {`,
+      `        type: 'object',`,
+      `        properties: { query: { type: 'string', description: 'Query string' } },`,
+      `        required: ['query'],`,
+      `      },`,
       `    },`,
-      `  },`,
-      `];`,
+      `  ],`,
+      `}));`,
       ``,
-      `async function handleRequest(req: unknown): Promise<unknown> {`,
-      `  const r = req as { method: string; id?: unknown };`,
-      `  if (r.method === 'tools/list') return { tools };`,
-      `  if (r.method === 'tools/call') return { content: [{ type: 'text', text: 'stub response' }] };`,
-      `  return { error: { code: -32601, message: 'Method not found' } };`,
+      `server.setRequestHandler(CallToolRequestSchema, async (request) => {`,
+      `  const { name, arguments: args } = request.params;`,
+      `  if (name === 'example_tool') {`,
+      `    const query = (args as { query: string }).query;`,
+      `    return {`,
+      `      content: [{ type: 'text' as const, text: \`Result for: \${query}\` }],`,
+      `    };`,
+      `  }`,
+      `  throw new Error(\`Unknown tool: \${name}\`);`,
+      `});`,
+      ``,
+      `async function main(): Promise<void> {`,
+      `  const transport = new StdioServerTransport();`,
+      `  await server.connect(transport);`,
+      `  // Server runs until stdin closes`,
       `}`,
       ``,
-      `const rl = createInterface({ input: process.stdin });`,
-      `rl.on('line', async (line) => {`,
-      `  try {`,
-      `    const req = JSON.parse(line) as unknown;`,
-      `    const res = await handleRequest(req);`,
-      `    process.stdout.write(JSON.stringify(res) + '\\n');`,
-      `  } catch (e) {`,
-      `    process.stdout.write(JSON.stringify({ error: String(e) }) + '\\n');`,
-      `  }`,
+      `main().catch((err) => {`,
+      `  process.stderr.write(String(err) + '\\n');`,
+      `  process.exit(1);`,
       `});`,
     ].join('\n'),
 
