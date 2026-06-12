@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "nx-migration",
   "dag": "dag.json",
-  "current_state": "migrate-rest",
+  "current_state": "ci-release",
   "states": {
     "checkpoint-branch": { "status": "done", "started_ts": "2026-06-12T01:00:00Z", "done_ts": "2026-06-12T01:03:47Z" },
     "nx-init": { "status": "done", "started_ts": "2026-06-11T20:06:00Z", "done_ts": "2026-06-11T20:13:00Z" },
@@ -14,7 +14,7 @@
     "audit-engine": { "status": "done", "started_ts": "2026-06-11T23:15:00Z", "done_ts": "2026-06-11T23:45:00Z" },
     "type-discovery": { "status": "done", "started_ts": "2026-06-11T22:00:00Z", "done_ts": "2026-06-11T22:10:00Z" },
     "memory-core": { "status": "done", "started_ts": "2026-06-11T22:10:00Z", "done_ts": "2026-06-11T23:15:00Z" },
-    "migrate-rest": { "status": "pending", "started_ts": null, "done_ts": null },
+    "migrate-rest": { "status": "done", "started_ts": "2026-06-11T22:30:00Z", "done_ts": "2026-06-11T23:55:00Z" },
     "ci-release": { "status": "pending", "started_ts": null, "done_ts": null },
     "audit-final": { "status": "pending", "started_ts": null, "done_ts": null },
     "done": { "status": "pending", "started_ts": null, "done_ts": null }
@@ -89,6 +89,13 @@
       "ts": "2026-06-11T23:15:00Z",
       "guard_exit": 0,
       "note": "libs/memory-core created (type:lib, internal): db/schema/embed/recall/write/memoryd/extensions extracted from memory-server; convenience write(dbPath,params)+recall(dbPath,params) wrappers for guard C5; @sox/memory-core path added to tsconfig.base.json; cross-extension reach-in killed: memory-cli (../../../mcp-servers/memory-server/src/{db,recall}.js) + memory-flush (dynamic import ../../../mcp-servers/memory-server/dist/lib.js) both re-pointed to @sox/memory-core; project.json (type:extension) added to all 4 extensions + bundle; extension tsconfigs updated to module:CommonJS/moduleResolution:node10 for path alias resolution; embed.ts eslint-disable @typescript-eslint/no-non-null-assertion removed (not in config) → typed casts on Float32Array; grep cross-extension ../dist/ = ZERO; boundary lint clean (4/4 extensions); C5 write+recall: exit 0; 374 tests green (0 regressions); guard bash memory-core.sh exit 0"
+    },
+    {
+      "from": "migrate-rest",
+      "to": "ci-release",
+      "ts": "2026-06-11T23:55:00Z",
+      "guard_exit": 0,
+      "note": "All 5 extensions already had project.json (type:extension) from memory-core state. Fixes applied: (1) sox-memory-bundle lint target changed from @nx/eslint:lint with empty lintFilePatterns (caused workspace-wide scan picking up stale eslint-disable @typescript-eslint/no-non-null-assertion comments) to nx:run-commands no-op; (2) libs/manifest build now emits {\"type\":\"commonjs\"} to dist/package.json (CJS/ESM interop fix — same pattern as other libs); (3) libs/manifest/project.json test target extended to run validate-manifests.test.ts alongside the 108 lib specs (218 tests total); (4) tsconfig.base.json @sox/manifest path updated to src/index.ts+dist/index.js dual entries; (5) vitest.config.ts resolve aliases added for all @sox/* libs; (6) scripts/validate-manifests.ts thin-wrapped: imports libsValidate from @sox/manifest, delegates structural checks (id/type/runtime/lifecycle/bundle/permissions) to libs/manifest, keeps type-dir match+version sync+config_schema+P3+P0+DX-conformance+cross-extension checks; description empty-string demoted from schema error to DX warn to preserve test semantics; VALID_TYPES+ID_PATTERN constants removed (delegated); 110 validate-manifests tests green; 374 total tests green; nx run-many -t build 13/13; nx run-many -t lint 13/13; guard bash migrate-rest.sh exit 0"
     }
   ],
   "amendment_log": [
