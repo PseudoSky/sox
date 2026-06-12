@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "nx-migration",
   "dag": "dag.json",
-  "current_state": "audit-engine",
+  "current_state": "type-discovery",
   "states": {
     "checkpoint-branch": { "status": "done", "started_ts": "2026-06-12T01:00:00Z", "done_ts": "2026-06-12T01:03:47Z" },
     "nx-init": { "status": "done", "started_ts": "2026-06-11T20:06:00Z", "done_ts": "2026-06-11T20:13:00Z" },
@@ -11,7 +11,7 @@
     "audit-foundation": { "status": "done", "started_ts": "2026-06-11T21:00:00Z", "done_ts": "2026-06-11T21:05:00Z" },
     "engine-libs": { "status": "done", "started_ts": "2026-06-11T21:10:00Z", "done_ts": "2026-06-11T22:45:00Z" },
     "sox-extension": { "status": "done", "started_ts": "2026-06-11T21:30:00Z", "done_ts": "2026-06-11T23:15:00Z" },
-    "audit-engine": { "status": "pending", "started_ts": null, "done_ts": null },
+    "audit-engine": { "status": "done", "started_ts": "2026-06-11T23:15:00Z", "done_ts": "2026-06-11T23:45:00Z" },
     "type-discovery": { "status": "pending", "started_ts": null, "done_ts": null },
     "memory-core": { "status": "pending", "started_ts": null, "done_ts": null },
     "migrate-rest": { "status": "pending", "started_ts": null, "done_ts": null },
@@ -68,7 +68,22 @@
       "ts": "2026-06-11T23:15:00Z",
       "guard_exit": 0,
       "note": "apps/sox/extension.json created (type:command, validates against libs/manifest D1/D2); apps/sox/src/main.ts fully wired — all 14 verbs (init/validate/search/install/update/uninstall/enable/disable/list/details/start/stop/status/exec) delegating to engine libs; A1: init uses libs/authoring scaffold() + template fallback for style-rule edge cases; A11: exec routes via McpRegistrar then fresh spawn; A12: parseArgs dual-flag-form throughout; bin/sox shebang wrapper; package.json with bin field; tsconfig.app.json outDir→dist/apps/sox/; rewrite-paths.cjs post-build resolves @sox/* at CJS runtime; boundary lint PASS (static imports only for install-engine+host-runtime); guard sox-extension.sh exited 0; 374 tests green"
+    },
+    {
+      "from": "audit-engine",
+      "to": "type-discovery",
+      "ts": "2026-06-11T23:45:00Z",
+      "guard_exit": 0,
+      "note": "fix-guard: [sox-extension.4] used absolute /.tmp-audit-soxext path (read-only fs root, $ROOT unset in subprocess) + invalid id 'smoke-hook' (ends with type name 'hook'); corrected to $(pwd)/.tmp-audit-soxext (writable repo-relative) + id 'event-probe'; same assertion intact: sox init → scaffolds hook → validate() against libs/manifest. Guard re-run: ENGINE AUDIT PASSED, exit 0. No real product failure surfaced. All [audit-engine.1-2] + [engine-libs.1-5] + [sox-extension.1-5] + all foundation criteria confirmed."
     }
   ],
-  "amendment_log": []
+  "amendment_log": [
+    {
+      "ts": "2026-06-11T23:45:00Z",
+      "state": "audit-engine",
+      "type": "fix-guard",
+      "criterion": "sox-extension.4",
+      "reason": "audit [sox-extension.4] used absolute /.tmp path on read-only fs ($ROOT was unset in subprocess, expanding to empty, producing path '/.tmp-audit-soxext') + invalid id 'smoke-hook' which ends with its type name 'hook' (correctly rejected by libs/manifest id-validator); corrected to writable temp dir via $(pwd)/.tmp-audit-soxext and valid id 'event-probe'; assertion is preserved intact (sox init → scaffold hook → validate(extension.json) against libs/manifest must return ok:true); same end state proven"
+    }
+  ]
 }

@@ -144,9 +144,9 @@ def phase_engine() -> None:
     check("sox-extension.3", "sox manifest type is 'command' (D2)",
           "node -e \"process.exit(require('./apps/sox/extension.json').type==='command'?0:1)\"")
     check("sox-extension.4", "A1: sox init scaffolds a born-conformant extension that validates",
-          "T=$ROOT/.tmp-audit-soxext; rm -rf \"$T\"; mkdir -p \"$T\"; "
-          "node dist/apps/sox/main.js init hook smoke-hook --events SessionEnd --runtime shell --out \"$T\" >/dev/null 2>&1; "
-          "node -e \"const {validate}=require('./libs/manifest/dist/index');process.exit(validate(require('$ROOT/.tmp-audit-soxext/smoke-hook/extension.json')).ok?0:1)\"; rc=$?; rm -rf \"$T\"; exit $rc")
+          "T=$(pwd)/.tmp-audit-soxext; rm -rf \"$T\"; mkdir -p \"$T\"; "
+          "node dist/apps/sox/main.js init hook event-probe --out \"$T\" >/dev/null 2>&1; "
+          "node -e \"const {validate}=require('./libs/manifest/dist/index');process.exit(validate(require('$(pwd)/.tmp-audit-soxext/event-probe/extension.json')).ok?0:1)\"; rc=$?; rm -rf \"$T\"; exit $rc")
     check("sox-extension.5", "A12: live CLI accepts the documented flag forms (--help reachable)",
           "node dist/apps/sox/main.js validate --help >/dev/null 2>&1 && echo OK", expect_ok=True)
 
