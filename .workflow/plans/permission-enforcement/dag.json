@@ -1,0 +1,139 @@
+{
+  "schema_version": 2,
+  "title": "C6 — Runtime Permission Enforcement",
+  "spec_sources": ["DOD.md", "docs/architecture-audit-v2.md"],
+  "executor": "sox-active:typescript-pro",
+  "phases": ["foundation", "enforcement", "convergence"],
+  "terminal": "done",
+  "nodes": {
+    "consolidate-legacy": {
+      "kind": "work",
+      "phase": "foundation",
+      "depends_on": [],
+      "guard": "test ! -d scripts/host && nx run-many -t test && nx run-many -t build && nx run-many -t lint",
+      "artifacts": [
+        "scripts/host/supervisor.ts",
+        "scripts/host/loader.ts",
+        "scripts/host/registrar.ts",
+        "scripts/host/runtime.ts",
+        "scripts/host/runtime-cli.ts",
+        "scripts/host/adapters/mcp.ts",
+        "scripts/host/adapters/hook.ts",
+        "scripts/host/adapters/agent.ts",
+        "scripts/host/adapters/command.ts",
+        "scripts/host/event-bus.ts",
+        "scripts/host/prompt-renderer.ts",
+        "scripts/host-runtime.test.ts",
+        "scripts/host-delivery.test.ts",
+        "scripts/host-event-bus.test.ts"
+      ],
+      "context": "contexts/consolidate-legacy.md",
+      "notes": "FIRST state. The nx migration (commit e29624c) ported the host runtime into libs/host-runtime but left the pre-nx copy under scripts/host/ live — two ProcessSupervisor symbols, two loadFromLockfile flows, duplicate activate* adapters. C6 must be enforced ONCE in the single canonical runtime, not twice. Delete the legacy scripts/host/** tree plus scripts/host-runtime.test.ts and scripts/host-delivery.test.ts so libs/host-runtime is the sole runtime. PROVE supersession first with gitnexus_impact/gitnexus_context: apps/sox imports @sox/host-runtime; confirm no live importer of scripts/host/ remains EXCEPT the two legacy test files (which are deleted here). bin/sox does NOT import scripts/host/ (verified — it is the CLI skeleton). docs/architecture-audit-v2.md mentions the symbols in PROSE only (reserved read_only, never edited). After this state ProcessSupervisor/activateHook/loadFromLockfile/McpRegistrar exist only in libs/host-runtime — the duplicate caller-mapping --discover FAILs vanish.",
+      "changes": {
+        "deletes": ["ProcessSupervisor", "activateHook", "activateAgent", "activateSkill", "activateCommand", "activateMcp", "loadFromLockfile", "McpRegistrar"],
+        "resigns": [],
+        "renames": []
+      }
+    },
+    "policy-core": {
+      "kind": "work",
+      "phase": "foundation",
+      "depends_on": ["consolidate-legacy"],
+      "guard": "nx run host-runtime:test",
+      "artifacts": [
+        "libs/host-runtime/src/policy.ts",
+        "libs/host-runtime/src/policy.spec.ts",
+        "libs/host-runtime/src/index.ts"
+      ],
+      "context": "contexts/policy-core.md",
+      "notes": "Pure foundation: compilePolicy/compilePolicyFromEnv/Policy matcher. No callers wired here (keeps downstream guards red->green). Reuse expandTilde from supervisor.ts; no new runtime npm dep. toEnv/fromEnv round-trip ([policy-core.4]) is the contract the spawned child consumes in mcp-path-guard — get it exactly right.",
+      "changes": {
+        "deletes": [],
+        "resigns": [],
+        "renames": []
+      }
+    },
+    "audit-foundation": {
+      "kind": "audit",
+      "phase": "foundation",
+      "depends_on": ["consolidate-legacy", "policy-core"],
+      "guard": "python3 .workflow/plans/permission-enforcement/scripts/audit_c6.py --phase foundation",
+      "artifacts": ["scripts/audit_c6.py"],
+      "context": "contexts/audit-foundation.md",
+      "notes": "Creates the phase-cumulative audit runner. Build the lib first so dist/index.js exists for [policy-core.1]/[.6]. Most likely failure: the toEnv/fromEnv round-trip."
+    },
+    "process-boundary": {
+      "kind": "work",
+      "phase": "enforcement",
+      "depends_on": ["audit-foundation"],
+      "guard": "nx run host-runtime:test",
+      "artifacts": [
+        "libs/host-runtime/src/supervisor.ts",
+        "libs/host-runtime/src/supervisor-policy.spec.ts"
+      ],
+      "context": "contexts/process-boundary.md",
+      "notes": "Bound the single spawn point: env scrub + policy-env injection + cwd restriction, gated on policy.enforced (legacy path byte-identical). Do NOT touch restart/stop/health ([def:session-fixes]). Parallel with inproc-policy (disjoint mutables). The fs DENIAL itself is mcp-path-guard, not here.",
+      "changes": {
+        "deletes": [],
+        "resigns": ["ProcessSupervisor"],
+        "renames": []
+      }
+    },
+    "inproc-policy": {
+      "kind": "work",
+      "phase": "enforcement",
+      "depends_on": ["audit-foundation"],
+      "guard": "nx run host-runtime:test",
+      "artifacts": [
+        "libs/host-runtime/src/adapters/agent.ts",
+        "libs/host-runtime/src/adapters/hook.ts",
+        "libs/host-runtime/src/adapters/command.ts",
+        "libs/host-runtime/src/audit-log.ts",
+        "libs/host-runtime/src/inproc-policy.spec.ts",
+        "libs/host-runtime/src/index.ts"
+      ],
+      "context": "contexts/inproc-policy.md",
+      "notes": "Honest SOFT level for in-process/declarative types: compiled policy + audit log + documented level (no OS isolation, [dod.6]). Parallel with process-boundary (disjoint mutables; both only READ policy.ts). Mutates index.ts ONLY for the audit-log export — keep the diff minimal so no future overlap with process-boundary. Do not touch fireIsolated.",
+      "changes": {
+        "deletes": [],
+        "resigns": ["activateAgent", "activateSkill", "activateHook", "activateCommand"],
+        "renames": []
+      }
+    },
+    "mcp-path-guard": {
+      "kind": "work",
+      "phase": "enforcement",
+      "depends_on": ["process-boundary"],
+      "guard": "nx run memory-server:test",
+      "artifacts": [
+        "extensions/mcp-servers/memory-server/src/index.ts",
+        "extensions/mcp-servers/memory-server/src/permission-guard.spec.ts"
+      ],
+      "context": "contexts/mcp-path-guard.md",
+      "notes": "The actual HARD fs denial: guard caller-supplied db_path against the env-injected policy BEFORE getDb/openDb. openDb mkdirSync's then opens, so the guard MUST precede the sink (no dir/file created on denial). Depends on process-boundary for the policy-env contract; unit tests set the env directly. Legacy/dev path (no SOX_PERM_ENFORCE) unchanged.",
+      "changes": {
+        "deletes": [],
+        "resigns": ["handleToolCall"],
+        "renames": []
+      }
+    },
+    "audit-enforcement": {
+      "kind": "audit",
+      "phase": "enforcement",
+      "depends_on": ["process-boundary", "inproc-policy", "mcp-path-guard"],
+      "guard": "python3 .workflow/plans/permission-enforcement/scripts/audit_c6.py --phase enforcement",
+      "artifacts": ["scripts/audit_c6.py"],
+      "context": "contexts/audit-enforcement.md",
+      "notes": "phase_enforcement() calls phase_foundation() first. Checks all [process-boundary.*]/[inproc-policy.*]/[mcp-path-guard.*]. Likely failure: guard running after mkdirSync in openDb."
+    },
+    "audit-final": {
+      "kind": "audit",
+      "phase": "convergence",
+      "depends_on": ["audit-enforcement"],
+      "guard": "python3 .workflow/plans/permission-enforcement/scripts/audit_c6.py --phase final",
+      "artifacts": ["scripts/audit_c6.py"],
+      "context": "contexts/audit-final.md",
+      "notes": "Reality audit: spawn the REAL built memory-server, attempt a forbidden db_path, observe denial AND absence of the file on disk ([inv:reality]). Proves every [dod.N] + every [ref:] + regression (suite + e2e). Founder reviews after green ([dod.5]); only THEN set state: complete."
+    }
+  }
+}
