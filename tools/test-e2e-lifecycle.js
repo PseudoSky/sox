@@ -244,13 +244,11 @@ async function main() {
   // ═══════════════════════════════════════════════════════════════════════════
   console.log('\nStep 2: sox start -s project');
 
-  // Run start via npx tsx runtime-cli.ts directly (in background as a child)
-  // We use tsx directly to have the supervisor keep running in this process.
+  // Run start via the compiled canonical runtime-cli (background child).
   // The test will keep a reference to the child and kill it on cleanup.
-  const runtimeCliPath = path.join(ROOT, 'scripts', 'host', 'runtime-cli.ts');
+  const runtimeCliPath = path.join(ROOT, 'libs', 'host-runtime', 'dist', 'runtime-cli.js');
 
-  startProcess = spawn('npx', [
-    'tsx',
+  startProcess = spawn(process.execPath, [
     runtimeCliPath,
     'start',
     `--scope=project`,

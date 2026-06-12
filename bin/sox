@@ -1145,11 +1145,10 @@ function cmdStart(argv) {
     }
   }
 
-  // Spawn runtime-cli.ts as a DETACHED background process so it can supervise children
-  // after bin/sox exits. We write its PID to the runtime record on completion.
+  // Spawn the compiled runtime-cli as a DETACHED background process so it can supervise
+  // children after bin/sox exits. We write its PID to the runtime record on completion.
   const cliArgs = [
-    'tsx',
-    join(ROOT, 'scripts', 'host', 'runtime-cli.ts'),
+    join(ROOT, 'libs', 'host-runtime', 'dist', 'runtime-cli.js'),
     'start',
     `--scope=${scope}`,
     `--root=${effectiveRoot}`,
@@ -1159,7 +1158,7 @@ function cmdStart(argv) {
   ];
 
   // Spawn detached so the supervisor outlives bin/sox
-  const child = spawn('npx', cliArgs, {
+  const child = spawn(process.execPath, cliArgs, {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
     cwd: ROOT,
@@ -1245,10 +1244,9 @@ function cmdStop(argv) {
   const { lockfile: lockfilePath } = getScopePathsWithRoot(scope, rootFlag);
   const runtimeFilePath = getRuntimeFilePath(lockfilePath, runtimeFileFlag);
 
-  // Invoke runtime-cli.ts stop (handles PID killing + record update)
+  // Invoke the compiled runtime-cli stop (handles PID killing + record update)
   const cliArgs = [
-    'tsx',
-    join(ROOT, 'scripts', 'host', 'runtime-cli.ts'),
+    join(ROOT, 'libs', 'host-runtime', 'dist', 'runtime-cli.js'),
     'stop',
     `--scope=${scope}`,
     `--lockfile=${lockfilePath}`,
@@ -1256,7 +1254,7 @@ function cmdStop(argv) {
     ...(id ? [`--id=${id}`] : []),
   ];
 
-  const result = spawnSync('npx', cliArgs, {
+  const result = spawnSync(process.execPath, cliArgs, {
     stdio: 'inherit',
     cwd: ROOT,
     env: { ...process.env, SOX_RUNTIME_FILE: runtimeFilePath },
@@ -1341,10 +1339,9 @@ function parseTopLevel(argv) {
       const execRuntimeFile = getRuntimeFilePath(execLockfile, execRuntimeFileFlag);
       const allFlags = rest.filter((a) => a.startsWith('--'));
       const execResult = spawnSync(
-        'npx',
+        process.execPath,
         [
-          'tsx',
-          join(ROOT, 'scripts', 'host', 'runtime-cli.ts'),
+          join(ROOT, 'libs', 'host-runtime', 'dist', 'runtime-cli.js'),
           'exec',
           `--runtime-file=${execRuntimeFile}`,
           ...allFlags.filter((f) => !f.startsWith('--runtime-file=') && !f.startsWith('--root=') && !f.startsWith('--scope')),

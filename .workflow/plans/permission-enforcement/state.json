@@ -106,6 +106,23 @@
       "by": "sox-active:workflow-planner"
     },
     {
+      "ts": "2026-06-12T17:00:00Z",
+      "state": "consolidate-legacy",
+      "class": "executor",
+      "type": "fix-regression",
+      "reason": "Deletion of scripts/host/runtime-cli.ts introduced a real regression: bin/sox start/stop/exec (3 sites) and tools/test-e2e-lifecycle.js (host-runtime:test-e2e nx target) all spawned that deleted file via 'npx tsx scripts/host/runtime-cli.ts'. The consolidate guard (nx run-many -t test) did not catch this because test-e2e is a separate nx target not covered by run-many -t test. Fix: recreate the CLI as libs/host-runtime/src/runtime-cli.ts (canonical artifact, imports from ./runtime.js/./loader.js/./registrar.js), compiled to libs/host-runtime/dist/runtime-cli.js by the existing host-runtime build target (tsc src/**). Re-point all 3 bin/sox spawner sites and tools/test-e2e-lifecycle.js to spawn: process.execPath + [libs/host-runtime/dist/runtime-cli.js, verb, ...args] — no npx, no tsx, compiled artifact only. Approach chosen: recreate (not reuse apps/sox) because apps/sox exposes no start/stop/status/exec CLI verbs; the compiled dist entry is the minimal, cleanest diff. Proof: nx run host-runtime:test-e2e = 33/33 PASS, zero orphan processes after stop. All four consolidate guards: (1) test ! -d scripts/host = PASS, (2) nx run-many -t test = PASS, (3) nx run-many -t build = PASS (13/13), (4) nx run-many -t lint = PASS (13/13). audit_c6.py --phase foundation = exit 0 FOUNDATION AUDIT PASSED.",
+      "files_changed": [
+        "libs/host-runtime/src/runtime-cli.ts (NEW) — canonical CLI entry, verb dispatch start/stop/status/exec, imports from ./runtime.js",
+        "bin/sox (MODIFIED) — start site ~1152: npx tsx scripts/host/runtime-cli.ts → node libs/host-runtime/dist/runtime-cli.js",
+        "bin/sox (MODIFIED) — stop site ~1251: same re-point",
+        "bin/sox (MODIFIED) — exec site ~1347: same re-point",
+        "tools/test-e2e-lifecycle.js (MODIFIED) — line ~250: npx tsx scripts/host/runtime-cli.ts → node libs/host-runtime/dist/runtime-cli.js"
+      ],
+      "dist_entry": "libs/host-runtime/dist/runtime-cli.js",
+      "e2e_result": "33/33 PASS, zero orphan processes, supervisor exited cleanly",
+      "by": "sox-active:typescript-pro"
+    },
+    {
       "ts": "2026-06-12T06:30:00Z",
       "state": "consolidate-legacy",
       "class": "executor",
