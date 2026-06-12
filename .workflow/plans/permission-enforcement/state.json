@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "C6 \u2014 Runtime Permission Enforcement",
   "dag": "dag.json",
-  "current_state": "audit-enforcement",
+  "current_state": "audit-final",
   "states": {
     "consolidate-legacy": {
       "status": "done",
@@ -35,9 +35,9 @@
       "done_ts": "2026-06-12T17:08:00Z"
     },
     "audit-enforcement": {
-      "status": "pending",
-      "started_ts": null,
-      "done_ts": null
+      "status": "done",
+      "started_ts": "2026-06-12T19:00:00Z",
+      "done_ts": "2026-06-12T19:05:00Z"
     },
     "audit-final": {
       "status": "pending",
@@ -92,16 +92,16 @@
       "from": "mcp-path-guard",
       "to": "audit-enforcement",
       "by": "sox-active:typescript-pro",
-      "guard_result": "PASS (nx run memory-server:test --skip-nx-cache: 14/14 tests green — 3 pre-existing recall-sqlite.test.ts + 11 new permission-guard.spec.ts; nx run memory-server:build: clean TypeScript compile)",
-      "test_delta": "memory-server test suite: 3→14 (+11 tests in permission-guard.spec.ts covering [mcp-path-guard.1-5]); all 3 pre-existing recall-sqlite tests still green",
+      "guard_result": "PASS (nx run memory-server:test --skip-nx-cache: 14/14 tests green \u2014 3 pre-existing recall-sqlite.test.ts + 11 new permission-guard.spec.ts; nx run memory-server:build: clean TypeScript compile)",
+      "test_delta": "memory-server test suite: 3\u219214 (+11 tests in permission-guard.spec.ts covering [mcp-path-guard.1-5]); all 3 pre-existing recall-sqlite tests still green",
       "artifacts": [
-        "extensions/mcp-servers/memory-server/src/index.ts (MODIFIED) — vendored compilePolicyFromEnv (matches [shape:policy-env]/[policy-core.4]); getPolicy() accessor reads process.env fresh per-call; checkDbPathPolicy() guard BEFORE getDb/openDb; handleToolCall: denied path returns isError+no-sink-call; [def:enforcement-opt-in] preserved (no SOX_PERM_ENFORCE → legacy path unchanged)",
-        "extensions/mcp-servers/memory-server/src/permission-guard.spec.ts (NEW) — 11 tests: [mcp-path-guard.1] isError on denied path; [mcp-path-guard.3] filesystem assertion fs.existsSync(EVIL_DB)===false after denial; [mcp-path-guard.2] allowed path succeeds; [mcp-path-guard.4] legacy compat no-enforce any path opens + file exists; [mcp-path-guard.5] compilePolicyFromEnv deny/allow/enforced=false/empty-array",
-        "extensions/mcp-servers/memory-server/project.json (MODIFIED) — added test target: vitest run --config memory-server/vitest.config.ts",
-        "extensions/mcp-servers/memory-server/vitest.config.ts (NEW) — vitest config covering src/**/*.spec.ts + src/**/*.test.ts + root *.test.ts"
+        "extensions/mcp-servers/memory-server/src/index.ts (MODIFIED) \u2014 vendored compilePolicyFromEnv (matches [shape:policy-env]/[policy-core.4]); getPolicy() accessor reads process.env fresh per-call; checkDbPathPolicy() guard BEFORE getDb/openDb; handleToolCall: denied path returns isError+no-sink-call; [def:enforcement-opt-in] preserved (no SOX_PERM_ENFORCE \u2192 legacy path unchanged)",
+        "extensions/mcp-servers/memory-server/src/permission-guard.spec.ts (NEW) \u2014 11 tests: [mcp-path-guard.1] isError on denied path; [mcp-path-guard.3] filesystem assertion fs.existsSync(EVIL_DB)===false after denial; [mcp-path-guard.2] allowed path succeeds; [mcp-path-guard.4] legacy compat no-enforce any path opens + file exists; [mcp-path-guard.5] compilePolicyFromEnv deny/allow/enforced=false/empty-array",
+        "extensions/mcp-servers/memory-server/project.json (MODIFIED) \u2014 added test target: vitest run --config memory-server/vitest.config.ts",
+        "extensions/mcp-servers/memory-server/vitest.config.ts (NEW) \u2014 vitest config covering src/**/*.spec.ts + src/**/*.test.ts + root *.test.ts"
       ],
-      "guard_before_sink_proof": "checkDbPathPolicy() is called at line ~279 in handleToolCall, BEFORE `const db = getDb(dbPath)` at line ~287. On denial, the function returns the isError result immediately without reaching getDb/openDb. The filesystem assertion in [mcp-path-guard.3] (fs.existsSync(EVIL_DB)===false) proves no directory or file is created at the undeclared path — openDb's mkdirSync was never reached.",
-      "acceptance_criteria": "[mcp-path-guard.1] OK (isError:true + text contains 'permission denied' + EVIL_DB path; vitest), [mcp-path-guard.2] OK (allowed path → no isError, episode_uid returned; vitest), [mcp-path-guard.3] OK (fs.existsSync(EVIL_DB)===false after denied call; vitest), [mcp-path-guard.4] OK (clearEnforceEnv → any tmpDb opens + file exists; vitest 2 assertions), [mcp-path-guard.5] OK (deny /tmp/..., allow ~/.memory/..., enforced=false when absent, deny-by-default empty array; vitest 4 assertions)"
+      "guard_before_sink_proof": "checkDbPathPolicy() is called at line ~279 in handleToolCall, BEFORE `const db = getDb(dbPath)` at line ~287. On denial, the function returns the isError result immediately without reaching getDb/openDb. The filesystem assertion in [mcp-path-guard.3] (fs.existsSync(EVIL_DB)===false) proves no directory or file is created at the undeclared path \u2014 openDb's mkdirSync was never reached.",
+      "acceptance_criteria": "[mcp-path-guard.1] OK (isError:true + text contains 'permission denied' + EVIL_DB path; vitest), [mcp-path-guard.2] OK (allowed path \u2192 no isError, episode_uid returned; vitest), [mcp-path-guard.3] OK (fs.existsSync(EVIL_DB)===false after denied call; vitest), [mcp-path-guard.4] OK (clearEnforceEnv \u2192 any tmpDb opens + file exists; vitest 2 assertions), [mcp-path-guard.5] OK (deny /tmp/..., allow ~/.memory/..., enforced=false when absent, deny-by-default empty array; vitest 4 assertions)"
     },
     {
       "ts": "2026-06-12T18:05:00Z",
@@ -123,9 +123,9 @@
       "state": "mcp-path-guard",
       "class": "executor",
       "type": "expand-reservation",
-      "reason": "Two additional files beyond the mcp-path-guard mutates reservation were required: (1) extensions/mcp-servers/memory-server/project.json — added 'test' target (vitest run) so nx run memory-server:test works; the project had no test target. (2) extensions/mcp-servers/memory-server/vitest.config.ts (NEW) — vitest config to include src/**/*.spec.ts, src/**/*.test.ts, and root *.test.ts (includes pre-existing recall-sqlite.test.ts). Also, compilePolicyFromEnv is vendored inside index.ts rather than imported from @sox/host-runtime because @sox/host-runtime is a private workspace package not available in node_modules at the spawned child's runtime. The vendored implementation matches [shape:policy-env] exactly and is parity-tested in permission-guard.spec.ts [mcp-path-guard.5]. Policy is read via getPolicy() (fresh process.env read per call) rather than cached at module load time, to support testability (env set per-test in beforeEach) while remaining functionally equivalent in production (env stable after exec).",
+      "reason": "Two additional files beyond the mcp-path-guard mutates reservation were required: (1) extensions/mcp-servers/memory-server/project.json \u2014 added 'test' target (vitest run) so nx run memory-server:test works; the project had no test target. (2) extensions/mcp-servers/memory-server/vitest.config.ts (NEW) \u2014 vitest config to include src/**/*.spec.ts, src/**/*.test.ts, and root *.test.ts (includes pre-existing recall-sqlite.test.ts). Also, compilePolicyFromEnv is vendored inside index.ts rather than imported from @sox/host-runtime because @sox/host-runtime is a private workspace package not available in node_modules at the spawned child's runtime. The vendored implementation matches [shape:policy-env] exactly and is parity-tested in permission-guard.spec.ts [mcp-path-guard.5]. Policy is read via getPolicy() (fresh process.env read per call) rather than cached at module load time, to support testability (env set per-test in beforeEach) while remaining functionally equivalent in production (env stable after exec).",
       "files_changed": [
-        "extensions/mcp-servers/memory-server/project.json (MODIFIED) — added test target",
+        "extensions/mcp-servers/memory-server/project.json (MODIFIED) \u2014 added test target",
         "extensions/mcp-servers/memory-server/vitest.config.ts (NEW)"
       ],
       "by": "sox-active:typescript-pro"
