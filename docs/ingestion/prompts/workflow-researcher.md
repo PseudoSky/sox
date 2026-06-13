@@ -33,8 +33,16 @@ STEP 1 — GROUND TRUTH FIRST (read before writing anything; do not assume conve
   b. `/Users/nix/dev/ai/sox-ecosystem/docs/guidelines/` — read the `agent` guideline in full
      (esp. the install-target / host-discovery placement, e.g. `~/.claude/agents/<id>.md`, and the
      manifest fields an agent uses).
-  c. A WORKING REFERENCE AGENT: study the installed `agent`-type extension `memory-organizer` under
-     `extensions/` — its layout, manifest, and how the markdown agent definition is carried. Mirror it.
+  c. A WORKING REFERENCE AGENT — CAUTION, the `agent` type is overloaded: `memory-organizer` (the
+     existing agent) is a CODE agent (`runtime: node`, an `entrypoint` exporting a function —
+     `function-export` invocation), which is a DIFFERENT shape from a DECLARATIVE markdown agent.
+     workflow-researcher is a declarative markdown agent (frontmatter + system prompt, installs to a
+     host-discovery target like `~/.claude/agents/`, `runtime: declarative`, no entrypoint). So study
+     memory-organizer only for manifest conventions, but for the actual shape follow the `agent`
+     GUIDELINE's declarative path + the install-target flex in `libs/manifest`. If no declarative
+     agent exists yet in `extensions/`, you may be the first — flag that so the founder can confirm
+     the guideline/generator cover the declarative-agent shape. Do NOT give this agent a `lifecycle`
+     block: the runtime ignores agent lifecycle (it is declared-unimplemented).
   d. `/Users/nix/dev/ai/sox-ecosystem/libs/manifest` — manifest schema incl. install-target +
      `permissions`. Read-only.
   e. `node bin/sox --help` — real CLI surface. `nx` not on PATH; use `./node_modules/.bin/nx`.

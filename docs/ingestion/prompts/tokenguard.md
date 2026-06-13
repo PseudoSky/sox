@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Source** | `~/dev/security/wop/scripts/tokenguard/` |
-| **Target type** | **DECISION POINT** — runs as a SERVER → a `mcp-server` (or `agent`) carrying a host-supervised `lifecycle` block (`background`/`health`); protocol fork in STEP 0; possibly **+** a `command`, composed as a `bundle` |
+| **Target type** | **DECISION POINT** — runs as a SERVER → `mcp-server` + a host-supervised `lifecycle` block (`background`/`health`); `mcp-server` is the only type whose lifecycle the runtime honors (agent's is vestigial); protocol fork in STEP 0; possibly **+** a `command`, composed as a `bundle` |
 | **Proposed id** | `tokenguard` (or `tokenguard-server` / `tokenguard-cli` if split) |
 | **Status** | drafted — source not yet read by prompt author; known to run as a server, but its protocol (MCP vs non-MCP) and whether a CLI also ships are unresolved |
 
@@ -32,17 +32,23 @@ loader/supervisor): "long-running" is NOT a type — it is a reusable `lifecycle
 manifest, handled generically by the host supervisor:
     lifecycle: { background: true, singleton?, stop_timeout_ms?,
                  health?: { type: 'stdio-ping' | 'socket' | 'command', endpoint?, interval_ms?, timeout_ms? } }
-The supervisor spawns, health-checks, restarts, and stops ANY extension that declares it; the health
-probe is PROTOCOL-AGNOSTIC (stdio-ping / socket / command), so a non-MCP server is supervised fine.
-The `lifecycle` block is currently VALIDATION-GATED to `type ∈ {mcp-server, agent}` — so the server
-is typed `mcp-server` (the natural fit for an agent-reachable server) and carries the lifecycle
-block. `runtime` may be `node`/`shell`/`python`/`stdio-any` (use `stdio-any` for a non-MCP stdio
-server). MCP is only required for the `sox exec` TOOL-CALL surface — not for supervision.
+RUNTIME REALITY (verify in `libs/host-runtime/src/loader.ts` `dispatchToAdapter`): the `lifecycle`
+block is honored AT RUNTIME ONLY for `type: mcp-server` (the loader passes it to the supervisor,
+which spawns + health-checks + restarts + stops the child). The schema/validator ALSO permits
+`lifecycle` on `agent`, BUT the loader's `agent` case does an in-process `import()` and ignores
+lifecycle — it is declared-unimplemented/vestigial (see `docs/guidelines/agent.md`). So for a
+long-running server, the type is `mcp-server` — do NOT use `agent` expecting supervision.
+The supervisor's health probe is PROTOCOL-AGNOSTIC (stdio-ping / socket / command), so a non-MCP
+server is supervised fine. `runtime` may be `node`/`shell`/`python`/`stdio-any` (use `stdio-any` for
+a non-MCP stdio server). MCP is only required for the `sox exec` TOOL-CALL surface — not for
+supervision. (If you find the loader has since learned to supervise agents, report it — the docs say
+otherwise as of this writing.)
 
 Read every file under the source dir, identify its interfaces, and decide:
 
   A. THE SERVER (the long-running part) → `type: mcp-server` + `lifecycle.background: true` + a
-     health probe matching how it actually reports health (stdio-ping / socket / command). Protocol
+     health probe matching how it actually reports health (stdio-ping / socket / command). This is
+     the ONLY type whose lifecycle the runtime honors — do not use `agent` for a service. Protocol
      fork for the TOOL surface:
      - It already speaks MCP (stdio JSON-RPC: initialize + tools/list + tools/call) → port directly;
        supervised via lifecycle AND callable via `sox exec`. health: stdio-ping.
@@ -53,10 +59,10 @@ Read every file under the source dir, identify its interfaces, and decide:
            in a shared lib) so `sox exec` can reach it. If no agent-facing tool surface is wanted,
            ship it supervised-only (no MCP front) and say so.
        Report whether it is a direct port, a supervised-only server, or a server + MCP wrap.
-     - Only if it fits NEITHER mcp-server NOR agent conceptually → STOP and report: the lifecycle
-       block is gated to {mcp-server, agent}; widening it (or adding a dedicated service type) is a
-       founder/contract decision. (This is a naming/validation-surface question, NOT a missing
-       capability — the supervision machinery is already generic.)
+     - If `mcp-server` is conceptually a poor fit for what this server is → STOP and report: the only
+       runtime-honored long-running type is `mcp-server`; a dedicated `service`/`daemon` type (or
+       implementing agent lifecycle) is a founder/contract decision. The supervision MACHINERY is
+       generic, but today only the `mcp-server` adapter path wires it.
 
   B. THE ONE-SHOT CLI (if present) → `command` (argv in, result/exit-code out, exits).
 
