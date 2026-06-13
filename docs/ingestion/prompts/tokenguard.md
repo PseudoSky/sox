@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Source** | `~/dev/security/wop/scripts/tokenguard/` |
-| **Target type** | **DECISION POINT** — runs as a SERVER → `mcp-server` (the only long-running supervised type; protocol fork in STEP 0), possibly **+** a `command`, composed as a `bundle` |
+| **Target type** | **DECISION POINT** — runs as a SERVER → a `mcp-server` (or `agent`) carrying a host-supervised `lifecycle` block (`background`/`health`); protocol fork in STEP 0; possibly **+** a `command`, composed as a `bundle` |
 | **Proposed id** | `tokenguard` (or `tokenguard-server` / `tokenguard-cli` if split) |
 | **Status** | drafted — source not yet read by prompt author; known to run as a server, but its protocol (MCP vs non-MCP) and whether a CLI also ships are unresolved |
 
@@ -27,24 +27,36 @@ Bring this into the ecosystem, born-conformant. ITS TYPE IS UNDECIDED — resolv
 
 STEP 0 — RESOLVE THE TYPE MAPPING (decision point — do this before any scaffolding)
 KNOWN: tokenguard runs as a SERVER (a long-running process), and may ALSO have a one-shot CLI.
-In this ecosystem the ONLY long-running, supervisor-spawned background type is `mcp-server` —
-there is NO generic "daemon"/"service" type (the 7 types are agent, skill, mcp-server, prompt,
-hook, command, bundle). So a server maps to `mcp-server` — but HOW it maps depends on its protocol.
+HOW LONG-RUNNING WORKS HERE (read this first — verify against `libs/manifest` + `libs/host-runtime`
+loader/supervisor): "long-running" is NOT a type — it is a reusable `lifecycle` block on the
+manifest, handled generically by the host supervisor:
+    lifecycle: { background: true, singleton?, stop_timeout_ms?,
+                 health?: { type: 'stdio-ping' | 'socket' | 'command', endpoint?, interval_ms?, timeout_ms? } }
+The supervisor spawns, health-checks, restarts, and stops ANY extension that declares it; the health
+probe is PROTOCOL-AGNOSTIC (stdio-ping / socket / command), so a non-MCP server is supervised fine.
+The `lifecycle` block is currently VALIDATION-GATED to `type ∈ {mcp-server, agent}` — so the server
+is typed `mcp-server` (the natural fit for an agent-reachable server) and carries the lifecycle
+block. `runtime` may be `node`/`shell`/`python`/`stdio-any` (use `stdio-any` for a non-MCP stdio
+server). MCP is only required for the `sox exec` TOOL-CALL surface — not for supervision.
+
 Read every file under the source dir, identify its interfaces, and decide:
 
-  A. THE SERVER (the long-running part) → `mcp-server`, with a protocol fork:
-     - It already speaks MCP (stdio JSON-RPC: initialize + tools/list + tools/call) → port it
-       directly as an `mcp-server`; the supervisor spawns + supervises it and `sox exec` calls its
-       tools.
-     - It is a server with a NON-MCP protocol (HTTP / socket / custom RPC) → it does not fit the
-       agent-facing tool model as-is. Wrap it: keep the core server logic in a shared lib and add a
-       thin MCP front (an `mcp-server` extension whose tools call the core) so agents can reach it
-       through `sox exec`. The underlying socket/port it opens is declared in `permissions.socket`/
-       `network`. Report this as a wrap, not a 1:1 port.
-     - It is a pure-infrastructure server with NO agent-facing surface and NO sensible MCP tool
-       mapping → STOP and report: sox-ecosystem has no generic long-running-daemon type; forcing it
-       into `mcp-server` may be wrong. This is a contract-gap decision for the founder, not something
-       to paper over.
+  A. THE SERVER (the long-running part) → `type: mcp-server` + `lifecycle.background: true` + a
+     health probe matching how it actually reports health (stdio-ping / socket / command). Protocol
+     fork for the TOOL surface:
+     - It already speaks MCP (stdio JSON-RPC: initialize + tools/list + tools/call) → port directly;
+       supervised via lifecycle AND callable via `sox exec`. health: stdio-ping.
+     - It is a server with a NON-MCP protocol (HTTP / socket / custom RPC):
+         · supervision still works generically (lifecycle + socket/command health) — declare the
+           port/socket in `permissions.socket`/`network`, runtime likely `stdio-any` or `node`;
+         · for an AGENT-CALLABLE tool surface, add a thin MCP front (tools that call the core, kept
+           in a shared lib) so `sox exec` can reach it. If no agent-facing tool surface is wanted,
+           ship it supervised-only (no MCP front) and say so.
+       Report whether it is a direct port, a supervised-only server, or a server + MCP wrap.
+     - Only if it fits NEITHER mcp-server NOR agent conceptually → STOP and report: the lifecycle
+       block is gated to {mcp-server, agent}; widening it (or adding a dedicated service type) is a
+       founder/contract decision. (This is a naming/validation-surface question, NOT a missing
+       capability — the supervision machinery is already generic.)
 
   B. THE ONE-SHOT CLI (if present) → `command` (argv in, result/exit-code out, exits).
 
@@ -53,19 +65,21 @@ Read every file under the source dir, identify its interfaces, and decide:
      Do NOT duplicate the core across extensions (DoD C7 — shared internal code, no reach-in).
 
 Decide using EVIDENCE from the source (entrypoints, how the server is started today, what protocol
-it speaks on which port/socket, whether anything calls it programmatically, whether the CLI is
-actually used). Bias toward the SMALLEST faithful mapping. Write a 3–5 line recommendation: the
-type(s) chosen, the server's protocol and whether it's a direct port or an MCP wrap, and what
-becomes a shared lib. If the choice has product implications (e.g. a non-MCP server, or a
-contract-gap), STOP and report for founder confirmation BEFORE building; otherwise proceed and note it.
+it speaks on which port/socket, how it reports health, whether anything calls it programmatically,
+whether the CLI is actually used). Bias toward the SMALLEST faithful mapping. Write a 3–5 line
+recommendation: the type(s) + lifecycle/health config chosen, the server's protocol and whether it's
+a direct port / supervised-only / MCP-wrapped, and what becomes a shared lib. If the choice has
+product implications, STOP and report for founder confirmation BEFORE building; otherwise proceed
+and note it.
 
 STEP 1 — GROUND TRUTH FIRST (read before writing anything; do not assume conventions)
   a. `/Users/nix/dev/ai/sox-ecosystem/DOD.md` — the bar.
   b. `/Users/nix/dev/ai/sox-ecosystem/docs/guidelines/` — read the guideline(s) for the type(s)
      you selected (`mcp-server` and/or `command`), in full.
-  c. WORKING REFERENCES: for an mcp-server, study `memory-server`; for a command, study
-     `memory-cli`; if you split into a shared lib + wrappers + bundle, also study how `libs/` are
-     shared and how `sox-memory-bundle` composes members. Mirror these shapes.
+  c. WORKING REFERENCES: for an mcp-server, study `memory-server` — INCLUDING how it declares its
+     `lifecycle` block + health probe in `extension.json` (that is the long-running mechanism you'll
+     reuse); for a command, study `memory-cli`; if you split into a shared lib + wrappers + bundle,
+     also study how `libs/` are shared and how `sox-memory-bundle` composes members. Mirror these.
   d. `/Users/nix/dev/ai/sox-ecosystem/libs/manifest` — manifest schema incl. `permissions`
      (this is a SECURITY tool — its fs/network/socket footprint must be declared precisely).
      Read-only.
