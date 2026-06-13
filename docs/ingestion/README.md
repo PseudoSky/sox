@@ -19,12 +19,22 @@ before committing a plan. None of these have been read yet unless a prompt exist
 
 | Type | Source | Notes | Prompt |
 |---|---|---|---|
-| hook | `~/dev/ai/claude-agents/tools/hooks/` | a directory of hooks; `swarm-cost` is one of them | [`swarm-cost`](./prompts/swarm-cost.md) |
-| mcp-server | `/Users/nix/dev/node/adhd/packages/ai/agent-mcp` | | — |
-| command | `~/dev/ai/sox-protocol/packages/python` · `~/dev/ai/claude-agents/tools/cli` | two sources | — |
-| skill | `~/dev/ai/claude-agents/categories/workflow/skills/` | a directory of skills | — |
-| agent | `~/dev/ai/claude-agents/categories/00-active/agents/` | a directory of agents | — |
+| hook | `~/dev/ai/claude-agents/tools/hooks/swarm-cost` | one hook in the `tools/hooks/` dir | [`swarm-cost`](./prompts/swarm-cost.md) |
+| skill | `~/dev/ai/claude-agents/tools/skills/strategy/SKILL.md` | declarative; may be the first skill | [`strategy`](./prompts/strategy.md) |
+| agent | `~/dev/ai/claude-agents/categories/workflow/agents/workflow-researcher.md` | declarative; mirror `memory-organizer` | [`workflow-researcher`](./prompts/workflow-researcher.md) |
+| **mcp-server \| command \| both** | `~/dev/security/wop/scripts/tokenguard/` | **decision point** — type unresolved; prompt resolves it (shared lib + thin wrappers, maybe a bundle) | [`tokenguard`](./prompts/tokenguard.md) |
+| **hook (+ optional command)** | `~/dev/ai/claude-agents/tools/policy-enforcer/` | hook is primary; **decision point** on whether the bundled cli ships | [`policy-enforcer`](./prompts/policy-enforcer.md) |
+| mcp-server | `/Users/nix/dev/node/adhd/packages/ai/agent-mcp` | not yet prompted | — |
+| command | `~/dev/ai/sox-protocol/packages/python` · `~/dev/ai/claude-agents/tools/cli` | two sources; not yet prompted | — |
+| hook (dir) | `~/dev/ai/claude-agents/tools/hooks/` | the rest of the hooks dir (beyond swarm-cost) | — |
+| skill (dir) | `~/dev/ai/claude-agents/categories/workflow/skills/` | the rest of the skills dir | — |
+| agent (dir) | `~/dev/ai/claude-agents/categories/00-active/agents/` | the rest of the agents dir | — |
 | prompt | *(unresolved)* | founder: "idk what this is" — resolve the `prompt` use case before ingesting | — |
+
+**Decision-point candidates** (type or composition unresolved) lead their prompt with a `STEP 0`
+that makes the executing agent investigate the source and **recommend** a mapping (and stop for
+confirmation if it's a real product call) before scaffolding: `tokenguard` (mcp/command/both),
+`policy-enforcer` (whether the cli ships alongside the hook).
 
 ## How to use a hand-off prompt
 
@@ -60,5 +70,14 @@ truth, not from memory; prove done against reality, not tests.**
 
 ## Status
 
-- `swarm-cost` — prompt drafted; source not yet read by the prompt author (the prompt makes the
-  executing agent read it). Not yet built.
+All prompts below are **drafted but unbuilt**; none of the sources have been read by the prompt
+author (each prompt makes the executing agent read its source). `swarm-cost` is the designated
+per-type pilot for `hook`.
+
+| Prompt | Type | Built? |
+|---|---|---|
+| `swarm-cost` | hook | no |
+| `strategy` | skill | no |
+| `workflow-researcher` | agent | no |
+| `tokenguard` | mcp / command / both (TBD) | no |
+| `policy-enforcer` | hook (+ optional command) | no |
