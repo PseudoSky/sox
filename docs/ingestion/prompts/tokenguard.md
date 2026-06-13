@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | **Source** | `~/dev/security/wop/scripts/tokenguard/` |
-| **Target type** | **DECISION POINT** — `mcp-server`, `command`, or both (a shared lib + thin wrappers, composed as a `bundle`) |
+| **Target type** | **DECISION POINT** — runs as a SERVER → `mcp-server` (the only long-running supervised type; protocol fork in STEP 0), possibly **+** a `command`, composed as a `bundle` |
 | **Proposed id** | `tokenguard` (or `tokenguard-server` / `tokenguard-cli` if split) |
-| **Status** | drafted — source not yet read by prompt author; type mapping unresolved |
+| **Status** | drafted — source not yet read by prompt author; known to run as a server, but its protocol (MCP vs non-MCP) and whether a CLI also ships are unresolved |
 
 > The founder is unsure whether this is an MCP server, a CLI command, or both. This prompt makes
 > the agent **investigate and recommend** the mapping from ground truth before building, and bias
@@ -26,20 +26,38 @@ Bring this into the ecosystem, born-conformant. ITS TYPE IS UNDECIDED — resolv
     SOURCE: ~/dev/security/wop/scripts/tokenguard/
 
 STEP 0 — RESOLVE THE TYPE MAPPING (decision point — do this before any scaffolding)
-Read every file under the source dir and determine HOW it is meant to be invoked:
-  - One-shot invocation by a human or script (argv in, result/exit-code out, exits) → `command`.
-  - A long-running server exposing tools to an agent over MCP (stdio JSON-RPC: initialize +
-    tools/list + tools/call) → `mcp-server`.
-  - BOTH a one-shot CLI AND an agent-facing tool surface are genuinely wanted → ship a shared core
-    library (the tokenguard logic, once) plus the thin interface(s) needed: a `command` extension
-    and/or an `mcp-server` extension that both import the lib, composed into a `bundle`. Do NOT
-    duplicate the core logic across two extensions (DoD C7 — shared internal code, no reach-in).
-Decide using EVIDENCE from the source (entrypoints, how it's run today, whether it already speaks
-MCP, whether anything calls it programmatically). Bias toward the SMALLEST faithful mapping: if only
-one interface is actually used, ship only that one. Write a 3–5 line recommendation: the type(s) you
-chose, why, and what (if anything) becomes a shared lib. If the evidence is genuinely 50/50 or the
-choice has product implications, STOP and report the recommendation for founder confirmation BEFORE
-building; otherwise proceed with your recommended mapping and note it.
+KNOWN: tokenguard runs as a SERVER (a long-running process), and may ALSO have a one-shot CLI.
+In this ecosystem the ONLY long-running, supervisor-spawned background type is `mcp-server` —
+there is NO generic "daemon"/"service" type (the 7 types are agent, skill, mcp-server, prompt,
+hook, command, bundle). So a server maps to `mcp-server` — but HOW it maps depends on its protocol.
+Read every file under the source dir, identify its interfaces, and decide:
+
+  A. THE SERVER (the long-running part) → `mcp-server`, with a protocol fork:
+     - It already speaks MCP (stdio JSON-RPC: initialize + tools/list + tools/call) → port it
+       directly as an `mcp-server`; the supervisor spawns + supervises it and `sox exec` calls its
+       tools.
+     - It is a server with a NON-MCP protocol (HTTP / socket / custom RPC) → it does not fit the
+       agent-facing tool model as-is. Wrap it: keep the core server logic in a shared lib and add a
+       thin MCP front (an `mcp-server` extension whose tools call the core) so agents can reach it
+       through `sox exec`. The underlying socket/port it opens is declared in `permissions.socket`/
+       `network`. Report this as a wrap, not a 1:1 port.
+     - It is a pure-infrastructure server with NO agent-facing surface and NO sensible MCP tool
+       mapping → STOP and report: sox-ecosystem has no generic long-running-daemon type; forcing it
+       into `mcp-server` may be wrong. This is a contract-gap decision for the founder, not something
+       to paper over.
+
+  B. THE ONE-SHOT CLI (if present) → `command` (argv in, result/exit-code out, exits).
+
+  C. IF BOTH the server and a genuinely-used CLI ship → shared core library (the tokenguard logic,
+     once) + thin `mcp-server` and `command` wrappers that both import it, composed into a `bundle`.
+     Do NOT duplicate the core across extensions (DoD C7 — shared internal code, no reach-in).
+
+Decide using EVIDENCE from the source (entrypoints, how the server is started today, what protocol
+it speaks on which port/socket, whether anything calls it programmatically, whether the CLI is
+actually used). Bias toward the SMALLEST faithful mapping. Write a 3–5 line recommendation: the
+type(s) chosen, the server's protocol and whether it's a direct port or an MCP wrap, and what
+becomes a shared lib. If the choice has product implications (e.g. a non-MCP server, or a
+contract-gap), STOP and report for founder confirmation BEFORE building; otherwise proceed and note it.
 
 STEP 1 — GROUND TRUTH FIRST (read before writing anything; do not assume conventions)
   a. `/Users/nix/dev/ai/sox-ecosystem/DOD.md` — the bar.

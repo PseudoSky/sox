@@ -22,7 +22,7 @@ before committing a plan. None of these have been read yet unless a prompt exist
 | hook | `~/dev/ai/claude-agents/tools/hooks/swarm-cost` | one hook in the `tools/hooks/` dir | [`swarm-cost`](./prompts/swarm-cost.md) |
 | skill | `~/dev/ai/claude-agents/tools/skills/strategy/SKILL.md` | declarative; may be the first skill | [`strategy`](./prompts/strategy.md) |
 | agent | `~/dev/ai/claude-agents/categories/workflow/agents/workflow-researcher.md` | declarative; mirror `memory-organizer` | [`workflow-researcher`](./prompts/workflow-researcher.md) |
-| **mcp-server \| command \| both** | `~/dev/security/wop/scripts/tokenguard/` | **decision point** — type unresolved; prompt resolves it (shared lib + thin wrappers, maybe a bundle) | [`tokenguard`](./prompts/tokenguard.md) |
+| **server (→ mcp-server) \| command \| both** | `~/dev/security/wop/scripts/tokenguard/` | **decision point** — runs as a server (maps to `mcp-server`, the only long-running supervised type); prompt forks on protocol (MCP=direct port, non-MCP=MCP wrap) + whether a CLI also ships (shared lib + bundle) | [`tokenguard`](./prompts/tokenguard.md) |
 | **hook (+ optional command)** | `~/dev/ai/claude-agents/tools/policy-enforcer/` | hook is primary; **decision point** on whether the bundled cli ships | [`policy-enforcer`](./prompts/policy-enforcer.md) |
 | mcp-server | `/Users/nix/dev/node/adhd/packages/ai/agent-mcp` | not yet prompted | — |
 | command | `~/dev/ai/sox-protocol/packages/python` · `~/dev/ai/claude-agents/tools/cli` | two sources; not yet prompted | — |
