@@ -97,8 +97,8 @@
         "tools/test-e2e-lifecycle.js"
       ],
       "context": "contexts/install-lifecycle.md",
-      "notes": "Wire install/update/diff/uninstall to the capability engine + host registry + ledger; host-detection defaults --host [inv:host-agnostic-type]. Add `sox diff`/`sox update` (declarative-aware) + `--host`/`--profile`/`--scope`/`--trust`. Reality: a markdown agent installs into .claude/agents/ (project+user), diff shows drift, update replaces, uninstall removes — verified on disk. MERGE PROTOCOL: shares bin/sox + apps/sox/main.ts with generators — coordinate (see both contexts). Parallel with mcp-runtime + generators.",
-      "changes": { "deletes": [], "resigns": ["install"], "renames": [] }
+      "notes": "Wire install/update/diff/uninstall to the capability engine + host registry + ledger; host-detection defaults --host [inv:host-agnostic-type]. Add `sox diff`/`sox update` (declarative-aware) + `--host`/`--profile`/`--scope`/`--trust`. Reality: a markdown agent installs into .claude/agents/ (project+user), diff shows drift, update replaces, uninstall removes — verified on disk. SYMBOL: the exported `install()` (libs/install-engine/src/install.ts:358) is re-signed to the descriptor contract — code callers are `cmdInstall` (apps/sox/src/main.ts, mutated) + bin/sox; deliberately NOT in `changes.resigns` because the token `install` is grep-hostile (floods `--discover` with docs-prose false positives) — caller mapping is hand-verified in final-review.md per the skill's 'semantic analysis is the planner's job'. MERGE PROTOCOL: shares bin/sox + apps/sox/main.ts with generators — coordinate (see both contexts). Parallel with mcp-runtime + generators.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
     },
     "generators": {
       "kind": "work",

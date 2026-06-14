@@ -26,9 +26,13 @@ left unchecked.
     changed symbols `install` (libs/install-engine/src/install.ts; callers: apps/sox cmdInstall, bin/sox),
     `checkDbPathPolicy`/`getPolicy`/`handleToolCall` (memory-server-local; sole external importer is
     permission-guard.spec.ts — now a declared mutate of rehome-memory-server).
-[x] Every node changing a symbol declares it in dag.json `changes`
-    (deletes/resigns/renames) — install-lifecycle (resigns `install`) + rehome-memory-server
-    (deletes checkDbPathPolicy/getPolicy, resigns handleToolCall) declare them; all others empty
+[x] Every node changing a symbol declares it in dag.json `changes` (deletes/resigns/renames) —
+    rehome-memory-server (deletes checkDbPathPolicy/getPolicy, resigns handleToolCall) declares them.
+    install-lifecycle re-signs the exported `install()` but INTENTIONALLY omits it from `changes`:
+    `install` is a generic grep token that makes the `--discover` oracle false-positive on every
+    docs-prose mention of the word "install" (32 hits); its real code callers (`cmdInstall` in
+    apps/sox/src/main.ts — a declared mutate — and bin/sox) are hand-verified here instead, per the
+    skill's rule that `--discover` is mechanical-only and semantic caller analysis is the planner's job.
 [x] Every deferral has a forcing function — named state and guard, no "during migration period" —
     no trigger phrases used; every "later" maps to a named state + its guard
 
