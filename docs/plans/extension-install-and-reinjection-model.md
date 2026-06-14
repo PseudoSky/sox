@@ -210,19 +210,19 @@ provides that; the manifest just declares/validates it.
 
 ---
 
-## 9. Open decisions (must close before formalizing)
+## 9. Decisions (resolved — design session 2026-06; see ADR-0002)
 
-1. **Preset/type breadth (Q6/Q7):** keep the existing names as the only presets (new surfaces = raw
-   capabilities / `--surface` flags), or promote some (e.g. `rules`/`instructions`, `output-style`,
-   `statusline`) to first-class types? *(`prompt` is **resolved** — content-injection type with
-   `--inject`; see Appendix A / ADR-0002 Decision 8.)*
-2. **Install descriptor location:** materialized in the manifest at init (explicit/overridable) vs
-   resolved from the registry at install (DRY). Leaning materialized-at-init.
-3. **Ledger granularity/location:** `.sox/ledger/<host>.<scope>.json` per install root vs centralized.
-4. **`@sox/mcp-runtime`:** wrap the official MCP SDK (lean) vs reimplement. Strong lean: **wrap**.
-5. **Verify the unconfirmed surfaces** (`rules`, `output-styles`, `keybindings`) and the **project
-   `.mcp.json`** path against live docs before encoding them.
-6. **Multi-host scope:** Claude first; when do codex/others land (host registry makes them additive)?
+1. **Type/preset breadth → keep 8 presets** (agent, skill, mcp-server, service, command, hook, prompt,
+   bundle). `rules`/`output-style` = `prompt --inject` targets; `statusline` = config. `prompt` resolved
+   as the content-injection type.
+2. **Install descriptor → hybrid** (manifest: `type` + chosen profiles/hosts + overrides; engine fills
+   registry defaults at install).
+3. **Ledger → one file per scope** (`<scope-root>/.sox/ledger.json`); project ledger **committed +
+   portable**; machine-specific actions in the gitignored user ledger (`~/.sox/`).
+4. **`@sox/mcp-runtime` → wrap** the official `@modelcontextprotocol/sdk`.
+5. **Verify-before-rely:** Claude `rules`/`output-styles`/`keybindings` + project `.mcp.json`, **and the
+   full codex matrix**, are doc/FS-verified before any tooling depends on them.
+6. **Multi-host → Claude + codex now** (registry + two host modules), further hosts additive.
 
 ---
 
@@ -230,13 +230,19 @@ provides that; the manifest just declares/validates it.
 
 Each phase reality-verified (the project rule: prove against the OS/host, not tests).
 
-- **P0 — Boundary ADR.** Write `docs/decisions/0002-extension-install-model.md`: Role A/B boundary,
-  3-layer model, capability set, ledger, host registry. (Cheap, unblocks the rest.)
-- **P1 — Schema delta.** Generalize `install-target` → host-keyed `install` descriptor; add `config`,
-  `serves`, `profiles`; deprecate vestigial `agent` lifecycle (or implement — tie to §9). `validate`
-  enforces `profiles ⊆ serves`, known surfaces, no `managed`.
-- **P2 — Capability engine + ledger.** Implement the ~6 capabilities (apply/reverse/diff/verify) +
-  provenance ledger + the host registry (claude detector, scope resolver, verified matrix).
+- **P0 — Boundary ADR.** ✅ `docs/decisions/0002-extension-install-model.md` (accepted; all decisions resolved).
+- **P0.5 — Surface verification.** Doc/FS-verify the unconfirmed Claude surfaces (`rules`,
+  `output-styles`, `keybindings`, project `.mcp.json`) **and research+verify the full codex surface
+  matrix** (config locations, scopes, MCP/agent/instruction equivalents). Output: the host-registry
+  data for `claude` + `codex`. (Decision #5/#6.)
+- **P1 — Schema delta.** Generalize `install-target` → host-keyed `install` descriptor (**hybrid**: type
+  + profiles/hosts + overrides); add `config`, `serves`, `profiles`, `source` provenance, `prompt
+  --inject`. Deprecate vestigial `agent` lifecycle. `validate` enforces `profiles ⊆ serves`, known
+  surfaces, no `managed`.
+- **P2 — Capability engine + ledger + registry.** Implement the ~6 capabilities (apply/reverse/diff/
+  verify) + per-scope provenance ledger (committed/portable project ledger; local user ledger) + the
+  host registry shipping **two modules: `claude` and `codex`** (detectors, scope resolvers, verified
+  matrices).
 - **P3 — Install/update/diff/uninstall wired to capabilities**, scope- and host-aware; host detection.
   *Acc: a markdown agent installs into `.claude/agents/`, shows in `diff`, version bump updates it,
   uninstall removes it — across project + user, verified on disk.*

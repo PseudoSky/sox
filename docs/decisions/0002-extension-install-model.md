@@ -1,6 +1,6 @@
 # ADR-0002 — Extension Install Model: Role A/B Boundary, Capabilities, and Reinjection
 
-- **Status:** Core decisions **Accepted** (interactive design, 2026-06); refinements **Pending** (see §Open).
+- **Status:** **Accepted** — all open items resolved (interactive design, 2026-06).
 - **Context doc:** [`docs/plans/extension-install-and-reinjection-model.md`](../plans/extension-install-and-reinjection-model.md) (full detail + phased plan).
 - **Builds on:** ADR-0001 (nx + self-hosting); the completed C6 runtime-permission work.
 
@@ -73,12 +73,21 @@ don't work for declarative content. Root cause: the **standard ran ahead of the 
 - Retires duplication (memory-server) and resolves the `install-target`-unimplemented and
   `agent`-lifecycle-vestigial findings.
 
-## Open (Pending — must close before the plan-state-machine is formalized)
+## Resolved (design session, 2026-06)
 
-1. Preset/type breadth — are `rules`/`output-style`/`statusline` first-class types or layer-3 config /
-   `--surface` flags on existing types? (`prompt` **resolved** — Decision 8.)
-2. Install descriptor: materialized-in-manifest vs resolved-at-install (lean: materialized).
-3. Ledger granularity/location.
-4. `@sox/mcp-runtime`: wrap the official MCP SDK (lean) vs reimplement.
-5. Verify `rules`/`output-styles`/`keybindings` + project `.mcp.json` against live docs.
-6. Multi-host timing (Claude first; codex/others additive via the registry).
+1. **Type/preset breadth → keep 8 presets** (agent, skill, mcp-server, service, command, hook, prompt,
+   bundle). `rules`/`output-style` are `prompt --inject` targets, **not** types; `statusline` is config
+   (a script + settings key). Promote nothing further until a real need *and* verification.
+2. **Install descriptor → hybrid.** Manifest stores `type` + chosen `profiles`/`hosts` + overrides; the
+   engine fills target defaults from the host registry at install time.
+3. **Ledger → one file per scope** (`<scope-root>/.sox/ledger.json`); the **project ledger is committed
+   and portable** — repo-relative paths / keyPaths / hashes only, **no** absolute or user paths.
+   Machine-specific actions (e.g. `materialize` into `~/.sox/…`) live in the **gitignored user ledger**
+   at `~/.sox/`.
+4. **`@sox/mcp-runtime` → wrap the official `@modelcontextprotocol/sdk`** (add transport-selection +
+   policy-env enforcement + health/shutdown; do not reimplement the protocol).
+5. **Verify before relying.** `rules`/`output-styles`/`keybindings` + project `.mcp.json` (Claude), and
+   the **full codex surface matrix** (see #6), are verified against live docs/FS before any tooling
+   depends on them.
+6. **Multi-host → Claude + codex now.** Build the pluggable host registry **and ship two host modules**
+   (`claude`, `codex`) to prove the abstraction isn't Claude-shaped; further hosts additive.
