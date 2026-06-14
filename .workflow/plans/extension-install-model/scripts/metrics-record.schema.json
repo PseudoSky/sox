@@ -1,0 +1,244 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sox/plan-state-machine/metrics-record.schema.json",
+  "title": "plan-state-machine per-state metrics record",
+  "description": "One JSONL record emitted per state-transition.js --complete invocation, written to data/training/metrics-aggregate.jsonl and a per-state metrics file. A leaner diagnostic sidecar to the 12-point training record — captures cost and quality dimensions (context/token burn, guard retries, audit pass-rate, amendment volume, wall-clock). Distinct file from the training aggregate.jsonl; joined by plan+slug. See docs/experiments/plan-state-machine-metrics-extraction-spec.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source",
+    "plan",
+    "slug",
+    "kind",
+    "phase",
+    "executor",
+    "degraded",
+    "timing",
+    "context_cost",
+    "authoring",
+    "guard",
+    "audit",
+    "amendments",
+    "environment",
+    "refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Literal 1. Incremented only on a breaking change (field removed or renamed); additive fields do not bump it."
+    },
+    "source": {
+      "type": "string",
+      "const": "plan-state-machine",
+      "description": "Discriminator for multi-source sinks."
+    },
+    "plan": { "type": "string", "description": "Plan directory basename." },
+    "slug": { "type": "string", "description": "dag.json node key." },
+    "kind": {
+      "type": ["string", "null"],
+      "enum": ["work", "audit", "review", null],
+      "description": "From dag.json nodes[slug].kind; null if absent."
+    },
+    "phase": {
+      "type": ["string", "null"],
+      "description": "From dag.json nodes[slug].phase; null if absent."
+    },
+    "executor": {
+      "type": ["string", "null"],
+      "description": "SOX_AGENT_NAME env var preferred; falls back to git config user.name; null if neither."
+    },
+    "degraded": {
+      "type": "boolean",
+      "description": "true when any field is unavailable (see spec §1.3); the record is still written and still flows to the sink."
+    },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["started_at", "done_at", "wall_clock_s"],
+      "properties": {
+        "started_at": {
+          "type": ["string", "null"],
+          "description": "ISO-8601; normalized from state.json started_at|started_ts."
+        },
+        "done_at": {
+          "type": ["string", "null"],
+          "description": "ISO-8601; normalized from state.json done_at|completed_at|done_ts."
+        },
+        "wall_clock_s": {
+          "type": ["integer", "null"],
+          "description": "done_at - started_at in whole seconds; null if either timestamp is missing or unparseable."
+        }
+      }
+    },
+    "context_cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "context_file_bytes",
+        "shared_md_bytes",
+        "total_input_bytes",
+        "tool_call_count",
+        "input_tokens_reported",
+        "output_tokens_reported",
+        "measurement_note"
+      ],
+      "properties": {
+        "method": {
+          "type": ["string", "null"],
+          "enum": ["transcript_byte_proxy", "agent_mcp_usage", null],
+          "description": "Which measurement approach was used (see spec §2)."
+        },
+        "context_file_bytes": {
+          "type": ["integer", "null"],
+          "description": "UTF-8 byte length of contexts/<slug>.md at start_ref (or current content in retrospective mode)."
+        },
+        "shared_md_bytes": {
+          "type": ["integer", "null"],
+          "description": "UTF-8 byte length of contexts/_shared.md at start_ref."
+        },
+        "total_input_bytes": {
+          "type": ["integer", "null"],
+          "description": "Sum of context_file + shared_md + any injected read_only blocks; proxy for context window consumed."
+        },
+        "tool_call_count": {
+          "type": ["integer", "null"],
+          "description": "From agent-mcp session usage telemetry; null if not available."
+        },
+        "input_tokens_reported": {
+          "type": ["integer", "null"],
+          "description": "From agent-mcp usage telemetry or orchestrator-reported flags; null means not instrumented, NOT zero."
+        },
+        "output_tokens_reported": {
+          "type": ["integer", "null"],
+          "description": "Same source as input_tokens_reported; null if not available."
+        },
+        "measurement_note": {
+          "type": ["string", "null"],
+          "description": "Free text; required when method is null or transcript_byte_proxy."
+        }
+      }
+    },
+    "authoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gap_check_iterations", "gap_check_failure_count", "fix_loop_present"],
+      "properties": {
+        "gap_check_iterations": {
+          "type": ["integer", "null"],
+          "description": "Gap-check run count during authoring. Only trustworthy if the authoring fix-loop is instrumented; null until then."
+        },
+        "gap_check_failure_count": {
+          "type": ["integer", "null"],
+          "description": "Total gap-check failures across iterations. Same instrumentation dependency; null until then."
+        },
+        "fix_loop_present": {
+          "type": "boolean",
+          "description": "true if amendment_log has an add-criterion or fix-guard entry attributable to authoring-phase correction."
+        }
+      }
+    },
+    "guard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["retry_count", "final_exit_code"],
+      "properties": {
+        "retry_count": {
+          "type": ["integer", "null"],
+          "description": "Times --complete exited 1 (guard failed) before the first exit 0. From the per-slug scratch counter; null in retrospective mode."
+        },
+        "final_exit_code": {
+          "type": "integer",
+          "const": 0,
+          "description": "Always 0 in a written record (exit 1 means --complete did not complete)."
+        }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["criteria_passed", "criteria_total", "pass_rate", "audit_exit_code"],
+      "properties": {
+        "criteria_passed": {
+          "type": ["integer", "null"],
+          "description": "Parsed from audit script stdout."
+        },
+        "criteria_total": {
+          "type": ["integer", "null"],
+          "description": "Parsed from audit script stdout."
+        },
+        "pass_rate": {
+          "type": ["number", "null"],
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "criteria_passed / criteria_total; null when no audit script ran (1.0 would be misleading) — degraded is then set."
+        },
+        "audit_exit_code": {
+          "type": ["integer", "null"],
+          "description": "0 = all pass; 4 = some fail; 1 = script error; null if no audit ran."
+        }
+      }
+    },
+    "amendments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "by_class", "by_type"],
+      "properties": {
+        "total": { "type": "integer", "description": "Total amendment_log entries for this slug." },
+        "by_class": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["executor", "planner"],
+          "properties": {
+            "executor": { "type": "integer" },
+            "planner": { "type": "integer" }
+          }
+        },
+        "by_type": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["expand-artifacts", "add-criterion", "fix-guard", "update-shared", "other"],
+          "properties": {
+            "expand-artifacts": { "type": "integer" },
+            "add-criterion": { "type": "integer" },
+            "fix-guard": { "type": "integer" },
+            "update-shared": { "type": "integer" },
+            "other": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["env_label", "env_pinned"],
+      "properties": {
+        "env_label": {
+          "type": ["string", "null"],
+          "description": "From PLAN_ENV_LABEL env var or plan-level config; null if absent."
+        },
+        "env_pinned": {
+          "type": "boolean",
+          "description": "true when env_label is set AND/OR the guard uses pinned tool resolution (see spec §3.2 heuristic)."
+        }
+      }
+    },
+    "refs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_ref", "end_ref"],
+      "properties": {
+        "start_ref": {
+          "type": ["string", "null"],
+          "description": "Full git SHA captured by --start; null in retrospective mode."
+        },
+        "end_ref": {
+          "type": ["string", "null"],
+          "description": "Full git SHA captured at guard-pass time; null in retrospective mode."
+        }
+      }
+    }
+  }
+}

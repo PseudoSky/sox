@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sox/plan-state-machine/failure-event.schema.json",
+  "title": "plan-state-machine failure/rework event",
+  "description": "One ndjson record in events.ndjson. Append-only. Emitted by wrapping existing tools (gap-check-instrumented.js, state-transition.js, integrity-check.js, consistency-check.js) — never by LLM self-report. See docs/experiments/plan-state-machine-failure-capture-spec.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ts",
+    "plan",
+    "slug",
+    "phase",
+    "kind",
+    "by",
+    "lifecycle",
+    "event_type",
+    "outcome",
+    "iteration",
+    "start_ref",
+    "end_ref",
+    "detail",
+    "complete"
+  ],
+  "properties": {
+    "ts": {
+      "type": "string",
+      "description": "ISO-8601 with milliseconds; emit time, not work time"
+    },
+    "plan": { "type": "string", "description": "basename of plan dir" },
+    "slug": { "type": ["string", "null"], "description": "state slug; null for plan-level events" },
+    "phase": { "type": ["string", "null"] },
+    "kind": { "type": ["string", "null"], "enum": ["work", "audit", "review", null] },
+    "by": { "type": "string", "description": "git user.name | SOX_AGENT_NAME | unknown" },
+    "lifecycle": { "type": "string", "enum": ["authoring", "execution"] },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "gap_check_run",
+        "gap_check_fail",
+        "gap_check_fix_iteration",
+        "format_footgun",
+        "dod_preflight_skipped",
+        "planner_no_bash",
+        "consistency_check_fail",
+        "state_start",
+        "state_start_resume",
+        "state_start_blocked",
+        "guard_fail",
+        "guard_retry",
+        "guard_pass",
+        "audit_criterion_fail",
+        "audit_criterion_pass",
+        "audit_run_complete",
+        "amendment_executor",
+        "amendment_planner",
+        "state_complete",
+        "state_complete_audit_fail",
+        "guard_bypass_suspected",
+        "env_gate_flip",
+        "context_interrupted",
+        "audit_at_wrong_ref",
+        "out_of_order_attempt"
+      ]
+    },
+    "outcome": { "type": "string", "enum": ["failure", "rework", "warning", "info"] },
+    "iteration": { "type": "integer", "minimum": 1 },
+    "start_ref": { "type": ["string", "null"] },
+    "end_ref": { "type": ["string", "null"] },
+    "detail": {
+      "type": "object",
+      "description": "event_type-specific payload; shape per spec §2.4"
+    },
+    "complete": {
+      "type": "boolean",
+      "description": "false when required context was unavailable at emit time (degraded mode)"
+    }
+  }
+}
