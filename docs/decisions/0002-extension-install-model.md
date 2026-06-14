@@ -27,7 +27,8 @@ don't work for declarative content. Root cause: the **standard ran ahead of the 
    built extension**, not types.
 
 3. **Capability composition with named presets** (not single-inheritance). Capabilities:
-   `file-drop`, `json-merge`, `array-merge`, `bin-link`, `run-service`, `materialize` — each idempotent
+   `file-drop`, **`config-merge` (format-aware: JSON *and* TOML — codex config is TOML)**,
+   `array-merge`, `bin-link`, `run-service`, `materialize` — each idempotent
    with **apply / reverse / update(diff) / verify**, scope- and host-aware. **Types** are build-layer
    presets; **profiles** are install-layer presets (capability + transport + host-target + config).
    `service` is the base sox-run type; `mcp-server` is a service that also injects into hosts.

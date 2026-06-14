@@ -74,7 +74,7 @@ host-aware**:
 | Capability | Action | Reverse | Clean? |
 |---|---|---|---|
 | `file-drop` | write file/dir at a discovery path | delete | ✅ |
-| `json-merge` | set an object key in a shared JSON | remove key | ⚠️ shared file → needs ledger |
+| `config-merge` (json \| **toml**) | set a key/sub-table in a shared config — JSON (`settings.json`/`.mcp.json`) **or** TOML (codex `config.toml`) | remove key | ⚠️ shared file → needs ledger |
 | `array-merge` | append to arrays (permissions/env), deny-wins | remove exact values | ⚠️ shared file → needs ledger |
 | `bin-link` | executable on PATH / referenced script | unlink | ✅ |
 | `run-service` | sox spawns + supervises (Role A only) | stop | ✅ |
@@ -138,11 +138,56 @@ location matrix (§4), the scope→path resolver, and a **detector** for install
 settings.json); hooks are *also* a directory; plugins register via `installed_plugins.json` + a
 marketplace; project `.mcp.json` servers are **trust-gated** via `enabledMcpjsonServers`.
 
-**Unverified — NOT present on this machine, do not bake in until doc-checked:** `~/.claude/rules/`,
-`~/.claude/output-styles/`, `~/.claude/keybindings.json`.
+**P0.5 doc-verification results (live Claude docs, 2026-06):**
+- **`rules` CONFIRMED** (`.claude/rules/**/*.md`, `paths:` glob frontmatter; Managed > User > Project; unconditional load at launch, path-scoped load on demand) → `prompt --inject rules` valid.
+- **`output-styles` is NOT a file surface** — only a `settings.json → outputStyle` *value*. **Drop `output-style` from `prompt --inject`.**
+- **`keybindings.json` CONFIRMED but user-only**, plain JSON.
+- **Hooks are NOT auto-discovered** from `~/.claude/hooks/` — that dir is a conventional script store; the script is referenced **by absolute path / `${CLAUDE_PROJECT_DIR}`** in `settings.json → hooks`. So a `hook` = **file-drop (script, any path) + config-merge (settings entry → that path)**. Event list is large; handler types `command|http|mcp_tool|prompt|agent`.
+- **No `enableAllProjectMcpServers`** — project `.mcp.json` trust is an approval **prompt** (reset: `claude mcp reset-project-choices`). **Do not auto-write a trust flag; default `--trust prompt`.**
+- MCP entry richer than noted: `type: stdio|http|sse|ws` + `timeout`, `alwaysLoad`.
 
 **Scope mapping:** project → `.claude/…` (and repo-root `.mcp.json`); user → `~/.claude/…`; local →
 `.claude/settings.local.json`; **managed tier → sox never writes it.**
+
+### 4b. Codex host (verified live docs, 2026-06)
+
+Codex validated that the host registry isn't Claude-shaped. Key deltas:
+
+- **Home `$CODEX_HOME` (default `~/.codex`); config is TOML** (`config.toml`). The hub for MCP, hooks,
+  agents, permissions, providers, plugin toggles → needs **`config-merge` in TOML mode**.
+- **Layers:** CLI flags > profile (`$CODEX_HOME/<name>.config.toml`) > project `.codex/config.toml`
+  (**trusted projects only**) > user `~/.codex/config.toml`.
+- **Project scope is trust- AND key-restricted:** `model_providers`, `notify`, `profile`, `otel`,
+  base-URLs **cannot** be set at project scope; project config no-ops until `trust_level = "trusted"`.
+  → the registry encodes per-host *project-forbidden keys* + trust semantics (parallels Claude's
+  managed-never).
+
+| Codex surface | Scope → path | Format / key | Capability |
+|---|---|---|---|
+| main config | user `~/.codex/config.toml` · project `.codex/config.toml` (trusted) | TOML tables | config-merge (toml) |
+| MCP servers | config.toml `[mcp_servers.<id>]` (stdio: command/args/env; http: url/…) | TOML sub-table | config-merge (toml) |
+| AGENTS.md (= CLAUDE.md) | global `~/.codex/AGENTS.md` · repo `AGENTS.md` root→CWD (closer wins), `*.override.md` beats `*.md`; 32 KiB cap | Markdown | file-drop |
+| skills | `.agents/skills/<skill>/SKILL.md` (**[path CONFLICT]** vs community `~/.codex/skills`) | dir + `SKILL.md` (name/description) | file-drop |
+| hooks | config.toml `[hooks.<Event>]` (feature-flagged) or `hooks.json` | TOML/JSON | config-merge |
+| subagents | config.toml `[agents.<name>]` (+ optional `config_file`) | TOML | config-merge (toml) |
+| permissions | `approval_policy` + `sandbox_mode` + `[permissions.<name>]` profiles | TOML | config-merge (toml) |
+| statusline/theme | `tui.status_line` / `tui.theme` | TOML | config-merge (toml) |
+| plugins | `codex plugin marketplace add …` + config.toml `[plugins."<p>@<m>"]` toggles | CLI + TOML | process-register + config-merge |
+| custom prompts | `~/.codex/prompts/*.md` — **DEPRECATED** (migrate to skills) | Markdown | file-drop |
+| slash commands | built-in only — **NOT user-extensible** | — | NONE |
+
+**Claude ↔ Codex divergence (why the host-keyed descriptor is right):** the *same* logical extension
+maps to *different* capabilities per host — e.g. an **agent** is `file-drop .claude/agents/x.md` on
+Claude but `config-merge [agents.x]` on Codex; a **slash command** has **no Codex equivalent**
+(deprecated prompts / migrate-to-skill). The TYPE is host-agnostic; capability+target come from the
+registry. **Skills are near-1:1** (same `SKILL.md` shape).
+
+**Codex shared-file hazards:** `AGENTS.md` (human-authored — prefer an owned `AGENTS.override.md` or a
+`project_doc_fallback_filenames` entry, never clobber) and `config.toml` (ledger-tracked keys).
+
+**Codex open items → P0.6 (verify against installed CLI):** the **skills path** (`.agents/skills` per
+official docs vs `~/.codex/skills` community) and the **plugin cache/marketplace paths** are
+medium-confidence — verify against the actual installed Codex version before wiring.
 
 ---
 
@@ -231,10 +276,13 @@ provides that; the manifest just declares/validates it.
 Each phase reality-verified (the project rule: prove against the OS/host, not tests).
 
 - **P0 — Boundary ADR.** ✅ `docs/decisions/0002-extension-install-model.md` (accepted; all decisions resolved).
-- **P0.5 — Surface verification.** Doc/FS-verify the unconfirmed Claude surfaces (`rules`,
-  `output-styles`, `keybindings`, project `.mcp.json`) **and research+verify the full codex surface
-  matrix** (config locations, scopes, MCP/agent/instruction equivalents). Output: the host-registry
-  data for `claude` + `codex`. (Decision #5/#6.)
+- **P0.5 — Surface verification.** ✅ Done (2026-06, live docs). Claude corrections + the codex matrix
+  are in §4/§4b; headline: **`config-merge` must be format-aware (json | toml)** because codex config
+  is TOML. `output-style` dropped as a file surface; hook = file-drop + config-merge; MCP trust =
+  prompt (no auto-flag).
+- **P0.6 — Verify codex paths against the installed CLI.** Resolve the medium-confidence codex items
+  before wiring: the **skills path** (`.agents/skills` vs `~/.codex/skills`) and **plugin
+  cache/marketplace paths**. (Carry-over from P0.5; affects the codex host-registry module only.)
 - **P1 — Schema delta.** Generalize `install-target` → host-keyed `install` descriptor (**hybrid**: type
   + profiles/hosts + overrides); add `config`, `serves`, `profiles`, `source` provenance, `prompt
   --inject`. Deprecate vestigial `agent` lifecycle. `validate` enforces `profiles ⊆ serves`, known
