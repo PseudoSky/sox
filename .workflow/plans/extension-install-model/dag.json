@@ -166,7 +166,7 @@
       "kind": "work",
       "phase": "convergence",
       "depends_on": ["install-lifecycle"],
-      "guard": "grep -q 'placed' DOD.md && grep -q 'placed' CLAUDE.md",
+      "guard": "python3 .workflow/plans/extension-install-model/scripts/check_docs_split.py",
       "artifacts": ["DOD.md", "CLAUDE.md"],
       "context": "contexts/dod-reconcile.md",
       "notes": "Split B2 'run' into run(process) vs placed+discoverable(declarative); record declarative-content support across scopes as a first-class requirement, reality-verified. Update CLAUDE.md status. [dod.9]. Pure docs — depends only on install-lifecycle being real.",

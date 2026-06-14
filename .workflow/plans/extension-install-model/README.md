@@ -8,7 +8,7 @@
 >
 > **Spec:** `docs/plans/extension-install-and-reinjection-model.md` + `docs/decisions/0002-extension-install-model.md`
 > **Executor:** `sox-active:typescript-pro`
-> **Author:** workflow-architect (plan-state-machine v0.8.6)
+> **Author:** workflow-architect (plan-state-machine v0.8.8)
 > **Created:** 2026-06-13
 > **Branch:** builds on `feat/nx-migration` (post-C6).
 
@@ -16,7 +16,7 @@
 
 ## What this directory is
 
-A **resumable state machine** (plan-state-machine skill, workflow 0.8.6). The implementation is
+A **resumable state machine** (plan-state-machine skill, workflow 0.8.8). The implementation is
 decomposed into work states + audit hold points + a terminal `done`, each keyed by an immutable
 **slug**. `dag.json` = structure; `state.json` = runtime. Reordering is cheap; criterion IDs
 (`[<slug>.n]`) survive reordering.
@@ -51,8 +51,8 @@ python script) — never a bare `nx`/`tsc`.
 ## Definition of Done
 
 > Agreed interactively (Step 1a) before any work state. The plan-level contract — *what the whole
-> change means when finished and correct.* Each clause is `[dod.N]` and proven by ≥1 final-audit
-> check (`gap-check.js` Check 8 enforces the mapping).
+> change means when finished and correct.* Each clause carries a numbered id and is proven by ≥1
+> final-audit check (`gap-check.js` Check 8 enforces the mapping).
 
 - `[dod.1]` **Declarative reinjection end-to-end** — a `prompt`/`agent`/`skill` installs to the
   correct host-discovery target for (host, scope); `diff` shows pending changes; a version bump
