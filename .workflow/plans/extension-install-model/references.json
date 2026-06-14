@@ -1,0 +1,37 @@
+{
+  "ledger-reversible": {
+    "anchor": "[ref:ledger-reversible]",
+    "rule": "every config-merge/array-merge write records a per-scope ledger action keyed by (file, keyPath[, values]); uninstall reverses ONLY sox-owned entries and never touches foreign keys in the shared file",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:ledger-reversible]",
+    "audit_check": "[audit-final.ref-ledger-reversible]"
+  },
+  "host-keyed-target": {
+    "anchor": "[ref:host-keyed-target]",
+    "rule": "capability targets resolve from libs/host-registry; no literal host-discovery path ('~/.claude', '.claude/', '~/.codex', '.codex/') appears outside libs/host-registry — the TYPE is host-agnostic, the target is registry-resolved",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:host-keyed-target]",
+    "audit_check": "[audit-final.ref-host-keyed-target]"
+  },
+  "config-merge-format": {
+    "anchor": "[ref:config-merge-format]",
+    "rule": "host config files (settings.json/.mcp.json/~/.claude.json/config.toml) are read+written ONLY via the config-merge capability (json AND toml); no ad-hoc JSON.parse/writeFileSync or toml write of a host config elsewhere",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:config-merge-format]",
+    "audit_check": "[audit-final.ref-config-merge-format]"
+  },
+  "policy-env-enforce": {
+    "anchor": "[ref:policy-env-enforce]",
+    "rule": "every mcp spawn path injects policy-env (toEnv) and every @sox/mcp-runtime server self-enforces via compilePolicyFromEnv at the resource sink before the OS resource — no unenforced spawn path (claude-stdio or sox-service)",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:policy-env-enforce]",
+    "audit_check": "[audit-final.ref-policy-env-enforce]"
+  },
+  "born-conformant-scaffold": {
+    "anchor": "[ref:born-conformant-scaffold]",
+    "rule": "generator output validates clean and is byte-identical between `sox init` and the nx generator; the libs/authoring core is the single scaffolder (no hand-rolled layout)",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:born-conformant-scaffold]",
+    "audit_check": "[audit-final.ref-born-conformant-scaffold]"
+  }
+}

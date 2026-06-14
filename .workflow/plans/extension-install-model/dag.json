@@ -1,0 +1,185 @@
+{
+  "schema_version": 2,
+  "title": "Extension Install & Reinjection Model",
+  "spec_sources": [
+    "docs/plans/extension-install-and-reinjection-model.md",
+    "docs/decisions/0002-extension-install-model.md"
+  ],
+  "executor": "sox-active:typescript-pro",
+  "phases": ["foundation", "enforcement", "convergence"],
+  "terminal": "done",
+  "nodes": {
+    "schema-delta": {
+      "kind": "work",
+      "phase": "foundation",
+      "depends_on": [],
+      "guard": "./node_modules/.bin/nx run manifest:test && ./node_modules/.bin/nx run manifest:build",
+      "artifacts": [
+        "libs/manifest/src/index.ts",
+        "libs/manifest/src/schema.json",
+        "libs/manifest/src/manifest.spec.ts"
+      ],
+      "context": "contexts/schema-delta.md",
+      "notes": "Generalize single-string `install-target` → host-keyed `install` descriptor (HYBRID: type + chosen profiles/hosts + overrides). Add `config`, `serves`, `profiles`, `source` (provenance). DEPRECATE the vestigial `agent` lifecycle: validator now REJECTS `lifecycle` on type=agent ([dod.6]). validate() enforces profiles ⊆ serves, known host surfaces, refuses managed (claude) / project-forbidden (codex) keys. Additive to the schema otherwise — back-compat for existing manifests. validate()'s signature is unchanged (behavior only), so no `changes` symbol churn.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "capability-engine": {
+      "kind": "work",
+      "phase": "foundation",
+      "depends_on": ["schema-delta"],
+      "guard": "./node_modules/.bin/nx run install-engine:test",
+      "artifacts": [
+        "libs/install-engine/src/capabilities/file-drop.ts",
+        "libs/install-engine/src/capabilities/config-merge.ts",
+        "libs/install-engine/src/capabilities/array-merge.ts",
+        "libs/install-engine/src/capabilities/bin-link.ts",
+        "libs/install-engine/src/capabilities/run-service.ts",
+        "libs/install-engine/src/capabilities/materialize.ts",
+        "libs/install-engine/src/ledger.ts",
+        "libs/install-engine/src/capabilities/capabilities.spec.ts"
+      ],
+      "context": "contexts/capability-engine.md",
+      "notes": "The 6 capabilities, each apply/reverse/diff/verify, idempotent + (host,scope)-aware. `config-merge` is FORMAT-AWARE (json AND toml) [inv:format-aware-merge]. Every config-merge/array-merge writes a per-scope provenance ledger action [inv:ledger-reversible] (project ledger committed+portable; user ledger ~/.sox local). Parallel with host-registry (disjoint files). No callers wired yet — keeps downstream guards red→green.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "host-registry": {
+      "kind": "work",
+      "phase": "foundation",
+      "depends_on": ["schema-delta"],
+      "guard": "./node_modules/.bin/nx run host-registry:test",
+      "artifacts": [
+        "libs/host-registry/src/index.ts",
+        "libs/host-registry/src/claude.ts",
+        "libs/host-registry/src/codex.ts",
+        "libs/host-registry/src/host-registry.spec.ts"
+      ],
+      "context": "contexts/host-registry.md",
+      "notes": "Pluggable per-host modules {detect(), scopePaths(scope), surfaces{}}. Ship TWO: claude (verified matrix from spec §4) + codex (TOML, spec §4b). Encodes project-forbidden keys (codex: model_providers/notify/profile/otel) + never-managed (claude) [inv:never-managed]. FIRST resolve P0.6: verify codex skills path (.agents/skills vs ~/.codex/skills) + plugin paths against the installed Codex CLI; record what was verified. Parallel with capability-engine.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "audit-foundation": {
+      "kind": "audit",
+      "phase": "foundation",
+      "depends_on": ["schema-delta", "capability-engine", "host-registry"],
+      "guard": "python3 scripts/audit_eim.py --phase foundation",
+      "artifacts": ["scripts/audit_eim.py"],
+      "context": "contexts/audit-foundation.md",
+      "notes": "Phase-cumulative audit runner (PATH-augmented _run so bare nx resolves). Checks all [schema-delta.*]/[capability-engine.*]/[host-registry.*]. Likely failures: agent-lifecycle still accepted; config-merge not round-tripping toml; ledger action not reversible; codex path unverified."
+    },
+    "mcp-runtime": {
+      "kind": "work",
+      "phase": "enforcement",
+      "depends_on": ["audit-foundation"],
+      "guard": "./node_modules/.bin/nx run mcp-runtime:test",
+      "artifacts": [
+        "libs/mcp-runtime/src/index.ts",
+        "libs/mcp-runtime/src/serve.ts",
+        "libs/mcp-runtime/src/transport.ts",
+        "libs/mcp-runtime/src/enforce.ts",
+        "libs/mcp-runtime/src/conformance.spec.ts"
+      ],
+      "context": "contexts/mcp-runtime.md",
+      "notes": "@sox/mcp-runtime WRAPS the official @modelcontextprotocol/sdk (decision #4 — do not reimplement). Author writes tools via serve(defineTool(...)); wrapper adds transport selection (stdio | sse/http via flag/env set by the install profile), health, shutdown, and C6 policy-env enforcement at the resource sink [inv:c6-holds] — uniform across claude-stdio + sox-service. Ships ONE generic conformance test inherited by every mcp extension. Parallel with install-lifecycle + generators.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "install-lifecycle": {
+      "kind": "work",
+      "phase": "enforcement",
+      "depends_on": ["audit-foundation"],
+      "guard": "./node_modules/.bin/nx run install-engine:test && ./node_modules/.bin/nx run host-runtime:test-e2e",
+      "artifacts": [
+        "libs/install-engine/src/install.ts",
+        "libs/install-engine/src/lifecycle.ts",
+        "libs/install-engine/src/diff.ts",
+        "bin/sox",
+        "apps/sox/src/main.ts",
+        "libs/install-engine/src/lifecycle.spec.ts"
+      ],
+      "context": "contexts/install-lifecycle.md",
+      "notes": "Wire install/update/diff/uninstall to the capability engine + host registry + ledger; host-detection defaults --host [inv:host-agnostic-type]. Add `sox diff`/`sox update` (declarative-aware) + `--host`/`--profile`/`--scope`/`--trust`. Reality: a markdown agent installs into .claude/agents/ (project+user), diff shows drift, update replaces, uninstall removes — verified on disk. MERGE PROTOCOL: shares bin/sox + apps/sox/main.ts with generators — coordinate (see both contexts). Parallel with mcp-runtime + generators.",
+      "changes": { "deletes": [], "resigns": ["runInstall"], "renames": [] }
+    },
+    "generators": {
+      "kind": "work",
+      "phase": "enforcement",
+      "depends_on": ["audit-foundation"],
+      "guard": "./node_modules/.bin/nx run sox-nx:test && ./node_modules/.bin/nx run authoring:test",
+      "artifacts": [
+        "libs/authoring/src/templates/mcp-server/index.ts",
+        "libs/authoring/src/templates/agent/index.ts",
+        "libs/authoring/src/templates/skill/index.ts",
+        "libs/authoring/src/templates/command/index.ts",
+        "libs/authoring/src/templates/hook/index.ts",
+        "libs/authoring/src/templates/prompt/index.ts",
+        "packages/sox-nx/src/generators/extension/extension.ts",
+        "packages/sox-nx/src/generators/extension/schema.json"
+      ],
+      "context": "contexts/generators.md",
+      "notes": "nx-style init options per Appendix A: --content @path / --from @dir, --inject (prompt), --profile/--mode (mcp), --surface (command), --host, --transports, --trust. Emits the HYBRID install descriptor + serves/profiles from chosen options. `--content @source` fills the artifact body + stamps `source:` provenance (the ingestion primitive [dod.7]). Born-conformant (byte-identical parity preserved). MERGE PROTOCOL with install-lifecycle on bin/sox + apps/sox/main.ts. Parallel with mcp-runtime.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "rehome-memory-server": {
+      "kind": "work",
+      "phase": "enforcement",
+      "depends_on": ["mcp-runtime"],
+      "guard": "./node_modules/.bin/nx run memory-server:test && ./node_modules/.bin/nx run host-runtime:test-e2e",
+      "artifacts": [
+        "extensions/mcp-servers/memory-server/src/index.ts",
+        "extensions/mcp-servers/memory-server/extension.json"
+      ],
+      "context": "contexts/rehome-memory-server.md",
+      "notes": "Collapse memory-server onto @sox/mcp-runtime: replace the hand-rolled MCP loop + the vendored compilePolicyFromEnv/checkDbPathPolicy/getPolicy guard with serve(tools) + ctx policy accessors ([dod.6] — those symbols must be GONE, grep empty). Behavior + the C6 negative reality check must stay identical (e2e green). Depends on mcp-runtime.",
+      "changes": { "deletes": ["checkDbPathPolicy", "getPolicy"], "resigns": ["handleToolCall"], "renames": [] }
+    },
+    "audit-enforcement": {
+      "kind": "audit",
+      "phase": "enforcement",
+      "depends_on": ["mcp-runtime", "install-lifecycle", "generators", "rehome-memory-server"],
+      "guard": "python3 scripts/audit_eim.py --phase enforcement",
+      "artifacts": ["scripts/audit_eim.py"],
+      "context": "contexts/audit-enforcement.md",
+      "notes": "phase_enforcement() runs phase_foundation() first. Checks [mcp-runtime.*]/[install-lifecycle.*]/[generators.*]/[rehome-memory-server.*]. Likely failures: C6 not enforced on the sse path; memory-server vendored guard still present; declarative update not idempotent; born-conformance parity drift."
+    },
+    "ingestion-skill": {
+      "kind": "work",
+      "phase": "convergence",
+      "depends_on": ["generators", "install-lifecycle"],
+      "guard": "test -d extensions/skills/sox-ingest && test ! -e docs/ingestion/migration-plan.md && test ! -d docs/ingestion/prompts && ./node_modules/.bin/nx run-many -t lint",
+      "artifacts": [
+        "extensions/skills/sox-ingest/SKILL.md",
+        "extensions/skills/sox-ingest/extension.json",
+        "extensions/skills/sox-ingest/references/by-type.md",
+        "extensions/skills/sox-ingest/references/by-operation.md",
+        "docs/ingestion/README.md",
+        "docs/ingestion/migration-plan.md",
+        "docs/ingestion/prompts/swarm-cost.md",
+        "docs/ingestion/prompts/strategy.md",
+        "docs/ingestion/prompts/workflow-researcher.md",
+        "docs/ingestion/prompts/tokenguard.md",
+        "docs/ingestion/prompts/policy-enforcer.md"
+      ],
+      "context": "contexts/ingestion-skill.md",
+      "notes": "Author the dogfooded `sox-ingest` skill (itself a type:skill extension) encoding initialize→generalize+author→validate→publish→install→enable→remove-old, delegating per-type/per-operation references. FOLD docs/ingestion/* content into references/, then DELETE docs/ingestion (the artifacts list marks them mutated=deleted). [dod.13]. Reality check (audit-final): ingest swarm-cost driven SOLELY by the skill. This is also the first real declarative skill extension → exercises [dod.1].",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "dod-reconcile": {
+      "kind": "work",
+      "phase": "convergence",
+      "depends_on": ["install-lifecycle"],
+      "guard": "grep -q 'placed' DOD.md && grep -q 'placed' CLAUDE.md",
+      "artifacts": ["DOD.md", "CLAUDE.md"],
+      "context": "contexts/dod-reconcile.md",
+      "notes": "Split B2 'run' into run(process) vs placed+discoverable(declarative); record declarative-content support across scopes as a first-class requirement, reality-verified. Update CLAUDE.md status. [dod.9]. Pure docs — depends only on install-lifecycle being real.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "audit-final": {
+      "kind": "audit",
+      "phase": "convergence",
+      "depends_on": ["ingestion-skill", "dod-reconcile", "audit-enforcement"],
+      "guard": "python3 scripts/audit_eim.py --phase final",
+      "artifacts": ["scripts/audit_eim.py"],
+      "context": "contexts/audit-final.md",
+      "notes": "Reality audit proving every [dod.1-13] + every [ref:] + no-regress. Spawns real hosts where possible: a markdown agent placed into .claude/agents/ (claude) and the codex equivalent; an mcp-server as stdio in .mcp.json (denied undeclared access) AND as a sox service; swarm-cost ingested via the sox-ingest skill; docs/ingestion gone. Founder reviews after green ([dod.11]); only THEN state: complete."
+    }
+  }
+}
