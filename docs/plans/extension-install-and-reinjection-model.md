@@ -213,8 +213,9 @@ provides that; the manifest just declares/validates it.
 ## 9. Open decisions (must close before formalizing)
 
 1. **Preset/type breadth (Q6/Q7):** keep the existing names as the only presets (new surfaces = raw
-   capabilities), or promote some (e.g. `rules`/`instructions`, `output-style`) to first-class types?
-   And **resolve `prompt`** (likely = instruction injection into CLAUDE.md/rules/output-style).
+   capabilities / `--surface` flags), or promote some (e.g. `rules`/`instructions`, `output-style`,
+   `statusline`) to first-class types? *(`prompt` is **resolved** — content-injection type with
+   `--inject`; see Appendix A / ADR-0002 Decision 8.)*
 2. **Install descriptor location:** materialized in the manifest at init (explicit/overridable) vs
    resolved from the registry at install (DRY). Leaning materialized-at-init.
 3. **Ledger granularity/location:** `.sox/ledger/<host>.<scope>.json` per install root vs centralized.
@@ -258,3 +259,91 @@ Each phase reality-verified (the project rule: prove against the OS/host, not te
 - **DoD:** exposes that B2's "run" was only verified for code/process types; P6 corrects the bar and
   delivers the declarative half honestly. This is arguably a **new first-class DoD requirement**
   (declarative-content support across scopes), to be added deliberately, not assumed.
+
+---
+
+## Appendix A — `init` generator options (the P5 schema)
+
+nx-style generators: each option is `flag` — choices `[default]` → *manifest part it drives*; prompted
+(`x-prompt`) when omitted, flaggable for CI. These materialize `type` + the `install` descriptor +
+`serves`/`profiles` + `config`.
+
+### Common to every type
+```
+<id>                       positional, kebab-case        → id
+--description "…"           (x-prompt)                    → description
+--version 0.1.0            [0.1.0]
+--host claude[,codex]      [detected, else claude]       → install.<host>
+--scope project|user|local [project]                     → default target scope hint
+--bundle <bundle-id>       optional                      → bundle member
+--permissions / --fs-read --fs-write --net --socket      → config.permissions (array-merge)
+--env KEY1,KEY2            optional                       → config.env
+--author / --license
+```
+
+### Content convention (declarative/content types — `agent`(declarative), `skill`, `prompt`; also slash `command`, `hook` script, `CLAUDE.md`)
+```
+--content "<text>"         inline text fills the file
+--content @<path>          @ = read body from a path (mirrors Claude @import)
+--from   @<dir>            dir-shaped artifacts (skill / agent+resources): copy the whole tree
+                           (omitted → template stub). Records `source:` provenance for re-pull.
+```
+
+### `mcp-server`
+```
+--transports stdio,sse,http [stdio]      → serves{}
+--profiles standalone,shared [standalone]→ profiles{}   (alias: --mode inject|service|both)
+--default-profile <name> · --runtime node|python [node]
+--wrapper / --no-wrapper [wrapper]       → depend on @sox/mcp-runtime
+--tools name1,name2                      → tool stubs
+--port <n>|auto [auto] · --health stdio-ping|socket|command [stdio-ping]
+--singleton [shared] · --stop-timeout <ms> [5000] · --trust prompt|enable [prompt]
+```
+
+### `service` (sox-run; no `--host`)
+```
+--runtime node|python|shell [node] · --background [on] · --singleton [on]
+--health stdio-ping|socket|command [socket] · --health-endpoint <path|url>
+--stop-timeout <ms> [5000] · --port <n>|auto / --socket <path>
+```
+
+### `agent`
+```
+--shape declarative|code [declarative]   → runtime: declarative|node
+declarative: --model <m> · --tools Read,Edit,… · --proactive · --content/--from
+code:        --handler <fn> [run] · --runtime node|python
+```
+
+### `skill` (declarative → `.claude/skills/<id>/`)
+```
+--content/--from · --with-resources · --allowed-tools … · --disable-model-invocation · --run-in fresh|current
+```
+
+### `command` (CLI and/or slash)
+```
+--surface cli|slash|both [cli]
+cli:   --runtime node|python|shell [node] · --bin-name <n> [<id>] · --bin-scope user|project [project] · --args-schema
+slash: --host claude · --argument-hint "…" · --content/--from
+```
+
+### `hook`
+```
+--event PreToolUse|PostToolUse|SessionStart|SessionEnd|UserPromptSubmit|Stop|… (multi)
+--matcher "Bash"|"*"|<regex> [*] · --handler-type command|http|mcp_tool|prompt|agent [command]
+--runtime node|python|shell [shell] · --blocking|--non-blocking [non-blocking] · --content/--from (script)
+--host claude  → settings.hooks + ~/.claude/hooks/<id>/
+```
+
+### `prompt` (content-injection — resolved)
+```
+--content "<text>" | --content @<path>   → body
+--inject claude-md|rules|output-style|settings-key [rules]   → injection target
+--host claude · --scope … · --paths "src/**" (rules) · --mode append|replace [append] (claude-md) · --key <dot.path> (settings-key)
+```
+
+### `bundle`
+```
+--members id@^1,id2@^0.2,… → members[]
+--from-plugin <path>       → extract a Claude plugin dir into member extensions (ingestion)
+--host claude[,codex] · --install-mode all|select [all]
+```

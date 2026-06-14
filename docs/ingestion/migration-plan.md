@@ -153,3 +153,16 @@ Use the skeleton documented in [`README.md`](./README.md) ("Conventions for a ne
 The pilot prompt [`prompts/swarm-cost.md`](./prompts/swarm-cost.md) is the canonical example —
 copy it, swap the source path / type / id, and adjust the reference-extension pointer to one of
 the same type.
+
+**Ingestion primitive (post-P5):** once the generator's content option lands, each ingestion is a
+single scaffold step that pulls the source content directly:
+
+```bash
+sox init agent <id>   --shape declarative --host claude --content @<source.md>
+sox init skill <id>   --from @<source-dir>                       # SKILL.md + supporting files
+sox init prompt <id>  --inject rules --paths "src/**" --content @<source.md>
+sox init bundle <id>  --from-plugin @<plugin-dir>                # whole plugin → member extensions
+```
+
+This collapses "scaffold → hand-copy the body" into one command and stamps `source:` provenance so
+updates can re-pull from origin. Until P5, scaffold then paste.

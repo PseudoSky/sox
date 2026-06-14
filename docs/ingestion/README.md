@@ -56,8 +56,12 @@ Every `prompts/<id>.md` follows the same skeleton:
 4. **Ground truth first** — the exact in-repo sources the agent must read before coding
    (`DOD.md`, `docs/guidelines/`, a reference extension of the same type, `libs/manifest`,
    `node bin/sox --help`) **and** the source itself.
-5. **Scaffold born-conformant** — use the generator (`node bin/sox init <type> <id>`); never
-   hand-roll the layout.
+5. **Scaffold born-conformant from the source in one step** — use the generator with the content
+   primitive: `node bin/sox init <type> <id> --content @<source-file>` (or `--from @<source-dir>` for
+   directory-shaped artifacts like skills). This fills the artifact body directly from the source and
+   records `source:` provenance — never hand-roll the layout or hand-copy content. (Pending the
+   generator work in `../plans/extension-install-and-reinjection-model.md` P5; until then, scaffold
+   then paste.)
 6. **Port the logic** — preserve the source's exact behavior, adapted to the type contract.
 7. **Declare permissions (C6)** — exact fs/network/socket the source touches; undeclared
    access is denied at runtime.

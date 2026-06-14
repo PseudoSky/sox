@@ -52,6 +52,16 @@ don't work for declarative content. Root cause: the **standard ran ahead of the 
    `.mcp.json` trust-gated by `enabledMcpjsonServers`). `rules`/`output-styles`/`keybindings` are
    **unverified** and excluded until doc-checked.
 
+8. **`prompt` resolved + `--content` convention.** `prompt` is the **content-injection** type: a piece
+   of instruction/template content plus a declared injection target, selected by `--inject`
+   (`claude-md` | `rules` | `output-style` | `settings-key`). Additionally, the declarative/content
+   types (`agent` declarative, `skill`, `prompt`; and any file-bodied artifact — slash `command`, `hook`
+   script, `CLAUDE.md`) accept a **`--content <text | @path>`** option (inline text or `@`-prefixed
+   file ref) and **`--from @<dir>`** for directory-shaped artifacts. When `--content @path`/`--from` is
+   used, the manifest records `source: <path>` provenance so updates can re-pull from origin. This makes
+   `init` the ingestion primitive (extract a plugin file/dir in one command). Full generator schema:
+   context doc Appendix A.
+
 ## Consequences
 
 - Unblocks declarative ingestion (`docs/ingestion/`) — the original goal.
@@ -65,7 +75,8 @@ don't work for declarative content. Root cause: the **standard ran ahead of the 
 
 ## Open (Pending — must close before the plan-state-machine is formalized)
 
-1. Preset/type breadth + resolve `prompt` (likely instruction-injection).
+1. Preset/type breadth — are `rules`/`output-style`/`statusline` first-class types or layer-3 config /
+   `--surface` flags on existing types? (`prompt` **resolved** — Decision 8.)
 2. Install descriptor: materialized-in-manifest vs resolved-at-install (lean: materialized).
 3. Ledger granularity/location.
 4. `@sox/mcp-runtime`: wrap the official MCP SDK (lean) vs reimplement.

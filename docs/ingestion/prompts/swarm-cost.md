@@ -55,7 +55,9 @@ STEP 2 — SCAFFOLD BORN-CONFORMANT (do not hand-roll the layout)
 From the repo root, scaffold the extension with the generator so it is conformant by
 construction:
 
-    node bin/sox init hook <chosen-id>        # alias: `new`
+    node bin/sox init hook <chosen-id> --content @~/dev/ai/claude-agents/tools/hooks/swarm-cost/<script>   # alias: `new`
+    # --content @<path> pulls the hook body straight from the source (records source: provenance).
+    # (Pending generator P5; until then scaffold plain, then port the body.)
 
 (If the guideline points to an nx generator instead, use that — whichever the docs say is
 the supported authoring path. The invariant: the scaffolder produces the conformant skeleton;
