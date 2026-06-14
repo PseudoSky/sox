@@ -93,11 +93,12 @@
         "libs/install-engine/src/diff.ts",
         "bin/sox",
         "apps/sox/src/main.ts",
-        "libs/install-engine/src/lifecycle.spec.ts"
+        "libs/install-engine/src/lifecycle.spec.ts",
+        "tools/test-e2e-lifecycle.js"
       ],
       "context": "contexts/install-lifecycle.md",
       "notes": "Wire install/update/diff/uninstall to the capability engine + host registry + ledger; host-detection defaults --host [inv:host-agnostic-type]. Add `sox diff`/`sox update` (declarative-aware) + `--host`/`--profile`/`--scope`/`--trust`. Reality: a markdown agent installs into .claude/agents/ (project+user), diff shows drift, update replaces, uninstall removes — verified on disk. MERGE PROTOCOL: shares bin/sox + apps/sox/main.ts with generators — coordinate (see both contexts). Parallel with mcp-runtime + generators.",
-      "changes": { "deletes": [], "resigns": ["runInstall"], "renames": [] }
+      "changes": { "deletes": [], "resigns": ["install"], "renames": [] }
     },
     "generators": {
       "kind": "work",
@@ -125,7 +126,8 @@
       "guard": "./node_modules/.bin/nx run memory-server:test && ./node_modules/.bin/nx run host-runtime:test-e2e",
       "artifacts": [
         "extensions/mcp-servers/memory-server/src/index.ts",
-        "extensions/mcp-servers/memory-server/extension.json"
+        "extensions/mcp-servers/memory-server/extension.json",
+        "extensions/mcp-servers/memory-server/src/permission-guard.spec.ts"
       ],
       "context": "contexts/rehome-memory-server.md",
       "notes": "Collapse memory-server onto @sox/mcp-runtime: replace the hand-rolled MCP loop + the vendored compilePolicyFromEnv/checkDbPathPolicy/getPolicy guard with serve(tools) + ctx policy accessors ([dod.6] — those symbols must be GONE, grep empty). Behavior + the C6 negative reality check must stay identical (e2e green). Depends on mcp-runtime.",

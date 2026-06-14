@@ -357,11 +357,16 @@ def phase_final() -> None:
     check(
         "dod.1",
         "[dod.1] Declarative reinjection end-to-end (claude project+user, codex) — real FS e2e",
+        # non-vacuous: the e2e must actually exercise declarative placement + codex, not just memory-server
+        "grep -q '.claude/agents' tools/test-e2e-lifecycle.js && "
+        "grep -qiE 'codex' tools/test-e2e-lifecycle.js && "
         "nx run host-runtime:test-e2e",
     )
     check(
         "dod.2",
         "[dod.2] mcp stdio (.mcp.json, --trust prompt) AND sox service; undeclared access denied (C6)",
+        # non-vacuous: the e2e must exercise the stdio-in-.mcp.json path, not only the sox-service path
+        "grep -q '.mcp.json' tools/test-e2e-lifecycle.js && "
         "nx run mcp-runtime:test && nx run host-runtime:test-e2e",
     )
     check(
@@ -425,10 +430,13 @@ def phase_final() -> None:
         "[dod.12] Rollback — a capability that cannot cleanly reverse aborts",
         "grep -niE 'abort|cannot.*reverse|reversib' libs/install-engine/src/lifecycle.ts",
     )
-    # LIVE + NEGATIVE: ingest a real source via the skill; legacy docs gone.
+    # NEGATIVE (file-existence): skill present + legacy docs gone. The actual
+    # swarm-cost ingest DRIVEN BY THE SKILL is a MANUAL founder-review step
+    # ([dod.11] checklist) — not machine-run here (an LLM-driven skill run can't
+    # be scripted deterministically). Do not overclaim it as a live check.
     check(
         "dod.13",
-        "[dod.13] Ingestion skill replaces docs/ingestion; swarm-cost ingested via the skill",
+        "[dod.13] Ingestion skill replaces docs/ingestion (skill present + legacy docs gone); live swarm-cost ingest verified manually at founder review",
         "test -d extensions/skills/sox-ingest && test ! -d docs/ingestion/prompts && "
         "test ! -e docs/ingestion/migration-plan.md",
     )

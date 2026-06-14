@@ -62,10 +62,11 @@ Checked by `audit-enforcement`. One check per item; none deferred.
 
 - [ ] **[install-lifecycle.1]** install/update/diff/uninstall modules exist and are wired.
       `for f in install lifecycle diff; do test -f libs/install-engine/src/$f.ts || exit 1; done`
-- [ ] **[install-lifecycle.2]** Declarative install places bytes at the host target and `uninstall`
-      reverses via the ledger (**[dod.1]**, **[dod.5]**, **[inv:ledger-reversible]**).
-      `host-runtime:test-e2e` covers install→diff→update→uninstall of a markdown agent on the real FS.
-- [ ] **[install-lifecycle.3]** `runInstall` is re-signed to the descriptor path; the old
+- [ ] **[install-lifecycle.2]** Declarative install places bytes at the host target, `uninstall`
+      reverses via the ledger, AND an external edit to a ledger-tracked file is reported as drifted by
+      `diff` (**[dod.1]**, **[dod.5]**, **[inv:ledger-reversible]**). `host-runtime:test-e2e` +
+      `install-engine:test` cover install→diff(+drift)→update→uninstall of a markdown agent on the real FS.
+- [ ] **[install-lifecycle.3]** the exported `install()` is re-signed to the descriptor path; the old
       single-string `install-target` consumer is gone. `grep -nE 'install-target' apps/sox/src/main.ts` → empty.
 - [ ] **[install-lifecycle.4]** `sox diff` / `sox update` exist with `--host`/`--profile`/`--scope`/
       `--trust`. `grep -nE 'diff|update' bin/sox apps/sox/src/main.ts` → non-empty.
@@ -86,8 +87,20 @@ mutates:    ["libs/install-engine/src/install.ts",
              "libs/install-engine/src/diff.ts",
              "bin/sox",
              "apps/sox/src/main.ts",
-             "libs/install-engine/src/lifecycle.spec.ts"]
+             "libs/install-engine/src/lifecycle.spec.ts",
+             "tools/test-e2e-lifecycle.js"]
 ```
+
+> **MANDATORY (architect pre-dispatch fix — BLOCKER-1):** extend `tools/test-e2e-lifecycle.js`
+> (the `host-runtime:test-e2e` target) with the DECLARATIVE-placement scenarios `[dod.1]`/`[dod.2]`
+> claim — otherwise the guard passes vacuously on the existing memory-server path. Add: (a) a markdown
+> `agent` install into `.claude/agents/` at **project** AND **user** scope, then `diff` shows drift,
+> `update` replaces, `uninstall` removes — asserted on the real FS; (b) the **codex** equivalent
+> placement; (c) an `mcp-server` installed as **stdio in `.mcp.json`** (`--trust prompt`) with an
+> undeclared-access **denial** observed. `install()` (NOT the `runInstall` test helper) is the
+> re-signed symbol — review its callers (`apps/sox/src/main.ts:cmdInstall`, `bin/sox`) when changing
+> its descriptor contract. The **drift-detection test** (external edit → `diff` reports drifted,
+> **[dod.5]**) is folded into `[install-lifecycle.2]` and must be a real case in `install-engine:test`.
 
 **Merge protocol:** This state and `generators` both mutate `bin/sox` + `apps/sox/src/main.ts`. Run
 **install-lifecycle first**, commit the result, then apply `generators` against this state's output

@@ -20,12 +20,14 @@ left unchecked.
     single-string install-target + vendored memory guard are negative checks (dod.6)
 [x] Shorthand/mechanism separated — ergonomic concepts preserved as macros, not code paths —
     `type` shorthand kept; the host-specific mechanism moves to the registry (inv:host-agnostic-type)
-[x] External caller analysis done — gap-check.js --discover ran clean
-    (graph/grep oracle), or grep by hand for every deleted/renamed symbol —
-    changed symbols (runInstall, checkDbPathPolicy, getPolicy, handleToolCall) declared in dag.json
-    `changes`; they live under libs/apps/extensions (re-derived by --discover); see Architect note below
+[x] External caller analysis done — BY HAND (see Architect note). NOTE: gap-check.js --discover is
+    VACUOUS for a .workflow/plans/ plan — its oracle scans src/tests/lib/app RELATIVE to the plan dir,
+    which has no repo source, so Check 10 effectively no-ops. Caller mapping was hand-verified:
+    changed symbols `install` (libs/install-engine/src/install.ts; callers: apps/sox cmdInstall, bin/sox),
+    `checkDbPathPolicy`/`getPolicy`/`handleToolCall` (memory-server-local; sole external importer is
+    permission-guard.spec.ts — now a declared mutate of rehome-memory-server).
 [x] Every node changing a symbol declares it in dag.json `changes`
-    (deletes/resigns/renames) — install-lifecycle (resigns runInstall) + rehome-memory-server
+    (deletes/resigns/renames) — install-lifecycle (resigns `install`) + rehome-memory-server
     (deletes checkDbPathPolicy/getPolicy, resigns handleToolCall) declare them; all others empty
 [x] Every deferral has a forcing function — named state and guard, no "during migration period" —
     no trigger phrases used; every "later" maps to a named state + its guard
@@ -77,9 +79,11 @@ Hand off:
 - **`--discover` oracle caveat.** gap-check's grep oracle scans `src tests test scripts docs lib app`
   at the repo root; the changed symbols live under `libs/`, `apps/`, `extensions/` (not those scanned
   dirs), so `--discover` reports no uncovered caller and prints the grep-oracle warning. The caller
-  mapping was therefore done by hand: `runInstall` is owned by `install-lifecycle.mutates`
-  (`apps/sox/src/main.ts`); `checkDbPathPolicy`/`getPolicy`/`handleToolCall` are owned by
-  `rehome-memory-server.mutates` (`extensions/mcp-servers/memory-server/src/index.ts`). The canonical
-  `compilePolicyFromEnv` stays in `libs/host-runtime` and is reused, not deleted.
+  mapping was therefore done by hand: the re-signed production symbol is the exported `install()`
+  (`libs/install-engine/src/install.ts`; callers = `apps/sox` `cmdInstall` + `bin/sox`) — NOT
+  `runInstall` (a private test helper in `tools/test-strict-caps.js`), corrected per architect review.
+  `checkDbPathPolicy`/`getPolicy`/`handleToolCall` are memory-server-local (`rehome-memory-server.mutates`);
+  their sole external importer `permission-guard.spec.ts` is now a declared mutate of that state. The
+  canonical `compilePolicyFromEnv` stays in `libs/host-runtime` and is reused, not deleted.
 - **Boundary discipline (inv:boundary).** No audit check asserts the foreign host executed content;
   verification tops out at "right bytes at the host discovery path" — dod.10 enforces this negatively.

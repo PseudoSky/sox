@@ -75,8 +75,15 @@ read_only:  ["libs/mcp-runtime/src/serve.ts",
              "libs/mcp-runtime/src/enforce.ts",
              "libs/host-runtime/src/policy.ts"]
 mutates:    ["extensions/mcp-servers/memory-server/src/index.ts",
-             "extensions/mcp-servers/memory-server/extension.json"]
+             "extensions/mcp-servers/memory-server/extension.json",
+             "extensions/mcp-servers/memory-server/src/permission-guard.spec.ts"]
 ```
+
+> **MANDATORY (architect pre-dispatch fix — BLOCKER-2):** `permission-guard.spec.ts` currently imports
+> `handleToolCall` + `compilePolicyFromEnv` directly from `./index.js`. Deleting `checkDbPathPolicy`/
+> `getPolicy` and rewiring `handleToolCall` onto `@sox/mcp-runtime` breaks its compile — so the guard
+> (`memory-server:test`) cannot go green until this spec is **rewritten to test through the wrapper's
+> `ctx` policy accessors** (the C6 negative case must still be asserted). It is now a declared mutate.
 
 ---
 
