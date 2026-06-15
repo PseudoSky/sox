@@ -31,10 +31,10 @@
       "end_ref": "02b35557599f192b9af722b8a67a483be678c2b0"
     },
     "audit-foundation": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-15T02:54:58.752Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "0cc3caa9148d5929d269fc6ede40c052b8270429",
       "end_ref": null
     },
     "cli-wiring": {
