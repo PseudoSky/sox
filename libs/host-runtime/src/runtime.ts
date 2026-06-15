@@ -6,6 +6,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { loadFromLockfile, type LoaderResult } from './loader.js';
@@ -30,6 +31,13 @@ export interface RuntimeRecord {
   startedAt: string;
   entries: RuntimeEntry[];
   supervisorPid?: number | undefined;
+  /**
+   * Path to the exec control socket opened by the supervisor process.
+   * [inv:exec-socket]: present only in supervisor mode (lockfile-based start);
+   * absent in service mode (detached spawn) and on old runtime records.
+   * sox exec connects here to route tool calls through the live session.
+   */
+  execSocketPath?: string | undefined;
 }
 
 export interface StartRuntimeOptions {
@@ -51,6 +59,8 @@ export interface StopRuntimeOptions {
 const _activeRuntimes = new Map<string, {
   loaderResult: LoaderResult;
   registrar: McpRegistrar;
+  execServer?: net.Server | undefined;
+  execSocketPath?: string | undefined;
 }>();
 
 export async function startRuntime(opts: StartRuntimeOptions): Promise<RuntimeRecord> {
@@ -136,7 +146,95 @@ export async function startRuntime(opts: StartRuntimeOptions): Promise<RuntimeRe
   };
 
   writeRuntimeRecord(opts.runtimeFilePath, record);
-  _activeRuntimes.set(opts.runtimeFilePath, { loaderResult, registrar });
+
+  // ── Exec control socket ────────────────────────────────────────────────────
+  // [inv:exec-socket]: The supervisor opens a Unix domain socket so that
+  // `sox exec` (a separate process) can route tool calls through the live
+  // McpRegistrar session rather than spawning a throwaway process.
+  // Protocol: client sends one JSON line → server replies one JSON line → close.
+  // Request:  { "ext": string, "tool": string, "args": object }
+  // Response: { "result": McpCallResult } | { "error": string }
+  const execSocketPath = path.join(
+    path.dirname(opts.runtimeFilePath),
+    '.sox-exec.sock',
+  );
+  // Remove stale socket file from a previous (unclean) shutdown.
+  try { if (fs.existsSync(execSocketPath)) fs.unlinkSync(execSocketPath); } catch { /* ignore */ }
+
+  const execServer = net.createServer((socket) => {
+    let buf = '';
+    socket.on('data', (chunk: Buffer) => {
+      buf += chunk.toString('utf8');
+      const nl = buf.indexOf('\n');
+      if (nl === -1) return; // wait for complete line
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+
+      let req: { ext?: unknown; tool?: unknown; args?: unknown };
+      try {
+        req = JSON.parse(line) as typeof req;
+      } catch {
+        socket.write(JSON.stringify({ error: 'invalid JSON request' }) + '\n');
+        socket.end();
+        return;
+      }
+
+      const ext  = typeof req.ext  === 'string' ? req.ext  : '';
+      const tool = typeof req.tool === 'string' ? req.tool : '';
+      const args = (req.args !== null && typeof req.args === 'object' && !Array.isArray(req.args))
+        ? req.args as Record<string, unknown>
+        : {};
+
+      if (!ext || !tool) {
+        socket.write(JSON.stringify({ error: 'request must include ext and tool fields' }) + '\n');
+        socket.end();
+        return;
+      }
+
+      const active = _activeRuntimes.get(opts.runtimeFilePath);
+      if (!active) {
+        socket.write(JSON.stringify({ error: 'runtime not active' }) + '\n');
+        socket.end();
+        return;
+      }
+
+      // Resolve the registrar key: callers pass the bare id (e.g. "memory-server")
+      // but the registrar stores versioned keys (e.g. "memory-server@0.1.0").
+      // Try exact match first, then fall back to the first key that starts with "<ext>@".
+      const allKeys = active.registrar.registrations().map((r) => r.serverKey);
+      const resolvedKey = allKeys.includes(ext)
+        ? ext
+        : (allKeys.find((k) => k.startsWith(`${ext}@`)) ?? ext);
+
+      active.registrar.call(resolvedKey, tool, args)
+        .then((result) => {
+          socket.write(JSON.stringify({ result }) + '\n');
+          socket.end();
+        })
+        .catch((e: unknown) => {
+          socket.write(JSON.stringify({ error: String(e) }) + '\n');
+          socket.end();
+        });
+    });
+
+    socket.on('error', (e) => {
+      console.warn(`[runtime] exec socket client error: ${String(e)}`);
+    });
+  });
+
+  execServer.on('error', (e) => {
+    console.warn(`[runtime] exec socket server error (exec will fall back to spawn): ${String(e)}`);
+  });
+
+  // listen() is synchronous on Unix sockets: ready immediately after the callback fires.
+  execServer.listen(execSocketPath, () => {
+    console.log(`[runtime] Exec socket listening at ${execSocketPath}`);
+    // Update record with the socket path so sox exec can find it.
+    record.execSocketPath = execSocketPath;
+    writeRuntimeRecord(opts.runtimeFilePath, record);
+  });
+
+  _activeRuntimes.set(opts.runtimeFilePath, { loaderResult, registrar, execServer, execSocketPath });
 
   console.log(`[runtime] Runtime record written to ${opts.runtimeFilePath}`);
   return record;
@@ -174,6 +272,15 @@ export async function stopRuntime(opts: StopRuntimeOptions): Promise<void> {
     }
 
     if (!opts.id) {
+      // Close exec control socket and remove socket file.
+      if (active.execServer) {
+        active.execServer.close();
+        try {
+          const sockPath = active.execSocketPath ??
+            path.join(path.dirname(opts.runtimeFilePath), '.sox-exec.sock');
+          if (fs.existsSync(sockPath)) fs.unlinkSync(sockPath);
+        } catch { /* ignore */ }
+      }
       _activeRuntimes.delete(opts.runtimeFilePath);
     }
   }

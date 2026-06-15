@@ -35,7 +35,6 @@ import {
   startRuntime,
   stopRuntime,
   getRuntimeRecord,
-  getRegistrar,
   resolveExtensionDir,
   McpClient,
   reconcileRuntime,
@@ -1216,29 +1215,114 @@ function cmdStatus(flags: Record<string, string>): void {
   process.exit(0);
 }
 
-// ─── exec (A11) ───────────────────────────────────────────────────────────────
+// ─── exec (A11) ──────────────────────────────────────────────────────────────
 
 /**
- * cmdExec — A11 fix: exec via the running server.
+ * callViaExecSocket — send one tool-call request to the supervisor's exec socket.
  *
- * Routes through the MCP registrar to call a tool on an already-running
- * extension, rather than spawning a throwaway session each time.
+ * [inv:exec-socket]: The supervisor writes `execSocketPath` into runtime.json when it
+ * starts (supervisor mode only). This function connects, sends one JSON line, reads
+ * one JSON line back, then closes the connection.  The entire round-trip is handled
+ * inside the live supervisor process — no throwaway spawn.
+ */
+async function callViaExecSocket(
+  socketPath: string,
+  ext: string,
+  tool: string,
+  args: Record<string, unknown>,
+  timeoutMs = 30000,
+): Promise<unknown> {
+  const netMod = require('node:net') as typeof import('node:net');
+  const rlMod  = require('node:readline') as typeof import('node:readline');
+
+  return new Promise((resolve, reject) => {
+    const socket = netMod.createConnection(socketPath);
+    const rl = rlMod.createInterface({ input: socket, crlfDelay: Infinity });
+
+    let done = false;
+    const finish = (fn: () => void) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      rl.close();
+      socket.destroy();
+      fn();
+    };
+
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error(`sox exec: timeout waiting for exec socket response (${timeoutMs}ms)`)));
+    }, timeoutMs);
+
+    rl.once('line', (line: string) => {
+      finish(() => {
+        try {
+          const resp = JSON.parse(line) as { result?: unknown; error?: string };
+          if (resp.error !== undefined) {
+            reject(new Error(resp.error));
+          } else {
+            resolve(resp.result);
+          }
+        } catch {
+          reject(new Error(`sox exec: invalid response from exec socket: ${line.slice(0, 120)}`));
+        }
+      });
+    });
+
+    socket.on('error', (e: Error) => {
+      finish(() => reject(e));
+    });
+
+    socket.on('connect', () => {
+      socket.write(JSON.stringify({ ext, tool, args }) + '\n');
+    });
+  });
+}
+
+/**
+ * cmdExec — A11: exec via the supervisor's Unix exec socket (airtight).
+ *
+ * Routing priority:
+ *   1. If runtime.json has execSocketPath and the socket is reachable →
+ *      route through the live supervisor session (McpRegistrar.call).
+ *   2. Else if runtime.json exists but no socket (service-mode detached spawn) →
+ *      fall back to fresh MCP spawn with policy enforcement.
+ *   3. No runtime.json → hard error: "run sox start first."
+ *
+ * [inv:exec-socket]: The socket is only present in supervisor mode (lockfile-based
+ * start where the sox process stays alive). Service-mode starts (detached via
+ * registry.json) legitimately have no socket — fresh spawn is correct there.
  */
 async function cmdExec(flags: Record<string, string>): Promise<void> {
-  const ROOT = process.cwd();
-  const runtimeFilePath =
-    flags['runtime-file'] ?? process.env['SOX_RUNTIME_FILE'] ?? '';
+  const ROOT  = process.cwd();
+  const scope = flags['scope'] ?? 'user';
+  const root  = flags['root']  ?? ROOT;
 
-  // Support both flag form (--id --tool --args) and positional form:
+  // Resolve runtimeFilePath using same scope → lockfile → getRuntimeFilePath
+  // chain as cmdStop / cmdList / cmdDetails, so the default is always correct.
+  let scopePaths: { config: string; lockfile: string };
+  try {
+    scopePaths = getScopePaths(scope, root);
+  } catch (e) {
+    process.stderr.write(`sox exec: ${String(e)}\n`);
+    process.exit(1);
+  }
+
+  const lockfilePath = flags['lockfile'] ?? scopePaths.lockfile;
+  const runtimeFilePath =
+    flags['runtime-file'] ??
+    process.env['SOX_RUNTIME_FILE'] ??
+    getRuntimeFilePath(lockfilePath);
+
+  // Support both positional and flag form:
   //   sox exec <id> <tool> [args-json]
-  // Positionals: argv[1..] after the 'exec' verb, skipping flag tokens.
+  //   sox exec --id <id> --tool <tool> [--args <json>]
   const rawAfterVerb = argv.slice(1);  // argv[0] = 'exec'
   const positionals: string[] = [];
   for (let i = 0; i < rawAfterVerb.length; i++) {
     const tok = rawAfterVerb[i];
     if (tok === undefined) continue;
     if (tok.startsWith('--')) {
-      if (!tok.includes('=')) i++; // skip the value token for --flag value form
+      if (!tok.includes('=')) i++; // skip value token for --flag value form
     } else {
       positionals.push(tok);
     }
@@ -1265,19 +1349,15 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
     process.exit(1);
   }
 
-  const record = getRuntimeRecord(
-    runtimeFilePath !== '' ? runtimeFilePath : 'runtime.json',
-  );
+  const record = getRuntimeRecord(runtimeFilePath);
   if (!record) {
     process.stderr.write(
-      `sox exec: no runtime record. Run 'sox start' first.\n`,
+      `sox exec: no runtime record at ${runtimeFilePath}. Run 'sox start' first.\n`,
     );
     process.exit(1);
   }
 
-  const entry = record.entries.find(
-    (e) => e.id === extId || e.key === extId,
-  );
+  const entry = record.entries.find((e) => e.id === extId || e.key === extId);
   if (!entry) {
     process.stderr.write(
       `sox exec: extension '${extId}' not found in runtime record.\n`,
@@ -1285,28 +1365,27 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
     process.exit(1);
   }
 
-  // A11 fix: try the running server first via the registrar
-  const registrar =
-    runtimeFilePath !== '' ? getRegistrar(runtimeFilePath) : null;
+  // ── Route 1: exec socket (supervisor mode — airtight) ─────────────────────
+  // [inv:exec-socket]: present in runtime.json only when startRuntime() opened it.
+  const fsMod   = require('node:fs')   as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
 
-  if (registrar) {
+  if (record.execSocketPath && fsMod.existsSync(record.execSocketPath)) {
     try {
-      const result = await registrar.call(extId, toolName, toolArgs);
+      const result = await callViaExecSocket(record.execSocketPath, extId, toolName, toolArgs);
       process.stdout.write(JSON.stringify(result) + '\n');
-      // [exec-exit-code]: exit 1 when the tool signals an error (isError: true in MCP response).
-      // This maps MCP-level tool denials (permission enforcement, unknown tool) to a non-zero
-      // exit code so `assert_nonzero` in the probe harness correctly detects enforcement.
+      // [exec-exit-code]: isError → exit 1 so probe harness detects enforcement denials.
       const mcpResult = result as { isError?: boolean };
       process.exit(mcpResult.isError ? 1 : 0);
-    } catch {
-      // Registrar call failed — fall through to fresh spawn
-      process.stderr.write(
-        `sox exec: registrar call failed, falling back to fresh spawn\n`,
-      );
+    } catch (e) {
+      // Socket error — fall through to fresh spawn with a warning.
+      process.stderr.write(`sox exec: exec socket failed (${String(e)}), falling back to fresh spawn\n`);
     }
   }
 
-  // Fallback: spawn a fresh MCP session
+  // ── Route 2: fresh MCP spawn (service-mode detached, or socket unavailable) ─
+  // Spawn a fresh MCP session with the same policy enforcement as the supervisor.
+  // [inv:no-regress]: identical behaviour to the pre-A11 path when socket is absent.
   const extDir = resolveExtensionDir(entry.source, ROOT);
   if (!extDir) {
     process.stderr.write(
@@ -1315,27 +1394,19 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
     process.exit(1);
   }
 
-  const fs = require('node:fs') as typeof import('node:fs');
-  const path = require('node:path') as typeof import('node:path');
-
-  const manifestPath = path.join(extDir, 'extension.json');
-  if (!fs.existsSync(manifestPath)) {
+  const manifestPath = pathMod.join(extDir, 'extension.json');
+  if (!fsMod.existsSync(manifestPath)) {
     process.stderr.write(`sox exec: manifest not found at ${manifestPath}\n`);
     process.exit(1);
   }
 
-  // [process-boundary.exec] — Compile policy from the manifest's permissions block
-  // and inject it into the child env, mirroring the supervisor's enforced spawn path.
-  // This closes the C6 enforcement gap for the apps/sox canonical CLI exec path.
-  // TODO C7: de-duplicate exec with runtime-cli (apps/sox and runtime-cli each hold a copy)
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+  // [process-boundary.exec] — mirror supervisor enforced-spawn for C6 compliance.
+  const manifest = JSON.parse(fsMod.readFileSync(manifestPath, 'utf8')) as {
     entrypoint?: string;
     permissions?: PermissionsBlock;
   };
   if (!manifest.entrypoint) {
-    process.stderr.write(
-      `sox exec: no entrypoint in manifest at ${manifestPath}\n`,
-    );
+    process.stderr.write(`sox exec: no entrypoint in manifest at ${manifestPath}\n`);
     process.exit(1);
   }
 
@@ -1343,76 +1414,44 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
 
   let execEnv: NodeJS.ProcessEnv;
   if (policy.enforced) {
-    // Scrub child env to the same minimal allowlist as supervisor._spawn enforced path.
-    const allowedKeys = new Set([
-      'PATH',
-      'HOME',
-      'USER',
-      'LOGNAME',
-      'LANG',
-      'LC_ALL',
-      'LC_CTYPE',
-      'TZ',
-    ]);
+    const allowedKeys = new Set(['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ']);
     const baseEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
       if (v !== undefined && (allowedKeys.has(k) || k.startsWith('NODE_'))) {
         baseEnv[k] = v;
       }
     }
-    // policy.toEnv() injects the enforce flag + 4 policy JSON arrays ([def:policy-env]).
-    // Goes last so it cannot be shadowed by any parent env var.
     execEnv = { ...baseEnv, ...policy.toEnv() };
   } else {
-    // [inv:no-regress] — No permissions block: byte-identical to pre-state.
     execEnv = { ...process.env };
   }
 
-  const entrypointPath = path.resolve(extDir, manifest.entrypoint);
-  if (!fs.existsSync(entrypointPath)) {
-    process.stderr.write(
-      `sox exec: entrypoint not found at ${entrypointPath}\n`,
-    );
+  const entrypointPath = pathMod.resolve(extDir, manifest.entrypoint);
+  if (!fsMod.existsSync(entrypointPath)) {
+    process.stderr.write(`sox exec: entrypoint not found at ${entrypointPath}\n`);
     process.exit(1);
   }
 
   const { spawn } = require('node:child_process') as typeof import('node:child_process');
-
-  // [dod.5]: spawn from the extension dir (store dir for service bundles) so
-  // the child process cwd matches its self-contained store dir.
-  // extDir = the store dir (resolveExtensionDir resolved file://<storePath>).
   const child = spawn(process.execPath, [entrypointPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: execEnv,
     cwd: extDir,
   });
 
-  // [shape:serve-marker]: forward child stderr to process stderr so the
-  // "[serve] real-path" marker appears in the probe harness LAST_ERR capture.
-  child.stderr?.on('data', (d: Buffer) => {
-    process.stderr.write(d);
-  });
+  child.stderr?.on('data', (d: Buffer) => { process.stderr.write(d); });
 
   const client = new McpClient(child);
   try {
     await client.call(
       'initialize',
-      {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'sox-exec', version: '1.0.0' },
-      },
+      { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'sox-exec', version: '1.0.0' } },
       10000,
     );
-    const result = await client.call(
-      'tools/call',
-      { name: toolName, arguments: toolArgs },
-      30000,
-    );
+    const result = await client.call('tools/call', { name: toolName, arguments: toolArgs }, 30000);
     process.stdout.write(JSON.stringify(result) + '\n');
     client.close();
     child.kill('SIGTERM');
-    // [exec-exit-code]: exit 1 when the tool signals an error (isError: true in MCP response).
     const mcpResult2 = result as { isError?: boolean };
     process.exit(mcpResult2.isError ? 1 : 0);
   } catch (e) {

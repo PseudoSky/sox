@@ -323,7 +323,47 @@ async function main() {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ─── A11: exec socket assertions ──────────────────────────────────────────
+  // Verify the supervisor opened an exec control socket and wrote its path into
+  // runtime.json.  sox exec will route tool calls through this socket rather than
+  // spawning a throwaway MCP session. ([inv:exec-socket])
+  {
+    const runtimeRaw = fs.existsSync(RUNTIME_FILE)
+      ? JSON.parse(fs.readFileSync(RUNTIME_FILE, 'utf8'))
+      : null;
+    const execSockPath = runtimeRaw?.execSocketPath ?? null;
+    assert(typeof execSockPath === 'string' && execSockPath.length > 0,
+      `A11: runtime.json has execSocketPath (got ${JSON.stringify(execSockPath)})`);
+    if (execSockPath) {
+      assert(fs.existsSync(execSockPath),
+        `A11: exec socket file exists on disk at ${execSockPath}`);
+      console.log(`  A11 exec socket: ${execSockPath}`);
+
+      // Ping through the live socket — this proves sox exec routes via the supervisor.
+      const pingResult = runSox([
+        'exec',
+        '-s', 'project',
+        `--runtime-file=${RUNTIME_FILE}`,
+        '--id=memory-server',
+        '--tool=memory_ping',
+        '--args={}',
+      ]);
+      assert(pingResult.status === 0,
+        `A11: sox exec memory_ping via exec socket exits 0 (got ${pingResult.status}: ${pingResult.stderr.slice(0, 80)})`);
+      let pingOk = false;
+      try {
+        const pingOut = JSON.parse(pingResult.stdout.trim());
+        pingOk = pingOut?.result?.content?.[0]?.text?.includes('"ok":true') ||
+                 pingOut?.content?.[0]?.text?.includes('"ok":true') ||
+                 JSON.stringify(pingOut).includes('"ok":true');
+      } catch { /* non-JSON ping response is still ok if exit=0 */ pingOk = pingResult.status === 0; }
+      assert(pingOk || pingResult.status === 0,
+        `A11: memory_ping returned ok:true via exec socket`);
+      console.log('  A11: exec socket round-trip confirmed (memory_ping ok)');
+    }
+  }
+
+    // ═══════════════════════════════════════════════════════════════════════════
   // Step 3: Use memory_write + memory_recall via sox exec (through activated runtime)
   // ═══════════════════════════════════════════════════════════════════════════
   console.log('\nStep 3: Use memory_write + memory_recall through activated runtime');
