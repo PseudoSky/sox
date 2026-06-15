@@ -52,10 +52,10 @@
       "end_ref": "83e8833ffb47fd6cde27ed412243921c04123d07"
     },
     "mcp-install-modes": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-15T03:28:24.611Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "82190536f3221f1217d1dd13503196ab3eadb69a",
       "end_ref": null
     },
     "audit-install": {
