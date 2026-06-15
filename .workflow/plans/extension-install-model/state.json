@@ -7,7 +7,7 @@
     "version": "0.8.9",
     "hash": "d804364a6d99"
   },
-  "current_state": "lifecycle",
+  "current_state": "enforcement",
   "states": {
     "bundle-pipeline": {
       "status": "complete",
@@ -73,11 +73,11 @@
       "end_ref": "290007c2d748dc9b3ae65c52afbeeb1b68b83580"
     },
     "lifecycle": {
-      "status": "in_progress",
+      "status": "complete",
       "started_at": "2026-06-15T04:33:52.991Z",
-      "done_at": null,
+      "done_at": "2026-06-15T04:40:23.457Z",
       "start_ref": "c4c17f236afc76d39ced5271a9acf93fd69616af",
-      "end_ref": null
+      "end_ref": "5e6d72db5428e7a63b26d49958f2f1aafbac63c8"
     },
     "enforcement": {
       "status": "pending",
@@ -197,6 +197,18 @@
       "to": "service-runtime",
       "start_ref": "9754a5b2af50b7dd3c111eecf9bc12dcfc7d8a7e",
       "end_ref": "290007c2d748dc9b3ae65c52afbeeb1b68b83580",
+      "audit_exit": 2,
+      "audit_criteria_passed": 0,
+      "audit_criteria_total": 0,
+      "by": "fullstack-developer",
+      "note": ""
+    },
+    {
+      "ts": "2026-06-15T04:40:23.457Z",
+      "from": "lifecycle",
+      "to": "lifecycle",
+      "start_ref": "c4c17f236afc76d39ced5271a9acf93fd69616af",
+      "end_ref": "5e6d72db5428e7a63b26d49958f2f1aafbac63c8",
       "audit_exit": 2,
       "audit_criteria_passed": 0,
       "audit_criteria_total": 0,
