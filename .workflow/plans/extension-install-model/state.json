@@ -7,7 +7,7 @@
     "version": "0.8.9",
     "hash": "d804364a6d99"
   },
-  "current_state": "mcp-install-modes",
+  "current_state": "audit-install",
   "states": {
     "bundle-pipeline": {
       "status": "complete",
@@ -52,11 +52,11 @@
       "end_ref": "83e8833ffb47fd6cde27ed412243921c04123d07"
     },
     "mcp-install-modes": {
-      "status": "in_progress",
+      "status": "complete",
       "started_at": "2026-06-15T03:28:24.611Z",
-      "done_at": null,
+      "done_at": "2026-06-15T03:43:26.773Z",
       "start_ref": "82190536f3221f1217d1dd13503196ab3eadb69a",
-      "end_ref": null
+      "end_ref": "fdf8a5b7cd3314b26dde14b834589c8464076472"
     },
     "audit-install": {
       "status": "pending",
@@ -164,6 +164,18 @@
       "audit_exit": 5,
       "audit_criteria_passed": 31,
       "audit_criteria_total": 41,
+      "by": "fullstack-developer",
+      "note": ""
+    },
+    {
+      "ts": "2026-06-15T03:43:26.773Z",
+      "from": "mcp-install-modes",
+      "to": "mcp-install-modes",
+      "start_ref": "82190536f3221f1217d1dd13503196ab3eadb69a",
+      "end_ref": "fdf8a5b7cd3314b26dde14b834589c8464076472",
+      "audit_exit": 0,
+      "audit_criteria_passed": 36,
+      "audit_criteria_total": 36,
       "by": "fullstack-developer",
       "note": ""
     }
