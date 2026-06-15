@@ -1,22 +1,98 @@
 {
   "schema_version": 2,
-  "title": "Extension Install & Reinjection Model",
+  "title": "Extension Install & Reinjection Model (v2, runtime-proven)",
   "dag": "dag.json",
-  "authored_with": "workflow@0.8.8+fd74ba3328ea",
-  "current_state": "schema-delta",
+  "authored_with": {
+    "plugin": "workflow",
+    "version": "0.8.9",
+    "hash": "d804364a6d99"
+  },
+  "current_state": "bundle-pipeline",
   "states": {
-    "schema-delta":          { "status": "pending", "started_at": null, "done_at": null, "start_ref": null, "end_ref": null },
-    "capability-engine":     { "status": "pending", "started_at": null, "done_at": null, "start_ref": null, "end_ref": null },
-    "host-registry":         { "status": "pending", "started_at": null, "done_at": null, "start_ref": null, "end_ref": null },
-    "audit-foundation":      { "status": "pending", "started_at": null, "done_at": null, "start_ref": null, "end_ref": null },
-    "mcp-runtime":           { "status": "pending", "started_at": null, "done_at": null, "start_ref": null, "end_ref": null },
-    "install-lifecycle":     { "status": "pending", "started_at": null, "done_at": null, "start_ref": null, "end_ref": null },
-    "generators":            { "status": "pending", "started_at": null, "done_at": null, "start_ref": null, "end_ref": null },
-    "rehome-memory-server":  { "status": "pending", "started_at": null, "done_at": null, "start_ref": null, "end_ref": null },
-    "audit-enforcement":     { "status": "pending", "started_at": null, "done_at": null, "start_ref": null, "end_ref": null },
-    "ingestion-skill":       { "status": "pending", "started_at": null, "done_at": null, "start_ref": null, "end_ref": null },
-    "dod-reconcile":         { "status": "pending", "started_at": null, "done_at": null, "start_ref": null, "end_ref": null },
-    "audit-final":           { "status": "pending", "started_at": null, "done_at": null, "start_ref": null, "end_ref": null }
+    "bundle-pipeline": {
+      "status": "in_progress",
+      "started_at": "2026-06-15T01:10:57.860Z",
+      "done_at": null,
+      "start_ref": "af9d119795a03293d2eec222cca60f0e83c8391a",
+      "end_ref": null
+    },
+    "manifest-templates": {
+      "status": "pending",
+      "started_at": null,
+      "done_at": null,
+      "start_ref": null,
+      "end_ref": null
+    },
+    "host-targets": {
+      "status": "pending",
+      "started_at": null,
+      "done_at": null,
+      "start_ref": null,
+      "end_ref": null
+    },
+    "audit-foundation": {
+      "status": "pending",
+      "started_at": null,
+      "done_at": null,
+      "start_ref": null,
+      "end_ref": null
+    },
+    "cli-wiring": {
+      "status": "pending",
+      "started_at": null,
+      "done_at": null,
+      "start_ref": null,
+      "end_ref": null
+    },
+    "declarative-install": {
+      "status": "pending",
+      "started_at": null,
+      "done_at": null,
+      "start_ref": null,
+      "end_ref": null
+    },
+    "mcp-install-modes": {
+      "status": "pending",
+      "started_at": null,
+      "done_at": null,
+      "start_ref": null,
+      "end_ref": null
+    },
+    "audit-install": {
+      "status": "pending",
+      "started_at": null,
+      "done_at": null,
+      "start_ref": null,
+      "end_ref": null
+    },
+    "service-runtime": {
+      "status": "pending",
+      "started_at": null,
+      "done_at": null,
+      "start_ref": null,
+      "end_ref": null
+    },
+    "lifecycle": {
+      "status": "pending",
+      "started_at": null,
+      "done_at": null,
+      "start_ref": null,
+      "end_ref": null
+    },
+    "enforcement": {
+      "status": "pending",
+      "started_at": null,
+      "done_at": null,
+      "start_ref": null,
+      "end_ref": null
+    },
+    "audit-final": {
+      "status": "pending",
+      "started_at": null,
+      "done_at": null,
+      "start_ref": null,
+      "end_ref": null
+    }
   },
   "transition_log": [],
   "amendment_log": []
