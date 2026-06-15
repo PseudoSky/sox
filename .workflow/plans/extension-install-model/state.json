@@ -47,7 +47,7 @@
     "declarative-install": {
       "status": "complete",
       "started_at": null,
-      "done_at": "2026-06-15T03:26:41.598Z",
+      "done_at": "2026-06-15T03:28:12.279Z",
       "start_ref": null,
       "end_ref": "83e8833ffb47fd6cde27ed412243921c04123d07"
     },
@@ -156,14 +156,14 @@
       "note": ""
     },
     {
-      "ts": "2026-06-15T03:26:41.598Z",
+      "ts": "2026-06-15T03:28:12.279Z",
       "from": "declarative-install",
       "to": "declarative-install",
       "start_ref": null,
       "end_ref": "83e8833ffb47fd6cde27ed412243921c04123d07",
-      "audit_exit": 6,
-      "audit_criteria_passed": 30,
-      "audit_criteria_total": 42,
+      "audit_exit": 5,
+      "audit_criteria_passed": 31,
+      "audit_criteria_total": 41,
       "by": "fullstack-developer",
       "note": ""
     }
