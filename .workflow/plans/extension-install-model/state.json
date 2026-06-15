@@ -87,11 +87,11 @@
       "end_ref": "13ab790c141a708f83419241145ccae4a1a3b71d"
     },
     "audit-final": {
-      "status": "in_progress",
+      "status": "complete",
       "started_at": "2026-06-15T04:50:05.838Z",
-      "done_at": null,
+      "done_at": "2026-06-15T07:45:13.060Z",
       "start_ref": "c165ace7d8a7c4a7157cbeb6ef8439c46d213b15",
-      "end_ref": null
+      "end_ref": "62e5a77b18c99018fc20d7cfe7eba9d09c9d80e2"
     }
   },
   "transition_log": [
@@ -221,6 +221,18 @@
       "to": "enforcement",
       "start_ref": "84bf891e15e00ba3dbe91349b3207d52fdcea0cf",
       "end_ref": "13ab790c141a708f83419241145ccae4a1a3b71d",
+      "audit_exit": 2,
+      "audit_criteria_passed": 0,
+      "audit_criteria_total": 0,
+      "by": "fullstack-developer",
+      "note": ""
+    },
+    {
+      "ts": "2026-06-15T07:45:13.060Z",
+      "from": "audit-final",
+      "to": "audit-final",
+      "start_ref": "c165ace7d8a7c4a7157cbeb6ef8439c46d213b15",
+      "end_ref": "62e5a77b18c99018fc20d7cfe7eba9d09c9d80e2",
       "audit_exit": 2,
       "audit_criteria_passed": 0,
       "audit_criteria_total": 0,
