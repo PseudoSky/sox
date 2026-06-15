@@ -60,9 +60,9 @@
     },
     "audit-install": {
       "status": "complete",
-      "started_at": null,
-      "done_at": "2026-06-15T03:54:43.373Z",
-      "start_ref": null,
+      "started_at": "2026-06-15T03:50:53.686Z",
+      "done_at": "2026-06-15T03:57:28.894Z",
+      "start_ref": "e6d2a3fd14a620f3c434b7e747b8f661c87c0636",
       "end_ref": "bb10e51c5d1a20845dd6e64787dfee6529c72535"
     },
     "service-runtime": {
@@ -180,10 +180,10 @@
       "note": ""
     },
     {
-      "ts": "2026-06-15T03:54:43.373Z",
+      "ts": "2026-06-15T03:57:28.894Z",
       "from": "audit-install",
       "to": "audit-install",
-      "start_ref": null,
+      "start_ref": "e6d2a3fd14a620f3c434b7e747b8f661c87c0636",
       "end_ref": "bb10e51c5d1a20845dd6e64787dfee6529c72535",
       "audit_exit": 0,
       "audit_criteria_passed": 36,
