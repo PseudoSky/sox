@@ -7,7 +7,7 @@
     "version": "0.8.9",
     "hash": "d804364a6d99"
   },
-  "current_state": "declarative-install",
+  "current_state": "mcp-install-modes",
   "states": {
     "bundle-pipeline": {
       "status": "complete",
@@ -45,11 +45,11 @@
       "end_ref": "1900a53bb01d42512d9acfb387560d3755ee152e"
     },
     "declarative-install": {
-      "status": "pending",
+      "status": "complete",
       "started_at": null,
-      "done_at": null,
+      "done_at": "2026-06-15T03:26:14.806Z",
       "start_ref": null,
-      "end_ref": null
+      "end_ref": "83e8833ffb47fd6cde27ed412243921c04123d07"
     },
     "mcp-install-modes": {
       "status": "pending",
@@ -152,6 +152,18 @@
       "audit_exit": 13,
       "audit_criteria_passed": 23,
       "audit_criteria_total": 49,
+      "by": "fullstack-developer",
+      "note": ""
+    },
+    {
+      "ts": "2026-06-15T03:26:14.806Z",
+      "from": "declarative-install",
+      "to": "declarative-install",
+      "start_ref": null,
+      "end_ref": "83e8833ffb47fd6cde27ed412243921c04123d07",
+      "audit_exit": 6,
+      "audit_criteria_passed": 30,
+      "audit_criteria_total": 42,
       "by": "fullstack-developer",
       "note": ""
     }
