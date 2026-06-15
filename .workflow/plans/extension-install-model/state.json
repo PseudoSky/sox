@@ -54,7 +54,7 @@
     "mcp-install-modes": {
       "status": "complete",
       "started_at": "2026-06-15T03:28:24.611Z",
-      "done_at": "2026-06-15T03:43:26.773Z",
+      "done_at": "2026-06-15T03:46:06.794Z",
       "start_ref": "82190536f3221f1217d1dd13503196ab3eadb69a",
       "end_ref": "fdf8a5b7cd3314b26dde14b834589c8464076472"
     },
@@ -168,7 +168,7 @@
       "note": ""
     },
     {
-      "ts": "2026-06-15T03:43:26.773Z",
+      "ts": "2026-06-15T03:46:06.794Z",
       "from": "mcp-install-modes",
       "to": "mcp-install-modes",
       "start_ref": "82190536f3221f1217d1dd13503196ab3eadb69a",
