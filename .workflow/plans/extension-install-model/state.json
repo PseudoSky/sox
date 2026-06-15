@@ -7,7 +7,7 @@
     "version": "0.8.9",
     "hash": "d804364a6d99"
   },
-  "current_state": "bundle-pipeline",
+  "current_state": "manifest-templates",
   "states": {
     "bundle-pipeline": {
       "status": "complete",
@@ -17,11 +17,11 @@
       "end_ref": "b168874d021983509246afbfb5967cdb9116dd1b"
     },
     "manifest-templates": {
-      "status": "in_progress",
+      "status": "complete",
       "started_at": "2026-06-15T01:11:05.112Z",
-      "done_at": null,
+      "done_at": "2026-06-15T02:19:07.464Z",
       "start_ref": "f962851c9079dbb27dc7d6d04f0e5ad187c23a69",
-      "end_ref": null
+      "end_ref": "25604faaf784a99bb91f768c568934694bea128d"
     },
     "host-targets": {
       "status": "in_progress",
@@ -106,6 +106,18 @@
       "audit_criteria_total": 22,
       "by": "fullstack-developer",
       "note": "guard: 5 ok 0 fail — self-contained esbuild bundle, serve marker present, zero real-home writes"
+    },
+    {
+      "ts": "2026-06-15T02:19:07.464Z",
+      "from": "bundle-pipeline",
+      "to": "manifest-templates",
+      "start_ref": "f962851c9079dbb27dc7d6d04f0e5ad187c23a69",
+      "end_ref": "25604faaf784a99bb91f768c568934694bea128d",
+      "audit_exit": 4,
+      "audit_criteria_passed": 14,
+      "audit_criteria_total": 22,
+      "by": "fullstack-developer",
+      "note": "guard: 26 ok 0 fail — all 6 types sox-init+validate clean"
     }
   ],
   "amendment_log": []
