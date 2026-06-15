@@ -66,10 +66,10 @@
       "end_ref": "50f7be08163c94a4eaf63d5cf063a923a7f4e928"
     },
     "service-runtime": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-15T04:13:25.603Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "9754a5b2af50b7dd3c111eecf9bc12dcfc7d8a7e",
       "end_ref": null
     },
     "lifecycle": {
