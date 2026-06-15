@@ -73,10 +73,10 @@
       "end_ref": "290007c2d748dc9b3ae65c52afbeeb1b68b83580"
     },
     "lifecycle": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-15T04:33:52.991Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "c4c17f236afc76d39ced5271a9acf93fd69616af",
       "end_ref": null
     },
     "enforcement": {
