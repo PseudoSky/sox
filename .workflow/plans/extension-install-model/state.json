@@ -7,7 +7,7 @@
     "version": "0.8.9",
     "hash": "d804364a6d99"
   },
-  "current_state": "cli-wiring",
+  "current_state": "declarative-install",
   "states": {
     "bundle-pipeline": {
       "status": "complete",
@@ -38,11 +38,11 @@
       "end_ref": "c1628c172b4c80dc48e6a0ae821e2e21cadcc870"
     },
     "cli-wiring": {
-      "status": "in_progress",
+      "status": "complete",
       "started_at": "2026-06-15T03:01:15.656Z",
-      "done_at": null,
+      "done_at": "2026-06-15T03:16:43.532Z",
       "start_ref": "597624b6480a59541de3140a734d7f03f965f0a6",
-      "end_ref": null
+      "end_ref": "1900a53bb01d42512d9acfb387560d3755ee152e"
     },
     "declarative-install": {
       "status": "pending",
@@ -142,6 +142,18 @@
       "audit_criteria_total": 18,
       "by": "fullstack-developer",
       "note": "foundation phase 18/18 criteria pass: bundle-pipeline+manifest-templates+host-targets guards all 0-fail; structural greps clean; parity gate green"
+    },
+    {
+      "ts": "2026-06-15T03:16:43.532Z",
+      "from": "cli-wiring",
+      "to": "cli-wiring",
+      "start_ref": "597624b6480a59541de3140a734d7f03f965f0a6",
+      "end_ref": "1900a53bb01d42512d9acfb387560d3755ee152e",
+      "audit_exit": 19,
+      "audit_criteria_passed": 17,
+      "audit_criteria_total": 55,
+      "by": "fullstack-developer",
+      "note": ""
     }
   ],
   "amendment_log": []
