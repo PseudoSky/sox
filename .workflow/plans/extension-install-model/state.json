@@ -47,7 +47,7 @@
     "declarative-install": {
       "status": "complete",
       "started_at": null,
-      "done_at": "2026-06-15T03:26:14.806Z",
+      "done_at": "2026-06-15T03:26:41.598Z",
       "start_ref": null,
       "end_ref": "83e8833ffb47fd6cde27ed412243921c04123d07"
     },
@@ -156,7 +156,7 @@
       "note": ""
     },
     {
-      "ts": "2026-06-15T03:26:14.806Z",
+      "ts": "2026-06-15T03:26:41.598Z",
       "from": "declarative-install",
       "to": "declarative-install",
       "start_ref": null,
