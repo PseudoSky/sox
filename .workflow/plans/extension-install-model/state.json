@@ -7,7 +7,7 @@
     "version": "0.8.9",
     "hash": "d804364a6d99"
   },
-  "current_state": "manifest-templates",
+  "current_state": "host-targets",
   "states": {
     "bundle-pipeline": {
       "status": "in_progress",
@@ -24,10 +24,10 @@
       "end_ref": null
     },
     "host-targets": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-15T01:11:05.213Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "52d40d1bd765daa07e62febf682a009e53fd0331",
       "end_ref": null
     },
     "audit-foundation": {
