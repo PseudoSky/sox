@@ -45,10 +45,10 @@
       "end_ref": "1900a53bb01d42512d9acfb387560d3755ee152e"
     },
     "declarative-install": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-15T03:17:06.760Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "dc01d3e4769979d80771e81fe497fdaa7c9699f5",
       "end_ref": null
     },
     "mcp-install-modes": {
