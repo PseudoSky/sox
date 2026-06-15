@@ -59,10 +59,10 @@
       "end_ref": "fdf8a5b7cd3314b26dde14b834589c8464076472"
     },
     "audit-install": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-15T03:50:53.686Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "e6d2a3fd14a620f3c434b7e747b8f661c87c0636",
       "end_ref": null
     },
     "service-runtime": {
