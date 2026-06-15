@@ -38,10 +38,10 @@
       "end_ref": "c1628c172b4c80dc48e6a0ae821e2e21cadcc870"
     },
     "cli-wiring": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-15T03:01:15.656Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "597624b6480a59541de3140a734d7f03f965f0a6",
       "end_ref": null
     },
     "declarative-install": {
