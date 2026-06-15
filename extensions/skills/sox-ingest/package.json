@@ -1,0 +1,7 @@
+{
+  "name": "@sox/extension-sox-ingest",
+  "version": "0.1.0",
+  "description": "Declarative skill for ingesting external sources into sox-ecosystem",
+  "private": true,
+  "license": "MIT"
+}

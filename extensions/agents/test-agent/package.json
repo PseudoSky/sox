@@ -1,0 +1,7 @@
+{
+  "name": "@sox/extension-test-agent",
+  "version": "0.1.0",
+  "description": "Declarative test-runner agent",
+  "private": true,
+  "license": "MIT"
+}

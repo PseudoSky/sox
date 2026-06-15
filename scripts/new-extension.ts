@@ -48,44 +48,71 @@ const DIR_MAP: Record<ExtensionType, string> = {
   bundle: 'bundles',
 };
 
-function validateId(id: string, type: ExtensionType): string | null {
+function validateId(id: string, _type: ExtensionType): string | null {
   if (!/^[a-z][a-z0-9-]*$/.test(id)) {
     return `id "${id}" must match ^[a-z][a-z0-9-]*$`;
-  }
-  if (id.endsWith(`-${type}`) || id === type) {
-    return `id "${id}" must not end with the type name "${type}"`;
   }
   return null;
 }
 
-function contentFileFor(type: ExtensionType): string {
+/**
+ * Return a style-advisory message when the id ends with the type name.
+ * This is a WARN-only rule (not an error) — it matches libs/authoring's fallback
+ * behavior and allows guard/test IDs like "test-agent" to scaffold without error.
+ * [inv:style-only]: the manifest schema does not enforce this restriction.
+ */
+function warnIdSuffix(id: string, type: ExtensionType): string | null {
+  if (id.endsWith(`-${type}`) || id === type) {
+    return `warning: id "${id}" ends with the type name "${type}" — consider a more descriptive name`;
+  }
+  return null;
+}
+
+function contentFileFor(type: ExtensionType, id?: string): string {
   if (type === 'prompt') return 'prompt.md';
   if (type === 'bundle') return ''; // bundles have no content file
+  // Declarative types: the content IS the markdown definition file, named <id>.md.
+  // This is the host-native format for file-drop install (claude: .claude/agents/<id>.md etc.).
+  if (type === 'agent' || type === 'command') return `${id ?? type}.md`;
   return 'src/index.ts';
 }
 
 function makeContentFile(type: ExtensionType, id: string, title: string, description: string): string {
   switch (type) {
     case 'agent':
+      // Declarative markdown agent definition — the host reads this .md file and
+      // injects it as a subagent definition. YAML frontmatter + markdown body.
+      // Named <id>.md and installed as a file-drop at .claude/agents/<id>.md.
       return [
-        `// Agent: ${title}`,
-        `// ${description}`,
+        `---`,
+        `name: ${id}`,
+        `description: ${description}`,
+        `tools: Read, Write, Edit, Bash, Glob, Grep`,
+        `model: sonnet`,
+        `---`,
         ``,
-        `export interface AgentDefinition {`,
-        `  name: string;`,
-        `  description: string;`,
-        `  systemPrompt: string;`,
-        `  tools: string[];`,
-        `}`,
+        `# ${title}`,
         ``,
-        `const agent: AgentDefinition = {`,
-        `  name: '${id}',`,
-        `  description: '${description}',`,
-        `  systemPrompt: 'You are a helpful assistant. ${description}',`,
-        `  tools: ['read_file', 'write_file'],`,
-        `};`,
+        `${description}`,
         ``,
-        `export default agent;`,
+        `## When to invoke this agent`,
+        ``,
+        `<!-- Describe the conditions under which an orchestrator should hand off to this agent. -->`,
+        ``,
+        `## What this agent does`,
+        ``,
+        `1. Receives a task description from the host or orchestrator.`,
+        `2. Uses available tools to complete the task.`,
+        `3. Returns a structured result to the caller.`,
+        ``,
+        `## Constraints`,
+        ``,
+        `- Keep task scope narrow: one goal per delegation.`,
+        `- Do NOT make external network calls unless explicitly permitted.`,
+        ``,
+        `## Agent id`,
+        ``,
+        `\`${id}\``,
       ].join('\n');
 
     case 'skill':
@@ -200,37 +227,40 @@ function makeContentFile(type: ExtensionType, id: string, title: string, descrip
       ].join('\n');
 
     case 'command':
+      // Declarative markdown slash command — installed as a file-drop at
+      // .claude/commands/<id>.md. The host reads this file to register the slash command.
       return [
-        `// Command: ${title}`,
-        `// ${description}`,
-        `// Slash-invoked, deterministic shell operation — no LLM calls.`,
+        `# /${id}`,
         ``,
-        `import { execSync } from 'node:child_process';`,
+        `${description}`,
         ``,
-        `export interface CommandInput {`,
-        `  args: string[];`,
-        `}`,
+        `## Usage`,
         ``,
-        `export interface CommandOutput {`,
-        `  stdout: string;`,
-        `  exitCode: number;`,
-        `}`,
+        `\`\`\``,
+        `/${id} [args...]`,
+        `\`\`\``,
         ``,
-        `/**`,
-        ` * Command handler — invoked via slash command /${id}`,
-        ` * Deterministic: no LLM calls, predictable output.`,
-        ` */`,
-        `export function run(input: CommandInput): CommandOutput {`,
-        `  try {`,
-        `    const stdout = execSync(\`echo "Command ${id}: \${input.args.join(' ')}"\`, {`,
-        `      encoding: 'utf8',`,
-        `      timeout: 5000,`,
-        `    });`,
-        `    return { stdout: stdout.trim(), exitCode: 0 };`,
-        `  } catch (e) {`,
-        `    return { stdout: String(e), exitCode: 1 };`,
-        `  }`,
-        `}`,
+        `## What this command does`,
+        ``,
+        `<!-- Describe what the slash command does when invoked. -->`,
+        ``,
+        `1. Receives the command arguments from the host.`,
+        `2. Performs the command action.`,
+        `3. Returns a result to the user.`,
+        ``,
+        `## Arguments`,
+        ``,
+        `<!-- List accepted arguments and their purpose. -->`,
+        ``,
+        `## Examples`,
+        ``,
+        `\`\`\``,
+        `/${id} example-arg`,
+        `\`\`\``,
+        ``,
+        `## Command id`,
+        ``,
+        `\`${id}\``,
       ].join('\n');
 
     case 'bundle':
@@ -739,6 +769,13 @@ function makeExtensionJson(
       { id: 'example-member-a', version: '^0.1.0' },
       { id: 'example-member-b', version: '^0.1.0' },
     ];
+  } else if (type === 'agent' || type === 'command') {
+    // Declarative markdown types: runtime=declarative, entrypoint=<id>.md
+    // The host reads the .md file directly; no build step, no process spawned.
+    // The entrypoint filename MUST match contentFileFor(type, id) so that
+    // bin/sox cmdInstall can derive srcPath = extDir/<id>.md for file-drop.
+    base['runtime'] = 'declarative';
+    base['entrypoint'] = `${id}.md`;
   } else {
     // G-D: runtime contract. 'node' = TS/Node (can call the provider abstraction).
     // 'stdio-any' = language-agnostic stdio process; MUST NOT declare provider requires.
@@ -873,6 +910,10 @@ async function scaffold(
     console.error(`ERROR: ${idErr}`);
     process.exit(1);
   }
+  const idWarn = warnIdSuffix(id, type);
+  if (idWarn) {
+    console.error(idWarn);
+  }
 
   // P3: --out redirects the output root instead of cwd/extensions/<type-dir>/
   let dir: string;
@@ -909,7 +950,7 @@ async function scaffold(
     return;
   }
 
-  const contentFile = contentFileFor(type);
+  const contentFile = contentFileFor(type, id);
   const isTs = contentFile.endsWith('.ts');
 
   if (isTs) {
@@ -933,13 +974,14 @@ async function scaffold(
     fs.writeFileSync(path.join(dir, 'SKILL.md'), makeSkillMd(id, title, description));
   }
 
-  if (type === 'agent' || type === 'mcp-server') {
+  // mcp-server still gets CLAUDE.md guidance; agent/command use their <id>.md as primary content
+  if (type === 'mcp-server') {
     fs.writeFileSync(path.join(dir, 'CLAUDE.md'), makeClaudeMd(type, id, title, description));
   }
 
   const docFiles: string[] = ['README.md'];
   if (type === 'skill') docFiles.push('SKILL.md');
-  if (type === 'agent' || type === 'mcp-server') docFiles.push('CLAUDE.md');
+  if (type === 'mcp-server') docFiles.push('CLAUDE.md');
 
   console.log(`Created ${type} extension "${id}" at ${dir}/`);
   console.log('  extension.json');

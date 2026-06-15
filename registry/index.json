@@ -16,6 +16,30 @@
     }
   },
   {
+    "id": "memory-org",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "memory-org",
+    "description": "Use this when you need an agent that organises or retrieves memories scoped to a project or organisation.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/org-agent",
+    "checksum": "sha256:cf90c51c3f101a0c0ef69c94aaaeb0b57374cdcc9ea7a32717353e229de54216",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    }
+  },
+  {
+    "id": "test-runner",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "test-runner",
+    "description": "Use this when you need an agent that runs test suites and reports results.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/test-agent",
+    "checksum": "sha256:ecedd835e8145f8bc0ee5e5dc1520f8301a097df08ae03bee7319b69818c01cb",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    }
+  },
+  {
     "id": "sox-memory-bundle",
     "type": "bundle",
     "version": "0.1.0",
@@ -44,6 +68,18 @@
         "version": "^0.1.0"
       }
     ]
+  },
+  {
+    "id": "dep-inject",
+    "type": "command",
+    "version": "0.1.0",
+    "title": "dep-inject",
+    "description": "Use this when you need a slash command that demonstrates dependency injection patterns.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/commands/di-command",
+    "checksum": "sha256:c01601085ee3d20f118c52fecc73dacf272c04af4c75e1e7d152f987e6484552",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    }
   },
   {
     "id": "memory-cli",
@@ -76,13 +112,61 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/mcp-servers/memory-server",
-    "checksum": "sha256:9fbb71104135d7413474a766bc3dc74185d31657b425581971201228a5cf3043",
+    "checksum": "sha256:e8381f48ce5c0da9b2fa38fb70f237a90a272a9e94b77ce6471d7902c4d42747",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "requires": {
       "structured_output": true,
       "min_context_tokens": 8192
+    }
+  },
+  {
+    "id": "di-codex",
+    "type": "skill",
+    "version": "0.1.0",
+    "title": "di-codex",
+    "description": "Use this when you need a skill that demonstrates dependency injection for Codex-based workflows.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/di-codex-skill",
+    "checksum": "sha256:99b1f97b06bc7da479164a797edcd4a3956c65d733ff7af18e49d60f58197a6e",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    }
+  },
+  {
+    "id": "dep-injector",
+    "type": "skill",
+    "version": "0.1.0",
+    "title": "dep-injector",
+    "description": "Use this when you need a skill that demonstrates dependency injection for Claude-based workflows.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/di-skill",
+    "checksum": "sha256:94811bf787ce204a09338702c5357becc86bfa6ed0ad15962c7a5d58c8325cd9",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    }
+  },
+  {
+    "id": "forbidden-access",
+    "type": "skill",
+    "version": "0.1.0",
+    "title": "forbidden-access",
+    "description": "Use this when testing permission enforcement — this skill targets a forbidden host path and must be rejected.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/forbidden-skill",
+    "checksum": "sha256:a289b86d4b53e3dad1fc8f466a2ce15dbeda42170173a9472b1beee35597e5da",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    }
+  },
+  {
+    "id": "sox-ingest",
+    "type": "skill",
+    "version": "0.1.0",
+    "title": "sox-ingest — Ingest external sources into sox-ecosystem",
+    "description": "Use this when you need to port an external repo, file, or directory into sox-ecosystem as born-conformant extensions. Encodes the full ingestion flow: initialize -> generalize+author -> validate -> publish -> install -> enable -> remove-old, delegating per-type and per-operation specifics to references/. An agent told 'ingest <source> into sox' loads this skill and runs the complete flow with no bespoke prompts.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/sox-ingest",
+    "checksum": "sha256:a643c1a907287ef019ee206f89dfd5fadf0fcacd650365ccd0bf178f3e9fc752",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
     }
   }
 ]

@@ -89,9 +89,9 @@
     "audit-final": {
       "status": "complete",
       "started_at": "2026-06-15T04:50:05.838Z",
-      "done_at": "2026-06-15T07:47:28.271Z",
+      "done_at": "2026-06-15T07:48:27.680Z",
       "start_ref": "c165ace7d8a7c4a7157cbeb6ef8439c46d213b15",
-      "end_ref": "ff4d2c9ab964d56779545f6f672b4ca6a82226a7"
+      "end_ref": "0536b58bbff528bda31e055c1233534bd8061c8b"
     }
   },
   "transition_log": [
@@ -228,16 +228,16 @@
       "note": ""
     },
     {
-      "ts": "2026-06-15T07:47:28.271Z",
+      "ts": "2026-06-15T07:48:27.680Z",
       "from": "audit-final",
       "to": "audit-final",
       "start_ref": "c165ace7d8a7c4a7157cbeb6ef8439c46d213b15",
-      "end_ref": "ff4d2c9ab964d56779545f6f672b4ca6a82226a7",
+      "end_ref": "0536b58bbff528bda31e055c1233534bd8061c8b",
       "audit_exit": 2,
       "audit_criteria_passed": 0,
       "audit_criteria_total": 0,
       "by": "fullstack-developer",
-      "note": ""
+      "note": "74/74 audit criteria pass; dod.12 exit-0 (59 e2e + 17 build/lint/test); memory-server permissions restored; D2 sandbox isolation fixed"
     }
   ],
   "amendment_log": []

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://your-registry/schemas/extension/v1.json",
+  "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "memory-server",
   "version": "0.1.0",
   "type": "mcp-server",
@@ -16,16 +16,29 @@
     "background": true,
     "singleton": true,
     "health": {
-      "type": "socket",
-      "endpoint": "~/.memory/memoryd.sock",
-      "interval_ms": 5000,
-      "timeout_ms": 2000
+      "type": "stdio-ping",
+      "interval_ms": 30000,
+      "timeout_ms": 5000
     },
     "stop_timeout_ms": 5000
   },
   "capabilities": ["memory.read", "memory.write", "memory.session"],
   "tags": ["memory", "rag", "graph", "sqlite"],
+  "install": {
+    "type": "mcp-server",
+    "serves": ["stdio"],
+    "profiles": {
+      "stdio": {
+        "transport": "stdio"
+      }
+    }
+  },
   "tools": [
+    {
+      "name": "memory_ping",
+      "description": "Use this to verify the server is reachable — returns {ok:true} without touching any database.",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
     {
       "name": "memory_write",
       "description": "Write a memory episode to the store. Returns {episode_uid}. Enqueues organize; never blocks on LLM.",

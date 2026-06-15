@@ -1,0 +1,16 @@
+{
+  "name": "@sox/extension-di-command",
+  "version": "0.1.0",
+  "description": "Dependency-injection demo command",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "typecheck": "tsc --noEmit --project tsconfig.json"
+  },
+  "license": "MIT"
+}

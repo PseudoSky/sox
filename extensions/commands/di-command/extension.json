@@ -1,0 +1,25 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v1.json",
+  "id": "dep-inject",
+  "version": "0.1.0",
+  "type": "command",
+  "title": "dep-inject",
+  "description": "Use this when you need a slash command that demonstrates dependency injection patterns.",
+  "keywords": ["dependency-injection", "demo", "command"],
+  "author": "sox-ecosystem",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "runtime": "node",
+  "entrypoint": "dist/index.js",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "run(input: CommandInput) → CommandOutput"
+  },
+  "install": {
+    "type": "command",
+    "hosts": ["claude"]
+  }
+}

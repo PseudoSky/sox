@@ -1,0 +1,25 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v1.json",
+  "id": "test-runner",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "test-runner",
+  "description": "Use this when you need an agent that runs test suites and reports results.",
+  "keywords": ["testing", "runner", "agent"],
+  "author": "sox-ecosystem",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "runtime": "declarative",
+  "entrypoint": "test-agent.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the .md definition file directly."
+  },
+  "install": {
+    "type": "agent",
+    "hosts": ["claude"]
+  }
+}

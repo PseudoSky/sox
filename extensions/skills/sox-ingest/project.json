@@ -1,0 +1,27 @@
+{
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "name": "sox-ingest",
+  "projectType": "library",
+  "root": "extensions/skills/sox-ingest",
+  "sourceRoot": "extensions/skills/sox-ingest",
+  "tags": ["type:extension"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": [],
+      "options": {
+        "command": "echo 'sox-ingest: no build step (declarative skill)'",
+        "cwd": "."
+      },
+      "cache": false
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "echo 'sox-ingest: no TS sources to lint (declarative skill)'",
+        "cwd": "."
+      },
+      "cache": true
+    }
+  }
+}

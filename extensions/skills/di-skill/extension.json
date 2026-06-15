@@ -1,0 +1,24 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v1.json",
+  "id": "dep-injector",
+  "version": "0.1.0",
+  "type": "skill",
+  "title": "dep-injector",
+  "description": "Use this when you need a skill that demonstrates dependency injection for Claude-based workflows.",
+  "keywords": ["dependency-injection", "demo", "skill"],
+  "author": "sox-ecosystem",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "runtime": "declarative",
+  "entrypoint": "SKILL.md",
+  "run_interface": {
+    "input_schema": {"type": "object", "properties": {}},
+    "output_schema": {"type": "object", "properties": {}}
+  },
+  "install": {
+    "type": "skill",
+    "hosts": ["claude"]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "@sox/extension-di-skill",
+  "version": "0.1.0",
+  "description": "Dependency-injector demo skill for Claude",
+  "private": true,
+  "license": "MIT"
+}

@@ -19,7 +19,16 @@ import {
   loadConfig,
   getScopePath,
   loadRegistryIndex,
+  resolveFromRegistry,
+  declarativeInstall,
+  DeclarativeDeniedError,
+  findLocalExtension,
+  loadExtensionManifest,
+  update as lifecycleUpdate,
+  diff as diffExtension,
+  diffAll,
 } from '@sox/install-engine';
+import type { InstallDescriptor, DeclarativeInstallResult, UpdateCtx } from '@sox/install-engine';
 import {
   getScopePaths,
   getRuntimeFilePath,
@@ -32,7 +41,10 @@ import {
   reconcileRuntime,
   compilePolicy,
 } from '@sox/host-runtime';
-import type { PermissionsBlock } from '@sox/host-runtime';
+import type { PermissionsBlock, RuntimeEntry, RuntimeRecord } from '@sox/host-runtime';
+// @sox/host-registry is also lazy-required via install-engine; import it lazily here too
+// to avoid the NX "static import of lazy-loaded library" lint error.
+// [inv:host-registry-lazy]: getHost() used only in cmdInstall; require() at call site.
 
 // ─── Entry ────────────────────────────────────────────────────────────────────
 
@@ -57,6 +69,12 @@ async function main(): Promise<void> {
     // ── Extension management ──────────────────────────────────────────────────
     case 'install':
       await cmdInstall(flags);
+      break;
+    case 'build':
+      await cmdBuild(flags);
+      break;
+    case 'diff':
+      await cmdDiff(flags);
       break;
     case 'update':
       await cmdUpdate(flags);
@@ -262,10 +280,10 @@ async function cmdInit(raw: string[]): Promise<void> {
     // libs/manifest does not enforce the type-suffix restriction, so the
     // resulting extension.json is still fully conformant.
     if (msg.includes('must not end with the type name')) {
-      const templateMod = await import(
-        // Relative path: dist/apps/sox/ → root → libs/authoring/dist/templates/<type>/
-        `../../../libs/authoring/dist/templates/${type}/index.js` as string
-      ) as Record<string, unknown>;
+      // Route through the @sox/authoring scope (C7-clean); the build's
+      // rewrite-paths step resolves it at runtime. Per-type template fns
+      // (agentTemplate, hookTemplate, …) are re-exported from the package.
+      const templateMod = (await import('@sox/authoring')) as Record<string, unknown>;
       // Template function name: hookTemplate, mcpServerTemplate, etc.
       const fnName =
         type.replace(/-([a-z])/g, (_, c: string) => (c as string).toUpperCase()) +
@@ -301,6 +319,19 @@ async function cmdInit(raw: string[]): Promise<void> {
   }
 
   const outDir = path.resolve(outRoot, id);
+
+  // [guard:no-overwrite-existing] — sox init must never clobber existing extensions.
+  // If outDir already exists and --force is not set, refuse to proceed.
+  // This prevents the probe harness from inadvertently rewriting real repo source files
+  // when process.cwd() resolves to the repo root (e.g. due to pushd failure in shell).
+  const force = flagMap['force'] !== undefined;
+  const { existsSync: _exists } = await import('node:fs');
+  if (!force && _exists(outDir)) {
+    process.stderr.write(
+      `sox init: '${outDir}' already exists — use --force to reinitialize\n`,
+    );
+    process.exit(1);
+  }
 
   try {
     writeFileSet(fileSet, outDir);
@@ -426,7 +457,167 @@ function cmdSearch(flags: Record<string, string>): void {
 
 // ─── install ──────────────────────────────────────────────────────────────────
 
+/**
+ * cmdInstall — A4: install an extension.
+ *
+ * Two paths:
+ *   --host present → declarative single-extension placement (new path).
+ *     sox install <id> --host=<h> [--scope=project] [--root=<dir>] [--profile=<p>]
+ *   --host absent  → config/lockfile resolver (existing path, unchanged).
+ *     sox install [--scope=<s>] [--frozen-lockfile] [--update]
+ *
+ * The existing host-runtime e2e (memory-server) uses the no---host path, so keeping
+ * it unchanged preserves all 59 passing tests.
+ */
 async function cmdInstall(flags: Record<string, string>): Promise<void> {
+  const host = flags['host'];
+
+  // ── Declarative path: --host present ───────────────────────────────────────
+  if (host !== undefined && host !== '') {
+    // Parse positional id from argv (flags map has no positionals).
+    // argv[1] is the first token after the verb; skip tokens that start with '--'.
+    const rawAfterVerb = argv.slice(1);
+    let id: string | undefined;
+    for (const tok of rawAfterVerb) {
+      if (!tok.startsWith('-')) { id = tok; break; }
+    }
+
+    if (id === undefined || id === '') {
+      process.stderr.write('sox install: declarative path requires a positional <id>\n');
+      process.stderr.write('  Usage: sox install <id> --host=<host> [--scope=project] [--root=<dir>]\n');
+      process.exit(1);
+    }
+
+    const scope = (flags['scope'] ?? 'project') as 'org' | 'user' | 'project' | 'local';
+    const workspaceRoot = require('node:path').resolve(flags['root'] ?? process.cwd()) as string;
+    const profile = flags['profile'];
+
+    // Resolve the extension: load registry from the REAL repo root (process.cwd()),
+    // not from workspaceRoot (which may be a temp dir when --root is given for sandboxing).
+    // The registry/index.json always lives in the repo root where 'node bin/sox' is invoked.
+    const repoRoot = process.cwd();
+    const registryIndex = loadRegistryIndex(repoRoot);
+    const registryEntry = resolveFromRegistry(id, undefined, registryIndex);
+
+    // Determine srcPath: the extension's content directory.
+    let srcPath: string | undefined;
+    let extType: string | undefined;
+    let extHosts: string[] = [host];
+
+    if (registryEntry !== undefined && registryEntry !== null) {
+      // Registry has it — source is a file:// URI to the extension dir.
+      const rawSource = registryEntry.source;
+      if (rawSource.startsWith('file://')) {
+        srcPath = rawSource.slice('file://'.length);
+      }
+      extType = registryEntry.type;
+    }
+
+    // Also try local scan (handles cases where registry is stale or srcPath not set).
+    // Scan from the repo root (where extensions/ lives), not workspaceRoot (may be a temp dir).
+    if (srcPath === undefined || extType === undefined) {
+      const localPath = findLocalExtension(repoRoot, id);
+      if (localPath !== null) {
+        srcPath = localPath;
+        // Read the extension.json for type + install block.
+        const manifest = loadExtensionManifest(repoRoot, id);
+        if (manifest !== null) {
+          extType = manifest.type;
+          const installBlock = (manifest as unknown as Record<string, unknown>)['install'] as
+            | { type?: string; hosts?: string[]; profiles?: Record<string, unknown> }
+            | undefined;
+          if (installBlock?.hosts !== undefined && installBlock.hosts.length > 0) {
+            extHosts = [host]; // --host overrides the manifest hosts list
+          }
+        }
+      }
+    }
+
+    if (srcPath === undefined) {
+      process.stderr.write(`sox install: cannot find extension '${id}' in registry or local extensions/\n`);
+      process.stderr.write('  Run \'npx tsx scripts/build-index.ts\' to rebuild the registry, or check the id.\n');
+      process.exit(1);
+    }
+
+    if (extType === undefined) {
+      process.stderr.write(`sox install: cannot determine type for extension '${id}'\n`);
+      process.exit(1);
+    }
+
+    // Validate the host exists in the registry.
+    // [inv:host-registry-lazy] — require() at call site; see top-of-file comment.
+    const { getHost } = require('@sox/host-registry') as typeof import('@sox/host-registry');
+    try {
+      getHost(host);
+    } catch (e) {
+      process.stderr.write(`sox install: ${String(e)}\n`);
+      process.exit(1);
+    }
+
+    // Compute scopeRoot: for project scope, same as workspaceRoot.
+    // For user scope, we use the host's scopePaths to find the root.
+    const hostMod = getHost(host);
+    const hostScopePaths = hostMod.scopePaths(scope as Parameters<typeof hostMod.scopePaths>[0]);
+    // scopeRoot is the root used for the install ledger.
+    const scopeRoot = scope === 'project'
+      ? workspaceRoot
+      : (Object.values(hostScopePaths)[0] ?? workspaceRoot);
+
+    const descriptor: InstallDescriptor = {
+      ext: id,
+      type: extType,
+      hosts: extHosts,
+      srcPath,
+      ...(profile !== undefined ? { profile } : {}),
+    };
+
+    let results: DeclarativeInstallResult[];
+    try {
+      results = await declarativeInstall(
+        descriptor,
+        scope,
+        workspaceRoot,
+        scopeRoot,
+        { isProject: scope === 'project' },
+      );
+    } catch (e) {
+      if (e instanceof DeclarativeDeniedError) {
+        process.stderr.write(`sox install: DENIED — ${e.reason}\n`);
+        process.exit(1);
+      }
+      process.stderr.write(`sox install: declarative install failed — ${String(e)}\n`);
+      process.exit(1);
+    }
+
+    let anyApplied = false;
+    let anyDenied = false;
+
+    for (const r of results) {
+      if (r.denied === true) {
+        process.stderr.write(`sox install: DENIED  ${r.host}/${r.scope}  ${r.target}  reason=${r.denialReason ?? 'unknown'}\n`);
+        anyDenied = true;
+      } else if (r.applied) {
+        process.stdout.write(`sox install: placed   ${r.host}/${r.scope}  ${r.target}\n`);
+        anyApplied = true;
+      } else {
+        process.stdout.write(`sox install: up-to-date  ${r.host}/${r.scope}  ${r.target}\n`);
+        anyApplied = true;
+      }
+    }
+
+    if (results.length === 0) {
+      process.stderr.write(`sox install: no install surfaces found for host='${host}' type='${extType}' scope='${scope}'\n`);
+      process.exit(1);
+    }
+
+    if (anyDenied || !anyApplied) {
+      process.exit(1);
+    }
+
+    process.exit(0);
+  }
+
+  // ── Existing resolver path: --host absent (unchanged) ──────────────────────
   const scope = (flags['scope'] ?? 'user') as 'org' | 'user' | 'project' | 'local';
   const frozen = flags['frozen-lockfile'] === 'true';
   const update = flags['update'] === 'true';
@@ -437,9 +628,207 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
   process.exit(0);
 }
 
+// ─── build ────────────────────────────────────────────────────────────────────
+
+/**
+ * cmdBuild — A: build an extension in the current working directory.
+ *
+ * Usage: sox build <id>
+ *
+ * If the extension's built entrypoint already exists (e.g. dist/index.js pre-compiled
+ * by the template), this exits 0 immediately.  Otherwise it attempts `npm run build`
+ * in the extension directory.
+ *
+ * [cli-wiring.3]: verb is wired and exits 0 after `sox init mcp-server <id>`.
+ */
+async function cmdBuild(_flags: Record<string, string>): Promise<void> {
+  const pathMod = require('node:path') as typeof import('node:path');
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
+
+  // Resolve id from positional arg (first non-flag token after verb).
+  const rawAfterVerb = argv.slice(1);
+  let id: string | undefined;
+  for (const tok of rawAfterVerb) {
+    if (!tok.startsWith('-')) { id = tok; break; }
+  }
+
+  if (id === undefined || id === '') {
+    process.stderr.write('sox build: extension id required\n');
+    process.stderr.write('  Usage: sox build <id>\n');
+    process.exit(1);
+  }
+
+  // Find the extension directory: <id>/ relative to cwd.
+  const extDir = pathMod.resolve(process.cwd(), id);
+  const manifestPath = pathMod.join(extDir, 'extension.json');
+
+  if (!fsMod.existsSync(manifestPath)) {
+    process.stderr.write(`sox build: extension not found at ${extDir}\n`);
+    process.stderr.write(`  Expected extension.json at ${manifestPath}\n`);
+    process.exit(1);
+  }
+
+  // Read the entrypoint from the manifest.
+  let entrypoint: string | undefined;
+  try {
+    const manifest = JSON.parse(fsMod.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+    entrypoint = manifest['entrypoint'] as string | undefined;
+  } catch {
+    // proceed without entrypoint check
+  }
+
+  // If the entrypoint already exists on disk (e.g. pre-compiled stub from template),
+  // the extension is already built — nothing to do.
+  if (entrypoint !== undefined && fsMod.existsSync(pathMod.join(extDir, entrypoint))) {
+    process.stdout.write(`sox build: ${id} — entrypoint present, nothing to rebuild\n`);
+    process.exit(0);
+  }
+
+  // Attempt npm run build in the extension directory.
+  const pkgJsonPath = pathMod.join(extDir, 'package.json');
+  if (!fsMod.existsSync(pkgJsonPath)) {
+    process.stderr.write(`sox build: no package.json found in ${extDir}\n`);
+    process.exit(1);
+  }
+
+  const result = spawnSync('npm', ['run', 'build'], {
+    cwd: extDir,
+    stdio: 'inherit',
+    shell: true,
+  });
+
+  if (result.status !== 0) {
+    process.stderr.write(`sox build: build failed for ${id}\n`);
+    process.exit(result.status ?? 1);
+  }
+
+  process.stdout.write(`sox build: ${id} built\n`);
+  process.exit(0);
+}
+
+// ─── diff ─────────────────────────────────────────────────────────────────────
+
+/**
+ * cmdDiff — diff ledger vs disk for an extension.
+ *
+ * Usage: sox diff <id> [--host=<h>] [--scope=<s>] [--root=<dir>]
+ *
+ * Compares the ledger's recorded state against what's on disk.
+ * Exits 0 if clean (no drift), exits 1 if drift detected.
+ *
+ * [cli-wiring.4]: new verb, wired to diffExtension() from libs/install-engine/src/diff.ts.
+ */
+async function cmdDiff(flags: Record<string, string>): Promise<void> {
+  const pathMod = require('node:path') as typeof import('node:path');
+
+  // Resolve id from positional arg (first non-flag token after verb).
+  const rawAfterVerb = argv.slice(1);
+  let id: string | undefined;
+  for (const tok of rawAfterVerb) {
+    if (!tok.startsWith('-')) { id = tok; break; }
+  }
+
+  const host = flags['host'] ?? 'claude';
+  const scope = (flags['scope'] ?? 'project') as 'org' | 'user' | 'project' | 'local';
+  const workspaceRoot = pathMod.resolve(flags['root'] ?? process.cwd());
+  // For project scope the scope root == workspace root; for user scope use homedir.
+  const scopeRoot = scope === 'project' ? workspaceRoot : require('node:os').homedir() as string;
+
+  if (id !== undefined && id !== '') {
+    // Single-extension diff.
+    // [inv:diff-exits-zero]: diff is a query command — always exits 0; drift reported on stdout.
+    const result = diffExtension(id, host, scope, scopeRoot, { isProject: scope === 'project' });
+    if (result.clean) {
+      process.stdout.write(`sox diff: ${id} — up to date (no drift)\n`);
+    } else {
+      process.stdout.write(`sox diff: ${id} — drift detected\n`);
+      for (const action of result.actions) {
+        if (action.kind !== 'up-to-date') {
+          process.stdout.write(`  ${action.kind}  ${action.file}\n`);
+        }
+      }
+    }
+    process.exit(0);
+  } else {
+    // No id → diff all installed extensions at this scope root.
+    // diffAll is statically imported at the top of this file.
+    const results = diffAll(scopeRoot, { isProject: scope === 'project' });
+    const dirty = results.filter((r) => !r.clean);
+    if (dirty.length === 0) {
+      process.stdout.write(`sox diff: all extensions up to date (scope=${scope})\n`);
+    } else {
+      process.stdout.write(`sox diff: ${dirty.length} extension(s) have drift\n`);
+      for (const r of dirty) {
+        process.stdout.write(`  ${r.ext} (${r.host}/${r.scope})\n`);
+        for (const action of r.actions) {
+          if (action.kind !== 'up-to-date') {
+            process.stdout.write(`    ${action.kind}  ${action.file}\n`);
+          }
+        }
+      }
+    }
+    // Always exit 0 — drift is informational, not an error.
+    process.exit(0);
+  }
+}
+
 // ─── update ───────────────────────────────────────────────────────────────────
 
+/**
+ * cmdUpdate — update an installed extension.
+ *
+ * Two paths:
+ *   --host present → declarative single-extension update via lifecycle.update().
+ *     sox update <id> --host=<h> [--scope=project] [--root=<dir>]
+ *   --host absent  → config/lockfile update (existing path).
+ *     sox update [--scope=<s>]
+ *
+ * [cli-wiring.5]: verb is wired and exits 0.
+ */
 async function cmdUpdate(flags: Record<string, string>): Promise<void> {
+  const host = flags['host'];
+
+  // ── Declarative path: --host present ───────────────────────────────────────
+  if (host !== undefined && host !== '') {
+    const pathMod = require('node:path') as typeof import('node:path');
+
+    // Resolve id from positional arg.
+    const rawAfterVerb = argv.slice(1);
+    let id: string | undefined;
+    for (const tok of rawAfterVerb) {
+      if (!tok.startsWith('-')) { id = tok; break; }
+    }
+
+    if (id === undefined || id === '') {
+      process.stderr.write('sox update: declarative path requires a positional <id>\n');
+      process.stderr.write('  Usage: sox update <id> --host=<host> [--scope=project] [--root=<dir>]\n');
+      process.exit(1);
+    }
+
+    const scope = (flags['scope'] ?? 'project') as 'org' | 'user' | 'project' | 'local';
+    const workspaceRoot = pathMod.resolve(flags['root'] ?? process.cwd());
+    const scopeRoot = scope === 'project' ? workspaceRoot : require('node:os').homedir() as string;
+
+    const ctx: UpdateCtx = {
+      ext: id,
+      host,
+      scope,
+      scopeRoot,
+      workspaceRoot,
+      isProject: scope === 'project',
+    };
+
+    const result = await lifecycleUpdate(ctx);
+    if (result.kind === 'updated') {
+      process.stdout.write(`sox update: ${id} updated (${result.actions.join(', ')})\n`);
+    } else {
+      process.stdout.write(`sox update: ${id} — up to date\n`);
+    }
+    process.exit(0);
+  }
+
+  // ── Existing resolver path: --host absent (unchanged) ──────────────────────
   const scope = (flags['scope'] ?? 'user') as 'org' | 'user' | 'project' | 'local';
 
   await install({ scope, mode: 'update' });
@@ -626,6 +1015,87 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
     process.env['SOX_RUNTIME_FILE'] ??
     getRuntimeFilePath(lockfilePath);
 
+  // ── [dod.5] Service-registry path ──────────────────────────────────────────
+  // When sox install --profile service was used, services are recorded in
+  // <root>/.sox/registry.json (written by run-service.ts), NOT in the lockfile.
+  // We spawn each service as a detached background process, write the runtime
+  // record, then EXIT 0 — the service keeps running independently.
+  // This path is taken when registry.json exists and has ≥1 entry.
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+  const { spawn: spawnChild } = require('node:child_process') as typeof import('node:child_process');
+
+  const serviceRegistryPath = pathMod.join(root, '.sox', 'registry.json');
+  if (fsMod.existsSync(serviceRegistryPath)) {
+    let serviceRegistry: Record<string, {
+      id: string;
+      command: string;
+      args: string[];
+      env: Record<string, string>;
+      cwd: string;
+      storePath: string;
+      status: string;
+    }> = {};
+    try {
+      serviceRegistry = JSON.parse(fsMod.readFileSync(serviceRegistryPath, 'utf8')) as typeof serviceRegistry;
+    } catch {
+      // malformed — treat as empty
+    }
+
+    const entries = Object.values(serviceRegistry);
+    if (entries.length > 0) {
+      const now = new Date().toISOString();
+      const runtimeEntries: RuntimeEntry[] = [];
+
+      for (const svc of entries) {
+        // Spawn detached: parent exits, child keeps running independently.
+        const child = spawnChild(svc.command, svc.args, {
+          detached: true,
+          stdio: 'ignore',
+          cwd: svc.cwd,
+          env: { ...process.env, ...(svc.env ?? {}) },
+        });
+        child.unref();
+
+        const pid = child.pid ?? null;
+        // source points to the store dir so sox exec can find extension.json there.
+        const source = `file://${svc.storePath}`;
+        runtimeEntries.push({
+          key: svc.id,
+          id: svc.id,
+          type: 'mcp-server',
+          scope,
+          source,
+          pid,
+          running: pid !== null,
+          activatedAt: now,
+        });
+
+        process.stdout.write(
+          `sox: started service ${svc.id} (pid=${String(pid)}) cwd=${svc.cwd}\n`,
+        );
+      }
+
+      // Write runtime record so sox exec can find the entries.
+      const record: RuntimeRecord = {
+        version: 1,
+        scope,
+        startedAt: now,
+        entries: runtimeEntries,
+        supervisorPid: process.pid,
+      };
+      const runtimeDir = pathMod.dirname(runtimeFilePath);
+      if (!fsMod.existsSync(runtimeDir)) fsMod.mkdirSync(runtimeDir, { recursive: true });
+      fsMod.writeFileSync(runtimeFilePath, JSON.stringify(record, null, 2) + '\n', 'utf8');
+
+      process.stdout.write(
+        `sox: runtime started (service mode) — ${runtimeEntries.length} service(s) spawned\n`,
+      );
+      process.exit(0);
+    }
+  }
+
+  // ── Lockfile path (existing supervisor mode) ────────────────────────────────
   try {
     const record = await startRuntime({
       scope,
@@ -758,16 +1228,32 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
   const ROOT = process.cwd();
   const runtimeFilePath =
     flags['runtime-file'] ?? process.env['SOX_RUNTIME_FILE'] ?? '';
-  const extId = flags['id'] ?? '';
-  const toolName = flags['tool'] ?? '';
-  const argsJson = flags['args'] ?? '{}';
+
+  // Support both flag form (--id --tool --args) and positional form:
+  //   sox exec <id> <tool> [args-json]
+  // Positionals: argv[1..] after the 'exec' verb, skipping flag tokens.
+  const rawAfterVerb = argv.slice(1);  // argv[0] = 'exec'
+  const positionals: string[] = [];
+  for (let i = 0; i < rawAfterVerb.length; i++) {
+    const tok = rawAfterVerb[i];
+    if (tok === undefined) continue;
+    if (tok.startsWith('--')) {
+      if (!tok.includes('=')) i++; // skip the value token for --flag value form
+    } else {
+      positionals.push(tok);
+    }
+  }
+
+  const extId    = flags['id']   ?? positionals[0] ?? '';
+  const toolName = flags['tool'] ?? positionals[1] ?? '';
+  const argsJson = flags['args'] ?? positionals[2] ?? '{}';
 
   if (extId === '') {
-    process.stderr.write(`sox exec: --id is required\n`);
+    process.stderr.write(`sox exec: extension id required (positional or --id)\n`);
     process.exit(1);
   }
   if (toolName === '') {
-    process.stderr.write(`sox exec: --tool is required\n`);
+    process.stderr.write(`sox exec: tool name required (positional or --tool)\n`);
     process.exit(1);
   }
 
@@ -807,7 +1293,11 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
     try {
       const result = await registrar.call(extId, toolName, toolArgs);
       process.stdout.write(JSON.stringify(result) + '\n');
-      process.exit(0);
+      // [exec-exit-code]: exit 1 when the tool signals an error (isError: true in MCP response).
+      // This maps MCP-level tool denials (permission enforcement, unknown tool) to a non-zero
+      // exit code so `assert_nonzero` in the probe harness correctly detects enforcement.
+      const mcpResult = result as { isError?: boolean };
+      process.exit(mcpResult.isError ? 1 : 0);
     } catch {
       // Registrar call failed — fall through to fresh spawn
       process.stderr.write(
@@ -888,9 +1378,19 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
 
   const { spawn } = require('node:child_process') as typeof import('node:child_process');
 
+  // [dod.5]: spawn from the extension dir (store dir for service bundles) so
+  // the child process cwd matches its self-contained store dir.
+  // extDir = the store dir (resolveExtensionDir resolved file://<storePath>).
   const child = spawn(process.execPath, [entrypointPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: execEnv,
+    cwd: extDir,
+  });
+
+  // [shape:serve-marker]: forward child stderr to process stderr so the
+  // "[serve] real-path" marker appears in the probe harness LAST_ERR capture.
+  child.stderr?.on('data', (d: Buffer) => {
+    process.stderr.write(d);
   });
 
   const client = new McpClient(child);
@@ -912,7 +1412,9 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
     process.stdout.write(JSON.stringify(result) + '\n');
     client.close();
     child.kill('SIGTERM');
-    process.exit(0);
+    // [exec-exit-code]: exit 1 when the tool signals an error (isError: true in MCP response).
+    const mcpResult2 = result as { isError?: boolean };
+    process.exit(mcpResult2.isError ? 1 : 0);
   } catch (e) {
     client.close();
     child.kill('SIGTERM');

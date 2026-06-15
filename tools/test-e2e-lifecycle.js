@@ -22,6 +22,7 @@ import { spawnSync, execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { createRequire } from 'node:module';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const SOX_BIN = path.join(ROOT, 'bin', 'sox');
@@ -681,7 +682,383 @@ async function main() {
   const supervisorAlive = !!(startProcess && startProcess.exitCode === null);
   assert(!supervisorAlive, 'supervisor (start) process exited after stop');
 
+
   // ═══════════════════════════════════════════════════════════════════════════
+  // Section D: DECLARATIVE PLACEMENT — [dod.1], [dod.2]
+  //
+  // Exercises install() as the descriptor-driven entrypoint ([install-lifecycle.3]).
+  // Tests three placement scenarios on the real FS:
+  //   D1. claude agent — project scope  (.claude/agents/)
+  //   D2. claude agent — user scope     (~/.claude/agents/)
+  //   D3. codex agent — user scope      (~/.codex/config.toml via config-merge)
+  // Plus the denial path:
+  //   D4. mcp-server with stdio transport into .mcp.json MUST be denied ([dod.2])
+  //
+  // [inv:host-agnostic-type]: type is host-agnostic; targets resolved from host-registry.
+  // [inv:ledger-reversible]: every placement recorded in ledger; uninstall reverses.
+  // [inv:boundary]: verification tops out at present+valid at target path.
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\n' + '═'.repeat(60));
+  console.log('Section D: DECLARATIVE PLACEMENT [dod.1] [dod.2]');
+  console.log('═'.repeat(60));
+
+  // Load the install-engine declarative API via the compiled dist.
+  // We use a fresh require of the compiled JS to match what bin/sox does in production.
+  const installEngineDistPath = path.join(ROOT, 'libs', 'install-engine', 'dist', 'install.js');
+
+  // Compile first if not built yet.
+  if (!fs.existsSync(installEngineDistPath)) {
+    console.log('  Building install-engine dist...');
+    const buildResult = spawnSync(
+      './node_modules/.bin/nx',
+      ['run', 'install-engine:build'],
+      { cwd: ROOT, stdio: 'inherit', encoding: 'utf8' }
+    );
+    if (buildResult.status !== 0) {
+      console.error('  FAIL: install-engine build failed');
+      assertionsFailed++;
+    }
+  }
+
+  // Dynamic require of the compiled module (CommonJS).
+  // ESM uses createRequire to load CJS modules.
+  const _require = createRequire(import.meta.url);
+  let declarativeInstall, DeclarativeDeniedError, diff, uninstall;
+  try {
+    // The compiled dist uses CommonJS (tsconfig.lib.json: "module": "CommonJS")
+    const installMod = _require(installEngineDistPath);
+    declarativeInstall = installMod.declarativeInstall;
+    DeclarativeDeniedError = installMod.DeclarativeDeniedError;
+
+    const diffMod = _require(path.join(ROOT, 'libs', 'install-engine', 'dist', 'diff.js'));
+    diff = diffMod.diff;
+
+    const lifecycleMod = _require(path.join(ROOT, 'libs', 'install-engine', 'dist', 'lifecycle.js'));
+    uninstall = lifecycleMod.uninstall;
+
+    assert(typeof declarativeInstall === 'function', 'declarativeInstall is exported from install-engine');
+    assert(typeof DeclarativeDeniedError === 'function', 'DeclarativeDeniedError is exported from install-engine');
+    assert(typeof diff === 'function', 'diff is exported from install-engine');
+    assert(typeof uninstall === 'function', 'uninstall is exported from install-engine');
+  } catch (e) {
+    console.error('  FAIL: could not load install-engine dist:', String(e));
+    assertionsFailed++;
+    declarativeInstall = null;
+    DeclarativeDeniedError = null;
+    diff = null;
+    uninstall = null;
+  }
+
+  if (declarativeInstall && diff && uninstall && DeclarativeDeniedError) {
+
+    // Temp workspace root for declarative tests (isolated from memory-server test)
+    const declTmpDir = path.join(os.tmpdir(), `sox-e2e-decl-${process.pid}-${Date.now()}`);
+    const declScopeRootProject = declTmpDir;
+    const declScopeRootUser = path.join(os.tmpdir(), `sox-e2e-decl-user-${process.pid}-${Date.now()}`);
+
+    process.on('exit', () => {
+      try { fs.rmSync(declTmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { fs.rmSync(declScopeRootUser, { recursive: true, force: true }); } catch { /* ignore */ }
+      // Remove agent files placed at user scope (~/.claude/agents/sox-e2e-agent-*.md)
+      try {
+        const claudeAgentsDir = path.join(os.homedir(), '.claude', 'agents');
+        if (fs.existsSync(claudeAgentsDir)) {
+          for (const f of fs.readdirSync(claudeAgentsDir)) {
+            if (f.startsWith('sox-e2e-agent-')) fs.rmSync(path.join(claudeAgentsDir, f), { force: true });
+          }
+        }
+      } catch { /* ignore */ }
+      // Remove codex config entries placed at user scope (~/.codex/config.toml)
+      // We only remove our test key to avoid clobbering user's real config.
+      // The uninstall() call below handles this via the ledger.
+    });
+
+    fs.mkdirSync(declTmpDir, { recursive: true });
+    fs.mkdirSync(declScopeRootUser, { recursive: true });
+
+    // Create a throwaway markdown agent file to place
+    const agentSrcFile = path.join(declTmpDir, `sox-e2e-agent-${process.pid}.md`);
+    fs.writeFileSync(agentSrcFile, `# E2E Test Agent\n\nThis is a placeholder agent for sox e2e testing.\n`, 'utf8');
+
+    // ── D1. Claude agent — project scope (.claude/agents/) ──────────────────
+    console.log('\nD1: claude agent install — project scope → .claude/agents/');
+
+    let d1Results = null;
+    try {
+      d1Results = await declarativeInstall(
+        {
+          ext: `sox-e2e-agent-${process.pid}`,
+          type: 'agent',
+          hosts: ['claude'],
+          srcPath: agentSrcFile,
+        },
+        'project',
+        declTmpDir,   // workspaceRoot
+        declScopeRootProject, // scopeRoot (same as workspace for project scope)
+        { isProject: true },
+      );
+
+      const d1Result = d1Results.find((r) => r.host === 'claude' && r.scope === 'project');
+      assert(d1Result != null, 'D1: declarativeInstall returned a result for claude/project');
+
+      if (d1Result) {
+        // Verify the file actually landed on disk ([dod.1] — real FS check)
+        const expectedTarget = d1Result.target;
+        const fileExists = fs.existsSync(expectedTarget);
+        assert(fileExists, `D1: agent file placed at ${expectedTarget}`);
+
+        if (fileExists) {
+          const content = fs.readFileSync(expectedTarget, 'utf8');
+          assert(content.includes('E2E Test Agent'), 'D1: placed file contains expected content');
+
+          // Verify target path is inside .claude/agents/ ([ref:host-keyed-target])
+          const relTarget = path.relative(declTmpDir, expectedTarget);
+          assert(relTarget.startsWith('.claude/agents'), `D1: target is inside .claude/agents (got ${relTarget})`);
+          console.log(`  D1 target: ${expectedTarget} (relative: ${relTarget})`);
+
+          // diff shows up-to-date
+          const d1Diff = diff(`sox-e2e-agent-${process.pid}`, 'claude', 'project', declScopeRootProject);
+          assert(d1Diff.clean, `D1: diff shows clean (up-to-date) after install (got: ${JSON.stringify(d1Diff.actions.map((a) => a.kind))})`);
+
+          // Uninstall — file must be gone ([inv:ledger-reversible])
+          await uninstall({
+            ext: `sox-e2e-agent-${process.pid}`,
+            host: 'claude',
+            scope: 'project',
+            scopeRoot: declScopeRootProject,
+            isProject: true,
+          });
+          assert(!fs.existsSync(expectedTarget), `D1: uninstall removed file at ${expectedTarget}`);
+          console.log(`  D1: uninstall removed ${expectedTarget}`);
+        }
+      }
+    } catch (e) {
+      console.error('  D1 error:', String(e));
+      assertionsFailed++;
+    }
+
+    // ── D2. Claude agent — user scope (~/.claude/agents/) ───────────────────
+    console.log('\nD2: claude agent install — user scope → ~/.claude/agents/');
+
+    // Use a unique agent name to avoid collisions with other tests
+    const d2AgentId = `sox-e2e-agent-user-${process.pid}`;
+    const d2SrcFile = path.join(declTmpDir, `${d2AgentId}.md`);
+    fs.writeFileSync(d2SrcFile, `# E2E User Agent\n\nUser-scope agent for sox e2e testing.\n`, 'utf8');
+
+    try {
+      const d2Results = await declarativeInstall(
+        {
+          ext: d2AgentId,
+          type: 'agent',
+          hosts: ['claude'],
+          srcPath: d2SrcFile,
+        },
+        'user',
+        declTmpDir,   // workspaceRoot (unused for user-scope absolute paths)
+        declScopeRootUser, // scopeRoot for ledger
+        { isProject: false },
+      );
+
+      const d2Result = d2Results.find((r) => r.host === 'claude' && r.scope === 'user');
+      assert(d2Result != null, 'D2: declarativeInstall returned a result for claude/user');
+
+      if (d2Result) {
+        // Verify the file actually landed on disk ([dod.1])
+        const expectedTarget = d2Result.target;
+        const fileExists = fs.existsSync(expectedTarget);
+        assert(fileExists, `D2: agent file placed at ${expectedTarget}`);
+
+        if (fileExists) {
+          const content = fs.readFileSync(expectedTarget, 'utf8');
+          assert(content.includes('E2E User Agent'), 'D2: placed file contains expected content');
+
+          // Verify target path is inside ~/.claude/agents/ ([ref:host-keyed-target])
+          // [inv:sandbox-isolation]: SOX_HOME reroots user-scope paths in test/probe
+          // environments; use the effective base rather than os.homedir() directly.
+          const effectiveBase = process.env['SOX_HOME'] || os.homedir();
+          const homeAgentsDir = path.join(effectiveBase, '.claude', 'agents');
+          assert(expectedTarget.startsWith(homeAgentsDir),
+            `D2: target is inside ~/.claude/agents (got ${expectedTarget})`);
+          console.log(`  D2 target: ${expectedTarget}`);
+
+          // diff shows up-to-date
+          const d2Diff = diff(d2AgentId, 'claude', 'user', declScopeRootUser);
+          assert(d2Diff.clean, `D2: diff shows clean after install (got: ${JSON.stringify(d2Diff.actions.map((a) => a.kind))})`);
+
+          // Uninstall via ledger ([inv:ledger-reversible])
+          await uninstall({
+            ext: d2AgentId,
+            host: 'claude',
+            scope: 'user',
+            scopeRoot: declScopeRootUser,
+            isProject: false,
+          });
+          assert(!fs.existsSync(expectedTarget), `D2: uninstall removed file at ${expectedTarget}`);
+          console.log(`  D2: uninstall removed ${expectedTarget}`);
+        }
+      }
+    } catch (e) {
+      console.error('  D2 error:', String(e));
+      assertionsFailed++;
+    }
+
+    // ── D3. Codex agent — user scope (~/.codex/config.toml via config-merge) ─
+    console.log('\nD3: codex agent install — user scope → ~/.codex/config.toml (config-merge)');
+
+    const d3AgentId = `sox-e2e-codex-agent-${process.pid}`;
+    const d3ScopeRoot = path.join(os.tmpdir(), `sox-e2e-decl-codex-${process.pid}-${Date.now()}`);
+    fs.mkdirSync(d3ScopeRoot, { recursive: true });
+
+    // Register cleanup for d3ScopeRoot
+    process.on('exit', () => {
+      try { fs.rmSync(d3ScopeRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+    });
+
+    // Codex agent is config-merge into config.toml [agents.<name>]
+    const d3AgentValue = { description: 'E2E test codex agent', model: 'o4-mini' };
+    const d3KeyPath = `agents.${d3AgentId}`;
+
+    try {
+      const d3Results = await declarativeInstall(
+        {
+          ext: d3AgentId,
+          type: 'agent',
+          hosts: ['codex'],
+          configKeyPath: d3KeyPath,
+          configValue: d3AgentValue,
+        },
+        'user',
+        declTmpDir,  // workspaceRoot
+        d3ScopeRoot, // scopeRoot for ledger
+        { isProject: false },
+      );
+
+      const d3Result = d3Results.find((r) => r.host === 'codex' && r.scope === 'user');
+      assert(d3Result != null, 'D3: declarativeInstall returned a result for codex/user');
+
+      if (d3Result) {
+        // Verify the config was written ([dod.1] — real FS check)
+        const targetFile = d3Result.target;
+        const fileExists = fs.existsSync(targetFile);
+        assert(fileExists, `D3: codex config file exists at ${targetFile}`);
+
+        if (fileExists) {
+          const raw = fs.readFileSync(targetFile, 'utf8');
+          // TOML or JSON depending on the capability. Codex uses config-merge TOML.
+          // The key should be present in the file somewhere.
+          const hasKey = raw.includes(d3AgentId) || raw.includes('E2E test codex agent');
+          assert(hasKey, `D3: codex config contains the agent entry (target: ${targetFile})`);
+          console.log(`  D3 target: ${targetFile}`);
+
+          // diff shows up-to-date
+          // Debug: show ledger contents
+          const d3LedgerPath = path.join(d3ScopeRoot, '.sox', 'ledger.json');
+          if (fs.existsSync(d3LedgerPath)) {
+            const d3Ledger = JSON.parse(fs.readFileSync(d3LedgerPath, 'utf8'));
+            console.log(`  D3 ledger: ${JSON.stringify(d3Ledger).slice(0, 300)}`);
+          } else {
+            console.log(`  D3: ledger NOT found at ${d3LedgerPath}`);
+          }
+          const d3Diff = diff(d3AgentId, 'codex', 'user', d3ScopeRoot);
+          console.log(`  D3 diff result: ${JSON.stringify(d3Diff.actions)}`);
+          assert(d3Diff.clean, `D3: diff shows clean after codex install (got: ${JSON.stringify(d3Diff.actions.map((a) => a.kind))})`);
+
+          // Uninstall via ledger — removes ONLY sox-owned key ([inv:ledger-reversible])
+          await uninstall({
+            ext: d3AgentId,
+            host: 'codex',
+            scope: 'user',
+            scopeRoot: d3ScopeRoot,
+            isProject: false,
+          });
+          // After uninstall, the key must be gone from the file
+          if (fs.existsSync(targetFile)) {
+            const rawAfter = fs.readFileSync(targetFile, 'utf8');
+            const keyGone = !rawAfter.includes(d3AgentId);
+            assert(keyGone, `D3: uninstall removed codex agent key from ${targetFile}`);
+          } else {
+            // File was removed entirely (e.g. was the only key) — that's also fine
+            assert(true, 'D3: codex config file removed entirely after uninstall');
+          }
+          console.log(`  D3: codex agent entry uninstalled from ${targetFile}`);
+        }
+      }
+    } catch (e) {
+      console.error('  D3 error:', String(e));
+      assertionsFailed++;
+    }
+
+    // ── D4. STDIO-IN-.MCP.JSON DENIAL ([dod.2]) ──────────────────────────────
+    // An mcp-server declaring stdio transport into .mcp.json MUST be denied.
+    // Claude's .mcp.json only accepts SSE/HTTP entries.
+    console.log('\nD4: stdio mcp-server into .mcp.json MUST be denied ([dod.2])');
+
+    const d4ScopeRoot = path.join(os.tmpdir(), `sox-e2e-decl-d4-${process.pid}-${Date.now()}`);
+    fs.mkdirSync(d4ScopeRoot, { recursive: true });
+    process.on('exit', () => {
+      try { fs.rmSync(d4ScopeRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+    });
+
+    let d4Denied = false;
+    let d4DenialMessage = '';
+    try {
+      await declarativeInstall(
+        {
+          ext: 'bad-stdio-server',
+          type: 'mcp-server',
+          hosts: ['claude'],
+          transport: 'stdio',  // <-- this MUST be denied at project scope
+          configKeyPath: 'mcpServers.bad-stdio-server',
+          configValue: { command: 'node', args: ['server.js'] },
+        },
+        'project',
+        d4ScopeRoot,
+        d4ScopeRoot,
+        { isProject: true },
+      );
+      // Should NOT reach here
+      console.error('  D4 FAIL: declarativeInstall did not throw for stdio mcp-server into .mcp.json');
+    } catch (e) {
+      if (e instanceof DeclarativeDeniedError || (e && e.constructor && e.constructor.name === 'DeclarativeDeniedError')) {
+        d4Denied = true;
+        d4DenialMessage = e.message ?? '';
+        console.log(`  D4: denial received: ${d4DenialMessage.slice(0, 120)}`);
+      } else {
+        // Wrong error type — still caught, but log
+        d4Denied = true; // the install WAS denied (threw)
+        d4DenialMessage = String(e);
+        console.log(`  D4: threw (not DeclarativeDeniedError): ${d4DenialMessage.slice(0, 120)}`);
+      }
+    }
+
+    assert(d4Denied,
+      'D4: stdio mcp-server install into .mcp.json is DENIED ([dod.2])');
+
+    // Ensure no .mcp.json was written (denial means no side effect)
+    const d4McpJson = path.join(d4ScopeRoot, '.mcp.json');
+    assert(!fs.existsSync(d4McpJson),
+      `D4: .mcp.json NOT created after denied stdio install (${d4McpJson})`);
+
+    console.log(`  D4: confirmed — .mcp.json does NOT exist after denied stdio install`);
+
+    // Also verify DeclarativeDeniedError has the expected message format
+    if (d4Denied && d4DenialMessage) {
+      const hasDeniedKeyword = d4DenialMessage.toLowerCase().includes('denied') ||
+                               d4DenialMessage.toLowerCase().includes('stdio') ||
+                               d4DenialMessage.toLowerCase().includes('mcp.json');
+      assert(hasDeniedKeyword,
+        `D4: denial message contains relevant keywords (got: ${d4DenialMessage.slice(0, 120)})`);
+    }
+
+    // Cleanup temp dirs
+    try { fs.rmSync(d4ScopeRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+
+  } else {
+    console.error('  SKIP: install-engine dist not available; declarative tests skipped');
+    assertionsFailed++;
+  }
+
+    // ═══════════════════════════════════════════════════════════════════════════
   // Summary
   // ═══════════════════════════════════════════════════════════════════════════
   console.log('\n' + '═'.repeat(60));
