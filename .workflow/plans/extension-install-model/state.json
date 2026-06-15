@@ -89,9 +89,9 @@
     "audit-final": {
       "status": "complete",
       "started_at": "2026-06-15T04:50:05.838Z",
-      "done_at": "2026-06-15T07:45:13.060Z",
+      "done_at": "2026-06-15T07:47:28.271Z",
       "start_ref": "c165ace7d8a7c4a7157cbeb6ef8439c46d213b15",
-      "end_ref": "62e5a77b18c99018fc20d7cfe7eba9d09c9d80e2"
+      "end_ref": "ff4d2c9ab964d56779545f6f672b4ca6a82226a7"
     }
   },
   "transition_log": [
@@ -228,11 +228,11 @@
       "note": ""
     },
     {
-      "ts": "2026-06-15T07:45:13.060Z",
+      "ts": "2026-06-15T07:47:28.271Z",
       "from": "audit-final",
       "to": "audit-final",
       "start_ref": "c165ace7d8a7c4a7157cbeb6ef8439c46d213b15",
-      "end_ref": "62e5a77b18c99018fc20d7cfe7eba9d09c9d80e2",
+      "end_ref": "ff4d2c9ab964d56779545f6f672b4ca6a82226a7",
       "audit_exit": 2,
       "audit_criteria_passed": 0,
       "audit_criteria_total": 0,
