@@ -40,15 +40,15 @@
     "cli-wiring": {
       "status": "complete",
       "started_at": "2026-06-15T03:01:15.656Z",
-      "done_at": "2026-06-15T03:16:43.532Z",
+      "done_at": "2026-06-15T03:18:55.661Z",
       "start_ref": "597624b6480a59541de3140a734d7f03f965f0a6",
       "end_ref": "1900a53bb01d42512d9acfb387560d3755ee152e"
     },
     "declarative-install": {
-      "status": "in_progress",
-      "started_at": "2026-06-15T03:17:06.760Z",
+      "status": "pending",
+      "started_at": null,
       "done_at": null,
-      "start_ref": "dc01d3e4769979d80771e81fe497fdaa7c9699f5",
+      "start_ref": null,
       "end_ref": null
     },
     "mcp-install-modes": {
@@ -144,14 +144,14 @@
       "note": "foundation phase 18/18 criteria pass: bundle-pipeline+manifest-templates+host-targets guards all 0-fail; structural greps clean; parity gate green"
     },
     {
-      "ts": "2026-06-15T03:16:43.532Z",
+      "ts": "2026-06-15T03:18:55.661Z",
       "from": "cli-wiring",
       "to": "cli-wiring",
       "start_ref": "597624b6480a59541de3140a734d7f03f965f0a6",
       "end_ref": "1900a53bb01d42512d9acfb387560d3755ee152e",
-      "audit_exit": 19,
-      "audit_criteria_passed": 17,
-      "audit_criteria_total": 55,
+      "audit_exit": 13,
+      "audit_criteria_passed": 23,
+      "audit_criteria_total": 49,
       "by": "fullstack-developer",
       "note": ""
     }
