@@ -7,7 +7,7 @@
     "version": "0.8.9",
     "hash": "d804364a6d99"
   },
-  "current_state": "manifest-templates",
+  "current_state": "audit-foundation",
   "states": {
     "bundle-pipeline": {
       "status": "complete",
@@ -24,11 +24,11 @@
       "end_ref": "25604faaf784a99bb91f768c568934694bea128d"
     },
     "host-targets": {
-      "status": "in_progress",
+      "status": "complete",
       "started_at": "2026-06-15T01:11:05.213Z",
-      "done_at": null,
+      "done_at": "2026-06-15T02:21:12.553Z",
       "start_ref": "52d40d1bd765daa07e62febf682a009e53fd0331",
-      "end_ref": null
+      "end_ref": "02b35557599f192b9af722b8a67a483be678c2b0"
     },
     "audit-foundation": {
       "status": "pending",
@@ -118,6 +118,18 @@
       "audit_criteria_total": 22,
       "by": "fullstack-developer",
       "note": "guard: 26 ok 0 fail — all 6 types sox-init+validate clean"
+    },
+    {
+      "ts": "2026-06-15T02:21:12.553Z",
+      "from": "manifest-templates",
+      "to": "host-targets",
+      "start_ref": "52d40d1bd765daa07e62febf682a009e53fd0331",
+      "end_ref": "02b35557599f192b9af722b8a67a483be678c2b0",
+      "audit_exit": 5,
+      "audit_criteria_passed": 13,
+      "audit_criteria_total": 23,
+      "by": "fullstack-developer",
+      "note": "guard: 14 ok 0 fail — all (type,host,scope) land under SBX, zero real-home writes"
     }
   ],
   "amendment_log": []
