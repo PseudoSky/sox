@@ -79,6 +79,8 @@ def phase_framework() -> None:
           "grep -qE \"'service'|\\\"service\\\"\" libs/host-runtime/src/loader.ts && echo OK", expect_ok=True)
     check("http-transport.7", "run-service registration injects SOX_CONFIG_* into spec.env",
           "grep -q 'SOX_CONFIG_' libs/install-engine/src/install.ts && echo OK", expect_ok=True)
+    check("http-transport.8", "findLocalExtension typeDirs includes services bucket",
+          "grep -qE \"typeDirs|services\" libs/install-engine/src/install.ts && grep -q 'services' libs/install-engine/src/install.ts && echo OK", expect_ok=True)
 
     # ---- mcp-as-service ----
     check("mcp-as-service.1", "mcp-server handled as service[transport=stdio]",

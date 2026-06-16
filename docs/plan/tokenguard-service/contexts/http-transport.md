@@ -21,6 +21,7 @@ After this state a `service` with `transport: http` **installs, starts, holds a 
   - **Runtime dispatch (BLOCKER):** `libs/host-runtime/src/loader.ts` `dispatchToAdapter()` has a `case 'mcp-server'` and a throwing `default`. Add a `case 'service'` so `sox start` on a `type:service` extension is dispatched (to the run-service/supervisor path), not thrown. Install-time routing alone is insufficient — without this, a service installs but cannot start. Keep the existing `activateMcp` path intact ([inv:no-regress-mcp]).
   - **Config passthrough (required):** at the `run-service` registration site in `install.ts`, `spec.env` is currently `{}`. Inject the cascade-resolved `SOX_CONFIG_*` for the extension's declared config keys (the same transform `loader.ts` `processEntry` applies for mcp-server) so a started service receives its config — **[ref:config-schema]**, **[inv:standard-config]**.
   - Install engine: generalize the `profile: 'service'` block so a `type:service` (or any `transport: http`) install materializes the bundle to the store dir and registers via `run-service` **[ref:run-service-spec]** — preserving the registry entry shape and the single registry **[inv:single-registry]**.
+  - **Local discovery (install-blocker):** add `'services'` to the `typeDirs` array in `findLocalExtension` (`libs/install-engine/src/install.ts:920`) so a `type:service` extension at `extensions/services/<id>/` is resolvable by `sox install <id>`. Without it, the service installs nowhere and `tg-service` cannot start. This is the on-disk type-bucket convention (`extensions/<type-plural>/<id>/`) made discoverable for the new bucket.
   - Host registry: add a `service` surface in `buildSurfaces()` routing to the `run-service` capability with scope-keyed store paths (no literal host path beyond the registry base — **[ref:host-keyed-target]**).
   - Confirm the stop path (SIGTERM → `stop_timeout_ms` → SIGKILL) terminates a port-holder and releases the port — **[ref:supervisor-stop]**.
   - Add `tools/tg-plan/check-http-service.sh` — scaffolds a trivial http service, installs+**starts** it via `./bin/sox` (exercising the loader `service` case), asserts `HTTP SERVICE HEALTHY` from the health probe, stops it, asserts `STOPPED CLEAN orphans=0` (no child + port free).
@@ -38,6 +39,7 @@ After this state a `service` with `transport: http` **installs, starts, holds a 
 - [ ] **[http-transport.5]** `tools/tg-plan/check-http-service.sh` asserts `STOPPED CLEAN orphans=0` after stop. `grep -n "orphans=0" tools/tg-plan/check-http-service.sh`
 - [ ] **[http-transport.6]** `loader.ts` `dispatchToAdapter` has a `service` case so a `type:service` extension starts at runtime (not just installs). `grep -n "'service'\|\"service\"" libs/host-runtime/src/loader.ts`
 - [ ] **[http-transport.7]** the run-service registration injects `SOX_CONFIG_*` into `spec.env` for declared config keys. `grep -n "SOX_CONFIG_" libs/install-engine/src/install.ts`
+- [ ] **[http-transport.8]** `findLocalExtension` `typeDirs` includes `services` so `extensions/services/<id>/` is discoverable. `grep -n "services" libs/install-engine/src/install.ts`
 
 ---
 
@@ -74,6 +76,7 @@ mutates:    ["libs/host-runtime/src/supervisor.ts",
 
 ## Notes for executor
 
+- **Duplicate `typeDirs` footgun.** `findLocalExtension`'s `typeDirs` array exists in **both** `libs/install-engine/src/install.ts:920` and a legacy copy at `scripts/install.ts:932`. Add `'services'` to the live lib copy; check whether `scripts/install.ts` is still reachable (per C1 the hand-maintained mirrors were retired) and either update it too or confirm it is dead — do not leave a half-updated pair (same class of footgun as the `VALID_TYPES` duplicate).
 - **Named magic — `tools/supervisor-shim.js`.** A legacy compatibility wrapper for sox-memory lifecycle tests duplicates `_probeHealth` (socket/memory health only). It is **out of scope** here: http services ride the real `libs/host-runtime` supervisor, and the shim is never on an http-service path. Do **not** add the http branch to the shim. It is reserved `read_only` so you see it; if a future change makes the shim http-aware, that is a separate planner-class amendment.
 - The http probe must use the Node stdlib `http`/`https` only — no new dependency; the supervisor is a foundational lib.
 - A port-holder that ignores SIGTERM is the classic orphan: ensure the trivial test service installs a SIGTERM handler that closes the server, and verify SIGKILL escalation still fires within `stop_timeout_ms` if it doesn't.
