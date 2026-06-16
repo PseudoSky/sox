@@ -31,7 +31,16 @@
         "resigns": [],
         "renames": [],
         "adds_set_members": ["http-get"]
-      }
+      },
+      "tasks": [
+        { "id": "st-1", "desc": "type system: VALID_TYPES (+dup) + unions + transports field", "writes": ["libs/manifest/src/index.ts"], "criteria": ["service-type.1", "service-type.2"], "needs": [], "model": "sonnet", "effort": "medium" },
+        { "id": "st-2", "desc": "inline JSON-schema enums + processTypes", "writes": ["libs/manifest/src/index.ts"], "criteria": ["service-type.7"], "needs": ["st-1"], "model": "sonnet", "effort": "medium" },
+        { "id": "st-3", "desc": "validate() transports generalization + tests", "writes": ["libs/manifest/src/index.ts"], "criteria": ["service-type.3"], "needs": ["st-2"], "model": "sonnet", "effort": "medium" },
+        { "id": "st-4", "desc": "serviceTemplate + scaffold dispatch", "writes": ["libs/authoring/src/templates/service/index.ts", "libs/authoring/src/index.ts"], "criteria": ["service-type.4"], "needs": ["st-1"], "model": "sonnet", "effort": "medium" },
+        { "id": "st-5", "desc": "sox init service + --transport flag", "writes": ["apps/sox/src/main.ts"], "criteria": [], "needs": ["st-4"], "model": "haiku", "effort": "low" },
+        { "id": "st-6", "desc": "docs/guidelines/service.md", "writes": ["docs/guidelines/service.md"], "criteria": ["service-type.5"], "needs": ["st-1"], "model": "haiku", "effort": "low" },
+        { "id": "st-7", "desc": "check-service-scaffold.sh harness", "writes": ["tools/tg-plan/check-service-scaffold.sh"], "criteria": ["service-type.6"], "needs": ["st-5"], "model": "haiku", "effort": "low" }
+      ]
     },
     "http-transport": {
       "kind": "work",
@@ -53,7 +62,17 @@
         "resigns": [],
         "renames": [],
         "adds_set_members": ["services"]
-      }
+      },
+      "tasks": [
+        { "id": "ht-1", "desc": "http-get health type + _probeHealth (http.get + timeout)", "writes": ["libs/host-runtime/src/supervisor.ts"], "criteria": ["http-transport.1"], "needs": ["st-1"], "model": "sonnet", "effort": "medium" },
+        { "id": "ht-2", "desc": "port.txt resolution + await-before-probe", "writes": ["libs/host-runtime/src/supervisor.ts"], "criteria": ["http-transport.2"], "needs": ["ht-1"], "model": "opus", "effort": "high" },
+        { "id": "ht-3", "desc": "loader.ts dispatchToAdapter service case", "writes": ["libs/host-runtime/src/loader.ts"], "criteria": ["http-transport.6"], "needs": ["st-1"], "model": "opus", "effort": "high" },
+        { "id": "ht-4", "desc": "install.ts route transport:http through run-service", "writes": ["libs/install-engine/src/install.ts", "libs/install-engine/src/capabilities/run-service.ts"], "criteria": ["http-transport.3"], "needs": ["st-1"], "model": "opus", "effort": "high" },
+        { "id": "ht-5", "desc": "SOX_CONFIG_* injection at run-service site", "writes": ["libs/install-engine/src/install.ts"], "criteria": ["http-transport.7"], "needs": ["ht-4"], "model": "sonnet", "effort": "medium" },
+        { "id": "ht-6", "desc": "host-registry service surface", "writes": ["libs/host-registry/src/claude.ts"], "criteria": ["http-transport.4"], "needs": ["st-1"], "model": "haiku", "effort": "low" },
+        { "id": "ht-7", "desc": "typeDirs += services", "writes": ["libs/install-engine/src/install.ts"], "criteria": ["http-transport.8"], "needs": ["ht-5"], "model": "haiku", "effort": "low" },
+        { "id": "ht-9", "desc": "check-http-service.sh harness (health + orphans=0)", "writes": ["tools/tg-plan/check-http-service.sh"], "criteria": ["http-transport.5"], "needs": ["ht-2", "ht-3", "ht-4", "ht-5", "ht-6", "ht-7"], "model": "sonnet", "effort": "medium" }
+      ]
     },
     "mcp-as-service": {
       "kind": "work",
@@ -73,7 +92,15 @@
         "deletes": [],
         "resigns": [],
         "renames": []
-      }
+      },
+      "tasks": [
+        { "id": "mas-1", "desc": "manifest: mcp-server = service[transport=stdio]", "writes": ["libs/manifest/src/index.ts"], "criteria": ["mcp-as-service.1"], "needs": ["st-3", "ht-4"], "model": "sonnet", "effort": "medium" },
+        { "id": "mas-2", "desc": "install.ts route mcp-server through unified run-service; drop parallel branch", "writes": ["libs/install-engine/src/install.ts"], "criteria": ["mcp-as-service.2"], "needs": ["ht-7"], "model": "opus", "effort": "high" },
+        { "id": "mas-3", "desc": "mcpServerTemplate emits transports:['stdio']", "writes": ["libs/authoring/src/templates/mcp-server/index.ts"], "criteria": ["mcp-as-service.3"], "needs": ["st-1"], "model": "haiku", "effort": "low" },
+        { "id": "mas-4", "desc": "docs/guidelines/mcp-server.md service[stdio] note", "writes": ["docs/guidelines/mcp-server.md"], "criteria": ["mcp-as-service.4"], "needs": ["mas-1"], "model": "haiku", "effort": "low" },
+        { "id": "mas-5", "desc": "check-memory-nonregress.sh harness", "writes": ["tools/tg-plan/check-memory-nonregress.sh"], "criteria": ["mcp-as-service.5"], "needs": ["ht-3"], "model": "sonnet", "effort": "medium" },
+        { "id": "mas-6", "desc": "memory-server non-regression glue (C6 + lifecycle green under unified routing)", "writes": ["libs/install-engine/src/install.ts"], "criteria": [], "needs": ["mas-2", "mas-5"], "model": "opus", "effort": "high" }
+      ]
     },
     "audit-framework": {
       "kind": "audit",
@@ -126,7 +153,14 @@
       ],
       "context": "contexts/core-invariants.md",
       "notes": "Port selftest.py + roundtrip.py invariants to Vitest: bijective+idempotent cache, reload-stable IDs, exact round-trip detokenize(tokenize(x))==x, zero-leak wire guarantee scoped to system/messages/metadata (tools untouched), SSE split-token reassembly, thinking-block passthrough, longest-first. Each is a red->green assertion. The suite IS the dod.4 proof.",
-      "changes": { "deletes": [], "resigns": [], "renames": [] }
+      "changes": { "deletes": [], "resigns": [], "renames": [] },
+      "tasks": [
+        { "id": "ci-1", "desc": "vitest config + test target", "writes": ["libs/tokenguard-core/vitest.config.ts"], "criteria": ["core-invariants.5"], "needs": ["ce-1"], "model": "haiku", "effort": "low" },
+        { "id": "ci-2", "desc": "mapper.spec (idempotent/bijective/reload-stable)", "writes": ["libs/tokenguard-core/test/mapper.spec.ts"], "criteria": ["core-invariants.4"], "needs": ["ci-1", "ce-3"], "model": "haiku", "effort": "low" },
+        { "id": "ci-3", "desc": "detectors.spec (coverage/longest-first/variants)", "writes": ["libs/tokenguard-core/test/detectors.spec.ts"], "criteria": [], "needs": ["ci-1", "ce-4"], "model": "sonnet", "effort": "medium" },
+        { "id": "ci-4", "desc": "roundtrip.spec (exact + zero-leak + scoping)", "writes": ["libs/tokenguard-core/test/roundtrip.spec.ts"], "criteria": ["core-invariants.1", "core-invariants.2"], "needs": ["ci-1", "ce-5"], "model": "sonnet", "effort": "medium" },
+        { "id": "ci-5", "desc": "sse.spec (split-token reassembly + passthrough)", "writes": ["libs/tokenguard-core/test/sse.spec.ts"], "criteria": ["core-invariants.3"], "needs": ["ci-1", "ce-6"], "model": "sonnet", "effort": "medium" }
+      ]
     },
     "audit-core": {
       "kind": "audit",
@@ -156,7 +190,20 @@
       ],
       "context": "contexts/tg-service.md",
       "notes": "Scaffold tokenguard as a `service` extension (transport http) on top of @sox/tokenguard-core. Port proxy.py: port-holding HTTP server (walk port..+9, write port.txt), capture/audit policy, leak self-check, Accept-Encoding: identity. Provider-agnostic via an adapter interface; ship anthropic (SSE reassembly, thinking passthrough, request scoping) + generic (plain JSON passthrough) adapters. Config exclusively via config_schema/SOX_CONFIG_* ([ref:config-schema]); permissions enforced at the resource sink ([ref:c6-policy-guard]). The running server persists the live map continuously. Convergence point: needs BOTH framework (service+http) and core (engine) done.",
-      "changes": { "deletes": [], "resigns": [], "renames": [] }
+      "changes": { "deletes": [], "resigns": [], "renames": [] },
+      "tasks": [
+        { "id": "tgs-1", "desc": "scaffold service ext + manifest (type:service/http/health/config_schema/perms)", "writes": ["extensions/services/tokenguard/extension.json", "extensions/services/tokenguard/tsconfig.json"], "criteria": ["tg-service.1"], "needs": ["audit-framework", "audit-core", "st-4"], "model": "sonnet", "effort": "medium" },
+        { "id": "tgs-2", "desc": "package.json/project.json incl. bundle target", "writes": ["extensions/services/tokenguard/package.json", "extensions/services/tokenguard/project.json"], "criteria": ["tg-service.2", "tg-service.7"], "needs": ["tgs-1", "ce-1"], "model": "haiku", "effort": "low" },
+        { "id": "tgs-3", "desc": "config.ts (SOX_CONFIG_* resolution)", "writes": ["extensions/services/tokenguard/src/config.ts"], "criteria": ["tg-service.3"], "needs": ["tgs-1"], "model": "sonnet", "effort": "medium" },
+        { "id": "tgs-4", "desc": "proxy server core (port walk + storePath/port.txt after listen + /health)", "writes": ["extensions/services/tokenguard/src/proxy.ts"], "criteria": ["tg-service.8"], "needs": ["tgs-3", "ht-2"], "model": "opus", "effort": "high" },
+        { "id": "tgs-5", "desc": "proxy tokenize path (scoping + identity + leak self-check + audit)", "writes": ["extensions/services/tokenguard/src/proxy.ts"], "criteria": [], "needs": ["tgs-4", "ce-5"], "model": "opus", "effort": "high" },
+        { "id": "tgs-6", "desc": "capture/audit policy", "writes": ["extensions/services/tokenguard/src/proxy.ts"], "criteria": [], "needs": ["tgs-5"], "model": "sonnet", "effort": "medium" },
+        { "id": "tgs-7", "desc": "anthropic adapter (SSE reassembly + thinking)", "writes": ["extensions/services/tokenguard/src/adapters/anthropic.ts"], "criteria": [], "needs": ["tgs-5", "ce-6"], "model": "opus", "effort": "high" },
+        { "id": "tgs-8", "desc": "generic passthrough adapter", "writes": ["extensions/services/tokenguard/src/adapters/generic.ts"], "criteria": ["tg-service.4"], "needs": ["tgs-5", "ce-5"], "model": "haiku", "effort": "low" },
+        { "id": "tgs-9", "desc": "C6 sink guard (SOX_POLICY_* before side-effect)", "writes": ["extensions/services/tokenguard/src/index.ts"], "criteria": ["tg-service.5"], "needs": ["tgs-4"], "model": "opus", "effort": "high" },
+        { "id": "tgs-10", "desc": "index.ts wiring (config->mapper->proxy->continuous persist)", "writes": ["extensions/services/tokenguard/src/index.ts"], "criteria": [], "needs": ["tgs-3", "tgs-6", "tgs-9", "ce-3"], "model": "sonnet", "effort": "medium" },
+        { "id": "tgs-11", "desc": "demo proxy-roundtrip.sh + mock upstream + 4 artifacts", "writes": ["extensions/services/tokenguard/demo/proxy-roundtrip.sh"], "criteria": ["tg-service.6"], "needs": ["tgs-10", "tgs-7", "tgs-8"], "model": "sonnet", "effort": "medium" }
+      ]
     },
     "tg-cli": {
       "kind": "work",
@@ -170,7 +217,12 @@
       ],
       "context": "contexts/tg-cli.md",
       "notes": "A simple CLI (invoked via `./bin/sox exec tokenguard -- <cmd>`) to seed + inspect identifiers, operating on the SAME live, continuously-persisted token map the running proxy reads. seed appends a custom entry; the running proxy reflects it without restart (file-watch or socket nudge, memoryd-style). map prints the current bijective entries. No MCP surface (out of scope by decision).",
-      "changes": { "deletes": [], "resigns": [], "renames": [] }
+      "changes": { "deletes": [], "resigns": [], "renames": [] },
+      "tasks": [
+        { "id": "cli-1", "desc": "mapstore.ts (shared store + fs.watch/debounce/merge signal)", "writes": ["extensions/services/tokenguard/src/mapstore.ts"], "criteria": ["tg-cli.2", "tg-cli.3"], "needs": ["tgs-10"], "model": "opus", "effort": "high" },
+        { "id": "cli-2", "desc": "cli.ts (seed/map/summary via sox exec)", "writes": ["extensions/services/tokenguard/src/cli.ts"], "criteria": ["tg-cli.1", "tg-cli.4"], "needs": ["cli-1"], "model": "sonnet", "effort": "medium" },
+        { "id": "cli-4", "desc": "demo live-seed.sh (LIVE SEED REFLECTED)", "writes": ["extensions/services/tokenguard/demo/live-seed.sh"], "criteria": ["tg-cli.5"], "needs": ["cli-2"], "model": "sonnet", "effort": "medium" }
+      ]
     },
     "audit-service": {
       "kind": "audit",
@@ -193,7 +245,12 @@
       ],
       "context": "contexts/decouple-generalize.md",
       "notes": "Final generalization pass + the simple negative check: prove zero WOP coupling remains (no roe.json / engagement-dir / e2e-harness / wop path tokens in tokenguard-core or the tokenguard service), and document the generic, config-driven usage for any LLM API (the *_BASE_URL redirect model). This is documentation + a grep gate, not new behavior.",
-      "changes": { "deletes": [], "resigns": [], "renames": [] }
+      "changes": { "deletes": [], "resigns": [], "renames": [] },
+      "tasks": [
+        { "id": "dg-1", "desc": "core README (engine API + generic usage)", "writes": ["libs/tokenguard-core/README.md"], "criteria": ["decouple-generalize.3"], "needs": ["audit-service", "ce-5"], "model": "haiku", "effort": "low" },
+        { "id": "dg-2", "desc": "service README (operator workflow + *_BASE_URL model)", "writes": ["extensions/services/tokenguard/README.md"], "criteria": ["decouple-generalize.2"], "needs": ["audit-service", "tgs-10"], "model": "haiku", "effort": "low" },
+        { "id": "dg-3", "desc": "service CLAUDE.md + zero-WOP-coupling gate", "writes": ["extensions/services/tokenguard/CLAUDE.md"], "criteria": ["decouple-generalize.1"], "needs": ["audit-service", "cli-2"], "model": "haiku", "effort": "low" }
+      ]
     },
     "code-review": {
       "kind": "work",
@@ -203,7 +260,10 @@
       "artifacts": ["docs/plan/tokenguard-service/code-review.md"],
       "context": "contexts/code-review.md",
       "notes": "The planner/orchestrator performs a full code review of every touched project before the final audit and records findings + resolution in code-review.md. Guard requires the review artifact present with a PASS verdict AND a clean `nx run-many -t typecheck,lint,test` across all touched projects. Reviewer gate per [dod.9].",
-      "changes": { "deletes": [], "resigns": [], "renames": [] }
+      "changes": { "deletes": [], "resigns": [], "renames": [] },
+      "tasks": [
+        { "id": "cr-1", "desc": "orchestrator review of all touched projects -> VERDICT: PASS + clean cross-project typecheck/lint/test", "writes": ["docs/plan/tokenguard-service/code-review.md"], "criteria": ["code-review.1", "code-review.2"], "needs": ["dg-1", "dg-2", "dg-3"], "model": "opus", "effort": "high" }
+      ]
     },
     "audit-final": {
       "kind": "audit",
