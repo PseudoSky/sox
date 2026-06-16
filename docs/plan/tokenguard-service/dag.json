@@ -29,7 +29,8 @@
       "changes": {
         "deletes": [],
         "resigns": [],
-        "renames": []
+        "renames": [],
+        "adds_set_members": ["http-get"]
       }
     },
     "http-transport": {
@@ -50,7 +51,8 @@
       "changes": {
         "deletes": [],
         "resigns": [],
-        "renames": []
+        "renames": [],
+        "adds_set_members": ["services"]
       }
     },
     "mcp-as-service": {

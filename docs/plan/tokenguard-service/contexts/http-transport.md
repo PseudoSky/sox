@@ -48,7 +48,8 @@ After this state a `service` with `transport: http` **installs, starts, holds a 
 ```text
 read_only:  ["libs/manifest/src/index.ts",
              "extensions/mcp-servers/memory-server/extension.json",
-             "tools/supervisor-shim.js"]
+             "tools/supervisor-shim.js",
+             "libs/install-engine/src/capabilities/capabilities.spec.ts"]
 mutates:    ["libs/host-runtime/src/supervisor.ts",
              "libs/host-runtime/src/loader.ts",
              "libs/install-engine/src/install.ts",
