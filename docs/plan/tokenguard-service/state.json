@@ -5,10 +5,10 @@
   "current_state": "service-type",
   "states": {
     "service-type": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-16T23:50:21.784Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "a913110a5b62e443629e453c5b68df2d7cdc3877",
       "end_ref": null
     },
     "http-transport": {
