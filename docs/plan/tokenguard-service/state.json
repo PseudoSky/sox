@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "tokenguard-service",
   "dag": "dag.json",
-  "current_state": "core-engine",
+  "current_state": "service-type",
   "states": {
     "service-type": {
       "status": "pending",
@@ -33,11 +33,11 @@
       "end_ref": null
     },
     "core-engine": {
-      "status": "in_progress",
+      "status": "complete",
       "started_at": "2026-06-16T23:38:35.717Z",
-      "done_at": null,
+      "done_at": "2026-06-16T23:47:22.476Z",
       "start_ref": "ce4bfac06b13f075904c98ab945c16deef5422f4",
-      "end_ref": null
+      "end_ref": "1ca2b672b945c094d6fa3e3b51bbc781abd14e27"
     },
     "core-invariants": {
       "status": "pending",
@@ -96,7 +96,20 @@
       "end_ref": null
     }
   },
-  "transition_log": [],
+  "transition_log": [
+    {
+      "ts": "2026-06-16T23:47:22.476Z",
+      "from": "core-engine",
+      "to": "core-engine",
+      "start_ref": "ce4bfac06b13f075904c98ab945c16deef5422f4",
+      "end_ref": "1ca2b672b945c094d6fa3e3b51bbc781abd14e27",
+      "audit_exit": 10,
+      "audit_criteria_passed": 0,
+      "audit_criteria_total": 20,
+      "by": "fullstack-developer",
+      "note": "Ported core.py to @sox/tokenguard-core (9 files); nx build green. In-spec deviations: seed uses neutral label/id types, DetectorConfig re-export, one intra-package require for a circular dep. 52751 subagent_tokens."
+    }
+  ],
   "amendment_log": [],
   "dod_provenance": {
     "confirmed_at": "2026-06-16T19:07:23.622Z",
