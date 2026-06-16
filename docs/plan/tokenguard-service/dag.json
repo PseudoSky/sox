@@ -102,7 +102,15 @@
       ],
       "context": "contexts/core-engine.md",
       "notes": "Port scripts/tokenguard/core.py to a pure, IO-light TS library @sox/tokenguard-core: the bijective origin-tagged Mapper (token-mapping.json v2 shape), the detector pipeline (known/email/fqdn/ipv4/ipv6/mac/phone), tokenize_str/walk/request (two-pass), wire_leaks scoped to system|messages|metadata, detokenize_text (longest-first) and detokenize_sse (delta reassembly). Generalize the WOP `engagement_variants(slug,hosts)` into a neutral `identifierGroupVariants(label, members)` with no roe/engagement vocabulary. This state runs PARALLEL to the framework phase — no shared files.",
-      "changes": { "deletes": [], "resigns": [], "renames": [] }
+      "changes": { "deletes": [], "resigns": [], "renames": [] },
+      "tasks": [
+        { "id": "ce-1", "desc": "nx lib scaffold + barrel", "writes": ["libs/tokenguard-core/project.json", "libs/tokenguard-core/package.json", "libs/tokenguard-core/tsconfig.json", "libs/tokenguard-core/src/index.ts"], "criteria": ["core-engine.5"], "needs": [], "model": "haiku", "effort": "low" },
+        { "id": "ce-2", "desc": "types.ts (TokenMap/MapEntry/IdType/Source)", "writes": ["libs/tokenguard-core/src/types.ts"], "criteria": [], "needs": ["ce-1"], "model": "haiku", "effort": "low" },
+        { "id": "ce-3", "desc": "mapper.ts (bijective origin-tagged store)", "writes": ["libs/tokenguard-core/src/mapper.ts"], "criteria": ["core-engine.1"], "needs": ["ce-2"], "model": "sonnet", "effort": "medium" },
+        { "id": "ce-4", "desc": "detectors.ts (7 detectors, Python->JS regex port)", "writes": ["libs/tokenguard-core/src/detectors.ts"], "criteria": [], "needs": ["ce-2"], "model": "opus", "effort": "high" },
+        { "id": "ce-5", "desc": "tokenize.ts (two-pass + scoping + wireLeaks + variants)", "writes": ["libs/tokenguard-core/src/tokenize.ts"], "criteria": ["core-engine.2", "core-engine.4"], "needs": ["ce-3", "ce-4"], "model": "opus", "effort": "high" },
+        { "id": "ce-6", "desc": "sse.ts (delta reassembly + thinking passthrough)", "writes": ["libs/tokenguard-core/src/sse.ts"], "criteria": ["core-engine.3"], "needs": ["ce-3"], "model": "opus", "effort": "high" }
+      ]
     },
     "core-invariants": {
       "kind": "work",
