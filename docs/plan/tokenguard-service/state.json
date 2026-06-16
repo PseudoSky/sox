@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "tokenguard-service",
   "dag": "dag.json",
-  "current_state": "service-type",
+  "current_state": "core-engine",
   "states": {
     "service-type": {
       "status": "pending",
@@ -33,10 +33,10 @@
       "end_ref": null
     },
     "core-engine": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-16T23:38:35.717Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "ce4bfac06b13f075904c98ab945c16deef5422f4",
       "end_ref": null
     },
     "core-invariants": {
@@ -116,5 +116,10 @@
       "dod.10",
       "dod.11"
     ]
+  },
+  "authored_with": {
+    "plugin": "workflow",
+    "version": "0.8.13",
+    "hash": "5f5be5f6a06a"
   }
 }
