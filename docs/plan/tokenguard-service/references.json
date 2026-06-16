@@ -1,0 +1,51 @@
+{
+  "config-schema": {
+    "anchor": "extensions/mcp-servers/memory-server/extension.json:config_schema",
+    "rule": "tokenguard config keys are declared in extension.json config_schema with x-sox-prompt + x-sox-default and additionalProperties:false; the running service reads them ONLY via SOX_CONFIG_<KEY> env (never a bespoke config-file reader) — same standardized path memory-server uses.",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:config-schema]",
+    "audit_check": "[audit-final.ref-config-schema]"
+  },
+  "run-service-spec": {
+    "anchor": "libs/install-engine/src/capabilities/run-service.ts:apply",
+    "rule": "the unified service model still writes the registry.json entry shape {id,command,args,env,cwd,status,storePath}; http/stdio transports both register through run-service so the supervisor reads one registry — no parallel service registry is introduced.",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:run-service-spec]",
+    "audit_check": "[audit-final.ref-run-service-spec]"
+  },
+  "supervisor-stop": {
+    "anchor": "libs/host-runtime/src/supervisor.ts:stop",
+    "rule": "every supervised service (incl. the http port-holder) stops via SIGTERM then SIGKILL after stop_timeout_ms; tokenguard must terminate cleanly with zero orphan processes and release its port.",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:supervisor-stop]",
+    "audit_check": "[audit-final.ref-supervisor-stop]"
+  },
+  "born-conformant-template": {
+    "anchor": "libs/authoring/src/templates/mcp-server/index.ts:mcpServerTemplate",
+    "rule": "serviceTemplate emits a born-conformant fileset (extension.json + package.json + tsconfig.json + src/index.ts + dist stub + CHANGELOG.md + README.md) so `sox init service` -> build -> validate passes with zero manual edits, by analogy to mcpServerTemplate.",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:born-conformant-template]",
+    "audit_check": "[audit-final.ref-born-conformant-template]"
+  },
+  "host-keyed-target": {
+    "anchor": "libs/authoring/src/templates/_shared.ts:buildInstallDescriptor",
+    "rule": "the service template emits NO literal host path (.claude/, ~/.claude.json); host-registry resolves the install target at install time, so the install descriptor stays host-agnostic.",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:host-keyed-target]",
+    "audit_check": "[audit-final.ref-host-keyed-target]"
+  },
+  "c7-no-reach-in": {
+    "anchor": "eslint.config.js:no-restricted-syntax (C7 reach-in rule)",
+    "rule": "the tokenguard service imports the engine via the @sox/tokenguard-core package scope only — no cross-package ../dist reach-in (static or dynamic); enforced by @nx/enforce-module-boundaries + the C7 lint rule.",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:c7-no-reach-in]",
+    "audit_check": "[audit-final.ref-c7-no-reach-in]"
+  },
+  "c6-policy-guard": {
+    "anchor": "extensions/mcp-servers/memory-server/src/index.ts:compilePolicyFromEnv",
+    "rule": "the tokenguard service enforces its declared permissions at the resource sink — it reads SOX_POLICY_* and denies a capture-dir write or upstream connection outside the declared fs/network allowlist BEFORE the side effect, mirroring memory-server's C6 guard.",
+    "discovered_via": "manual",
+    "shared_ref": "[ref:c6-policy-guard]",
+    "audit_check": "[audit-final.ref-c6-policy-guard]"
+  }
+}

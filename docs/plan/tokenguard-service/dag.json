@@ -1,0 +1,207 @@
+{
+  "schema_version": 2,
+  "title": "tokenguard-service",
+  "spec_sources": [
+    "docs/plan/tokenguard-service/README.md",
+    "scripts/tokenguard (Python source being ported)",
+    "extensions/mcp-servers/memory-server (reference extension + config system)"
+  ],
+  "executor": "sox-active:typescript-pro",
+  "assumed_baseline": [],
+  "phases": ["framework", "core", "service", "final"],
+  "terminal": "done",
+  "nodes": {
+    "service-type": {
+      "kind": "work",
+      "phase": "framework",
+      "depends_on": [],
+      "guard": "python3 docs/plan/tokenguard-service/scripts/guard_service_type.py",
+      "artifacts": [
+        "libs/manifest/src/index.ts",
+        "libs/authoring/src/templates/service/index.ts",
+        "libs/authoring/src/index.ts",
+        "apps/sox/src/main.ts",
+        "docs/guidelines/service.md",
+        "tools/tg-plan/check-service-scaffold.sh"
+      ],
+      "context": "contexts/service-type.md",
+      "notes": "Promote `service` to a declarable manifest type carrying a `transports` block (stdio|http|sse|socket). Add it to the VALID_TYPES set + the Manifest/ManifestInstall type unions, generalize the `profiles ⊆ serves` validation to `transports`, add a serviceTemplate + scaffold dispatch + `sox init service`, and a docs/guidelines/service.md contract. Do NOT remove `mcp-server` here — it stays valid; it is folded onto the service model in `mcp-as-service`. The whole-tree footgun: VALID_TYPES is duplicated in scripts/new-extension.ts — update both.",
+      "changes": {
+        "deletes": [],
+        "resigns": [],
+        "renames": []
+      }
+    },
+    "http-transport": {
+      "kind": "work",
+      "phase": "framework",
+      "depends_on": ["service-type"],
+      "guard": "python3 docs/plan/tokenguard-service/scripts/guard_http_transport.py",
+      "artifacts": [
+        "libs/host-runtime/src/supervisor.ts",
+        "libs/install-engine/src/install.ts",
+        "libs/install-engine/src/capabilities/run-service.ts",
+        "libs/host-registry/src/claude.ts",
+        "tools/tg-plan/check-http-service.sh"
+      ],
+      "context": "contexts/http-transport.md",
+      "notes": "Wire the missing http transport: add an `http-get` health probe to the supervisor LifecycleHealth.type union + _probeHealth (http.get against lifecycle.health.endpoint with timeout); route `transport: http` installs through the unified run-service capability (generalize the existing `profile: service` path so a service serving http registers + is supervised); add a `service` surface to host-registry so install resolves a target. Footgun: the supervisor stop path (SIGTERM->stop_timeout_ms->SIGKILL) must hold for a port-holder — verify zero orphans.",
+      "changes": {
+        "deletes": [],
+        "resigns": [],
+        "renames": []
+      }
+    },
+    "mcp-as-service": {
+      "kind": "work",
+      "phase": "framework",
+      "depends_on": ["http-transport"],
+      "guard": "python3 docs/plan/tokenguard-service/scripts/guard_mcp_as_service.py",
+      "artifacts": [
+        "libs/manifest/src/index.ts",
+        "libs/install-engine/src/install.ts",
+        "libs/authoring/src/templates/mcp-server/index.ts",
+        "docs/guidelines/mcp-server.md",
+        "tools/tg-plan/check-memory-nonregress.sh"
+      ],
+      "context": "contexts/mcp-as-service.md",
+      "notes": "Refactor mcp-server to be service[transport=stdio]: route mcp-server install/run through the SAME unified service model http-transport built, so `type:mcp-server` is mechanically sugar for a stdio-transport service. mcp-server MUST stay a valid type name (back-compat alias) and memory-server must non-regress: build/validate/install/start/health/stop + the C6 forbidden-write denial all green. This is the highest-risk state — memory-server is load-bearing (C6/A11). Footgun: do not change memory-server's extension.json; the refactor is behind the type, not in the extension.",
+      "changes": {
+        "deletes": [],
+        "resigns": [],
+        "renames": []
+      }
+    },
+    "audit-framework": {
+      "kind": "audit",
+      "phase": "framework",
+      "depends_on": ["mcp-as-service"],
+      "guard": "python3 docs/plan/tokenguard-service/scripts/audit_tokenguard.py --phase framework",
+      "artifacts": ["docs/plan/tokenguard-service/scripts/audit_tokenguard.py"],
+      "context": "contexts/audit-framework.md",
+      "notes": "Verify the service primitive (service-type), the http transport + http-get health (http-transport), and mcp-server-as-service non-regression (mcp-as-service). The most likely failure: memory-server lifecycle or C6 regression after the routing refactor. Fix in source, never weaken the check."
+    },
+    "core-engine": {
+      "kind": "work",
+      "phase": "core",
+      "depends_on": [],
+      "guard": "npx --yes nx build tokenguard-core",
+      "artifacts": [
+        "libs/tokenguard-core/project.json",
+        "libs/tokenguard-core/package.json",
+        "libs/tokenguard-core/tsconfig.json",
+        "libs/tokenguard-core/src/index.ts",
+        "libs/tokenguard-core/src/types.ts",
+        "libs/tokenguard-core/src/mapper.ts",
+        "libs/tokenguard-core/src/detectors.ts",
+        "libs/tokenguard-core/src/tokenize.ts",
+        "libs/tokenguard-core/src/sse.ts"
+      ],
+      "context": "contexts/core-engine.md",
+      "notes": "Port scripts/tokenguard/core.py to a pure, IO-light TS library @sox/tokenguard-core: the bijective origin-tagged Mapper (token-mapping.json v2 shape), the detector pipeline (known/email/fqdn/ipv4/ipv6/mac/phone), tokenize_str/walk/request (two-pass), wire_leaks scoped to system|messages|metadata, detokenize_text (longest-first) and detokenize_sse (delta reassembly). Generalize the WOP `engagement_variants(slug,hosts)` into a neutral `identifierGroupVariants(label, members)` with no roe/engagement vocabulary. This state runs PARALLEL to the framework phase — no shared files.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "core-invariants": {
+      "kind": "work",
+      "phase": "core",
+      "depends_on": ["core-engine"],
+      "guard": "npx --yes nx test tokenguard-core",
+      "artifacts": [
+        "libs/tokenguard-core/vitest.config.ts",
+        "libs/tokenguard-core/test/mapper.spec.ts",
+        "libs/tokenguard-core/test/detectors.spec.ts",
+        "libs/tokenguard-core/test/roundtrip.spec.ts",
+        "libs/tokenguard-core/test/sse.spec.ts"
+      ],
+      "context": "contexts/core-invariants.md",
+      "notes": "Port selftest.py + roundtrip.py invariants to Vitest: bijective+idempotent cache, reload-stable IDs, exact round-trip detokenize(tokenize(x))==x, zero-leak wire guarantee scoped to system/messages/metadata (tools untouched), SSE split-token reassembly, thinking-block passthrough, longest-first. Each is a red->green assertion. The suite IS the dod.4 proof.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "audit-core": {
+      "kind": "audit",
+      "phase": "core",
+      "depends_on": ["core-invariants"],
+      "guard": "python3 docs/plan/tokenguard-service/scripts/audit_tokenguard.py --phase core",
+      "artifacts": ["docs/plan/tokenguard-service/scripts/audit_tokenguard.py"],
+      "context": "contexts/audit-core.md",
+      "notes": "Verify the core invariants all pass and that no WOP/engagement/roe vocabulary leaked into the core lib. Likely failure: a detector regex ported with a subtle anchor change breaking longest-first or boundary matching."
+    },
+    "tg-service": {
+      "kind": "work",
+      "phase": "service",
+      "depends_on": ["audit-framework", "audit-core"],
+      "guard": "python3 docs/plan/tokenguard-service/scripts/guard_tg_service.py",
+      "artifacts": [
+        "extensions/services/tokenguard/extension.json",
+        "extensions/services/tokenguard/package.json",
+        "extensions/services/tokenguard/project.json",
+        "extensions/services/tokenguard/tsconfig.json",
+        "extensions/services/tokenguard/src/index.ts",
+        "extensions/services/tokenguard/src/proxy.ts",
+        "extensions/services/tokenguard/src/config.ts",
+        "extensions/services/tokenguard/src/adapters/anthropic.ts",
+        "extensions/services/tokenguard/src/adapters/generic.ts",
+        "extensions/services/tokenguard/demo/proxy-roundtrip.sh"
+      ],
+      "context": "contexts/tg-service.md",
+      "notes": "Scaffold tokenguard as a `service` extension (transport http) on top of @sox/tokenguard-core. Port proxy.py: port-holding HTTP server (walk port..+9, write port.txt), capture/audit policy, leak self-check, Accept-Encoding: identity. Provider-agnostic via an adapter interface; ship anthropic (SSE reassembly, thinking passthrough, request scoping) + generic (plain JSON passthrough) adapters. Config exclusively via config_schema/SOX_CONFIG_* ([ref:config-schema]); permissions enforced at the resource sink ([ref:c6-policy-guard]). The running server persists the live map continuously. Convergence point: needs BOTH framework (service+http) and core (engine) done.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "tg-cli": {
+      "kind": "work",
+      "phase": "service",
+      "depends_on": ["tg-service"],
+      "guard": "python3 docs/plan/tokenguard-service/scripts/guard_tg_cli.py",
+      "artifacts": [
+        "extensions/services/tokenguard/src/cli.ts",
+        "extensions/services/tokenguard/src/mapstore.ts",
+        "extensions/services/tokenguard/demo/live-seed.sh"
+      ],
+      "context": "contexts/tg-cli.md",
+      "notes": "A simple CLI (invoked via `./bin/sox exec tokenguard -- <cmd>`) to seed + inspect identifiers, operating on the SAME live, continuously-persisted token map the running proxy reads. seed appends a custom entry; the running proxy reflects it without restart (file-watch or socket nudge, memoryd-style). map prints the current bijective entries. No MCP surface (out of scope by decision).",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "audit-service": {
+      "kind": "audit",
+      "phase": "service",
+      "depends_on": ["tg-cli"],
+      "guard": "python3 docs/plan/tokenguard-service/scripts/audit_tokenguard.py --phase service",
+      "artifacts": ["docs/plan/tokenguard-service/scripts/audit_tokenguard.py"],
+      "context": "contexts/audit-service.md",
+      "notes": "Verify the service installs/starts/health(http)/stops via the real sox CLI with zero orphans, the proxy round-trips real->token->real through a mock upstream with zero leaks, both adapters work, and a CLI-seeded id is reflected in the running proxy. Likely failure: port.txt race or the live-reload not picking up a CLI seed."
+    },
+    "decouple-generalize": {
+      "kind": "work",
+      "phase": "final",
+      "depends_on": ["audit-service"],
+      "guard": "python3 docs/plan/tokenguard-service/scripts/guard_decouple.py",
+      "artifacts": [
+        "extensions/services/tokenguard/README.md",
+        "extensions/services/tokenguard/CLAUDE.md",
+        "libs/tokenguard-core/README.md"
+      ],
+      "context": "contexts/decouple-generalize.md",
+      "notes": "Final generalization pass + the simple negative check: prove zero WOP coupling remains (no roe.json / engagement-dir / e2e-harness / wop path tokens in tokenguard-core or the tokenguard service), and document the generic, config-driven usage for any LLM API (the *_BASE_URL redirect model). This is documentation + a grep gate, not new behavior.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "code-review": {
+      "kind": "work",
+      "phase": "final",
+      "depends_on": ["decouple-generalize"],
+      "guard": "python3 docs/plan/tokenguard-service/scripts/guard_code_review.py",
+      "artifacts": ["docs/plan/tokenguard-service/code-review.md"],
+      "context": "contexts/code-review.md",
+      "notes": "The planner/orchestrator performs a full code review of every touched project before the final audit and records findings + resolution in code-review.md. Guard requires the review artifact present with a PASS verdict AND a clean `nx run-many -t typecheck,lint,test` across all touched projects. Reviewer gate per [dod.9].",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "audit-final": {
+      "kind": "audit",
+      "phase": "final",
+      "depends_on": ["code-review"],
+      "guard": "python3 docs/plan/tokenguard-service/scripts/audit_tokenguard.py --phase final",
+      "artifacts": ["docs/plan/tokenguard-service/scripts/audit_tokenguard.py"],
+      "context": "contexts/audit-final.md",
+      "notes": "The terminal audit: every [dod.N] proven (behavioral clauses driven through their documented entrypoint + observable asserted, with a negative control), every [ref:] conformance check, the WOP-gone negative checks, and the live demonstration harness producing the four founder-facing artifacts (agent prompts, outbound real->token diff, raw API response, inbound token->real diff). DONE is refused unless every [dod.N] emits an executed PASS."
+    }
+  }
+}
