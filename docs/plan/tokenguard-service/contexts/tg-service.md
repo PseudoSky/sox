@@ -19,7 +19,8 @@ After this state, `tokenguard` exists as a born-conformant **`service`-type exte
 - **Delta Spec:**
   - Born-conformant fileset via `sox init service tokenguard` then filled in: `extension.json` (`type:service`, `transports:['http']`, `[shape:http-health]` lifecycle, `config_schema`, `permissions` for the capture dir + upstream host), `package.json` (`@sox/extension-tokenguard`, dep `@sox/tokenguard-core` — **[ref:c7-no-reach-in]**), `project.json` (build/test/bundle targets like memory-server), `tsconfig.json`.
   - `src/config.ts` — resolve config from `SOX_CONFIG_*` only (**[ref:config-schema]**, **[inv:standard-config]**): port, upstream, capture-policy (**[def:capture-policy]**), provider, seeds, never-list, detector toggles, map path.
-  - `src/proxy.ts` — the port-holding HTTP server: walk port..+9, write `port.txt`, expose `/_tokenguard/health` (for `http-get`), tokenize outbound request-scoped regions via the engine, force `Accept-Encoding: identity`, capture/audit per policy, leak self-check + audit event, detokenize inbound via the adapter. SIGTERM closes the server cleanly (**[ref:supervisor-stop]**).
+  - `src/proxy.ts` — the port-holding HTTP server: walk port..+9, write the actual bound port to **`storePath/port.txt`** (the path the supervisor's `http-get` probe reads — **not** the capture dir) **only after the server is listening**, expose `/_tokenguard/health` (for `http-get`), tokenize outbound request-scoped regions via the engine, force `Accept-Encoding: identity`, capture/audit per policy, leak self-check + audit event, detokenize inbound via the adapter. SIGTERM closes the server cleanly (**[ref:supervisor-stop]**).
+  - `project.json` includes a `bundle` target (esbuild, mirroring memory-server) so the service materializes self-contained at install time even where workspace `node_modules` is absent; `@sox/tokenguard-core` is inlined, native/optional deps marked external.
   - `src/adapters/anthropic.ts` + `src/adapters/generic.ts` implementing **[shape:provider-adapter]** — anthropic: request scoping + SSE reassembly + thinking passthrough; generic: plain JSON passthrough + whole-body reversal.
   - `src/index.ts` — the service entrypoint: read config, enforce permissions at the sink (**[ref:c6-policy-guard]**), build the Mapper from seeds + map file, start the proxy, persist the map continuously.
   - `demo/proxy-roundtrip.sh` — starts tokenguard via `./bin/sox`, points a client at it with a seeded real + **[fix:mock-upstream]**, sends a request, and asserts the upstream saw only placeholders (`LEAKS 0`) and the client got the real value back exactly (`ROUNDTRIP OK`). Also writes the four founder-facing artifacts (prompt, outbound diff, raw reply, inbound diff) under `demo/out/`.
@@ -36,6 +37,8 @@ After this state, `tokenguard` exists as a born-conformant **`service`-type exte
 - [ ] **[tg-service.4]** both provider adapters exist and implement the adapter seam. `test -f extensions/services/tokenguard/src/adapters/anthropic.ts && test -f extensions/services/tokenguard/src/adapters/generic.ts`
 - [ ] **[tg-service.5]** permissions are enforced at the resource sink before the side effect. `grep -n "SOX_POLICY_\|policy" extensions/services/tokenguard/src/index.ts`
 - [ ] **[tg-service.6]** the demo harness asserts the round-trip + zero leaks. `grep -n "ROUNDTRIP OK\|LEAKS 0" extensions/services/tokenguard/demo/proxy-roundtrip.sh`
+- [ ] **[tg-service.7]** `project.json` has a `bundle` target (self-contained materialization). `grep -n "bundle" extensions/services/tokenguard/project.json`
+- [ ] **[tg-service.8]** the proxy writes the actual bound port to `storePath/port.txt` after listening. `grep -n "port.txt\|storePath\|listen" extensions/services/tokenguard/src/proxy.ts`
 
 ---
 

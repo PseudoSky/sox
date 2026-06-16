@@ -27,6 +27,7 @@ Verify every acceptance criterion from `service-type`, `http-transport`, and `mc
 
 - [ ] The script checks every `[service-type.*]`, `[http-transport.*]`, `[mcp-as-service.*]` criterion ID. None omitted.
 - [ ] `memory-server` non-regression (`MEMORY OK` + `C6 DENY OK`) is verified.
+- [ ] A `type:service` extension can not only install but **start** at runtime (the loader `service` case) — `[http-transport.6]` — so the non-regression gate is not the only confirmation the refactor landed.
 - [ ] The script exits 0 and prints the phase PASS line.
 - [ ] No criterion is marked skipped/manual.
 

@@ -17,11 +17,13 @@ After this state a `service` with `transport: http` **installs, starts, holds a 
 - **Primitive:** MODIFY `libs/host-runtime/src/supervisor.ts` + `libs/install-engine/src/install.ts` — add an http health probe and http install routing to the unified service model.
 - **Reference Pattern:** the socket health probe `probeSocket` + `_probeHealth` (`libs/host-runtime/src/supervisor.ts`), the `profile: 'service'` materialize+register path (`libs/install-engine/src/install.ts` ~L1116-1175), the `run-service` capability (`libs/install-engine/src/capabilities/run-service.ts`), and the `mcp-server` surface in `libs/host-registry/src/claude.ts`. See **[ref:run-service-spec]**, **[ref:supervisor-stop]**.
 - **Delta Spec:**
-  - Supervisor: add `'http-get'` to `LifecycleHealth.type`; implement it in `_probeHealth` via a stdlib `http.get(endpoint)` with `timeout_ms`, resolving true on a 2xx/expected response. `endpoint` supports `${PORT}` expansion. See **[shape:http-health]**.
+  - Supervisor: add `'http-get'` to `LifecycleHealth.type`; implement it in `_probeHealth` via a stdlib `http.get(endpoint)` with `timeout_ms`, resolving true on a 2xx/expected response. `endpoint` supports `${PORT}` expansion where `${PORT}` is the **actual bound port read from `storePath/port.txt`** (not the configured port — the service may walk to a free port). `_waitForHealth` polls for `port.txt` to appear before the first probe. See **[shape:http-health]**.
+  - **Runtime dispatch (BLOCKER):** `libs/host-runtime/src/loader.ts` `dispatchToAdapter()` has a `case 'mcp-server'` and a throwing `default`. Add a `case 'service'` so `sox start` on a `type:service` extension is dispatched (to the run-service/supervisor path), not thrown. Install-time routing alone is insufficient — without this, a service installs but cannot start. Keep the existing `activateMcp` path intact ([inv:no-regress-mcp]).
+  - **Config passthrough (required):** at the `run-service` registration site in `install.ts`, `spec.env` is currently `{}`. Inject the cascade-resolved `SOX_CONFIG_*` for the extension's declared config keys (the same transform `loader.ts` `processEntry` applies for mcp-server) so a started service receives its config — **[ref:config-schema]**, **[inv:standard-config]**.
   - Install engine: generalize the `profile: 'service'` block so a `type:service` (or any `transport: http`) install materializes the bundle to the store dir and registers via `run-service` **[ref:run-service-spec]** — preserving the registry entry shape and the single registry **[inv:single-registry]**.
   - Host registry: add a `service` surface in `buildSurfaces()` routing to the `run-service` capability with scope-keyed store paths (no literal host path beyond the registry base — **[ref:host-keyed-target]**).
   - Confirm the stop path (SIGTERM → `stop_timeout_ms` → SIGKILL) terminates a port-holder and releases the port — **[ref:supervisor-stop]**.
-  - Add `tools/tg-plan/check-http-service.sh` — scaffolds a trivial http service, installs+starts it via `./bin/sox`, asserts `HTTP SERVICE HEALTHY` from the health probe, stops it, asserts `STOPPED CLEAN orphans=0` (no child + port free).
+  - Add `tools/tg-plan/check-http-service.sh` — scaffolds a trivial http service, installs+**starts** it via `./bin/sox` (exercising the loader `service` case), asserts `HTTP SERVICE HEALTHY` from the health probe, stops it, asserts `STOPPED CLEAN orphans=0` (no child + port free).
 - **Invariants:** **[inv:single-registry]**, **[inv:supervisor-stop]** via **[ref:supervisor-stop]**, **[inv:no-regress-mcp]** (stdio path unchanged here).
 - **Validation:** the guard runs an http service through install→health→stop and asserts the markers.
 
@@ -34,6 +36,8 @@ After this state a `service` with `transport: http` **installs, starts, holds a 
 - [ ] **[http-transport.3]** install routing materializes + registers an http/service install through `run-service`, preserving the registry entry shape. `grep -n "run-service\|runService\|runServiceApply" libs/install-engine/src/install.ts`
 - [ ] **[http-transport.4]** a `service` surface exists in host-registry. `grep -n "service" libs/host-registry/src/claude.ts`
 - [ ] **[http-transport.5]** `tools/tg-plan/check-http-service.sh` asserts `STOPPED CLEAN orphans=0` after stop. `grep -n "orphans=0" tools/tg-plan/check-http-service.sh`
+- [ ] **[http-transport.6]** `loader.ts` `dispatchToAdapter` has a `service` case so a `type:service` extension starts at runtime (not just installs). `grep -n "'service'\|\"service\"" libs/host-runtime/src/loader.ts`
+- [ ] **[http-transport.7]** the run-service registration injects `SOX_CONFIG_*` into `spec.env` for declared config keys. `grep -n "SOX_CONFIG_" libs/install-engine/src/install.ts`
 
 ---
 
@@ -44,6 +48,7 @@ read_only:  ["libs/manifest/src/index.ts",
              "extensions/mcp-servers/memory-server/extension.json",
              "tools/supervisor-shim.js"]
 mutates:    ["libs/host-runtime/src/supervisor.ts",
+             "libs/host-runtime/src/loader.ts",
              "libs/install-engine/src/install.ts",
              "libs/install-engine/src/capabilities/run-service.ts",
              "libs/host-registry/src/claude.ts",
@@ -54,8 +59,8 @@ mutates:    ["libs/host-runtime/src/supervisor.ts",
 
 ## Contract Promise
 
-- **Added:** `'http-get'` health type + probe; `service`/http install routing; host-registry `service` surface; `tools/tg-plan/check-http-service.sh`.
-- **Modified:** `_probeHealth` (signature unchanged; new branch); the install descriptor routing in `install.ts`; `run-service` capability if it needs an `env` passthrough for `SOX_CONFIG_*`.
+- **Added:** `'http-get'` health type + probe; the `service` case in `loader.ts` `dispatchToAdapter`; `service`/http install routing; host-registry `service` surface; `SOX_CONFIG_*` injection at the run-service site; `tools/tg-plan/check-http-service.sh`.
+- **Modified:** `_probeHealth` (signature unchanged; new branch + port-file resolution); `dispatchToAdapter` (new `service` case, mcp-server case intact); the install descriptor routing in `install.ts`; `run-service` capability `env` passthrough.
 - **Deleted:** none.
 
 ---

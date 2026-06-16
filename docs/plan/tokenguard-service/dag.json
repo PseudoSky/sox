@@ -39,13 +39,14 @@
       "guard": "python3 docs/plan/tokenguard-service/scripts/guard_http_transport.py",
       "artifacts": [
         "libs/host-runtime/src/supervisor.ts",
+        "libs/host-runtime/src/loader.ts",
         "libs/install-engine/src/install.ts",
         "libs/install-engine/src/capabilities/run-service.ts",
         "libs/host-registry/src/claude.ts",
         "tools/tg-plan/check-http-service.sh"
       ],
       "context": "contexts/http-transport.md",
-      "notes": "Wire the missing http transport: add an `http-get` health probe to the supervisor LifecycleHealth.type union + _probeHealth (http.get against lifecycle.health.endpoint with timeout); route `transport: http` installs through the unified run-service capability (generalize the existing `profile: service` path so a service serving http registers + is supervised); add a `service` surface to host-registry so install resolves a target. Footgun: the supervisor stop path (SIGTERM->stop_timeout_ms->SIGKILL) must hold for a port-holder — verify zero orphans.",
+      "notes": "Wire the missing http transport AND the runtime dispatch the install routing implies. (1) supervisor: add `http-get` to LifecycleHealth.type + _probeHealth (http.get vs lifecycle.health.endpoint, timeout) and have it resolve the actual bound port from storePath/port.txt, polling for the file before the first probe. (2) loader.ts dispatchToAdapter: add a `service` case — the BLOCKER the install routing alone misses; without it `sox start` on a type:service throws Unknown extension type. (3) install.ts: route transport:http through the unified run-service path, and inject SOX_CONFIG_* into spec.env at the run-service registration site (registry env is currently {} — required for [inv:standard-config]). (4) host-registry: a `service` surface. Footgun: SIGTERM->stop_timeout_ms->SIGKILL must hold for a port-holder; concurrent `sox start` is a deferred non-goal ([dod.10]).",
       "changes": {
         "deletes": [],
         "resigns": [],

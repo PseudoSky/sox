@@ -61,6 +61,8 @@ def phase_framework() -> None:
           "test -f docs/guidelines/service.md && echo OK", expect_ok=True)
     check("service-type.6", "scaffold harness drives sox init service",
           "grep -q 'init service' tools/tg-plan/check-service-scaffold.sh && echo OK", expect_ok=True)
+    check("service-type.7", "inline JSON-schema enums + processTypes include service/http-get/socket",
+          "grep -qE 'http-get' libs/manifest/src/index.ts && grep -q 'processTypes' libs/manifest/src/index.ts && echo OK", expect_ok=True)
 
     # ---- http-transport ----
     check("http-transport.1", "http-get health type recognized by supervisor",
@@ -73,6 +75,10 @@ def phase_framework() -> None:
           "grep -q 'service' libs/host-registry/src/claude.ts && echo OK", expect_ok=True)
     check("http-transport.5", "http-service harness asserts zero orphans on stop",
           "grep -q 'orphans=0' tools/tg-plan/check-http-service.sh && echo OK", expect_ok=True)
+    check("http-transport.6", "loader dispatchToAdapter has a service case (runtime start works)",
+          "grep -qE \"'service'|\\\"service\\\"\" libs/host-runtime/src/loader.ts && echo OK", expect_ok=True)
+    check("http-transport.7", "run-service registration injects SOX_CONFIG_* into spec.env",
+          "grep -q 'SOX_CONFIG_' libs/install-engine/src/install.ts && echo OK", expect_ok=True)
 
     # ---- mcp-as-service ----
     check("mcp-as-service.1", "mcp-server handled as service[transport=stdio]",
@@ -136,6 +142,10 @@ def phase_service() -> None:
           "grep -qE 'SOX_POLICY_|policy' extensions/services/tokenguard/src/index.ts && echo OK", expect_ok=True)
     check("tg-service.6", "demo harness asserts round-trip + zero leaks",
           "grep -qE 'ROUNDTRIP OK|LEAKS 0' extensions/services/tokenguard/demo/proxy-roundtrip.sh && echo OK", expect_ok=True)
+    check("tg-service.7", "project.json has a bundle target (self-contained materialization)",
+          "grep -q 'bundle' extensions/services/tokenguard/project.json && echo OK", expect_ok=True)
+    check("tg-service.8", "proxy writes the bound port to storePath/port.txt after listen",
+          "grep -qE 'port.txt|storePath' extensions/services/tokenguard/src/proxy.ts && echo OK", expect_ok=True)
 
     # ---- tg-cli ----
     check("tg-cli.1", "CLI exposes seed/map/summary",

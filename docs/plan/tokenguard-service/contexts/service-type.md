@@ -19,10 +19,12 @@ After this state, `service` is a **declarable manifest type** carrying a `transp
 - **Reference Pattern:** the `mcp-server` type plumbing — `VALID_TYPES` (`libs/manifest/src/index.ts` + the duplicate in `scripts/new-extension.ts`), the `Manifest`/`ManifestInstall` unions, `validate()`'s `profiles ⊆ serves` check (`libs/manifest/src/index.ts`), `mcpServerTemplate` + `scaffold()` dispatch (`libs/authoring/src/index.ts`). Mirror it for `service`. See **[ref:born-conformant-template]**, **[ref:host-keyed-target]**.
 - **Delta Spec:**
   - Add `'service'` to `VALID_TYPES` in **both** `libs/manifest/src/index.ts` and `scripts/new-extension.ts`, and to the `Manifest.type` + `ManifestInstall.type` unions.
+  - **Inline JSON-schema enums (a THIRD type list — do not miss):** `libs/manifest/src/index.ts` carries an inlined JSON schema with closed enums for `type`, `install.type`, `lifecycle.health.type`, and `serves.items`. Add `'service'` to the `type` + `install.type` enums, `'http-get'` to the `health.type` enum, and `'socket'` to the transport/serves enum vocabulary. The comment that says `'service'` is intentionally absent is the marker being overturned.
+  - **`processTypes`:** add `'service'` to the `processTypes` set in `libs/manifest/src/index.ts` so the `config_schema` recommendation fires for service extensions (currently it is silently suppressed for unknown types).
   - Add an optional `transports?: Array<'stdio'|'sse'|'http'|'socket'>` field to `ManifestInstall` (the type's transport vocabulary), kept in sync with the existing `serves` (back-compat alias). See **[shape:service-install]**.
   - Generalize `validate()`: the `profiles ⊆ serves` invariant also accepts `transports`; transport values are constrained to the vocabulary; for `type:service`, at least one transport is required.
   - Add `serviceTemplate(opts)` at `libs/authoring/src/templates/service/index.ts` emitting a born-conformant fileset (manifest with `type:service` + `transports` + `[shape:http-health]`-style lifecycle + `config_schema`, `package.json`, `tsconfig.json`, `src/index.ts` stub, `dist/index.js` stub, CHANGELOG, README) and register it in `scaffold()` dispatch + exports in `libs/authoring/src/index.ts`.
-  - Add `docs/guidelines/service.md` — the per-type authoring contract (transports, lifecycle/health, supervision, when to use vs mcp-server).
+  - Add `docs/guidelines/service.md` — the per-type authoring contract (transports, lifecycle/health, supervision, when to use vs mcp-server). Include an explicit operator warning that **concurrent `sox start` of the same service is a deferred non-goal** (runtime-productionization) — do not start the same service twice simultaneously.
   - Add `tools/tg-plan/check-service-scaffold.sh` — drives `./bin/sox init service tgprobe` into a temp dir, builds it, runs `./bin/sox validate`, prints `SCAFFOLD OK` on success / `SCAFFOLD FAIL` otherwise, and cleans up.
 - **Invariants:** **[inv:no-regress-mcp]** — do not change `mcp-server` behavior here; `service` is added alongside.
 - **Validation:** the guard scaffolds a `service`, builds it, and validates it; exits 0 only when the born-conformant round-trip is clean.
@@ -39,6 +41,7 @@ Checked by `audit-framework` as slug-keyed IDs.
 - [ ] **[service-type.4]** `serviceTemplate` exists and `scaffold()` dispatches `'service'` to it. `grep -n "serviceTemplate" libs/authoring/src/index.ts`
 - [ ] **[service-type.5]** `docs/guidelines/service.md` exists and documents the transports + lifecycle contract. `test -f docs/guidelines/service.md`
 - [ ] **[service-type.6]** `tools/tg-plan/check-service-scaffold.sh` exists and drives `./bin/sox init service`. `grep -n "init service" tools/tg-plan/check-service-scaffold.sh`
+- [ ] **[service-type.7]** the inline JSON-schema enums + `processTypes` include `service`/`http-get`/`socket`. `grep -nE "http-get|processTypes" libs/manifest/src/index.ts` (and `service` present in the `type`/`install.type` enums)
 
 ---
 
