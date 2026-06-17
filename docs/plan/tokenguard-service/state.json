@@ -54,10 +54,10 @@
       "end_ref": "3850aabbe29c4a199587982268b50bda3c862439"
     },
     "tg-service": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-17T00:31:49.866Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "cbdc6df89639caae1f701a900a7abeedcaf38371",
       "end_ref": null
     },
     "tg-cli": {
