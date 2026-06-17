@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "tokenguard-service",
   "dag": "dag.json",
-  "current_state": "tg-service",
+  "current_state": "tg-cli",
   "states": {
     "service-type": {
       "status": "complete",
@@ -54,11 +54,11 @@
       "end_ref": "3850aabbe29c4a199587982268b50bda3c862439"
     },
     "tg-service": {
-      "status": "in_progress",
+      "status": "complete",
       "started_at": "2026-06-17T00:31:49.866Z",
-      "done_at": null,
+      "done_at": "2026-06-17T02:49:34.188Z",
       "start_ref": "cbdc6df89639caae1f701a900a7abeedcaf38371",
-      "end_ref": null
+      "end_ref": "b7e7eb6508af0559cb1cf5acbd79f85383f81965"
     },
     "tg-cli": {
       "status": "pending",
@@ -180,6 +180,18 @@
       "audit_criteria_total": 38,
       "by": "fullstack-developer",
       "note": "phase framework audit: 20/20 PASS (service-type + http-transport + mcp-as-service). Framework refactor verified, memory-server non-regressed. Zero fix-loop."
+    },
+    {
+      "ts": "2026-06-17T02:49:34.188Z",
+      "from": "tg-service",
+      "to": "tg-service",
+      "start_ref": "cbdc6df89639caae1f701a900a7abeedcaf38371",
+      "end_ref": "b7e7eb6508af0559cb1cf5acbd79f85383f81965",
+      "audit_exit": 40,
+      "audit_criteria_passed": 3,
+      "audit_criteria_total": 83,
+      "by": "fullstack-developer",
+      "note": "Live pseudonymizing proxy: ROUNDTRIP OK + LEAKS 0 verified; real id never on wire. 2 dispatches (529 + header-fix)."
     }
   ],
   "amendment_log": [
