@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "tokenguard-service",
   "dag": "dag.json",
-  "current_state": "audit-final",
+  "current_state": "done",
   "states": {
     "service-type": {
       "status": "complete",
@@ -91,9 +91,9 @@
     "audit-final": {
       "status": "complete",
       "started_at": "2026-06-17T03:22:44.013Z",
-      "done_at": "2026-06-17T03:28:14.969Z",
+      "done_at": "2026-06-17T03:30:02.067Z",
       "start_ref": "892aa7af229215e55c73190efaa1510ca8c1e949",
-      "end_ref": "0a7f9a84eb0a021ace47a02066c36f5f66e57949"
+      "end_ref": "75bad8cb42ba0ac0d1cd378387dff668666943ac"
     }
   },
   "transition_log": [
@@ -276,6 +276,18 @@
       "audit_criteria_total": 66,
       "by": "fullstack-developer",
       "note": "FINAL AUDIT PASSED 66/66 (cwd-robust); all 11 dod executed-PASS; live proxy+CLI verified end-to-end."
+    },
+    {
+      "ts": "2026-06-17T03:30:02.067Z",
+      "from": "audit-final",
+      "to": "audit-final",
+      "start_ref": "892aa7af229215e55c73190efaa1510ca8c1e949",
+      "end_ref": "75bad8cb42ba0ac0d1cd378387dff668666943ac",
+      "audit_exit": 0,
+      "audit_criteria_passed": 66,
+      "audit_criteria_total": 66,
+      "by": "fullstack-developer",
+      "note": "FINAL AUDIT PASSED 66/66; all 11 dod confirmed; live proxy+CLI verified."
     }
   ],
   "amendment_log": [
