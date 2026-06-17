@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "tokenguard-service",
   "dag": "dag.json",
-  "current_state": "mcp-as-service",
+  "current_state": "audit-framework",
   "states": {
     "service-type": {
       "status": "complete",
@@ -19,11 +19,11 @@
       "end_ref": "860605f465b0ac093fe1f3707f72c23b07ed8962"
     },
     "mcp-as-service": {
-      "status": "in_progress",
+      "status": "complete",
       "started_at": "2026-06-17T00:17:19.935Z",
-      "done_at": null,
+      "done_at": "2026-06-17T00:30:52.861Z",
       "start_ref": "fcb62fd1e6937f646fe6fc9c1cf4a7cba8eb244a",
-      "end_ref": null
+      "end_ref": "e5e95ae9fa50ca0a40c803d8d040b0d7ca4b0401"
     },
     "audit-framework": {
       "status": "pending",
@@ -156,6 +156,18 @@
       "audit_criteria_total": 38,
       "by": "fullstack-developer",
       "note": "http transport + runtime dispatch; guard PASS; no-regress 9 tasks green; 105828 subagent_tokens (sonnet)."
+    },
+    {
+      "ts": "2026-06-17T00:30:52.861Z",
+      "from": "mcp-as-service",
+      "to": "mcp-as-service",
+      "start_ref": "fcb62fd1e6937f646fe6fc9c1cf4a7cba8eb244a",
+      "end_ref": "e5e95ae9fa50ca0a40c803d8d040b0d7ca4b0401",
+      "audit_exit": 18,
+      "audit_criteria_passed": 2,
+      "audit_criteria_total": 38,
+      "by": "fullstack-developer",
+      "note": "mcp-server folded onto service[stdio]; memory-server non-regressed (C6 intact); 139333 subagent_tokens (sonnet)."
     }
   ],
   "amendment_log": [
