@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "tokenguard-service",
   "dag": "dag.json",
-  "current_state": "audit-core",
+  "current_state": "mcp-as-service",
   "states": {
     "service-type": {
       "status": "complete",
@@ -12,11 +12,11 @@
       "end_ref": "207a0c01f266e2abf5291e29d4846eaeaaf60c40"
     },
     "http-transport": {
-      "status": "in_progress",
+      "status": "complete",
       "started_at": "2026-06-17T00:02:04.732Z",
-      "done_at": null,
+      "done_at": "2026-06-17T00:16:44.073Z",
       "start_ref": "f62cf54de93d82e2e7443ebf37adabb50ac67b49",
-      "end_ref": null
+      "end_ref": "860605f465b0ac093fe1f3707f72c23b07ed8962"
     },
     "mcp-as-service": {
       "status": "pending",
@@ -144,6 +144,18 @@
       "audit_criteria_total": 19,
       "by": "fullstack-developer",
       "note": "phase core audit: 10/10 criteria PASS (core-engine + core-invariants). No fixes needed — clean audit, zero fix-loop."
+    },
+    {
+      "ts": "2026-06-17T00:16:44.073Z",
+      "from": "audit-core",
+      "to": "http-transport",
+      "start_ref": "f62cf54de93d82e2e7443ebf37adabb50ac67b49",
+      "end_ref": "860605f465b0ac093fe1f3707f72c23b07ed8962",
+      "audit_exit": 18,
+      "audit_criteria_passed": 2,
+      "audit_criteria_total": 38,
+      "by": "fullstack-developer",
+      "note": "http transport + runtime dispatch; guard PASS; no-regress 9 tasks green; 105828 subagent_tokens (sonnet)."
     }
   ],
   "amendment_log": [
