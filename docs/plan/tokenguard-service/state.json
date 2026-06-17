@@ -110,7 +110,20 @@
       "note": "Ported core.py to @sox/tokenguard-core (9 files); nx build green. In-spec deviations: seed uses neutral label/id types, DetectorConfig re-export, one intra-package require for a circular dep. 52751 subagent_tokens."
     }
   ],
-  "amendment_log": [],
+  "amendment_log": [
+    {
+      "ts": "2026-06-17T00:00:45.864Z",
+      "state": "service-type",
+      "class": "executor",
+      "type": "expand-artifacts",
+      "reason": "executor also edited scripts/new-extension.ts (duplicate VALID_TYPES footgun, authorized) + libs/manifest/src/manifest.spec.ts (st-3 validate unit tests); added both to artifacts/mutates/task-writes",
+      "files_synced": [
+        "dag.json",
+        "contexts/service-type.md"
+      ],
+      "by": "fullstack-developer"
+    }
+  ],
   "dod_provenance": {
     "confirmed_at": "2026-06-16T19:07:23.622Z",
     "by": "fullstack-developer",
