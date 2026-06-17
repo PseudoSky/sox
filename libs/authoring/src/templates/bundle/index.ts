@@ -2,7 +2,8 @@
  * Bundle template — scaffolds a manifest-only bundle extension (no entrypoint).
  *
  * Files:
- *   extension.json   (born-conformant manifest: type=bundle, members=[...placeholders])
+ *   extension.json   (born-conformant manifest: type=bundle, members=[...placeholders],
+ *                     install block with type+hosts)
  *   package.json
  *   CHANGELOG.md
  *   README.md
@@ -11,11 +12,13 @@
  * members at install time. tsconfig is omitted (nothing to compile).
  *
  * [inv:nx-free-core] — no nx-packages imports.
+ * [inv:host-agnostic-type] — install.type used; no hardcoded host paths.
+ * [ref:host-keyed-target] — target paths resolved from host-registry at install time.
  */
 
 import type { FileSet } from '../../index.js';
 import type { TemplateOpts } from '../_shared.js';
-import { manifestJson, changelogMd, readmeMd } from '../_shared.js';
+import { manifestJson, buildInstallDescriptor, changelogMd, readmeMd } from '../_shared.js';
 
 export function bundleTemplate(opts: TemplateOpts): FileSet {
   // Bundles use a simplified package.json (no build/typecheck scripts needed)
@@ -40,6 +43,10 @@ export function bundleTemplate(opts: TemplateOpts): FileSet {
         { id: 'example-member-a', version: '^0.1.0' },
         { id: 'example-member-b', version: '^0.1.0' },
       ],
+      // [shape:install-descriptor] — host-agnostic; engine expands bundle members
+      // and resolves each member's target from libs/host-registry at install time.
+      // [ref:host-keyed-target] — NO literal host path here.
+      install: buildInstallDescriptor('bundle', opts),
     }),
 
     'package.json': bundlePkg,

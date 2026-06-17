@@ -1,9 +1,9 @@
 import { defineConfig } from 'vitest/config';
+import { resolve } from 'path';
 
 export default defineConfig({
   test: {
-    include: ['src/**/*.spec.ts', 'src/**/*.test.ts'],
+    include: [resolve(__dirname, 'src/**/*.spec.ts'), resolve(__dirname, 'src/**/*.test.ts')],
     environment: 'node',
-    passWithNoTests: true,
   },
 });

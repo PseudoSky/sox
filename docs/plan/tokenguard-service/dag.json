@@ -22,7 +22,9 @@
         "libs/authoring/src/index.ts",
         "apps/sox/src/main.ts",
         "docs/guidelines/service.md",
-        "tools/tg-plan/check-service-scaffold.sh"
+        "tools/tg-plan/check-service-scaffold.sh",
+        "scripts/new-extension.ts",
+        "libs/manifest/src/manifest.spec.ts"
       ],
       "context": "contexts/service-type.md",
       "notes": "Promote `service` to a declarable manifest type carrying a `transports` block (stdio|http|sse|socket). Add it to the VALID_TYPES set + the Manifest/ManifestInstall type unions, generalize the `profiles ⊆ serves` validation to `transports`, add a serviceTemplate + scaffold dispatch + `sox init service`, and a docs/guidelines/service.md contract. Do NOT remove `mcp-server` here — it stays valid; it is folded onto the service model in `mcp-as-service`. The whole-tree footgun: VALID_TYPES is duplicated in scripts/new-extension.ts — update both.",
@@ -33,9 +35,9 @@
         "adds_set_members": ["http-get"]
       },
       "tasks": [
-        { "id": "st-1", "desc": "type system: VALID_TYPES (+dup) + unions + transports field", "writes": ["libs/manifest/src/index.ts"], "criteria": ["service-type.1", "service-type.2"], "needs": [], "model": "sonnet", "effort": "medium" },
+        { "id": "st-1", "desc": "type system: VALID_TYPES (+dup) + unions + transports field", "writes": ["libs/manifest/src/index.ts", "scripts/new-extension.ts"], "criteria": ["service-type.1", "service-type.2"], "needs": [], "model": "sonnet", "effort": "medium" },
         { "id": "st-2", "desc": "inline JSON-schema enums + processTypes", "writes": ["libs/manifest/src/index.ts"], "criteria": ["service-type.7"], "needs": ["st-1"], "model": "sonnet", "effort": "medium" },
-        { "id": "st-3", "desc": "validate() transports generalization + tests", "writes": ["libs/manifest/src/index.ts"], "criteria": ["service-type.3"], "needs": ["st-2"], "model": "sonnet", "effort": "medium" },
+        { "id": "st-3", "desc": "validate() transports generalization + tests", "writes": ["libs/manifest/src/index.ts", "libs/manifest/src/manifest.spec.ts"], "criteria": ["service-type.3"], "needs": ["st-2"], "model": "sonnet", "effort": "medium" },
         { "id": "st-4", "desc": "serviceTemplate + scaffold dispatch", "writes": ["libs/authoring/src/templates/service/index.ts", "libs/authoring/src/index.ts"], "criteria": ["service-type.4"], "needs": ["st-1"], "model": "sonnet", "effort": "medium" },
         { "id": "st-5", "desc": "sox init service + --transport flag", "writes": ["apps/sox/src/main.ts"], "criteria": [], "needs": ["st-4"], "model": "haiku", "effort": "low" },
         { "id": "st-6", "desc": "docs/guidelines/service.md", "writes": ["docs/guidelines/service.md"], "criteria": ["service-type.5"], "needs": ["st-1"], "model": "haiku", "effort": "low" },

@@ -8,9 +8,12 @@
  *     and server.setRequestHandler(CallToolRequestSchema, ...).
  *   - lifecycle: background=true, singleton=true (one process per install).
  *   - runtime: node, transport: stdio.
+ *   - Install target resolved from libs/host-registry at install time.
+ *     [ref:host-keyed-target] — NO hardcoded ~/.claude/ paths here.
  *
  * Files:
- *   extension.json   (born-conformant manifest: type=mcp-server, runtime=node, lifecycle)
+ *   extension.json   (born-conformant manifest: type=mcp-server, runtime=node,
+ *                     lifecycle, install block with type+serves+profiles)
  *   package.json     (includes @modelcontextprotocol/sdk dep)
  *   tsconfig.json
  *   src/index.ts     (@modelcontextprotocol/sdk StdioServerTransport stub)
@@ -19,13 +22,42 @@
  *   CLAUDE.md        (LLM tool-call guidance)
  *
  * [inv:nx-free-core] — no nx-packages imports.
+ * [inv:host-agnostic-type] — install.type used; target resolved from host-registry.
  */
 
 import type { FileSet } from '../../index.js';
 import type { TemplateOpts } from '../_shared.js';
-import { manifestJson, tsconfigJson, changelogMd, readmeMd } from '../_shared.js';
+import { manifestJson, buildInstallDescriptor, tsconfigJson, changelogMd, readmeMd } from '../_shared.js';
+
+/** Default transports for mcp-server: stdio only. Override with --transports. */
+const DEFAULT_SERVES = ['stdio'];
+
+/**
+ * Default profiles: keyed by transport name (satisfies profiles ⊆ serves invariant).
+ * Each profile key MUST appear in the serves array; validate() enforces this.
+ * [inv:never-managed] profiles ⊆ serves: profile name must equal a transport in serves.
+ */
+function defaultProfiles(serves: string[]): Record<string, unknown> {
+  const profiles: Record<string, unknown> = {};
+  // Profile key = transport name (stdio/sse/http) — must be in serves.
+  if (serves.includes('stdio')) {
+    profiles['stdio'] = { transport: 'stdio' };
+  }
+  if (serves.includes('sse')) {
+    profiles['sse'] = { transport: 'sse' };
+  }
+  if (serves.includes('http')) {
+    profiles['http'] = { transport: 'http' };
+  }
+  return profiles;
+}
 
 export function mcpServerTemplate(opts: TemplateOpts): FileSet {
+  // Effective transports: from --transports flag, or default stdio
+  const serves = opts.transports !== undefined && opts.transports.length > 0
+    ? opts.transports
+    : DEFAULT_SERVES;
+
   // Custom package.json includes @modelcontextprotocol/sdk dependency
   const mcpPkg = JSON.stringify(
     {
@@ -66,6 +98,29 @@ export function mcpServerTemplate(opts: TemplateOpts): FileSet {
           timeout_ms: 5000,
         },
       },
+      // [shape:install-descriptor] — host-agnostic; engine resolves target from
+      // libs/host-registry (claude: config-merge .mcp.json; codex: config-merge config.toml).
+      // [def:serves] — transports this server implements; profiles ⊆ serves enforced by validate().
+      // [ref:host-keyed-target] — NO literal ~/.claude/ path here.
+      install: buildInstallDescriptor('mcp-server', opts, serves, defaultProfiles(serves)),
+      // Install-time configuration schema. Keys listed in "required" are prompted
+      // during `sox install` (interactive) or warned about (CI/non-TTY).
+      // x-sox-prompt: text shown to the user; x-sox-default: value if user hits enter.
+      // At spawn time, values are injected as SOX_CONFIG_<KEY> environment vars.
+      // Remove this block if your server needs no persistent configuration.
+      config_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: [],
+        properties: {
+          example_setting: {
+            type: 'string',
+            description: 'An example configurable setting. Replace with your extension\'s actual config.',
+            'x-sox-prompt': `Enter a value for ${opts.id} example_setting:`,
+            'x-sox-default': 'default-value',
+          },
+        },
+      },
       tools: [
         {
           name: 'example_tool',
@@ -89,6 +144,10 @@ export function mcpServerTemplate(opts: TemplateOpts): FileSet {
       `// ${opts.description}`,
       `// Transport: stdio — uses @modelcontextprotocol/sdk StdioServerTransport`,
       `// Real shape reference: @adhd/agent-mcp (~/dev/node/adhd/packages/ai/agent-mcp)`,
+      `//`,
+      `// Install-time config is injected as SOX_CONFIG_<KEY> environment variables`,
+      `// at spawn time (values from extensions.json "config" block, cascade-resolved).`,
+      `// Example: const exampleSetting = process.env['SOX_CONFIG_EXAMPLE_SETTING'] ?? 'default-value';`,
       ``,
       `import { Server } from '@modelcontextprotocol/sdk/server/index.js';`,
       `import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';`,
@@ -137,6 +196,17 @@ export function mcpServerTemplate(opts: TemplateOpts): FileSet {
       `  process.stderr.write(String(err) + '\\n');`,
       `  process.exit(1);`,
       `});`,
+    ].join('\n'),
+
+    // Pre-compiled stub so sox validate passes the P0 entrypoint-reachability gate
+    // immediately after scaffold (before the author runs `npm run build`).
+    // This file is overwritten by the real build; treat it as a placeholder.
+    'dist/index.js': [
+      `#!/usr/bin/env node`,
+      `// ${opts.id} — MCP server stub (replace with real build output)`,
+      `"use strict";`,
+      `process.stderr.write('${opts.id}: run npm run build to compile the real server\\n');`,
+      `process.exit(1);`,
     ].join('\n'),
 
     'CHANGELOG.md': changelogMd(),

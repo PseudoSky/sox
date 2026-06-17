@@ -8,21 +8,25 @@
  *   - runtime: shell, entrypoint: hook.sh (the script file itself).
  *   - Also present: node CJS hooks (*.cjs / *.js) for more complex logic.
  *   - Hook payload arrives on stdin; hooks must be self-contained (no imports).
+ *   - Install target resolved from libs/host-registry at install time.
+ *     [ref:host-keyed-target] — NO hardcoded host paths here.
  *
  * Files:
  *   extension.json   (born-conformant manifest: type=hook, runtime=shell,
- *                     entrypoint=hook.sh, order=100, events=[PreToolUse])
+ *                     entrypoint=hook.sh, order=100, events=[PreToolUse],
+ *                     install block with type+hosts)
  *   package.json     (minimal — shell hooks have no build step)
  *   hook.sh          (#!/usr/bin/env bash — reads stdin JSON, runs logic, exits 0)
  *   CHANGELOG.md
  *   README.md
  *
  * [inv:nx-free-core] — no nx-packages imports.
+ * [inv:host-agnostic-type] — install.type used; target resolved from host-registry.
  */
 
 import type { FileSet } from '../../index.js';
 import type { TemplateOpts } from '../_shared.js';
-import { manifestJson, changelogMd, readmeMd } from '../_shared.js';
+import { manifestJson, buildInstallDescriptor, changelogMd, readmeMd } from '../_shared.js';
 
 export function hookTemplate(opts: TemplateOpts): FileSet {
   // Minimal package.json — shell hooks have no build step
@@ -48,6 +52,10 @@ export function hookTemplate(opts: TemplateOpts): FileSet {
       entrypoint: 'hook.sh',
       order: 100,
       events: ['PreToolUse'],
+      // [shape:install-descriptor] — host-agnostic; engine resolves target from
+      // libs/host-registry (claude: file-drop hook-script + config-merge settings).
+      // [ref:host-keyed-target] — NO literal ~/.claude/ path here.
+      install: buildInstallDescriptor('hook', opts),
     }),
 
     'package.json': hookPkg,

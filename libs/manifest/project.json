@@ -23,18 +23,40 @@
     "test": {
       "executor": "nx:run-commands",
       "options": {
-        "commands": [
-          "vitest run --config libs/manifest/vitest.config.ts",
-          "vitest run scripts/validate-manifests.test.ts"
-        ],
-        "parallel": false
+        "command": "vitest run --config libs/manifest/vitest.config.ts"
       },
       "cache": true,
+      "dependsOn": ["test-scripts"],
       "inputs": [
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/src/schema.json",
+        "{projectRoot}/vitest.config.ts"
+      ]
+    },
+    "test-scripts": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run scripts/validate-manifests.test.ts"
+      },
+      "cache": true,
+      "inputs": [
         "{workspaceRoot}/scripts/validate-manifests.ts",
-        "{workspaceRoot}/scripts/validate-manifests.test.ts"
+        "{workspaceRoot}/scripts/validate-manifests.test.ts",
+        "{workspaceRoot}/extensions/**/*",
+        "{workspaceRoot}/registry/index.json"
+      ]
+    },
+    "check-registry": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx tsx scripts/check-registry-sync.ts"
+      },
+      "cache": true,
+      "inputs": [
+        "{workspaceRoot}/scripts/check-registry-sync.ts",
+        "{workspaceRoot}/scripts/build-index.ts",
+        "{workspaceRoot}/extensions/**/*",
+        "{workspaceRoot}/registry/index.json"
       ]
     },
     "lint": {

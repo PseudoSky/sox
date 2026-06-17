@@ -56,7 +56,9 @@ mutates:    ["libs/manifest/src/index.ts",
              "libs/authoring/src/index.ts",
              "apps/sox/src/main.ts",
              "docs/guidelines/service.md",
-             "tools/tg-plan/check-service-scaffold.sh"]
+             "tools/tg-plan/check-service-scaffold.sh",
+             "scripts/new-extension.ts",
+             "libs/manifest/src/manifest.spec.ts"]
 ```
 
 ---

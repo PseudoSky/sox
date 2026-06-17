@@ -6,23 +6,25 @@
  *   - Runtime: declarative — no process spawned; the host reads the .md and
  *     injects it as a subagent definition.
  *   - Entrypoint: agent.md (the markdown definition file).
- *   - install-target: ~/.claude/agents/ (host discovery location).
+ *   - Install target resolved from libs/host-registry at install time.
+ *     [ref:host-keyed-target] — NO hardcoded ~/.claude/agents/ here.
  *   - No src/, no tsconfig, no build step required.
  *
  * Files:
  *   extension.json   (born-conformant manifest: type=agent, runtime=declarative,
- *                     entrypoint=agent.md, install-target=~/.claude/agents/)
+ *                     entrypoint=agent.md, install block with type+hosts)
  *   package.json     (minimal — no build scripts; just identity + metadata)
  *   agent.md         (YAML frontmatter + markdown body — the real agent definition)
  *   CHANGELOG.md
  *   README.md
  *
  * [inv:nx-free-core] — no nx-packages imports.
+ * [inv:host-agnostic-type] — install-target removed; install.type used instead.
  */
 
 import type { FileSet } from '../../index.js';
 import type { TemplateOpts } from '../_shared.js';
-import { manifestJson, changelogMd, readmeMd } from '../_shared.js';
+import { manifestJson, buildInstallDescriptor, changelogMd, readmeMd } from '../_shared.js';
 
 export function agentTemplate(opts: TemplateOpts): FileSet {
   // Minimal package.json — declarative agents have no build step
@@ -46,10 +48,29 @@ export function agentTemplate(opts: TemplateOpts): FileSet {
       runtime: 'declarative',
       // [flex:entrypoint-optional] — present but points to the .md definition file
       entrypoint: 'agent.md',
-      // [flex:install-target] — where the host discovers this agent
-      'install-target': '~/.claude/agents/',
+      // [shape:install-descriptor] — host-agnostic; engine resolves target from
+      // libs/host-registry (claude: file-drop at .claude/agents/; codex: config-merge).
+      // [ref:host-keyed-target] — NO literal ~/.claude/ path here.
+      install: buildInstallDescriptor('agent', opts),
       requires: {
         tool_calling: true,
+      },
+      // Install-time configuration schema. Agents are declarative (Role B) — sox
+      // does not spawn them, so config is NOT injected as env vars. It IS available
+      // via `sox config get/set/list` and is prompted during `sox install`.
+      // Remove this block if your agent needs no persistent configuration.
+      config_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: [],
+        properties: {
+          example_setting: {
+            type: 'string',
+            description: 'An example configurable setting. Replace with your agent\'s actual config.',
+            'x-sox-prompt': `Enter a value for ${opts.id} example_setting:`,
+            'x-sox-default': 'default-value',
+          },
+        },
       },
     }),
 
@@ -108,7 +129,7 @@ export function agentTemplate(opts: TemplateOpts): FileSet {
       '## Runtime',
       '',
       '`declarative` — the host reads `agent.md` and injects it as a subagent definition.',
-      'No process is spawned. Install places `agent.md` at `~/.claude/agents/`.',
+      'No process is spawned. Install target resolved from host-registry at install time.',
       '',
       '## Capabilities',
       '',

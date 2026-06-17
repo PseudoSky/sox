@@ -17,14 +17,16 @@ estimate with measured data. "Tokens" = the subagent's reported total
 |---|---|---|---|---|---|---|---|---|
 | A0 | plan | (plan architecture review) | architect-reviewer | 84,407 | 73 | ~365s | n/a | read-only anchor; GO-WITH-CHANGES, 7 findings |
 | 1 | core | core-engine | sox-active:typescript-pro | **52,751** | 37 | ~370s | **PASS** (`nx build` exit 0) | ported core.py → 9 files; smooth (no build-fix loop); 3 in-spec deviations (seed type label/id, DetectorConfig re-export, 1 intra-pkg require for circular dep) |
+| 2 | framework | service-type | sox-active:typescript-pro | **93,994** | 56 | ~457s | **PASS** (`SCAFFOLD OK`) | live manifest/type-system edit; nx test manifest 150 pass (0 fail, memory-server non-regressed); +2 files beyond mutates (new-extension.ts footgun + manifest.spec.ts) → executor-class expand-artifacts amendment |
 
 ## Transition-engine note (v0.8.13 — skill-feedback candidate)
 `state-transition.js --complete core-engine` returned `status: audit_failed (0/20)` **even though the state completed correctly** (state.json `core-engine: complete`, `end_ref` set, `nx build` green, `core-engine.1–5` all PASS). The 0/20 is a *forward-looking* run of the **framework**-phase audit (20 criteria) after `current_state` advanced — it can't pass mid-plan. A `--complete` should report on the **completed** state's guard/criteria, not a look-ahead phase; the misleading `audit_failed` could make an orchestrator falsely halt. → file as a fix for plan-state-machine.
 
 ## Running totals
-- Execution dispatches recorded: **1** (core-engine verified complete)
-- Execution `subagent_tokens` so far: **52,751**
-- Mean per coding-state (so far): **52,751** (n=1, a Hard-tier state that ran clean)
+- Execution dispatches recorded: **2** (core-engine, service-type — both PASS, both 1-shot)
+- Execution `subagent_tokens` so far: **146,745** (52,751 + 93,994)
+- Mean per coding-state (so far): **73,372** (n=2)
+- **Re-projected full plan (n=2):** done 147k + 7 remaining work states (~700k tiered) + audit fix-loops (~140k) ≈ **~1.0M subagent_tokens** (range 0.8–1.6M). Converging on the prior ~0.7M recalibration; both 1-shot passes keep it at the low end. Greenfield port (53k) < live-edit (94k) — editing live code with a no-regress test suite costs ~1.8× a clean port, as expected.
 
 ## Recalibration log
 

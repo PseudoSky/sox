@@ -1,13 +1,23 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://your-registry/schemas/extension/v2.json",
-  "title": "Extension manifest v2 (libs/manifest — single source of truth)",
+  "title": "Extension manifest v2 (libs/manifest \u2014 single source of truth)",
   "description": "Adds three contract flexes over v1: entrypoint optional/typed, runtime expanded to {node,shell,python,declarative,stdio-any}, install-target for declarative host-placement.",
   "type": "object",
   "additionalProperties": true,
-  "required": ["id", "version", "type", "title", "description", "compatibility", "license"],
+  "required": [
+    "id",
+    "version",
+    "type",
+    "title",
+    "description",
+    "compatibility",
+    "license"
+  ],
   "properties": {
-    "$schema": { "type": "string" },
+    "$schema": {
+      "type": "string"
+    },
     "id": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]*$",
@@ -20,95 +30,168 @@
     },
     "type": {
       "type": "string",
-      "enum": ["agent", "skill", "mcp-server", "prompt", "hook", "command", "bundle"],
+      "enum": [
+        "agent",
+        "skill",
+        "mcp-server",
+        "prompt",
+        "hook",
+        "command",
+        "bundle"
+      ],
       "description": "Extension type. Closed enum."
     },
-    "title": { "type": "string", "minLength": 1 },
-    "description": { "type": "string", "minLength": 1 },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
     "compatibility": {
       "type": "object",
       "description": "Host compatibility requirements. Accepts any shape (host or sox key).",
       "additionalProperties": true
     },
-    "license": { "type": "string" },
-
+    "license": {
+      "type": "string"
+    },
     "entrypoint": {
       "type": "string",
-      "description": "[flex:entrypoint-optional] Resolved at install. Optional — absent for bundle, prompt, and declarative types. Required for behavioral types (node/shell/python runtimes) by runtime-specific logic, not by schema required[]."
+      "description": "[flex:entrypoint-optional] Resolved at install. Optional \u2014 absent for bundle, prompt, and declarative types. Required for behavioral types (node/shell/python runtimes) by runtime-specific logic, not by schema required[]."
     },
-
     "runtime": {
       "type": "string",
-      "enum": ["node", "shell", "python", "declarative", "stdio-any"],
+      "enum": [
+        "node",
+        "shell",
+        "python",
+        "declarative",
+        "stdio-any"
+      ],
       "description": "[flex:runtime-expanded] Author-declared runtime contract. 'node'=TS/Node; 'shell'=shell script; 'python'=Python process; 'declarative'=no process, install-target placement only; 'stdio-any'=language-agnostic stdio. Absent => 'node' (back-compat)."
     },
-
     "install-target": {
       "type": "string",
-      "description": "[flex:install-target] Optional host-placement path for declarative extensions (e.g. '~/.claude/commands/'). Generalised reinjection primitive — see [def:install-target]."
+      "description": "[flex:install-target] Optional host-placement path for declarative extensions (e.g. '~/.claude/commands/'). Generalised reinjection primitive \u2014 see [def:install-target]. Superseded by install.{type,hosts,profiles,...} for new descriptors but kept for back-compat."
     },
-
     "keywords": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "author": {
       "oneOf": [
-        { "type": "string" },
+        {
+          "type": "string"
+        },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["name"],
+          "required": [
+            "name"
+          ],
           "properties": {
-            "name": { "type": "string" },
-            "email": { "type": "string" },
-            "url": { "type": "string" }
+            "name": {
+              "type": "string"
+            },
+            "email": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
           }
         }
       ]
     },
-    "homepage": { "type": "string" },
-    "repository": { "type": "string" },
-    "private": { "type": "boolean" },
-    "checksum": { "type": "string" },
-    "order": { "type": "integer" },
-    "tags": { "type": "array", "items": { "type": "string" } },
+    "homepage": {
+      "type": "string"
+    },
+    "repository": {
+      "type": "string"
+    },
+    "private": {
+      "type": "boolean"
+    },
+    "checksum": {
+      "type": "string"
+    },
+    "order": {
+      "type": "integer"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "requires": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "tool_calling": { "type": "boolean" },
-        "structured_output": { "type": "boolean" },
-        "min_context_tokens": { "type": "integer", "minimum": 1 }
+        "tool_calling": {
+          "type": "boolean"
+        },
+        "structured_output": {
+          "type": "boolean"
+        },
+        "min_context_tokens": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "dependencies": {
       "type": "array",
       "items": {
         "oneOf": [
-          { "type": "string" },
+          {
+            "type": "string"
+          },
           {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "version"],
+            "required": [
+              "id",
+              "version"
+            ],
             "properties": {
-              "id": { "type": "string" },
-              "version": { "type": "string" }
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
             }
           }
         ]
       }
     },
-    "capabilities": { "type": "array", "items": { "type": "string" } },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "members": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "version"],
+        "required": [
+          "id",
+          "version"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "version": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
         }
       }
     },
@@ -116,34 +199,73 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "background": { "type": "boolean" },
-        "singleton": { "type": "boolean" },
-        "stop_timeout_ms": { "type": "integer", "minimum": 0 },
+        "background": {
+          "type": "boolean"
+        },
+        "singleton": {
+          "type": "boolean"
+        },
+        "stop_timeout_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
         "health": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "type": { "enum": ["stdio-ping", "socket", "command"] },
-            "endpoint": { "type": "string" },
-            "interval_ms": { "type": "integer", "minimum": 250 },
-            "timeout_ms": { "type": "integer", "minimum": 100 }
+            "type": {
+              "enum": [
+                "stdio-ping",
+                "socket",
+                "command"
+              ]
+            },
+            "endpoint": {
+              "type": "string"
+            },
+            "interval_ms": {
+              "type": "integer",
+              "minimum": 250
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 100
+            }
           }
         }
       }
     },
     "events": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "minItems": 1
     },
     "invocation": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "protocol": { "type": "string", "enum": ["function-export", "stdio", "ipc", "http"] },
-        "handler": { "type": "string" },
-        "input_schema": { "type": "object", "additionalProperties": true },
-        "output_schema": { "type": "object", "additionalProperties": true }
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "function-export",
+            "stdio",
+            "ipc",
+            "http"
+          ]
+        },
+        "handler": {
+          "type": "string"
+        },
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "output_schema": {
+          "type": "object",
+          "additionalProperties": true
+        }
       }
     },
     "tools": {
@@ -151,11 +273,21 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "description"],
+        "required": [
+          "name",
+          "description"
+        ],
         "properties": {
-          "name": { "type": "string" },
-          "description": { "type": "string" },
-          "inputSchema": { "type": "object", "additionalProperties": true }
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "inputSchema": {
+            "type": "object",
+            "additionalProperties": true
+          }
         }
       }
     },
@@ -164,28 +296,60 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name"],
+        "required": [
+          "name"
+        ],
         "properties": {
-          "name": { "type": "string" },
-          "type": { "type": "string", "enum": ["string", "number", "boolean", "array", "object"] },
-          "required": { "type": "boolean" },
-          "description": { "type": "string" }
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "string",
+              "number",
+              "boolean",
+              "array",
+              "object"
+            ]
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": "string"
+          }
         }
       }
     },
     "template_engine": {
       "type": "string",
-      "enum": ["handlebars", "jinja2", "mustache", "simple", "none"]
+      "enum": [
+        "handlebars",
+        "jinja2",
+        "mustache",
+        "simple",
+        "none"
+      ]
     },
     "run_interface": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "input_schema": { "type": "object", "additionalProperties": true },
-        "output_schema": { "type": "object", "additionalProperties": true }
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "output_schema": {
+          "type": "object",
+          "additionalProperties": true
+        }
       }
     },
-    "config_schema": { "type": "object", "additionalProperties": true },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": true
+    },
     "permissions": {
       "type": "object",
       "additionalProperties": false,
@@ -194,25 +358,111 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "read": { "type": "array", "items": { "type": "string" } },
-            "write": { "type": "array", "items": { "type": "string" } }
+            "read": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "write": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           }
         },
         "network": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "outbound": { "type": "array", "items": { "type": "string" } }
+            "outbound": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           }
         },
         "socket": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "paths": { "type": "array", "items": { "type": "string" } }
+            "paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           }
         }
       }
+    },
+    "install": {
+      "type": "object",
+      "description": "[shape:install-descriptor] Hybrid install descriptor (ADR resolved #2). Engine fills per-host target defaults from libs/host-registry at install time. NOTE: 'service' is a sox-run execution mode, not a separate manifest type \u2014 intentionally absent from the type enum here and in the top-level type field.",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "agent",
+            "skill",
+            "mcp-server",
+            "prompt",
+            "hook",
+            "command",
+            "bundle"
+          ],
+          "description": "Host-agnostic extension type \u2014 same closed enum as top-level type. [inv:host-agnostic-type]"
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex"
+            ]
+          },
+          "description": "Chosen host targets. Engine resolves target paths from libs/host-registry."
+        },
+        "profiles": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "[def:profile] Install-layer presets over (capability + transport + host-target + config). Keys are profile names (e.g. 'standalone', 'shared'). profiles \u2286 serves is a validate-time invariant."
+        },
+        "serves": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "stdio",
+              "sse",
+              "http"
+            ]
+          },
+          "description": "[def:serves] Transports the mcp extension implements. profiles \u2286 serves enforced by validate(). [inv:never-managed]"
+        },
+        "source": {
+          "type": "string",
+          "description": "[def:source-provenance] Origin path when --content @path / --from @dir used at init. Enables update to re-pull from origin."
+        },
+        "overrides": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Per-host surface/key overrides. Keys are host names ('claude', 'codex'). Managed (claude) and project-forbidden (codex) keys are refused by validate(). [inv:never-managed]"
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Permissions and environment config carried on the built extension. Consumed by the capability engine at install time."
+    },
+    "source": {
+      "type": "string",
+      "description": "[def:source-provenance] Top-level provenance path (alias; prefer install.source for new descriptors)."
     }
   }
 }

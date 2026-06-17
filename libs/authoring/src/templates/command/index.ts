@@ -10,10 +10,12 @@
  *   - runtime: node (default); use runtime: python for Python-based commands.
  *   - invocation: stdio protocol — args from process.argv, output to stdout.
  *   - Commands are deterministic: no LLM calls inside the handler.
+ *   - Install target resolved from libs/host-registry at install time.
+ *     [ref:host-keyed-target] — NO hardcoded host paths here.
  *
  * Files:
  *   extension.json   (born-conformant manifest: type=command, runtime=node,
- *                     invocation.protocol=stdio)
+ *                     invocation.protocol=stdio, install block with type+hosts)
  *   package.json     (with bin field pointing to dist/index.js)
  *   tsconfig.json
  *   src/index.ts     (#!/usr/bin/env node stub with run() + CLI entry)
@@ -21,11 +23,12 @@
  *   README.md
  *
  * [inv:nx-free-core] — no nx-packages imports.
+ * [inv:host-agnostic-type] — install.type used; target resolved from host-registry.
  */
 
 import type { FileSet } from '../../index.js';
 import type { TemplateOpts } from '../_shared.js';
-import { manifestJson, tsconfigJson, changelogMd, readmeMd } from '../_shared.js';
+import { manifestJson, buildInstallDescriptor, tsconfigJson, changelogMd, readmeMd } from '../_shared.js';
 
 export function commandTemplate(opts: TemplateOpts): FileSet {
   // package.json with bin field for direct CLI invocation
@@ -52,6 +55,12 @@ export function commandTemplate(opts: TemplateOpts): FileSet {
     2,
   );
 
+  // Build install descriptor; apply --surface override if provided
+  const installDescriptor = buildInstallDescriptor('command', opts);
+  if (opts.surface !== undefined && opts.surface !== '') {
+    installDescriptor['overrides'] = { surface: opts.surface };
+  }
+
   return {
     'extension.json': manifestJson(opts, {
       runtime: 'node',
@@ -62,6 +71,10 @@ export function commandTemplate(opts: TemplateOpts): FileSet {
         protocol: 'stdio',
         handler: 'run',
       },
+      // [shape:install-descriptor] — host-agnostic; engine resolves target from
+      // libs/host-registry (claude: file-drop at .claude/commands/; codex: config-merge).
+      // [ref:host-keyed-target] — NO literal host path here.
+      install: installDescriptor,
     }),
 
     'package.json': cmdPkg,
@@ -100,6 +113,22 @@ export function commandTemplate(opts: TemplateOpts): FileSet {
       `  const out = run({ args });`,
       `  process.stdout.write(out.stdout + '\\n');`,
       `  process.exit(out.exitCode);`,
+      `}`,
+    ].join('\n'),
+
+    // Pre-compiled stub so sox validate passes the P0 entrypoint-reachability gate
+    // immediately after scaffold (before the author runs `npm run build`).
+    // This file is overwritten by the real build; treat it as a placeholder.
+    'dist/index.js': [
+      `#!/usr/bin/env node`,
+      `// ${opts.id} — command stub (replace with real build output)`,
+      `"use strict";`,
+      `const run = (i) => ({ stdout: \`${opts.id}: \${i.args.join(' ')}\`, exitCode: 0 });`,
+      `exports.run = run;`,
+      `if (require.main === module) {`,
+      `  const o = run({ args: process.argv.slice(2) });`,
+      `  process.stdout.write(o.stdout + '\\n');`,
+      `  process.exit(o.exitCode);`,
       `}`,
     ].join('\n'),
 

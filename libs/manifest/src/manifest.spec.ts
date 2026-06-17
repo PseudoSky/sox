@@ -436,11 +436,15 @@ describe('validate() — lifecycle block', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('passes for agent with lifecycle', () => {
+  it('[dod.6] REJECTS agent with lifecycle — agents are Role B (reinjection), not Role A (supervised)', () => {
+    // NEGATIVE fixture: type:"agent" + lifecycle must be REJECTED. [dod.6]
+    // Agents are reinjected via file-drop into host discovery paths; they are not
+    // supervised processes. The validator enforces this boundary.
     const result = validate(minimal('agent', {
       lifecycle: { background: true, singleton: true },
     }));
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('lifecycle') && e.includes('agent'))).toBe(true);
   });
 
   it('fails for command with lifecycle (not allowed)', () => {
@@ -846,5 +850,456 @@ describe('validate() — ported invariants from validate-manifests.test.ts', () 
   });
 });
 
+
+// ─── [schema-delta] install descriptor validation ────────────────────────────
+
+describe('[schema-delta] install descriptor — new hybrid fields', () => {
+  it('[schema-delta.1] install block with profiles/serves/source validates', () => {
+    const result = validate(minimal('mcp-server', {
+      install: {
+        type: 'mcp-server',
+        hosts: ['claude'],
+        serves: ['stdio'],
+        profiles: { stdio: { transport: 'stdio' } },
+        source: '/path/to/origin',
+      },
+    }));
+    expect(result.ok).toBe(true);
+  });
+
+  it('[schema-delta.3] rejects profiles key not in serves — profiles ⊆ serves invariant', () => {
+    // NEGATIVE: profile "sse" declared but serves only ["stdio"] — rejected.
+    const result = validate(minimal('mcp-server', {
+      install: {
+        serves: ['stdio'],
+        profiles: { sse: { transport: 'sse' } }, // "sse" not in serves
+      },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('profiles') && e.includes('serves'))).toBe(true);
+  });
+
+  it('[schema-delta.3] allows profiles ⊆ serves (all profile keys in serves)', () => {
+    const result = validate(minimal('mcp-server', {
+      install: {
+        serves: ['stdio', 'sse'],
+        profiles: { stdio: {}, sse: {} },
+      },
+    }));
+    expect(result.ok).toBe(true);
+  });
+
+  it('[schema-delta.4] REJECTS install.overrides.claude with managed key — [inv:never-managed]', () => {
+    // NEGATIVE: targeting the Claude managed tier must be refused.
+    // [def:managed-tier] sox never writes the managed settings tier.
+    const result = validate(minimal('agent', {
+      install: {
+        hosts: ['claude'],
+        overrides: { claude: { managed: { some: 'policy' } } },
+      },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('managed') && e.includes('managed-tier'))).toBe(true);
+  });
+
+  it('[schema-delta.4] REJECTS install.overrides.codex with project-forbidden key — [inv:never-managed]', () => {
+    // NEGATIVE: targeting a Codex project-forbidden key must be refused.
+    // [def:project-forbidden-keys] model_providers cannot be set at project scope.
+    const result = validate(minimal('skill', {
+      install: {
+        hosts: ['codex'],
+        overrides: { codex: { model_providers: ['openai'] } },
+      },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('model_providers') && e.includes('project-forbidden'))).toBe(true);
+  });
+
+  it('[schema-delta.4] REJECTS install.overrides.codex with other project-forbidden keys', () => {
+    for (const key of ['notify', 'profile', 'otel']) {
+      const overrides: Record<string, unknown> = {};
+      overrides[key] = 'value';
+      const result = validate(minimal('skill', {
+        install: { hosts: ['codex'], overrides: { codex: overrides } },
+      }));
+      expect(result.ok).toBe(false);
+      expect(result.errors.some((e) => e.includes(key))).toBe(true, `Expected rejection for codex key "${key}"`);
+    }
+  });
+
+  it('[schema-delta.4] allows install.overrides with non-forbidden codex keys', () => {
+    const result = validate(minimal('skill', {
+      install: {
+        hosts: ['codex'],
+        overrides: { codex: { theme: 'dark' } }, // not a forbidden key
+      },
+    }));
+    expect(result.ok).toBe(true);
+  });
+
+  it('[schema-delta.4] allows install.overrides with non-managed claude keys', () => {
+    const result = validate(minimal('agent', {
+      install: {
+        hosts: ['claude'],
+        overrides: { claude: { theme: 'dark' } }, // not a managed-tier key
+      },
+    }));
+    expect(result.ok).toBe(true);
+  });
+
+  it('[schema-delta.5] back-compat: manifest with old install-target still validates', () => {
+    const result = validate(minimal('skill', {
+      'install-target': '~/.claude/commands/',
+      runtime: 'declarative',
+    }));
+    expect(result.ok).toBe(true);
+  });
+
+  it('[schema-delta.5] back-compat: existing non-agent manifests without install block validate', () => {
+    for (const t of ['skill', 'mcp-server', 'command', 'hook', 'prompt']) {
+      const extra: Record<string, unknown> = {};
+      if (t === 'bundle') extra['members'] = [{ id: 'other', version: '^0.1.0' }];
+      expect(validate(minimal(t, extra)).ok).toBe(true);
+    }
+  });
+
+  it('install.serves with unknown transport is rejected', () => {
+    const result = validate(minimal('mcp-server', {
+      install: { serves: ['grpc'] },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('grpc'))).toBe(true);
+  });
+
+  it('install.hosts with unknown host is rejected', () => {
+    const result = validate(minimal('skill', {
+      install: { hosts: ['vscode'] },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('vscode'))).toBe(true);
+  });
+
+  it('install block absent — no install validation errors', () => {
+    const result = validate(minimal('skill'));
+    expect(result.ok).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('[schema-delta] ManifestSchema has install, profiles, serves, source properties', () => {
+    const props = ManifestSchema['properties'] as Record<string, unknown>;
+    expect(props['install']).toBeDefined();
+    expect(props['config']).toBeDefined();
+    expect(props['source']).toBeDefined();
+    // Check nested install properties for profiles/serves/source
+    const installProp = props['install'] as Record<string, unknown>;
+    const installProps = installProp['properties'] as Record<string, unknown>;
+    expect(installProps['profiles']).toBeDefined();
+    expect(installProps['serves']).toBeDefined();
+    expect(installProps['source']).toBeDefined();
+  });
+});
+
 // Ensure errors() helper is used
 void errors;
+
+// ─── config_schema meta-validation ───────────────────────────────────────────
+
+describe('validate() — config_schema meta-validation', () => {
+  it('valid config_schema with required + properties is accepted', () => {
+    const result = validate(minimal('mcp-server', {
+      config_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['db_path'],
+        properties: {
+          db_path: { type: 'string', description: 'Path to the SQLite store' },
+        },
+      },
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('config_schema without additionalProperties:false emits a warning', () => {
+    const result = validate(minimal('mcp-server', {
+      config_schema: {
+        type: 'object',
+        properties: { db_path: { type: 'string' } },
+      },
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.includes('additionalProperties'))).toBe(true);
+  });
+
+  it('config_schema: additionalProperties:true also emits a warning', () => {
+    const result = validate(minimal('mcp-server', {
+      config_schema: { type: 'object', additionalProperties: true },
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.includes('additionalProperties'))).toBe(true);
+  });
+
+  it('config_schema that is not an object is an error', () => {
+    const result = validate(minimal('mcp-server', { config_schema: ['invalid'] }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('config_schema must be a JSON Schema object'))).toBe(true);
+  });
+
+  it('config_schema with wrong type field is an error', () => {
+    const result = validate(minimal('mcp-server', {
+      config_schema: { type: 'array', items: { type: 'string' } },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('config_schema.type must be "object"'))).toBe(true);
+  });
+
+  it('config_schema.required must be an array', () => {
+    const result = validate(minimal('mcp-server', {
+      config_schema: { type: 'object', additionalProperties: false, required: 'db_path' },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('config_schema.required must be an array'))).toBe(true);
+  });
+
+  it('config_schema.required entries must be strings', () => {
+    const result = validate(minimal('mcp-server', {
+      config_schema: { type: 'object', additionalProperties: false, required: [42] },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('required entries must all be strings'))).toBe(true);
+  });
+
+  it('mcp-server without config_schema emits advisory warning (not error)', () => {
+    const result = validate(minimal('mcp-server'));
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.includes('config_schema'))).toBe(true);
+  });
+
+  it('agent without config_schema emits advisory warning (not error)', () => {
+    const result = validate(minimal('agent'));
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.includes('config_schema'))).toBe(true);
+  });
+
+  it('skill without config_schema emits no warning (stateless)', () => {
+    const result = validate(minimal('skill'));
+    expect(result.ok).toBe(true);
+    expect(result.warnings.filter((w) => w.includes('config_schema'))).toHaveLength(0);
+  });
+
+  it('hook without config_schema emits no warning (stateless)', () => {
+    const result = validate(minimal('hook', { events: ['PostToolUse'] }));
+    expect(result.ok).toBe(true);
+    expect(result.warnings.filter((w) => w.includes('config_schema'))).toHaveLength(0);
+  });
+});
+
+// ─── [service-type] service primitive — st-1..st-3 ───────────────────────────
+
+describe('[service-type] service as a first-class manifest type', () => {
+  // st-1: 'service' is in VALID_TYPES — passes as a known type
+  it('[service-type.1] type:"service" is accepted as a known type', () => {
+    const result = validate(minimal('service', {
+      install: { type: 'service', transports: ['http'] },
+      lifecycle: {
+        background: true,
+        singleton: true,
+        health: { type: 'http-get', endpoint: 'http://127.0.0.1:8080/_probe/health' },
+      },
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  // st-2: install.type enum includes 'service'
+  it('[service-type.2] install.type:"service" is accepted in the install descriptor', () => {
+    const result = validate(minimal('service', {
+      install: { type: 'service', transports: ['stdio'] },
+      lifecycle: { background: true, health: { type: 'stdio-ping' } },
+    }));
+    expect(result.ok).toBe(true);
+  });
+
+  // st-2: http-get is a valid health type
+  it('[service-type.2] health.type:"http-get" is accepted with an endpoint', () => {
+    const result = validate(minimal('service', {
+      install: { type: 'service', transports: ['http'] },
+      lifecycle: {
+        background: true,
+        health: { type: 'http-get', endpoint: 'http://127.0.0.1:9090/_svc/health' },
+      },
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  // st-2: http-get requires endpoint
+  it('[service-type.2] health.type:"http-get" without endpoint is rejected', () => {
+    const result = validate(minimal('service', {
+      install: { type: 'service', transports: ['http'] },
+      lifecycle: {
+        background: true,
+        health: { type: 'http-get' }, // missing endpoint
+      },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('endpoint') && e.includes('http-get'))).toBe(true);
+  });
+
+  // st-2: 'socket' is a valid transport value
+  it('[service-type.2] install.transports with "socket" is accepted', () => {
+    const result = validate(minimal('service', {
+      install: {
+        type: 'service',
+        transports: ['socket'],
+        profiles: { socket: { transport: 'socket' } },
+      },
+      lifecycle: {
+        background: true,
+        health: { type: 'http-get', endpoint: 'http://127.0.0.1:9090/_svc/health' },
+      },
+    }));
+    expect(result.ok).toBe(true);
+  });
+
+  // st-3: invalid transport value is rejected
+  it('[service-type.3] rejects invalid transport value (e.g. "grpc")', () => {
+    const result = validate(minimal('service', {
+      install: { type: 'service', transports: ['grpc'] },
+      lifecycle: { background: true },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('grpc'))).toBe(true);
+  });
+
+  // st-3: type:service without transports (and no serves) is rejected
+  it('[service-type.3] type:"service" without install.transports is rejected', () => {
+    const result = validate(minimal('service', {
+      install: { type: 'service' }, // no transports, no serves
+      lifecycle: { background: true },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('transport') && e.includes('service'))).toBe(true);
+  });
+
+  // st-3: type:service with serves (back-compat alias) satisfies the ≥1 requirement
+  it('[service-type.3] type:"service" with only install.serves (back-compat) is accepted', () => {
+    const result = validate(minimal('service', {
+      install: { type: 'service', serves: ['http'] },
+      lifecycle: {
+        background: true,
+        health: { type: 'http-get', endpoint: 'http://127.0.0.1:8080/_svc/health' },
+      },
+    }));
+    expect(result.ok).toBe(true);
+  });
+
+  // st-3: profiles ⊆ transports invariant is enforced
+  it('[service-type.3] profiles ⊆ transports invariant — profile key not in transports is rejected', () => {
+    const result = validate(minimal('service', {
+      install: {
+        type: 'service',
+        transports: ['http'],
+        profiles: { socket: { transport: 'socket' } }, // 'socket' not in transports
+      },
+      lifecycle: {
+        background: true,
+        health: { type: 'http-get', endpoint: 'http://127.0.0.1:8080/_svc/health' },
+      },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('profiles') && e.includes('transports'))).toBe(true);
+  });
+
+  // st-3: mixed transports all valid
+  it('[service-type.3] all four transport values are accepted', () => {
+    for (const t of ['stdio', 'http', 'sse', 'socket'] as const) {
+      const lifecycle: Record<string, unknown> = { background: true };
+      if (t !== 'stdio') {
+        lifecycle['health'] = { type: 'http-get', endpoint: `http://127.0.0.1:8080/_svc/health` };
+      }
+      const result = validate(minimal('service', {
+        install: { type: 'service', transports: [t] },
+        lifecycle,
+      }));
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  // st-2: processTypes includes 'service' — emits config_schema advisory
+  it('[service-type.2] service without config_schema emits advisory warning', () => {
+    const result = validate(minimal('service', {
+      install: { type: 'service', transports: ['http'] },
+      lifecycle: {
+        background: true,
+        health: { type: 'http-get', endpoint: 'http://127.0.0.1:8080/_svc/health' },
+      },
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.includes('config_schema'))).toBe(true);
+  });
+
+  // st-2: ManifestSchema type enum includes 'service'
+  it('[service-type.2] ManifestSchema type enum includes "service"', () => {
+    const props = ManifestSchema['properties'] as Record<string, unknown>;
+    const typeProp = props['type'] as Record<string, unknown>;
+    const typeEnum = typeProp['enum'] as string[];
+    expect(typeEnum).toContain('service');
+  });
+
+  // st-2: ManifestSchema install.type enum includes 'service'
+  it('[service-type.2] ManifestSchema install.type enum includes "service"', () => {
+    const props = ManifestSchema['properties'] as Record<string, unknown>;
+    const installProp = props['install'] as Record<string, unknown>;
+    const installProps = installProp['properties'] as Record<string, unknown>;
+    const installTypeProp = installProps['type'] as Record<string, unknown>;
+    const installTypeEnum = installTypeProp['enum'] as string[];
+    expect(installTypeEnum).toContain('service');
+  });
+
+  // st-2: ManifestSchema health.type enum includes 'http-get'
+  it('[service-type.2] ManifestSchema lifecycle.health.type enum includes "http-get"', () => {
+    const props = ManifestSchema['properties'] as Record<string, unknown>;
+    const lifecycleProp = props['lifecycle'] as Record<string, unknown>;
+    const lifecycleProps = lifecycleProp['properties'] as Record<string, unknown>;
+    const healthProp = lifecycleProps['health'] as Record<string, unknown>;
+    const healthProps = healthProp['properties'] as Record<string, unknown>;
+    const healthTypeProp = healthProps['type'] as Record<string, unknown>;
+    const healthTypeEnum = healthTypeProp['enum'] as string[];
+    expect(healthTypeEnum).toContain('http-get');
+  });
+
+  // st-2: ManifestSchema install.transports field exists and includes 'socket'
+  it('[service-type.2] ManifestSchema install.transports schema includes "socket"', () => {
+    const props = ManifestSchema['properties'] as Record<string, unknown>;
+    const installProp = props['install'] as Record<string, unknown>;
+    const installProps = installProp['properties'] as Record<string, unknown>;
+    const transportsProp = installProps['transports'] as Record<string, unknown>;
+    expect(transportsProp).toBeDefined();
+    const transportItems = transportsProp['items'] as Record<string, unknown>;
+    const transportEnum = transportItems['enum'] as string[];
+    expect(transportEnum).toContain('socket');
+  });
+
+  // [inv:no-regress-mcp]: mcp-server still validates (non-regression)
+  it('[inv:no-regress-mcp] mcp-server type is still valid (not removed)', () => {
+    const result = validate(minimal('mcp-server', {
+      install: { type: 'mcp-server', serves: ['stdio'], profiles: { stdio: {} } },
+      lifecycle: { background: true, health: { type: 'stdio-ping' } },
+    }));
+    expect(result.ok).toBe(true);
+  });
+
+  // [inv:no-regress-mcp]: profiles ⊆ serves still works for mcp-server
+  it('[inv:no-regress-mcp] mcp-server profiles ⊆ serves invariant still enforced', () => {
+    const result = validate(minimal('mcp-server', {
+      install: {
+        serves: ['stdio'],
+        profiles: { http: { transport: 'http' } }, // 'http' not in serves
+      },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('profiles'))).toBe(true);
+  });
+});
+

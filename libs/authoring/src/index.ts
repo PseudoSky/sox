@@ -9,7 +9,7 @@
  *   scaffold(opts) → FileSet   — generate all files for a given type+id
  *   writeFileSet(fs, outDir)   — write a FileSet to disk (delegated to writer.ts)
  *   FileSet                    — type alias
- *   ScaffoldOpts               — input options type
+ *   ScaffoldOpts               — input options type (with Appendix-A options)
  *   ActiveType                 — union of 6 active extension types
  */
 
@@ -19,8 +19,20 @@ import { mcpServerTemplate } from './templates/mcp-server/index.js';
 import { hookTemplate } from './templates/hook/index.js';
 import { commandTemplate } from './templates/command/index.js';
 import { bundleTemplate } from './templates/bundle/index.js';
+import { serviceTemplate } from './templates/service/index.js';
 
 export { writeFileSet } from './writer.js';
+// Re-export per-type template functions so consumers (apps/sox init fallback)
+// can dispatch by name via the @sox/authoring scope — no ../dist reach-in (C7).
+export {
+  agentTemplate,
+  skillTemplate,
+  mcpServerTemplate,
+  hookTemplate,
+  commandTemplate,
+  bundleTemplate,
+  serviceTemplate,
+};
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,7 +44,7 @@ export { writeFileSet } from './writer.js';
 export type FileSet = Readonly<Record<string, string>>;
 
 /**
- * The 6 active extension types. 'prompt' is parked — no template, no generator.
+ * The active extension types. 'prompt' is parked — no template in the active scaffold path.
  * [def:active-types] in _shared.md.
  */
 export type ActiveType =
@@ -41,7 +53,8 @@ export type ActiveType =
   | 'mcp-server'
   | 'hook'
   | 'command'
-  | 'bundle';
+  | 'bundle'
+  | 'service';
 
 export const ACTIVE_TYPES: ReadonlyArray<ActiveType> = [
   'agent',
@@ -50,11 +63,25 @@ export const ACTIVE_TYPES: ReadonlyArray<ActiveType> = [
   'hook',
   'command',
   'bundle',
+  'service',
 ];
 
-/** Options passed to scaffold(). All fields required; no interactive fallback in core. */
+/**
+ * Options passed to scaffold().
+ *
+ * Core fields (all required by the scaffold contract):
+ *   type, id, title, description, author, keywords
+ *
+ * Appendix-A options (all optional; forwarded to templates and emitted in descriptors):
+ *   content, source, hosts, scope, permissions, env,
+ *   transports, profile, trust, surface, inject
+ *
+ * [generators.1] — all Appendix-A options are accepted here and forwarded to templates.
+ * [inv:host-agnostic-type] — target paths are resolved from host-registry at install,
+ *   not stored in the scaffold output.
+ */
 export interface ScaffoldOpts {
-  /** One of the 6 active types. prompt is NOT accepted here. */
+  /** One of the 6 active types. prompt is NOT accepted here (parked). */
   type: ActiveType;
   /** Extension id: must match ^[a-z][a-z0-9-]*$ and NOT end with the type name. */
   id: string;
@@ -66,6 +93,44 @@ export interface ScaffoldOpts {
   author?: string;
   /** Keywords array — written to extension.json. */
   keywords?: string[];
+
+  // ── Appendix-A: content / provenance ──────────────────────────────────────
+  /**
+   * --content @path — body text read from a source path at init time.
+   * Fills the artifact body when present.
+   */
+  content?: string;
+  /**
+   * [def:source-provenance] — origin path from --content @path / --from @dir.
+   * Stamped into install.source on the manifest so update can re-pull. [generators.3]
+   */
+  source?: string;
+
+  // ── Appendix-A: install descriptor ────────────────────────────────────────
+  /** --host: chosen host targets (e.g. ['claude', 'codex']). [inv:host-agnostic-type] */
+  hosts?: string[];
+  /** --scope: install scope override (project | user | local). */
+  scope?: string;
+  /** --permissions: declared permission block overrides. */
+  permissions?: Record<string, unknown>;
+  /** --env: environment variable declarations. */
+  env?: Record<string, string>;
+
+  // ── Appendix-A: mcp-server specific ───────────────────────────────────────
+  /** --transports: mcp transports (stdio | sse | http). [def:serves] */
+  transports?: string[];
+  /** --profile / --mode: install-layer preset name (e.g. standalone | shared). [def:profile] */
+  profile?: string;
+  /** --trust: mcp trust disposition (prompt | auto). [inv:never-managed] */
+  trust?: string;
+
+  // ── Appendix-A: command specific ──────────────────────────────────────────
+  /** --surface: command surface override (e.g. claude-commands | codex-commands). */
+  surface?: string;
+
+  // ── Appendix-A: prompt specific ───────────────────────────────────────────
+  /** --inject: prompt injection target (rules | claude-md). Prompt type only. */
+  inject?: string;
 }
 
 // ─── ID validation ────────────────────────────────────────────────────────────
@@ -88,7 +153,7 @@ export function validateId(id: string, type: ActiveType): string | null {
 
 // ─── Template dispatch ────────────────────────────────────────────────────────
 
-/** Internal resolved opts (title/description are always strings). */
+/** Internal resolved opts (title/description always present; Appendix-A fields passed through). */
 export interface ResolvedOpts {
   type: ActiveType;
   id: string;
@@ -96,6 +161,18 @@ export interface ResolvedOpts {
   description: string;
   author: string | undefined;
   keywords: string[] | undefined;
+  // Appendix-A fields (all optional)
+  content: string | undefined;
+  source: string | undefined;
+  hosts: string[] | undefined;
+  scope: string | undefined;
+  permissions: Record<string, unknown> | undefined;
+  env: Record<string, string> | undefined;
+  transports: string[] | undefined;
+  profile: string | undefined;
+  trust: string | undefined;
+  surface: string | undefined;
+  inject: string | undefined;
 }
 
 function resolveOpts(opts: ScaffoldOpts): ResolvedOpts {
@@ -106,6 +183,18 @@ function resolveOpts(opts: ScaffoldOpts): ResolvedOpts {
     description: opts.description ?? `${opts.id} extension`,
     author: opts.author,
     keywords: opts.keywords,
+    // Appendix-A passthrough
+    content: opts.content,
+    source: opts.source,
+    hosts: opts.hosts,
+    scope: opts.scope,
+    permissions: opts.permissions,
+    env: opts.env,
+    transports: opts.transports,
+    profile: opts.profile,
+    trust: opts.trust,
+    surface: opts.surface,
+    inject: opts.inject,
   };
 }
 
@@ -115,6 +204,10 @@ function resolveOpts(opts: ScaffoldOpts): ResolvedOpts {
  * Generates a complete, born-conformant FileSet for the given extension type.
  * The returned FileSet validates against libs/manifest when the extension.json
  * is parsed.
+ *
+ * Appendix-A options (content, source, hosts, transports, profile, trust,
+ * surface, inject, etc.) are forwarded to the type template and emitted in
+ * the install descriptor. [generators.1] [generators.2] [generators.3]
  *
  * [ref:nx-free-authoring-core] — this function and all transitive imports
  * contain zero nx-devkit or nx-packages imports.
@@ -142,6 +235,8 @@ export function scaffold(opts: ScaffoldOpts): FileSet {
       return commandTemplate(resolved);
     case 'bundle':
       return bundleTemplate(resolved);
+    case 'service':
+      return serviceTemplate(resolved);
   }
 }
 

@@ -35,7 +35,8 @@ import * as readline from 'node:readline';
 
 // G-B: 'bundle' is the one new type in v2. It is install-time-only and has no entrypoint.
 // A bundle is a named, independently-versioned set of members; the installer expands it.
-const VALID_TYPES = ['agent', 'skill', 'mcp-server', 'prompt', 'hook', 'command', 'bundle'] as const;
+// 'service' is a supervised long-running extension with a transports array.
+const VALID_TYPES = ['agent', 'skill', 'mcp-server', 'prompt', 'hook', 'command', 'bundle', 'service'] as const;
 type ExtensionType = (typeof VALID_TYPES)[number];
 
 const DIR_MAP: Record<ExtensionType, string> = {
@@ -46,6 +47,7 @@ const DIR_MAP: Record<ExtensionType, string> = {
   hook: 'hooks',
   command: 'commands',
   bundle: 'bundles',
+  service: 'services',
 };
 
 function validateId(id: string, _type: ExtensionType): string | null {
