@@ -278,6 +278,18 @@
         "contexts/decouple-generalize.md"
       ],
       "by": "fullstack-developer"
+    },
+    {
+      "ts": "2026-06-17T03:19:39.445Z",
+      "state": "tg-service",
+      "class": "executor",
+      "type": "expand-artifacts",
+      "reason": "code-review gate added tokenguard vitest.config + test/smoke.spec (the missing unit-test target)",
+      "files_synced": [
+        "dag.json",
+        "contexts/tg-service.md"
+      ],
+      "by": "fullstack-developer"
     }
   ],
   "dod_provenance": {
