@@ -313,6 +313,17 @@
         "libs/tokenguard-core/test"
       ],
       "by": "fullstack-developer"
+    },
+    {
+      "ts": "2026-06-17T03:22:43.870Z",
+      "state": "service-type",
+      "class": "executor",
+      "type": "fix-guard",
+      "reason": "audit-final ref-host-keyed-target false-positive: service template comment mentioned ~/.claude/ while asserting absence; reworded (no literal host token)",
+      "files_synced": [
+        "libs/authoring/src/templates/service/index.ts"
+      ],
+      "by": "fullstack-developer"
     }
   ],
   "dod_provenance": {
