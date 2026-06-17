@@ -84,6 +84,17 @@ export function mcpServerTemplate(opts: TemplateOpts): FileSet {
     2,
   );
 
+  // [mcp-as-service]: build the install descriptor and augment it with `transports`
+  // so newly-scaffolded mcp-servers are born on the unified service model.
+  // serves = back-compat alias; transports = the new unified field ([def:transport]).
+  // Both are emitted; validate() accepts either. profiles ⊆ {serves∪transports}.
+  const installDescriptor = buildInstallDescriptor('mcp-server', opts, serves, defaultProfiles(serves));
+  // Emit transports as the unified field — maps stdio serves to service[transport=stdio].
+  const stdioTransports = serves.filter((s) => s === 'stdio' || s === 'http' || s === 'sse' || s === 'socket');
+  if (stdioTransports.length > 0) {
+    installDescriptor['transports'] = stdioTransports;
+  }
+
   return {
     'extension.json': manifestJson(opts, {
       runtime: 'node',
@@ -99,10 +110,11 @@ export function mcpServerTemplate(opts: TemplateOpts): FileSet {
         },
       },
       // [shape:install-descriptor] — host-agnostic; engine resolves target from
-      // libs/host-registry (claude: config-merge .mcp.json; codex: config-merge config.toml).
-      // [def:serves] — transports this server implements; profiles ⊆ serves enforced by validate().
+      // libs/host-registry via unified run-service path ([mcp-as-service]).
+      // [def:serves] — back-compat alias; [def:transport] — new unified field.
+      // profiles ⊆ {serves∪transports} enforced by validate().
       // [ref:host-keyed-target] — NO literal ~/.claude/ path here.
-      install: buildInstallDescriptor('mcp-server', opts, serves, defaultProfiles(serves)),
+      install: installDescriptor,
       // Install-time configuration schema. Keys listed in "required" are prompted
       // during `sox install` (interactive) or warned about (CI/non-TTY).
       // x-sox-prompt: text shown to the user; x-sox-default: value if user hits enter.

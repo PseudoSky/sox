@@ -1128,10 +1128,14 @@ export async function declarativeInstall(
   //   2. Copy extension.json (entrypoint updated to 'index.js')
   //   3. Register with run-service (command = node <storePath>/index.js)
   //
-  // ht-4: also handles type:'service' (transport:http) — unified run-service path.
+  // [mcp-as-service]: mcp-server IS service[transport=stdio] for routing purposes.
+  // All mcp-server declarative installs (--host path) now flow through the unified
+  // run-service registration path. The parallel config-merge branch (writing to
+  // .claude.json for stdio profile) is removed as a routing destination for
+  // mcp-server — the supervisor model is the single supervised-service path.
   // [inv:single-registry]: only one registry write site for all transports.
   const isServiceInstall =
-    (descriptor.type === 'mcp-server' && descriptor.profile === 'service') ||
+    descriptor.type === 'mcp-server' ||
     descriptor.type === 'service';
 
   if (isServiceInstall) {

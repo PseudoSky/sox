@@ -8,6 +8,31 @@
 
 ---
 
+## `mcp-server` is `service[transport=stdio]`
+
+> **[mcp-as-service]** — As of the `tokenguard-service` plan, `mcp-server` is formally treated as
+> `service[transport=stdio]` for all routing purposes. The type name `mcp-server` is a **back-compat
+> alias** that remains valid indefinitely — no existing `extension.json` needs to change.
+>
+> **What this means:**
+> - `mcp-server` extensions install and run through the **unified service model** — the same
+>   `run-service` capability and supervisor path used by `type: service` extensions.
+> - Transport is always `stdio` (JSON-RPC lines). The install descriptor should declare both
+>   `serves: ['stdio']` (back-compat) and `transports: ['stdio']` (unified field).
+> - The `service[transport=stdio]` equivalence is enforced at install routing time in
+>   `libs/install-engine/src/install.ts` (`isServiceInstall` check).
+> - The supervisor spawns and supervises `mcp-server` processes identically to `service` processes.
+>
+> **Cross-reference:** See [`docs/guidelines/service.md`](./service.md) for the full unified service
+> model contract, transport vocabulary, and lifecycle semantics.
+>
+> **Invariant ([inv:no-regress-mcp]):** `mcp-server` remains a valid manifest `type`; `memory-server`
+> (the reference mcp-server implementation) non-regresses across its full lifecycle
+> (build/validate/install/start/health/stop) **and** the C6 forbidden-write denial at every audit hold
+> point. Verified by `bash tools/tg-plan/check-memory-nonregress.sh` → `MEMORY OK` + `C6 DENY OK`.
+
+---
+
 ## Operating principle (read first)
 
 This document exists to find holes in the **framework**, not to grade any tenant.

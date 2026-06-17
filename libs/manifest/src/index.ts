@@ -437,6 +437,9 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
 
   // ── lifecycle: only mcp-server / agent ───────────────────────────────────
 
+  // [mcp-as-service]: mcp-server IS service[transport=stdio] for routing purposes.
+  // The type name "mcp-server" is a back-compat alias; it is always valid.
+  // validate() accepts lifecycle and transports on both mcp-server and service.
   const lifecycle = raw['lifecycle'] as Record<string, unknown> | undefined;
   if (lifecycle !== undefined) {
     const typeStr = typeof type === 'string' ? type : '';
