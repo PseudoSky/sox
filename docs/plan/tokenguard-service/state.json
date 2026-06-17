@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "tokenguard-service",
   "dag": "dag.json",
-  "current_state": "decouple-generalize",
+  "current_state": "code-review",
   "states": {
     "service-type": {
       "status": "complete",
@@ -75,11 +75,11 @@
       "end_ref": "e92cf5b25d205e1542465ee1b901325e7e6edafb"
     },
     "decouple-generalize": {
-      "status": "in_progress",
+      "status": "complete",
       "started_at": "2026-06-17T03:04:21.160Z",
-      "done_at": null,
+      "done_at": "2026-06-17T03:12:10.231Z",
       "start_ref": "55061903a141dd058fd39634b69c6fef636e25a5",
-      "end_ref": null
+      "end_ref": "d4b194a8d914ac947f9120f61d879d4435bce92e"
     },
     "code-review": {
       "status": "pending",
@@ -216,6 +216,18 @@
       "audit_criteria_total": 83,
       "by": "fullstack-developer",
       "note": "phase service audit PASSED — framework+core+service criteria all green. Zero fix-loop."
+    },
+    {
+      "ts": "2026-06-17T03:12:10.231Z",
+      "from": "decouple-generalize",
+      "to": "decouple-generalize",
+      "start_ref": "55061903a141dd058fd39634b69c6fef636e25a5",
+      "end_ref": "d4b194a8d914ac947f9120f61d879d4435bce92e",
+      "audit_exit": 62,
+      "audit_criteria_passed": 4,
+      "audit_criteria_total": 128,
+      "by": "fullstack-developer",
+      "note": "generic docs + zero-WOP-coupling gate green; haiku, out-of-lane edit recorded; 46365 subagent_tokens."
     }
   ],
   "amendment_log": [
