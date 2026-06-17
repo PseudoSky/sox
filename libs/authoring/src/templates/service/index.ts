@@ -18,7 +18,7 @@
  *   README.md
  *
  * [inv:nx-free-core] — no nx-packages imports.
- * [ref:host-keyed-target] — NO hardcoded ~/.claude/ host paths here.
+ * [ref:host-keyed-target] — NO hardcoded host paths here; host-registry resolves the target.
  * [shape:service-install] — install descriptor shape.
  * [shape:http-health] — lifecycle health block.
  */
@@ -161,7 +161,7 @@ export function serviceTemplate(opts: TemplateOpts): FileSet {
       entrypoint: 'dist/index.js',
       lifecycle,
       // [shape:service-install] — host-agnostic; engine resolves target from libs/host-registry.
-      // [ref:host-keyed-target] — NO literal ~/.claude/ path here.
+      // [ref:host-keyed-target] — NO literal host path here; host-registry resolves it.
       install: buildServiceInstallDescriptor(opts, transports, profiles),
       // Install-time configuration schema. Values injected as SOX_CONFIG_<KEY> at spawn time.
       // Remove this block if your service needs no persistent configuration.
