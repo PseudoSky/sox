@@ -76,7 +76,7 @@ Two consumers walk through this change; the headline outcome is the operator's.
 
 ## Definition of Done
 
-> Agreed interactively with the requester in **Step 1a**. The plan-level success contract — *what the whole change means when finished and correct* — distinct from per-state acceptance criteria. Each clause is IDed `[dod.N]` and proven by ≥1 final-audit check; behavioral clauses are proven **through their declared entrypoint** (tier 3), structural clauses by grep/AST.
+> Agreed interactively with the requester in **Step 1a**. The plan-level success contract — *what the whole change means when finished and correct* — distinct from per-state acceptance criteria. Each clause carries a numbered `dod` id (dod.1 … dod.11) and is proven by ≥1 final-audit check; behavioral clauses are proven **through their declared entrypoint** (tier 3), structural clauses by grep/AST.
 
 - `[dod.1]` **Outcome (behavioral)** — An extension author can scaffold a new long-running networked service that passes conformance with no manual edits.
   - given: a clean checkout of the monorepo with the command line built
