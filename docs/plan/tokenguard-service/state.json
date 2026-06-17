@@ -12,10 +12,10 @@
       "end_ref": "207a0c01f266e2abf5291e29d4846eaeaaf60c40"
     },
     "http-transport": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-17T00:02:04.732Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "f62cf54de93d82e2e7443ebf37adabb50ac67b49",
       "end_ref": null
     },
     "mcp-as-service": {
