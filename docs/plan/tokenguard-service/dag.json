@@ -216,13 +216,14 @@
       "artifacts": [
         "extensions/services/tokenguard/src/cli.ts",
         "extensions/services/tokenguard/src/mapstore.ts",
-        "extensions/services/tokenguard/demo/live-seed.sh"
+        "extensions/services/tokenguard/demo/live-seed.sh",
+        "extensions/services/tokenguard/src/index.ts"
       ],
       "context": "contexts/tg-cli.md",
       "notes": "A simple CLI (invoked via `./bin/sox exec tokenguard -- <cmd>`) to seed + inspect identifiers, operating on the SAME live, continuously-persisted token map the running proxy reads. seed appends a custom entry; the running proxy reflects it without restart (file-watch or socket nudge, memoryd-style). map prints the current bijective entries. No MCP surface (out of scope by decision).",
       "changes": { "deletes": [], "resigns": [], "renames": [] },
       "tasks": [
-        { "id": "cli-1", "desc": "mapstore.ts (shared store + fs.watch/debounce/merge signal)", "writes": ["extensions/services/tokenguard/src/mapstore.ts"], "criteria": ["tg-cli.2", "tg-cli.3"], "needs": ["tgs-10"], "model": "opus", "effort": "high" },
+        { "id": "cli-1", "desc": "mapstore.ts (shared store + fs.watch/debounce/merge) + proxy subscription wiring in index.ts", "writes": ["extensions/services/tokenguard/src/mapstore.ts", "extensions/services/tokenguard/src/index.ts"], "criteria": ["tg-cli.2", "tg-cli.3"], "needs": ["tgs-10"], "model": "opus", "effort": "high" },
         { "id": "cli-2", "desc": "cli.ts (seed/map/summary via sox exec)", "writes": ["extensions/services/tokenguard/src/cli.ts"], "criteria": ["tg-cli.1", "tg-cli.4"], "needs": ["cli-1"], "model": "sonnet", "effort": "medium" },
         { "id": "cli-4", "desc": "demo live-seed.sh (LIVE SEED REFLECTED)", "writes": ["extensions/services/tokenguard/demo/live-seed.sh"], "criteria": ["tg-cli.5"], "needs": ["cli-2"], "model": "sonnet", "effort": "medium" }
       ]

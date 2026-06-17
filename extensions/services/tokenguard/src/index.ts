@@ -22,6 +22,8 @@ import { resolveConfig } from './config.js';
 import { startProxy } from './proxy.js';
 import { anthropicAdapter } from './adapters/anthropic.js';
 import { genericAdapter } from './adapters/generic.js';
+import { watchChanges, reloadIntoMapper } from './mapstore.js';
+import { CLI_TOOLS, handleCliTool, runCli } from './cli.js';
 
 // ─── Vendored compilePolicyFromEnv — matches [shape:policy-env] ───────────────
 // Mirrors memory-server/src/index.ts pattern exactly.
@@ -136,6 +138,82 @@ function enforceMapPathPolicy(mapPath: string, policy: Policy): void {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
+// ─── MCP stdio handler (CLI exec mode) ───────────────────────────────────────
+
+/**
+ * Run the MCP stdio handler for CLI tools (seed / map / summary).
+ *
+ * Entered when the process is spawned by `sox exec` (stdin is a pipe).
+ * Speaks JSON-RPC 2.0 line-by-line over stdio — identical protocol to
+ * memory-server/src/index.ts. [tg-cli.4] [def:live-map]
+ */
+function runMcpCli(): void {
+  const rl = require('node:readline').createInterface({
+    input: process.stdin,
+    crlfDelay: Infinity,
+  }) as import('node:readline').Interface;
+
+  rl.on('line', (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+
+    let req: { jsonrpc?: string; id?: unknown; method?: string; params?: unknown };
+    try {
+      req = JSON.parse(trimmed) as typeof req;
+    } catch {
+      process.stdout.write(
+        JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' } }) + '\n',
+      );
+      return;
+    }
+
+    const { id, method, params } = req;
+    const p = (params ?? {}) as Record<string, unknown>;
+
+    if (method === 'initialize') {
+      process.stdout.write(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          result: {
+            protocolVersion: '2024-11-05',
+            capabilities: { tools: {} },
+            serverInfo: { name: 'tokenguard-cli', version: '0.1.0' },
+          },
+        }) + '\n',
+      );
+      return;
+    }
+
+    if (method === 'tools/list') {
+      process.stdout.write(
+        JSON.stringify({ jsonrpc: '2.0', id, result: { tools: CLI_TOOLS } }) + '\n',
+      );
+      return;
+    }
+
+    if (method === 'tools/call') {
+      const toolName = typeof p['name'] === 'string' ? p['name'] : '';
+      const toolArgs = (typeof p['arguments'] === 'object' && p['arguments'] !== null
+        ? p['arguments']
+        : {}) as Record<string, unknown>;
+      const result = handleCliTool(toolName, toolArgs);
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+      return;
+    }
+
+    process.stdout.write(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32601, message: `Method not found: ${String(method)}` },
+      }) + '\n',
+    );
+  });
+}
+
+// ─── Proxy service mode ───────────────────────────────────────────────────────
+
 async function main(): Promise<void> {
   const config = resolveConfig();
   const policy = compilePolicyFromEnv();
@@ -161,6 +239,14 @@ async function main(): Promise<void> {
   if (config.seeds.length > 0) {
     mapper.seed(config.seeds, 'seed');
   }
+
+  // Wire mapstore watch → mapper reload on CLI seed change. [def:live-map] [tg-cli.3]
+  // The footgun is a stale in-memory map; this subscription ensures the running proxy
+  // reflects a CLI-seeded identifier within ~500ms of the seed write, no restart.
+  const stopWatch = watchChanges(config.mapPath, () => {
+    reloadIntoMapper(config.mapPath, mapper);
+    process.stderr.write('tokenguard: map reloaded from disk (CLI seed reflected)\n');
+  });
 
   // Select adapter
   const adapter = config.provider === 'anthropic' ? anthropicAdapter : genericAdapter;
@@ -193,6 +279,7 @@ async function main(): Promise<void> {
 
   // Clean shutdown [ref:supervisor-stop]
   function shutdown(): void {
+    stopWatch();
     clearInterval(persistInterval);
     server.close(() => {
       // Remove port.txt on clean exit
@@ -209,7 +296,35 @@ async function main(): Promise<void> {
   process.on('SIGINT', shutdown);
 }
 
-main().catch((err: unknown) => {
-  process.stderr.write(`tokenguard: fatal: ${String(err)}\n`);
-  process.exit(1);
-});
+// ─── Entrypoint — three-way bifurcation ──────────────────────────────────────
+//
+// 1. Direct CLI mode: process.argv[2] is a CLI subcommand (seed|map|summary).
+//    Invoked as: node bundle/index.js seed <real> <type>
+//    Used by demo/live-seed.sh for direct seeding without sox exec overhead.
+//
+// 2. MCP exec mode: stdin is piped AND no SOX_CONFIG_PORT (spawned by sox exec).
+//    Speaks JSON-RPC 2.0 over stdio for the sox exec tool-call protocol.
+//
+// 3. Service mode: everything else — starts the HTTP proxy.
+//    Invoked by the supervisor with SOX_CONFIG_* env set.
+
+const CLI_SUBCMDS = new Set(['seed', 'map', 'summary', '--help', '-h']);
+const argv2 = process.argv[2];
+
+const isDirectCli = argv2 !== undefined && CLI_SUBCMDS.has(argv2);
+const isMcpExecMode = !isDirectCli
+  && !process.stdin.isTTY
+  && process.env['SOX_CONFIG_PORT'] === undefined;
+
+if (isDirectCli) {
+  // Direct CLI invocation: node bundle/index.js seed <real> <type>
+  // runCli reads from process.argv[2..]. [tg-cli.4]
+  runCli(process.argv.slice(2));
+} else if (isMcpExecMode) {
+  runMcpCli();
+} else {
+  main().catch((err: unknown) => {
+    process.stderr.write(`tokenguard: fatal: ${String(err)}\n`);
+    process.exit(1);
+  });
+}

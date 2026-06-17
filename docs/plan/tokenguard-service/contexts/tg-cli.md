@@ -44,7 +44,8 @@ read_only:  ["extensions/services/tokenguard/src/proxy.ts",
              "scripts/tokenguard/summary.py"]
 mutates:    ["extensions/services/tokenguard/src/cli.ts",
              "extensions/services/tokenguard/src/mapstore.ts",
-             "extensions/services/tokenguard/demo/live-seed.sh"]
+             "extensions/services/tokenguard/demo/live-seed.sh",
+             "extensions/services/tokenguard/src/index.ts"]
 ```
 
 > The proxy (`src/proxy.ts`, authored in `tg-service`) must subscribe to the mapstore change signal. If that subscription is a one-line wire-up in `proxy.ts`/`index.ts`, record it as an executor-class `expand-artifacts` amendment adding those files to this state's `mutates`, then re-run gap-check.
