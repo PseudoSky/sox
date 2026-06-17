@@ -101,6 +101,23 @@ export interface ExtensionManifest {
   checksum?: string | undefined;
   private?: boolean | undefined;
   members?: Array<{ id: string; version: string }> | undefined;
+  /**
+   * JSON Schema (draft-07 subset) for install-time configuration.
+   * Sox recognises two non-standard extension properties:
+   *   x-sox-prompt  — prompt text shown during interactive install
+   *   x-sox-default — value used when user enters nothing
+   */
+  config_schema?: {
+    type?: string;
+    additionalProperties?: boolean;
+    required?: string[];
+    properties?: Record<string, {
+      type?: string;
+      description?: string;
+      'x-sox-prompt'?: string;
+      'x-sox-default'?: unknown;
+    }>;
+  } | undefined;
 }
 
 // ─── Scope path resolution ────────────────────────────────────────────────────
@@ -353,6 +370,22 @@ export interface InstallOptions {
   lockfilePath?: string | undefined;
   root?: string | undefined;
   overrideProvider?: string | undefined;
+  /**
+   * Called for each required config key that has no cascade-resolved value.
+   * The CLI layer provides a readline implementation in interactive mode.
+   * Return the string value to persist, or undefined to skip (with a warning).
+   *
+   * @param extId    Extension id
+   * @param key      Config key that is required but unset
+   * @param prompt   x-sox-prompt text from the config_schema property (or a generated default)
+   * @param defaultVal  x-sox-default from the schema (or undefined)
+   */
+  onMissingConfig?: (
+    extId: string,
+    key: string,
+    prompt: string,
+    defaultVal: unknown,
+  ) => Promise<string | undefined>;
 }
 
 export async function install(opts: InstallOptions): Promise<ResolvedSet> {
@@ -455,6 +488,56 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
     }
 
     const extManifest = loadExtensionManifest(root, entry.id);
+
+    // ── Install-time config capture ─────────────────────────────────────────
+    // If the extension declares a config_schema with required keys, check the
+    // cascade-resolved config and prompt (or warn) for missing values.
+    if (extManifest?.config_schema) {
+      const schema = extManifest.config_schema;
+      const requiredKeys: string[] = schema.required ?? [];
+      const properties = schema.properties ?? {};
+      // Get the cascade-resolved config for this extension
+      const cascadedEntryConfig: Record<string, unknown> = cascadedConfig[entry.id]?.config ?? {};
+      const configPath5 = opts.configPath ?? scopePaths.config;
+
+      for (const reqKey of requiredKeys) {
+        if (reqKey in cascadedEntryConfig) continue; // already set in some scope
+
+        const propDef = properties[reqKey] ?? {};
+        const promptText = propDef['x-sox-prompt'] ?? `Enter value for ${entry.id}.${reqKey}:`;
+        const defaultVal = propDef['x-sox-default'];
+
+        if (opts.onMissingConfig) {
+          // CLI layer handles the interactive prompt
+          const captured = await opts.onMissingConfig(entry.id, reqKey, promptText as string, defaultVal);
+          if (captured !== undefined) {
+            // Persist to the scope config file
+            const existing = loadConfig(configPath5) as Record<string, unknown> ?? {};
+            const cfgBlock = (existing['config'] as Record<string, Record<string, unknown>> | undefined) ?? {};
+            const extBlock = cfgBlock[entry.id] ?? {};
+            extBlock[reqKey] = captured;
+            cfgBlock[entry.id] = extBlock;
+            existing['config'] = cfgBlock;
+            const configDir = path.dirname(configPath5);
+            if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+            fs.writeFileSync(configPath5, JSON.stringify(existing, null, 2) + '\n', 'utf8');
+            console.log(`install: config: set ${entry.id}.${reqKey} (scope: ${opts.scope})`);
+          } else {
+            console.warn(
+              `install: warning: required config key '${reqKey}' for '${entry.id}' was not set. ` +
+              `Run: sox config set ${entry.id} ${reqKey} <value>`,
+            );
+          }
+        } else {
+          // Non-interactive: warn
+          console.warn(
+            `install: warning: required config key '${reqKey}' for '${entry.id}' is not set in any scope.\n` +
+            `  Run: sox config set ${entry.id} ${reqKey} <value>`,
+          );
+        }
+      }
+    }
+
     if (extManifest?.requires !== undefined && activeProvider !== undefined) {
       const capResult = checkProviderCapabilities(activeProvider, extManifest.requires);
       if (!capResult.ok) {
@@ -736,6 +819,24 @@ function expandBundles(
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * copyDirSync — recursively copy src directory into dest.
+ * dest is created if absent. Existing files are overwritten.
+ * [dod.5]: used to materialize the extension bundle into the service store dir.
+ */
+function copyDirSync(src: string, dest: string): void {
+  if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const srcChild  = path.join(src, entry.name);
+    const destChild = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyDirSync(srcChild, destChild);
+    } else {
+      fs.copyFileSync(srcChild, destChild);
+    }
+  }
+}
+
 function buildInstallList(
   scopeConfig: ScopeConfig,
   cascadedConfig: ResolvedConfigMap,
@@ -815,8 +916,9 @@ function buildResolvedSetFromInstallList(
   return result;
 }
 
-function findLocalExtension(root: string, id: string): string | null {
-  const typeDirs = ['agents', 'skills', 'mcp-servers', 'prompts', 'hooks', 'commands', 'bundles'];
+export function findLocalExtension(root: string, id: string): string | null {
+  // ht-8: 'services' added so extensions/services/<id>/ is discoverable.
+  const typeDirs = ['agents', 'skills', 'mcp-servers', 'prompts', 'hooks', 'commands', 'bundles', 'services'];
   for (const typeDir of typeDirs) {
     const typePath = path.join(root, 'extensions', typeDir);
     if (!fs.existsSync(typePath)) continue;
@@ -835,7 +937,7 @@ function findLocalExtension(root: string, id: string): string | null {
   return null;
 }
 
-function loadExtensionManifest(root: string, id: string): ExtensionManifest | null {
+export function loadExtensionManifest(root: string, id: string): ExtensionManifest | null {
   const localPath = findLocalExtension(root, id);
   if (!localPath) return null;
   const manifestPath = path.join(localPath, 'extension.json');
@@ -858,4 +960,436 @@ function resolveActiveProvider(configs: ScopeConfigWithMeta[]): string | undefin
     }
   }
   return undefined;
+}
+
+// ─── Declarative install (descriptor-driven, Role B) ─────────────────────────
+//
+// [def:role-b] — sox materialises bytes at the host's discovery path for the
+// right scope. Execution is deferred to the host. [inv:boundary].
+//
+// [ref:host-keyed-target]: all target paths resolved from libs/host-registry.
+// [inv:host-agnostic-type]: type is host-agnostic; capability+target are host-specific.
+// [inv:never-managed]: managed/forbidden keys are blocked in the registry itself.
+// [inv:ledger-reversible]: every placement is recorded in the per-scope ledger.
+//
+// STDIO-IN-.MCP.JSON DENIAL ([dod.2] / architect note):
+// An mcp-server declaring stdio transport into a .mcp.json target MUST be denied.
+// Claude's .mcp.json only supports SSE/HTTP; stdio is a claude.json/process-spawn path.
+// The engine blocks this at install time: if the descriptor's transport is 'stdio'
+// and the resolved target file ends with '.mcp.json', install throws DeclarativeDeniedError.
+
+import { Ledger } from './ledger.js';
+
+// ─── Host-registry: loaded at runtime from dist to avoid cross-lib rootDir ──
+// [ref:host-keyed-target]: all literal host paths live in libs/host-registry.
+// We load the compiled dist at runtime so the TypeScript compiler does not
+// need to traverse outside rootDir (libs/install-engine/src).
+// The type shapes are declared locally below for compile-time safety.
+
+/** Minimal local shape for a host surface (mirrors [shape:capability] in _shared.md). */
+interface HostSurface {
+  capability: string;
+  format?: string;
+  paths: Partial<Record<string, string>>;
+}
+
+/** Minimal local shape for a host module (mirrors HostModule in host-registry). */
+interface HostModuleLocal {
+  host: string;
+  detect(workspaceRoot: string): boolean;
+  scopePaths(scope: string): Partial<Record<string, string>>;
+  readonly surfaces: Record<string, HostSurface>;
+}
+
+export type RegistryHostScope = 'project' | 'user' | 'local' | 'org';
+
+/** Load host-registry at runtime.
+ *
+ * Source imports the clean '@sox/host-registry' scope — C7: no cross-package
+ * ../dist reach-in, and lint-clean under @nx/enforce-module-boundaries. There
+ * are no node_modules symlinks for workspace libs at runtime, so the build's
+ * post-tsc step (scripts/rewrite-paths.cjs) rewrites this specifier in the
+ * compiled dist to the correct relative path. nx orders host-registry's build
+ * first via implicitDependencies in project.json.
+ *
+ * Loaded lazily (function-scoped require) so host-registry is only pulled in
+ * when a declarative install actually runs.
+ *
+ * [ref:host-keyed-target]: all literal host paths live in libs/host-registry.
+ */
+function loadHostRegistry(): {
+  getHost(name: string): HostModuleLocal;
+  expandHome(p: string): string;
+} {
+  const mod = require('@sox/host-registry') as {
+    getHost(name: string): HostModuleLocal;
+    expandHome(p: string): string;
+  };
+  return mod;
+}
+
+/**
+ * Thrown when a declarative install is denied at policy check time.
+ * [dod.2] — stdio mcp-server into .mcp.json must be denied.
+ */
+export class DeclarativeDeniedError extends Error {
+  constructor(
+    public readonly reason: string,
+    public readonly ext: string,
+    public readonly host: string,
+    public readonly scope: string,
+  ) {
+    super(`[declarative-install] DENIED: ${reason} (ext=${ext}, host=${host}, scope=${scope})`);
+    this.name = 'DeclarativeDeniedError';
+  }
+}
+
+/**
+ * Install descriptor — the hybrid install block on a manifest.
+ * [shape:install-descriptor] from _shared.md.
+ *
+ * The engine resolves the per-host target at install time using libs/host-registry.
+ * No literal host paths appear here ([ref:host-keyed-target]).
+ */
+export interface InstallDescriptor {
+  /** Extension id. */
+  ext: string;
+  /** Host-agnostic extension type ("agent", "skill", "mcp-server", "service", etc.) */
+  type: string;
+  /** Which hosts to install on. */
+  hosts: string[];
+  /** Source content path (absolute) for file-drop types. */
+  srcPath?: string | undefined;
+  /**
+   * For config-merge types: the key path within the config file and the value.
+   * [inv:never-managed]: callers must not pass managed/forbidden keyPaths.
+   */
+  configKeyPath?: string | undefined;
+  configValue?: unknown;
+  /**
+   * Transport for mcp-server: "stdio" | "sse" | "http".
+   * Used for the stdio-in-.mcp.json denial check.
+   */
+  transport?: 'stdio' | 'sse' | 'http' | undefined;
+  /** Profile: "standalone" | "shared" | "service" (for mcp-server profile selection). */
+  profile?: string | undefined;
+  /**
+   * ht-5: cascade-resolved config for the extension, used to inject SOX_CONFIG_* into
+   * the run-service spec.env at registration time ([inv:standard-config]).
+   */
+  resolvedConfig?: Record<string, unknown> | undefined;
+}
+
+export interface DeclarativeInstallResult {
+  host: string;
+  scope: string;
+  capability: string;
+  target: string;
+  applied: boolean;
+  denied?: boolean;
+  denialReason?: string;
+}
+
+/**
+ * declarativeInstall — place extension content at the host's discovery path.
+ *
+ * This is the descriptor-driven install entrypoint ([install-lifecycle.3]).
+ * It replaces the old single-string `install-target` consumer.
+ *
+ * Steps:
+ *   1. Resolve target path from host-registry ([ref:host-keyed-target]).
+ *   2. Policy check: deny stdio mcp-server into .mcp.json ([dod.2]).
+ *   3. Apply the capability (file-drop or config-merge).
+ *   4. Record in the per-scope ledger ([inv:ledger-reversible]).
+ *
+ * @param descriptor  the install descriptor (type, hosts, srcPath, etc.)
+ * @param scope       the installation scope ("project" | "user")
+ * @param workspaceRoot  absolute workspace root (for project-scope relative paths)
+ * @param scopeRoot   absolute path to the scope root (for the ledger)
+ * @param opts        optional: isProject flag, injected ledger for tests
+ * @throws DeclarativeDeniedError if a policy check fails ([dod.2])
+ */
+export async function declarativeInstall(
+  descriptor: InstallDescriptor,
+  scope: RegistryHostScope,
+  workspaceRoot: string,
+  scopeRoot: string,
+  opts?: { isProject?: boolean; ledger?: Ledger },
+): Promise<DeclarativeInstallResult[]> {
+  const results: DeclarativeInstallResult[] = [];
+  const isProject = opts?.isProject ?? (scope === 'project');
+
+  // ── service/mcp-server-service: materialize bundle → store-dir + registry ──
+  // [mcp-install-modes.5]: runService is called from install.ts for --profile service.
+  // [def:store-dir]: materialized extension at <scopeRoot>/.sox/ext/<id>/
+  // [dod.5]: the bundle is copied to storePath so the service runs from a
+  // self-contained dir with no monorepo siblings. Order:
+  //   1. Materialize bundle (srcPath/bundle/ → storePath/)
+  //   2. Copy extension.json (entrypoint updated to 'index.js')
+  //   3. Register with run-service (command = node <storePath>/index.js)
+  //
+  // ht-4: also handles type:'service' (transport:http) — unified run-service path.
+  // [inv:single-registry]: only one registry write site for all transports.
+  const isServiceInstall =
+    (descriptor.type === 'mcp-server' && descriptor.profile === 'service') ||
+    descriptor.type === 'service';
+
+  if (isServiceInstall) {
+    const { apply: runServiceApply } = await import('./capabilities/run-service.js');
+    const storeDir = path.join(scopeRoot, '.sox', 'ext');
+    const storePath = path.join(storeDir, descriptor.ext);
+
+    // 1. Materialize bundle: copy <srcPath>/bundle/ → <storePath>/
+    //    Fall back to <srcPath>/dist/ if no bundle dir exists yet.
+    if (descriptor.srcPath) {
+      const bundleSrcDir = path.join(descriptor.srcPath, 'bundle');
+      const distSrcDir   = path.join(descriptor.srcPath, 'dist');
+      const materializeSrc = fs.existsSync(bundleSrcDir) ? bundleSrcDir
+                           : fs.existsSync(distSrcDir)   ? distSrcDir
+                           : null;
+      if (materializeSrc) {
+        copyDirSync(materializeSrc, storePath);
+      }
+      // 2. Copy extension.json to store dir, updating entrypoint to 'index.js'
+      //    so that sox exec can locate the bundle entry without knowing the source.
+      const srcManifestPath = path.join(descriptor.srcPath, 'extension.json');
+      if (fs.existsSync(srcManifestPath)) {
+        const manifest = JSON.parse(fs.readFileSync(srcManifestPath, 'utf8')) as Record<string, unknown>;
+        manifest['entrypoint'] = 'index.js';
+        fs.writeFileSync(
+          path.join(storePath, 'extension.json'),
+          JSON.stringify(manifest, null, 2) + '\n',
+          'utf8',
+        );
+      }
+    }
+
+    // ht-5: Build SOX_CONFIG_* env from cascade-resolved config for this extension.
+    // [inv:standard-config]: config flows only through SOX_CONFIG_* env at runtime.
+    const specEnv: Record<string, string> = {};
+    if (descriptor.resolvedConfig && Object.keys(descriptor.resolvedConfig).length > 0) {
+      const homeDir = os.homedir();
+      for (const [cfgKey, cfgVal] of Object.entries(descriptor.resolvedConfig)) {
+        const envKey = `SOX_CONFIG_${cfgKey.toUpperCase().replace(/[-\s]/g, '_')}`;
+        let strVal = typeof cfgVal === 'string'
+          ? cfgVal
+          : (cfgVal === null || cfgVal === undefined ? '' : JSON.stringify(cfgVal));
+        // Tilde expansion
+        if (strVal.startsWith('~/')) strVal = homeDir + strVal.slice(1);
+        // Env ref resolution: ${VAR}
+        strVal = strVal.replace(/\$\{([A-Z0-9_]+)\}/g, (_m, varName: string) =>
+          process.env[varName] ?? _m,
+        );
+        specEnv[envKey] = strVal;
+      }
+    }
+
+    // 3. Register with run-service — command always targets the store dir bundle.
+    // [ref:run-service-spec]: preserve the registry entry shape {id,command,args,env,cwd,status,storePath}.
+    await runServiceApply({
+      host: descriptor.hosts[0] ?? 'claude',
+      scope,
+      target: { scopeRoot, serviceId: descriptor.ext },
+      payload: {
+        spec: {
+          command: 'node',
+          args: [path.join(storePath, 'index.js')],
+          env: specEnv,
+          cwd: storePath,
+        },
+      },
+    });
+    results.push({
+      host: descriptor.hosts[0] ?? 'claude',
+      scope,
+      capability: 'run-service' as DeclarativeInstallResult['capability'],
+      target: storeDir,
+      applied: true,
+    });
+    return results;
+  }
+
+  for (const hostName of descriptor.hosts) {
+    const { getHost: _getHost, expandHome: _expandHome } = loadHostRegistry();
+    const hostMod = _getHost(hostName);
+    const surface = hostMod.surfaces[descriptor.type];
+    if (surface === undefined) {
+      // No surface defined for this type on this host — skip.
+      continue;
+    }
+
+    const rawTarget = surface.paths[scope];
+    if (rawTarget === undefined) {
+      // No path for this scope on this host — skip.
+      continue;
+    }
+
+    // Resolve the absolute target path.
+    // [ref:host-keyed-target]: literal paths only in libs/host-registry.
+    const absTarget = path.isAbsolute(rawTarget)
+      ? _expandHome(rawTarget)
+      : path.join(workspaceRoot, rawTarget);
+
+    // ── Policy check: stdio mcp-server into .mcp.json MUST be denied ──────
+    // [dod.2] / architect note: Claude .mcp.json only accepts SSE/HTTP entries.
+    // stdio transport goes via claude.json (user scope process-spawn), not .mcp.json.
+    if (
+      descriptor.type === 'mcp-server' &&
+      descriptor.transport === 'stdio' &&
+      absTarget.endsWith('.mcp.json')
+    ) {
+      throw new DeclarativeDeniedError(
+        'mcp-server with stdio transport cannot be installed into .mcp.json — ' +
+          '.mcp.json only accepts sse/http entries; stdio uses ~/.claude.json instead.',
+        descriptor.ext,
+        hostName,
+        scope,
+      );
+    }
+
+    const ledger = opts?.ledger ?? Ledger.load(scopeRoot, { isProject });
+
+    if (surface.capability === 'file-drop') {
+      // file-drop: copy srcPath to the target path.
+      if (descriptor.srcPath === undefined) {
+        throw new Error(
+          `[declarative-install] file-drop requires srcPath for ext=${descriptor.ext} type=${descriptor.type}`,
+        );
+      }
+      if (!fs.existsSync(descriptor.srcPath)) {
+        throw new Error(
+          `[declarative-install] srcPath not found: ${descriptor.srcPath}`,
+        );
+      }
+
+      // Idempotent: copy only if hash differs.
+      const srcHash = hashPathForInstall(descriptor.srcPath);
+
+      // Determine the destination: if absTarget is a directory (or should be),
+      // place the file as <dir>/<basename>. If the surface path includes a filename
+      // extension (like CLAUDE.md), use absTarget directly.
+      let destPath: string;
+      const srcBasename = path.basename(descriptor.srcPath);
+      const targetHasExt = path.extname(absTarget) !== '';
+      if (targetHasExt) {
+        destPath = absTarget;
+      } else {
+        destPath = path.join(absTarget, srcBasename);
+      }
+
+      const destHash = fs.existsSync(destPath) ? hashPathForInstall(destPath) : '';
+      let applied = false;
+      if (srcHash !== destHash) {
+        // src can be a file (single-file agent/rules drop) or a directory
+        // (skill/command/hook directory drop). Use cpSync for directory support.
+        // fs.cpSync is available in Node 16.7+; it handles both.
+        const srcStat = fs.statSync(descriptor.srcPath);
+        if (srcStat.isDirectory()) {
+          // For a directory srcPath the destPath IS the directory to create/replace.
+          // cpSync with recursive:true copies the contents into destPath.
+          if (!fs.existsSync(destPath)) fs.mkdirSync(destPath, { recursive: true });
+          fs.cpSync(descriptor.srcPath, destPath, { recursive: true, force: true });
+        } else {
+          const dir = path.dirname(destPath);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          fs.copyFileSync(descriptor.srcPath, destPath);
+        }
+        applied = true;
+      }
+
+      // Record in ledger ([inv:ledger-reversible]).
+      // [inv:ledger-reversible]: project ledger must store repo-relative paths so
+      // the ledger is portable (committed to repo). User/local scope store absolute.
+      const appliedHash = hashPathForInstall(destPath);
+      const ledgerFilePath = isProject
+        ? path.relative(workspaceRoot, destPath)
+        : destPath;
+      ledger.record({
+        ext: descriptor.ext,
+        host: hostName,
+        scope,
+        action: { cap: 'file-drop', file: ledgerFilePath, keyPath: '', appliedHash },
+      });
+      ledger.save();
+
+      results.push({ host: hostName, scope, capability: 'file-drop', target: destPath, applied });
+
+    } else if (surface.capability === 'config-merge') {
+      // config-merge: set keyPath to value in the shared config file.
+      //
+      // For mcp-server types, auto-derive configKeyPath+configValue from the profile
+      // when the caller does not provide them explicitly (common for CLI installs).
+      // [mcp-install-modes.1/2]: sse/http → .mcp.json; stdio → .claude.json.
+      let resolvedKeyPath = descriptor.configKeyPath;
+      let resolvedValue = descriptor.configValue;
+      if (descriptor.type === 'mcp-server' && (resolvedKeyPath === undefined || resolvedValue === undefined)) {
+        const profile = descriptor.profile ?? 'stdio';
+        resolvedKeyPath = `mcpServers.${descriptor.ext}`;
+        if (profile === 'sse' || profile === 'http') {
+          resolvedValue = { type: profile, url: 'http://localhost:3000/' + profile };
+        } else {
+          // stdio — command path: srcPath/dist/index.js or generic node entrypoint.
+          const entryCmd = descriptor.srcPath
+            ? path.join(descriptor.srcPath, 'dist', 'index.js')
+            : 'index.js';
+          resolvedValue = { type: 'stdio', command: 'node', args: [entryCmd] };
+        }
+      }
+
+      if (resolvedKeyPath === undefined || resolvedValue === undefined) {
+        throw new Error(
+          `[declarative-install] config-merge requires configKeyPath+configValue for ext=${descriptor.ext}`,
+        );
+      }
+
+      const { apply: configMergeApply } = await import('./capabilities/config-merge.js');
+      await configMergeApply({
+        host: hostName,
+        scope,
+        scopeRoot,
+        isProject,
+        ext: descriptor.ext,
+        ledger,
+        target: { filePath: absTarget, keyPath: resolvedKeyPath },
+        payload: { value: resolvedValue },
+      });
+
+      results.push({
+        host: hostName,
+        scope,
+        capability: 'config-merge',
+        target: absTarget,
+        applied: true,
+      });
+    }
+  }
+
+  return results;
+}
+
+// Internal hash helper for declarative install (does not write ledger).
+function hashPathForInstall(p: string): string {
+  if (!fs.existsSync(p)) return '';
+  const stat = fs.statSync(p);
+  if (stat.isDirectory()) return hashDirForInstall(p);
+  const data = fs.readFileSync(p);
+  return 'sha256:' + crypto.createHash('sha256').update(data).digest('hex');
+}
+
+function hashDirForInstall(dirPath: string): string {
+  const h = crypto.createHash('sha256');
+  const entries = fs
+    .readdirSync(dirPath, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    const child = path.join(dirPath, entry.name);
+    h.update(entry.name + ':');
+    if (entry.isDirectory()) {
+      h.update('dir:' + hashDirForInstall(child));
+    } else {
+      const data = fs.readFileSync(child);
+      h.update('file:sha256:' + crypto.createHash('sha256').update(data).digest('hex'));
+    }
+  }
+  return 'sha256:' + h.digest('hex');
 }

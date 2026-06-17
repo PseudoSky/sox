@@ -45,7 +45,12 @@ export {
   semverSatisfies,
   fetchArtifact,
   install,
+  declarativeInstall,
+  DeclarativeDeniedError,
+  findLocalExtension,
+  loadExtensionManifest,
 } from './install.js';
+export type { InstallDescriptor, DeclarativeInstallResult } from './install.js';
 
 // ─── Re-export build-index ────────────────────────────────────────────────────
 
@@ -61,13 +66,33 @@ export type {
 } from './provider-capabilities.js';
 export { checkProviderCapabilities, loadCapabilityTable } from './provider-capabilities.js';
 
+
+// ─── Re-export lifecycle (update / uninstall) ─────────────────────────────────
+
+export type { LifecycleCtx, UpdateCtx, UpdateResult, HostScope as LifecycleHostScope } from './lifecycle.js';
+export { uninstall, update, ReverseAbortError } from './lifecycle.js';
+
+// ─── Re-export diff ──────────────────────────────────────────────────────────
+
+export type { ActionDiff, ExtensionDiff, DiffKind } from './diff.js';
+export { diff, diffAll } from './diff.js';
+
 // ─── parseArgs (A12 fix) ──────────────────────────────────────────────────────
+
+/**
+ * Short-flag aliases: single-char flags map to their long-form names.
+ * `-s project` is treated as `--scope=project`.
+ */
+const SHORT_ALIASES: Record<string, string> = {
+  s: 'scope',
+};
 
 /**
  * Parse CLI arguments — handles BOTH forms (A12 fix):
  *   --flag=value     (equals form)
  *   --flag value     (space-separated form)
  *   --flag           (boolean flag, value = 'true')
+ *   -s value         (short-flag alias, e.g. -s project → scope=project)
  *
  * This is the canonical parseArgs for the engine libs. It is exported and
  * testable independently. The reference pattern is [ref:dual-flag-form].
@@ -93,7 +118,7 @@ export function parseArgs(argv: string[]): Record<string, string> {
       } else {
         const key = arg.slice(2);
         const next = argv[i + 1];
-        if (next !== undefined && !next.startsWith('--')) {
+        if (next !== undefined && !next.startsWith('-')) {
           // --flag value form (space-separated)
           result[key] = next;
           i += 2;
@@ -102,6 +127,23 @@ export function parseArgs(argv: string[]): Record<string, string> {
           result[key] = 'true';
           i++;
         }
+      }
+    } else if (arg.startsWith('-') && arg.length === 2) {
+      // Short-flag form: -s project → scope=project
+      const shortKey = arg.slice(1);
+      const longKey = SHORT_ALIASES[shortKey];
+      if (longKey !== undefined) {
+        const next = argv[i + 1];
+        if (next !== undefined && !next.startsWith('-')) {
+          result[longKey] = next;
+          i += 2;
+        } else {
+          result[longKey] = 'true';
+          i++;
+        }
+      } else {
+        // unknown short flag — skip
+        i++;
       }
     } else {
       // positional — skip

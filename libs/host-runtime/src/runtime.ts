@@ -48,6 +48,11 @@ export interface StartRuntimeOptions {
   root: string;
   env?: Record<string, string> | undefined;
   overrideHealthToStdioPing?: boolean | undefined;
+  /**
+   * When set, only activate extensions whose id matches one of the provided ids.
+   * All other lockfile entries are skipped. Used by `sox start --id=<ext>`.
+   */
+  filterIds?: string[] | undefined;
 }
 
 export interface StopRuntimeOptions {
@@ -79,7 +84,11 @@ export async function startRuntime(opts: StartRuntimeOptions): Promise<RuntimeRe
     root: opts.root,
     env: loaderEnv,
     enabledOverrides,
-    overrideMcpHealthToStdioPing: opts.overrideHealthToStdioPing ?? true,
+    // Default false — honour the extension's declared health.type.
+    // Callers that need test-mode override (e.g. test harnesses without a live daemon)
+    // can pass overrideHealthToStdioPing: true explicitly.
+    overrideMcpHealthToStdioPing: opts.overrideHealthToStdioPing ?? false,
+    ...(opts.filterIds !== undefined ? { filterIds: opts.filterIds } : {}),
   });
 
   console.log(
@@ -170,7 +179,7 @@ export async function startRuntime(opts: StartRuntimeOptions): Promise<RuntimeRe
       const line = buf.slice(0, nl);
       buf = buf.slice(nl + 1);
 
-      let req: { ext?: unknown; tool?: unknown; args?: unknown };
+      let req: { ext?: unknown; tool?: unknown; args?: unknown; list?: unknown };
       try {
         req = JSON.parse(line) as typeof req;
       } catch {
@@ -184,6 +193,50 @@ export async function startRuntime(opts: StartRuntimeOptions): Promise<RuntimeRe
       const args = (req.args !== null && typeof req.args === 'object' && !Array.isArray(req.args))
         ? req.args as Record<string, unknown>
         : {};
+
+      // ── List request: { list: true } or { ext: "...", list: true } ────────────
+      // Returns all registrar-cached tool descriptors (name, description, inputSchema)
+      // without spawning any process.  Used by `sox exec --list`.
+      if (req.list === true) {
+        const active2 = _activeRuntimes.get(opts.runtimeFilePath);
+        if (!active2) {
+          socket.write(JSON.stringify({ error: 'runtime not active' }) + '\n');
+          socket.end();
+          return;
+        }
+        const allRegs = active2.registrar.registrations();
+        type ExtEntry = {
+          key: string;
+          id: string;
+          serverInfo: { name: string; version: string };
+          live: boolean;
+          tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
+        };
+        let extensions: ExtEntry[];
+        if (ext) {
+          const allKeys2 = allRegs.map((r) => r.serverKey);
+          const resolvedKey2 = allKeys2.includes(ext)
+            ? ext
+            : (allKeys2.find((k) => k.startsWith(`${ext}@`)) ?? ext);
+          const reg2 = allRegs.find((r) => r.serverKey === resolvedKey2);
+          extensions = reg2
+            ? [{ key: reg2.serverKey, id: ext, serverInfo: reg2.serverInfo, live: reg2.live, tools: reg2.tools as ExtEntry['tools'] }]
+            : [];
+        } else {
+          extensions = allRegs.map((reg2) => ({
+            key: reg2.serverKey,
+            id: reg2.serverKey.includes('@')
+              ? reg2.serverKey.slice(0, reg2.serverKey.lastIndexOf('@'))
+              : reg2.serverKey,
+            serverInfo: reg2.serverInfo,
+            live: reg2.live,
+            tools: reg2.tools as ExtEntry['tools'],
+          }));
+        }
+        socket.write(JSON.stringify({ result: { extensions } }) + '\n');
+        socket.end();
+        return;
+      }
 
       if (!ext || !tool) {
         socket.write(JSON.stringify({ error: 'request must include ext and tool fields' }) + '\n');
@@ -226,12 +279,18 @@ export async function startRuntime(opts: StartRuntimeOptions): Promise<RuntimeRe
     console.warn(`[runtime] exec socket server error (exec will fall back to spawn): ${String(e)}`);
   });
 
-  // listen() is synchronous on Unix sockets: ready immediately after the callback fires.
-  execServer.listen(execSocketPath, () => {
-    console.log(`[runtime] Exec socket listening at ${execSocketPath}`);
-    // Update record with the socket path so sox exec can find it.
-    record.execSocketPath = execSocketPath;
-    writeRuntimeRecord(opts.runtimeFilePath, record);
+  // Await the listen so execSocketPath is in runtime.json before startRuntime() returns.
+  // On Unix domain sockets the listen callback fires synchronously within the same
+  // event-loop tick once the file descriptor is bound — the await is nearly free but
+  // eliminates the race where a caller reads runtime.json before the callback fires.
+  await new Promise<void>((resolve, reject) => {
+    execServer.once('error', reject);
+    execServer.listen(execSocketPath, () => {
+      console.log(`[runtime] Exec socket listening at ${execSocketPath}`);
+      record.execSocketPath = execSocketPath;
+      writeRuntimeRecord(opts.runtimeFilePath, record);
+      resolve();
+    });
   });
 
   _activeRuntimes.set(opts.runtimeFilePath, { loaderResult, registrar, execServer, execSocketPath });
@@ -372,8 +431,48 @@ export async function reconcileRuntime(
     const baseId = handle.key.includes('@')
       ? handle.key.slice(0, handle.key.lastIndexOf('@'))
       : handle.key;
-    if (shouldRun.has(baseId)) continue;
 
+    if (shouldRun.has(baseId)) {
+      // Extension should run.  If it was stopped (e.g. by a previous disable),
+      // restart it in-process so the supervisor keeps ownership and the test's
+      // startProcess reference stays alive until `sox stop` kills it cleanly.
+      if (handle.type === 'mcp-server') {
+        const mcpHandle = handle as McpAdapterHandle;
+        if (!mcpHandle.supervisor.isHealthy()) {
+          try {
+            // supervisor.restart() clears _stopping, re-spawns, and waits for health.
+            await mcpHandle.supervisor.restart();
+            const newPid = mcpHandle.supervisor.pid();
+            // Re-register the freshly spawned process with the MCP registrar
+            // (it was deregistered on the matching disable call).
+            const proc = getProcessFromSupervisor(mcpHandle.supervisor);
+            if (proc !== null) {
+              try {
+                await active.registrar.register(mcpHandle.key, proc);
+              } catch {
+                // Already registered (edge case) — ignore.
+              }
+            }
+            if (record) {
+              const entry = record.entries.find(
+                (e) => e.id === baseId || e.key === handle.key,
+              );
+              if (entry) {
+                entry.running = newPid !== null;
+                entry.pid = newPid ?? null;
+              }
+            }
+          } catch (e) {
+            console.warn(
+              `[runtime] reconcile: error restarting ${handle.key}: ${String(e)}`,
+            );
+          }
+        }
+      }
+      continue;
+    }
+
+    // Extension should NOT run — stop it.
     if (handle.type === 'mcp-server') {
       const mcpHandle = handle as McpAdapterHandle;
       try {
@@ -417,6 +516,15 @@ export function getRuntimeRecord(runtimeFilePath: string): RuntimeRecord | null 
   return readRuntimeRecord(runtimeFilePath);
 }
 
+/**
+ * @deprecated getRegistrar() reads the in-process _activeRuntimes Map and is therefore
+ * only non-null in the same process that called startRuntime(). Any separate CLI
+ * invocation (e.g. `sox exec`) always sees an empty Map and receives null.
+ *
+ * Use the exec socket instead: read `record.execSocketPath` from runtime.json and
+ * call the supervisor process via the [inv:exec-socket] Unix domain socket protocol.
+ * See callViaExecSocket() in apps/sox/src/main.ts for the reference implementation.
+ */
 export function getRegistrar(runtimeFilePath: string): McpRegistrar | null {
   return _activeRuntimes.get(runtimeFilePath)?.registrar ?? null;
 }

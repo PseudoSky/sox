@@ -104,7 +104,9 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
       configPath,
       runtimeFilePath,
       root,
-      overrideHealthToStdioPing: true,
+      // Do NOT force overrideHealthToStdioPing here — honour whatever the extension declares.
+      // memory-server correctly declares "stdio-ping" in extension.json; other extensions
+      // may legitimately declare "socket" or "command" health checks.
     });
 
     const runningCount = record.entries.filter((e) => e.running).length;
@@ -343,29 +345,76 @@ function cmdStatus(flags: Record<string, string>): void {
 }
 
 /**
+ * callViaExecSocket — send one tool-call request to the supervisor's exec socket.
+ *
+ * [inv:exec-socket]: The supervisor writes `execSocketPath` into runtime.json when it
+ * starts (supervisor mode only). This function connects, sends one JSON line, reads
+ * one JSON line back, then closes the connection. The entire round-trip is handled
+ * inside the live supervisor process — no throwaway spawn.
+ */
+async function callViaExecSocket(
+  socketPath: string,
+  ext: string,
+  tool: string,
+  args: Record<string, unknown>,
+  timeoutMs = 30000,
+): Promise<unknown> {
+  const { createConnection } = await import('node:net');
+  const { createInterface } = await import('node:readline');
+
+  return new Promise<unknown>((resolve, reject) => {
+    const socket = createConnection(socketPath);
+    const rl = createInterface({ input: socket, crlfDelay: Infinity });
+
+    let done = false;
+    const finish = (fn: () => void) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      rl.close();
+      socket.destroy();
+      fn();
+    };
+
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error(`sox exec: timeout waiting for exec socket response (${timeoutMs}ms)`)));
+    }, timeoutMs);
+
+    rl.once('line', (line: string) => {
+      finish(() => {
+        try {
+          const resp = JSON.parse(line) as { result?: unknown; error?: string };
+          if (resp.error !== undefined) {
+            reject(new Error(resp.error));
+          } else {
+            resolve(resp.result);
+          }
+        } catch {
+          reject(new Error(`sox exec: invalid response from exec socket: ${line.slice(0, 120)}`));
+        }
+      });
+    });
+
+    socket.on('error', (e: Error) => {
+      finish(() => reject(e));
+    });
+
+    socket.on('connect', () => {
+      socket.write(JSON.stringify({ ext, tool, args }) + '\n');
+    });
+  });
+}
+
+/**
  * Call a tool on an extension from the activated runtime.
  *
- * Uses the runtime record to find the extension's entrypoint, spawns a fresh
- * MCP session (stdio), calls the tool, prints the result as JSON, and exits.
+ * Routing priority (mirrors apps/sox cmdExec):
+ *   1. If runtime.json has execSocketPath and the socket file exists →
+ *      route through the live supervisor session (zero throwaway spawn).
+ *   2. Else → fresh MCP spawn with policy enforcement (service-mode or socket absent).
  *
  * [process-boundary.exec] — Policy env injected into the exec spawn so that a
  * fresh-spawned child self-enforces identically to the supervised child.
- *
- * ENFORCED path (manifest declares permissions block):
- *   Compile the policy from the manifest's permissions (same compilePolicy used
- *   by the supervisor in supervisor.ts _spawn). Inject policy.toEnv() into the
- *   child env, mirroring the supervisor's enforced path ([def:policy-env]).
- *   Child env is scrubbed to the same minimal allowlist (PATH/HOME/USER/LOGNAME/
- *   LANG/LC_ALL/LC_CTYPE/TZ/NODE_*) then merged with policy.toEnv() — identical
- *   to supervisor._spawn enforced path. [ref:guard-before-sink] is satisfied
- *   because checkDbPathPolicy in the child reads the enforce flag from env ([def:policy-env]).
- *
- * UNENFORCED path (no permissions block):
- *   env is { ...process.env } — byte-identical to today ([inv:no-regress], legacy
- *   compat; dev / standalone invocations are NOT restricted).
- *
- * NOTE: routing exec to the already-running supervised child (proper A11) is
- * out of scope here — this only closes the C6 hole in the existing fresh-spawn.
  */
 async function cmdExec(flags: Record<string, string>): Promise<void> {
   const runtimeFilePath = flags['runtime-file'] ?? process.env['SOX_RUNTIME_FILE'] ?? '';
@@ -407,8 +456,24 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
     process.exit(1);
   }
 
+  const { existsSync, readFileSync } = await import('node:fs');
+
+  // ── Route 1: exec socket (supervisor mode — airtight) ─────────────────────
+  // [inv:exec-socket]: present in runtime.json only when startRuntime() opened it.
+  if (record.execSocketPath && existsSync(record.execSocketPath)) {
+    try {
+      const result = await callViaExecSocket(record.execSocketPath, extId, toolName, toolArgs);
+      process.stdout.write(JSON.stringify(result) + '\n');
+      const mcpResult = result as { isError?: boolean };
+      process.exit(mcpResult.isError ? 1 : 0);
+    } catch (e) {
+      // Socket error — fall through to fresh spawn with a warning.
+      process.stderr.write(`sox exec: exec socket failed (${String(e)}), falling back to fresh spawn\n`);
+    }
+  }
+
+  // ── Route 2: fresh MCP spawn (service-mode detached, or socket unavailable) ─
   const { resolveExtensionDir } = await import('./loader.js');
-  const { readFileSync, existsSync } = await import('node:fs');
 
   const extDir = resolveExtensionDir(entry.source, ROOT);
   if (!extDir) {
@@ -422,13 +487,18 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
     process.exit(1);
   }
 
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { entrypoint?: string };
-  if (!manifest.entrypoint) {
+  // [process-boundary.exec] — Compile policy from the manifest's permissions block
+  // and inject it into the child env, mirroring the supervisor's enforced spawn path.
+  const manifestFull = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+    entrypoint?: string;
+    permissions?: PermissionsBlock;
+  };
+  if (!manifestFull.entrypoint) {
     process.stderr.write(`sox exec: no entrypoint in manifest at ${manifestPath}\n`);
     process.exit(1);
   }
 
-  const entrypointPath = path.resolve(extDir, manifest.entrypoint);
+  const entrypointPath = path.resolve(extDir, manifestFull.entrypoint);
   if (!existsSync(entrypointPath)) {
     process.stderr.write(`sox exec: entrypoint not found at ${entrypointPath}\n`);
     process.exit(1);
@@ -437,13 +507,6 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
   const { spawn } = await import('node:child_process');
   const { McpClient } = await import('./registrar.js');
 
-  // [process-boundary.exec] — Compile policy from the manifest's permissions block
-  // and inject it into the child env, mirroring the supervisor's enforced spawn path.
-  // This closes the C6 enforcement gap: sox exec fresh-spawn is now policy-bound.
-  const manifestFull = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
-    entrypoint?: string;
-    permissions?: PermissionsBlock;
-  };
   const policy = compilePolicy(manifestFull.permissions);
 
   let execEnv: NodeJS.ProcessEnv;
@@ -466,7 +529,6 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
       }
     }
     // policy.toEnv() injects the enforce flag + 4 policy JSON arrays ([def:policy-env]).
-    // Goes last so it cannot be shadowed by any parent env var.
     execEnv = { ...baseEnv, ...policy.toEnv() };
   } else {
     // [inv:no-regress] — No permissions block: byte-identical to pre-state.
@@ -508,7 +570,8 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
 
     client.close();
     child.kill('SIGTERM');
-    process.exit(0);
+    const mcpResult2 = result as { isError?: boolean };
+    process.exit(mcpResult2.isError ? 1 : 0);
   } catch (e) {
     client.close();
     child.kill('SIGTERM');

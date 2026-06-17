@@ -19,6 +19,7 @@ import { activateMcp } from './adapters/mcp.js';
 import { activateHook } from './adapters/hook.js';
 import { activateAgent, activateSkill } from './adapters/agent.js';
 import { activateCommand, CommandRegistry } from './adapters/command.js';
+import { ProcessSupervisor } from './supervisor.js';
 import type { McpAdapterHandle } from './adapters/mcp.js';
 import type { HookAdapterHandle } from './adapters/hook.js';
 import type { AgentAdapterHandle, SkillAdapterHandle } from './adapters/agent.js';
@@ -39,7 +40,7 @@ interface Lockfile {
 }
 
 interface LifecycleHealth {
-  type?: 'stdio-ping' | 'socket' | 'command' | undefined;
+  type?: 'stdio-ping' | 'socket' | 'command' | 'http-get' | undefined;
   endpoint?: string | undefined;
   interval_ms?: number | undefined;
   timeout_ms?: number | undefined;
@@ -77,12 +78,24 @@ interface ExtensionManifest {
   [key: string]: unknown;
 }
 
+/**
+ * ServiceAdapterHandle — ht-3: handle returned when a type:service extension is activated.
+ * Carries the supervisor so the runtime can track pid/health.
+ */
+export interface ServiceAdapterHandle {
+  key: string;
+  supervisor: ProcessSupervisor;
+  permissions: PermissionsBlock | undefined;
+  type: 'service';
+}
+
 export type ActivatedHandle =
   | McpAdapterHandle
   | HookAdapterHandle
   | AgentAdapterHandle
   | SkillAdapterHandle
-  | CommandAdapterHandle;
+  | CommandAdapterHandle
+  | ServiceAdapterHandle;
 
 export interface LoaderResult {
   activated: ActivatedHandle[];
@@ -101,6 +114,11 @@ export interface LoaderOptions {
   enabledOverrides?: Record<string, boolean> | undefined;
   resolvedConfigMap?: Record<string, { config: Record<string, unknown>; enabled: boolean; version: string | undefined }> | undefined;
   overrideMcpHealthToStdioPing?: boolean | undefined;
+  /**
+   * When set, only activate extensions whose lockfile key or base-id matches one of
+   * these strings. All others are skipped. Used by `sox start --id=<ext>`.
+   */
+  filterIds?: string[] | undefined;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -131,6 +149,7 @@ export async function loadFromLockfile(opts: LoaderOptions = {}): Promise<Loader
   const resolvedConfigMap = opts.resolvedConfigMap ?? {};
   const hasResolvedConfigMap = opts.resolvedConfigMap !== undefined;
   const overrideMcpHealthToStdioPing = opts.overrideMcpHealthToStdioPing ?? false;
+  const filterIds = opts.filterIds; // undefined → no filter
   const activated: ActivatedHandle[] = [];
   const skipped: Array<{ key: string; reason: string }> = [];
   const errors: Array<{ key: string; error: unknown }> = [];
@@ -154,6 +173,15 @@ export async function loadFromLockfile(opts: LoaderOptions = {}): Promise<Loader
   }
 
   for (const [key, _entry] of Object.entries(lockfile.resolved)) {
+    // filterIds: skip any entry whose base-id or full key doesn't appear in the filter set.
+    if (filterIds !== undefined && filterIds.length > 0) {
+      const atIdx = key.lastIndexOf('@');
+      const baseId = atIdx === -1 ? key : key.slice(0, atIdx);
+      if (!filterIds.includes(key) && !filterIds.includes(baseId)) {
+        skipped.push({ key, reason: `filtered by --id (not in [${filterIds.join(', ')}])` });
+        continue;
+      }
+    }
     try {
       const result = await processEntry(key, _entry, {
         root,
@@ -243,13 +271,44 @@ async function processEntry(
     };
   }
 
-  // Config schema validation is deferred — validate-manifests is not yet a lib.
-  // When resolvedConfigMap is provided, log a note; enforcement is migrate-rest state.
-  if (manifest.config_schema && ctx.hasResolvedConfigMap) {
-    const resolvedEntry = ctx.resolvedConfigMap[baseId] ?? ctx.resolvedConfigMap[key];
-    const resolvedConfig = resolvedEntry?.config ?? {};
+  // ── Spawn-time config injection ───────────────────────────────────────────
+  // Convert cascade-resolved config keys to SOX_CONFIG_<KEY> environment vars
+  // so background process types (mcp-server, agent) can read their installation
+  // config via process.env without requiring it on every tool call.
+  //
+  // Key format: uppercased, hyphens/spaces → underscores.
+  // e.g. db_path → SOX_CONFIG_DB_PATH, recall-ceiling-ms → SOX_CONFIG_RECALL_CEILING_MS
+  //
+  // Value transforms (applied in order):
+  //   1. Tilde expansion: ~/... → <homedir>/...
+  //   2. Env ref resolution: ${VAR} → process.env[VAR] (unchanged if var not set)
+  //
+  // Config env vars are LOWER priority than the caller's env — any explicit key
+  // in opts.env that matches a SOX_CONFIG_* key wins.
+
+  let spawnEnv = ctx.env;
+  const resolvedEntry = ctx.resolvedConfigMap[baseId] ?? ctx.resolvedConfigMap[key];
+  const resolvedConfig = resolvedEntry?.config ?? {};
+  if (Object.keys(resolvedConfig).length > 0) {
+    const configEnv: Record<string, string> = {};
+    const homeDir = os.homedir();
+    for (const [cfgKey, cfgVal] of Object.entries(resolvedConfig)) {
+      const envKey = `SOX_CONFIG_${cfgKey.toUpperCase().replace(/[-\s]/g, '_')}`;
+      let strVal = typeof cfgVal === 'string'
+        ? cfgVal
+        : (cfgVal === null || cfgVal === undefined ? '' : JSON.stringify(cfgVal));
+      // Tilde expansion
+      if (strVal.startsWith('~/')) strVal = homeDir + strVal.slice(1);
+      // Env ref resolution: ${VAR}
+      strVal = strVal.replace(/\$\{([A-Z0-9_]+)\}/g, (_m, varName: string) =>
+        process.env[varName] ?? _m,
+      );
+      configEnv[envKey] = strVal;
+    }
+    // Caller env wins over config defaults
+    spawnEnv = { ...configEnv, ...ctx.env };
     console.log(
-      `[loader] "${key}": config_schema validation deferred (${Object.keys(resolvedConfig).length} key(s) — validate-manifests not yet a lib)`,
+      `[loader] "${key}": injecting ${Object.keys(configEnv).length} config key(s) as SOX_CONFIG_* env vars`,
     );
   }
 
@@ -272,7 +331,7 @@ async function processEntry(
     }
   }
 
-  const handle = await dispatchToAdapter(key, extType, entrypointPath, manifest, ctx, ctx.overrideMcpHealthToStdioPing);
+  const handle = await dispatchToAdapter(key, extType, entrypointPath, manifest, { ...ctx, env: spawnEnv }, ctx.overrideMcpHealthToStdioPing);
   return { type: 'activated', handle };
 }
 
@@ -351,10 +410,40 @@ async function dispatchToAdapter(
       });
     }
 
+    // ht-3: service case — dispatch type:service extensions to the supervisor path.
+    // [inv:no-regress-mcp]: the mcp-server case above is UNCHANGED.
+    case 'service': {
+      const rawLifecycle = manifest.lifecycle ?? {};
+      // storePath: the directory of the entrypoint so the supervisor can find port.txt
+      // written by the service when it binds its port (ht-2).
+      const storePath = path.dirname(entrypointPath);
+
+      const supervisor = new ProcessSupervisor({
+        key,
+        entrypointPath,
+        args: [],
+        env: ctx.env,
+        lifecycle: rawLifecycle,
+        permissions: manifest.permissions,
+        storePath,
+      });
+
+      await supervisor.start();
+      console.log(`[loader] service "${key}" started (pid=${String(supervisor.pid())})`);
+
+      const handle: ServiceAdapterHandle = {
+        key,
+        supervisor,
+        permissions: manifest.permissions,
+        type: 'service',
+      };
+      return handle;
+    }
+
     default:
       throw new Error(
         `[loader] Unknown extension type "${extType}" for "${key}". ` +
-          `Supported runtime types: mcp-server, hook, agent, skill, command.`,
+          `Supported runtime types: mcp-server, hook, agent, skill, command, service.`,
       );
   }
 }

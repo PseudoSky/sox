@@ -41,10 +41,11 @@
         "cwd": "."
       },
       "cache": false,
-      "dependsOn": ["build"],
+      "dependsOn": ["build", "sox:build"],
       "inputs": [
         "{workspaceRoot}/tools/test-e2e-lifecycle.js",
-        "{workspaceRoot}/libs/host-runtime/dist/**"
+        "{workspaceRoot}/libs/host-runtime/dist/**",
+        "{workspaceRoot}/dist/apps/sox/**"
       ]
     }
   }

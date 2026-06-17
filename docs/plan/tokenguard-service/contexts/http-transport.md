@@ -55,7 +55,8 @@ mutates:    ["libs/host-runtime/src/supervisor.ts",
              "libs/install-engine/src/install.ts",
              "libs/install-engine/src/capabilities/run-service.ts",
              "libs/host-registry/src/claude.ts",
-             "tools/tg-plan/check-http-service.sh"]
+             "tools/tg-plan/check-http-service.sh",
+             "scripts/install.ts"]
 ```
 
 ---

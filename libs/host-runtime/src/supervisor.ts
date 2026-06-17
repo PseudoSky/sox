@@ -20,12 +20,15 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as net from 'node:net';
+import * as http from 'node:http';
+import * as https from 'node:https';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { compilePolicy, type Policy } from './policy.js';
 
 export interface LifecycleHealth {
-  type?: 'stdio-ping' | 'socket' | 'command' | undefined;
+  type?: 'stdio-ping' | 'socket' | 'command' | 'http-get' | undefined;
   endpoint?: string | undefined;
   interval_ms?: number | undefined;
   timeout_ms?: number | undefined;
@@ -52,6 +55,13 @@ export interface SupervisorOptions {
   lifecycle: LifecycleBlock;
   permissions?: PermissionsBlock | undefined;
   onRestart?: ((restartCount: number) => void) | undefined;
+  /**
+   * storePath — [dod.5] service bundle store directory.
+   * When set, the child process is spawned with cwd=storePath so it runs from
+   * the materialized self-contained bundle with no monorepo siblings on the path.
+   * Takes precedence over the policy-enforced dirname(entrypointPath) cwd.
+   */
+  storePath?: string | undefined;
 }
 
 export interface SupervisedProcess {
@@ -83,6 +93,7 @@ export class ProcessSupervisor {
   private readonly _lifecycle: LifecycleBlock;
   private readonly _onRestart: ((n: number) => void) | undefined;
   private readonly _policy: Policy;
+  private readonly _storePath: string | undefined;
 
   private _proc: ChildProcess | null = null;
   private _healthy = false;
@@ -97,6 +108,7 @@ export class ProcessSupervisor {
     this._env = opts.env ?? {};
     this._lifecycle = opts.lifecycle;
     this._onRestart = opts.onRestart;
+    this._storePath = opts.storePath;
     // [process-boundary] Compile policy once at construction.
     // compilePolicy(undefined) → enforced=false (legacy compat, [inv:no-regress]).
     // compilePolicy(perms)     → enforced=true  ([def:enforcement-opt-in]).
@@ -223,15 +235,20 @@ export class ProcessSupervisor {
       // Extension-declared env overrides go on top of the scrubbed base.
       // Policy env ([def:policy-env]) goes last so it cannot be shadowed.
       spawnEnv = { ...baseEnv, ...this._env, ...this._policy.toEnv() };
-      // Restrict cwd to the extension directory (dirname of entrypointPath).
-      spawnCwd = path.dirname(this._entrypointPath);
+      // [dod.5]: storePath overrides the dirname(entrypointPath) default so the
+      // service runs from its self-contained materialized store dir.
+      spawnCwd = this._storePath ?? path.dirname(this._entrypointPath);
     } else {
       // [inv:no-regress] BYTE-IDENTICAL to pre-state spawn options.
       spawnEnv = { ...process.env, ...this._env };
-      spawnCwd = undefined;
+      // [dod.5]: even without enforcement, storePath sets cwd so the service
+      // bundle runs from the store dir (no monorepo siblings on the path).
+      spawnCwd = this._storePath;
     }
 
-    this._proc = spawn(process.execPath, [this._entrypointPath, ...this._args], {
+    // --enable-source-maps: Node.js uses sourceMappingURL comments in bundles so
+    // stack traces resolve back to original TypeScript line numbers.
+    this._proc = spawn(process.execPath, ['--enable-source-maps', this._entrypointPath, ...this._args], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: spawnEnv,
       ...(spawnCwd !== undefined ? { cwd: spawnCwd } : {}),
@@ -277,6 +294,23 @@ export class ProcessSupervisor {
 
   private async _waitForHealth(timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs;
+
+    // ht-2: For http-get probes, poll for port.txt before the first probe to
+    // avoid a race where the service has not yet bound its port.
+    const healthCfg = this._lifecycle.health;
+    if (healthCfg?.type === 'http-get' && this._storePath) {
+      const portFile = path.join(this._storePath, 'port.txt');
+      while (Date.now() < deadline) {
+        if (fs.existsSync(portFile)) break;
+        await sleep(50);
+      }
+      if (!fs.existsSync(portFile)) {
+        throw new Error(
+          `[supervisor] port.txt never appeared at "${portFile}" within ${timeoutMs}ms for "${this._key}"`,
+        );
+      }
+    }
+
     while (Date.now() < deadline) {
       if (await this._probeHealth()) {
         this._healthy = true;
@@ -294,8 +328,25 @@ export class ProcessSupervisor {
     if (!healthCfg) return true;
 
     const type = healthCfg.type ?? 'socket';
-    const endpoint = healthCfg.endpoint ? expandTilde(healthCfg.endpoint) : null;
     const timeout = healthCfg.timeout_ms ?? 2000;
+
+    // ht-1/ht-2: http-get probe — resolve ${PORT} from storePath/port.txt
+    if (type === 'http-get' && healthCfg.endpoint) {
+      let endpoint = healthCfg.endpoint;
+      if (endpoint.includes('${PORT}') && this._storePath) {
+        const portFile = path.join(this._storePath, 'port.txt');
+        try {
+          const port = fs.readFileSync(portFile, 'utf8').trim();
+          endpoint = endpoint.replace(/\$\{PORT\}/g, port);
+        } catch {
+          // port.txt not yet readable — not healthy yet
+          return false;
+        }
+      }
+      return probeHttp(endpoint, timeout);
+    }
+
+    const endpoint = healthCfg.endpoint ? expandTilde(healthCfg.endpoint) : null;
 
     if (type === 'socket' && endpoint) {
       return probeSocket(endpoint, timeout);
@@ -357,6 +408,39 @@ function probeSocket(socketPath: string, timeoutMs: number): Promise<boolean> {
     client.on('error', () => {
       clearTimeout(timer);
       resolve(false);
+    });
+  });
+}
+
+/**
+ * probeHttp — ht-1: HTTP GET probe using Node stdlib http/https.
+ * Returns true on any 2xx response, false on error or non-2xx.
+ * [inv:no-new-dependency]: uses Node stdlib only.
+ */
+function probeHttp(endpoint: string, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const transport = endpoint.startsWith('https://') ? https : http;
+    let done = false;
+    const req = transport.get(endpoint, { timeout: timeoutMs }, (res) => {
+      if (done) return;
+      done = true;
+      const ok = res.statusCode !== undefined && res.statusCode >= 200 && res.statusCode < 300;
+      // Consume response body to free the socket.
+      res.resume();
+      resolve(ok);
+    });
+    req.on('timeout', () => {
+      if (!done) {
+        done = true;
+        req.destroy();
+        resolve(false);
+      }
+    });
+    req.on('error', () => {
+      if (!done) {
+        done = true;
+        resolve(false);
+      }
     });
   });
 }

@@ -4,19 +4,24 @@
   "projectType": "library",
   "root": "libs/install-engine",
   "sourceRoot": "libs/install-engine/src",
-  "tags": ["type:lib"],
+  "tags": [
+    "type:lib"
+  ],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/libs/install-engine/dist"],
+      "outputs": [
+        "{workspaceRoot}/libs/install-engine/dist"
+      ],
       "options": {
-        "command": "tsc --project libs/install-engine/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/install-engine/dist/package.json",
+        "command": "tsc --project libs/install-engine/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/install-engine/dist/package.json && node libs/install-engine/scripts/rewrite-paths.cjs",
         "cwd": "."
       },
       "cache": true,
       "inputs": [
         "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/tsconfig.lib.json"
+        "{projectRoot}/tsconfig.lib.json",
+        "{projectRoot}/scripts/rewrite-paths.cjs"
       ]
     },
     "test": {
@@ -26,13 +31,20 @@
         "cwd": "."
       },
       "cache": true,
-      "inputs": ["{projectRoot}/src/**/*.ts"]
+      "inputs": [
+        "{projectRoot}/src/**/*.ts"
+      ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["libs/install-engine/**/*.ts"]
+        "lintFilePatterns": [
+          "libs/install-engine/**/*.ts"
+        ]
       }
     }
-  }
+  },
+  "implicitDependencies": [
+    "host-registry"
+  ]
 }

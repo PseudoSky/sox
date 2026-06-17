@@ -929,7 +929,8 @@ function buildResolvedSetFromInstallList(
 
 function findLocalExtension(root: string, id: string): string | null {
   // G-B: include 'bundles' so bundle manifests can be resolved locally
-  const typeDirs = ['agents', 'skills', 'mcp-servers', 'prompts', 'hooks', 'commands', 'bundles'];
+  // ht-8 parity: include 'services' so extensions/services/<id>/ is discoverable
+  const typeDirs = ['agents', 'skills', 'mcp-servers', 'prompts', 'hooks', 'commands', 'bundles', 'services'];
   for (const typeDir of typeDirs) {
     const typePath = path.join(root, 'extensions', typeDir);
     if (!fs.existsSync(typePath)) continue;

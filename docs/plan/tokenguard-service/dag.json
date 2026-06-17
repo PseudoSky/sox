@@ -55,7 +55,8 @@
         "libs/install-engine/src/install.ts",
         "libs/install-engine/src/capabilities/run-service.ts",
         "libs/host-registry/src/claude.ts",
-        "tools/tg-plan/check-http-service.sh"
+        "tools/tg-plan/check-http-service.sh",
+        "scripts/install.ts"
       ],
       "context": "contexts/http-transport.md",
       "notes": "Wire the missing http transport AND the runtime dispatch the install routing implies. (1) supervisor: add `http-get` to LifecycleHealth.type + _probeHealth (http.get vs lifecycle.health.endpoint, timeout) and have it resolve the actual bound port from storePath/port.txt, polling for the file before the first probe. (2) loader.ts dispatchToAdapter: add a `service` case — the BLOCKER the install routing alone misses; without it `sox start` on a type:service throws Unknown extension type. (3) install.ts: route transport:http through the unified run-service path, and inject SOX_CONFIG_* into spec.env at the run-service registration site (registry env is currently {} — required for [inv:standard-config]). (4) host-registry: a `service` surface. Footgun: SIGTERM->stop_timeout_ms->SIGKILL must hold for a port-holder; concurrent `sox start` is a deferred non-goal ([dod.10]).",
@@ -72,7 +73,7 @@
         { "id": "ht-4", "desc": "install.ts route transport:http through run-service", "writes": ["libs/install-engine/src/install.ts", "libs/install-engine/src/capabilities/run-service.ts"], "criteria": ["http-transport.3"], "needs": ["st-1"], "model": "opus", "effort": "high" },
         { "id": "ht-5", "desc": "SOX_CONFIG_* injection at run-service site", "writes": ["libs/install-engine/src/install.ts"], "criteria": ["http-transport.7"], "needs": ["ht-4"], "model": "sonnet", "effort": "medium" },
         { "id": "ht-6", "desc": "host-registry service surface", "writes": ["libs/host-registry/src/claude.ts"], "criteria": ["http-transport.4"], "needs": ["st-1"], "model": "haiku", "effort": "low" },
-        { "id": "ht-7", "desc": "typeDirs += services", "writes": ["libs/install-engine/src/install.ts"], "criteria": ["http-transport.8"], "needs": ["ht-5"], "model": "haiku", "effort": "low" },
+        { "id": "ht-7", "desc": "typeDirs += services (lib + live scripts/install.ts parity)", "writes": ["libs/install-engine/src/install.ts", "scripts/install.ts"], "criteria": ["http-transport.8"], "needs": ["ht-5"], "model": "haiku", "effort": "low" },
         { "id": "ht-9", "desc": "check-http-service.sh harness (health + orphans=0)", "writes": ["tools/tg-plan/check-http-service.sh"], "criteria": ["http-transport.5"], "needs": ["ht-2", "ht-3", "ht-4", "ht-5", "ht-6", "ht-7"], "model": "sonnet", "effort": "medium" }
       ]
     },

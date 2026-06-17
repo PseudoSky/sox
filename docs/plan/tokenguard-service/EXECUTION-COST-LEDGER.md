@@ -18,7 +18,7 @@ estimate with measured data. "Tokens" = the subagent's reported total
 | A0 | plan | (plan architecture review) | architect-reviewer | 84,407 | 73 | ~365s | n/a | read-only anchor; GO-WITH-CHANGES, 7 findings |
 | 1 | core | core-engine | sox-active:typescript-pro | **52,751** | 37 | ~370s | **PASS** (`nx build` exit 0) | ported core.py → 9 files; smooth (no build-fix loop); 3 in-spec deviations (seed type label/id, DetectorConfig re-export, 1 intra-pkg require for circular dep) |
 | 2 | framework | service-type | sox-active:typescript-pro | **93,994** | 56 | ~457s | **PASS** (`SCAFFOLD OK`) | live manifest/type-system edit; nx test manifest 150 pass (0 fail, memory-server non-regressed); +2 files beyond mutates (new-extension.ts footgun + manifest.spec.ts) → executor-class expand-artifacts amendment |
-| 3 | framework | http-transport | sox-active:typescript-pro | _running_ | — | — | _running_ | a0358f9; ran on sonnet (under its opus-rated tasks — escalate to opus only if guard fails) |
+| 3 | framework | http-transport | sox-active:typescript-pro | **105,828** | 84 | ~746s | **PASS** (`HEALTHY` + `orphans=0`) | hardest framework state; real service spawned on walked port + clean stop; no-regress 9 tasks green (191 unit + 63 e2e). **Opus-rated tasks (ht-2/3/4) PASSED on sonnet** → ratings too conservative (2nd such state). +scripts/install.ts (live, footgun parity) → expand-artifacts amendment |
 | 4 | core | core-invariants | sox-active:typescript-pro | **62,661** | 48 | ~362s | **PASS** (63/63 tests) | ported selftest+roundtrip to Vitest; ran on **sonnet (correct tier)**; labeled [neg-ctrl] tests incl. SSE split-token proof; project.json test target already present (no amendment) |
 
 ## Transition-engine note (v0.8.13 — skill-feedback candidate)
