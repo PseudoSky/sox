@@ -75,10 +75,10 @@
       "end_ref": "e92cf5b25d205e1542465ee1b901325e7e6edafb"
     },
     "decouple-generalize": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-17T03:04:21.160Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "55061903a141dd058fd39634b69c6fef636e25a5",
       "end_ref": null
     },
     "code-review": {
