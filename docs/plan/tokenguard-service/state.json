@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "tokenguard-service",
   "dag": "dag.json",
-  "current_state": "http-transport",
+  "current_state": "core-invariants",
   "states": {
     "service-type": {
       "status": "complete",
@@ -40,10 +40,10 @@
       "end_ref": "1ca2b672b945c094d6fa3e3b51bbc781abd14e27"
     },
     "core-invariants": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-17T00:02:04.835Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "3de8fb4eb26ffa2a950b7c8376e5b8a0dfaedf9b",
       "end_ref": null
     },
     "audit-core": {
