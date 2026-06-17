@@ -2,7 +2,7 @@
   "schema_version": 2,
   "title": "tokenguard-service",
   "dag": "dag.json",
-  "current_state": "tg-cli",
+  "current_state": "audit-service",
   "states": {
     "service-type": {
       "status": "complete",
@@ -61,11 +61,11 @@
       "end_ref": "b7e7eb6508af0559cb1cf5acbd79f85383f81965"
     },
     "tg-cli": {
-      "status": "in_progress",
+      "status": "complete",
       "started_at": "2026-06-17T02:50:00.280Z",
-      "done_at": null,
+      "done_at": "2026-06-17T03:03:48.446Z",
       "start_ref": "77fd7df32d1f5c0f4bbd8a55e6c9f3fa28ae9b8d",
-      "end_ref": null
+      "end_ref": "929a76c9785d9bd4251b70606bb7881e27d1de28"
     },
     "audit-service": {
       "status": "pending",
@@ -192,6 +192,18 @@
       "audit_criteria_total": 83,
       "by": "fullstack-developer",
       "note": "Live pseudonymizing proxy: ROUNDTRIP OK + LEAKS 0 verified; real id never on wire. 2 dispatches (529 + header-fix)."
+    },
+    {
+      "ts": "2026-06-17T03:03:48.446Z",
+      "from": "tg-cli",
+      "to": "tg-cli",
+      "start_ref": "77fd7df32d1f5c0f4bbd8a55e6c9f3fa28ae9b8d",
+      "end_ref": "929a76c9785d9bd4251b70606bb7881e27d1de28",
+      "audit_exit": 40,
+      "audit_criteria_passed": 3,
+      "audit_criteria_total": 83,
+      "by": "fullstack-developer",
+      "note": "live map CLI reflected by running proxy (no restart); LIVE SEED REFLECTED verified; 102808 subagent_tokens."
     }
   ],
   "amendment_log": [
