@@ -25,9 +25,11 @@ estimate with measured data. "Tokens" = the subagent's reported total
 `state-transition.js --complete core-engine` returned `status: audit_failed (0/20)` **even though the state completed correctly** (state.json `core-engine: complete`, `end_ref` set, `nx build` green, `core-engine.1–5` all PASS). The 0/20 is a *forward-looking* run of the **framework**-phase audit (20 criteria) after `current_state` advanced — it can't pass mid-plan. A `--complete` should report on the **completed** state's guard/criteria, not a look-ahead phase; the misleading `audit_failed` could make an orchestrator falsely halt. → file as a fix for plan-state-machine.
 
 ## Running totals
-- Execution dispatches recorded: **3 complete** (core-engine, service-type, core-invariants — all PASS, all 1-shot) + 1 running (http-transport)
-- Execution `subagent_tokens` so far: **209,406** (52,751 + 93,994 + 62,661)
-- Mean per coding-state (so far): **69,802** (n=3)
+- Execution dispatches recorded: **4 complete** (core-engine, service-type, core-invariants, http-transport — all PASS, all 1-shot) + audit-core (free, no dispatch)
+- Execution `subagent_tokens` so far: **315,234** (52,751 + 93,994 + 62,661 + 105,828)
+- Mean per coding-state (so far): **78,808** (n=4); range 52,751–105,828
+- States complete: **5 of 13** (core track 100% done; framework spine at mcp-as-service)
+- **Re-projected total (n=4):** done 315k + 5 remaining work states (mcp-as-service, tg-service, tg-cli, decouple, code-review ~ 350–500k) + audit-framework/service/final (cheap if clean) ≈ **~0.75–0.9M subagent_tokens**. Tracking the low end of the 0.5–1.5M band — every state 1-shot so far, every audit free.
 - **Model-tiering note:** all dispatches ran on `typescript-pro`'s default **sonnet** (no override). core-engine + service-type's "opus"-rated tasks PASSED on sonnet → ratings look too conservative. Policy going forward (R6 escalation ladder): default sonnet, escalate to opus only on repeated guard failure; route the all-haiku `decouple-generalize` state to haiku.
 - **Re-projected full plan (n=2):** done 147k + 7 remaining work states (~700k tiered) + audit fix-loops (~140k) ≈ **~1.0M subagent_tokens** (range 0.8–1.6M). Converging on the prior ~0.7M recalibration; both 1-shot passes keep it at the low end. Greenfield port (53k) < live-edit (94k) — editing live code with a no-regress test suite costs ~1.8× a clean port, as expected.
 
