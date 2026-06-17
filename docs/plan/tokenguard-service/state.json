@@ -218,6 +218,18 @@
         "contexts/http-transport.md"
       ],
       "by": "fullstack-developer"
+    },
+    {
+      "ts": "2026-06-17T03:03:42.586Z",
+      "state": "tg-cli",
+      "class": "executor",
+      "type": "expand-artifacts",
+      "reason": "tg-cli wired the proxy mapstore subscription into src/index.ts (tg-service file, authorized cross-state wiring)",
+      "files_synced": [
+        "dag.json",
+        "contexts/tg-cli.md"
+      ],
+      "by": "fullstack-developer"
     }
   ],
   "dod_provenance": {
