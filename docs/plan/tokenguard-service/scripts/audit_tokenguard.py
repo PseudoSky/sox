@@ -17,8 +17,16 @@ Structural clauses (old-is-gone / conformance) are grep/AST by nature.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
+
+# cwd-robustness: all checks below use repo-root-relative paths. The guard runs
+# this from the repo root, but state-transition.js runs the dod-confirmation
+# pass from the PLAN dir (cwd: planDir) — inconsistent. Anchor to the repo root
+# (this file is <repo>/docs/plan/tokenguard-service/scripts/audit_tokenguard.py)
+# so the audit resolves identically regardless of caller cwd.
+os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", ".."))
 
 
 def _run(cmd: str) -> tuple[int, str]:
