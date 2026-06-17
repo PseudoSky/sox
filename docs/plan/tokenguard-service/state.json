@@ -26,10 +26,10 @@
       "end_ref": "e5e95ae9fa50ca0a40c803d8d040b0d7ca4b0401"
     },
     "audit-framework": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-17T00:31:19.405Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "ea2b021b5cbe8ea59f95bcd780dc55393c416cc5",
       "end_ref": null
     },
     "core-engine": {
