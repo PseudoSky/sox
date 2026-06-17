@@ -68,10 +68,10 @@
       "end_ref": "929a76c9785d9bd4251b70606bb7881e27d1de28"
     },
     "audit-service": {
-      "status": "pending",
-      "started_at": null,
+      "status": "in_progress",
+      "started_at": "2026-06-17T03:04:16.167Z",
       "done_at": null,
-      "start_ref": null,
+      "start_ref": "753276c6d35f2996e42e796671b7c897eab20a73",
       "end_ref": null
     },
     "decouple-generalize": {
