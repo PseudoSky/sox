@@ -1,0 +1,58 @@
+{
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "name": "tokenguard",
+  "projectType": "library",
+  "root": "extensions/services/tokenguard",
+  "sourceRoot": "extensions/services/tokenguard/src",
+  "tags": ["type:extension"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/extensions/services/tokenguard/dist",
+        "{workspaceRoot}/extensions/services/tokenguard/bundle"
+      ],
+      "options": {
+        "commands": [
+          "tsc --project extensions/services/tokenguard/tsconfig.json",
+          "node tools/bundle-extension.cjs --entry extensions/services/tokenguard/src/index.ts --outdir extensions/services/tokenguard/bundle --tsconfig extensions/services/tokenguard/tsconfig.json"
+        ],
+        "parallel": false,
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.json"
+      ],
+      "dependsOn": ["tokenguard-core:build"]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config extensions/services/tokenguard/vitest.config.ts",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/vitest.config.ts"
+      ]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": ["extensions/services/tokenguard/src/**/*.ts"]
+      }
+    },
+    "bundle": {
+      "executor": "nx:run-commands",
+      "outputs": ["{workspaceRoot}/extensions/services/tokenguard/bundle"],
+      "options": {
+        "command": "node tools/bundle-extension.cjs --entry extensions/services/tokenguard/src/index.ts --outdir extensions/services/tokenguard/bundle --tsconfig extensions/services/tokenguard/tsconfig.json",
+        "cwd": "."
+      },
+      "dependsOn": ["build"]
+    }
+  }
+}

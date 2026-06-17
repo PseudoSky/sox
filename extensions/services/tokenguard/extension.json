@@ -1,0 +1,117 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "tokenguard",
+  "version": "0.1.0",
+  "type": "service",
+  "title": "TokenGuard Pseudonymizing Proxy",
+  "description": "Generalized pseudonymizing HTTP proxy. Tokenizes PII in outbound API requests and detokenizes inbound responses — provider-agnostic via pluggable adapters. Seeded identifiers are mapped bijectively and never reach the wire.",
+  "keywords": ["proxy", "tokenize", "pseudonymize", "privacy", "pii", "redact"],
+  "author": "sox-ecosystem",
+  "compatibility": { "host": ">=1.0.0 <2.0.0" },
+  "entrypoint": "dist/index.js",
+  "license": "MIT",
+  "runtime": "node",
+  "lifecycle": {
+    "background": true,
+    "singleton": true,
+    "health": {
+      "type": "http-get",
+      "endpoint": "http://127.0.0.1:${PORT:-9099}/_tokenguard/health",
+      "interval_ms": 30000,
+      "timeout_ms": 5000
+    },
+    "stop_timeout_ms": 5000
+  },
+  "install": {
+    "type": "service",
+    "transports": ["http"],
+    "serves": ["http"],
+    "profiles": {
+      "http": { "transport": "http" }
+    }
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["upstream"],
+    "properties": {
+      "port": {
+        "type": "integer",
+        "description": "Base port to listen on (walks +9 if occupied).",
+        "x-sox-prompt": "Base port for tokenguard proxy:",
+        "x-sox-default": 9099
+      },
+      "upstream": {
+        "type": "string",
+        "description": "Upstream API base URL (e.g. https://api.anthropic.com).",
+        "x-sox-prompt": "Upstream API base URL:",
+        "x-sox-default": "https://api.anthropic.com"
+      },
+      "capture": {
+        "type": "string",
+        "enum": ["full", "truncated", "none"],
+        "description": "Body capture mode for the audit log.",
+        "x-sox-prompt": "Body capture mode (full/truncated/none):",
+        "x-sox-default": "truncated"
+      },
+      "capture_max_bytes": {
+        "type": "integer",
+        "description": "Max bytes per captured body (truncated mode).",
+        "x-sox-prompt": "Max bytes per captured body:",
+        "x-sox-default": 4096
+      },
+      "provider": {
+        "type": "string",
+        "enum": ["anthropic", "generic"],
+        "description": "Provider adapter (anthropic for SSE/streaming; generic for plain JSON).",
+        "x-sox-prompt": "Provider adapter (anthropic/generic):",
+        "x-sox-default": "anthropic"
+      },
+      "map_path": {
+        "type": "string",
+        "description": "Path to persist the live token map JSON (token-mapping.json).",
+        "x-sox-prompt": "Path for the live token map file:",
+        "x-sox-default": "~/.tokenguard/token-mapping.json"
+      },
+      "capture_dir": {
+        "type": "string",
+        "description": "Directory for audit.jsonl capture log.",
+        "x-sox-prompt": "Directory for audit log:",
+        "x-sox-default": "~/.tokenguard"
+      },
+      "seeds": {
+        "type": "string",
+        "description": "JSON array of seed entries [{real,type?,token?}] to pre-load into the mapper.",
+        "x-sox-prompt": "Seed entries (JSON array, optional):",
+        "x-sox-default": "[]"
+      },
+      "never": {
+        "type": "string",
+        "description": "JSON array of strings that must never be tokenized.",
+        "x-sox-prompt": "Never-tokenize list (JSON array, optional):",
+        "x-sox-default": "[]"
+      },
+      "detect_phone": {
+        "type": "boolean",
+        "description": "Enable phone-number detection.",
+        "x-sox-prompt": "Enable phone detection (true/false):",
+        "x-sox-default": false
+      },
+      "detect_ipv6": {
+        "type": "boolean",
+        "description": "Enable IPv6 detection.",
+        "x-sox-prompt": "Enable IPv6 detection (true/false):",
+        "x-sox-default": true
+      }
+    }
+  },
+  "permissions": {
+    "fs": {
+      "read":  ["~/.tokenguard/**"],
+      "write": ["~/.tokenguard/**"]
+    },
+    "network": {
+      "outbound": ["*"]
+    }
+  }
+}
