@@ -58,7 +58,9 @@ mutates:    ["extensions/services/tokenguard/extension.json",
              "extensions/services/tokenguard/src/config.ts",
              "extensions/services/tokenguard/src/adapters/anthropic.ts",
              "extensions/services/tokenguard/src/adapters/generic.ts",
-             "extensions/services/tokenguard/demo/proxy-roundtrip.sh"]
+             "extensions/services/tokenguard/demo/proxy-roundtrip.sh",
+             "extensions/services/tokenguard/vitest.config.ts",
+             "extensions/services/tokenguard/test/smoke.spec.ts"]
 ```
 
 ---

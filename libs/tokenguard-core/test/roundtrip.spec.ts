@@ -15,7 +15,7 @@ import {
   wireLeaks,
   detokenizeText,
   walkTokenize,
-} from '@sox/tokenguard-core';
+} from '../src/index';
 
 // ── [inv:bijective-roundtrip] corpus ─────────────────────────────────────────
 

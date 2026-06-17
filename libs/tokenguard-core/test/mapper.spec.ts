@@ -12,8 +12,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { Mapper } from '@sox/tokenguard-core';
-import type { MapEntry } from '@sox/tokenguard-core';
+import { Mapper } from '../src/index';
+import type { MapEntry } from '../src/index';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 

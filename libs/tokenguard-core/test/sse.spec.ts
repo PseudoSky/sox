@@ -13,7 +13,7 @@ import {
   Mapper,
   detokenizeSse,
   detokenizeSseWithMapper,
-} from '@sox/tokenguard-core';
+} from '../src/index';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 

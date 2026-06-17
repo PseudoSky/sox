@@ -23,7 +23,7 @@ import {
   detectKnown,
   tokenizeStr,
   identifierGroupVariants,
-} from '@sox/tokenguard-core';
+} from '../src/index';
 
 // ── email ─────────────────────────────────────────────────────────────────────
 
