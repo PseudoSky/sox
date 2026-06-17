@@ -245,13 +245,15 @@
       "artifacts": [
         "extensions/services/tokenguard/README.md",
         "extensions/services/tokenguard/CLAUDE.md",
-        "libs/tokenguard-core/README.md"
+        "libs/tokenguard-core/README.md",
+        "libs/tokenguard-core/src/index.ts",
+        "libs/tokenguard-core/src/tokenize.ts"
       ],
       "context": "contexts/decouple-generalize.md",
       "notes": "Final generalization pass + the simple negative check: prove zero WOP coupling remains (no roe.json / engagement-dir / e2e-harness / wop path tokens in tokenguard-core or the tokenguard service), and document the generic, config-driven usage for any LLM API (the *_BASE_URL redirect model). This is documentation + a grep gate, not new behavior.",
       "changes": { "deletes": [], "resigns": [], "renames": [] },
       "tasks": [
-        { "id": "dg-1", "desc": "core README (engine API + generic usage)", "writes": ["libs/tokenguard-core/README.md"], "criteria": ["decouple-generalize.3"], "needs": ["audit-service", "ce-5"], "model": "haiku", "effort": "low" },
+        { "id": "dg-1", "desc": "core README + strip vestigial red-team comments from engine src", "writes": ["libs/tokenguard-core/README.md", "libs/tokenguard-core/src/index.ts", "libs/tokenguard-core/src/tokenize.ts"], "criteria": ["decouple-generalize.3"], "needs": ["audit-service", "ce-5"], "model": "haiku", "effort": "low" },
         { "id": "dg-2", "desc": "service README (operator workflow + *_BASE_URL model)", "writes": ["extensions/services/tokenguard/README.md"], "criteria": ["decouple-generalize.2"], "needs": ["audit-service", "tgs-10"], "model": "haiku", "effort": "low" },
         { "id": "dg-3", "desc": "service CLAUDE.md + zero-WOP-coupling gate", "writes": ["extensions/services/tokenguard/CLAUDE.md"], "criteria": ["decouple-generalize.1"], "needs": ["audit-service", "cli-2"], "model": "haiku", "effort": "low" }
       ]

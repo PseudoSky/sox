@@ -41,7 +41,9 @@ read_only:  ["libs/tokenguard-core/src/index.ts",
              "extensions/services/tokenguard/src/proxy.ts"]
 mutates:    ["extensions/services/tokenguard/README.md",
              "extensions/services/tokenguard/CLAUDE.md",
-             "libs/tokenguard-core/README.md"]
+             "libs/tokenguard-core/README.md",
+             "libs/tokenguard-core/src/index.ts",
+             "libs/tokenguard-core/src/tokenize.ts"]
 ```
 
 ---

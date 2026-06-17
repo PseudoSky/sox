@@ -38,7 +38,7 @@ const LABEL_STOPLIST = new Set([
  * (access, api, www, TLDs, etc.). Returns a de-duplicated list of lower-cased strings.
  *
  * This is the neutral generalisation of the Python identifier-variant function.
- * Same algorithm; no red-team vocabulary.
+ * Generic algorithm, provider-agnostic implementation.
  */
 export function identifierGroupVariants(label: string, members: string[]): string[] {
   const out: string[] = [];

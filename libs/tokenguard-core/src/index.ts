@@ -2,7 +2,7 @@
  * @sox/tokenguard-core — public surface
  *
  * Pure, IO-light TypeScript port of the TokenGuard bijective tokenize/detokenize engine.
- * No network, no provider, no red-team vocabulary.
+ * No network, no provider specifics.
  */
 
 // Types
