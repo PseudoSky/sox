@@ -522,6 +522,8 @@ function cmdSearch(flags: Record<string, string>): void {
     }
   }
   const typeFilter = flags['type'];
+  // R9: --all includes internal (bundle member) entries. Default: exclude them.
+  const showAll = flags['all'] !== undefined || flags['all'] === '';
 
   // The registry/index.json always lives in the repo root where sox is invoked,
   // NOT in the scope config directory. Use process.cwd(), same as cmdInstall.
@@ -535,8 +537,14 @@ function cmdSearch(flags: Record<string, string>): void {
   }
 
   let results = entries;
+
+  // R9: by default exclude internal entries (bundle members not independently installable).
+  if (!showAll) {
+    results = results.filter((e) => (e as { visibility?: string }).visibility !== 'internal');
+  }
+
   if (query !== '') {
-    results = entries.filter(
+    results = results.filter(
       (e) =>
         e.id.includes(query) ||
         e.title.includes(query) ||

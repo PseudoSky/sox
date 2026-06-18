@@ -82,6 +82,10 @@ export interface IndexEntry {
     min_context_tokens?: number | undefined;
   } | undefined;
   members?: Array<{ id: string; version: string }> | undefined;
+  /** R9: "public" (default if absent) or "internal" (bundle member, not independently installable). */
+  visibility?: 'public' | 'internal' | undefined;
+  /** R9: populated when visibility is "internal". The owning bundle's id. */
+  bundleId?: string | undefined;
 }
 
 export interface ExtensionManifest {
@@ -483,6 +487,23 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
     if (!entry.enabled) {
       console.log(`install: skipping disabled extension "${entry.id}"`);
       continue;
+    }
+
+    // R9: visibility enforcement — block direct installation of bundle members.
+    // Bundle members are only installable as part of their owning bundle.
+    // expandBundles() already expands bundle installs to their members, so this
+    // guard only fires when a user explicitly names a member id directly.
+    if (entry.bundleId === undefined) {
+      // Only check when NOT already expanded from a bundle (bundleId is set by expandBundles)
+      const indexEntryForVisibility = resolveFromRegistry(entry.id, entry.version, registryIndex);
+      if (indexEntryForVisibility?.visibility === 'internal') {
+        const owningBundle = indexEntryForVisibility.bundleId ?? 'the bundle that owns it';
+        console.error(
+          `sox: install: "${entry.id}" is a member of bundle "${owningBundle}".\n` +
+          `     Install the bundle instead: sox install ${owningBundle}`,
+        );
+        process.exit(1);
+      }
     }
 
     let source: string;
@@ -956,6 +977,24 @@ export function findLocalExtension(root: string, id: string): string | null {
         if (manifest.id === id) return extPath;
       } catch (_e) {
         // Skip malformed manifests
+      }
+
+      // R9: also search inside bundle members/ subdirectory
+      if (typeDir === 'bundles') {
+        const membersPath = path.join(extPath, 'members');
+        if (fs.existsSync(membersPath) && fs.statSync(membersPath).isDirectory()) {
+          for (const memberId of fs.readdirSync(membersPath)) {
+            const memberPath = path.join(membersPath, memberId);
+            const memberManifestPath = path.join(memberPath, 'extension.json');
+            if (!fs.existsSync(memberManifestPath)) continue;
+            try {
+              const memberManifest = JSON.parse(fs.readFileSync(memberManifestPath, 'utf8')) as { id?: string };
+              if (memberManifest.id === id) return memberPath;
+            } catch (_e) {
+              // Skip malformed manifests
+            }
+          }
+        }
       }
     }
   }

@@ -52,6 +52,12 @@ export interface TemplateOpts {
   // ── Appendix-A: prompt specific ──────────────────────────────────────────
   /** --inject: prompt injection target (rules | claude-md). Used only by prompt type. */
   inject?: string | undefined;
+  // ── Appendix-A: bundle specific ──────────────────────────────────────────
+  /**
+   * R9: --member flag(s) for bundle init. Each entry is { type, id }.
+   * Scaffolds member extensions in members/ subdirectory with visibility: "internal".
+   */
+  members?: Array<{ type: string; id: string }> | undefined;
 }
 
 /** Compatibility block used by all templates */

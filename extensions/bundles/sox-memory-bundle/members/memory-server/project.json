@@ -1,16 +1,16 @@
 {
-  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "$schema": "../../../../../../node_modules/nx/schemas/project-schema.json",
   "name": "memory-server",
   "projectType": "library",
-  "root": "extensions/mcp-servers/memory-server",
-  "sourceRoot": "extensions/mcp-servers/memory-server/src",
+  "root": "extensions/bundles/sox-memory-bundle/members/memory-server",
+  "sourceRoot": "extensions/bundles/sox-memory-bundle/members/memory-server/src",
   "tags": ["type:extension"],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/extensions/mcp-servers/memory-server/dist"],
+      "outputs": ["{workspaceRoot}/extensions/bundles/sox-memory-bundle/members/memory-server/dist"],
       "options": {
-        "command": "tsc --project extensions/mcp-servers/memory-server/tsconfig.json",
+        "command": "tsc --project extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json",
         "cwd": "."
       },
       "cache": true,
@@ -23,7 +23,7 @@
     "test": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "vitest run --config extensions/mcp-servers/memory-server/vitest.config.ts",
+        "command": "vitest run --config extensions/bundles/sox-memory-bundle/members/memory-server/vitest.config.ts",
         "cwd": "."
       },
       "cache": true,
@@ -36,7 +36,7 @@
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["extensions/mcp-servers/memory-server/src/**/*.ts"]
+        "lintFilePatterns": ["extensions/bundles/sox-memory-bundle/members/memory-server/src/**/*.ts"]
       }
     }
   }

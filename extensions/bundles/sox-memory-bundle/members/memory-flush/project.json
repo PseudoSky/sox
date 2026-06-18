@@ -1,0 +1,30 @@
+{
+  "$schema": "../../../../../../node_modules/nx/schemas/project-schema.json",
+  "name": "memory-flush",
+  "projectType": "library",
+  "root": "extensions/bundles/sox-memory-bundle/members/memory-flush",
+  "sourceRoot": "extensions/bundles/sox-memory-bundle/members/memory-flush/src",
+  "tags": ["type:extension"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": ["{workspaceRoot}/extensions/bundles/sox-memory-bundle/members/memory-flush/dist"],
+      "options": {
+        "command": "tsc --project extensions/bundles/sox-memory-bundle/members/memory-flush/tsconfig.json",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.json"
+      ],
+      "dependsOn": ["memory-core:build"]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": ["extensions/bundles/sox-memory-bundle/members/memory-flush/src/**/*.ts"]
+      }
+    }
+  }
+}

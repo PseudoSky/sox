@@ -39,6 +39,10 @@ interface ExtensionManifest {
   capabilities?: string[];
   /** G-B: bundle members. Present iff type=='bundle'. Indexed like any extension. */
   members?: Array<{ id: string; version: string }>;
+  /** R9: "public" (default) or "internal" (bundle member, not independently installable). */
+  visibility?: 'public' | 'internal';
+  /** R9: populated when visibility is "internal". The owning bundle's id. */
+  bundle_id?: string;
 }
 
 export interface IndexEntry {
@@ -56,6 +60,10 @@ export interface IndexEntry {
   requires?: ExtensionManifest['requires'];
   /** G-B: populated for bundle type; the members this bundle expands to at install time */
   members?: ExtensionManifest['members'];
+  /** R9: "public" (default if absent) or "internal" (bundle member, not independently installable). */
+  visibility?: 'public' | 'internal';
+  /** R9: populated when visibility is "internal". The owning bundle's id. */
+  bundleId?: string;
 }
 
 const DIR_TO_TYPE: Record<string, string> = {
@@ -80,8 +88,12 @@ function computeBytesChecksum(bytes: Buffer): string {
   return `sha256:${hash}`;
 }
 
-function findExtensionDirs(root: string): string[] {
-  const dirs: string[] = [];
+/**
+ * Returns extension dirs paired with optional bundle context.
+ * bundleId is set when the dir is a member of a bundle (detected by filesystem location).
+ */
+function findExtensionDirs(root: string): Array<{ extPath: string; bundleId?: string }> {
+  const dirs: Array<{ extPath: string; bundleId?: string }> = [];
 
   // Primary scan: extensions/<type>/<id>/extension.json
   const extensionsRoot = path.join(root, 'extensions');
@@ -96,7 +108,23 @@ function findExtensionDirs(root: string): string[] {
         if (!fs.statSync(extPath).isDirectory()) continue;
         const manifestPath = path.join(extPath, 'extension.json');
         if (fs.existsSync(manifestPath)) {
-          dirs.push(extPath);
+          // R9: for bundles, also scan members/ subdirectory
+          if (typeDir === 'bundles') {
+            dirs.push({ extPath });
+            const membersPath = path.join(extPath, 'members');
+            if (fs.existsSync(membersPath) && fs.statSync(membersPath).isDirectory()) {
+              for (const memberId of fs.readdirSync(membersPath)) {
+                const memberPath = path.join(membersPath, memberId);
+                if (!fs.statSync(memberPath).isDirectory()) continue;
+                const memberManifestPath = path.join(memberPath, 'extension.json');
+                if (fs.existsSync(memberManifestPath)) {
+                  dirs.push({ extPath: memberPath, bundleId: extId });
+                }
+              }
+            }
+          } else {
+            dirs.push({ extPath });
+          }
         }
       }
     }
@@ -112,7 +140,7 @@ function findExtensionDirs(root: string): string[] {
       if (!fs.statSync(appPath).isDirectory()) continue;
       const manifestPath = path.join(appPath, 'extension.json');
       if (fs.existsSync(manifestPath)) {
-        dirs.push(appPath);
+        dirs.push({ extPath: appPath });
       }
     }
   }
@@ -183,7 +211,7 @@ export function buildIndex(opts: { root: string }): IndexEntry[] {
   const dirs = findExtensionDirs(root);
   const entries: IndexEntry[] = [];
 
-  for (const extDir of dirs) {
+  for (const { extPath: extDir, bundleId: detectedBundleId } of dirs) {
     const manifestPath = path.join(extDir, 'extension.json');
 
     let manifest: ExtensionManifest;
@@ -232,6 +260,20 @@ export function buildIndex(opts: { root: string }): IndexEntry[] {
     // G-B: include members for bundle type so the install client can expand without re-reading disk
     if (manifest.type === 'bundle' && Array.isArray(manifest.members) && manifest.members.length > 0) {
       entry.members = manifest.members;
+    }
+
+    // R9: auto-set visibility for bundle members detected by filesystem location.
+    // Members at extensions/bundles/<bundle-id>/members/<member-id>/ are always internal.
+    // The extension.json visibility field is the source of truth; filesystem detection
+    // is a fallback that ensures correctness even if extension.json omits the field.
+    if (detectedBundleId !== undefined) {
+      entry.visibility = 'internal';
+      entry.bundleId = detectedBundleId;
+    } else if (manifest.visibility === 'internal') {
+      entry.visibility = 'internal';
+      if (manifest.bundle_id !== undefined) {
+        entry.bundleId = manifest.bundle_id;
+      }
     }
 
     entries.push(entry);
