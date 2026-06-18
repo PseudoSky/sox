@@ -1,5 +1,16 @@
 # CLAUDE.md — sox-ecosystem
 
+## ⛔ AGENT CONSTRAINT — bin/sox IS READ-ONLY
+
+**Never write code to `bin/sox`.** It is a thin ESM shim that only loads the compiled
+output from `dist/apps/sox/main.js`. All CLI logic lives in `apps/sox/src/main.ts`.
+
+- **Edit CLI logic** → `apps/sox/src/main.ts`, then `npx nx build sox`
+- **Edit the runtime** → `libs/host-runtime/src/`, then `npx nx build host-runtime`
+- Changes to `bin/sox` are silently bypassed at runtime and will never take effect.
+
+---
+
 A monorepo for an **LLM-extension ecosystem**: independently-versioned extensions of 7 types
 (`agent`, `skill`, `mcp-server`, `prompt`, `hook`, `command`, `bundle`), installed across scopes
 (`org`/`user`/`project`/`local`) and run by a host runtime. CLI: `bin/sox`. Engine: `scripts/`.
@@ -26,12 +37,14 @@ Verify against the OS / real artifacts, **not** test output (every prior "green"
 - [x] **A8 `update`** — works (registry drift gate added).
 - [x] **A9 `uninstall`** — stops + removes.
 - [x] **A10 `stop`** — clean teardown, zero orphans (verified from clean slate).
-- [~] **A11 `exec`** — now tries the running registrar first, falls back to a fresh spawn (improved, not airtight).
+- [x] **A11 `exec`** — airtight: both `apps/sox` and `runtime-cli` route through the live supervisor's Unix exec socket; fresh spawn is a fallback for service-mode (no socket) only. execSocketPath race fixed (awaited in startRuntime). Socket routing verified in e2e (63/63).
 - [x] **A12 flags** — both `--flag value` and `--flag=value` parse (parser fixed in `install-engine`).
 
 ### B. Authoring at scale
 - [x] **B1** born-conformant `init` for all active types — `libs/authoring` core + `@sox/nx` generators (the `prompt` type is parked by design).
-- [x] **B2** every type `init → build → validate → install → run` — born-conformance gate + lifecycle e2e green.
+- [x] **B2** every type `init → build → validate → install` — born-conformance gate + lifecycle e2e green. "Run" splits by role:
+  - [x] **run (process) — Role A:** code/service types spawn + execute (lifecycle e2e, 35/35).
+  - [x] **placed + discoverable (declarative) — Role B:** content types placed at the host's discovery path for the correct scope; reality-check tops out at placed + valid at target (not host execution).
 - [x] **B3** build graph scales — `nx affected` + cache; project-graph-aware build.
 - [x] **B4** adding an extension never red-bars the tree — verified (audit `dod.6`).
 
@@ -39,20 +52,30 @@ Verify against the OS / real artifacts, **not** test output (every prior "green"
 - [x] **C1** framework-owned build; hand-maintained `dist` mirrors retired.
 - [x] **C2** registry checksums current + CI drift gate.
 - [x] **C3** `build → validate --strict → typecheck → test` blocking CI, correct order.
-- [~] **C4** reality-checking gates — done for the lifecycle e2e; not yet universal.
+- [x] **C4** reality-checking gates — universal: (1) `sox list` validates pid liveness via `process.kill(pid, 0)` before reporting RUNNING (stale `runtime.json` entries reported INACTIVE); (2) born-conformance gate verifies `dist/index.js` exists and passes `node --check` for code types; (3) lockfile + registry now checksum the declared `entrypoint` (built artifact) not `src/index.ts` — `fetchArtifact` in `install.ts` and `resolveChecksum` in `build-index.ts` both follow the same resolution order: `manifest.entrypoint` → `dist/index.js` → `prompt.md` → `extension.json`. Registry regenerated + lockfile refreshed.
 - [x] **C5** memory MCP `write` + `recall` execute correctly (zero-LLM read) — recall bug fixed.
 - [x] **C6** `permissions` enforced at runtime — HARD for spawned types (env-scrub + policy-env injection + in-process fs/socket allowlist at the resource sink) across all four extension entry points (supervisor `_spawn`, `runtime-cli` exec, `apps/sox` exec, in-proc adapters = SOFT declare+audit per `[dod.6]`); undeclared `db_path` denied at runtime with no file created. Reality-verified: real spawned `memory-server`, forbidden write denied + side-effect absent (e2e + independent probe). OS-kernel sandboxing is an explicit non-goal.
-- [x] **C7** shared internal code reuse without reach-in — `libs/memory-core` extracted; cross-extension `../../../dist` reach-in eliminated (grep returns zero).
+- [x] **C7** shared internal code reuse without reach-in — `libs/memory-core` extracted; cross-package `../dist` reach-ins eliminated and **enforced at lint time**: `@nx/enforce-module-boundaries` (static import/require) plus a `no-restricted-syntax` rule in `eslint.config.js` that also catches the dynamic/laundered form (`require(path.resolve(__dirname, '../x/dist/...'))`). NB: the prior "grep returns zero" was unreliable — that grep missed both a template-literal dynamic import and multi-segment paths; turning the lint rule on surfaced two real reach-ins it had missed (`install-engine`→`host-registry`, `apps/sox`→`authoring`). Both now route through the `@sox/*` scope + the build's `rewrite-paths` step (source clean, dist resolved); reach-in is now a hard lint error, not a hopeful grep.
 
-**Summary: 21/23 done, 2 partial (A11, C4), 0 not done.** The nx self-hosting migration met the
-DoD to its D5 scope (architect-verified: final audit exit 0, C7 zero, `nx build,lint` 13/13), and the
+**Summary: 23/23 done, 0 partial, 0 not done.** The nx self-hosting migration met the
+DoD to its D5 scope (architect-verified: final audit exit 0, C7 lint-enforced (see note above), `nx build,lint` 13/13), and the
 **C6 engagement is now complete** — runtime permission enforcement is delivered and reality-verified
 across all four extension spawn paths (`audit_c6.py --phase final` exit 0; `nx run-many build,lint,test`
-green; `host-runtime:test-e2e` 35/35 with the undeclared-write denial proven + zero orphans). The C6
-work also fixed two latent migration defects the prior audit missed (duplicate `scripts/host/` runtime;
-deleted-`runtime-cli` regression) and closed four distinct unenforced spawn points. The two remaining
-partials are acknowledged scope: **A11** (`exec` routing not airtight) and **C4** (reality-gates not yet
-universal). Work lives on branch `feat/nx-migration` (committed; not merged to `main`).
+green; `host-runtime:test-e2e` 63/63 with the undeclared-write denial proven + zero orphans). **A11 is
+now complete** — exec routing is airtight in both `apps/sox` and `runtime-cli` via Unix exec socket;
+execSocketPath write race fixed; `sox exec --help` documents `--scope`; dead `getRegistrar()` export
+deprecated; SOX_HOME redirect notice added; `manifest:test` Nx flakiness resolved by splitting into
+independent `test` + `test-scripts` targets. **B2 "run" splits by role:** process types (Role A) are
+spawned + supervised by sox; declarative/content types (Role B) are placed at the host's discovery path
+for the correct scope. **C4 is now complete** — reality-gates are universal: pid liveness in `sox list`,
+born-conformance gate checks `dist/index.js` syntax, lockfile + registry checksum the built entrypoint
+artifact (`fetchArtifact` + `resolveChecksum` aligned). Work lives on branch `feat/nx-migration`
+(committed; not merged to `main`).
+
+**Next plan:** `runtime-productionization` — scoped at `.workflow/plans/runtime-productionization/SCOPE.md`.
+Covers global service discovery, stale-state GC, concurrent-start safety, log management, worker
+containment, SIGKILL escalation, signal contract enforcement, and a live monitoring surface. Architect
+design required before implementation.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence

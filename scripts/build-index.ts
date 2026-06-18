@@ -81,24 +81,42 @@ function computeBytesChecksum(bytes: Buffer): string {
 }
 
 function findExtensionDirs(root: string): string[] {
-  const extensionsRoot = path.join(root, 'extensions');
-  if (!fs.existsSync(extensionsRoot)) return [];
-
   const dirs: string[] = [];
-  for (const typeDir of fs.readdirSync(extensionsRoot)) {
-    const typePath = path.join(extensionsRoot, typeDir);
-    if (!fs.statSync(typePath).isDirectory()) continue;
-    if (!Object.keys(DIR_TO_TYPE).includes(typeDir)) continue;
 
-    for (const extId of fs.readdirSync(typePath)) {
-      const extPath = path.join(typePath, extId);
-      if (!fs.statSync(extPath).isDirectory()) continue;
-      const manifestPath = path.join(extPath, 'extension.json');
-      if (fs.existsSync(manifestPath)) {
-        dirs.push(extPath);
+  // Primary scan: extensions/<type>/<id>/extension.json
+  const extensionsRoot = path.join(root, 'extensions');
+  if (fs.existsSync(extensionsRoot)) {
+    for (const typeDir of fs.readdirSync(extensionsRoot)) {
+      const typePath = path.join(extensionsRoot, typeDir);
+      if (!fs.statSync(typePath).isDirectory()) continue;
+      if (!Object.keys(DIR_TO_TYPE).includes(typeDir)) continue;
+
+      for (const extId of fs.readdirSync(typePath)) {
+        const extPath = path.join(typePath, extId);
+        if (!fs.statSync(extPath).isDirectory()) continue;
+        const manifestPath = path.join(extPath, 'extension.json');
+        if (fs.existsSync(manifestPath)) {
+          dirs.push(extPath);
+        }
       }
     }
   }
+
+  // Secondary scan: apps/<name>/extension.json
+  // First-party CLI tools (e.g. apps/sox) are self-hosted extensions; they live
+  // outside extensions/ but still declare an extension.json to be discoverable.
+  const appsRoot = path.join(root, 'apps');
+  if (fs.existsSync(appsRoot)) {
+    for (const appName of fs.readdirSync(appsRoot)) {
+      const appPath = path.join(appsRoot, appName);
+      if (!fs.statSync(appPath).isDirectory()) continue;
+      const manifestPath = path.join(appPath, 'extension.json');
+      if (fs.existsSync(manifestPath)) {
+        dirs.push(appPath);
+      }
+    }
+  }
+
   return dirs;
 }
 
@@ -139,15 +157,22 @@ function resolveChecksum(extDir: string, manifest: ExtensionManifest): string {
     return manifest.checksum;
   }
 
-  // Compute from the content file
-  const contentFile =
-    manifest.type === 'prompt'
-      ? path.join(extDir, 'prompt.md')
-      : path.join(extDir, 'src', 'index.ts');
-
-  if (fs.existsSync(contentFile)) {
-    return computeFileChecksum(contentFile);
+  // C4: checksum the declared entrypoint (the built artifact), not the TS source.
+  // Resolution order mirrors fetchArtifact in install.ts — must stay in sync:
+  //  1. manifest.entrypoint (explicit: dist/index.js, SKILL.md, org-agent.md, …)
+  //  2. dist/index.js (built artifact fallback for code types)
+  //  3. prompt.md (declarative prompt types)
+  //  4. extension.json (final fallback)
+  if (typeof manifest.entrypoint === 'string' && manifest.entrypoint.trim() !== '') {
+    const declared = path.join(extDir, manifest.entrypoint);
+    if (fs.existsSync(declared)) return computeFileChecksum(declared);
   }
+
+  const distJs = path.join(extDir, 'dist', 'index.js');
+  if (fs.existsSync(distJs)) return computeFileChecksum(distJs);
+
+  const promptMd = path.join(extDir, 'prompt.md');
+  if (fs.existsSync(promptMd)) return computeFileChecksum(promptMd);
 
   // Fallback: checksum the extension.json itself
   return computeFileChecksum(path.join(extDir, 'extension.json'));

@@ -1416,8 +1416,11 @@ function cmdList(flags: Record<string, string>): void {
       const ver   = atIdx === -1 ? '' : lockKey.slice(atIdx + 1);
 
       const rtEntry = runtimeEntries.find((r) => (r.key ?? r.id) === lockKey || r.id === extId);
-      const running = rtEntry?.running ?? false;
       const pid = (rtEntry?.pid != null && typeof rtEntry.pid === 'number') ? rtEntry.pid : null;
+      // C4: validate RUNNING state against the OS process table, not just the bookkeeping record.
+      // A stale runtime.json entry (crash, SIGKILL, reboot) must not appear as RUNNING.
+      const pidAlive = (p: number): boolean => { try { process.kill(p, 0); return true; } catch { return false; } };
+      const running = rtEntry?.running === true && pid !== null && pidAlive(pid);
 
       const rawSrc = rtEntry?.source ?? entry?.source ?? '';
       const source = cleanSource(typeof rawSrc === 'string' ? rawSrc : '');

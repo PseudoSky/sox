@@ -18,10 +18,11 @@
 
 // @ts-check
 import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -43,7 +44,23 @@ const TYPE_IDS = {
   'hook': 'bc-audit',
   'command': 'bc-status',
   'bundle': 'bc-pack',
+  'service': 'bc-svc',
 };
+
+/**
+ * C4 reality gate: verify a scaffolded dist/index.js is syntactically valid Node.js.
+ * Uses `node --check` (parse-only, no execution) so the stub can exit(1) safely.
+ * Returns null on pass, or an error string on failure.
+ * @param {string} distPath
+ * @returns {string | null}
+ */
+function checkDistSyntax(distPath) {
+  const r = spawnSync(process.execPath, ['--check', distPath], { encoding: 'utf8' });
+  if (r.status !== 0) {
+    return `node --check failed (exit ${r.status}): ${(r.stderr ?? '').trim()}`;
+  }
+  return null;
+}
 
 for (const type of ACTIVE_TYPES) {
   const id = TYPE_IDS[type] ?? `bc-${type.replace('-', '')}x`;
@@ -70,10 +87,26 @@ for (const type of ACTIVE_TYPES) {
     // Step 4: validate against libs/manifest
     const result = validate(raw);
 
-    // Step 5: assert
-    if (!result.ok) {
+    // Step 5a: assert manifest validity
+    const errors = result.ok ? [] : [...result.errors];
+
+    // Step 5b: C4 reality gate — for code types that scaffold a dist/index.js,
+    // verify the file exists and is syntactically valid Node.js. This catches
+    // template regressions that produce a valid manifest but broken JS output.
+    const distPath = join(tmpDir, 'dist', 'index.js');
+    if (existsSync(distPath)) {
+      const syntaxErr = checkDistSyntax(distPath);
+      if (syntaxErr) {
+        errors.push(`dist/index.js reality check failed: ${syntaxErr}`);
+      }
+    } else if (['mcp-server', 'service', 'command'].includes(type)) {
+      // These types MUST produce a dist/index.js — absence is a scaffold regression.
+      errors.push(`dist/index.js missing for code type "${type}" — scaffold must produce a built artifact stub`);
+    }
+
+    if (errors.length > 0) {
       anyFailed = true;
-      RESULTS.push({ type, status: 'FAIL', errors: result.errors });
+      RESULTS.push({ type, status: 'FAIL', errors });
     } else {
       RESULTS.push({ type, status: 'PASS', errors: [] });
     }

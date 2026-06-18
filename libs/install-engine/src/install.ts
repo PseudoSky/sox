@@ -294,12 +294,37 @@ export async function fetchArtifact(
     if (fs.existsSync(filePath)) {
       const stat = fs.statSync(filePath);
       if (stat.isDirectory()) {
-        const indexTs = path.join(filePath, 'src', 'index.ts');
-        const promptMd = path.join(filePath, 'prompt.md');
         const extJson = path.join(filePath, 'extension.json');
         let contentPath = extJson;
-        if (fs.existsSync(indexTs)) contentPath = indexTs;
-        else if (fs.existsSync(promptMd)) contentPath = promptMd;
+
+        // C4 / lockfile artifact fix: pin the declared entrypoint (the built artifact),
+        // not the TypeScript source. This handles Vite-style builds where the checksum
+        // target is the compiled JS entrypoint, not the TS source.
+        //
+        // Resolution order:
+        //  1. manifest.entrypoint (explicit declaration — e.g. dist/index.js, SKILL.md)
+        //  2. dist/index.js (built artifact fallback for code types)
+        //  3. prompt.md (declarative prompt types)
+        //  4. extension.json (final fallback for bundles / bare manifests)
+        if (fs.existsSync(extJson)) {
+          try {
+            const manifest = JSON.parse(fs.readFileSync(extJson, 'utf8')) as { entrypoint?: string };
+            if (typeof manifest.entrypoint === 'string' && manifest.entrypoint.trim() !== '') {
+              const declared = path.join(filePath, manifest.entrypoint);
+              if (fs.existsSync(declared)) contentPath = declared;
+            }
+          } catch { /* unparseable extension.json — fall through */ }
+        }
+
+        if (contentPath === extJson) {
+          // No entrypoint declared or file missing — use fallback chain.
+          const distJs = path.join(filePath, 'dist', 'index.js');
+          const promptMd = path.join(filePath, 'prompt.md');
+          if (fs.existsSync(distJs)) contentPath = distJs;
+          else if (fs.existsSync(promptMd)) contentPath = promptMd;
+          // else stays as extension.json
+        }
+
         bytes = fs.readFileSync(contentPath);
         resolvedSource = `file://${contentPath}`;
       } else {
