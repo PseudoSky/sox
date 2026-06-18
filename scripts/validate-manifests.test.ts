@@ -581,8 +581,9 @@ describe('validate-manifests — P8 G-A service lifecycle block', () => {
     expect(result.ok).toBe(true);
   });
 
-  // PASS: agent with lifecycle is valid
-  it('passes when an agent declares lifecycle with health.type:stdio-ping', () => {
+  // FAIL: agent with lifecycle is rejected — agents are Role B (reinjected), not Role A (supervised)
+  // Validator rule [dod.6]: lifecycle is only allowed on mcp-server and service types.
+  it('errors when an agent declares lifecycle with health.type:stdio-ping (Role B restriction)', () => {
     makeExtensionWithFields(tmpRoot, 'agents', 'memory-orchestrator', {
       lifecycle: {
         background: true,
@@ -593,8 +594,9 @@ describe('validate-manifests — P8 G-A service lifecycle block', () => {
 
     const result = validateManifests(tmpRoot);
     const errors = result.errors.filter((d) => d.severity === 'error');
-    expect(errors).toHaveLength(0);
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    const lifecycleError = errors.find((e) => e.message.includes('lifecycle'));
+    expect(lifecycleError).toBeDefined();
   });
 
   // PASS: mcp-server with socket health and endpoint is valid

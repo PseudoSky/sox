@@ -615,7 +615,7 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
     const hostMod = getHost(host);
     const hostScopePaths = hostMod.scopePaths(scope as Parameters<typeof hostMod.scopePaths>[0]);
     // scopeRoot is the root used for the install ledger.
-    const scopeRoot = scope === 'project'
+    const scopeRoot: string = scope === 'project'
       ? workspaceRoot
       : (Object.values(hostScopePaths)[0] ?? workspaceRoot);
 

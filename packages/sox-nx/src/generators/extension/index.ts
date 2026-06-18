@@ -34,6 +34,7 @@ const DIR_MAP: Record<ActiveType, string> = {
   hook: 'hooks',
   command: 'commands',
   bundle: 'bundles',
+  service: 'services',
 };
 
 /**

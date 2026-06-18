@@ -12,6 +12,7 @@ import * as os from 'node:os';
 import { loadFromLockfile, type LoaderResult } from './loader.js';
 import { McpRegistrar } from './registrar.js';
 import type { McpAdapterHandle } from './adapters/mcp.js';
+import { acquireStartLock, computeSupervisorId } from './lock.js';
 
 export interface RuntimeEntry {
   key: string;
@@ -75,6 +76,26 @@ export async function startRuntime(opts: StartRuntimeOptions): Promise<RuntimeRe
     return readRuntimeRecord(opts.runtimeFilePath) ?? buildEmptyRecord(opts.scope);
   }
 
+  // ── Concurrent-start lock (R3) ────────────────────────────────────────────
+  // Acquired as the very first action. Released after writeRuntimeRecord writes
+  // the final runtime record with execSocketPath set, at which point subsequent
+  // startRuntime calls see the idempotent guard above.
+  const supervisorId = computeSupervisorId(opts.scope, opts.root);
+  const lock = acquireStartLock(supervisorId);
+
+  try {
+    return await _startRuntimeLocked(opts, supervisorId, lock);
+  } catch (e) {
+    lock.release();
+    throw e;
+  }
+}
+
+async function _startRuntimeLocked(
+  opts: StartRuntimeOptions,
+  supervisorId: string,
+  lock: { release: () => void },
+): Promise<RuntimeRecord> {
   const enabledOverrides = readEnabledOverrides(opts.configPath);
   const sourceMap = readLockfileSourceMap(opts.lockfilePath);
   const loaderEnv = opts.env ?? {};
@@ -163,10 +184,14 @@ export async function startRuntime(opts: StartRuntimeOptions): Promise<RuntimeRe
   // Protocol: client sends one JSON line → server replies one JSON line → close.
   // Request:  { "ext": string, "tool": string, "args": object }
   // Response: { "result": McpCallResult } | { "error": string }
-  const execSocketPath = path.join(
-    path.dirname(opts.runtimeFilePath),
-    '.sox-exec.sock',
-  );
+  //
+  // Add-2: Canonical socket path in ~/.sox/supervisors/<supervisorId>.sock
+  // — avoids polluting project directories and is discoverable from the global
+  //   supervisor registry (R1/P4).
+  const soxHome = process.env['SOX_HOME'] ?? path.join(os.homedir(), '.sox');
+  const sockDir = path.join(soxHome, 'supervisors');
+  fs.mkdirSync(sockDir, { recursive: true });
+  const execSocketPath = path.join(sockDir, `${supervisorId}.sock`);
   // Remove stale socket file from a previous (unclean) shutdown.
   try { if (fs.existsSync(execSocketPath)) fs.unlinkSync(execSocketPath); } catch { /* ignore */ }
 
@@ -283,12 +308,16 @@ export async function startRuntime(opts: StartRuntimeOptions): Promise<RuntimeRe
   // On Unix domain sockets the listen callback fires synchronously within the same
   // event-loop tick once the file descriptor is bound — the await is nearly free but
   // eliminates the race where a caller reads runtime.json before the callback fires.
+  // Lock (R3) is released here — after the final writeRuntimeRecord that includes
+  // execSocketPath. At this point the idempotent guard in startRuntime() will fire
+  // for any concurrent caller that was spin-waiting.
   await new Promise<void>((resolve, reject) => {
     execServer.once('error', reject);
     execServer.listen(execSocketPath, () => {
       console.log(`[runtime] Exec socket listening at ${execSocketPath}`);
       record.execSocketPath = execSocketPath;
       writeRuntimeRecord(opts.runtimeFilePath, record);
+      lock.release();
       resolve();
     });
   });
@@ -335,9 +364,8 @@ export async function stopRuntime(opts: StopRuntimeOptions): Promise<void> {
       if (active.execServer) {
         active.execServer.close();
         try {
-          const sockPath = active.execSocketPath ??
-            path.join(path.dirname(opts.runtimeFilePath), '.sox-exec.sock');
-          if (fs.existsSync(sockPath)) fs.unlinkSync(sockPath);
+          const sockPath = active.execSocketPath;
+          if (sockPath && fs.existsSync(sockPath)) fs.unlinkSync(sockPath);
         } catch { /* ignore */ }
       }
       _activeRuntimes.delete(opts.runtimeFilePath);
@@ -543,7 +571,12 @@ function writeRuntimeRecord(filePath: string, record: RuntimeRecord): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(filePath, JSON.stringify(record, null, 2) + '\n', 'utf8');
+  // Add-1: atomic write — write to a temp file then rename so that concurrent
+  // readers never see partial JSON. A partial write followed by a crash leaves
+  // a .tmp file behind, not a corrupt runtime.json.
+  const tmp = filePath + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(record, null, 2) + '\n', 'utf8');
+  fs.renameSync(tmp, filePath);
 }
 
 function buildEmptyRecord(scope: string): RuntimeRecord {

@@ -82,6 +82,9 @@ export type {
   StopRuntimeOptions,
 } from './runtime.js';
 
+// ─── Lock (R3) ────────────────────────────────────────────────────────────────
+export { acquireStartLock, computeSupervisorId } from './lock.js';
+
 // ─── Adapters ─────────────────────────────────────────────────────────────────
 export { activateMcp } from './adapters/mcp.js';
 export type { McpAdapterOptions, McpAdapterHandle } from './adapters/mcp.js';

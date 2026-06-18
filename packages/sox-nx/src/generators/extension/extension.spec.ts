@@ -45,6 +45,7 @@ const DIR_MAP: Record<ActiveType, string> = {
   hook: 'hooks',
   command: 'commands',
   bundle: 'bundles',
+  service: 'services',
 };
 
 /** IDs that do NOT end with the type name — required by manifest contract. */
@@ -55,6 +56,7 @@ const TYPE_IDS: Record<ActiveType, string> = {
   hook: 'test-audit',
   command: 'test-status',
   bundle: 'test-pack',
+  service: 'test-daemon',
 };
 
 describe('[ref:scaffold-parity] scaffold() == @sox/nx:extension for all active types', () => {
