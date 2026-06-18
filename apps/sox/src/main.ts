@@ -1721,6 +1721,55 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
     process.env['SOX_RUNTIME_FILE'] ??
     getRuntimeFilePath(lockfilePath);
 
+  // ── R8: daemon mode ──────────────────────────────────────────────────────────
+  // When --daemon is passed (and --_daemon-child is NOT), re-spawn ourselves
+  // detached with stdio redirected to a log file, print the background PID and
+  // log path, then exit 0.  The child runs with --_daemon-child which skips
+  // this branch.
+  //
+  // Spec: IMPLEMENTATION.md Section 5 (R8)
+  if (flags['daemon'] !== undefined && flags['_daemon-child'] === undefined) {
+    const fsDaemon = require('node:fs') as typeof import('node:fs');
+    const pathDaemon = require('node:path') as typeof import('node:path');
+    const osDaemon = require('node:os') as typeof import('node:os');
+    const { spawn: spawnDaemon } = require('node:child_process') as typeof import('node:child_process');
+
+    const supervisorIdDaemon = computeSupervisorId(scope, root);
+    const soxHomeDaemon = process.env['SOX_HOME'] ?? pathDaemon.join(osDaemon.homedir(), '.sox');
+    const logDirDaemon = pathDaemon.join(soxHomeDaemon, 'logs', supervisorIdDaemon);
+    fsDaemon.mkdirSync(logDirDaemon, { recursive: true });
+
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const logPathDaemon = pathDaemon.join(logDirDaemon, `supervisor-${today}.log`);
+    const logFd = fsDaemon.openSync(logPathDaemon, 'a');
+
+    const selectIdDaemon = flags['id'];
+    const childArgs = [
+      '--enable-source-maps',
+      process.argv[1] as string,
+      'start',
+      `--scope=${scope}`,
+      `--root=${root}`,
+      '--_daemon-child',
+      ...(selectIdDaemon !== undefined ? [`--id=${selectIdDaemon}`] : []),
+    ];
+
+    const child = spawnDaemon(process.execPath, childArgs, {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+    });
+    child.unref();
+    fsDaemon.closeSync(logFd);
+
+    process.stdout.write(
+      `[sox] Supervisor started in background.\n` +
+      `  PID:     ${String(child.pid)}\n` +
+      `  Logs:    ${logPathDaemon}\n` +
+      `  Follow:  sox logs --id=<ext> --follow\n`,
+    );
+    process.exit(0);
+  }
+
   // ── [dod.5] Service-registry path ──────────────────────────────────────────
   // When sox install --profile service was used, services are recorded in
   // <root>/.sox/registry.json (written by run-service.ts), NOT in the lockfile.
