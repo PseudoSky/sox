@@ -1420,7 +1420,6 @@ function cmdList(flags: Record<string, string>): void {
       pid: number | null;
     };
     const allRows: AllRow[] = [];
-    const staleIds: string[] = [];
 
     for (const sup of supervisors) {
       // Stale-GC probe: check pid liveness.
@@ -1430,7 +1429,6 @@ function cmdList(flags: Record<string, string>): void {
       })();
 
       if (!pidAlive) {
-        staleIds.push(sup.supervisorId);
         process.stderr.write(
           `[sox] stale supervisor removed: ${sup.supervisorId} (scope=${sup.scope}, root=${sup.root}, pid=${sup.pid})\n`,
         );
