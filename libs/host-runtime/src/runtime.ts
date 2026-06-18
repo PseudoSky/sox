@@ -100,6 +100,10 @@ async function _startRuntimeLocked(
   const sourceMap = readLockfileSourceMap(opts.lockfilePath);
   const loaderEnv = opts.env ?? {};
 
+  // R4: log directory for this supervisor's extensions.
+  const soxHomeForLogs = process.env['SOX_HOME'] ?? path.join(os.homedir(), '.sox');
+  const logDir = path.join(soxHomeForLogs, 'logs', supervisorId);
+
   const loaderResult = await loadFromLockfile({
     lockfilePath: opts.lockfilePath,
     root: opts.root,
@@ -109,6 +113,7 @@ async function _startRuntimeLocked(
     // Callers that need test-mode override (e.g. test harnesses without a live daemon)
     // can pass overrideHealthToStdioPing: true explicitly.
     overrideMcpHealthToStdioPing: opts.overrideHealthToStdioPing ?? false,
+    logDir,
     ...(opts.filterIds !== undefined ? { filterIds: opts.filterIds } : {}),
   });
 

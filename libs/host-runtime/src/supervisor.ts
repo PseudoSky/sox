@@ -26,6 +26,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { compilePolicy, type Policy } from './policy.js';
+import type { LogManager } from './log-manager.js';
 
 export interface LifecycleHealth {
   type?: 'stdio-ping' | 'socket' | 'command' | 'http-get' | undefined;
@@ -62,6 +63,12 @@ export interface SupervisorOptions {
    * Takes precedence over the policy-enforced dirname(entrypointPath) cwd.
    */
   storePath?: string | undefined;
+  /**
+   * logManager — R4 log pipeline.
+   * When set, stdout and stderr from the spawned child process are piped into
+   * logManager.write(). The manager owns the write stream and handles rotation.
+   */
+  logManager?: LogManager | undefined;
 }
 
 export interface SupervisedProcess {
@@ -94,6 +101,7 @@ export class ProcessSupervisor {
   private readonly _onRestart: ((n: number) => void) | undefined;
   private readonly _policy: Policy;
   private readonly _storePath: string | undefined;
+  private readonly _logManager: LogManager | undefined;
 
   private _proc: ChildProcess | null = null;
   private _healthy = false;
@@ -109,6 +117,7 @@ export class ProcessSupervisor {
     this._lifecycle = opts.lifecycle;
     this._onRestart = opts.onRestart;
     this._storePath = opts.storePath;
+    this._logManager = opts.logManager;
     // [process-boundary] Compile policy once at construction.
     // compilePolicy(undefined) → enforced=false (legacy compat, [inv:no-regress]).
     // compilePolicy(perms)     → enforced=true  ([def:enforcement-opt-in]).
@@ -161,7 +170,11 @@ export class ProcessSupervisor {
     }
     ProcessSupervisor._registry.delete(this._key);
 
-    if (!this._proc || this._proc.exitCode !== null) return;
+    if (!this._proc || this._proc.exitCode !== null) {
+      // Process already gone — close the log stream if open.
+      if (this._logManager) this._logManager.close();
+      return;
+    }
 
     const stopTimeoutMs = this._lifecycle.stop_timeout_ms ?? 5000;
     const pid = this._proc.pid;
@@ -198,6 +211,9 @@ export class ProcessSupervisor {
         this._healthy = false;
       }
     }
+
+    // R4: close the log stream after the process has stopped.
+    if (this._logManager) this._logManager.close();
   }
 
   async kill(): Promise<void> {
@@ -291,15 +307,42 @@ export class ProcessSupervisor {
     });
     // Do NOT call this._proc.unref() — the supervisor must keep the child alive.
 
-    this._proc.stdout?.on('data', (_d: Buffer) => {
-      // P5 logging hook
+    // R4: pipe stdout and stderr to the log stream if a LogManager is wired.
+    // Raw bytes are written verbatim — sox does not inject prefixes into extension output.
+    this._proc.stdout?.on('data', (d: Buffer) => {
+      if (this._logManager) this._logManager.write(d);
     });
-    this._proc.stderr?.on('data', (_d: Buffer) => {
-      // P5 logging hook
+    this._proc.stderr?.on('data', (d: Buffer) => {
+      if (this._logManager) this._logManager.write(d);
     });
+
+    // R4: record run-start in run-history.json (extId = bare key without version).
+    if (this._logManager) {
+      const extId = this._key.includes('@')
+        ? this._key.slice(0, this._key.lastIndexOf('@'))
+        : this._key;
+      this._logManager.appendRunStart(extId);
+    }
 
     this._proc.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
       this._healthy = false;
+      // R4: patch run-history with stop information.
+      if (this._logManager) {
+        const extId = this._key.includes('@')
+          ? this._key.slice(0, this._key.lastIndexOf('@'))
+          : this._key;
+        let stopReason: import('./log-manager.js').RunRecord['stopReason'];
+        if (signal === 'SIGKILL') {
+          stopReason = 'sigkill';
+        } else if (signal === 'SIGTERM') {
+          stopReason = 'sigterm';
+        } else if (code === 0) {
+          stopReason = 'clean';
+        } else {
+          stopReason = 'crash';
+        }
+        this._logManager.patchRunStop(extId, code, stopReason);
+      }
       if (!this._stopping) {
         // [def:session-fixes] enable-reactivation: restart on unexpected exit
         const backoffMs = Math.min(5000, 200 * Math.pow(2, this._restartCount));

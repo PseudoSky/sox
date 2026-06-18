@@ -39,6 +39,7 @@ import {
   McpClient,
   reconcileRuntime,
   compilePolicy,
+  computeSupervisorId,
 } from '@sox/host-runtime';
 import type { PermissionsBlock, RuntimeEntry, RuntimeRecord } from '@sox/host-runtime';
 // @sox/host-registry is also lazy-required via install-engine; import it lazily here too
@@ -114,6 +115,9 @@ async function main(): Promise<void> {
       break;
     case 'status':
       cmdStatus(flags);
+      break;
+    case 'logs':
+      await cmdLogs(flags);
       break;
 
     // ── Authoring (A1) ────────────────────────────────────────────────────────
@@ -199,6 +203,9 @@ Runtime:
   details            Show details for an extension
                      Flags: --id=<ext-id>  --scope=<scope>
   status             Show runtime record
+  logs               Tail or follow extension log output (R4)
+                     Flags: --id=<ext-id>  --scope=<scope>  --lines=<n>
+                            --follow  --history  --json
 
 Flags accept both forms: --flag=value  and  --flag value  (A12)
 
@@ -1899,6 +1906,237 @@ function cmdStatus(flags: Record<string, string>): void {
 
   process.stdout.write(JSON.stringify(record, null, 2) + '\n');
   process.exit(0);
+}
+
+// ─── logs (R4) ───────────────────────────────────────────────────────────────
+
+/**
+ * cmdLogs — stream or tail the log file for a running extension (R4).
+ *
+ * Usage:
+ *   sox logs --id=<extId> [--scope=<scope>] [--lines=<n>] [--follow] [--json]
+ *            [--history]
+ *
+ * Log file location: ~/.sox/logs/<supervisorId>/<extId>-<YYYY-MM-DD>.log
+ * The supervisorId is derived deterministically from scope+root.
+ *
+ * Without --follow: prints the last --lines lines (default 100).
+ * With --follow: watches the file for new writes (pure Node.js, no tail spawn).
+ * With --history: prints the run-history.json table instead of log lines.
+ */
+async function cmdLogs(flags: Record<string, string>): Promise<void> {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+  const osMod = require('node:os') as typeof import('node:os');
+
+  const id = flags['id'];
+  if (!id) {
+    process.stderr.write(`sox logs: --id is required\n`);
+    process.exit(1);
+  }
+
+  const scope = flags['scope'] ?? 'user';
+  const root = flags['root'] ?? process.cwd();
+  const linesArg = parseInt(flags['lines'] ?? '100', 10);
+  const lines = Number.isFinite(linesArg) && linesArg > 0 ? linesArg : 100;
+  const follow = flags['follow'] !== undefined;
+  const jsonMode = flags['json'] !== undefined;
+  const showHistory = flags['history'] !== undefined;
+
+  const soxHome = process.env['SOX_HOME'] ?? pathMod.join(osMod.homedir(), '.sox');
+  const supervisorId = computeSupervisorId(scope, root);
+  const logDir = pathMod.join(soxHome, 'logs', supervisorId);
+
+  // ── Run history mode ──────────────────────────────────────────────────────
+  if (showHistory) {
+    const histPath = pathMod.join(logDir, 'run-history.json');
+    if (!fsMod.existsSync(histPath)) {
+      process.stdout.write(`sox logs: no run history at ${histPath}\n`);
+      process.exit(0);
+    }
+    let hist: { version: number; runs: Array<{ extId: string; startedAt: string; stoppedAt: string | null; exitCode: number | null; stopReason: string | null }> };
+    try {
+      hist = JSON.parse(fsMod.readFileSync(histPath, 'utf8')) as typeof hist;
+    } catch (e) {
+      process.stderr.write(`sox logs: failed to read run history: ${String(e)}\n`);
+      process.exit(1);
+    }
+    // Filter to the requested ext id.
+    const runs = hist.runs.filter((r) => r.extId === id);
+    if (jsonMode) {
+      process.stdout.write(JSON.stringify(runs, null, 2) + '\n');
+      process.exit(0);
+    }
+    // Human table
+    const h1 = 16, h2 = 26, h3 = 26, h4 = 10;
+    process.stdout.write(
+      `${'EXT'.padEnd(h1)}  ${'STARTED'.padEnd(h2)}  ${'STOPPED'.padEnd(h3)}  ${'DURATION'.padEnd(h4)}  REASON\n`,
+    );
+    process.stdout.write(
+      `${'-'.repeat(h1)}  ${'-'.repeat(h2)}  ${'-'.repeat(h3)}  ${'-'.repeat(h4)}  ------\n`,
+    );
+    for (const run of [...runs].reverse()) {
+      const stopped = run.stoppedAt ?? '—';
+      let duration = 'running';
+      if (run.stoppedAt) {
+        const ms = new Date(run.stoppedAt).getTime() - new Date(run.startedAt).getTime();
+        duration = formatDuration(ms);
+      }
+      const reason = run.stopReason ?? '—';
+      process.stdout.write(
+        `${run.extId.padEnd(h1)}  ${run.startedAt.padEnd(h2)}  ${stopped.padEnd(h3)}  ${duration.padEnd(h4)}  ${reason}\n`,
+      );
+    }
+    process.exit(0);
+  }
+
+  // ── Find the most recent log file for this extId ──────────────────────────
+  function findMostRecentLog(dir: string, extId: string): string | null {
+    if (!fsMod.existsSync(dir)) return null;
+    let files: string[];
+    try {
+      files = fsMod.readdirSync(dir)
+        .filter((f: string) => f.startsWith(`${extId}-`) && f.endsWith('.log'))
+        .sort(); // ISO dates sort correctly lexicographically
+    } catch {
+      return null;
+    }
+    if (files.length === 0) return null;
+    return pathMod.join(dir, files[files.length - 1] as string);
+  }
+
+  const logPath = findMostRecentLog(logDir, id);
+  if (!logPath) {
+    process.stderr.write(
+      `sox logs: no log file found for "${id}" in ${logDir}\n` +
+      `  Make sure the extension has been started at least once.\n`,
+    );
+    process.exit(1);
+  }
+
+  // ── Without --follow: tail last N lines ───────────────────────────────────
+  if (!follow) {
+    const text = readLastLines(logPath, lines);
+    if (jsonMode) {
+      process.stdout.write(JSON.stringify({ logPath, lines: text.split('\n') }, null, 2) + '\n');
+    } else {
+      process.stdout.write(text);
+      if (text.length > 0 && !text.endsWith('\n')) process.stdout.write('\n');
+    }
+    process.exit(0);
+  }
+
+  // ── With --follow: tail -f equivalent using fs.watch ─────────────────────
+  // First print the last N lines, then watch for new bytes.
+  const initialText = readLastLines(logPath, lines);
+  process.stdout.write(initialText);
+
+  let fileSize: number;
+  try {
+    fileSize = fsMod.statSync(logPath).size;
+  } catch {
+    fileSize = 0;
+  }
+
+  // Re-resolve log path on each poll in case rotation created a new file.
+  let currentLogPath = logPath;
+  let watching = true;
+
+  const watcher = fsMod.watch(pathMod.dirname(logPath), { persistent: true }, (_event: string, filename: string | null) => {
+    if (!watching) return;
+    // Check if a new log file appeared (rotation) or the current one grew.
+    const newLogPath = findMostRecentLog(logDir, id);
+    if (newLogPath && newLogPath !== currentLogPath) {
+      // File rotated — reset position for new file.
+      currentLogPath = newLogPath;
+      fileSize = 0;
+    }
+
+    if (!filename) return;
+    if (!currentLogPath.endsWith(filename) && !fsMod.existsSync(currentLogPath)) return;
+
+    let stat: { size: number };
+    try {
+      stat = fsMod.statSync(currentLogPath);
+    } catch {
+      return;
+    }
+
+    if (stat.size > fileSize) {
+      const fd = fsMod.openSync(currentLogPath, 'r');
+      try {
+        const toRead = stat.size - fileSize;
+        const buf = Buffer.allocUnsafe(toRead);
+        fsMod.readSync(fd, buf, 0, toRead, fileSize);
+        process.stdout.write(buf);
+      } finally {
+        fsMod.closeSync(fd);
+      }
+      fileSize = stat.size;
+    }
+  });
+
+  // Handle ctrl-c cleanly.
+  process.on('SIGINT', () => {
+    watching = false;
+    watcher.close();
+    process.exit(0);
+  });
+
+  // Keep process alive indefinitely.
+  await new Promise<void>(() => { /* never resolves — SIGINT exits */ });
+}
+
+function readLastLines(filePath: string, n: number): string {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  let stat: { size: number };
+  try {
+    stat = fsMod.statSync(filePath);
+  } catch {
+    return '';
+  }
+  if (stat.size === 0) return '';
+
+  const CHUNK = 65536; // 64 KB
+  let remaining = stat.size;
+  let lineCount = 0;
+  const parts: Buffer[] = [];
+
+  const fd = fsMod.openSync(filePath, 'r');
+  try {
+    while (remaining > 0 && lineCount <= n) {
+      const toRead = Math.min(CHUNK, remaining);
+      remaining -= toRead;
+      const buf = Buffer.allocUnsafe(toRead);
+      fsMod.readSync(fd, buf, 0, toRead, remaining);
+      parts.unshift(buf);
+      // Count newlines to know if we have enough.
+      for (let i = buf.length - 1; i >= 0; i--) {
+        if (buf[i] === 10 /* '\n' */) {
+          lineCount++;
+          if (lineCount > n) break;
+        }
+      }
+    }
+  } finally {
+    fsMod.closeSync(fd);
+  }
+
+  const full = Buffer.concat(parts).toString('utf8');
+  const allLines = full.split('\n');
+  // Take the last n lines (the initial split may have an empty string at the end).
+  const tail = allLines.slice(Math.max(0, allLines.length - n - 1));
+  return tail.join('\n');
+}
+
+function formatDuration(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
 }
 
 // ─── exec (A11) ──────────────────────────────────────────────────────────────

@@ -85,6 +85,10 @@ export type {
 // ─── Lock (R3) ────────────────────────────────────────────────────────────────
 export { acquireStartLock, computeSupervisorId } from './lock.js';
 
+// ─── Log Manager (R4) ─────────────────────────────────────────────────────────
+export { LogManager } from './log-manager.js';
+export type { LogManagerOptions, RunRecord, RunHistoryFile } from './log-manager.js';
+
 // ─── Adapters ─────────────────────────────────────────────────────────────────
 export { activateMcp } from './adapters/mcp.js';
 export type { McpAdapterOptions, McpAdapterHandle } from './adapters/mcp.js';
