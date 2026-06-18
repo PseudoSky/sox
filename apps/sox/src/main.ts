@@ -437,10 +437,51 @@ Exit codes:
   }
 
   const result = validate(rawObj as Record<string, unknown>);
+
+  // [R6: signal-contract] Textual SIGTERM handler check for background:true extensions.
+  // Checks the source-side entrypoint (src/index.ts) first, then the built entrypoint.
+  // This is a weak check (grep, not semantic) — prevents accidental omission.
+  const sigTermWarnings: string[] = [];
+  {
+    const manifest = rawObj as Record<string, unknown>;
+    const lifecycle = manifest['lifecycle'] as Record<string, unknown> | undefined;
+    const isBackground = lifecycle?.['background'] === true;
+    if (isBackground) {
+      const entrypoint = manifest['entrypoint'] as string | undefined;
+      const extDir = path.dirname(absPath);
+      // Check the src/ counterpart first (most readable), then the built entrypoint.
+      const candidateSrc = path.join(extDir, 'src', 'index.ts');
+      const candidateBuilt = entrypoint ? path.join(extDir, entrypoint) : null;
+      const checkPaths = [candidateSrc, ...(candidateBuilt ? [candidateBuilt] : [])];
+      let hasSigterm = false;
+      for (const p of checkPaths) {
+        try {
+          if (fs.existsSync(p)) {
+            const src = fs.readFileSync(p, 'utf-8');
+            if (src.includes("'SIGTERM'") || src.includes('"SIGTERM"')) {
+              hasSigterm = true;
+              break;
+            }
+          }
+        } catch { /* ignore read errors */ }
+      }
+      if (!hasSigterm) {
+        sigTermWarnings.push(
+          `validate: WARNING: no SIGTERM handler found in entrypoint.\n` +
+          `  mcp-server and service extensions must handle SIGTERM gracefully.\n` +
+          `  See docs/guidelines/signal-contract.md`,
+        );
+      }
+    }
+  }
+
   if (result.ok) {
     process.stdout.write(`sox validate: OK — ${absPath}\n`);
     for (const w of (result.warnings ?? [])) {
       process.stdout.write(`  warning: ${w}\n`);
+    }
+    for (const w of sigTermWarnings) {
+      process.stdout.write(`  ${w}\n`);
     }
     process.exit(0);
   } else {
@@ -450,6 +491,9 @@ Exit codes:
     }
     for (const w of (result.warnings ?? [])) {
       process.stdout.write(`  warning: ${w}\n`);
+    }
+    for (const w of sigTermWarnings) {
+      process.stdout.write(`  ${w}\n`);
     }
     process.exit(1);
   }
