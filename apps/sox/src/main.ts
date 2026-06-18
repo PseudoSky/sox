@@ -40,8 +40,7 @@ import {
   reconcileRuntime,
   compilePolicy,
   computeSupervisorId,
-  listRegisteredSupervisors,
-  deregisterSupervisor,
+  readGlobalRegistry,
 } from '@sox/host-runtime';
 import type { PermissionsBlock, RuntimeEntry, RuntimeRecord } from '@sox/host-runtime';
 // @sox/host-registry is also lazy-required via install-engine; import it lazily here too
@@ -107,7 +106,7 @@ async function main(): Promise<void> {
 
     // ── Query ─────────────────────────────────────────────────────────────────
     case 'list':
-      cmdList(flags);
+      await cmdList(flags);
       break;
     case 'details':
       cmdDetails(flags);
@@ -116,7 +115,7 @@ async function main(): Promise<void> {
       cmdSearch(flags);
       break;
     case 'status':
-      cmdStatus(flags);
+      await cmdStatus(flags);
       break;
     case 'logs':
       await cmdLogs(flags);
@@ -1399,16 +1398,18 @@ async function cmdDisable(flags: Record<string, string>): Promise<void> {
 
 // ─── list ─────────────────────────────────────────────────────────────────────
 
-function cmdList(flags: Record<string, string>): void {
+async function cmdList(flags: Record<string, string>): Promise<void> {
   const ROOT2 = process.cwd();
   const jsonMode = flags['json'] !== undefined;
   const fsMod = require('node:fs') as typeof import('node:fs');
 
   // ── --all mode: reads ~/.sox/supervisors.json and merges runtime records ───
   // Shows what is running across all projects on this machine.
-  // Stale entries (dead pid) are removed and reported to stderr.
+  // Stale entries (dead pid or unreachable socket) are cleaned up by readGlobalRegistry.
   if (flags['all'] !== undefined) {
-    const supervisors = listRegisteredSupervisors();
+    // R2: use readGlobalRegistry() which runs full probeEntryLiveness (pid + socket)
+    // and removes stale entries before returning.
+    const supervisors = await readGlobalRegistry();
 
     type AllRow = {
       id: string;
@@ -1422,23 +1423,6 @@ function cmdList(flags: Record<string, string>): void {
     const allRows: AllRow[] = [];
 
     for (const sup of supervisors) {
-      // Stale-GC probe: check pid liveness.
-      const pidAlive = (() => {
-        try { process.kill(sup.pid, 0); return true; }
-        catch { return false; }
-      })();
-
-      if (!pidAlive) {
-        process.stderr.write(
-          `[sox] stale supervisor removed: ${sup.supervisorId} (scope=${sup.scope}, root=${sup.root}, pid=${sup.pid})\n`,
-        );
-        // Remove stale entry from registry.
-        try {
-          deregisterSupervisor(sup.supervisorId);
-        } catch { /* best-effort */ }
-        continue;
-      }
-
       // Read the runtime.json for this supervisor.
       if (!fsMod.existsSync(sup.runtimeFilePath)) continue;
       let runtimeEntries: Array<{
@@ -1979,7 +1963,12 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
 
 // ─── status ───────────────────────────────────────────────────────────────────
 
-function cmdStatus(flags: Record<string, string>): void {
+async function cmdStatus(flags: Record<string, string>): Promise<void> {
+  // R2: run lazy GC on the global registry before returning any status.
+  // This ensures stale supervisor entries are cleaned up and their runtime.json
+  // entries are marked running=false before the caller reads them.
+  await readGlobalRegistry();
+
   const ROOT = process.cwd();
   const scope = flags['scope'] ?? 'user';
   const root = flags['root'] ?? ROOT;

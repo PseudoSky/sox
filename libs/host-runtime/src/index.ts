@@ -100,6 +100,9 @@ export type { SupervisorRegistryEntry, SupervisorsFile } from './registry.js';
 export { LogManager } from './log-manager.js';
 export type { LogManagerOptions, RunRecord, RunHistoryFile } from './log-manager.js';
 
+// ─── Stale state GC (R2) ──────────────────────────────────────────────────────
+export { probeSocket, probeEntryLiveness, readGlobalRegistry } from './gc.js';
+
 // ─── Adapters ─────────────────────────────────────────────────────────────────
 export { activateMcp } from './adapters/mcp.js';
 export type { McpAdapterOptions, McpAdapterHandle } from './adapters/mcp.js';
