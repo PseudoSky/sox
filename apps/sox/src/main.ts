@@ -203,7 +203,10 @@ Runtime:
                      Flags: --scope=<scope>
   details            Show details for an extension
                      Flags: --id=<ext-id>  --scope=<scope>
-  status             Show runtime record
+  status             Show live health for all running extensions (R7)
+                     Flags: --id=<ext-id>  --project=<path>  --scope=<scope>
+                            --lines=<n>  --json
+                     Exit: 0=healthy 1=degraded 2=dead
   logs               Tail or follow extension log output (R4)
                      Flags: --id=<ext-id>  --scope=<scope>  --lines=<n>
                             --follow  --history  --json
@@ -2010,42 +2013,406 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
   process.exit(0);
 }
 
-// ─── status ───────────────────────────────────────────────────────────────────
+// ─── status (R7 / P7) ─────────────────────────────────────────────────────────
 
-async function cmdStatus(flags: Record<string, string>): Promise<void> {
-  // R2: run lazy GC on the global registry before returning any status.
-  // This ensures stale supervisor entries are cleaned up and their runtime.json
-  // entries are marked running=false before the caller reads them.
-  await readGlobalRegistry();
+/**
+ * HealthRecord — live health snapshot for a single running extension.
+ * Populated by probing the global supervisor registry + runtime.json + run-history.json.
+ */
+interface HealthRecord {
+  /** Extension ID as declared in extension.json */
+  id: string;
+  /** Versioned key as stored in the lockfile (e.g. "memory-server@0.1.0") */
+  key: string;
+  scope: string;
+  /** The supervisor's root directory (--root used at sox start time) */
+  root: string;
+  /** Basename of root — used in the table PROJECT column for readability */
+  project: string;
+  /** Stable supervisor identifier: sha256(scope + ":" + root)[0..12] */
+  supervisorId: string;
+  /** ISO 8601 timestamp when the supervisor activated this extension */
+  activatedAt: string;
+  /** Elapsed seconds since activatedAt (current session only) */
+  uptimeSeconds: number;
+  /** OS process check: process.kill(pid, 0) returned true */
+  pidAlive: boolean;
+  pid: number | null;
+  /** Exec socket connectivity (list request round-trip succeeded within 2s) */
+  socketReachable: boolean;
+  /** Round-trip latency in ms for the socket ping, or null if unreachable */
+  socketLatencyMs: number | null;
+  /** Last N lines of the extension's log file (only populated in detail view) */
+  logTail: string[];
+  /** Path to the active log file */
+  logPath: string | null;
+  /** ISO 8601 timestamp when the supervisor last spawned this extension */
+  lastStartedAt: string | null;
+  /** ISO 8601 timestamp when the extension last stopped, or null if currently running */
+  lastStoppedAt: string | null;
+  /** Duration in ms of the last completed run, or null if still running or no prior run */
+  lastRunDurationMs: number | null;
+  /** Cumulative uptime in ms across all runs recorded in the current supervisor session */
+  totalUptimeMs: number;
+  /** Derived: 'healthy' | 'degraded' | 'dead' */
+  status: 'healthy' | 'degraded' | 'dead';
+}
 
-  const ROOT = process.cwd();
-  const scope = flags['scope'] ?? 'user';
-  const root = flags['root'] ?? ROOT;
-
-  let scopePaths: { config: string; lockfile: string };
+/**
+ * Probe a single extension's exec socket reachability by sending a { list: true }
+ * JSON request. Returns { reachable, latencyMs }.
+ *
+ * Reuses the existing listViaExecSocket helper which exercises the full socket
+ * stack. Latency is measured from connection-open to response-parsed.
+ */
+async function probeSocketReachability(
+  socketPath: string,
+  timeoutMs = 2000,
+): Promise<{ reachable: boolean; latencyMs: number | null }> {
+  const t0 = Date.now();
   try {
-    scopePaths = getScopePaths(scope, root);
-  } catch (e) {
-    process.stderr.write(`sox status: ${String(e)}\n`);
-    process.exit(1);
+    await listViaExecSocket(socketPath, undefined, timeoutMs);
+    return { reachable: true, latencyMs: Date.now() - t0 };
+  } catch {
+    return { reachable: false, latencyMs: null };
+  }
+}
+
+/**
+ * Read run history from <logDir>/run-history.json and compute per-extension stats.
+ * Returns a map of extId → { lastStartedAt, lastStoppedAt, lastRunDurationMs, totalUptimeMs }.
+ */
+function readRunStats(logDir: string): Map<string, {
+  lastStartedAt: string | null;
+  lastStoppedAt: string | null;
+  lastRunDurationMs: number | null;
+  totalUptimeMs: number;
+}> {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+  const result = new Map<string, {
+    lastStartedAt: string | null;
+    lastStoppedAt: string | null;
+    lastRunDurationMs: number | null;
+    totalUptimeMs: number;
+  }>();
+
+  const histPath = pathMod.join(logDir, 'run-history.json');
+  if (!fsMod.existsSync(histPath)) return result;
+
+  let hist: { version: number; runs: Array<{
+    extId: string;
+    startedAt: string;
+    stoppedAt: string | null;
+    exitCode: number | null;
+    stopReason: string | null;
+  }> };
+  try {
+    hist = JSON.parse(fsMod.readFileSync(histPath, 'utf8')) as typeof hist;
+  } catch {
+    return result;
   }
 
-  const lockfilePath = flags['lockfile'] ?? scopePaths.lockfile;
-  const runtimeFilePath =
-    flags['runtime-file'] ??
-    process.env['SOX_RUNTIME_FILE'] ??
-    getRuntimeFilePath(lockfilePath);
+  // Group runs by extId.
+  const byExt = new Map<string, typeof hist.runs>();
+  for (const run of hist.runs) {
+    if (!byExt.has(run.extId)) byExt.set(run.extId, []);
+    byExt.get(run.extId)!.push(run);
+  }
 
-  const record = getRuntimeRecord(runtimeFilePath);
-  if (!record) {
-    process.stdout.write(
-      `sox: no runtime record at ${runtimeFilePath} (host not started?)\n`,
-    );
+  for (const [extId, runs] of byExt.entries()) {
+    if (runs.length === 0) continue;
+    const last = runs[runs.length - 1]!;
+    let totalUptimeMs = 0;
+    for (const run of runs) {
+      if (run.stoppedAt) {
+        totalUptimeMs += new Date(run.stoppedAt).getTime() - new Date(run.startedAt).getTime();
+      } else {
+        // Currently running — count up to now.
+        totalUptimeMs += Date.now() - new Date(run.startedAt).getTime();
+      }
+    }
+    const lastRunDurationMs = last.stoppedAt
+      ? new Date(last.stoppedAt).getTime() - new Date(last.startedAt).getTime()
+      : null;
+    result.set(extId, {
+      lastStartedAt: last.startedAt,
+      lastStoppedAt: last.stoppedAt,
+      lastRunDurationMs,
+      totalUptimeMs,
+    });
+  }
+  return result;
+}
+
+/**
+ * Find the most recent log file for the given extId in logDir.
+ */
+function findMostRecentLogFile(logDir: string, extId: string): string | null {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+  if (!fsMod.existsSync(logDir)) return null;
+  try {
+    const files = fsMod.readdirSync(logDir)
+      .filter((f: string) => f.startsWith(`${extId}-`) && f.endsWith('.log'))
+      .sort();
+    if (files.length === 0) return null;
+    return pathMod.join(logDir, files[files.length - 1] as string);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * cmdStatus — R7 health surface.
+ *
+ * Usage:
+ *   sox status [--id=<extId>] [--project=<path>] [--scope=user|project|local]
+ *              [--json] [--lines=<n>]
+ *
+ * Default (no flags): read ~/.sox/supervisors.json, GC stale entries, probe
+ * every extension across all live supervisors and render a health table.
+ *
+ * Filtering (ANDed):
+ *   --id=<extId>       filter by extension id (matches across projects)
+ *   --project=<path>   filter by supervisor root (absolute or basename)
+ *   --scope=<scope>    filter by scope
+ *
+ * When --id matches exactly one extension, switches to the detail view with
+ * a log tail (last --lines lines, default 20).
+ *
+ * Exit codes:
+ *   0 — all healthy
+ *   1 — any degraded (pid alive, socket unreachable)
+ *   2 — any dead (pid not found)
+ */
+async function cmdStatus(flags: Record<string, string>): Promise<void> {
+  const pathMod = require('node:path') as typeof import('node:path');
+  const osMod = require('node:os') as typeof import('node:os');
+  const fsMod = require('node:fs') as typeof import('node:fs');
+
+  const filterId = flags['id'];
+  const filterProject = flags['project'];
+  const filterScope = flags['scope'];
+  const jsonMode = flags['json'] !== undefined;
+  const linesArg = parseInt(flags['lines'] ?? '20', 10);
+  const logLines = Number.isFinite(linesArg) && linesArg > 0 ? linesArg : 20;
+
+  // R2: lazy GC — returns only live supervisors; dead entries are cleaned up.
+  const liveSupervisors = await readGlobalRegistry();
+
+  if (liveSupervisors.length === 0) {
+    if (jsonMode) {
+      process.stdout.write('[]\n');
+    } else {
+      process.stdout.write('sox status: no running supervisors found\n');
+      process.stdout.write('  Start the runtime with: sox start\n');
+    }
     process.exit(0);
   }
 
-  process.stdout.write(JSON.stringify(record, null, 2) + '\n');
-  process.exit(0);
+  const soxHome = process.env['SOX_HOME'] ?? pathMod.join(osMod.homedir(), '.sox');
+
+  // ── Collect HealthRecords from all live supervisors ─────────────────────────
+  const records: HealthRecord[] = [];
+
+  for (const sup of liveSupervisors) {
+    // Apply project filter.
+    if (filterProject !== undefined) {
+      const rootBase = pathMod.basename(sup.root);
+      if (sup.root !== filterProject && rootBase !== filterProject) continue;
+    }
+    // Apply scope filter.
+    if (filterScope !== undefined && sup.scope !== filterScope) continue;
+
+    // Read runtime.json for this supervisor.
+    if (!fsMod.existsSync(sup.runtimeFilePath)) continue;
+    let runtimeEntries: Array<{
+      id: string;
+      key?: string;
+      running?: boolean;
+      pid?: number | null;
+      activatedAt?: string;
+    }> = [];
+    try {
+      const rec = JSON.parse(fsMod.readFileSync(sup.runtimeFilePath, 'utf8')) as {
+        entries?: Array<{ id: string; key?: string; running?: boolean; pid?: number | null; activatedAt?: string }>;
+      };
+      runtimeEntries = rec.entries ?? [];
+    } catch {
+      continue;
+    }
+
+    // Read run history for all extensions under this supervisor.
+    const logDir = pathMod.join(soxHome, 'logs', sup.supervisorId);
+    const runStats = readRunStats(logDir);
+
+    // Probe socket reachability once per supervisor (not per extension).
+    // The socket is supervisor-level; all extensions share it.
+    const { reachable: socketReachable, latencyMs: socketLatencyMs } =
+      await probeSocketReachability(sup.execSocketPath);
+
+    for (const rtEntry of runtimeEntries) {
+      const extId = rtEntry.id;
+      const key = rtEntry.key ?? extId;
+      const atIdx = key.lastIndexOf('@');
+      const version = atIdx === -1 ? '' : key.slice(atIdx + 1);
+
+      // Apply id filter.
+      if (filterId !== undefined && extId !== filterId) continue;
+
+      const pid = (rtEntry.pid != null && typeof rtEntry.pid === 'number')
+        ? rtEntry.pid
+        : null;
+
+      // C4: pid liveness via OS signal.
+      const pidAlive = pid !== null && (() => {
+        try { process.kill(pid, 0); return true; }
+        catch { return false; }
+      })();
+
+      const activatedAt = rtEntry.activatedAt ?? sup.startedAt;
+      const uptimeSeconds = Math.floor(
+        (Date.now() - new Date(activatedAt).getTime()) / 1000,
+      );
+
+      // Find log file for this extension.
+      const logPath = findMostRecentLogFile(logDir, extId);
+
+      // Run stats from run-history.json.
+      const stats = runStats.get(extId) ?? {
+        lastStartedAt: null,
+        lastStoppedAt: null,
+        lastRunDurationMs: null,
+        totalUptimeMs: 0,
+      };
+
+      // Derive health status.
+      let status: HealthRecord['status'];
+      if (!pidAlive) {
+        status = 'dead';
+      } else if (!socketReachable) {
+        status = 'degraded';
+      } else {
+        status = 'healthy';
+      }
+
+      records.push({
+        id: extId,
+        key: `${extId}@${version}`,
+        scope: sup.scope,
+        root: sup.root,
+        project: pathMod.basename(sup.root),
+        supervisorId: sup.supervisorId,
+        activatedAt,
+        uptimeSeconds,
+        pidAlive,
+        pid,
+        socketReachable,
+        socketLatencyMs,
+        logTail: [],   // populated only in detail view
+        logPath,
+        lastStartedAt: stats.lastStartedAt,
+        lastStoppedAt: stats.lastStoppedAt,
+        lastRunDurationMs: stats.lastRunDurationMs,
+        totalUptimeMs: stats.totalUptimeMs,
+        status,
+      });
+    }
+  }
+
+  // ── Determine overall exit code ─────────────────────────────────────────────
+  let exitCode = 0;
+  for (const r of records) {
+    if (r.status === 'dead' && exitCode < 2) exitCode = 2;
+    else if (r.status === 'degraded' && exitCode < 1) exitCode = 1;
+  }
+
+  // ── JSON output ─────────────────────────────────────────────────────────────
+  if (jsonMode) {
+    // Populate logTail for all records in JSON mode.
+    for (const r of records) {
+      if (r.logPath) {
+        r.logTail = readLastLines(r.logPath, logLines).split('\n').filter((l) => l.length > 0);
+      }
+    }
+    process.stdout.write(JSON.stringify(records, null, 2) + '\n');
+    process.exit(exitCode);
+  }
+
+  // ── No matching extensions ──────────────────────────────────────────────────
+  if (records.length === 0) {
+    const parts: string[] = [];
+    if (filterId) parts.push(`id=${filterId}`);
+    if (filterProject) parts.push(`project=${filterProject}`);
+    if (filterScope) parts.push(`scope=${filterScope}`);
+    const filterDesc = parts.length > 0 ? ` (filters: ${parts.join(', ')})` : '';
+    process.stdout.write(`sox status: no running extensions found${filterDesc}\n`);
+    process.exit(exitCode);
+  }
+
+  // ── Single-extension detail view ────────────────────────────────────────────
+  if (filterId !== undefined && records.length === 1) {
+    const r = records[0]!;
+    const uptimeStr = formatDuration(r.uptimeSeconds * 1000);
+    const totalUptimeStr = formatDuration(r.totalUptimeMs);
+    const statusTag = r.status.toUpperCase();
+    const pidLine = r.pid !== null
+      ? `${r.pid}  (${r.pidAlive ? 'alive' : 'dead'})`
+      : 'none';
+    const socketLine = r.socketReachable
+      ? `reachable (latency: ${r.socketLatencyMs ?? '?'}ms)`
+      : 'unreachable';
+    const lastStopLine = r.lastStoppedAt ?? 'never';
+    const logLine = r.logPath ?? 'none';
+
+    process.stdout.write(`\nExtension:    ${r.id}\n`);
+    process.stdout.write(`Key:          ${r.key}\n`);
+    process.stdout.write(`Scope:        ${r.scope}\n`);
+    process.stdout.write(`Project:      ${r.project} (${r.root})\n`);
+    process.stdout.write(`Supervisor:   ${r.supervisorId}\n`);
+    process.stdout.write(`Status:       ${statusTag}\n`);
+    process.stdout.write(`PID:          ${pidLine}\n`);
+    process.stdout.write(`Socket:       ${socketLine}\n`);
+    process.stdout.write(`Uptime:       ${uptimeStr}  (started ${r.activatedAt})\n`);
+    process.stdout.write(`Last stop:    ${lastStopLine}\n`);
+    process.stdout.write(`Total uptime: ${totalUptimeStr} (this session)\n`);
+    process.stdout.write(`Log:          ${logLine}\n`);
+
+    if (r.logPath) {
+      process.stdout.write(`\n--- Last ${logLines} log lines ---\n`);
+      const tail = readLastLines(r.logPath, logLines);
+      process.stdout.write(tail);
+      if (tail.length > 0 && !tail.endsWith('\n')) process.stdout.write('\n');
+    }
+    process.stdout.write('\n');
+    process.exit(exitCode);
+  }
+
+  // ── Multi-extension table view ──────────────────────────────────────────────
+  const col1 = Math.max(...records.map((r) => r.id.length), 4);
+  const col2 = Math.max(...records.map((r) => r.key.length), 7);
+  const col3 = Math.max(...records.map((r) => r.scope.length), 5);
+  const col4 = Math.max(...records.map((r) => r.project.length), 7);
+  const col5 = 8; // HEALTHY / DEGRADED / DEAD
+
+  process.stdout.write(
+    `${'ID'.padEnd(col1)}  ${'KEY'.padEnd(col2)}  ${'SCOPE'.padEnd(col3)}  ${'PROJECT'.padEnd(col4)}  ${'STATUS'.padEnd(col5)}  PID     UPTIME      SOCKET\n`,
+  );
+  process.stdout.write(
+    `${'-'.repeat(col1)}  ${'-'.repeat(col2)}  ${'-'.repeat(col3)}  ${'-'.repeat(col4)}  ${'-'.repeat(col5)}  ------  ----------  ------\n`,
+  );
+  for (const r of records) {
+    const pidStr = r.pid !== null ? String(r.pid) : '';
+    const uptimeStr = formatDuration(r.uptimeSeconds * 1000);
+    const socketStr = r.socketReachable
+      ? `${r.socketLatencyMs ?? '?'}ms`
+      : (r.pidAlive ? 'unreachable' : '—');
+    process.stdout.write(
+      `${r.id.padEnd(col1)}  ${r.key.padEnd(col2)}  ${r.scope.padEnd(col3)}  ${r.project.padEnd(col4)}  ${r.status.toUpperCase().padEnd(col5)}  ${pidStr.padEnd(6)}  ${uptimeStr.padEnd(10)}  ${socketStr}\n`,
+    );
+  }
+  process.exit(exitCode);
 }
 
 // ─── logs (R4) ───────────────────────────────────────────────────────────────
