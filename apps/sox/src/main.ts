@@ -27,8 +27,10 @@ import {
   update as lifecycleUpdate,
   diff as diffExtension,
   diffAll,
+  readInstallRegistry,
+  removeInstallRecord,
 } from '@sox/install-engine';
-import type { InstallDescriptor, DeclarativeInstallResult, UpdateCtx } from '@sox/install-engine';
+import type { InstallDescriptor, DeclarativeInstallResult, UpdateCtx, InstallRecord } from '@sox/install-engine';
 import {
   getScopePaths,
   getRuntimeFilePath,
@@ -93,6 +95,9 @@ async function main(): Promise<void> {
       break;
     case 'update':
       await cmdUpdate(flags);
+      break;
+    case 'upgrade':
+      await cmdUpgrade(flags);
       break;
     case 'uninstall':
       cmdUninstall(flags);
@@ -177,6 +182,8 @@ Extension management:
                      Flags: --scope=<scope>  --frozen-lockfile  --update
   update             Update installed extensions
                      Flags: --scope=<scope>
+  upgrade <ext-id>   Re-install an extension across all projects (P9)
+                     Flags: --all (required)
   uninstall          Remove an extension
                      Flags: --id=<ext-id>  --scope=<scope>
   enable             Enable a disabled extension
@@ -200,7 +207,7 @@ Runtime:
   exec               Call a tool on a running extension (A11: via running server)
                      Flags: --scope=<scope>  --id=<ext-id>  --tool=<tool>  --args='<json>'
   list               List activated extensions
-                     Flags: --scope=<scope>
+                     Flags: --scope=<scope>  --all  --global  --id=<ext>  --json
   details            Show details for an extension
                      Flags: --id=<ext-id>  --scope=<scope>
   status             Show live health for all running extensions (R7)
@@ -1088,6 +1095,96 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
   process.exit(0);
 }
 
+// ─── upgrade ─────────────────────────────────────────────────────────────────
+
+/**
+ * cmdUpgrade — P9: re-install an extension across all projects that have it.
+ *
+ * Usage: sox upgrade <ext-id> --all
+ *
+ * Reads ~/.sox/install-registry.json, finds all InstallRecords for <ext-id>,
+ * verifies each is still in that project's lockfile, then re-runs install()
+ * with mode:'update' for each one. No shell subprocess is spawned.
+ */
+async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
+  // Accept positional id as well as --id flag.
+  const rawAfterVerbUpg = argv.slice(1);
+  let positionalUpg: string | undefined;
+  for (const tok of rawAfterVerbUpg) {
+    if (!tok.startsWith('-')) { positionalUpg = tok; break; }
+  }
+  const extId = flags['id'] ?? positionalUpg;
+
+  if (extId === undefined || extId === '') {
+    process.stderr.write(`sox upgrade: extension id required (positional or --id)\n`);
+    process.stderr.write(`  Usage: sox upgrade <ext-id> --all\n`);
+    process.exit(1);
+  }
+
+  if (flags['all'] === undefined) {
+    process.stderr.write(`sox upgrade: --all flag required\n`);
+    process.stderr.write(`  Usage: sox upgrade <ext-id> --all\n`);
+    process.exit(1);
+  }
+
+  const pathMod = require('node:path') as typeof import('node:path');
+  const soxHome = process.env['SOX_HOME'] ?? pathMod.join(require('node:os').homedir() as string, '.sox');
+  const registryPath = pathMod.join(soxHome, 'install-registry.json') as string;
+  const registry = readInstallRegistry(registryPath);
+
+  const matches = registry.installs.filter((r) => r.extId === extId);
+
+  if (matches.length === 0) {
+    process.stdout.write(`sox upgrade: no install records found for '${extId}'\n`);
+    process.exit(0);
+  }
+
+  process.stdout.write(`Upgrading ${extId} in ${matches.length} project${matches.length === 1 ? '' : 's'}:\n`);
+
+  let upgraded = 0;
+  let failed = 0;
+
+  for (let i = 0; i < matches.length; i++) {
+    const record = matches[i]!;
+    const label = `  [${i + 1}/${matches.length}] ${record.root} (scope: ${record.scope})`;
+
+    // Upgrade safety check: verify the extension still appears in that project's lockfile.
+    // Guards against stale install-registry entries where sox uninstall ran but
+    // removeInstallRecord failed (best-effort write).
+    const { lockfile: lockfilePath } = getScopePaths(record.scope, record.root);
+    const currentLockfile = loadLockfile(lockfilePath);
+    const inLockfile = currentLockfile !== null &&
+      Object.keys(currentLockfile.resolved).some(
+        (k) => k === record.extId || k.startsWith(`${record.extId}@`),
+      );
+
+    if (!inLockfile) {
+      process.stdout.write(
+        `${label} ... skipped (not in current lockfile — run sox install to re-add)\n`,
+      );
+      continue;
+    }
+
+    process.stdout.write(`${label} ... `);
+
+    try {
+      await install({
+        scope: record.scope,
+        mode: 'update',
+        root: record.root,
+      });
+      upgraded++;
+      process.stdout.write(`done\n`);
+    } catch (e) {
+      failed++;
+      process.stdout.write(`FAILED: ${String(e)}\n`);
+    }
+  }
+
+  process.stdout.write(`\n${upgraded} upgraded, ${failed} failed.\n`);
+  process.exit(failed > 0 ? 1 : 0);
+}
+
 // ─── uninstall ────────────────────────────────────────────────────────────────
 
 function cmdUninstall(flags: Record<string, string>): void {
@@ -1158,6 +1255,16 @@ function cmdUninstall(flags: Record<string, string>): void {
         fsMod.writeFileSync(configPath5, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
       }
     } catch { /* config parse failure — lockfile is already cleaned up, that's enough */ }
+  }
+
+  // P9: remove the install record from the global install ledger.
+  // Best-effort — a failed registry write must not fail the uninstall.
+  try {
+    removeInstallRecord(id, scope, root);
+  } catch (e) {
+    process.stderr.write(
+      `sox: warning: could not update install registry: ${String(e)}\n`,
+    );
   }
 
   process.stdout.write(`sox uninstall: removed '${id}' (${matchKey}) from scope '${scope}'\n`);
@@ -1413,6 +1520,65 @@ async function cmdList(flags: Record<string, string>): Promise<void> {
   const ROOT2 = process.cwd();
   const jsonMode = flags['json'] !== undefined;
   const fsMod = require('node:fs') as typeof import('node:fs');
+
+  // ── --global mode: reads ~/.sox/install-registry.json (P9) ─────────────────
+  // Shows every extension ever installed on this machine, across all projects.
+  // No live probing — works without any supervisor running.
+  if (flags['global'] !== undefined) {
+    const soxHome = process.env['SOX_HOME'] ?? require('node:path').join(require('node:os').homedir(), '.sox');
+    const registryPath = require('node:path').join(soxHome, 'install-registry.json') as string;
+    const registry = readInstallRegistry(registryPath);
+    let records: InstallRecord[] = registry.installs;
+
+    // Apply filters: --id and --scope
+    const idFilter = flags['id'];
+    const scopeFilter = flags['scope'];
+    if (idFilter !== undefined) {
+      records = records.filter((r) => r.extId === idFilter);
+    }
+    if (scopeFilter !== undefined) {
+      records = records.filter((r) => r.scope === scopeFilter);
+    }
+
+    if (jsonMode) {
+      process.stdout.write(JSON.stringify(records, null, 2) + '\n');
+      process.exit(0);
+    }
+
+    if (records.length === 0) {
+      process.stdout.write(`sox list --global: no install records found\n`);
+      process.exit(0);
+    }
+
+    // Compute column widths.
+    const col1 = Math.max(...records.map((r) => r.extId.length), 2);
+    const col2 = Math.max(...records.map((r) => r.version.length), 7);
+    const col3 = Math.max(...records.map((r) => r.scope.length), 5);
+    const col4 = Math.max(...records.map((r) => require('node:path').basename(r.root as string).length), 7);
+    const col5 = 17; // "2026-06-01T09:00Z" (truncated to minute)
+    const col6 = 17;
+
+    // Truncate ISO timestamp to minute: "2026-06-01T09:00Z"
+    const fmtTs = (ts: string): string => {
+      // ts = "2026-06-01T09:00:00.000Z" → "2026-06-01T09:00Z"
+      const m = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})/.exec(ts);
+      return m ? `${m[1]}Z` : ts.slice(0, 17);
+    };
+
+    process.stdout.write(
+      `${'ID'.padEnd(col1)}  ${'VERSION'.padEnd(col2)}  ${'SCOPE'.padEnd(col3)}  ${'PROJECT'.padEnd(col4)}  ${'INSTALLED'.padEnd(col5)}  ${'UPDATED'.padEnd(col6)}\n`,
+    );
+    process.stdout.write(
+      `${'-'.repeat(col1)}  ${'-'.repeat(col2)}  ${'-'.repeat(col3)}  ${'-'.repeat(col4)}  ${'-'.repeat(col5)}  ${'-'.repeat(col6)}\n`,
+    );
+    for (const r of records) {
+      const project = (require('node:path').basename(r.root as string) as string).padEnd(col4);
+      process.stdout.write(
+        `${r.extId.padEnd(col1)}  ${r.version.padEnd(col2)}  ${r.scope.padEnd(col3)}  ${project}  ${fmtTs(r.installedAt).padEnd(col5)}  ${fmtTs(r.updatedAt).padEnd(col6)}\n`,
+      );
+    }
+    process.exit(0);
+  }
 
   // ── --all mode: reads ~/.sox/supervisors.json and merges runtime records ───
   // Shows what is running across all projects on this machine.

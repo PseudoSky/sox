@@ -77,6 +77,17 @@ export { uninstall, update, ReverseAbortError } from './lifecycle.js';
 export type { ActionDiff, ExtensionDiff, DiffKind } from './diff.js';
 export { diff, diffAll } from './diff.js';
 
+// ─── Re-export install-registry (P9) ─────────────────────────────────────────
+
+export type { InstallRecord, InstallRegistry, UpsertInstallRecordOpts } from './install-registry.js';
+export {
+  resolveInstallRegistryPath,
+  readInstallRegistry,
+  writeInstallRegistryAtomic,
+  upsertInstallRecord,
+  removeInstallRecord,
+} from './install-registry.js';
+
 // ─── parseArgs (A12 fix) ──────────────────────────────────────────────────────
 
 /**

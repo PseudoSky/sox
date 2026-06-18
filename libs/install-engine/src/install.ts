@@ -15,6 +15,7 @@ import * as os from 'node:os';
 import { cascade } from './cascade.js';
 import type { ScopeConfig as CascadeScopeConfig, ResolvedConfigMap } from './cascade.js';
 import { checkProviderCapabilities } from './provider-capabilities.js';
+import { upsertInstallRecord } from './install-registry.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -624,6 +625,20 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
       newResolved[actualKey] = lockEntry;
 
       console.log(`install: resolved ${actualKey} from ${resolvedSource} (${checksum})`);
+
+      // P9: upsert into global install ledger (~/.sox/install-registry.json).
+      // Best-effort: a failed write must never fail the install.
+      try {
+        upsertInstallRecord({
+          extId: entry.id,
+          version: resolvedVersion,
+          scope: opts.scope as 'user' | 'project' | 'local',
+          root,
+          source: resolvedSource,
+        });
+      } catch (regErr) {
+        console.warn(`install: warning: could not update install registry: ${String(regErr)}`);
+      }
     } catch (e) {
       console.error(String(e));
       process.exit(1);
