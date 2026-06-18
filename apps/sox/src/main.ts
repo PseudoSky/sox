@@ -40,6 +40,8 @@ import {
   reconcileRuntime,
   compilePolicy,
   computeSupervisorId,
+  listRegisteredSupervisors,
+  deregisterSupervisor,
 } from '@sox/host-runtime';
 import type { PermissionsBlock, RuntimeEntry, RuntimeRecord } from '@sox/host-runtime';
 // @sox/host-registry is also lazy-required via install-engine; import it lazily here too
@@ -1399,15 +1401,117 @@ async function cmdDisable(flags: Record<string, string>): Promise<void> {
 
 function cmdList(flags: Record<string, string>): void {
   const ROOT2 = process.cwd();
+  const jsonMode = flags['json'] !== undefined;
+  const fsMod = require('node:fs') as typeof import('node:fs');
+
+  // ── --all mode: reads ~/.sox/supervisors.json and merges runtime records ───
+  // Shows what is running across all projects on this machine.
+  // Stale entries (dead pid) are removed and reported to stderr.
+  if (flags['all'] !== undefined) {
+    const supervisors = listRegisteredSupervisors();
+
+    type AllRow = {
+      id: string;
+      key: string;
+      version: string;
+      scope: string;
+      root: string;
+      running: boolean;
+      pid: number | null;
+    };
+    const allRows: AllRow[] = [];
+    const staleIds: string[] = [];
+
+    for (const sup of supervisors) {
+      // Stale-GC probe: check pid liveness.
+      const pidAlive = (() => {
+        try { process.kill(sup.pid, 0); return true; }
+        catch { return false; }
+      })();
+
+      if (!pidAlive) {
+        staleIds.push(sup.supervisorId);
+        process.stderr.write(
+          `[sox] stale supervisor removed: ${sup.supervisorId} (scope=${sup.scope}, root=${sup.root}, pid=${sup.pid})\n`,
+        );
+        // Remove stale entry from registry.
+        try {
+          deregisterSupervisor(sup.supervisorId);
+        } catch { /* best-effort */ }
+        continue;
+      }
+
+      // Read the runtime.json for this supervisor.
+      if (!fsMod.existsSync(sup.runtimeFilePath)) continue;
+      let runtimeEntries: Array<{
+        id: string;
+        key?: string;
+        running?: boolean;
+        pid?: number | null;
+      }> = [];
+      try {
+        const rec = JSON.parse(fsMod.readFileSync(sup.runtimeFilePath, 'utf8')) as {
+          entries?: Array<{ id: string; key?: string; running?: boolean; pid?: number | null }>;
+        };
+        runtimeEntries = rec.entries ?? [];
+      } catch { continue; }
+
+      for (const rtEntry of runtimeEntries) {
+        if (rtEntry.running !== true) continue; // --all only shows running extensions
+        const key = rtEntry.key ?? rtEntry.id;
+        const atIdx = key.lastIndexOf('@');
+        const extId = atIdx === -1 ? key : key.slice(0, atIdx);
+        const ver = atIdx === -1 ? '' : key.slice(atIdx + 1);
+        const pid = (rtEntry.pid != null && typeof rtEntry.pid === 'number') ? rtEntry.pid : null;
+
+        allRows.push({
+          id: extId,
+          key,
+          version: ver,
+          scope: sup.scope,
+          root: sup.root,
+          running: true,
+          pid,
+        });
+      }
+    }
+
+    if (jsonMode) {
+      process.stdout.write(JSON.stringify(allRows, null, 2) + '\n');
+      process.exit(0);
+    }
+
+    if (allRows.length === 0) {
+      process.stdout.write(`sox list --all: no running extensions found across all supervisors\n`);
+      process.exit(0);
+    }
+
+    const col1 = Math.max(...allRows.map((r) => r.id.length), 4);
+    const col2 = Math.max(...allRows.map((r) => r.version.length), 7);
+    const col3 = Math.max(...allRows.map((r) => r.scope.length), 5);
+    const col4 = Math.max(...allRows.map((r) => r.root.length), 4);
+
+    process.stdout.write(
+      `${'ID'.padEnd(col1)}  ${'VERSION'.padEnd(col2)}  ${'SCOPE'.padEnd(col3)}  ${'STATUS'.padEnd(8)}  PID     ROOT\n`,
+    );
+    process.stdout.write(
+      `${'-'.repeat(col1)}  ${'-'.repeat(col2)}  ${'-'.repeat(col3)}  ${'-'.repeat(8)}  ------  ${'-'.repeat(col4)}\n`,
+    );
+    for (const r of allRows) {
+      const pidStr = r.pid !== null ? String(r.pid) : '';
+      process.stdout.write(
+        `${r.id.padEnd(col1)}  ${r.version.padEnd(col2)}  ${r.scope.padEnd(col3)}  ${'RUNNING'.padEnd(8)}  ${pidStr.padEnd(6)}  ${r.root}\n`,
+      );
+    }
+    process.exit(0);
+  }
+
   // When no explicit --scope is given, scan all scopes (user, project, local) —
   // matching the old bin/sox behaviour and allowing `sox list --root=TMP` to find
   // project-scope extensions without requiring `-s project`.
   const scopeOverride = flags['scope'];
   const root = flags['root'] ?? ROOT2;
   const statusFilter = flags['status']; // e.g. --status=running
-  const jsonMode = flags['json'] !== undefined;
-
-  const fsMod = require('node:fs') as typeof import('node:fs');
 
   const runtimeFileOverride = flags['runtime-file'] ?? process.env['SOX_RUNTIME_FILE'];
 

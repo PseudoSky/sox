@@ -13,6 +13,7 @@ import { loadFromLockfile, type LoaderResult } from './loader.js';
 import { McpRegistrar } from './registrar.js';
 import type { McpAdapterHandle } from './adapters/mcp.js';
 import { acquireStartLock, computeSupervisorId } from './lock.js';
+import { registerSupervisor, deregisterSupervisor, readSupervisorsFile } from './registry.js';
 
 export interface RuntimeEntry {
   key: string;
@@ -329,6 +330,28 @@ async function _startRuntimeLocked(
 
   _activeRuntimes.set(opts.runtimeFilePath, { loaderResult, registrar, execServer, execSocketPath });
 
+  // ── R1: Self-registration in global supervisor registry ────────────────────
+  // Called after exec socket is listening and runtime.json is written, so the
+  // entry is immediately usable by `sox list --all` and `sox stop` (daemon mode).
+  try {
+    registerSupervisor({
+      supervisorId,
+      scope: opts.scope,
+      root: opts.root,
+      pid: process.pid,
+      runtimeFilePath: opts.runtimeFilePath,
+      execSocketPath,
+      logDir,
+      startedAt: now,
+      hostname: os.hostname(),
+    });
+    console.log(`[runtime] Registered supervisor ${supervisorId} in global registry`);
+  } catch (e) {
+    // Registration failure is non-fatal — the supervisor is running; the registry
+    // is best-effort. Log the warning and continue.
+    console.warn(`[runtime] Warning: could not register in global registry: ${String(e)}`);
+  }
+
   console.log(`[runtime] Runtime record written to ${opts.runtimeFilePath}`);
   return record;
 }
@@ -374,6 +397,21 @@ export async function stopRuntime(opts: StopRuntimeOptions): Promise<void> {
         } catch { /* ignore */ }
       }
       _activeRuntimes.delete(opts.runtimeFilePath);
+
+      // ── R1: Self-deregistration from global supervisor registry ─────────────
+      // Called after all extensions are stopped and the exec socket is closed.
+      // Looks up the supervisorId by matching runtimeFilePath in the registry,
+      // then removes that entry. Best-effort — failure does not fail the stop.
+      try {
+        const registryFile = readSupervisorsFile();
+        const regEntry = registryFile.supervisors.find((e) => e.runtimeFilePath === opts.runtimeFilePath);
+        if (regEntry) {
+          deregisterSupervisor(regEntry.supervisorId);
+          console.log(`[runtime] Deregistered supervisor ${regEntry.supervisorId} from global registry`);
+        }
+      } catch (e) {
+        console.warn(`[runtime] Warning: could not deregister from global registry: ${String(e)}`);
+      }
     }
   }
 
