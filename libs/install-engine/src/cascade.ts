@@ -40,6 +40,13 @@ export interface ResolvedConfigEntry {
   version: string | undefined;
   enabled: boolean;
   config: Record<string, unknown>;
+  /**
+   * True when this entry was created solely from a `config:` or `enabled:` block,
+   * with no corresponding `install:` directive in any scope.  Such entries provide
+   * configuration for extensions installed transitively (e.g. bundle members) and
+   * must NOT be treated as standalone install requests.
+   */
+  configOnly?: boolean;
 }
 
 export type ResolvedConfigMap = Record<string, ResolvedConfigEntry>;
@@ -105,11 +112,14 @@ export function cascade(scopes: ScopeConfig[]): ResolvedConfigMap {
           if (entry.enabled !== undefined) {
             existing.enabled = entry.enabled;
           }
+          // An explicit install: directive claims this entry — it is no longer config-only.
+          delete existing.configOnly;
         } else {
           result[entry.id] = {
             version: entry.version,
             enabled: entry.enabled ?? true,
             config: {},
+            // Explicitly installed — NOT config-only.
           };
         }
       }
@@ -120,9 +130,12 @@ export function cascade(scopes: ScopeConfig[]): ResolvedConfigMap {
       for (const [id, extConfig] of Object.entries(scope.config)) {
         const entry = result[id];
         if (!entry) {
-          result[id] = { version: undefined, enabled: true, config: extConfig };
+          // No install: entry has claimed this id yet — mark as config-only so that
+          // buildInstallList does not treat it as an explicit install request.
+          result[id] = { version: undefined, enabled: true, config: extConfig, configOnly: true };
         } else {
           entry.config = deepMerge(entry.config, extConfig);
+          // configOnly stays as-is: if already claimed by install: it remains undefined.
         }
       }
     }
@@ -132,9 +145,10 @@ export function cascade(scopes: ScopeConfig[]): ResolvedConfigMap {
       for (const [id, enabledVal] of Object.entries(scope.enabled)) {
         const entry = result[id];
         if (!entry) {
-          result[id] = { version: undefined, enabled: enabledVal, config: {} };
+          result[id] = { version: undefined, enabled: enabledVal, config: {}, configOnly: true };
         } else {
           entry.enabled = enabledVal;
+          // configOnly stays as-is: if already claimed by install: it remains undefined.
         }
       }
     }

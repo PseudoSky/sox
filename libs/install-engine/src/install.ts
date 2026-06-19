@@ -906,6 +906,13 @@ function buildInstallList(
   const seenIds = new Set<string>();
 
   for (const [id, resolved] of Object.entries(cascadedConfig)) {
+    // Skip config-only entries: they provide configuration for extensions installed
+    // transitively (e.g. bundle members) but carry no install: directive in any scope.
+    // Including them here would treat them as explicit installs and interfere with
+    // bundle-member visibility enforcement (R9 / P8).
+    if (resolved.configOnly) {
+      continue;
+    }
     seenIds.add(id);
     entries.push({
       id,

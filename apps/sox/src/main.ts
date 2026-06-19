@@ -2462,8 +2462,16 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
       };
 
       // Derive health status.
+      // In-process adapters (agent/hook/command) have no pid — they live inside
+      // the supervisor process.  Their health mirrors the supervisor socket:
+      //   • socket reachable + rtEntry.running=true → healthy
+      //   • socket unreachable                      → dead
+      // Spawned extensions (mcp-server) have a pid and are probed directly.
       let status: HealthRecord['status'];
-      if (!pidAlive) {
+      const inProcess = pid === null && (rtEntry as { running?: boolean }).running === true;
+      if (inProcess) {
+        status = socketReachable ? 'healthy' : 'dead';
+      } else if (!pidAlive) {
         status = 'dead';
       } else if (!socketReachable) {
         status = 'degraded';
