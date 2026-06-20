@@ -15,6 +15,7 @@
       "@sox/authoring": ["libs/authoring/dist/index.d.ts"],
       "@sox/install-engine": ["libs/install-engine/dist/index.d.ts"],
       "@sox/host-runtime": ["libs/host-runtime/dist/index.d.ts"],
+      "@sox/host-registry": ["libs/host-registry/dist/index.d.ts"],
       "@sox/registry": ["libs/registry/dist/index.d.ts"]
     }
   },

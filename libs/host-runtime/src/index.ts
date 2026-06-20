@@ -82,6 +82,27 @@ export type {
   StopRuntimeOptions,
 } from './runtime.js';
 
+// ─── Lock (R3) ────────────────────────────────────────────────────────────────
+export { acquireStartLock, computeSupervisorId } from './lock.js';
+
+// ─── Global Supervisor Registry (R1) ─────────────────────────────────────────
+export {
+  getSupervisorsFilePath,
+  readSupervisorsFile,
+  writeSupervisorsFile,
+  registerSupervisor,
+  deregisterSupervisor,
+  listRegisteredSupervisors,
+} from './registry.js';
+export type { SupervisorRegistryEntry, SupervisorsFile } from './registry.js';
+
+// ─── Log Manager (R4) ─────────────────────────────────────────────────────────
+export { LogManager } from './log-manager.js';
+export type { LogManagerOptions, RunRecord, RunHistoryFile } from './log-manager.js';
+
+// ─── Stale state GC (R2) ──────────────────────────────────────────────────────
+export { probeSocket, probeEntryLiveness, readGlobalRegistry } from './gc.js';
+
 // ─── Adapters ─────────────────────────────────────────────────────────────────
 export { activateMcp } from './adapters/mcp.js';
 export type { McpAdapterOptions, McpAdapterHandle } from './adapters/mcp.js';

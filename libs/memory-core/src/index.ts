@@ -1,12 +1,12 @@
 /**
  * libs/memory-core — shared internal library for the sox-memory subsystem.
  *
- * Internal: not published. Consumed by the 4 memory extensions:
- *   - extensions/mcp-servers/memory-server
- *   - extensions/agents/memory-organizer
- *   - extensions/hooks/memory-flush
- *   - extensions/commands/memory-cli
- *   - extensions/bundles/sox-memory-bundle
+ * Internal: not published. Consumed by the 4 memory extensions (R9: co-located in bundle):
+ *   - extensions/bundles/sox-memory-bundle/members/memory-server
+ *   - extensions/bundles/sox-memory-bundle/members/memory-organizer
+ *   - extensions/bundles/sox-memory-bundle/members/memory-flush
+ *   - extensions/bundles/sox-memory-bundle/members/memory-cli
+ *   - extensions/bundles/sox-memory-bundle (bundle manifest)
  *
  * Eliminates the cross-extension ../../../dist/ reach-in (C7, ref:no-cross-extension-reachin).
  */

@@ -15,6 +15,7 @@ import * as os from 'node:os';
 import { cascade } from './cascade.js';
 import type { ScopeConfig as CascadeScopeConfig, ResolvedConfigMap } from './cascade.js';
 import { checkProviderCapabilities } from './provider-capabilities.js';
+import { upsertInstallRecord } from './install-registry.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -82,6 +83,10 @@ export interface IndexEntry {
     min_context_tokens?: number | undefined;
   } | undefined;
   members?: Array<{ id: string; version: string }> | undefined;
+  /** R9: "public" (default if absent) or "internal" (bundle member, not independently installable). */
+  visibility?: 'public' | 'internal' | undefined;
+  /** R9: populated when visibility is "internal". The owning bundle's id. */
+  bundleId?: string | undefined;
 }
 
 export interface ExtensionManifest {
@@ -485,6 +490,23 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
       continue;
     }
 
+    // R9: visibility enforcement — block direct installation of bundle members.
+    // Bundle members are only installable as part of their owning bundle.
+    // expandBundles() already expands bundle installs to their members, so this
+    // guard only fires when a user explicitly names a member id directly.
+    if (entry.bundleId === undefined) {
+      // Only check when NOT already expanded from a bundle (bundleId is set by expandBundles)
+      const indexEntryForVisibility = resolveFromRegistry(entry.id, entry.version, registryIndex);
+      if (indexEntryForVisibility?.visibility === 'internal') {
+        const owningBundle = indexEntryForVisibility.bundleId ?? 'the bundle that owns it';
+        console.error(
+          `sox: install: "${entry.id}" is a member of bundle "${owningBundle}".\n` +
+          `     Install the bundle instead: sox install ${owningBundle}`,
+        );
+        process.exit(1);
+      }
+    }
+
     let source: string;
     let expectedChecksum: string | undefined;
 
@@ -603,6 +625,20 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
       newResolved[actualKey] = lockEntry;
 
       console.log(`install: resolved ${actualKey} from ${resolvedSource} (${checksum})`);
+
+      // P9: upsert into global install ledger (~/.sox/install-registry.json).
+      // Best-effort: a failed write must never fail the install.
+      try {
+        upsertInstallRecord({
+          extId: entry.id,
+          version: resolvedVersion,
+          scope: opts.scope as 'user' | 'project' | 'local',
+          root,
+          source: resolvedSource,
+        });
+      } catch (regErr) {
+        console.warn(`install: warning: could not update install registry: ${String(regErr)}`);
+      }
     } catch (e) {
       console.error(String(e));
       process.exit(1);
@@ -870,6 +906,13 @@ function buildInstallList(
   const seenIds = new Set<string>();
 
   for (const [id, resolved] of Object.entries(cascadedConfig)) {
+    // Skip config-only entries: they provide configuration for extensions installed
+    // transitively (e.g. bundle members) but carry no install: directive in any scope.
+    // Including them here would treat them as explicit installs and interfere with
+    // bundle-member visibility enforcement (R9 / P8).
+    if (resolved.configOnly) {
+      continue;
+    }
     seenIds.add(id);
     entries.push({
       id,
@@ -956,6 +999,24 @@ export function findLocalExtension(root: string, id: string): string | null {
         if (manifest.id === id) return extPath;
       } catch (_e) {
         // Skip malformed manifests
+      }
+
+      // R9: also search inside bundle members/ subdirectory
+      if (typeDir === 'bundles') {
+        const membersPath = path.join(extPath, 'members');
+        if (fs.existsSync(membersPath) && fs.statSync(membersPath).isDirectory()) {
+          for (const memberId of fs.readdirSync(membersPath)) {
+            const memberPath = path.join(membersPath, memberId);
+            const memberManifestPath = path.join(memberPath, 'extension.json');
+            if (!fs.existsSync(memberManifestPath)) continue;
+            try {
+              const memberManifest = JSON.parse(fs.readFileSync(memberManifestPath, 'utf8')) as { id?: string };
+              if (memberManifest.id === id) return memberPath;
+            } catch (_e) {
+              // Skip malformed manifests
+            }
+          }
+        }
       }
     }
   }

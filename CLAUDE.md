@@ -11,8 +11,8 @@ output from `dist/apps/sox/main.js`. All CLI logic lives in `apps/sox/src/main.t
 
 ---
 
-A monorepo for an **LLM-extension ecosystem**: independently-versioned extensions of 7 types
-(`agent`, `skill`, `mcp-server`, `prompt`, `hook`, `command`, `bundle`), installed across scopes
+A monorepo for an **LLM-extension ecosystem**: independently-versioned extensions of 8 types
+(`agent`, `skill`, `mcp-server`, `service`, `prompt`, `hook`, `command`, `bundle`), installed across scopes
 (`org`/`user`/`project`/`local`) and run by a host runtime. CLI: `bin/sox`. Engine: `scripts/`.
 Extensions: `extensions/`. Per-type contracts: `docs/guidelines/`. Current-state audit:
 `docs/architecture-audit-v2.md`.

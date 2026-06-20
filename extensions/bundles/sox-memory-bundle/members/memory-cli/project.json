@@ -1,0 +1,30 @@
+{
+  "$schema": "../../../../../../node_modules/nx/schemas/project-schema.json",
+  "name": "memory-cli",
+  "projectType": "library",
+  "root": "extensions/bundles/sox-memory-bundle/members/memory-cli",
+  "sourceRoot": "extensions/bundles/sox-memory-bundle/members/memory-cli/src",
+  "tags": ["type:extension"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": ["{workspaceRoot}/extensions/bundles/sox-memory-bundle/members/memory-cli/dist"],
+      "options": {
+        "command": "tsc --project extensions/bundles/sox-memory-bundle/members/memory-cli/tsconfig.json",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.json"
+      ],
+      "dependsOn": ["memory-core:build"]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": ["extensions/bundles/sox-memory-bundle/members/memory-cli/src/**/*.ts"]
+      }
+    }
+  }
+}

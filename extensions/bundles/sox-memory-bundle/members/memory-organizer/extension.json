@@ -3,6 +3,8 @@
   "id": "memory-organizer",
   "version": "0.1.0",
   "type": "agent",
+  "visibility": "internal",
+  "bundle_id": "sox-memory-bundle",
   "title": "Memory Organizer",
   "description": "Use this when memoryd needs to promote raw episodes into structured graph knowledge — runs batched relation extraction, importance scoring (1–10), contradiction detection, and reflection synthesis via LLM. Invoked by memoryd on the write path; never called on the read path.",
   "keywords": ["memory", "organizer", "graph", "relation-extraction", "importance-scoring"],

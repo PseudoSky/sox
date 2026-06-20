@@ -131,6 +131,13 @@ export interface ScaffoldOpts {
   // ── Appendix-A: prompt specific ───────────────────────────────────────────
   /** --inject: prompt injection target (rules | claude-md). Prompt type only. */
   inject?: string;
+
+  // ── Appendix-A: bundle specific ───────────────────────────────────────────
+  /**
+   * R9: --member flag(s) for bundle init. Each entry is "<type>:<member-id>".
+   * Scaffolds member extensions in members/ subdirectory with visibility: "internal".
+   */
+  members?: Array<{ type: string; id: string }>;
 }
 
 // ─── ID validation ────────────────────────────────────────────────────────────
@@ -173,6 +180,7 @@ export interface ResolvedOpts {
   trust: string | undefined;
   surface: string | undefined;
   inject: string | undefined;
+  members: Array<{ type: string; id: string }> | undefined;
 }
 
 function resolveOpts(opts: ScaffoldOpts): ResolvedOpts {
@@ -195,6 +203,7 @@ function resolveOpts(opts: ScaffoldOpts): ResolvedOpts {
     trust: opts.trust,
     surface: opts.surface,
     inject: opts.inject,
+    members: opts.members,
   };
 }
 

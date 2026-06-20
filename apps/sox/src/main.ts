@@ -27,8 +27,10 @@ import {
   update as lifecycleUpdate,
   diff as diffExtension,
   diffAll,
+  readInstallRegistry,
+  removeInstallRecord,
 } from '@sox/install-engine';
-import type { InstallDescriptor, DeclarativeInstallResult, UpdateCtx } from '@sox/install-engine';
+import type { InstallDescriptor, DeclarativeInstallResult, UpdateCtx, InstallRecord } from '@sox/install-engine';
 import {
   getScopePaths,
   getRuntimeFilePath,
@@ -39,6 +41,8 @@ import {
   McpClient,
   reconcileRuntime,
   compilePolicy,
+  computeSupervisorId,
+  readGlobalRegistry,
 } from '@sox/host-runtime';
 import type { PermissionsBlock, RuntimeEntry, RuntimeRecord } from '@sox/host-runtime';
 // @sox/host-registry is also lazy-required via install-engine; import it lazily here too
@@ -92,6 +96,9 @@ async function main(): Promise<void> {
     case 'update':
       await cmdUpdate(flags);
       break;
+    case 'upgrade':
+      await cmdUpgrade(flags);
+      break;
     case 'uninstall':
       cmdUninstall(flags);
       break;
@@ -104,7 +111,7 @@ async function main(): Promise<void> {
 
     // ── Query ─────────────────────────────────────────────────────────────────
     case 'list':
-      cmdList(flags);
+      await cmdList(flags);
       break;
     case 'details':
       cmdDetails(flags);
@@ -113,7 +120,10 @@ async function main(): Promise<void> {
       cmdSearch(flags);
       break;
     case 'status':
-      cmdStatus(flags);
+      await cmdStatus(flags);
+      break;
+    case 'logs':
+      await cmdLogs(flags);
       break;
 
     // ── Authoring (A1) ────────────────────────────────────────────────────────
@@ -172,6 +182,8 @@ Extension management:
                      Flags: --scope=<scope>  --frozen-lockfile  --update
   update             Update installed extensions
                      Flags: --scope=<scope>
+  upgrade <ext-id>   Re-install an extension across all projects (P9)
+                     Flags: --all (required)
   uninstall          Remove an extension
                      Flags: --id=<ext-id>  --scope=<scope>
   enable             Enable a disabled extension
@@ -195,10 +207,16 @@ Runtime:
   exec               Call a tool on a running extension (A11: via running server)
                      Flags: --scope=<scope>  --id=<ext-id>  --tool=<tool>  --args='<json>'
   list               List activated extensions
-                     Flags: --scope=<scope>
+                     Flags: --scope=<scope>  --all  --global  --id=<ext>  --json
   details            Show details for an extension
                      Flags: --id=<ext-id>  --scope=<scope>
-  status             Show runtime record
+  status             Show live health for all running extensions (R7)
+                     Flags: --id=<ext-id>  --project=<path>  --scope=<scope>
+                            --lines=<n>  --json
+                     Exit: 0=healthy 1=degraded 2=dead
+  logs               Tail or follow extension log output (R4)
+                     Flags: --id=<ext-id>  --scope=<scope>  --lines=<n>
+                            --follow  --history  --json
 
 Flags accept both forms: --flag=value  and  --flag value  (A12)
 
@@ -437,10 +455,51 @@ Exit codes:
   }
 
   const result = validate(rawObj as Record<string, unknown>);
+
+  // [R6: signal-contract] Textual SIGTERM handler check for background:true extensions.
+  // Checks the source-side entrypoint (src/index.ts) first, then the built entrypoint.
+  // This is a weak check (grep, not semantic) — prevents accidental omission.
+  const sigTermWarnings: string[] = [];
+  {
+    const manifest = rawObj as Record<string, unknown>;
+    const lifecycle = manifest['lifecycle'] as Record<string, unknown> | undefined;
+    const isBackground = lifecycle?.['background'] === true;
+    if (isBackground) {
+      const entrypoint = manifest['entrypoint'] as string | undefined;
+      const extDir = path.dirname(absPath);
+      // Check the src/ counterpart first (most readable), then the built entrypoint.
+      const candidateSrc = path.join(extDir, 'src', 'index.ts');
+      const candidateBuilt = entrypoint ? path.join(extDir, entrypoint) : null;
+      const checkPaths = [candidateSrc, ...(candidateBuilt ? [candidateBuilt] : [])];
+      let hasSigterm = false;
+      for (const p of checkPaths) {
+        try {
+          if (fs.existsSync(p)) {
+            const src = fs.readFileSync(p, 'utf-8');
+            if (src.includes("'SIGTERM'") || src.includes('"SIGTERM"')) {
+              hasSigterm = true;
+              break;
+            }
+          }
+        } catch { /* ignore read errors */ }
+      }
+      if (!hasSigterm) {
+        sigTermWarnings.push(
+          `validate: WARNING: no SIGTERM handler found in entrypoint.\n` +
+          `  mcp-server and service extensions must handle SIGTERM gracefully.\n` +
+          `  See docs/guidelines/signal-contract.md`,
+        );
+      }
+    }
+  }
+
   if (result.ok) {
     process.stdout.write(`sox validate: OK — ${absPath}\n`);
     for (const w of (result.warnings ?? [])) {
       process.stdout.write(`  warning: ${w}\n`);
+    }
+    for (const w of sigTermWarnings) {
+      process.stdout.write(`  ${w}\n`);
     }
     process.exit(0);
   } else {
@@ -450,6 +509,9 @@ Exit codes:
     }
     for (const w of (result.warnings ?? [])) {
       process.stdout.write(`  warning: ${w}\n`);
+    }
+    for (const w of sigTermWarnings) {
+      process.stdout.write(`  ${w}\n`);
     }
     process.exit(1);
   }
@@ -467,6 +529,8 @@ function cmdSearch(flags: Record<string, string>): void {
     }
   }
   const typeFilter = flags['type'];
+  // R9: --all includes internal (bundle member) entries. Default: exclude them.
+  const showAll = flags['all'] !== undefined || flags['all'] === '';
 
   // The registry/index.json always lives in the repo root where sox is invoked,
   // NOT in the scope config directory. Use process.cwd(), same as cmdInstall.
@@ -480,8 +544,14 @@ function cmdSearch(flags: Record<string, string>): void {
   }
 
   let results = entries;
+
+  // R9: by default exclude internal entries (bundle members not independently installable).
+  if (!showAll) {
+    results = results.filter((e) => (e as { visibility?: string }).visibility !== 'internal');
+  }
+
   if (query !== '') {
-    results = entries.filter(
+    results = results.filter(
       (e) =>
         e.id.includes(query) ||
         e.title.includes(query) ||
@@ -615,7 +685,7 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
     const hostMod = getHost(host);
     const hostScopePaths = hostMod.scopePaths(scope as Parameters<typeof hostMod.scopePaths>[0]);
     // scopeRoot is the root used for the install ledger.
-    const scopeRoot = scope === 'project'
+    const scopeRoot: string = scope === 'project'
       ? workspaceRoot
       : (Object.values(hostScopePaths)[0] ?? workspaceRoot);
 
@@ -1025,6 +1095,96 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
   process.exit(0);
 }
 
+// ─── upgrade ─────────────────────────────────────────────────────────────────
+
+/**
+ * cmdUpgrade — P9: re-install an extension across all projects that have it.
+ *
+ * Usage: sox upgrade <ext-id> --all
+ *
+ * Reads ~/.sox/install-registry.json, finds all InstallRecords for <ext-id>,
+ * verifies each is still in that project's lockfile, then re-runs install()
+ * with mode:'update' for each one. No shell subprocess is spawned.
+ */
+async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
+  // Accept positional id as well as --id flag.
+  const rawAfterVerbUpg = argv.slice(1);
+  let positionalUpg: string | undefined;
+  for (const tok of rawAfterVerbUpg) {
+    if (!tok.startsWith('-')) { positionalUpg = tok; break; }
+  }
+  const extId = flags['id'] ?? positionalUpg;
+
+  if (extId === undefined || extId === '') {
+    process.stderr.write(`sox upgrade: extension id required (positional or --id)\n`);
+    process.stderr.write(`  Usage: sox upgrade <ext-id> --all\n`);
+    process.exit(1);
+  }
+
+  if (flags['all'] === undefined) {
+    process.stderr.write(`sox upgrade: --all flag required\n`);
+    process.stderr.write(`  Usage: sox upgrade <ext-id> --all\n`);
+    process.exit(1);
+  }
+
+  const pathMod = require('node:path') as typeof import('node:path');
+  const soxHome = process.env['SOX_HOME'] ?? pathMod.join(require('node:os').homedir() as string, '.sox');
+  const registryPath = pathMod.join(soxHome, 'install-registry.json') as string;
+  const registry = readInstallRegistry(registryPath);
+
+  const matches = registry.installs.filter((r) => r.extId === extId);
+
+  if (matches.length === 0) {
+    process.stdout.write(`sox upgrade: no install records found for '${extId}'\n`);
+    process.exit(0);
+  }
+
+  process.stdout.write(`Upgrading ${extId} in ${matches.length} project${matches.length === 1 ? '' : 's'}:\n`);
+
+  let upgraded = 0;
+  let failed = 0;
+
+  for (let i = 0; i < matches.length; i++) {
+    const record = matches[i]!;
+    const label = `  [${i + 1}/${matches.length}] ${record.root} (scope: ${record.scope})`;
+
+    // Upgrade safety check: verify the extension still appears in that project's lockfile.
+    // Guards against stale install-registry entries where sox uninstall ran but
+    // removeInstallRecord failed (best-effort write).
+    const { lockfile: lockfilePath } = getScopePaths(record.scope, record.root);
+    const currentLockfile = loadLockfile(lockfilePath);
+    const inLockfile = currentLockfile !== null &&
+      Object.keys(currentLockfile.resolved).some(
+        (k) => k === record.extId || k.startsWith(`${record.extId}@`),
+      );
+
+    if (!inLockfile) {
+      process.stdout.write(
+        `${label} ... skipped (not in current lockfile — run sox install to re-add)\n`,
+      );
+      continue;
+    }
+
+    process.stdout.write(`${label} ... `);
+
+    try {
+      await install({
+        scope: record.scope,
+        mode: 'update',
+        root: record.root,
+      });
+      upgraded++;
+      process.stdout.write(`done\n`);
+    } catch (e) {
+      failed++;
+      process.stdout.write(`FAILED: ${String(e)}\n`);
+    }
+  }
+
+  process.stdout.write(`\n${upgraded} upgraded, ${failed} failed.\n`);
+  process.exit(failed > 0 ? 1 : 0);
+}
+
 // ─── uninstall ────────────────────────────────────────────────────────────────
 
 function cmdUninstall(flags: Record<string, string>): void {
@@ -1095,6 +1255,16 @@ function cmdUninstall(flags: Record<string, string>): void {
         fsMod.writeFileSync(configPath5, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
       }
     } catch { /* config parse failure — lockfile is already cleaned up, that's enough */ }
+  }
+
+  // P9: remove the install record from the global install ledger.
+  // Best-effort — a failed registry write must not fail the uninstall.
+  try {
+    removeInstallRecord(id, scope, root);
+  } catch (e) {
+    process.stderr.write(
+      `sox: warning: could not update install registry: ${String(e)}\n`,
+    );
   }
 
   process.stdout.write(`sox uninstall: removed '${id}' (${matchKey}) from scope '${scope}'\n`);
@@ -1346,17 +1516,161 @@ async function cmdDisable(flags: Record<string, string>): Promise<void> {
 
 // ─── list ─────────────────────────────────────────────────────────────────────
 
-function cmdList(flags: Record<string, string>): void {
+async function cmdList(flags: Record<string, string>): Promise<void> {
   const ROOT2 = process.cwd();
+  const jsonMode = flags['json'] !== undefined;
+  const fsMod = require('node:fs') as typeof import('node:fs');
+
+  // ── --global mode: reads ~/.sox/install-registry.json (P9) ─────────────────
+  // Shows every extension ever installed on this machine, across all projects.
+  // No live probing — works without any supervisor running.
+  if (flags['global'] !== undefined) {
+    const soxHome = process.env['SOX_HOME'] ?? require('node:path').join(require('node:os').homedir(), '.sox');
+    const registryPath = require('node:path').join(soxHome, 'install-registry.json') as string;
+    const registry = readInstallRegistry(registryPath);
+    let records: InstallRecord[] = registry.installs;
+
+    // Apply filters: --id and --scope
+    const idFilter = flags['id'];
+    const scopeFilter = flags['scope'];
+    if (idFilter !== undefined) {
+      records = records.filter((r) => r.extId === idFilter);
+    }
+    if (scopeFilter !== undefined) {
+      records = records.filter((r) => r.scope === scopeFilter);
+    }
+
+    if (jsonMode) {
+      process.stdout.write(JSON.stringify(records, null, 2) + '\n');
+      process.exit(0);
+    }
+
+    if (records.length === 0) {
+      process.stdout.write(`sox list --global: no install records found\n`);
+      process.exit(0);
+    }
+
+    // Compute column widths.
+    const col1 = Math.max(...records.map((r) => r.extId.length), 2);
+    const col2 = Math.max(...records.map((r) => r.version.length), 7);
+    const col3 = Math.max(...records.map((r) => r.scope.length), 5);
+    const col4 = Math.max(...records.map((r) => require('node:path').basename(r.root as string).length), 7);
+    const col5 = 17; // "2026-06-01T09:00Z" (truncated to minute)
+    const col6 = 17;
+
+    // Truncate ISO timestamp to minute: "2026-06-01T09:00Z"
+    const fmtTs = (ts: string): string => {
+      // ts = "2026-06-01T09:00:00.000Z" → "2026-06-01T09:00Z"
+      const m = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})/.exec(ts);
+      return m ? `${m[1]}Z` : ts.slice(0, 17);
+    };
+
+    process.stdout.write(
+      `${'ID'.padEnd(col1)}  ${'VERSION'.padEnd(col2)}  ${'SCOPE'.padEnd(col3)}  ${'PROJECT'.padEnd(col4)}  ${'INSTALLED'.padEnd(col5)}  ${'UPDATED'.padEnd(col6)}\n`,
+    );
+    process.stdout.write(
+      `${'-'.repeat(col1)}  ${'-'.repeat(col2)}  ${'-'.repeat(col3)}  ${'-'.repeat(col4)}  ${'-'.repeat(col5)}  ${'-'.repeat(col6)}\n`,
+    );
+    for (const r of records) {
+      const project = (require('node:path').basename(r.root as string) as string).padEnd(col4);
+      process.stdout.write(
+        `${r.extId.padEnd(col1)}  ${r.version.padEnd(col2)}  ${r.scope.padEnd(col3)}  ${project}  ${fmtTs(r.installedAt).padEnd(col5)}  ${fmtTs(r.updatedAt).padEnd(col6)}\n`,
+      );
+    }
+    process.exit(0);
+  }
+
+  // ── --all mode: reads ~/.sox/supervisors.json and merges runtime records ───
+  // Shows what is running across all projects on this machine.
+  // Stale entries (dead pid or unreachable socket) are cleaned up by readGlobalRegistry.
+  if (flags['all'] !== undefined) {
+    // R2: use readGlobalRegistry() which runs full probeEntryLiveness (pid + socket)
+    // and removes stale entries before returning.
+    const supervisors = await readGlobalRegistry();
+
+    type AllRow = {
+      id: string;
+      key: string;
+      version: string;
+      scope: string;
+      root: string;
+      running: boolean;
+      pid: number | null;
+    };
+    const allRows: AllRow[] = [];
+
+    for (const sup of supervisors) {
+      // Read the runtime.json for this supervisor.
+      if (!fsMod.existsSync(sup.runtimeFilePath)) continue;
+      let runtimeEntries: Array<{
+        id: string;
+        key?: string;
+        running?: boolean;
+        pid?: number | null;
+      }> = [];
+      try {
+        const rec = JSON.parse(fsMod.readFileSync(sup.runtimeFilePath, 'utf8')) as {
+          entries?: Array<{ id: string; key?: string; running?: boolean; pid?: number | null }>;
+        };
+        runtimeEntries = rec.entries ?? [];
+      } catch { continue; }
+
+      for (const rtEntry of runtimeEntries) {
+        if (rtEntry.running !== true) continue; // --all only shows running extensions
+        const key = rtEntry.key ?? rtEntry.id;
+        const atIdx = key.lastIndexOf('@');
+        const extId = atIdx === -1 ? key : key.slice(0, atIdx);
+        const ver = atIdx === -1 ? '' : key.slice(atIdx + 1);
+        const pid = (rtEntry.pid != null && typeof rtEntry.pid === 'number') ? rtEntry.pid : null;
+
+        allRows.push({
+          id: extId,
+          key,
+          version: ver,
+          scope: sup.scope,
+          root: sup.root,
+          running: true,
+          pid,
+        });
+      }
+    }
+
+    if (jsonMode) {
+      process.stdout.write(JSON.stringify(allRows, null, 2) + '\n');
+      process.exit(0);
+    }
+
+    if (allRows.length === 0) {
+      process.stdout.write(`sox list --all: no running extensions found across all supervisors\n`);
+      process.exit(0);
+    }
+
+    const col1 = Math.max(...allRows.map((r) => r.id.length), 4);
+    const col2 = Math.max(...allRows.map((r) => r.version.length), 7);
+    const col3 = Math.max(...allRows.map((r) => r.scope.length), 5);
+    const col4 = Math.max(...allRows.map((r) => r.root.length), 4);
+
+    process.stdout.write(
+      `${'ID'.padEnd(col1)}  ${'VERSION'.padEnd(col2)}  ${'SCOPE'.padEnd(col3)}  ${'STATUS'.padEnd(8)}  PID     ROOT\n`,
+    );
+    process.stdout.write(
+      `${'-'.repeat(col1)}  ${'-'.repeat(col2)}  ${'-'.repeat(col3)}  ${'-'.repeat(8)}  ------  ${'-'.repeat(col4)}\n`,
+    );
+    for (const r of allRows) {
+      const pidStr = r.pid !== null ? String(r.pid) : '';
+      process.stdout.write(
+        `${r.id.padEnd(col1)}  ${r.version.padEnd(col2)}  ${r.scope.padEnd(col3)}  ${'RUNNING'.padEnd(8)}  ${pidStr.padEnd(6)}  ${r.root}\n`,
+      );
+    }
+    process.exit(0);
+  }
+
   // When no explicit --scope is given, scan all scopes (user, project, local) —
   // matching the old bin/sox behaviour and allowing `sox list --root=TMP` to find
   // project-scope extensions without requiring `-s project`.
   const scopeOverride = flags['scope'];
   const root = flags['root'] ?? ROOT2;
   const statusFilter = flags['status']; // e.g. --status=running
-  const jsonMode = flags['json'] !== undefined;
-
-  const fsMod = require('node:fs') as typeof import('node:fs');
 
   const runtimeFileOverride = flags['runtime-file'] ?? process.env['SOX_RUNTIME_FILE'];
 
@@ -1583,6 +1897,55 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
     flags['runtime-file'] ??
     process.env['SOX_RUNTIME_FILE'] ??
     getRuntimeFilePath(lockfilePath);
+
+  // ── R8: daemon mode ──────────────────────────────────────────────────────────
+  // When --daemon is passed (and --_daemon-child is NOT), re-spawn ourselves
+  // detached with stdio redirected to a log file, print the background PID and
+  // log path, then exit 0.  The child runs with --_daemon-child which skips
+  // this branch.
+  //
+  // Spec: IMPLEMENTATION.md Section 5 (R8)
+  if (flags['daemon'] !== undefined && flags['_daemon-child'] === undefined) {
+    const fsDaemon = require('node:fs') as typeof import('node:fs');
+    const pathDaemon = require('node:path') as typeof import('node:path');
+    const osDaemon = require('node:os') as typeof import('node:os');
+    const { spawn: spawnDaemon } = require('node:child_process') as typeof import('node:child_process');
+
+    const supervisorIdDaemon = computeSupervisorId(scope, root);
+    const soxHomeDaemon = process.env['SOX_HOME'] ?? pathDaemon.join(osDaemon.homedir(), '.sox');
+    const logDirDaemon = pathDaemon.join(soxHomeDaemon, 'logs', supervisorIdDaemon);
+    fsDaemon.mkdirSync(logDirDaemon, { recursive: true });
+
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const logPathDaemon = pathDaemon.join(logDirDaemon, `supervisor-${today}.log`);
+    const logFd = fsDaemon.openSync(logPathDaemon, 'a');
+
+    const selectIdDaemon = flags['id'];
+    const childArgs = [
+      '--enable-source-maps',
+      process.argv[1] as string,
+      'start',
+      `--scope=${scope}`,
+      `--root=${root}`,
+      '--_daemon-child',
+      ...(selectIdDaemon !== undefined ? [`--id=${selectIdDaemon}`] : []),
+    ];
+
+    const child = spawnDaemon(process.execPath, childArgs, {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+    });
+    child.unref();
+    fsDaemon.closeSync(logFd);
+
+    process.stdout.write(
+      `[sox] Supervisor started in background.\n` +
+      `  PID:     ${String(child.pid)}\n` +
+      `  Logs:    ${logPathDaemon}\n` +
+      `  Follow:  sox logs --id=<ext> --follow\n`,
+    );
+    process.exit(0);
+  }
 
   // ── [dod.5] Service-registry path ──────────────────────────────────────────
   // When sox install --profile service was used, services are recorded in
@@ -1824,37 +2187,645 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
   process.exit(0);
 }
 
-// ─── status ───────────────────────────────────────────────────────────────────
+// ─── status (R7 / P7) ─────────────────────────────────────────────────────────
 
-function cmdStatus(flags: Record<string, string>): void {
-  const ROOT = process.cwd();
-  const scope = flags['scope'] ?? 'user';
-  const root = flags['root'] ?? ROOT;
+/**
+ * HealthRecord — live health snapshot for a single running extension.
+ * Populated by probing the global supervisor registry + runtime.json + run-history.json.
+ */
+interface HealthRecord {
+  /** Extension ID as declared in extension.json */
+  id: string;
+  /** Versioned key as stored in the lockfile (e.g. "memory-server@0.1.0") */
+  key: string;
+  scope: string;
+  /** The supervisor's root directory (--root used at sox start time) */
+  root: string;
+  /** Basename of root — used in the table PROJECT column for readability */
+  project: string;
+  /** Stable supervisor identifier: sha256(scope + ":" + root)[0..12] */
+  supervisorId: string;
+  /** ISO 8601 timestamp when the supervisor activated this extension */
+  activatedAt: string;
+  /** Elapsed seconds since activatedAt (current session only) */
+  uptimeSeconds: number;
+  /** OS process check: process.kill(pid, 0) returned true */
+  pidAlive: boolean;
+  pid: number | null;
+  /** Exec socket connectivity (list request round-trip succeeded within 2s) */
+  socketReachable: boolean;
+  /** Round-trip latency in ms for the socket ping, or null if unreachable */
+  socketLatencyMs: number | null;
+  /** Last N lines of the extension's log file (only populated in detail view) */
+  logTail: string[];
+  /** Path to the active log file */
+  logPath: string | null;
+  /** ISO 8601 timestamp when the supervisor last spawned this extension */
+  lastStartedAt: string | null;
+  /** ISO 8601 timestamp when the extension last stopped, or null if currently running */
+  lastStoppedAt: string | null;
+  /** Duration in ms of the last completed run, or null if still running or no prior run */
+  lastRunDurationMs: number | null;
+  /** Cumulative uptime in ms across all runs recorded in the current supervisor session */
+  totalUptimeMs: number;
+  /** Derived: 'healthy' | 'degraded' | 'dead' */
+  status: 'healthy' | 'degraded' | 'dead';
+}
 
-  let scopePaths: { config: string; lockfile: string };
+/**
+ * Probe a single extension's exec socket reachability by sending a { list: true }
+ * JSON request. Returns { reachable, latencyMs }.
+ *
+ * Reuses the existing listViaExecSocket helper which exercises the full socket
+ * stack. Latency is measured from connection-open to response-parsed.
+ */
+async function probeSocketReachability(
+  socketPath: string,
+  timeoutMs = 2000,
+): Promise<{ reachable: boolean; latencyMs: number | null }> {
+  const t0 = Date.now();
   try {
-    scopePaths = getScopePaths(scope, root);
-  } catch (e) {
-    process.stderr.write(`sox status: ${String(e)}\n`);
-    process.exit(1);
+    await listViaExecSocket(socketPath, undefined, timeoutMs);
+    return { reachable: true, latencyMs: Date.now() - t0 };
+  } catch {
+    return { reachable: false, latencyMs: null };
+  }
+}
+
+/**
+ * Read run history from <logDir>/run-history.json and compute per-extension stats.
+ * Returns a map of extId → { lastStartedAt, lastStoppedAt, lastRunDurationMs, totalUptimeMs }.
+ */
+function readRunStats(logDir: string): Map<string, {
+  lastStartedAt: string | null;
+  lastStoppedAt: string | null;
+  lastRunDurationMs: number | null;
+  totalUptimeMs: number;
+}> {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+  const result = new Map<string, {
+    lastStartedAt: string | null;
+    lastStoppedAt: string | null;
+    lastRunDurationMs: number | null;
+    totalUptimeMs: number;
+  }>();
+
+  const histPath = pathMod.join(logDir, 'run-history.json');
+  if (!fsMod.existsSync(histPath)) return result;
+
+  let hist: { version: number; runs: Array<{
+    extId: string;
+    startedAt: string;
+    stoppedAt: string | null;
+    exitCode: number | null;
+    stopReason: string | null;
+  }> };
+  try {
+    hist = JSON.parse(fsMod.readFileSync(histPath, 'utf8')) as typeof hist;
+  } catch {
+    return result;
   }
 
-  const lockfilePath = flags['lockfile'] ?? scopePaths.lockfile;
-  const runtimeFilePath =
-    flags['runtime-file'] ??
-    process.env['SOX_RUNTIME_FILE'] ??
-    getRuntimeFilePath(lockfilePath);
+  // Group runs by extId.
+  const byExt = new Map<string, typeof hist.runs>();
+  for (const run of hist.runs) {
+    if (!byExt.has(run.extId)) byExt.set(run.extId, []);
+    byExt.get(run.extId)!.push(run);
+  }
 
-  const record = getRuntimeRecord(runtimeFilePath);
-  if (!record) {
-    process.stdout.write(
-      `sox: no runtime record at ${runtimeFilePath} (host not started?)\n`,
-    );
+  for (const [extId, runs] of byExt.entries()) {
+    if (runs.length === 0) continue;
+    const last = runs[runs.length - 1]!;
+    let totalUptimeMs = 0;
+    for (const run of runs) {
+      if (run.stoppedAt) {
+        totalUptimeMs += new Date(run.stoppedAt).getTime() - new Date(run.startedAt).getTime();
+      } else {
+        // Currently running — count up to now.
+        totalUptimeMs += Date.now() - new Date(run.startedAt).getTime();
+      }
+    }
+    const lastRunDurationMs = last.stoppedAt
+      ? new Date(last.stoppedAt).getTime() - new Date(last.startedAt).getTime()
+      : null;
+    result.set(extId, {
+      lastStartedAt: last.startedAt,
+      lastStoppedAt: last.stoppedAt,
+      lastRunDurationMs,
+      totalUptimeMs,
+    });
+  }
+  return result;
+}
+
+/**
+ * Find the most recent log file for the given extId in logDir.
+ */
+function findMostRecentLogFile(logDir: string, extId: string): string | null {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+  if (!fsMod.existsSync(logDir)) return null;
+  try {
+    const files = fsMod.readdirSync(logDir)
+      .filter((f: string) => f.startsWith(`${extId}-`) && f.endsWith('.log'))
+      .sort();
+    if (files.length === 0) return null;
+    return pathMod.join(logDir, files[files.length - 1] as string);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * cmdStatus — R7 health surface.
+ *
+ * Usage:
+ *   sox status [--id=<extId>] [--project=<path>] [--scope=user|project|local]
+ *              [--json] [--lines=<n>]
+ *
+ * Default (no flags): read ~/.sox/supervisors.json, GC stale entries, probe
+ * every extension across all live supervisors and render a health table.
+ *
+ * Filtering (ANDed):
+ *   --id=<extId>       filter by extension id (matches across projects)
+ *   --project=<path>   filter by supervisor root (absolute or basename)
+ *   --scope=<scope>    filter by scope
+ *
+ * When --id matches exactly one extension, switches to the detail view with
+ * a log tail (last --lines lines, default 20).
+ *
+ * Exit codes:
+ *   0 — all healthy
+ *   1 — any degraded (pid alive, socket unreachable)
+ *   2 — any dead (pid not found)
+ */
+async function cmdStatus(flags: Record<string, string>): Promise<void> {
+  const pathMod = require('node:path') as typeof import('node:path');
+  const osMod = require('node:os') as typeof import('node:os');
+  const fsMod = require('node:fs') as typeof import('node:fs');
+
+  const filterId = flags['id'];
+  const filterProject = flags['project'];
+  const filterScope = flags['scope'];
+  const jsonMode = flags['json'] !== undefined;
+  const linesArg = parseInt(flags['lines'] ?? '20', 10);
+  const logLines = Number.isFinite(linesArg) && linesArg > 0 ? linesArg : 20;
+
+  // R2: lazy GC — returns only live supervisors; dead entries are cleaned up.
+  const liveSupervisors = await readGlobalRegistry();
+
+  if (liveSupervisors.length === 0) {
+    if (jsonMode) {
+      process.stdout.write('[]\n');
+    } else {
+      process.stdout.write('sox status: no running supervisors found\n');
+      process.stdout.write('  Start the runtime with: sox start\n');
+    }
     process.exit(0);
   }
 
-  process.stdout.write(JSON.stringify(record, null, 2) + '\n');
-  process.exit(0);
+  const soxHome = process.env['SOX_HOME'] ?? pathMod.join(osMod.homedir(), '.sox');
+
+  // ── Collect HealthRecords from all live supervisors ─────────────────────────
+  const records: HealthRecord[] = [];
+
+  for (const sup of liveSupervisors) {
+    // Apply project filter.
+    if (filterProject !== undefined) {
+      const rootBase = pathMod.basename(sup.root);
+      if (sup.root !== filterProject && rootBase !== filterProject) continue;
+    }
+    // Apply scope filter.
+    if (filterScope !== undefined && sup.scope !== filterScope) continue;
+
+    // Read runtime.json for this supervisor.
+    if (!fsMod.existsSync(sup.runtimeFilePath)) continue;
+    let runtimeEntries: Array<{
+      id: string;
+      key?: string;
+      running?: boolean;
+      pid?: number | null;
+      activatedAt?: string;
+    }> = [];
+    try {
+      const rec = JSON.parse(fsMod.readFileSync(sup.runtimeFilePath, 'utf8')) as {
+        entries?: Array<{ id: string; key?: string; running?: boolean; pid?: number | null; activatedAt?: string }>;
+      };
+      runtimeEntries = rec.entries ?? [];
+    } catch {
+      continue;
+    }
+
+    // Read run history for all extensions under this supervisor.
+    const logDir = pathMod.join(soxHome, 'logs', sup.supervisorId);
+    const runStats = readRunStats(logDir);
+
+    // Probe socket reachability once per supervisor (not per extension).
+    // The socket is supervisor-level; all extensions share it.
+    const { reachable: socketReachable, latencyMs: socketLatencyMs } =
+      await probeSocketReachability(sup.execSocketPath);
+
+    for (const rtEntry of runtimeEntries) {
+      const extId = rtEntry.id;
+      const key = rtEntry.key ?? extId;
+      const atIdx = key.lastIndexOf('@');
+      const version = atIdx === -1 ? '' : key.slice(atIdx + 1);
+
+      // Apply id filter.
+      if (filterId !== undefined && extId !== filterId) continue;
+
+      const pid = (rtEntry.pid != null && typeof rtEntry.pid === 'number')
+        ? rtEntry.pid
+        : null;
+
+      // C4: pid liveness via OS signal.
+      const pidAlive = pid !== null && (() => {
+        try { process.kill(pid, 0); return true; }
+        catch { return false; }
+      })();
+
+      const activatedAt = rtEntry.activatedAt ?? sup.startedAt;
+      const uptimeSeconds = Math.floor(
+        (Date.now() - new Date(activatedAt).getTime()) / 1000,
+      );
+
+      // Find log file for this extension.
+      const logPath = findMostRecentLogFile(logDir, extId);
+
+      // Run stats from run-history.json.
+      const stats = runStats.get(extId) ?? {
+        lastStartedAt: null,
+        lastStoppedAt: null,
+        lastRunDurationMs: null,
+        totalUptimeMs: 0,
+      };
+
+      // Derive health status.
+      // In-process adapters (agent/hook/command) have no pid — they live inside
+      // the supervisor process.  Their health mirrors the supervisor socket:
+      //   • socket reachable + rtEntry.running=true → healthy
+      //   • socket unreachable                      → dead
+      // Spawned extensions (mcp-server) have a pid and are probed directly.
+      let status: HealthRecord['status'];
+      const inProcess = pid === null && (rtEntry as { running?: boolean }).running === true;
+      if (inProcess) {
+        status = socketReachable ? 'healthy' : 'dead';
+      } else if (!pidAlive) {
+        status = 'dead';
+      } else if (!socketReachable) {
+        status = 'degraded';
+      } else {
+        status = 'healthy';
+      }
+
+      records.push({
+        id: extId,
+        key: `${extId}@${version}`,
+        scope: sup.scope,
+        root: sup.root,
+        project: pathMod.basename(sup.root),
+        supervisorId: sup.supervisorId,
+        activatedAt,
+        uptimeSeconds,
+        pidAlive,
+        pid,
+        socketReachable,
+        socketLatencyMs,
+        logTail: [],   // populated only in detail view
+        logPath,
+        lastStartedAt: stats.lastStartedAt,
+        lastStoppedAt: stats.lastStoppedAt,
+        lastRunDurationMs: stats.lastRunDurationMs,
+        totalUptimeMs: stats.totalUptimeMs,
+        status,
+      });
+    }
+  }
+
+  // ── Determine overall exit code ─────────────────────────────────────────────
+  let exitCode = 0;
+  for (const r of records) {
+    if (r.status === 'dead' && exitCode < 2) exitCode = 2;
+    else if (r.status === 'degraded' && exitCode < 1) exitCode = 1;
+  }
+
+  // ── JSON output ─────────────────────────────────────────────────────────────
+  if (jsonMode) {
+    // Populate logTail for all records in JSON mode.
+    for (const r of records) {
+      if (r.logPath) {
+        r.logTail = readLastLines(r.logPath, logLines).split('\n').filter((l) => l.length > 0);
+      }
+    }
+    process.stdout.write(JSON.stringify(records, null, 2) + '\n');
+    process.exit(exitCode);
+  }
+
+  // ── No matching extensions ──────────────────────────────────────────────────
+  if (records.length === 0) {
+    const parts: string[] = [];
+    if (filterId) parts.push(`id=${filterId}`);
+    if (filterProject) parts.push(`project=${filterProject}`);
+    if (filterScope) parts.push(`scope=${filterScope}`);
+    const filterDesc = parts.length > 0 ? ` (filters: ${parts.join(', ')})` : '';
+    process.stdout.write(`sox status: no running extensions found${filterDesc}\n`);
+    process.exit(exitCode);
+  }
+
+  // ── Single-extension detail view ────────────────────────────────────────────
+  if (filterId !== undefined && records.length === 1) {
+    const r = records[0]!;
+    const uptimeStr = formatDuration(r.uptimeSeconds * 1000);
+    const totalUptimeStr = formatDuration(r.totalUptimeMs);
+    const statusTag = r.status.toUpperCase();
+    const pidLine = r.pid !== null
+      ? `${r.pid}  (${r.pidAlive ? 'alive' : 'dead'})`
+      : 'none';
+    const socketLine = r.socketReachable
+      ? `reachable (latency: ${r.socketLatencyMs ?? '?'}ms)`
+      : 'unreachable';
+    const lastStopLine = r.lastStoppedAt ?? 'never';
+    const logLine = r.logPath ?? 'none';
+
+    process.stdout.write(`\nExtension:    ${r.id}\n`);
+    process.stdout.write(`Key:          ${r.key}\n`);
+    process.stdout.write(`Scope:        ${r.scope}\n`);
+    process.stdout.write(`Project:      ${r.project} (${r.root})\n`);
+    process.stdout.write(`Supervisor:   ${r.supervisorId}\n`);
+    process.stdout.write(`Status:       ${statusTag}\n`);
+    process.stdout.write(`PID:          ${pidLine}\n`);
+    process.stdout.write(`Socket:       ${socketLine}\n`);
+    process.stdout.write(`Uptime:       ${uptimeStr}  (started ${r.activatedAt})\n`);
+    process.stdout.write(`Last stop:    ${lastStopLine}\n`);
+    process.stdout.write(`Total uptime: ${totalUptimeStr} (this session)\n`);
+    process.stdout.write(`Log:          ${logLine}\n`);
+
+    if (r.logPath) {
+      process.stdout.write(`\n--- Last ${logLines} log lines ---\n`);
+      const tail = readLastLines(r.logPath, logLines);
+      process.stdout.write(tail);
+      if (tail.length > 0 && !tail.endsWith('\n')) process.stdout.write('\n');
+    }
+    process.stdout.write('\n');
+    process.exit(exitCode);
+  }
+
+  // ── Multi-extension table view ──────────────────────────────────────────────
+  const col1 = Math.max(...records.map((r) => r.id.length), 4);
+  const col2 = Math.max(...records.map((r) => r.key.length), 7);
+  const col3 = Math.max(...records.map((r) => r.scope.length), 5);
+  const col4 = Math.max(...records.map((r) => r.project.length), 7);
+  const col5 = 8; // HEALTHY / DEGRADED / DEAD
+
+  process.stdout.write(
+    `${'ID'.padEnd(col1)}  ${'KEY'.padEnd(col2)}  ${'SCOPE'.padEnd(col3)}  ${'PROJECT'.padEnd(col4)}  ${'STATUS'.padEnd(col5)}  PID     UPTIME      SOCKET\n`,
+  );
+  process.stdout.write(
+    `${'-'.repeat(col1)}  ${'-'.repeat(col2)}  ${'-'.repeat(col3)}  ${'-'.repeat(col4)}  ${'-'.repeat(col5)}  ------  ----------  ------\n`,
+  );
+  for (const r of records) {
+    const pidStr = r.pid !== null ? String(r.pid) : '';
+    const uptimeStr = formatDuration(r.uptimeSeconds * 1000);
+    const socketStr = r.socketReachable
+      ? `${r.socketLatencyMs ?? '?'}ms`
+      : (r.pidAlive ? 'unreachable' : '—');
+    process.stdout.write(
+      `${r.id.padEnd(col1)}  ${r.key.padEnd(col2)}  ${r.scope.padEnd(col3)}  ${r.project.padEnd(col4)}  ${r.status.toUpperCase().padEnd(col5)}  ${pidStr.padEnd(6)}  ${uptimeStr.padEnd(10)}  ${socketStr}\n`,
+    );
+  }
+  process.exit(exitCode);
+}
+
+// ─── logs (R4) ───────────────────────────────────────────────────────────────
+
+/**
+ * cmdLogs — stream or tail the log file for a running extension (R4).
+ *
+ * Usage:
+ *   sox logs --id=<extId> [--scope=<scope>] [--lines=<n>] [--follow] [--json]
+ *            [--history]
+ *
+ * Log file location: ~/.sox/logs/<supervisorId>/<extId>-<YYYY-MM-DD>.log
+ * The supervisorId is derived deterministically from scope+root.
+ *
+ * Without --follow: prints the last --lines lines (default 100).
+ * With --follow: watches the file for new writes (pure Node.js, no tail spawn).
+ * With --history: prints the run-history.json table instead of log lines.
+ */
+async function cmdLogs(flags: Record<string, string>): Promise<void> {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+  const osMod = require('node:os') as typeof import('node:os');
+
+  const id = flags['id'];
+  if (!id) {
+    process.stderr.write(`sox logs: --id is required\n`);
+    process.exit(1);
+  }
+
+  const scope = flags['scope'] ?? 'user';
+  const root = flags['root'] ?? process.cwd();
+  const linesArg = parseInt(flags['lines'] ?? '100', 10);
+  const lines = Number.isFinite(linesArg) && linesArg > 0 ? linesArg : 100;
+  const follow = flags['follow'] !== undefined;
+  const jsonMode = flags['json'] !== undefined;
+  const showHistory = flags['history'] !== undefined;
+
+  const soxHome = process.env['SOX_HOME'] ?? pathMod.join(osMod.homedir(), '.sox');
+  const supervisorId = computeSupervisorId(scope, root);
+  const logDir = pathMod.join(soxHome, 'logs', supervisorId);
+
+  // ── Run history mode ──────────────────────────────────────────────────────
+  if (showHistory) {
+    const histPath = pathMod.join(logDir, 'run-history.json');
+    if (!fsMod.existsSync(histPath)) {
+      process.stdout.write(`sox logs: no run history at ${histPath}\n`);
+      process.exit(0);
+    }
+    let hist: { version: number; runs: Array<{ extId: string; startedAt: string; stoppedAt: string | null; exitCode: number | null; stopReason: string | null }> };
+    try {
+      hist = JSON.parse(fsMod.readFileSync(histPath, 'utf8')) as typeof hist;
+    } catch (e) {
+      process.stderr.write(`sox logs: failed to read run history: ${String(e)}\n`);
+      process.exit(1);
+    }
+    // Filter to the requested ext id.
+    const runs = hist.runs.filter((r) => r.extId === id);
+    if (jsonMode) {
+      process.stdout.write(JSON.stringify(runs, null, 2) + '\n');
+      process.exit(0);
+    }
+    // Human table
+    const h1 = 16, h2 = 26, h3 = 26, h4 = 10;
+    process.stdout.write(
+      `${'EXT'.padEnd(h1)}  ${'STARTED'.padEnd(h2)}  ${'STOPPED'.padEnd(h3)}  ${'DURATION'.padEnd(h4)}  REASON\n`,
+    );
+    process.stdout.write(
+      `${'-'.repeat(h1)}  ${'-'.repeat(h2)}  ${'-'.repeat(h3)}  ${'-'.repeat(h4)}  ------\n`,
+    );
+    for (const run of [...runs].reverse()) {
+      const stopped = run.stoppedAt ?? '—';
+      let duration = 'running';
+      if (run.stoppedAt) {
+        const ms = new Date(run.stoppedAt).getTime() - new Date(run.startedAt).getTime();
+        duration = formatDuration(ms);
+      }
+      const reason = run.stopReason ?? '—';
+      process.stdout.write(
+        `${run.extId.padEnd(h1)}  ${run.startedAt.padEnd(h2)}  ${stopped.padEnd(h3)}  ${duration.padEnd(h4)}  ${reason}\n`,
+      );
+    }
+    process.exit(0);
+  }
+
+  // ── Find the most recent log file for this extId ──────────────────────────
+  function findMostRecentLog(dir: string, extId: string): string | null {
+    if (!fsMod.existsSync(dir)) return null;
+    let files: string[];
+    try {
+      files = fsMod.readdirSync(dir)
+        .filter((f: string) => f.startsWith(`${extId}-`) && f.endsWith('.log'))
+        .sort(); // ISO dates sort correctly lexicographically
+    } catch {
+      return null;
+    }
+    if (files.length === 0) return null;
+    return pathMod.join(dir, files[files.length - 1] as string);
+  }
+
+  const logPath = findMostRecentLog(logDir, id);
+  if (!logPath) {
+    process.stderr.write(
+      `sox logs: no log file found for "${id}" in ${logDir}\n` +
+      `  Make sure the extension has been started at least once.\n`,
+    );
+    process.exit(1);
+  }
+
+  // ── Without --follow: tail last N lines ───────────────────────────────────
+  if (!follow) {
+    const text = readLastLines(logPath, lines);
+    if (jsonMode) {
+      process.stdout.write(JSON.stringify({ logPath, lines: text.split('\n') }, null, 2) + '\n');
+    } else {
+      process.stdout.write(text);
+      if (text.length > 0 && !text.endsWith('\n')) process.stdout.write('\n');
+    }
+    process.exit(0);
+  }
+
+  // ── With --follow: tail -f equivalent using fs.watch ─────────────────────
+  // First print the last N lines, then watch for new bytes.
+  const initialText = readLastLines(logPath, lines);
+  process.stdout.write(initialText);
+
+  let fileSize: number;
+  try {
+    fileSize = fsMod.statSync(logPath).size;
+  } catch {
+    fileSize = 0;
+  }
+
+  // Re-resolve log path on each poll in case rotation created a new file.
+  let currentLogPath = logPath;
+  let watching = true;
+
+  const watcher = fsMod.watch(pathMod.dirname(logPath), { persistent: true }, (_event: string, filename: string | null) => {
+    if (!watching) return;
+    // Check if a new log file appeared (rotation) or the current one grew.
+    const newLogPath = findMostRecentLog(logDir, id);
+    if (newLogPath && newLogPath !== currentLogPath) {
+      // File rotated — reset position for new file.
+      currentLogPath = newLogPath;
+      fileSize = 0;
+    }
+
+    if (!filename) return;
+    if (!currentLogPath.endsWith(filename) && !fsMod.existsSync(currentLogPath)) return;
+
+    let stat: { size: number };
+    try {
+      stat = fsMod.statSync(currentLogPath);
+    } catch {
+      return;
+    }
+
+    if (stat.size > fileSize) {
+      const fd = fsMod.openSync(currentLogPath, 'r');
+      try {
+        const toRead = stat.size - fileSize;
+        const buf = Buffer.allocUnsafe(toRead);
+        fsMod.readSync(fd, buf, 0, toRead, fileSize);
+        process.stdout.write(buf);
+      } finally {
+        fsMod.closeSync(fd);
+      }
+      fileSize = stat.size;
+    }
+  });
+
+  // Handle ctrl-c cleanly.
+  process.on('SIGINT', () => {
+    watching = false;
+    watcher.close();
+    process.exit(0);
+  });
+
+  // Keep process alive indefinitely.
+  await new Promise<void>(() => { /* never resolves — SIGINT exits */ });
+}
+
+function readLastLines(filePath: string, n: number): string {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  let stat: { size: number };
+  try {
+    stat = fsMod.statSync(filePath);
+  } catch {
+    return '';
+  }
+  if (stat.size === 0) return '';
+
+  const CHUNK = 65536; // 64 KB
+  let remaining = stat.size;
+  let lineCount = 0;
+  const parts: Buffer[] = [];
+
+  const fd = fsMod.openSync(filePath, 'r');
+  try {
+    while (remaining > 0 && lineCount <= n) {
+      const toRead = Math.min(CHUNK, remaining);
+      remaining -= toRead;
+      const buf = Buffer.allocUnsafe(toRead);
+      fsMod.readSync(fd, buf, 0, toRead, remaining);
+      parts.unshift(buf);
+      // Count newlines to know if we have enough.
+      for (let i = buf.length - 1; i >= 0; i--) {
+        if (buf[i] === 10 /* '\n' */) {
+          lineCount++;
+          if (lineCount > n) break;
+        }
+      }
+    }
+  } finally {
+    fsMod.closeSync(fd);
+  }
+
+  const full = Buffer.concat(parts).toString('utf8');
+  const allLines = full.split('\n');
+  // Take the last n lines (the initial split may have an empty string at the end).
+  const tail = allLines.slice(Math.max(0, allLines.length - n - 1));
+  return tail.join('\n');
+}
+
+function formatDuration(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
 }
 
 // ─── exec (A11) ──────────────────────────────────────────────────────────────

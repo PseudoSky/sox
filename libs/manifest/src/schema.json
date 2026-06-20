@@ -34,6 +34,7 @@
         "agent",
         "skill",
         "mcp-server",
+        "service",
         "prompt",
         "hook",
         "command",
@@ -400,7 +401,7 @@
     },
     "install": {
       "type": "object",
-      "description": "[shape:install-descriptor] Hybrid install descriptor (ADR resolved #2). Engine fills per-host target defaults from libs/host-registry at install time. NOTE: 'service' is a sox-run execution mode, not a separate manifest type \u2014 intentionally absent from the type enum here and in the top-level type field.",
+      "description": "[shape:install-descriptor] Hybrid install descriptor (ADR resolved #2). Engine fills per-host target defaults from libs/host-registry at install time.",
       "additionalProperties": false,
       "properties": {
         "type": {

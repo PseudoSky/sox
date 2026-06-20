@@ -3,6 +3,8 @@
   "id": "memory-cli",
   "version": "0.1.0",
   "type": "command",
+  "visibility": "internal",
+  "bundle_id": "sox-memory-bundle",
   "title": "Memory CLI",
   "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
   "keywords": ["memory", "cli", "init", "status", "registry", "scope"],

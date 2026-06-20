@@ -20,6 +20,7 @@ import { activateHook } from './adapters/hook.js';
 import { activateAgent, activateSkill } from './adapters/agent.js';
 import { activateCommand, CommandRegistry } from './adapters/command.js';
 import { ProcessSupervisor } from './supervisor.js';
+import { LogManager } from './log-manager.js';
 import type { McpAdapterHandle } from './adapters/mcp.js';
 import type { HookAdapterHandle } from './adapters/hook.js';
 import type { AgentAdapterHandle, SkillAdapterHandle } from './adapters/agent.js';
@@ -119,6 +120,12 @@ export interface LoaderOptions {
    * these strings. All others are skipped. Used by `sox start --id=<ext>`.
    */
   filterIds?: string[] | undefined;
+  /**
+   * R4: when set, each background extension gets a LogManager rooted at this directory.
+   * Path template: <logDir>/<extId>-<YYYY-MM-DD>.log
+   * Typically: ~/.sox/logs/<supervisorId>
+   */
+  logDir?: string | undefined;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -150,6 +157,7 @@ export async function loadFromLockfile(opts: LoaderOptions = {}): Promise<Loader
   const hasResolvedConfigMap = opts.resolvedConfigMap !== undefined;
   const overrideMcpHealthToStdioPing = opts.overrideMcpHealthToStdioPing ?? false;
   const filterIds = opts.filterIds; // undefined → no filter
+  const logDir = opts.logDir; // R4: undefined → no logging
   const activated: ActivatedHandle[] = [];
   const skipped: Array<{ key: string; reason: string }> = [];
   const errors: Array<{ key: string; error: unknown }> = [];
@@ -192,6 +200,7 @@ export async function loadFromLockfile(opts: LoaderOptions = {}): Promise<Loader
         resolvedConfigMap,
         hasResolvedConfigMap,
         overrideMcpHealthToStdioPing,
+        logDir,
       });
 
       if (result.type === 'activated') {
@@ -227,6 +236,7 @@ async function processEntry(
     resolvedConfigMap: Record<string, { config: Record<string, unknown>; enabled: boolean; version: string | undefined }>;
     hasResolvedConfigMap: boolean;
     overrideMcpHealthToStdioPing: boolean;
+    logDir?: string | undefined;
   },
 ): Promise<ProcessResult> {
   const baseId = key.includes('@') ? key.slice(0, key.lastIndexOf('@')) : key;
@@ -331,7 +341,15 @@ async function processEntry(
     }
   }
 
-  const handle = await dispatchToAdapter(key, extType, entrypointPath, manifest, { ...ctx, env: spawnEnv }, ctx.overrideMcpHealthToStdioPing);
+  const handle = await dispatchToAdapter(
+    key,
+    extType,
+    entrypointPath,
+    manifest,
+    { ...ctx, env: spawnEnv },
+    ctx.overrideMcpHealthToStdioPing,
+    ctx.logDir,
+  );
   return { type: 'activated', handle };
 }
 
@@ -348,7 +366,11 @@ async function dispatchToAdapter(
     env: Record<string, string>;
   },
   overrideMcpHealthToStdioPing = false,
+  logDir?: string | undefined,
 ): Promise<ActivatedHandle> {
+  // R4: derive the bare extension id (without version suffix) for log file naming.
+  const extId = key.includes('@') ? key.slice(0, key.lastIndexOf('@')) : key;
+
   switch (extType) {
     case 'mcp-server': {
       const rawLifecycle = manifest.lifecycle ?? {};
@@ -361,12 +383,18 @@ async function dispatchToAdapter(
           }
         : rawLifecycle;
 
+      // R4: create a LogManager for background extensions when logDir is provided.
+      const logManager = (logDir && rawLifecycle.background)
+        ? new LogManager({ logDir, extId })
+        : undefined;
+
       return activateMcp({
         key,
         entrypointPath,
         env: ctx.env,
         lifecycle: effectiveLifecycle,
         permissions: manifest.permissions,
+        logManager,
       });
     }
 
@@ -418,6 +446,11 @@ async function dispatchToAdapter(
       // written by the service when it binds its port (ht-2).
       const storePath = path.dirname(entrypointPath);
 
+      // R4: create a LogManager for service types when logDir is provided.
+      const serviceLogManager = logDir
+        ? new LogManager({ logDir, extId })
+        : undefined;
+
       const supervisor = new ProcessSupervisor({
         key,
         entrypointPath,
@@ -426,6 +459,7 @@ async function dispatchToAdapter(
         lifecycle: rawLifecycle,
         permissions: manifest.permissions,
         storePath,
+        logManager: serviceLogManager,
       });
 
       await supervisor.start();

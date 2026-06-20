@@ -409,6 +409,22 @@ function findExtensionDirs(root: string): string[] {
       if (fs.existsSync(manifestPath)) {
         dirs.push(extPath);
       }
+
+      // R9: also scan bundle members/ subdirectory so co-located member extensions
+      // are validated and included in the knownIds set for member-existence checks.
+      if (typeDir === 'bundles') {
+        const membersPath = path.join(extPath, 'members');
+        if (fs.existsSync(membersPath) && fs.statSync(membersPath).isDirectory()) {
+          for (const memberId of fs.readdirSync(membersPath)) {
+            const memberPath = path.join(membersPath, memberId);
+            if (!fs.statSync(memberPath).isDirectory()) continue;
+            const memberManifestPath = path.join(memberPath, 'extension.json');
+            if (fs.existsSync(memberManifestPath)) {
+              dirs.push(memberPath);
+            }
+          }
+        }
+      }
     }
   }
   return dirs;
@@ -454,20 +470,25 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
   } = manifest;
 
   // Check 4: type/dir match (validate-manifests specific — not in libs/manifest)
+  // R9: member extensions are co-located at extensions/bundles/<bundle>/members/<id>/
+  // Their parent dir is "members", not a type dir. Skip the type/dir match for them.
   const typeDir = path.basename(path.dirname(extDir));
-  const expectedType = DIR_TO_TYPE[typeDir];
-  if (expectedType === undefined) {
-    diags.push({
-      path: manifestPath,
-      message: `Unknown type directory "${typeDir}" — must be one of: ${Object.keys(DIR_TO_TYPE).join(', ')}`,
-      severity: 'error',
-    });
-  } else if (type !== expectedType) {
-    diags.push({
-      path: manifestPath,
-      message: `type "${type}" does not match parent directory "${typeDir}" (expected "${expectedType}")`,
-      severity: 'error',
-    });
+  const isBundleMember = typeDir === 'members';
+  if (!isBundleMember) {
+    const expectedType = DIR_TO_TYPE[typeDir];
+    if (expectedType === undefined) {
+      diags.push({
+        path: manifestPath,
+        message: `Unknown type directory "${typeDir}" — must be one of: ${Object.keys(DIR_TO_TYPE).join(', ')}`,
+        severity: 'error',
+      });
+    } else if (type !== expectedType) {
+      diags.push({
+        path: manifestPath,
+        message: `type "${type}" does not match parent directory "${typeDir}" (expected "${expectedType}")`,
+        severity: 'error',
+      });
+    }
   }
 
   // Check 5: version sync (validate-manifests specific — not in libs/manifest)

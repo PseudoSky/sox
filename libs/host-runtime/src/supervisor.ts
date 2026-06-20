@@ -26,6 +26,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { compilePolicy, type Policy } from './policy.js';
+import type { LogManager } from './log-manager.js';
 
 export interface LifecycleHealth {
   type?: 'stdio-ping' | 'socket' | 'command' | 'http-get' | undefined;
@@ -62,6 +63,12 @@ export interface SupervisorOptions {
    * Takes precedence over the policy-enforced dirname(entrypointPath) cwd.
    */
   storePath?: string | undefined;
+  /**
+   * logManager — R4 log pipeline.
+   * When set, stdout and stderr from the spawned child process are piped into
+   * logManager.write(). The manager owns the write stream and handles rotation.
+   */
+  logManager?: LogManager | undefined;
 }
 
 export interface SupervisedProcess {
@@ -94,6 +101,7 @@ export class ProcessSupervisor {
   private readonly _onRestart: ((n: number) => void) | undefined;
   private readonly _policy: Policy;
   private readonly _storePath: string | undefined;
+  private readonly _logManager: LogManager | undefined;
 
   private _proc: ChildProcess | null = null;
   private _healthy = false;
@@ -109,6 +117,7 @@ export class ProcessSupervisor {
     this._lifecycle = opts.lifecycle;
     this._onRestart = opts.onRestart;
     this._storePath = opts.storePath;
+    this._logManager = opts.logManager;
     // [process-boundary] Compile policy once at construction.
     // compilePolicy(undefined) → enforced=false (legacy compat, [inv:no-regress]).
     // compilePolicy(perms)     → enforced=true  ([def:enforcement-opt-in]).
@@ -147,6 +156,11 @@ export class ProcessSupervisor {
   /**
    * stop — [def:session-fixes] stop-via-supervisor.
    * Sets _stopping=true → prevents restart loop on exit.
+   *
+   * [R5/R6: process-group-containment + two-phase-shutdown]
+   * Uses process.kill(-pgid, signal) to deliver signals to the entire process
+   * group (extension process + all descendants). Falls back to proc.kill() if
+   * the pid is not yet assigned. SIGTERM → wait stop_timeout_ms → SIGKILL.
    */
   async stop(): Promise<void> {
     this._stopping = true;
@@ -156,16 +170,50 @@ export class ProcessSupervisor {
     }
     ProcessSupervisor._registry.delete(this._key);
 
-    if (!this._proc || this._proc.exitCode !== null) return;
+    if (!this._proc || this._proc.exitCode !== null) {
+      // Process already gone — close the log stream if open.
+      if (this._logManager) this._logManager.close();
+      return;
+    }
 
     const stopTimeoutMs = this._lifecycle.stop_timeout_ms ?? 5000;
-    this._proc.kill('SIGTERM');
+    const pid = this._proc.pid;
+
+    // Phase 1: SIGTERM → entire process group (child + workers).
+    // Negative pgid signals the whole process group created by detached:true.
+    if (pid !== undefined) {
+      try {
+        process.kill(-pid, 'SIGTERM');
+      } catch {
+        // Group may already be dead — fall through to wait.
+      }
+    } else {
+      this._proc.kill('SIGTERM');
+    }
+
     const stopped = await this._waitForExit(stopTimeoutMs);
     if (!stopped) {
-      console.log(`[supervisor] SIGKILL for "${this._key}" (stop_timeout_ms exceeded)`);
-      this._proc.kill('SIGKILL');
-      await this._waitForExit(2000);
+      // Phase 2: SIGKILL → entire process group (stop_timeout_ms exceeded).
+      console.log(`[supervisor] SIGKILL for "${this._key}" process group (stop_timeout_ms exceeded)`);
+      if (pid !== undefined) {
+        try { process.kill(-pid, 'SIGKILL'); } catch { /* already dead */ }
+      } else {
+        this._proc.kill('SIGKILL');
+      }
+      const killed = await this._waitForExit(2000);
+      if (!killed) {
+        console.error(
+          `[supervisor] CRITICAL: could not kill "${this._key}" (pid ${String(pid)}) even with SIGKILL. ` +
+          `Process may be in uninterruptible sleep (D state). Manual intervention required.`,
+        );
+        // Mark as stopped in our bookkeeping so the runtime record is updated,
+        // even though the process may still be running at the OS level.
+        this._healthy = false;
+      }
     }
+
+    // R4: close the log stream after the process has stopped.
+    if (this._logManager) this._logManager.close();
   }
 
   async kill(): Promise<void> {
@@ -248,21 +296,53 @@ export class ProcessSupervisor {
 
     // --enable-source-maps: Node.js uses sourceMappingURL comments in bundles so
     // stack traces resolve back to original TypeScript line numbers.
+    // detached: true — creates a new process group (setsid on Linux/macOS).
+    // This lets us send signals to the entire process group (-pgid) on stop,
+    // covering the child AND all of its descendants. [R5: process-group-containment]
     this._proc = spawn(process.execPath, ['--enable-source-maps', this._entrypointPath, ...this._args], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: spawnEnv,
+      detached: true,            // ← R5: new process group per extension
       ...(spawnCwd !== undefined ? { cwd: spawnCwd } : {}),
     });
+    // Do NOT call this._proc.unref() — the supervisor must keep the child alive.
 
-    this._proc.stdout?.on('data', (_d: Buffer) => {
-      // P5 logging hook
+    // R4: pipe stdout and stderr to the log stream if a LogManager is wired.
+    // Raw bytes are written verbatim — sox does not inject prefixes into extension output.
+    this._proc.stdout?.on('data', (d: Buffer) => {
+      if (this._logManager) this._logManager.write(d);
     });
-    this._proc.stderr?.on('data', (_d: Buffer) => {
-      // P5 logging hook
+    this._proc.stderr?.on('data', (d: Buffer) => {
+      if (this._logManager) this._logManager.write(d);
     });
+
+    // R4: record run-start in run-history.json (extId = bare key without version).
+    if (this._logManager) {
+      const extId = this._key.includes('@')
+        ? this._key.slice(0, this._key.lastIndexOf('@'))
+        : this._key;
+      this._logManager.appendRunStart(extId);
+    }
 
     this._proc.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
       this._healthy = false;
+      // R4: patch run-history with stop information.
+      if (this._logManager) {
+        const extId = this._key.includes('@')
+          ? this._key.slice(0, this._key.lastIndexOf('@'))
+          : this._key;
+        let stopReason: import('./log-manager.js').RunRecord['stopReason'];
+        if (signal === 'SIGKILL') {
+          stopReason = 'sigkill';
+        } else if (signal === 'SIGTERM') {
+          stopReason = 'sigterm';
+        } else if (code === 0) {
+          stopReason = 'clean';
+        } else {
+          stopReason = 'crash';
+        }
+        this._logManager.patchRunStop(extId, code, stopReason);
+      }
       if (!this._stopping) {
         // [def:session-fixes] enable-reactivation: restart on unexpected exit
         const backoffMs = Math.min(5000, 200 * Math.pow(2, this._restartCount));

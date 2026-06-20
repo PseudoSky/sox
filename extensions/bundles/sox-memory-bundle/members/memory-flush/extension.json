@@ -3,6 +3,8 @@
   "id": "memory-flush",
   "version": "0.1.0",
   "type": "hook",
+  "visibility": "internal",
+  "bundle_id": "sox-memory-bundle",
   "title": "Memory Session Flush",
   "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
   "keywords": ["memory", "session", "lifecycle", "flush", "promotion", "SessionEnd"],
