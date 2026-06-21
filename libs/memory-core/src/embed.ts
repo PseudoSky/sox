@@ -23,6 +23,7 @@
 
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as fs from 'node:fs';
 
 // ── Public constants ──────────────────────────────────────────────────────────
 
@@ -104,6 +105,10 @@ async function initRealBackend(config: EmbedConfig): Promise<FlagEmbeddingInstan
     try {
       // Dynamic import so the hash-only path never loads fastembed's ONNX runtime.
       const { FlagEmbedding, EmbeddingModel } = await import('fastembed');
+
+      // Ensure the cache directory exists before fastembed tries to write into it.
+      // Without recursive: true this throws ENOENT when any parent is absent.
+      fs.mkdirSync(config.cacheDir, { recursive: true });
 
       // BGEBaseENV15 = 'fast-bge-base-en-v1.5' — 768-dim, L2-normalized output.
       const instance = await FlagEmbedding.init({

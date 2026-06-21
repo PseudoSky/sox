@@ -16,6 +16,15 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+// ── Real-model gate ───────────────────────────────────────────────────────────
+// The semantic similarity test runs when:
+//   - SOX_EMBED_BACKEND=real  (explicit opt-in), OR
+//   - SOX_RUN_EMBED_DOWNLOAD_TESTS=1  (CI gate when model is pre-cached)
+// In all other environments it skips cleanly.
+const RUN_REAL_EMBED =
+  process.env['SOX_EMBED_BACKEND'] === 'real' ||
+  process.env['SOX_RUN_EMBED_DOWNLOAD_TESTS'] === '1';
+
 import {
   embed,
   embedText,
@@ -165,23 +174,28 @@ describe('auto fallback — real model unavailable', () => {
 // ── 4. Real backend semantics (skipped if model not cached) ──────────────────
 
 describe('real backend — semantic similarity', () => {
-  it.skip('cosine(similar pair) > cosine(unrelated pair) [requires model download]', async () => {
-    // This test is skipped in CI unless the model is pre-cached.
-    // To run locally: SOX_EMBED_BACKEND=real pnpm -F @sox/memory-core test
-    process.env['SOX_EMBED_BACKEND'] = 'real';
+  // Runs when SOX_EMBED_BACKEND=real or SOX_RUN_EMBED_DOWNLOAD_TESTS=1.
+  // Skips cleanly in CI when the model has not been downloaded.
+  it.skipIf(!RUN_REAL_EMBED)(
+    'cosine(similar pair) > cosine(unrelated pair) [requires model download]',
+    async () => {
+      process.env['SOX_EMBED_BACKEND'] = 'real';
 
-    const dog1 = await embed('The dog ran across the field.');
-    const dog2 = await embed('A puppy sprinted through the meadow.');
-    const unrelated = await embed('The quarterly earnings report exceeded expectations.');
+      const dog1 = await embed('The dog ran across the field.');
+      const dog2 = await embed('A puppy sprinted through the meadow.');
+      const unrelated = await embed('The quarterly earnings report exceeded expectations.');
 
-    const simSimilar = cosine(dog1, dog2);
-    const simUnrelated = cosine(dog1, unrelated);
+      const simSimilar = cosine(dog1, dog2);
+      const simUnrelated = cosine(dog1, unrelated);
 
-    expect(dog1.length).toBe(EMBED_DIM);
-    expect(dog2.length).toBe(EMBED_DIM);
-    expect(unrelated.length).toBe(EMBED_DIM);
-    expect(simSimilar).toBeGreaterThan(simUnrelated);
-  });
+      expect(dog1.length).toBe(EMBED_DIM);
+      expect(dog2.length).toBe(EMBED_DIM);
+      expect(unrelated.length).toBe(EMBED_DIM);
+      // Similar-meaning sentences must score higher than unrelated ones
+      expect(simSimilar).toBeGreaterThan(simUnrelated);
+    },
+    30_000, // 30 s timeout — first call loads the ONNX model
+  );
 });
 
 // ── 5. Real-SQLite memoryWrite + memoryRecall round-trip ─────────────────────
