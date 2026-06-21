@@ -1,5 +1,6 @@
 packages:
   - 'extensions/*/*'
+  - 'extensions/bundles/*/members/*'
   - 'apps/**'
   - 'libs/**'
   - 'packages/**'
