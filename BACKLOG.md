@@ -82,6 +82,31 @@ The workspace-glob widening (`bec9914`) now links `@sox/memory-core` into all fi
 recall). Confirm `memory-cli`, `memory-flush`, `memory-daemon`, `memory-organizer` build and
 resolve `@sox/memory-core` at runtime too.
 
+### BL-7 — `install` should persist the resolved scope so `serve` needs no `--scope` flag
+
+**Severity:** Medium (DX / correctness footgun) · **Status:** Open
+`soxe install --scope=user` writes the user-scope lockfile (`~/.config/extensions/extensions.lock`),
+but `soxe serve <id>` defaults to `--scope=project` (cwd-rooted). So a user-scope-installed
+extension is invisible to `serve` unless the caller _also_ passes `--scope=user` — which means
+the scope decision has to be re-stated at every invocation site (the `~/.claude.json` MCP
+entry, `.mcp.json`, etc.). That conditional handling at install-time/launch files is exactly
+what we want to avoid.
+
+**Desired:** install should make the resolved scope self-describing so `serve` finds the
+extension without a flag. Options to evaluate:
+
+- `serve` resolves across scopes by precedence (project → user → org) instead of a single
+  default scope, so a user-scope install is found automatically.
+- and/or install records the scope in a stable, cwd-independent index (e.g. the
+  `~/.sox`/`SOX_HOME` install-registry) that `serve` consults regardless of cwd.
+- and/or install stamps the chosen scope into the generated launch/config artifact so no
+  caller has to pass `--scope`.
+
+**Follow-up (do this once BL-7 lands):** remove the `--scope=user` argument from the global
+MCP entry in `~/.claude.json` (`mcpServers."memory-server".args`) — it is a temporary
+workaround for this gap and should be deleted once `serve` resolves user-scope installs on
+its own. Track that removal as the closing step of BL-7.
+
 ---
 
 ## Resolved (this engagement)
