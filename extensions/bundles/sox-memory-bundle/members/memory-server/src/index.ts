@@ -27,9 +27,7 @@
 import { createInterface } from 'node:readline';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { openDb } from './db.js';
-import { memoryWrite } from './write.js';
-import { memoryRecall } from './recall.js';
+import { openDb, memoryWrite, memoryRecall } from '@sox/memory-core';
 import Database from 'better-sqlite3';
 
 // ─── Vendored compilePolicyFromEnv — matches [shape:policy-env] ───────────────
@@ -362,7 +360,6 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         agent_id: args['agent_id'] as string | undefined,
         source: args['source'] as 'message' | undefined,
         importance: args['importance'] as number | undefined,
-        tags: args['tags'] as string[] | undefined,
       });
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
