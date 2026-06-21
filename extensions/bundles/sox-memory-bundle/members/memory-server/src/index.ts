@@ -191,6 +191,11 @@ const TOOLS = [
           enum: ['message', 'tool_output', 'observation', 'document', 'reflection', 'import'],
         },
         importance: { type: 'number', minimum: 1, maximum: 10 },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Explicit concept/entity tags to attach immediately (user-asserted, no organizer delay)',
+        },
       },
       required: ['content', 'db_path'],
     },
@@ -333,7 +338,7 @@ function checkDbPathPolicy(dbPath: string): { isError: true; content: Array<{ ty
   return null;
 }
 
-export function handleToolCall(name: string, args: Record<string, unknown>): unknown {
+export async function handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
   const dbPath = args['db_path'] as string | undefined;
   if (!dbPath) {
     return { isError: true, content: [{ type: 'text', text: 'db_path is required' }] };
@@ -350,13 +355,14 @@ export function handleToolCall(name: string, args: Record<string, unknown>): unk
 
   switch (name) {
     case 'memory_write': {
-      const result = memoryWrite(db, {
+      const result = await memoryWrite(db, {
         content: args['content'] as string,
         session_id: args['session_id'] as string | undefined,
         t_occurred: args['t_occurred'] as string | undefined,
         agent_id: args['agent_id'] as string | undefined,
         source: args['source'] as 'message' | undefined,
         importance: args['importance'] as number | undefined,
+        tags: args['tags'] as string[] | undefined,
       });
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
@@ -364,7 +370,7 @@ export function handleToolCall(name: string, args: Record<string, unknown>): unk
     }
 
     case 'memory_recall': {
-      const result = memoryRecall(db, (args['scope'] as string) ?? 'project', {
+      const result = await memoryRecall(db, (args['scope'] as string) ?? 'project', {
         query: args['query'] as string,
         agent_id: args['agent_id'] as string | undefined,
         as_of: args['as_of'] as string | undefined,
@@ -527,7 +533,7 @@ async function handleRequest(req: JsonRpcRequest): Promise<unknown> {
   if (method === 'tools/call') {
     const p = params as ToolCallParams;
     const args = (p.arguments ?? {}) as Record<string, unknown>;
-    const toolResult = handleToolCall(p.name, args);
+    const toolResult = await handleToolCall(p.name, args);
     return {
       jsonrpc: '2.0',
       id,

@@ -17,7 +17,7 @@
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
 import { monotonicFactory } from 'ulid';
-import { embedText, vecToJson } from './embed.js';
+import { embed, vecToJson } from './embed.js';
 import { enqueueIngest, nudgeDaemon } from './memoryd.js';
 
 const ulid = monotonicFactory();
@@ -31,6 +31,7 @@ export interface WriteParams {
   metadata?: Record<string, unknown> | undefined;
   importance?: number | undefined;
   scope?: string | undefined;
+  tags?: string[] | undefined;
 }
 
 export interface WriteResult {
@@ -47,10 +48,10 @@ export type WriteError =
  * P2: enqueue into organizer_queue + nudge memoryd.
  * The organizer will asynchronously score importance and extract entities/relations.
  */
-export function memoryWrite(
+export async function memoryWrite(
   db: Database.Database,
   params: WriteParams,
-): WriteResult | WriteError {
+): Promise<WriteResult | WriteError> {
   const {
     content,
     session_id,
@@ -59,6 +60,7 @@ export function memoryWrite(
     source = 'message',
     importance = 1.0, // default; organizer will update via LLM scoring
     scope = 'project',
+    tags,
   } = params;
 
   if (!content || !content.trim()) {
@@ -87,7 +89,8 @@ export function memoryWrite(
   const tOccurred = t_occurred ?? now;
 
   // Compute embedding locally (zero provider calls — R1)
-  const embeddingVec = embedText(content);
+  // Real backend: in-process ONNX inference; no per-query network.
+  const embeddingVec = await embed(content);
   const embeddingJson = vecToJson(embeddingVec);
 
   // Atomic transaction: insert node + vec + FTS (via trigger) + enqueue
@@ -108,6 +111,35 @@ export function memoryWrite(
       rowid,
       embeddingJson,
     );
+
+    // User-asserted tags: insert entity nodes + MENTIONS edges immediately (no organizer delay)
+    if (tags && tags.length > 0) {
+      for (const tag of tags) {
+        const name = tag.trim();
+        if (!name) continue;
+
+        // Upsert entity node (dedup by name)
+        const existing = db
+          .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE kind='entity' AND name=? AND t_invalid IS NULL`)
+          .get(name);
+
+        const entityRowid = existing?.rowid ?? (() => {
+          const entityUid = `entity-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          const r = db.prepare<unknown[], { rowid: number }>(
+            `INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'entity', ?, ?, ?) RETURNING rowid`,
+          ).get(entityUid, name, now, now);
+          return r?.rowid;
+        })();
+
+        if (entityRowid && result) {
+          db.prepare(
+            `INSERT INTO edge (src, dst, rel, origin, t_created)
+             SELECT ?, ?, 'MENTIONS', 'user_asserted', ?
+             WHERE NOT EXISTS (SELECT 1 FROM edge WHERE src=? AND dst=? AND rel='MENTIONS')`,
+          ).run(result.rowid, entityRowid, now, result.rowid, entityRowid);
+        }
+      }
+    }
 
     // Enqueue for async organize (LLM step in memoryd→organizer)
     enqueueIngest(db, uid, scope, agent_id ?? null);

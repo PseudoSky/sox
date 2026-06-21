@@ -11,5 +11,8 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     }
+  },
+  "dependencies": {
+    "fastembed": "^2.1.0"
   }
 }

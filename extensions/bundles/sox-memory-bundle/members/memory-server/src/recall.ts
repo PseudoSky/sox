@@ -19,7 +19,7 @@
 import Database from 'better-sqlite3';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { embedText, vecToJson, getProviderCallCount } from './embed.js';
+import { embed, vecToJson, getProviderCallCount } from './embed.js';
 import { openDbReadOnly } from './db.js';
 
 export interface RecallParams {
@@ -100,11 +100,11 @@ interface NodeRow {
  * Main recall function — executes the full hot path.
  * Invariant R1: zero provider/LLM calls (enforced by not calling any provider).
  */
-export function memoryRecall(
+export async function memoryRecall(
   db: Database.Database,
   scope: string,
   params: RecallParams,
-): RecallResponse {
+): Promise<RecallResponse> {
   const {
     query,
     agent_id,
@@ -116,8 +116,8 @@ export function memoryRecall(
 
   const beforeCount = getProviderCallCount();
 
-  // 1. Query embedding (zero provider calls — local hash only)
-  const queryVec = embedText(query);
+  // 1. Query embedding — zero per-query network calls (R1).
+  const queryVec = await embed(query);
   const queryVecJson = vecToJson(queryVec);
 
   // Validity predicate
@@ -437,13 +437,13 @@ export function closeFederationConnections(): void {
  * Run per-store hybrid pipeline using a pre-opened connection.
  * Zero LLM calls.
  */
-function recallFromOpenDb(
+async function recallFromOpenDb(
   db: Database.Database,
   scope: string,
   params: RecallParams,
-): RecallResult[] {
+): Promise<RecallResult[]> {
   try {
-    const res = memoryRecall(db, scope, params);
+    const res = await memoryRecall(db, scope, params);
     return res.results;
   } catch {
     return [];
@@ -480,10 +480,10 @@ function collectSupersededFromDb(db: Database.Database, suppressed: Set<string>)
  *
  * Invariant R1: zero LLM/provider calls.
  */
-export function federatedRecall(
+export async function federatedRecall(
   stores: StoreDescriptor[],
   params: RecallParams,
-): FederatedRecallResponse {
+): Promise<FederatedRecallResponse> {
   if (!stores || stores.length === 0) {
     return { results: [], provider_call_count: 0 };
   }
@@ -511,7 +511,7 @@ export function federatedRecall(
   const allStoreResults: Array<{ scope: string; results: RecallResult[] }> = [];
   for (const { scope, db } of openConns) {
     if (!db) continue;
-    const results = recallFromOpenDb(db, scope, storeParams);
+    const results = await recallFromOpenDb(db, scope, storeParams);
     allStoreResults.push({ scope, results });
   }
 
