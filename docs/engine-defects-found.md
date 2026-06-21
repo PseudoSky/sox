@@ -81,3 +81,41 @@ The existing `fire()` semantics (abort-on-throw) can remain for backward compati
 must not block others.
 
 **Tracked in:** follow-on engagement (scope expansion flagged in P7 plan note)
+
+---
+
+## DEFECT-2: `pnpm typecheck` exits 2 on latent tokenguard + scripts errors
+
+**Discovered by:** workflow-agent-builder (claude-agents) — surfaced after fixing the
+`@sox/tokenguard-core` workspace-protocol resolution bug (`fix/tokenguard-workspace-protocol`,
+commit `dabe9ea`). These were previously *masked*: TS aborted on `TS2307 Cannot find module
+'@sox/tokenguard-core'` before it could reach them. With resolution fixed, the compiler now
+reaches and reports them. They are pre-existing code-quality defects, not regressions from
+the protocol fix (a `package.json` dep-spec change cannot introduce `TS6133`).
+**Severity:** Low — code hygiene; blocks a green `pnpm typecheck` but no runtime impact.
+**Status: OPEN** — not yet fixed.
+
+### Errors (9)
+
+tokenguard source:
+
+- `extensions/services/tokenguard/src/cli.ts(23,1)` — TS6133 `'readline'` declared but never read
+- `extensions/services/tokenguard/src/mapstore.ts(32,10)` — TS6133 `'now'` declared but never read
+- `extensions/services/tokenguard/src/proxy.ts(170,19)` — TS6133 `'mapper'` declared but never read
+- `extensions/services/tokenguard/src/proxy.ts(170,27)` — TS6133 `'adapter'` declared but never read
+- `extensions/services/tokenguard/src/proxy.ts(309,19)` — TS2322 `string | string[] | undefined` not assignable to `string | string[]` (needs an undefined guard)
+
+repo scripts (unrelated to tokenguard):
+
+- `scripts/check-registry-sync.ts(35,7)` — TS6133 `'tmpRoot'` declared but never read
+- `scripts/check-registry-sync.ts(162,7)` — TS6133 `'liveJson'` declared but never read
+- `scripts/new-extension.ts(82,96)` — TS2366 function lacks ending return statement
+- `scripts/new-extension.ts(281,91)` — TS2366 function lacks ending return statement
+
+### Fix sketch
+
+Remove the unused declarations; add an `undefined` guard at `proxy.ts:309`; add explicit
+returns (or `: void`/`undefined` return types) in `new-extension.ts`. All mechanical;
+no behavior change. After: `pnpm typecheck` should exit 0.
+
+**Tracked in:** this backlog entry (follow-on hygiene pass)
