@@ -22,12 +22,16 @@ export { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
 export {
   EMBED_MODEL,
   EMBED_DIM,
+  embed,
   embedText,
   vecToJson,
   vecToBuffer,
   getProviderCallCount,
   resetProviderCallCount,
+  getActiveEmbedModel,
+  _resetEmbedSingleton,
 } from './embed.js';
+export type { EmbedBackend, EmbedConfig } from './embed.js';
 
 // ── Write + invalidate ────────────────────────────────────────────────────────
 export { memoryWrite, memoryInvalidate } from './write.js';
@@ -60,7 +64,7 @@ export type {
 } from './recall.js';
 
 // ── Daemon interop ────────────────────────────────────────────────────────────
-export { enqueueIngest, nudgeDaemon, MemoryDaemon, SOCKET_PATH } from './memoryd.js';
+export { enqueueIngest, enqueueReindex, nudgeDaemon, MemoryDaemon, SOCKET_PATH } from './memoryd.js';
 export type { OrganizerItem, OrganizerResult } from './memoryd.js';
 
 // ── Extended functions (promotion, graphify, communities, entity search) ───────
@@ -108,13 +112,13 @@ import type { RecallParams, RecallResult } from './recall.js';
  * Convenience: open DB at dbPath, write an episode, close DB.
  * Returns WriteResult | WriteError.
  */
-export function write(
+export async function write(
   dbPath: string,
   params: WriteParams,
-): WriteResult | WriteError {
+): Promise<WriteResult | WriteError> {
   const db = openDb(dbPath);
   try {
-    return _write(db, params);
+    return await _write(db, params);
   } finally {
     db.close();
   }
@@ -124,14 +128,14 @@ export function write(
  * Convenience: open DB at dbPath, run hybrid recall, close DB.
  * Returns RecallResult[].
  */
-export function recall(
+export async function recall(
   dbPath: string,
   params: RecallParams,
-): RecallResult[] {
+): Promise<RecallResult[]> {
   const db = openDb(dbPath);
   try {
     const scope = (params.scopes && params.scopes[0]) ?? 'project';
-    const res = _recall(db, scope, params);
+    const res = await _recall(db, scope, params);
     return res.results;
   } finally {
     db.close();

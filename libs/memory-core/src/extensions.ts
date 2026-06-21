@@ -12,7 +12,7 @@
 
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
-import { embedText, vecToJson } from './embed.js';
+import { embed, vecToJson } from './embed.js';
 
 // ── P4: Scope Promotion (design.md §2.5, docs/scope-promotion.md) ─────────────
 
@@ -240,13 +240,13 @@ function _writePromotionQueueApplied(
  * Writes SAME_AS edge in src DB (linking src node to promoted dst uid).
  * Sets status='applied' in src's promotion_queue.
  */
-export function applyPromotion(
+export async function applyPromotion(
   srcDb: Database.Database,
   dstDb: Database.Database,
   nodeUid: string,
   fromScope: string,
   toScope: string,
-): ApplyPromotionResult {
+): Promise<ApplyPromotionResult> {
   const srcNode = srcDb
     .prepare(
       `SELECT uid, kind, content, name, summary, agent_id, session_id, source,
@@ -317,10 +317,10 @@ export function applyPromotion(
 
     if (!dstRow) throw new Error('Insert into dst DB failed');
 
-    // Insert vec embedding for dst node
+    // Insert vec embedding for dst node (await outside transaction — safe here)
     if (srcNode.content || srcNode.name) {
       const text = [srcNode.content, srcNode.name].filter(Boolean).join(' ');
-      const vec = embedText(text);
+      const vec = await embed(text);
       const vecJson = vecToJson(vec);
       try {
         dstDb
@@ -505,11 +505,11 @@ export interface GraphifyImportError {
  *   2. Validate every field → FAIL LOUD on unknown fields.
  *   3. Atomic import only after full validation.
  */
-export function graphifyImport(
+export async function graphifyImport(
   db: Database.Database,
   graphJson: unknown,
   options?: { agent_id?: string },
-): GraphifyImportResult | GraphifyImportError {
+): Promise<GraphifyImportResult | GraphifyImportError> {
   const agentId = options?.agent_id ?? null;
 
   // Parse if string
@@ -577,14 +577,32 @@ export function graphifyImport(
     };
   }
 
-  // 3. Atomic import — all validation passed
+  // 3. Atomic import — all validation passed.
+  //    Pre-compute embeddings before the transaction (better-sqlite3 transactions
+  //    are synchronous — cannot await inside them).
   const now = new Date().toISOString();
   let importedNodes = 0;
   let importedEdges = 0;
   const uidMap = new Map<string, string>(); // original id/uid → internal uid
 
+  // Pre-compute embeddings keyed by node index
+  const nodeEmbedJsons: (string | null)[] = await Promise.all(
+    nodes.map(async (node) => {
+      const content = node['content'] as string | undefined;
+      const name = (node['name'] as string | undefined) ?? null;
+      const text = [content, name].filter(Boolean).join(' ');
+      if (!text) return null;
+      try {
+        return vecToJson(await embed(text));
+      } catch {
+        return null;
+      }
+    }),
+  );
+
   const tx = db.transaction(() => {
-    for (const node of nodes) {
+    for (let nodeIdx = 0; nodeIdx < nodes.length; nodeIdx++) {
+      const node = nodes[nodeIdx]!;
       const origId = (shapeName === 'v2' ? node['uid'] : node['id']) as string;
       const uid = shapeName === 'v2' ? (node['uid'] as string) : `import-${node['id'] as string}`;
       const kind =
@@ -619,9 +637,7 @@ export function graphifyImport(
         | undefined;
 
       if (row) {
-        const text = [content, name].filter(Boolean).join(' ');
-        const vec = embedText(text);
-        const vecJson = vecToJson(vec);
+        const vecJson = nodeEmbedJsons[nodeIdx] ?? null;
         try {
           db.prepare(
             'INSERT OR IGNORE INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',

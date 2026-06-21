@@ -17,7 +17,7 @@
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
 import { monotonicFactory } from 'ulid';
-import { embedText, vecToJson } from './embed.js';
+import { embed, vecToJson } from './embed.js';
 import { enqueueIngest, nudgeDaemon } from './memoryd.js';
 
 const ulid = monotonicFactory();
@@ -47,10 +47,10 @@ export type WriteError =
  * P2: enqueue into organizer_queue + nudge memoryd.
  * The organizer will asynchronously score importance and extract entities/relations.
  */
-export function memoryWrite(
+export async function memoryWrite(
   db: Database.Database,
   params: WriteParams,
-): WriteResult | WriteError {
+): Promise<WriteResult | WriteError> {
   const {
     content,
     session_id,
@@ -87,7 +87,8 @@ export function memoryWrite(
   const tOccurred = t_occurred ?? now;
 
   // Compute embedding locally (zero provider calls — R1)
-  const embeddingVec = embedText(content);
+  // Real backend: in-process ONNX inference; no per-query network.
+  const embeddingVec = await embed(content);
   const embeddingJson = vecToJson(embeddingVec);
 
   // Atomic transaction: insert node + vec + FTS (via trigger) + enqueue

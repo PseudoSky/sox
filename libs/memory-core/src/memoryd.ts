@@ -26,6 +26,7 @@ import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 import { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
+import { reembedNodes } from './embed.js';
 
 export const SOCKET_PATH = path.join(process.env['HOME'] ?? '/tmp', '.memory', 'memoryd.sock');
 const POLL_INTERVAL_MS = 1000;
@@ -239,8 +240,47 @@ export class MemoryDaemon {
         break;
       }
       case 'reindex': {
-        // Trigger FTS rebuild for recently modified nodes
+        // Trigger FTS rebuild for recently modified nodes.
+        // When payload.reembed=true, also re-run the embedding model over each node
+        // (used when embed_model changes — see design.md §R2).
         const uids = (payload['uids'] as string[] | undefined) ?? [];
+        const reembed = (payload['reembed'] as boolean | undefined) ?? false;
+
+        if (reembed) {
+          // Resolve rowids for the given uids (or ALL nodes if uids is empty = full reindex)
+          let rowids: number[];
+          if (uids.length > 0) {
+            rowids = uids.flatMap((uid) => {
+              const row = this.db
+                .prepare(`SELECT rowid FROM node WHERE uid = ?`)
+                .get(uid) as { rowid: number } | undefined;
+              return row ? [row.rowid] : [];
+            });
+          } else {
+            // Full reindex: every non-invalidated node
+            rowids = (
+              this.db
+                .prepare(`SELECT rowid FROM node WHERE t_invalid IS NULL`)
+                .all() as { rowid: number }[]
+            ).map((r) => r.rowid);
+          }
+
+          const getContent = (rowid: number): string | null => {
+            const row = this.db
+              .prepare(`SELECT content, name FROM node WHERE rowid = ?`)
+              .get(rowid) as { content: string | null; name: string | null } | undefined;
+            if (!row) return null;
+            return [row.content, row.name].filter(Boolean).join(' ') || null;
+          };
+
+          try {
+            const updated = await reembedNodes(this.db, rowids, getContent);
+            console.log(`[memoryd] reindex: re-embedded ${updated} nodes`);
+          } catch (err) {
+            console.error('[memoryd] reindex: re-embed error', err);
+          }
+        }
+
         if (uids.length > 0) {
           // FTS content table is kept in sync via triggers; force rebuild by rebuilding
           try {
@@ -444,6 +484,28 @@ export function enqueueIngest(
     `INSERT INTO organizer_queue (op, payload, priority, enqueued)
      VALUES ('ingest', ?, ?, ?)`,
   ).run(payload, priority, now);
+}
+
+/**
+ * Enqueue a reindex operation.
+ * When reembed=true, re-runs the embedding model over each node's content
+ * and replaces its vec_node row. Use this after changing SOX_EMBED_BACKEND
+ * to keep vectors consistent with the active embed_model.
+ *
+ * @param uids - specific node UIDs to reindex; omit (or pass []) for a full reindex.
+ * @param reembed - also re-run the embedder (default true).
+ */
+export function enqueueReindex(
+  db: Database.Database,
+  uids: string[] = [],
+  reembed = true,
+): void {
+  const now = new Date().toISOString();
+  const payload = JSON.stringify({ uids, reembed });
+  db.prepare(
+    `INSERT INTO organizer_queue (op, payload, priority, enqueued)
+     VALUES ('reindex', ?, 0, ?)`,
+  ).run(payload, now);
 }
 
 /**

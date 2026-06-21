@@ -116,8 +116,8 @@ describe('permission-guard — mcp-path-guard enforcement', () => {
       try { fs.rmSync(EVIL_DB, { force: true }); } catch { /* ignore */ }
     });
 
-    it('returns isError: true for memory_write with db_path outside allowlist', () => {
-      const result = handleToolCall('memory_write', {
+    it('returns isError: true for memory_write with db_path outside allowlist', async () => {
+      const result = await handleToolCall('memory_write', {
         db_path: EVIL_DB,
         content: 'should-be-denied',
       }) as { isError?: boolean; content?: Array<{ type: string; text: string }> };
@@ -128,17 +128,17 @@ describe('permission-guard — mcp-path-guard enforcement', () => {
       expect(result.content![0]?.text).toContain(EVIL_DB);
     });
 
-    it('[mcp-path-guard.3] guard runs BEFORE sink: evil db file does NOT exist after denied call', () => {
+    it('[mcp-path-guard.3] guard runs BEFORE sink: evil db file does NOT exist after denied call', async () => {
       // Call handleToolCall with the forbidden path
-      handleToolCall('memory_write', { db_path: EVIL_DB, content: 'should-be-denied' });
+      await handleToolCall('memory_write', { db_path: EVIL_DB, content: 'should-be-denied' });
 
       // The file must NOT exist — openDb was never reached so mkdirSync+open
       // never ran for the evil path ([ref:guard-before-sink])
       expect(fs.existsSync(EVIL_DB), `Evil DB file must not be created at ${EVIL_DB}`).toBe(false);
     });
 
-    it('returns isError: true for memory_recall with db_path outside allowlist', () => {
-      const result = handleToolCall('memory_recall', {
+    it('returns isError: true for memory_recall with db_path outside allowlist', async () => {
+      const result = await handleToolCall('memory_recall', {
         db_path: EVIL_DB,
         query: 'should-be-denied',
       }) as { isError?: boolean };
@@ -146,8 +146,8 @@ describe('permission-guard — mcp-path-guard enforcement', () => {
       expect(result.isError).toBe(true);
     });
 
-    it('evil db does not exist after denied memory_recall call', () => {
-      handleToolCall('memory_recall', { db_path: EVIL_DB, query: 'denied' });
+    it('evil db does not exist after denied memory_recall call', async () => {
+      await handleToolCall('memory_recall', { db_path: EVIL_DB, query: 'denied' });
       expect(fs.existsSync(EVIL_DB)).toBe(false);
     });
   });
@@ -166,8 +166,8 @@ describe('permission-guard — mcp-path-guard enforcement', () => {
       restoreEnv();
     });
 
-    it('memory_write with db_path inside allowlist returns no isError', () => {
-      const result = handleToolCall('memory_write', {
+    it('memory_write with db_path inside allowlist returns no isError', async () => {
+      const result = await handleToolCall('memory_write', {
         db_path: ALLOWED_DB,
         content: 'allowed write test',
       }) as { isError?: boolean; content?: Array<{ type: string; text: string }> };
@@ -197,8 +197,8 @@ describe('permission-guard — mcp-path-guard enforcement', () => {
       try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
     });
 
-    it('memory_write with any db_path succeeds when SOX_PERM_ENFORCE is absent ([inv:no-regress])', () => {
-      const result = handleToolCall('memory_write', {
+    it('memory_write with any db_path succeeds when SOX_PERM_ENFORCE is absent ([inv:no-regress])', async () => {
+      const result = await handleToolCall('memory_write', {
         db_path: tmpDb,
         content: 'legacy compat test',
       }) as { isError?: boolean; content?: Array<{ type: string; text: string }> };
@@ -208,8 +208,8 @@ describe('permission-guard — mcp-path-guard enforcement', () => {
       expect(result.content![0]?.text).toContain('episode_uid');
     });
 
-    it('db file IS created in legacy mode (openDb runs normally)', () => {
-      handleToolCall('memory_write', { db_path: tmpDb, content: 'legacy' });
+    it('db file IS created in legacy mode (openDb runs normally)', async () => {
+      await handleToolCall('memory_write', { db_path: tmpDb, content: 'legacy' });
       // The file must exist — openDb was reached normally
       expect(fs.existsSync(tmpDb)).toBe(true);
     });

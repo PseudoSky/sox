@@ -265,7 +265,11 @@ async function handleScopePromotionProposed(payload: ScopePromotionPayload): Pro
       let failed = 0;
 
       for (const item of items) {
-        const result = (applyPromotion as Function)(srcDbRaw, dstDbRaw, item.uid, from_scope, to_scope);
+        // applyPromotion is async (embed is async); cast through unknown to handle
+        // stale dist type declarations while awaiting correctly.
+        const result = await (applyPromotion as unknown as (...args: unknown[]) => Promise<{ ok: boolean; dst_uid?: string; error?: string }>)(
+          srcDbRaw, dstDbRaw, item.uid, from_scope, to_scope,
+        );
         if (result?.ok) {
           applied++;
           console.log(`[memory-flush] applied promotion: ${item.uid} → ${result.dst_uid} (${from_scope}→${to_scope})`);

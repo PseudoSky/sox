@@ -14,16 +14,6 @@
   "license": "MIT",
   "runtime": "node",
   "requires": { "structured_output": true, "min_context_tokens": 8192 },
-  "lifecycle": {
-    "background": true,
-    "singleton": true,
-    "health": {
-      "type": "stdio-ping",
-      "interval_ms": 30000,
-      "timeout_ms": 5000
-    },
-    "stop_timeout_ms": 5000
-  },
   "capabilities": ["memory.read", "memory.write", "memory.session"],
   "tags": ["memory", "rag", "graph", "sqlite"],
   "install": {

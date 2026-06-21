@@ -25,9 +25,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
-import { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
+import { PRAGMAS, DDL, FTS_TRIGGERS } from '@sox/memory-core';
 
-const SOCKET_PATH = path.join(process.env['HOME'] ?? '/tmp', '.memory', 'memoryd.sock');
+const SOCKET_PATH = process.env['SOX_CONFIG_SOCK_PATH']
+  ?? path.join(process.env['HOME'] ?? '/tmp', '.memory', 'memoryd.sock');
 const POLL_INTERVAL_MS = 1000;
 const BATCH_MAX = 50;
 const DECAY_FACTOR = 0.995; // per-hour recency decay
