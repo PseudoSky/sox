@@ -14,7 +14,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@sox/tokenguard-core": "*"
+    "@sox/tokenguard-core": "workspace:*"
   },
   "license": "MIT"
 }
