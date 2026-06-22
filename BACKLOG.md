@@ -7,14 +7,21 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ---
 
-> **Status (2026-06-22): BL-1 … BL-20 all resolved** (incl. BL-7's manual `~/.claude.json`
-> cleanup, BL-19 install-resilience, and BL-20 DB→markdown export mirror).
+> **Status (2026-06-22): BL-1 … BL-20 all resolved.** BL-21/22/23/24 are now **folded into the
+> memory-enrichment plan** at `docs/plan/memory-enrichment/` (SPEC + DESIGN + CONSUMER-INTERFACES +
+> CONTRACTS + IMPLEMENTATION) and tracked there per `IMPLEMENTATION.md §0` — they are resolved by its
+> phases (P1–P6), not as loose items. The metadata-drop half of BL-23 is already fixed (`9728f6f`).
 
-## Open
+## Folded into the memory-enrichment plan
+
+> **BL-21, BL-22, BL-23, BL-24 are owned by `docs/plan/memory-enrichment/IMPLEMENTATION.md` (§0).**
+> Each is resolved by a plan phase: BL-23 metadata = done (`9728f6f`); BL-23 project-path + BL-24
+> tags/topic = P1; BL-24 clustering = P3; BL-22 entity-names + BL-21 auto-refresh = P5. The detailed
+> entries below remain as the original discovery context; status is **Folded (tracked in the plan)**.
 
 ### BL-23 — `memory_write` drops `metadata` and records no caller provenance (project path)
 
-**Severity:** Medium (provenance / data loss) · **Status:** Open
+**Severity:** Medium (provenance / data loss) · **Status:** Folded → memory-enrichment plan (metadata done `9728f6f`; project-path = P1)
 `memory_write` accepts a `metadata?: Record<string, unknown>` param but **never persists it** —
 it's referenced only in the `WriteParams` type, not in the node INSERT, so any caller-supplied
 metadata (e.g. a project path) is silently discarded. The `node` table has `agent_id` +
@@ -25,7 +32,7 @@ field (project path / repo) captured at write time. Surfaced auditing DB vs the 
 
 ### BL-24 — tags and the `[<topic>]` cluster are not first-class structured fields
 
-**Severity:** Low/Medium (queryability) · **Status:** Open
+**Severity:** Low/Medium (queryability) · **Status:** Folded → memory-enrichment plan (tags/topic = P1; clustering = P3)
 Two related modelling gaps surfaced comparing DB vs docs:
 - **Tags are lossy:** an agent's `tags[]` are converted to `entity` nodes + `MENTIONS` edges; the
   raw tag list is not retained on the episode and there is no `tags` column — so you can't query
@@ -38,7 +45,7 @@ Two related modelling gaps surfaced comparing DB vs docs:
 
 ### BL-22 — memory export frontmatter lists entities by opaque uid, not name
 
-**Severity:** Low (export usability) · **Status:** Open
+**Severity:** Low (export usability) · **Status:** Folded → memory-enrichment plan (P5)
 The BL-20 export renders each episode's `entities:` frontmatter as raw entity uids
 (e.g. `entity-1782156652131-v1dfntxapt`) instead of the human-readable entity NAME the DB
 stores (e.g. `acceptance-testing`). For a git-reviewable mirror this defeats the purpose — a
@@ -47,7 +54,7 @@ return entity names (optionally keep the uid as a secondary field). Surfaced com
 
 ### BL-21 — memory markdown export is on-demand; not auto-refreshed as new memory is written
 
-**Severity:** Low (auditability / DX) · **Status:** Open
+**Severity:** Low (auditability / DX) · **Status:** Folded → memory-enrichment plan (P5)
 BL-20 delivered `memory export` (DB→markdown mirror, topic-organized, configurable) but it must
 be run **manually** to refresh. BL-20's goal was that the mirror *stays current* — so a new
 finding written via `memory_write` still has no markdown representation until someone runs
