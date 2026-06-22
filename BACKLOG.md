@@ -7,11 +7,30 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ---
 
-> **Status (2026-06-22): all BL-1 … BL-15 resolved.** Five (BL-1/5/9/11/13) were already in
-> committed code; the remaining ten (BL-2/3/4/6/7/8/10/12/14/15) were resolved per the architect
-> plans at `docs/plan/memory-system/` and `docs/plan/ecosystem-feedback/`, build/lint/typecheck
-> verified cache-busted. One manual follow-up remains under BL-7 (remove the `--scope=user`
-> workaround from `~/.claude.json` now that `serve` cascades scopes) — config cleanup, not code.
+> **Status (2026-06-22): BL-1 … BL-18 all resolved** (incl. BL-7's manual `~/.claude.json`
+> cleanup, now done). **BL-19 is open** (install resilience — see below).
+
+## Open
+
+### BL-19 — `install` hard-fails on a single unresolvable config `install[]` entry
+
+**Severity:** Medium (install robustness / DX) · **Status:** Open
+Discovered while upgrading the user-scope install (2026-06-22): `~/.config/extensions/extensions.json`
+contained a stray `{ "id": "user" }` in `install[]` (cruft from an older CLI version that captured
+a scope value as a positional id). The result: `soxe install --scope=user` resolved all valid
+entries (the whole `sox-memory-bundle`) and then **errored out entirely** on `cannot resolve
+extension "user"`, so **none** of the valid upgrade was written until the bad entry was removed by
+hand. A single bad config line blocks the entire install.
+
+The **write-side is already fixed** — verified the current CLI does NOT add a scope value as an id
+(`install --scope user`, `install -s user`, and `install <id> --scope user` all leave `install[]`
+correct). The remaining gaps:
+1. **Read-side resilience:** `install` should **skip + warn** on an unresolvable `install[]` entry
+   (continue with the valid ones), not abort the whole operation.
+2. **Defense in depth:** reject reserved scope names (`user`/`project`/`local`) as extension ids at
+   config-write time, so this class of cruft can't be created.
+
+(The stray `{ "id": "user" }` was cleaned from the live config as part of the upgrade.)
 
 ## Resolved (formerly Open)
 
@@ -130,10 +149,9 @@ extension without a flag. Options to evaluate:
 - and/or install stamps the chosen scope into the generated launch/config artifact so no
   caller has to pass `--scope`.
 
-**Follow-up (do this once BL-7 lands):** remove the `--scope=user` argument from the global
-MCP entry in `~/.claude.json` (`mcpServers."memory-server".args`) — it is a temporary
-workaround for this gap and should be deleted once `serve` resolves user-scope installs on
-its own. Track that removal as the closing step of BL-7.
+**Follow-up — DONE (2026-06-22):** the `--scope=user` argument was removed from the global
+MCP entry in `~/.claude.json` (`mcpServers."memory-server".args`) now that `soxe serve`
+cascades scopes. BL-7 is fully closed (code + the manual config cleanup).
 
 ## Memory subsystem (`@sox/memory-core` + sox-memory-bundle)
 
