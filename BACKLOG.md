@@ -23,7 +23,7 @@ Surfaced after the `@sox/tokenguard-core` workspace-protocol fix (`dabe9ea`) unm
 files are inside the compilation (`--listFilesOnly` confirms) and every cited error is gone
 (e.g. `proxy.ts:309` now reads `(vs[0] ?? '')` — the prescribed `undefined` guard). The
 mechanical fixes are realized in the working tree (tokenguard `cli.ts`/`mapstore.ts`/`proxy.ts`,
-`scripts/new-extension.ts`, `scripts/check-registry-sync.ts) — **committed in `7a30ea5`.**
+`scripts/new-extension.ts`, `scripts/check-registry-sync.ts) — **committed in`7a30ea5`.**
 
 9 errors (historical):
 
@@ -49,7 +49,7 @@ mechanical, no behavior change. After: `pnpm typecheck` exits 0.
 ### ~~BL-2~~ — `embed.ts` real backend uses `bge-base-en-v1.5`, not the nominal nomic model — **Resolved**
 
 **Severity:** Low (works; naming/quality) · **Status:** Resolved (2026-06-22)
-`embed.ts` now carries an explicit comment at `EMBED_MODEL` clarifying it is the *hash-backend*
+`embed.ts` now carries an explicit comment at `EMBED_MODEL` clarifying it is the _hash-backend_
 identifier and that `getActiveEmbedModel()` returns `bge-base-en-v1.5` for the real backend;
 the module header documents the real model. The constant is retained for back-compat. Callers
 must use `getActiveEmbedModel()`, not `EMBED_MODEL`, as the active-backend proxy.
@@ -206,6 +206,47 @@ The `db_path` allowlist constraint is now documented for tool callers: `memory_w
 stating paths must be within `~/.memory/**` (else denied by the host guard, no side effects),
 and `memory-server/CLAUDE.md` gains a "Permissions and db_path constraint" section with the
 two escape hatches (reconfigure allowlist / symlink into `~/.memory/`).
+
+## Authoring / CLI
+
+### BL-16 — `soxe init` accepts ids that `soxe validate` rejects; naming rules undocumented; re-evaluate the rule
+
+**Severity:** Medium (authoring DX / correctness) · **Status:** Open
+Three related problems, surfaced authoring the memory-usage skill as a bundle member:
+
+1. **init/validate inconsistency (bug).** `soxe init skill memory-skill` **scaffolds
+   successfully**, but `soxe validate` then **rejects** the result:
+   `id "memory-skill" must not end with the type name "skill"`
+   (`libs/authoring/src/index.ts:156`). `init` and `validate` must agree — `init` should
+   reject (or auto-fix) a non-conformant id at scaffold time, not produce a born-INVALID
+   extension. Today the author only learns the id is illegal after a full scaffold.
+
+2. **Naming rules are undocumented.** The id contract (`^[a-z][a-z0-9-]*$` **and** must not
+   end with the type name) lives only in code + a test; there is no author-facing doc, and
+   `soxe init --help` shows only `init <type> <id>`. Document the id rules — and the bundle
+   convention that members are named by **function** (`memory-server`/`memory-cli`), not by
+   type — in the init help and an authoring guide, with examples + the rejection reason.
+
+3. **Re-evaluate whether the "no type-name suffix" rule still makes sense under bundling.**
+   The rule predates the bundle layout. Inside a bundle, members already live under
+   `members/<id>/` with the type explicit in `extension.json`, so a suffix like `-skill` is
+   arguably informative (it disambiguates a member's role in a mixed bundle), not redundant.
+   Decide: keep globally, relax for bundle members, or drop. (Complied for now by naming the
+   skill `memory-usage`, matching the `memory-<function>` sibling convention.)
+
+### BL-17 — bundle/config install does not host-place skill members (only the `--host` path does)
+
+**Severity:** Medium (install correctness) · **Status:** Open
+`soxe install --scope=user --update` (the config/lockfile path used to "upgrade a bundle")
+**resolves** a bundle's skill member into the lockfile but does **not** host-place it — after
+upgrading `sox-memory-bundle` with the new `memory-usage` skill member, the skill was written
+to the lockfile (`memory-usage/SKILL.md`) but **not** dropped into `~/.claude/skills/`, so it
+was not loadable. Host file-drop only happens on the **declarative `--host` path**
+(`sox install <id> --host=claude --scope=user`, `main.ts:631`). Net: upgrading a bundle does
+not deploy its skill members; a separate per-member `--host` install is required (the workaround
+used here). Fix: the config/bundle install should host-place every member per its
+`install.hosts` (so `install --update` of a bundle deploys skills/agents/commands too), or this
+two-step requirement must be documented. Closely related to BL-7 (scope/placement semantics).
 
 ---
 

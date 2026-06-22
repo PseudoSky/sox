@@ -10,10 +10,11 @@
   "compatibility": { "host": ">=1.0.0 <2.0.0" },
   "license": "MIT",
   "members": [
-    { "id": "memory-daemon",  "version": "^0.1.0" },
-    { "id": "memory-server",  "version": "^0.1.0" },
-    { "id": "memory-flush",   "version": "^0.1.0" },
-    { "id": "memory-cli",     "version": "^0.1.0" }
+    { "id": "memory-daemon", "version": "^0.1.0" },
+    { "id": "memory-server", "version": "^0.1.0" },
+    { "id": "memory-flush", "version": "^0.1.0" },
+    { "id": "memory-cli", "version": "^0.1.0" },
+    { "id": "memory-usage", "version": "^0.1.0" }
   ],
   "permissions": {}
 }

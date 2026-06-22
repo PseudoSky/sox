@@ -30,7 +30,7 @@
     "title": "sox-memory (graph memory subsystem)",
     "description": "Use this when you want the full sox-memory graph-memory subsystem installed in one command — expands to memory-daemon (supervised Unix-socket writer daemon), memory-server (7 MCP tools, stdio), memory-flush (SessionEnd hook), and memory-cli (store lifecycle commands).",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle",
-    "checksum": "sha256:9510dd7eb2dfd06c3e704465264bdfd66c1f1dde3c7fa041d57ca222bc562fb7",
+    "checksum": "sha256:eb8107e3aad6c4c4f036067264fa8266ab678dd5975295b46332f15da281f6aa",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -49,6 +49,10 @@
       },
       {
         "id": "memory-cli",
+        "version": "^0.1.0"
+      },
+      {
+        "id": "memory-usage",
         "version": "^0.1.0"
       }
     ]
@@ -127,6 +131,20 @@
     "requires": {
       "structured_output": true,
       "min_context_tokens": 8192
+    },
+    "visibility": "internal",
+    "bundleId": "sox-memory-bundle"
+  },
+  {
+    "id": "memory-usage",
+    "type": "skill",
+    "version": "0.1.0",
+    "title": "Using the sox memory system",
+    "description": "Use when an agent should recall prior knowledge or store durable findings in the sox graph-memory system via the memory_* MCP tools (memory_recall / memory_write / memory_search_entities / memory_invalidate).",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-usage",
+    "checksum": "sha256:fe875636699480e66e62624b2e25d46c061d76a3791171775d0c19256a792c9a",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle"
