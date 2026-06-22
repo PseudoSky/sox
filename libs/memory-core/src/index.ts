@@ -118,6 +118,10 @@ export type {
   SearchEntitiesResult,
 } from './extensions.js';
 
+// ── Markdown export mirror ────────────────────────────────────────────────────
+export { exportMarkdown } from './export.js';
+export type { ExportOpts, ExportResult } from './export.js';
+
 // ── Convenience wrappers (guard C5: write(dbPath, params) + recall(dbPath, params)) ──
 
 import { openDb } from './db.js';

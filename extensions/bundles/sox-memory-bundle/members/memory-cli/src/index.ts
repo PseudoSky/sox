@@ -1,5 +1,5 @@
 /**
- * Memory CLI — memory init|import|status|list|promote|registry
+ * Memory CLI — memory init|import|status|list|promote|registry|export
  * Deterministic: no LLM calls, predictable output.
  *
  * P3: multi-scope with registry.json.
@@ -9,18 +9,24 @@
  *   memory status [--path DIR]
  *   memory list [--path DIR]
  *   memory registry
+ *   memory export [--scope <s>] [--base-path <p>] [--dir <path>] [--db <path>]
  *
  * Scope → default store path (design.md §2.1):
  *   project  → <cwd>/.memory/project.db
  *   user     → ~/.memory/user.db
  *   org      → ~/.memory/org.db
  *   local    → <cwd>/.memory/local.db
+ *
+ * Export config resolution (highest precedence first):
+ *   --dir flag  >  SOX_CONFIG_EXPORT_DIR env var  >  scope-relative default
+ *   --db  flag  >  SOX_CONFIG_DB_PATH env var     >  resolveDbPath(scope, basePath)
+ *   export_enabled: --enabled/--no-enabled flag  >  SOX_CONFIG_EXPORT_ENABLED env var  >  true
  */
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
-import { openDb, initScope } from '@sox/memory-core';
+import { openDb, initScope, exportMarkdown } from '@sox/memory-core';
 import { writeRegistry } from '@sox/memory-core';
 
 export type ScopeKind = 'project' | 'user' | 'org' | 'local';
@@ -51,6 +57,10 @@ interface ParsedArgs {
   command: string;
   scope: ScopeKind;
   basePath: string;
+  /** --dir override for export subcommand */
+  exportDir: string;
+  /** --db override for export subcommand */
+  dbPathOverride: string;
   rest: string[];
 }
 
@@ -59,6 +69,8 @@ function parseArgs(argv: string[]): ParsedArgs {
   const command = argv[0] ?? 'help';
   let scope: ScopeKind = 'project';
   let basePath = '';
+  let exportDir = '';
+  let dbPathOverride = '';
   const rest: string[] = [];
 
   for (let i = 1; i < argv.length; i++) {
@@ -70,14 +82,53 @@ function parseArgs(argv: string[]): ParsedArgs {
         process.exit(1);
       }
       scope = s as ScopeKind;
-    } else if (arg === '--path') {
+    } else if (arg === '--path' || arg === '--base-path') {
       basePath = argv[++i] ?? '';
+    } else if (arg === '--dir') {
+      exportDir = argv[++i] ?? '';
+    } else if (arg === '--db') {
+      dbPathOverride = argv[++i] ?? '';
     } else {
       rest.push(arg ?? '');
     }
   }
 
-  return { command, scope, basePath, rest };
+  return { command, scope, basePath, exportDir, dbPathOverride, rest };
+}
+
+/**
+ * Default export directory for a scope when no --dir or SOX_CONFIG_EXPORT_DIR is set.
+ *   user/org  → ~/.memory/export
+ *   project   → <cwd>/.memory/export
+ *   local     → <cwd>/.memory/export
+ */
+function defaultExportDir(scope: ScopeKind): string {
+  const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? '/tmp';
+  if (scope === 'user' || scope === 'org') {
+    return path.join(home, '.memory', 'export');
+  }
+  return path.join(process.cwd(), '.memory', 'export');
+}
+
+/**
+ * Resolve the export directory with precedence:
+ *   --dir flag  >  SOX_CONFIG_EXPORT_DIR env var  >  scope-relative default
+ */
+function resolveExportDir(scope: ScopeKind, dirFlag: string): string {
+  if (dirFlag) return path.resolve(dirFlag);
+  const envDir = process.env['SOX_CONFIG_EXPORT_DIR'];
+  if (envDir) return path.resolve(envDir);
+  return defaultExportDir(scope);
+}
+
+/**
+ * Resolve whether export is enabled:
+ *   SOX_CONFIG_EXPORT_ENABLED env var  >  true (default on)
+ */
+function resolveExportEnabled(): boolean {
+  const env = process.env['SOX_CONFIG_EXPORT_ENABLED'];
+  if (env === 'false' || env === '0') return false;
+  return true;
 }
 
 function cmdInit(scope: ScopeKind, basePath: string): void {
@@ -197,8 +248,51 @@ function cmdRegistry(): void {
   }
 }
 
+/**
+ * Export live episodes to a markdown mirror.
+ *
+ * DB resolution (highest precedence first):
+ *   --db flag  >  SOX_CONFIG_DB_PATH env var  >  resolveDbPath(scope, basePath)
+ *
+ * Export-dir resolution:
+ *   --dir flag  >  SOX_CONFIG_EXPORT_DIR env var  >  scope-relative default
+ *
+ * Enabled resolution:
+ *   SOX_CONFIG_EXPORT_ENABLED env var  >  true (default on)
+ */
+function cmdExport(scope: ScopeKind, basePath: string, dirFlag: string, dbFlag: string): void {
+  // Resolve db path
+  const configDbPath = process.env['SOX_CONFIG_DB_PATH'];
+  const dbPath = dbFlag
+    ? path.resolve(dbFlag)
+    : configDbPath
+      ? path.resolve(configDbPath)
+      : resolveDbPath(scope, basePath);
+
+  if (!fs.existsSync(dbPath)) {
+    console.error(`Memory store not found at ${dbPath} — run 'memory init' first.`);
+    process.exit(1);
+  }
+
+  const exportDir = resolveExportDir(scope, dirFlag);
+  const enabled = resolveExportEnabled();
+
+  if (!enabled) {
+    console.log('export disabled');
+    return;
+  }
+
+  const db = openDb(dbPath);
+  try {
+    const result = exportMarkdown(db, { dir: exportDir, enabled });
+    console.log(`exported ${result.nodesWritten} nodes across ${result.topics} topics → ${result.dir}`);
+  } finally {
+    db.close();
+  }
+}
+
 export function runCli(argv: string[]): void {
-  const { command, scope, basePath } = parseArgs(argv);
+  const { command, scope, basePath, exportDir, dbPathOverride } = parseArgs(argv);
 
   switch (command) {
     case 'init':
@@ -213,6 +307,9 @@ export function runCli(argv: string[]): void {
     case 'registry':
       cmdRegistry();
       break;
+    case 'export':
+      cmdExport(scope, basePath, exportDir, dbPathOverride);
+      break;
     case 'help':
     default:
       console.log(`sox-memory CLI (P3: multi-scope)
@@ -221,10 +318,14 @@ Commands:
   status [--path DIR]                                   Show all store info
   list [--path DIR]                                     List recent memories
   registry                                              Show ~/.memory/registry.json
+  export [--scope <s>] [--base-path <p>]               Export live episodes to markdown
+         [--dir <path>] [--db <path>]
 `);
   }
 }
 
-// Module is loaded; CLI entry is via the compiled package entry or direct node invocation.
-// Export runCli for programmatic use.
+// When invoked directly (not required as a library), run the CLI.
+if (require.main === module) {
+  runCli(process.argv.slice(2));
+}
 
