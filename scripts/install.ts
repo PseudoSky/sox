@@ -310,12 +310,36 @@ export async function fetchArtifact(
     if (fs.existsSync(filePath)) {
       const stat = fs.statSync(filePath);
       if (stat.isDirectory()) {
-        const indexTs = path.join(filePath, 'src', 'index.ts');
-        const promptMd = path.join(filePath, 'prompt.md');
         const extJson = path.join(filePath, 'extension.json');
-        let contentPath = extJson; // fallback
-        if (fs.existsSync(indexTs)) contentPath = indexTs;
-        else if (fs.existsSync(promptMd)) contentPath = promptMd;
+        const promptMd = path.join(filePath, 'prompt.md');
+        let contentPath = extJson; // final fallback
+
+        // C4 entrypoint resolution — mirrors libs/install-engine/src/install.ts:
+        //   1. manifest.entrypoint (explicit declaration — e.g. dist/index.js, SKILL.md)
+        //   2. dist/index.js       (built artifact fallback for code types)
+        //   3. prompt.md           (declarative prompt types)
+        //   4. extension.json      (final fallback for bundles / bare manifests)
+        // NOTE: the old resolution order (src/index.ts first) was intentionally
+        // removed — it hashes the TypeScript source instead of the built artifact,
+        // producing a checksum that never matches the registry entry.
+        if (fs.existsSync(extJson)) {
+          try {
+            const manifest = JSON.parse(fs.readFileSync(extJson, 'utf8')) as { entrypoint?: string };
+            if (typeof manifest.entrypoint === 'string' && manifest.entrypoint.trim() !== '') {
+              const declared = path.join(filePath, manifest.entrypoint);
+              if (fs.existsSync(declared)) contentPath = declared;
+            }
+          } catch { /* unparseable extension.json — fall through */ }
+        }
+
+        if (contentPath === extJson) {
+          // No entrypoint declared or file missing — use fallback chain.
+          const distJs = path.join(filePath, 'dist', 'index.js');
+          if (fs.existsSync(distJs)) contentPath = distJs;
+          else if (fs.existsSync(promptMd)) contentPath = promptMd;
+          // else stays as extension.json
+        }
+
         bytes = fs.readFileSync(contentPath);
         resolvedSource = `file://${contentPath}`;
       } else {
