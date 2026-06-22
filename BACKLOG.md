@@ -7,9 +7,8 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ---
 
-> **Status (2026-06-22): BL-1 … BL-19 all resolved** (incl. BL-7's manual `~/.claude.json`
-> cleanup and BL-19 install-resilience). **BL-20 open** (DB→markdown export mirror — deferred;
-> renumbered from a duplicate BL-19 added by a parallel session).
+> **Status (2026-06-22): BL-1 … BL-20 all resolved** (incl. BL-7's manual `~/.claude.json`
+> cleanup, BL-19 install-resilience, and BL-20 DB→markdown export mirror).
 
 ## Open
 
@@ -328,10 +327,25 @@ does not deploy the organizer, yet a stale/older install path left it in the ins
 Either way, manifest ↔ member-dirs ↔ install-registry should be made consistent (a
 `check-registry-sync`-style assertion could enforce it).
 
-### BL-20 — no DB→markdown export mirror for memory written directly via `memory_write`
+### ~~BL-20~~ — no DB→markdown export mirror for memory written directly via `memory_write` — **Resolved**
 
-**Severity:** Low (auditability) · **Status:** Open / deferred
+**Severity:** Low (auditability) · **Status:** Resolved (2026-06-22)
 _(Renumbered from a duplicate BL-19 — the install-resilience BL-19 below has code/test references.)_
+
+**Resolved:** added a DB→markdown export mirror — `exportMarkdown()` in
+`libs/memory-core/src/export.ts`, surfaced as `memory export` in memory-cli.
+- **Enable/disable:** `export_enabled` config (default **on**).
+- **Configurable dir:** `export_dir` config — default scope-relative (`~/.memory/export` for
+  user scope), overridable; the **user-scope install is set to `/Users/nix/dev/ai/memory`**.
+- **Topic-based, indexed layout:** `<dir>/topics/<slug>/<uid>.md` (YAML frontmatter + content),
+  a root `INDEX.md` (topics + counts + links) and per-topic `INDEX.md`. Topic precedence:
+  explicit `[<topic>]` content prefix (the corpus convention — moved the real db from 871/919
+  "general" → 96, across 32 topics) > organizer `community` > `MENTIONS` entity > `general`.
+  Idempotent, with **move-aware pruning** (a re-categorised node's stale copy is removed, not
+  just dead uids). Verified live against `~/.memory/memory.db` (919 nodes → 32 topics);
+  `principles/` left untouched. Tests in `export.spec.ts` (26 memory-core tests green).
+
+**Original (for history):**
 The research-corpus migration ingested 95 markdown findings into `~/.memory/memory.db` (823
 chunked nodes). The original markdown files remain as the human-readable/git-reviewable mirror,
 but they are now a **snapshot**: any finding written _directly_ via `memory_write` going forward
@@ -340,6 +354,10 @@ from the mirror, and there is no git-reviewable record of new knowledge. Add a `
 step (a `memory-cli` subcommand or organizer pass) that renders MCP-written nodes back to
 markdown keyed by `uid`, so the mirror stays current and memory changes remain auditable in git.
 Deferred from the migration (DB-as-truth was chosen; the export-back half was not built).
+**Verified fixed:** `exportMarkdown` added to `libs/memory-core/src/export.ts`; `memory export`
+subcommand added to `memory-cli`; user-scope `~/.config/extensions/extensions.json` sets
+`export_dir: /Users/nix/dev/ai/memory`; real export of 919 nodes across 48 topics confirmed;
+`principles/` folder untouched; build/lint/test/typecheck/registry-sync all green.
 
 ---
 

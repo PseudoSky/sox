@@ -68,7 +68,7 @@
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "checksum": "sha256:2ee6779c8c7d75360f582540555d6518191136f03839f4813ed4a6b8062a7d2e",
+    "checksum": "sha256:b4fc168720886c77230ddd0619d540daec09037877b20f20d89d751041c363c6",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
