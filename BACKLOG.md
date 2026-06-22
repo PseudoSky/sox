@@ -12,6 +12,17 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ## Open
 
+### BL-21 — memory markdown export is on-demand; not auto-refreshed as new memory is written
+
+**Severity:** Low (auditability / DX) · **Status:** Open
+BL-20 delivered `memory export` (DB→markdown mirror, topic-organized, configurable) but it must
+be run **manually** to refresh. BL-20's goal was that the mirror *stays current* — so a new
+finding written via `memory_write` still has no markdown representation until someone runs
+`memory export`. Wire an automatic refresh so the mirror tracks the DB without manual steps:
+e.g. call `exportMarkdown()` from the `memory-flush` SessionEnd hook (and/or a periodic
+`memory-daemon` pass), gated on `export_enabled`. Consider throttling/incremental export (919
+nodes today) so it stays cheap on large stores.
+
 ### ~~BL-19~~ — `install` hard-fails on a single unresolvable config `install[]` entry — **Resolved**
 
 **Severity:** Medium (install robustness / DX) · **Status:** Resolved (2026-06-22)
