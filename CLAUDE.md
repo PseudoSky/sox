@@ -1,27 +1,24 @@
 # CLAUDE.md — sox-ecosystem
 
-## ⛔ AGENT CONSTRAINT — two CLIs: `bin/soxe` is a SHIM; `bin/sox` is the LEGACY CLI
+## ⛔ AGENT CONSTRAINT — `bin/sox` AND `bin/soxe` ARE SHIMS, DO NOT EDIT THEM FOR CLI LOGIC
 
-The repo currently ships **two** CLI entrypoints. Know which you're touching:
+Both CLI entrypoints are now thin ESM shims (~10 lines each) that load the compiled
+`dist/apps/sox/main.js`. **They contain zero CLI logic.** All CLI logic lives in
+**`apps/sox/src/main.ts`**.
 
-- **`bin/soxe` — the shim (DO NOT edit for CLI logic).** ~10 lines; loads the compiled
-  `dist/apps/sox/main.js`. All its CLI logic lives in **`apps/sox/src/main.ts`**. The only
-  legitimate edit to `bin/soxe` is the shim mechanism itself (dist load path, ESM/CJS interop).
-  To change a verb/flag/behavior of the new CLI: edit `apps/sox/src/main.ts`, then `npx nx build sox`.
-- **`bin/sox` — the legacy hand-maintained CLI (1377 lines, editable).** It is **not** a shim.
-  It implements its own verbs and delegates to `scripts/` (`validate`→`validate-manifests.ts`,
-  `install`→`install.ts`, `init`→`new-extension.ts`; `list`/`details` read JSON directly). It is
-  still exercised by `scripts/cli-adapter.test.ts` and `host-runtime:test-e2e` (SOX_BIN), so it
-  must keep working. Do **not** delete the `scripts/*` files it wraps.
+- **Edit a verb / flag / behavior** → `apps/sox/src/main.ts`, then `npx nx build sox`.
+- **Edit the runtime** → `libs/host-runtime/src/`, then `npx nx build host-runtime`.
+- **Editing a shim to change CLI behavior is always a bug** — the logic isn't there. The only
+  legitimate edit to a shim is the shim mechanism itself (dist load path, ESM/CJS interop), and
+  that is rare and deliberate.
+- If `node bin/sox …` (or `bin/soxe`) behaves unexpectedly, the fix is in `apps/sox/src/main.ts`
+  (rebuild with `npx nx build sox`), **never** in the shim.
 
-**Goal (not yet realized):** collapse `bin/sox` into a shim like `bin/soxe`. That is blocked
-until `apps/sox/src/main.ts` reaches behavioral **parity** with the legacy CLI — a drop-in
-shim today fails ~22 cli-adapter + ~13 e2e assertions. Until parity exists, `bin/sox` stays
-the legacy CLI. **Do not "shim" `bin/sox` without first porting parity and proving the full
-suite + e2e stay green.**
-
-> The `## Definition of Done` table below still describes `bin/sox` as a shim — that is
-> aspirational, not current. `bin/soxe` is the shim today.
+> History: `bin/sox` was a 1379-line hand-maintained legacy CLI. It was collapsed to a shim only
+> after `apps/sox/src/main.ts` reached full behavioral parity (cli-adapter 255/255 +
+> `host-runtime:test-e2e` 63/63 with the shim in place). The legacy scaffolder
+> `scripts/new-extension.ts` it wrapped is removed — `sox init` now runs through the compiled
+> `cmdInit`. **Never re-shim a CLI without first proving the full suite + e2e stay green.**
 
 ---
 

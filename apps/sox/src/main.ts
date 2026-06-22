@@ -151,6 +151,12 @@ async function main(): Promise<void> {
       printHelp();
       break;
 
+    // ── Version ───────────────────────────────────────────────────────────────
+    case '--version':
+    case '-V':
+      printVersion();
+      break;
+
     default:
       if (verb === undefined) {
         printHelp();
@@ -263,6 +269,22 @@ Runtime:
 Flags accept both forms: --flag=value  and  --flag value  (A12)
 
 `);
+}
+
+// ─── Version ──────────────────────────────────────────────────────────────────
+
+function printVersion(): void {
+  let version = '0.0.0';
+  try {
+    const fs = require('node:fs') as typeof import('node:fs');
+    const path = require('node:path') as typeof import('node:path');
+    // __dirname is dist/apps/sox/ in CommonJS build; root is three levels up.
+    const pkgPath = path.resolve(__dirname, '..', '..', '..', 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
+    version = pkg.version ?? '0.0.0';
+  } catch { /* fallback to 0.0.0 */ }
+  process.stdout.write(`${version}\n`);
+  process.exit(0);
 }
 
 // ─── A1: init — uses libs/authoring scaffold() ────────────────────────────────
@@ -481,17 +503,86 @@ Exit codes:
   const fs = await import('node:fs');
 
   const positionals = raw.filter((t) => !t.startsWith('-'));
-  const manifestPath = positionals[0] ?? 'extension.json';
-  const absPath = path.resolve(process.cwd(), manifestPath);
+  const givenPath = positionals[0];
+  const absPath = givenPath !== undefined ? path.resolve(process.cwd(), givenPath) : undefined;
 
-  if (!fs.existsSync(absPath)) {
-    process.stderr.write(`${CLI} validate: file not found: ${absPath}\n`);
+  // ── Directory / no-path mode: walk for extension.json files ────────────────
+  // When no path is given, walk the cwd for extension.json files (mirrors the
+  // validate-manifests.ts legacy behaviour). When a directory is given, same.
+  // When a specific file path is given that exists, validate just that file.
+  const isDirectory = absPath !== undefined
+    ? (fs.existsSync(absPath) && fs.statSync(absPath).isDirectory())
+    : true; // no path given → treat cwd as directory
+
+  if (isDirectory) {
+    const walkRoot = absPath ?? process.cwd();
+
+    // Collect all extension.json files under the given directory.
+    const found: string[] = [];
+    function walk(dir: string): void {
+      let entries: string[];
+      try { entries = fs.readdirSync(dir); } catch { return; }
+      for (const ent of entries) {
+        if (ent === 'node_modules' || ent === '.git' || ent === 'dist' || ent.startsWith('.nx')) continue;
+        const full = path.join(dir, ent);
+        let stat: ReturnType<typeof fs.statSync> | null = null;
+        try { stat = fs.statSync(full); } catch { continue; }
+        if (stat.isDirectory()) { walk(full); }
+        else if (ent === 'extension.json') { found.push(full); }
+      }
+    }
+    walk(walkRoot);
+
+    if (found.length === 0) {
+      process.stdout.write(`${CLI} validate: no extensions found under ${walkRoot}\n`);
+      process.exit(0);
+    }
+
+    let anyInvalid = false;
+    for (const manifestFile of found) {
+      let rawObj: unknown;
+      try {
+        rawObj = JSON.parse(fs.readFileSync(manifestFile, 'utf-8')) as unknown;
+      } catch (e) {
+        process.stderr.write(`${CLI} validate: parse error: ${manifestFile}: ${String(e)}\n`);
+        anyInvalid = true;
+        continue;
+      }
+      if (typeof rawObj !== 'object' || rawObj === null || Array.isArray(rawObj)) {
+        process.stderr.write(`${CLI} validate: manifest must be a JSON object: ${manifestFile}\n`);
+        anyInvalid = true;
+        continue;
+      }
+      const result = validate(rawObj as Record<string, unknown>);
+      if (result.ok) {
+        process.stdout.write(`${CLI} validate: OK — ${manifestFile}\n`);
+        for (const w of (result.warnings ?? [])) {
+          process.stdout.write(`  warning: ${w}\n`);
+        }
+      } else {
+        process.stdout.write(`${CLI} validate: INVALID — ${manifestFile}\n`);
+        for (const err of result.errors) {
+          process.stdout.write(`  - ${err}\n`);
+        }
+        for (const w of (result.warnings ?? [])) {
+          process.stdout.write(`  warning: ${w}\n`);
+        }
+        anyInvalid = true;
+      }
+    }
+    process.exit(anyInvalid ? 1 : 0);
+  }
+
+  // ── Single-file mode ─────────────────────────────────────────────────────────
+  // absPath is defined (givenPath was provided) and is not a directory.
+  if (!fs.existsSync(absPath!)) {
+    process.stderr.write(`${CLI} validate: file not found: ${String(absPath)}\n`);
     process.exit(2);
   }
 
   let rawObj: unknown;
   try {
-    const content = fs.readFileSync(absPath, 'utf-8');
+    const content = fs.readFileSync(absPath!, 'utf-8');
     rawObj = JSON.parse(content) as unknown;
   } catch (e) {
     process.stderr.write(`${CLI} validate: parse error: ${String(e)}\n`);
@@ -515,7 +606,7 @@ Exit codes:
     const isBackground = lifecycle?.['background'] === true;
     if (isBackground) {
       const entrypoint = manifest['entrypoint'] as string | undefined;
-      const extDir = path.dirname(absPath);
+      const extDir = path.dirname(absPath!);
       // Check the src/ counterpart first (most readable), then the built entrypoint.
       const candidateSrc = path.join(extDir, 'src', 'index.ts');
       const candidateBuilt = entrypoint ? path.join(extDir, entrypoint) : null;
@@ -543,7 +634,7 @@ Exit codes:
   }
 
   if (result.ok) {
-    process.stdout.write(`${CLI} validate: OK — ${absPath}\n`);
+    process.stdout.write(`${CLI} validate: OK — ${String(absPath)}\n`);
     for (const w of (result.warnings ?? [])) {
       process.stdout.write(`  warning: ${w}\n`);
     }
@@ -552,7 +643,7 @@ Exit codes:
     }
     process.exit(0);
   } else {
-    process.stdout.write(`${CLI} validate: INVALID — ${absPath}\n`);
+    process.stdout.write(`${CLI} validate: INVALID — ${String(absPath)}\n`);
     for (const err of result.errors) {
       process.stdout.write(`  - ${err}\n`);
     }
@@ -645,17 +736,45 @@ function cmdSearch(flags: Record<string, string>): void {
  * it unchanged preserves all 59 passing tests.
  */
 async function cmdInstall(flags: Record<string, string>): Promise<void> {
+  // --help / -h — always exit 0 before scope/host processing
+  if (flags['help'] !== undefined || flags['h'] !== undefined) {
+    process.stdout.write(`${CLI} install — install extensions for a scope
+
+Usage:
+  ${CLI} install [<id>] [-s <scope>] [--frozen-lockfile] [--update]
+  ${CLI} install <id> --host=<host> [--scope=project] [--root=<dir>]
+
+Options:
+  -s, --scope <scope>    Scope: user | project | local  (default: user)
+  --frozen-lockfile      Use frozen-lockfile mode
+  --update               Update pinned hashes
+  --host <host>          Declarative install to a specific host
+  --root <dir>           Workspace root override
+  --help                 Show this message
+`);
+    process.exit(0);
+  }
+
   const host = flags['host'];
+
+  // ── Scope validation ────────────────────────────────────────────────────────
+  // Validate early on the no-host path so we get a clean error before any
+  // config reads. (The host path uses 'project' as default and validates
+  // scope more loosely — declarativeInstall will catch invalid scopes.)
+  if (host === undefined || host === '') {
+    const scopeRaw = flags['scope'] ?? 'user';
+    const validScopes = new Set(['user', 'project', 'local']);
+    if (!validScopes.has(scopeRaw)) {
+      process.stderr.write(`${CLI} install: invalid scope '${scopeRaw}'\n`);
+      process.stderr.write(`  Valid scopes: user, project, local\n`);
+      process.exit(1);
+    }
+  }
 
   // ── Declarative path: --host present ───────────────────────────────────────
   if (host !== undefined && host !== '') {
-    // Parse positional id from argv (flags map has no positionals).
-    // argv[1] is the first token after the verb; skip tokens that start with '--'.
-    const rawAfterVerb = argv.slice(1);
-    let id: string | undefined;
-    for (const tok of rawAfterVerb) {
-      if (!tok.startsWith('-')) { id = tok; break; }
-    }
+    // id is the first positional argument (parseArgs stores it as flags['_']).
+    const id = flags['_'];
 
     if (id === undefined || id === '') {
       process.stderr.write(`${CLI} install: declarative path requires a positional <id>\n`);
@@ -806,15 +925,15 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
   // If a positional <id> was given (e.g. `sox install sox --scope=project`),
   // write it into the scope config before resolving — otherwise install() only
   // re-resolves what's already in extensions.json and the new id is silently ignored.
-  const rawAfterVerb2 = argv.slice(1);
-  let positionalId: string | undefined;
-  for (const tok of rawAfterVerb2) {
-    if (!tok.startsWith('-')) { positionalId = tok; break; }
-  }
+  //
+  // Use parseArgs-produced flags['_'] instead of scanning raw argv: the latter
+  // mis-identifies flag VALUES (e.g. `user` from `-s user`) as positionals (A12).
+  const positionalId: string | undefined = flags['_'];
 
   if (positionalId !== undefined && positionalId !== '') {
     const fsMod2  = require('node:fs')   as typeof import('node:fs');
     const pathMod2 = require('node:path') as typeof import('node:path');
+
     // Use the explicit --config path if provided; fall back to scope default.
     const cfgPath = configPathFlag ?? getScopePath(scope).config;
 
@@ -826,6 +945,21 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
 
     const alreadyPresent = cfg.install.some((e) => e.id === positionalId);
     if (!alreadyPresent) {
+      // R9: block bare positional install of internal bundle members — but only
+      // when the member is NOT already in the config. A config that explicitly lists
+      // a bundle member (e.g. the e2e test config) is respected without blocking.
+      const repoRootForGuard = process.cwd();
+      const registryIndexForGuard = loadRegistryIndex(repoRootForGuard);
+      const entryForGuard = resolveFromRegistry(positionalId, undefined, registryIndexForGuard);
+      if (entryForGuard?.visibility === 'internal') {
+        const owningBundle = entryForGuard.bundleId ?? 'the bundle that owns it';
+        process.stderr.write(
+          `${CLI} install: "${positionalId}" is a member of bundle "${owningBundle}".\n` +
+          `     Install the bundle instead: ${CLI} install ${owningBundle}\n`,
+        );
+        process.exit(1);
+      }
+
       cfg.install.push({ id: positionalId });
       fsMod2.mkdirSync(pathMod2.dirname(cfgPath), { recursive: true });
       fsMod2.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
@@ -1375,14 +1509,23 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
 // ─── uninstall ────────────────────────────────────────────────────────────────
 
 function cmdUninstall(flags: Record<string, string>): void {
-  const ROOT5 = process.cwd();
-  // Accept positional or --id flag.
-  const rawAfterVerb = argv.slice(1);
-  let positional: string | undefined;
-  for (const tok of rawAfterVerb) {
-    if (!tok.startsWith('-')) { positional = tok; break; }
+  // --help / -h — exit 0 immediately
+  if (flags['help'] !== undefined || flags['h'] !== undefined) {
+    process.stdout.write(`${CLI} uninstall — remove an installed extension from a scope
+
+Usage:
+  ${CLI} uninstall <id> [-s <scope>]
+
+Options:
+  -s, --scope <scope>    Scope: user | project | local  (default: user)
+  --help                 Show this message
+`);
+    process.exit(0);
   }
-  const id = flags['id'] ?? positional;
+
+  const ROOT5 = process.cwd();
+  // Accept positional (flags['_']) or --id flag.
+  const id = flags['id'] ?? flags['_'];
   const scope = (flags['scope'] ?? 'user') as 'org' | 'user' | 'project' | 'local';
   const root = flags['root'] ?? ROOT5;
 
@@ -1704,6 +1847,23 @@ async function cmdDisable(flags: Record<string, string>): Promise<void> {
 // ─── list ─────────────────────────────────────────────────────────────────────
 
 async function cmdList(flags: Record<string, string>): Promise<void> {
+  // --help / -h — exit 0 immediately
+  if (flags['help'] !== undefined || flags['h'] !== undefined) {
+    process.stdout.write(`${CLI} list — list installed extensions and their running state
+
+Usage:
+  ${CLI} list [-s <scope>] [--all] [--global] [--json]
+
+Options:
+  -s, --scope <scope>    Scope: user | project | local  (default: all scopes)
+  --all                  Include all extensions (including disabled)
+  --global               Show global install registry (~/.sox/install-registry.json)
+  --json                 Output as JSON array
+  --help                 Show this message
+`);
+    process.exit(0);
+  }
+
   const ROOT2 = process.cwd();
   const jsonMode = flags['json'] !== undefined;
   const fsMod = require('node:fs') as typeof import('node:fs');
@@ -1987,31 +2147,147 @@ async function cmdList(flags: Record<string, string>): Promise<void> {
 
 // ─── details ─────────────────────────────────────────────────────────────────
 
+/**
+ * cmdDetails — show manifest fields + scope provenance for a named extension.
+ *
+ * Accepts the id as either a positional arg or --id flag.
+ * Reads from registry/index.json (not the lockfile) so it works for any
+ * registry entry, installed or not.
+ * Shows type, version, source, members (bundle), requires, and installed-in
+ * provenance across all scope lockfiles.
+ */
 function cmdDetails(flags: Record<string, string>): void {
-  const id = flags['id'];
-  const scope = (flags['scope'] ?? 'user') as 'org' | 'user' | 'project' | 'local';
+  // --help / -h — exit 0 before touching any id
+  if (flags['help'] !== undefined || flags['h'] !== undefined) {
+    process.stdout.write(`${CLI} details — Show details for a named extension
+
+Usage:
+  ${CLI} details <id> [--scope=<scope>]
+
+Looks up the extension in registry/index.json and prints its manifest fields.
+Also shows scope provenance (installed-in) and running state.
+Exits non-zero if the id is not found.
+`);
+    process.exit(0);
+  }
+
+  // Accept positional arg (flags['_']) or --id flag
+  const id = flags['_'] ?? flags['id'];
 
   if (id === undefined || id === '') {
-    process.stderr.write(`${CLI} details: --id is required\n`);
+    process.stderr.write(`${CLI} details: extension id is required\n`);
+    process.stderr.write(`Usage: ${CLI} details <id>\n`);
     process.exit(1);
   }
 
-  const scopePaths = getScopePath(scope);
-  const lockfile = loadLockfile(scopePaths.lockfile);
+  // ── Registry lookup ──────────────────────────────────────────────────────
+  const repoRoot = process.cwd();
+  const registryIndex = loadRegistryIndex(repoRoot);
+  const entry = registryIndex.find((e) => e.id === id);
 
-  if (lockfile === null) {
-    process.stderr.write(`${CLI} details: no lockfile at ${scopePaths.lockfile}\n`);
-    process.exit(1);
-  }
-
-  const entry = lockfile.resolved[id]
-    ?? Object.entries(lockfile.resolved).find(([k]) => k.startsWith(id + '@'))?.[1];
   if (entry === undefined) {
-    process.stderr.write(`${CLI} details: extension '${id}' not found\n`);
+    process.stderr.write(`${CLI} details: unknown extension '${id}'\n`);
+    process.stderr.write(`Run '${CLI} search' to see available extensions.\n`);
     process.exit(1);
   }
 
-  process.stdout.write(JSON.stringify({ id, ...entry }, null, 2) + '\n');
+  // ── Scope provenance: find which lockfiles contain this id ───────────────
+  const fsDet = require('node:fs') as typeof import('node:fs');
+  const rootOverride = flags['root'];
+
+  type InstalledEntry = {
+    scope: string;
+    source: string;
+    resolved_at: string;
+    running: boolean;
+    pid: number | null;
+  };
+  const installedIn: InstalledEntry[] = [];
+
+  for (const sc of ['user', 'project', 'local'] as const) {
+    try {
+      const sp = sc === 'user'
+        ? getScopePath('user')
+        : sc === 'project'
+          ? (rootOverride !== undefined
+            ? { lockfile: require('node:path').join(rootOverride, '.extensions', 'extensions.lock') }
+            : getScopePath('project'))
+          : (rootOverride !== undefined
+            ? { lockfile: require('node:path').join(rootOverride, '.extensions', 'extensions.local.lock') }
+            : getScopePath('local'));
+
+      const lock = loadLockfile(sp.lockfile);
+      if (!lock || typeof lock.resolved !== 'object') continue;
+
+      // Read runtime record for running state
+      const runtimeFilePath =
+        flags['runtime-file'] ??
+        process.env['SOX_RUNTIME_FILE'] ??
+        sp.lockfile.replace(/\.lock$/, '.json').replace(/extensions\.json$/, 'runtime.json');
+      let runtimeEntries: Array<{ id: string; key: string; running: boolean; pid: number | null }> = [];
+      try {
+        if (fsDet.existsSync(runtimeFilePath)) {
+          const rec = JSON.parse(fsDet.readFileSync(runtimeFilePath, 'utf8')) as {
+            entries?: Array<{ id: string; key: string; running: boolean; pid: number | null }>;
+          };
+          runtimeEntries = Array.isArray(rec.entries) ? rec.entries : [];
+        }
+      } catch { /* skip unreadable runtime record */ }
+
+      for (const [key, lockEntry] of Object.entries(lock.resolved)) {
+        const baseKey = key.includes('@') ? key.slice(0, key.lastIndexOf('@')) : key;
+        if (key !== id && baseKey !== id) continue;
+
+        const runtimeEntry = runtimeEntries.find((e) => e.key === key || e.id === baseKey);
+        installedIn.push({
+          scope: sc,
+          source: (lockEntry as { source?: string }).source ?? '—',
+          resolved_at: (lockEntry as { resolved_at?: string }).resolved_at ?? '—',
+          running: runtimeEntry?.running ?? false,
+          pid: runtimeEntry?.pid ?? null,
+        });
+      }
+    } catch { /* skip inaccessible scope */ }
+  }
+
+  // ── Render ───────────────────────────────────────────────────────────────
+  const lines: string[] = [
+    `id:          ${entry.id}`,
+    `type:        ${entry.type}`,
+    `version:     ${entry.version}`,
+    `title:       ${entry.title}`,
+    `description: ${entry.description}`,
+    `source:      ${entry.source}`,
+    `checksum:    ${entry.checksum}`,
+    `host:        ${entry.compatibility?.host ?? '—'}`,
+  ];
+
+  if (entry.requires !== undefined) {
+    const reqs = Object.entries(entry.requires)
+      .map(([k, v]) => `${k}=${String(v)}`)
+      .join(', ');
+    lines.push(`requires:    ${reqs}`);
+  }
+
+  if (Array.isArray(entry.members) && entry.members.length > 0) {
+    const memberStr = entry.members
+      .map((m: { id: string; version: string }) => `${m.id}@${m.version}`)
+      .join(', ');
+    lines.push(`members:     ${memberStr}`);
+  }
+
+  // P6 scope provenance block — always emitted (even if empty, to make "not installed" explicit)
+  if (installedIn.length > 0) {
+    lines.push(`installed-in:`);
+    for (const p of installedIn) {
+      const runStr = p.running ? `RUNNING pid=${String(p.pid)}` : 'stopped';
+      lines.push(`  scope=${p.scope}  status=${runStr}  source=${p.source}  resolved_at=${p.resolved_at}`);
+    }
+  } else {
+    lines.push(`installed-in: (not installed in any scope)`);
+  }
+
+  process.stdout.write(lines.join('\n') + '\n');
   process.exit(0);
 }
 
