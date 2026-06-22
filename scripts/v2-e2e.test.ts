@@ -599,8 +599,8 @@ describe('P11 v2-e2e — BACK-COMPAT: all v1 extensions validate + the bundle va
     };
     expect(manifest.type).toBe('bundle');
     expect(Array.isArray(manifest.members)).toBe(true);
-    // sox-memory-bundle members: memory-daemon, memory-server, memory-flush,
-    // memory-cli, memory-usage (the usage skill added alongside the runtime members).
-    expect(manifest.members).toHaveLength(5);
+    // sox-memory-bundle members: memory-daemon, memory-server, memory-organizer,
+    // memory-flush, memory-cli, memory-usage (BL-18: organizer added to members[]).
+    expect(manifest.members).toHaveLength(6);
   });
 });

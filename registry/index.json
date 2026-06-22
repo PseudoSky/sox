@@ -28,9 +28,9 @@
     "type": "bundle",
     "version": "0.1.0",
     "title": "sox-memory (graph memory subsystem)",
-    "description": "Use this when you want the full sox-memory graph-memory subsystem installed in one command — expands to memory-daemon (supervised Unix-socket writer daemon), memory-server (7 MCP tools, stdio), memory-flush (SessionEnd hook), and memory-cli (store lifecycle commands).",
+    "description": "Use this when you want the full sox-memory graph-memory subsystem installed in one command — expands to memory-daemon (supervised Unix-socket writer daemon), memory-server (MCP tools, stdio), memory-organizer (LLM extract/link/consolidate agent that builds the graph), memory-flush (SessionEnd hook), memory-cli (store lifecycle commands), and memory-usage (how-to skill).",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle",
-    "checksum": "sha256:eb8107e3aad6c4c4f036067264fa8266ab678dd5975295b46332f15da281f6aa",
+    "checksum": "sha256:95d2c02579cad9094a0cae6bb9432052f251ecd0fa53ee07833ac97161bcdf2e",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -41,6 +41,10 @@
       },
       {
         "id": "memory-server",
+        "version": "^0.1.0"
+      },
+      {
+        "id": "memory-organizer",
         "version": "^0.1.0"
       },
       {

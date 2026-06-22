@@ -260,9 +260,19 @@ used here). Fix: the config/bundle install should host-place every member per it
 `install.hosts` (so `install --update` of a bundle deploys skills/agents/commands too), or this
 two-step requirement must be documented. Closely related to BL-7 (scope/placement semantics).
 
-### BL-18 — `memory-organizer` is a member dir + install-registry record but absent from the bundle manifest `members[]`
+### ~~BL-18~~ — `memory-organizer` is a member dir + install-registry record but absent from the bundle manifest `members[]` — **Resolved**
 
-**Severity:** Low (manifest/registry consistency) · **Status:** Open / needs-decision
+**Severity:** Low (manifest/registry consistency) · **Status:** Resolved (2026-06-22)
+Resolved by **including** the organizer in the bundle (intent confirmed: the daemon calls it and
+BL-9/BL-13 graph work depends on its extract-link-consolidate pass). Added
+`{ "id": "memory-organizer", "version": "^0.1.0" }` to `members[]` (now 6 members) and rewrote the
+bundle `description` to list all six (organizer + the previously-omitted memory-usage). The
+organizer's manifest already passes strict validate (author/keywords/invocation present, no
+lifecycle). v2-e2e member-count assertion updated 5→6. `install sox-memory-bundle` now deploys
+the organizer, reconciling the manifest with the install-registry record.
+
+**Original (for history):**
+**Severity:** Low (manifest/registry consistency) · **Status:** ~~Open / needs-decision~~
 `extensions/bundles/sox-memory-bundle/members/memory-organizer/` exists on disk and appears in
 `~/.sox`-side `install-registry.json`, but the bundle manifest's `members[]` lists only
 `memory-daemon`, `memory-server`, `memory-flush`, `memory-cli` (and now `memory-usage`) — **not**
