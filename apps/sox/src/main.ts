@@ -202,6 +202,7 @@ Usage: ${CLI} <verb> [flags]
 
 Authoring:
   init <type> <id>   Scaffold a born-conformant extension (uses libs/authoring)
+                     id: lowercase ^[a-z][a-z0-9-]*$, must not end in the type name
                      Types: agent | skill | mcp-server | hook | command | bundle | service
                      Flags: --out=<dir>  --title=<str>  --description=<str>
                             --author=<str>  --keywords=<k1,k2>
@@ -288,7 +289,7 @@ async function cmdInit(raw: string[]): Promise<void> {
   // @sox/authoring is genuinely init-only — dynamic import is appropriate here.
   // This is NOT a circular or cross-lib import; it keeps the authoring lib out of
   // the module graph when sox is used for non-init verbs.
-  const { scaffold, writeFileSet } = await import('@sox/authoring');
+  const { scaffold, writeFileSet, validateId } = await import('@sox/authoring');
 
   const flagMap = parseArgs(raw);
 
@@ -312,6 +313,8 @@ async function cmdInit(raw: string[]): Promise<void> {
   if (type === undefined || id === undefined) {
     process.stderr.write(`${CLI} init: usage: ${CLI} init <type> <id> [--out=<dir>]\n`);
     process.stderr.write(`  Types: agent | skill | mcp-server | hook | command | bundle | service\n`);
+    process.stderr.write(`  Id rules: lowercase ^[a-z][a-z0-9-]*$, and must NOT end in the type name\n`);
+    process.stderr.write(`           (e.g. 'memory-skill' is rejected; name members by function: 'memory-usage').\n`);
     process.exit(1);
   }
 
@@ -322,10 +325,15 @@ async function cmdInit(raw: string[]): Promise<void> {
     process.exit(1);
   }
 
-  // Validate id against the manifest pattern (^[a-z][a-z0-9-]*$).
-  const ID_RE = /^[a-z][a-z0-9-]*$/;
-  if (!ID_RE.test(id)) {
-    process.stderr.write(`${CLI} init: invalid id '${id}' — must match ^[a-z][a-z0-9-]*$\n`);
+  // Validate the id with the canonical authoring rule (BL-16): the same `validateId`
+  // that `scaffold()` and `soxe validate` enforce — pattern ^[a-z][a-z0-9-]*$ AND the
+  // id must not end with the type name (`-skill`, `-agent`, …). Failing fast here keeps
+  // `init` and `validate` in agreement instead of producing a born-INVALID extension.
+  const idErr = validateId(id, type as Parameters<typeof validateId>[1]);
+  if (idErr) {
+    process.stderr.write(`${CLI} init: ${idErr}\n`);
+    process.stderr.write(`  Id rules: lowercase, ^[a-z][a-z0-9-]*$, and not ending in the type name.\n`);
+    process.stderr.write(`  Bundle members are named by function (e.g. memory-server, memory-cli), not by type.\n`);
     process.exit(1);
   }
 

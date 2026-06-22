@@ -58,14 +58,14 @@ function validateId(id: string, _type: ExtensionType): string | null {
 }
 
 /**
- * Return a style-advisory message when the id ends with the type name.
- * This is a WARN-only rule (not an error) — it matches libs/authoring's fallback
- * behavior and allows guard/test IDs like "test-agent" to scaffold without error.
- * [inv:style-only]: the manifest schema does not enforce this restriction.
+ * Return an error message when the id ends with the type name.
+ * BL-16 decision: this is a HARD error, matching `validateId` in libs/authoring and
+ * `soxe validate` — `init` must not produce a born-INVALID extension. Name extensions
+ * (and bundle members) by function (`memory-server`, `memory-usage`), not by type.
  */
-function warnIdSuffix(id: string, type: ExtensionType): string | null {
+function idSuffixError(id: string, type: ExtensionType): string | null {
   if (id.endsWith(`-${type}`) || id === type) {
-    return `warning: id "${id}" ends with the type name "${type}" — consider a more descriptive name`;
+    return `id "${id}" must not end with the type name "${type}"`;
   }
   return null;
 }
@@ -919,9 +919,12 @@ async function scaffold(
     console.error(`ERROR: ${idErr}`);
     process.exit(1);
   }
-  const idWarn = warnIdSuffix(id, type);
-  if (idWarn) {
-    console.error(idWarn);
+  const idSuffixErr = idSuffixError(id, type);
+  if (idSuffixErr) {
+    console.error(`ERROR: ${idSuffixErr}`);
+    console.error(`  Id rules: lowercase ^[a-z][a-z0-9-]*$, and must not end in the type name.`);
+    console.error(`  Name extensions/members by function (e.g. memory-server, memory-usage), not by type.`);
+    process.exit(1);
   }
 
   // P3: --out redirects the output root instead of cwd/extensions/<type-dir>/

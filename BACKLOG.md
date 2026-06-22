@@ -209,9 +209,20 @@ two escape hatches (reconfigure allowlist / symlink into `~/.memory/`).
 
 ## Authoring / CLI
 
-### BL-16 — `soxe init` accepts ids that `soxe validate` rejects; naming rules undocumented; re-evaluate the rule
+### ~~BL-16~~ — `soxe init` accepts ids that `soxe validate` rejects; naming rules undocumented; re-evaluate the rule — **Resolved**
 
-**Severity:** Medium (authoring DX / correctness) · **Status:** Open
+**Severity:** Medium (authoring DX / correctness) · **Status:** Resolved (2026-06-22)
+1. **init/validate agreement (bug):** both init surfaces now fail fast on a non-conformant id,
+   matching `soxe validate`. `cmdInit` (`apps/sox/src/main.ts`, the `soxe` path) uses the
+   canonical `validateId` from `@sox/authoring` (pattern **and** no-type-suffix), exit 1 with a
+   clear message; the legacy `scripts/new-extension.ts` (`bin/sox` path) suffix check was
+   promoted from warn-only to a hard error (`idSuffixError`). Verified: `soxe init skill
+   memory-skill` and `sox init skill memory-skill` both exit 1; `memory-usage` scaffolds.
+2. **Documented:** id rules now appear in `init` usage + `--help` and in `docs/guidelines/bundle.md`.
+3. **Decision (re-evaluate):** the no-type-suffix rule is **kept globally** (not relaxed for
+   bundle members) — one uniform contract; member type is already explicit in `extension.json`
+   and the `members/<id>/` path; the `memory-<function>` convention is more informative.
+   Rationale recorded in `docs/guidelines/bundle.md`.
 Three related problems, surfaced authoring the memory-usage skill as a bundle member:
 
 1. **init/validate inconsistency (bug).** `soxe init skill memory-skill` **scaffolds
