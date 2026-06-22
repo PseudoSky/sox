@@ -174,6 +174,15 @@ function getDb(dbPath: string): Database.Database {
 
 const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
+    name: 'memory_ping',
+    description:
+      'Use this to verify the server is reachable — returns {ok:true} without touching any database.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
     name: 'memory_write',
     description:
       'Write a memory episode to the store. Returns {episode_uid}. Enqueues organize; never blocks on LLM.',
@@ -378,6 +387,11 @@ function splitIntoChunks(text: string, chunkTokens: number): string[] {
 }
 
 export async function handleToolCall(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  // memory_ping: no db_path needed — handled before the db_path guard.
+  if (name === 'memory_ping') {
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };
+  }
+
   const dbPath = args['db_path'] as string | undefined;
   if (!dbPath) {
     return { isError: true, content: [{ type: 'text', text: 'db_path is required' }] };

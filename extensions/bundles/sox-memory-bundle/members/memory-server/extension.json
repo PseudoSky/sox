@@ -16,6 +16,10 @@
   "requires": { "structured_output": true, "min_context_tokens": 8192 },
   "capabilities": ["memory.read", "memory.write", "memory.session"],
   "tags": ["memory", "rag", "graph", "sqlite"],
+  "lifecycle": {
+    "background": true,
+    "health": { "type": "stdio-ping" }
+  },
   "install": {
     "type": "mcp-server",
     "serves": ["stdio"],

@@ -1306,6 +1306,24 @@ export async function declarativeInstall(
       ? _expandHome(rawTarget)
       : path.join(workspaceRoot, rawTarget);
 
+    // [dod.2] Policy check: deny stdio mcp-server into .mcp.json.
+    // Claude's .mcp.json only accepts SSE/HTTP transports. A stdio mcp-server placed
+    // into .mcp.json would expose an unmediated spawn path outside sox supervision.
+    // Throw DeclarativeDeniedError BEFORE writing any file so there is no side effect.
+    if (
+      descriptor.type === 'mcp-server' &&
+      (descriptor.transport === 'stdio' || descriptor.transport === undefined && descriptor.profile === 'stdio') &&
+      absTarget.endsWith('.mcp.json')
+    ) {
+      throw new DeclarativeDeniedError(
+        'stdio mcp-server cannot be placed into .mcp.json (only SSE/HTTP transports are allowed); ' +
+        'use transport=sse or transport=http for .mcp.json placement',
+        descriptor.ext,
+        hostName,
+        scope,
+      );
+    }
+
     const ledger = opts?.ledger ?? Ledger.load(scopeRoot, { isProject });
 
     if (surface.capability === 'file-drop') {

@@ -1861,8 +1861,22 @@ async function cmdList(flags: Record<string, string>): Promise<void> {
 
   const runtimeFileOverride = flags['runtime-file'] ?? process.env['SOX_RUNTIME_FILE'];
 
-  const scopesToScan = scopeOverride !== undefined
-    ? [scopeOverride]
+  // When --runtime-file is explicitly provided, read the scope declared in that
+  // record so we scan only the matching lockfile. This prevents a runtime record
+  // for scope=project being attributed to scope=user because the user lockfile is
+  // scanned first and inherits the shared runtimeFileOverride. ([inv:scope-provenance])
+  let effectiveScopeOverride = scopeOverride;
+  if (runtimeFileOverride !== undefined && effectiveScopeOverride === undefined) {
+    try {
+      const overrideRec = JSON.parse(
+        (require('node:fs') as typeof import('node:fs')).readFileSync(runtimeFileOverride, 'utf8'),
+      ) as { scope?: string };
+      if (overrideRec.scope !== undefined) effectiveScopeOverride = overrideRec.scope;
+    } catch { /* ignore — fall through to scanning all scopes */ }
+  }
+
+  const scopesToScan = effectiveScopeOverride !== undefined
+    ? [effectiveScopeOverride]
     : ['user', 'project', 'local'];
 
   // Strip file:// scheme prefix from a source path for clean display.
