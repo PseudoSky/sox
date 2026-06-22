@@ -41,6 +41,14 @@ and bare runs bypass the project-graph dependency ordering and cache.
 - **Whole-repo gate:** `npx nx run-many -t build,lint,test` (the order C3 mandates).
 - A bare `tsc`/`vitest` result is **not** authoritative — verify runtime behavior against `nx build` output (see BACKLOG BL-4).
 
+**Build vs. test hygiene (BL-4).** `memory-core` and the `memory-server` bundle use
+`composite: true`. A bare `tsc` after a source change may emit nothing because `.tsbuildinfo`
+believes outputs are current — leaving a **stale `dist/`**. Vitest resolves `@sox/memory-core`
+to `libs/memory-core/dist/index.js` (a static alias), so **tests can pass against a stale
+`dist/`** if `nx build` was not run first — "tests pass" does not prove the runtime/MCP path.
+**Always `npx nx build memory-core && npx nx build memory-server` before running memory tests**,
+and prove runtime behavior against the built `dist`, never a vitest run alone.
+
 ---
 
 A monorepo for an **LLM-extension ecosystem**: independently-versioned extensions of 8 types
