@@ -210,18 +210,6 @@
     }
   },
   {
-    "id": "sox-memory",
-    "type": "skill",
-    "version": "0.1.0",
-    "title": "Using the sox memory system",
-    "description": "Use when an agent should recall prior knowledge or store durable findings in the sox graph-memory system via the memory_* MCP tools (memory_recall / memory_write / memory_search_entities / memory_invalidate).",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/sox-memory",
-    "checksum": "sha256:4d76fdc1500a62e00d1bcedb7375861e9420c35c44d6fa8a6d7c3a47a4b909f9",
-    "compatibility": {
-      "host": ">=1.0.0 <2.0.0"
-    }
-  },
-  {
     "id": "sox",
     "type": "command",
     "version": "1.0.0",
