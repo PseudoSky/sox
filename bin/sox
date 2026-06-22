@@ -578,7 +578,19 @@ function cmdList(argv) {
 
   const rows = [];
 
-  for (const scope of ['user', 'project', 'local']) {
+  // [inv:scope-provenance]: when --runtime-file is given, restrict the lockfile
+  // scan to the scope declared in that record. Without this guard the runtime
+  // file is fed to every scope's lockfile scan, so a project runtime.json causes
+  // user-lockfile entries to appear as RUNNING with scope=user.
+  let scopesToScan = ['user', 'project', 'local'];
+  if (runtimeFileFlag) {
+    try {
+      const rec = loadJSON(runtimeFileFlag);
+      if (rec && typeof rec.scope === 'string') scopesToScan = [rec.scope];
+    } catch { /* fall through — scan all scopes */ }
+  }
+
+  for (const scope of scopesToScan) {
     const { lockfile: lockPath } = getScopePathsWithRoot(scope, rootFlag);
     const lock = loadJSON(lockPath);
     if (!lock || typeof lock.resolved !== 'object') continue;

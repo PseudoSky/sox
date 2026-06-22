@@ -1,13 +1,25 @@
 # CLAUDE.md — sox-ecosystem
 
-## ⛔ AGENT CONSTRAINT — bin/sox IS READ-ONLY
+## ⛔ AGENT CONSTRAINT — `bin/sox` AND `bin/soxe` ARE SHIMS, DO NOT EDIT THEM
 
-**Never write code to `bin/sox`.** It is a thin ESM shim that only loads the compiled
-output from `dist/apps/sox/main.js`. All CLI logic lives in `apps/sox/src/main.ts`.
+**`bin/sox` and `bin/soxe` are thin ESM shims** — each does nothing but load the compiled
+output `dist/apps/sox/main.js`. They contain **zero CLI logic** (each is ~10–22 lines). All
+CLI logic lives in `apps/sox/src/main.ts`.
 
-- **Edit CLI logic** → `apps/sox/src/main.ts`, then `npx nx build sox`
-- **Edit the runtime** → `libs/host-runtime/src/`, then `npx nx build host-runtime`
-- Changes to `bin/sox` are silently bypassed at runtime and will never take effect.
+**Never edit either shim to add, change, or fix a verb, flag, or behavior.** A change to a
+shim is *always wrong* for CLI work — the logic isn't there. The **only** legitimate edit to
+a shim is to the shim mechanism itself (e.g. the dist load path or the ESM/CJS interop), and
+that should be rare and deliberate.
+
+- **Edit CLI verbs/flags/behavior** → `apps/sox/src/main.ts`, then `npx nx build sox`.
+- **Edit the runtime** → `libs/host-runtime/src/`, then `npx nx build host-runtime`.
+- **Editing a shim to change CLI behavior is a bug** — your change belongs in the source above.
+- If a test runs `node bin/sox …` and behaves unexpectedly, the fix is in `apps/sox/src/main.ts`
+  (rebuild with `npx nx build sox`), **not** in `bin/sox`.
+
+> History: `bin/sox` was once a 1379-line hand-maintained legacy CLI; it has been collapsed
+> into a shim. The legacy scaffolder `scripts/new-extension.ts` it wrapped is removed —
+> `sox init` now runs through the compiled `cmdInit` in `apps/sox/src/main.ts`.
 
 ---
 
