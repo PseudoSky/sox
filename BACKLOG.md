@@ -7,14 +7,26 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ---
 
-> **Status (2026-06-22): BL-1 … BL-18 all resolved** (incl. BL-7's manual `~/.claude.json`
-> cleanup, now done). **BL-19 is open** (install resilience — see below).
+> **Status (2026-06-22): BL-1 … BL-19 all resolved** (incl. BL-7's manual `~/.claude.json`
+> cleanup and BL-19 install-resilience). **BL-20 open** (DB→markdown export mirror — deferred;
+> renumbered from a duplicate BL-19 added by a parallel session).
 
 ## Open
 
-### BL-19 — `install` hard-fails on a single unresolvable config `install[]` entry
+### ~~BL-19~~ — `install` hard-fails on a single unresolvable config `install[]` entry — **Resolved**
 
-**Severity:** Medium (install robustness / DX) · **Status:** Open
+**Severity:** Medium (install robustness / DX) · **Status:** Resolved (2026-06-22)
+Both gaps fixed + tested: **(1) read-side resilience** — `install()` now **skips + warns** on an
+unresolvable `install[]` entry and continues (both `libs/install-engine/src/install.ts` and the
+legacy `scripts/install.ts` mirror); a single bad config line no longer aborts the whole install.
+**(2) source guard** — `cmdInstall` rejects a reserved scope name (`user`/`project`/`local`/`org`)
+as a positional id before writing it to the config, so the cruft can't be re-created. Regression
+tests added: `cli-adapter.test.ts` (`install user` → exit≠0, "scope name") and `install.test.ts`
+(valid+bogus config → valid installs, bogus skipped). Verified: scripts 257/257, e2e 63/63,
+build+lint+typecheck. The live stray `{ "id": "user" }` was cleaned from `~/.config/...` during the
+upgrade.
+
+**Original (for history):**
 Discovered while upgrading the user-scope install (2026-06-22): `~/.config/extensions/extensions.json`
 contained a stray `{ "id": "user" }` in `install[]` (cruft from an older CLI version that captured
 a scope value as a positional id). The result: `soxe install --scope=user` resolved all valid
@@ -316,9 +328,10 @@ does not deploy the organizer, yet a stale/older install path left it in the ins
 Either way, manifest ↔ member-dirs ↔ install-registry should be made consistent (a
 `check-registry-sync`-style assertion could enforce it).
 
-### BL-19 — no DB→markdown export mirror for memory written directly via `memory_write`
+### BL-20 — no DB→markdown export mirror for memory written directly via `memory_write`
 
 **Severity:** Low (auditability) · **Status:** Open / deferred
+_(Renumbered from a duplicate BL-19 — the install-resilience BL-19 below has code/test references.)_
 The research-corpus migration ingested 95 markdown findings into `~/.memory/memory.db` (823
 chunked nodes). The original markdown files remain as the human-readable/git-reviewable mirror,
 but they are now a **snapshot**: any finding written _directly_ via `memory_write` going forward

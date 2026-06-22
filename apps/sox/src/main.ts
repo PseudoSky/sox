@@ -931,6 +931,20 @@ Options:
   const positionalId: string | undefined = flags['_'];
 
   if (positionalId !== undefined && positionalId !== '') {
+    // BL-19 source guard: a reserved scope name must NEVER be written as an extension id.
+    // Older CLIs that scanned raw argv could capture a `--scope <name>` value as a positional,
+    // leaving a bogus `{ "id": "user" }` in the config that then hard-failed every later install.
+    // The write path now uses flags['_'] (so the value isn't mis-captured), and this guard
+    // closes the gap for a literal `install user`.
+    const RESERVED_SCOPE_IDS = new Set(['user', 'project', 'local', 'org']);
+    if (RESERVED_SCOPE_IDS.has(positionalId)) {
+      process.stderr.write(
+        `${CLI} install: '${positionalId}' is a scope name, not an extension id.\n` +
+        `     Set the scope with a flag: ${CLI} install [<id>] --scope=${positionalId}\n`,
+      );
+      process.exit(1);
+    }
+
     const fsMod2  = require('node:fs')   as typeof import('node:fs');
     const pathMod2 = require('node:path') as typeof import('node:path');
 

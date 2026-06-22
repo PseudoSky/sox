@@ -509,12 +509,14 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
         if (localPath) {
           source = `file://${localPath}`;
         } else {
-          console.error(
-            `install: ERROR cannot resolve extension "${entry.id}" @ "${entry.version ?? 'latest'}" — ` +
+          // BL-19 resilience: skip + warn on an unresolvable entry instead of aborting the
+          // whole install. One bad config line must not block every valid entry.
+          console.warn(
+            `install: WARNING skipping "${entry.id}" @ "${entry.version ?? 'latest'}" — ` +
               `not found in registry/index.json and not found locally. ` +
-              `Run 'pnpm run build-index' to rebuild the registry.`,
+              `Run 'pnpm run build-index' to rebuild the registry, or remove this entry from the config.`,
           );
-          process.exit(1);
+          continue;
         }
       } else {
         source = indexEntry.source;
