@@ -1,14 +1,22 @@
 /**
  * libs/memory-core — shared internal library for the sox-memory subsystem.
  *
- * EMBEDDING BACKEND (BL-11 resolved):
- * `embed()` routes onnxruntime-node through a persistent worker_thread (embedWorker.ts),
- * keeping the ONNX native addon isolated from better-sqlite3 + sqlite-vec in the main
- * thread. `openDb()` + `await embed()` in the same process is now safe.
+ * PROCESS BOUNDARY CONSTRAINT (BL-11):
+ * `openDb()` (better-sqlite3 + sqlite-vec) and `await embed()` with the real ONNX backend
+ * MUST NOT run in the same thread — both native addons share a libpthread mutex that is
+ * corrupted across async boundaries ("mutex lock failed: Invalid argument").
  *
- * Historical note: prior to this fix, both native addons shared a libpthread mutex that
- * was corrupted across async boundaries ("mutex lock failed: Invalid argument"). The
- * worker_thread boundary prevents this. See embed.ts for implementation.
+ * Safe patterns:
+ *   1. Route writes through the MCP server process (memory-server handles DB writes; your
+ *      process only calls the MCP tool over stdio/socket).
+ *   2. Use the embed worker thread — `embed()` in this library already routes through
+ *      embedWorker.ts (worker_threads), keeping ONNX isolated from the main thread.
+ *   3. Set SOX_EMBED_BACKEND=hash to avoid loading onnxruntime-node entirely.
+ *
+ * The worker isolation (option 2) is already active in embed.ts, so direct callers of
+ * `openDb()` + `await embed()` in the same process are safe as long as they go through
+ * this library's `embed()` export (not a raw onnxruntime-node import). Do NOT bypass the
+ * worker boundary by importing onnxruntime-node directly alongside better-sqlite3.
  *
  * Internal: not published. Consumed by the 4 memory extensions (R9: co-located in bundle):
  *   - extensions/bundles/sox-memory-bundle/members/memory-server

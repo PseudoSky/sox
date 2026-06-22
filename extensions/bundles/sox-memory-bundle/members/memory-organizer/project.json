@@ -1,6 +1,7 @@
 {
   "$schema": "../../../../../../node_modules/nx/schemas/project-schema.json",
   "name": "memory-organizer",
+  "description": "Builds cleanly and resolves @sox/memory-core from workspace (verified 2026-06-22).",
   "projectType": "library",
   "root": "extensions/bundles/sox-memory-bundle/members/memory-organizer",
   "sourceRoot": "extensions/bundles/sox-memory-bundle/members/memory-organizer/src",
