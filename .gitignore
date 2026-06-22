@@ -14,3 +14,14 @@ dist/
 .DS_Store
 # tsc incremental build cache
 *.tsbuildinfo
+# machine-local runtime / home state
+.extensions/runtime.json
+.sox/
+/data/
+# project-local MCP config (contains absolute machine paths)
+.mcp.json
+# per-extension build/demo artifacts
+extensions/services/tokenguard/bundle/
+extensions/services/tokenguard/demo/out/
+# sox init test-scaffold output
+/test-*-init/
