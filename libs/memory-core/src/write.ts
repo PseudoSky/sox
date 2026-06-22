@@ -31,6 +31,7 @@ export interface WriteParams {
   metadata?: Record<string, unknown> | undefined;
   importance?: number | undefined;
   scope?: string | undefined;
+  tags?: string[] | undefined;
 }
 
 export interface WriteResult {
@@ -59,6 +60,7 @@ export async function memoryWrite(
     source = 'message',
     importance = 1.0, // default; organizer will update via LLM scoring
     scope = 'project',
+    tags,
   } = params;
 
   if (!content || !content.trim()) {
@@ -112,6 +114,36 @@ export async function memoryWrite(
 
     // Enqueue for async organize (LLM step in memoryd→organizer)
     enqueueIngest(db, uid, scope, agent_id ?? null);
+
+    // Attach user-asserted tags as entity nodes + MENTIONS edges (no organizer delay)
+    if (tags && tags.length > 0) {
+      for (const tag of tags) {
+        const name = tag.trim();
+        if (!name) continue;
+        const existingEntity = db
+          .prepare<[string], { rowid: number }>(
+            `SELECT rowid FROM node WHERE kind = 'entity' AND name = ? AND t_invalid IS NULL`,
+          )
+          .get(name);
+        const entityRowid = existingEntity?.rowid ?? (() => {
+          const entityUid = ulid();
+          const r = db
+            .prepare<unknown[], { rowid: number }>(
+              `INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'entity', ?, ?, ?) RETURNING rowid`,
+            )
+            .get(entityUid, name, now, now);
+          if (!r) throw new Error(`Failed to insert entity node for tag: ${name}`);
+          return r.rowid;
+        })();
+        db.prepare(
+          `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
+           SELECT ?, ?, 'MENTIONS', 'user_asserted', ?, '{}'
+           WHERE NOT EXISTS (
+             SELECT 1 FROM edge WHERE src=? AND dst=? AND rel='MENTIONS' AND t_expired IS NULL
+           )`,
+        ).run(rowid, entityRowid, now, rowid, entityRowid);
+      }
+    }
 
     return uid;
   });

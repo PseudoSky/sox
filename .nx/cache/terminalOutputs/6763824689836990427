@@ -1,3 +1,0 @@
-> tsc --project apps/sox/tsconfig.app.json && echo '{"type":"commonjs"}' > dist/apps/sox/package.json && node apps/sox/scripts/rewrite-paths.cjs
-
-rewrite-paths: OK

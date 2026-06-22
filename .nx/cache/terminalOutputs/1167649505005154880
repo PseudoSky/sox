@@ -1,2 +1,0 @@
-> tsc --project libs/authoring/tsconfig.lib.json
-

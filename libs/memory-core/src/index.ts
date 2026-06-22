@@ -1,6 +1,15 @@
 /**
  * libs/memory-core — shared internal library for the sox-memory subsystem.
  *
+ * EMBEDDING BACKEND (BL-11 resolved):
+ * `embed()` routes onnxruntime-node through a persistent worker_thread (embedWorker.ts),
+ * keeping the ONNX native addon isolated from better-sqlite3 + sqlite-vec in the main
+ * thread. `openDb()` + `await embed()` in the same process is now safe.
+ *
+ * Historical note: prior to this fix, both native addons shared a libpthread mutex that
+ * was corrupted across async boundaries ("mutex lock failed: Invalid argument"). The
+ * worker_thread boundary prevents this. See embed.ts for implementation.
+ *
  * Internal: not published. Consumed by the 4 memory extensions (R9: co-located in bundle):
  *   - extensions/bundles/sox-memory-bundle/members/memory-server
  *   - extensions/bundles/sox-memory-bundle/members/memory-organizer
@@ -29,6 +38,7 @@ export {
   getProviderCallCount,
   resetProviderCallCount,
   getActiveEmbedModel,
+  reembedNodes,
   _resetEmbedSingleton,
 } from './embed.js';
 export type { EmbedBackend, EmbedConfig } from './embed.js';

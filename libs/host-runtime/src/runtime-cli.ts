@@ -19,6 +19,8 @@
  * all implemented in the lib's own runtime.ts / supervisor.ts.
  */
 
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   startRuntime,
@@ -34,6 +36,31 @@ import type { PermissionsBlock } from './supervisor.js';
 // __dirname is available because tsconfig.lib.json compiles to CommonJS.
 // dist/runtime-cli.js lives at libs/host-runtime/dist/, so three levels up is the repo root.
 const ROOT = path.resolve(__dirname, '..', '..', '..');
+
+/** Build SOX_CONFIG_* env vars from cascade-resolved config for an extension. */
+function buildExtConfigEnv(extId: string, root: string): Record<string, string> {
+  const configEnv: Record<string, string> = {};
+  const merged: Record<string, unknown> = {};
+  for (const cs of ['org', 'user', 'project', 'local'] as const) {
+    try {
+      const csp = getScopePaths(cs, root);
+      if (!fs.existsSync(csp.config)) continue;
+      const raw = JSON.parse(fs.readFileSync(csp.config, 'utf8')) as {
+        config?: Record<string, Record<string, unknown>>;
+      };
+      Object.assign(merged, raw.config?.[extId] ?? {});
+    } catch { /* skip missing scope */ }
+  }
+  const homeDir = os.homedir();
+  for (const [k, v] of Object.entries(merged)) {
+    const envKey = `SOX_CONFIG_${k.toUpperCase().replace(/[-\s]/g, '_')}`;
+    let strVal = typeof v === 'string' ? v : (v == null ? '' : JSON.stringify(v));
+    if (strVal.startsWith('~/')) strVal = homeDir + strVal.slice(1);
+    strVal = strVal.replace(/\$\{([A-Z0-9_]+)\}/g, (_m: string, n: string) => process.env[n] ?? _m);
+    configEnv[envKey] = strVal;
+  }
+  return configEnv;
+}
 
 /** Is a pid currently alive? (signal 0 = existence check) */
 function isAlive(pid: number): boolean {
@@ -508,6 +535,7 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
   const { McpClient } = await import('./registrar.js');
 
   const policy = compilePolicy(manifestFull.permissions);
+  const extConfigEnv = buildExtConfigEnv(extId, ROOT);
 
   let execEnv: NodeJS.ProcessEnv;
   if (policy.enforced) {
@@ -529,10 +557,10 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
       }
     }
     // policy.toEnv() injects the enforce flag + 4 policy JSON arrays ([def:policy-env]).
-    execEnv = { ...baseEnv, ...policy.toEnv() };
+    execEnv = { ...baseEnv, ...extConfigEnv, ...policy.toEnv() };
   } else {
     // [inv:no-regress] — No permissions block: byte-identical to pre-state.
-    execEnv = { ...process.env };
+    execEnv = { ...process.env, ...extConfigEnv };
   }
 
   const child = spawn(process.execPath, [entrypointPath], {

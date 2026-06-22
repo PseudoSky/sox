@@ -62,6 +62,7 @@
       "memory-extensions": {
         "projects": [
           "memory-server",
+          "memory-daemon",
           "memory-organizer",
           "memory-flush",
           "memory-cli",

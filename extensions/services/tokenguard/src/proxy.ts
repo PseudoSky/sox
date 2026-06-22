@@ -167,7 +167,7 @@ export interface ProxyOptions {
 }
 
 export async function startProxy(opts: ProxyOptions): Promise<http.Server> {
-  const { config, mapper, adapter, storePath, auditPath } = opts;
+  const { config, storePath, auditPath } = opts;
 
   const port = await findFreePort(config.port);
 
@@ -306,7 +306,7 @@ async function handleProxyRequest(
     const responseHeaders: Record<string, string | string[]> = {};
     for (const [k, vs] of Object.entries(upstream.headers)) {
       if (STRIP.has(k.toLowerCase())) continue;
-      responseHeaders[k] = vs.length === 1 ? vs[0] : vs;
+      responseHeaders[k] = vs.length === 1 ? (vs[0] ?? '') : vs;
     }
     // Set content-length based on the detokenized body (may differ from upstream)
     responseHeaders['content-length'] = String(Buffer.byteLength(reversed, 'utf8'));

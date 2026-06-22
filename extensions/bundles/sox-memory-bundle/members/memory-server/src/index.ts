@@ -24,7 +24,8 @@
  * permission-guard.spec.ts [mcp-path-guard.5] tests verify parity.
  */
 
-import { createInterface } from 'node:readline';
+import { serve, defineTool } from '@sox/mcp-runtime';
+import type { ToolDefinition, ToolResult } from '@sox/mcp-runtime';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { openDb, memoryWrite, memoryRecall } from '@sox/memory-core';
@@ -171,7 +172,7 @@ function getDb(dbPath: string): Database.Database {
   return db;
 }
 
-const TOOLS = [
+const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_write',
     description:
@@ -193,6 +194,11 @@ const TOOLS = [
           type: 'array',
           items: { type: 'string' },
           description: 'Explicit concept/entity tags to attach immediately (user-asserted, no organizer delay)',
+        },
+        chunk_size: {
+          type: 'number',
+          description: 'Approximate tokens per chunk (default: 500). Content exceeding this threshold is split at sentence boundaries; each chunk is stored as a separate episode with a DERIVED_FROM edge to the parent.',
+          default: 500,
         },
       },
       required: ['content', 'db_path'],
@@ -284,19 +290,29 @@ const TOOLS = [
       required: ['claim_uid', 'reason', 'db_path'],
     },
   },
+  {
+    name: 'memory_link',
+    description:
+      'Create a directed edge between two existing nodes. Use for chunk→parent (DERIVED_FROM), claim replacement (SUPERSEDES), or explicit relationships (RELATES_TO, SUPPORTS, MENTIONS).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        src_uid: { type: 'string', description: 'UID of the source node' },
+        dst_uid: { type: 'string', description: 'UID of the destination node' },
+        rel: {
+          type: 'string',
+          enum: ['MENTIONS', 'SUPPORTS', 'RELATES_TO', 'DERIVED_FROM', 'SUPERSEDES', 'ASSIGNED_TO'],
+          description: 'Relationship type',
+        },
+        db_path: { type: 'string', description: 'Path to the .db file' },
+        weight: { type: 'number', description: 'Optional edge weight (0–1)' },
+        meta: { type: 'object', description: 'Optional JSON metadata' },
+      },
+      required: ['src_uid', 'dst_uid', 'rel', 'db_path'],
+    },
+  },
 ];
 
-type JsonRpcRequest = {
-  jsonrpc?: '2.0';
-  id?: unknown;
-  method: string;
-  params?: unknown;
-};
-
-type ToolCallParams = {
-  name: string;
-  arguments?: Record<string, unknown>;
-};
 
 /**
  * [mcp-path-guard] Policy guard: resolve db_path to absolute, then check the
@@ -311,7 +327,7 @@ type ToolCallParams = {
  *
  * Returns: a permission-denied tool result on denial, or null if the path is allowed.
  */
-function checkDbPathPolicy(dbPath: string): { isError: true; content: Array<{ type: string; text: string }> } | null {
+function checkDbPathPolicy(dbPath: string): (ToolResult & { isError: true }) | null {
   const p = getPolicy();
   if (!p.enforced) return null;
 
@@ -336,7 +352,32 @@ function checkDbPathPolicy(dbPath: string): { isError: true; content: Array<{ ty
   return null;
 }
 
-export async function handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
+/**
+ * Split `text` into chunks of at most `chunkTokens * 4` characters, preferring
+ * sentence boundaries (`.`, `!`, `?` followed by whitespace).
+ * Returns a single-element array if text is short enough to not need splitting.
+ */
+function splitIntoChunks(text: string, chunkTokens: number): string[] {
+  const chunkChars = chunkTokens * 4;
+  if (text.length <= chunkChars) return [text];
+
+  const chunks: string[] = [];
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  let current = '';
+
+  for (const sentence of sentences) {
+    if (current.length > 0 && current.length + 1 + sentence.length > chunkChars) {
+      chunks.push(current.trim());
+      current = sentence;
+    } else {
+      current = current ? current + ' ' + sentence : sentence;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks.length > 0 ? chunks : [text];
+}
+
+export async function handleToolCall(name: string, args: Record<string, unknown>): Promise<ToolResult> {
   const dbPath = args['db_path'] as string | undefined;
   if (!dbPath) {
     return { isError: true, content: [{ type: 'text', text: 'db_path is required' }] };
@@ -353,13 +394,93 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
 
   switch (name) {
     case 'memory_write': {
+      const content = args['content'] as string;
+      const chunkSize = (args['chunk_size'] as number | undefined) ?? 500;
+      const chunks = splitIntoChunks(content, chunkSize);
+
+      if (chunks.length > 1) {
+        // Long content: write parent episode, then all chunks in parallel
+        // (embed() dispatches to the worker thread — parallel dispatches are safe;
+        //  the synchronous SQLite transactions serialise naturally on the JS event loop)
+        const parentResult = await memoryWrite(db, {
+          content,
+          session_id: args['session_id'] as string | undefined,
+          t_occurred: args['t_occurred'] as string | undefined,
+          agent_id: args['agent_id'] as string | undefined,
+          source: args['source'] as 'message' | undefined,
+          importance: args['importance'] as number | undefined,
+          tags: args['tags'] as string[] | undefined,
+        });
+
+        const parentUid =
+          'episode_uid' in parentResult
+            ? parentResult.episode_uid
+            : parentResult.code === 'E_DEDUP'
+              ? parentResult.existing_uid
+              : null;
+
+        if (!parentUid) {
+          return { isError: true, content: [{ type: 'text', text: JSON.stringify(parentResult) }] };
+        }
+
+        const chunkResults = await Promise.all(
+          chunks.map((chunk) =>
+            memoryWrite(db, {
+              content: chunk,
+              agent_id: args['agent_id'] as string | undefined,
+              source: (args['source'] as 'message' | undefined) ?? 'document',
+            }),
+          ),
+        );
+
+        const now = new Date().toISOString();
+        const parentRow = db
+          .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?')
+          .get(parentUid);
+        const chunkUids: string[] = [];
+
+        for (const chunkResult of chunkResults) {
+          const chunkUid =
+            'episode_uid' in chunkResult
+              ? chunkResult.episode_uid
+              : chunkResult.code === 'E_DEDUP'
+                ? chunkResult.existing_uid
+                : null;
+
+          if (chunkUid) {
+            chunkUids.push(chunkUid);
+            const chunkRow = db
+              .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?')
+              .get(chunkUid);
+            if (chunkRow && parentRow) {
+              db.prepare(
+                `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
+                 SELECT ?, ?, 'DERIVED_FROM', 'user_asserted', ?, '{"auto_chunk":true}'
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM edge WHERE src=? AND dst=? AND rel='DERIVED_FROM' AND t_expired IS NULL
+                 )`,
+              ).run(chunkRow.rowid, parentRow.rowid, now, chunkRow.rowid, parentRow.rowid);
+            }
+          }
+        }
+
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ episode_uid: parentUid, chunk_uids: chunkUids, chunk_count: chunks.length }),
+          }],
+        };
+      }
+
+      // Content below threshold: single write
       const result = await memoryWrite(db, {
-        content: args['content'] as string,
+        content,
         session_id: args['session_id'] as string | undefined,
         t_occurred: args['t_occurred'] as string | undefined,
         agent_id: args['agent_id'] as string | undefined,
         source: args['source'] as 'message' | undefined,
         importance: args['importance'] as number | undefined,
+        tags: args['tags'] as string[] | undefined,
       });
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
@@ -496,6 +617,38 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       };
     }
 
+    case 'memory_link': {
+      const VALID_RELS = ['MENTIONS', 'SUPPORTS', 'RELATES_TO', 'DERIVED_FROM', 'SUPERSEDES', 'ASSIGNED_TO'];
+      const rel = args['rel'] as string;
+      if (!VALID_RELS.includes(rel)) {
+        return { isError: true, content: [{ type: 'text', text: `Unknown rel: ${rel}` }] };
+      }
+      const srcUid = args['src_uid'] as string;
+      const dstUid = args['dst_uid'] as string;
+      const srcRow = db.prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?').get(srcUid);
+      const dstRow = db.prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?').get(dstUid);
+      if (!srcRow) {
+        return { isError: true, content: [{ type: 'text', text: `src_uid not found: ${srcUid}` }] };
+      }
+      if (!dstRow) {
+        return { isError: true, content: [{ type: 'text', text: `dst_uid not found: ${dstUid}` }] };
+      }
+      const now = new Date().toISOString();
+      const edgeUid = `edge-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      db.prepare(
+        `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
+         SELECT ?, ?, ?, 'user_asserted', ?, ?
+         WHERE NOT EXISTS (SELECT 1 FROM edge WHERE src=? AND dst=? AND rel=? AND t_expired IS NULL)`,
+      ).run(
+        srcRow.rowid, dstRow.rowid, rel, now,
+        JSON.stringify(args['meta'] ?? {}),
+        srcRow.rowid, dstRow.rowid, rel,
+      );
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ edge_uid: edgeUid }) }],
+      };
+    }
+
     default:
       return {
         isError: true,
@@ -504,60 +657,13 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
   }
 }
 
-async function handleRequest(req: JsonRpcRequest): Promise<unknown> {
-  const { method, id, params } = req;
+const registeredTools = TOOLS.map((tool) =>
+  defineTool({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    handler: (_args, _ctx) => handleToolCall(tool.name, _args),
+  }),
+);
 
-  if (method === 'initialize') {
-    return {
-      jsonrpc: '2.0',
-      id,
-      result: {
-        protocolVersion: '2024-11-05',
-        capabilities: { tools: {} },
-        serverInfo: { name: 'memory-server', version: '0.1.0' },
-      },
-    };
-  }
-
-  if (method === 'tools/list') {
-    return {
-      jsonrpc: '2.0',
-      id,
-      result: { tools: TOOLS },
-    };
-  }
-
-  if (method === 'tools/call') {
-    const p = params as ToolCallParams;
-    const args = (p.arguments ?? {}) as Record<string, unknown>;
-    const toolResult = await handleToolCall(p.name, args);
-    return {
-      jsonrpc: '2.0',
-      id,
-      result: toolResult,
-    };
-  }
-
-  return {
-    jsonrpc: '2.0',
-    id,
-    error: { code: -32601, message: `Method not found: ${method}` },
-  };
-}
-
-const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
-rl.on('line', (line) => {
-  const trimmed = line.trim();
-  if (!trimmed) return;
-  void (async () => {
-    try {
-      const req = JSON.parse(trimmed) as JsonRpcRequest;
-      const res = await handleRequest(req);
-      process.stdout.write(JSON.stringify(res) + '\n');
-    } catch (e) {
-      process.stdout.write(
-        JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: String(e) } }) + '\n',
-      );
-    }
-  })();
-});
+void serve(registeredTools, { name: 'memory-server', version: '0.1.0' });

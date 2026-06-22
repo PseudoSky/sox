@@ -31,6 +31,9 @@ export interface RecallParams {
   token_budget?: number | undefined;
   depth?: number | undefined;
   limit?: number | undefined;
+  vec_weight?: number | undefined;
+  fts_weight?: number | undefined;
+  temporal_weight?: number | undefined;
 }
 
 export interface RecallResult {
@@ -52,7 +55,7 @@ export interface RecallResponse {
 
 const RRF_K = 60;
 const RECENCY_DECAY_PER_HOUR = 0.995;
-const DEFAULT_TOKEN_BUDGET = 4000;
+const DEFAULT_TOKEN_BUDGET = 32000;
 const DEFAULT_DEPTH = 1;
 const KNN_LIMIT = 20;
 const FTS_LIMIT = 20;
@@ -112,6 +115,9 @@ export async function memoryRecall(
     token_budget = DEFAULT_TOKEN_BUDGET,
     depth = DEFAULT_DEPTH,
     limit = 10,
+    vec_weight = 1.0,
+    fts_weight = 0.8,
+    temporal_weight = 0.4,
   } = params;
 
   const beforeCount = getProviderCallCount();
@@ -196,9 +202,9 @@ export async function memoryRecall(
     const vr = vecRanks.get(rowid);
     const fr = ftsRowids.get(rowid);
     const tr = temporalRanks.get(rowid);
-    if (vr !== undefined) score += rrfScore(vr);
-    if (fr !== undefined) score += rrfScore(fr);
-    if (tr !== undefined) score += rrfScore(tr);
+    if (vr !== undefined) score += vec_weight * rrfScore(vr);
+    if (fr !== undefined) score += fts_weight * rrfScore(fr);
+    if (tr !== undefined) score += temporal_weight * rrfScore(tr);
     rrfScores.set(rowid, score);
   }
 
@@ -270,6 +276,8 @@ export async function memoryRecall(
   // Assemble final results within token_budget
   const results: RecallResult[] = [];
   let tokenCount = 0;
+  const sourceCounts = new Map<string, number>();
+  const MAX_PER_SOURCE = Math.max(2, Math.ceil(limit / 5));
 
   const addResult = (node: NodeRow, score: number, provenance: string[]) => {
     const text = [node.content, node.name, node.summary]
@@ -277,6 +285,11 @@ export async function memoryRecall(
       .join(' ');
     const tokens = estimateTokens(text);
     if (tokenCount + tokens > token_budget && results.length > 0) return false;
+    // Per-source diversity cap: prevent one verbose document from filling top-N
+    const sourceKey = node.content_hash ?? node.uid;
+    const sourceCount = sourceCounts.get(sourceKey) ?? 0;
+    if (sourceCount >= MAX_PER_SOURCE) return false;
+    sourceCounts.set(sourceKey, sourceCount + 1);
     tokenCount += tokens;
     results.push({
       uid: node.uid,

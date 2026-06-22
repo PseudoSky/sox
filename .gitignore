@@ -8,3 +8,23 @@ dist/
 # sox-memory temp test dirs
 .tmp-mvp/
 .tmp-test/
+# nx machine-local state (never belongs in git)
+.nx/
+# macOS junk
+.DS_Store
+# tsc incremental build cache
+*.tsbuildinfo
+# machine-local runtime / home state
+.extensions/runtime.json
+.extensions/extensions.json
+.sox/
+/data/
+# project-local MCP config (contains absolute machine paths)
+.mcp.json
+# per-extension build/demo artifacts
+extensions/services/tokenguard/bundle/
+extensions/services/tokenguard/demo/out/
+# sox init test-scaffold output
+/test-*-init/
+# plan runtime event logs (append-only, machine-local)
+.workflow/plans/*/events.ndjson

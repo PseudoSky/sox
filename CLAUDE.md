@@ -11,6 +11,38 @@ output from `dist/apps/sox/main.js`. All CLI logic lives in `apps/sox/src/main.t
 
 ---
 
+## ⛔ AGENT CONSTRAINT — GIT STAGING IS EXPLICIT-PATH ONLY
+
+**Never run `git add -A`, `git add .`, or `git add --all`.** They sweep machine-local
+state and build artifacts into commits (`.nx/`, `.DS_Store`, stray `dist`/compiled output
+emitted into `src/`). The repo has been polluted this way before (478 `.nx/cache` files +
+9 `.DS_Store` were tracked).
+
+- **Stage by explicit path:** `git add <file> <file> …` — only the files your change touched.
+- **Review before staging:** run `git status` and confirm every path is intended source.
+- **Never stage** `.nx/`, `.DS_Store`, `dist/`, or any `*.js`/`*.d.ts` sitting next to a `.ts` source.
+
+**Never run `git stash` (or `git stash pop/drop/clear`).** Stashed changes are invisible to
+`git status`, silently dropped on conflict (`pop`), and trivially lost or forgotten across
+sessions — a real hazard given how much uncommitted work this tree accumulates. To set work
+aside, commit it to a branch (`git switch -c wip/<topic>` + an explicit-path commit), never stash.
+
+---
+
+## ⛔ AGENT CONSTRAINT — BUILD VIA NX TARGETS, NEVER BARE TOOLS
+
+**Always build, test, lint, and typecheck through nx targets — never invoke `tsc`, `vitest`,
+or `eslint` directly against a project.** A bare `tsc` with no `outDir` emits compiled
+`.js`/`.d.ts` into `src/` (this is exactly how `libs/tokenguard-core/src/*.js` got created),
+and bare runs bypass the project-graph dependency ordering and cache.
+
+- **Build:** `npx nx build <project>` (or `npx nx run-many -t build`); for affected-only, `npx nx affected -t build`.
+- **Test / lint / typecheck:** `npx nx test|lint|typecheck <project>` — the project's target wires the correct config + `outDir`.
+- **Whole-repo gate:** `npx nx run-many -t build,lint,test` (the order C3 mandates).
+- A bare `tsc`/`vitest` result is **not** authoritative — verify runtime behavior against `nx build` output (see BACKLOG BL-4).
+
+---
+
 A monorepo for an **LLM-extension ecosystem**: independently-versioned extensions of 8 types
 (`agent`, `skill`, `mcp-server`, `service`, `prompt`, `hook`, `command`, `bundle`), installed across scopes
 (`org`/`user`/`project`/`local`) and run by a host runtime. CLI: `bin/sox`. Engine: `scripts/`.
@@ -51,7 +83,7 @@ Verify against the OS / real artifacts, **not** test output (every prior "green"
 ### C. Foundational integrity
 - [x] **C1** framework-owned build; hand-maintained `dist` mirrors retired.
 - [x] **C2** registry checksums current + CI drift gate.
-- [x] **C3** `build → validate --strict → typecheck → test` blocking CI, correct order.
+- [x] **C3** `build → validate --strict → typecheck → lint → test` blocking CI, correct order; pre-commit hook runs `nx affected --target=lint`.
 - [x] **C4** reality-checking gates — universal: (1) `sox list` validates pid liveness via `process.kill(pid, 0)` before reporting RUNNING (stale `runtime.json` entries reported INACTIVE); (2) born-conformance gate verifies `dist/index.js` exists and passes `node --check` for code types; (3) lockfile + registry now checksum the declared `entrypoint` (built artifact) not `src/index.ts` — `fetchArtifact` in `install.ts` and `resolveChecksum` in `build-index.ts` both follow the same resolution order: `manifest.entrypoint` → `dist/index.js` → `prompt.md` → `extension.json`. Registry regenerated + lockfile refreshed.
 - [x] **C5** memory MCP `write` + `recall` execute correctly (zero-LLM read) — recall bug fixed.
 - [x] **C6** `permissions` enforced at runtime — HARD for spawned types (env-scrub + policy-env injection + in-process fs/socket allowlist at the resource sink) across all four extension entry points (supervisor `_spawn`, `runtime-cli` exec, `apps/sox` exec, in-proc adapters = SOFT declare+audit per `[dod.6]`); undeclared `db_path` denied at runtime with no file created. Reality-verified: real spawned `memory-server`, forbidden write denied + side-effect absent (e2e + independent probe). OS-kernel sandboxing is an explicit non-goal.

@@ -1057,13 +1057,6 @@ function resolveActiveProvider(configs: ScopeConfigWithMeta[]): string | undefin
 // [inv:host-agnostic-type]: type is host-agnostic; capability+target are host-specific.
 // [inv:never-managed]: managed/forbidden keys are blocked in the registry itself.
 // [inv:ledger-reversible]: every placement is recorded in the per-scope ledger.
-//
-// STDIO-IN-.MCP.JSON DENIAL ([dod.2] / architect note):
-// An mcp-server declaring stdio transport into a .mcp.json target MUST be denied.
-// Claude's .mcp.json only supports SSE/HTTP; stdio is a claude.json/process-spawn path.
-// The engine blocks this at install time: if the descriptor's transport is 'stdio'
-// and the resolved target file ends with '.mcp.json', install throws DeclarativeDeniedError.
-
 import { Ledger } from './ledger.js';
 
 // ─── Host-registry: loaded at runtime from dist to avoid cross-lib rootDir ──
@@ -1193,7 +1186,7 @@ export interface DeclarativeInstallResult {
  * @param workspaceRoot  absolute workspace root (for project-scope relative paths)
  * @param scopeRoot   absolute path to the scope root (for the ledger)
  * @param opts        optional: isProject flag, injected ledger for tests
- * @throws DeclarativeDeniedError if a policy check fails ([dod.2])
+ * @throws Error if the installation descriptor is invalid
  */
 export async function declarativeInstall(
   descriptor: InstallDescriptor,
@@ -1205,24 +1198,17 @@ export async function declarativeInstall(
   const results: DeclarativeInstallResult[] = [];
   const isProject = opts?.isProject ?? (scope === 'project');
 
-  // ── service/mcp-server-service: materialize bundle → store-dir + registry ──
-  // [mcp-install-modes.5]: runService is called from install.ts for --profile service.
+  // ── service: materialize bundle → store-dir + run-service registry ─────────
+  // [mcp-install-modes.5]: runService is called from install.ts for type:service.
   // [def:store-dir]: materialized extension at <scopeRoot>/.sox/ext/<id>/
-  // [dod.5]: the bundle is copied to storePath so the service runs from a
-  // self-contained dir with no monorepo siblings. Order:
+  // Order:
   //   1. Materialize bundle (srcPath/bundle/ → storePath/)
   //   2. Copy extension.json (entrypoint updated to 'index.js')
   //   3. Register with run-service (command = node <storePath>/index.js)
   //
-  // [mcp-as-service]: mcp-server IS service[transport=stdio] for routing purposes.
-  // All mcp-server declarative installs (--host path) now flow through the unified
-  // run-service registration path. The parallel config-merge branch (writing to
-  // .claude.json for stdio profile) is removed as a routing destination for
-  // mcp-server — the supervisor model is the single supervised-service path.
-  // [inv:single-registry]: only one registry write site for all transports.
-  const isServiceInstall =
-    descriptor.type === 'mcp-server' ||
-    descriptor.type === 'service';
+  // mcp-server types are NOT supervised — they go through the host surface lookup
+  // below (config-merge → .mcp.json with "sox serve <id>" as the command).
+  const isServiceInstall = descriptor.type === 'service';
 
   if (isServiceInstall) {
     const { apply: runServiceApply } = await import('./capabilities/run-service.js');
@@ -1320,23 +1306,6 @@ export async function declarativeInstall(
       ? _expandHome(rawTarget)
       : path.join(workspaceRoot, rawTarget);
 
-    // ── Policy check: stdio mcp-server into .mcp.json MUST be denied ──────
-    // [dod.2] / architect note: Claude .mcp.json only accepts SSE/HTTP entries.
-    // stdio transport goes via claude.json (user scope process-spawn), not .mcp.json.
-    if (
-      descriptor.type === 'mcp-server' &&
-      descriptor.transport === 'stdio' &&
-      absTarget.endsWith('.mcp.json')
-    ) {
-      throw new DeclarativeDeniedError(
-        'mcp-server with stdio transport cannot be installed into .mcp.json — ' +
-          '.mcp.json only accepts sse/http entries; stdio uses ~/.claude.json instead.',
-        descriptor.ext,
-        hostName,
-        scope,
-      );
-    }
-
     const ledger = opts?.ledger ?? Ledger.load(scopeRoot, { isProject });
 
     if (surface.capability === 'file-drop') {
@@ -1418,11 +1387,10 @@ export async function declarativeInstall(
         if (profile === 'sse' || profile === 'http') {
           resolvedValue = { type: profile, url: 'http://localhost:3000/' + profile };
         } else {
-          // stdio — command path: srcPath/dist/index.js or generic node entrypoint.
-          const entryCmd = descriptor.srcPath
-            ? path.join(descriptor.srcPath, 'dist', 'index.js')
-            : 'index.js';
-          resolvedValue = { type: 'stdio', command: 'node', args: [entryCmd] };
+          // stdio — sox serve <ext> keeps sox in the spawn chain so cascade config
+          // (SOX_CONFIG_*) is injected fresh at each Claude Code session start.
+          const cliBin = process.env['SOX_CLI_BIN'] ?? 'sox';
+          resolvedValue = { type: 'stdio', command: cliBin, args: ['serve', descriptor.ext] };
         }
       }
 

@@ -17,6 +17,7 @@ let src = fs.readFileSync(file, 'utf8');
 // Map: @sox alias → relative path from dist/apps/sox/
 const aliases = {
   '@sox/install-engine': '../../../libs/install-engine/dist/index.js',
+  '@sox/host-registry':  '../../../libs/host-registry/dist/index.js',
   '@sox/host-runtime':   '../../../libs/host-runtime/dist/index.js',
   '@sox/manifest':       '../../../libs/manifest/dist/index.js',
   '@sox/authoring':      '../../../libs/authoring/dist/index.js',

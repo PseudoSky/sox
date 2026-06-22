@@ -1,2 +1,0 @@
-> tsc --project libs/memory-core/tsconfig.lib.json && echo '{"type":"commonjs"}' > libs/memory-core/dist/package.json --dry-run
-

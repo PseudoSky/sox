@@ -1,7 +1,0 @@
-
-Linting "sox-memory-bundle"...
-
-[7m[1m[31m NX [39m[22m[27m  [31mInvalid lint configuration. Nothing to lint. Please check your lint target pattern(s).[39m
-
-Pass --verbose to see the stacktrace.
-

@@ -3,9 +3,13 @@
  *
  * Backends:
  *   'hash' — deterministic FNV-1a hash projection (MVP, zero download, zero network).
- *   'real' — in-process ONNX via fastembed (BGE-base-en-v1.5, 768-dim, L2-normalized).
+ *   'real' — worker_thread ONNX via fastembed (BGE-base-en-v1.5, 768-dim, L2-normalized).
+ *             onnxruntime-node runs in embedWorker.ts (worker_thread), isolated from the
+ *             main thread's better-sqlite3 + sqlite-vec native handle. This prevents
+ *             the BL-11 libpthread mutex corruption that occurred when both native addons
+ *             shared the same thread (see libs/memory-core/src/index.ts process boundary note).
  *             Model is downloaded once to cacheDir on first use; subsequent calls are
- *             in-process ONNX inference with zero per-query network I/O (satisfies R1).
+ *             in-worker ONNX inference with zero per-query network I/O (satisfies R1).
  *   'auto' — try to load/init the real model; fall back to hash if unavailable.
  *
  * Configuration (env vars, read once at first embed() call):
@@ -23,7 +27,7 @@
 
 import * as os from 'node:os';
 import * as path from 'node:path';
-import * as fs from 'node:fs';
+import { Worker } from 'node:worker_threads';
 
 // ── Public constants ──────────────────────────────────────────────────────────
 
@@ -35,9 +39,10 @@ let _activeModel = 'nomic-embed-text-v1.5-hash';
 export function getActiveEmbedModel(): string {
   return _activeModel;
 }
-// Re-export as a mutable binding so existing callers (`import { EMBED_MODEL }`)
-// continue to compile. They get the initial hash value; use getActiveEmbedModel()
-// after the first embed() call for the live value.
+// The EMBED_MODEL constant is the *hash backend* identifier.
+// When backend='real' or 'auto' resolves to real, getActiveEmbedModel() returns
+// 'bge-base-en-v1.5' (BGE-base-en-v1.5 via fastembed, 768-dim).
+// Do NOT use EMBED_MODEL as a proxy for the active backend — use getActiveEmbedModel().
 export const EMBED_MODEL = 'nomic-embed-text-v1.5-hash';
 
 // ── Provider-call counter (R1 guard) ─────────────────────────────────────────
@@ -80,56 +85,107 @@ function resolveConfig(): EmbedConfig {
   };
 }
 
-// ── Real backend singleton ────────────────────────────────────────────────────
+// ── Real backend — worker_thread proxy ───────────────────────────────────────
+//
+// onnxruntime-node loads in a dedicated worker_thread (embedWorker.ts), keeping
+// it isolated from the main thread's better-sqlite3 + sqlite-vec native handle.
+// This resolves BL-11: the libpthread mutex corruption that occurred when both
+// native addons shared the same thread.
 
-type FlagEmbeddingInstance = {
-  queryEmbed(query: string): Promise<number[]>;
-};
-
-let _realInstance: FlagEmbeddingInstance | null = null;
-let _realInitPromise: Promise<FlagEmbeddingInstance | null> | null = null;
 let _resolvedBackend: 'real' | 'hash' | null = null;
 
+interface WorkerEmbedResponse {
+  id: number;
+  embedding?: number[];
+  error?: string;
+}
+
+let _worker: Worker | null = null;
+let _workerReady = false;
+let _workerReadyPromise: Promise<void> | null = null;
+let _nextId = 1;
+const _pending = new Map<number, { resolve: (v: number[]) => void; reject: (e: Error) => void }>();
+
 /**
- * Initialise the fastembed real backend.
- * Downloads the model to cacheDir on first call (one-time, ~120 MB for BGE-base-en-v1.5).
- * Subsequent calls return the cached singleton.
- *
- * Returns null if the model cannot be loaded (auto-fallback path).
+ * Returns the persistent embed worker, spawning it on first call.
+ * The worker preloads fastembed before accepting requests so the first embed
+ * call pays the model-init cost without blocking subsequent calls.
  */
-async function initRealBackend(config: EmbedConfig): Promise<FlagEmbeddingInstance | null> {
-  if (_realInstance !== null) return _realInstance;
-  if (_realInitPromise !== null) return _realInitPromise;
+function getEmbedWorker(config: EmbedConfig): Worker {
+  if (_worker) return _worker;
 
-  _realInitPromise = (async () => {
-    try {
-      // Dynamic import so the hash-only path never loads fastembed's ONNX runtime.
-      const { FlagEmbedding, EmbeddingModel } = await import('fastembed');
+  // embedWorker.js lives alongside this file in dist/
+  const workerPath = path.join(__dirname, 'embedWorker.js');
+  _worker = new Worker(workerPath, { workerData: { cacheDir: config.cacheDir } });
 
-      // Ensure the cache directory exists before fastembed tries to write into it.
-      // Without recursive: true this throws ENOENT when any parent is absent.
-      fs.mkdirSync(config.cacheDir, { recursive: true });
-
-      // BGEBaseENV15 = 'fast-bge-base-en-v1.5' — 768-dim, L2-normalized output.
-      const instance = await FlagEmbedding.init({
-        model: EmbeddingModel.BGEBaseENV15,
-        cacheDir: config.cacheDir,
-        showDownloadProgress: false,
-      });
-
-      _realInstance = instance;
-      _activeModel = 'bge-base-en-v1.5';
-      _resolvedBackend = 'real';
-      return instance;
-    } catch (err) {
-      // Model download failed, ONNX unavailable, or fastembed not installed.
-      // Caller decides whether to hard-error (backend='real') or fall back (backend='auto').
-      _realInitPromise = null; // allow retry on next call if wanted
-      throw err;
+  _worker.on('message', (msg: WorkerEmbedResponse) => {
+    const pending = _pending.get(msg.id);
+    if (!pending) return;
+    _pending.delete(msg.id);
+    if (msg.error) {
+      pending.reject(new Error(msg.error));
+    } else {
+      pending.resolve(msg.embedding!);
     }
-  })();
+  });
 
-  return _realInitPromise;
+  _worker.on('error', (err) => {
+    // Propagate to all pending requests
+    for (const { reject } of _pending.values()) reject(err);
+    _pending.clear();
+    _worker = null;
+    _workerReady = false;
+    _workerReadyPromise = null;
+  });
+
+  _worker.on('exit', (code) => {
+    if (code !== 0) {
+      const err = new Error(`embedWorker exited with code ${code}`);
+      for (const { reject } of _pending.values()) reject(err);
+      _pending.clear();
+    }
+    _worker = null;
+    _workerReady = false;
+    _workerReadyPromise = null;
+  });
+
+  // Send a warmup embed so the model is loaded before the first real request.
+  // We treat this as a fire-and-forget; failures are surfaced on the first real call.
+  _workerReadyPromise = new Promise<void>((resolve) => {
+    const id = _nextId++;
+    _pending.set(id, {
+      resolve: () => {
+        _workerReady = true;
+        _activeModel = 'bge-base-en-v1.5';
+        _resolvedBackend = 'real';
+        resolve();
+      },
+      reject: (e) => {
+        _workerReadyPromise = null;
+        resolve(); // don't block; caller will get the error on first real embed
+        console.warn('[sox-memory] embed worker warmup failed:', e.message);
+      },
+    });
+    _worker!.postMessage({ id, text: 'warmup', cacheDir: config.cacheDir });
+  });
+
+  return _worker;
+}
+
+/**
+ * Embed text via the worker proxy. Waits for worker readiness on first call.
+ */
+async function workerEmbed(text: string, config: EmbedConfig): Promise<number[]> {
+  const worker = getEmbedWorker(config);
+  // Wait for warmup to complete (model download + init) on first real call
+  if (!_workerReady && _workerReadyPromise) {
+    await _workerReadyPromise;
+  }
+  return new Promise<number[]>((resolve, reject) => {
+    const id = _nextId++;
+    _pending.set(id, { resolve, reject });
+    worker.postMessage({ id, text, cacheDir: config.cacheDir });
+  });
 }
 
 // ── Primary async embed API ───────────────────────────────────────────────────
@@ -155,26 +211,20 @@ export async function embed(text: string): Promise<Float32Array> {
   }
 
   if (config.backend === 'real') {
-    let instance: FlagEmbeddingInstance | null;
     try {
-      instance = await initRealBackend(config);
+      const vec = await workerEmbed(text, config);
+      return toFloat32Normalised(vec);
     } catch (err) {
       throw new Error(
-        `[sox-memory] embedding.backend='real' but real backend failed to init: ${String(err)}`,
+        `[sox-memory] embedding.backend='real' but worker embed failed: ${String(err)}`,
       );
     }
-    if (!instance) {
-      throw new Error('[sox-memory] embedding.backend=\'real\' but real backend returned null');
-    }
-    return toFloat32Normalised(await instance.queryEmbed(text));
   }
 
-  // 'auto': try real, fall back to hash
+  // 'auto': try real via worker, fall back to hash
   try {
-    const instance = await initRealBackend(config);
-    if (instance) {
-      return toFloat32Normalised(await instance.queryEmbed(text));
-    }
+    const vec = await workerEmbed(text, config);
+    return toFloat32Normalised(vec);
   } catch {
     if (_resolvedBackend === null) {
       console.warn(
@@ -310,8 +360,14 @@ function toFloat32Normalised(raw: number[]): Float32Array {
 
 /** Exposed for tests: reset singleton so backend can be re-initialised. */
 export function _resetEmbedSingleton(): void {
-  _realInstance = null;
-  _realInitPromise = null;
+  if (_worker) {
+    _worker.terminate().catch(() => {/* ignore */});
+    _worker = null;
+  }
+  _workerReady = false;
+  _workerReadyPromise = null;
+  _pending.clear();
+  _nextId = 1;
   _resolvedBackend = null;
   _activeModel = 'nomic-embed-text-v1.5-hash';
   _configCache = null;

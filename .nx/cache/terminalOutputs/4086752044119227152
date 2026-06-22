@@ -1,2 +1,0 @@
-> tsc --project libs/manifest/tsconfig.lib.json && echo '{"type":"commonjs"}' > libs/manifest/dist/package.json --dry-run
-

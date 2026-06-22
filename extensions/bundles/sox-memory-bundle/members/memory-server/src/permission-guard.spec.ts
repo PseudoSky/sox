@@ -31,6 +31,7 @@ import * as path from 'node:path';
 // logic lives in index.ts; compilePolicyFromEnv comes from policy-guard.ts (the
 // vendored minimal implementation inside this extension, [mcp-path-guard.5]).
 import { handleToolCall, compilePolicyFromEnv } from './index.js';
+import { openDb } from '@sox/memory-core';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -256,5 +257,92 @@ describe('permission-guard — mcp-path-guard enforcement', () => {
         expect(policy.allowsFsWrite(path.join(os.homedir(), '.memory', 'test.db'))).toBe(false);
       } finally { restore(); }
     });
+  });
+});
+
+// ── BL-13 auto_chunk ──────────────────────────────────────────────────────────
+
+describe('memory_write auto_chunk — BL-13', () => {
+  let tmpDir: string;
+  let tmpDb: string;
+  let restoreEnv: () => void;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-chunk-'));
+    tmpDb = path.join(tmpDir, 'chunk.db');
+    restoreEnv = clearEnforceEnv();
+  });
+
+  afterEach(() => {
+    restoreEnv();
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('short content returns single episode_uid (below chunk threshold)', async () => {
+    const result = await handleToolCall('memory_write', {
+      db_path: tmpDb,
+      content: 'Short content that does not need chunking.',
+    }) as { isError?: boolean; content?: Array<{ type: string; text: string }> };
+
+    expect(result.isError).not.toBe(true);
+    const parsed = JSON.parse(result.content![0]!.text);
+    expect(parsed).toHaveProperty('episode_uid');
+    // No chunk_uids for short content
+    expect(parsed.chunk_uids).toBeUndefined();
+  });
+
+  it('long content auto-chunks into parent + chunks with DERIVED_FROM edges', async () => {
+    // Craft content long enough to be split at chunk_size=20 tokens (~80 chars per chunk)
+    const longContent =
+      'The first sentence covers topic A. ' +
+      'The second sentence covers topic B. ' +
+      'The third sentence covers topic C. ' +
+      'The fourth sentence covers topic D. ' +
+      'The fifth sentence covers topic E.';
+
+    const result = await handleToolCall('memory_write', {
+      db_path: tmpDb,
+      content: longContent,
+      chunk_size: 20, // small chunk size to force splitting
+    }) as { isError?: boolean; content?: Array<{ type: string; text: string }> };
+
+    expect(result.isError).not.toBe(true);
+    const parsed = JSON.parse(result.content![0]!.text) as {
+      episode_uid: string;
+      chunk_uids: string[];
+      chunk_count: number;
+    };
+
+    // Must have a parent uid and at least 2 chunks
+    expect(parsed).toHaveProperty('episode_uid');
+    expect(parsed).toHaveProperty('chunk_uids');
+    expect(parsed).toHaveProperty('chunk_count');
+    expect(parsed.chunk_count).toBeGreaterThan(1);
+    expect(parsed.chunk_uids.length).toBe(parsed.chunk_count);
+
+    // Verify DERIVED_FROM edges exist in the DB
+    const db = openDb(tmpDb);
+    try {
+      const edgeCount = db.prepare(
+        `SELECT COUNT(*) as cnt FROM edge WHERE rel = 'DERIVED_FROM' AND t_expired IS NULL`,
+      ).get() as { cnt: number };
+      expect(edgeCount.cnt).toBe(parsed.chunk_count);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('custom chunk_size controls the split threshold', async () => {
+    // chunk_size=1000 means ~4000 chars before splitting — this short content won't split
+    const result = await handleToolCall('memory_write', {
+      db_path: tmpDb,
+      content: 'Normal write with large chunk_size. Should not be split.',
+      chunk_size: 1000,
+    }) as { isError?: boolean; content?: Array<{ type: string; text: string }> };
+
+    expect(result.isError).not.toBe(true);
+    const parsed = JSON.parse(result.content![0]!.text);
+    expect(parsed).toHaveProperty('episode_uid');
+    expect(parsed.chunk_uids).toBeUndefined();
   });
 });

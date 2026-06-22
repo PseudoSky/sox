@@ -1,2 +1,0 @@
-> tsc --project extensions/commands/memory-cli/tsconfig.json
-

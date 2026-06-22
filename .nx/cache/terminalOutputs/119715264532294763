@@ -1,4 +1,0 @@
-> tsc --project extensions/mcp-servers/memory-server/tsconfig.json --dry-run
-
-error TS5023: Unknown compiler option '--dry-run'.
-Warning: command "tsc --project extensions/mcp-servers/memory-server/tsconfig.json --dry-run" exited with non-zero status code

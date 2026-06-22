@@ -1,0 +1,1 @@
+npx nx affected --target=lint --base=HEAD~1 --head=HEAD

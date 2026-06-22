@@ -1,0 +1,17 @@
+{
+  "name": "@sox/extension-memory-daemon",
+  "version": "0.1.0",
+  "description": "Supervised Unix-socket daemon that drains the organizer queue and calls memory-organizer for LLM processing",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "test": "vitest run"
+  },
+  "license": "MIT"
+}
