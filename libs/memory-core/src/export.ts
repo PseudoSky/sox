@@ -10,10 +10,14 @@
  *   <dir>/topics/<slug>/INDEX.md         — per-topic node list (importance desc, recency)
  *   <dir>/topics/<slug>/<uid>.md         — one file per episode
  *
- * Topic derivation (TOPIC-BASED, not agent-based):
- *   1. community the episode belongs to via MEMBER_OF edge (strongest link)
- *   2. first entity it MENTIONS via edge
- *   3. "general"
+ * Topic derivation (TOPIC-BASED, not agent-based) — P5 updated order:
+ *   1. node.topic column (structured, set by enrichOnWrite) — authoritative
+ *   2. explicit `[<topic>]` prefix in content — legacy text convention fallback
+ *   3. community the episode belongs to via MEMBER_OF edge
+ *   4. first entity it MENTIONS via edge (resolved to entity.name, not uid)
+ *   5. "general"
+ *
+ * Entities are always rendered by their name (node.name), never by uid (resolves BL-22).
  *
  * Idempotency: keyed by uid (overwrite); stale files for invalidated/deleted
  * episodes are pruned on each run.
@@ -46,7 +50,14 @@ interface EpisodeRow {
   uid: string;
   content: string | null;
   name: string | null;
+  /** Structured summary column (populated by enrichOnWrite extractiveSummary, P2). */
   summary: string | null;
+  /** Structured topic column (populated by enrichOnWrite, P1/P5 — authoritative topic). */
+  topic: string | null;
+  /** Durable tags JSON column (populated by enrichOnWrite, P1). */
+  tags: string | null;
+  /** Caller provenance: project root path (populated by enrichOnWrite resolveProjectPath, P1). */
+  project_path: string | null;
   source: string | null;
   importance: number;
   t_created: string;
@@ -75,27 +86,34 @@ function nowIso(): string {
 
 /**
  * Derive a topic name for an episode.
- * Priority:
- *   1. an explicit `[<topic>]` prefix in the content — the author's intended topic and the
- *      dominant convention in written findings (e.g. "[acceptance-testing] …"). This is the
- *      most direct "topic-based" signal, so it wins.
- *   2. community the episode is a member of (MEMBER_OF) — organizer-derived cluster.
- *   3. first entity it MENTIONS.
- *   4. "general".
+ *
+ * P5 updated priority (structured data wins, text parsing is a fallback):
+ *   1. node.topic column — enrichOnWrite's authoritative structured topic (set on every write).
+ *   2. explicit `[<topic>]` prefix in the content — legacy text convention, kept as fallback.
+ *   3. community the episode is a member of (MEMBER_OF) — cluster-derived topic.
+ *   4. first entity it MENTIONS (resolved to entity name, not uid — BL-22).
+ *   5. "general".
  */
 function deriveTopicName(
   db: Database.Database,
   episodeRowid: number,
   content: string | null,
+  structuredTopic: string | null,
 ): { name: string; slug: string } {
-  // First preference: an explicit `[<topic>]` prefix at the start of the content.
+  // First preference: structured node.topic column — set by enrichOnWrite, authoritative.
+  if (structuredTopic && structuredTopic.trim()) {
+    const name = structuredTopic.trim();
+    return { name, slug: slugify(name) };
+  }
+
+  // Second preference: an explicit `[<topic>]` prefix at the start of the content (legacy fallback).
   const prefix = content?.match(/^\s*\[([^\]\n]{1,64})\]/);
   if (prefix && prefix[1] && prefix[1].trim()) {
     const name = prefix[1].trim();
     return { name, slug: slugify(name) };
   }
 
-  // Next preference: community this episode is a member of
+  // Third preference: community this episode is a member of
   const communityEdge = db
     .prepare<[number], { name: string | null; uid: string }>(
       `SELECT n.name, n.uid
@@ -112,7 +130,7 @@ function deriveTopicName(
     return { name, slug: slugify(name) };
   }
 
-  // Second preference: first entity this episode MENTIONS
+  // Fourth preference: first entity this episode MENTIONS, resolved to entity.name (BL-22).
   const mentionEdge = db
     .prepare<[number], { name: string | null; uid: string }>(
       `SELECT n.name, n.uid
@@ -126,23 +144,28 @@ function deriveTopicName(
     .get(episodeRowid);
 
   if (mentionEdge) {
-    const name = mentionEdge.name ?? 'general';
-    return { name, slug: slugify(name) };
+    // Always use entity.name (not uid); if name is somehow null, fall through.
+    const name = mentionEdge.name;
+    if (name && name.trim()) {
+      return { name: name.trim(), slug: slugify(name.trim()) };
+    }
   }
 
   return { name: 'general', slug: 'general' };
 }
 
 /**
- * Collect all entity uids this episode MENTIONS (for frontmatter).
+ * Collect all entity NAMES this episode MENTIONS (for frontmatter).
+ * Resolves entity nodes to their `name` field (BL-22: never render raw uids).
+ * Entities without a name are skipped; uid is never surfaced to the user.
  */
 function collectMentionedEntities(
   db: Database.Database,
   episodeRowid: number,
 ): string[] {
   return db
-    .prepare<[number], { uid: string }>(
-      `SELECT n.uid
+    .prepare<[number], { name: string | null }>(
+      `SELECT n.name
        FROM edge e
        JOIN node n ON n.rowid = e.dst
        WHERE e.src = ? AND e.rel = 'MENTIONS' AND n.kind = 'entity'
@@ -150,7 +173,7 @@ function collectMentionedEntities(
        ORDER BY e.rowid ASC`,
     )
     .all(episodeRowid)
-    .map((r) => r.uid);
+    .flatMap((r) => (r.name && r.name.trim() ? [r.name.trim()] : []));
 }
 
 /**
@@ -201,6 +224,12 @@ function renderFrontmatter(fields: Record<string, unknown>): string {
 
 /**
  * Render a single episode node to a markdown string.
+ *
+ * P5 changes:
+ * - `summary` rendered from structured node.summary (not content excerpt).
+ * - `project_path` rendered from structured node.project_path.
+ * - `tags` rendered from structured node.tags JSON column (parsed array).
+ * - `entities` contains entity NAMES (not uids) — BL-22 resolved.
  */
 function renderEpisodeMarkdown(
   episode: EpisodeRow,
@@ -212,6 +241,19 @@ function renderEpisodeMarkdown(
     ?? episode.content?.split('\n')[0]?.slice(0, 72)
     ?? episode.uid;
 
+  // Parse the structured tags JSON column (may be null or a JSON array string).
+  let tagsArray: string[] | undefined;
+  if (episode.tags) {
+    try {
+      const parsed: unknown = JSON.parse(episode.tags);
+      if (Array.isArray(parsed)) {
+        tagsArray = (parsed as unknown[]).map(String).filter(Boolean);
+      }
+    } catch {
+      // Malformed JSON: skip tags rather than crash.
+    }
+  }
+
   const frontmatter = renderFrontmatter({
     uid: episode.uid,
     kind: episode.source ?? 'episode',
@@ -220,6 +262,11 @@ function renderEpisodeMarkdown(
     t_created: episode.t_created,
     agent_id: episode.agent_id,
     session_id: episode.session_id,
+    // Structured provenance fields (P1/P5).
+    summary: episode.summary,
+    project_path: episode.project_path,
+    tags: tagsArray,
+    // Entities by name (BL-22), not uid.
     entities: entities,
     derived_from: derivedFrom,
     supersedes: supersedes,
@@ -247,9 +294,11 @@ export function exportMarkdown(db: Database.Database, opts: ExportOpts): ExportR
   const topicsRoot = path.join(dir, 'topics');
 
   // ── Fetch live episodes ───────────────────────────────────────────────────
+  // P5: include structured enrichment columns (topic, tags, project_path, summary).
   const episodes = db
     .prepare<[], EpisodeRow>(
-      `SELECT rowid, uid, content, name, summary, source, importance, t_created, agent_id, session_id
+      `SELECT rowid, uid, content, name, summary, topic, tags, project_path,
+              source, importance, t_created, agent_id, session_id
        FROM node
        WHERE kind = 'episode' AND t_invalid IS NULL
        ORDER BY t_created ASC`,
@@ -262,7 +311,8 @@ export function exportMarkdown(db: Database.Database, opts: ExportOpts): ExportR
   const episodeTopicSlug = new Map<string, string>(); // uid → slug
 
   for (const ep of episodes) {
-    const { name: topicName, slug } = deriveTopicName(db, ep.rowid, ep.content);
+    // P5: pass structured topic column as the first-priority argument.
+    const { name: topicName, slug } = deriveTopicName(db, ep.rowid, ep.content, ep.topic);
     if (!topicMap.has(slug)) {
       topicMap.set(slug, { name: topicName, episodes: [] });
     }
