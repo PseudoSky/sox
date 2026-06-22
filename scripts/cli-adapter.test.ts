@@ -120,13 +120,13 @@ describe('list verb', () => {
 
 describe('details verb', () => {
   it('exits 0 for a known registry extension', () => {
-    const r = sox(['details', 'hello-world']);
+    const r = sox(['details', 'memory-cli']);
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain('hello-world');
+    expect(r.stdout).toContain('memory-cli');
   });
 
   it('output contains type, version, source fields', () => {
-    const r = sox(['details', 'hello-world']);
+    const r = sox(['details', 'memory-cli']);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('type:');
     expect(r.stdout).toContain('version:');
@@ -219,14 +219,14 @@ describe('list --json scope provenance (P6)', () => {
 
 describe('details scope provenance (P6)', () => {
   it('output contains installed-in field', () => {
-    const r = sox(['details', 'hello-world']);
+    const r = sox(['details', 'memory-cli']);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('installed-in');
   });
 
   it('installed extension shows scope in provenance block', () => {
-    // hello-world is installed in user scope per the lockfile fixture
-    const r = sox(['details', 'hello-world']);
+    // memory-cli is installed (user + project scope) per the lockfile.
+    const r = sox(['details', 'memory-cli']);
     expect(r.status).toBe(0);
     // Either it is installed (shows "scope=") or explicitly not installed
     const hasProvenance = r.stdout.includes('scope=') || r.stdout.includes('not installed');
