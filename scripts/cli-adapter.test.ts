@@ -1,8 +1,8 @@
 /**
  * cli-adapter.test.ts — P1 CLI adapter tests
  *
- * Tests for the Tier-1 verb adapters in bin/sox.
- * Each test spawns `node bin/sox …` and asserts on exit code + stdout/stderr.
+ * Tests for the Tier-1 verb adapters in bin/soxe.
+ * Each test spawns `node bin/soxe …` and asserts on exit code + stdout/stderr.
  *
  * Constraints:
  *   - Never pipe a command whose exit code is being tested.
@@ -15,7 +15,7 @@ import { resolve, join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 
 const ROOT = resolve(import.meta.dirname ?? process.cwd(), '..');
-const SOX = join(ROOT, 'bin', 'sox');
+const SOX = join(ROOT, 'bin', 'soxe');
 
 function sox(args: string[]): { status: number; stdout: string; stderr: string } {
   const result = spawnSync('node', [SOX, ...args], {
@@ -120,13 +120,13 @@ describe('list verb', () => {
 
 describe('details verb', () => {
   it('exits 0 for a known registry extension', () => {
-    const r = sox(['details', 'hello-world']);
+    const r = sox(['details', 'memory-cli']);
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain('hello-world');
+    expect(r.stdout).toContain('memory-cli');
   });
 
   it('output contains type, version, source fields', () => {
-    const r = sox(['details', 'hello-world']);
+    const r = sox(['details', 'memory-cli']);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('type:');
     expect(r.stdout).toContain('version:');
@@ -219,14 +219,14 @@ describe('list --json scope provenance (P6)', () => {
 
 describe('details scope provenance (P6)', () => {
   it('output contains installed-in field', () => {
-    const r = sox(['details', 'hello-world']);
+    const r = sox(['details', 'memory-cli']);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('installed-in');
   });
 
   it('installed extension shows scope in provenance block', () => {
-    // hello-world is installed in user scope per the lockfile fixture
-    const r = sox(['details', 'hello-world']);
+    // memory-cli is installed (user + project scope) per the lockfile.
+    const r = sox(['details', 'memory-cli']);
     expect(r.status).toBe(0);
     // Either it is installed (shows "scope=") or explicitly not installed
     const hasProvenance = r.stdout.includes('scope=') || r.stdout.includes('not installed');

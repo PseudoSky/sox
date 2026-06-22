@@ -5,7 +5,7 @@
   "private": true,
   "main": "../../dist/apps/sox/main.js",
   "bin": {
-    "sox": "./bin/sox"
+    "soxe": "../../bin/soxe"
   },
   "dependencies": {
     "@sox/authoring": "workspace:*",

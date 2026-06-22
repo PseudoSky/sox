@@ -1,13 +1,23 @@
 # CLAUDE.md — sox-ecosystem
 
-## ⛔ AGENT CONSTRAINT — bin/sox IS READ-ONLY
+## ⛔ AGENT CONSTRAINT — `bin/soxe` IS THE CLI SHIM, DO NOT EDIT IT FOR CLI LOGIC
 
-**Never write code to `bin/sox`.** It is a thin ESM shim that only loads the compiled
-output from `dist/apps/sox/main.js`. All CLI logic lives in `apps/sox/src/main.ts`.
+The CLI entrypoint is **`bin/soxe`** — a ~10-line ESM shim that loads the compiled
+`dist/apps/sox/main.js`. (The name avoids colliding with the system `sox` audio tool.) It
+contains **zero CLI logic.** All CLI logic lives in **`apps/sox/src/main.ts`**.
 
-- **Edit CLI logic** → `apps/sox/src/main.ts`, then `npx nx build sox`
-- **Edit the runtime** → `libs/host-runtime/src/`, then `npx nx build host-runtime`
-- Changes to `bin/sox` are silently bypassed at runtime and will never take effect.
+- **Edit a verb / flag / behavior** → `apps/sox/src/main.ts`, then `npx nx build sox`.
+- **Edit the runtime** → `libs/host-runtime/src/`, then `npx nx build host-runtime`.
+- **Editing the shim to change CLI behavior is always a bug** — the logic isn't there. The only
+  legitimate edit to `bin/soxe` is the shim mechanism itself (dist load path, ESM/CJS interop).
+- If `node bin/soxe …` behaves unexpectedly, the fix is in `apps/sox/src/main.ts`
+  (rebuild with `npx nx build sox`), **never** in the shim.
+
+> History: there used to be a second entrypoint, `bin/sox` — originally a 1379-line
+> hand-maintained legacy CLI, later collapsed to a shim, and now **removed** (it was a
+> redundant duplicate of `bin/soxe` and collided with the system `sox` audio binary). Tests and
+> the e2e harness invoke `bin/soxe`. The legacy scaffolder `scripts/new-extension.ts` is gone —
+> `soxe init` runs through the compiled `cmdInit`.
 
 ---
 
@@ -79,7 +89,7 @@ registry checksum stale and the global install will refuse to upgrade (C2/C4 rea
 
 A monorepo for an **LLM-extension ecosystem**: independently-versioned extensions of 8 types
 (`agent`, `skill`, `mcp-server`, `service`, `prompt`, `hook`, `command`, `bundle`), installed across scopes
-(`org`/`user`/`project`/`local`) and run by a host runtime. CLI: `bin/sox`. Engine: `scripts/`.
+(`org`/`user`/`project`/`local`) and run by a host runtime. CLI: `bin/soxe`. Engine: `scripts/`.
 Extensions: `extensions/`. Per-type contracts: `docs/guidelines/`. Current-state audit:
 `docs/architecture-audit-v2.md`.
 

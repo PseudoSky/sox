@@ -195,15 +195,20 @@ describe('P11 v2-e2e — G-A: lifecycle block (host-owned supervision)', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('G-A PASS: agent with lifecycle.singleton:true validates', () => {
+  it('G-A: agent with a lifecycle block is rejected (agents are Role B / reinjected, not host-supervised)', () => {
+    // Lifecycle (host-owned supervision) is restricted to the process types (mcp-server/
+    // service). Agents are reinjected as content (Role B), so a lifecycle block on an
+    // agent is a hard validation error.
     makeExtension(root, 'agents', 'memory-orchestrator', {
       lifecycle: { background: true, singleton: true },
     });
 
     const result = validateManifests(root);
     const errors = result.errors.filter((d) => d.severity === 'error');
-    expect(errors).toHaveLength(0);
-    expect(result.ok).toBe(true);
+    expect(
+      errors.some((e) => /lifecycle block is not allowed on type:"agent"/.test(e.message)),
+    ).toBe(true);
+    expect(result.ok).toBe(false);
   });
 
   it('G-A FAIL: command-type with lifecycle is rejected (lifecycle restricted to mcp-server/agent)', () => {
@@ -557,25 +562,22 @@ describe('P11 v2-e2e — BACK-COMPAT: all v1 extensions validate + the bundle va
     // D4 (authoring-lib): the 6 demo extensions were deleted as part of the nx-migration.
     // The born-conformance gate (tools/born-conformance.js) is the new fixture source.
     // This test now confirms the real production extensions (memory subsystem) are present.
-    const expectedDirs: Array<[string, string]> = [
-      ['agents', 'memory-organizer'],
-      ['mcp-servers', 'memory-server'],
-      ['hooks', 'memory-flush'],
-      ['commands', 'memory-cli'],
-      ['bundles', 'sox-memory-bundle'],
+    // Each active extension type must have a representative manifest in the repo.
+    // After P8 bundle co-location (24cb5fe) the memory mcp-server/hook/cli/organizer
+    // live as members under sox-memory-bundle, not at top-level type dirs — so this
+    // references each type at its real current location (top-level or bundle member).
+    const expectedManifests: string[] = [
+      'extensions/agents/org-agent/extension.json',                                  // agent
+      'extensions/bundles/sox-memory-bundle/members/memory-server/extension.json',   // mcp-server
+      'extensions/bundles/sox-memory-bundle/members/memory-flush/extension.json',    // hook
+      'extensions/commands/di-command/extension.json',                               // command
+      'extensions/bundles/sox-memory-bundle/extension.json',                         // bundle
     ];
 
-    for (const [typeDir, id] of expectedDirs) {
-      const manifestPath = path.join(
-        REPO_ROOT,
-        'extensions',
-        typeDir,
-        id,
-        'extension.json',
-      );
+    for (const rel of expectedManifests) {
       expect(
-        fs.existsSync(manifestPath),
-        `manifest missing: extensions/${typeDir}/${id}/extension.json`,
+        fs.existsSync(path.join(REPO_ROOT, rel)),
+        `manifest missing: ${rel}`,
       ).toBe(true);
     }
   });
@@ -597,6 +599,8 @@ describe('P11 v2-e2e — BACK-COMPAT: all v1 extensions validate + the bundle va
     };
     expect(manifest.type).toBe('bundle');
     expect(Array.isArray(manifest.members)).toBe(true);
-    expect(manifest.members).toHaveLength(4);
+    // sox-memory-bundle members: memory-daemon, memory-server, memory-organizer,
+    // memory-flush, memory-cli, memory-usage (BL-18: organizer added to members[]).
+    expect(manifest.members).toHaveLength(6);
   });
 });

@@ -209,25 +209,37 @@ two escape hatches (reconfigure allowlist / symlink into `~/.memory/`).
 
 ## Authoring / CLI
 
-### BL-16 — `soxe init` accepts ids that `soxe validate` rejects; naming rules undocumented; re-evaluate the rule
+### ~~BL-16~~ — `soxe init` accepts ids that `soxe validate` rejects; naming rules undocumented; re-evaluate the rule — **Resolved**
 
-**Severity:** Medium (authoring DX / correctness) · **Status:** Open
+**Severity:** Medium (authoring DX / correctness) · **Status:** Resolved (2026-06-22)
+
+1. **init/validate agreement (bug):** both init surfaces now fail fast on a non-conformant id,
+   matching `soxe validate`. `cmdInit` (`apps/sox/src/main.ts`, the `soxe` path) uses the
+   canonical `validateId` from `@sox/authoring` (pattern **and** no-type-suffix), exit 1 with a
+   clear message; the legacy `scripts/new-extension.ts` (`bin/sox` path) suffix check was
+   promoted from warn-only to a hard error (`idSuffixError`). Verified: `soxe init skill
+   memory-skill` and `sox init skill memory-skill` both exit 1; `memory-usage` scaffolds.
+2. **Documented:** id rules now appear in `init` usage + `--help` and in `docs/guidelines/bundle.md`.
+3. **Decision (re-evaluate):** the no-type-suffix rule is **kept globally** (not relaxed for
+   bundle members) — one uniform contract; member type is already explicit in `extension.json`
+   and the `members/<id>/` path; the `memory-<function>` convention is more informative.
+   Rationale recorded in `docs/guidelines/bundle.md`.
 Three related problems, surfaced authoring the memory-usage skill as a bundle member:
 
-1. **init/validate inconsistency (bug).** `soxe init skill memory-skill` **scaffolds
+4. **init/validate inconsistency (bug).** `soxe init skill memory-skill` **scaffolds
    successfully**, but `soxe validate` then **rejects** the result:
    `id "memory-skill" must not end with the type name "skill"`
    (`libs/authoring/src/index.ts:156`). `init` and `validate` must agree — `init` should
    reject (or auto-fix) a non-conformant id at scaffold time, not produce a born-INVALID
    extension. Today the author only learns the id is illegal after a full scaffold.
 
-2. **Naming rules are undocumented.** The id contract (`^[a-z][a-z0-9-]*$` **and** must not
+5. **Naming rules are undocumented.** The id contract (`^[a-z][a-z0-9-]*$` **and** must not
    end with the type name) lives only in code + a test; there is no author-facing doc, and
    `soxe init --help` shows only `init <type> <id>`. Document the id rules — and the bundle
    convention that members are named by **function** (`memory-server`/`memory-cli`), not by
    type — in the init help and an authoring guide, with examples + the rejection reason.
 
-3. **Re-evaluate whether the "no type-name suffix" rule still makes sense under bundling.**
+6. **Re-evaluate whether the "no type-name suffix" rule still makes sense under bundling.**
    The rule predates the bundle layout. Inside a bundle, members already live under
    `members/<id>/` with the type explicit in `extension.json`, so a suffix like `-skill` is
    arguably informative (it disambiguates a member's role in a mixed bundle), not redundant.
@@ -247,6 +259,37 @@ not deploy its skill members; a separate per-member `--host` install is required
 used here). Fix: the config/bundle install should host-place every member per its
 `install.hosts` (so `install --update` of a bundle deploys skills/agents/commands too), or this
 two-step requirement must be documented. Closely related to BL-7 (scope/placement semantics).
+
+### ~~BL-18~~ — `memory-organizer` is a member dir + install-registry record but absent from the bundle manifest `members[]` — **Resolved**
+
+**Severity:** Low (manifest/registry consistency) · **Status:** Resolved (2026-06-22)
+Resolved by **including** the organizer in the bundle (intent confirmed: the daemon calls it and
+BL-9/BL-13 graph work depends on its extract-link-consolidate pass). Added
+`{ "id": "memory-organizer", "version": "^0.1.0" }` to `members[]` (now 6 members) and rewrote the
+bundle `description` to list all six (organizer + the previously-omitted memory-usage). The
+organizer's manifest already passes strict validate (author/keywords/invocation present, no
+lifecycle). v2-e2e member-count assertion updated 5→6. `install sox-memory-bundle` now deploys
+the organizer, reconciling the manifest with the install-registry record.
+
+**Original (for history):**
+**Severity:** Low (manifest/registry consistency) · **Status:** ~~Open / needs-decision~~
+`extensions/bundles/sox-memory-bundle/members/memory-organizer/` exists on disk and appears in
+`~/.sox`-side `install-registry.json`, but the bundle manifest's `members[]` lists only
+`memory-daemon`, `memory-server`, `memory-flush`, `memory-cli` (and now `memory-usage`) — **not**
+`memory-organizer`. The bundle `description` likewise omits it. So `install sox-memory-bundle`
+does not deploy the organizer, yet a stale/older install path left it in the install-registry.
+**Decide intent:**
+
+- If the organizer **should** ship with the bundle (it builds the graph / does extract-link-
+  consolidate, which BL-9/BL-13 rely on), add `{ "id": "memory-organizer", "version": "^0.1.0" }`
+  to `members[]` and update the description — note this makes every bundle install also deploy/run
+  the organizer daemon (a behavior change, hence not done unilaterally here).
+- If it is intentionally **out** of the bundle (optional/experimental, installed separately),
+  document why, and reconcile the stale `install-registry.json` record so the registry stops
+  advertising a member the manifest doesn't ship.
+
+Either way, manifest ↔ member-dirs ↔ install-registry should be made consistent (a
+`check-registry-sync`-style assertion could enforce it).
 
 ---
 

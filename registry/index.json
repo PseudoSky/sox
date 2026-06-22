@@ -28,9 +28,9 @@
     "type": "bundle",
     "version": "0.1.0",
     "title": "sox-memory (graph memory subsystem)",
-    "description": "Use this when you want the full sox-memory graph-memory subsystem installed in one command — expands to memory-daemon (supervised Unix-socket writer daemon), memory-server (7 MCP tools, stdio), memory-flush (SessionEnd hook), and memory-cli (store lifecycle commands).",
+    "description": "Use this when you want the full sox-memory graph-memory subsystem installed in one command — expands to memory-daemon (supervised Unix-socket writer daemon), memory-server (MCP tools, stdio), memory-organizer (LLM extract/link/consolidate agent that builds the graph), memory-flush (SessionEnd hook), memory-cli (store lifecycle commands), and memory-usage (how-to skill).",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle",
-    "checksum": "sha256:eb8107e3aad6c4c4f036067264fa8266ab678dd5975295b46332f15da281f6aa",
+    "checksum": "sha256:95d2c02579cad9094a0cae6bb9432052f251ecd0fa53ee07833ac97161bcdf2e",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -41,6 +41,10 @@
       },
       {
         "id": "memory-server",
+        "version": "^0.1.0"
+      },
+      {
+        "id": "memory-organizer",
         "version": "^0.1.0"
       },
       {
@@ -76,7 +80,7 @@
     "type": "service",
     "version": "0.1.0",
     "title": "Memory Daemon",
-    "description": "Supervised Unix-socket daemon that drains the organizer queue and calls memory-organizer for LLM processing",
+    "description": "Processes the sox graph-memory organizer queue: a supervised, singleton Unix-socket service that invokes memory-organizer for LLM-driven entity/relation extraction, consolidation, and reindexing, keeping the memory graph current without blocking the MCP write path.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-daemon",
     "checksum": "sha256:51c53d92dab483ae4945ea30fbf9e5a2dfbb7fda75e70d1f26c9c01bcb530353",
     "compatibility": {
@@ -124,7 +128,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:56d3aacac7558cc8e41dbb7819b84e2487caab2d7a6cf60a444c3e023954b3f6",
+    "checksum": "sha256:7f8273ac4129690f6a7644427faf69069a8ffa61cb6aba15f5164c9d602d6320",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },

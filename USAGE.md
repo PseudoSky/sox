@@ -1,6 +1,6 @@
 # USAGE — sox CLI command surface
 
-The host CLI is `bin/sox` (run as `node bin/sox <verb> [flags]`). This document
+The host CLI is `bin/soxe` (run as `node bin/soxe <verb> [flags]`). This document
 walks **every command path the install model was designed for**, with the exact
 syntax, the observable each command should produce, and an honest status marker.
 
@@ -30,7 +30,7 @@ Extensions install one of two ways:
 ## Command syntax
 
 ```
-node bin/sox <verb> [<id>] [flags]
+node bin/soxe <verb> [<id>] [flags]
 
 verbs:   init <type> <id> · validate [<path>] · search [<query>] · install [<id>]
          · start · stop [<id>] · list · details <id> · enable <id> · disable <id>
@@ -54,9 +54,9 @@ install profile (a sox-run execution mode).
 ## A — Authoring lifecycle (every active type)
 
 ```bash
-node bin/sox init <type> demo-<type>                      # ✅ scaffolds extensions/<typedir>/demo-<type>
+node bin/soxe init <type> demo-<type>                      # ✅ scaffolds extensions/<typedir>/demo-<type>
 ./node_modules/.bin/nx build demo-<type>                  # ✅ build is nx, per project
-node bin/sox validate extensions/<typedir>/demo-<type>    # ✅ asserts born-conformant manifest
+node bin/soxe validate extensions/<typedir>/demo-<type>    # ✅ asserts born-conformant manifest
 ```
 
 Run for each of: `agent skill mcp-server command hook bundle`.
@@ -65,58 +65,58 @@ Run for each of: `agent skill mcp-server command hook bundle`.
 
 ```bash
 T=$(mktemp -d)
-node bin/sox install demo-agent   --host claude --scope project --root "$T"   # ✅ → $T/.claude/agents/demo-agent.md
-node bin/sox install demo-agent   --host claude --scope user    --root "$T"   # ✅ → $T/.claude/agents/…
-node bin/sox install demo-skill   --host claude --scope project --root "$T"   # ✅ → $T/.claude/skills/demo-skill/SKILL.md
-node bin/sox install demo-skill   --host claude --scope user    --root "$T"   # ✅
-node bin/sox install demo-command --host claude --scope project --root "$T"   # ✅ → $T/.claude/commands/demo-command.md
-node bin/sox install demo-hook    --host claude --scope project --root "$T"   # ⚠️ hook = file-drop (script) + config-merge (settings.json hooks entry); assert BOTH — the config-merge half is unverified
+node bin/soxe install demo-agent   --host claude --scope project --root "$T"   # ✅ → $T/.claude/agents/demo-agent.md
+node bin/soxe install demo-agent   --host claude --scope user    --root "$T"   # ✅ → $T/.claude/agents/…
+node bin/soxe install demo-skill   --host claude --scope project --root "$T"   # ✅ → $T/.claude/skills/demo-skill/SKILL.md
+node bin/soxe install demo-skill   --host claude --scope user    --root "$T"   # ✅
+node bin/soxe install demo-command --host claude --scope project --root "$T"   # ✅ → $T/.claude/commands/demo-command.md
+node bin/soxe install demo-hook    --host claude --scope project --root "$T"   # ⚠️ hook = file-drop (script) + config-merge (settings.json hooks entry); assert BOTH — the config-merge half is unverified
 ```
 
 ## C — Declarative placement on **codex**
 
 ```bash
-node bin/sox install demo-skill --host codex --scope user    --root "$T"   # ✅ → $T/.codex/skills/demo-skill/ (P0.6-verified path)
-node bin/sox install demo-agent --host codex --scope project --root "$T"   # ⚠️ codex AGENTS.md file-drop — registered but not exercised end-to-end
+node bin/soxe install demo-skill --host codex --scope user    --root "$T"   # ✅ → $T/.codex/skills/demo-skill/ (P0.6-verified path)
+node bin/soxe install demo-agent --host codex --scope project --root "$T"   # ⚠️ codex AGENTS.md file-drop — registered but not exercised end-to-end
 ```
 
 ## D — mcp-server install **modes** (the dod.2 matrix)
 
 ```bash
-node bin/sox install demo-mcp --host claude --scope project --profile sse     --root "$T"   # ⚠️ sse/http → $T/.mcp.json (config-merge, --trust prompt)
-node bin/sox install demo-mcp --host claude --scope user    --profile stdio   --root "$T"   # ⚠️ stdio → $T/.claude.json (user-scope spawn), NOT .mcp.json
-node bin/sox install demo-mcp --host claude --scope project --profile service --root "$T"   # ⚠️ sox service via run-service — UNWIRED: declarativeInstall only dispatches file-drop/config-merge today
+node bin/soxe install demo-mcp --host claude --scope project --profile sse     --root "$T"   # ⚠️ sse/http → $T/.mcp.json (config-merge, --trust prompt)
+node bin/soxe install demo-mcp --host claude --scope user    --profile stdio   --root "$T"   # ⚠️ stdio → $T/.claude.json (user-scope spawn), NOT .mcp.json
+node bin/soxe install demo-mcp --host claude --scope project --profile service --root "$T"   # ⚠️ sox service via run-service — UNWIRED: declarativeInstall only dispatches file-drop/config-merge today
 ```
 
 ## E — Process / service runtime lifecycle (supervisor path)
 
 ```bash
-node bin/sox install memory-server -s project --root "$T"     # ✅ config-resolver install
-node bin/sox start  -s project --root "$T"                    # ✅ supervisor spawns the process
-node bin/sox list                                             # ✅ shows memory-server RUNNING
-node bin/sox details memory-server                            # ✅ scope / pid / source
-node bin/sox exec   memory-server memory_recall '{"query":"x","db_path":"'"$T"'/m.db"}'   # ✅ tool returns
-node bin/sox disable memory-server -s project                 # ✅ deactivates (process stops)
-node bin/sox enable  memory-server -s project                 # ✅ reactivates
-node bin/sox stop   memory-server                             # ✅ teardown, zero orphans
-node bin/sox uninstall memory-server -s project               # ✅ removed + lockfile updated
+node bin/soxe install memory-server -s project --root "$T"     # ✅ config-resolver install
+node bin/soxe start  -s project --root "$T"                    # ✅ supervisor spawns the process
+node bin/soxe list                                             # ✅ shows memory-server RUNNING
+node bin/soxe details memory-server                            # ✅ scope / pid / source
+node bin/soxe exec   memory-server memory_recall '{"query":"x","db_path":"'"$T"'/m.db"}'   # ✅ tool returns
+node bin/soxe disable memory-server -s project                 # ✅ deactivates (process stops)
+node bin/soxe enable  memory-server -s project                 # ✅ reactivates
+node bin/soxe stop   memory-server                             # ✅ teardown, zero orphans
+node bin/soxe uninstall memory-server -s project               # ✅ removed + lockfile updated
 ```
 
 ## F — update + reversal (per declarative path)
 
 ```bash
 # bump demo-skill version, then:
-node bin/sox update demo-skill -s project                                     # ✅ re-pins / re-installs
-node bin/sox uninstall demo-skill --host claude --scope project --root "$T"   # ⚠️ declarative uninstall by --host: assert files REMOVED + ledger entry reversed (less exercised than install)
+node bin/soxe update demo-skill -s project                                     # ✅ re-pins / re-installs
+node bin/soxe uninstall demo-skill --host claude --scope project --root "$T"   # ⚠️ declarative uninstall by --host: assert files REMOVED + ledger entry reversed (less exercised than install)
 ```
 
 ## G — Negative / enforcement (each MUST be denied, side-effect ABSENT)
 
 ```bash
-node bin/sox install demo-mcp --host claude --scope project --profile stdio-into-mcp --root "$T"  # ⚠️ stdio→.mcp.json MUST be denied (exit≠0, no .mcp.json entry) — proven as a lib call, not via the CLI verb
-node bin/sox exec memory-server memory_write '{"content":"x","db_path":"/tmp/evil.db"}'           # ✅ C6: denied + /tmp/evil.db absent on disk
-node bin/sox install demo-mcp  --host codex  --scope project --root "$T"                          # ⚠️ manifest carrying a codex project-forbidden key MUST be denied
-node bin/sox install demo-agent --host claude --scope org --root "$T"                             # ⚠️ org/managed tier → no write (scopePaths('org') is empty); assert nothing placed
+node bin/soxe install demo-mcp --host claude --scope project --profile stdio-into-mcp --root "$T"  # ⚠️ stdio→.mcp.json MUST be denied (exit≠0, no .mcp.json entry) — proven as a lib call, not via the CLI verb
+node bin/soxe exec memory-server memory_write '{"content":"x","db_path":"/tmp/evil.db"}'           # ✅ C6: denied + /tmp/evil.db absent on disk
+node bin/soxe install demo-mcp  --host codex  --scope project --root "$T"                          # ⚠️ manifest carrying a codex project-forbidden key MUST be denied
+node bin/soxe install demo-agent --host claude --scope org --root "$T"                             # ⚠️ org/managed tier → no write (scopePaths('org') is empty); assert nothing placed
 ```
 
 ---

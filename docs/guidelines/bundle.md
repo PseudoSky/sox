@@ -41,6 +41,22 @@ A hole is any row that is not **Defined**. The rest of this document is the hole
 
 ---
 
+## Member id naming (decision, BL-16)
+
+Bundle members follow the **same id contract as any extension** — `^[a-z][a-z0-9-]*$` **and the
+id must not end in the type name** (`-skill`, `-agent`, `-server`-the-suffix is fine because the
+type is `mcp-server` only when it equals/ends-with the literal type token). Members are named by
+**function**, not by type: `memory-server`, `memory-cli`, `memory-daemon`, `memory-usage` (a
+skill) — never `memory-skill`. `soxe init` enforces this at scaffold time (it shares
+`validateId` with `soxe validate`), so a non-conformant member id is rejected before any files
+are written.
+
+**Decision (BL-16.3): the no-type-suffix rule is kept globally, not relaxed for bundle members.**
+Rationale: one uniform id contract avoids two divergent rules; the member's type is already
+explicit in its `extension.json` and `members/<id>/` path, so a `-skill` suffix is redundant
+rather than disambiguating; and the `memory-<function>` convention already conveys a member's
+role more usefully than its type would.
+
 ## Fundamental deviation: `bundle` is not a runtime type
 
 Before applying the layer model, the single most important fact about `bundle` must be stated

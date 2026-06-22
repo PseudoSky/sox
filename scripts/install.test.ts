@@ -179,9 +179,14 @@ describe('P1: single-scope local install', () => {
       compatibility: { host: '>=1.0.0 <2.0.0' },
     };
 
-    // Compute actual checksum from the content file
+    // The registry checksum must match the built entrypoint artifact (C4: dist/index.js,
+    // the declared `entrypoint`), NOT the TS source — mirroring fetchArtifact /
+    // resolveChecksum resolution order. Create the built artifact and hash it.
     const crypto = await import('node:crypto');
-    const contentPath = path.join(root, 'extensions', 'skills', 'registry-ext', 'src', 'index.ts');
+    const distDir = path.join(root, 'extensions', 'skills', 'registry-ext', 'dist');
+    fs.mkdirSync(distDir, { recursive: true });
+    const contentPath = path.join(distDir, 'index.js');
+    fs.writeFileSync(contentPath, 'module.exports = {};\n');
     const bytes = fs.readFileSync(contentPath);
     const realChecksum = 'sha256:' + crypto.createHash('sha256').update(bytes).digest('hex');
     indexEntry.checksum = realChecksum;

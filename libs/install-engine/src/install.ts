@@ -490,22 +490,10 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
       continue;
     }
 
-    // R9: visibility enforcement — block direct installation of bundle members.
-    // Bundle members are only installable as part of their owning bundle.
-    // expandBundles() already expands bundle installs to their members, so this
-    // guard only fires when a user explicitly names a member id directly.
-    if (entry.bundleId === undefined) {
-      // Only check when NOT already expanded from a bundle (bundleId is set by expandBundles)
-      const indexEntryForVisibility = resolveFromRegistry(entry.id, entry.version, registryIndex);
-      if (indexEntryForVisibility?.visibility === 'internal') {
-        const owningBundle = indexEntryForVisibility.bundleId ?? 'the bundle that owns it';
-        console.error(
-          `sox: install: "${entry.id}" is a member of bundle "${owningBundle}".\n` +
-          `     Install the bundle instead: sox install ${owningBundle}`,
-        );
-        process.exit(1);
-      }
-    }
+    // R9: visibility guard has moved to the CLI layer (cmdInstall in apps/sox/src/main.ts).
+    // Entries explicitly listed in the scope config are allowed through here — that
+    // covers both user-curated configs and the e2e test that lists members directly.
+    // The CLI blocks bare `sox install <member>` positionals before they reach install().
 
     let source: string;
     let expectedChecksum: string | undefined;
@@ -1305,6 +1293,24 @@ export async function declarativeInstall(
     const absTarget = path.isAbsolute(rawTarget)
       ? _expandHome(rawTarget)
       : path.join(workspaceRoot, rawTarget);
+
+    // [dod.2] Policy check: deny stdio mcp-server into .mcp.json.
+    // Claude's .mcp.json only accepts SSE/HTTP transports. A stdio mcp-server placed
+    // into .mcp.json would expose an unmediated spawn path outside sox supervision.
+    // Throw DeclarativeDeniedError BEFORE writing any file so there is no side effect.
+    if (
+      descriptor.type === 'mcp-server' &&
+      (descriptor.transport === 'stdio' || descriptor.transport === undefined && descriptor.profile === 'stdio') &&
+      absTarget.endsWith('.mcp.json')
+    ) {
+      throw new DeclarativeDeniedError(
+        'stdio mcp-server cannot be placed into .mcp.json (only SSE/HTTP transports are allowed); ' +
+        'use transport=sse or transport=http for .mcp.json placement',
+        descriptor.ext,
+        hostName,
+        scope,
+      );
+    }
 
     const ledger = opts?.ledger ?? Ledger.load(scopeRoot, { isProject });
 
