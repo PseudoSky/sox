@@ -29,7 +29,7 @@
  */
 
 // ── Database ──────────────────────────────────────────────────────────────────
-export { openDb, openDbReadOnly, initScope } from './db.js';
+export { openDb, openDbReadOnly, initScope, migrateAddColumn } from './db.js';
 export type { ScopeKind, MemoryScope } from './db.js';
 
 // ── Schema ────────────────────────────────────────────────────────────────────

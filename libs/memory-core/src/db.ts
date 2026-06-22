@@ -50,12 +50,21 @@ export function openDb(dbPath: string): Database.Database {
   // Idempotent column migrations for pre-existing stores (CREATE IF NOT EXISTS won't
   // add columns to a table that already exists). Add new columns when missing.
   migrateAddColumn(db, 'node', 'meta', 'TEXT');
+  // P1 enrichment columns (D3.1) — all NULL-defaulting, idempotent.
+  migrateAddColumn(db, 'node', 'tags', 'TEXT');
+  migrateAddColumn(db, 'node', 'topic', 'TEXT');
+  migrateAddColumn(db, 'node', 'project_path', 'TEXT');
+  migrateAddColumn(db, 'node', 'enrich_ver', 'TEXT');
+  // D3.4 partial indices for enrichment columns
+  db.exec(`CREATE INDEX IF NOT EXISTS ix_node_topic      ON node(topic)        WHERE topic IS NOT NULL`);
+  db.exec(`CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`);
+  db.exec(`CREATE INDEX IF NOT EXISTS ix_node_enrich_ver ON node(enrich_ver)   WHERE enrich_ver IS NOT NULL`);
 
   return db;
 }
 
 /** Add a column to a table if it does not already exist (idempotent migration). */
-function migrateAddColumn(
+export function migrateAddColumn(
   db: Database.Database,
   table: string,
   column: string,

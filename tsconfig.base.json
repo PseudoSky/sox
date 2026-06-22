@@ -35,6 +35,7 @@
       "@sox/host-runtime": ["libs/host-runtime/dist/index.js"],
       "@sox/registry": ["libs/registry/dist/index.js"],
       "@sox/memory-core": ["libs/memory-core/dist/index.d.ts"],
+      "@sox/memory-enrich": ["libs/memory-enrich/dist/index.d.ts"],
       "@sox/mcp-runtime": ["libs/mcp-runtime/dist/index.d.ts"]
     }
   },

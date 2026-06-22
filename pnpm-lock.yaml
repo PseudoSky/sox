@@ -125,6 +125,8 @@ importers:
         specifier: workspace:*
         version: link:../../../../../libs/memory-core
 
+  extensions/bundles/sox-memory-bundle/members/memory-usage: {}
+
   extensions/commands/di-command: {}
 
   extensions/services/tokenguard:
@@ -172,11 +174,22 @@ importers:
 
   libs/memory-core:
     dependencies:
+      '@sox/memory-enrich':
+        specifier: workspace:*
+        version: link:../memory-enrich
       fastembed:
         specifier: ^2.1.0
         version: 2.1.0
 
   libs/memory-core/dist: {}
+
+  libs/memory-enrich:
+    dependencies:
+      better-sqlite3:
+        specifier: '*'
+        version: 12.10.0
+
+  libs/memory-enrich/dist: {}
 
   libs/registry: {}
 
