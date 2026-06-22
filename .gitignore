@@ -25,3 +25,5 @@ extensions/services/tokenguard/bundle/
 extensions/services/tokenguard/demo/out/
 # sox init test-scaffold output
 /test-*-init/
+# plan runtime event logs (append-only, machine-local)
+.workflow/plans/*/events.ndjson
