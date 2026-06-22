@@ -246,9 +246,16 @@ Three related problems, surfaced authoring the memory-usage skill as a bundle me
    Decide: keep globally, relax for bundle members, or drop. (Complied for now by naming the
    skill `memory-usage`, matching the `memory-<function>` sibling convention.)
 
-### BL-17 — bundle/config install does not host-place skill members (only the `--host` path does)
+### ~~BL-17~~ — bundle/config install does not host-place skill members (only the `--host` path does) — **Resolved**
 
-**Severity:** Medium (install correctness) · **Status:** Open
+**Severity:** Medium (install correctness) · **Status:** Resolved (2026-06-22)
+Fixed in `d874926`: after `install()` writes the lockfile, the config/no-`--host` path now
+host-places every resolved extension whose manifest declares `install.hosts` (skill/agent/
+command members), via a shared `hostPlaceExtension()` helper also used by the `--host` path
+(single placement implementation). Runtime types (service/bundle) are skipped. Net:
+`soxe install --scope=user` of a bundle now deploys its skill members per `install.hosts`,
+not just the lockfile. Verified: nx build sox + lint + typecheck; the no-`--host` path stays
+green in `host-runtime:test-e2e` (63/63).
 `soxe install --scope=user --update` (the config/lockfile path used to "upgrade a bundle")
 **resolves** a bundle's skill member into the lockfile but does **not** host-place it — after
 upgrading `sox-memory-bundle` with the new `memory-usage` skill member, the skill was written
