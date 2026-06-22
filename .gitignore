@@ -16,6 +16,7 @@ dist/
 *.tsbuildinfo
 # machine-local runtime / home state
 .extensions/runtime.json
+.extensions/extensions.json
 .sox/
 /data/
 # project-local MCP config (contains absolute machine paths)
