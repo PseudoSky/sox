@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS node (
   uid          TEXT UNIQUE NOT NULL,
   kind         TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session')),
   content      TEXT, name TEXT, summary TEXT,
+  meta         TEXT,  -- caller-supplied metadata (JSON); persisted, not dropped
   agent_id     TEXT,
   session_id   TEXT,
   source       TEXT CHECK (source IN ('message','tool_output','observation','document','reflection','import')),

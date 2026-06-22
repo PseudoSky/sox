@@ -24,6 +24,8 @@ const ulid = monotonicFactory();
 
 export interface WriteParams {
   content: string;
+  /** Human-readable summary / topic of the content (persisted to node.summary). */
+  summary?: string | undefined;
   session_id?: string | undefined;
   t_occurred?: string | undefined;
   agent_id?: string | undefined;
@@ -54,6 +56,7 @@ export async function memoryWrite(
 ): Promise<WriteResult | WriteError> {
   const {
     content,
+    summary,
     session_id,
     t_occurred,
     agent_id,
@@ -61,7 +64,11 @@ export async function memoryWrite(
     importance = 1.0, // default; organizer will update via LLM scoring
     scope = 'project',
     tags,
+    metadata,
   } = params;
+
+  // Caller-supplied metadata is persisted as JSON (previously silently dropped).
+  const metaJson = metadata !== undefined ? JSON.stringify(metadata) : null;
 
   if (!content || !content.trim()) {
     return { code: 'E_SCOPE_RO', message: 'content must not be empty' };
@@ -96,11 +103,11 @@ export async function memoryWrite(
   // Atomic transaction: insert node + vec + FTS (via trigger) + enqueue
   const tx = db.transaction(() => {
     const result = db.prepare<unknown[], { rowid: number }>(
-      `INSERT INTO node (uid, kind, content, agent_id, session_id, source, importance,
+      `INSERT INTO node (uid, kind, content, summary, meta, agent_id, session_id, source, importance,
                          content_hash, t_created, t_occurred, t_valid)
-       VALUES (?, 'episode', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, 'episode', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING rowid`,
-    ).get(uid, content, agent_id ?? null, session_id ?? null, source, importance,
+    ).get(uid, content, summary ?? null, metaJson, agent_id ?? null, session_id ?? null, source, importance,
           contentHash, now, tOccurred, tValid);
 
     if (!result) throw new Error('Insert failed: no rowid returned');

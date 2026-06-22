@@ -26,11 +26,14 @@ Write a memory episode to the store. Enqueues async organisation by `memory-orga
 {
   "content":    "<string, required>",
   "db_path":    "<string, required — path to .db file>",
+  "summary":    "<string, optional — human-readable summary / topic, persisted>",
+  "metadata":   "<object, optional — arbitrary caller metadata persisted as JSON, e.g. project path>",
   "session_id": "<string, optional>",
   "t_occurred": "<ISO timestamp, optional>",
   "agent_id":   "<string, optional>",
   "source":     "<'message'|'tool_output'|'observation'|'document'|'reflection'|'import', optional>",
-  "importance": "<number 1–10, optional>"
+  "importance": "<number 1–10, optional>",
+  "tags":       "<string[], optional — concept tags attached immediately>"
 }
 ```
 
