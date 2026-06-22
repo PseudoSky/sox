@@ -298,6 +298,18 @@ does not deploy the organizer, yet a stale/older install path left it in the ins
 Either way, manifest ↔ member-dirs ↔ install-registry should be made consistent (a
 `check-registry-sync`-style assertion could enforce it).
 
+### BL-19 — no DB→markdown export mirror for memory written directly via `memory_write`
+
+**Severity:** Low (auditability) · **Status:** Open / deferred
+The research-corpus migration ingested 95 markdown findings into `~/.memory/memory.db` (823
+chunked nodes). The original markdown files remain as the human-readable/git-reviewable mirror,
+but they are now a **snapshot**: any finding written _directly_ via `memory_write` going forward
+(e.g. by `workflow-researcher`) has **no** markdown representation — so the DB silently diverges
+from the mirror, and there is no git-reviewable record of new knowledge. Add a `memory-export`
+step (a `memory-cli` subcommand or organizer pass) that renders MCP-written nodes back to
+markdown keyed by `uid`, so the mirror stays current and memory changes remain auditable in git.
+Deferred from the migration (DB-as-truth was chosen; the export-back half was not built).
+
 ---
 
 ## Resolved (this engagement)
