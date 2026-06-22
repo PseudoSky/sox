@@ -157,7 +157,14 @@ export function parseArgs(argv: string[]): Record<string, string> {
         i++;
       }
     } else {
-      // positional — skip
+      // positional — store as '_' (first positional wins; subsequent go to '_2', '_3', ...)
+      if (result['_'] === undefined) {
+        result['_'] = arg;
+      } else {
+        let n = 2;
+        while (result[`_${n}`] !== undefined) n++;
+        result[`_${n}`] = arg;
+      }
       i++;
     }
   }

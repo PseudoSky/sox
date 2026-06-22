@@ -4,7 +4,7 @@
  * Full command surface wired to engine libs (sox-extension state, legacy P5).
  *
  * Verbs: init, validate, search, install, start, list, details, enable,
- *        disable, update, uninstall, stop, exec, help
+ *        disable, update, uninstall, stop, serve, exec, help
  *
  * [ref:self-hosted-extension-zero] — apps/sox ships extension.json type:command
  * [ref:dual-flag-form]             — parseArgs accepts --flag=value AND --flag value (A12)
@@ -49,6 +49,11 @@ import type { PermissionsBlock, RuntimeEntry, RuntimeRecord } from '@sox/host-ru
 // to avoid the NX "static import of lazy-loaded library" lint error.
 // [inv:host-registry-lazy]: getHost() used only in cmdInstall; require() at call site.
 
+// ─── CLI name ─────────────────────────────────────────────────────────────────
+// Single source of truth for the CLI command name used in all usage strings.
+// To rename the CLI: change the bin key in apps/sox/package.json to match.
+const CLI = 'sox';
+
 // ─── Entry ────────────────────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
@@ -76,6 +81,9 @@ async function main(): Promise<void> {
       break;
     case 'exec':
       await cmdExec(flags);
+      break;
+    case 'serve':
+      await cmdServe(flags);
       break;
 
     // ── Config management ─────────────────────────────────────────────────────
@@ -148,18 +156,49 @@ async function main(): Promise<void> {
         printHelp();
       } else {
         process.stderr.write(`sox: unknown verb '${String(verb)}'\n`);
-        process.stderr.write(`Run 'sox --help' for usage.\n`);
+        process.stderr.write(`Run '${CLI} --help' for usage.\n`);
         process.exit(1);
       }
   }
 }
 
+// ─── Shared helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Build SOX_CONFIG_* env vars from cascade-resolved config for a given extension.
+ * Reads all four scopes (org→user→project→local, narrowest wins) and converts
+ * each config key to SOX_CONFIG_<KEY>, with tilde and ${VAR} expansion.
+ * Used by cmdStart, cmdExec (fresh-spawn), and cmdServe.
+ */
+function buildExtConfigEnv(extId: string, root: string): Record<string, string> {
+  const configEnv: Record<string, string> = {};
+  const merged: Record<string, unknown> = {};
+  const { homedir } = require('node:os') as typeof import('node:os');
+  for (const cs of ['org', 'user', 'project', 'local'] as const) {
+    try {
+      const csp = getScopePaths(cs, root);
+      const cfg = loadConfig(csp.config);
+      const blk = (cfg?.config as Record<string, Record<string, unknown>> | undefined)?.[extId] ?? {};
+      Object.assign(merged, blk);
+    } catch { /* skip missing scope */ }
+  }
+  const homeDir = homedir();
+  for (const [k, v] of Object.entries(merged)) {
+    const envKey = `SOX_CONFIG_${k.toUpperCase().replace(/[-\s]/g, '_')}`;
+    let strVal = typeof v === 'string' ? v : (v === null || v === undefined ? '' : JSON.stringify(v));
+    if (strVal.startsWith('~/')) strVal = homeDir + strVal.slice(1);
+    strVal = strVal.replace(/\$\{([A-Z0-9_]+)\}/g, (_m: string, varName: string) => process.env[varName] ?? _m);
+    configEnv[envKey] = strVal;
+  }
+  return configEnv;
+}
+
 // ─── Help ─────────────────────────────────────────────────────────────────────
 
 function printHelp(): void {
-  process.stdout.write(`sox — LLM extension ecosystem CLI (extension #0)
+  process.stdout.write(`${CLI} — LLM extension ecosystem CLI (extension #0)
 
-Usage: sox <verb> [flags]
+Usage: ${CLI} <verb> [flags]
 
 Authoring:
   init <type> <id>   Scaffold a born-conformant extension (uses libs/authoring)
@@ -200,10 +239,12 @@ Config:
                      Flags: --scope=<scope>
 
 Runtime:
-  start              Start the sox host runtime
+  start              Start the ${CLI} host runtime
                      Flags: --scope=<scope>  --root=<root>  --id=<ext-id>
   stop               Stop the runtime or a single extension
                      Flags: --scope=<scope>  --id=<ext-id>
+  serve              Launch a stdio MCP server with live cascade config (for .mcp.json)
+                     Flags: --scope=<scope>  --root=<dir>
   exec               Call a tool on a running extension (A11: via running server)
                      Flags: --scope=<scope>  --id=<ext-id>  --tool=<tool>  --args='<json>'
   list               List activated extensions
@@ -269,14 +310,14 @@ async function cmdInit(raw: string[]): Promise<void> {
   const id = positionals[1];
 
   if (type === undefined || id === undefined) {
-    process.stderr.write(`sox init: usage: sox init <type> <id> [--out=<dir>]\n`);
+    process.stderr.write(`${CLI} init: usage: ${CLI} init <type> <id> [--out=<dir>]\n`);
     process.stderr.write(`  Types: agent | skill | mcp-server | hook | command | bundle | service\n`);
     process.exit(1);
   }
 
   const ACTIVE_TYPES = ['agent', 'skill', 'mcp-server', 'hook', 'command', 'bundle', 'service'] as const;
   if (!(ACTIVE_TYPES as readonly string[]).includes(type)) {
-    process.stderr.write(`sox init: unknown type '${type}'\n`);
+    process.stderr.write(`${CLI} init: unknown type '${type}'\n`);
     process.stderr.write(`  Valid types: ${ACTIVE_TYPES.join(' | ')}\n`);
     process.exit(1);
   }
@@ -284,7 +325,7 @@ async function cmdInit(raw: string[]): Promise<void> {
   // Validate id against the manifest pattern (^[a-z][a-z0-9-]*$).
   const ID_RE = /^[a-z][a-z0-9-]*$/;
   if (!ID_RE.test(id)) {
-    process.stderr.write(`sox init: invalid id '${id}' — must match ^[a-z][a-z0-9-]*$\n`);
+    process.stderr.write(`${CLI} init: invalid id '${id}' — must match ^[a-z][a-z0-9-]*$\n`);
     process.exit(1);
   }
 
@@ -352,7 +393,7 @@ async function cmdInit(raw: string[]): Promise<void> {
         | undefined;
       if (typeof templateFn !== 'function') {
         process.stderr.write(
-          `sox init: internal: template '${fnName}' not found for type '${type}'\n`,
+          `${CLI} init: internal: template '${fnName}' not found for type '${type}'\n`,
         );
         process.exit(1);
       }
@@ -365,7 +406,7 @@ async function cmdInit(raw: string[]): Promise<void> {
         keywords,
       });
     } else {
-      process.stderr.write(`sox init: scaffold error — ${msg}\n`);
+      process.stderr.write(`${CLI} init: scaffold error — ${msg}\n`);
       process.exit(1);
     }
   }
@@ -380,7 +421,7 @@ async function cmdInit(raw: string[]): Promise<void> {
   const { existsSync: _exists } = await import('node:fs');
   if (!force && _exists(outDir)) {
     process.stderr.write(
-      `sox init: '${outDir}' already exists — use --force to reinitialize\n`,
+      `${CLI} init: '${outDir}' already exists — use --force to reinitialize\n`,
     );
     process.exit(1);
   }
@@ -388,11 +429,11 @@ async function cmdInit(raw: string[]): Promise<void> {
   try {
     writeFileSet(fileSet, outDir);
   } catch (e) {
-    process.stderr.write(`sox init: write error — ${String(e)}\n`);
+    process.stderr.write(`${CLI} init: write error — ${String(e)}\n`);
     process.exit(1);
   }
 
-  process.stdout.write(`sox init: scaffolded ${type} '${id}' → ${outDir}\n`);
+  process.stdout.write(`${CLI} init: scaffolded ${type} '${id}' → ${outDir}\n`);
   process.exit(0);
 }
 
@@ -409,9 +450,9 @@ async function cmdInit(raw: string[]): Promise<void> {
 async function cmdValidate(raw: string[]): Promise<void> {
   // --help flag — exit 0 (A12: --help is a documented flag form)
   if (raw.includes('--help') || raw.includes('-h')) {
-    process.stdout.write(`sox validate — validate an extension.json against the libs/manifest schema
+    process.stdout.write(`${CLI} validate — validate an extension.json against the libs/manifest schema
 
-Usage: sox validate [path-to-extension.json]
+Usage: ${CLI} validate [path-to-extension.json]
 
 If no path is given, validates ./extension.json in the current directory.
 
@@ -436,7 +477,7 @@ Exit codes:
   const absPath = path.resolve(process.cwd(), manifestPath);
 
   if (!fs.existsSync(absPath)) {
-    process.stderr.write(`sox validate: file not found: ${absPath}\n`);
+    process.stderr.write(`${CLI} validate: file not found: ${absPath}\n`);
     process.exit(2);
   }
 
@@ -445,12 +486,12 @@ Exit codes:
     const content = fs.readFileSync(absPath, 'utf-8');
     rawObj = JSON.parse(content) as unknown;
   } catch (e) {
-    process.stderr.write(`sox validate: parse error: ${String(e)}\n`);
+    process.stderr.write(`${CLI} validate: parse error: ${String(e)}\n`);
     process.exit(2);
   }
 
   if (typeof rawObj !== 'object' || rawObj === null || Array.isArray(rawObj)) {
-    process.stderr.write(`sox validate: manifest must be a JSON object\n`);
+    process.stderr.write(`${CLI} validate: manifest must be a JSON object\n`);
     process.exit(2);
   }
 
@@ -494,7 +535,7 @@ Exit codes:
   }
 
   if (result.ok) {
-    process.stdout.write(`sox validate: OK — ${absPath}\n`);
+    process.stdout.write(`${CLI} validate: OK — ${absPath}\n`);
     for (const w of (result.warnings ?? [])) {
       process.stdout.write(`  warning: ${w}\n`);
     }
@@ -503,7 +544,7 @@ Exit codes:
     }
     process.exit(0);
   } else {
-    process.stdout.write(`sox validate: INVALID — ${absPath}\n`);
+    process.stdout.write(`${CLI} validate: INVALID — ${absPath}\n`);
     for (const err of result.errors) {
       process.stdout.write(`  - ${err}\n`);
     }
@@ -563,7 +604,7 @@ function cmdSearch(flags: Record<string, string>): void {
   }
 
   if (results.length === 0) {
-    process.stdout.write(`sox search: no results for '${query}'\n`);
+    process.stdout.write(`${CLI} search: no results for '${query}'\n`);
   } else {
     const col1 = Math.max(...results.map((e) => e.id.length), 2);
     const col2 = Math.max(...results.map((e) => e.type.length), 4);
@@ -609,8 +650,8 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
     }
 
     if (id === undefined || id === '') {
-      process.stderr.write('sox install: declarative path requires a positional <id>\n');
-      process.stderr.write('  Usage: sox install <id> --host=<host> [--scope=project] [--root=<dir>]\n');
+      process.stderr.write(`${CLI} install: declarative path requires a positional <id>\n`);
+      process.stderr.write(`  Usage: ${CLI} install <id> --host=<host> [--scope=project] [--root=<dir>]\n`);
       process.exit(1);
     }
 
@@ -660,13 +701,13 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
     }
 
     if (srcPath === undefined) {
-      process.stderr.write(`sox install: cannot find extension '${id}' in registry or local extensions/\n`);
+      process.stderr.write(`${CLI} install: cannot find extension '${id}' in registry or local extensions/\n`);
       process.stderr.write('  Run \'npx tsx scripts/build-index.ts\' to rebuild the registry, or check the id.\n');
       process.exit(1);
     }
 
     if (extType === undefined) {
-      process.stderr.write(`sox install: cannot determine type for extension '${id}'\n`);
+      process.stderr.write(`${CLI} install: cannot determine type for extension '${id}'\n`);
       process.exit(1);
     }
 
@@ -676,7 +717,7 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
     try {
       getHost(host);
     } catch (e) {
-      process.stderr.write(`sox install: ${String(e)}\n`);
+      process.stderr.write(`${CLI} install: ${String(e)}\n`);
       process.exit(1);
     }
 
@@ -708,10 +749,10 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
       );
     } catch (e) {
       if (e instanceof DeclarativeDeniedError) {
-        process.stderr.write(`sox install: DENIED — ${e.reason}\n`);
+        process.stderr.write(`${CLI} install: DENIED — ${e.reason}\n`);
         process.exit(1);
       }
-      process.stderr.write(`sox install: declarative install failed — ${String(e)}\n`);
+      process.stderr.write(`${CLI} install: declarative install failed — ${String(e)}\n`);
       process.exit(1);
     }
 
@@ -720,19 +761,19 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
 
     for (const r of results) {
       if (r.denied === true) {
-        process.stderr.write(`sox install: DENIED  ${r.host}/${r.scope}  ${r.target}  reason=${r.denialReason ?? 'unknown'}\n`);
+        process.stderr.write(`${CLI} install: DENIED  ${r.host}/${r.scope}  ${r.target}  reason=${r.denialReason ?? 'unknown'}\n`);
         anyDenied = true;
       } else if (r.applied) {
-        process.stdout.write(`sox install: placed   ${r.host}/${r.scope}  ${r.target}\n`);
+        process.stdout.write(`${CLI} install: placed   ${r.host}/${r.scope}  ${r.target}\n`);
         anyApplied = true;
       } else {
-        process.stdout.write(`sox install: up-to-date  ${r.host}/${r.scope}  ${r.target}\n`);
+        process.stdout.write(`${CLI} install: up-to-date  ${r.host}/${r.scope}  ${r.target}\n`);
         anyApplied = true;
       }
     }
 
     if (results.length === 0) {
-      process.stderr.write(`sox install: no install surfaces found for host='${host}' type='${extType}' scope='${scope}'\n`);
+      process.stderr.write(`${CLI} install: no install surfaces found for host='${host}' type='${extType}' scope='${scope}'\n`);
       process.exit(1);
     }
 
@@ -780,7 +821,7 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
       cfg.install.push({ id: positionalId });
       fsMod2.mkdirSync(pathMod2.dirname(cfgPath), { recursive: true });
       fsMod2.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-      process.stdout.write(`sox install: added '${positionalId}' to ${cfgPath}\n`);
+      process.stdout.write(`${CLI} install: added '${positionalId}' to ${cfgPath}\n`);
     }
   }
 
@@ -801,8 +842,8 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
       const iface = rl.createInterface({ input: process.stdin, output: process.stdout });
       const defaultStr = defaultVal !== undefined ? String(defaultVal) : '';
       const fullPrompt = defaultStr
-        ? `sox install: ${prompt} [${defaultStr}]: `
-        : `sox install: ${prompt}: `;
+        ? `${CLI} install: ${prompt} [${defaultStr}]: `
+        : `${CLI} install: ${prompt}: `;
       return new Promise((resolve) => {
         iface.question(fullPrompt, (answer: string) => {
           iface.close();
@@ -878,12 +919,12 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
           );
         }
 
-        process.stdout.write(`sox install: refreshed store   ${storePath3}\n`);
+        process.stdout.write(`${CLI} install: refreshed store   ${storePath3}\n`);
       }
     }
   }
 
-  process.stdout.write(`sox install: done (scope=${scope}, mode=${mode})\n`);
+  process.stdout.write(`${CLI} install: done (scope=${scope}, mode=${mode})\n`);
   process.exit(0);
 }
 
@@ -913,8 +954,8 @@ async function cmdBuild(_flags: Record<string, string>): Promise<void> {
   }
 
   if (id === undefined || id === '') {
-    process.stderr.write('sox build: extension id required\n');
-    process.stderr.write('  Usage: sox build <id>\n');
+    process.stderr.write(`${CLI} build: extension id required\n`);
+    process.stderr.write(`  Usage: ${CLI} build <id>\n`);
     process.exit(1);
   }
 
@@ -923,7 +964,7 @@ async function cmdBuild(_flags: Record<string, string>): Promise<void> {
   const manifestPath = pathMod.join(extDir, 'extension.json');
 
   if (!fsMod.existsSync(manifestPath)) {
-    process.stderr.write(`sox build: extension not found at ${extDir}\n`);
+    process.stderr.write(`${CLI} build: extension not found at ${extDir}\n`);
     process.stderr.write(`  Expected extension.json at ${manifestPath}\n`);
     process.exit(1);
   }
@@ -940,14 +981,14 @@ async function cmdBuild(_flags: Record<string, string>): Promise<void> {
   // If the entrypoint already exists on disk (e.g. pre-compiled stub from template),
   // the extension is already built — nothing to do.
   if (entrypoint !== undefined && fsMod.existsSync(pathMod.join(extDir, entrypoint))) {
-    process.stdout.write(`sox build: ${id} — entrypoint present, nothing to rebuild\n`);
+    process.stdout.write(`${CLI} build: ${id} — entrypoint present, nothing to rebuild\n`);
     process.exit(0);
   }
 
   // Attempt npm run build in the extension directory.
   const pkgJsonPath = pathMod.join(extDir, 'package.json');
   if (!fsMod.existsSync(pkgJsonPath)) {
-    process.stderr.write(`sox build: no package.json found in ${extDir}\n`);
+    process.stderr.write(`${CLI} build: no package.json found in ${extDir}\n`);
     process.exit(1);
   }
 
@@ -958,11 +999,11 @@ async function cmdBuild(_flags: Record<string, string>): Promise<void> {
   });
 
   if (result.status !== 0) {
-    process.stderr.write(`sox build: build failed for ${id}\n`);
+    process.stderr.write(`${CLI} build: build failed for ${id}\n`);
     process.exit(result.status ?? 1);
   }
 
-  process.stdout.write(`sox build: ${id} built\n`);
+  process.stdout.write(`${CLI} build: ${id} built\n`);
   process.exit(0);
 }
 
@@ -999,9 +1040,9 @@ async function cmdDiff(flags: Record<string, string>): Promise<void> {
     // [inv:diff-exits-zero]: diff is a query command — always exits 0; drift reported on stdout.
     const result = diffExtension(id, host, scope, scopeRoot, { isProject: scope === 'project' });
     if (result.clean) {
-      process.stdout.write(`sox diff: ${id} — up to date (no drift)\n`);
+      process.stdout.write(`${CLI} diff: ${id} — up to date (no drift)\n`);
     } else {
-      process.stdout.write(`sox diff: ${id} — drift detected\n`);
+      process.stdout.write(`${CLI} diff: ${id} — drift detected\n`);
       for (const action of result.actions) {
         if (action.kind !== 'up-to-date') {
           process.stdout.write(`  ${action.kind}  ${action.file}\n`);
@@ -1015,9 +1056,9 @@ async function cmdDiff(flags: Record<string, string>): Promise<void> {
     const results = diffAll(scopeRoot, { isProject: scope === 'project' });
     const dirty = results.filter((r) => !r.clean);
     if (dirty.length === 0) {
-      process.stdout.write(`sox diff: all extensions up to date (scope=${scope})\n`);
+      process.stdout.write(`${CLI} diff: all extensions up to date (scope=${scope})\n`);
     } else {
-      process.stdout.write(`sox diff: ${dirty.length} extension(s) have drift\n`);
+      process.stdout.write(`${CLI} diff: ${dirty.length} extension(s) have drift\n`);
       for (const r of dirty) {
         process.stdout.write(`  ${r.ext} (${r.host}/${r.scope})\n`);
         for (const action of r.actions) {
@@ -1060,8 +1101,8 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
     }
 
     if (id === undefined || id === '') {
-      process.stderr.write('sox update: declarative path requires a positional <id>\n');
-      process.stderr.write('  Usage: sox update <id> --host=<host> [--scope=project] [--root=<dir>]\n');
+      process.stderr.write(`${CLI} update: declarative path requires a positional <id>\n`);
+      process.stderr.write(`  Usage: ${CLI} update <id> --host=<host> [--scope=project] [--root=<dir>]\n`);
       process.exit(1);
     }
 
@@ -1080,9 +1121,9 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
 
     const result = await lifecycleUpdate(ctx);
     if (result.kind === 'updated') {
-      process.stdout.write(`sox update: ${id} updated (${result.actions.join(', ')})\n`);
+      process.stdout.write(`${CLI} update: ${id} updated (${result.actions.join(', ')})\n`);
     } else {
-      process.stdout.write(`sox update: ${id} — up to date\n`);
+      process.stdout.write(`${CLI} update: ${id} — up to date\n`);
     }
     process.exit(0);
   }
@@ -1091,7 +1132,7 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
   const scope = (flags['scope'] ?? 'user') as 'org' | 'user' | 'project' | 'local';
 
   await install({ scope, mode: 'update' });
-  process.stdout.write(`sox update: done (scope=${scope})\n`);
+  process.stdout.write(`${CLI} update: done (scope=${scope})\n`);
   process.exit(0);
 }
 
@@ -1116,14 +1157,14 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
   const extId = flags['id'] ?? positionalUpg;
 
   if (extId === undefined || extId === '') {
-    process.stderr.write(`sox upgrade: extension id required (positional or --id)\n`);
-    process.stderr.write(`  Usage: sox upgrade <ext-id> --all\n`);
+    process.stderr.write(`${CLI} upgrade: extension id required (positional or --id)\n`);
+    process.stderr.write(`  Usage: ${CLI} upgrade <ext-id> --all\n`);
     process.exit(1);
   }
 
   if (flags['all'] === undefined) {
-    process.stderr.write(`sox upgrade: --all flag required\n`);
-    process.stderr.write(`  Usage: sox upgrade <ext-id> --all\n`);
+    process.stderr.write(`${CLI} upgrade: --all flag required\n`);
+    process.stderr.write(`  Usage: ${CLI} upgrade <ext-id> --all\n`);
     process.exit(1);
   }
 
@@ -1135,7 +1176,7 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
   const matches = registry.installs.filter((r) => r.extId === extId);
 
   if (matches.length === 0) {
-    process.stdout.write(`sox upgrade: no install records found for '${extId}'\n`);
+    process.stdout.write(`${CLI} upgrade: no install records found for '${extId}'\n`);
     process.exit(0);
   }
 
@@ -1160,7 +1201,7 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
 
     if (!inLockfile) {
       process.stdout.write(
-        `${label} ... skipped (not in current lockfile — run sox install to re-add)\n`,
+        `${label} ... skipped (not in current lockfile — run ${CLI} install to re-add)\n`,
       );
       continue;
     }
@@ -1200,7 +1241,7 @@ function cmdUninstall(flags: Record<string, string>): void {
   const root = flags['root'] ?? ROOT5;
 
   if (id === undefined || id === '') {
-    process.stderr.write(`sox uninstall: extension id required (positional or --id)\n`);
+    process.stderr.write(`${CLI} uninstall: extension id required (positional or --id)\n`);
     process.exit(1);
   }
 
@@ -1210,7 +1251,7 @@ function cmdUninstall(flags: Record<string, string>): void {
   try {
     scopePaths5 = getScopePaths(scope, root);
   } catch (e) {
-    process.stderr.write(`sox uninstall: ${String(e)}\n`);
+    process.stderr.write(`${CLI} uninstall: ${String(e)}\n`);
     process.exit(1);
   }
 
@@ -1221,7 +1262,7 @@ function cmdUninstall(flags: Record<string, string>): void {
   const lockfile = loadLockfile(lockfilePath5);
 
   if (lockfile === null) {
-    process.stderr.write(`sox uninstall: no lockfile at ${lockfilePath5}\n`);
+    process.stderr.write(`${CLI} uninstall: no lockfile at ${lockfilePath5}\n`);
     process.exit(1);
   }
 
@@ -1234,7 +1275,7 @@ function cmdUninstall(flags: Record<string, string>): void {
   });
 
   if (matchKey === undefined) {
-    process.stderr.write(`sox uninstall: extension '${id}' not found in lockfile\n`);
+    process.stderr.write(`${CLI} uninstall: extension '${id}' not found in lockfile\n`);
     process.stderr.write(`  Installed: ${lockKeys.join(', ') || '(none)'}\n`);
     process.exit(1);
   }
@@ -1267,7 +1308,7 @@ function cmdUninstall(flags: Record<string, string>): void {
     );
   }
 
-  process.stdout.write(`sox uninstall: removed '${id}' (${matchKey}) from scope '${scope}'\n`);
+  process.stdout.write(`${CLI} uninstall: removed '${id}' (${matchKey}) from scope '${scope}'\n`);
   process.exit(0);
 }
 
@@ -1286,7 +1327,7 @@ async function cmdEnable(flags: Record<string, string>): Promise<void> {
   const root = flags['root'] ?? ROOT3;
 
   if (id === undefined || id === '') {
-    process.stderr.write(`sox enable: extension id required (positional or --id)\n`);
+    process.stderr.write(`${CLI} enable: extension id required (positional or --id)\n`);
     process.exit(1);
   }
 
@@ -1296,7 +1337,7 @@ async function cmdEnable(flags: Record<string, string>): Promise<void> {
   try {
     scopePaths3 = getScopePaths(scope, root);
   } catch (e) {
-    process.stderr.write(`sox enable: ${String(e)}\n`);
+    process.stderr.write(`${CLI} enable: ${String(e)}\n`);
     process.exit(1);
   }
 
@@ -1334,7 +1375,7 @@ async function cmdEnable(flags: Record<string, string>): Promise<void> {
   const supPid3 = typeof rtRaw3?.supervisorPid === 'number' ? rtRaw3.supervisorPid : null;
 
   if (supPid3 === null) {
-    process.stderr.write(`sox enable: no running supervisor found in runtime record — try 'sox start' first\n`);
+    process.stderr.write(`${CLI} enable: no running supervisor found in runtime record — try '${CLI} start' first\n`);
     process.exit(1);
   }
 
@@ -1342,7 +1383,7 @@ async function cmdEnable(flags: Record<string, string>): Promise<void> {
     process.stdout.write(`sox: signaling supervisor (pid=${supPid3}) to reconcile (enable '${id}')...\n`);
     process.kill(supPid3, 'SIGHUP');
   } catch (e) {
-    process.stderr.write(`sox enable: could not signal supervisor: ${String(e)}\n`);
+    process.stderr.write(`${CLI} enable: could not signal supervisor: ${String(e)}\n`);
     process.exit(1);
   }
 
@@ -1363,10 +1404,10 @@ async function cmdEnable(flags: Record<string, string>): Promise<void> {
   }
 
   if (isRunning3) {
-    process.stdout.write(`sox enable: '${id}' enabled and running\n`);
+    process.stdout.write(`${CLI} enable: '${id}' enabled and running\n`);
   } else {
     process.stderr.write(
-      `sox enable: '${id}' enabled but process did not appear running within timeout\n`,
+      `${CLI} enable: '${id}' enabled but process did not appear running within timeout\n`,
     );
   }
   process.exit(0);
@@ -1387,7 +1428,7 @@ async function cmdDisable(flags: Record<string, string>): Promise<void> {
   const root = flags['root'] ?? ROOT4;
 
   if (id === undefined || id === '') {
-    process.stderr.write(`sox disable: extension id required (positional or --id)\n`);
+    process.stderr.write(`${CLI} disable: extension id required (positional or --id)\n`);
     process.exit(1);
   }
 
@@ -1397,7 +1438,7 @@ async function cmdDisable(flags: Record<string, string>): Promise<void> {
   try {
     scopePaths4 = getScopePaths(scope, root);
   } catch (e) {
-    process.stderr.write(`sox disable: ${String(e)}\n`);
+    process.stderr.write(`${CLI} disable: ${String(e)}\n`);
     process.exit(1);
   }
 
@@ -1510,7 +1551,7 @@ async function cmdDisable(flags: Record<string, string>): Promise<void> {
     } catch { /* ignore */ }
   }
 
-  process.stdout.write(`sox disable: '${id}' disabled\n`);
+  process.stdout.write(`${CLI} disable: '${id}' disabled\n`);
   process.exit(0);
 }
 
@@ -1546,7 +1587,7 @@ async function cmdList(flags: Record<string, string>): Promise<void> {
     }
 
     if (records.length === 0) {
-      process.stdout.write(`sox list --global: no install records found\n`);
+      process.stdout.write(`${CLI} list --global: no install records found\n`);
       process.exit(0);
     }
 
@@ -1641,7 +1682,7 @@ async function cmdList(flags: Record<string, string>): Promise<void> {
     }
 
     if (allRows.length === 0) {
-      process.stdout.write(`sox list --all: no running extensions found across all supervisors\n`);
+      process.stdout.write(`${CLI} list --all: no running extensions found across all supervisors\n`);
       process.exit(0);
     }
 
@@ -1758,7 +1799,7 @@ async function cmdList(flags: Record<string, string>): Promise<void> {
   // ── Human table ───────────────────────────────────────────────────────────
   if (displayRows.length === 0) {
     process.stdout.write(
-      `sox list: no extensions installed (scopes: ${scopesToScan.join(', ')})\n`,
+      `${CLI} list: no extensions installed (scopes: ${scopesToScan.join(', ')})\n`,
     );
     process.exit(0);
   }
@@ -1791,7 +1832,7 @@ function cmdDetails(flags: Record<string, string>): void {
   const scope = (flags['scope'] ?? 'user') as 'org' | 'user' | 'project' | 'local';
 
   if (id === undefined || id === '') {
-    process.stderr.write(`sox details: --id is required\n`);
+    process.stderr.write(`${CLI} details: --id is required\n`);
     process.exit(1);
   }
 
@@ -1799,13 +1840,14 @@ function cmdDetails(flags: Record<string, string>): void {
   const lockfile = loadLockfile(scopePaths.lockfile);
 
   if (lockfile === null) {
-    process.stderr.write(`sox details: no lockfile at ${scopePaths.lockfile}\n`);
+    process.stderr.write(`${CLI} details: no lockfile at ${scopePaths.lockfile}\n`);
     process.exit(1);
   }
 
-  const entry = lockfile.resolved[id];
+  const entry = lockfile.resolved[id]
+    ?? Object.entries(lockfile.resolved).find(([k]) => k.startsWith(id + '@'))?.[1];
   if (entry === undefined) {
-    process.stderr.write(`sox details: extension '${id}' not found\n`);
+    process.stderr.write(`${CLI} details: extension '${id}' not found\n`);
     process.exit(1);
   }
 
@@ -1824,7 +1866,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
   try {
     scopePaths = getScopePaths(scope, root);
   } catch (e) {
-    process.stderr.write(`sox start: ${String(e)}\n`);
+    process.stderr.write(`${CLI} start: ${String(e)}\n`);
     process.exit(1);
   }
 
@@ -1842,8 +1884,8 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
     // Read lockfile for what's available.
     const lockfile = loadLockfile(lockfilePath);
     if (!lockfile || Object.keys(lockfile.resolved ?? {}).length === 0) {
-      process.stdout.write(`sox start: no extensions in lockfile at ${lockfilePath}\n`);
-      process.stdout.write(`Run 'sox install <ext> -s ${scope}' to install an extension.\n`);
+      process.stdout.write(`${CLI} start: no extensions in lockfile at ${lockfilePath}\n`);
+      process.stdout.write(`Run '${CLI} install <ext> -s ${scope}' to install an extension.\n`);
       process.exit(0);
     }
 
@@ -1887,8 +1929,8 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
     }
     process.stdout.write('\n');
     process.stdout.write(
-      `Run 'sox start -s ${scope}' to start all extensions.\n` +
-      `Run 'sox exec --list -s ${scope}' to see available tools once running.\n\n`,
+      `Run '${CLI} start -s ${scope}' to start all extensions.\n` +
+      `Run '${CLI} exec --list -s ${scope}' to see available tools once running.\n\n`,
     );
     process.exit(0);
   }
@@ -1942,7 +1984,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
       `[sox] Supervisor started in background.\n` +
       `  PID:     ${String(child.pid)}\n` +
       `  Logs:    ${logPathDaemon}\n` +
-      `  Follow:  sox logs --id=<ext> --follow\n`,
+      `  Follow:  ${CLI} logs --id=<ext> --follow\n`,
     );
     process.exit(0);
   }
@@ -1980,29 +2022,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
       const runtimeEntries: RuntimeEntry[] = [];
 
       for (const svc of entries) {
-        // Build SOX_CONFIG_* env vars from cascade-resolved config for this service.
-        const svcConfigEnv: Record<string, string> = {};
-        {
-          const SVC_CASCADE_SCOPES = ['org', 'user', 'project', 'local'] as const;
-          const svcConfigMerged: Record<string, unknown> = {};
-          for (const cs of SVC_CASCADE_SCOPES) {
-            try {
-              const csp = getScopePaths(cs, root);
-              const cfgSvc = loadConfig(csp.config);
-              const blk = (cfgSvc?.config as Record<string, Record<string, unknown>> | undefined)?.[svc.id] ?? {};
-              Object.assign(svcConfigMerged, blk); // narrower scope overwrites wider
-            } catch { /* skip missing scope */ }
-          }
-          const { homedir: hd } = require('node:os') as typeof import('node:os');
-          const homeDir5 = hd();
-          for (const [cfgKey, cfgVal] of Object.entries(svcConfigMerged)) {
-            const envKey = `SOX_CONFIG_${cfgKey.toUpperCase().replace(/[-\s]/g, '_')}`;
-            let strVal = typeof cfgVal === 'string' ? cfgVal : (cfgVal === null || cfgVal === undefined ? '' : JSON.stringify(cfgVal));
-            if (strVal.startsWith('~/')) strVal = homeDir5 + strVal.slice(1);
-            strVal = strVal.replace(/\$\{([A-Z0-9_]+)\}/g, (_m: string, varName: string) => process.env[varName] ?? _m);
-            svcConfigEnv[envKey] = strVal;
-          }
-        }
+        const svcConfigEnv = buildExtConfigEnv(svc.id, root);
 
         // Spawn detached: parent exits, child keeps running independently.
         const child = spawnChild(svc.command, svc.args, {
@@ -2081,7 +2101,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
     const runningCount = record.entries.filter((e) => e.running).length;
     process.stdout.write(
       `sox: runtime started — ${record.entries.length} extension(s) activated, ${runningCount} running\n` +
-      `  logs           : (attached to this terminal — use Ctrl+C or 'sox stop' to shut down)\n`,
+      `  logs           : (attached to this terminal — use Ctrl+C or '${CLI} stop' to shut down)\n`,
     );
 
     process.on('SIGTERM', () => {
@@ -2105,7 +2125,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
       /* heartbeat */
     }, 5000);
   } catch (e) {
-    process.stderr.write(`sox start: failed — ${String(e)}\n`);
+    process.stderr.write(`${CLI} start: failed — ${String(e)}\n`);
     process.exit(1);
   }
 }
@@ -2116,13 +2136,13 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
   const ROOT = process.cwd();
   const scope = flags['scope'] ?? 'user';
   const root = flags['root'] ?? ROOT;
-  const id = flags['id'];
+  const id = flags['id'] ?? flags['_'];
 
   let scopePaths: { config: string; lockfile: string };
   try {
     scopePaths = getScopePaths(scope, root);
   } catch (e) {
-    process.stderr.write(`sox stop: ${String(e)}\n`);
+    process.stderr.write(`${CLI} stop: ${String(e)}\n`);
     process.exit(1);
   }
 
@@ -2136,13 +2156,13 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
   if (flags['list'] !== undefined) {
     const record0 = getRuntimeRecord(runtimeFilePath);
     if (!record0) {
-      process.stdout.write(`sox stop: no runtime running at scope '${scope}'.\n`);
-      process.stdout.write(`Run 'sox start -s ${scope}' to start the runtime.\n`);
+      process.stdout.write(`${CLI} stop: no runtime running at scope '${scope}'.\n`);
+      process.stdout.write(`Run '${CLI} start -s ${scope}' to start the runtime.\n`);
       process.exit(0);
     }
     const running = record0.entries.filter((e) => e.running);
     if (running.length === 0) {
-      process.stdout.write(`sox stop: no extensions currently running (scope: ${scope}).\n`);
+      process.stdout.write(`${CLI} stop: no extensions currently running (scope: ${scope}).\n`);
       process.exit(0);
     }
     process.stdout.write(`\nRunning extensions you can stop  (scope: ${scope})\n\n`);
@@ -2157,8 +2177,8 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
     }
     process.stdout.write('\n');
     process.stdout.write(
-      `Run 'sox stop -s ${scope}' to stop all.\n` +
-      `Run 'sox stop --id=<ext> -s ${scope}' to stop one extension.\n\n`,
+      `Run '${CLI} stop -s ${scope}' to stop all.\n` +
+      `Run '${CLI} stop --id=<ext> -s ${scope}' to stop one extension.\n\n`,
     );
     process.exit(0);
   }
@@ -2178,6 +2198,15 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
       );
     } catch (e) {
       process.stderr.write(`sox: could not signal supervisor: ${String(e)}\n`);
+      // Supervisor gone — fall through to kill daemon pids directly from record
+      for (const entry of record.entries ?? []) {
+        if (typeof entry.pid === 'number') {
+          try {
+            process.kill(entry.pid, 'SIGTERM');
+            process.stdout.write(`sox: sent SIGTERM to ${entry.id} (pid=${entry.pid})\n`);
+          } catch { /* already gone */ }
+        }
+      }
     }
     process.exit(0);
   }
@@ -2379,8 +2408,8 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
     if (jsonMode) {
       process.stdout.write('[]\n');
     } else {
-      process.stdout.write('sox status: no running supervisors found\n');
-      process.stdout.write('  Start the runtime with: sox start\n');
+      process.stdout.write(`${CLI} status: no running supervisors found\n`);
+      process.stdout.write(`  Start the runtime with: ${CLI} start\n`);
     }
     process.exit(0);
   }
@@ -2529,7 +2558,7 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
     if (filterProject) parts.push(`project=${filterProject}`);
     if (filterScope) parts.push(`scope=${filterScope}`);
     const filterDesc = parts.length > 0 ? ` (filters: ${parts.join(', ')})` : '';
-    process.stdout.write(`sox status: no running extensions found${filterDesc}\n`);
+    process.stdout.write(`${CLI} status: no running extensions found${filterDesc}\n`);
     process.exit(exitCode);
   }
 
@@ -2620,7 +2649,7 @@ async function cmdLogs(flags: Record<string, string>): Promise<void> {
 
   const id = flags['id'];
   if (!id) {
-    process.stderr.write(`sox logs: --id is required\n`);
+    process.stderr.write(`${CLI} logs: --id is required\n`);
     process.exit(1);
   }
 
@@ -2640,14 +2669,14 @@ async function cmdLogs(flags: Record<string, string>): Promise<void> {
   if (showHistory) {
     const histPath = pathMod.join(logDir, 'run-history.json');
     if (!fsMod.existsSync(histPath)) {
-      process.stdout.write(`sox logs: no run history at ${histPath}\n`);
+      process.stdout.write(`${CLI} logs: no run history at ${histPath}\n`);
       process.exit(0);
     }
     let hist: { version: number; runs: Array<{ extId: string; startedAt: string; stoppedAt: string | null; exitCode: number | null; stopReason: string | null }> };
     try {
       hist = JSON.parse(fsMod.readFileSync(histPath, 'utf8')) as typeof hist;
     } catch (e) {
-      process.stderr.write(`sox logs: failed to read run history: ${String(e)}\n`);
+      process.stderr.write(`${CLI} logs: failed to read run history: ${String(e)}\n`);
       process.exit(1);
     }
     // Filter to the requested ext id.
@@ -2697,7 +2726,7 @@ async function cmdLogs(flags: Record<string, string>): Promise<void> {
   const logPath = findMostRecentLog(logDir, id);
   if (!logPath) {
     process.stderr.write(
-      `sox logs: no log file found for "${id}" in ${logDir}\n` +
+      `${CLI} logs: no log file found for "${id}" in ${logDir}\n` +
       `  Make sure the extension has been started at least once.\n`,
     );
     process.exit(1);
@@ -2863,7 +2892,7 @@ async function callViaExecSocket(
     };
 
     const timer = setTimeout(() => {
-      finish(() => reject(new Error(`sox exec: timeout waiting for exec socket response (${timeoutMs}ms)`)));
+      finish(() => reject(new Error(`${CLI} exec: timeout waiting for exec socket response (${timeoutMs}ms)`)));
     }, timeoutMs);
 
     rl.once('line', (line: string) => {
@@ -2876,7 +2905,7 @@ async function callViaExecSocket(
             resolve(resp.result);
           }
         } catch {
-          reject(new Error(`sox exec: invalid response from exec socket: ${line.slice(0, 120)}`));
+          reject(new Error(`${CLI} exec: invalid response from exec socket: ${line.slice(0, 120)}`));
         }
       });
     });
@@ -2999,7 +3028,7 @@ function renderToolSchema(tool: ExecToolDescriptor): string[] {
 function printToolList(listResult: ExecListResult, scope: string): void {
   if (listResult.extensions.length === 0) {
     process.stdout.write(`sox: no extensions registered in running runtime (scope: ${scope})\n`);
-    process.stdout.write(`Run 'sox start -s ${scope}' to start the runtime.\n`);
+    process.stdout.write(`Run '${CLI} start -s ${scope}' to start the runtime.\n`);
     return;
   }
 
@@ -3040,7 +3069,7 @@ function printToolList(listResult: ExecListResult, scope: string): void {
     })();
     const argsJson = JSON.stringify(reqProps);
     process.stdout.write(
-      `Example:\n  sox exec ${firstExt.id} ${firstTool.name} --args='${argsJson}' -s ${scope}\n\n` +
+      `Example:\n  ${CLI} exec ${firstExt.id} ${firstTool.name} --args='${argsJson}' -s ${scope}\n\n` +
       `  (* = required argument)\n\n`,
     );
   }
@@ -3056,23 +3085,169 @@ function printToolList(listResult: ExecListResult, scope: string): void {
  *      fall back to fresh MCP spawn with policy enforcement.
  *   3. No runtime.json → hard error: "run sox start first."
  *
+/**
+ * sox serve <id> [--scope=<scope>] [--root=<dir>]
+ *
+ * Launch an extension as a long-lived process with live cascade config injected.
+ * Resolves the entrypoint, builds SOX_CONFIG_* env from the current cascade,
+ * then replaces the sox process image via execFileSync (stdio inherited).
+ *
+ * This is the correct command to use as the .mcp.json "command" entry for stdio
+ * MCP servers — the process stays alive reading stdin/stdout, and config is always
+ * fresh (re-resolved on each session start).
+ */
+async function cmdServe(flags: Record<string, string>): Promise<void> {
+  if (flags['help'] !== undefined || flags['h'] !== undefined) {
+    process.stdout.write(`${CLI} serve — launch an extension process with live cascade config
+
+Usage:
+  ${CLI} serve <ext-id> [--scope=<scope>] [--root=<dir>]
+
+Resolves the extension entrypoint, injects SOX_CONFIG_* env vars from the
+current cascade config, then exec()s the Node process (replaces this process).
+Designed for use as the .mcp.json command for stdio MCP servers.
+
+Flags:
+  --scope=<scope>   Restrict lookup to one scope (default: cascade project→user→org→local)
+  --root=<dir>      Workspace root (default: cwd)
+  --help            Show this message
+`);
+    process.exit(0);
+  }
+
+  const extId = flags['_0'] ?? flags['id'] ?? argv[1];
+  if (!extId) {
+    process.stderr.write(`${CLI} serve: extension id required\n`);
+    process.stderr.write(`Usage: ${CLI} serve <ext-id> [--scope=<scope>]\n`);
+    process.exit(1);
+  }
+
+  const ROOT2 = process.cwd();
+  const explicitScope2 = flags['scope'];
+  const root2 = flags['root'] ?? ROOT2;
+
+  const fsMod2 = require('node:fs') as typeof import('node:fs');
+  const pathMod2 = require('node:path') as typeof import('node:path');
+
+  // Cascade scope resolution: project → user → org → local (innermost wins).
+  // If --scope is explicit, search only that scope (preserves explicit-scope behaviour).
+  const SERVE_SCOPE_ORDER = ['project', 'user', 'org', 'local'] as const;
+  const scopesToSearch2 = explicitScope2 ? [explicitScope2] : (SERVE_SCOPE_ORDER as readonly string[]);
+
+  let extDir2: string | null = null;
+
+  for (const sc of scopesToSearch2) {
+    let sp: { lockfile: string; config: string };
+    try {
+      sp = getScopePaths(sc, root2);
+    } catch {
+      continue; // scope path may not exist (e.g. no org scope configured)
+    }
+    const lf = loadLockfile(sp.lockfile);
+    const found = lf?.resolved?.[extId]
+      ?? Object.entries(lf?.resolved ?? {}).find(([k]) => k.startsWith(extId + '@'))?.[1];
+    if (found) {
+      extDir2 = resolveExtensionDir(found.source, root2);
+      break;
+    }
+  }
+
+  if (!extDir2) {
+    const localExt2 = findLocalExtension(extId, root2);
+    if (localExt2) {
+      extDir2 = pathMod2.dirname(localExt2);
+    }
+  }
+
+  if (!extDir2) {
+    const searched = scopesToSearch2.join(', ');
+    process.stderr.write(`${CLI} serve: extension '${extId}' not found in lockfile (searched scopes: ${searched}) or local extensions\n`);
+    process.exit(1);
+  }
+
+  const manifestPath2 = pathMod2.join(extDir2, 'extension.json');
+  if (!fsMod2.existsSync(manifestPath2)) {
+    process.stderr.write(`${CLI} serve: manifest not found at ${manifestPath2}\n`);
+    process.exit(1);
+  }
+
+  const manifest2 = JSON.parse(fsMod2.readFileSync(manifestPath2, 'utf8')) as {
+    entrypoint?: string;
+    permissions?: PermissionsBlock;
+  };
+  if (!manifest2.entrypoint) {
+    process.stderr.write(`${CLI} serve: no entrypoint in manifest at ${manifestPath2}\n`);
+    process.exit(1);
+  }
+
+  const entrypointPath2 = pathMod2.resolve(extDir2, manifest2.entrypoint);
+  if (!fsMod2.existsSync(entrypointPath2)) {
+    process.stderr.write(`${CLI} serve: entrypoint not found at ${entrypointPath2}\n`);
+    process.exit(1);
+  }
+
+  // Inject live cascade config as SOX_CONFIG_* env vars.
+  const configEnv2 = buildExtConfigEnv(extId, root2);
+
+  // Policy env (permissions enforcement).
+  const policy2 = compilePolicy(manifest2.permissions);
+  let serveEnv: NodeJS.ProcessEnv;
+  if (policy2.enforced) {
+    const allowedKeys2 = new Set(['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ']);
+    const baseEnv2: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v !== undefined && (allowedKeys2.has(k) || k.startsWith('NODE_'))) {
+        baseEnv2[k] = v;
+      }
+    }
+    serveEnv = { ...baseEnv2, ...configEnv2, ...policy2.toEnv() };
+  } else {
+    serveEnv = { ...process.env, ...configEnv2 };
+  }
+
+  // Replace the current process with the extension (stdio inherited — MCP server
+  // takes over stdin/stdout directly, no intermediary).
+  const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
+  try {
+    execFileSync(process.execPath, ['--enable-source-maps', entrypointPath2], {
+      stdio: 'inherit',
+      env: serveEnv,
+      cwd: extDir2,
+    });
+  } catch (e) {
+    // execFileSync throws on non-zero exit; propagate the exit code.
+    const code = (e as NodeJS.ErrnoException & { status?: number }).status ?? 1;
+    process.exit(code);
+  }
+}
+
+/**
+ * sox exec — call a tool on a running extension (A11).
+ *
+ * Routing:
+ *   1. If runtime.json has execSocketPath and the socket file exists →
+ *      route through the live supervisor session (McpRegistrar.call).
+ *   2. Else if runtime.json exists but no socket (service-mode detached spawn) →
+ *      fall back to fresh MCP spawn with policy enforcement.
+ *   3. No runtime.json → hard error: "run sox start first."
+ *
  * [inv:exec-socket]: The socket is only present in supervisor mode (lockfile-based
  * start where the sox process stays alive). Service-mode starts (detached via
  * registry.json) legitimately have no socket — fresh spawn is correct there.
  */
 async function cmdExec(flags: Record<string, string>): Promise<void> {
   if (flags['help'] !== undefined || flags['h'] !== undefined) {
-    process.stdout.write(`sox exec — call a tool on a running extension (A11)
+    process.stdout.write(`${CLI} exec — call a tool on a running extension (A11)
 
 Usage:
-  sox exec <ext-id> <tool> [--args=<json>] [-s <scope>]
-  sox exec --id=<ext-id> --tool=<tool> [--args=<json>] [--scope=<scope>]
-  sox exec --list [-s <scope>]           # list all tools on running extensions
-  sox exec --list --id=<ext-id>          # list tools for one extension
-  sox exec <tool-name>                   # show schema + example for a named tool
+  ${CLI} exec <ext-id> <tool> [--args=<json>] [-s <scope>]
+  ${CLI} exec --id=<ext-id> --tool=<tool> [--args=<json>] [--scope=<scope>]
+  ${CLI} exec --list [-s <scope>]           # list all tools on running extensions
+  ${CLI} exec --list --id=<ext-id>          # list tools for one extension
+  ${CLI} exec <tool-name>                   # show schema + example for a named tool
 
 Flags:
-  --id=<ext-id>    Extension id (must be running — see 'sox exec --list')
+  --id=<ext-id>    Extension id (must be running — see '${CLI} exec --list')
   --tool=<name>    MCP tool name declared by the extension
   --args=<json>    JSON object of tool arguments (default: {})
   --scope=<scope>  Scope of the runtime record (default: user)
@@ -3084,9 +3259,9 @@ Routing:
   2. If no socket (service-mode detached start) → spawns a fresh MCP session.
 
 Examples:
-  sox exec --list -s project
-  sox exec memory-server memory_write --args='{"content":"hello"}' -s project
-  sox exec memory_write                # show schema for memory_write
+  ${CLI} exec --list -s project
+  ${CLI} exec memory-server memory_write --args='{"content":"hello"}' -s project
+  ${CLI} exec memory_write                # show schema for memory_write
 `);
     process.exit(0);
   }
@@ -3101,7 +3276,7 @@ Examples:
   try {
     scopePaths = getScopePaths(scope, root);
   } catch (e) {
-    process.stderr.write(`sox exec: ${String(e)}\n`);
+    process.stderr.write(`${CLI} exec: ${String(e)}\n`);
     process.exit(1);
   }
 
@@ -3119,7 +3294,7 @@ Examples:
     const record0 = getRuntimeRecord(runtimeFilePath);
     if (!record0) {
       process.stderr.write(
-        `sox exec: no runtime record at ${runtimeFilePath}. Run 'sox start -s ${scope}' first.\n`,
+        `${CLI} exec: no runtime record at ${runtimeFilePath}. Run '${CLI} start -s ${scope}' first.\n`,
       );
       process.exit(1);
     }
@@ -3130,7 +3305,7 @@ Examples:
         const listResult = await listViaExecSocket(record0.execSocketPath, filterExt);
         printToolList(listResult, scope);
       } catch (e) {
-        process.stderr.write(`sox exec: list failed: ${String(e)}\n`);
+        process.stderr.write(`${CLI} exec: list failed: ${String(e)}\n`);
         process.exit(1);
       }
       process.exit(0);
@@ -3247,21 +3422,21 @@ Examples:
             })();
             const argsEx = JSON.stringify(reqProps);
             process.stdout.write(
-              `Example:\n  sox exec ${ext.id} ${found.name} --args='${argsEx}' -s ${scope}\n\n`,
+              `Example:\n  ${CLI} exec ${ext.id} ${found.name} --args='${argsEx}' -s ${scope}\n\n`,
             );
             process.exit(0);
           }
         }
         process.stderr.write(
-          `sox exec: tool '${queryTool}' not found in any running extension.\n` +
-          `Run 'sox exec --list -s ${scope}' to see available tools.\n`,
+          `${CLI} exec: tool '${queryTool}' not found in any running extension.\n` +
+          `Run '${CLI} exec --list -s ${scope}' to see available tools.\n`,
         );
       } catch {
         // socket unavailable — fall through to normal error path
       }
     }
     process.stderr.write(
-      `sox exec: tool '${queryTool}' not found. Run 'sox exec --list -s ${scope}' to see available tools.\n`,
+      `${CLI} exec: tool '${queryTool}' not found. Run '${CLI} exec --list -s ${scope}' to see available tools.\n`,
     );
     process.exit(1);
   }
@@ -3272,13 +3447,13 @@ Examples:
   if (extId === '' || toolName === '') {
     if (extId === '') {
       process.stderr.write(
-        `sox exec: extension id required.\n` +
-        `Run 'sox exec --list -s ${scope}' to see running extensions and their tools.\n`,
+        `${CLI} exec: extension id required.\n` +
+        `Run '${CLI} exec --list -s ${scope}' to see running extensions and their tools.\n`,
       );
     } else {
       process.stderr.write(
-        `sox exec: tool name required.\n` +
-        `Run 'sox exec --list --id=${extId} -s ${scope}' to see tools for '${extId}'.\n`,
+        `${CLI} exec: tool name required.\n` +
+        `Run '${CLI} exec --list --id=${extId} -s ${scope}' to see tools for '${extId}'.\n`,
       );
     }
     process.exit(1);
@@ -3288,7 +3463,7 @@ Examples:
   try {
     toolArgs = JSON.parse(argsJson) as Record<string, unknown>;
   } catch {
-    process.stderr.write(`sox exec: invalid --args JSON: ${argsJson}\n`);
+    process.stderr.write(`${CLI} exec: invalid --args JSON: ${argsJson}\n`);
     process.exit(1);
   }
 
@@ -3332,7 +3507,7 @@ Examples:
   const record = getRuntimeRecord(runtimeFilePath);
   if (!record) {
     process.stderr.write(
-      `sox exec: no runtime record at ${runtimeFilePath}. Run 'sox start -s ${scope}' first.\n`,
+      `${CLI} exec: no runtime record at ${runtimeFilePath}. Run '${CLI} start -s ${scope}' first.\n`,
     );
     process.exit(1);
   }
@@ -3341,9 +3516,9 @@ Examples:
   if (!entry) {
     const available = record.entries.map((e) => e.id).join(', ');
     process.stderr.write(
-      `sox exec: extension '${extId}' not found in runtime.\n` +
+      `${CLI} exec: extension '${extId}' not found in runtime.\n` +
       (available ? `Running extensions: ${available}\n` : `No extensions in runtime record.\n`) +
-      `Run 'sox exec --list -s ${scope}' to see available extensions and tools.\n`,
+      `Run '${CLI} exec --list -s ${scope}' to see available extensions and tools.\n`,
     );
     process.exit(1);
   }
@@ -3365,13 +3540,13 @@ Examples:
                              errMsg.toLowerCase().includes('unknown tool');
       if (isToolNotFound) {
         process.stderr.write(
-          `sox exec: tool '${toolName}' not found on '${extId}'.\n` +
-          `Run 'sox exec --list --id=${extId} -s ${scope}' to see available tools.\n`,
+          `${CLI} exec: tool '${toolName}' not found on '${extId}'.\n` +
+          `Run '${CLI} exec --list --id=${extId} -s ${scope}' to see available tools.\n`,
         );
         process.exit(1);
       }
       // Other socket error — fall through to fresh spawn with a warning.
-      process.stderr.write(`sox exec: exec socket failed (${errMsg}), falling back to fresh spawn\n`);
+      process.stderr.write(`${CLI} exec: exec socket failed (${errMsg}), falling back to fresh spawn\n`);
     }
   }
 
@@ -3381,14 +3556,14 @@ Examples:
   const extDir = resolveExtensionDir(entry.source, ROOT);
   if (!extDir) {
     process.stderr.write(
-      `sox exec: cannot resolve extension dir from source: ${entry.source}\n`,
+      `${CLI} exec: cannot resolve extension dir from source: ${entry.source}\n`,
     );
     process.exit(1);
   }
 
   const manifestPath = pathMod.join(extDir, 'extension.json');
   if (!fsMod.existsSync(manifestPath)) {
-    process.stderr.write(`sox exec: manifest not found at ${manifestPath}\n`);
+    process.stderr.write(`${CLI} exec: manifest not found at ${manifestPath}\n`);
     process.exit(1);
   }
 
@@ -3398,11 +3573,13 @@ Examples:
     permissions?: PermissionsBlock;
   };
   if (!manifest.entrypoint) {
-    process.stderr.write(`sox exec: no entrypoint in manifest at ${manifestPath}\n`);
+    process.stderr.write(`${CLI} exec: no entrypoint in manifest at ${manifestPath}\n`);
     process.exit(1);
   }
 
   const policy = compilePolicy(manifest.permissions);
+
+  const extConfigEnv = buildExtConfigEnv(extId, root);
 
   let execEnv: NodeJS.ProcessEnv;
   if (policy.enforced) {
@@ -3413,14 +3590,14 @@ Examples:
         baseEnv[k] = v;
       }
     }
-    execEnv = { ...baseEnv, ...policy.toEnv() };
+    execEnv = { ...baseEnv, ...extConfigEnv, ...policy.toEnv() };
   } else {
-    execEnv = { ...process.env };
+    execEnv = { ...process.env, ...extConfigEnv };
   }
 
   const entrypointPath = pathMod.resolve(extDir, manifest.entrypoint);
   if (!fsMod.existsSync(entrypointPath)) {
-    process.stderr.write(`sox exec: entrypoint not found at ${entrypointPath}\n`);
+    process.stderr.write(`${CLI} exec: entrypoint not found at ${entrypointPath}\n`);
     process.exit(1);
   }
 
@@ -3450,7 +3627,7 @@ Examples:
   } catch (e) {
     client.close();
     child.kill('SIGTERM');
-    process.stderr.write(`sox exec: tool call failed: ${String(e)}\n`);
+    process.stderr.write(`${CLI} exec: tool call failed: ${String(e)}\n`);
     process.exit(1);
   }
 }
@@ -3481,14 +3658,14 @@ async function cmdConfig(argv: string[], flags: Record<string, string>): Promise
   const ROOT     = flags['root'] ?? process.cwd();
 
   if (!subVerb || subVerb === '--help' || subVerb === '-h') {
-    process.stdout.write(`sox config — manage per-extension install-time configuration
+    process.stdout.write(`${CLI} config — manage per-extension install-time configuration
 
 Sub-verbs:
-  sox config get   <ext> <key> [--scope=<scope>]   Get a config value (cascade-resolved)
-  sox config set   <ext> <key> <value> [--scope]   Write a value to the scope config (default: user)
-  sox config list  <ext> [--scope=<scope>]          List all config keys with cascade origin
-  sox config unset <ext> <key> [--scope=<scope>]   Remove a key from the scope config
-  sox config check <ext> [--scope=<scope>]          Validate config against config_schema
+  ${CLI} config get   <ext> <key> [--scope=<scope>]   Get a config value (cascade-resolved)
+  ${CLI} config set   <ext> <key> <value> [--scope]   Write a value to the scope config (default: user)
+  ${CLI} config list  <ext> [--scope=<scope>]          List all config keys with cascade origin
+  ${CLI} config unset <ext> <key> [--scope=<scope>]   Remove a key from the scope config
+  ${CLI} config check <ext> [--scope=<scope>]          Validate config against config_schema
 
 Flags:
   --scope=<scope>  Scope: org | user | project | local  (default: user for set/unset, current for get/list/check)
@@ -3561,7 +3738,7 @@ Sensitive values should use env refs: \${VAR_NAME}
     // ── get ────────────────────────────────────────────────────────────────
     case 'get': {
       if (!extId || !key) {
-        process.stderr.write(`sox config get: usage: sox config get <ext> <key> [--scope=<scope>]\n`);
+        process.stderr.write(`${CLI} config get: usage: ${CLI} config get <ext> <key> [--scope=<scope>]\n`);
         process.exit(1);
       }
       const { value: cascaded } = cascadeExtConfig(extId);
@@ -3569,7 +3746,7 @@ Sensitive values should use env refs: \${VAR_NAME}
         process.stdout.write(String(cascaded[key]) + '\n');
         process.exit(0);
       } else {
-        process.stderr.write(`sox config get: key '${key}' not set for '${extId}'\n`);
+        process.stderr.write(`${CLI} config get: key '${key}' not set for '${extId}'\n`);
         process.exit(1);
       }
     }
@@ -3577,7 +3754,7 @@ Sensitive values should use env refs: \${VAR_NAME}
     // ── set ────────────────────────────────────────────────────────────────
     case 'set': {
       if (!extId || !key || value === undefined) {
-        process.stderr.write(`sox config set: usage: sox config set <ext> <key> <value> [--scope=<scope>]\n`);
+        process.stderr.write(`${CLI} config set: usage: ${CLI} config set <ext> <key> <value> [--scope=<scope>]\n`);
         process.exit(1);
       }
       const writeScope = flags['scope'] ?? 'user';
@@ -3590,18 +3767,18 @@ Sensitive values should use env refs: \${VAR_NAME}
       if (typeof value === 'string' && !value.startsWith('${') &&
           /key|token|secret|password|api[-_]?key|credential/i.test(key)) {
         process.stderr.write(
-          `sox config set: warning: '${key}' looks like a secret — consider using an env ref instead: \${${key.toUpperCase().replace(/[-\s]/g, '_')}}\n`,
+          `${CLI} config set: warning: '${key}' looks like a secret — consider using an env ref instead: \${${key.toUpperCase().replace(/[-\s]/g, '_')}}\n`,
         );
       }
       writeScopeConfig(writeScope, ROOT, cfgObj);
-      process.stdout.write(`sox config: set ${extId}.${key} = ${value}  (scope: ${writeScope})\n`);
+      process.stdout.write(`${CLI} config: set ${extId}.${key} = ${value}  (scope: ${writeScope})\n`);
       process.exit(0);
     }
 
     // ── list ───────────────────────────────────────────────────────────────
     case 'list': {
       if (!extId) {
-        process.stderr.write(`sox config list: usage: sox config list <ext> [--scope=<scope>]\n`);
+        process.stderr.write(`${CLI} config list: usage: ${CLI} config list <ext> [--scope=<scope>]\n`);
         process.exit(1);
       }
       const { value: cascaded, origins } = cascadeExtConfig(extId);
@@ -3625,14 +3802,14 @@ Sensitive values should use env refs: \${VAR_NAME}
     // ── unset ──────────────────────────────────────────────────────────────
     case 'unset': {
       if (!extId || !key) {
-        process.stderr.write(`sox config unset: usage: sox config unset <ext> <key> [--scope=<scope>]\n`);
+        process.stderr.write(`${CLI} config unset: usage: ${CLI} config unset <ext> <key> [--scope=<scope>]\n`);
         process.exit(1);
       }
       const unsetScope = flags['scope'] ?? 'user';
       const cfgObj2 = loadScopeConfig(unsetScope, ROOT);
       const configBlock2 = (cfgObj2['config'] as Record<string, Record<string, unknown>> | undefined) ?? {};
       if (!configBlock2[extId] || !(key in configBlock2[extId])) {
-        process.stderr.write(`sox config unset: key '${key}' not set for '${extId}' in scope '${unsetScope}'\n`);
+        process.stderr.write(`${CLI} config unset: key '${key}' not set for '${extId}' in scope '${unsetScope}'\n`);
         process.exit(1);
       }
       delete configBlock2[extId][key];
@@ -3642,11 +3819,11 @@ Sensitive values should use env refs: \${VAR_NAME}
       // Warn if required key becomes unset in cascade after removal
       const { value: cascaded2 } = cascadeExtConfig(extId);
       if (!(key in cascaded2)) {
-        process.stdout.write(`sox config: unset ${extId}.${key}  (scope: ${unsetScope})\n`);
+        process.stdout.write(`${CLI} config: unset ${extId}.${key}  (scope: ${unsetScope})\n`);
         // Try to find config_schema to check if the key was required
         process.stdout.write(`  (key '${key}' is no longer set in any scope)\n`);
       } else {
-        process.stdout.write(`sox config: unset ${extId}.${key}  (scope: ${unsetScope}) — still set in '${cascaded2 ? (cascadeExtConfig(extId).origins[key] ?? '?') : '?'}' scope\n`);
+        process.stdout.write(`${CLI} config: unset ${extId}.${key}  (scope: ${unsetScope}) — still set in '${cascaded2 ? (cascadeExtConfig(extId).origins[key] ?? '?') : '?'}' scope\n`);
       }
       process.exit(0);
     }
@@ -3654,7 +3831,7 @@ Sensitive values should use env refs: \${VAR_NAME}
     // ── check ──────────────────────────────────────────────────────────────
     case 'check': {
       if (!extId) {
-        process.stderr.write(`sox config check: usage: sox config check <ext> [--scope=<scope>]\n`);
+        process.stderr.write(`${CLI} config check: usage: ${CLI} config check <ext> [--scope=<scope>]\n`);
         process.exit(1);
       }
       const { value: cascaded3 } = cascadeExtConfig(extId);
@@ -3684,7 +3861,7 @@ Sensitive values should use env refs: \${VAR_NAME}
       }
 
       if (!cfgSchema) {
-        process.stdout.write(`sox config check: no config_schema found for '${extId}' (${schemaSource})\n`);
+        process.stdout.write(`${CLI} config check: no config_schema found for '${extId}' (${schemaSource})\n`);
         process.stdout.write(`Cascade-resolved config has ${Object.keys(cascaded3).length} key(s).\n`);
         process.exit(0);
       }
@@ -3695,7 +3872,7 @@ Sensitive values should use env refs: \${VAR_NAME}
       const required = Array.isArray(cfgSchema['required']) ? (cfgSchema['required'] as string[]) : [];
       for (const req of required) {
         if (!(req in cascaded3)) {
-          issues.push(`required key '${req}' is not set in any scope — run: sox config set ${extId} ${req} <value>`);
+          issues.push(`required key '${req}' is not set in any scope — run: ${CLI} config set ${extId} ${req} <value>`);
         }
       }
       // Unknown keys (when additionalProperties: false)
@@ -3703,15 +3880,15 @@ Sensitive values should use env refs: \${VAR_NAME}
         const declared = Object.keys((cfgSchema['properties'] as Record<string, unknown> | undefined) ?? {});
         for (const k of Object.keys(cascaded3)) {
           if (!declared.includes(k)) {
-            warnings4.push(`key '${k}' is not declared in config_schema — run: sox config unset ${extId} ${k}`);
+            warnings4.push(`key '${k}' is not declared in config_schema — run: ${CLI} config unset ${extId} ${k}`);
           }
         }
       }
       if (issues.length === 0 && warnings4.length === 0) {
-        process.stdout.write(`sox config check: OK — '${extId}' config is valid\n`);
+        process.stdout.write(`${CLI} config check: OK — '${extId}' config is valid\n`);
         process.stdout.write(`  ${Object.keys(cascaded3).length} key(s) set, all required keys present\n`);
       } else {
-        process.stdout.write(`sox config check: ${issues.length} issue(s), ${warnings4.length} warning(s) for '${extId}'\n\n`);
+        process.stdout.write(`${CLI} config check: ${issues.length} issue(s), ${warnings4.length} warning(s) for '${extId}'\n\n`);
         for (const iss of issues) { process.stdout.write(`  ERROR:   ${iss}\n`); }
         for (const w of warnings4) { process.stdout.write(`  warning: ${w}\n`); }
         process.exit(issues.length > 0 ? 1 : 0);
@@ -3720,7 +3897,7 @@ Sensitive values should use env refs: \${VAR_NAME}
     }
 
     default:
-      process.stderr.write(`sox config: unknown sub-verb '${subVerb}'. Use: get | set | list | unset | check\n`);
+      process.stderr.write(`${CLI} config: unknown sub-verb '${subVerb}'. Use: get | set | list | unset | check\n`);
       process.exit(1);
   }
 }

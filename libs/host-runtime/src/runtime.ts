@@ -419,12 +419,28 @@ export async function stopRuntime(opts: StopRuntimeOptions): Promise<void> {
     if (opts.id) {
       for (const entry of record.entries) {
         if (entry.id === opts.id || entry.key === opts.id) {
+          if (typeof entry.pid === 'number') {
+            try {
+              process.kill(entry.pid, 'SIGTERM');
+              console.log(`[runtime] Sent SIGTERM to ${entry.id} (pid=${entry.pid})`);
+            } catch {
+              // already gone — that's fine
+            }
+          }
           entry.running = false;
           entry.pid = null;
         }
       }
     } else {
       for (const entry of record.entries) {
+        if (typeof entry.pid === 'number') {
+          try {
+            process.kill(entry.pid, 'SIGTERM');
+            console.log(`[runtime] Sent SIGTERM to ${entry.id} (pid=${entry.pid})`);
+          } catch {
+            // already gone
+          }
+        }
         entry.running = false;
         entry.pid = null;
       }
