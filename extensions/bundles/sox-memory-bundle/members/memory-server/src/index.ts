@@ -35,7 +35,7 @@ import type { ToolDefinition, ToolResult } from '@sox/mcp-runtime';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { openDb, memoryWrite, memoryRecall, enqueueReindex } from '@sox/memory-core';
-import { clusterStats, ENRICH_VERSION } from '@sox/memory-enrich';
+import { clusterStats, clusterSubset, ENRICH_VERSION } from '@sox/memory-enrich';
 import { monotonicFactory } from 'ulid';
 import Database from 'better-sqlite3';
 
@@ -463,7 +463,7 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_curate',
     description:
-      'Curation operations: retag, set topic, override importance, merge near-duplicates, or trigger a re-cluster pass.',
+      'Curation operations: retag, set topic, override importance, merge near-duplicates, or trigger a (optionally filtered) re-cluster pass.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -479,6 +479,8 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         importance: { type: 'number', minimum: 1, maximum: 10, description: '(set_importance) User-asserted importance.' },
         uid_keep:   { type: 'string', description: '(merge_duplicates) UID of the episode to keep.' },
         uid_drop:   { type: 'string', description: '(merge_duplicates) UID of the episode to invalidate.' },
+        filters:    { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: global async re-cluster via the daemon (unchanged).' },
+        threshold:  { type: 'number', description: '(recluster, filtered) Optional cosine similarity threshold override for the subset pass.' },
         dry_run:    { type: 'boolean', default: false, description: 'If true, return proposed changes without committing them.' },
       },
       required: ['db_path', 'op'],
@@ -657,6 +659,19 @@ function buildFiltersClause(
 
   const sql = parts.length > 0 ? ' AND ' + parts.join(' AND ') : '';
   return { sql, params };
+}
+
+/** Resolve episode rowids → uids, preserving the input order. */
+function rowidsToUids(db: Database.Database, rowids: number[]): string[] {
+  if (rowids.length === 0) return [];
+  const ph = rowids.map(() => '?').join(',');
+  const rows = db
+    .prepare<unknown[], { rowid: number; uid: string }>(
+      `SELECT rowid, uid FROM node WHERE rowid IN (${ph})`,
+    )
+    .all(...rowids);
+  const byRowid = new Map(rows.map((r) => [r.rowid, r.uid]));
+  return rowids.map((r) => byRowid.get(r)).filter((u): u is string => typeof u === 'string');
 }
 
 /** Resolve a MEMBER_OF community uid for an episode rowid, if any. */
@@ -1916,7 +1931,48 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         }
 
         case 'recluster': {
-          // OQ-3: dry_run on recluster means don't enqueue, just report
+          const filters = args['filters'] as Record<string, unknown> | undefined;
+
+          // Filtered recluster: cluster ONLY the subset matching `filters`,
+          // synchronously, and return the resulting communities. This is the
+          // on-demand "cluster a subset to find synthesis candidates" path.
+          // dry_run=true → read-only (no writes); dry_run=false → persist a
+          // provenance-scoped community slice that never touches the global
+          // partition. The server treats `filters` as opaque graph predicates;
+          // it carries no knowledge of what the tags/topics mean.
+          if (filters && Object.keys(filters).length > 0) {
+            const restrict = buildFiltersClause(filters);
+            const threshold = args['threshold'];
+            const res = clusterSubset(db, {
+              restrict,
+              filter: filters,
+              persist: !dryRun,
+              ...(typeof threshold === 'number' ? { threshold } : {}),
+            });
+            const clusters = res.clusters.map((c) => ({
+              community_uid: c.community_uid,
+              label: c.label,
+              size: c.member_rowids.length,
+              mean_intra_sim: c.mean_intra_sim,
+              members: rowidsToUids(db, c.member_rowids),
+            }));
+            return {
+              content: [{ type: 'text', text: JSON.stringify({
+                op: 'recluster',
+                scope: 'subset',
+                dry_run: dryRun,
+                persisted: res.persisted,
+                provenance_hash: res.provenance_hash,
+                candidate_count: res.candidate_count,
+                cluster_count: clusters.length,
+                unclustered_count: res.unclustered_count,
+                full_pass: res.full_pass,
+                clusters,
+              }) }],
+            };
+          }
+
+          // Global recluster (unchanged): OQ-3 dry_run means don't enqueue, just report.
           if (dryRun) {
             return {
               content: [{ type: 'text', text: JSON.stringify({ op: 'recluster', enqueued: false, dry_run: true }) }],

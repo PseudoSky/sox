@@ -566,3 +566,85 @@ describe('backward compat — existing tools unbroken', () => {
     ).toBe(true);
   });
 });
+
+// ── memory_curate recluster — filtered (synchronous subset) wiring ───────────────
+// The deep clustering / scoped-persist / UID-collision correctness is covered by
+// the unit tests in @sox/memory-enrich (cluster-subset.spec.ts) with controlled
+// embeddings. These integration tests verify only the SERVER WIRING: that
+// `recluster` with `filters` routes to the synchronous subset path, selects the
+// right candidate set, honours dry_run for persistence, and returns the generic
+// response shape. The server carries no knowledge of what the tags mean.
+
+describe('memory_curate recluster — filtered subset', () => {
+  const UNIQ = 'synthtest';
+  // Two deliberately DISSIMILAR episodes sharing a unique tag, so neither the
+  // shared seed nor near-dup-on-write (E8) collapses them — the subset is a
+  // stable 2.
+  beforeAll(async () => {
+    await handleToolCall('memory_write', {
+      db_path: DB_PATH,
+      content: 'Calibration of the pneumatic widget press requires a torque of forty newton metres.',
+      tags: [UNIQ, 'alpha'],
+    });
+    await handleToolCall('memory_write', {
+      db_path: DB_PATH,
+      content: 'Migratory albatross navigation relies on geomagnetic field gradients over open ocean.',
+      tags: [UNIQ, 'beta'],
+    });
+  });
+
+  it('selects only episodes matching the filter and is read-only under dry_run', async () => {
+    const out = parseResult(
+      await handleToolCall('memory_curate', {
+        db_path: DB_PATH,
+        op: 'recluster',
+        filters: { tags: [UNIQ] },
+        dry_run: true,
+      }),
+    );
+    expect(out['op']).toBe('recluster');
+    expect(out['scope']).toBe('subset');
+    expect(out['dry_run']).toBe(true);
+    expect(out['persisted']).toBe(false); // dry_run never writes
+    expect(out['candidate_count']).toBe(2); // the two uniquely-tagged episodes
+    expect(typeof out['provenance_hash']).toBe('string');
+    expect((out['provenance_hash'] as string).length).toBeGreaterThan(0);
+    expect(Array.isArray(out['clusters'])).toBe(true);
+  });
+
+  it('treats the filter as an opaque predicate (non-matching filter → empty subset)', async () => {
+    const out = parseResult(
+      await handleToolCall('memory_curate', {
+        db_path: DB_PATH,
+        op: 'recluster',
+        filters: { tags: ['no-such-tag-xyz'] },
+        dry_run: true,
+      }),
+    );
+    expect(out['candidate_count']).toBe(0);
+    expect(out['cluster_count']).toBe(0);
+  });
+
+  it('derives a stable provenance hash for the same filter', async () => {
+    const a = parseResult(
+      await handleToolCall('memory_curate', {
+        db_path: DB_PATH, op: 'recluster', filters: { tags: [UNIQ] }, dry_run: true,
+      }),
+    );
+    const b = parseResult(
+      await handleToolCall('memory_curate', {
+        db_path: DB_PATH, op: 'recluster', filters: { tags: [UNIQ] }, dry_run: true,
+      }),
+    );
+    expect(a['provenance_hash']).toBe(b['provenance_hash']);
+  });
+
+  it('no filters → unchanged global behaviour (daemon enqueue, not subset)', async () => {
+    const out = parseResult(
+      await handleToolCall('memory_curate', { db_path: DB_PATH, op: 'recluster', dry_run: true }),
+    );
+    // Global path reports enqueue semantics, never the subset shape.
+    expect(out['scope']).toBeUndefined();
+    expect(out).toHaveProperty('enqueued');
+  });
+});
