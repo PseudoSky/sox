@@ -13,6 +13,36 @@
   "license": "MIT",
   "runtime": "declarative",
   "entrypoint": "SKILL.md",
+  "run_interface": {
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "What the agent needs from memory — e.g. 'recall prior findings about X' or 'store this durable finding'."
+        },
+        "operation": {
+          "type": "string",
+          "enum": ["recall", "write", "search_entities", "invalidate"],
+          "description": "The memory_* operation the task maps to."
+        }
+      },
+      "required": ["task"]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "recommended_tool": {
+          "type": "string",
+          "description": "The memory_* MCP tool to call (memory_recall | memory_write | memory_search_entities | memory_invalidate)."
+        },
+        "guidance": {
+          "type": "string",
+          "description": "How to perform the task: tool arguments, token_budget/scope notes, and chunking guidance for document-scale writes."
+        }
+      }
+    }
+  },
   "install": {
     "type": "skill",
     "hosts": ["claude"]

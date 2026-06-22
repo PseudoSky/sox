@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "type": "service",
   "title": "Memory Daemon",
-  "description": "Supervised Unix-socket daemon that drains the organizer queue and calls memory-organizer for LLM processing",
+  "description": "Processes the sox graph-memory organizer queue: a supervised, singleton Unix-socket service that invokes memory-organizer for LLM-driven entity/relation extraction, consolidation, and reindexing, keeping the memory graph current without blocking the MCP write path.",
+  "keywords": ["memory", "daemon", "service", "organizer", "graph", "socket"],
+  "author": "sox-ecosystem",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
