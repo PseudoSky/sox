@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@sox/memory-core": "workspace:*",
+    "@sox/memory-enrich": "workspace:*",
     "@sox/mcp-runtime": "workspace:*"
   },
   "license": "MIT"

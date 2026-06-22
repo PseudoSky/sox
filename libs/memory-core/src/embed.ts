@@ -118,6 +118,12 @@ function getEmbedWorker(config: EmbedConfig): Worker {
   const workerPath = path.join(__dirname, 'embedWorker.js');
   _worker = new Worker(workerPath, { workerData: { cacheDir: config.cacheDir } });
 
+  // Do not let the embed worker keep the host event loop / test fork alive when idle.
+  // It only does work in response to a posted message; production servers keep the loop
+  // alive via stdin/socket. Without unref(), vitest's fork pool times out terminating
+  // workers that ran an embed (the worker thread lingers past test teardown).
+  _worker.unref();
+
   _worker.on('message', (msg: WorkerEmbedResponse) => {
     const pending = _pending.get(msg.id);
     if (!pending) return;
@@ -359,6 +365,32 @@ function toFloat32Normalised(raw: number[]): Float32Array {
 }
 
 /** Exposed for tests: reset singleton so backend can be re-initialised. */
+/**
+ * Await full termination of the embed worker thread. Use in test teardown so the
+ * vitest fork can exit cleanly — the worker (and its onnxruntime native threads) must
+ * be gone before the test file finishes, which the fire-and-forget `_resetEmbedSingleton`
+ * does not guarantee.
+ */
+export async function _shutdownEmbedWorker(): Promise<void> {
+  const w = _worker;
+  _worker = null;
+  _workerReady = false;
+  _workerReadyPromise = null;
+  _pending.clear();
+  if (!w) return;
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = (): void => { if (!done) { done = true; resolve(); } };
+    w.once('exit', finish);
+    // Ask the worker to exit voluntarily between messages. A forced terminate() while
+    // onnxruntime native code is on the stack can hard-abort the host (V8 ReportApiFailure).
+    try { w.postMessage({ __shutdown: true }); } catch { void w.terminate().finally(finish); }
+    // Fallback: if the worker does not exit promptly, force-terminate.
+    const t = setTimeout(() => { if (!done) void w.terminate().finally(finish); }, 3000);
+    if (typeof t.unref === 'function') t.unref();
+  });
+}
+
 export function _resetEmbedSingleton(): void {
   if (_worker) {
     _worker.terminate().catch(() => {/* ignore */});

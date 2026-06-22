@@ -48,6 +48,7 @@ export {
   getActiveEmbedModel,
   reembedNodes,
   _resetEmbedSingleton,
+  _shutdownEmbedWorker,
 } from './embed.js';
 export type { EmbedBackend, EmbedConfig } from './embed.js';
 

@@ -124,6 +124,9 @@ importers:
       '@sox/memory-core':
         specifier: workspace:*
         version: link:../../../../../libs/memory-core
+      '@sox/memory-enrich':
+        specifier: workspace:*
+        version: link:../../../../../libs/memory-enrich
 
   extensions/bundles/sox-memory-bundle/members/memory-usage: {}
 
