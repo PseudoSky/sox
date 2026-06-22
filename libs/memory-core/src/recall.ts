@@ -55,10 +55,17 @@ export interface RecallResponse {
 
 const RRF_K = 60;
 const RECENCY_DECAY_PER_HOUR = 0.995;
-const DEFAULT_TOKEN_BUDGET = 32000;
+const DEFAULT_TOKEN_BUDGET = 32000; // was 4000 — too small for doc-scale nodes
 const DEFAULT_DEPTH = 1;
 const KNN_LIMIT = 20;
 const FTS_LIMIT = 20;
+
+// Per-signal RRF weights. Temporal is down-weighted (0.4) because recency
+// already enters via the recency × importance rerank; giving it equal 1:1:1
+// weight double-counted freshness and buried older-but-relevant matches.
+const VEC_WEIGHT = 1.0;
+const FTS_WEIGHT = 0.8;
+const TEMPORAL_WEIGHT = 0.4;
 
 /**
  * Estimate token count (rough: 1 token ≈ 4 chars)
@@ -115,9 +122,9 @@ export async function memoryRecall(
     token_budget = DEFAULT_TOKEN_BUDGET,
     depth = DEFAULT_DEPTH,
     limit = 10,
-    vec_weight = 1.0,
-    fts_weight = 0.8,
-    temporal_weight = 0.4,
+    vec_weight = VEC_WEIGHT,
+    fts_weight = FTS_WEIGHT,
+    temporal_weight = TEMPORAL_WEIGHT,
   } = params;
 
   const beforeCount = getProviderCallCount();
@@ -504,7 +511,7 @@ export async function federatedRecall(
 
   const beforeCount = getProviderCallCount();
 
-  const { agent_id, token_budget = 4000, limit = 10 } = params;
+  const { agent_id, token_budget = DEFAULT_TOKEN_BUDGET, limit = 10 } = params;
 
   // Use cached connections (warm page cache, amortize open cost).
   interface OpenConn { scope: string; db: Database.Database | null }

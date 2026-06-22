@@ -39,10 +39,10 @@ let _activeModel = 'nomic-embed-text-v1.5-hash';
 export function getActiveEmbedModel(): string {
   return _activeModel;
 }
-// The EMBED_MODEL constant is the *hash backend* identifier.
-// When backend='real' or 'auto' resolves to real, getActiveEmbedModel() returns
-// 'bge-base-en-v1.5' (BGE-base-en-v1.5 via fastembed, 768-dim).
-// Do NOT use EMBED_MODEL as a proxy for the active backend — use getActiveEmbedModel().
+// The EMBED_MODEL constant is the *hash backend* identifier ('nomic-embed-text-v1.5-hash').
+// When backend='real'/'auto'→real, getActiveEmbedModel() returns 'bge-base-en-v1.5'
+// (BGE-base-en-v1.5 via fastembed, 768-dim). Do NOT use EMBED_MODEL as a proxy for the
+// active backend — use getActiveEmbedModel().
 export const EMBED_MODEL = 'nomic-embed-text-v1.5-hash';
 
 // ── Provider-call counter (R1 guard) ─────────────────────────────────────────

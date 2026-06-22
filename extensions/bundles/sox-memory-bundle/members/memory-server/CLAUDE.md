@@ -97,3 +97,13 @@ Implements: `initialize`, `tools/list`, `tools/call`.
 ## Server id
 
 `memory-server`
+
+## Permissions and db_path constraint
+
+This extension declares an `fs` allowlist covering `~/.memory/**` (both read and write). The host runtime injects this allowlist as an environment policy at spawn time.
+
+The `db_path` parameter accepted by `memory_write` and `memory_recall` is validated against this allowlist by the in-process permission guard before any database operation begins. If the resolved path falls outside `~/.memory/**`, the guard denies the operation and returns an error — no file is created, no partial write occurs, and no side effects are left on disk.
+
+To use a `db_path` outside `~/.memory/`:
+- Reconfigure the `fs.write` and `fs.read` allowlist in this extension's `permissions` block to include the desired path, then re-install.
+- Or create a symlink inside `~/.memory/` pointing to the external location.
