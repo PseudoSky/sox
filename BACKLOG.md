@@ -12,6 +12,15 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ## Open
 
+### BL-22 — memory export frontmatter lists entities by opaque uid, not name
+
+**Severity:** Low (export usability) · **Status:** Open
+The BL-20 export renders each episode's `entities:` frontmatter as raw entity uids
+(e.g. `entity-1782156652131-v1dfntxapt`) instead of the human-readable entity NAME the DB
+stores (e.g. `acceptance-testing`). For a git-reviewable mirror this defeats the purpose — a
+reviewer can't tell what an episode is about from the uids. Fix: have `collectMentionedEntities`
+return entity names (optionally keep the uid as a secondary field). Surfaced comparing DB vs docs.
+
 ### BL-21 — memory markdown export is on-demand; not auto-refreshed as new memory is written
 
 **Severity:** Low (auditability / DX) · **Status:** Open
