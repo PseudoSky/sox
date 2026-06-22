@@ -932,8 +932,146 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
     }
   }
 
+  // ── Host-place declarative members (BL-17) ────────────────────────────────
+  // After install() writes the lockfile, host-place every resolved extension
+  // whose manifest declares `install.hosts`. This covers bundle members (e.g.
+  // memory-usage skill) and standalone declarative extensions installed via the
+  // config/lockfile path. Service and mcp-server runtime types have no file-drop
+  // surface and are skipped automatically by declarativeInstall.
+  {
+    const fsMod4   = require('node:fs')   as typeof import('node:fs');
+    const pathMod4 = require('node:path') as typeof import('node:path');
+
+    // Resolve the lockfile that install() just wrote.
+    const lockfilePath4 = lockfilePathFlag ?? getScopePath(scope).lockfile;
+    const lockfile4 = loadLockfile(lockfilePath4);
+
+    if (lockfile4 !== null) {
+      const repoRoot4 = process.cwd();
+
+      for (const [lockKey, lkEntry4] of Object.entries(lockfile4.resolved)) {
+        // Strip the @version suffix to get the bare extension id.
+        const atIdx = lockKey.lastIndexOf('@');
+        const extId4 = atIdx > 0 ? lockKey.slice(0, atIdx) : lockKey;
+
+        // Resolve the extension source directory from the lockfile entry.
+        // resolveExtensionDir returns the directory for a file:// source but may
+        // return a file path (e.g. SKILL.md, dist/index.js) when the lockfile
+        // source was pinned to the entrypoint artifact. In that case, use dirname.
+        const resolved4 = resolveExtensionDir(lkEntry4.source, repoRoot4);
+        if (!resolved4) continue;
+        const extDir4 = fsMod4.existsSync(resolved4) && fsMod4.statSync(resolved4).isDirectory()
+          ? resolved4
+          : pathMod4.dirname(resolved4);
+
+        // Load manifest to check install.hosts.
+        const manifestPath4 = pathMod4.join(extDir4, 'extension.json');
+        if (!fsMod4.existsSync(manifestPath4)) continue;
+        let mf4: Record<string, unknown>;
+        try {
+          mf4 = JSON.parse(fsMod4.readFileSync(manifestPath4, 'utf8')) as Record<string, unknown>;
+        } catch { continue; }
+
+        const installBlock4 = mf4['install'] as
+          | { type?: string; hosts?: string[] }
+          | undefined;
+        if (!installBlock4?.hosts || installBlock4.hosts.length === 0) continue;
+
+        const extType4 = (mf4['type'] as string | undefined) ?? '';
+
+        // Skip non-declarative (runtime) types — they have no file-drop surface.
+        // declarativeInstall will silently return [] for them, but skip early to
+        // avoid unnecessary I/O.
+        if (extType4 === 'service' || extType4 === 'bundle') continue;
+
+        await hostPlaceExtension(
+          extId4,
+          extDir4,
+          extType4,
+          installBlock4.hosts,
+          scope,
+          repoRoot4,
+        );
+      }
+    }
+  }
+
   process.stdout.write(`${CLI} install: done (scope=${scope}, mode=${mode})\n`);
   process.exit(0);
+}
+
+// ─── hostPlaceExtension ───────────────────────────────────────────────────────
+//
+// Shared host-placement helper — called by both the --host path (via
+// declarativeInstall directly) and the no-host config/lockfile path (BL-17).
+//
+// Places the content of `srcPath` at each host's discovery directory for the
+// given scope. Uses declarativeInstall so placement is idempotent (hash-gated)
+// and ledger-recorded. Non-fatal: placement errors are warnings; they do not
+// abort the install.
+//
+// [inv:host-registry-lazy]: @sox/host-registry loaded via require() inside
+// declarativeInstall — no static import here.
+//
+async function hostPlaceExtension(
+  id: string,
+  srcPath: string,
+  extType: string,
+  hosts: string[],
+  scope: 'org' | 'user' | 'project' | 'local',
+  workspaceRoot: string,
+): Promise<void> {
+  const pathMod = require('node:path') as typeof import('node:path');
+  const { getHost } = require('@sox/host-registry') as typeof import('@sox/host-registry');
+
+  for (const hostName of hosts) {
+    // Validate the host is registered; skip unknown hosts gracefully.
+    let hostMod: ReturnType<typeof getHost>;
+    try {
+      hostMod = getHost(hostName);
+    } catch {
+      process.stderr.write(`${CLI} install: warning: unknown host '${hostName}' in manifest for '${id}' — skipping\n`);
+      continue;
+    }
+
+    // Compute scopeRoot: the root used for the install ledger + relative-path resolution.
+    // For project scope: workspaceRoot (repo root). For user scope: the host's scope dir.
+    const hostScopePaths = hostMod.scopePaths(scope as Parameters<typeof hostMod.scopePaths>[0]);
+    const scopeRoot: string = scope === 'project'
+      ? workspaceRoot
+      : (Object.values(hostScopePaths)[0] as string | undefined ?? workspaceRoot);
+
+    const descriptor: import('@sox/install-engine').InstallDescriptor = {
+      ext: id,
+      type: extType,
+      hosts: [hostName],
+      srcPath: pathMod.resolve(srcPath),
+    };
+
+    let results: import('@sox/install-engine').DeclarativeInstallResult[];
+    try {
+      results = await declarativeInstall(
+        descriptor,
+        scope,
+        workspaceRoot,
+        scopeRoot,
+        { isProject: scope === 'project' },
+      );
+    } catch (e) {
+      process.stderr.write(`${CLI} install: warning: host-placement failed for '${id}' on '${hostName}' — ${String(e)}\n`);
+      continue;
+    }
+
+    for (const r of results) {
+      if (r.denied === true) {
+        process.stderr.write(`${CLI} install: warning: host-placement DENIED  ${r.host}/${r.scope}  ${r.target}  reason=${r.denialReason ?? 'unknown'}\n`);
+      } else if (r.applied) {
+        process.stdout.write(`${CLI} install: placed   ${r.host}/${r.scope}  ${r.target}\n`);
+      } else {
+        process.stdout.write(`${CLI} install: up-to-date  ${r.host}/${r.scope}  ${r.target}\n`);
+      }
+    }
+  }
 }
 
 // ─── build ────────────────────────────────────────────────────────────────────
