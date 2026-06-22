@@ -1,25 +1,27 @@
 # CLAUDE.md — sox-ecosystem
 
-## ⛔ AGENT CONSTRAINT — `bin/sox` AND `bin/soxe` ARE SHIMS, DO NOT EDIT THEM
+## ⛔ AGENT CONSTRAINT — two CLIs: `bin/soxe` is a SHIM; `bin/sox` is the LEGACY CLI
 
-**`bin/sox` and `bin/soxe` are thin ESM shims** — each does nothing but load the compiled
-output `dist/apps/sox/main.js`. They contain **zero CLI logic** (each is ~10–22 lines). All
-CLI logic lives in `apps/sox/src/main.ts`.
+The repo currently ships **two** CLI entrypoints. Know which you're touching:
 
-**Never edit either shim to add, change, or fix a verb, flag, or behavior.** A change to a
-shim is *always wrong* for CLI work — the logic isn't there. The **only** legitimate edit to
-a shim is to the shim mechanism itself (e.g. the dist load path or the ESM/CJS interop), and
-that should be rare and deliberate.
+- **`bin/soxe` — the shim (DO NOT edit for CLI logic).** ~10 lines; loads the compiled
+  `dist/apps/sox/main.js`. All its CLI logic lives in **`apps/sox/src/main.ts`**. The only
+  legitimate edit to `bin/soxe` is the shim mechanism itself (dist load path, ESM/CJS interop).
+  To change a verb/flag/behavior of the new CLI: edit `apps/sox/src/main.ts`, then `npx nx build sox`.
+- **`bin/sox` — the legacy hand-maintained CLI (1377 lines, editable).** It is **not** a shim.
+  It implements its own verbs and delegates to `scripts/` (`validate`→`validate-manifests.ts`,
+  `install`→`install.ts`, `init`→`new-extension.ts`; `list`/`details` read JSON directly). It is
+  still exercised by `scripts/cli-adapter.test.ts` and `host-runtime:test-e2e` (SOX_BIN), so it
+  must keep working. Do **not** delete the `scripts/*` files it wraps.
 
-- **Edit CLI verbs/flags/behavior** → `apps/sox/src/main.ts`, then `npx nx build sox`.
-- **Edit the runtime** → `libs/host-runtime/src/`, then `npx nx build host-runtime`.
-- **Editing a shim to change CLI behavior is a bug** — your change belongs in the source above.
-- If a test runs `node bin/sox …` and behaves unexpectedly, the fix is in `apps/sox/src/main.ts`
-  (rebuild with `npx nx build sox`), **not** in `bin/sox`.
+**Goal (not yet realized):** collapse `bin/sox` into a shim like `bin/soxe`. That is blocked
+until `apps/sox/src/main.ts` reaches behavioral **parity** with the legacy CLI — a drop-in
+shim today fails ~22 cli-adapter + ~13 e2e assertions. Until parity exists, `bin/sox` stays
+the legacy CLI. **Do not "shim" `bin/sox` without first porting parity and proving the full
+suite + e2e stay green.**
 
-> History: `bin/sox` was once a 1379-line hand-maintained legacy CLI; it has been collapsed
-> into a shim. The legacy scaffolder `scripts/new-extension.ts` it wrapped is removed —
-> `sox init` now runs through the compiled `cmdInit` in `apps/sox/src/main.ts`.
+> The `## Definition of Done` table below still describes `bin/sox` as a shim — that is
+> aspirational, not current. `bin/soxe` is the shim today.
 
 ---
 
