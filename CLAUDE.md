@@ -51,6 +51,32 @@ and prove runtime behavior against the built `dist`, never a vitest run alone.
 
 ---
 
+## ⛔ AGENT SEQUENCE — when you change extension/lib code that ships a `dist` artifact
+
+Editing any extension or lib that is checksummed in `registry/index.json` (every code-type
+extension + bundle member + app) requires this exact sequence. Skipping a step leaves the
+registry checksum stale and the global install will refuse to upgrade (C2/C4 reality gate —
+`CHECKSUM MISMATCH`, which is the gate working, not a bug).
+
+1. **Lint** — `npx nx lint <project>` (or `npx nx affected -t lint`).
+2. **Build** — `npx nx build <project>` (or `npx nx affected -t build`). Never bare `tsc`.
+3. **Update the registry hash** — `npx nx run registry:sync-index`. This rebuilds every
+   extension (cached) and regenerates `registry/index.json` checksums against the freshly
+   built `dist`. **Never hand-edit `registry/index.json`** and never run bare
+   `tsx scripts/build-index.ts` (the nx target guarantees the artifacts are built first).
+4. **Commit** the source changes **and** the regenerated `registry/index.json` together,
+   by explicit path (the C2 drift gate fails CI if the registry lags the artifacts).
+5. **Ask the user before** the next two — do NOT do them unprompted:
+   - **Upgrade the global install** — `node bin/soxe install --scope=user` (refreshes the
+     user-scope lockfile to the new artifacts; `--update` does **not** bypass the checksum
+     gate — the registry must be resynced in step 3 first).
+   - **Restart the affected services** — so a running process picks up new code:
+     `node bin/soxe stop --id=<ext> --scope=user && node bin/soxe start --id=<ext> --scope=user`.
+     Note: stdio MCP servers (e.g. `memory-server`) are spawned on demand by the client and
+     respawn with new code on the next connection — flag that the user may need to reconnect.
+
+---
+
 A monorepo for an **LLM-extension ecosystem**: independently-versioned extensions of 8 types
 (`agent`, `skill`, `mcp-server`, `service`, `prompt`, `hook`, `command`, `bundle`), installed across scopes
 (`org`/`user`/`project`/`local`) and run by a host runtime. CLI: `bin/sox`. Engine: `scripts/`.
