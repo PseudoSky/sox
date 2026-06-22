@@ -7,6 +7,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@sox/memory-core': resolve(repoRoot, 'libs/memory-core/dist/index.js'),
+      '@sox/memory-enrich': resolve(repoRoot, 'libs/memory-enrich/dist/index.js'),
     },
   },
   test: {

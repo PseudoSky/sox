@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { openDb, memoryWrite, memoryRecall, getActiveEmbedModel, _resetEmbedSingleton } from '@sox/memory-core';
+import { openDb, memoryWrite, memoryRecall, getActiveEmbedModel, _resetEmbedSingleton, _shutdownEmbedWorker } from '@sox/memory-core';
 import type { RecallResponse } from '@sox/memory-core';
 
 
@@ -44,9 +44,15 @@ describe('memoryRecall — real SQLite integration', () => {
     const tmp = makeTempDb();
     dbPath = tmp.dbPath;
     cleanup = tmp.cleanup;
+    // These tests assert bi-temporal recall MECHANICS, not embedding quality — pin the
+    // fast, deterministic hash backend so they never trigger a slow cold ONNX model load.
+    _resetEmbedSingleton();
+    process.env['SOX_EMBED_BACKEND'] = 'hash';
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await _shutdownEmbedWorker();
+    delete process.env['SOX_EMBED_BACKEND'];
     cleanup();
   });
 
@@ -177,8 +183,10 @@ describe('MCP bundle path — real embedding semantic proof', () => {
     process.env['SOX_EMBED_BACKEND'] = 'real';
   });
 
-  afterEach(() => {
-    _resetEmbedSingleton();
+  afterEach(async () => {
+    // Await full termination so the onnxruntime worker thread is gone before the
+    // test file ends — otherwise vitest's fork pool times out terminating the fork.
+    await _shutdownEmbedWorker();
     delete process.env['SOX_EMBED_BACKEND'];
     cleanup();
   });

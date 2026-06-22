@@ -1,0 +1,568 @@
+/**
+ * memory-tools.spec.ts — focused P4 enrichment tool tests.
+ *
+ * Exercises CONTRACTS.md C2 shapes for:
+ *   - memory_topics (C2.3)
+ *   - memory_list_projects (C2.4)
+ *   - memory_recall with filters (C2.2 — project_path + topic + query-optional)
+ *   - memory_list_entities (C2.5)
+ *   - memory_near_duplicates (C2.10)
+ *   - memory_supersession_chain (C2.9)
+ *   - memory_stats (C2.12)
+ *   - memory_curate (C2.11 — set_topic, retag, set_importance)
+ *   - memory_get_community v1 (C2.6 — community_uid direct lookup)
+ *
+ * Setup: a small SQLite DB with a couple of writes + a cluster pass,
+ * so the tool outputs can be asserted against the contract shapes.
+ *
+ * All operations are deterministic — no LLM, no provider calls (SOX_EMBED_BACKEND=hash).
+ */
+
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { openDb } from '@sox/memory-core';
+import { clusterStore } from '@sox/memory-enrich';
+import { handleToolCall } from './index.js';
+
+// Force hash backend for deterministic, dependency-free tests
+process.env['SOX_EMBED_BACKEND'] = 'hash';
+
+// ── Test DB setup ──────────────────────────────────────────────────────────────
+
+const TEST_DIR = path.join(os.tmpdir(), `sox-p4-spec-${process.pid}`);
+const DB_PATH = path.join(TEST_DIR, 'test.db');
+
+/** Written episode UIDs, populated in beforeAll. */
+const uids: string[] = [];
+
+beforeAll(async () => {
+  fs.mkdirSync(TEST_DIR, { recursive: true });
+
+  // Write several episodes with different topics and project paths
+  const writes = [
+    {
+      content: 'The TypeScript compiler enforces strict null checks.',
+      topic: 'typescript',
+      project_path: '/home/user/projects/ts-app',
+      tags: ['compiler', 'typescript'],
+    },
+    {
+      content: 'SQLite supports full-text search via FTS5 extension.',
+      topic: 'databases',
+      project_path: '/home/user/projects/db-project',
+      tags: ['sqlite', 'fts5'],
+    },
+    {
+      content: 'Node.js uses an event-loop for I/O concurrency.',
+      topic: 'nodejs',
+      project_path: '/home/user/projects/ts-app',
+      tags: ['node', 'event-loop'],
+    },
+    {
+      content: 'TypeScript generics allow type-safe abstractions over collections.',
+      topic: 'typescript',
+      project_path: '/home/user/projects/ts-app',
+      tags: ['generics', 'typescript'],
+    },
+  ];
+
+  for (const w of writes) {
+    const result = await handleToolCall('memory_write', {
+      db_path: DB_PATH,
+      content: w.content,
+      topic: w.topic,
+      project_path: w.project_path,
+      tags: w.tags,
+    });
+
+    const parsed = JSON.parse((result.content[0] as { type: string; text: string }).text) as {
+      episode_uid?: string;
+      code?: string;
+      existing_uid?: string;
+    };
+
+    const uid = parsed.episode_uid ?? parsed.existing_uid;
+    if (uid) uids.push(uid);
+  }
+
+  // Run a cluster pass so community data is available
+  const db = openDb(DB_PATH);
+  clusterStore(db);
+});
+
+afterAll(() => {
+  try { fs.rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+type JsonObj = Record<string, unknown>;
+
+function parseResult(result: Awaited<ReturnType<typeof handleToolCall>>): JsonObj {
+  expect(result.isError).toBeFalsy();
+  return JSON.parse((result.content[0] as { type: string; text: string }).text) as JsonObj;
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe('memory_topics (C2.3)', () => {
+  it('returns topics array with required fields', async () => {
+    const out = parseResult(await handleToolCall('memory_topics', { db_path: DB_PATH }));
+    const topics = out['topics'] as JsonObj[];
+    expect(Array.isArray(topics)).toBe(true);
+    expect(typeof out['total']).toBe('number');
+    expect(topics.length).toBeGreaterThan(0);
+
+    // Each topic entry must have the C2.3 shape
+    for (const t of topics) {
+      expect(typeof t['topic']).toBe('string');
+      expect(typeof t['episode_count']).toBe('number');
+      expect(typeof t['avg_importance']).toBe('number');
+      expect(typeof t['last_written']).toBe('string');
+      expect(typeof t['has_community']).toBe('boolean');
+      // community_uid: null or string
+      expect(t['community_uid'] === null || typeof t['community_uid'] === 'string').toBe(true);
+    }
+  });
+
+  it('counts typescript topic episodes correctly', async () => {
+    const out = parseResult(await handleToolCall('memory_topics', { db_path: DB_PATH, sort_by: 'episode_count' }));
+    const topics = out['topics'] as JsonObj[];
+    const ts = topics.find((t) => t['topic'] === 'typescript');
+    expect(ts).toBeDefined();
+    expect(ts!['episode_count']).toBe(2); // two typescript writes above
+  });
+
+  it('project_path filter returns only relevant topics', async () => {
+    const out = parseResult(await handleToolCall('memory_topics', {
+      db_path: DB_PATH,
+      project_path: '/home/user/projects/db-project',
+    }));
+    const topics = out['topics'] as JsonObj[];
+    // Only the db-project episode has topic=databases
+    expect(topics.every((t) => t['topic'] === 'databases')).toBe(true);
+  });
+
+  it('search filter narrows by substring', async () => {
+    const out = parseResult(await handleToolCall('memory_topics', { db_path: DB_PATH, search: 'type' }));
+    const topics = out['topics'] as JsonObj[];
+    expect(topics.every((t) => (t['topic'] as string).toLowerCase().includes('type'))).toBe(true);
+  });
+});
+
+describe('memory_list_projects (C2.4)', () => {
+  it('returns projects array with required fields', async () => {
+    const out = parseResult(await handleToolCall('memory_list_projects', { db_path: DB_PATH }));
+    const projects = out['projects'] as JsonObj[];
+    expect(Array.isArray(projects)).toBe(true);
+    expect(typeof out['total']).toBe('number');
+    expect(projects.length).toBeGreaterThan(0);
+
+    for (const p of projects) {
+      expect(typeof p['project_path']).toBe('string');
+      expect(typeof p['episode_count']).toBe('number');
+      expect(typeof p['last_written']).toBe('string');
+    }
+  });
+
+  it('lists both distinct project paths', async () => {
+    const out = parseResult(await handleToolCall('memory_list_projects', { db_path: DB_PATH }));
+    const projects = out['projects'] as JsonObj[];
+    const paths = projects.map((p) => p['project_path'] as string);
+    expect(paths).toContain('/home/user/projects/ts-app');
+    expect(paths).toContain('/home/user/projects/db-project');
+  });
+
+  it('episode_count is correct for ts-app (3 episodes)', async () => {
+    const out = parseResult(await handleToolCall('memory_list_projects', { db_path: DB_PATH }));
+    const projects = out['projects'] as JsonObj[];
+    const tsApp = projects.find((p) => p['project_path'] === '/home/user/projects/ts-app');
+    expect(tsApp).toBeDefined();
+    expect(tsApp!['episode_count']).toBe(3);
+  });
+});
+
+describe('memory_recall with filters (C2.2)', () => {
+  it('returns v1 enrichment fields on each result', async () => {
+    const out = parseResult(await handleToolCall('memory_recall', {
+      db_path: DB_PATH,
+      query: 'TypeScript compiler',
+    }));
+    const results = out['results'] as JsonObj[];
+    expect(Array.isArray(results)).toBe(true);
+    expect(typeof out['provider_call_count']).toBe('number');
+    expect(out['provider_call_count']).toBe(0); // zero LLM calls
+
+    if (results.length > 0) {
+      const r = results[0]!;
+      // v0 fields
+      expect(typeof r['uid']).toBe('string');
+      expect(typeof r['score']).toBe('number');
+      // v1 enrichment fields
+      expect('summary' in r).toBe(true);
+      expect('topic' in r).toBe(true);
+      expect('tags' in r).toBe(true);
+      expect(Array.isArray(r['tags'])).toBe(true);
+      expect('project_path' in r).toBe(true);
+      expect('is_superseded' in r).toBe(true);
+      expect('supersedes_uid' in r).toBe(true);
+      expect('community_uid' in r).toBe(true);
+      expect(typeof r['is_superseded']).toBe('boolean');
+    }
+  });
+
+  it('topic filter narrows results to matching topic', async () => {
+    const out = parseResult(await handleToolCall('memory_recall', {
+      db_path: DB_PATH,
+      query: 'type system',
+      filters: { topic: 'typescript' },
+    }));
+    const results = out['results'] as JsonObj[];
+    // All results that have a topic should be typescript
+    for (const r of results) {
+      if (r['topic'] !== null) {
+        expect(r['topic']).toBe('typescript');
+      }
+    }
+  });
+
+  it('project_path filter (exact) narrows to correct project', async () => {
+    const out = parseResult(await handleToolCall('memory_recall', {
+      db_path: DB_PATH,
+      filters: { project_path: '/home/user/projects/db-project' },
+    }));
+    const results = out['results'] as JsonObj[];
+    expect(results.length).toBeGreaterThan(0);
+    for (const r of results) {
+      expect(r['project_path']).toBe('/home/user/projects/db-project');
+    }
+  });
+
+  it('empty/absent query returns importance-ranked listing', async () => {
+    const out = parseResult(await handleToolCall('memory_recall', {
+      db_path: DB_PATH,
+    }));
+    const results = out['results'] as JsonObj[];
+    expect(Array.isArray(results)).toBe(true);
+    // Results are ordered by importance DESC — verify non-increasing importance
+    const importances = results.map((r) => r['importance'] as number);
+    for (let i = 1; i < importances.length; i++) {
+      expect(importances[i]!).toBeLessThanOrEqual(importances[i - 1]!);
+    }
+  });
+});
+
+describe('memory_list_entities (C2.5)', () => {
+  it('returns entities array with required fields', async () => {
+    const out = parseResult(await handleToolCall('memory_list_entities', { db_path: DB_PATH }));
+    const entities = out['entities'] as JsonObj[];
+    expect(Array.isArray(entities)).toBe(true);
+    expect(typeof out['total']).toBe('number');
+
+    for (const e of entities) {
+      expect(typeof e['uid']).toBe('string');
+      expect(typeof e['name']).toBe('string');
+      expect(typeof e['mention_count']).toBe('number');
+      expect(typeof e['first_seen']).toBe('string');
+      expect(typeof e['last_seen']).toBe('string');
+    }
+  });
+
+  it('entities are sorted by mention_count DESC', async () => {
+    const out = parseResult(await handleToolCall('memory_list_entities', { db_path: DB_PATH }));
+    const entities = out['entities'] as JsonObj[];
+    const counts = entities.map((e) => e['mention_count'] as number);
+    for (let i = 1; i < counts.length; i++) {
+      expect(counts[i]!).toBeLessThanOrEqual(counts[i - 1]!);
+    }
+  });
+
+  it('search filter by name substring', async () => {
+    const out = parseResult(await handleToolCall('memory_list_entities', {
+      db_path: DB_PATH,
+      search: 'type',
+    }));
+    const entities = out['entities'] as JsonObj[];
+    for (const e of entities) {
+      expect((e['name'] as string).toLowerCase()).toContain('type');
+    }
+  });
+});
+
+describe('memory_stats (C2.12)', () => {
+  it('returns tool_version 1.0.0', async () => {
+    const out = parseResult(await handleToolCall('memory_stats', { db_path: DB_PATH }));
+    expect(out['tool_version']).toBe('1.0.0');
+  });
+
+  it('returns all required C2.12 fields', async () => {
+    const out = parseResult(await handleToolCall('memory_stats', { db_path: DB_PATH }));
+    expect(typeof out['enrich_version']).toBe('string');
+    expect(typeof out['embed_model']).toBe('string');
+    expect(typeof out['total_episodes']).toBe('number');
+    expect(typeof out['with_topic']).toBe('number');
+    expect(typeof out['with_summary']).toBe('number');
+    expect(typeof out['with_tags']).toBe('number');
+    expect(typeof out['with_project_path']).toBe('number');
+    expect(typeof out['with_community']).toBe('number');
+    expect(typeof out['legacy_episodes']).toBe('number');
+    expect(typeof out['stale_episodes']).toBe('number');
+    expect(typeof out['cluster_count']).toBe('number');
+    expect(typeof out['largest_cluster_size']).toBe('number');
+    expect(typeof out['mean_intra_cluster_sim']).toBe('number');
+    expect(typeof out['coverage']).toBe('number');
+    expect(typeof out['cluster_quality']).toBe('object');
+  });
+
+  it('total_episodes matches written count', async () => {
+    const out = parseResult(await handleToolCall('memory_stats', { db_path: DB_PATH }));
+    expect(out['total_episodes']).toBe(4);
+  });
+
+  it('with_topic = 4 (all writes supplied topic)', async () => {
+    const out = parseResult(await handleToolCall('memory_stats', { db_path: DB_PATH }));
+    expect(out['with_topic']).toBe(4);
+  });
+
+  it('with_tags = 4 (all writes supplied tags)', async () => {
+    const out = parseResult(await handleToolCall('memory_stats', { db_path: DB_PATH }));
+    expect(out['with_tags']).toBe(4);
+  });
+
+  it('with_project_path = 4 (all writes supplied project_path)', async () => {
+    const out = parseResult(await handleToolCall('memory_stats', { db_path: DB_PATH }));
+    expect(out['with_project_path']).toBe(4);
+  });
+
+  it('project_path filter scopes stats to one project', async () => {
+    const out = parseResult(await handleToolCall('memory_stats', {
+      db_path: DB_PATH,
+      project_path: '/home/user/projects/db-project',
+    }));
+    expect(out['total_episodes']).toBe(1);
+  });
+});
+
+describe('memory_curate (C2.11)', () => {
+  it('set_topic changes topic and reports old/new', async () => {
+    const uid = uids[1]; // SQLite episode with topic 'databases'
+    if (!uid) return;
+
+    const out = parseResult(await handleToolCall('memory_curate', {
+      db_path: DB_PATH,
+      op: 'set_topic',
+      uid,
+      topic: 'storage',
+    }));
+    expect(out['op']).toBe('set_topic');
+    expect(out['uid']).toBe(uid);
+    expect(out['old_topic']).toBe('databases');
+    expect(out['new_topic']).toBe('storage');
+
+    // Verify it persisted
+    const topicsOut = parseResult(await handleToolCall('memory_topics', { db_path: DB_PATH }));
+    const topics = (topicsOut['topics'] as JsonObj[]).map((t) => t['topic'] as string);
+    expect(topics).toContain('storage');
+    expect(topics).not.toContain('databases');
+  });
+
+  it('retag adds tags additively and reports added tags', async () => {
+    const uid = uids[0]; // typescript episode
+    if (!uid) return;
+
+    const out = parseResult(await handleToolCall('memory_curate', {
+      db_path: DB_PATH,
+      op: 'retag',
+      uid,
+      tags: ['type-safety', 'compiler'], // 'compiler' is a duplicate, should be ignored
+    }));
+    expect(out['op']).toBe('retag');
+    expect(out['uid']).toBe(uid);
+    // Only new tags reported
+    const added = out['tags_added'] as string[];
+    expect(added).toContain('type-safety');
+    expect(added).not.toContain('compiler'); // already present — not re-added
+  });
+
+  it('set_importance persists override and marks user_override', async () => {
+    const uid = uids[2]; // nodejs episode
+    if (!uid) return;
+
+    const out = parseResult(await handleToolCall('memory_curate', {
+      db_path: DB_PATH,
+      op: 'set_importance',
+      uid,
+      importance: 8,
+    }));
+    expect(out['op']).toBe('set_importance');
+    expect(out['new_importance']).toBe(8);
+
+    // Verify it shows up in stats — episode is now high importance
+    const db = openDb(DB_PATH);
+    const row = db.prepare<[string], { importance: number; enrich_ver: string | null }>(
+      `SELECT importance, enrich_ver FROM node WHERE uid = ?`,
+    ).get(uid);
+    expect(row?.importance).toBe(8);
+    if (row?.enrich_ver) {
+      const ev = JSON.parse(row.enrich_ver) as { note?: string };
+      expect(ev.note).toBe('user_override');
+    }
+  });
+
+  it('recluster dry_run returns enqueued: false without writing', async () => {
+    const out = parseResult(await handleToolCall('memory_curate', {
+      db_path: DB_PATH,
+      op: 'recluster',
+      dry_run: true,
+    }));
+    expect(out['op']).toBe('recluster');
+    expect(out['enqueued']).toBe(false);
+    expect(out['dry_run']).toBe(true);
+  });
+
+  it('merge_duplicates invalidates uid_drop and creates SAME_AS edge', async () => {
+    const uidKeep = uids[0];
+    const uidDrop = uids[3]; // second typescript episode
+    if (!uidKeep || !uidDrop) return;
+
+    const out = parseResult(await handleToolCall('memory_curate', {
+      db_path: DB_PATH,
+      op: 'merge_duplicates',
+      uid_keep: uidKeep,
+      uid_drop: uidDrop,
+    }));
+    expect(out['op']).toBe('merge_duplicates');
+    expect(out['uid_kept']).toBe(uidKeep);
+    expect(out['uid_dropped']).toBe(uidDrop);
+    expect(out['dry_run']).toBe(false);
+
+    // uid_drop should now be invalidated
+    const db = openDb(DB_PATH);
+    const dropped = db.prepare<[string], { t_invalid: string | null }>(
+      `SELECT t_invalid FROM node WHERE uid = ?`,
+    ).get(uidDrop);
+    expect(dropped?.t_invalid).not.toBeNull();
+  });
+});
+
+describe('memory_supersession_chain (C2.9)', () => {
+  it('returns chain for a standalone episode', async () => {
+    const uid = uids[0];
+    if (!uid) return;
+
+    const out = parseResult(await handleToolCall('memory_supersession_chain', {
+      db_path: DB_PATH,
+      uid,
+    }));
+    expect(typeof out['canonical_uid']).toBe('string');
+    expect(Array.isArray(out['chain'])).toBe(true);
+    expect(typeof out['is_current']).toBe('boolean');
+
+    const chain = out['chain'] as JsonObj[];
+    expect(chain.length).toBeGreaterThanOrEqual(1);
+    for (const link of chain) {
+      expect(typeof link['uid']).toBe('string');
+      expect(typeof link['t_created']).toBe('string');
+      expect('t_invalid' in link).toBe(true);
+      expect('reason' in link).toBe(true);
+    }
+  });
+});
+
+describe('memory_near_duplicates (C2.10)', () => {
+  it('returns pairs array and total', async () => {
+    const out = parseResult(await handleToolCall('memory_near_duplicates', { db_path: DB_PATH }));
+    expect(Array.isArray(out['pairs'])).toBe(true);
+    expect(typeof out['total']).toBe('number');
+  });
+
+  it('pairs have required C2.10 shape', async () => {
+    const out = parseResult(await handleToolCall('memory_near_duplicates', { db_path: DB_PATH }));
+    const pairs = out['pairs'] as JsonObj[];
+    for (const p of pairs) {
+      expect(typeof p['uid_a']).toBe('string');
+      expect(typeof p['uid_b']).toBe('string');
+      expect(typeof p['cosine_sim']).toBe('number');
+      expect(typeof p['content_preview_a']).toBe('string');
+      expect(typeof p['content_preview_b']).toBe('string');
+      expect(typeof p['already_merged']).toBe('boolean');
+      // previews are truncated at 120 chars
+      expect((p['content_preview_a'] as string).length).toBeLessThanOrEqual(120);
+      expect((p['content_preview_b'] as string).length).toBeLessThanOrEqual(120);
+    }
+  });
+});
+
+describe('memory_get_community v1 (C2.6)', () => {
+  it('community_uid direct lookup returns v1 shape', async () => {
+    // Fetch a community uid from stats first
+    const statsOut = parseResult(await handleToolCall('memory_stats', { db_path: DB_PATH }));
+    if ((statsOut['cluster_count'] as number) === 0) {
+      // No clusters formed with hash backend at this scale — skip gracefully
+      return;
+    }
+
+    // Get a community_uid from topics
+    const topicsOut = parseResult(await handleToolCall('memory_topics', { db_path: DB_PATH }));
+    const topics = topicsOut['topics'] as JsonObj[];
+    const withCommunity = topics.find((t) => t['community_uid'] !== null);
+    if (!withCommunity) return; // no communities formed yet
+
+    const communityUid = withCommunity['community_uid'] as string;
+    const out = parseResult(await handleToolCall('memory_get_community', {
+      db_path: DB_PATH,
+      community_uid: communityUid,
+    }));
+
+    const community = out['community'] as JsonObj;
+    expect(typeof community['uid']).toBe('string');
+    expect(typeof community['label']).toBe('string');
+    expect(typeof community['member_count']).toBe('number');
+    expect(typeof community['mean_intra_sim']).toBe('number');
+    expect(typeof community['t_created']).toBe('string');
+
+    const members = out['members'] as JsonObj[];
+    expect(Array.isArray(members)).toBe(true);
+    for (const m of members) {
+      expect(typeof m['uid']).toBe('string');
+      expect('summary' in m).toBe(true);
+      expect('topic' in m).toBe(true);
+      expect(typeof m['importance']).toBe('number');
+      expect(typeof m['t_created']).toBe('string');
+      expect(Array.isArray(m['tags'])).toBe(true);
+    }
+  });
+
+  it('supplying both entity_uid and community_uid returns E_AMBIGUOUS', async () => {
+    const result = await handleToolCall('memory_get_community', {
+      db_path: DB_PATH,
+      entity_uid: 'ep-1',
+      community_uid: 'comm-1',
+    });
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(JSON.parse(text)).toMatchObject({ code: 'E_AMBIGUOUS' });
+  });
+});
+
+describe('backward compat — existing tools unbroken', () => {
+  it('memory_ping still works', async () => {
+    const out = parseResult(await handleToolCall('memory_ping', {}));
+    expect(out['ok']).toBe(true);
+  });
+
+  it('memory_write still returns episode_uid', async () => {
+    const result = await handleToolCall('memory_write', {
+      db_path: DB_PATH,
+      content: 'Backward compat test episode.',
+    });
+    // May be E_DEDUP if content matches; either way, no isError
+    const text = (result.content[0] as { text: string }).text;
+    const parsed = JSON.parse(text) as { episode_uid?: string; code?: string };
+    expect(
+      typeof parsed.episode_uid === 'string' || parsed.code === 'E_DEDUP',
+    ).toBe(true);
+  });
+});

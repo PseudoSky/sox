@@ -1,10 +1,16 @@
 /**
- * MCP Server: Agent Memory Server
- * 7 memory_* tools over a single-file SQLite graph store.
+ * MCP Server: Agent Memory Server v1.0.0
+ * 19 memory_* tools over a single-file SQLite graph store.
  * Transport: stdio JSON-RPC (tools/list + tools/call).
  *
- * P1 MVP: memory_write (in-process) + memory_recall (hybrid vec+FTS+temporal)
- * Remaining tools: session state, invalidate, search_entities, get_community (stubs for P1)
+ * v1.0.0 adds (P4 enrichment surface — CONTRACTS.md C2):
+ *   - memory_write: +topic/project_path/name/derived_from_uid inputs; returns enrichment
+ *   - memory_recall: +filters (project_path, topic, tags, importance_min, time range);
+ *                    query is now optional; results carry enrichment fields
+ *   - memory_get_community: accepts community_uid directly; returns label/member_count/mean_intra_sim
+ *   - NEW: memory_topics, memory_list_projects, memory_list_entities, memory_entity_episodes,
+ *          memory_related, memory_supersession_chain, memory_near_duplicates,
+ *          memory_curate, memory_stats
  *
  * [mcp-path-guard] C6 enforcement: a policy guard runs BEFORE the resource sink
  * (getDb → openDb) in handleToolCall. The guard reads [def:policy-env] injected
@@ -28,8 +34,12 @@ import { serve, defineTool } from '@sox/mcp-runtime';
 import type { ToolDefinition, ToolResult } from '@sox/mcp-runtime';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { openDb, memoryWrite, memoryRecall } from '@sox/memory-core';
+import { openDb, memoryWrite, memoryRecall, enqueueReindex } from '@sox/memory-core';
+import { clusterStats, ENRICH_VERSION } from '@sox/memory-enrich';
+import { monotonicFactory } from 'ulid';
 import Database from 'better-sqlite3';
+
+const ulid = monotonicFactory();
 
 // ─── Vendored compilePolicyFromEnv — matches [shape:policy-env] ───────────────
 //
@@ -218,20 +228,38 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_recall',
     description:
-      'Recall memories using hybrid vec+BM25+temporal search. <50ms, zero LLM. Returns ranked results.',
+      'Recall memories using hybrid vec+BM25+temporal search, filtered by provenance, topic, or tags. query may be omitted for importance-ranked listing. <50ms, zero LLM.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'The query to recall' },
-        db_path: { type: 'string', description: 'Path to the .db file' },
-        scope: { type: 'string', description: 'Scope name (project/user/org/local)' },
-        agent_id: { type: 'string' },
-        as_of: { type: 'string', description: 'ISO timestamp for point-in-time recall' },
+        query:        { type: 'string', description: 'Semantic query text. If absent or empty, returns importance-ranked results (no vec/FTS, sorted by importance DESC).' },
+        db_path:      { type: 'string' },
+        scope:        { type: 'string', description: 'Store scope name: project/user/org/local.' },
+        agent_id:     { type: 'string' },
+        as_of:        { type: 'string', description: 'ISO timestamp for point-in-time recall.' },
         token_budget: { type: 'number', default: 4000 },
-        depth: { type: 'number', default: 1 },
-        limit: { type: 'number', default: 10 },
+        depth:        { type: 'number', default: 1 },
+        limit:        { type: 'number', default: 10 },
+        filters: {
+          type: 'object',
+          description: 'Optional filter object.',
+          properties: {
+            project_path: {
+              oneOf: [
+                { type: 'string', description: 'Exact match on node.project_path.' },
+                { type: 'object', properties: { prefix: { type: 'string' } }, required: ['prefix'], description: 'Prefix match.' },
+              ],
+            },
+            topic:           { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }], description: 'Exact topic string or array of topics (OR semantics).' },
+            tags:            { type: 'array', items: { type: 'string' }, description: 'Any-match: episodes that have at least one of these tags.' },
+            tags_match_all:  { type: 'boolean', default: false },
+            importance_min:  { type: 'number', description: 'Only return episodes with importance >= this value.' },
+            t_created_after: { type: 'string', description: 'ISO timestamp; only episodes created after this.' },
+            t_created_before:{ type: 'string', description: 'ISO timestamp; only episodes created before this.' },
+          },
+        },
       },
-      required: ['query', 'db_path'],
+      required: ['db_path'],
     },
   },
   {
@@ -275,15 +303,16 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   },
   {
     name: 'memory_get_community',
-    description: 'Get community node for an entity.',
+    description: 'Get a community node (embedding-derived cluster) and its members.',
     inputSchema: {
       type: 'object',
       properties: {
-        entity_uid: { type: 'string' },
-        db_path: { type: 'string' },
-        level: { type: 'number', default: 0 },
+        db_path:       { type: 'string' },
+        entity_uid:    { type: 'string', description: 'Resolve community for this episode/entity UID (via MEMBER_OF edge).' },
+        community_uid: { type: 'string', description: 'Fetch a community directly by its UID.' },
+        level:         { type: 'number', default: 0 },
       },
-      required: ['entity_uid', 'db_path'],
+      required: ['db_path'],
     },
   },
   {
@@ -304,7 +333,7 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_link',
     description:
-      'Create a directed edge between two existing nodes. Use for chunk→parent (DERIVED_FROM), claim replacement (SUPERSEDES), or explicit relationships (RELATES_TO, SUPPORTS, MENTIONS).',
+      'Create a directed edge between two existing nodes. Use for chunk→parent (DERIVED_FROM), claim replacement (SUPERSEDES), or explicit relationships (RELATES_TO, SUPPORTS, MENTIONS, SAME_AS).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -320,6 +349,152 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         meta: { type: 'object', description: 'Optional JSON metadata' },
       },
       required: ['src_uid', 'dst_uid', 'rel', 'db_path'],
+    },
+  },
+  // ── P4 NEW TOOLS ──────────────────────────────────────────────────────────────
+  {
+    name: 'memory_topics',
+    description:
+      'List topics in the memory store with episode counts and cluster backing status. Use before memory_recall to discover valid topic filters.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        db_path:      { type: 'string' },
+        project_path: { type: 'string', description: 'Filter to topics that have at least one episode from this project_path.' },
+        search:       { type: 'string', description: 'Partial topic name substring filter.' },
+        sort_by:      { type: 'string', enum: ['episode_count', 'avg_importance', 'last_written'], default: 'episode_count' },
+        limit:        { type: 'number', default: 20, maximum: 200 },
+        offset:       { type: 'number', default: 0 },
+      },
+      required: ['db_path'],
+    },
+  },
+  {
+    name: 'memory_list_projects',
+    description: 'List distinct project_path values present in the store, with episode counts.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        db_path: { type: 'string' },
+        limit:   { type: 'number', default: 20, maximum: 200 },
+        offset:  { type: 'number', default: 0 },
+      },
+      required: ['db_path'],
+    },
+  },
+  {
+    name: 'memory_list_entities',
+    description:
+      'List entity nodes ranked by mention count. Use for entity vocabulary discovery. For lookup by name/type, use memory_search_entities.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        db_path:      { type: 'string' },
+        project_path: { type: 'string', description: 'Only count episodes from this project_path.' },
+        topic:        { type: 'string', description: 'Only count episodes in this topic.' },
+        search:       { type: 'string', description: 'Substring filter on entity name.' },
+        limit:        { type: 'number', default: 20, maximum: 200 },
+        offset:       { type: 'number', default: 0 },
+      },
+      required: ['db_path'],
+    },
+  },
+  {
+    name: 'memory_entity_episodes',
+    description:
+      'Return episodes that mention a given entity (via MENTIONS edge), ranked by importance.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        db_path:     { type: 'string' },
+        entity_uid:  { type: 'string', description: 'UID of the entity node.' },
+        entity_name: { type: 'string', description: 'Name of the entity (resolved to UID if entity_uid not supplied).' },
+        limit:       { type: 'number', default: 20, maximum: 200 },
+        offset:      { type: 'number', default: 0 },
+      },
+      required: ['db_path'],
+    },
+  },
+  {
+    name: 'memory_related',
+    description:
+      'Return neighbor episodes of a given episode at depth=1 via graph edges (RELATES_TO, DERIVED_FROM, SUPPORTS, SAME_AS).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        db_path:  { type: 'string' },
+        uid:      { type: 'string', description: 'UID of the source episode.' },
+        rel:      { type: 'array', items: { type: 'string' }, description: 'Filter by relation type(s). Default: all live relation types.' },
+        limit:    { type: 'number', default: 20, maximum: 100 },
+      },
+      required: ['db_path', 'uid'],
+    },
+  },
+  {
+    name: 'memory_supersession_chain',
+    description:
+      'Return the supersession chain for an episode: what it supersedes and what supersedes it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        db_path: { type: 'string' },
+        uid:     { type: 'string', description: 'Any episode UID in the chain.' },
+      },
+      required: ['db_path', 'uid'],
+    },
+  },
+  {
+    name: 'memory_near_duplicates',
+    description:
+      'List near-duplicate episode pairs connected by SAME_AS edges. Use for manual deduplication review.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        db_path:      { type: 'string' },
+        project_path: { type: 'string' },
+        topic:        { type: 'string' },
+        threshold:    { type: 'number', description: 'Minimum cosine similarity stored in the SAME_AS edge meta.' },
+        limit:        { type: 'number', default: 20, maximum: 200 },
+        offset:       { type: 'number', default: 0 },
+      },
+      required: ['db_path'],
+    },
+  },
+  {
+    name: 'memory_curate',
+    description:
+      'Curation operations: retag, set topic, override importance, merge near-duplicates, or trigger a re-cluster pass.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        db_path:    { type: 'string' },
+        op: {
+          type: 'string',
+          enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster'],
+          description: 'The curation operation to perform.',
+        },
+        uid:        { type: 'string', description: 'Target episode UID (required for retag, set_topic, set_importance).' },
+        tags:       { type: 'array', items: { type: 'string' }, description: '(retag) Tags to add. Additive; duplicates are ignored.' },
+        topic:      { type: 'string', description: '(set_topic) New topic string.' },
+        importance: { type: 'number', minimum: 1, maximum: 10, description: '(set_importance) User-asserted importance.' },
+        uid_keep:   { type: 'string', description: '(merge_duplicates) UID of the episode to keep.' },
+        uid_drop:   { type: 'string', description: '(merge_duplicates) UID of the episode to invalidate.' },
+        dry_run:    { type: 'boolean', default: false, description: 'If true, return proposed changes without committing them.' },
+      },
+      required: ['db_path', 'op'],
+    },
+  },
+  {
+    name: 'memory_stats',
+    description:
+      'Return enrichment coverage and cluster quality statistics. Use for health checks and CI gates. Returns tool_version: "1.0.0" signaling v1 surface is present.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        db_path:      { type: 'string' },
+        project_path: { type: 'string', description: 'Scope stats to episodes from this project.' },
+      },
+      required: ['db_path'],
     },
   },
 ];
@@ -386,6 +561,139 @@ function splitIntoChunks(text: string, chunkTokens: number): string[] {
   }
   if (current.trim()) chunks.push(current.trim());
   return chunks.length > 0 ? chunks : [text];
+}
+
+// ── Helpers for enrichment field reads ───────────────────────────────────────
+
+/** Parse a JSON tags column value — returns [] if null or invalid. */
+function parseTags(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed as string[];
+  } catch { /* malformed */ }
+  return [];
+}
+
+/**
+ * Build the WHERE clause fragment and params for the `filters` object from memory_recall (C2.2).
+ * Returns [sqlFragment, params[]] — the fragment starts with AND so the caller can append it.
+ */
+function buildFiltersClause(
+  filters: Record<string, unknown> | undefined,
+): { sql: string; params: unknown[] } {
+  if (!filters) return { sql: '', params: [] };
+
+  const parts: string[] = [];
+  const params: unknown[] = [];
+
+  // project_path filter — exact string or { prefix: string }
+  const pp = filters['project_path'];
+  if (pp !== undefined && pp !== null) {
+    if (typeof pp === 'string') {
+      parts.push('n.project_path = ?');
+      params.push(pp);
+    } else if (typeof pp === 'object' && 'prefix' in (pp as object)) {
+      const prefix = (pp as { prefix: string }).prefix;
+      parts.push('(n.project_path = ? OR n.project_path LIKE ?)');
+      params.push(prefix, `${prefix}/%`);
+    }
+  }
+
+  // topic filter — single string or string[]
+  const topicFilter = filters['topic'];
+  if (topicFilter !== undefined && topicFilter !== null) {
+    if (typeof topicFilter === 'string') {
+      parts.push('n.topic = ?');
+      params.push(topicFilter);
+    } else if (Array.isArray(topicFilter) && topicFilter.length > 0) {
+      const placeholders = topicFilter.map(() => '?').join(', ');
+      parts.push(`n.topic IN (${placeholders})`);
+      params.push(...topicFilter);
+    }
+  }
+
+  // tags filter — any-match (default) or all-match
+  const tagsFilter = filters['tags'] as string[] | undefined;
+  const tagsMatchAll = filters['tags_match_all'] === true;
+  if (tagsFilter && tagsFilter.length > 0) {
+    if (tagsMatchAll) {
+      // ALL tags must be present
+      const tagClauses = tagsFilter.map(() =>
+        `EXISTS (SELECT 1 FROM json_each(n.tags) WHERE value = ?)`,
+      );
+      parts.push(`(${tagClauses.join(' AND ')})`);
+      params.push(...tagsFilter);
+    } else {
+      // ANY tag must be present
+      const tagClauses = tagsFilter.map(() =>
+        `EXISTS (SELECT 1 FROM json_each(n.tags) WHERE value = ?)`,
+      );
+      parts.push(`(${tagClauses.join(' OR ')})`);
+      params.push(...tagsFilter);
+    }
+  }
+
+  // importance_min
+  const impMin = filters['importance_min'];
+  if (typeof impMin === 'number') {
+    parts.push('n.importance >= ?');
+    params.push(impMin);
+  }
+
+  // t_created_after
+  const tAfter = filters['t_created_after'];
+  if (typeof tAfter === 'string') {
+    parts.push("n.t_created > ?");
+    params.push(tAfter);
+  }
+
+  // t_created_before
+  const tBefore = filters['t_created_before'];
+  if (typeof tBefore === 'string') {
+    parts.push("n.t_created < ?");
+    params.push(tBefore);
+  }
+
+  const sql = parts.length > 0 ? ' AND ' + parts.join(' AND ') : '';
+  return { sql, params };
+}
+
+/** Resolve a MEMBER_OF community uid for an episode rowid, if any. */
+function communityUidForRowid(db: Database.Database, rowid: number): string | null {
+  const row = db
+    .prepare<[number], { uid: string }>(
+      `SELECT n2.uid FROM edge e
+       JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.t_invalid IS NULL
+       WHERE e.src = ? AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+       LIMIT 1`,
+    )
+    .get(rowid);
+  return row?.uid ?? null;
+}
+
+/** Resolve the SUPERSEDES uid for an episode rowid (i.e., what episode this supersedes). */
+function supersedesUidForRowid(db: Database.Database, rowid: number): string | null {
+  // "This episode supersedes dst": edge where src=rowid, rel=SUPERSEDES
+  const row = db
+    .prepare<[number], { uid: string }>(
+      `SELECT n.uid FROM edge e
+       JOIN node n ON n.rowid = e.dst AND n.t_invalid IS NULL
+       WHERE e.src = ? AND e.rel = 'SUPERSEDES' AND e.t_expired IS NULL
+       LIMIT 1`,
+    )
+    .get(rowid);
+  return row?.uid ?? null;
+}
+
+/** Check if an episode is superseded (some other episode's SUPERSEDES edge points to it). */
+function isSuperseded(db: Database.Database, rowid: number): boolean {
+  const row = db
+    .prepare<[number], { cnt: number }>(
+      `SELECT COUNT(*) AS cnt FROM edge WHERE dst = ? AND rel = 'SUPERSEDES' AND t_expired IS NULL`,
+    )
+    .get(rowid);
+  return (row?.cnt ?? 0) > 0;
 }
 
 export async function handleToolCall(name: string, args: Record<string, unknown>): Promise<ToolResult> {
@@ -517,16 +825,134 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_recall': {
-      const result = await memoryRecall(db, (args['scope'] as string) ?? 'project', {
-        query: args['query'] as string,
+      const query = args['query'] as string | undefined;
+      const filters = args['filters'] as Record<string, unknown> | undefined;
+      const limit = (args['limit'] as number | undefined) ?? 10;
+
+      // If no query (or empty), fall back to importance-ranked listing (UC7, OQ-6).
+      if (!query || !query.trim()) {
+        const { sql: filterSql, params: filterParams } = buildFiltersClause(filters);
+        const rows = db
+          .prepare<unknown[], {
+            rowid: number; uid: string; content: string | null; importance: number;
+            t_valid: string | null; agent_id: string | null; content_hash: string | null;
+            summary: string | null; topic: string | null; tags: string | null;
+            project_path: string | null; t_invalid: string | null; t_created: string;
+          }>(
+            `SELECT n.rowid, n.uid, n.content, n.importance, n.t_valid, n.agent_id,
+                    n.content_hash, n.summary, n.topic, n.tags, n.project_path,
+                    n.t_invalid, n.t_created
+             FROM node n
+             WHERE n.kind = 'episode' AND n.t_invalid IS NULL${filterSql}
+             ORDER BY n.importance DESC, n.t_created DESC
+             LIMIT ?`,
+          )
+          .all(...filterParams, limit);
+
+        const results = rows.map((r) => ({
+          uid: r.uid,
+          content: r.content,
+          score: r.importance / 10.0,
+          t_valid: r.t_valid,
+          scope: (args['scope'] as string | undefined) ?? 'project',
+          provenance: ['importance'],
+          importance: r.importance,
+          content_hash: r.content_hash ?? null,
+          agent_id: r.agent_id ?? null,
+          // v1 enrichment fields:
+          summary: r.summary ?? null,
+          topic: r.topic ?? null,
+          tags: parseTags(r.tags),
+          project_path: r.project_path ?? null,
+          is_superseded: isSuperseded(db, r.rowid),
+          supersedes_uid: supersedesUidForRowid(db, r.rowid),
+          community_uid: communityUidForRowid(db, r.rowid),
+        }));
+
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ results, provider_call_count: 0 }) }],
+        };
+      }
+
+      // Build recall filters map compatible with RecallParams.filters
+      const recallFilters: Record<string, unknown> = {};
+      if (filters) {
+        // project_path
+        const pp = filters['project_path'];
+        if (pp !== undefined) recallFilters['project_path'] = pp;
+        // topic
+        const tf = filters['topic'];
+        if (tf !== undefined) recallFilters['topic'] = tf;
+        // tags
+        const tg = filters['tags'];
+        if (tg !== undefined) recallFilters['tags'] = tg;
+        // tags_match_all
+        const tma = filters['tags_match_all'];
+        if (tma !== undefined) recallFilters['tags_match_all'] = tma;
+        // importance_min
+        const im = filters['importance_min'];
+        if (im !== undefined) recallFilters['importance_min'] = im;
+        // time range
+        const ta = filters['t_created_after'];
+        if (ta !== undefined) recallFilters['t_created_after'] = ta;
+        const tb = filters['t_created_before'];
+        if (tb !== undefined) recallFilters['t_created_before'] = tb;
+      }
+
+      const recallResult = await memoryRecall(db, (args['scope'] as string) ?? 'project', {
+        query,
         agent_id: args['agent_id'] as string | undefined,
         as_of: args['as_of'] as string | undefined,
         token_budget: args['token_budget'] as number | undefined,
         depth: args['depth'] as number | undefined,
-        limit: args['limit'] as number | undefined,
+        limit,
+        filters: Object.keys(recallFilters).length > 0 ? recallFilters : undefined,
       });
+
+      // Augment each result with v1 enrichment fields
+      const enrichedResults = recallResult.results.map((r) => {
+        // Fetch enrichment columns for this uid
+        const nodeRow = db
+          .prepare<[string], {
+            rowid: number; summary: string | null; topic: string | null;
+            tags: string | null; project_path: string | null; t_invalid: string | null;
+          }>(
+            `SELECT rowid, summary, topic, tags, project_path, t_invalid FROM node WHERE uid = ? LIMIT 1`,
+          )
+          .get(r.uid);
+
+        return {
+          ...r,
+          summary: nodeRow?.summary ?? null,
+          topic: nodeRow?.topic ?? null,
+          tags: parseTags(nodeRow?.tags),
+          project_path: nodeRow?.project_path ?? null,
+          is_superseded: nodeRow ? isSuperseded(db, nodeRow.rowid) : false,
+          supersedes_uid: nodeRow ? supersedesUidForRowid(db, nodeRow.rowid) : null,
+          community_uid: nodeRow ? communityUidForRowid(db, nodeRow.rowid) : null,
+        };
+      });
+
+      // Apply filter-level post-processing for fields not handled by the core recall.
+      // The core recall path does not yet understand the enrichment filters natively,
+      // so we apply them as a post-filter on the result set.
+      let filteredResults = enrichedResults;
+      if (filters) {
+        const { sql: filterSql, params: filterParams } = buildFiltersClause(filters);
+        if (filterSql) {
+          // Collect the uids that pass the SQL filter
+          const uidsRaw = db
+            .prepare<unknown[], { uid: string }>(
+              `SELECT n.uid FROM node n WHERE n.uid IN (${enrichedResults.map(() => '?').join(',')})${filterSql}`,
+            )
+            .all(...enrichedResults.map((r) => r.uid), ...filterParams);
+          const passingUids = new Set(uidsRaw.map((r) => r.uid));
+          filteredResults = enrichedResults.filter((r) => passingUids.has(r.uid));
+        }
+      }
+
       return {
-        content: [{ type: 'text', text: JSON.stringify(result) }],
+        content: [{ type: 'text', text: JSON.stringify({ results: filteredResults, provider_call_count: recallResult.provider_call_count }) }],
       };
     }
 
@@ -580,26 +1006,117 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_get_community': {
-      const entityUid = args['entity_uid'] as string;
+      const entityUid = args['entity_uid'] as string | undefined;
+      const communityUidArg = args['community_uid'] as string | undefined;
       const level = (args['level'] as number) ?? 0;
-      // Find community via MEMBER_OF edge
-      const row = db
-        .prepare(
-          `SELECT n2.uid, n2.name, n2.summary, n2.level
-           FROM node n1
-           JOIN edge e ON e.src = n1.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
-           JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.level = ? AND n2.t_invalid IS NULL
-           WHERE n1.uid = ? AND n1.t_invalid IS NULL`,
-        )
-        .get(level, entityUid);
-      if (!row) {
+
+      // OQ-1: community_uid takes precedence; both supplied is an error per contract.
+      if (entityUid && communityUidArg) {
         return {
           isError: true,
-          content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', entity_uid: entityUid }) }],
+          content: [{ type: 'text', text: JSON.stringify({ code: 'E_AMBIGUOUS', message: 'Supply entity_uid OR community_uid, not both' }) }],
         };
       }
+
+      interface CommunityRow {
+        rowid: number; uid: string; name: string | null; meta: string | null; t_created: string;
+      }
+
+      let communityRow: CommunityRow | undefined;
+
+      if (communityUidArg) {
+        // Fetch community directly by UID
+        communityRow = db
+          .prepare<[string], CommunityRow>(
+            `SELECT rowid, uid, name, meta, t_created FROM node
+             WHERE uid = ? AND kind = 'community' AND t_invalid IS NULL`,
+          )
+          .get(communityUidArg);
+      } else if (entityUid) {
+        // Find community via MEMBER_OF edge
+        communityRow = db
+          .prepare<[number, string], CommunityRow>(
+            `SELECT n2.rowid, n2.uid, n2.name, n2.meta, n2.t_created
+             FROM node n1
+             JOIN edge e ON e.src = n1.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+             JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.level = ? AND n2.t_invalid IS NULL
+             WHERE n1.uid = ? AND n1.t_invalid IS NULL`,
+          )
+          .get(level, entityUid);
+      } else {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING_INPUT', message: 'Supply entity_uid or community_uid' }) }],
+        };
+      }
+
+      if (!communityRow) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', entity_uid: entityUid, community_uid: communityUidArg }) }],
+        };
+      }
+
+      // Parse community meta for quality metrics
+      let memberCount = 0;
+      let meanIntraSim = 0;
+      let centroidEpisodeUid = '';
+      if (communityRow.meta) {
+        try {
+          const m = JSON.parse(communityRow.meta) as {
+            mean_intra_sim?: number;
+            centroid_rowid?: number;
+            member_count?: number;
+          };
+          if (typeof m.mean_intra_sim === 'number') meanIntraSim = m.mean_intra_sim;
+          if (typeof m.member_count === 'number') memberCount = m.member_count;
+          if (typeof m.centroid_rowid === 'number') {
+            const centRow = db
+              .prepare<[number], { uid: string }>(`SELECT uid FROM node WHERE rowid = ?`)
+              .get(m.centroid_rowid);
+            if (centRow) centroidEpisodeUid = centRow.uid;
+          }
+        } catch { /* malformed meta */ }
+      }
+
+      // Fetch member episodes via MEMBER_OF edges
+      const memberRows = db
+        .prepare<[number], {
+          uid: string; summary: string | null; topic: string | null;
+          importance: number; t_created: string; project_path: string | null;
+          tags: string | null;
+        }>(
+          `SELECT n.uid, n.summary, n.topic, n.importance, n.t_created, n.project_path, n.tags
+           FROM edge e
+           JOIN node n ON n.rowid = e.src AND n.t_invalid IS NULL
+           WHERE e.dst = ? AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+           ORDER BY n.importance DESC`,
+        )
+        .all(communityRow.rowid);
+
+      if (memberCount === 0) memberCount = memberRows.length;
+
+      const communityOut = {
+        uid: communityRow.uid,
+        label: communityRow.name ?? communityRow.uid,
+        member_count: memberCount,
+        mean_intra_sim: meanIntraSim,
+        centroid_episode_uid: centroidEpisodeUid,
+        t_created: communityRow.t_created,
+      };
+
+      const members = memberRows.map((m) => ({
+        uid: m.uid,
+        summary: m.summary ?? null,
+        topic: m.topic ?? null,
+        importance: m.importance,
+        t_created: m.t_created,
+        project_path: m.project_path ?? null,
+        tags: parseTags(m.tags),
+      }));
+
       return {
-        content: [{ type: 'text', text: JSON.stringify({ community: row }) }],
+        content: [{ type: 'text', text: JSON.stringify({ community: communityOut, members }) }],
       };
     }
 
@@ -647,7 +1164,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_link': {
-      const VALID_RELS = ['MENTIONS', 'SUPPORTS', 'RELATES_TO', 'DERIVED_FROM', 'SUPERSEDES', 'ASSIGNED_TO'];
+      const VALID_RELS = ['MENTIONS', 'SUPPORTS', 'RELATES_TO', 'DERIVED_FROM', 'SUPERSEDES', 'SAME_AS', 'ASSIGNED_TO'];
       const rel = args['rel'] as string;
       if (!VALID_RELS.includes(rel)) {
         return { isError: true, content: [{ type: 'text', text: `Unknown rel: ${rel}` }] };
@@ -678,6 +1195,846 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       };
     }
 
+    // ── P4 NEW TOOL HANDLERS ──────────────────────────────────────────────────
+
+    case 'memory_topics': {
+      const projectPath = args['project_path'] as string | undefined;
+      const search = args['search'] as string | undefined;
+      const sortBy = (args['sort_by'] as string | undefined) ?? 'episode_count';
+      const limit = Math.min((args['limit'] as number | undefined) ?? 20, 200);
+      const offset = (args['offset'] as number | undefined) ?? 0;
+
+      const orderMap: Record<string, string> = {
+        episode_count: 'episode_count DESC',
+        avg_importance: 'avg_importance DESC',
+        last_written: 'last_written DESC',
+      };
+      const orderClause = orderMap[sortBy] ?? 'episode_count DESC';
+
+      const extraFilters: string[] = [];
+      const extraParams: unknown[] = [];
+
+      if (projectPath) {
+        extraFilters.push('AND n.project_path = ?');
+        extraParams.push(projectPath);
+      }
+      if (search) {
+        extraFilters.push('AND n.topic LIKE ?');
+        extraParams.push(`%${search}%`);
+      }
+
+      const extraSql = extraFilters.join(' ');
+
+      // Total count
+      const countRow = db
+        .prepare<unknown[], { cnt: number }>(
+          `SELECT COUNT(DISTINCT n.topic) AS cnt
+           FROM node n
+           WHERE n.kind = 'episode' AND n.t_invalid IS NULL AND n.topic IS NOT NULL
+           ${extraSql}`,
+        )
+        .get(...extraParams);
+      const total = countRow?.cnt ?? 0;
+
+      // Per-topic aggregate
+      const rows = db
+        .prepare<unknown[], {
+          topic: string;
+          episode_count: number;
+          avg_importance: number;
+          last_written: string;
+        }>(
+          `SELECT n.topic AS topic,
+                  COUNT(*) AS episode_count,
+                  AVG(n.importance) AS avg_importance,
+                  MAX(n.t_created) AS last_written
+           FROM node n
+           WHERE n.kind = 'episode' AND n.t_invalid IS NULL AND n.topic IS NOT NULL
+           ${extraSql}
+           GROUP BY n.topic
+           ORDER BY ${orderClause}
+           LIMIT ? OFFSET ?`,
+        )
+        .all(...extraParams, limit, offset);
+
+      // Enrich each topic with community_uid
+      const topics = rows.map((r) => {
+        // Find a community uid that has at least one MEMBER_OF member with this topic
+        const commRow = db
+          .prepare<[string], { uid: string }>(
+            `SELECT n2.uid FROM node n1
+             JOIN edge e ON e.src = n1.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+             JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.t_invalid IS NULL
+             WHERE n1.kind = 'episode' AND n1.t_invalid IS NULL AND n1.topic = ?
+             LIMIT 1`,
+          )
+          .get(r.topic);
+
+        return {
+          topic: r.topic,
+          episode_count: r.episode_count,
+          avg_importance: r.avg_importance,
+          last_written: r.last_written,
+          community_uid: commRow?.uid ?? null,
+          has_community: commRow !== undefined,
+        };
+      });
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ topics, total }) }],
+      };
+    }
+
+    case 'memory_list_projects': {
+      const limit = Math.min((args['limit'] as number | undefined) ?? 20, 200);
+      const offset = (args['offset'] as number | undefined) ?? 0;
+
+      const countRow = db
+        .prepare<[], { cnt: number }>(
+          `SELECT COUNT(DISTINCT project_path) AS cnt
+           FROM node
+           WHERE kind = 'episode' AND t_invalid IS NULL AND project_path IS NOT NULL`,
+        )
+        .get();
+      const total = countRow?.cnt ?? 0;
+
+      const rows = db
+        .prepare<[number, number], {
+          project_path: string;
+          episode_count: number;
+          last_written: string;
+        }>(
+          `SELECT project_path, COUNT(*) AS episode_count, MAX(t_created) AS last_written
+           FROM node
+           WHERE kind = 'episode' AND t_invalid IS NULL AND project_path IS NOT NULL
+           GROUP BY project_path
+           ORDER BY last_written DESC
+           LIMIT ? OFFSET ?`,
+        )
+        .all(limit, offset);
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ projects: rows, total }) }],
+      };
+    }
+
+    case 'memory_list_entities': {
+      const projectPath = args['project_path'] as string | undefined;
+      const topicFilter = args['topic'] as string | undefined;
+      const search = args['search'] as string | undefined;
+      const limit = Math.min((args['limit'] as number | undefined) ?? 20, 200);
+      const offset = (args['offset'] as number | undefined) ?? 0;
+
+      // Build episode filter for project_path and topic
+      const epFilters: string[] = [];
+      const epParams: unknown[] = [];
+      if (projectPath) {
+        epFilters.push('ep.project_path = ?');
+        epParams.push(projectPath);
+      }
+      if (topicFilter) {
+        epFilters.push('ep.topic = ?');
+        epParams.push(topicFilter);
+      }
+      const epFilterSql = epFilters.length > 0 ? 'AND ' + epFilters.join(' AND ') : '';
+
+      const nameFilter = search ? 'AND e_node.name LIKE ?' : '';
+      if (search) epParams.push(`%${search}%`);
+
+      // Count distinct entities
+      const countSql = `
+        SELECT COUNT(DISTINCT e_node.rowid) AS cnt
+        FROM node e_node
+        WHERE e_node.kind = 'entity' AND e_node.t_invalid IS NULL
+        ${nameFilter}
+        AND EXISTS (
+          SELECT 1 FROM edge ment
+          JOIN node ep ON ep.rowid = ment.src AND ep.kind = 'episode' AND ep.t_invalid IS NULL
+          WHERE ment.dst = e_node.rowid AND ment.rel = 'MENTIONS' AND ment.t_expired IS NULL
+          ${epFilterSql}
+        )`;
+
+      const countRow = db
+        .prepare<unknown[], { cnt: number }>(countSql)
+        .get(...epParams);
+      const total = countRow?.cnt ?? 0;
+
+      // Fetch entities with mention count and time range
+      const rowSql = `
+        SELECT e_node.uid,
+               e_node.name,
+               COUNT(ment.rowid) AS mention_count,
+               MIN(ep.t_created)  AS first_seen,
+               MAX(ep.t_created)  AS last_seen
+        FROM node e_node
+        JOIN edge ment ON ment.dst = e_node.rowid AND ment.rel = 'MENTIONS' AND ment.t_expired IS NULL
+        JOIN node ep   ON ep.rowid = ment.src AND ep.kind = 'episode' AND ep.t_invalid IS NULL
+        WHERE e_node.kind = 'entity' AND e_node.t_invalid IS NULL
+        ${nameFilter}
+        ${epFilterSql}
+        GROUP BY e_node.rowid
+        ORDER BY mention_count DESC
+        LIMIT ? OFFSET ?`;
+
+      const rows = db
+        .prepare<unknown[], {
+          uid: string; name: string | null; mention_count: number;
+          first_seen: string; last_seen: string;
+        }>(rowSql)
+        .all(...epParams, limit, offset);
+
+      const entities = rows.map((r) => ({
+        uid: r.uid,
+        name: r.name ?? '',
+        mention_count: r.mention_count,
+        first_seen: r.first_seen,
+        last_seen: r.last_seen,
+      }));
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ entities, total }) }],
+      };
+    }
+
+    case 'memory_entity_episodes': {
+      const entityUid = args['entity_uid'] as string | undefined;
+      const entityName = args['entity_name'] as string | undefined;
+      const limit = Math.min((args['limit'] as number | undefined) ?? 20, 200);
+      const offset = (args['offset'] as number | undefined) ?? 0;
+
+      // Resolve entity uid
+      let resolvedEntityUid = entityUid;
+      let resolvedEntityName = '';
+
+      if (!resolvedEntityUid && entityName) {
+        // Case-insensitive exact match (OQ-2: return error on ambiguity)
+        const matchRows = db
+          .prepare<[string], { uid: string; name: string }>(
+            `SELECT uid, name FROM node WHERE kind = 'entity' AND LOWER(name) = LOWER(?) AND t_invalid IS NULL`,
+          )
+          .all(entityName);
+        if (matchRows.length === 0) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', entity_name: entityName }) }],
+          };
+        }
+        if (matchRows.length > 1) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: JSON.stringify({ code: 'E_AMBIGUOUS', entity_name: entityName, candidates: matchRows.map((r) => r.uid) }) }],
+          };
+        }
+        resolvedEntityUid = matchRows[0]!.uid;
+        resolvedEntityName = matchRows[0]!.name ?? entityName;
+      }
+
+      if (!resolvedEntityUid) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING_INPUT', message: 'Supply entity_uid or entity_name' }) }],
+        };
+      }
+
+      // Fetch entity name if not already resolved
+      if (!resolvedEntityName) {
+        const nameRow = db
+          .prepare<[string], { name: string | null }>(`SELECT name FROM node WHERE uid = ? LIMIT 1`)
+          .get(resolvedEntityUid);
+        resolvedEntityName = nameRow?.name ?? resolvedEntityUid;
+      }
+
+      const entityRow = db
+        .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ? LIMIT 1`)
+        .get(resolvedEntityUid);
+
+      if (!entityRow) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', entity_uid: resolvedEntityUid }) }],
+        };
+      }
+
+      const countRow = db
+        .prepare<[number], { cnt: number }>(
+          `SELECT COUNT(*) AS cnt
+           FROM edge e
+           JOIN node ep ON ep.rowid = e.src AND ep.kind = 'episode' AND ep.t_invalid IS NULL
+           WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_expired IS NULL`,
+        )
+        .get(entityRow.rowid);
+      const total = countRow?.cnt ?? 0;
+
+      const rows = db
+        .prepare<[number, number, number], {
+          rowid: number; uid: string; content: string | null; summary: string | null;
+          topic: string | null; tags: string | null; project_path: string | null;
+          importance: number; t_created: string; agent_id: string | null;
+          t_invalid: string | null;
+        }>(
+          `SELECT ep.rowid, ep.uid, ep.content, ep.summary, ep.topic, ep.tags, ep.project_path,
+                  ep.importance, ep.t_created, ep.agent_id, ep.t_invalid
+           FROM edge e
+           JOIN node ep ON ep.rowid = e.src AND ep.kind = 'episode' AND ep.t_invalid IS NULL
+           WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_expired IS NULL
+           ORDER BY ep.importance DESC
+           LIMIT ? OFFSET ?`,
+        )
+        .all(entityRow.rowid, limit, offset);
+
+      const episodes = rows.map((r) => ({
+        uid: r.uid,
+        content: r.content,
+        summary: r.summary ?? null,
+        topic: r.topic ?? null,
+        tags: parseTags(r.tags),
+        project_path: r.project_path ?? null,
+        importance: r.importance,
+        t_created: r.t_created,
+        agent_id: r.agent_id ?? null,
+        is_superseded: isSuperseded(db, r.rowid),
+        supersedes_uid: supersedesUidForRowid(db, r.rowid),
+        community_uid: communityUidForRowid(db, r.rowid),
+      }));
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          entity: { uid: resolvedEntityUid, name: resolvedEntityName },
+          episodes,
+          total,
+        }) }],
+      };
+    }
+
+    case 'memory_related': {
+      const uid = args['uid'] as string;
+      const relFilter = args['rel'] as string[] | undefined;
+      const limit = Math.min((args['limit'] as number | undefined) ?? 20, 100);
+
+      const sourceRow = db
+        .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ? LIMIT 1`)
+        .get(uid);
+
+      if (!sourceRow) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', uid }) }],
+        };
+      }
+
+      // Build rel IN clause
+      const relClause = relFilter && relFilter.length > 0
+        ? `AND e.rel IN (${relFilter.map(() => '?').join(',')})`
+        : '';
+      const relParams = relFilter && relFilter.length > 0 ? relFilter : [];
+
+      // Outbound edges (src = source)
+      const outRows = db
+        .prepare<unknown[], {
+          rowid: number; uid: string; content: string | null; summary: string | null;
+          topic: string | null; tags: string | null; project_path: string | null;
+          importance: number; t_created: string; agent_id: string | null;
+          t_invalid: string | null; rel: string; weight: number | null;
+        }>(
+          `SELECT n.rowid, n.uid, n.content, n.summary, n.topic, n.tags, n.project_path,
+                  n.importance, n.t_created, n.agent_id, n.t_invalid,
+                  e.rel, e.weight
+           FROM edge e
+           JOIN node n ON n.rowid = e.dst AND n.t_invalid IS NULL
+           WHERE e.src = ? AND e.t_expired IS NULL ${relClause}
+           LIMIT ?`,
+        )
+        .all(sourceRow.rowid, ...relParams, limit);
+
+      // Inbound edges (dst = source)
+      const inRows = db
+        .prepare<unknown[], {
+          rowid: number; uid: string; content: string | null; summary: string | null;
+          topic: string | null; tags: string | null; project_path: string | null;
+          importance: number; t_created: string; agent_id: string | null;
+          t_invalid: string | null; rel: string; weight: number | null;
+        }>(
+          `SELECT n.rowid, n.uid, n.content, n.summary, n.topic, n.tags, n.project_path,
+                  n.importance, n.t_created, n.agent_id, n.t_invalid,
+                  e.rel, e.weight
+           FROM edge e
+           JOIN node n ON n.rowid = e.src AND n.t_invalid IS NULL
+           WHERE e.dst = ? AND e.t_expired IS NULL ${relClause}
+           LIMIT ?`,
+        )
+        .all(sourceRow.rowid, ...relParams, limit);
+
+      const toEdge = (r: typeof outRows[0], direction: 'outbound' | 'inbound') => ({
+        episode: {
+          uid: r.uid,
+          content: r.content,
+          summary: r.summary ?? null,
+          topic: r.topic ?? null,
+          tags: parseTags(r.tags),
+          project_path: r.project_path ?? null,
+          importance: r.importance,
+          t_created: r.t_created,
+          agent_id: r.agent_id ?? null,
+          is_superseded: isSuperseded(db, r.rowid),
+          supersedes_uid: supersedesUidForRowid(db, r.rowid),
+          community_uid: communityUidForRowid(db, r.rowid),
+        },
+        rel: r.rel,
+        weight: r.weight ?? 1.0,
+        direction,
+      });
+
+      const edges = [
+        ...outRows.map((r) => toEdge(r, 'outbound')),
+        ...inRows.map((r) => toEdge(r, 'inbound')),
+      ].slice(0, limit);
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ source_uid: uid, edges }) }],
+      };
+    }
+
+    case 'memory_supersession_chain': {
+      const uid = args['uid'] as string;
+
+      // Walk the SUPERSEDES edges to build the full chain.
+      // Edge convention (from memory_invalidate): new.rowid → old.rowid with rel=SUPERSEDES.
+      // So "uid_a supersedes uid_b" = edge: src=uid_a, dst=uid_b.
+
+      const allRows = new Map<string, { uid: string; t_created: string; t_invalid: string | null }>();
+
+      // Collect all nodes in the chain via BFS from the given uid
+      const queue: string[] = [uid];
+      const visited = new Set<string>();
+
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+        if (visited.has(current)) continue;
+        visited.add(current);
+
+        const row = db
+          .prepare<[string], { uid: string; t_created: string; t_invalid: string | null; rowid: number }>(
+            `SELECT uid, t_created, t_invalid, rowid FROM node WHERE uid = ? LIMIT 1`,
+          )
+          .get(current);
+        if (!row) continue;
+
+        allRows.set(current, { uid: row.uid, t_created: row.t_created, t_invalid: row.t_invalid });
+
+        // What does this episode supersede? (outbound SUPERSEDES edge)
+        const supersededRows = db
+          .prepare<[number], { uid: string }>(
+            `SELECT n.uid FROM edge e JOIN node n ON n.rowid = e.dst WHERE e.src = ? AND e.rel = 'SUPERSEDES'`,
+          )
+          .all(row.rowid);
+        for (const s of supersededRows) queue.push(s.uid);
+
+        // What supersedes this episode? (inbound SUPERSEDES edge — src supersedes this)
+        const supersederRows = db
+          .prepare<[number], { uid: string }>(
+            `SELECT n.uid FROM edge e JOIN node n ON n.rowid = e.src WHERE e.dst = ? AND e.rel = 'SUPERSEDES'`,
+          )
+          .all(row.rowid);
+        for (const s of supersederRows) queue.push(s.uid);
+      }
+
+      // Build ordered chain oldest-first (by t_created)
+      const chain = [...allRows.values()].sort(
+        (a, b) => new Date(a.t_created).getTime() - new Date(b.t_created).getTime(),
+      );
+
+      // Canonical = most recent non-invalidated node, or latest by t_created
+      const canonical = chain.find((n) => n.t_invalid === null) ?? chain[chain.length - 1]!;
+
+      // Fetch reason strings from SUPERSEDES edge metas
+      const chainWithReasons = chain.map((n) => {
+        // Reason is on the inbound SUPERSEDES edge meta (the edge that made this node superseded)
+        const edgeRow = db
+          .prepare<[string], { meta: string | null }>(
+            `SELECT e.meta FROM edge e
+             JOIN node src ON src.rowid = e.src
+             JOIN node dst ON dst.rowid = e.dst
+             WHERE dst.uid = ? AND e.rel = 'SUPERSEDES'
+             LIMIT 1`,
+          )
+          .get(n.uid);
+        let reason: string | null = null;
+        if (edgeRow?.meta) {
+          try {
+            const m = JSON.parse(edgeRow.meta) as { reason?: string };
+            reason = m.reason ?? null;
+          } catch { /* malformed */ }
+        }
+        return {
+          uid: n.uid,
+          t_created: n.t_created,
+          t_invalid: n.t_invalid,
+          reason,
+        };
+      });
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          canonical_uid: canonical.uid,
+          chain: chainWithReasons,
+          is_current: canonical.uid === uid,
+        }) }],
+      };
+    }
+
+    case 'memory_near_duplicates': {
+      const projectPath = args['project_path'] as string | undefined;
+      const topicFilter = args['topic'] as string | undefined;
+      const cosineThreshold = args['threshold'] as number | undefined;
+      const limit = Math.min((args['limit'] as number | undefined) ?? 20, 200);
+      const offset = (args['offset'] as number | undefined) ?? 0;
+
+      // Find SAME_AS edges
+      const extraFilters: string[] = [];
+      const extraParams: unknown[] = [];
+
+      if (projectPath) {
+        extraFilters.push('(na.project_path = ? OR nb.project_path = ?)');
+        extraParams.push(projectPath, projectPath);
+      }
+      if (topicFilter) {
+        extraFilters.push('(na.topic = ? OR nb.topic = ?)');
+        extraParams.push(topicFilter, topicFilter);
+      }
+      if (typeof cosineThreshold === 'number') {
+        extraFilters.push('CAST(json_extract(e.meta, \'$.cosine_sim\') AS REAL) >= ?');
+        extraParams.push(cosineThreshold);
+      }
+
+      const extraSql = extraFilters.length > 0 ? 'AND ' + extraFilters.join(' AND ') : '';
+
+      const countRow = db
+        .prepare<unknown[], { cnt: number }>(
+          `SELECT COUNT(*) AS cnt
+           FROM edge e
+           JOIN node na ON na.rowid = e.src
+           JOIN node nb ON nb.rowid = e.dst
+           WHERE e.rel = 'SAME_AS' AND e.t_expired IS NULL
+             AND na.kind = 'episode' AND nb.kind = 'episode'
+           ${extraSql}`,
+        )
+        .get(...extraParams);
+      const total = countRow?.cnt ?? 0;
+
+      const rows = db
+        .prepare<unknown[], {
+          uid_a: string; uid_b: string;
+          content_a: string | null; content_b: string | null;
+          invalid_b: string | null; meta: string | null;
+        }>(
+          `SELECT na.uid AS uid_a, nb.uid AS uid_b,
+                  na.content AS content_a, nb.content AS content_b,
+                  nb.t_invalid AS invalid_b,
+                  e.meta
+           FROM edge e
+           JOIN node na ON na.rowid = e.src
+           JOIN node nb ON nb.rowid = e.dst
+           WHERE e.rel = 'SAME_AS' AND e.t_expired IS NULL
+             AND na.kind = 'episode' AND nb.kind = 'episode'
+           ${extraSql}
+           LIMIT ? OFFSET ?`,
+        )
+        .all(...extraParams, limit, offset);
+
+      const pairs = rows.map((r) => {
+        let cosineSim = 0;
+        if (r.meta) {
+          try {
+            const m = JSON.parse(r.meta) as { cosine_sim?: number };
+            cosineSim = m.cosine_sim ?? 0;
+          } catch { /* malformed */ }
+        }
+        return {
+          uid_a: r.uid_a,
+          uid_b: r.uid_b,
+          cosine_sim: cosineSim,
+          content_preview_a: (r.content_a ?? '').slice(0, 120),
+          content_preview_b: (r.content_b ?? '').slice(0, 120),
+          already_merged: r.invalid_b !== null,
+        };
+      });
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ pairs, total }) }],
+      };
+    }
+
+    case 'memory_curate': {
+      const op = args['op'] as string;
+      const dryRun = args['dry_run'] === true;
+      const now = new Date().toISOString();
+
+      switch (op) {
+        case 'retag': {
+          const uid = args['uid'] as string | undefined;
+          const newTags = args['tags'] as string[] | undefined;
+          if (!uid) {
+            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING', message: 'uid required for retag' }) }] };
+          }
+
+          const row = db
+            .prepare<[string], { rowid: number; tags: string | null }>(
+              `SELECT rowid, tags FROM node WHERE uid = ? AND t_invalid IS NULL LIMIT 1`,
+            )
+            .get(uid);
+          if (!row) {
+            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', uid }) }] };
+          }
+
+          const existingTags = parseTags(row.tags);
+          const tagsToAdd = (newTags ?? []).filter((t) => !existingTags.includes(t));
+          const mergedTags = [...existingTags, ...tagsToAdd];
+
+          const newEntityUids: string[] = [];
+          if (!dryRun) {
+            db.transaction(() => {
+              db.prepare(`UPDATE node SET tags = ? WHERE uid = ?`).run(
+                JSON.stringify(mergedTags), uid,
+              );
+              // Add new entity nodes + MENTIONS edges for new tags
+              for (const tag of tagsToAdd) {
+                const tagName = tag.trim();
+                if (!tagName) continue;
+                const existing = db
+                  .prepare<[string], { rowid: number; uid: string }>(
+                    `SELECT rowid, uid FROM node WHERE kind = 'entity' AND name = ? AND t_invalid IS NULL`,
+                  )
+                  .get(tagName);
+                let entityRowid: number;
+                let entityUid: string;
+                if (existing) {
+                  entityRowid = existing.rowid;
+                  entityUid = existing.uid;
+                } else {
+                  entityUid = ulid();
+                  const ins = db
+                    .prepare<unknown[], { rowid: number }>(
+                      `INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'entity', ?, ?, ?) RETURNING rowid`,
+                    )
+                    .get(entityUid, tagName, now, now);
+                  if (!ins) continue;
+                  entityRowid = ins.rowid;
+                  newEntityUids.push(entityUid);
+                }
+                db.prepare(
+                  `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
+                   SELECT ?, ?, 'MENTIONS', 'user_asserted', ?, '{}'
+                   WHERE NOT EXISTS (SELECT 1 FROM edge WHERE src=? AND dst=? AND rel='MENTIONS' AND t_expired IS NULL)`,
+                ).run(row.rowid, entityRowid, now, row.rowid, entityRowid);
+              }
+            })();
+          }
+
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ op: 'retag', uid, tags_added: tagsToAdd, new_entity_uids: newEntityUids }) }],
+          };
+        }
+
+        case 'set_topic': {
+          const uid = args['uid'] as string | undefined;
+          const newTopic = args['topic'] as string | undefined;
+          if (!uid || !newTopic) {
+            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING', message: 'uid and topic required for set_topic' }) }] };
+          }
+          const row = db
+            .prepare<[string], { topic: string | null }>(
+              `SELECT topic FROM node WHERE uid = ? AND t_invalid IS NULL LIMIT 1`,
+            )
+            .get(uid);
+          if (row === undefined) {
+            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', uid }) }] };
+          }
+          const oldTopic = row.topic ?? null;
+          if (!dryRun) {
+            db.prepare(`UPDATE node SET topic = ? WHERE uid = ?`).run(newTopic, uid);
+          }
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ op: 'set_topic', uid, old_topic: oldTopic, new_topic: newTopic }) }],
+          };
+        }
+
+        case 'set_importance': {
+          const uid = args['uid'] as string | undefined;
+          const newImportance = args['importance'] as number | undefined;
+          if (!uid || newImportance === undefined) {
+            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING', message: 'uid and importance required for set_importance' }) }] };
+          }
+          const row = db
+            .prepare<[string], { importance: number }>(
+              `SELECT importance FROM node WHERE uid = ? AND t_invalid IS NULL LIMIT 1`,
+            )
+            .get(uid);
+          if (row === undefined) {
+            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', uid }) }] };
+          }
+          const oldImportance = row.importance;
+          if (!dryRun) {
+            // Mark enrich_ver.note=user_override so batch enricher skips re-scoring
+            const enrichVer = JSON.stringify({ pass: ENRICH_VERSION, ts: now, note: 'user_override' });
+            db.prepare(`UPDATE node SET importance = ?, enrich_ver = ? WHERE uid = ?`).run(newImportance, enrichVer, uid);
+          }
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ op: 'set_importance', uid, old_importance: oldImportance, new_importance: newImportance }) }],
+          };
+        }
+
+        case 'merge_duplicates': {
+          const uidKeep = args['uid_keep'] as string | undefined;
+          const uidDrop = args['uid_drop'] as string | undefined;
+          if (!uidKeep || !uidDrop) {
+            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING', message: 'uid_keep and uid_drop required for merge_duplicates' }) }] };
+          }
+
+          const keepRow = db.prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ? LIMIT 1`).get(uidKeep);
+          const dropRow = db.prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ? LIMIT 1`).get(uidDrop);
+
+          if (!keepRow) return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', uid: uidKeep }) }] };
+          if (!dropRow) return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', uid: uidDrop }) }] };
+
+          const sameAsEdgeUid = `same-${Date.now()}`;
+          if (!dryRun) {
+            db.transaction(() => {
+              // Invalidate the dropped episode
+              db.prepare(`UPDATE node SET t_invalid = ? WHERE uid = ?`).run(now, uidDrop);
+              // Insert SAME_AS edge from keep → drop
+              db.prepare(
+                `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
+                 SELECT ?, ?, 'SAME_AS', 'user_asserted', ?, '{"merge":"manual"}'
+                 WHERE NOT EXISTS (SELECT 1 FROM edge WHERE src=? AND dst=? AND rel='SAME_AS' AND t_expired IS NULL)`,
+              ).run(keepRow.rowid, dropRow.rowid, now, keepRow.rowid, dropRow.rowid);
+            })();
+          }
+
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ op: 'merge_duplicates', uid_kept: uidKeep, uid_dropped: uidDrop, same_as_edge_uid: sameAsEdgeUid, dry_run: dryRun }) }],
+          };
+        }
+
+        case 'recluster': {
+          // OQ-3: dry_run on recluster means don't enqueue, just report
+          if (dryRun) {
+            return {
+              content: [{ type: 'text', text: JSON.stringify({ op: 'recluster', enqueued: false, dry_run: true }) }],
+            };
+          }
+          // Enqueue a reindex op to trigger full re-cluster in the daemon
+          try {
+            enqueueReindex(db);
+          } catch {
+            // If daemon not available, the cluster can be triggered manually
+          }
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ op: 'recluster', enqueued: true }) }],
+          };
+        }
+
+        default:
+          return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_UNKNOWN_OP', op }) }] };
+      }
+    }
+
+    case 'memory_stats': {
+      const projectPath = args['project_path'] as string | undefined;
+
+      const ppFilter = projectPath ? 'AND project_path = ?' : '';
+      const ppParams = projectPath ? [projectPath] : [];
+
+      const totalRow = db
+        .prepare<unknown[], { cnt: number }>(
+          `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL ${ppFilter}`,
+        )
+        .get(...ppParams);
+      const totalEpisodes = totalRow?.cnt ?? 0;
+
+      const withTopicRow = db
+        .prepare<unknown[], { cnt: number }>(
+          `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND topic IS NOT NULL ${ppFilter}`,
+        )
+        .get(...ppParams);
+
+      const withSummaryRow = db
+        .prepare<unknown[], { cnt: number }>(
+          `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND summary IS NOT NULL ${ppFilter}`,
+        )
+        .get(...ppParams);
+
+      const withTagsRow = db
+        .prepare<unknown[], { cnt: number }>(
+          `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND tags IS NOT NULL ${ppFilter}`,
+        )
+        .get(...ppParams);
+
+      const withProjectPathRow = db
+        .prepare<unknown[], { cnt: number }>(
+          `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND project_path IS NOT NULL ${ppFilter}`,
+        )
+        .get(...ppParams);
+
+      // with_community: episodes that have a MEMBER_OF edge to a live community
+      const withCommunityRow = db
+        .prepare<unknown[], { cnt: number }>(
+          `SELECT COUNT(DISTINCT n.rowid) AS cnt
+           FROM node n
+           JOIN edge e ON e.src = n.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+           JOIN node c ON c.rowid = e.dst AND c.kind = 'community' AND c.t_invalid IS NULL
+           WHERE n.kind = 'episode' AND n.t_invalid IS NULL ${ppFilter.replace('AND project_path', 'AND n.project_path')}`,
+        )
+        .get(...ppParams);
+
+      // Legacy: enrich_ver IS NULL or note = "legacy"
+      const legacyRow = db
+        .prepare<unknown[], { cnt: number }>(
+          `SELECT COUNT(*) AS cnt FROM node
+           WHERE kind = 'episode' AND t_invalid IS NULL
+             AND (enrich_ver IS NULL
+               OR json_extract(enrich_ver, '$.note') = 'legacy')
+           ${ppFilter}`,
+        )
+        .get(...ppParams);
+
+      // Stale: enrich_ver.pass != current ENRICH_VERSION
+      const staleRow = db
+        .prepare<unknown[], { cnt: number }>(
+          `SELECT COUNT(*) AS cnt FROM node
+           WHERE kind = 'episode' AND t_invalid IS NULL AND enrich_ver IS NOT NULL
+             AND json_extract(enrich_ver, '$.pass') != ?
+           ${ppFilter}`,
+        )
+        .get(ENRICH_VERSION, ...ppParams);
+
+      const qStats = clusterStats(db);
+
+      const embedModel = process.env['SOX_EMBED_BACKEND'] === 'real'
+        ? 'onnx/all-MiniLM-L6-v2'
+        : 'hash';
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          tool_version: '1.0.0',
+          enrich_version: ENRICH_VERSION,
+          embed_model: embedModel,
+          total_episodes: totalEpisodes,
+          with_topic: withTopicRow?.cnt ?? 0,
+          with_summary: withSummaryRow?.cnt ?? 0,
+          with_tags: withTagsRow?.cnt ?? 0,
+          with_project_path: withProjectPathRow?.cnt ?? 0,
+          with_community: withCommunityRow?.cnt ?? 0,
+          legacy_episodes: legacyRow?.cnt ?? 0,
+          stale_episodes: staleRow?.cnt ?? 0,
+          cluster_count: qStats.cluster_count,
+          largest_cluster_size: qStats.largest_cluster_size,
+          mean_intra_cluster_sim: qStats.mean_intra_sim,
+          coverage: qStats.coverage,
+          cluster_quality: qStats,
+        }) }],
+      };
+    }
+
     default:
       return {
         isError: true,
@@ -695,4 +2052,4 @@ const registeredTools = TOOLS.map((tool) =>
   }),
 );
 
-void serve(registeredTools, { name: 'memory-server', version: '0.1.0' });
+void serve(registeredTools, { name: 'memory-server', version: '1.0.0' });

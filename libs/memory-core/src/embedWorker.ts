@@ -53,7 +53,16 @@ if (!parentPort) {
   throw new Error('embedWorker must be run as a worker_thread, not directly');
 }
 
-parentPort.on('message', (req: EmbedRequest) => {
+parentPort.on('message', (msg: EmbedRequest | { __shutdown: true }) => {
+  // Graceful shutdown: exit voluntarily between messages (no onnxruntime native op on
+  // the stack), avoiding the hard V8 abort that worker.terminate() triggers when it
+  // force-kills the thread mid-inference.
+  if ('__shutdown' in msg) {
+    try { parentPort!.close(); } catch { /* ignore */ }
+    process.exit(0);
+    return;
+  }
+  const req = msg;
   ensureEmbedder(req.cacheDir)
     .then(async (inst) => {
       const vec = await inst.queryEmbed(req.text);
