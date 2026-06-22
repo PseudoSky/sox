@@ -12,6 +12,30 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ## Open
 
+### BL-23 — `memory_write` drops `metadata` and records no caller provenance (project path)
+
+**Severity:** Medium (provenance / data loss) · **Status:** Open
+`memory_write` accepts a `metadata?: Record<string, unknown>` param but **never persists it** —
+it's referenced only in the `WriteParams` type, not in the node INSERT, so any caller-supplied
+metadata (e.g. a project path) is silently discarded. The `node` table has `agent_id` +
+`session_id` but **no column for the caller's project/repo path or cwd** — so there is no record
+of *where* a memory came from. Fix: (a) stop silently dropping `metadata` (persist it, e.g. a
+`meta` JSON column, or reject unknown fields loudly); (b) add a first-class caller provenance
+field (project path / repo) captured at write time. Surfaced auditing DB vs the export docs.
+
+### BL-24 — tags and the `[<topic>]` cluster are not first-class structured fields
+
+**Severity:** Low/Medium (queryability) · **Status:** Open
+Two related modelling gaps surfaced comparing DB vs docs:
+- **Tags are lossy:** an agent's `tags[]` are converted to `entity` nodes + `MENTIONS` edges; the
+  raw tag list is not retained on the episode and there is no `tags` column — so you can't query
+  "episodes the author tagged X" distinct from organizer-extracted entities.
+- **Topic/cluster is unstructured:** the `[<topic>]` prefix lives only inside `content`; there is
+  no topic/cluster column. The BL-20 export parses it from text at export time (fragile,
+  format-dependent) and the DB can't be queried/grouped by topic. Consider a structured
+  `topic`/`cluster` field (or a `TOPIC`/`MEMBER_OF` edge to a topic node) set at write time from
+  the `[<topic>]` prefix and/or tags, so clustering is durable and queryable, not derived.
+
 ### BL-22 — memory export frontmatter lists entities by opaque uid, not name
 
 **Severity:** Low (export usability) · **Status:** Open
