@@ -47,7 +47,27 @@ export function openDb(dbPath: string): Database.Database {
   db.exec(DDL);
   db.exec(FTS_TRIGGERS);
 
+  // Idempotent column migrations for pre-existing stores (CREATE IF NOT EXISTS won't
+  // add columns to a table that already exists). Add new columns when missing.
+  migrateAddColumn(db, 'node', 'meta', 'TEXT');
+
   return db;
+}
+
+/** Add a column to a table if it does not already exist (idempotent migration). */
+function migrateAddColumn(
+  db: Database.Database,
+  table: string,
+  column: string,
+  type: string,
+): void {
+  const cols = db
+    .prepare<[], { name: string }>(`PRAGMA table_info(${table})`)
+    .all()
+    .map((c) => c.name);
+  if (!cols.includes(column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
 }
 
 /**

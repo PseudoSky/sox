@@ -190,6 +190,8 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
       type: 'object',
       properties: {
         content: { type: 'string', description: 'The content to memorize' },
+        summary: { type: 'string', description: 'Human-readable summary / topic of the content (persisted)' },
+        metadata: { type: 'object', additionalProperties: true, description: 'Arbitrary caller metadata, persisted as JSON (e.g. project path, source url)' },
         db_path: { type: 'string', description: 'Path to the .db file' },
         session_id: { type: 'string' },
         t_occurred: { type: 'string', description: 'ISO timestamp when this occurred' },
@@ -418,6 +420,8 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         //  the synchronous SQLite transactions serialise naturally on the JS event loop)
         const parentResult = await memoryWrite(db, {
           content,
+          summary: args['summary'] as string | undefined,
+          metadata: args['metadata'] as Record<string, unknown> | undefined,
           session_id: args['session_id'] as string | undefined,
           t_occurred: args['t_occurred'] as string | undefined,
           agent_id: args['agent_id'] as string | undefined,
@@ -443,6 +447,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
               content: chunk,
               agent_id: args['agent_id'] as string | undefined,
               source: (args['source'] as 'message' | undefined) ?? 'document',
+              metadata: args['metadata'] as Record<string, unknown> | undefined,
             }),
           ),
         );
@@ -489,6 +494,8 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       // Content below threshold: single write
       const result = await memoryWrite(db, {
         content,
+        summary: args['summary'] as string | undefined,
+        metadata: args['metadata'] as Record<string, unknown> | undefined,
         session_id: args['session_id'] as string | undefined,
         t_occurred: args['t_occurred'] as string | undefined,
         agent_id: args['agent_id'] as string | undefined,
