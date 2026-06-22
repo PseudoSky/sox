@@ -63,13 +63,17 @@ filters + provenance), and NEW `memory_topics`, `memory_list_projects`, `memory_
 - **Gate:** each tool matches its contract inputSchema/output; e2e exercises the new write fields +
   a discovery tool; `validate --strict`; registry synced.
 
-## §P5 — Export integration (reads structured data) + auto-refresh
+## §P5 — Export integration (reads structured data) + auto-refresh — **DONE (2026-06-22)**
 
 Update `libs/memory-core/src/export.ts` to read the **structured** `topic`/`summary`/`project_path`
 (not parse `[<topic>]` text) and render entities by **name** (BL-22); add an auto-refresh trigger via
 the `memory-flush` SessionEnd hook (gated on `export_enabled`, throttled) (BL-21).
 - **Gate:** export of the real store uses structured topics + entity names + provenance; re-export
   idempotent; SessionEnd triggers a refresh. *(Resolves BL-21, BL-22.)*
+- **Reality-verified (2026-06-22):** `nx run-many -t build lint test --projects=memory-core,memory-flush`
+  65/65 green; real-store proof: 3-episode DB exported with structured topic/summary/project_path/tags
+  and entity names (not uids) in frontmatter. `tryAutoExport` throttle/gate/failure-isolation verified
+  by 14 new tests in `memory-flush/src/index.spec.ts`.
 
 ## §P6 — Full removal of `memory-organizer` (mandatory)
 

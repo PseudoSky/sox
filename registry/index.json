@@ -96,7 +96,7 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-flush",
-    "checksum": "sha256:d0e58a7cc322c6f1bb900a27887df96f860a12f5309594e2cfa233736727b5d5",
+    "checksum": "sha256:e3edd139a9d47fdff6fc40517d0549ec5d0fe0c5c572a45722227ec7a2d1c587",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },

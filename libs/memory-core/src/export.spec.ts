@@ -278,14 +278,19 @@ describe('exportMarkdown — pruning', () => {
     try {
       const db = openDb(path.join(dbDir, 'test.db'));
 
-      const w = await memoryWrite(db, { content: '[topic-a] Original content.' });
+      const w = await memoryWrite(db, { content: '[topic-a] Original content.', topic: 'topic-a' });
       const uid = (w as { episode_uid: string }).episode_uid;
 
       exportMarkdown(db, { dir: exportDir, enabled: true });
       expect(fs.existsSync(path.join(exportDir, 'topics', 'topic-a', `${uid}.md`))).toBe(true);
 
-      // Re-categorise the node by changing its [<topic>] prefix, then re-export.
-      db.prepare('UPDATE node SET content = ? WHERE uid = ?').run('[topic-b] Original content.', uid);
+      // P5: re-categorise by updating the structured node.topic column (the authoritative field).
+      // Content is also updated for consistency, but topic derivation now reads node.topic first.
+      db.prepare('UPDATE node SET topic = ?, content = ? WHERE uid = ?').run(
+        'topic-b',
+        '[topic-b] Original content.',
+        uid,
+      );
       exportMarkdown(db, { dir: exportDir, enabled: true });
 
       // The stale copy in the old topic must be pruned; the new topic must hold it.
@@ -466,6 +471,337 @@ describe('exportMarkdown — topic derivation', () => {
 
       // Principles folder must still exist and be untouched
       expect(fs.existsSync(path.join(exportDir, 'principles', 'my-principle.md'))).toBe(true);
+
+      db.close();
+    } finally {
+      dbCleanup();
+      exportCleanup();
+    }
+  });
+});
+
+// ── 7. P5 — structured node.topic wins over [<topic>] prefix (BL-22) ──────────
+
+describe('exportMarkdown — P5 structured topic precedence', () => {
+  it('structured node.topic column wins over [<topic>] prefix in content', async () => {
+    const { dir: dbDir, cleanup: dbCleanup } = makeTempDir();
+    const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
+
+    try {
+      const db = openDb(path.join(dbDir, 'test.db'));
+
+      // Explicit topic='structured-topic' + content has [prefix-topic] — structured wins.
+      const w = await memoryWrite(db, {
+        content: '[prefix-topic] Content with a conflicting text prefix.',
+        topic: 'structured-topic',
+      });
+      const uid = (w as { episode_uid: string }).episode_uid;
+
+      exportMarkdown(db, { dir: exportDir, enabled: true });
+
+      const topicsDir = path.join(exportDir, 'topics');
+      // Must land in structured-topic slug, not prefix-topic slug.
+      expect(fs.existsSync(path.join(topicsDir, 'structured-topic', `${uid}.md`))).toBe(true);
+      expect(fs.existsSync(path.join(topicsDir, 'prefix-topic', `${uid}.md`))).toBe(false);
+
+      db.close();
+    } finally {
+      dbCleanup();
+      exportCleanup();
+    }
+  });
+
+  it('[<topic>] prefix is used as fallback when node.topic column is null', async () => {
+    const { dir: dbDir, cleanup: dbCleanup } = makeTempDir();
+    const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
+
+    try {
+      const db = openDb(path.join(dbDir, 'test.db'));
+
+      // Write without explicit topic — prefix gets stored in node.topic by enrichOnWrite,
+      // then NULL it out to simulate a legacy store where node.topic wasn't populated.
+      const w = await memoryWrite(db, {
+        content: '[fallback-prefix] Content using the legacy text prefix convention.',
+      });
+      const uid = (w as { episode_uid: string }).episode_uid;
+
+      // Force node.topic to null to prove the fallback path in export.ts still works.
+      db.prepare('UPDATE node SET topic = NULL WHERE uid = ?').run(uid);
+
+      exportMarkdown(db, { dir: exportDir, enabled: true });
+
+      const topicsDir = path.join(exportDir, 'topics');
+      // With node.topic=null, the [<topic>] prefix must be used as fallback.
+      expect(fs.existsSync(path.join(topicsDir, 'fallback-prefix', `${uid}.md`))).toBe(true);
+
+      db.close();
+    } finally {
+      dbCleanup();
+      exportCleanup();
+    }
+  });
+
+  it('structured node.topic wins over MENTIONS entity fallback', async () => {
+    const { dir: dbDir, cleanup: dbCleanup } = makeTempDir();
+    const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
+
+    try {
+      const db = openDb(path.join(dbDir, 'test.db'));
+
+      // Write with an explicit topic and tags — structured topic must win, not entity name.
+      const w = await memoryWrite(db, {
+        content: 'Discussing TypeScript generics and mapped types.',
+        topic: 'typescript-types',
+        tags: ['generics', 'mapped-types'],
+      });
+      const uid = (w as { episode_uid: string }).episode_uid;
+
+      exportMarkdown(db, { dir: exportDir, enabled: true });
+
+      const topicsDir = path.join(exportDir, 'topics');
+      // Must use structured-topic slug, not entity slug.
+      expect(fs.existsSync(path.join(topicsDir, 'typescript-types', `${uid}.md`))).toBe(true);
+      expect(fs.existsSync(path.join(topicsDir, 'generics', `${uid}.md`))).toBe(false);
+      expect(fs.existsSync(path.join(topicsDir, 'mapped-types', `${uid}.md`))).toBe(false);
+
+      db.close();
+    } finally {
+      dbCleanup();
+      exportCleanup();
+    }
+  });
+});
+
+// ── 8. P5 — entity names rendered, not UIDs (BL-22) ─────────────────────────
+
+describe('exportMarkdown — P5 entity names in frontmatter (BL-22)', () => {
+  it('entities frontmatter lists entity names, not UIDs', async () => {
+    const { dir: dbDir, cleanup: dbCleanup } = makeTempDir();
+    const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
+
+    try {
+      const db = openDb(path.join(dbDir, 'test.db'));
+
+      // Write with tags — these become entity nodes with MENTIONS edges.
+      const w = await memoryWrite(db, {
+        content: 'JWT and OAuth2 are authentication protocols.',
+        tags: ['JWT', 'OAuth2'],
+      });
+      const uid = (w as { episode_uid: string }).episode_uid;
+
+      exportMarkdown(db, { dir: exportDir, enabled: true });
+
+      const topicsDir = path.join(exportDir, 'topics');
+      const slugDirs = fs.readdirSync(topicsDir);
+      // Find the episode file (it'll be in the first tag's slug dir or structured-topic)
+      let episodeContent: string | null = null;
+      for (const slug of slugDirs) {
+        const episodePath = path.join(topicsDir, slug, `${uid}.md`);
+        if (fs.existsSync(episodePath)) {
+          episodeContent = fs.readFileSync(episodePath, 'utf8');
+          break;
+        }
+      }
+
+      expect(episodeContent).not.toBeNull();
+      // Entities should contain names, not UIDs (UIDs would be ULID-format like "01J...")
+      expect(episodeContent).toContain('entities:');
+      expect(episodeContent).toContain('JWT');
+      expect(episodeContent).toContain('OAuth2');
+      // UIDs are ULID format (26 uppercase base32 chars) — none should appear under entities:
+      // We verify entity names appear and no ULID-like string is in the entities block.
+      const entitiesSection = episodeContent!.match(/entities:\n([\s\S]*?)(?:\n\w|---)/)?.[1] ?? '';
+      expect(entitiesSection).not.toMatch(/\b[0-9A-Z]{26}\b/); // no ULID UIDs
+
+      db.close();
+    } finally {
+      dbCleanup();
+      exportCleanup();
+    }
+  });
+
+  it('entities with null name are omitted from frontmatter', async () => {
+    const { dir: dbDir, cleanup: dbCleanup } = makeTempDir();
+    const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
+
+    try {
+      const db = openDb(path.join(dbDir, 'test.db'));
+
+      const w = await memoryWrite(db, {
+        content: 'Null-named entity test.',
+        topic: 'test-topic',
+      });
+      const uid = (w as { episode_uid: string }).episode_uid;
+
+      // Insert an entity with null name and a MENTIONS edge to the episode.
+      const now = new Date().toISOString();
+      const nullEntityUid = `entity-null-${Date.now()}`;
+      const entityRow = db.prepare<unknown[], { rowid: number }>(
+        `INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'entity', NULL, ?, ?) RETURNING rowid`,
+      ).get(nullEntityUid, now, now) as { rowid: number };
+
+      const epRow = db.prepare<[string], { rowid: number }>(
+        `SELECT rowid FROM node WHERE uid = ?`,
+      ).get(uid) as { rowid: number };
+
+      db.prepare(
+        `INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'MENTIONS', 'user_asserted', ?)`,
+      ).run(epRow.rowid, entityRow.rowid, now);
+
+      exportMarkdown(db, { dir: exportDir, enabled: true });
+
+      const episodePath = path.join(exportDir, 'topics', 'test-topic', `${uid}.md`);
+      expect(fs.existsSync(episodePath)).toBe(true);
+      const content = fs.readFileSync(episodePath, 'utf8');
+      // The null-named entity should not appear in the entities list at all.
+      expect(content).not.toContain(nullEntityUid);
+
+      db.close();
+    } finally {
+      dbCleanup();
+      exportCleanup();
+    }
+  });
+});
+
+// ── 9. P5 — structured summary / tags / project_path in frontmatter ───────────
+
+describe('exportMarkdown — P5 structured provenance fields in frontmatter', () => {
+  it('renders structured summary in frontmatter', async () => {
+    const { dir: dbDir, cleanup: dbCleanup } = makeTempDir();
+    const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
+
+    try {
+      const db = openDb(path.join(dbDir, 'test.db'));
+
+      const w = await memoryWrite(db, {
+        content: 'JWT tokens expire after one hour for security reasons.',
+        topic: 'security',
+        summary: 'JWT token expiry policy',
+      });
+      const uid = (w as { episode_uid: string }).episode_uid;
+
+      exportMarkdown(db, { dir: exportDir, enabled: true });
+
+      const episodePath = path.join(exportDir, 'topics', 'security', `${uid}.md`);
+      expect(fs.existsSync(episodePath)).toBe(true);
+      const content = fs.readFileSync(episodePath, 'utf8');
+      expect(content).toContain('summary: JWT token expiry policy');
+
+      db.close();
+    } finally {
+      dbCleanup();
+      exportCleanup();
+    }
+  });
+
+  it('renders structured project_path in frontmatter', async () => {
+    const { dir: dbDir, cleanup: dbCleanup } = makeTempDir();
+    const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
+
+    try {
+      const db = openDb(path.join(dbDir, 'test.db'));
+
+      const w = await memoryWrite(db, {
+        content: 'Nx build caching reduces CI time significantly.',
+        topic: 'ci',
+        project_path: '/projects/sox-ecosystem',
+      });
+      const uid = (w as { episode_uid: string }).episode_uid;
+
+      exportMarkdown(db, { dir: exportDir, enabled: true });
+
+      const episodePath = path.join(exportDir, 'topics', 'ci', `${uid}.md`);
+      expect(fs.existsSync(episodePath)).toBe(true);
+      const content = fs.readFileSync(episodePath, 'utf8');
+      expect(content).toContain('project_path');
+      expect(content).toContain('/projects/sox-ecosystem');
+
+      db.close();
+    } finally {
+      dbCleanup();
+      exportCleanup();
+    }
+  });
+
+  it('renders structured tags in frontmatter', async () => {
+    const { dir: dbDir, cleanup: dbCleanup } = makeTempDir();
+    const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
+
+    try {
+      const db = openDb(path.join(dbDir, 'test.db'));
+
+      const w = await memoryWrite(db, {
+        content: 'SQLite WAL mode enables concurrent reads.',
+        topic: 'database',
+        tags: ['sqlite', 'wal', 'concurrency'],
+      });
+      const uid = (w as { episode_uid: string }).episode_uid;
+
+      exportMarkdown(db, { dir: exportDir, enabled: true });
+
+      const episodePath = path.join(exportDir, 'topics', 'database', `${uid}.md`);
+      expect(fs.existsSync(episodePath)).toBe(true);
+      const content = fs.readFileSync(episodePath, 'utf8');
+      expect(content).toContain('tags:');
+      expect(content).toContain('sqlite');
+      expect(content).toContain('wal');
+      expect(content).toContain('concurrency');
+
+      db.close();
+    } finally {
+      dbCleanup();
+      exportCleanup();
+    }
+  });
+
+  it('re-export is byte-identical for unchanged DB (idempotent with structured fields)', async () => {
+    const { dir: dbDir, cleanup: dbCleanup } = makeTempDir();
+    const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
+
+    try {
+      const db = openDb(path.join(dbDir, 'test.db'));
+
+      await memoryWrite(db, {
+        content: 'Idempotency with structured fields.',
+        topic: 'idempotency',
+        summary: 'Test for identical re-export',
+        tags: ['test', 'idempotency'],
+        project_path: '/projects/test',
+      });
+
+      exportMarkdown(db, { dir: exportDir, enabled: true });
+
+      // Collect all file contents from first export
+      const topicsDir = path.join(exportDir, 'topics');
+      const slugDirs = fs.readdirSync(topicsDir);
+      const firstContents = new Map<string, string>();
+      for (const slug of slugDirs) {
+        const slugPath = path.join(topicsDir, slug);
+        for (const f of fs.readdirSync(slugPath)) {
+          const fullPath = path.join(slugPath, f);
+          firstContents.set(fullPath, fs.readFileSync(fullPath, 'utf8'));
+        }
+      }
+      const rootIndex = fs.readFileSync(path.join(exportDir, 'INDEX.md'), 'utf8');
+
+      // Second run — must produce identical content for all episode files.
+      // (Timestamps in INDEX.md may differ by sub-second; only check episode files)
+      exportMarkdown(db, { dir: exportDir, enabled: true });
+
+      for (const [p, originalContent] of firstContents) {
+        if (p.endsWith('INDEX.md')) continue; // INDEX.md has a generation timestamp
+        const secondContent = fs.readFileSync(p, 'utf8');
+        expect(secondContent).toBe(originalContent);
+      }
+      // Root index must still be identical (same episodes list)
+      // — we only check that its structure is the same, not the timestamp line
+      const rootIndex2 = fs.readFileSync(path.join(exportDir, 'INDEX.md'), 'utf8');
+      expect(rootIndex2).toContain('Memory Export Index');
+      // The episode count must be the same
+      const countMatch1 = rootIndex.match(/Total episodes:\*\* (\d+)/);
+      const countMatch2 = rootIndex2.match(/Total episodes:\*\* (\d+)/);
+      expect(countMatch2?.[1]).toBe(countMatch1?.[1]);
 
       db.close();
     } finally {

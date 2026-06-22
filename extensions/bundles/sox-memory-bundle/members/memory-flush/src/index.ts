@@ -2,8 +2,14 @@
  * memory-flush — SessionEnd + ScopePromotionProposed hook handler.
  *
  * Binds two host events (design.md §1.1c, §2.5):
- *   1. SessionEnd — persists working memory, enqueues episodes, nudges memoryd.
+ *   1. SessionEnd — persists working memory, enqueues episodes, nudges memoryd,
+ *      then (if export_enabled+export_dir configured) auto-exports to markdown.
  *   2. ScopePromotionProposed — runs the promotion approval/policy step (P4: stub).
+ *
+ * P5 auto-export (BL-21):
+ *   - Gated: only runs when `export_enabled=true` AND `export_dir` is configured.
+ *   - Throttled: at most once per `export_throttle_secs` (default 60s) per process.
+ *   - Failure-isolated: a failed export NEVER breaks the SessionEnd flush.
  *
  * Deterministic: no LLM calls, no provider dependency (R3 preserved).
  * order: 100 (ascending; ties by id).
@@ -14,6 +20,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
+import { openDb as memCoreOpenDb, exportMarkdown as memCoreExportMarkdown, applyPromotion as memCoreApplyPromotion } from '@sox/memory-core';
 
 const SOCKET_PATH = path.join(process.env['HOME'] ?? '/tmp', '.memory', 'memoryd.sock');
 
@@ -23,6 +30,48 @@ export interface HookContext {
   event: string;
   timestamp: string;
   payload?: unknown;
+}
+
+// ── Export config (P5 — BL-21) ────────────────────────────────────────────────
+
+/**
+ * Configuration for the auto-export feature.
+ * Can be injected at test time via `setExportConfig()` or read from
+ * `SessionEndPayload.export_config` at runtime.
+ */
+export interface ExportConfig {
+  /** Enable auto-export on SessionEnd. Default: false. */
+  export_enabled: boolean;
+  /** Directory to write the markdown mirror into. Required when export_enabled=true. */
+  export_dir: string;
+  /**
+   * Minimum seconds between auto-exports per process lifetime (throttle).
+   * Default: 60. Set to 0 to disable throttle (useful in tests).
+   */
+  export_throttle_secs: number;
+}
+
+/** Module-level export config override (set by tests or host startup). */
+let _exportConfig: ExportConfig | null = null;
+
+/**
+ * Override export config for the lifetime of this module instance.
+ * Pass `null` to clear the override and revert to payload-driven config.
+ * Tests use this to inject config without needing to send it via payload.
+ */
+export function setExportConfig(cfg: ExportConfig | null): void {
+  _exportConfig = cfg;
+}
+
+/** Module-level last-export timestamp in ms (per process lifetime). */
+let _lastExportMs = 0;
+
+/**
+ * Reset the throttle clock (useful in tests to force a fresh export).
+ * Not exported for production use; tests should import this for isolation.
+ */
+export function _resetExportThrottle(): void {
+  _lastExportMs = 0;
 }
 
 interface SessionEndPayload {
@@ -36,6 +85,11 @@ interface SessionEndPayload {
     source?: string;
     importance?: number;
   }>;
+  /**
+   * Optional export config passed by the host from installed extension config.
+   * If _exportConfig module override is set, it takes precedence.
+   */
+  export_config?: Partial<ExportConfig>;
 }
 
 interface ScopePromotionPayload {
@@ -100,12 +154,76 @@ function openWriteDb(dbPath: string): Database.Database | null {
 }
 
 /**
+ * Resolve the effective export config for a SessionEnd event.
+ * Priority: module-level override (_exportConfig) > payload.export_config > defaults.
+ */
+function resolveExportConfig(payload: SessionEndPayload): ExportConfig {
+  if (_exportConfig !== null) {
+    return _exportConfig;
+  }
+  const pc = payload.export_config ?? {};
+  return {
+    export_enabled: pc.export_enabled ?? false,
+    export_dir: pc.export_dir ?? '',
+    export_throttle_secs: pc.export_throttle_secs ?? 60,
+  };
+}
+
+/**
+ * Attempt a markdown export from the given db_path to export_dir.
+ *
+ * Throttle: if called within `throttleSecs` of the last successful export,
+ * this is a no-op. The throttle is per-process (module-level `_lastExportMs`).
+ *
+ * Failure-isolated: any error is caught and logged; never re-thrown.
+ *
+ * @returns true if export ran, false if throttled or skipped.
+ */
+function tryAutoExport(db_path: string, exportDir: string, throttleSecs: number): boolean {
+  // Throttle check
+  const nowMs = Date.now();
+  const elapsedSecs = (nowMs - _lastExportMs) / 1000;
+  if (_lastExportMs > 0 && elapsedSecs < throttleSecs) {
+    console.log(
+      `[memory-flush] auto-export throttled (${elapsedSecs.toFixed(1)}s since last export, ` +
+        `throttle=${throttleSecs}s)`,
+    );
+    return false;
+  }
+
+  try {
+    if (!fs.existsSync(db_path)) {
+      console.log(`[memory-flush] auto-export skipped: db_path not found: ${db_path}`);
+      return false;
+    }
+
+    const db = memCoreOpenDb(db_path);
+    try {
+      const result = memCoreExportMarkdown(db, { dir: exportDir, enabled: true });
+      _lastExportMs = Date.now();
+      console.log(
+        `[memory-flush] auto-export complete: ${result.nodesWritten} nodes written, ` +
+          `${result.topics} topics → ${exportDir}`,
+      );
+    } finally {
+      db.close();
+    }
+    return true;
+  } catch (err) {
+    console.error(`[memory-flush] auto-export failed (non-fatal):`, err);
+    return false;
+  }
+}
+
+/**
  * Handle SessionEnd:
  *   1. Save session working memory state (if provided).
  *   2. Enqueue any pending episodes for async organization.
  *   3. Nudge memoryd to wake and process the queue.
+ *   4. (P5 BL-21) Auto-export to markdown if export_enabled + export_dir configured and
+ *      not within the throttle window.
  */
-function handleSessionEnd(payload: SessionEndPayload): void {
+async function handleSessionEnd(payload: SessionEndPayload): Promise<void> {
   const { session_id, db_path, scope = 'project', working_memory, episodes } = payload;
 
   if (!db_path) return;
@@ -177,6 +295,14 @@ function handleSessionEnd(payload: SessionEndPayload): void {
     nudgeDaemon();
   } finally {
     db.close();
+  }
+
+  // 4. (P5 BL-21) Auto-export — runs AFTER db.close() so the DB is not locked during export.
+  // Gate: export_enabled must be true AND export_dir must be a non-empty string.
+  // Failure-isolated: tryAutoExport catches all errors internally.
+  const exportCfg = resolveExportConfig(payload);
+  if (exportCfg.export_enabled && exportCfg.export_dir.trim()) {
+    tryAutoExport(db_path, exportCfg.export_dir.trim(), exportCfg.export_throttle_secs);
   }
 }
 
@@ -257,17 +383,13 @@ async function handleScopePromotionProposed(payload: ScopePromotionPayload): Pro
     }
 
     try {
-      // Dynamically import applyPromotion and rejectPromotion from the dist lib
-      // (avoids a circular dependency while keeping the logic in the lib — R3 preserved)
-      const { applyPromotion } = await import('@sox/memory-core');
-
       let applied = 0;
       let failed = 0;
 
       for (const item of items) {
         // applyPromotion is async (embed is async); cast through unknown to handle
         // stale dist type declarations while awaiting correctly.
-        const result = await (applyPromotion as unknown as (...args: unknown[]) => Promise<{ ok: boolean; dst_uid?: string; error?: string }>)(
+        const result = await (memCoreApplyPromotion as unknown as (...args: unknown[]) => Promise<{ ok: boolean; dst_uid?: string; error?: string }>)(
           srcDbRaw, dstDbRaw, item.uid, from_scope, to_scope,
         );
         if (result?.ok) {
@@ -298,8 +420,11 @@ export function handler(ctx: HookContext): void | Promise<void> {
   try {
     switch (ctx.event) {
       case 'SessionEnd':
-        handleSessionEnd(ctx.payload as SessionEndPayload);
-        break;
+        // handleSessionEnd is async (awaits tryAutoExport). Return the Promise so the host
+        // can optionally await the full flush+export cycle. Errors are caught inside.
+        return handleSessionEnd(ctx.payload as SessionEndPayload).catch(err => {
+          console.error(`[memory-flush] SessionEnd handler error:`, err);
+        });
       case 'ScopePromotionProposed':
         return handleScopePromotionProposed(ctx.payload as ScopePromotionPayload).catch(err => {
           console.error(`[memory-flush] ScopePromotionProposed handler error:`, err);

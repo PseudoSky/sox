@@ -22,13 +22,16 @@
     "additionalProperties": true,
     "properties": {
       "db_path": { "type": "string", "description": "Path to the SQLite memory store file used by the flush hook (e.g. ~/.memory/memory.db)." },
-      "promotion_policy": { "type": "string", "enum": ["auto", "manual", "disabled"], "description": "Scope promotion approval policy (default: manual)." }
+      "promotion_policy": { "type": "string", "enum": ["auto", "manual", "disabled"], "description": "Scope promotion approval policy (default: manual)." },
+      "export_enabled": { "type": "boolean", "default": false, "description": "When true, a markdown mirror export is automatically triggered after each SessionEnd flush. Default: false (opt-in). Requires export_dir to also be set." },
+      "export_dir": { "type": "string", "description": "Directory to write the markdown mirror into on auto-export (e.g. ~/.memory/export). Required when export_enabled=true." },
+      "export_throttle_secs": { "type": "number", "default": 60, "description": "Minimum seconds between auto-exports per process lifetime. Prevents redundant re-exports when many sessions end in quick succession. Default: 60s." }
     }
   },
   "permissions": {
     "fs": {
       "read":  ["~/.memory/**"],
-      "write": ["~/.memory/**"]
+      "write": ["~/.memory/**", "${MEMORY_EXPORT_DIR}/**"]
     },
     "socket": {
       "paths": ["~/.memory/memoryd.sock"]

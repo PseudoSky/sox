@@ -7,17 +7,18 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ---
 
-> **Status (2026-06-22): BL-1 … BL-20 all resolved.** BL-21/22/23/24 are now **folded into the
+> **Status (2026-06-22): BL-1 … BL-22 all resolved.** BL-23/24 are now **folded into the
 > memory-enrichment plan** at `docs/plan/memory-enrichment/` (SPEC + DESIGN + CONSUMER-INTERFACES +
 > CONTRACTS + IMPLEMENTATION) and tracked there per `IMPLEMENTATION.md §0` — they are resolved by its
 > phases (P1–P6), not as loose items. The metadata-drop half of BL-23 is already fixed (`9728f6f`).
+> **BL-21 (auto-export) and BL-22 (entity names) resolved by P5 (2026-06-22).**
 
 ## Folded into the memory-enrichment plan
 
 > **BL-21, BL-22, BL-23, BL-24 are owned by `docs/plan/memory-enrichment/IMPLEMENTATION.md` (§0).**
 > Each is resolved by a plan phase: BL-23 metadata = done (`9728f6f`); BL-23 project-path + BL-24
-> tags/topic = P1; BL-24 clustering = P3; BL-22 entity-names + BL-21 auto-refresh = P5. The detailed
-> entries below remain as the original discovery context; status is **Folded (tracked in the plan)**.
+> tags/topic = P1; BL-24 clustering = P3; BL-22 entity-names + BL-21 auto-refresh = P5 (both done 2026-06-22).
+> The detailed entries below remain as the original discovery context.
 
 ### BL-23 — `memory_write` drops `metadata` and records no caller provenance (project path)
 
@@ -43,25 +44,24 @@ Two related modelling gaps surfaced comparing DB vs docs:
   `topic`/`cluster` field (or a `TOPIC`/`MEMBER_OF` edge to a topic node) set at write time from
   the `[<topic>]` prefix and/or tags, so clustering is durable and queryable, not derived.
 
-### BL-22 — memory export frontmatter lists entities by opaque uid, not name
+### ~~BL-22~~ — memory export frontmatter lists entities by opaque uid, not name — **Resolved**
 
-**Severity:** Low (export usability) · **Status:** Folded → memory-enrichment plan (P5)
-The BL-20 export renders each episode's `entities:` frontmatter as raw entity uids
-(e.g. `entity-1782156652131-v1dfntxapt`) instead of the human-readable entity NAME the DB
-stores (e.g. `acceptance-testing`). For a git-reviewable mirror this defeats the purpose — a
-reviewer can't tell what an episode is about from the uids. Fix: have `collectMentionedEntities`
-return entity names (optionally keep the uid as a secondary field). Surfaced comparing DB vs docs.
+**Severity:** Low (export usability) · **Status:** Resolved — P5 (2026-06-22)
+`collectMentionedEntities` now returns entity `name` fields (not uids). Entities without a name
+are silently omitted. The topic derivation chain also uses entity names at every level. Verified
+by real-store proof: `entities: typescript, strict-mode` (not `01KVRS4Q1S...`). Gates: `nx run-many
+-t build lint test --projects=memory-core,memory-flush` 65/65 green.
 
-### BL-21 — memory markdown export is on-demand; not auto-refreshed as new memory is written
+### ~~BL-21~~ — memory markdown export is on-demand; not auto-refreshed as new memory is written — **Resolved**
 
-**Severity:** Low (auditability / DX) · **Status:** Folded → memory-enrichment plan (P5)
-BL-20 delivered `memory export` (DB→markdown mirror, topic-organized, configurable) but it must
-be run **manually** to refresh. BL-20's goal was that the mirror *stays current* — so a new
-finding written via `memory_write` still has no markdown representation until someone runs
-`memory export`. Wire an automatic refresh so the mirror tracks the DB without manual steps:
-e.g. call `exportMarkdown()` from the `memory-flush` SessionEnd hook (and/or a periodic
-`memory-daemon` pass), gated on `export_enabled`. Consider throttling/incremental export (919
-nodes today) so it stays cheap on large stores.
+**Severity:** Low (auditability / DX) · **Status:** Resolved — P5 (2026-06-22)
+`memory-flush` `handleSessionEnd` now calls `tryAutoExport` after the flush+nudge, gated on
+`export_enabled=true` AND `export_dir` being configured (default OFF — explicitly opt-in). The
+export is throttled (default 60s, configurable via `export_throttle_secs`) and fully
+failure-isolated (any export error is caught + logged; flush never breaks). Config injected via
+`setExportConfig()` (module override for tests/startup) or `payload.export_config` from host.
+Gates: 14 new tests in `index.spec.ts` covering gate/throttle/failure-isolation; `nx run-many
+-t build lint test --projects=memory-core,memory-flush` 65/65 green.
 
 ### ~~BL-19~~ — `install` hard-fails on a single unresolvable config `install[]` entry — **Resolved**
 
