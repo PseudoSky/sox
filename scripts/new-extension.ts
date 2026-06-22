@@ -269,6 +269,9 @@ function makeContentFile(type: ExtensionType, id: string, title: string, descrip
       // A bundle has no content file — it is manifest-only (extension.json + package.json).
       // This case returns an empty string; scaffold() skips writing a content file for bundles.
       return '';
+
+    default:
+      return '';
   }
 }
 
@@ -557,6 +560,7 @@ function makeReadme(type: ExtensionType, id: string, title: string, description:
         `## Overview`,
         ``,
         `<!-- Describe the purpose of this bundle and the extensions it ships together. -->`,
+
         ``,
         `## When to use`,
         ``,
@@ -584,6 +588,9 @@ function makeReadme(type: ExtensionType, id: string, title: string, description:
         ``,
         `MIT`,
       ].join('\n');
+
+    default:
+      return '';
   }
 }
 

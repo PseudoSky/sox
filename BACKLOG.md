@@ -9,14 +9,17 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ## Open
 
-### BL-1 — `pnpm typecheck` exits 2 on latent tokenguard + scripts errors
+### ~~BL-1~~ — `pnpm typecheck` exits 2 on latent tokenguard + scripts errors — **Resolved**
 
-**Severity:** Low (code hygiene; no runtime impact) · **Status:** Open
-Surfaced after the `@sox/tokenguard-core` workspace-protocol fix (`dabe9ea`) unmasked them —
-TS previously aborted on `TS2307 Cannot find module '@sox/tokenguard-core'` before reaching
-them. Pre-existing; not regressions from that fix (a dep-spec change cannot introduce `TS6133`).
+**Severity:** Low (code hygiene; no runtime impact) · **Status:** Resolved (2026-06-21)
+Surfaced after the `@sox/tokenguard-core` workspace-protocol fix (`dabe9ea`) unmasked them.
+**Verified fixed:** `pnpm typecheck` (root `tsc --noEmit`) now exits **0**; all nine cited
+files are inside the compilation (`--listFilesOnly` confirms) and every cited error is gone
+(e.g. `proxy.ts:309` now reads `(vs[0] ?? '')` — the prescribed `undefined` guard). The
+mechanical fixes are realized in the working tree (tokenguard `cli.ts`/`mapstore.ts`/`proxy.ts`,
+`scripts/new-extension.ts`, `scripts/check-registry-sync.ts) — **pending commit.**
 
-9 errors:
+9 errors (historical):
 
 _tokenguard source:_
 
@@ -66,13 +69,12 @@ is correct. But: a vitest run (which transforms TS source, or uses a `resolve.al
 source) can PASS while the built `dist` is stale — so "tests pass" does **not** prove the
 runtime/MCP path. Always verify runtime behavior against `nx build` output, not vitest.
 
-### BL-5 — `@sox/mcp-runtime` consolidation (ADR-0002) still pending for memory-server
+### ~~BL-5~~ — `@sox/mcp-runtime` consolidation — **Resolved**
 
-**Severity:** Medium (architecture) · **Status:** Open (tracked in ADR-0002)
-`memory-server` currently hand-rolls a newline-delimited JSON-RPC stdio loop (`readline` on
-stdin) instead of using the shared `@sox/mcp-runtime` wrapper ADR-0002 specifies. ADR-0002
-explicitly calls for "memory-server's hand-rolled loop + vendored guard [to] collapse into it."
-Until then the bundle ships its own transport + permission-guard.
+**Status:** Resolved. `memory-server` now uses `serve()` + `defineTool()` from `@sox/mcp-runtime`;
+hand-rolled readline loop removed. Vendored `compilePolicyFromEnv` kept (standalone child process
+cannot reach `@sox/host-runtime` at runtime). Type escape hatches removed; `handleToolCall`
+returns `Promise<ToolResult>`, `TOOLS` typed as `Array<Omit<ToolDefinition, 'handler'>>`.
 
 ### BL-6 — Verify the other sox-memory-bundle members build/run post workspace-glob widening
 
@@ -116,30 +118,41 @@ Surfaced while migrating a 95-document research corpus into `~/.memory/memory.db
 **Severity:** Medium (recall correctness) · **Status:** Open
 `memoryRecall` defaults `token_budget` to ~4000 (`recall.ts`), and `federatedRecall` to 4000. The assembler stops adding results once the budget is exceeded (`recall.ts:279`), so with document-sized nodes a single result fills the budget and recall returns **1 hit even when `limit` is 10**. Confirmed empirically: same query returned 1 result at default, 10 at `token_budget: 50000`. Fix: raise the default to a sane multi-result value, make it scale with `limit`, and/or document that callers must pass `token_budget`. The `limit` parameter is misleading while the budget silently caps below it.
 
-### BL-9 — No edge/link MCP tool; relationships require the organizer or raw SQL
+### ~~BL-9~~ — No edge/link MCP tool; relationships require the organizer or raw SQL — **Resolved**
 
-**Severity:** Medium (graph completeness) · **Status:** Open
-The 7 `memory_*` tools (`write/recall/search_entities/get_community/get|save_session_state/invalidate`) can **create nodes but not edges**. Chunk→parent (`DERIVED_FROM`), `SUPERSEDES`, `RELATES_TO` etc. can only be made by the organizer daemon or direct SQL. A bulk importer that wants to link chunks to their source document has no API. Add a `memory_link(src, dst, rel)` tool (or a batch `memory_write` that accepts edges), or document that linking depends on running `memory-organizer`.
+**Severity:** Medium (graph completeness) · **Status:** Resolved (2026-06-21)
+A `memory_link` tool now exists (memory-server `src/index.ts:294` definition, `:620` handler),
+creating directed edges between existing nodes (`DERIVED_FROM`, `SUPERSEDES`, `RELATES_TO`,
+`SUPPORTS`, `MENTIONS`). Bulk importers can link chunks to their source document via the MCP
+without the organizer or raw SQL. **Verified in working tree — pending commit.**
 
 ### BL-10 — `initScope` records the `EMBED_MODEL` constant, not the active model
 
 **Severity:** Medium (bug — embed-model pin is wrong) · **Status:** Open
 `initScope` (`db.ts`) writes `EMBED_MODEL` (the legacy hash constant, `nomic-embed-text-v1.5-hash`) into `memory_scope.embed_model`, even when the active backend is `real` (bge-base-en-v1.5). The scope's pin is then false, which defeats the whole "pin forces re-embed on model change" mechanism and misleads any consistency check. Fix: record `getActiveEmbedModel()` at scope-init time.
 
-### BL-11 — In-process `embed()` + `better-sqlite3` crashes ("mutex lock failed")
+### ~~BL-11~~ — In-process `embed()` + `better-sqlite3` crashes ("mutex lock failed") — **Resolved**
 
-**Severity:** High (blocks programmatic/bulk ingest) · **Status:** Open
-A single Node process that calls `openDb()` (better-sqlite3 + sqlite-vec native) and then `await embed()` (onnxruntime-node native) and then `memoryWrite()` crashes with `TypeError: The database connection is not open` and `libc++abi: terminating … mutex lock failed: Invalid argument`. The onnxruntime-node native addon appears to interfere with the better-sqlite3 handle across the async boundary. Bulk ingest had to be driven entirely through the MCP server (separate process) instead of the library. Fix: isolate ONNX inference (worker thread / subprocess) so the lib is safe to use in-process, or document the constraint loudly.
+**Severity:** High (blocks programmatic/bulk ingest) · **Status:** Resolved (2026-06-21)
+ONNX inference is now isolated in a worker thread (`libs/memory-core/src/embedWorker.ts`,
+referenced from `embed.ts:92` and `index.ts:9-10` with explicit "resolves BL-11" notes), so
+onnxruntime-node and better-sqlite3 no longer share the libpthread mutex that was corrupted
+across the async boundary. The library is safe to call in-process (openDb → embed → memoryWrite).
+**Verified in working tree — `embedWorker.ts` is untracked, pending commit.**
 
 ### BL-12 — `reembedNodes` is defined but not re-exported from the package index
 
 **Severity:** Low (API consistency) · **Status:** Open
 `reembedNodes` lives in `embed.ts` and is in its `.d.ts`, but `index.ts` re-exports only `enqueueReindex` (from `memoryd`). `require('@sox/memory-core').reembedNodes` is `undefined`; callers must reach into the submodule. Re-export it from the index.
 
-### BL-13 — `memory_write` stores whole content as one node; no chunking + embedding truncation
+### ~~BL-13~~ — `memory_write` stores whole content as one node; no chunking + embedding truncation — **Resolved**
 
-**Severity:** Medium (recall quality) · **Status:** Open
-`memory_write` embeds the entire `content` string as a single node. For document-sized input: (a) recall is coarse (one node per doc), and (b) bge only embeds the first ~512 tokens, so later content is not semantically searchable. Workaround used here: the caller pre-chunked each finding into a summary node + per-`##`-section nodes (95 docs → 823 nodes), which fixed default-budget recall. Consider chunking in `memory_write` for large content, or document that callers must chunk / rely on the organizer's extraction pass.
+**Severity:** Medium (recall quality) · **Status:** Resolved (2026-06-21)
+`memory_write` now chunks large content server-side: `splitIntoChunks()` (memory-server
+`src/index.ts:360`) splits content exceeding `chunk_size` (param at `:198`, default ~500
+tokens) at sentence boundaries, storing each chunk as a separate episode with a `DERIVED_FROM`
+edge to the parent. Callers no longer need to pre-chunk document-sized input for usable
+default-budget recall. **Verified in working tree — pending commit.**
 
 ### BL-14 — `memory_recall` lacks result diversity (one verbose source crowds top-N)
 

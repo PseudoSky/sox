@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@sox/memory-core": "workspace:*"
+    "@sox/memory-core": "workspace:*",
+    "@sox/mcp-runtime": "workspace:*"
   },
   "license": "MIT"
 }

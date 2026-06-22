@@ -9,7 +9,7 @@ import * as sqliteVec from 'sqlite-vec';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
-import { EMBED_MODEL, EMBED_DIM } from './embed.js';
+import { EMBED_DIM, getActiveEmbedModel } from './embed.js';
 
 export type ScopeKind = 'project' | 'user' | 'org' | 'local';
 
@@ -68,12 +68,12 @@ export function initScope(
   db.prepare(
     `INSERT INTO memory_scope(scope, scope_id, embed_model, embed_dim, schema_ver, created_at)
      VALUES (?, ?, ?, ?, 1, ?)`,
-  ).run(scope, scopeId, EMBED_MODEL, EMBED_DIM, now);
+  ).run(scope, scopeId, getActiveEmbedModel(), EMBED_DIM, now);
 
   return {
     scope,
     scope_id: scopeId,
-    embed_model: EMBED_MODEL,
+    embed_model: getActiveEmbedModel(),
     embed_dim: EMBED_DIM,
     schema_ver: 1,
     created_at: now,

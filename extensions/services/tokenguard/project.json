@@ -30,13 +30,13 @@
     "test": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "vitest run --config extensions/services/tokenguard/vitest.config.ts",
+        "command": "vitest run --config extensions/services/tokenguard/vitest.config.mts",
         "cwd": "."
       },
       "cache": true,
       "inputs": [
         "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/vitest.config.ts"
+        "{projectRoot}/vitest.config.mts"
       ]
     },
     "lint": {

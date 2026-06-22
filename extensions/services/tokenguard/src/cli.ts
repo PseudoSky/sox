@@ -20,7 +20,6 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as readline from 'node:readline';
 
 import { appendEntry, readEntries } from './mapstore.js';
 

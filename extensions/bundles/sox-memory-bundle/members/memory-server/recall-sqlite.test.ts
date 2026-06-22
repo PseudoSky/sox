@@ -20,11 +20,6 @@ import * as path from 'node:path';
 import { openDb, memoryWrite, memoryRecall, getActiveEmbedModel, _resetEmbedSingleton } from '@sox/memory-core';
 import type { RecallResponse } from '@sox/memory-core';
 
-// Gate: real embedding tests only run when SOX_EMBED_BACKEND=real or the
-// explicit download-test flag is set. Hash backend is the default in CI.
-const RUN_REAL_EMBED =
-  process.env['SOX_EMBED_BACKEND'] === 'real' ||
-  process.env['SOX_RUN_EMBED_DOWNLOAD_TESTS'] === '1';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -165,14 +160,10 @@ describe('memoryRecall — real SQLite integration', () => {
   });
 });
 
-// ── Semantic proof — MCP bundle path ──────────────────────────────────────────
+// ── Semantic proof — real embedding ───────────────────────────────────────────
 //
-// Proves that the bundle's MCP path (index.ts → @sox/memory-core) routes through
-// the real fastembed backend when SOX_EMBED_BACKEND=real is set, producing
+// Proves that the MCP path routes through the real fastembed backend, producing
 // semantically-ranked recall (not just hash-bucket recall).
-//
-// Skipped in CI (hash backend) — run with:
-//   SOX_EMBED_BACKEND=real npx vitest run recall-sqlite.test.ts
 
 describe('MCP bundle path — real embedding semantic proof', () => {
   let dbPath: string;
@@ -182,20 +173,19 @@ describe('MCP bundle path — real embedding semantic proof', () => {
     const tmp = makeTempDb();
     dbPath = tmp.dbPath;
     cleanup = tmp.cleanup;
-    // Reset singleton so backend env var is picked up fresh per test
     _resetEmbedSingleton();
+    process.env['SOX_EMBED_BACKEND'] = 'real';
   });
 
   afterEach(() => {
     _resetEmbedSingleton();
+    delete process.env['SOX_EMBED_BACKEND'];
     cleanup();
   });
 
-  it.skipIf(!RUN_REAL_EMBED)(
+  it(
     'getActiveEmbedModel() reports real BGE model and cosine(similar) > cosine(dissimilar)',
     async () => {
-      // Set real backend for this test
-      process.env['SOX_EMBED_BACKEND'] = 'real';
 
       const db = openDb(dbPath);
 
@@ -207,7 +197,7 @@ describe('MCP bundle path — real embedding semantic proof', () => {
 
         // Verify the active model is the real BGE model (not 'hash')
         const activeModel = getActiveEmbedModel();
-        expect(activeModel).toBe('fast-bge-base-en-v1.5');
+        expect(activeModel).toBe('bge-base-en-v1.5');
 
         // Semantic recall: the AI/ML query should rank the two AI claims above the budget claim
         const response: RecallResponse = await memoryRecall(db, 'project', {
@@ -220,11 +210,10 @@ describe('MCP bundle path — real embedding semantic proof', () => {
 
         // The top-2 results should be the AI/ML claims, not the budget claim
         const top2Contents = response.results.slice(0, 2).map((r) => r.content);
-        const budgetInTop2 = top2Contents.some((c) => c.includes('budget'));
+        const budgetInTop2 = top2Contents.some((c) => c?.includes('budget'));
         expect(budgetInTop2).toBe(false);
       } finally {
         db.close();
-        delete process.env['SOX_EMBED_BACKEND'];
       }
     },
     30_000, // allow fastembed model download on first run

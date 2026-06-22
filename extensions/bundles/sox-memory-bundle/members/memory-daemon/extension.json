@@ -1,0 +1,80 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "memory-daemon",
+  "version": "0.1.0",
+  "type": "service",
+  "title": "Memory Daemon",
+  "description": "Supervised Unix-socket daemon that drains the organizer queue and calls memory-organizer for LLM processing",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "runtime": "node",
+  "entrypoint": "dist/index.js",
+  "lifecycle": {
+    "background": true,
+    "singleton": true,
+    "stop_timeout_ms": 5000,
+    "health": {
+      "type": "socket",
+      "endpoint": "${SOX_CONFIG_SOCK_PATH}",
+      "interval_ms": 30000,
+      "timeout_ms": 5000
+    }
+  },
+  "install": {
+    "type": "service",
+    "transports": [
+      "socket"
+    ],
+    "profiles": {
+      "socket": {
+        "transport": "socket"
+      }
+    }
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["db_path"],
+    "properties": {
+      "db_path": {
+        "type": "string",
+        "description": "Path to the SQLite memory database file.",
+        "x-sox-prompt": "Enter the path for the memory database:",
+        "x-sox-default": "~/.memory/memory.db"
+      },
+      "sock_path": {
+        "type": "string",
+        "description": "Unix socket path for the daemon IPC endpoint.",
+        "x-sox-prompt": "Enter the socket path for memory-daemon:",
+        "x-sox-default": "~/.memory/memoryd.sock"
+      },
+      "provider_url": {
+        "type": "string",
+        "description": "LLM provider base URL for memory-organizer (optional; uses deterministic fallback if absent)."
+      },
+      "provider_key": {
+        "type": "string",
+        "description": "LLM provider API key (optional)."
+      },
+      "provider_model": {
+        "type": "string",
+        "description": "LLM model name for memory-organizer (default: gpt-4o-mini).",
+        "x-sox-default": "gpt-4o-mini"
+      }
+    }
+  },
+  "permissions": {
+    "fs": {
+      "read": ["~/.memory/**"],
+      "write": ["~/.memory/**"]
+    },
+    "socket": {
+      "paths": ["~/.memory/memoryd.sock"]
+    },
+    "network": {
+      "outbound": ["${MEMORY_PROVIDER_HOST}"]
+    }
+  }
+}

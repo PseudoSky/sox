@@ -29,10 +29,6 @@ interface TokenMap {
   entries: MapEntry[];
 }
 
-function now(): string {
-  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
-}
-
 // ── Atomic write helper ───────────────────────────────────────────────────────
 
 function atomicWrite(filePath: string, doc: TokenMap): void {
