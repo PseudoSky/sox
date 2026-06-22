@@ -317,6 +317,14 @@ describe('Scope vocabulary (-s / --scope)', () => {
     expect(r.stderr).toContain('invalid scope');
   });
 
+  it('rejects a reserved scope name as a positional id (BL-19 source guard)', () => {
+    // `install user` must NOT write { id: "user" } into the config — a scope name is
+    // never an extension id. Guards against the cruft that hard-failed later installs.
+    const r = sox(['install', 'user']);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('scope name');
+  });
+
   it('rejects -g as a scope on install', () => {
     // -g is not the named-scope vocabulary; it must be rejected
     const r = sox(['install', '-g']);

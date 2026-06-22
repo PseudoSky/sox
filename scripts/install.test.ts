@@ -208,6 +208,41 @@ describe('P1: single-scope local install', () => {
     expect(Object.keys(resolved)).toContain('registry-ext');
     expect(fs.existsSync(lockfilePath)).toBe(true);
   });
+
+  it('skips an unresolvable install[] entry instead of aborting (BL-19 resilience)', async () => {
+    makeExtension(root, 'skills', 'registry-ext');
+    const registryDir = path.join(root, 'registry');
+    fs.mkdirSync(registryDir, { recursive: true });
+    const crypto = await import('node:crypto');
+    const distDir = path.join(root, 'extensions', 'skills', 'registry-ext', 'dist');
+    fs.mkdirSync(distDir, { recursive: true });
+    const distJs = path.join(distDir, 'index.js');
+    fs.writeFileSync(distJs, 'module.exports = {};\n');
+    const checksum = 'sha256:' + crypto.createHash('sha256').update(fs.readFileSync(distJs)).digest('hex');
+    fs.writeFileSync(
+      path.join(registryDir, 'index.json'),
+      JSON.stringify([{
+        id: 'registry-ext', type: 'skill', version: '0.1.0', title: 'Registry Ext',
+        description: 'test', source: `file://${path.join(root, 'extensions', 'skills', 'registry-ext')}`,
+        checksum, compatibility: { host: '>=1.0.0 <2.0.0' },
+      }], null, 2),
+    );
+
+    // Config mixes a VALID entry with an UNRESOLVABLE one — install must skip the bad
+    // one and still install the valid one (not process.exit on the whole operation).
+    const { configPath, lockfilePath } = makeUserConfig(root, {
+      install: [
+        { id: 'registry-ext', version: '0.1.0' },
+        { id: 'totally-bogus-xyz', version: '0.1.0' },
+      ],
+    });
+
+    const resolved = await install({ scope: 'user', mode: 'default', configPath, lockfilePath, root });
+
+    expect(Object.keys(resolved)).toContain('registry-ext');
+    expect(Object.keys(resolved)).not.toContain('totally-bogus-xyz');
+    expect(fs.existsSync(lockfilePath)).toBe(true);
+  });
 });
 
 // ─── P2 Tests — extends hash pin ─────────────────────────────────────────────
