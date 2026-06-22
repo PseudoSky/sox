@@ -1,3 +1,0 @@
-> echo 'sox-memory-bundle: no TS sources to lint (declarative bundle)' --dry-run
-
-sox-memory-bundle: no TS sources to lint (declarative bundle) --dry-run

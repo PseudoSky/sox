@@ -1,2 +1,0 @@
-> tsc --project libs/registry/tsconfig.lib.json && echo '{"type":"commonjs"}' > libs/registry/dist/package.json
-

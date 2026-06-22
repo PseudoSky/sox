@@ -1,2 +1,0 @@
-> tsc --project libs/install-engine/tsconfig.lib.json && echo '{"type":"commonjs"}' > libs/install-engine/dist/package.json
-

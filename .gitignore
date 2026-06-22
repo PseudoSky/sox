@@ -8,3 +8,9 @@ dist/
 # sox-memory temp test dirs
 .tmp-mvp/
 .tmp-test/
+# nx machine-local state (never belongs in git)
+.nx/
+# macOS junk
+.DS_Store
+# tsc incremental build cache
+*.tsbuildinfo
