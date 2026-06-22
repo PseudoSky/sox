@@ -25,7 +25,7 @@ import * as os from 'node:os';
 import { createRequire } from 'node:module';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
-const SOX_BIN = path.join(ROOT, 'bin', 'sox');
+const SOX_BIN = path.join(ROOT, 'bin', 'soxe');
 const NODE = process.execPath;
 
 // ─── Temp dir (throwaway, not in .tmp-* which are reserved for other tools) ───

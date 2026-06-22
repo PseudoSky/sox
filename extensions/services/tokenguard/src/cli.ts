@@ -6,7 +6,7 @@
  *   map                         — print current entries as JSON
  *   summary                     — per-identifier swap counts + leak check from audit log
  *
- * Wired into the service so `./bin/sox exec tokenguard -- <cmd>` reaches it
+ * Wired into the service so `./bin/soxee exec tokenguard -- <cmd>` reaches it
  * via the MCP stdio protocol handled in index.ts. [tg-cli.1] [tg-cli.4]
  *
  * Direct invocation:
@@ -241,9 +241,9 @@ Environment:
   SOX_CONFIG_CAPTURE_DIR   Override the capture/audit directory
 
 Via sox exec (exec-socket or fresh-spawn MCP):
-  ./bin/sox exec tokenguard --tool=seed   --args='{"real":"host.internal","type":"host"}'
-  ./bin/sox exec tokenguard --tool=map    --args='{}'
-  ./bin/sox exec tokenguard --tool=summary --args='{}'
+  ./bin/soxe exec tokenguard --tool=seed   --args='{"real":"host.internal","type":"host"}'
+  ./bin/soxe exec tokenguard --tool=map    --args='{}'
+  ./bin/soxe exec tokenguard --tool=summary --args='{}'
 `);
     return;
   }
