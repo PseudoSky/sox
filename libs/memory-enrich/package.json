@@ -1,7 +1,7 @@
 {
-  "name": "@sox/memory-core",
-  "version": "0.1.0",
-  "description": "Shared internal library for the sox-memory subsystem (db, schema, embed, recall, write, memoryd, extensions)",
+  "name": "@sox/memory-enrich",
+  "version": "1.0.0",
+  "description": "Deterministic memory graph enrichment — no LLM, no provider, byte-reproducible outputs.",
   "private": true,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,7 +13,6 @@
     }
   },
   "dependencies": {
-    "fastembed": "^2.1.0",
-    "@sox/memory-enrich": "workspace:*"
+    "better-sqlite3": "*"
   }
 }

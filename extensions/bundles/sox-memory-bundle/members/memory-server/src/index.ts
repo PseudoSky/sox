@@ -185,27 +185,27 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_write',
     description:
-      'Write a memory episode to the store. Returns {episode_uid}. Enqueues organize; never blocks on LLM.',
+      'Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, near-dup, extractive summary). Returns {episode_uid}. Batch enrichments (clustering, auto-links, importance link-score) run asynchronously in the daemon.',
     inputSchema: {
       type: 'object',
       properties: {
-        content: { type: 'string', description: 'The content to memorize' },
-        summary: { type: 'string', description: 'Human-readable summary / topic of the content (persisted)' },
-        metadata: { type: 'object', additionalProperties: true, description: 'Arbitrary caller metadata, persisted as JSON (e.g. project path, source url)' },
-        db_path: { type: 'string', description: 'Path to the .db file' },
-        session_id: { type: 'string' },
-        t_occurred: { type: 'string', description: 'ISO timestamp when this occurred' },
-        agent_id: { type: 'string' },
+        content:          { type: 'string', description: 'The content to memorize. Required.' },
+        db_path:          { type: 'string', description: 'Path to the .db file.' },
+        summary:          { type: 'string', description: '(E2) Human-readable summary. Persisted to node.summary; no extractive fallback runs if supplied.' },
+        name:             { type: 'string', description: '(E2) Title/name for this episode (node.name).' },
+        topic:            { type: 'string', description: '(E5) Explicit topic override. Stored to node.topic; takes priority over [<topic>] prefix and cluster label.' },
+        tags:             { type: 'array', items: { type: 'string' }, description: '(E4) Concept/entity tags. Persisted as node.tags JSON array AND as entity nodes + MENTIONS edges.' },
+        metadata:         { type: 'object', additionalProperties: true, description: '(E3) Arbitrary caller metadata persisted as node.meta JSON. Queryable via json_extract.' },
+        project_path:     { type: 'string', description: '(E1) Caller project root path. Auto-detected from cwd+git if omitted.' },
+        derived_from_uid: { type: 'string', description: '(E9) UID of a parent episode; emits a DERIVED_FROM edge from this episode to parent.' },
+        session_id:       { type: 'string' },
+        t_occurred:       { type: 'string', description: 'ISO timestamp when this occurred.' },
+        agent_id:         { type: 'string' },
         source: {
           type: 'string',
           enum: ['message', 'tool_output', 'observation', 'document', 'reflection', 'import'],
         },
-        importance: { type: 'number', minimum: 1, maximum: 10 },
-        tags: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Explicit concept/entity tags to attach immediately (user-asserted, no organizer delay)',
-        },
+        importance:       { type: 'number', minimum: 1, maximum: 10, description: 'User-asserted importance (1–10). If supplied, batch enricher will not overwrite it.' },
         chunk_size: {
           type: 'number',
           description: 'Approximate tokens per chunk (default: 500). Content exceeding this threshold is split at sentence boundaries; each chunk is stored as a separate episode with a DERIVED_FROM edge to the parent.',
@@ -312,7 +312,7 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         dst_uid: { type: 'string', description: 'UID of the destination node' },
         rel: {
           type: 'string',
-          enum: ['MENTIONS', 'SUPPORTS', 'RELATES_TO', 'DERIVED_FROM', 'SUPERSEDES', 'ASSIGNED_TO'],
+          enum: ['MENTIONS', 'SUPPORTS', 'RELATES_TO', 'DERIVED_FROM', 'SUPERSEDES', 'SAME_AS', 'ASSIGNED_TO'],
           description: 'Relationship type',
         },
         db_path: { type: 'string', description: 'Path to the .db file' },
@@ -421,6 +421,10 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         const parentResult = await memoryWrite(db, {
           content,
           summary: args['summary'] as string | undefined,
+          name: args['name'] as string | undefined,
+          topic: args['topic'] as string | undefined,
+          project_path: args['project_path'] as string | undefined,
+          derived_from_uid: args['derived_from_uid'] as string | undefined,
           metadata: args['metadata'] as Record<string, unknown> | undefined,
           session_id: args['session_id'] as string | undefined,
           t_occurred: args['t_occurred'] as string | undefined,
@@ -495,6 +499,10 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       const result = await memoryWrite(db, {
         content,
         summary: args['summary'] as string | undefined,
+        name: args['name'] as string | undefined,
+        topic: args['topic'] as string | undefined,
+        project_path: args['project_path'] as string | undefined,
+        derived_from_uid: args['derived_from_uid'] as string | undefined,
         metadata: args['metadata'] as Record<string, unknown> | undefined,
         session_id: args['session_id'] as string | undefined,
         t_occurred: args['t_occurred'] as string | undefined,

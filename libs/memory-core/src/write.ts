@@ -19,6 +19,7 @@ import * as crypto from 'node:crypto';
 import { monotonicFactory } from 'ulid';
 import { embed, vecToJson } from './embed.js';
 import { enqueueIngest, nudgeDaemon } from './memoryd.js';
+import { enrichOnWrite } from '@sox/memory-enrich';
 
 const ulid = monotonicFactory();
 
@@ -26,6 +27,14 @@ export interface WriteParams {
   content: string;
   /** Human-readable summary / topic of the content (persisted to node.summary). */
   summary?: string | undefined;
+  /** (E2) Title / name for this episode (node.name). */
+  name?: string | undefined;
+  /** (E5) Explicit topic override. Stored to node.topic; takes priority over [<topic>] prefix. */
+  topic?: string | undefined;
+  /** (E1) Caller project root path. Auto-detected from cwd+git if omitted. */
+  project_path?: string | undefined;
+  /** (E9) UID of a parent episode; emits a DERIVED_FROM edge from this episode to parent. */
+  derived_from_uid?: string | undefined;
   session_id?: string | undefined;
   t_occurred?: string | undefined;
   agent_id?: string | undefined;
@@ -38,6 +47,14 @@ export interface WriteParams {
 
 export interface WriteResult {
   episode_uid: string;
+  /** Enrichment fields resolved at write time via enrichOnWrite (E1–E5, E8, E10, E12). */
+  enrichment?: {
+    topic: string | null;
+    project_path: string | null;
+    summary: string | null;
+    tags: string[];
+    near_dup: { existing_uid: string; cosine_sim: number } | null;
+  };
 }
 
 export type WriteError =
@@ -57,11 +74,15 @@ export async function memoryWrite(
   const {
     content,
     summary,
+    name,
+    topic,
+    project_path,
+    derived_from_uid,
     session_id,
     t_occurred,
     agent_id,
     source = 'message',
-    importance = 1.0, // default; organizer will update via LLM scoring
+    importance = 1.0, // default; batch enricher will update on next pass
     scope = 'project',
     tags,
     metadata,
@@ -69,6 +90,21 @@ export async function memoryWrite(
 
   // Caller-supplied metadata is persisted as JSON (previously silently dropped).
   const metaJson = metadata !== undefined ? JSON.stringify(metadata) : null;
+
+  // (E5) Parse [<topic>] prefix from content if no explicit topic was supplied.
+  // Regex matches `[<topic>]` at the start of content (up to 64 chars, no newlines).
+  let resolvedTopic: string | null = topic ?? null;
+  if (resolvedTopic === null) {
+    const prefixMatch = /^\s*\[([^\]\n]{1,64})\]/.exec(content);
+    if (prefixMatch) resolvedTopic = prefixMatch[1] ?? null;
+  }
+
+  // (E4) Tags JSON column — retain the raw string[] alongside the MENTIONS edges.
+  const tagsJson = tags && tags.length > 0 ? JSON.stringify(tags) : null;
+
+  // (E1) project_path — use caller value if supplied; auto-detection (resolveProjectPath)
+  // will be wired in P2 via enrichOnWrite. For P1 we store caller-supplied value only.
+  const resolvedProjectPath: string | null = project_path ?? null;
 
   if (!content || !content.trim()) {
     return { code: 'E_SCOPE_RO', message: 'content must not be empty' };
@@ -100,18 +136,25 @@ export async function memoryWrite(
   const embeddingVec = await embed(content);
   const embeddingJson = vecToJson(embeddingVec);
 
+  // Track rowid for post-transaction enrichOnWrite call
+  let insertedRowid = 0;
+
   // Atomic transaction: insert node + vec + FTS (via trigger) + enqueue
   const tx = db.transaction(() => {
     const result = db.prepare<unknown[], { rowid: number }>(
-      `INSERT INTO node (uid, kind, content, summary, meta, agent_id, session_id, source, importance,
-                         content_hash, t_created, t_occurred, t_valid)
-       VALUES (?, 'episode', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO node (uid, kind, content, name, summary, meta, agent_id, session_id, source,
+                         importance, content_hash, t_created, t_occurred, t_valid,
+                         topic, tags, project_path)
+       VALUES (?, 'episode', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING rowid`,
-    ).get(uid, content, summary ?? null, metaJson, agent_id ?? null, session_id ?? null, source, importance,
-          contentHash, now, tOccurred, tValid);
+    ).get(uid, content, name ?? null, summary ?? null, metaJson,
+          agent_id ?? null, session_id ?? null, source, importance,
+          contentHash, now, tOccurred, tValid,
+          resolvedTopic, tagsJson, resolvedProjectPath);
 
     if (!result) throw new Error('Insert failed: no rowid returned');
     const rowid = result.rowid;
+    insertedRowid = rowid;
 
     // Insert into vec_node (accepts JSON string or binary blob)
     db.prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(
@@ -125,21 +168,21 @@ export async function memoryWrite(
     // Attach user-asserted tags as entity nodes + MENTIONS edges (no organizer delay)
     if (tags && tags.length > 0) {
       for (const tag of tags) {
-        const name = tag.trim();
-        if (!name) continue;
+        const tagName = tag.trim();
+        if (!tagName) continue;
         const existingEntity = db
           .prepare<[string], { rowid: number }>(
             `SELECT rowid FROM node WHERE kind = 'entity' AND name = ? AND t_invalid IS NULL`,
           )
-          .get(name);
+          .get(tagName);
         const entityRowid = existingEntity?.rowid ?? (() => {
           const entityUid = ulid();
           const r = db
             .prepare<unknown[], { rowid: number }>(
               `INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'entity', ?, ?, ?) RETURNING rowid`,
             )
-            .get(entityUid, name, now, now);
-          if (!r) throw new Error(`Failed to insert entity node for tag: ${name}`);
+            .get(entityUid, tagName, now, now);
+          if (!r) throw new Error(`Failed to insert entity node for tag: ${tagName}`);
           return r.rowid;
         })();
         db.prepare(
@@ -152,15 +195,55 @@ export async function memoryWrite(
       }
     }
 
+    // (E9) Explicit DERIVED_FROM edge when caller supplies a parent UID.
+    if (derived_from_uid) {
+      const parent = db
+        .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ?`)
+        .get(derived_from_uid);
+      if (parent) {
+        db.prepare(
+          `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
+           VALUES (?, ?, 'DERIVED_FROM', 'user_asserted', ?, '{}')`,
+        ).run(rowid, parent.rowid, now);
+      }
+    }
+
     return uid;
   });
 
   const episodeUid = tx() as string;
 
+  // P2: run write-path enrichments (E1–E5, E8, E10, E12) synchronously after insert.
+  // enrichOnWrite updates node.topic/project_path/summary/tags/importance/enrich_ver.
+  const enrichResult = enrichOnWrite(db, {
+    uid: episodeUid,
+    rowid: insertedRowid,
+    content,
+    summary,
+    tags,
+    topic,
+    metadata,
+    project_path,
+    derived_from_uid,
+    embedding: embeddingVec,
+    importance, // pass caller-supplied importance so enrichOnWrite respects it
+  });
+
   // Non-blocking nudge to memoryd via socket doorbell
   nudgeDaemon();
 
-  return { episode_uid: episodeUid };
+  return {
+    episode_uid: episodeUid,
+    enrichment: {
+      topic: enrichResult.topic,
+      project_path: enrichResult.project_path,
+      summary: enrichResult.summary,
+      tags: enrichResult.tags,
+      near_dup: enrichResult.near_dup
+        ? { existing_uid: enrichResult.near_dup.existing_uid, cosine_sim: enrichResult.near_dup.cosine_sim }
+        : null,
+    },
+  };
 }
 
 /**
