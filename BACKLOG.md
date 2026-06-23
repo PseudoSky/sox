@@ -167,7 +167,7 @@ Surfaced during the BL-37 fix. (1) `memory-server` builds with `tsc` and its `di
 store it will crash exactly like the daemon did — give it the same self-contained `bundle-extension`
 treatment then. (2) `memory-server` ships a **stale, orphaned tracked `bundle/`** dir from a one-off
 bundler run; its `project.json` build uses `tsc` and nothing references the dir — dead tracked
-output to delete + gitignore. Neither blocks anything today.
+output to delete + gitignore. Neither blocks anything today. **(2) RESOLVED** (`2867b4f`): the orphaned `bundle/` was untracked + gitignored (it was a 2.4MB dead artifact; runtime uses `dist` via `sox serve`); the BL-41 probe now builds a self-contained bundle on-demand. **(1) still open** — the latent `tsc`-bare-`@adhd/sox-*` shape (only matters if an mcp-server is ever materialized to a copied store).
 
 ### ~~BL-39~~ — `upgrade --all` / `install(mode:update)` re-pins the lockfile but does NOT re-materialize the copied service store — **Resolved** (`ca20ecf`, ADR-0004)
 
@@ -196,9 +196,9 @@ Homebrew **audio** tool, not the extension CLI → the MCP server failed to spaw
 `SOX_CLI_BIN ?? process.argv[1] ?? 'soxe'` (explicitly never `'sox'`), proven by e2e D5. Surfaced
 diagnosing MCP global-availability.
 
-### BL-41 — `db_path` with a literal `~` is not expanded → creates a literal `~/` directory
+### ~~BL-41~~ — `db_path` with a literal `~` is not expanded → creates a literal `~/` directory — **Resolved** (`2867b4f`)
 
-**Severity:** Low/Medium (stray dirs; allowlist confusion) · **Status:** Open
+**Severity:** Low/Medium (stray dirs; allowlist confusion) · **Status:** Resolved — single `expandDbPath()` applied at every memory-core sink (`openDb`/`openDbReadOnly`/daemon ctor) + once at memory-server dispatch, so guard + cache + sink agree; e2e Section BL41 proves `~/.memory/x.db` writes under `$HOME` with no literal `~` dir. The original Open writeup follows.
 A `memory_*` call with `db_path: "~/.memory/memory.db"` (the literal string the skill docs show) is
 **not tilde-expanded** by the server before `openDb` — so a literal `~` directory is created relative
 to the server's cwd (observed: `extensions/.../memory-server/~/.memory/memory.db`). The server must
