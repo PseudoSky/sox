@@ -187,6 +187,24 @@ This directly undermines the upgrade tooling's promise (refresh running code + r
 service checksum anchor should track the materialized `bundle/`. Discovered deploying the daemon
 post-rename. (Workaround applied for this deploy: `install sox-memory-bundle --scope=user`.)
 
+### ~~BL-40~~ — `soxe install <mcp-server>` wrote `command: "sox"` (Homebrew audio-tool collision) — **Resolved** (`00e7f9e`)
+
+**Severity:** High (silent MCP spawn failure) · **Status:** Resolved
+`libs/install-engine/src/install.ts` fell back to `command: 'sox'` when `SOX_CLI_BIN` was unset, so
+`soxe install <mcp-server> --scope=user` registered a spawn command of `sox` — which on macOS is the
+Homebrew **audio** tool, not the extension CLI → the MCP server failed to spawn silently. Fixed:
+`SOX_CLI_BIN ?? process.argv[1] ?? 'soxe'` (explicitly never `'sox'`), proven by e2e D5. Surfaced
+diagnosing MCP global-availability.
+
+### BL-41 — `db_path` with a literal `~` is not expanded → creates a literal `~/` directory
+
+**Severity:** Low/Medium (stray dirs; allowlist confusion) · **Status:** Open
+A `memory_*` call with `db_path: "~/.memory/memory.db"` (the literal string the skill docs show) is
+**not tilde-expanded** by the server before `openDb` — so a literal `~` directory is created relative
+to the server's cwd (observed: `extensions/.../memory-server/~/.memory/memory.db`). The server must
+expand `~`→`$HOME` (consistently for the allowlist check AND the file open), or reject an unexpanded
+`~`. Surfaced cleaning a stray artifact during the MCP-availability work.
+
 > **BL-21, BL-22, BL-23, BL-24 are owned by `docs/plan/memory-enrichment/IMPLEMENTATION.md` (§0).**
 > Each is resolved by a plan phase: BL-23 metadata = done (`9728f6f`); BL-23 project-path + BL-24
 > tags/topic = P1; BL-24 clustering = P3; BL-22 entity-names + BL-21 auto-refresh = P5 (both done 2026-06-22).
