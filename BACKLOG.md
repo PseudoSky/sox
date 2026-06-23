@@ -122,6 +122,28 @@ of the built artifact. Works (and correctly changed when ADR-0003 removed `versi
 entrypoint should be index-resolvable so its checksum tracks the *built* artifact like every other
 code type. Surfaced during the ADR-0003 implementation.
 
+### BL-35 — `install()` test runs pollute the real install-registry (no path injection)
+
+**Severity:** Medium (test isolation; live ledger pollution) · **Status:** Open
+Any spec that calls `install()` (e.g. `integrity.scope.spec.ts`) triggers `upsertInstallRecord`,
+which uses `resolveInstallRegistryPath()` and **ignores** the test's sandboxed `configPath`/
+`lockfilePath` — so it writes `fix-*` fixture records into the **real** install-registry under
+`SOX_HOME` (`/Users/nix/dev/ai/claude-agents/install-registry.json`, observed grown to ~441
+entries). Harmless to `upgrade --all` (polluted ids report `not-installed` and are skipped) but it
+corrupts the live consumer ledger. Fix: add `installRegistryPath?` to `InstallOptions`, thread it
+into `upsertInstallRecord`, and have the integrity spec point it at a tmp path. (The orchestrator
+purges the leaked `fix-*` records as a one-off; this is the permanent fix.) Surfaced building
+`upgrade --all`.
+
+### BL-36 — runtime record hardcodes `type: 'mcp-server'` for every detached service
+
+**Severity:** Low/Medium (misleading `sox list`/`status`; type unreliable) · **Status:** Open
+`cmdStart`'s service-registry start path writes `type: 'mcp-server'` into the runtime record for
+**every** detached service, so the runtime entry's `type` can't distinguish a `service` from an
+`mcp-server`. `rollingRestartConsumer` works around it by classifying from the manifest, but
+`sox list`/`status` may still mislabel services. Fix: record the real manifest `type` at start.
+Surfaced building the rolling-restart classifier.
+
 
 > **BL-21, BL-22, BL-23, BL-24 are owned by `docs/plan/memory-enrichment/IMPLEMENTATION.md` (§0).**
 > Each is resolved by a plan phase: BL-23 metadata = done (`9728f6f`); BL-23 project-path + BL-24
