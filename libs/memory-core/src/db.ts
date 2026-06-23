@@ -6,12 +6,32 @@
 
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
 import { EMBED_DIM, getActiveEmbedModel } from './embed.js';
 
 export type ScopeKind = 'project' | 'user' | 'org' | 'local';
+
+/**
+ * Expand a leading `~`/`~/` in a db_path to the user's home directory (BL-41).
+ *
+ * This is THE single canonical db_path expander for sox-memory. It is applied at
+ * every file-create sink (openDb, openDbReadOnly, the daemon constructor) so the
+ * literal string the skill docs show — `db_path: "~/.memory/memory.db"` — resolves
+ * to `$HOME/.memory/memory.db` and NEVER creates a literal `~` directory relative
+ * to cwd. Idempotent: a path without a leading `~` is returned unchanged.
+ *
+ * It must stay byte-for-byte consistent with the memory-server permission guard's
+ * `expandTilde` (members/memory-server/src/index.ts) so the allowlist check and the
+ * actual open agree on the resolved path ([ref:guard-before-sink]).
+ */
+export function expandDbPath(dbPath: string): string {
+  if (dbPath === '~') return os.homedir();
+  if (dbPath.startsWith('~/')) return path.join(os.homedir(), dbPath.slice(2));
+  return dbPath;
+}
 
 export interface MemoryScope {
   scope: ScopeKind;
@@ -28,6 +48,10 @@ export interface MemoryScope {
  * Returns a connected Database instance.
  */
 export function openDb(dbPath: string): Database.Database {
+  // BL-41: expand a leading ~ to $HOME at the file-create sink so every caller —
+  // regardless of whether it expanded — opens the real path, never a literal `~` dir.
+  dbPath = expandDbPath(dbPath);
+
   // Ensure parent directory exists
   const dir = path.dirname(dbPath);
   fs.mkdirSync(dir, { recursive: true });
@@ -175,6 +199,8 @@ export function initScope(
  * Open a read-only WAL connection (for federated recall from non-primary stores).
  */
 export function openDbReadOnly(dbPath: string): Database.Database {
+  // BL-41: expand ~ at the sink (mirrors openDb).
+  dbPath = expandDbPath(dbPath);
   const db = new Database(dbPath, { readonly: true });
   sqliteVec.load(db);
   // Only WAL pragma needed for read-only connections

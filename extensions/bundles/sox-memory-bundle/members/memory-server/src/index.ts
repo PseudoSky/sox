@@ -775,10 +775,18 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     };
   }
 
-  const dbPath = args['db_path'] as string | undefined;
-  if (!dbPath) {
+  const rawDbPath = args['db_path'] as string | undefined;
+  if (!rawDbPath) {
     return { isError: true, content: [{ type: 'text', text: 'db_path is required' }] };
   }
+
+  // BL-41: expand a leading `~`/`~/` to $HOME ONCE, here, so the permission guard,
+  // the connection cache (getDb), and the resource sink (openDb) all operate on the
+  // SAME resolved path. The skill docs show `db_path: "~/.memory/memory.db"` verbatim;
+  // without this single expansion the cache keyed on the raw `~` string and openDb
+  // would mkdirSync a literal `~` directory relative to cwd. expandTilde mirrors
+  // memory-core's expandDbPath byte-for-byte (parity: permission-guard.spec.ts).
+  const dbPath = expandTilde(rawDbPath);
 
   // [ref:guard-before-sink]: policy guard runs BEFORE getDb/openDb.
   // openDb does mkdirSync then opens — so the guard must precede the sink so

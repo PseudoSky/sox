@@ -26,6 +26,7 @@ import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
 import * as sqliteVec from 'sqlite-vec';
+import { expandDbPath } from './db.js';
 import { reembedNodes } from './embed.js';
 import { DDL, FTS_TRIGGERS, PRAGMAS } from './schema.js';
 
@@ -54,6 +55,8 @@ export class MemoryDaemon {
   readonly dbPath: string;
 
   constructor(dbPath: string) {
+    // BL-41: expand ~ at the sink so the daemon never creates a literal `~` dir.
+    dbPath = expandDbPath(dbPath);
     this.dbPath = dbPath;
 
     // Open write connection
