@@ -57,7 +57,19 @@ guard requires a shared MENTIONS entity, which `enrichOnWrite` alone never creat
 Fixed (removed the extra `NULL`) + added a real-backend regression test in `enrich.spec.ts` that
 drives the `SAME_AS` insert. Found during the filtered-clustering review reconciliation.
 
-## Folded into the memory-enrichment plan
+### BL-29 — intermittent embed-worker path flake under parallel vitest (`nx run-many test`)
+
+**Severity:** Low (test-infra, intermittent) · **Status:** Open
+Observed once during the `memory_update` engagement: running `memory-core` + `memory-server`
+`test` targets together under a single `nx run-many` invocation intermittently fails with the
+embed worker unable to resolve `embedWorker.js` (worker-thread path resolution under vitest's
+parallel fork pool). **Not reproducible on re-run** (the same `run-many` is green), and all
+sequential/CI gates pass. **This is NOT BL-4** (BL-4 is stale-`dist`/composite build hygiene) —
+flagging the misattribution. Root-cause: the `new Worker(workerPath)` path in `embed.ts` resolves
+relative to the built file; under parallel vitest forks the cwd/resolution can differ. Fix sketch:
+resolve `embedWorker.js` via an absolute `import.meta.url`/`__dirname`-anchored path so it is
+fork-cwd-independent. Low priority — only the parallel test runner is affected, not runtime.
+
 
 > **BL-21, BL-22, BL-23, BL-24 are owned by `docs/plan/memory-enrichment/IMPLEMENTATION.md` (§0).**
 > Each is resolved by a plan phase: BL-23 metadata = done (`9728f6f`); BL-23 project-path + BL-24
