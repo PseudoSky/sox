@@ -44,7 +44,14 @@ export { extractiveSummary } from './extractive.js';
 
 // ── C1.8 + C1.10 clustering ───────────────────────────────────────────────────
 
-export { clusterStore, clusterStats, clusterSubset, materializeClusters } from './cluster.js';
+export {
+  clusterStore,
+  clusterStats,
+  clusterSubset,
+  materializeClusters,
+  dropSubsetLens,
+  listSubsetLenses,
+} from './cluster.js';
 export type {
   ClusterResult,
   ClusterStoreOptions,
@@ -53,6 +60,8 @@ export type {
   ClusterSubsetOptions,
   ClusterSubsetResult,
   MaterializeOptions,
+  SubsetLensDescriptor,
+  DropSubsetLensResult,
 } from './cluster.js';
 
 // ── C1.11 structured filter + SQL builder ─────────────────────────────────────

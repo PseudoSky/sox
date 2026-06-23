@@ -21,17 +21,17 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 > done-on-failure, tags guard) are being fixed in the fix wave, not logged here.
 > Full writeups: `docs/plan/filtered-clustering/REVIEW-architecture.md` + `REVIEW-code.md`.
 
-### BL-25 — three divergent `memoryd.ts` copies; member copies lack reembed-on-reindex
+### ~~BL-25~~ — three divergent `memoryd.ts` copies; member copies lack reembed-on-reindex — **Resolved** (`8a5246e`)
 
-**Severity:** Medium (stale vectors) · **Status:** Open
+**Severity:** Medium (stale vectors) · **Status:** Resolved — converged all three onto `@sox/memory-core` (members are thin re-exports; single `MemoryDaemon`; reembed-on-reindex on the daemon path; C7-clean; e2e 63/0 proves the bundled daemon still spawns).
 After P6, `memory-daemon`, `memory-server`, and `memory-core` each carry a `memoryd.ts`; the
 member copies the daemon actually runs **lack the reembed-on-reindex path** that `memory-core`'s
 copy has → vectors go stale after an embed-backend change. Fix: converge all three on
 `@sox/memory-core` (the C7 single-source pattern) so there is one daemon implementation.
 
-### BL-26 — subset-lens communities have no GC / drop-by-hash reaper
+### ~~BL-26~~ — subset-lens communities have no GC / drop-by-hash reaper — **Resolved** (`8a5246e`)
 
-**Severity:** Medium (unbounded accumulation) · **Status:** Open
+**Severity:** Medium (unbounded accumulation) · **Status:** Resolved — added `dropSubsetLens`/`listSubsetLenses` in `@sox/memory-enrich` + `memory_curate` `drop_lens`/`list_lenses` ops (CONTRACTS C2.11); persisted lenses are now GC-able by provenance hash, leaving global + other lenses intact.
 Persisting a filtered recluster (`memory_curate recluster` + `filters`, `dry_run:false`) writes a
 provenance-scoped community slice keyed on the filter hash. Only an exact re-run of the *same*
 filter reaps its prior slice — distinct/one-off filters leave orphaned subset communities that
@@ -39,9 +39,9 @@ accumulate with no reaper. Fix: add a `drop-by-hash` curation op (or a TTL/GC pa
 subset lenses as ephemeral with the accumulation caveat. Gated behind the persist path being
 read-side-scoped first.
 
-### BL-27 — filtered-clustering review LOW findings (bundle)
+### ~~BL-27~~ — filtered-clustering review LOW findings (bundle) — **Resolved** (`8a5246e`)
 
-**Severity:** Low · **Status:** Open
+**Severity:** Low · **Status:** Resolved — (1) empty-filter persist guard added; (2) dead branch removed from `computeClusters`; (3) server persist-path (`dry_run:false`) test added; (4) idempotent `organizer_queue` CHECK migration for `'enrich'`.
 From `REVIEW-code.md`: (1) an empty-filter subset duplicates the global partition under a hash;
 (2) dead branch at `libs/memory-enrich/src/cluster.ts:507-509`; (3) no server-level persist-path
 (`dry_run:false`) test; (4) no migration for the `organizer_queue` CHECK-constraint change on
@@ -57,9 +57,9 @@ guard requires a shared MENTIONS entity, which `enrichOnWrite` alone never creat
 Fixed (removed the extra `NULL`) + added a real-backend regression test in `enrich.spec.ts` that
 drives the `SAME_AS` insert. Found during the filtered-clustering review reconciliation.
 
-### BL-29 — intermittent embed-worker path flake under parallel vitest (`nx run-many test`)
+### ~~BL-29~~ — intermittent embed-worker path flake under parallel vitest (`nx run-many test`) — **Resolved** (`8a5246e`)
 
-**Severity:** Low (test-infra, intermittent) · **Status:** Open
+**Severity:** Low (test-infra, intermittent) · **Status:** Resolved — `embedWorker.js` now resolves via a module-anchored absolute path (dist sibling, with a `src→dist` fallback), fork-cwd-independent. A separate pre-existing real-embed timeout flake in `write.spec.ts` (surfaced under the same run-many load) was also fixed by pinning the hash backend for those persistence tests.
 Observed once during the `memory_update` engagement: running `memory-core` + `memory-server`
 `test` targets together under a single `nx run-many` invocation intermittently fails with the
 embed worker unable to resolve `embedWorker.js` (worker-thread path resolution under vitest's

@@ -39,7 +39,7 @@ import type { ToolDefinition, ToolResult } from '@sox/mcp-runtime';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { openDb, memoryWrite, memoryRecall, enqueueEnrich, memoryUpdate } from '@sox/memory-core';
-import { clusterStats, clusterSubset, buildFiltersClause, ENRICH_VERSION } from '@sox/memory-enrich';
+import { clusterStats, clusterSubset, buildFiltersClause, ENRICH_VERSION, dropSubsetLens, listSubsetLenses } from '@sox/memory-enrich';
 import type { MemoryFilter } from '@sox/memory-enrich';
 import { monotonicFactory } from 'ulid';
 import Database from 'better-sqlite3';
@@ -503,18 +503,19 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         db_path:    { type: 'string' },
         op: {
           type: 'string',
-          enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster'],
-          description: 'The curation operation to perform.',
+          enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster', 'drop_lens', 'list_lenses'],
+          description: 'The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. list_lenses returns all live subset lenses.',
         },
-        uid:        { type: 'string', description: 'Target episode UID (required for retag, set_topic, set_importance).' },
-        tags:       { type: 'array', items: { type: 'string' }, description: '(retag) Tags to add. Additive; duplicates are ignored.' },
-        topic:      { type: 'string', description: '(set_topic) New topic string.' },
-        importance: { type: 'number', minimum: 1, maximum: 10, description: '(set_importance) User-asserted importance.' },
-        uid_keep:   { type: 'string', description: '(merge_duplicates) UID of the episode to keep.' },
-        uid_drop:   { type: 'string', description: '(merge_duplicates) UID of the episode to invalidate.' },
-        filters:    { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: global async re-cluster via the daemon (unchanged).' },
-        threshold:  { type: 'number', description: '(recluster, filtered) Optional cosine similarity threshold override for the subset pass.' },
-        dry_run:    { type: 'boolean', default: false, description: 'If true, return proposed changes without committing them.' },
+        uid:              { type: 'string', description: 'Target episode UID (required for retag, set_topic, set_importance).' },
+        tags:             { type: 'array', items: { type: 'string' }, description: '(retag) Tags to add. Additive; duplicates are ignored.' },
+        topic:            { type: 'string', description: '(set_topic) New topic string.' },
+        importance:       { type: 'number', minimum: 1, maximum: 10, description: '(set_importance) User-asserted importance.' },
+        uid_keep:         { type: 'string', description: '(merge_duplicates) UID of the episode to keep.' },
+        uid_drop:         { type: 'string', description: '(merge_duplicates) UID of the episode to invalidate.' },
+        filters:          { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: global async re-cluster via the daemon (unchanged).' },
+        threshold:        { type: 'number', description: '(recluster, filtered) Optional cosine similarity threshold override for the subset pass.' },
+        provenance_hash:  { type: 'string', description: '(drop_lens) The 16-hex provenance hash of the subset lens to drop (obtain from a prior recluster response).' },
+        dry_run:          { type: 'boolean', default: false, description: 'If true, return proposed changes without committing them.' },
       },
       required: ['db_path', 'op'],
     },
@@ -1985,6 +1986,48 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           }
           return {
             content: [{ type: 'text', text: JSON.stringify({ op: 'recluster', enqueued: true }) }],
+          };
+        }
+
+        case 'drop_lens': {
+          // Drop a persisted subset lens by provenance hash.
+          // Invalidates only that lens's community nodes + their MEMBER_OF edges.
+          // Never touches the global partition or any other lens.
+          const provenanceHash = args['provenance_hash'] as string | undefined;
+          if (!provenanceHash) {
+            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING', message: 'provenance_hash required for drop_lens' }) }] };
+          }
+          if (dryRun) {
+            // dry_run: report what would be dropped without committing.
+            const lenses = listSubsetLenses(db);
+            const lens = lenses.find((l) => l.provenance_hash === provenanceHash);
+            return {
+              content: [{ type: 'text', text: JSON.stringify({
+                op: 'drop_lens',
+                provenance_hash: provenanceHash,
+                dry_run: true,
+                communities_to_drop: lens?.community_count ?? 0,
+                found: lens !== undefined,
+              }) }],
+            };
+          }
+          const result = dropSubsetLens(db, provenanceHash);
+          return {
+            content: [{ type: 'text', text: JSON.stringify({
+              op: 'drop_lens',
+              provenance_hash: result.provenance_hash,
+              communities_dropped: result.communities_dropped,
+              edges_dropped: result.edges_dropped,
+              dry_run: false,
+            }) }],
+          };
+        }
+
+        case 'list_lenses': {
+          // List all live persisted subset lenses with their provenance hashes.
+          const lenses = listSubsetLenses(db);
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ op: 'list_lenses', lenses }) }],
           };
         }
 

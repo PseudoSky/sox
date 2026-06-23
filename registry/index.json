@@ -78,7 +78,7 @@
     "title": "Memory Daemon",
     "description": "Use this when you need the sox graph-memory enrichment pipeline running: a singleton Unix-socket service that drains the batch-enrich queue and runs deterministic clustering, importance scoring, and auto-links via @sox/memory-enrich — zero LLM calls, no provider required.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-daemon",
-    "checksum": "sha256:f592b6aa823dedfe65e69263c676d0ec1627b1672d2dabe0cafc342aa6515d54",
+    "checksum": "sha256:5732383bbfabd196fdd18be19f847d9829edda175a99f2afb8237def2e1d7c56",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -106,7 +106,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:60943e3346d07bb44e6290f7008dea12f4ba71801fd454151a4fdee19bcce8cf",
+    "checksum": "sha256:f5d89e2b9a04d7005d7f4ab4b6fb2e7d6c6f040d970c80580d02a120af5166ce",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },

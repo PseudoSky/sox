@@ -3,13 +3,19 @@
  * and the idempotent `node.meta` column migration (BL-23).
  * P1 enrichment fields: topic, tags, project_path, enrich_ver columns (BL-24 / D3.1).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import { openDb } from './db.js';
 import { memoryWrite } from './write.js';
+
+// These tests assert DB persistence (summary/metadata/migration/P1 fields), NOT embedding
+// quality — pin the fast, deterministic hash backend so a cold real-ONNX model load never
+// tips the default 5s test timeout (a pre-existing flake, sharper under parallel run-many).
+beforeAll(() => { process.env['SOX_EMBED_BACKEND'] = 'hash'; });
+afterAll(() => { delete process.env['SOX_EMBED_BACKEND']; });
 
 function tmpDir(): { dir: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memwrite-'));

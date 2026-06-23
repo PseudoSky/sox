@@ -647,6 +647,54 @@ describe('memory_curate recluster — filtered subset', () => {
     expect(out['scope']).toBeUndefined();
     expect(out).toHaveProperty('enqueued');
   });
+
+  it('dry_run:false persists the subset and leaves global communities intact (BL-27 LOW-3)', async () => {
+    // Capture the global cluster_count before the persist.
+    const statsBefore = parseResult(await handleToolCall('memory_stats', { db_path: DB_PATH }));
+    const globalCountBefore = statsBefore['cluster_count'] as number;
+
+    // Persist the subset — response must declare persisted:true.
+    const out = parseResult(
+      await handleToolCall('memory_curate', {
+        db_path: DB_PATH,
+        op: 'recluster',
+        filters: { tags: [UNIQ] },
+        dry_run: false,
+      }),
+    );
+    expect(out['op']).toBe('recluster');
+    expect(out['scope']).toBe('subset');
+    expect(out['persisted']).toBe(true);
+    expect(out['dry_run']).toBe(false);
+    expect(typeof out['provenance_hash']).toBe('string');
+
+    // Global stats must be unchanged — subset communities must not inflate global count.
+    const statsAfter = parseResult(await handleToolCall('memory_stats', { db_path: DB_PATH }));
+    expect(statsAfter['cluster_count']).toBe(globalCountBefore);
+
+    // Use list_lenses to confirm the lens is visible.
+    const lensesOut = parseResult(
+      await handleToolCall('memory_curate', { db_path: DB_PATH, op: 'list_lenses' }),
+    );
+    expect(lensesOut['op']).toBe('list_lenses');
+    const lenses = lensesOut['lenses'] as Array<{ provenance_hash: string }>;
+    expect(lenses.some((l) => l.provenance_hash === out['provenance_hash'])).toBe(true);
+
+    // Drop the lens and confirm it's gone.
+    const dropOut = parseResult(
+      await handleToolCall('memory_curate', {
+        db_path: DB_PATH,
+        op: 'drop_lens',
+        provenance_hash: out['provenance_hash'] as string,
+      }),
+    );
+    expect(dropOut['op']).toBe('drop_lens');
+    expect(dropOut['communities_dropped']).toBeGreaterThan(0);
+
+    // After drop, global stats still unchanged.
+    const statsPostDrop = parseResult(await handleToolCall('memory_stats', { db_path: DB_PATH }));
+    expect(statsPostDrop['cluster_count']).toBe(globalCountBefore);
+  });
 });
 
 // ── Fix ①: server-level scope isolation ──────────────────────────────────────

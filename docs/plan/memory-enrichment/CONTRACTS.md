@@ -1305,21 +1305,22 @@ interface MemoryNearDuplicatesResponse {
       "db_path":    { "type": "string" },
       "op": {
         "type": "string",
-        "enum": ["retag", "set_topic", "set_importance", "merge_duplicates", "recluster"],
-        "description": "The curation operation to perform."
+        "enum": ["retag", "set_topic", "set_importance", "merge_duplicates", "recluster", "drop_lens", "list_lenses"],
+        "description": "The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. list_lenses returns all live subset lenses."
       },
-      "uid":        { "type": "string", "description": "Target episode UID (required for retag, set_topic, set_importance)." },
-      "tags":       { "type": "array", "items": { "type": "string" }, "description": "(retag) Tags to add. Additive; duplicates are ignored." },
-      "topic":      { "type": "string", "description": "(set_topic) New topic string. Overrides cluster-derived topic." },
+      "uid":              { "type": "string", "description": "Target episode UID (required for retag, set_topic, set_importance)." },
+      "tags":             { "type": "array", "items": { "type": "string" }, "description": "(retag) Tags to add. Additive; duplicates are ignored." },
+      "topic":            { "type": "string", "description": "(set_topic) New topic string. Overrides cluster-derived topic." },
       "importance": { "type": "number", "minimum": 1, "maximum": 10, "description": "(set_importance) User-asserted importance. Batch enricher will not overwrite this." },
-      "uid_keep":   { "type": "string", "description": "(merge_duplicates) UID of the episode to keep as canonical." },
-      "uid_drop":   { "type": "string", "description": "(merge_duplicates) UID of the episode to invalidate as a duplicate." },
-      "filters":    {
+      "uid_keep":        { "type": "string", "description": "(merge_duplicates) UID of the episode to keep as canonical." },
+      "uid_drop":        { "type": "string", "description": "(merge_duplicates) UID of the episode to invalidate as a duplicate." },
+      "filters":         {
         "type": "object",
         "description": "(recluster only) Restrict clustering to the subset of episodes matching these filters. Same vocabulary as memory_recall filters: project_path, topic, tags, tags_match_all, importance_min, t_created_after, t_created_before. When present, recluster runs SYNCHRONOUSLY over the subset and returns communities. combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped slice (leaves the global partition untouched). When absent, recluster triggers the standard async global re-cluster via the daemon."
       },
-      "threshold":  { "type": "number", "description": "(recluster with filters) Optional cosine similarity threshold override for the subset pass." },
-      "dry_run":    { "type": "boolean", "default": false, "description": "If true, return proposed changes without committing them. For recluster: see two-mode behavior below." }
+      "threshold":       { "type": "number", "description": "(recluster with filters) Optional cosine similarity threshold override for the subset pass." },
+      "provenance_hash": { "type": "string", "description": "(drop_lens) The 16-hex provenance hash of the subset lens to drop. Obtain from a prior recluster response's provenance_hash field." },
+      "dry_run":         { "type": "boolean", "default": false, "description": "If true, return proposed changes without committing them. For recluster: see two-mode behavior below. For drop_lens: reports communities_to_drop without invalidating." }
     },
     "required": ["db_path", "op"]
   }
@@ -1426,11 +1427,63 @@ Mode B (filtered), `dry_run:true` skips the DB write. Both meanings are coherent
 commit the proposed change." The response shape differs between the two modes, discriminated
 by the `scope` field.
 
-**Lifecycle note — subset lens GC:** Persisted subset slices are only ever replaced by
-re-running the same filter (same `provenance_hash`). There is currently no automated reaper
-for slices whose member episodes are later invalidated, and no MCP op to drop a slice by hash.
-These are tracked as deferred work (BL-26). Callers should treat persisted subset lenses as
-best-effort / accumulating until a cleanup mechanism is added.
+#### `drop_lens` op — subset lens GC (BL-26)
+
+Remove a persisted subset lens and all its associated community nodes and MEMBER_OF edges.
+Never touches the global partition or any other lens's communities. Idempotent.
+
+- **`provenance_hash`** (required): the 16-hex hash identifying the lens to remove. Obtain
+  from a prior `recluster` response's `provenance_hash` field, or from `list_lenses`.
+- **`dry_run:true`**: reports `communities_to_drop` without writing.
+- **`dry_run:false`** (default): performs the invalidation.
+
+Output:
+```typescript
+interface CurateDropLensResult {
+  op: "drop_lens";
+  provenance_hash: string;
+  /** Number of community nodes invalidated (0 if hash not found — idempotent). */
+  communities_dropped: number;
+  /** Number of MEMBER_OF edges invalidated. */
+  edges_dropped: number;
+  dry_run: boolean;
+}
+
+// dry_run variant
+interface CurateDropLensDryRunResult {
+  op: "drop_lens";
+  provenance_hash: string;
+  communities_to_drop: number;
+  found: boolean;
+  dry_run: true;
+}
+```
+
+#### `list_lenses` op — discover persisted subset lenses (BL-26)
+
+Return all live persisted subset lenses in the store. Use to find `provenance_hash` values
+for `drop_lens`, or to audit accumulated lenses.
+
+Output:
+```typescript
+interface SubsetLensDescriptor {
+  provenance_hash: string;
+  community_count: number;
+  last_updated: string;  // ISO timestamp of most recent community in this lens
+  filter: unknown;       // the MemoryFilter stored at persist time (null for legacy)
+}
+
+interface CurateListLensesResult {
+  op: "list_lenses";
+  lenses: SubsetLensDescriptor[];
+}
+```
+
+**Lifecycle note — subset lens GC (resolved, BL-26):** Persisted subset slices can now be
+dropped explicitly via `op:'drop_lens'` with the `provenance_hash` from a prior `recluster`
+response. Use `op:'list_lenses'` to discover all live hashes. The automated reaper for
+slices whose member episodes are later invalidated remains deferred (no timer-driven GC),
+but the manual cleanup path is now available.
 
 ---
 
