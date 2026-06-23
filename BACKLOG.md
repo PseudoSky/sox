@@ -13,6 +13,26 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 > phases (P1–P6), not as loose items. The metadata-drop half of BL-23 is already fixed (`9728f6f`).
 > **BL-21 (auto-export) and BL-22 (entity names) resolved by P5 (2026-06-22).**
 
+## Open — pre-existing e2e failure surfaced during BL-45..48 verification (2026-06-23)
+
+### BL-49 — `#16728` auto-merge e2e fails: `syncResults.length === 0` (expected 2 project roots) — **Open (HIGH) — NOT caused by BL-45..48**
+
+`npx nx run host-runtime:test-e2e` → 91 passed, **2 failed** (4 assertions): `AUTO-MERGE: targeted
+both known project roots (got 0)`, `MERGE: project1/.mcp.json carries the same server entry`,
+`MERGE: project2/.mcp.json created`, `MCP: #16728 auto-merge gate failed (exit 1)`. Source:
+`tools/probe-mcp-project-automerge.mjs` / `tools/test-e2e-lifecycle.js`; feature owner
+`libs/install-engine/src/mcp-project-sync.ts`.
+
+**Origin traced (not deflection):** `git diff 3f5e7bb..HEAD -- libs/install-engine/src/mcp-project-sync.ts
+libs/install-engine/src/index.ts` is **empty**; the only `apps/sox/src/main.ts` delta on the BL branch
+is the `cmdServe` region (BL-46). The auto-merge code the test exercises is byte-identical to `main`, so
+this failure is pre-existing in the `#16728` work merged in `2867b4f`/`fe42b90`/`3f5e7bb` immediately
+before this session — the probe (added with #16728) ships red. `got 0` means the install hook found zero
+known project roots to propagate the user-scope MCP entry into. Fix: investigate why `mcp-project-sync`
+resolves 0 project roots from the install-registry in the sandboxed probe (likely a registry-root lookup
+/ `SOX_ECOSYSTEM_HOME` resolution regression). The memory MCP lifecycle steps of the SAME e2e all pass
+(install→start→exec memory_ping/write/recall→disable→enable→uninstall, 19 tools, zero orphans).
+
 ## Resolved — observability gap + daemon down (2026-06-23, fixed fix/memory-server-bl45-48 1a5f1ed)
 
 ### BL-46 — production `serve` (stdio MCP) path captures NO logs — **Resolved**
