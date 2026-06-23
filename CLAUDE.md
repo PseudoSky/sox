@@ -53,7 +53,7 @@ and bare runs bypass the project-graph dependency ordering and cache.
 
 **Build vs. test hygiene (BL-4).** `memory-core` and the `memory-server` bundle use
 `composite: true`. A bare `tsc` after a source change may emit nothing because `.tsbuildinfo`
-believes outputs are current — leaving a **stale `dist/`**. Vitest resolves `@sox/memory-core`
+believes outputs are current — leaving a **stale `dist/`**. Vitest resolves `@adhd/sox-memory-core`
 to `libs/memory-core/dist/index.js` (a static alias), so **tests can pass against a stale
 `dist/`** if `nx build` was not run first — "tests pass" does not prove the runtime/MCP path.
 **Always `npx nx build memory-core && npx nx build memory-server` before running memory tests**,
@@ -108,7 +108,8 @@ a build that stays fast at scale — plus the full command surface working.
 Verify against the OS / real artifacts, **not** test output (every prior "green" that skipped that lied).
 
 ### A. Command surface
-- [x] **A1 `init`** — born-conformant for all active types via `libs/authoring` + `@sox/nx`/`sox init` (born-conformance + byte-identical parity gates green).
+
+- [x] **A1 `init`** — born-conformant for all active types via `libs/authoring` + `@adhd/sox-nx`/`sox init` (born-conformance + byte-identical parity gates green).
 - [x] **A2 `validate`** — works; entrypoint-reachability enforced.
 - [x] **A3 `search`** — works.
 - [x] **A4 `install`** — works (resolves + lockfile).
@@ -122,7 +123,8 @@ Verify against the OS / real artifacts, **not** test output (every prior "green"
 - [x] **A12 flags** — both `--flag value` and `--flag=value` parse (parser fixed in `install-engine`).
 
 ### B. Authoring at scale
-- [x] **B1** born-conformant `init` for all active types — `libs/authoring` core + `@sox/nx` generators (the `prompt` type is parked by design).
+
+- [x] **B1** born-conformant `init` for all active types — `libs/authoring` core + `@adhd/sox-nx` generators (the `prompt` type is parked by design).
 - [x] **B2** every type `init → build → validate → install` — born-conformance gate + lifecycle e2e green. "Run" splits by role:
   - [x] **run (process) — Role A:** code/service types spawn + execute (lifecycle e2e, 35/35).
   - [x] **placed + discoverable (declarative) — Role B:** content types placed at the host's discovery path for the correct scope; reality-check tops out at placed + valid at target (not host execution).
@@ -130,13 +132,14 @@ Verify against the OS / real artifacts, **not** test output (every prior "green"
 - [x] **B4** adding an extension never red-bars the tree — verified (audit `dod.6`).
 
 ### C. Foundational integrity
+
 - [x] **C1** framework-owned build; hand-maintained `dist` mirrors retired.
 - [x] **C2** registry checksums current + CI drift gate.
 - [x] **C3** `build → validate --strict → typecheck → lint → test` blocking CI, correct order; pre-commit hook runs `nx affected --target=lint`.
 - [x] **C4** reality-checking gates — universal: (1) `sox list` validates pid liveness via `process.kill(pid, 0)` before reporting RUNNING (stale `runtime.json` entries reported INACTIVE); (2) born-conformance gate verifies `dist/index.js` exists and passes `node --check` for code types; (3) lockfile + registry now checksum the declared `entrypoint` (built artifact) not `src/index.ts` — `fetchArtifact` in `install.ts` and `resolveChecksum` in `build-index.ts` both follow the same resolution order: `manifest.entrypoint` → `dist/index.js` → `prompt.md` → `extension.json`. Registry regenerated + lockfile refreshed.
 - [x] **C5** memory MCP `write` + `recall` execute correctly (zero-LLM read) — recall bug fixed.
 - [x] **C6** `permissions` enforced at runtime — HARD for spawned types (env-scrub + policy-env injection + in-process fs/socket allowlist at the resource sink) across all four extension entry points (supervisor `_spawn`, `runtime-cli` exec, `apps/sox` exec, in-proc adapters = SOFT declare+audit per `[dod.6]`); undeclared `db_path` denied at runtime with no file created. Reality-verified: real spawned `memory-server`, forbidden write denied + side-effect absent (e2e + independent probe). OS-kernel sandboxing is an explicit non-goal.
-- [x] **C7** shared internal code reuse without reach-in — `libs/memory-core` extracted; cross-package `../dist` reach-ins eliminated and **enforced at lint time**: `@nx/enforce-module-boundaries` (static import/require) plus a `no-restricted-syntax` rule in `eslint.config.js` that also catches the dynamic/laundered form (`require(path.resolve(__dirname, '../x/dist/...'))`). NB: the prior "grep returns zero" was unreliable — that grep missed both a template-literal dynamic import and multi-segment paths; turning the lint rule on surfaced two real reach-ins it had missed (`install-engine`→`host-registry`, `apps/sox`→`authoring`). Both now route through the `@sox/*` scope + the build's `rewrite-paths` step (source clean, dist resolved); reach-in is now a hard lint error, not a hopeful grep.
+- [x] **C7** shared internal code reuse without reach-in — `libs/memory-core` extracted; cross-package `../dist` reach-ins eliminated and **enforced at lint time**: `@nx/enforce-module-boundaries` (static import/require) plus a `no-restricted-syntax` rule in `eslint.config.js` that also catches the dynamic/laundered form (`require(path.resolve(__dirname, '../x/dist/...'))`). NB: the prior "grep returns zero" was unreliable — that grep missed both a template-literal dynamic import and multi-segment paths; turning the lint rule on surfaced two real reach-ins it had missed (`install-engine`→`host-registry`, `apps/sox`→`authoring`). Both now route through the `@adhd/sox-*` scope + the build's `rewrite-paths` step (source clean, dist resolved); reach-in is now a hard lint error, not a hopeful grep.
 
 **Summary: 23/23 done, 0 partial, 0 not done.** The nx self-hosting migration met the
 DoD to its D5 scope (architect-verified: final audit exit 0, C7 lint-enforced (see note above), `nx build,lint` 13/13), and the
@@ -154,6 +157,7 @@ artifact (`fetchArtifact` + `resolveChecksum` aligned). Work lives on branch `fe
 (committed; not merged to `main`).
 
 **Recent plans (implemented):**
+
 - `runtime-productionization` (`.workflow/plans/runtime-productionization/`) — global service
   discovery, stale-state GC, concurrent-start safety, log management, worker containment, SIGKILL
   escalation, signal-contract enforcement, live monitoring surface. **All phases P1–P9 shipped.**

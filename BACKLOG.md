@@ -23,15 +23,15 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ### ~~BL-25~~ — three divergent `memoryd.ts` copies; member copies lack reembed-on-reindex — **Resolved** (`8a5246e`)
 
-**Severity:** Medium (stale vectors) · **Status:** Resolved — converged all three onto `@sox/memory-core` (members are thin re-exports; single `MemoryDaemon`; reembed-on-reindex on the daemon path; C7-clean; e2e 63/0 proves the bundled daemon still spawns).
+**Severity:** Medium (stale vectors) · **Status:** Resolved — converged all three onto `@adhd/sox-memory-core` (members are thin re-exports; single `MemoryDaemon`; reembed-on-reindex on the daemon path; C7-clean; e2e 63/0 proves the bundled daemon still spawns).
 After P6, `memory-daemon`, `memory-server`, and `memory-core` each carry a `memoryd.ts`; the
 member copies the daemon actually runs **lack the reembed-on-reindex path** that `memory-core`'s
 copy has → vectors go stale after an embed-backend change. Fix: converge all three on
-`@sox/memory-core` (the C7 single-source pattern) so there is one daemon implementation.
+`@adhd/sox-memory-core` (the C7 single-source pattern) so there is one daemon implementation.
 
 ### ~~BL-26~~ — subset-lens communities have no GC / drop-by-hash reaper — **Resolved** (`8a5246e`)
 
-**Severity:** Medium (unbounded accumulation) · **Status:** Resolved — added `dropSubsetLens`/`listSubsetLenses` in `@sox/memory-enrich` + `memory_curate` `drop_lens`/`list_lenses` ops (CONTRACTS C2.11); persisted lenses are now GC-able by provenance hash, leaving global + other lenses intact.
+**Severity:** Medium (unbounded accumulation) · **Status:** Resolved — added `dropSubsetLens`/`listSubsetLenses` in `@adhd/sox-memory-enrich` + `memory_curate` `drop_lens`/`list_lenses` ops (CONTRACTS C2.11); persisted lenses are now GC-able by provenance hash, leaving global + other lenses intact.
 Persisting a filtered recluster (`memory_curate recluster` + `filters`, `dry_run:false`) writes a
 provenance-scoped community slice keyed on the filter hash. Only an exact re-run of the *same*
 filter reaps its prior slice — distinct/one-off filters leave orphaned subset communities that
@@ -144,20 +144,19 @@ purges the leaked `fix-*` records as a one-off; this is the permanent fix.) Surf
 `sox list`/`status` may still mislabel services. Fix: record the real manifest `type` at start.
 Surfaced building the rolling-restart classifier.
 
-### BL-37 — `memory-daemon` service-store copy can't resolve `@sox/memory-core` → crashes on start
+### BL-37 — `memory-daemon` service-store copy can't resolve `@adhd/sox-memory-core` → crashes on start
 
 **Severity:** High (the supervised daemon is fully down in service mode) · **Status:** Open
-BL-25 converged the daemon's `memoryd` onto `@sox/memory-core` (thin re-export →
-`require('@sox/memory-core')`). The **service-mode copied store** (`.sox/ext/memory-daemon/`) has
-no resolvable `@sox/memory-core` (not self-contained-bundled, no node_modules link), so the daemon
-crashes on start: `Error: Cannot find module '@sox/memory-core'` (exits immediately; `sox list`
+BL-25 converged the daemon's `memoryd` onto `@adhd/sox-memory-core` (thin re-export →
+`require('@adhd/sox-memory-core')`). The **service-mode copied store** (`.sox/ext/memory-daemon/`) has
+no resolvable `@adhd/sox-memory-core` (not self-contained-bundled, no node_modules link), so the daemon
+crashes on start: `Error: Cannot find module '@adhd/sox-memory-core'` (exits immediately; `sox list`
 shows INACTIVE with a dead pid). **`memory-server` (stdio) is unaffected** — it runs from the repo
 where the dep resolves. **Gate gap:** the lifecycle e2e spawns the daemon from the *repo* (deps
 resolve), never from a copied service store, so this slipped all gates. Fix: self-contained-bundle
 the daemon (esbuild, C7-respecting — the bundled-extension-build-standard) so the copied store has
-zero external `@sox/*` deps, AND strengthen the e2e to spawn the daemon from a copied store.
+zero external `@adhd/sox-*` deps, AND strengthen the e2e to spawn the daemon from a copied store.
 Discovered starting the daemon during the content-addressed deploy.
-
 
 > **BL-21, BL-22, BL-23, BL-24 are owned by `docs/plan/memory-enrichment/IMPLEMENTATION.md` (§0).**
 > Each is resolved by a plan phase: BL-23 metadata = done (`9728f6f`); BL-23 project-path + BL-24
@@ -179,6 +178,7 @@ field (project path / repo) captured at write time. Surfaced auditing DB vs the 
 
 **Severity:** Low/Medium (queryability) · **Status:** Folded → memory-enrichment plan (tags/topic = P1; clustering = P3)
 Two related modelling gaps surfaced comparing DB vs docs:
+
 - **Tags are lossy:** an agent's `tags[]` are converted to `entity` nodes + `MENTIONS` edges; the
   raw tag list is not retained on the episode and there is no `tags` column — so you can't query
   "episodes the author tagged X" distinct from organizer-extracted entities.
@@ -231,6 +231,7 @@ hand. A single bad config line blocks the entire install.
 The **write-side is already fixed** — verified the current CLI does NOT add a scope value as an id
 (`install --scope user`, `install -s user`, and `install <id> --scope user` all leave `install[]`
 correct). The remaining gaps:
+
 1. **Read-side resilience:** `install` should **skip + warn** on an unresolvable `install[]` entry
    (continue with the valid ones), not abort the whole operation.
 2. **Defense in depth:** reject reserved scope names (`user`/`project`/`local`) as extension ids at
@@ -243,7 +244,7 @@ correct). The remaining gaps:
 ### ~~BL-1~~ — `pnpm typecheck` exits 2 on latent tokenguard + scripts errors — **Resolved**
 
 **Severity:** Low (code hygiene; no runtime impact) · **Status:** Resolved (2026-06-21)
-Surfaced after the `@sox/tokenguard-core` workspace-protocol fix (`dabe9ea`) unmasked them.
+Surfaced after the `@adhd/sox-tokenguard-core` workspace-protocol fix (`dabe9ea`) unmasked them.
 **Verified fixed:** `pnpm typecheck` (root `tsc --noEmit`) now exits **0**; all nine cited
 files are inside the compilation (`--listFilesOnly` confirms) and every cited error is gone
 (e.g. `proxy.ts:309` now reads `(vs[0] ?? '')` — the prescribed `undefined` guard). The
@@ -252,7 +253,7 @@ mechanical fixes are realized in the working tree (tokenguard `cli.ts`/`mapstore
 
 9 errors (historical):
 
-_tokenguard source:_
+*tokenguard source:*
 
 - `extensions/services/tokenguard/src/cli.ts(23,1)` — TS6133 `'readline'` unused
 - `extensions/services/tokenguard/src/mapstore.ts(32,10)` — TS6133 `'now'` unused
@@ -260,7 +261,7 @@ _tokenguard source:_
 - `extensions/services/tokenguard/src/proxy.ts(170,27)` — TS6133 `'adapter'` unused
 - `extensions/services/tokenguard/src/proxy.ts(309,19)` — TS2322 `string | string[] | undefined` not assignable to `string | string[]` (needs an undefined guard)
 
-_repo scripts (unrelated to tokenguard):_
+*repo scripts (unrelated to tokenguard):*
 
 - `scripts/check-registry-sync.ts(35,7)` — TS6133 `'tmpRoot'` unused
 - `scripts/check-registry-sync.ts(162,7)` — TS6133 `'liveJson'` unused
@@ -274,7 +275,7 @@ mechanical, no behavior change. After: `pnpm typecheck` exits 0.
 ### ~~BL-2~~ — `embed.ts` real backend uses `bge-base-en-v1.5`, not the nominal nomic model — **Resolved**
 
 **Severity:** Low (works; naming/quality) · **Status:** Resolved (2026-06-22)
-`embed.ts` now carries an explicit comment at `EMBED_MODEL` clarifying it is the _hash-backend_
+`embed.ts` now carries an explicit comment at `EMBED_MODEL` clarifying it is the *hash-backend*
 identifier and that `getActiveEmbedModel()` returns `bge-base-en-v1.5` for the real backend;
 the module header documents the real model. The constant is retained for back-compat. Callers
 must use `getActiveEmbedModel()`, not `EMBED_MODEL`, as the active-backend proxy.
@@ -301,7 +302,7 @@ score spread, when corpus writes cluster in time.
 
 **Severity:** Low (dev ergonomics) · **Status:** Resolved (2026-06-22)
 Documented in `CLAUDE.md` under "BUILD VIA NX TARGETS" → "Build vs. test hygiene (BL-4)":
-composite `tsc` can leave a stale `dist`; vitest resolves `@sox/memory-core` to a static
+composite `tsc` can leave a stale `dist`; vitest resolves `@adhd/sox-memory-core` to a static
 `dist` alias so "tests pass" does not prove the runtime/MCP path; always `nx build memory-core
 && nx build memory-server` before memory tests. The nx-targets constraint also bans bare `tsc`.
 `libs/memory-core` and the memory-server bundle use `composite: true`. A bare `tsc` after a
@@ -312,23 +313,23 @@ is correct. But: a vitest run (which transforms TS source, or uses a `resolve.al
 source) can PASS while the built `dist` is stale — so "tests pass" does **not** prove the
 runtime/MCP path. Always verify runtime behavior against `nx build` output, not vitest.
 
-### ~~BL-5~~ — `@sox/mcp-runtime` consolidation — **Resolved**
+### ~~BL-5~~ — `@adhd/sox-mcp-runtime` consolidation — **Resolved**
 
-**Status:** Resolved. `memory-server` now uses `serve()` + `defineTool()` from `@sox/mcp-runtime`;
+**Status:** Resolved. `memory-server` now uses `serve()` + `defineTool()` from `@adhd/sox-mcp-runtime`;
 hand-rolled readline loop removed. Vendored `compilePolicyFromEnv` kept (standalone child process
-cannot reach `@sox/host-runtime` at runtime). Type escape hatches removed; `handleToolCall`
+cannot reach `@adhd/sox-host-runtime` at runtime). Type escape hatches removed; `handleToolCall`
 returns `Promise<ToolResult>`, `TOOLS` typed as `Array<Omit<ToolDefinition, 'handler'>>`.
 
 ### ~~BL-6~~ — Verify the other sox-memory-bundle members build/run post workspace-glob widening — **Resolved**
 
 **Severity:** Low · **Status:** Resolved (2026-06-22)
 Verified cache-busted: `memory-daemon`, `memory-cli`, `memory-flush`, `memory-organizer` all
-build clean and resolve `@sox/memory-core` (`nx run-many build --skip-nx-cache`, 6/6 incl.
+build clean and resolve `@adhd/sox-memory-core` (`nx run-many build --skip-nx-cache`, 6/6 incl.
 core+server). Each member's `project.json` carries a `description` noting the verification.
-The workspace-glob widening (`bec9914`) now links `@sox/memory-core` into all five members
+The workspace-glob widening (`bec9914`) now links `@adhd/sox-memory-core` into all five members
 (server/cli/flush/daemon/organizer). Only `memory-server` was deep-tested (build + real MCP
 recall). Confirm `memory-cli`, `memory-flush`, `memory-daemon`, `memory-organizer` build and
-resolve `@sox/memory-core` at runtime too.
+resolve `@adhd/sox-memory-core` at runtime too.
 
 ### ~~BL-7~~ — `install` should persist the resolved scope so `serve` needs no `--scope` flag — **Resolved**
 
@@ -340,7 +341,7 @@ found by `sox serve <id>` with no flag; help text updated. Build+lint verified c
 **Remaining follow-up below is a manual config cleanup, not code.**
 `soxe install --scope=user` writes the user-scope lockfile (`~/.config/extensions/extensions.lock`),
 but `soxe serve <id>` defaults to `--scope=project` (cwd-rooted). So a user-scope-installed
-extension is invisible to `serve` unless the caller _also_ passes `--scope=user` — which means
+extension is invisible to `serve` unless the caller *also* passes `--scope=user` — which means
 the scope decision has to be re-stated at every invocation site (the `~/.claude.json` MCP
 entry, `.mcp.json`, etc.). That conditional handling at install-time/launch files is exactly
 what we want to avoid.
@@ -359,7 +360,7 @@ extension without a flag. Options to evaluate:
 MCP entry in `~/.claude.json` (`mcpServers."memory-server".args`) now that `soxe serve`
 cascades scopes. BL-7 is fully closed (code + the manual config cleanup).
 
-## Memory subsystem (`@sox/memory-core` + sox-memory-bundle)
+## Memory subsystem (`@adhd/sox-memory-core` + sox-memory-bundle)
 
 Surfaced while migrating a 95-document research corpus into `~/.memory/memory.db` and exercising `memory_recall` via the live MCP (2026-06-21).
 
@@ -402,7 +403,7 @@ across the async boundary. The library is safe to call in-process (openDb → em
 
 **Severity:** Low (API consistency) · **Status:** Resolved (2026-06-22)
 `reembedNodes` added to the embedding export block in `libs/memory-core/src/index.ts`. Verified
-from built dist: `typeof require('@sox/memory-core').reembedNodes === 'function'` (was `undefined`).
+from built dist: `typeof require('@adhd/sox-memory-core').reembedNodes === 'function'` (was `undefined`).
 
 ### ~~BL-13~~ — `memory_write` stores whole content as one node; no chunking + embedding truncation — **Resolved**
 
@@ -439,7 +440,7 @@ two escape hatches (reconfigure allowlist / symlink into `~/.memory/`).
 
 1. **init/validate agreement (bug):** both init surfaces now fail fast on a non-conformant id,
    matching `soxe validate`. `cmdInit` (`apps/sox/src/main.ts`, the `soxe` path) uses the
-   canonical `validateId` from `@sox/authoring` (pattern **and** no-type-suffix), exit 1 with a
+   canonical `validateId` from `@adhd/sox-authoring` (pattern **and** no-type-suffix), exit 1 with a
    clear message; the legacy `scripts/new-extension.ts` (`bin/sox` path) suffix check was
    promoted from warn-only to a hard error (`idSuffixError`). Verified: `soxe init skill
    memory-skill` and `sox init skill memory-skill` both exit 1; `memory-usage` scaffolds.
@@ -525,10 +526,11 @@ Either way, manifest ↔ member-dirs ↔ install-registry should be made consist
 ### ~~BL-20~~ — no DB→markdown export mirror for memory written directly via `memory_write` — **Resolved**
 
 **Severity:** Low (auditability) · **Status:** Resolved (2026-06-22)
-_(Renumbered from a duplicate BL-19 — the install-resilience BL-19 below has code/test references.)_
+*(Renumbered from a duplicate BL-19 — the install-resilience BL-19 below has code/test references.)*
 
 **Resolved:** added a DB→markdown export mirror — `exportMarkdown()` in
 `libs/memory-core/src/export.ts`, surfaced as `memory export` in memory-cli.
+
 - **Enable/disable:** `export_enabled` config (default **on**).
 - **Configurable dir:** `export_dir` config — default scope-relative (`~/.memory/export` for
   user scope), overridable; the **user-scope install is set to `/Users/nix/dev/ai/memory`**.
@@ -543,7 +545,7 @@ _(Renumbered from a duplicate BL-19 — the install-resilience BL-19 below has c
 **Original (for history):**
 The research-corpus migration ingested 95 markdown findings into `~/.memory/memory.db` (823
 chunked nodes). The original markdown files remain as the human-readable/git-reviewable mirror,
-but they are now a **snapshot**: any finding written _directly_ via `memory_write` going forward
+but they are now a **snapshot**: any finding written *directly* via `memory_write` going forward
 (e.g. by `workflow-researcher`) has **no** markdown representation — so the DB silently diverges
 from the mirror, and there is no git-reviewable record of new knowledge. Add a `memory-export`
 step (a `memory-cli` subcommand or organizer pass) that renders MCP-written nodes back to
@@ -560,7 +562,7 @@ subcommand added to `memory-cli`; user-scope `~/.config/extensions/extensions.js
 
 - **Embedding was a hash stub (ADR audit A6)** → configurable backend (`auto|real|hash`),
   real = in-process fastembed bge-base-768 auto-downloaded to a global cache. (`f7ba7c4`, `ccff191`)
-- **`pnpm install` 404 on `@sox/tokenguard-core`** → `workspace:*` protocol. (`dabe9ea`)
+- **`pnpm install` 404 on `@adhd/sox-tokenguard-core`** → `workspace:*` protocol. (`dabe9ea`)
 - **memory-server MCP fell back to hash at runtime** → workspace-glob widening links the
-  bundle members so `@sox/memory-core` resolves; verified real semantic recall over the
+  bundle members so `@adhd/sox-memory-core` resolves; verified real semantic recall over the
   MCP stdio path. (`bec9914`, C7 dedupe `8c96865`)
