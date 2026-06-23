@@ -82,6 +82,24 @@ checksum-driven, not version-driven), but a three-way inconsistency. Fixed: bump
 to `^1.1.0` (a `^0.1.0` constraint would have rejected 1.1.0), and the stale `tool_version: "1.0.0"`
 line in CLAUDE.md → 1.1.0; resynced the registry. Surfaced when refreshing the user-scope install.
 
+### BL-31 — `sox stop` doesn't verify the kill or escalate to SIGKILL; orphaned daemons survive
+
+**Severity:** High (zombie process can keep hitting a removed dependency) · **Status:** Open
+During the memory upgrade, the running pre-P6 `memory-daemon` (pid 33079, started before the
+store refresh) had been **orphaned (PPID 1 — its supervisor had exited)**. `sox stop
+--id=memory-daemon` sent it **SIGTERM, reported "stop complete", and returned** — but the process
+**never died** (its old-code shutdown path hung on in-flight LLM/LM-Studio requests, or ignored the
+signal). `sox start` then spawned a *second* daemon (pid 43867) from the refreshed deterministic
+store, leaving **two daemons** — the orphaned old one kept draining its organizer queue against
+LM Studio (`localhost:1234`) until manually `kill -9`'d. Root gaps: (1) `stop` is fire-and-forget
+SIGTERM with **no post-signal liveness check and no SIGTERM→SIGKILL escalation/timeout**; (2) the
+runtime has **no reaper for orphaned daemons** — once the supervisor link breaks (PPID 1) it can
+only signal a tracked pid and never confirms death or matches by store path (`.sox/ext/<id>`).
+This is the failure mode the `runtime-productionization` SIGKILL-escalation / stale-state-GC work
+targets, but it does not cover an already-orphaned process whose supervisor is gone. Fix: `stop`
+must poll-verify exit and escalate to SIGKILL after a grace period; add a store-path-matched reaper
+for orphaned daemons. Discovered diagnosing "a ton of requests going to LM Studio."
+
 
 > **BL-21, BL-22, BL-23, BL-24 are owned by `docs/plan/memory-enrichment/IMPLEMENTATION.md` (§0).**
 > Each is resolved by a plan phase: BL-23 metadata = done (`9728f6f`); BL-23 project-path + BL-24
