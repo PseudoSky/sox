@@ -90,8 +90,9 @@ registry checksum stale and the global install will refuse to upgrade (C2/C4 rea
 A monorepo for an **LLM-extension ecosystem**: independently-versioned extensions of 8 types
 (`agent`, `skill`, `mcp-server`, `service`, `prompt`, `hook`, `command`, `bundle`), installed across scopes
 (`org`/`user`/`project`/`local`) and run by a host runtime. CLI: `bin/soxe`. Engine: `scripts/`.
-Extensions: `extensions/`. Per-type contracts: `docs/guidelines/`. Current-state audit:
-`docs/architecture-audit-v2.md`.
+Extensions: `extensions/`. Per-type contracts: `docs/guidelines/`. Architecture audits
+(dated point-in-time snapshots, **2026-06-08** — predate the sox-memory enrichment work):
+`docs/architecture-audit.md` + `docs/architecture-audit-v2.md`.
 
 ## Definition of Done
 
@@ -148,10 +149,15 @@ born-conformance gate checks `dist/index.js` syntax, lockfile + registry checksu
 artifact (`fetchArtifact` + `resolveChecksum` aligned). Work lives on branch `feat/nx-migration`
 (committed; not merged to `main`).
 
-**Next plan:** `runtime-productionization` — scoped at `.workflow/plans/runtime-productionization/SCOPE.md`.
-Covers global service discovery, stale-state GC, concurrent-start safety, log management, worker
-containment, SIGKILL escalation, signal contract enforcement, and a live monitoring surface. Architect
-design required before implementation.
+**Recent plans (implemented):**
+- `runtime-productionization` (`.workflow/plans/runtime-productionization/`) — global service
+  discovery, stale-state GC, concurrent-start safety, log management, worker containment, SIGKILL
+  escalation, signal-contract enforcement, live monitoring surface. **All phases P1–P9 shipped.**
+- sox-memory `memory-enrichment` + `filtered-clustering` (`docs/plan/`) — deterministic in-process
+  enrichment (zero LLM, the LLM `memory-organizer` was removed), filtered/subset clustering,
+  `memory_update`, and a **19-tool `memory_*` MCP surface (v1.1.0)**. Implemented + merged.
+
+See each plan dir's `SCOPE.md`/`IMPLEMENTATION.md` for per-phase status.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
