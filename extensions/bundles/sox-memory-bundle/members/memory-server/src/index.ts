@@ -34,8 +34,9 @@ import { serve, defineTool } from '@sox/mcp-runtime';
 import type { ToolDefinition, ToolResult } from '@sox/mcp-runtime';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { openDb, memoryWrite, memoryRecall, enqueueReindex } from '@sox/memory-core';
-import { clusterStats, ENRICH_VERSION } from '@sox/memory-enrich';
+import { openDb, memoryWrite, memoryRecall, enqueueEnrich } from '@sox/memory-core';
+import { clusterStats, clusterSubset, buildFiltersClause, ENRICH_VERSION } from '@sox/memory-enrich';
+import type { MemoryFilter } from '@sox/memory-enrich';
 import { monotonicFactory } from 'ulid';
 import Database from 'better-sqlite3';
 
@@ -463,7 +464,7 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_curate',
     description:
-      'Curation operations: retag, set topic, override importance, merge near-duplicates, or trigger a re-cluster pass.',
+      'Curation operations: retag, set topic, override importance, merge near-duplicates, or trigger a (optionally filtered) re-cluster pass.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -479,6 +480,8 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         importance: { type: 'number', minimum: 1, maximum: 10, description: '(set_importance) User-asserted importance.' },
         uid_keep:   { type: 'string', description: '(merge_duplicates) UID of the episode to keep.' },
         uid_drop:   { type: 'string', description: '(merge_duplicates) UID of the episode to invalidate.' },
+        filters:    { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: global async re-cluster via the daemon (unchanged).' },
+        threshold:  { type: 'number', description: '(recluster, filtered) Optional cosine similarity threshold override for the subset pass.' },
         dry_run:    { type: 'boolean', default: false, description: 'If true, return proposed changes without committing them.' },
       },
       required: ['db_path', 'op'],
@@ -575,97 +578,39 @@ function parseTags(raw: string | null | undefined): string[] {
   return [];
 }
 
-/**
- * Build the WHERE clause fragment and params for the `filters` object from memory_recall (C2.2).
- * Returns [sqlFragment, params[]] — the fragment starts with AND so the caller can append it.
- */
-function buildFiltersClause(
-  filters: Record<string, unknown> | undefined,
-): { sql: string; params: unknown[] } {
-  if (!filters) return { sql: '', params: [] };
+// buildFiltersClause is now owned by @sox/memory-enrich (imported above).
+// The local server still uses MemoryFilter for the recluster case type-cast.
 
-  const parts: string[] = [];
-  const params: unknown[] = [];
-
-  // project_path filter — exact string or { prefix: string }
-  const pp = filters['project_path'];
-  if (pp !== undefined && pp !== null) {
-    if (typeof pp === 'string') {
-      parts.push('n.project_path = ?');
-      params.push(pp);
-    } else if (typeof pp === 'object' && 'prefix' in (pp as object)) {
-      const prefix = (pp as { prefix: string }).prefix;
-      parts.push('(n.project_path = ? OR n.project_path LIKE ?)');
-      params.push(prefix, `${prefix}/%`);
-    }
-  }
-
-  // topic filter — single string or string[]
-  const topicFilter = filters['topic'];
-  if (topicFilter !== undefined && topicFilter !== null) {
-    if (typeof topicFilter === 'string') {
-      parts.push('n.topic = ?');
-      params.push(topicFilter);
-    } else if (Array.isArray(topicFilter) && topicFilter.length > 0) {
-      const placeholders = topicFilter.map(() => '?').join(', ');
-      parts.push(`n.topic IN (${placeholders})`);
-      params.push(...topicFilter);
-    }
-  }
-
-  // tags filter — any-match (default) or all-match
-  const tagsFilter = filters['tags'] as string[] | undefined;
-  const tagsMatchAll = filters['tags_match_all'] === true;
-  if (tagsFilter && tagsFilter.length > 0) {
-    if (tagsMatchAll) {
-      // ALL tags must be present
-      const tagClauses = tagsFilter.map(() =>
-        `EXISTS (SELECT 1 FROM json_each(n.tags) WHERE value = ?)`,
-      );
-      parts.push(`(${tagClauses.join(' AND ')})`);
-      params.push(...tagsFilter);
-    } else {
-      // ANY tag must be present
-      const tagClauses = tagsFilter.map(() =>
-        `EXISTS (SELECT 1 FROM json_each(n.tags) WHERE value = ?)`,
-      );
-      parts.push(`(${tagClauses.join(' OR ')})`);
-      params.push(...tagsFilter);
-    }
-  }
-
-  // importance_min
-  const impMin = filters['importance_min'];
-  if (typeof impMin === 'number') {
-    parts.push('n.importance >= ?');
-    params.push(impMin);
-  }
-
-  // t_created_after
-  const tAfter = filters['t_created_after'];
-  if (typeof tAfter === 'string') {
-    parts.push("n.t_created > ?");
-    params.push(tAfter);
-  }
-
-  // t_created_before
-  const tBefore = filters['t_created_before'];
-  if (typeof tBefore === 'string') {
-    parts.push("n.t_created < ?");
-    params.push(tBefore);
-  }
-
-  const sql = parts.length > 0 ? ' AND ' + parts.join(' AND ') : '';
-  return { sql, params };
+/** Resolve episode rowids → uids, preserving the input order. */
+function rowidsToUids(db: Database.Database, rowids: number[]): string[] {
+  if (rowids.length === 0) return [];
+  const ph = rowids.map(() => '?').join(',');
+  const rows = db
+    .prepare<unknown[], { rowid: number; uid: string }>(
+      `SELECT rowid, uid FROM node WHERE rowid IN (${ph})`,
+    )
+    .all(...rowids);
+  const byRowid = new Map(rows.map((r) => [r.rowid, r.uid]));
+  return rowids.map((r) => byRowid.get(r)).filter((u): u is string => typeof u === 'string');
 }
 
-/** Resolve a MEMBER_OF community uid for an episode rowid, if any. */
+/**
+ * Resolve the GLOBAL MEMBER_OF community uid for an episode rowid.
+ *
+ * Defaults to `cluster_scope.kind='global'` (treating legacy NULL scope as global)
+ * so that persisted subset lenses never leak into recall's `community_uid` field.
+ * An episode may be MEMBER_OF both a global and one or more subset communities —
+ * this function always returns the global one.
+ */
 function communityUidForRowid(db: Database.Database, rowid: number): string | null {
   const row = db
     .prepare<[number], { uid: string }>(
       `SELECT n2.uid FROM edge e
        JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.t_invalid IS NULL
+         AND (json_extract(n2.meta, '$.cluster_scope.kind') IS NULL
+              OR json_extract(n2.meta, '$.cluster_scope.kind') = 'global')
        WHERE e.src = ? AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+       ORDER BY e.rowid ASC
        LIMIT 1`,
     )
     .get(rowid);
@@ -1033,14 +978,18 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           )
           .get(communityUidArg);
       } else if (entityUid) {
-        // Find community via MEMBER_OF edge
+        // Find community via MEMBER_OF edge — scoped to GLOBAL communities by default.
+        // A subset lens on the same episode must not shadow the global community lookup.
         communityRow = db
           .prepare<[number, string], CommunityRow>(
             `SELECT n2.rowid, n2.uid, n2.name, n2.meta, n2.t_created
              FROM node n1
              JOIN edge e ON e.src = n1.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
              JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.level = ? AND n2.t_invalid IS NULL
-             WHERE n1.uid = ? AND n1.t_invalid IS NULL`,
+               AND (json_extract(n2.meta, '$.cluster_scope.kind') IS NULL
+                    OR json_extract(n2.meta, '$.cluster_scope.kind') = 'global')
+             WHERE n1.uid = ? AND n1.t_invalid IS NULL
+             LIMIT 1`,
           )
           .get(level, entityUid);
       } else {
@@ -1916,15 +1865,60 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         }
 
         case 'recluster': {
-          // OQ-3: dry_run on recluster means don't enqueue, just report
+          const filters = args['filters'] as MemoryFilter | Record<string, unknown> | undefined;
+
+          // Filtered recluster: cluster ONLY the subset matching `filters`,
+          // synchronously, and return the resulting communities. This is the
+          // on-demand "cluster a subset to find synthesis candidates" path.
+          // dry_run=true → read-only (no writes); dry_run=false → persist a
+          // provenance-scoped community slice that never touches the global
+          // partition. The server treats `filters` as opaque graph predicates;
+          // it carries no knowledge of what the tags/topics mean.
+          //
+          // The structured filter is now passed directly to clusterSubset — the
+          // engine owns buildFiltersClause and builds the SQL clause internally.
+          // This makes @sox/memory-enrich callable without server-private code.
+          if (filters && Object.keys(filters).length > 0) {
+            const threshold = args['threshold'];
+            const res = clusterSubset(db, {
+              filter: filters as MemoryFilter,
+              persist: !dryRun,
+              ...(typeof threshold === 'number' ? { threshold } : {}),
+            });
+            const clusters = res.clusters.map((c) => ({
+              community_uid: c.community_uid,
+              label: c.label,
+              size: c.member_rowids.length,
+              mean_intra_sim: c.mean_intra_sim,
+              members: rowidsToUids(db, c.member_rowids),
+            }));
+            return {
+              content: [{ type: 'text', text: JSON.stringify({
+                op: 'recluster',
+                scope: 'subset',
+                dry_run: dryRun,
+                persisted: res.persisted,
+                provenance_hash: res.provenance_hash,
+                candidate_count: res.candidate_count,
+                cluster_count: clusters.length,
+                unclustered_count: res.unclustered_count,
+                full_pass: res.full_pass,
+                clusters,
+              }) }],
+            };
+          }
+
+          // Global recluster (unchanged): OQ-3 dry_run means don't enqueue, just report.
           if (dryRun) {
             return {
               content: [{ type: 'text', text: JSON.stringify({ op: 'recluster', enqueued: false, dry_run: true }) }],
             };
           }
-          // Enqueue a reindex op to trigger full re-cluster in the daemon
+          // Enqueue an explicit 'enrich' op so the daemon runs a full batch-enrich pass
+          // (re-clusters + re-links the whole store). This wires the previously-dead
+          // schema CHECK constraint so 'enrich' rows have a real producer.
           try {
-            enqueueReindex(db);
+            enqueueEnrich(db);
           } catch {
             // If daemon not available, the cluster can be triggered manually
           }
@@ -1975,13 +1969,17 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         )
         .get(...ppParams);
 
-      // with_community: episodes that have a MEMBER_OF edge to a live community
+      // with_community: episodes that have a MEMBER_OF edge to a live GLOBAL community.
+      // Scoped to kind='global' (or legacy NULL scope) so persisted subset lenses
+      // do not inflate this count — it is used as a CI-gate metric (CONTRACTS C2.12).
       const withCommunityRow = db
         .prepare<unknown[], { cnt: number }>(
           `SELECT COUNT(DISTINCT n.rowid) AS cnt
            FROM node n
            JOIN edge e ON e.src = n.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
            JOIN node c ON c.rowid = e.dst AND c.kind = 'community' AND c.t_invalid IS NULL
+             AND (json_extract(c.meta, '$.cluster_scope.kind') IS NULL
+                  OR json_extract(c.meta, '$.cluster_scope.kind') = 'global')
            WHERE n.kind = 'episode' AND n.t_invalid IS NULL ${ppFilter.replace('AND project_path', 'AND n.project_path')}`,
         )
         .get(...ppParams);

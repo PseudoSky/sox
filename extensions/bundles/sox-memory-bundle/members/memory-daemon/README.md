@@ -1,6 +1,6 @@
 # Memory Daemon
 
-> Supervised Unix-socket daemon that drains the organizer queue and calls memory-organizer for LLM processing
+> Supervised Unix-socket daemon that drains the batch-enrich queue and runs deterministic enrichment (clustering, importance, auto-links) via @sox/memory-enrich — zero LLM calls, no provider required.
 
 ## Overview
 

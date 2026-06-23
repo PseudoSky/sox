@@ -44,13 +44,21 @@ export { extractiveSummary } from './extractive.js';
 
 // ── C1.8 + C1.10 clustering ───────────────────────────────────────────────────
 
-export { clusterStore, clusterStats } from './cluster.js';
+export { clusterStore, clusterStats, clusterSubset, materializeClusters } from './cluster.js';
 export type {
   ClusterResult,
   ClusterStoreOptions,
   ClusterStoreResult,
   ClusterStats,
+  ClusterSubsetOptions,
+  ClusterSubsetResult,
+  MaterializeOptions,
 } from './cluster.js';
+
+// ── C1.11 structured filter + SQL builder ─────────────────────────────────────
+
+export { buildFiltersClause } from './filters.js';
+export type { MemoryFilter } from './filters.js';
 
 // ── C1.9 auto-links ───────────────────────────────────────────────────────────
 

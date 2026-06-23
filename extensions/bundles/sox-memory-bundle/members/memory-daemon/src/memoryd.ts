@@ -14,10 +14,10 @@
  *   - Socket doubles as lifecycle.health endpoint (no extra FD).
  *   - Fallback poll every 1000ms if no socket nudge.
  *
- * Loop (7-step deterministic-first, ≤50 nodes/cycle):
- *   ingest → extract → link → consolidate → decay → reindex → idle
+ * Loop (deterministic batch enrichment, ≤50 items/cycle):
+ *   drain organizer_queue → runBatchEnrich(@sox/memory-enrich) → idle
  *
- * LLM step delegated to memory-organizer via the organizeItems() IPC call.
+ * Enrichment is fully deterministic — no LLM, no provider calls.
  */
 
 import * as net from 'node:net';
@@ -25,6 +25,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
+import { runBatchEnrich } from '@sox/memory-enrich';
 import { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
 
 const SOCKET_PATH = process.env['SOX_CONFIG_SOCK_PATH']
@@ -45,40 +46,15 @@ interface QueueRow {
   attempts: number;
 }
 
-export interface OrganizerItem {
-  uid: string;
-  content: string;
-  kind: string;
-  agent_id: string | null;
-  session_id: string | null;
-}
-
-export interface OrganizerResult {
-  uid: string;
-  importance?: number;
-  entities?: Array<{ name: string; type: string; summary?: string }>;
-  relations?: Array<{ src_uid?: string; rel: string; dst_uid?: string; dst_name?: string; weight?: number }>;
-  contradicts_uid?: string;
-  reflection?: string;
-}
-
-/**
- * Organizer callback type. memoryd invokes this with a batch;
- * memory-organizer implements the LLM step (R3: every LLM call lives there).
- */
-type OrganizerFn = (items: OrganizerItem[], db: Database.Database) => Promise<OrganizerResult[]>;
-
 export class MemoryDaemon {
   private db: Database.Database;
   private server: net.Server | null = null;
   private stopping = false;
   private loopHandle: ReturnType<typeof setTimeout> | null = null;
-  private organizerFn: OrganizerFn;
   readonly dbPath: string;
 
-  constructor(dbPath: string, organizerFn: OrganizerFn) {
+  constructor(dbPath: string) {
     this.dbPath = dbPath;
-    this.organizerFn = organizerFn;
 
     // Open write connection
     const dir = path.dirname(dbPath);
@@ -157,7 +133,7 @@ export class MemoryDaemon {
 
   /**
    * Main drain loop — processes one batch then reschedules.
-   * 7-step deterministic-first pipeline.
+   * Deterministic batch enrichment pipeline.
    */
   private async runLoop(): Promise<void> {
     if (this.stopping) return;
@@ -199,39 +175,49 @@ export class MemoryDaemon {
        WHERE seq IN (${seqs.map(() => '?').join(',')})`,
     ).run(claimedAt, ...seqs);
 
-    // Separate ingest rows (need organizer) from others (deterministic)
-    const ingestRows = rows.filter((r) => r.op === 'ingest');
-    const otherRows = rows.filter((r) => r.op !== 'ingest');
+    // Separate enrich/ingest rows (trigger batch enrichment) from other deterministic ops
+    const enrichRows = rows.filter((r) => r.op === 'ingest' || r.op === 'enrich');
+    const otherRows = rows.filter((r) => r.op !== 'ingest' && r.op !== 'enrich');
 
-    // Process deterministic ops first (steps: link, consolidate, decay, reindex)
+    // Process other deterministic ops (decay, reindex, etc.) — mark each done immediately.
+    const doneAt = new Date().toISOString();
+    const doneOtherSeqs: number[] = [];
     for (const row of otherRows) {
       await this.processDeterministic(row);
+      doneOtherSeqs.push(row.seq);
+    }
+    if (doneOtherSeqs.length > 0) {
+      this.db.prepare(
+        `UPDATE organizer_queue SET done_at = ?
+         WHERE seq IN (${doneOtherSeqs.map(() => '?').join(',')})`,
+      ).run(doneAt, ...doneOtherSeqs);
     }
 
-    // Process ingest rows via organizer (the LLM step — only in memory-organizer per R3)
-    if (ingestRows.length > 0) {
-      await this.processIngestBatch(ingestRows);
+    // Process enrich/ingest rows — only mark done on SUCCESS so transient failures
+    // are retried on the next drain cycle instead of being silently dropped.
+    if (enrichRows.length > 0) {
+      const enrichSucceeded = this.processBatchEnrich();
+      if (enrichSucceeded) {
+        const enrichSeqs = enrichRows.map((r) => r.seq);
+        this.db.prepare(
+          `UPDATE organizer_queue SET done_at = ?
+           WHERE seq IN (${enrichSeqs.map(() => '?').join(',')})`,
+        ).run(doneAt, ...enrichSeqs);
+      }
     }
-
-    // Mark done
-    const doneAt = new Date().toISOString();
-    this.db.prepare(
-      `UPDATE organizer_queue SET done_at = ?
-       WHERE seq IN (${seqs.map(() => '?').join(',')})`,
-    ).run(doneAt, ...seqs);
 
     return rows.length;
   }
 
   /**
-   * Process a single deterministic queue item (non-ingest ops).
+   * Process a single deterministic queue item (non-enrich ops).
    */
   private async processDeterministic(row: QueueRow): Promise<void> {
     const payload = JSON.parse(row.payload) as Record<string, unknown>;
 
     switch (row.op) {
       case 'decay': {
-        // Update access timestamps for decay tracking — no LLM needed
+        // Update access timestamps for decay tracking
         const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
         this.db.prepare(
           `UPDATE node SET importance = MAX(1.0, importance * ?)
@@ -243,7 +229,6 @@ export class MemoryDaemon {
         // Trigger FTS rebuild for recently modified nodes
         const uids = (payload['uids'] as string[] | undefined) ?? [];
         if (uids.length > 0) {
-          // FTS content table is kept in sync via triggers; force rebuild by rebuilding
           try {
             this.db.exec('INSERT INTO fts_node(fts_node) VALUES(\'rebuild\')');
           } catch {
@@ -255,7 +240,7 @@ export class MemoryDaemon {
       case 'consolidate':
       case 'extract':
       case 'link':
-        // These require the organizer LLM step — mark as handled via ingest flow
+        // Legacy op codes — treated as batch-enrich triggers; handled above via processBatchEnrich
         break;
       default:
         break;
@@ -264,122 +249,26 @@ export class MemoryDaemon {
   }
 
   /**
-   * Process a batch of 'ingest' operations via the organizer.
-   * The organizer makes the only LLM calls (R3).
+   * Run deterministic batch enrichment over the full live corpus.
+   * Delegates to @sox/memory-enrich runBatchEnrich — no LLM, no provider calls.
+   * Returns true on success, false on failure. Caller marks queue rows done only
+   * on success so transient failures are retried on the next drain cycle.
    */
-  private async processIngestBatch(rows: QueueRow[]): Promise<void> {
-    const items: OrganizerItem[] = [];
-
-    for (const row of rows) {
-      const payload = JSON.parse(row.payload) as Record<string, unknown>;
-      const uid = payload['uid'] as string;
-      if (!uid) continue;
-
-      const node = this.db
-        .prepare(`SELECT uid, content, kind, agent_id, session_id FROM node WHERE uid = ?`)
-        .get(uid) as OrganizerItem | undefined;
-
-      if (node) {
-        items.push(node);
-      }
-    }
-
-    if (items.length === 0) return;
-
+  private processBatchEnrich(): boolean {
     try {
-      const results = await this.organizerFn(items, this.db);
-      this.applyOrganizerResults(results);
+      const result = runBatchEnrich(this.db);
+      console.log(
+        `[memoryd] batch enrich: communities=${result.communities_upserted}` +
+        ` member_of=${result.member_of_edges}` +
+        ` importance_updated=${result.importance_updated}` +
+        ` relates_to=${result.relates_to_edges}` +
+        ` topics_backfilled=${result.topics_backfilled}`,
+      );
+      return true;
     } catch (err) {
-      console.error('[memoryd] organizer error:', err);
-      // Don't re-throw — the items are marked done to avoid re-processing
+      console.error('[memoryd] batch enrich error — rows left for retry:', err);
+      return false;
     }
-  }
-
-  /**
-   * Apply organizer results to the database:
-   * - Update importance scores
-   * - Insert entity nodes
-   * - Insert relation edges
-   * - Handle contradictions (bi-temporal invalidation, R5)
-   * - Insert reflection nodes
-   */
-  private applyOrganizerResults(results: OrganizerResult[]): void {
-    const tx = this.db.transaction(() => {
-      for (const result of results) {
-        // Update importance
-        if (result.importance !== undefined) {
-          this.db.prepare(`UPDATE node SET importance = ? WHERE uid = ?`)
-            .run(result.importance, result.uid);
-        }
-
-        // Insert entity nodes
-        if (result.entities) {
-          for (const entity of result.entities) {
-            const existingEntity = this.db
-              .prepare(`SELECT uid, rowid FROM node WHERE kind = 'entity' AND name = ? AND t_invalid IS NULL`)
-              .get(entity.name) as { uid: string; rowid: number } | undefined;
-
-            if (!existingEntity) {
-              const entityUid = `entity-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-              const now = new Date().toISOString();
-              const entityRow = this.db.prepare(
-                `INSERT INTO node (uid, kind, name, summary, t_created, t_valid)
-                 VALUES (?, 'entity', ?, ?, ?, ?)
-                 RETURNING rowid`,
-              ).get(entityUid, entity.name, entity.summary ?? null, now, now) as { rowid: number } | undefined;
-
-              if (entityRow) {
-                // Link the source node to this entity via MENTIONS
-                const srcRow = this.db
-                  .prepare(`SELECT rowid FROM node WHERE uid = ?`)
-                  .get(result.uid) as { rowid: number } | undefined;
-
-                if (srcRow) {
-                  this.db.prepare(
-                    `INSERT INTO edge (src, dst, rel, origin, t_created)
-                     VALUES (?, ?, 'MENTIONS', 'extracted', ?)`,
-                  ).run(srcRow.rowid, entityRow.rowid, now);
-                }
-              }
-            }
-          }
-        }
-
-        // Handle contradiction: close old claim (bi-temporal R5)
-        if (result.contradicts_uid) {
-          const now = new Date().toISOString();
-          this.db.prepare(`UPDATE node SET t_invalid = ? WHERE uid = ? AND t_invalid IS NULL`)
-            .run(now, result.contradicts_uid);
-
-          const oldRow = this.db
-            .prepare(`SELECT rowid FROM node WHERE uid = ?`)
-            .get(result.contradicts_uid) as { rowid: number } | undefined;
-
-          const newRow = this.db
-            .prepare(`SELECT rowid FROM node WHERE uid = ?`)
-            .get(result.uid) as { rowid: number } | undefined;
-
-          if (oldRow && newRow) {
-            this.db.prepare(
-              `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
-               VALUES (?, ?, 'SUPERSEDES', 'extracted', ?, ?)`,
-            ).run(newRow.rowid, oldRow.rowid, now, JSON.stringify({ reason: 'contradiction_detected' }));
-          }
-        }
-
-        // Insert reflection node
-        if (result.reflection) {
-          const reflUid = `reflect-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-          const now = new Date().toISOString();
-          this.db.prepare(
-            `INSERT INTO node (uid, kind, content, source, t_created, t_valid)
-             VALUES (?, 'episode', ?, 'reflection', ?, ?)`,
-          ).run(reflUid, result.reflection, now, now);
-        }
-      }
-    });
-
-    tx();
   }
 
   /**
@@ -429,7 +318,7 @@ export class MemoryDaemon {
 /**
  * Enqueue an item for the daemon to process.
  * Called by memory_write (enqueue+nudge replaces synchronous in-process write).
- * Sub-ms under WAL; does NOT block on LLM.
+ * Sub-ms under WAL; does NOT block on enrichment.
  */
 export function enqueueIngest(
   db: Database.Database,

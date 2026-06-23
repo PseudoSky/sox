@@ -99,7 +99,7 @@ is DENIED at runtime — C6 enforcement applies at the resource sink before the 
       "paths": ["~/.memory/memoryd.sock"]
     },
     "network": {
-      "outbound": ["api.anthropic.com", "${MEMORY_PROVIDER_HOST}"]
+      "outbound": ["api.anthropic.com", "${EXTERNAL_API_HOST}"]
     }
   }
 }

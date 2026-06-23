@@ -13,6 +13,50 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 > phases (P1–P6), not as loose items. The metadata-drop half of BL-23 is already fixed (`9728f6f`).
 > **BL-21 (auto-export) and BL-22 (entity names) resolved by P5 (2026-06-22).**
 
+## Open — surfaced by the filtered-clustering review (2026-06-22)
+
+> Deferred (non-blocking) findings from the architect + code review of branch
+> `memory-enrich/filtered-clustering`. The merge-blocking findings (read-side scoping,
+> structured-filter engine boundary, `nx.json` stale organizer, unreachable `'enrich'` op,
+> done-on-failure, tags guard) are being fixed in the fix wave, not logged here.
+> Full writeups: `docs/plan/filtered-clustering/REVIEW-architecture.md` + `REVIEW-code.md`.
+
+### BL-25 — three divergent `memoryd.ts` copies; member copies lack reembed-on-reindex
+
+**Severity:** Medium (stale vectors) · **Status:** Open
+After P6, `memory-daemon`, `memory-server`, and `memory-core` each carry a `memoryd.ts`; the
+member copies the daemon actually runs **lack the reembed-on-reindex path** that `memory-core`'s
+copy has → vectors go stale after an embed-backend change. Fix: converge all three on
+`@sox/memory-core` (the C7 single-source pattern) so there is one daemon implementation.
+
+### BL-26 — subset-lens communities have no GC / drop-by-hash reaper
+
+**Severity:** Medium (unbounded accumulation) · **Status:** Open
+Persisting a filtered recluster (`memory_curate recluster` + `filters`, `dry_run:false`) writes a
+provenance-scoped community slice keyed on the filter hash. Only an exact re-run of the *same*
+filter reaps its prior slice — distinct/one-off filters leave orphaned subset communities that
+accumulate with no reaper. Fix: add a `drop-by-hash` curation op (or a TTL/GC pass), or document
+subset lenses as ephemeral with the accumulation caveat. Gated behind the persist path being
+read-side-scoped first.
+
+### BL-27 — filtered-clustering review LOW findings (bundle)
+
+**Severity:** Low · **Status:** Open
+From `REVIEW-code.md`: (1) an empty-filter subset duplicates the global partition under a hash;
+(2) dead branch at `libs/memory-enrich/src/cluster.ts:507-509`; (3) no server-level persist-path
+(`dry_run:false`) test; (4) no migration for the `organizer_queue` CHECK-constraint change on
+pre-existing DBs (`'enrich'` op added). Address opportunistically.
+
+### ~~BL-28~~ — near-dup `SAME_AS` edge insert had a 7-col/8-value mismatch — **Resolved** (`06579d4`)
+
+**Severity:** High (write-path crash) · **Status:** Resolved
+`libs/memory-enrich/src/enrich.ts` inserted the near-dup `SAME_AS` edge with `INSERT INTO edge
+(7 cols) SELECT … 8 values` (a spurious trailing `NULL`), throwing a SQLite column-count error on
+**any near-duplicate write** under `enrichOnWrite`. No test exercised the path (the hash-backend
+guard requires a shared MENTIONS entity, which `enrichOnWrite` alone never creates), so it slipped.
+Fixed (removed the extra `NULL`) + added a real-backend regression test in `enrich.spec.ts` that
+drives the `SAME_AS` insert. Found during the filtered-clustering review reconciliation.
+
 ## Folded into the memory-enrichment plan
 
 > **BL-21, BL-22, BL-23, BL-24 are owned by `docs/plan/memory-enrichment/IMPLEMENTATION.md` (§0).**

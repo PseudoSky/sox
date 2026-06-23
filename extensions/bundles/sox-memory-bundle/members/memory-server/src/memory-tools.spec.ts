@@ -566,3 +566,176 @@ describe('backward compat — existing tools unbroken', () => {
     ).toBe(true);
   });
 });
+
+// ── memory_curate recluster — filtered (synchronous subset) wiring ───────────────
+// The deep clustering / scoped-persist / UID-collision correctness is covered by
+// the unit tests in @sox/memory-enrich (cluster-subset.spec.ts) with controlled
+// embeddings. These integration tests verify only the SERVER WIRING: that
+// `recluster` with `filters` routes to the synchronous subset path, selects the
+// right candidate set, honours dry_run for persistence, and returns the generic
+// response shape. The server carries no knowledge of what the tags mean.
+
+describe('memory_curate recluster — filtered subset', () => {
+  const UNIQ = 'synthtest';
+  // Two deliberately DISSIMILAR episodes sharing a unique tag, so neither the
+  // shared seed nor near-dup-on-write (E8) collapses them — the subset is a
+  // stable 2.
+  beforeAll(async () => {
+    await handleToolCall('memory_write', {
+      db_path: DB_PATH,
+      content: 'Calibration of the pneumatic widget press requires a torque of forty newton metres.',
+      tags: [UNIQ, 'alpha'],
+    });
+    await handleToolCall('memory_write', {
+      db_path: DB_PATH,
+      content: 'Migratory albatross navigation relies on geomagnetic field gradients over open ocean.',
+      tags: [UNIQ, 'beta'],
+    });
+  });
+
+  it('selects only episodes matching the filter and is read-only under dry_run', async () => {
+    const out = parseResult(
+      await handleToolCall('memory_curate', {
+        db_path: DB_PATH,
+        op: 'recluster',
+        filters: { tags: [UNIQ] },
+        dry_run: true,
+      }),
+    );
+    expect(out['op']).toBe('recluster');
+    expect(out['scope']).toBe('subset');
+    expect(out['dry_run']).toBe(true);
+    expect(out['persisted']).toBe(false); // dry_run never writes
+    expect(out['candidate_count']).toBe(2); // the two uniquely-tagged episodes
+    expect(typeof out['provenance_hash']).toBe('string');
+    expect((out['provenance_hash'] as string).length).toBeGreaterThan(0);
+    expect(Array.isArray(out['clusters'])).toBe(true);
+  });
+
+  it('treats the filter as an opaque predicate (non-matching filter → empty subset)', async () => {
+    const out = parseResult(
+      await handleToolCall('memory_curate', {
+        db_path: DB_PATH,
+        op: 'recluster',
+        filters: { tags: ['no-such-tag-xyz'] },
+        dry_run: true,
+      }),
+    );
+    expect(out['candidate_count']).toBe(0);
+    expect(out['cluster_count']).toBe(0);
+  });
+
+  it('derives a stable provenance hash for the same filter', async () => {
+    const a = parseResult(
+      await handleToolCall('memory_curate', {
+        db_path: DB_PATH, op: 'recluster', filters: { tags: [UNIQ] }, dry_run: true,
+      }),
+    );
+    const b = parseResult(
+      await handleToolCall('memory_curate', {
+        db_path: DB_PATH, op: 'recluster', filters: { tags: [UNIQ] }, dry_run: true,
+      }),
+    );
+    expect(a['provenance_hash']).toBe(b['provenance_hash']);
+  });
+
+  it('no filters → unchanged global behaviour (daemon enqueue, not subset)', async () => {
+    const out = parseResult(
+      await handleToolCall('memory_curate', { db_path: DB_PATH, op: 'recluster', dry_run: true }),
+    );
+    // Global path reports enqueue semantics, never the subset shape.
+    expect(out['scope']).toBeUndefined();
+    expect(out).toHaveProperty('enqueued');
+  });
+});
+
+// ── Fix ①: server-level scope isolation ──────────────────────────────────────
+// After persisting a subset lens, the global-scoped read paths (memory_stats)
+// must NOT be influenced by the subset communities.
+//
+// We write directly to the DB (bypassing handleToolCall memoryWrite) to avoid
+// triggering the near-dup code path in enrich.ts which has a pre-existing
+// column-count bug unrelated to this feature.
+
+describe('read-path scope isolation at server layer (fix ①)', () => {
+  let ISO_DB_PATH: string;
+  let isoDir: string;
+
+  beforeAll(() => {
+    isoDir = path.join(os.tmpdir(), `sox-iso-spec-${process.pid}`);
+    fs.mkdirSync(isoDir, { recursive: true });
+    ISO_DB_PATH = path.join(isoDir, 'iso.db');
+
+    // Open DB directly (bypasses memoryWrite near-dup path) and insert raw episodes.
+    const isoDb = openDb(ISO_DB_PATH);
+    const now = new Date().toISOString();
+    type InsRow = { rowid: number };
+    const ins = (content: string, tags: string[]): number => {
+      const uid = `iso-ep-${Math.random().toString(36).slice(2)}`;
+      return (isoDb.prepare<unknown[], InsRow>(
+        `INSERT INTO node (uid, kind, content, t_created, t_valid, tags) VALUES (?, 'episode', ?, ?, ?, ?) RETURNING rowid`,
+      ).get(uid, content, now, now, JSON.stringify(tags)) as InsRow).rowid;
+    };
+    // Insert 4 episodes: 2 iso:A, 2 iso:B. Content is long and lexically distinct
+    // so hash embeddings don't collide at the 0.98 near-dup threshold.
+    const r0 = ins('Aerobic respiration in eukaryotic cells produces adenosine triphosphate via the citric acid cycle and oxidative phosphorylation in mitochondria.', ['iso:A']);
+    const r1 = ins('Plate tectonics describes the movement of lithospheric plates driven by mantle convection and ridge push and slab pull forces.', ['iso:A']);
+    const r2 = ins('The Fourier transform decomposes a signal into its constituent sinusoidal frequency components represented as complex amplitudes.', ['iso:B']);
+    const r3 = ins('A Byzantine fault tolerant consensus algorithm requires at least three f plus one nodes to tolerate f simultaneous Byzantine failures.', ['iso:B']);
+
+    // Insert synthetic hash embeddings (group-orthogonal so they cluster correctly).
+    const encodeVec = (group: number): string => {
+      const v = new Float32Array(768);
+      for (let i = 0; i < 100; i++) v[group * 100 + i] = 1;
+      let norm = 0;
+      for (let i = 0; i < 768; i++) norm += v[i]! * v[i]!;
+      norm = Math.sqrt(norm);
+      for (let i = 0; i < 768; i++) v[i] = v[i]! / norm;
+      return '[' + Array.from(v).map((x) => x.toFixed(8)).join(',') + ']';
+    };
+    for (const [rowid, g] of [[r0, 0], [r1, 0], [r2, 1], [r3, 1]] as [number, number][]) {
+      isoDb.prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(rowid, encodeVec(g));
+    }
+
+    // Run a global cluster pass — 2 communities (iso:A group, iso:B group).
+    clusterStore(isoDb);
+    isoDb.close();
+  });
+
+  afterAll(() => {
+    try { fs.rmSync(isoDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('memory_stats cluster_count unchanged after subset persist', async () => {
+    // Capture global stats before persisting a subset.
+    const before = parseResult(await handleToolCall('memory_stats', { db_path: ISO_DB_PATH }));
+    const clusterCountBefore = before['cluster_count'] as number;
+    expect(clusterCountBefore).toBeGreaterThan(0); // sanity: global pass ran
+
+    // Persist a subset lens for iso:A.
+    await handleToolCall('memory_curate', {
+      db_path: ISO_DB_PATH, op: 'recluster',
+      filters: { tags: ['iso:A'] }, dry_run: false,
+    });
+
+    // Global stats must be unchanged — subset communities must not inflate count.
+    const after = parseResult(await handleToolCall('memory_stats', { db_path: ISO_DB_PATH }));
+    expect(after['cluster_count']).toBe(clusterCountBefore);
+  });
+
+  it('memory_stats with_community unchanged after subset persist', async () => {
+    const before = parseResult(await handleToolCall('memory_stats', { db_path: ISO_DB_PATH }));
+    const withCommunityBefore = before['with_community'] as number;
+
+    // Re-persist the same subset (idempotent).
+    await handleToolCall('memory_curate', {
+      db_path: ISO_DB_PATH, op: 'recluster',
+      filters: { tags: ['iso:A'] }, dry_run: false,
+    });
+
+    const after = parseResult(await handleToolCall('memory_stats', { db_path: ISO_DB_PATH }));
+    // Episodes in a subset community must not be counted in the global with_community stat.
+    // The count must not grow beyond what the global pass established.
+    expect(after['with_community']).toBeLessThanOrEqual(withCommunityBefore);
+  });
+});

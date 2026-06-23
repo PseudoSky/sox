@@ -18,9 +18,9 @@
  * this library's `embed()` export (not a raw onnxruntime-node import). Do NOT bypass the
  * worker boundary by importing onnxruntime-node directly alongside better-sqlite3.
  *
- * Internal: not published. Consumed by the 4 memory extensions (R9: co-located in bundle):
+ * Internal: not published. Consumed by the memory extensions (R9: co-located in bundle):
  *   - extensions/bundles/sox-memory-bundle/members/memory-server
- *   - extensions/bundles/sox-memory-bundle/members/memory-organizer
+ *   - extensions/bundles/sox-memory-bundle/members/memory-daemon
  *   - extensions/bundles/sox-memory-bundle/members/memory-flush
  *   - extensions/bundles/sox-memory-bundle/members/memory-cli
  *   - extensions/bundles/sox-memory-bundle (bundle manifest)
@@ -83,8 +83,7 @@ export type {
 } from './recall.js';
 
 // ── Daemon interop ────────────────────────────────────────────────────────────
-export { enqueueIngest, enqueueReindex, nudgeDaemon, MemoryDaemon, SOCKET_PATH } from './memoryd.js';
-export type { OrganizerItem, OrganizerResult } from './memoryd.js';
+export { enqueueIngest, enqueueReindex, enqueueEnrich, nudgeDaemon, MemoryDaemon, SOCKET_PATH } from './memoryd.js';
 
 // ── Extended functions (promotion, graphify, communities, entity search) ───────
 export {

@@ -6,7 +6,7 @@
  *
  * Invariants:
  *   R1: zero provider/LLM calls on the read path
- *   R3: ALL LLM calls originate in memory-organizer
+ *   R3: zero LLM calls — all enrichment is deterministic via @sox/memory-enrich
  *   R5: bi-temporal — invalidation closes t_invalid, never deletes
  */
 
@@ -728,8 +728,8 @@ export interface BuildCommunitiesResult {
 
 /**
  * Deterministic label-propagation community detection (design.md §2.3, P4).
- * LLM community summary lives ONLY in memory-organizer (R3).
- * This function builds the structure; organizer fills in summary.
+ * Community labels are derived deterministically from centroid member names.
+ * Batch clustering runs in memory-daemon via @sox/memory-enrich runBatchEnrich.
  */
 export function buildCommunities(
   db: Database.Database,
@@ -840,7 +840,7 @@ export function buildCommunities(
       });
       const communityName = `Community: ${memberNames.filter(Boolean).join(', ')}`;
 
-      // Insert community node (summary filled by organizer LLM — R3)
+      // Insert community node (label derived from member names — deterministic)
       const commRow = db
         .prepare(
           `INSERT INTO node (uid, kind, name, level, t_created, t_valid)

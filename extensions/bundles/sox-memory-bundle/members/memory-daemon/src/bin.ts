@@ -14,13 +14,10 @@
  *
  * Invariants:
  *   R6: NO ~/.memory/memoryd.lock advisory lock file is ever created.
- *   R3: All LLM calls are delegated to memory-organizer (organizeItems).
- *       Uses deterministic fallback unless MEMORY_PROVIDER_URL is set.
+ *   Enrichment: fully deterministic via @sox/memory-enrich — no LLM, no provider.
  */
 
 import { MemoryDaemon } from './memoryd.js';
-import type { OrganizerItem, OrganizerResult } from './memoryd.js';
-import Database from 'better-sqlite3';
 
 // ── CLI arg parsing ───────────────────────────────────────────────────────────
 
@@ -49,30 +46,12 @@ if (!dbPath) {
   process.exit(1);
 }
 
-// ── Deterministic organizer fallback ─────────────────────────────────────────
-//
-// When MEMORY_PROVIDER_URL is not set, use the deterministic fallback:
-// importance stays 1.0, no entity extraction, no LLM calls (R1, R3).
-// This is what tests use.
-
-async function deterministicOrganizer(
-  items: OrganizerItem[],
-  _db: Database.Database,
-): Promise<OrganizerResult[]> {
-  return items.map((item) => ({
-    uid: item.uid,
-    importance: 1.0,
-    entities: [],
-    relations: [],
-  }));
-}
-
 // ── Start daemon ─────────────────────────────────────────────────────────────
 
-const daemon = new MemoryDaemon(dbPath, deterministicOrganizer);
+const daemon = new MemoryDaemon(dbPath);
 
 daemon.start().then(() => {
-  console.log(`[memoryd] started — db: ${dbPath}, scope: ${scope}`);
+  console.log(`[memoryd] started — db: ${dbPath}, scope: ${scope}, enrichment: deterministic (no provider)`);
 }).catch((err: unknown) => {
   console.error('[memoryd] startup error:', err);
   process.exit(1);

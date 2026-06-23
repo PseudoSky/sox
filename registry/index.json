@@ -28,9 +28,9 @@
     "type": "bundle",
     "version": "0.1.0",
     "title": "sox-memory (graph memory subsystem)",
-    "description": "Use this when you want the full sox-memory graph-memory subsystem installed in one command — expands to memory-daemon (supervised Unix-socket writer daemon), memory-server (MCP tools, stdio), memory-organizer (LLM extract/link/consolidate agent that builds the graph), memory-flush (SessionEnd hook), memory-cli (store lifecycle commands), and memory-usage (how-to skill).",
+    "description": "Use this when you want the full sox-memory graph-memory subsystem installed in one command — expands to memory-daemon (supervised Unix-socket writer daemon with deterministic batch enrichment), memory-server (MCP tools, stdio), memory-flush (SessionEnd hook), memory-cli (store lifecycle commands), and memory-usage (how-to skill). Fully deterministic; zero LLM calls; no provider required.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle",
-    "checksum": "sha256:95d2c02579cad9094a0cae6bb9432052f251ecd0fa53ee07833ac97161bcdf2e",
+    "checksum": "sha256:7fb055f0a06144fbd13951d1acdcce7ec2417bded53ed8e2a3f332f435a2a11a",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -41,10 +41,6 @@
       },
       {
         "id": "memory-server",
-        "version": "^0.1.0"
-      },
-      {
-        "id": "memory-organizer",
         "version": "^0.1.0"
       },
       {
@@ -80,9 +76,9 @@
     "type": "service",
     "version": "0.1.0",
     "title": "Memory Daemon",
-    "description": "Processes the sox graph-memory organizer queue: a supervised, singleton Unix-socket service that invokes memory-organizer for LLM-driven entity/relation extraction, consolidation, and reindexing, keeping the memory graph current without blocking the MCP write path.",
+    "description": "Use this when you need the sox graph-memory enrichment pipeline running: a singleton Unix-socket service that drains the batch-enrich queue and runs deterministic clustering, importance scoring, and auto-links via @sox/memory-enrich — zero LLM calls, no provider required.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-daemon",
-    "checksum": "sha256:51c53d92dab483ae4945ea30fbf9e5a2dfbb7fda75e70d1f26c9c01bcb530353",
+    "checksum": "sha256:f592b6aa823dedfe65e69263c676d0ec1627b1672d2dabe0cafc342aa6515d54",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -104,31 +100,13 @@
     "bundleId": "sox-memory-bundle"
   },
   {
-    "id": "memory-organizer",
-    "type": "agent",
-    "version": "0.1.0",
-    "title": "Memory Organizer",
-    "description": "Use this when memoryd needs to promote raw episodes into structured graph knowledge — runs batched relation extraction, importance scoring (1–10), contradiction detection, and reflection synthesis via LLM. Invoked by memoryd on the write path; never called on the read path.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-organizer",
-    "checksum": "sha256:ab34dd4cef0d6d6c95bf11bf47473c3157509028c00a6f9217960a89f471fbf0",
-    "compatibility": {
-      "host": ">=1.0.0 <2.0.0"
-    },
-    "requires": {
-      "structured_output": true,
-      "min_context_tokens": 16384
-    },
-    "visibility": "internal",
-    "bundleId": "sox-memory-bundle"
-  },
-  {
     "id": "memory-server",
     "type": "mcp-server",
     "version": "0.1.0",
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:061eb8ed25cdffb37079c866d50b7d4dd41c4aa533d30b39539f8af792a46515",
+    "checksum": "sha256:4283626841b75285a0dea214951bbf75883599c33e3a1a9da6e37c8f210cae98",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },

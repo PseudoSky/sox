@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "type": "service",
   "title": "Memory Daemon",
-  "description": "Processes the sox graph-memory organizer queue: a supervised, singleton Unix-socket service that invokes memory-organizer for LLM-driven entity/relation extraction, consolidation, and reindexing, keeping the memory graph current without blocking the MCP write path.",
-  "keywords": ["memory", "daemon", "service", "organizer", "graph", "socket"],
+  "description": "Use this when you need the sox graph-memory enrichment pipeline running: a singleton Unix-socket service that drains the batch-enrich queue and runs deterministic clustering, importance scoring, and auto-links via @sox/memory-enrich — zero LLM calls, no provider required.",
+  "keywords": ["memory", "daemon", "service", "enrichment", "graph", "socket"],
   "author": "sox-ecosystem",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
@@ -51,19 +51,6 @@
         "description": "Unix socket path for the daemon IPC endpoint.",
         "x-sox-prompt": "Enter the socket path for memory-daemon:",
         "x-sox-default": "~/.memory/memoryd.sock"
-      },
-      "provider_url": {
-        "type": "string",
-        "description": "LLM provider base URL for memory-organizer (optional; uses deterministic fallback if absent)."
-      },
-      "provider_key": {
-        "type": "string",
-        "description": "LLM provider API key (optional)."
-      },
-      "provider_model": {
-        "type": "string",
-        "description": "LLM model name for memory-organizer (default: gpt-4o-mini).",
-        "x-sox-default": "gpt-4o-mini"
       }
     }
   },
@@ -74,9 +61,6 @@
     },
     "socket": {
       "paths": ["~/.memory/memoryd.sock"]
-    },
-    "network": {
-      "outbound": ["${MEMORY_PROVIDER_HOST}"]
     }
   }
 }

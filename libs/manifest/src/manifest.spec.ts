@@ -525,7 +525,7 @@ describe('validate() — bundle type', () => {
       id: 'sox-memory-bundle',
       members: [
         { id: 'memory-server', version: '^0.1.0' },
-        { id: 'memory-organizer', version: '^0.1.0' },
+        { id: 'memory-flush', version: '^0.1.0' },
       ],
     }));
     expect(result.ok).toBe(true);
