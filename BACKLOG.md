@@ -70,6 +70,18 @@ relative to the built file; under parallel vitest forks the cwd/resolution can d
 resolve `embedWorker.js` via an absolute `import.meta.url`/`__dirname`-anchored path so it is
 fork-cwd-independent. Low priority — only the parallel test runner is affected, not runtime.
 
+### ~~BL-30~~ — `memory-server` manifest version stuck at 0.1.0 despite v1.1.0 tool surface — **Resolved** (this commit)
+
+**Severity:** Low (version inconsistency) · **Status:** Resolved
+The P4 and `memory_update` "version bumps" only touched the runtime `tool_version` string + the
+source header comment — never the extension **manifest** `version`. So `extension.json` /
+`package.json` read **0.1.0** while the tool surface + docs claimed **1.0.0 / 1.1.0**, and the
+user-scope install resolved `memory-server@0.1.0`. Functionally harmless (upgrades are
+checksum-driven, not version-driven), but a three-way inconsistency. Fixed: bumped
+`memory-server` `extension.json` + `package.json` to **1.1.0**, the bundle `members[]` constraint
+to `^1.1.0` (a `^0.1.0` constraint would have rejected 1.1.0), and the stale `tool_version: "1.0.0"`
+line in CLAUDE.md → 1.1.0; resynced the registry. Surfaced when refreshing the user-scope install.
+
 
 > **BL-21, BL-22, BL-23, BL-24 are owned by `docs/plan/memory-enrichment/IMPLEMENTATION.md` (§0).**
 > Each is resolved by a plan phase: BL-23 metadata = done (`9728f6f`); BL-23 project-path + BL-24
