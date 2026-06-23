@@ -196,6 +196,75 @@ function sleep(ms) {
 }
 
 /**
+ * BL-31: spawn a TRULY ORPHANED (PPID 1) detached process running `node <argv>`.
+ *
+ * Uses a double-fork: a short-lived shell launches `setsid node <args> &` then
+ * exits immediately. When the intermediate shell exits, the grandchild is
+ * reparented to init (PPID 1) — exactly the BL-31 condition (supervisor gone).
+ * We then locate the grandchild pid by its unique argv marker via pgrep.
+ *
+ * @param {string} entrypoint absolute path passed to node as argv[1] (the identity)
+ * @param {string} marker     a second argv token to make the pid findable
+ * @returns {Promise<number>} the orphaned grandchild pid (PPID becomes 1)
+ */
+async function spawnOrphan(entrypoint, marker) {
+  // A long-running grandchild: a node setInterval daemon whose argv contains the
+  // entrypoint + marker verbatim (matching `node <entrypoint> <marker>`).
+  // We launch it via `/bin/sh -c 'nohup node <entry> <marker> & echo $!'` then let
+  // the shell exit. nohup + detached + backgrounding survives the shell's exit, and
+  // when the intermediate shell exits the node grandchild is reparented to init
+  // (PID 1) — the BL-31 orphan condition. We append our own setInterval keep-alive
+  // by passing a wrapper that requires the entrypoint only if it exists; to keep
+  // the daemon trivially alive regardless, we run `node -e` is NOT used here because
+  // we need the real entrypoint path in argv. Instead we let node load the
+  // entrypoint; the memory-server entry is a long-lived server, the unrelated
+  // placeholder exits fast — so for BOTH we instead use a generic keep-alive that
+  // still carries the entrypoint as a real argv token via --require-noop.
+  //
+  // Simpler + robust: run node with the entrypoint as argv[1] but force a
+  // keep-alive by also evaluating a setInterval via -e is incompatible with a
+  // positional script. So we use a tiny shim: `node -e 'setInterval(...)' --
+  // <entrypoint> <marker>` — the entrypoint appears in argv (process.argv) and the
+  // process stays alive deterministically.
+  const shim = "setInterval(()=>{},1000)";
+  const cmd =
+    `nohup "${NODE}" -e '${shim}' -- "${entrypoint}" "${marker}" ` +
+    `>/dev/null 2>&1 & echo $! ; exit 0`;
+  const child = spawn('/bin/sh', ['-c', cmd], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+    detached: true,
+  });
+  let out = '';
+  child.stdout.on('data', (d) => { out += d.toString(); });
+  await new Promise((resolve) => child.on('exit', resolve));
+  const gpid = Number(out.trim().split('\n').pop());
+  // Wait for reparenting to init.
+  await sleep(500);
+  return gpid;
+}
+
+/** Live pids whose argv contains a given marker token. */
+function pidsMatching(marker) {
+  try {
+    const out = execFileSync('pgrep', ['-f', marker], { encoding: 'utf8' });
+    return out.split('\n').map((s) => s.trim()).filter(Boolean).map(Number);
+  } catch { return []; }
+}
+
+/** True iff pid is alive. */
+function isAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+/** Read the PPID of a pid via ps; returns NaN if gone. */
+function ppidOf(pid) {
+  try {
+    const out = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8' });
+    return Number(out.trim());
+  } catch { return NaN; }
+}
+
+/**
  * Wait for the runtime record to show the extension as running.
  * @param {string} extId
  * @param {number} timeoutMs
@@ -721,6 +790,94 @@ async function main() {
   // The supervisor (start) process itself must be gone too.
   const supervisorAlive = !!(startProcess && startProcess.exitCode === null);
   assert(!supervisorAlive, 'supervisor (start) process exited after stop');
+
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Step 7b: BL-31 — `sox stop --id` REAPS a PPID-1 orphan by store path,
+  //          and SPARES an unrelated node process.
+  //
+  // This is the exact incident: a daemon whose supervisor exited (PPID 1) and
+  // that is absent from runtime.json. The pre-fix `sox stop` could only signal a
+  // tracked pid and never found such an orphan. We spawn a REAL detached node
+  // process running the actual memory-server entrypoint, orphan it (PPID 1),
+  // plus an UNRELATED detached node process, then prove `sox stop` reaps the
+  // orphan and leaves the unrelated one alive. Real ps/kill, cleaned up after.
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\nStep 7b: BL-31 orphan reaper — PPID-1 daemon reaped by store path');
+
+  // The real memory-server entrypoint — this is the identity the reaper matches.
+  const MEMSERVER_ENTRY = path.join(
+    ROOT, 'extensions', 'bundles', 'sox-memory-bundle', 'members',
+    'memory-server', 'dist', 'index.js',
+  );
+  // Re-write the lockfile + runtime record so `sox stop --id=memory-server`
+  // can resolve the entrypoint source (Step 6 uninstalled it). We rebuild a
+  // minimal lockfile + a runtime.json with NO tracked pid for memory-server —
+  // proving the reaper finds the orphan by IDENTITY, not by a tracked pid.
+  const reapLock = {
+    version: 1,
+    resolved: { 'memory-server@0.1.0': { source: `file://${MEMSERVER_ENTRY}` } },
+  };
+  fs.writeFileSync(LOCKFILE_PATH, JSON.stringify(reapLock, null, 2) + '\n', 'utf8');
+  fs.writeFileSync(RUNTIME_FILE, JSON.stringify({
+    version: 1, scope: 'project', startedAt: new Date().toISOString(),
+    entries: [{
+      key: 'memory-server@0.1.0', id: 'memory-server', type: 'mcp-server',
+      scope: 'project', source: `file://${MEMSERVER_ENTRY}`,
+      pid: null, running: false, activatedAt: new Date().toISOString(),
+    }],
+  }, null, 2) + '\n', 'utf8');
+
+  const UNRELATED_MARKER = path.join(TMP_DIR, 'unrelated-daemon', 'index.js');
+  fs.mkdirSync(path.dirname(UNRELATED_MARKER), { recursive: true });
+  fs.writeFileSync(UNRELATED_MARKER, '// unrelated placeholder', 'utf8');
+
+  // Spawn the orphan (real memory-server entrypoint) + the unrelated process.
+  const orphanPid = await spawnOrphan(MEMSERVER_ENTRY, `bl31-orphan-${process.pid}`);
+  const unrelatedOrphanPid = await spawnOrphan(UNRELATED_MARKER, `bl31-unrelated-${process.pid}`);
+
+  assert(isAlive(orphanPid), `BL-31 orphan daemon spawned + alive (pid=${orphanPid})`);
+  assert(isAlive(unrelatedOrphanPid), `BL-31 unrelated daemon spawned + alive (pid=${unrelatedOrphanPid})`);
+  // Confirm the orphan is actually reparented (PPID 1) — the BL-31 condition.
+  const orphanPpid = ppidOf(orphanPid);
+  assert(orphanPpid === 1,
+    `BL-31 orphan is reparented to init (PPID=${orphanPpid}, expected 1)`);
+
+  // The fix under test: `sox stop --id=memory-server` must reap the orphan.
+  const reapResult = runSox([
+    'stop', '--id=memory-server', '-s', 'project',
+    `--runtime-file=${RUNTIME_FILE}`,
+    `--lockfile=${LOCKFILE_PATH}`,
+    `--root=${TMP_DIR}`,
+    '--grace-ms=1500',
+  ]);
+  assert(reapResult.status === 0,
+    `BL-31 sox stop --id exits 0 (got ${reapResult.status}); stderr=${reapResult.stderr.slice(0, 200)}`);
+  // The reap is reported by either the CLI (`sox: reaped …`) or the runtime
+  // (`[runtime] … orphan … SIGKILL/SIGTERM`). Whichever path kills it first
+  // emits a reap line for the orphan pid — assert the orphan pid appears in a
+  // reap/kill context.
+  const reapEvidence =
+    new RegExp(`reaped memory-server pid=${orphanPid}`).test(reapResult.stdout) ||
+    new RegExp(`memory-server[^\\n]*orphan[^\\n]*pid=${orphanPid}`).test(reapResult.stdout) ||
+    new RegExp(`reap[^\\n]*pid ${orphanPid}`).test(reapResult.stdout);
+  assert(reapEvidence,
+    `BL-31 sox stop reports reaping the orphan (pid=${orphanPid}) in stdout`);
+
+  await sleep(400);
+  // REALITY CHECK against the OS process table.
+  assert(!isAlive(orphanPid),
+    `BL-31 orphaned memory-server daemon (pid=${orphanPid}) is DEAD after sox stop`);
+  assert(isAlive(unrelatedOrphanPid),
+    `BL-31 unrelated daemon (pid=${unrelatedOrphanPid}) SPARED — reaper matched by store path only`);
+
+  // Belt-and-suspenders: no leaked memory-server pid survives.
+  const reapLeaks = leakedServerPids();
+  assert(reapLeaks.length === 0,
+    `BL-31 no orphan memory-server processes survive sox stop (found: ${reapLeaks.join(', ') || 'none'})`);
+
+  // Cleanup the unrelated process we deliberately spared.
+  if (isAlive(unrelatedOrphanPid)) { try { process.kill(unrelatedOrphanPid, 'SIGKILL'); } catch { /* ignore */ } }
 
 
   // ═══════════════════════════════════════════════════════════════════════════

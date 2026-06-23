@@ -14,6 +14,7 @@ import { McpRegistrar } from './registrar.js';
 import type { McpAdapterHandle } from './adapters/mcp.js';
 import { acquireStartLock, computeSupervisorId } from './lock.js';
 import { registerSupervisor, deregisterSupervisor, readSupervisorsFile } from './registry.js';
+import { killAndVerify, reapBySource, reapByIdentity, identityToken, type KillOutcome } from './reaper.js';
 
 export interface RuntimeEntry {
   key: string;
@@ -416,36 +417,66 @@ export async function stopRuntime(opts: StopRuntimeOptions): Promise<void> {
   }
 
   if (record) {
-    if (opts.id) {
-      for (const entry of record.entries) {
-        if (entry.id === opts.id || entry.key === opts.id) {
-          if (typeof entry.pid === 'number') {
-            try {
-              process.kill(entry.pid, 'SIGTERM');
-              console.log(`[runtime] Sent SIGTERM to ${entry.id} (pid=${entry.pid})`);
-            } catch {
-              // already gone — that's fine
-            }
-          }
-          entry.running = false;
-          entry.pid = null;
+    // ── BL-31: verified kill + escalation + orphan reaping ───────────────────
+    // This is the NON-active path: a fresh CLI process (each `sox stop` is its
+    // own process) with no in-memory supervisor. The pre-fix code sent SIGTERM
+    // and immediately set running=false — fire-and-forget, no verification, no
+    // SIGKILL escalation, no way to find a detached PPID-1 orphan. We now:
+    //   1. For every targeted tracked pid: killAndVerify (SIGTERM → poll → SIGKILL).
+    //   2. Reap any orphan matching the extension's entrypoint identity, even
+    //      when it is detached (PPID 1) and/or absent from runtime.json.
+    const targets = opts.id
+      ? record.entries.filter((e) => e.id === opts.id || e.key === opts.id)
+      : record.entries;
+
+    for (const entry of targets) {
+      if (typeof entry.pid === 'number') {
+        const outcome = await killAndVerify(entry.pid, {
+          log: (m) => console.log(`[runtime] stop ${entry.id}: ${m}`),
+        });
+        reportKillOutcome(entry.id, entry.pid, outcome);
+      }
+      // Reap orphans by identity (store path / entrypoint), regardless of
+      // whether the tracked pid existed — the orphan may have a different pid
+      // than runtime.json last recorded (e.g. a respawn after supervisor death).
+      if (entry.source) {
+        const reap = await reapBySource(entry.source, {
+          excludePids: typeof entry.pid === 'number' ? [entry.pid] : [],
+          log: (m) => console.log(`[runtime] reap ${entry.id}: ${m}`),
+        });
+        for (const k of reap.killed) {
+          reportKillOutcome(
+            `${entry.id} (orphan${k.orphaned ? ', PPID 1' : ''})`,
+            k.pid,
+            k.outcome,
+          );
         }
       }
-    } else {
-      for (const entry of record.entries) {
-        if (typeof entry.pid === 'number') {
-          try {
-            process.kill(entry.pid, 'SIGTERM');
-            console.log(`[runtime] Sent SIGTERM to ${entry.id} (pid=${entry.pid})`);
-          } catch {
-            // already gone
-          }
-        }
-        entry.running = false;
-        entry.pid = null;
-      }
+      entry.running = false;
+      entry.pid = null;
     }
     writeRuntimeRecord(opts.runtimeFilePath, record);
+  }
+}
+
+/** Log a per-process kill outcome honestly. 'undead' is surfaced as an error. */
+function reportKillOutcome(label: string, pid: number, outcome: KillOutcome): void {
+  switch (outcome) {
+    case 'already-dead':
+      console.log(`[runtime] ${label} (pid=${pid}) already dead — no-op`);
+      break;
+    case 'term':
+      console.log(`[runtime] ${label} (pid=${pid}) exited after SIGTERM`);
+      break;
+    case 'kill':
+      console.log(`[runtime] ${label} (pid=${pid}) survived SIGTERM → killed with SIGKILL`);
+      break;
+    case 'undead':
+      console.error(
+        `[runtime] CRITICAL: ${label} (pid=${pid}) could not be killed even with SIGKILL ` +
+        `(uninterruptible sleep / EPERM). Manual intervention required.`,
+      );
+      break;
   }
 }
 
@@ -456,25 +487,36 @@ export async function stopExtension(runtimeFilePath: string, id: string): Promis
     if (!record) return false;
 
     const entry = record.entries.find((e) => e.id === id || e.key === id);
-    if (!entry || !entry.running) return false;
+    if (!entry) return false;
 
-    if (entry.pid !== null) {
-      try {
-        process.kill(entry.pid, 'SIGTERM');
-        console.log(`[runtime] Sent SIGTERM to pid ${entry.pid} for ${id}`);
-        entry.running = false;
-        entry.pid = null;
-        writeRuntimeRecord(runtimeFilePath, record);
-        return true;
-      } catch (e) {
-        console.warn(`[runtime] Could not kill pid ${String(entry.pid)}: ${String(e)}`);
-        entry.running = false;
-        entry.pid = null;
-        writeRuntimeRecord(runtimeFilePath, record);
-        return false;
+    // BL-31: verified kill + orphan reaping (non-active path). Even when the
+    // tracked entry is already running=false, an orphan may still survive — so
+    // we always run the identity reap.
+    let allDead = true;
+
+    if (typeof entry.pid === 'number') {
+      const outcome = await killAndVerify(entry.pid, {
+        log: (m) => console.log(`[runtime] stop ${id}: ${m}`),
+      });
+      reportKillOutcome(id, entry.pid, outcome);
+      if (outcome === 'undead') allDead = false;
+    }
+
+    if (entry.source) {
+      const reap = await reapBySource(entry.source, {
+        excludePids: typeof entry.pid === 'number' ? [entry.pid] : [],
+        log: (m) => console.log(`[runtime] reap ${id}: ${m}`),
+      });
+      for (const k of reap.killed) {
+        reportKillOutcome(`${id} (orphan${k.orphaned ? ', PPID 1' : ''})`, k.pid, k.outcome);
+        if (k.outcome === 'undead') allDead = false;
       }
     }
-    return false;
+
+    entry.running = false;
+    entry.pid = null;
+    writeRuntimeRecord(runtimeFilePath, record);
+    return allDead;
   }
 
   const { loaderResult, registrar } = active;
@@ -501,6 +543,77 @@ export async function stopExtension(runtimeFilePath: string, id: string): Promis
     }
   }
   return false;
+}
+
+export interface ReapExtensionResult {
+  id: string;
+  /** The entrypoint identity token used to match the process table. */
+  token: string;
+  /** Per-process kill outcomes for everything matched. Empty = nothing found. */
+  killed: Array<{ pid: number; ppid: number; orphaned: boolean; outcome: KillOutcome }>;
+}
+
+/**
+ * BL-31 orphan reaper — the supervisor-independent path.
+ *
+ * Finds and kills any process running an extension's entrypoint, by matching the
+ * OS process table against the entrypoint identity resolved from the lockfile
+ * (and/or runtime.json) — even when the supervisor is gone, the process is
+ * detached (PPID 1), and the runtime record has been cleaned. This is exactly
+ * the failure mode in BL-31: `sox stop` could only signal a tracked pid and had
+ * no way to find a daemon by *what it is*.
+ *
+ * Resolution order for the identity token:
+ *   1. runtime.json entry.source for the id (most authoritative when present).
+ *   2. lockfile `resolved[<id|id@ver>].source`.
+ * The token is a precise entrypoint path, so an unrelated `node` process is never
+ * killed (see argvContainsToken in reaper.ts).
+ *
+ * @param lockfilePath  path to extensions.lock (for source resolution); optional.
+ * @param runtimeFilePath path to runtime.json (for source + excluding the supervisor pid).
+ * @param id            bare extension id (e.g. "memory-daemon").
+ */
+export async function reapOrphansForExtension(
+  id: string,
+  opts: {
+    lockfilePath?: string | undefined;
+    runtimeFilePath?: string | undefined;
+    graceMs?: number | undefined;
+    log?: ((msg: string) => void) | undefined;
+  } = {},
+): Promise<ReapExtensionResult> {
+  // 1. Resolve the entrypoint source for this id.
+  let source = '';
+  let supervisorPid: number | undefined;
+  if (opts.runtimeFilePath) {
+    const record = readRuntimeRecord(opts.runtimeFilePath);
+    if (record) {
+      supervisorPid = record.supervisorPid;
+      const entry = record.entries.find((e) => e.id === id || e.key === id);
+      if (entry?.source) source = entry.source;
+    }
+  }
+  if (!source && opts.lockfilePath) {
+    const map = readLockfileSourceMap(opts.lockfilePath);
+    source = map[id] ?? map[`${id}@`] ?? '';
+    if (!source) {
+      // Fall back to a versioned key match (id@x.y.z).
+      const k = Object.keys(map).find((key) => key === id || key.startsWith(`${id}@`));
+      if (k) source = map[k] ?? '';
+    }
+  }
+
+  const token = identityToken(source);
+  if (!token) return { id, token: '', killed: [] };
+
+  // 2. Reap by identity, never touching the live supervisor process.
+  const excludePids = supervisorPid !== undefined ? [supervisorPid] : [];
+  const reap = await reapByIdentity(token, {
+    excludePids,
+    graceMs: opts.graceMs,
+    log: opts.log,
+  });
+  return { id, token, killed: reap.killed };
 }
 
 export async function reconcileRuntime(
