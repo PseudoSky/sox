@@ -2,16 +2,18 @@
  * libs/install-engine/src/install-registry.ts — Global install ledger (P9)
  *
  * Tracks every successful `sox install` across all projects on this machine.
- * Written to ~/.sox/install-registry.json using atomic rename.
- * All writes are best-effort — a failure here must never fail the install.
+ * Written using atomic rename. All writes are best-effort — a failure here must
+ * never fail the install.
  *
- * File: ~/.sox/install-registry.json (or $SOX_HOME/install-registry.json)
+ * File: $SOX_ECOSYSTEM_HOME/install-registry.json (ADR-0004 §D7; default
+ * ~/.adhd/sox-ecosystem/install-registry.json). Resolved via the data-paths leaf
+ * (kept in parity with the host-runtime resolver by data-paths.parity.spec.ts).
  * Natural key for dedup: (extId, scope, root)
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
+import { installRegistryPath } from './data-paths.js';
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -40,8 +42,8 @@ export interface InstallRegistry {
 // ─── Path resolution ──────────────────────────────────────────────────────────
 
 export function resolveInstallRegistryPath(): string {
-  const soxHome = process.env['SOX_HOME'] ?? path.join(os.homedir(), '.sox');
-  return path.join(soxHome, 'install-registry.json');
+  // ADR-0004 §D7: global install ledger under the user data root.
+  return installRegistryPath();
 }
 
 // ─── Read / write ─────────────────────────────────────────────────────────────

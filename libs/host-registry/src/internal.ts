@@ -109,14 +109,16 @@ export interface HostModule {
 
 /**
  * Expand a leading ~ to the effective home directory.
- * [inv:sandbox-isolation]: when SOX_HOME is set (test/probe mode), tilde expands
- * to SOX_HOME so that any path prefixed with ~/ is rerooted under the sandbox.
- * Reads process.env at call time — NOT at module load — so env vars set after
- * import are honoured.
+ * [inv:sandbox-isolation]: when SOX_SANDBOX_ROOT is set (test/probe mode ONLY),
+ * tilde expands to SOX_SANDBOX_ROOT so any ~/-prefixed path reroots under the
+ * sandbox. (ADR-0004 §D3: this is the DEDICATED isolation switch — split off the
+ * data root. SOX_ECOSYSTEM_HOME does NOT reroot placements
+ * [inv:data-root-never-reroutes].) Reads process.env at call time — NOT at module
+ * load — so env vars set after import are honoured.
  */
 export function expandHome(p: string): string {
-  const soxHome = process.env['SOX_HOME'];
-  const base = soxHome !== undefined && soxHome !== '' ? soxHome : os.homedir();
+  const sandbox = process.env['SOX_SANDBOX_ROOT'];
+  const base = sandbox !== undefined && sandbox !== '' ? sandbox : os.homedir();
   // Tilde expansion: p === '~' or p starts with tilde+separator.
   // Written as a char-level check so no literal tilde-slash appears in source
   // ([host-targets.5] structural gate: no bare path literals outside host-registry).

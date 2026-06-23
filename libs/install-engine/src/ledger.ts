@@ -7,10 +7,14 @@
  * LedgerAction keyed by (ext, host, scope).  Capabilities read/write the ledger
  * so that reverse() can undo ONLY sox-owned entries and never touch foreign keys.
  *
- * Ledger location:
- *   project scope → <scope-root>/.sox/ledger.json  (committed, portable — repo-relative paths)
- *   user scope    → ~/.sox/ledger.json              (gitignored)
- *   org/local     → <scope-root>/.sox/ledger.json
+ * Ledger location (ADR-0004 §D2 — under the per-scope data root):
+ *   project scope → <repo>/.adhd/sox-ecosystem/ledger.json  (committed, portable)
+ *   user scope    → $SOX_ECOSYSTEM_HOME/ledger.json          (gitignored)
+ *   org/local     → <root>/.adhd/sox-ecosystem/ledger.json
+ *
+ * NOTE: `Ledger.load(dataDir)` takes the ALREADY-RESOLVED data directory (the
+ * `.adhd/sox-ecosystem` dir for the scope), computed by the caller via the
+ * data-paths resolver. The ledger no longer appends its own `.sox` subdir.
  *
  * Portability invariant ([def:ledger] ADR resolved #3):
  *   The project ledger must contain ONLY repo-relative paths and keyPaths / hashes —
@@ -22,6 +26,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as os from 'os';
+import { ledgerPathFor } from './data-paths.js';
 
 // --- Shape: LedgerAction ([shape:ledger-action]) ---
 
@@ -73,19 +78,21 @@ export function sha256(value: unknown): string {
 }
 
 /**
- * Resolve the ledger file path for a given scope root.
- * Always <scope-root>/.sox/ledger.json regardless of scope kind.
+ * Resolve the ledger file path for a given data directory (ADR-0004 §D2).
+ * `dataDir` is the already-resolved `.adhd/sox-ecosystem` directory for the scope.
+ * Always <dataDir>/ledger.json regardless of scope kind.
  */
-export function ledgerPath(scopeRoot: string): string {
-  return path.join(scopeRoot, '.sox', 'ledger.json');
+export function ledgerPath(dataDir: string): string {
+  return path.join(dataDir, 'ledger.json');
 }
 
 /**
- * Resolve the user ledger path (~/.sox/ledger.json).
- * This file is gitignored and may contain absolute paths.
+ * Resolve the user ledger path (ADR-0004 §D2): $SOX_ECOSYSTEM_HOME/ledger.json
+ * (default ~/.adhd/sox-ecosystem/ledger.json). Routed through the single
+ * data-root resolver. This file is gitignored and may contain absolute paths.
  */
 export function userLedgerPath(): string {
-  return path.join(os.homedir(), '.sox', 'ledger.json');
+  return ledgerPathFor('user');
 }
 
 // --- Ledger class ---

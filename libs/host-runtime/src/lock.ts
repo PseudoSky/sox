@@ -13,8 +13,8 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import * as crypto from 'node:crypto';
+import { runDir } from './data-paths.js';
 
 /**
  * Compute the stable supervisor ID for a given scope+root combination.
@@ -51,8 +51,8 @@ export function acquireStartLock(
   supervisorId: string,
   opts: { timeoutMs?: number } = {},
 ): { release: () => void } {
-  const soxHome = process.env['SOX_HOME'] ?? path.join(os.homedir(), '.sox');
-  const lockDir = path.join(soxHome, 'locks');
+  // ADR-0004 §D2: locks live under the user data root's run/ dir.
+  const lockDir = path.join(runDir(), 'locks');
   fs.mkdirSync(lockDir, { recursive: true });
   const lockPath = path.join(lockDir, `${supervisorId}.lock`);
   const timeoutMs = opts.timeoutMs ?? 10_000;

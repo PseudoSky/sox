@@ -40,8 +40,16 @@ export interface ConfigMergePayload {
 export interface ConfigMergeCtx {
   host: string;
   scope: string;
-  /** scopeRoot used to locate the ledger for this scope. */
+  /**
+   * The resolved data directory (ADR-0004 §D2: `.adhd/sox-ecosystem` for the
+   * scope) used to locate the ledger. NOT the host placement root.
+   */
   scopeRoot: string;
+  /**
+   * Workspace root — the base for project-scope relative ledger paths
+   * (portability). When omitted, falls back to scopeRoot for back-compat.
+   */
+  workspaceRoot?: string;
   /** Whether this is a project-scope install (affects ledger portability). */
   isProject?: boolean;
   ext: string;
@@ -360,8 +368,11 @@ export async function apply(ctx: ConfigMergeCtx): Promise<void> {
   // be stored relative to scopeRoot (= workspaceRoot for project scope) so the
   // ledger remains portable (committed to the repo without machine-specific paths).
   const ledger = ctx.ledger ?? Ledger.load(ctx.scopeRoot, ctx.isProject !== undefined ? { isProject: ctx.isProject } : undefined);
+  // Project-ledger portability: store paths relative to the WORKSPACE root (the
+  // host placement base), not the data dir. ADR-0004 splits these two roots.
+  const relBase = ctx.workspaceRoot ?? ctx.scopeRoot;
   const ledgerFilePath = ctx.isProject
-    ? path.relative(ctx.scopeRoot, ctx.target.filePath)
+    ? path.relative(relBase, ctx.target.filePath)
     : ctx.target.filePath;
   const action: LedgerAction = {
     cap: 'config-merge',

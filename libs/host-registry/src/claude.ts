@@ -30,10 +30,12 @@
  *   local   -> .claude/settings.local.json
  *   managed -> SOX NEVER WRITES THIS (enterprise/org policy tier)
  *
- * [inv:sandbox-isolation]: when SOX_HOME is set (sandbox/test mode), ALL absolute
- *   user-scope paths reroot under SOX_HOME so probe_done can assert zero real-home writes.
- *   getBase() reads SOX_HOME at call time — NOT at module load time — so the env var
- *   set after import is honoured.
+ * [inv:sandbox-isolation]: when SOX_SANDBOX_ROOT is set (sandbox/test mode), ALL
+ *   absolute user-scope paths reroot under it so probe_done can assert zero real-home
+ *   writes. getBase() reads SOX_SANDBOX_ROOT at call time — NOT at module load time.
+ *   ADR-0004 §D3: this is the DEDICATED isolation switch, split off the data root.
+ *   SOX_ECOSYSTEM_HOME (the data root) NEVER reroutes placement
+ *   [inv:data-root-never-reroutes].
  */
 
 import * as os from 'os';
@@ -65,12 +67,13 @@ const HOME = os.homedir();
 
 /**
  * [inv:sandbox-isolation]: Return the effective base directory for user-scope paths.
- * When SOX_HOME is set (probe/test sandbox), all absolute user paths reroot there.
- * Reads at call time so the env var set after module load is honoured.
+ * When SOX_SANDBOX_ROOT is set (probe/test sandbox), all absolute user paths reroot
+ * there. Reads at call time so the env var set after module load is honoured.
+ * ADR-0004 §D3: dedicated isolation switch; SOX_ECOSYSTEM_HOME does NOT reroot here.
  */
 function getBase(): string {
-  const soxHome = process.env['SOX_HOME'];
-  return soxHome !== undefined && soxHome !== '' ? soxHome : HOME;
+  const sandbox = process.env['SOX_SANDBOX_ROOT'];
+  return sandbox !== undefined && sandbox !== '' ? sandbox : HOME;
 }
 
 /**
@@ -82,13 +85,13 @@ function getBase(): string {
  * a path to the managed tier.
  */
 function scopePaths(scope: HostScope): ScopePathMap {
-  // [inv:sandbox-isolation]: when SOX_HOME is set, user-scope paths reroot under it.
+  // [inv:sandbox-isolation]: when SOX_SANDBOX_ROOT is set, user-scope paths reroot under it.
   switch (scope) {
     case 'project':
       // Relative paths from the workspace root — portable, committed to repo.
       return { project: '.claude' };
     case 'user':
-      // Absolute home-relative path — rerooted under SOX_HOME when set.
+      // Absolute home-relative path — rerooted under SOX_SANDBOX_ROOT when set.
       return { user: path.join(getBase(), '.claude') };
     case 'local':
       // Local overrides sit inside the project .claude/ dir.
@@ -116,7 +119,7 @@ function scopePaths(scope: HostScope): ScopePathMap {
  * Each value is { capability, format?, paths }.
  *
  * Literal .claude/ and ~/.claude/ paths live HERE — [ref:host-keyed-target].
- * User-scope absolute paths use getBase() so SOX_HOME sandboxing is honoured.
+ * User-scope absolute paths use getBase() so SOX_SANDBOX_ROOT sandboxing is honoured.
  *
  * NOTE: 'output-style' is intentionally absent (P0.5: it is a settings.json
  * value, not a file surface — do not add it here).
@@ -269,7 +272,7 @@ export const claudeHost: HostModule = {
   detect,
   scopePaths,
   // [inv:sandbox-isolation]: surfaces is a getter that calls buildSurfaces() each time,
-  // so SOX_HOME set after import is honoured for all user-scope path lookups.
+  // so SOX_SANDBOX_ROOT set after import is honoured for all user-scope path lookups.
   get surfaces(): SurfaceMap {
     return buildSurfaces();
   },

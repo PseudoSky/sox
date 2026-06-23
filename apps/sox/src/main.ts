@@ -16,6 +16,9 @@ import type { PermissionsBlock, RuntimeEntry, RuntimeRecord } from '@adhd/sox-ho
 import {
   compilePolicy,
   computeSupervisorId,
+  dataRoot,
+  installRegistryPath,
+  logDirFor,
   getRuntimeFilePath,
   getRuntimeRecord,
   getScopePaths,
@@ -28,6 +31,7 @@ import {
   resolveExtensionDir,
   startRuntime,
   stopRuntime,
+  type DataScope,
 } from '@adhd/sox-host-runtime';
 import type { DeclarativeInstallResult, InstallDescriptor, InstallRecord, Scope, UpdateCtx } from '@adhd/sox-install-engine';
 import {
@@ -39,6 +43,8 @@ import {
   getScopePath,
   install,
   update as lifecycleUpdate,
+  uninstall as lifecycleUninstall,
+  OwnershipIndex,
   loadConfig,
   loadExtensionManifest,
   loadLockfile,
@@ -67,12 +73,20 @@ const verb = argv[0];
 const flags = parseArgs(argv.slice(1));
 
 async function main(): Promise<void> {
-  // [inv:sox-home-notice] — Warn when SOX_HOME redirects all user-scope paths away from
-  // os.homedir(). Silent redirection is surprising; a single stderr line makes it visible.
-  const soxHomeOverride = process.env['SOX_HOME'];
-  if (soxHomeOverride && verb !== 'help' && verb !== undefined) {
+  // ADR-0004: SOX_HOME is RETIRED. It used to mean two things at once (data root +
+  // host-path rerouting). It is replaced by SOX_ECOSYSTEM_HOME (data root only) and
+  // SOX_SANDBOX_ROOT (test isolation only). A still-set SOX_HOME is now inert for
+  // data resolution — warn loudly so a stale shell export does not mislead.
+  if (process.env['SOX_HOME'] && verb !== 'help' && verb !== undefined) {
     process.stderr.write(
-      `[sox] SOX_HOME is set — user-scope paths rooted at ${soxHomeOverride}\n`,
+      `[sox] WARNING: SOX_HOME is set but RETIRED (ADR-0004). It no longer affects data\n` +
+      `      location or placement. Use SOX_ECOSYSTEM_HOME for the data root, or run\n` +
+      `      '${CLI} migrate-home' to relocate existing data. Unset SOX_HOME to silence this.\n`,
+    );
+  }
+  if (process.env['SOX_ECOSYSTEM_HOME'] && verb !== 'help' && verb !== undefined) {
+    process.stderr.write(
+      `[sox] SOX_ECOSYSTEM_HOME is set — data root: ${process.env['SOX_ECOSYSTEM_HOME']} (placement unaffected)\n`,
     );
   }
 
@@ -113,7 +127,7 @@ async function main(): Promise<void> {
       await cmdUpgrade(flags);
       break;
     case 'uninstall':
-      cmdUninstall(flags);
+      await cmdUninstall(flags);
       break;
     case 'enable':
       await cmdEnable(flags);
@@ -137,6 +151,9 @@ async function main(): Promise<void> {
       break;
     case 'logs':
       await cmdLogs(flags);
+      break;
+    case 'migrate-home':
+      cmdMigrateHome(flags);
       break;
 
     // ── Authoring (A1) ────────────────────────────────────────────────────────
@@ -275,6 +292,9 @@ Runtime:
   logs               Tail or follow extension log output (R4)
                      Flags: --id=<ext-id>  --scope=<scope>  --lines=<n>
                             --follow  --history  --json
+  migrate-home       Relocate sox data to the ADR-0004 .adhd/sox-ecosystem layout
+                     Flags: --old-home  --old-config  --old-sandbox  --new-home
+                            --dry-run
 
 Flags accept both forms: --flag=value  and  --flag value  (A12)
 
@@ -924,14 +944,12 @@ Options:
       process.exit(1);
     }
 
-    // Compute scopeRoot: for project scope, same as workspaceRoot.
-    // For user scope, we use the host's scopePaths to find the root.
-    const hostMod = getHost(host);
-    const hostScopePaths = hostMod.scopePaths(scope as Parameters<typeof hostMod.scopePaths>[0]);
-    // scopeRoot is the root used for the install ledger.
-    const scopeRoot: string = scope === 'project'
-      ? workspaceRoot
-      : (Object.values(hostScopePaths)[0] ?? workspaceRoot);
+    // ADR-0004 §D2: scopeRoot is the DATA dir (`.adhd/sox-ecosystem`) for the
+    // scope — the home of the ledger, ownership index, and materialized store.
+    // It is decoupled from the host placement root (which is resolved separately
+    // inside declarativeInstall via the surface paths). Setting SOX_ECOSYSTEM_HOME
+    // moves this; it never moves placement ([inv:data-root-never-reroutes]).
+    const scopeRoot: string = dataRoot(scope as DataScope, workspaceRoot);
 
     const descriptor: InstallDescriptor = {
       ext: id,
@@ -1090,71 +1108,15 @@ Options:
 
   // ── Re-materialize service-registered extensions ───────────────────────────
   // The main install() call only writes the lockfile. If any extension is
-  // registered as a service in .sox/registry.json, re-copy the bundle from
-  // its source dir to the store dir so the next `sox start` picks up the
-  // updated bundle without requiring `--profile=service` or a full reinstall.
-  {
-    const fsMod3 = require('node:fs') as typeof import('node:fs');
-    const pathMod3 = require('node:path') as typeof import('node:path');
-
-    const registryPath3 = pathMod3.join(process.cwd(), '.sox', 'registry.json');
-    const lockfilePath3 = configPathFlag !== undefined
-      ? (lockfilePathFlag ?? getScopePath(scope).lockfile)
-      : (lockfilePathFlag ?? getScopePath(scope).lockfile);
-    const lockfile3 = loadLockfile(lockfilePath3);
-
-    if (fsMod3.existsSync(registryPath3) && lockfile3 !== null) {
-      let registry3: Record<string, { id: string; storePath: string }> = {};
-      try {
-        registry3 = JSON.parse(fsMod3.readFileSync(registryPath3, 'utf8')) as typeof registry3;
-      } catch { /* malformed — skip */ }
-
-      for (const [svcId, svc] of Object.entries(registry3)) {
-        // Find the lockfile entry for this service (with or without @version suffix)
-        const lkEntry3 = lockfile3.resolved[svcId] ??
-          Object.entries(lockfile3.resolved).find(([k]) => k.startsWith(svcId + '@'))?.[1];
-        if (!lkEntry3) continue;
-
-        const extDir3 = resolveExtensionDir(lkEntry3.source, process.cwd());
-        if (!extDir3) continue;
-
-        const bundleDir3 = pathMod3.join(extDir3, 'bundle');
-        const distDir3 = pathMod3.join(extDir3, 'dist');
-        const srcDir3 = fsMod3.existsSync(bundleDir3) ? bundleDir3
-          : fsMod3.existsSync(distDir3) ? distDir3
-            : null;
-        if (!srcDir3) continue;
-
-        const storePath3 = svc.storePath;
-
-        // Recursively copy bundle → store dir (overwrites existing files)
-        const copyDirSync3 = (src: string, dest: string): void => {
-          if (!fsMod3.existsSync(dest)) fsMod3.mkdirSync(dest, { recursive: true });
-          for (const ent of fsMod3.readdirSync(src, { withFileTypes: true })) {
-            const s = pathMod3.join(src, ent.name);
-            const d = pathMod3.join(dest, ent.name);
-            if (ent.isDirectory()) copyDirSync3(s, d);
-            else fsMod3.copyFileSync(s, d);
-          }
-        };
-        copyDirSync3(srcDir3, storePath3);
-
-        // Re-copy extension.json with entrypoint = index.js
-        const srcManifest3 = pathMod3.join(extDir3, 'extension.json');
-        if (fsMod3.existsSync(srcManifest3)) {
-          const mf3 = JSON.parse(fsMod3.readFileSync(srcManifest3, 'utf8')) as Record<string, unknown>;
-          mf3['entrypoint'] = 'index.js';
-          fsMod3.writeFileSync(
-            pathMod3.join(storePath3, 'extension.json'),
-            JSON.stringify(mf3, null, 2) + '\n',
-            'utf8',
-          );
-        }
-
-        process.stdout.write(`${CLI} install: refreshed store   ${storePath3}\n`);
-      }
-    }
-  }
+  // registered as a service in the scope's run-service registry.json, re-copy the
+  // bundle from its source dir to the store dir so the next `sox start` picks up
+  // the updated bundle without requiring `--profile=service` or a full reinstall.
+  // ADR-0004 §D2: the registry lives under the scope's data dir.
+  rematerializeServiceStores(
+    scope,
+    process.cwd(),
+    lockfilePathFlag ?? getScopePath(scope).lockfile,
+  );
 
   // ── Host-place declarative members (BL-17) ────────────────────────────────
   // After install() writes the lockfile, host-place every resolved extension
@@ -1250,20 +1212,17 @@ async function hostPlaceExtension(
 
   for (const hostName of hosts) {
     // Validate the host is registered; skip unknown hosts gracefully.
-    let hostMod: ReturnType<typeof getHost>;
     try {
-      hostMod = getHost(hostName);
+      getHost(hostName); // validate the host exists in the registry
     } catch {
       process.stderr.write(`${CLI} install: warning: unknown host '${hostName}' in manifest for '${id}' — skipping\n`);
       continue;
     }
 
-    // Compute scopeRoot: the root used for the install ledger + relative-path resolution.
-    // For project scope: workspaceRoot (repo root). For user scope: the host's scope dir.
-    const hostScopePaths = hostMod.scopePaths(scope as Parameters<typeof hostMod.scopePaths>[0]);
-    const scopeRoot: string = scope === 'project'
-      ? workspaceRoot
-      : (Object.values(hostScopePaths)[0] as string | undefined ?? workspaceRoot);
+    // ADR-0004 §D2: scopeRoot = the DATA dir for the scope (ledger/ownership/store),
+    // decoupled from the host placement root. SOX_ECOSYSTEM_HOME moves it; placement
+    // is unaffected ([inv:data-root-never-reroutes]).
+    const scopeRoot: string = dataRoot(scope as DataScope, workspaceRoot);
 
     const descriptor: import('@adhd/sox-install-engine').InstallDescriptor = {
       ext: id,
@@ -1402,8 +1361,8 @@ async function cmdDiff(flags: Record<string, string>): Promise<void> {
   const host = flags['host'] ?? 'claude';
   const scope = (flags['scope'] ?? 'project') as 'org' | 'user' | 'project' | 'local';
   const workspaceRoot = pathMod.resolve(flags['root'] ?? process.cwd());
-  // For project scope the scope root == workspace root; for user scope use homedir.
-  const scopeRoot = scope === 'project' ? workspaceRoot : require('node:os').homedir() as string;
+  // ADR-0004 §D2: scopeRoot = the DATA dir (ledger lives here), per scope.
+  const scopeRoot = dataRoot(scope as DataScope, workspaceRoot);
 
   if (id !== undefined && id !== '') {
     // Single-extension diff.
@@ -1478,7 +1437,8 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
 
     const scope = (flags['scope'] ?? 'project') as 'org' | 'user' | 'project' | 'local';
     const workspaceRoot = pathMod.resolve(flags['root'] ?? process.cwd());
-    const scopeRoot = scope === 'project' ? workspaceRoot : require('node:os').homedir() as string;
+    // ADR-0004 §D2: scopeRoot = the DATA dir for the scope (ledger/store/ownership).
+    const scopeRoot = dataRoot(scope as DataScope, workspaceRoot);
 
     const ctx: UpdateCtx = {
       ext: id,
@@ -1502,6 +1462,9 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
   const scope = (flags['scope'] ?? 'user') as 'org' | 'user' | 'project' | 'local';
 
   await install({ scope, mode: 'update' });
+  // BL-39 / ADR-0004 §D6: re-materialize service stores so an updated artifact is
+  // re-copied into the store (a running daemon must not keep stale copied code).
+  rematerializeServiceStores(scope, process.cwd(), getScopePath(scope).lockfile);
   process.stdout.write(`${CLI} update: done (scope=${scope})\n`);
   process.exit(0);
 }
@@ -1709,9 +1672,8 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
     process.exit(1);
   }
 
-  const pathMod = require('node:path') as typeof import('node:path');
-  const soxHome = process.env['SOX_HOME'] ?? pathMod.join(require('node:os').homedir() as string, '.sox');
-  const registryPath = pathMod.join(soxHome, 'install-registry.json') as string;
+  // ADR-0004 §D7: global install registry under the user data root.
+  const registryPath = installRegistryPath();
   const registry = readInstallRegistry(registryPath);
 
   // Consumer set: every InstallRecord (optionally filtered to a single id).
@@ -1789,6 +1751,9 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
         configPath: configPathForRecord(record.scope, record.root),
         lockfilePath: lockfilePath,
       });
+      // BL-39 / ADR-0004 §D6: an upgrade that changes the artifact MUST re-materialize
+      // the service store — the lockfile re-pin alone leaves a daemon on stale code.
+      rematerializeServiceStores(record.scope, record.root, lockfilePath);
     } catch (e) {
       process.stdout.write(`    → RE-INSTALL FAILED: ${String(e)}\n`);
       outcomes.push({ extId: record.extId, scope: record.scope, root: record.root, state: 'failed', detail: String(e) });
@@ -1846,9 +1811,95 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
   process.exit(failed > 0 ? 1 : 0);
 }
 
+// ─── re-materialize service stores (BL-39 / ADR-0004 §D6) ──────────────────────
+
+/**
+ * Re-copy every service-registered extension's bundle from its (current) lockfile
+ * source into its materialized store dir, so a running daemon never keeps stale
+ * COPIED code after an install/update/upgrade. This is the BL-39 fix: it runs on
+ * EVERY install path (install, update, upgrade), not just a fresh install.
+ *
+ * Idempotent + overwriting: the store is rebuilt from the source each call. The
+ * ownership index's materialize entry is refreshed so uninstall still removes it.
+ */
+function rematerializeServiceStores(scope: string, root: string, lockfilePath: string): void {
+  const fsMod3 = require('node:fs') as typeof import('node:fs');
+  const pathMod3 = require('node:path') as typeof import('node:path');
+
+  const registryPath3 = pathMod3.join(dataRoot(scope as DataScope, root), 'registry.json');
+  const lockfile3 = loadLockfile(lockfilePath);
+  if (!fsMod3.existsSync(registryPath3) || lockfile3 === null) return;
+
+  let registry3: Record<string, { id: string; storePath: string }> = {};
+  try {
+    registry3 = JSON.parse(fsMod3.readFileSync(registryPath3, 'utf8')) as typeof registry3;
+  } catch { return; /* malformed — nothing to refresh */ }
+
+  const copyDirSync3 = (src: string, dest: string): void => {
+    if (!fsMod3.existsSync(dest)) fsMod3.mkdirSync(dest, { recursive: true });
+    for (const ent of fsMod3.readdirSync(src, { withFileTypes: true })) {
+      const s = pathMod3.join(src, ent.name);
+      const d = pathMod3.join(dest, ent.name);
+      if (ent.isDirectory()) copyDirSync3(s, d);
+      else fsMod3.copyFileSync(s, d);
+    }
+  };
+
+  for (const [svcId, svc] of Object.entries(registry3)) {
+    const lkEntry3 = lockfile3.resolved[svcId] ??
+      Object.entries(lockfile3.resolved).find(([k]) => k.startsWith(svcId + '@'))?.[1];
+    if (!lkEntry3) continue;
+
+    const extDir3 = resolveExtensionDir(lkEntry3.source, root);
+    if (!extDir3) continue;
+
+    const bundleDir3 = pathMod3.join(extDir3, 'bundle');
+    const distDir3 = pathMod3.join(extDir3, 'dist');
+    const srcDir3 = fsMod3.existsSync(bundleDir3) ? bundleDir3
+      : fsMod3.existsSync(distDir3) ? distDir3
+        : null;
+    if (!srcDir3) continue;
+
+    const storePath3 = svc.storePath;
+    // BL-39: clear the old store first so a renamed/removed file in the new artifact
+    // does not linger, then re-copy the current bundle.
+    try { if (fsMod3.existsSync(storePath3)) fsMod3.rmSync(storePath3, { recursive: true, force: true }); }
+    catch { /* best-effort */ }
+    copyDirSync3(srcDir3, storePath3);
+
+    const srcManifest3 = pathMod3.join(extDir3, 'extension.json');
+    if (fsMod3.existsSync(srcManifest3)) {
+      const mf3 = JSON.parse(fsMod3.readFileSync(srcManifest3, 'utf8')) as Record<string, unknown>;
+      mf3['entrypoint'] = 'index.js';
+      fsMod3.writeFileSync(
+        pathMod3.join(storePath3, 'extension.json'),
+        JSON.stringify(mf3, null, 2) + '\n',
+        'utf8',
+      );
+    }
+
+    // Keep the ownership index's materialize entry current (idempotent upsert).
+    try {
+      const idx = OwnershipIndex.loadFromFile(
+        pathMod3.join(dataRoot(scope as DataScope, root), 'ownership.json'),
+      );
+      const existing = idx.get(svcId, scope);
+      const hasStore = existing?.entries.some(
+        (e) => e.kind === 'materialize' && e.path === storePath3,
+      );
+      if (!hasStore) {
+        idx.addEntries(svcId, scope, [{ kind: 'materialize', path: storePath3 }]);
+        idx.save();
+      }
+    } catch { /* ownership refresh best-effort */ }
+
+    process.stdout.write(`${CLI} install: refreshed store   ${storePath3}\n`);
+  }
+}
+
 // ─── uninstall ────────────────────────────────────────────────────────────────
 
-function cmdUninstall(flags: Record<string, string>): void {
+async function cmdUninstall(flags: Record<string, string>): Promise<void> {
   // --help / -h — exit 0 immediately
   if (flags['help'] !== undefined || flags['h'] !== undefined) {
     process.stdout.write(`${CLI} uninstall — remove an installed extension from a scope
@@ -1907,6 +1958,52 @@ Options:
     process.stderr.write(`${CLI} uninstall: extension '${id}' not found in lockfile\n`);
     process.stderr.write(`  Installed: ${lockKeys.join(', ') || '(none)'}\n`);
     process.exit(1);
+  }
+
+  // ── ADR-0004 §D6 [inv:reversible-injection]: consume the ownership index ────
+  // Reverse EXACTLY what this install placed, leaving host files byte-clean of
+  // sox-owned content while preserving foreign entries. The data dir (= scopeRoot)
+  // is where ownership.json + the ledger live.
+  const dataDir = dataRoot(scope as DataScope, root);
+  const pathMod = require('node:path') as typeof import('node:path');
+  const ownership = OwnershipIndex.loadFromFile(pathMod.join(dataDir, 'ownership.json'));
+  const owned = ownership.get(id, scope);
+
+  if (owned !== undefined) {
+    // 1. Reverse config-key / array-value merges via the ledger path
+    //    (lifecycleUninstall preserves foreign keys — [inv:ledger-reversible]).
+    const host = owned.host ?? 'claude';
+    try {
+      await lifecycleUninstall({
+        ext: id,
+        host,
+        scope,
+        scopeRoot: dataDir,
+        isProject: scope === 'project',
+      });
+    } catch (e) {
+      process.stderr.write(`${CLI} uninstall: config reversal aborted: ${String(e)}\n`);
+      process.exit(1);
+    }
+
+    // 2. Remove owned file-drops and materialized stores directly.
+    for (const entry of owned.entries) {
+      if (entry.kind === 'file-drop' || entry.kind === 'materialize') {
+        try {
+          if (fsMod.existsSync(entry.path)) {
+            fsMod.rmSync(entry.path, { recursive: true, force: true });
+          }
+        } catch (e) {
+          process.stderr.write(
+            `${CLI} uninstall: warning: could not remove ${entry.path}: ${String(e)}\n`,
+          );
+        }
+      }
+    }
+
+    // 3. Clear the ownership entry — nothing this install owned remains tracked.
+    ownership.remove(id, scope);
+    ownership.save();
   }
 
   // Remove from lockfile.
@@ -2208,12 +2305,11 @@ Options:
   const jsonMode = flags['json'] !== undefined;
   const fsMod = require('node:fs') as typeof import('node:fs');
 
-  // ── --global mode: reads ~/.sox/install-registry.json (P9) ─────────────────
+  // ── --global mode: reads the global install registry (P9, ADR-0004 §D7) ────
   // Shows every extension ever installed on this machine, across all projects.
   // No live probing — works without any supervisor running.
   if (flags['global'] !== undefined) {
-    const soxHome = process.env['SOX_HOME'] ?? require('node:path').join(require('node:os').homedir(), '.sox');
-    const registryPath = require('node:path').join(soxHome, 'install-registry.json') as string;
+    const registryPath = installRegistryPath();
     const registry = readInstallRegistry(registryPath);
     let records: InstallRecord[] = registry.installs;
 
@@ -2764,12 +2860,11 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
   if (flags['daemon'] !== undefined && flags['_daemon-child'] === undefined) {
     const fsDaemon = require('node:fs') as typeof import('node:fs');
     const pathDaemon = require('node:path') as typeof import('node:path');
-    const osDaemon = require('node:os') as typeof import('node:os');
     const { spawn: spawnDaemon } = require('node:child_process') as typeof import('node:child_process');
 
     const supervisorIdDaemon = computeSupervisorId(scope, root);
-    const soxHomeDaemon = process.env['SOX_HOME'] ?? pathDaemon.join(osDaemon.homedir(), '.sox');
-    const logDirDaemon = pathDaemon.join(soxHomeDaemon, 'logs', supervisorIdDaemon);
+    // ADR-0004 §D2: supervisor logs under the user data root's run/logs/.
+    const logDirDaemon = logDirFor(supervisorIdDaemon);
     fsDaemon.mkdirSync(logDirDaemon, { recursive: true });
 
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
@@ -3083,6 +3178,149 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
   process.exit(undead ? 1 : 0);
 }
 
+// ─── migrate-home (ADR-0004 §D8) ───────────────────────────────────────────────
+
+/**
+ * cmdMigrateHome — relocate an existing sox data dir to the ADR-0004 layout and
+ * re-place user-scope skills/MCP that a prior sandboxed SOX_HOME wrote under the
+ * WRONG root to the REAL ~/.claude. Idempotent: a second run is a no-op.
+ *
+ * Flags:
+ *   --old-home <dir>     The legacy data root to migrate FROM (default: $SOX_HOME
+ *                        if set, else ~/.sox). Holds install-registry.json,
+ *                        supervisors.json, ext/ stores, ledger.json, lockfiles.
+ *   --old-config <dir>   Legacy user config/lockfile dir (default: ~/.config/extensions).
+ *   --old-sandbox <dir>  The path a prior sandboxed SOX_HOME used as the host base
+ *                        (skills/MCP landed under <old-sandbox>/.claude). When given,
+ *                        user-scope skills + ~/.claude.json mcpServers are re-placed
+ *                        into the REAL ~/.claude. (Often == --old-home.)
+ *   --new-home <dir>     The new data root (default: $SOX_ECOSYSTEM_HOME or
+ *                        ~/.adhd/sox-ecosystem).
+ *   --dry-run            Print the plan; change nothing.
+ */
+function cmdMigrateHome(flags: Record<string, string>): void {
+  if (flags['help'] !== undefined || flags['h'] !== undefined) {
+    process.stdout.write(`${CLI} migrate-home — relocate sox data to the ADR-0004 layout
+
+Usage:
+  ${CLI} migrate-home [--old-home <dir>] [--old-config <dir>] [--old-sandbox <dir>] [--new-home <dir>] [--dry-run]
+
+Moves install-registry.json, supervisors.json, ext/ stores, ledgers, and lockfiles
+into ~/.adhd/sox-ecosystem/ (or $SOX_ECOSYSTEM_HOME). With --old-sandbox, re-places
+user-scope skills + ~/.claude.json MCP entries from the sandboxed path to the REAL
+~/.claude. Idempotent.
+`);
+    process.exit(0);
+  }
+
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+  const osMod = require('node:os') as typeof import('node:os');
+  const HOME = osMod.homedir();
+  const dryRun = flags['dry-run'] !== undefined;
+
+  const oldHome = flags['old-home'] ?? process.env['SOX_HOME'] ?? pathMod.join(HOME, '.sox');
+  const oldConfig = flags['old-config'] ?? pathMod.join(HOME, '.config', 'extensions');
+  const oldSandbox = flags['old-sandbox'];
+  const newHome = flags['new-home']
+    ?? process.env['SOX_ECOSYSTEM_HOME']
+    ?? pathMod.join(HOME, '.adhd', 'sox-ecosystem');
+
+  const log = (m: string): void => { process.stdout.write(`${CLI} migrate-home: ${m}\n`); };
+  log(`old data root : ${oldHome}`);
+  log(`old config dir: ${oldConfig}`);
+  log(`new data root : ${newHome}`);
+  if (oldSandbox !== undefined) log(`old sandbox   : ${oldSandbox} (skills/MCP re-placement source)`);
+  if (dryRun) log('DRY RUN — no changes will be written');
+
+  let moved = 0;
+  let skipped = 0;
+
+  const ensureDir = (d: string): void => { if (!dryRun) fsMod.mkdirSync(d, { recursive: true }); };
+  ensureDir(newHome);
+
+  // Move a top-level data file (idempotent: skip if the target already exists).
+  const moveFile = (relFrom: string, fromRoot: string, toName: string): void => {
+    const src = pathMod.join(fromRoot, relFrom);
+    const dst = pathMod.join(newHome, toName);
+    if (!fsMod.existsSync(src)) return;
+    if (fsMod.existsSync(dst)) { log(`skip (exists): ${toName}`); skipped++; return; }
+    log(`move: ${src} → ${dst}`);
+    if (!dryRun) { ensureDir(newHome); fsMod.renameSync(src, dst); }
+    moved++;
+  };
+
+  // Move a directory subtree (ext/ stores, run/ state). Idempotent per-entry.
+  const moveDir = (src: string, dst: string): void => {
+    if (!fsMod.existsSync(src)) return;
+    if (!dryRun) ensureDir(dst);
+    for (const ent of fsMod.readdirSync(src, { withFileTypes: true })) {
+      const s = pathMod.join(src, ent.name);
+      const d = pathMod.join(dst, ent.name);
+      if (fsMod.existsSync(d)) { skipped++; continue; }
+      log(`move: ${s} → ${d}`);
+      if (!dryRun) fsMod.renameSync(s, d);
+      moved++;
+    }
+  };
+
+  // 1. Global state files: install-registry.json, supervisors.json.
+  moveFile('install-registry.json', oldHome, 'install-registry.json');
+  moveFile('supervisors.json', oldHome, 'supervisors.json');
+
+  // 2. Materialized service stores: <oldHome>/ext/ → <newHome>/ext/.
+  moveDir(pathMod.join(oldHome, 'ext'), pathMod.join(newHome, 'ext'));
+
+  // 3. Legacy user ledger (<oldHome>/ledger.json) → <newHome>/ledger.json.
+  moveFile('ledger.json', oldHome, 'ledger.json');
+
+  // 4. Legacy user config/lockfile (~/.config/extensions) → <newHome>.
+  moveFile('extensions.json', oldConfig, 'extensions.json');
+  moveFile('extensions.lock', oldConfig, 'extensions.lock');
+
+  // 5. Re-place user-scope skills + MCP from the sandboxed path to the REAL ~/.claude.
+  if (oldSandbox !== undefined) {
+    const sbxSkills = pathMod.join(oldSandbox, '.claude', 'skills');
+    const realSkills = pathMod.join(HOME, '.claude', 'skills');
+    if (fsMod.existsSync(sbxSkills)) {
+      if (!dryRun) fsMod.mkdirSync(realSkills, { recursive: true });
+      for (const ent of fsMod.readdirSync(sbxSkills, { withFileTypes: true })) {
+        const s = pathMod.join(sbxSkills, ent.name);
+        const d = pathMod.join(realSkills, ent.name);
+        if (fsMod.existsSync(d)) { log(`skip skill (exists): ${ent.name}`); skipped++; continue; }
+        log(`re-place skill: ${s} → ${d}`);
+        if (!dryRun) fsMod.cpSync(s, d, { recursive: true });
+        moved++;
+      }
+    }
+    // MCP: merge sandboxed <oldSandbox>/.claude.json mcpServers into the real ~/.claude.json.
+    const sbxMcp = pathMod.join(oldSandbox, '.claude.json');
+    const realMcp = pathMod.join(HOME, '.claude.json');
+    if (fsMod.existsSync(sbxMcp)) {
+      try {
+        const sbxCfg = JSON.parse(fsMod.readFileSync(sbxMcp, 'utf8')) as { mcpServers?: Record<string, unknown> };
+        const realCfg = fsMod.existsSync(realMcp)
+          ? JSON.parse(fsMod.readFileSync(realMcp, 'utf8')) as { mcpServers?: Record<string, unknown> }
+          : {};
+        const srcServers = sbxCfg.mcpServers ?? {};
+        realCfg.mcpServers = realCfg.mcpServers ?? {};
+        for (const [k, v] of Object.entries(srcServers)) {
+          if (realCfg.mcpServers[k] !== undefined) { skipped++; continue; }
+          log(`re-place MCP: mcpServers.${k} → ~/.claude.json`);
+          realCfg.mcpServers[k] = v;
+          moved++;
+        }
+        if (!dryRun) fsMod.writeFileSync(realMcp, JSON.stringify(realCfg, null, 2) + '\n', 'utf8');
+      } catch (e) {
+        process.stderr.write(`${CLI} migrate-home: warning: could not re-place MCP from ${sbxMcp}: ${String(e)}\n`);
+      }
+    }
+  }
+
+  log(`done — ${moved} moved, ${skipped} already-present (idempotent)${dryRun ? ' [dry-run]' : ''}`);
+  process.exit(0);
+}
+
 // ─── status (R7 / P7) ─────────────────────────────────────────────────────────
 
 /**
@@ -3259,9 +3497,8 @@ function findMostRecentLogFile(logDir: string, extId: string): string | null {
  *   2 — any dead (pid not found)
  */
 async function cmdStatus(flags: Record<string, string>): Promise<void> {
-  const pathMod = require('node:path') as typeof import('node:path');
-  const osMod = require('node:os') as typeof import('node:os');
   const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
 
   const filterId = flags['id'];
   const filterProject = flags['project'];
@@ -3282,8 +3519,6 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
     }
     process.exit(0);
   }
-
-  const soxHome = process.env['SOX_HOME'] ?? pathMod.join(osMod.homedir(), '.sox');
 
   // ── Collect HealthRecords from all live supervisors ─────────────────────────
   const records: HealthRecord[] = [];
@@ -3315,8 +3550,8 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
       continue;
     }
 
-    // Read run history for all extensions under this supervisor.
-    const logDir = pathMod.join(soxHome, 'logs', sup.supervisorId);
+    // Read run history for all extensions under this supervisor (ADR-0004 §D2).
+    const logDir = logDirFor(sup.supervisorId);
     const runStats = readRunStats(logDir);
 
     // Probe socket reachability once per supervisor (not per extension).
@@ -3514,7 +3749,6 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
 async function cmdLogs(flags: Record<string, string>): Promise<void> {
   const fsMod = require('node:fs') as typeof import('node:fs');
   const pathMod = require('node:path') as typeof import('node:path');
-  const osMod = require('node:os') as typeof import('node:os');
 
   const id = flags['id'];
   if (!id) {
@@ -3530,9 +3764,8 @@ async function cmdLogs(flags: Record<string, string>): Promise<void> {
   const jsonMode = flags['json'] !== undefined;
   const showHistory = flags['history'] !== undefined;
 
-  const soxHome = process.env['SOX_HOME'] ?? pathMod.join(osMod.homedir(), '.sox');
   const supervisorId = computeSupervisorId(scope, root);
-  const logDir = pathMod.join(soxHome, 'logs', supervisorId);
+  const logDir = logDirFor(supervisorId); // ADR-0004 §D2: run/logs/<supervisorId>
 
   // ── Run history mode ──────────────────────────────────────────────────────
   if (showHistory) {

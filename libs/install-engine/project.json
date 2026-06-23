@@ -32,7 +32,8 @@
       },
       "cache": true,
       "inputs": [
-        "{projectRoot}/src/**/*.ts"
+        "{projectRoot}/src/**/*.ts",
+        "{workspaceRoot}/libs/host-runtime/src/data-paths.ts"
       ]
     },
     "lint": {

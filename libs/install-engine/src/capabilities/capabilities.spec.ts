@@ -55,7 +55,9 @@ describe('ledger — [capability-engine.4]', () => {
       action: { cap: 'config-merge', file: '.claude/settings.json', keyPath: 'mcpServers.x', appliedHash: 'sha256:abc' },
     });
     ledger.save();
-    expect(fs.existsSync(path.join(dir, '.sox', 'ledger.json'))).toBe(true);
+    // ADR-0004 §D2: Ledger.load(dataDir) writes <dataDir>/ledger.json directly
+    // (the caller passes the already-resolved data dir; no extra .sox subdir).
+    expect(fs.existsSync(path.join(dir, 'ledger.json'))).toBe(true);
   });
 
   it('records and retrieves actions', () => {
@@ -593,7 +595,7 @@ describe('run-service — [capability-engine.1] [capability-engine.5]', () => {
   it('apply: writes service manifest', async () => {
     const ctx = makeCtx();
     await runService.apply(ctx);
-    const mp = path.join(dir, '.sox', 'services', 'my-service.json');
+    const mp = path.join(dir, 'services', 'my-service.json');
     expect(fs.existsSync(mp)).toBe(true);
     const data = JSON.parse(fs.readFileSync(mp, 'utf8')) as { serviceId: string; spec: runService.ServiceSpec };
     expect(data.serviceId).toBe('my-service');
@@ -611,14 +613,14 @@ describe('run-service — [capability-engine.1] [capability-engine.5]', () => {
     const ctx = makeCtx();
     await runService.apply(ctx);
     await runService.reverse(ctx);
-    const mp = path.join(dir, '.sox', 'services', 'my-service.json');
+    const mp = path.join(dir, 'services', 'my-service.json');
     expect(fs.existsSync(mp)).toBe(false);
   });
 
   it('apply is idempotent [capability-engine.5]', async () => {
     const ctx = makeCtx();
     await runService.apply(ctx);
-    const mp = path.join(dir, '.sox', 'services', 'my-service.json');
+    const mp = path.join(dir, 'services', 'my-service.json');
     const mtime1 = fs.statSync(mp).mtimeMs;
     await new Promise((r) => setTimeout(r, 20));
     await runService.apply(ctx);
@@ -732,8 +734,9 @@ describe('materialize — [capability-engine.1] [capability-engine.5]', () => {
     expect(diff.kind).toBe('update');
   });
 
-  it('defaultStoreRoot() returns a path inside home dir', () => {
+  it('defaultStoreRoot() returns the ext dir under the user data root (ADR-0004)', () => {
     const root = materialize.defaultStoreRoot();
-    expect(root).toContain('.sox');
+    // ADR-0004 §D2: $userDataRoot/ext (default ~/.adhd/sox-ecosystem/ext).
+    expect(root).toContain(path.join('.adhd', 'sox-ecosystem', 'ext'));
   });
 });
