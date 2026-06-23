@@ -169,6 +169,24 @@ treatment then. (2) `memory-server` ships a **stale, orphaned tracked `bundle/`*
 bundler run; its `project.json` build uses `tsc` and nothing references the dir — dead tracked
 output to delete + gitignore. Neither blocks anything today.
 
+### BL-39 — `upgrade --all` / `install(mode:update)` re-pins the lockfile but does NOT re-materialize the copied service store
+
+**Severity:** High (upgrade leaves a running service on stale code) · **Status:** Open
+A `type:service` extension runs from a **copied store** (`.sox/ext/<id>/`). `upgrade --all` (via
+`install({mode:'update'})`) re-pins the lockfile checksum but **never re-copies the store**, so after
+an upgrade the daemon keeps running the store copy from its **original** install. Observed live: post
+`@sox`→`@adhd` rename + BL-37 fix, `upgrade --all` reported `memory-daemon user → upgraded` yet
+`.sox/ext/memory-daemon/` still held the pre-rename `@sox` `dist` copy (`require("@sox/memory-core")`)
+→ crash on start. Only a **fresh** install (`mode:default` — `uninstall`+`install`, or `install
+sox-memory-bundle`) re-materialized the store (with the self-contained `bundle/`) → daemon then
+started and stayed up. Root: the daemon's lockfile `source` is the **repo `dist/index.js`**
+(checksum-current), so `verifyIntegrity` sees "current" and re-pins without re-copying; and the
+checksum anchor tracks the repo `dist/`, not the materialized `bundle/` that's actually deployed.
+This directly undermines the upgrade tooling's promise (refresh running code + rolling restart). Fix:
+`install(mode:update)` must **re-materialize the service store** when the artifact changed, and the
+service checksum anchor should track the materialized `bundle/`. Discovered deploying the daemon
+post-rename. (Workaround applied for this deploy: `install sox-memory-bundle --scope=user`.)
+
 > **BL-21, BL-22, BL-23, BL-24 are owned by `docs/plan/memory-enrichment/IMPLEMENTATION.md` (§0).**
 > Each is resolved by a plan phase: BL-23 metadata = done (`9728f6f`); BL-23 project-path + BL-24
 > tags/topic = P1; BL-24 clustering = P3; BL-22 entity-names + BL-21 auto-refresh = P5 (both done 2026-06-22).
