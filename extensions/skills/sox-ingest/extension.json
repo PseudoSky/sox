@@ -1,7 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v1.json",
   "id": "sox-ingest",
-  "version": "0.1.0",
   "type": "skill",
   "title": "sox-ingest — Ingest external sources into sox-ecosystem",
   "description": "Use this when you need to port an external repo, file, or directory into sox-ecosystem as born-conformant extensions. Encodes the full ingestion flow: initialize -> generalize+author -> validate -> publish -> install -> enable -> remove-old, delegating per-type and per-operation specifics to references/. An agent told 'ingest <source> into sox' loads this skill and runs the complete flow with no bespoke prompts.",

@@ -1,7 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v1.json",
   "id": "memory-org",
-  "version": "0.1.0",
   "type": "agent",
   "title": "memory-org",
   "description": "Use this when you need an agent that organises or retrieves memories scoped to a project or organisation.",

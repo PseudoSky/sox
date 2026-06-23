@@ -30,30 +30,25 @@
     "title": "sox-memory (graph memory subsystem)",
     "description": "Use this when you want the full sox-memory graph-memory subsystem installed in one command — expands to memory-daemon (supervised Unix-socket writer daemon with deterministic batch enrichment), memory-server (MCP tools, stdio), memory-flush (SessionEnd hook), memory-cli (store lifecycle commands), and memory-usage (how-to skill). Fully deterministic; zero LLM calls; no provider required.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle",
-    "checksum": "sha256:e2ca96bd4a27bfcb7d59690507dc31617563176cb11ac78ba78fd3d33fe7ee00",
+    "checksum": "sha256:9e0e687a62eda6365c72e4d487db6a6c5e27b82d7ebce660389c059fa34792d5",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "members": [
       {
-        "id": "memory-daemon",
-        "version": "^0.1.0"
+        "id": "memory-daemon"
       },
       {
-        "id": "memory-server",
-        "version": "^1.1.0"
+        "id": "memory-server"
       },
       {
-        "id": "memory-flush",
-        "version": "^0.1.0"
+        "id": "memory-flush"
       },
       {
-        "id": "memory-cli",
-        "version": "^0.1.0"
+        "id": "memory-cli"
       },
       {
-        "id": "memory-usage",
-        "version": "^0.1.0"
+        "id": "memory-usage"
       }
     ]
   },
@@ -106,7 +101,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:f5d89e2b9a04d7005d7f4ab4b6fb2e7d6c6f040d970c80580d02a120af5166ce",
+    "checksum": "sha256:cc4645c025223f6a76114bf2b6f53f4d88279774f751982cfabc2a3ab6a89095",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -198,7 +193,7 @@
     "title": "sox CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/apps/sox",
-    "checksum": "sha256:00a99e0ba996d8d0add7cbc4fc789c2514d1669200fdb9764dc1b5a96ef452cc",
+    "checksum": "sha256:5860c1c94316b2b91ac82d38e8f486ea085b667c9de3b72ebcb855b20528a5f8",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     }

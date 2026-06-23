@@ -1,7 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v1.json",
   "id": "test-runner",
-  "version": "0.1.0",
   "type": "agent",
   "title": "test-runner",
   "description": "Use this when you need an agent that runs test suites and reports results.",

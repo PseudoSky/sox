@@ -94,9 +94,9 @@ export function resolveBundleDir(
  * Writes the updated manifest back to disk as formatted JSON (2-space indent, trailing
  * newline — matching the existing bundle extension.json style).
  *
- * [bundle-register.1]: version is always "^0.1.0" for newly scaffolded members —
- *   matching the born-conformant default version (0.1.0) and the semver range used
- *   by all existing members in the sox-memory-bundle.
+ * [bundle-register.1]: ADR-0003 — members are referenced by `id` only. Identity is
+ *   id + content checksum; there is no per-member version. New members are appended
+ *   as `{ id }`.
  *
  * @throws Error if the manifest cannot be read, is malformed, or cannot be written.
  */
@@ -137,8 +137,8 @@ export function registerBundleMember(
     return;
   }
 
-  // Append the new member
-  existing.push({ id: memberId, version: '^0.1.0' });
+  // Append the new member (ADR-0003: id-only reference).
+  existing.push({ id: memberId });
   manifest['members'] = existing;
 
   try {

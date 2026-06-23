@@ -1,7 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v1.json",
   "id": "dep-injector",
-  "version": "0.1.0",
   "type": "skill",
   "title": "dep-injector",
   "description": "Use this when you need a skill that demonstrates dependency injection for Claude-based workflows.",

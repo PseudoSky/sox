@@ -1,7 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v1.json",
   "id": "di-codex",
-  "version": "0.1.0",
   "type": "skill",
   "title": "di-codex",
   "description": "Use this when you need a skill that demonstrates dependency injection for Codex-based workflows.",

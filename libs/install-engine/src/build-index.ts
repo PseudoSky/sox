@@ -12,7 +12,7 @@ import * as crypto from 'node:crypto';
 interface ExtensionManifest {
   $schema: string;
   id: string;
-  version: string;
+  version?: string;
   type: string;
   title: string;
   description: string;
@@ -29,13 +29,13 @@ interface ExtensionManifest {
   };
   tags?: string[];
   capabilities?: string[];
-  members?: Array<{ id: string; version: string }>;
+  members?: Array<{ id: string }>;
 }
 
 export interface IndexEntry {
   id: string;
   type: string;
-  version: string;
+  version?: string;
   title: string;
   description: string;
   source: string;
@@ -94,10 +94,23 @@ function resolveSource(extDir: string, manifest: ExtensionManifest): string {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string; version?: string };
     const pkgName = pkg.name ?? `@sox/extension-${manifest.id}`;
     if (manifest.checksum) {
-      return `https://cdn.jsdelivr.net/npm/${pkgName}@${manifest.version}/dist/index.js`;
+      // ADR-0003 Decision 6: derived display version from package.json.
+      return `https://cdn.jsdelivr.net/npm/${pkgName}@${resolveDisplayVersion(extDir)}/dist/index.js`;
     }
   }
   return `file://${extDir}`;
+}
+
+/** ADR-0003 Decision 6: derived display-only version from package.json. */
+function resolveDisplayVersion(extDir: string): string {
+  const pkgPath = path.join(extDir, 'package.json');
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
+      if (typeof pkg.version === 'string' && pkg.version.length > 0) return pkg.version;
+    } catch { /* fall through */ }
+  }
+  return '0.0.0';
 }
 
 function resolveChecksum(extDir: string, manifest: ExtensionManifest): string {
@@ -133,7 +146,8 @@ export function buildIndex(opts: { root: string }): IndexEntry[] {
       process.exit(1);
     }
 
-    const requiredFields = ['id', 'type', 'version', 'title', 'description', 'compatibility'];
+    // ADR-0003: `version` is no longer required (identity = id + checksum).
+    const requiredFields = ['id', 'type', 'title', 'description', 'compatibility'];
     for (const field of requiredFields) {
       if (!(field in manifest)) {
         console.error(
@@ -154,7 +168,8 @@ export function buildIndex(opts: { root: string }): IndexEntry[] {
     const entry: IndexEntry = {
       id: manifest.id,
       type: manifest.type,
-      version: manifest.version,
+      // ADR-0003 Decision 6: derived display-only label, never an identity input.
+      version: resolveDisplayVersion(extDir),
       title: manifest.title,
       description: manifest.description,
       source,

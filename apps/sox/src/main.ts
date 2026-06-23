@@ -779,16 +779,17 @@ function cmdSearch(flags: Record<string, string>): void {
   if (results.length === 0) {
     process.stdout.write(`${CLI} search: no results for '${query}'\n`);
   } else {
+    // ADR-0003: entry.version is a derived display-only label; may be absent.
     const col1 = Math.max(...results.map((e) => e.id.length), 2);
     const col2 = Math.max(...results.map((e) => e.type.length), 4);
-    const col3 = Math.max(...results.map((e) => e.version.length), 7);
+    const col3 = Math.max(...results.map((e) => (e.version ?? '').length), 7);
     process.stdout.write(
       `${'ID'.padEnd(col1)}  ${'TYPE'.padEnd(col2)}  ${'VERSION'.padEnd(col3)}  DESCRIPTION\n`,
     );
     process.stdout.write(`${'-'.repeat(col1)}  ${'-'.repeat(col2)}  ${'-'.repeat(col3)}  -----------\n`);
     for (const entry of results) {
       process.stdout.write(
-        `${entry.id.padEnd(col1)}  ${entry.type.padEnd(col2)}  ${entry.version.padEnd(col3)}  ${entry.description}\n`,
+        `${entry.id.padEnd(col1)}  ${entry.type.padEnd(col2)}  ${(entry.version ?? '').padEnd(col3)}  ${entry.description}\n`,
       );
     }
   }
@@ -865,7 +866,7 @@ Options:
     // The registry/index.json always lives in the repo root where 'node bin/sox' is invoked.
     const repoRoot = process.cwd();
     const registryIndex = loadRegistryIndex(repoRoot);
-    const registryEntry = resolveFromRegistry(id, undefined, registryIndex);
+    const registryEntry = resolveFromRegistry(id, registryIndex);
 
     // Determine srcPath: the extension's content directory.
     let srcPath: string | undefined;
@@ -1038,7 +1039,7 @@ Options:
       // a bundle member (e.g. the e2e test config) is respected without blocking.
       const repoRootForGuard = process.cwd();
       const registryIndexForGuard = loadRegistryIndex(repoRootForGuard);
-      const entryForGuard = resolveFromRegistry(positionalId, undefined, registryIndexForGuard);
+      const entryForGuard = resolveFromRegistry(positionalId, registryIndexForGuard);
       if (entryForGuard?.visibility === 'internal') {
         const owningBundle = entryForGuard.bundleId ?? 'the bundle that owns it';
         process.stderr.write(
@@ -2342,7 +2343,7 @@ Exits non-zero if the id is not found.
   const lines: string[] = [
     `id:          ${entry.id}`,
     `type:        ${entry.type}`,
-    `version:     ${entry.version}`,
+    `version:     ${entry.version ?? '-'}`,
     `title:       ${entry.title}`,
     `description: ${entry.description}`,
     `source:      ${entry.source}`,
@@ -2358,8 +2359,9 @@ Exits non-zero if the id is not found.
   }
 
   if (Array.isArray(entry.members) && entry.members.length > 0) {
+    // ADR-0003: members are referenced by id only.
     const memberStr = entry.members
-      .map((m: { id: string; version: string }) => `${m.id}@${m.version}`)
+      .map((m: { id: string }) => m.id)
       .join(', ');
     lines.push(`members:     ${memberStr}`);
   }
@@ -3962,13 +3964,16 @@ Examples:
             tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
           };
           client2.close(); child2.kill('SIGTERM');
+          // ADR-0003: the lockfile key is the bare id; there is no `@version`.
+          // serverInfo.version is a display-only label (from the manifest's optional
+          // displayVersion when present), never an identity input.
           const rawId = entry.id ?? (entry.key.includes('@')
             ? entry.key.slice(0, entry.key.lastIndexOf('@'))
             : entry.key);
           extensions.push({
             key: entry.key,
             id: rawId,
-            serverInfo: { name: rawId, version: entry.key.includes('@') ? entry.key.slice(entry.key.lastIndexOf('@') + 1) : (manifest2.version ?? '?') },
+            serverInfo: { name: rawId, version: manifest2.version ?? '?' },
             live: entry.running,
             tools: (toolsResp.tools ?? []) as ExecToolDescriptor[],
           });

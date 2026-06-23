@@ -20,7 +20,7 @@ import * as crypto from 'node:crypto';
 interface ExtensionManifest {
   $schema: string;
   id: string;
-  version: string;
+  version?: string;
   type: string;
   title: string;
   description: string;
@@ -38,7 +38,7 @@ interface ExtensionManifest {
   tags?: string[];
   capabilities?: string[];
   /** G-B: bundle members. Present iff type=='bundle'. Indexed like any extension. */
-  members?: Array<{ id: string; version: string }>;
+  members?: Array<{ id: string }>;
   /** R9: "public" (default) or "internal" (bundle member, not independently installable). */
   visibility?: 'public' | 'internal';
   /** R9: populated when visibility is "internal". The owning bundle's id. */
@@ -48,7 +48,7 @@ interface ExtensionManifest {
 export interface IndexEntry {
   id: string;
   type: string;
-  version: string;
+  version?: string;
   title: string;
   description: string;
   /** npm CDN URL or file:// path or https:// URL */
@@ -166,11 +166,31 @@ function resolveSource(extDir: string, manifest: ExtensionManifest): string {
     // For local development, use file:// path
     // We use the manifest checksum presence as a signal of publication
     if (manifest.checksum) {
-      return `https://cdn.jsdelivr.net/npm/${pkgName}@${manifest.version}/dist/index.js`;
+      // ADR-0003 Decision 6: the published CDN path uses the nx package.json
+      // version (release bookkeeping) — a derived display label, never the
+      // extension's own (now-removed) authored version.
+      return `https://cdn.jsdelivr.net/npm/${pkgName}@${resolveDisplayVersion(extDir)}/dist/index.js`;
     }
   }
   // Default: local file path
   return `file://${extDir}`;
+}
+
+/**
+ * ADR-0003 Decision 6: the registry's `version` is a DERIVED, display-only label.
+ * Sourced from the nx `package.json` (release bookkeeping) — the single source —
+ * never from `extension.json` (which no longer carries a version). Absent
+ * package.json ⇒ '0.0.0' placeholder (display chrome only; never a gate input).
+ */
+function resolveDisplayVersion(extDir: string): string {
+  const pkgPath = path.join(extDir, 'package.json');
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
+      if (typeof pkg.version === 'string' && pkg.version.length > 0) return pkg.version;
+    } catch { /* fall through */ }
+  }
+  return '0.0.0';
 }
 
 /**
@@ -222,8 +242,9 @@ export function buildIndex(opts: { root: string }): IndexEntry[] {
       process.exit(1);
     }
 
-    // Validate required fields
-    const requiredFields = ['id', 'type', 'version', 'title', 'description', 'compatibility'];
+    // Validate required fields. ADR-0003: `version` is NO LONGER required — identity
+    // is `id` + content checksum; the registry's version is a derived display label.
+    const requiredFields = ['id', 'type', 'title', 'description', 'compatibility'];
     for (const field of requiredFields) {
       if (!(field in manifest)) {
         console.error(
@@ -245,7 +266,9 @@ export function buildIndex(opts: { root: string }): IndexEntry[] {
     const entry: IndexEntry = {
       id: manifest.id,
       type: manifest.type,
-      version: manifest.version,
+      // ADR-0003 Decision 6: derived display-only label (from package.json), never
+      // an identity/integrity input. Resolution/lockfile/bundles never read it.
+      version: resolveDisplayVersion(extDir),
       title: manifest.title,
       description: manifest.description,
       source,

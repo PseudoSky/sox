@@ -24,8 +24,8 @@ function makeRegistry(
   return JSON.stringify(entries);
 }
 
-/** Build a bundle extension.json with the given members. */
-function makeBundle(id: string, members: Array<{ id: string; version: string }>): string {
+/** Build a bundle extension.json with the given members (ADR-0003: id-only refs). */
+function makeBundle(id: string, members: Array<{ id: string }>): string {
   return JSON.stringify({ id, type: 'bundle', title: id, members });
 }
 
@@ -210,8 +210,8 @@ describe('resolveBundleDir — filesystem fallback', () => {
 // ─── registerBundleMember ─────────────────────────────────────────────────────
 
 describe('registerBundleMember — append and idempotency', () => {
-  it('appends a new member to members[] and writes the file', () => {
-    const initial = makeBundle('test-bundle', [{ id: 'existing-member', version: '^0.1.0' }]);
+  it('appends a new member (id-only) to members[] and writes the file', () => {
+    const initial = makeBundle('test-bundle', [{ id: 'existing-member' }]);
     let written = '';
 
     const readFileFn = (_p: string, _enc: 'utf8'): string => initial;
@@ -221,13 +221,13 @@ describe('registerBundleMember — append and idempotency', () => {
 
     registerBundleMember('/fake/extension.json', 'new-member', readFileFn, writeFileFn);
 
-    const result = JSON.parse(written) as { members: Array<{ id: string; version: string }> };
+    const result = JSON.parse(written) as { members: Array<{ id: string }> };
     expect(result.members).toHaveLength(2);
-    expect(result.members[1]).toEqual({ id: 'new-member', version: '^0.1.0' });
+    expect(result.members[1]).toEqual({ id: 'new-member' });
   });
 
   it('is idempotent: does not duplicate if member id already present', () => {
-    const initial = makeBundle('test-bundle', [{ id: 'already-there', version: '^0.1.0' }]);
+    const initial = makeBundle('test-bundle', [{ id: 'already-there' }]);
     let written = '';
 
     const readFileFn = (_p: string, _enc: 'utf8'): string => initial;
@@ -252,12 +252,12 @@ describe('registerBundleMember — append and idempotency', () => {
 
     registerBundleMember('/fake/extension.json', 'first-member', readFileFn, writeFileFn);
 
-    const result = JSON.parse(written) as { members: Array<{ id: string; version: string }> };
+    const result = JSON.parse(written) as { members: Array<{ id: string }> };
     expect(result.members).toHaveLength(1);
-    expect(result.members[0]).toEqual({ id: 'first-member', version: '^0.1.0' });
+    expect(result.members[0]).toEqual({ id: 'first-member' });
   });
 
-  it('uses version ^0.1.0 for newly registered members', () => {
+  it('registers members as id-only (no version field — ADR-0003)', () => {
     const initial = makeBundle('test-bundle', []);
     let written = '';
 
@@ -266,11 +266,12 @@ describe('registerBundleMember — append and idempotency', () => {
       written = data;
     };
 
-    registerBundleMember('/fake/extension.json', 'versioned-member', readFileFn, writeFileFn);
+    registerBundleMember('/fake/extension.json', 'plain-member', readFileFn, writeFileFn);
 
-    const result = JSON.parse(written) as { members: Array<{ id: string; version: string }> };
-    const member = result.members.find((m) => m.id === 'versioned-member');
-    expect(member?.version).toBe('^0.1.0');
+    const result = JSON.parse(written) as { members: Array<Record<string, unknown>> };
+    const member = result.members.find((m) => m['id'] === 'plain-member');
+    expect(member).toEqual({ id: 'plain-member' });
+    expect(member).not.toHaveProperty('version');
   });
 
   it('writes 2-space indented JSON with trailing newline', () => {

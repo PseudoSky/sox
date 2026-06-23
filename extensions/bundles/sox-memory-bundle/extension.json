@@ -1,7 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v1.json",
   "id": "sox-memory-bundle",
-  "version": "0.1.0",
   "type": "bundle",
   "title": "sox-memory (graph memory subsystem)",
   "description": "Use this when you want the full sox-memory graph-memory subsystem installed in one command — expands to memory-daemon (supervised Unix-socket writer daemon with deterministic batch enrichment), memory-server (MCP tools, stdio), memory-flush (SessionEnd hook), memory-cli (store lifecycle commands), and memory-usage (how-to skill). Fully deterministic; zero LLM calls; no provider required.",
@@ -10,11 +9,11 @@
   "compatibility": { "host": ">=1.0.0 <2.0.0" },
   "license": "MIT",
   "members": [
-    { "id": "memory-daemon", "version": "^0.1.0" },
-    { "id": "memory-server", "version": "^1.1.0" },
-    { "id": "memory-flush", "version": "^0.1.0" },
-    { "id": "memory-cli", "version": "^0.1.0" },
-    { "id": "memory-usage", "version": "^0.1.0" }
+    { "id": "memory-daemon" },
+    { "id": "memory-server" },
+    { "id": "memory-flush" },
+    { "id": "memory-cli" },
+    { "id": "memory-usage" }
   ],
   "permissions": {}
 }
