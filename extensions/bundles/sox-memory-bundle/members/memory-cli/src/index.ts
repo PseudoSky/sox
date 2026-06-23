@@ -23,11 +23,10 @@
  *   export_enabled: --enabled/--no-enabled flag  >  SOX_CONFIG_EXPORT_ENABLED env var  >  true
  */
 
-import * as path from 'node:path';
-import * as fs from 'node:fs';
+import { exportMarkdown, initScope, openDb, writeRegistry } from '@adhd/sox-memory-core';
 import * as crypto from 'node:crypto';
-import { openDb, initScope, exportMarkdown } from '@sox/memory-core';
-import { writeRegistry } from '@sox/memory-core';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 export type ScopeKind = 'project' | 'user' | 'org' | 'local';
 

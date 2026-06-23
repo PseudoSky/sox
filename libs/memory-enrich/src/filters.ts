@@ -1,7 +1,7 @@
 /**
  * filters.ts — structured filter type + SQL clause builder for episode subsets.
  *
- * Owned by @sox/memory-enrich so that `clusterSubset` is self-contained and
+ * Owned by @adhd/sox-memory-enrich so that `clusterSubset` is self-contained and
  * callable without any server-private code. `memory-server` imports and reuses
  * both the type and the builder instead of maintaining its own copy.
  *

@@ -99,11 +99,11 @@ def phase_foundation() -> None:
     # ---- authoring-lib ----
     check("authoring-lib.1", "libs/authoring builds clean",
           "pnpm exec nx run authoring:build")
-    check("authoring-lib.2", "@sox/nx plugin builds clean",
+    check("authoring-lib.2", "@adhd/sox-nx plugin builds clean",
           "pnpm exec nx run sox-nx:build")
     check("authoring-lib.3", "All 6 active types scaffold to a manifest that validates",
           "pnpm exec nx run sox-nx:born-conformance")
-    check("authoring-lib.4", "scaffold-parity: sox init == @sox/nx:extension (byte-identical)",
+    check("authoring-lib.4", "scaffold-parity: sox init == @adhd/sox-nx:extension (byte-identical)",
           "pnpm exec nx run sox-nx:test")
     check("authoring-lib.5", "libs/authoring scaffold core is nx-free (no @nx/devkit or @nx/* import)",
           "grep -rn '@nx/devkit\\|@nx/' libs/authoring/src", expect_empty=True)
@@ -194,7 +194,7 @@ def _convergence_work() -> None:
     check("migrate-rest.3", "Thin-wrapped validate-manifests still passes its 44 conformance tests",
           "pnpm exec nx run manifest:test")
     check("migrate-rest.4", "scripts/validate-manifests.ts imports libs/manifest (single source of truth)",
-          "grep -n 'manifest' scripts/validate-manifests.ts | grep -qi 'libs/manifest\\|@sox/manifest\\|from .*manifest' && echo OK",
+          "grep -n 'manifest' scripts/validate-manifests.ts | grep -qi 'libs/manifest\\|@adhd/sox-manifest\\|from .*manifest' && echo OK",
           expect_ok=True)
 
 

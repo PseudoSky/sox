@@ -14,6 +14,7 @@ across agents.
 ### P0-A: Fix all 9 typecheck errors (BL-1)
 
 **Files to change:**
+
 - `extensions/services/tokenguard/src/cli.ts`
 - `extensions/services/tokenguard/src/mapstore.ts`
 - `extensions/services/tokenguard/src/proxy.ts`
@@ -42,10 +43,13 @@ Line 309: `responseHeaders[k] = vs.length === 1 ? vs[0] : vs;`
 produces values of type `string | string[] | undefined`. When `vs` is an array of 1
 element, `vs[0]` is `string | undefined`, not `string`.  
 Fix:
+
 ```typescript
 responseHeaders[k] = vs.length === 1 ? (vs[0] ?? '') : vs;
 ```
+
 Or add a type guard:
+
 ```typescript
 if (vs.length === 1) {
   responseHeaders[k] = vs[0] as string;
@@ -82,6 +86,7 @@ Same pattern for `function makeReadme(...)`. Add a `default: return '';`.
 ### P0-B: Document build hygiene — stale dist warning (BL-4)
 
 **Files to change:**
+
 - `CLAUDE.md` (already has a note; add to the project-level instructions)
 - `libs/memory-core/README.md` or the `memory-server` project README if it exists
 
@@ -93,7 +98,7 @@ Add a note to `CLAUDE.md` (project root) under a "Testing" or "Build" section:
 
 `memory-server` and `memory-core` use `composite: true` in their `tsconfig.json`.
 A bare `tsc` after a source change may emit nothing if `.tsbuildinfo` thinks outputs are
-current. Vitest resolves `@sox/memory-core` to `libs/memory-core/dist/index.js` — a
+current. Vitest resolves `@adhd/sox-memory-core` to `libs/memory-core/dist/index.js` — a
 static alias. Tests pass against stale `dist/` if `nx build` was not run first.
 
 **Always run `npx nx build memory-core && npx nx build memory-server` before running
@@ -110,6 +115,7 @@ The note is visible in the project-level CLAUDE.md. No code change is required.
 **Files to change:** None (verification task, not a code change).
 
 **Actions:**  
+
 1. Clear nx cache for all four members: `npx nx reset` (or delete `.nx/cache`).
 2. Run `npx nx build memory-daemon memory-cli memory-flush` with `--skip-nx-cache`.
 3. Verify `dist/index.js` exists and `node --check dist/index.js` passes for each.
@@ -135,6 +141,7 @@ but should be completed first for clean CI.
 ### P1-A: Implement scope-cascade resolution in `cmdServe` (BL-7)
 
 **Files to change:**
+
 - `apps/sox/src/main.ts` (function `cmdServe`, lines 3099–3210)
 
 **Fix:**  
@@ -208,6 +215,7 @@ no change is needed there. The scope cascade here is purely for locating the ext
 directory.
 
 **Verification:**  
+
 - `sox install memory-server --scope=user` then `sox serve memory-server` (no --scope) resolves the user-scoped entry.
 - `sox install memory-server --scope=project` then `sox serve memory-server` resolves the project-scoped entry.
 - If installed at both scopes, project-scoped entry wins.
@@ -219,10 +227,12 @@ directory.
 ### P1-B: Update `cmdServe` help text and serve default scope (BL-7)
 
 **Files to change:**
+
 - `apps/sox/src/main.ts` (the `--help` block inside `cmdServe`, lines 3101–3114)
 
 **Fix:**  
 Update the help block to reflect the cascade behavior:
+
 ```
 Flags:
   --scope=<scope>   Restrict lookup to one scope (default: cascade project→user→org→local)
@@ -237,7 +247,7 @@ Also update the main `helpText` function (around line 247) to match.
 
 ---
 
-## Phase 2 — `@sox/mcp-runtime` Consolidation (BL-5)
+## Phase 2 — `@adhd/sox-mcp-runtime` Consolidation (BL-5)
 
 This is the largest single refactor. It depends on Phase 1 (scope cascade) being stable,
 because `sox serve memory-server` is the intended `.mcp.json` command after refactor and
@@ -245,17 +255,20 @@ must work cross-scope first.
 
 ---
 
-### P2-A: Migrate `memory-server` to `@sox/mcp-runtime` (BL-5)
+### P2-A: Migrate `memory-server` to `@adhd/sox-mcp-runtime` (BL-5)
 
 **Files to change:**
+
 - `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts`
 - `extensions/bundles/sox-memory-bundle/members/memory-server/package.json`
-  (add `@sox/mcp-runtime` to dependencies)
+  (add `@adhd/sox-mcp-runtime` to dependencies)
 
 **Fix approach:**  
-1. Add `@sox/mcp-runtime` to `package.json` dependencies.
-2. Import `{ serve, defineTool }` from `@sox/mcp-runtime`.
+
+1. Add `@adhd/sox-mcp-runtime` to `package.json` dependencies.
+2. Import `{ serve, defineTool }` from `@adhd/sox-mcp-runtime`.
 3. Convert each of the 7 handlers to `defineTool(...)` calls:
+
    ```typescript
    const memoryWriteTool = defineTool({
      name: 'memory_write',
@@ -268,18 +281,21 @@ must work cross-scope first.
      }
    });
    ```
+
 4. Delete the `compilePolicyFromEnv` vendor block (lines 43–145) and the `readline`
    loop (lines 548–562).
 5. Replace the process entry point with:
+
    ```typescript
    serve({ tools: [memoryWriteTool, memoryRecallTool, ...], serverInfo: { name: 'memory-server', version: '0.1.0' } });
    ```
 
 The `checkDbPathCtx` function must be adapted to use the `ctx` (tool context from
-`@sox/mcp-runtime`) rather than reading `process.env` directly. The mcp-runtime
+`@adhd/sox-mcp-runtime`) rather than reading `process.env` directly. The mcp-runtime
 enforce.ts already provides `checkFsAccess(path)` which reads from the policy-env.
 
 **Verification:**  
+
 - All 7 `memory_*` tools respond correctly to MCP tool calls.
 - The vendored `compilePolicyFromEnv` is gone from `src/index.ts`.
 - The `readline` loop is gone from `src/index.ts`.
@@ -296,7 +312,7 @@ enforce.ts already provides `checkFsAccess(path)` which reads from the policy-en
 | BL-1 | P0-A   | Fix 9 typecheck errors (tokenguard + scripts) |
 | BL-2 | Memory plan P0-D | (naming drift — ecosystem aspect: none beyond documentation) |
 | BL-4 | P0-B   | Document build hygiene for stale dist |
-| BL-5 | P2-A   | Migrate memory-server to @sox/mcp-runtime |
+| BL-5 | P2-A   | Migrate memory-server to @adhd/sox-mcp-runtime |
 | BL-6 | P0-C   | Verify all bundle members build post-glob-widening |
 | BL-7 | P1-A, P1-B | Scope cascade in cmdServe |
 | BL-15| Memory plan P0-C | (db_path documentation — covered in memory-system plan) |

@@ -45,7 +45,7 @@
       "guard": "bash .workflow/plans/nx-migration/scripts/guards/authoring-lib.sh",
       "artifacts": ["libs/authoring/src/index.ts", "libs/authoring/src/writer.ts", "libs/authoring/src/templates", "libs/authoring/project.json", "packages/sox-nx/src/generators/extension", "packages/sox-nx/src/generators/library", "packages/sox-nx/project.json", "tools/born-conformance.js", "extensions/agents/echo-agent", "extensions/skills/hello-world", "extensions/mcp-servers/hello-server", "extensions/hooks/audit-hook", "extensions/prompts/greeting-prompt", "extensions/commands/status-command"],
       "context": "contexts/authoring-lib.md",
-      "notes": "Legacy P3. libs/authoring = pure scaffold(opts)->FileSet (inv:nx-free-core); @sox/nx = thin adapters; born-conformance gate (scaffold->build->validate per type); scaffold-parity test (inv:scaffold-parity). D4: DELETE the 6 demo extensions (they become generated fixtures) — they appear in artifacts because this state removes them. prompt is parked (no generator). Carry scripts/new-extension.ts logic forward, fix its gaps (missing tsconfig, keywords/author)."
+      "notes": "Legacy P3. libs/authoring = pure scaffold(opts)->FileSet (inv:nx-free-core); @adhd/sox-nx = thin adapters; born-conformance gate (scaffold->build->validate per type); scaffold-parity test (inv:scaffold-parity). D4: DELETE the 6 demo extensions (they become generated fixtures) — they appear in artifacts because this state removes them. prompt is parked (no generator). Carry scripts/new-extension.ts logic forward, fix its gaps (missing tsconfig, keywords/author)."
     },
     "audit-foundation": {
       "kind": "audit",

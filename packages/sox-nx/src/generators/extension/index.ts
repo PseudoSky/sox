@@ -1,5 +1,5 @@
 /**
- * @sox/nx extension generator — thin adapter over libs/authoring scaffold().
+ * @adhd/sox-nx extension generator — thin adapter over libs/authoring scaffold().
  *
  * Maps scaffold(opts) → nx Tree by writing each FileSet entry.
  * This is the only place @nx/devkit is imported — libs/authoring has zero devkit.
@@ -10,10 +10,10 @@
  * [ref:scaffold-parity] anchor lives in extension.spec.ts in this directory.
  */
 
+import type { ActiveType, FileSet, ScaffoldOpts } from '@adhd/sox-authoring';
+import { scaffold } from '@adhd/sox-authoring';
 import type { Tree } from '@nx/devkit';
 import { generateFiles, joinPathFragments } from '@nx/devkit';
-import { scaffold } from '@sox/authoring';
-import type { ScaffoldOpts, ActiveType, FileSet } from '@sox/authoring';
 import * as path from 'node:path';
 
 export interface ExtensionGeneratorSchema {
@@ -49,7 +49,7 @@ export function applyFileSet(tree: Tree, fileSet: FileSet, rootPath: string): vo
 }
 
 /**
- * extensionGenerator — the @sox/nx:extension nx generator.
+ * extensionGenerator — the @adhd/sox-nx:extension nx generator.
  *
  * Calls scaffold() from libs/authoring and applies the resulting FileSet to the Tree.
  * The parity test ([ref:scaffold-parity]) confirms this produces byte-identical output

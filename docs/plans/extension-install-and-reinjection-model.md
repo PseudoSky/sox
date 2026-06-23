@@ -139,6 +139,7 @@ settings.json); hooks are *also* a directory; plugins register via `installed_pl
 marketplace; project `.mcp.json` servers are **trust-gated** via `enabledMcpjsonServers`.
 
 **P0.5 doc-verification results (live Claude docs, 2026-06):**
+
 - **`rules` CONFIRMED** (`.claude/rules/**/*.md`, `paths:` glob frontmatter; Managed > User > Project; unconditional load at launch, path-scoped load on demand) → `prompt --inject rules` valid.
 - **`output-styles` is NOT a file surface** — only a `settings.json → outputStyle` *value*. **Drop `output-style` from `prompt --inject`.**
 - **`keybindings.json` CONFIRMED but user-only**, plain JSON.
@@ -229,7 +230,7 @@ sox init agent reviewer --host claude --runtime declarative
 
 ---
 
-## 8. MCP wrapper — `@sox/mcp-runtime` (the "build the template for them" lever)
+## 8. MCP wrapper — `@adhd/sox-mcp-runtime` (the "build the template for them" lever)
 
 Because sox owns the template, dual-transport + dual-profile + enforcement is a property of a **shared
 wrapper lib**, not a burden on authors.
@@ -240,7 +241,7 @@ wrapper lib**, not a burden on authors.
   `@modelcontextprotocol/sdk`, don't reimplement — *lean, see §9*); health (stdio-ping/socket);
   graceful shutdown; **C6 permission enforcement read from policy-env, applied uniformly whether Claude
   spawns it (stdio) or sox supervises it (sse)** — generalizing memory-server's hand-rolled guard.
-- **`serves` becomes derived** ("built on `@sox/mcp-runtime@^1` ⇒ stdio+sse"), and the wrapper ships
+- **`serves` becomes derived** ("built on `@adhd/sox-mcp-runtime@^1` ⇒ stdio+sse"), and the wrapper ships
   **one generic conformance test** every MCP extension inherits (start in each transport, run
   initialize + tools/list).
 - **Profiles** select topology at install:
@@ -248,7 +249,7 @@ wrapper lib**, not a burden on authors.
   - `shared` (Topology B) — sox `run-service` (sse, `singleton`) + Claude entry `{type:sse,url}`.
   - One artifact; the profile only changes launch args/target shape.
 - **Retires duplication:** memory-server's MCP loop + vendored `compilePolicyFromEnv` collapse into
-  `@sox/mcp-runtime` (C7-clean, like `memory-core`).
+  `@adhd/sox-mcp-runtime` (C7-clean, like `memory-core`).
 
 Constraint kept honest: "supports both" requires the server to *implement* both transports — the wrapper
 provides that; the manifest just declares/validates it.
@@ -264,7 +265,7 @@ provides that; the manifest just declares/validates it.
    registry defaults at install).
 3. **Ledger → one file per scope** (`<scope-root>/.sox/ledger.json`); project ledger **committed +
    portable**; machine-specific actions in the gitignored user ledger (`~/.sox/`).
-4. **`@sox/mcp-runtime` → wrap** the official `@modelcontextprotocol/sdk`.
+4. **`@adhd/sox-mcp-runtime` → wrap** the official `@modelcontextprotocol/sdk`.
 5. **Verify-before-rely:** Claude `rules`/`output-styles`/`keybindings` + project `.mcp.json`, **and the
    full codex matrix**, are doc/FS-verified before any tooling depends on them.
 6. **Multi-host → Claude + codex now** (registry + two host modules), further hosts additive.
@@ -284,7 +285,7 @@ Each phase reality-verified (the project rule: prove against the OS/host, not te
   before wiring: the **skills path** (`.agents/skills` vs `~/.codex/skills`) and **plugin
   cache/marketplace paths**. (Carry-over from P0.5; affects the codex host-registry module only.)
 - **P1 — Schema delta.** Generalize `install-target` → host-keyed `install` descriptor (**hybrid**: type
-  + profiles/hosts + overrides); add `config`, `serves`, `profiles`, `source` provenance, `prompt
+  - profiles/hosts + overrides); add `config`, `serves`, `profiles`, `source` provenance, `prompt
   --inject`. Deprecate vestigial `agent` lifecycle. `validate` enforces `profiles ⊆ serves`, known
   surfaces, no `managed`.
 - **P2 — Capability engine + ledger + registry.** Implement the ~6 capabilities (apply/reverse/diff/
@@ -294,7 +295,7 @@ Each phase reality-verified (the project rule: prove against the OS/host, not te
 - **P3 — Install/update/diff/uninstall wired to capabilities**, scope- and host-aware; host detection.
   *Acc: a markdown agent installs into `.claude/agents/`, shows in `diff`, version bump updates it,
   uninstall removes it — across project + user, verified on disk.*
-- **P4 — `@sox/mcp-runtime` wrapper** (wrap MCP SDK + transport selection + policy-env enforcement +
+- **P4 — `@adhd/sox-mcp-runtime` wrapper** (wrap MCP SDK + transport selection + policy-env enforcement +
   generic conformance test). Re-home `memory-server` onto it (retire duplication).
 - **P5 — Generators (nx-style options).** `init` emits descriptor + profiles from typed options.
 - **P6 — Reconcile DoD.** Split B2 "run" into *run (process)* vs *placed+discoverable (declarative)*;
@@ -307,7 +308,7 @@ Each phase reality-verified (the project rule: prove against the OS/host, not te
 ## 11. Relationship to other work / DoD impact
 
 - **Builds on:** the nx self-hosting foundation and the completed **C6** runtime-permission engagement
-  (its policy-env contract is what `@sox/mcp-runtime` reuses for universal enforcement).
+  (its policy-env contract is what `@adhd/sox-mcp-runtime` reuses for universal enforcement).
 - **Unblocks:** `docs/ingestion/` (declarative agent/skill/command ingestion from Claude plugins —
   the original goal).
 - **DoD:** exposes that B2's "run" was only verified for code/process types; P6 corrects the bar and
@@ -323,6 +324,7 @@ nx-style generators: each option is `flag` — choices `[default]` → *manifest
 `serves`/`profiles` + `config`.
 
 ### Common to every type
+
 ```
 <id>                       positional, kebab-case        → id
 --description "…"           (x-prompt)                    → description
@@ -336,6 +338,7 @@ nx-style generators: each option is `flag` — choices `[default]` → *manifest
 ```
 
 ### Content convention (declarative/content types — `agent`(declarative), `skill`, `prompt`; also slash `command`, `hook` script, `CLAUDE.md`)
+
 ```
 --content "<text>"         inline text fills the file
 --content @<path>          @ = read body from a path (mirrors Claude @import)
@@ -344,17 +347,19 @@ nx-style generators: each option is `flag` — choices `[default]` → *manifest
 ```
 
 ### `mcp-server`
+
 ```
 --transports stdio,sse,http [stdio]      → serves{}
 --profiles standalone,shared [standalone]→ profiles{}   (alias: --mode inject|service|both)
 --default-profile <name> · --runtime node|python [node]
---wrapper / --no-wrapper [wrapper]       → depend on @sox/mcp-runtime
+--wrapper / --no-wrapper [wrapper]       → depend on @adhd/sox-mcp-runtime
 --tools name1,name2                      → tool stubs
 --port <n>|auto [auto] · --health stdio-ping|socket|command [stdio-ping]
 --singleton [shared] · --stop-timeout <ms> [5000] · --trust prompt|enable [prompt]
 ```
 
 ### `service` (sox-run; no `--host`)
+
 ```
 --runtime node|python|shell [node] · --background [on] · --singleton [on]
 --health stdio-ping|socket|command [socket] · --health-endpoint <path|url>
@@ -362,6 +367,7 @@ nx-style generators: each option is `flag` — choices `[default]` → *manifest
 ```
 
 ### `agent`
+
 ```
 --shape declarative|code [declarative]   → runtime: declarative|node
 declarative: --model <m> · --tools Read,Edit,… · --proactive · --content/--from
@@ -369,11 +375,13 @@ code:        --handler <fn> [run] · --runtime node|python
 ```
 
 ### `skill` (declarative → `.claude/skills/<id>/`)
+
 ```
 --content/--from · --with-resources · --allowed-tools … · --disable-model-invocation · --run-in fresh|current
 ```
 
 ### `command` (CLI and/or slash)
+
 ```
 --surface cli|slash|both [cli]
 cli:   --runtime node|python|shell [node] · --bin-name <n> [<id>] · --bin-scope user|project [project] · --args-schema
@@ -381,6 +389,7 @@ slash: --host claude · --argument-hint "…" · --content/--from
 ```
 
 ### `hook`
+
 ```
 --event PreToolUse|PostToolUse|SessionStart|SessionEnd|UserPromptSubmit|Stop|… (multi)
 --matcher "Bash"|"*"|<regex> [*] · --handler-type command|http|mcp_tool|prompt|agent [command]
@@ -389,6 +398,7 @@ slash: --host claude · --argument-hint "…" · --content/--from
 ```
 
 ### `prompt` (content-injection — resolved)
+
 ```
 --content "<text>" | --content @<path>   → body
 --inject claude-md|rules|output-style|settings-key [rules]   → injection target
@@ -396,6 +406,7 @@ slash: --host claude · --argument-hint "…" · --content/--from
 ```
 
 ### `bundle`
+
 ```
 --members id@^1,id2@^0.2,… → members[]
 --from-plugin <path>       → extract a Claude plugin dir into member extensions (ingestion)

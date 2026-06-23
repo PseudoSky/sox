@@ -7,13 +7,13 @@
  * P4 tests: semver range resolution, checksum tamper detection
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
 import * as http from 'node:http';
-import { install, semverSatisfies, fetchArtifact } from './install.js';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { InstallOptions } from './install.js';
+import { fetchArtifact, install, semverSatisfies } from './install.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -58,7 +58,7 @@ function makeExtension(
   fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
   fs.writeFileSync(
     path.join(extDir, 'package.json'),
-    JSON.stringify({ name: `@sox/extension-${id}`, version }, null, 2),
+    JSON.stringify({ name: `@adhd/sox-extension-${id}`, version }, null, 2),
   );
   fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
   fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), `// ${id} stub\nexport const id = '${id}';\n`);
@@ -518,7 +518,7 @@ describe('P4: registry publish + remote install simulation', () => {
 
   beforeEach(async () => {
     root = makeTempRoot();
-    artifactContent = Buffer.from('// @sox/extension-hello-world v0.2.0\nexport const id = "hello-world";\n');
+    artifactContent = Buffer.from('// @adhd/sox-extension-hello-world v0.2.0\nexport const id = "hello-world";\n');
 
     await new Promise<void>((resolve) => {
       server = http.createServer((_req, res) => {
@@ -763,7 +763,7 @@ describe('P9: G-B bundle expansion (post-cascade)', () => {
     fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: `@sox/extension-${bundleId}`, version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: `@adhd/sox-extension-${bundleId}`, version: '0.1.0' }, null, 2),
     );
   }
 

@@ -161,7 +161,7 @@ source change, otherwise install resolves stale checksums.
 
 | Error | Fix |
 |---|---|
-| `tsc: error TS2307: Cannot find module '@sox/...'` | Check `package.json` `dependencies`; run `pnpm install` if a new dep was added |
+| `tsc: error TS2307: Cannot find module '@adhd/sox-...'` | Check `package.json` `dependencies`; run `pnpm install` if a new dep was added |
 | `dist/index.js: no such file` | Build did not run or TSConfig emitDeclarationOnly is set; check `tsconfig.json` |
 | `nx: project not found` | Confirm `project.json` exists in the extension root and `"name"` matches the id |
 

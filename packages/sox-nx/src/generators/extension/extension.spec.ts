@@ -1,11 +1,11 @@
 /**
  * [ref:scaffold-parity] — anchor for the scaffold-parity invariant.
  *
- * Asserts that scaffold() (the sox init path) and @sox/nx:extension (the generator path)
+ * Asserts that scaffold() (the sox init path) and @adhd/sox-nx:extension (the generator path)
  * emit byte-identical FileSet output for the same inputs, for all 6 active types.
  *
  * Rule (from _shared.md): "a passing test asserts scaffold() (the sox init path) and
- * @sox/nx:extension produce byte-identical FileSet output for identical inputs."
+ * @adhd/sox-nx:extension produce byte-identical FileSet output for identical inputs."
  *
  * Test methodology:
  *   1. Call scaffold(opts) directly — this is what sox init uses.
@@ -14,11 +14,11 @@
  *   4. Assert every key/value pair is byte-identical.
  */
 
-import { describe, it, expect } from 'vitest';
+import type { ActiveType } from '@adhd/sox-authoring';
+import { ACTIVE_TYPES, scaffold } from '@adhd/sox-authoring';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
-import { scaffold, ACTIVE_TYPES } from '@sox/authoring';
-import type { ActiveType } from '@sox/authoring';
-import { extensionGenerator, applyFileSet } from './index.js';
+import { describe, expect, it } from 'vitest';
+import { applyFileSet, extensionGenerator } from './index.js';
 
 /** Reconstruct a FileSet from an nx Tree at the given root path. */
 function treeToFileSet(
@@ -59,7 +59,7 @@ const TYPE_IDS: Record<ActiveType, string> = {
   service: 'test-daemon',
 };
 
-describe('[ref:scaffold-parity] scaffold() == @sox/nx:extension for all active types', () => {
+describe('[ref:scaffold-parity] scaffold() == @adhd/sox-nx:extension for all active types', () => {
   for (const type of ACTIVE_TYPES) {
     it(`type=${type}: generator FileSet is byte-identical to scaffold() output`, async () => {
       const id = TYPE_IDS[type];

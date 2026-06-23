@@ -18,7 +18,7 @@ comes from `depends_on`, not the numbers.
 | `checkpoint-branch` | P0 | checkpoint | Session fixes committed + tagged `pre-nx-baseline`; `feat/nx-migration` branched |
 | `nx-init` | P1 | foundation | Nx alive: graph, target defaults, boundaries, cache, release, commitlint |
 | `manifest-lib` | P2 | foundation | `libs/manifest` is the single source of truth for validate() + the 3 flexes |
-| `authoring-lib` | P3 | foundation | Pure `scaffold()` core + thin `@sox/nx` generators + born-conformance + parity; demos deleted |
+| `authoring-lib` | P3 | foundation | Pure `scaffold()` core + thin `@adhd/sox-nx` generators + born-conformance + parity; demos deleted |
 | `audit-foundation` | — | **Audit** | Verify all foundation criteria; fix before the engine phase |
 | `engine-libs` | P4 | engine | Engine logic re-homed into 3 libs; fixes carried forward; A12 flag parser fixed |
 | `sox-extension` | P5 | engine | `apps/sox` = literal extension #0; conformant manifest; full command surface |

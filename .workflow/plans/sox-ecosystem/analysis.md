@@ -31,7 +31,7 @@ The project directory `/Users/nix/dev/ai/sox-ecosystem` contains only `.workflow
 
 ### 1.2 Global agents (`~/.claude/agents/`)
 
-37 agents installed globally, populated by `sox-active@sox-subagents` v1.0.20. Default tools for worker agents: `Read, Write, Edit, Glob, Grep, Bash`. Notable: `cto-agent`, `forge-master`, `workflow-implementer` are `model: opus`; `janitor-agent`, `workflow-analyst` are `model: sonnet`; `workflow-analyst` has no Bash (deliberately scoped down); `forge-master` is the only agent with WebFetch + WebSearch and operates outside the SOX supervisor loop.
+37 agents installed globally, populated by `sox-active@adhd-subagents` v1.0.20. Default tools for worker agents: `Read, Write, Edit, Glob, Grep, Bash`. Notable: `cto-agent`, `forge-master`, `workflow-implementer` are `model: opus`; `janitor-agent`, `workflow-analyst` are `model: sonnet`; `workflow-analyst` has no Bash (deliberately scoped down); `forge-master` is the only agent with WebFetch + WebSearch and operates outside the SOX supervisor loop.
 
 (Full 37-agent table retained in the analyzer transcript; the load-bearing distinctions are the model and tool-privilege deltas above.)
 
@@ -43,10 +43,10 @@ The project directory `/Users/nix/dev/ai/sox-ecosystem` contains only `.workflow
 
 | Plugin | Version | Enabled | Summary |
 |---|---|---|---|
-| `sox-cto-system@sox-subagents` | 2.0.23 | **yes** | Core SOX daemon: janitor, cto-agent, planner, merge-resolver, skills, scripts, templates |
-| `sox-active@sox-subagents` | 1.0.20 | **yes** | Active roster of ~37 workers/leads/specialists |
-| `workflow@sox-subagents` | 0.6.1 | **yes** | architect, analyzer, optimizer, planner, researcher, agent-builder, curator |
-| `sox-tools@sox-subagents` | 1.0.3 | **yes** | SOX CLI + MCP server (`sox`) + skills: reflection, sox-init, workflow-relevancy |
+| `sox-cto-system@adhd-subagents` | 2.0.23 | **yes** | Core SOX daemon: janitor, cto-agent, planner, merge-resolver, skills, scripts, templates |
+| `sox-active@adhd-subagents` | 1.0.20 | **yes** | Active roster of ~37 workers/leads/specialists |
+| `workflow@adhd-subagents` | 0.6.1 | **yes** | architect, analyzer, optimizer, planner, researcher, agent-builder, curator |
+| `sox-tools@adhd-subagents` | 1.0.3 | **yes** | SOX CLI + MCP server (`sox`) + skills: reflection, sox-init, workflow-relevancy |
 | (15 more) | — | no | sox-biz, sox-core-dev, sox-data-ai, sox-dev-exp, sox-domains, sox-generalist, sox-infra, sox-lang, sox-marketing-skills, sox-meta, sox-portfolio, sox-qa-sec, sox-research, sox-sales-skills, memory-mcp; plus `nx` project-scoped to another repo |
 
 Marketplace source: `sox-subagents` from local file `/Users/nix/dev/ai/claude-agents/.claude-plugin/marketplace.json`. **`sox-active` v1.0.20 duplicates 5 agents also in `sox-cto-system` v2.0.23** (`cto-agent`, `janitor-agent`, `workflow-analyst`, `workflow-implementer`, `planner`).
@@ -88,7 +88,7 @@ Plugin-contributed: `sox-tools` SessionStart auto-installs Node deps; `memory-mc
 
 ---
 
-### 1.6 Workflow plugin agents (`workflow@sox-subagents` v0.6.1)
+### 1.6 Workflow plugin agents (`workflow@adhd-subagents` v0.6.1)
 
 architect (opus, Task — orchestrator), analyzer (opus — this run), optimizer (opus, Task), planner (opus), researcher (web), agent-builder (opus v2.0.1), curator (opus, 4 modes). Pipeline: architect → one specialist via Task → artifact → architect rebuilds INDEX.
 
@@ -126,6 +126,7 @@ Global CLAUDE.md (empty), `.workflow/INDEX.md`, engagement status/migration, sox
 ## 2. Patterns
 
 **2.1 Orchestration topology — hybrid, two parallel hub/spoke systems + a linear pipeline:**
+
 - **System A (SOX autonomous dev, event-driven hub/spoke):** non-LLM Node supervisor polls `.cto/`, fires typed signals to one-shot janitor; janitor spawns cto-agent / workflow-analyst / post-mortem as 2nd-level spokes; workers + leads pulled directly by supervisor. Janitor does NOT route workers.
 - **System B (workflow planning, linear):** architect → one specialist via Task → artifact → architect composes + rebuilds INDEX. Single dispatch per invocation.
 - **System C (catalog/reflection, on-demand hub/spoke):** agent-builder and curator each dispatch researcher via Task; curator mutates REFLECTIONS.json only via `reflect.js`.
@@ -221,11 +222,13 @@ flowchart TD
 **Ecosystem:** 19 plugins installed / 4 enabled (15 disabled to suppress system-prompt bloat). `sox-active` duplicates 5 `sox-cto-system` agents. `memory-mcp` fully dormant. Only safety constraint in the system is the recursion guard preventing meta-loop self-modification. No agent eval harness.
 
 **ALIGNED with the extension-ecosystem design:**
+
 1. **`plugin.json` + `installed_plugins.json` scope system is a working prototype** of the proposed `extension.json` + multi-scope cascade (`scope: user` / `scope: project` already exist, proven in production).
 2. **Type-taxonomy vocabulary is already correct** — the live system ships agents, skills, MCP servers, hooks, commands as plugin sub-namespaces; the plan promotes them to six independent types. Vocabulary right; independence missing.
 3. **Research-memory hierarchy mirrors the proposed registry discovery** (`INDEX.md → <topic>/INDEX.md → finding.md` ≈ two-level `registry/index.json`).
 
 **DIVERGENT (gaps the build must close):**
+
 1. **Monolithic plugin versioning vs independent extension versioning** (largest gap): `sox-cto-system` v2.0.23 bundles 4 agents + 3 skills + scripts + templates under one semver; the plan requires Changesets independent mode per extension.
 2. **Manifest identity:** live plugins use `name@marketplace`; the plan mandates immutable slug `id` + CI-enforced dedup invariants — no uniqueness/immutability enforcement exists today.
 3. **No scaffold generator** — all live extensions authored manually; plan specifies `scripts/new-extension.ts` (4 files/extension).

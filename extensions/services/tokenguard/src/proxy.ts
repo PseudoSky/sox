@@ -11,23 +11,23 @@
  * - Detokenizes inbound via the adapter.
  * - SIGTERM closes the server cleanly. [ref:supervisor-stop]
  *
- * [ref:c7-no-reach-in] — imports from @sox/tokenguard-core only.
+ * [ref:c7-no-reach-in] — imports from @adhd/sox-tokenguard-core only.
  * [tg-service.8] — port.txt written after listen.
  */
 
+import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as https from 'node:https';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import * as net from 'node:net';
+import * as path from 'node:path';
 import * as url from 'node:url';
 
 import {
+  detokenizeText,
   Mapper,
   tokenizeRequest,
   wireLeaks,
-  detokenizeText,
-} from '@sox/tokenguard-core';
+} from '@adhd/sox-tokenguard-core';
 
 import type { ProviderAdapter } from './adapters/generic.js';
 import type { TokenGuardConfig } from './config.js';

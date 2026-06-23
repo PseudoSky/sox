@@ -87,6 +87,7 @@ cat ~/.tokenguard/audit.jsonl | tail -10
 ```
 
 **Key fields:**
+
 - `swap_count` — how many tokens appeared in the response (high means good tokenization)
 - `leak_count` — how many real values leaked (should be 0)
 
@@ -214,6 +215,7 @@ if (leak_count > 0) {
 ### Debugging
 
 **Check if running:**
+
 ```typescript
 const state = await sox.list();
 const tg = state.find(s => s.name === 'tokenguard');
@@ -221,6 +223,7 @@ console.log(tg.status);  // 'RUNNING' or 'STOPPED'
 ```
 
 **Read audit log directly:**
+
 ```typescript
 import * as fs from 'fs';
 const home = process.env.HOME || '/tmp';
@@ -232,6 +235,7 @@ for (const line of lines.slice(-5)) {
 ```
 
 **Inspect the live token map:**
+
 ```typescript
 const { entries } = await sox.exec('tokenguard', { tool: 'map' });
 console.log('Tokens in use:', entries.length);
@@ -244,7 +248,7 @@ for (const e of entries) {
 
 ## Implementation Notes
 
-### Engine (@sox/tokenguard-core)
+### Engine (@adhd/sox-tokenguard-core)
 
 - Pure TypeScript, no I/O, provider-agnostic.
 - Exports: `Mapper` (bijective store), detectors (regex-based), `tokenizeRequest`/`detokenizeText`, SSE reassembler.
@@ -259,7 +263,7 @@ for (const e of entries) {
 
 ### Invariants
 
-- **[inv:c7-no-reach-in]**: no reach-in imports; uses `@sox/tokenguard-core` scope only.
+- **[inv:c7-no-reach-in]**: no reach-in imports; uses `@adhd/sox-tokenguard-core` scope only.
 - **[inv:wire-guarantee]**: Anthropic adapter tokenizes only system/messages/metadata; tools/thinking verbatim.
 - **[decouple-generalize.1]**: no WOP/red-team vocabulary in shipped source.
 - **[decouple-generalize.3]**: no provider hostname hard-coded in the engine.

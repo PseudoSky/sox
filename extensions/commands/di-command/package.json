@@ -1,5 +1,5 @@
 {
-  "name": "@sox/extension-di-command",
+  "name": "@adhd/sox-extension-di-command",
   "version": "0.1.0",
   "description": "Dependency-injection demo command",
   "private": true,

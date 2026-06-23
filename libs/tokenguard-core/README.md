@@ -1,4 +1,4 @@
-# @sox/tokenguard-core
+# @adhd/sox-tokenguard-core
 
 **Bijective pseudonymization engine** — pure TypeScript, zero network, provider-agnostic.
 
@@ -108,7 +108,7 @@ export function identifierGroupVariants(
 ## Usage Example
 
 ```typescript
-import { Mapper, tokenizeRequest, detokenizeText, detectKnown } from '@sox/tokenguard-core';
+import { Mapper, tokenizeRequest, detokenizeText, detectKnown } from '@adhd/sox-tokenguard-core';
 
 // Create a mapper (optional persist path for reload-stable tokens)
 const mapper = new Mapper('/tmp/tokens.json');

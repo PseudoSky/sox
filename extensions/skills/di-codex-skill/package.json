@@ -1,5 +1,5 @@
 {
-  "name": "@sox/extension-di-codex-skill",
+  "name": "@adhd/sox-extension-di-codex-skill",
   "version": "0.1.0",
   "description": "Dependency-injection demo skill for Codex",
   "private": true,

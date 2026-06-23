@@ -13,12 +13,12 @@
  *      but visible in as_of recall at a timestamp before invalidation.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { RecallResponse } from '@adhd/sox-memory-core';
+import { _resetEmbedSingleton, _shutdownEmbedWorker, getActiveEmbedModel, memoryRecall, memoryWrite, openDb } from '@adhd/sox-memory-core';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { openDb, memoryWrite, memoryRecall, getActiveEmbedModel, _resetEmbedSingleton, _shutdownEmbedWorker } from '@sox/memory-core';
-import type { RecallResponse } from '@sox/memory-core';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

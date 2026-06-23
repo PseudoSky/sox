@@ -1,7 +1,7 @@
 {
   "$schema": "../../../../../../node_modules/nx/schemas/project-schema.json",
   "name": "memory-cli",
-  "description": "Builds cleanly and resolves @sox/memory-core from workspace (verified 2026-06-22).",
+  "description": "Builds cleanly and resolves @adhd/sox-memory-core from workspace (verified 2026-06-22).",
   "projectType": "library",
   "root": "extensions/bundles/sox-memory-bundle/members/memory-cli",
   "sourceRoot": "extensions/bundles/sox-memory-bundle/members/memory-cli/src",

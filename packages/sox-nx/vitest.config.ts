@@ -1,5 +1,5 @@
-import { defineConfig } from 'vitest/config';
 import { resolve } from 'node:path';
+import { defineConfig } from 'vitest/config';
 
 const PKG_ROOT = resolve(__dirname);
 const ROOT = resolve(__dirname, '../..');
@@ -12,7 +12,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@sox/authoring': resolve(ROOT, 'libs/authoring/dist/index.js'),
+      '@adhd/sox-authoring': resolve(ROOT, 'libs/authoring/dist/index.js'),
     },
   },
 });

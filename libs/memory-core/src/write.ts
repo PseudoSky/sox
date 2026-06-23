@@ -14,12 +14,12 @@
  *   R6: no OS advisory lock (host holds singleton via lifecycle block).
  */
 
+import { enrichOnWrite } from '@adhd/sox-memory-enrich';
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
 import { monotonicFactory } from 'ulid';
 import { embed, vecToJson } from './embed.js';
 import { enqueueIngest, nudgeDaemon } from './memoryd.js';
-import { enrichOnWrite } from '@sox/memory-enrich';
 
 const ulid = monotonicFactory();
 
@@ -148,9 +148,9 @@ export async function memoryWrite(
        VALUES (?, 'episode', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING rowid`,
     ).get(uid, content, name ?? null, summary ?? null, metaJson,
-          agent_id ?? null, session_id ?? null, source, importance,
-          contentHash, now, tOccurred, tValid,
-          resolvedTopic, tagsJson, resolvedProjectPath);
+      agent_id ?? null, session_id ?? null, source, importance,
+      contentHash, now, tOccurred, tValid,
+      resolvedTopic, tagsJson, resolvedProjectPath);
 
     if (!result) throw new Error('Insert failed: no rowid returned');
     const rowid = result.rowid;

@@ -168,7 +168,7 @@ These hold throughout the migration, not just at the end. Full definitions in `c
 - **[inv:wire-guarantee]** — after tokenizing the request-scoped regions (system/messages/metadata), no mapped real survives on the wire; `tools` JSON-Schema is left verbatim.
 - **[inv:single-registry]** — all transports register through the one service registry the supervisor reads; no parallel service store is introduced.
 - **[inv:standard-config]** — service configuration flows exclusively through the standardized `config_schema` → install-prompt → `SOX_CONFIG_*` path; no bespoke config reader.
-- **[inv:c7-no-reach-in]** — the service consumes the engine via the `@sox/tokenguard-core` package scope; no cross-package `../dist` reach-in.
+- **[inv:c7-no-reach-in]** — the service consumes the engine via the `@adhd/sox-tokenguard-core` package scope; no cross-package `../dist` reach-in.
 
 ---
 

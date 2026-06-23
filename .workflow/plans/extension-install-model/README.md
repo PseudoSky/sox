@@ -54,40 +54,40 @@ python script) — never a bare `nx`/`tsc`.
 > change means when finished and correct.* Each clause carries a numbered id and is proven by ≥1
 > final-audit check (`gap-check.js` Check 8 enforces the mapping).
 
-- `[dod.1]` **Declarative reinjection end-to-end** — a `prompt`/`agent`/`skill` installs to the
++ `[dod.1]` **Declarative reinjection end-to-end** — a `prompt`/`agent`/`skill` installs to the
   correct host-discovery target for (host, scope); `diff` shows pending changes; a version bump
   `update`s in place; `uninstall` removes it — reality-verified on the real FS for **claude
   (project + user)** and **codex**.
-- `[dod.2]` **MCP install modes** — an `mcp-server` installs as **stdio in `.mcp.json`** (materialize
++ `[dod.2]` **MCP install modes** — an `mcp-server` installs as **stdio in `.mcp.json`** (materialize
   + config-merge, `--trust prompt`) AND as a **sox service** (`run-service`), selected by `--profile`;
-  both reality-verified, and an undeclared access is **denied** (C6 holds via `@sox/mcp-runtime`).
-- `[dod.3]` **Capabilities complete** — each of `file-drop`, `config-merge (json|toml)`,
+  both reality-verified, and an undeclared access is **denied** (C6 holds via `@adhd/sox-mcp-runtime`).
++ `[dod.3]` **Capabilities complete** — each of `file-drop`, `config-merge (json|toml)`,
   `array-merge`, `bin-link`, `run-service`, `materialize` implements **apply / reverse / update(diff)
   / verify**, idempotent + scope+host-aware; shared-file merges reverse cleanly via the ledger.
-- `[dod.4]` **Host registry ships claude + codex** — detectors, scope resolvers, verified surface
++ `[dod.4]` **Host registry ships claude + codex** — detectors, scope resolvers, verified surface
   matrices; install host-detection defaults correctly; project-forbidden / managed keys are refused.
-- `[dod.5]` **Provenance ledger** — per scope; project ledger committed + portable; `diff`/`uninstall`
++ `[dod.5]` **Provenance ledger** — per scope; project ledger committed + portable; `diff`/`uninstall`
   driven by it; reality test: external edit → `diff` detects drift; `uninstall` removes only
   sox-owned entries.
-- `[dod.6]` **Old system gone** — single-string `install-target` path replaced; `memory-server`
-  re-homed onto `@sox/mcp-runtime` (hand-rolled MCP loop + vendored `compilePolicyFromEnv` gone, grep
++ `[dod.6]` **Old system gone** — single-string `install-target` path replaced; `memory-server`
+  re-homed onto `@adhd/sox-mcp-runtime` (hand-rolled MCP loop + vendored `compilePolicyFromEnv` gone, grep
   empty); the vestigial `agent` `lifecycle` is **deprecated in the validator** (schema rejects it for
   `agent`).
-- `[dod.7]` **Generators** — `sox init <type>` exposes the Appendix-A options (`--content @path`/
++ `[dod.7]` **Generators** — `sox init <type>` exposes the Appendix-A options (`--content @path`/
   `--from`, `--inject`, `--profile`/`--mode`, `--surface`, `--host`), emits the hybrid descriptor,
   born-conformant; `--content @source` fills the body.
-- `[dod.8]` **No regression** — `nx run-many build,lint,test` green; C6 enforcement + its e2e intact;
++ `[dod.8]` **No regression** — `nx run-many build,lint,test` green; C6 enforcement + its e2e intact;
   `memory-*` still install/run.
-- `[dod.9]` **DoD reconcile** — `DOD.md`/`CLAUDE.md` split "run" into *run (process)* vs
++ `[dod.9]` **DoD reconcile** — `DOD.md`/`CLAUDE.md` split "run" into *run (process)* vs
   *placed+discoverable (declarative)*; the declarative half reality-verified.
-- `[dod.10]` **Non-goals** — NOT niche Claude surfaces beyond rules + settings injection; NOT
++ `[dod.10]` **Non-goals** — NOT niche Claude surfaces beyond rules + settings injection; NOT
   OS-kernel sandboxing (C6 scope); NOT hosts beyond claude+codex; **NOT verifying the foreign host
   executed** the content (placement boundary).
-- `[dod.11]` **Reviewer = the founder** — proof: `scripts/audit_eim.py --phase final` exits 0
++ `[dod.11]` **Reviewer = the founder** — proof: `scripts/audit_eim.py --phase final` exits 0
   (positive + negative + live + conformance) **+ founder approval**. Partial ≠ done.
-- `[dod.12]` **Rollback** — any capability that cannot cleanly reverse via the ledger aborts; a
++ `[dod.12]` **Rollback** — any capability that cannot cleanly reverse via the ledger aborts; a
   half-applied install must be fully reversible.
-- `[dod.13]` **Ingestion skill replaces `docs/ingestion/`** — one dogfooded sox skill (itself a
++ `[dod.13]` **Ingestion skill replaces `docs/ingestion/`** — one dogfooded sox skill (itself a
   `type: skill` extension) encodes initialize → generalize+author → validate → publish → install →
   enable → remove-old, **delegating per-type/per-operation references**. An agent told "ingest
   `<source>` into sox" loads it and runs the full flow with no bespoke prompts. Reality check:
@@ -100,16 +100,16 @@ python script) — never a bare `nx`/`tsc`.
 
 > Decided with the requester (Step 1b), before the graph.
 
-- **Parallel execution:** **yes**, where the DAG allows — `capability-engine` ∥ `host-registry`
++ **Parallel execution:** **yes**, where the DAG allows — `capability-engine` ∥ `host-registry`
   (after `schema-delta`); `mcp-runtime` ∥ `generators` ∥ `install-lifecycle` (after
   `audit-foundation`). Shared mutable files get a merge protocol in both contexts.
-- **Implementer agent(s):**
-  - [x] `sox-active:typescript-pro` — all work + audit states (schema/engine/registry/runtime/
++ **Implementer agent(s):**
+  + [x] `sox-active:typescript-pro` — all work + audit states (schema/engine/registry/runtime/
     generators/ingestion-skill).
-- **Review:** **yes** — (a) **architect reviews the authored plan before execution starts**
++ **Review:** **yes** — (a) **architect reviews the authored plan before execution starts**
   (pre-dispatch gate, via `architect-reviewer`); (b) audit hold points after **foundation** and
   **enforcement**; (c) **founder** at `audit-final` (`[dod.11]`).
-- **Automatic dispatch:** **no** — resumable hand-off (multi-session; executor ≠ planner; needs
++ **Automatic dispatch:** **no** — resumable hand-off (multi-session; executor ≠ planner; needs
   build/test tooling). Step 8 prints the Dispatch line.
 
 ---
@@ -118,18 +118,18 @@ python script) — never a bare `nx`/`tsc`.
 
 (Full definitions in `contexts/_shared.md` as `[inv:*]`.)
 
-- **[inv:boundary]** Role B (reinjection) ends at *"right bytes at the host's discovery path for the
++ **[inv:boundary]** Role B (reinjection) ends at *"right bytes at the host's discovery path for the
   right scope"* — execution is the host's; sox never asserts the host ran the content.
-- **[inv:ledger-reversible]** Every shared-file write (`config-merge`/`array-merge`) is recorded in
++ **[inv:ledger-reversible]** Every shared-file write (`config-merge`/`array-merge`) is recorded in
   the per-scope ledger and reversible to the exact key/value; uninstall never touches non-sox entries.
-- **[inv:host-agnostic-type]** The TYPE is host-agnostic; capability+target are host-specific, resolved
++ **[inv:host-agnostic-type]** The TYPE is host-agnostic; capability+target are host-specific, resolved
   from the registry. The same type maps to different capabilities per host (agent: file-drop on
   claude, config-merge on codex).
-- **[inv:format-aware-merge]** `config-merge` handles JSON *and* TOML; no json-only assumption.
-- **[inv:never-managed]** sox never writes the managed tier (claude) or project-forbidden keys (codex).
-- **[inv:c6-holds]** `@sox/mcp-runtime` enforces declared permissions from policy-env in every spawn
++ **[inv:format-aware-merge]** `config-merge` handles JSON *and* TOML; no json-only assumption.
++ **[inv:never-managed]** sox never writes the managed tier (claude) or project-forbidden keys (codex).
++ **[inv:c6-holds]** `@adhd/sox-mcp-runtime` enforces declared permissions from policy-env in every spawn
   path (claude-stdio + sox-service); no unenforced path is introduced.
-- **[inv:no-regress]** `nx run-many build,lint,test`, the C6 e2e, and `memory-*` behavior stay green.
++ **[inv:no-regress]** `nx run-many build,lint,test`, the C6 e2e, and `memory-*` behavior stay green.
 
 ---
 

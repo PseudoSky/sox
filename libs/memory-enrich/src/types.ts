@@ -1,5 +1,5 @@
 /**
- * Shared type definitions for @sox/memory-enrich.
+ * Shared type definitions for @adhd/sox-memory-enrich.
  * Matches CONTRACTS.md C1.1, C3.1–C3.4.
  */
 
@@ -31,7 +31,7 @@ export interface EnrichableNode {
 
 /** Enrichment provenance stamp written by every pass (E12). */
 export interface EnrichmentProvenance {
-  /** Semver of @sox/memory-enrich that produced this. e.g. "1.0.0" */
+  /** Semver of @adhd/sox-memory-enrich that produced this. e.g. "1.0.0" */
   pass: string;
   /** ISO timestamp of enrichment run. */
   ts: string;

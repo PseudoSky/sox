@@ -8,7 +8,7 @@
 
 ## Goal
 
-After this state, every documented verb (`install`, `build`, `diff`, `update`) is wired in `apps/sox/src/main.ts` and resolves the correct library function, with all flags parsed correctly including both `--flag value` and `--flag=value` syntax. The CLI resolves `@sox/*` at runtime via `rewrite-paths.cjs`. This state is the prerequisite for declarative-install and mcp-install-modes.
+After this state, every documented verb (`install`, `build`, `diff`, `update`) is wired in `apps/sox/src/main.ts` and resolves the correct library function, with all flags parsed correctly including both `--flag value` and `--flag=value` syntax. The CLI resolves `@adhd/sox-*` at runtime via `rewrite-paths.cjs`. This state is the prerequisite for declarative-install and mcp-install-modes.
 
 The v1 failure was that the `install` verb was never wired to the library at all; the `diff` verb was absent; and `--flag=value` broke the flag parser.
 
@@ -18,17 +18,17 @@ The v1 failure was that the `install` verb was never wired to the library at all
 
 - **Primitive:** WIRE `apps/sox/src/main.ts` — add `install`, `build`, `diff`, `update` dispatch; fix flag parser.
 
-- **Reference Pattern:** `bin/sox` is the shell shim that invokes `apps/sox/src/main.ts`. `apps/sox/scripts/rewrite-paths.cjs` handles `@sox/*` resolution at runtime. Existing verb dispatch (e.g. `start`, `list`, `stop`) shows the pattern to follow.
+- **Reference Pattern:** `bin/sox` is the shell shim that invokes `apps/sox/src/main.ts`. `apps/sox/scripts/rewrite-paths.cjs` handles `@adhd/sox-*` resolution at runtime. Existing verb dispatch (e.g. `start`, `list`, `stop`) shows the pattern to follow.
 
 - **Delta Spec:**
-  - `bin/sox` — ensure it invokes the built `apps/sox` bundle with no bare module references; `rewrite-paths.cjs` must be called before any `@sox/*` import.
+  - `bin/sox` — ensure it invokes the built `apps/sox` bundle with no bare module references; `rewrite-paths.cjs` must be called before any `@adhd/sox-*` import.
   - `apps/sox/src/main.ts`:
     - `install <id> [--host <h>] [--scope <s>] [--profile <p>] [--root <r>]` → calls `installExtension(...)` from `libs/install-engine`.
     - `build <id>` → calls the extension's nx build target.
     - `diff <id> [--host <h>] [--scope <s>]` → calls `diffExtension(...)` from `libs/install-engine`. NEW verb.
     - `update <id> [--host <h>] [--scope <s>]` → calls `updateExtension(...)` from `libs/install-engine`.
   - Flag parser: support both `--key value` and `--key=value`. Fix the existing parser or replace with a minimal correct one.
-  - `apps/sox/scripts/rewrite-paths.cjs` — verify `@sox/*` is rewritten to the correct monorepo dist paths at build time so the CLI works from any cwd.
+  - `apps/sox/scripts/rewrite-paths.cjs` — verify `@adhd/sox-*` is rewritten to the correct monorepo dist paths at build time so the CLI works from any cwd.
 
 - **Invariants:** `[inv:tier3-proof]` — the guard drives real `node bin/sox <verb>` calls. `[inv:sandbox-isolation]` enforced by `probe_done`. Merge protocol: this state writes `bin/sox` + `main.ts` FIRST; `lifecycle` rebases onto this state's output.
 
@@ -93,5 +93,5 @@ mutates:    ["bin/sox",
 ## Notes for executor
 
 - The `diff` verb is new — it does not exist in v1. Add it to the parser and wire it to `diffExtension` from `libs/install-engine/src/diff.ts` (which the declarative-install state will create; wire the call site now, implement the library function in declarative-install).
-- The `rewrite-paths.cjs` step must run at build time so the emitted `bin/sox` bundle has no `@sox/*` bare specifiers at runtime. If the paths are already resolved by esbuild, that is fine; just verify with a grep on the built artifact.
+- The `rewrite-paths.cjs` step must run at build time so the emitted `bin/sox` bundle has no `@adhd/sox-*` bare specifiers at runtime. If the paths are already resolved by esbuild, that is fine; just verify with a grep on the built artifact.
 - Do not touch `libs/install-engine/src/install.ts` in this state — that is declarative-install's territory.

@@ -8,11 +8,11 @@
  *   - valid manifests → passes
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import * as os from 'node:os';
-import { validateManifests, validateConfigAgainstSchema, type ValidateOptions } from './validate-manifests.js';
+import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { validateConfigAgainstSchema, validateManifests, type ValidateOptions } from './validate-manifests.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -85,7 +85,7 @@ function makeExtension(
   fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
   fs.writeFileSync(
     path.join(extDir, 'package.json'),
-    JSON.stringify({ name: `@sox/extension-${id}`, version }, null, 2),
+    JSON.stringify({ name: `@adhd/sox-extension-${id}`, version }, null, 2),
   );
   fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
   if (type === 'prompt') {
@@ -312,7 +312,7 @@ describe('validate-manifests — P2 dedup + secret lint', () => {
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/extension-bad-id', version: '0.1.0' }),
+      JSON.stringify({ name: '@adhd/sox-extension-bad-id', version: '0.1.0' }),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
@@ -376,7 +376,7 @@ describe('validate-manifests — P7 G-D runtime-language contract', () => {
     fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: `@sox/extension-${id}`, version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: `@adhd/sox-extension-${id}`, version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
@@ -552,7 +552,7 @@ describe('validate-manifests — P8 G-A service lifecycle block', () => {
     fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: `@sox/extension-${id}`, version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: `@adhd/sox-extension-${id}`, version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
@@ -802,7 +802,7 @@ describe('validate-manifests — P9 G-B bundle type', () => {
     fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: `@sox/extension-${id}`, version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: `@adhd/sox-extension-${id}`, version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
   }
@@ -879,7 +879,7 @@ describe('validate-manifests — P9 G-B bundle type', () => {
     fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/extension-no-members-bundle', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-extension-no-members-bundle', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
 
@@ -1057,7 +1057,7 @@ describe('validate-manifests — P10 G-E requires-granularity advisory', () => {
     fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: `@sox/extension-${id}`, version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: `@adhd/sox-extension-${id}`, version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
@@ -1318,7 +1318,7 @@ describe('validate-manifests — P2 self-description contract (OPTIONAL-FIRST)',
     fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: `@sox/extension-${id}`, version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: `@adhd/sox-extension-${id}`, version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
@@ -1428,7 +1428,7 @@ describe('validate-manifests — P2 self-description contract (OPTIONAL-FIRST)',
       tags: ['productivity'],
       author: {
         name: 'Sox Dev',
-        email: 'dev@sox-ecosystem.dev',
+        email: 'dev@adhd-ecosystem.dev',
       },
       homepage: 'https://sox-ecosystem.dev/extensions/fully-described-assistant',
       repository: 'https://github.com/sox-ecosystem/fully-described-assistant',
@@ -1533,7 +1533,7 @@ describe('validate-manifests — P4 DX-conformance advisory rules', () => {
     fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: `@sox/${id}`, version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: `@adhd/sox-${id}`, version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     if (type !== 'prompt') {
@@ -1585,7 +1585,7 @@ describe('validate-manifests — P4 DX-conformance advisory rules', () => {
     fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: `@sox/${id}`, version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: `@adhd/sox-${id}`, version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     if (type !== 'prompt') {
@@ -1598,10 +1598,10 @@ describe('validate-manifests — P4 DX-conformance advisory rules', () => {
     fs.writeFileSync(
       path.join(extDir, 'README.md'),
       `# ${id}\n\n` +
-        `> use this when you need a ${type} for testing DX conformance\n\n` +
-        `## Overview\n\nThis ${type} is used for testing the DX-conformance advisory rules.\n\n` +
-        `## When to use\n\nUse this ${type} when you need to verify that advisory conformance checks work.\n\n` +
-        `## Inputs\n\nNone required.\n\n## Outputs\n\nConformance check result.\n`,
+      `> use this when you need a ${type} for testing DX conformance\n\n` +
+      `## Overview\n\nThis ${type} is used for testing the DX-conformance advisory rules.\n\n` +
+      `## When to use\n\nUse this ${type} when you need to verify that advisory conformance checks work.\n\n` +
+      `## Inputs\n\nNone required.\n\n## Outputs\n\nConformance check result.\n`,
     );
   }
 
@@ -1679,7 +1679,7 @@ describe('validate-manifests — P4 DX-conformance advisory rules', () => {
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/empty-desc', version: '0.1.0' }),
+      JSON.stringify({ name: '@adhd/sox-empty-desc', version: '0.1.0' }),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
@@ -1838,7 +1838,7 @@ describe('validate-manifests — P4 DX-conformance advisory rules', () => {
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/my-ext', version: '0.1.0' }),
+      JSON.stringify({ name: '@adhd/sox-my-ext', version: '0.1.0' }),
     );
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
     // P0 entrypoint-reachability: create dist/index.js stub so the gate passes in tests
@@ -1872,7 +1872,7 @@ describe('validate-manifests — P4 DX-conformance advisory rules', () => {
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/my-strict-ext', version: '0.1.0' }),
+      JSON.stringify({ name: '@adhd/sox-my-strict-ext', version: '0.1.0' }),
     );
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
 
@@ -1903,7 +1903,7 @@ describe('validate-manifests — P4 DX-conformance advisory rules', () => {
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/my-good-ext', version: '0.1.0' }),
+      JSON.stringify({ name: '@adhd/sox-my-good-ext', version: '0.1.0' }),
     );
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
     // P0 entrypoint-reachability: create dist/index.js stub so the gate passes in tests
@@ -1912,10 +1912,10 @@ describe('validate-manifests — P4 DX-conformance advisory rules', () => {
     fs.writeFileSync(
       path.join(extDir, 'README.md'),
       `# my-good-ext\n\n` +
-        `> use this when you need to verify DX conformance in single-dir mode\n\n` +
-        `## Overview\n\nA test extension for verifying DX conformance rules.\n\n` +
-        `## When to use\n\nUse this extension when running P4 conformance tests.\n\n` +
-        `## Inputs\n\nNone.\n\n## Outputs\n\nConformance pass/fail result.\n`,
+      `> use this when you need to verify DX conformance in single-dir mode\n\n` +
+      `## Overview\n\nA test extension for verifying DX conformance rules.\n\n` +
+      `## When to use\n\nUse this extension when running P4 conformance tests.\n\n` +
+      `## Inputs\n\nNone.\n\n## Outputs\n\nConformance pass/fail result.\n`,
     );
 
     const result = validateManifests(extDir, { strict: true });
@@ -1947,15 +1947,15 @@ describe('validate-manifests — P4 DX-conformance advisory rules', () => {
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/use-this-probe', version: '0.1.0' }),
+      JSON.stringify({ name: '@adhd/sox-use-this-probe', version: '0.1.0' }),
     );
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
     fs.writeFileSync(
       path.join(extDir, 'README.md'),
       `# use-this-probe\n\nuse this when you need to probe the description rule.\n\n` +
-        `## Overview\nProbe extension for testing description guidance shape.\n\n` +
-        `## When to use\nWhen testing the guidance shape rule.\n\n` +
-        `## Inputs\nNone.\n\n## Outputs\nNothing.\n`,
+      `## Overview\nProbe extension for testing description guidance shape.\n\n` +
+      `## When to use\nWhen testing the guidance shape rule.\n\n` +
+      `## Inputs\nNone.\n\n## Outputs\nNothing.\n`,
     );
 
     const result = validateManifests(tmpRoot, { strict: true });
@@ -1986,15 +1986,15 @@ describe('validate-manifests — P4 DX-conformance advisory rules', () => {
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/fetch-data', version: '0.1.0' }),
+      JSON.stringify({ name: '@adhd/sox-fetch-data', version: '0.1.0' }),
     );
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
     fs.writeFileSync(
       path.join(extDir, 'README.md'),
       `# fetch-data\n\nfetches data from a remote source.\n\n` +
-        `## Overview\nA skill that fetches remote data.\n\n` +
-        `## When to use\nWhen you need to retrieve remote data.\n\n` +
-        `## Inputs\nURL parameter.\n\n## Outputs\nStructured data object.\n`,
+      `## Overview\nA skill that fetches remote data.\n\n` +
+      `## When to use\nWhen you need to retrieve remote data.\n\n` +
+      `## Inputs\nURL parameter.\n\n## Outputs\nStructured data object.\n`,
     );
 
     const result = validateManifests(tmpRoot, { strict: true });
@@ -2030,7 +2030,7 @@ describe('validate-manifests — P4 DX-conformance advisory rules', () => {
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/bad-id', version: '0.1.0' }),
+      JSON.stringify({ name: '@adhd/sox-bad-id', version: '0.1.0' }),
     );
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
 
@@ -2219,7 +2219,7 @@ describe('validate-manifests — PB config schema + resource/permission declarat
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/schema-declared', version: '0.1.0' }),
+      JSON.stringify({ name: '@adhd/sox-schema-declared', version: '0.1.0' }),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
@@ -2257,7 +2257,7 @@ describe('validate-manifests — PB config schema + resource/permission declarat
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/bad-schema', version: '0.1.0' }),
+      JSON.stringify({ name: '@adhd/sox-bad-schema', version: '0.1.0' }),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
@@ -2300,7 +2300,7 @@ describe('validate-manifests — PB config schema + resource/permission declarat
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/perms-declared', version: '0.1.0' }),
+      JSON.stringify({ name: '@adhd/sox-perms-declared', version: '0.1.0' }),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
@@ -2340,7 +2340,7 @@ describe('validate-manifests — PB config schema + resource/permission declarat
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/bad-perms', version: '0.1.0' }),
+      JSON.stringify({ name: '@adhd/sox-bad-perms', version: '0.1.0' }),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
@@ -2424,7 +2424,7 @@ describe('validate-manifests — P0 entrypoint-reachability gate', () => {
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/p0-gate-probe', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-p0-gate-probe', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
@@ -2461,7 +2461,7 @@ describe('validate-manifests — P0 entrypoint-reachability gate', () => {
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/p0-gate-missing', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-p0-gate-missing', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
@@ -2501,7 +2501,7 @@ describe('validate-manifests — P0 entrypoint-reachability gate', () => {
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/my-prompt', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-my-prompt', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     fs.writeFileSync(path.join(extDir, 'prompt.md'), '# Prompt\n');
@@ -2535,7 +2535,7 @@ describe('validate-manifests — P0 entrypoint-reachability gate', () => {
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/p0-single-probe', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-p0-single-probe', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
     fs.writeFileSync(path.join(extDir, 'dist', 'index.js'), 'export {};\n');
@@ -2569,7 +2569,7 @@ describe('validate-manifests — P0 entrypoint-reachability gate', () => {
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/p0-missing-probe', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-p0-missing-probe', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
     // Intentionally do NOT create dist/index.js
@@ -2652,7 +2652,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/audit-logger', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-audit-logger', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     const result = validateManifests(tmpRoot);
@@ -2688,7 +2688,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/audit-logger', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-audit-logger', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     const result = validateManifests(tmpRoot);
@@ -2723,7 +2723,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/audit-logger', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-audit-logger', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     const result = validateManifests(tmpRoot);
@@ -2767,7 +2767,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
       );
       fs.writeFileSync(
         path.join(extDir, 'package.json'),
-        JSON.stringify({ name: `@sox/on-${evtSlug}`, version: '0.1.0' }, null, 2),
+        JSON.stringify({ name: `@adhd/sox-on-${evtSlug}`, version: '0.1.0' }, null, 2),
       );
       fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     }
@@ -2804,7 +2804,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/my-assistant', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-my-assistant', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     const result = validateManifests(tmpRoot);
@@ -2838,7 +2838,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/my-assistant', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-my-assistant', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     const result = validateManifests(tmpRoot);
@@ -2874,7 +2874,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/my-cmd', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-my-cmd', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     const result = validateManifests(tmpRoot);
@@ -2911,7 +2911,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/my-mcp', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-my-mcp', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     const result = validateManifests(tmpRoot);
@@ -2947,7 +2947,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/my-mcp', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-my-mcp', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     const result = validateManifests(tmpRoot);
@@ -2981,7 +2981,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/greeting', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-greeting', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     fs.writeFileSync(path.join(extDir, 'prompt.md'), '# Prompt\n');
@@ -3019,7 +3019,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/greeting', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-greeting', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     fs.writeFileSync(path.join(extDir, 'prompt.md'), '# Prompt\n');
@@ -3060,7 +3060,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/my-analyzer', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-my-analyzer', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     const result = validateManifests(tmpRoot);
@@ -3097,7 +3097,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/my-analyzer', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-my-analyzer', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     const result = validateManifests(tmpRoot);
@@ -3135,7 +3135,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     );
     fs.writeFileSync(
       path.join(extDir, 'package.json'),
-      JSON.stringify({ name: '@sox/my-assistant', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-my-assistant', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
     const result = validateManifests(tmpRoot);
@@ -3172,7 +3172,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     );
     fs.writeFileSync(
       path.join(serverDir, 'package.json'),
-      JSON.stringify({ name: '@sox/my-backend', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-my-backend', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(serverDir, 'CHANGELOG.md'), '');
 
@@ -3199,7 +3199,7 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     );
     fs.writeFileSync(
       path.join(agentDir, 'package.json'),
-      JSON.stringify({ name: '@sox/my-agent', version: '0.1.0' }, null, 2),
+      JSON.stringify({ name: '@adhd/sox-my-agent', version: '0.1.0' }, null, 2),
     );
     fs.writeFileSync(path.join(agentDir, 'CHANGELOG.md'), '');
 

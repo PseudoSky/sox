@@ -8,7 +8,7 @@
   },
   "scaffold-parity": {
     "anchor": "packages/sox-nx/src/generators/extension/extension.spec.ts",
-    "rule": "a passing test asserts scaffold() called directly (sox init path) and via @sox/nx:extension emit byte-identical FileSet output for identical inputs — the two authoring paths can never drift",
+    "rule": "a passing test asserts scaffold() called directly (sox init path) and via @adhd/sox-nx:extension emit byte-identical FileSet output for identical inputs — the two authoring paths can never drift",
     "discovered_via": "manual",
     "shared_ref": "[ref:scaffold-parity]",
     "audit_check": "[audit-final.ref-scaffold-parity]"

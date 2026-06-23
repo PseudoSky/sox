@@ -15,12 +15,12 @@
  * order: 100 (ascending; ties by id).
  */
 
+import { applyPromotion as memCoreApplyPromotion, exportMarkdown as memCoreExportMarkdown, openDb as memCoreOpenDb } from '@adhd/sox-memory-core';
+import Database from 'better-sqlite3';
+import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
-import * as fs from 'node:fs';
-import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
-import { openDb as memCoreOpenDb, exportMarkdown as memCoreExportMarkdown, applyPromotion as memCoreApplyPromotion } from '@sox/memory-core';
 
 const SOCKET_PATH = path.join(process.env['HOME'] ?? '/tmp', '.memory', 'memoryd.sock');
 
@@ -186,7 +186,7 @@ function tryAutoExport(db_path: string, exportDir: string, throttleSecs: number)
   if (_lastExportMs > 0 && elapsedSecs < throttleSecs) {
     console.log(
       `[memory-flush] auto-export throttled (${elapsedSecs.toFixed(1)}s since last export, ` +
-        `throttle=${throttleSecs}s)`,
+      `throttle=${throttleSecs}s)`,
     );
     return false;
   }
@@ -203,7 +203,7 @@ function tryAutoExport(db_path: string, exportDir: string, throttleSecs: number)
       _lastExportMs = Date.now();
       console.log(
         `[memory-flush] auto-export complete: ${result.nodesWritten} nodes written, ` +
-          `${result.topics} topics → ${exportDir}`,
+        `${result.topics} topics → ${exportDir}`,
       );
     } finally {
       db.close();

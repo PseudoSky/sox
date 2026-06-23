@@ -163,7 +163,7 @@ export function manifestJson(opts: TemplateOpts, extra: Record<string, unknown> 
 /** Build a per-extension package.json. Includes tsconfig + scripts. */
 export function packageJson(opts: TemplateOpts): string {
   const pkg: Record<string, unknown> = {
-    name: `@sox/extension-${opts.id}`,
+    name: `@adhd/sox-extension-${opts.id}`,
     version: '0.1.0',
     description: opts.description,
     private: true,

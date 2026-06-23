@@ -70,4 +70,4 @@ mutates:    ["extensions/services/tokenguard/src/cli.ts",
 ## Notes for executor
 
 - The footgun is a stale in-memory map: the proxy must re-read (or merge) on the change signal, not cache the map for the process lifetime. Prove the reflection with traffic, not just by reading the file.
-- Keep the CLI dependency-free beyond `@sox/tokenguard-core` + stdlib; it ships inside the service bundle.
+- Keep the CLI dependency-free beyond `@adhd/sox-tokenguard-core` + stdlib; it ships inside the service bundle.

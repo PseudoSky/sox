@@ -78,19 +78,19 @@ importers:
 
   apps/sox:
     dependencies:
-      '@sox/authoring':
+      '@adhd/sox-authoring':
         specifier: workspace:*
         version: link:../../libs/authoring
-      '@sox/host-runtime':
+      '@adhd/sox-host-runtime':
         specifier: workspace:*
         version: link:../../libs/host-runtime
-      '@sox/install-engine':
+      '@adhd/sox-install-engine':
         specifier: workspace:*
         version: link:../../libs/install-engine
-      '@sox/manifest':
+      '@adhd/sox-manifest':
         specifier: workspace:*
         version: link:../../libs/manifest
-      '@sox/registry':
+      '@adhd/sox-registry':
         specifier: workspace:*
         version: link:../../libs/registry
 
@@ -102,7 +102,7 @@ importers:
 
   extensions/bundles/sox-memory-bundle/members/memory-cli:
     dependencies:
-      '@sox/memory-core':
+      '@adhd/sox-memory-core':
         specifier: workspace:*
         version: link:../../../../../libs/memory-core
 
@@ -110,21 +110,19 @@ importers:
 
   extensions/bundles/sox-memory-bundle/members/memory-flush:
     dependencies:
-      '@sox/memory-core':
+      '@adhd/sox-memory-core':
         specifier: workspace:*
         version: link:../../../../../libs/memory-core
-
-  extensions/bundles/sox-memory-bundle/members/memory-organizer: {}
 
   extensions/bundles/sox-memory-bundle/members/memory-server:
     dependencies:
-      '@sox/mcp-runtime':
+      '@adhd/sox-mcp-runtime':
         specifier: workspace:*
         version: link:../../../../../libs/mcp-runtime
-      '@sox/memory-core':
+      '@adhd/sox-memory-core':
         specifier: workspace:*
         version: link:../../../../../libs/memory-core
-      '@sox/memory-enrich':
+      '@adhd/sox-memory-enrich':
         specifier: workspace:*
         version: link:../../../../../libs/memory-enrich
 
@@ -134,7 +132,7 @@ importers:
 
   extensions/services/tokenguard:
     dependencies:
-      '@sox/tokenguard-core':
+      '@adhd/sox-tokenguard-core':
         specifier: workspace:*
         version: link:../../../libs/tokenguard-core
 
@@ -166,18 +164,18 @@ importers:
 
   libs/mcp-runtime:
     dependencies:
+      '@adhd/sox-host-runtime':
+        specifier: workspace:*
+        version: link:../host-runtime
       '@modelcontextprotocol/sdk':
         specifier: ^1.0.0
         version: 1.29.0(zod@4.4.3)
-      '@sox/host-runtime':
-        specifier: workspace:*
-        version: link:../host-runtime
 
   libs/mcp-runtime/dist: {}
 
   libs/memory-core:
     dependencies:
-      '@sox/memory-enrich':
+      '@adhd/sox-memory-enrich':
         specifier: workspace:*
         version: link:../memory-enrich
       fastembed:
@@ -204,15 +202,15 @@ importers:
 
   packages/sox-nx:
     dependencies:
+      '@adhd/sox-authoring':
+        specifier: workspace:*
+        version: link:../../libs/authoring
       '@nx/devkit':
         specifier: '>=22.0.0'
         version: 22.7.5(nx@22.7.5)
       '@nx/js':
         specifier: '>=22.0.0'
         version: 22.7.5(@babel/traverse@7.29.7)(nx@22.7.5)
-      '@sox/authoring':
-        specifier: workspace:*
-        version: link:../../libs/authoring
 
 packages:
 

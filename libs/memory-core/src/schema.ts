@@ -75,7 +75,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fts_node USING fts5(content, name, summary,
   content='node', content_rowid='rowid', tokenize='unicode61');
 
 -- batch-enrich trigger queue (formerly "organizer work queue").
--- 'ingest' and 'enrich' ops trigger a runBatchEnrich(@sox/memory-enrich) pass (deterministic, no LLM).
+-- 'ingest' and 'enrich' ops trigger a runBatchEnrich(@adhd/sox-memory-enrich) pass (deterministic, no LLM).
 -- 'decay' and 'reindex' are handled in-daemon without the batch-enrich pass.
 -- 'extract', 'link', 'consolidate' are legacy op codes accepted for backward compat.
 CREATE TABLE IF NOT EXISTS organizer_queue (

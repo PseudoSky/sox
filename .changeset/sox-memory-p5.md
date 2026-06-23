@@ -1,9 +1,9 @@
 ---
-"@sox/extension-memory-server": patch
-"@sox/extension-memory-organizer": patch
-"@sox/extension-memory-flush": patch
-"@sox/extension-memory-cli": patch
-"@sox/extension-sox-memory-bundle": patch
+"@adhd/sox-extension-memory-server": patch
+"@adhd/sox-extension-memory-organizer": patch
+"@adhd/sox-extension-memory-flush": patch
+"@adhd/sox-extension-memory-cli": patch
+"@adhd/sox-extension-sox-memory-bundle": patch
 ---
 
 Phase 5: conformance hardening, strict-caps test, bench-scale, TypeScript strict-mode fixes.

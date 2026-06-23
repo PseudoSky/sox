@@ -27,7 +27,7 @@
 
 import type { FileSet } from '../../index.js';
 import type { TemplateOpts } from '../_shared.js';
-import { manifestJson, buildInstallDescriptor, tsconfigJson, changelogMd, readmeMd } from '../_shared.js';
+import { buildInstallDescriptor, changelogMd, manifestJson, readmeMd, tsconfigJson } from '../_shared.js';
 
 /** Default transports for mcp-server: stdio only. Override with --transports. */
 const DEFAULT_SERVES = ['stdio'];
@@ -61,7 +61,7 @@ export function mcpServerTemplate(opts: TemplateOpts): FileSet {
   // Custom package.json includes @modelcontextprotocol/sdk dependency
   const mcpPkg = JSON.stringify(
     {
-      name: `@sox/extension-${opts.id}`,
+      name: `@adhd/sox-extension-${opts.id}`,
       version: '0.1.0',
       description: opts.description,
       private: true,
@@ -155,7 +155,7 @@ export function mcpServerTemplate(opts: TemplateOpts): FileSet {
       `// MCP Server: ${opts.title}`,
       `// ${opts.description}`,
       `// Transport: stdio — uses @modelcontextprotocol/sdk StdioServerTransport`,
-      `// Real shape reference: @adhd/agent-mcp (~/dev/node/adhd/packages/ai/agent-mcp)`,
+      `// Real shape reference: @adhd/sox-agent-mcp (~/dev/node/adhd/packages/ai/agent-mcp)`,
       `//`,
       `// Install-time config is injected as SOX_CONFIG_<KEY> environment variables`,
       `// at spawn time (values from extensions.json "config" block, cascade-resolved).`,

@@ -11,12 +11,12 @@
     "sourceMap": true,
     "esModuleInterop": true,
     "paths": {
-      "@sox/manifest": ["libs/manifest/dist/index.d.ts"],
-      "@sox/authoring": ["libs/authoring/dist/index.d.ts"],
-      "@sox/install-engine": ["libs/install-engine/dist/index.d.ts"],
-      "@sox/host-runtime": ["libs/host-runtime/dist/index.d.ts"],
-      "@sox/host-registry": ["libs/host-registry/dist/index.d.ts"],
-      "@sox/registry": ["libs/registry/dist/index.d.ts"]
+      "@adhd/sox-manifest": ["libs/manifest/dist/index.d.ts"],
+      "@adhd/sox-authoring": ["libs/authoring/dist/index.d.ts"],
+      "@adhd/sox-install-engine": ["libs/install-engine/dist/index.d.ts"],
+      "@adhd/sox-host-runtime": ["libs/host-runtime/dist/index.d.ts"],
+      "@adhd/sox-host-registry": ["libs/host-registry/dist/index.d.ts"],
+      "@adhd/sox-registry": ["libs/registry/dist/index.d.ts"]
     }
   },
   "include": ["src/**/*.ts"],

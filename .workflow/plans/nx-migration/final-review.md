@@ -22,7 +22,7 @@ unticked box.
     extension-reachin); the dual dist mirror / hand-maintained build (nx tsc
     targets); the broken single-form flag parser (A12 fix, [ref:dual-flag-form]).
 [x] Shorthand/mechanism separated — the ergonomic "scaffold a type" shorthand is
-    preserved as scaffold()/@sox/nx generators; the drift-prone hand-rolled
+    preserved as scaffold()/@adhd/sox-nx generators; the drift-prone hand-rolled
     string-template mechanism is eliminated. nx is dev-time only — the build
     mechanism is adopted without leaking into the runtime contract.
 [x] External caller analysis done — gap-check.js --discover ran clean. The

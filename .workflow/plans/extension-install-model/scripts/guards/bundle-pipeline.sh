@@ -17,8 +17,10 @@ node tools/bundle-extension.cjs \
   --entry extensions/mcp-servers/memory-server/src/index.ts \
   --outdir "$BUNDLE_OUT" \
   --external better-sqlite3 \
-  2>/tmp/bundle-build-err.$$ ; BUILD_RC=$?
-BUILD_ERR="$(cat /tmp/bundle-build-err.$$ 2>/dev/null)"; rm -f /tmp/bundle-build-err.$$
+  2>/tmp/bundle-build-err.$$
+BUILD_RC=$?
+BUILD_ERR="$(cat /tmp/bundle-build-err.$$ 2>/dev/null)"
+rm -f /tmp/bundle-build-err.$$
 popd >/dev/null
 
 if [ $BUILD_RC -eq 0 ] && [ -f "$BUNDLE_OUT/index.js" ]; then
@@ -28,32 +30,34 @@ else
 fi
 
 # --- 2. Run the bundle's entrypoint from /tmp (no monorepo on $PATH) ---------
-# Proves [inv:bundle-selfcontained]: no Cannot find module '@sox in stderr.
+# Proves [inv:bundle-selfcontained]: no Cannot find module '@adhd in stderr.
 TMP_RUN="$(mktemp -d "${TMPDIR:-/tmp}/sox-bundle-run.XXXXXX")"
 SERVE_OUT="$TMP_RUN/serve.out"
 SERVE_ERR="$TMP_RUN/serve.err"
 
 # The bundle uses --external better-sqlite3 (a native .node binary; can't be inlined).
 # Symlink it from the repo's node_modules into the run dir so the bundle can load it
-# while all @sox/* packages remain unavailable (proving they are bundled, not resolved).
+# while all @adhd/sox-* packages remain unavailable (proving they are bundled, not resolved).
 if [ -d "$REPO/node_modules/better-sqlite3" ]; then
   mkdir -p "$TMP_RUN/node_modules"
   ln -sf "$REPO/node_modules/better-sqlite3" "$TMP_RUN/node_modules/better-sqlite3"
 fi
 
 # Spawn the bundle for 3 s in a totally isolated cwd (not the repo).
-( cd "$TMP_RUN" && \
+(cd "$TMP_RUN" &&
   timeout 3 node "$BUNDLE_OUT/index.js" \
-  >"$SERVE_OUT" 2>"$SERVE_ERR" ) || true
+    >"$SERVE_OUT" 2>"$SERVE_ERR") || true
 
 BUNDLE_STDERR="$(cat "$SERVE_ERR" 2>/dev/null)"
 BUNDLE_STDOUT="$(cat "$SERVE_OUT" 2>/dev/null)"
 
 case "$BUNDLE_STDERR$BUNDLE_STDOUT" in
-  *"Cannot find module '@sox"*|*"MODULE_NOT_FOUND"*)
-    _bad "@sox import error running bundle from /tmp: ${BUNDLE_STDERR:0:200}" ;;
-  *)
-    _ok "no @sox import errors: bundle runs from /tmp ([inv:bundle-selfcontained])" ;;
+*"Cannot find module '@adhd"* | *"MODULE_NOT_FOUND"*)
+  _bad "@adhd import error running bundle from /tmp: ${BUNDLE_STDERR:0:200}"
+  ;;
+*)
+  _ok "no @adhd import errors: bundle runs from /tmp ([inv:bundle-selfcontained])"
+  ;;
 esac
 
 # --- 3. Assert [shape:serve-marker] present in combined output ----------------

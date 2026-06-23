@@ -38,7 +38,7 @@ the enforcement seams are unambiguous.
   legacy copy defined — `libs/host-runtime/src/index.ts` exports
   `ProcessSupervisor`, `loadFromLockfile`, `McpRegistrar`, `activateMcp`,
   `activateHook`, `activateAgent`, `activateSkill`, `activateCommand`. The
-  consuming app imports the lib (`@sox/host-runtime`), NOT `scripts/host/`.
+  consuming app imports the lib (`@adhd/sox-host-runtime`), NOT `scripts/host/`.
 
 - **Delta Spec:**
   - **Prove supersession FIRST (read-only investigation), before deleting:**
@@ -50,7 +50,7 @@ the enforcement seams are unambiguous.
       files deleted here (`scripts/host-runtime.test.ts` imports
       `./host/supervisor.js`; `scripts/host-delivery.test.ts` imports
       `./host/prompt-renderer.js` / `./host/registrar.js` / command). Confirm the
-      product consumer (`apps/sox` / `bin/sox`) imports `@sox/host-runtime`, NOT
+      product consumer (`apps/sox` / `bin/sox`) imports `@adhd/sox-host-runtime`, NOT
       `scripts/host/`. `bin/sox` (the CLI skeleton) imports no host module —
       verify and record. If any **non-test** live importer of `scripts/host/`
       remains, STOP and escalate (planner-class amendment) — do not delete under
@@ -199,4 +199,5 @@ the source.
   (executor-class `expand-artifacts` amendment, cite the `gitnexus_impact`
   output). Keep `artifacts` ≡ `mutates`.
 - Budget: 1 session.
+
 ```

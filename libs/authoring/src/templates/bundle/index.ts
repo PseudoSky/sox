@@ -25,7 +25,7 @@
 
 import type { FileSet } from '../../index.js';
 import type { TemplateOpts } from '../_shared.js';
-import { manifestJson, buildInstallDescriptor, changelogMd, readmeMd } from '../_shared.js';
+import { buildInstallDescriptor, changelogMd, manifestJson, readmeMd } from '../_shared.js';
 
 /** Minimal stub src/index.ts for a member extension */
 function memberStubSrc(memberId: string, memberType: string): string {
@@ -75,7 +75,7 @@ function memberManifestJson(bundleId: string, memberId: string, memberType: stri
 function memberPackageJson(memberId: string): string {
   return JSON.stringify(
     {
-      name: `@sox/extension-${memberId}`,
+      name: `@adhd/sox-extension-${memberId}`,
       version: '0.1.0',
       private: true,
       main: 'dist/index.js',
@@ -153,14 +153,14 @@ export function bundleTemplate(opts: TemplateOpts): FileSet {
   const memberRefs = members.length > 0
     ? members.map((m) => ({ id: m.id }))
     : [
-        { id: 'example-member-a' },
-        { id: 'example-member-b' },
-      ];
+      { id: 'example-member-a' },
+      { id: 'example-member-b' },
+    ];
 
   // Bundles use a simplified package.json (no build/typecheck scripts needed)
   const bundlePkg = JSON.stringify(
     {
-      name: `@sox/extension-${opts.id}`,
+      name: `@adhd/sox-extension-${opts.id}`,
       version: '0.1.0',
       description: opts.description,
       private: true,

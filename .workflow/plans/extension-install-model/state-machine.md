@@ -18,7 +18,7 @@ not the source. Inserting a state never renumbers another.
 | `capability-engine` | Six capabilities + ledger | foundation | apply/reverse/update/verify caps + provenance ledger |
 | `host-registry` | claude + codex modules | foundation | Pluggable host registry; the only place host paths live |
 | `audit-foundation` | FOUNDATION_AUDIT | **Audit** | Verify foundation criteria; fix before advancing |
-| `mcp-runtime` | `@sox/mcp-runtime` wrapper | enforcement | SDK wrapper + uniform C6 enforcement on both transports |
+| `mcp-runtime` | `@adhd/sox-mcp-runtime` wrapper | enforcement | SDK wrapper + uniform C6 enforcement on both transports |
 | `install-lifecycle` | install/update/diff/uninstall | enforcement | Declarative placement wired to engine+registry+ledger |
 | `generators` | nx-style `init` options | enforcement | Appendix-A options emit the hybrid descriptor |
 | `rehome-memory-server` | memory onto the wrapper | enforcement | Vendored MCP loop + guard gone; behavior identical |

@@ -148,7 +148,7 @@ When two bundles list the same member extension with different version specs, `e
 const { applyPromotion } = await import('../../../dist/memory-lib.js' as string);
 ```
 
-This dynamically imports a file at a relative path that resolves to the repo root's `dist/memory-lib.js`. This file: (a) is hand-maintained, not compiled; (b) is not listed in any package's `files` field; (c) will not exist after an npm publish of `@sox/extension-memory-flush`. When the hook is loaded in production from npm, this import will throw `MODULE_NOT_FOUND`. This is a currently broken runtime dependency path.
+This dynamically imports a file at a relative path that resolves to the repo root's `dist/memory-lib.js`. This file: (a) is hand-maintained, not compiled; (b) is not listed in any package's `files` field; (c) will not exist after an npm publish of `@adhd/sox-extension-memory-flush`. When the hook is loaded in production from npm, this import will throw `MODULE_NOT_FOUND`. This is a currently broken runtime dependency path.
 
 ### Gap A5 — memory-server health endpoint mismatch (MEDIUM)
 
@@ -233,7 +233,7 @@ This is the largest single work item. Decide concretely: is the host runtime par
 Add a required `events` array to the extension schema for type `hook`, listing the lifecycle event names the hook binds. Add an enum of valid host event names. Update the manifest validator to enforce this. This enables a host to discover hook bindings without executing code, and enables operator tooling to surface which hooks fire on which events.
 
 **4. Fix the cross-package runtime dependency in memory-flush**
-Replace the dynamic `import('../../../dist/memory-lib.js')` in `extensions/hooks/memory-flush/src/index.ts` line 262 with a proper package dependency. Either publish `@sox/memory-lib` as an npm package or restructure the code to avoid the cross-package runtime import. As written, this hook is undeployable from npm.
+Replace the dynamic `import('../../../dist/memory-lib.js')` in `extensions/hooks/memory-flush/src/index.ts` line 262 with a proper package dependency. Either publish `@adhd/sox-memory-lib` as an npm package or restructure the code to avoid the cross-package runtime import. As written, this hook is undeployable from npm.
 
 **5. Implement extension dependency resolution at install**
 Teach `install.ts` to read the `dependencies` field from each resolved extension's manifest and add those dependency extensions to the install queue if they are not already present. Dependency-missing installs should warn or error, not silently succeed.
@@ -264,6 +264,7 @@ Set `$id` in all three schemas to real, dereferenceable URLs. Serve the schemas 
 ## Appendix — Files Read During Audit
 
 41 files read. Key files:
+
 - `/Users/nix/dev/ai/sox-ecosystem/package.json`
 - `/Users/nix/dev/ai/sox-ecosystem/pnpm-workspace.yaml`
 - `/Users/nix/dev/ai/sox-ecosystem/tsconfig.json`

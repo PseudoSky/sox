@@ -27,24 +27,24 @@
  * today's behaviour exactly ([inv:no-regress]).
  *
  * NOTE on vendoring: compilePolicyFromEnv is vendored here (not imported from
- * @sox/host-runtime) because the spawned memory-server is a standalone CommonJS
- * process — @sox/host-runtime is a private workspace package not available in
+ * @adhd/sox-host-runtime) because the spawned memory-server is a standalone CommonJS
+ * process — @adhd/sox-host-runtime is a private workspace package not available in
  * node_modules at the child's runtime. The implementation matches [shape:policy-env]
  * and the policy-core round-trip contract ([policy-core.4]) exactly; the
  * permission-guard.spec.ts [mcp-path-guard.5] tests verify parity.
  */
 
-import { serve, defineTool } from '@sox/mcp-runtime';
-import type { ToolDefinition, ToolResult } from '@sox/mcp-runtime';
-import * as path from 'node:path';
-import * as os from 'node:os';
-import * as fs from 'node:fs';
-import * as crypto from 'node:crypto';
-import { openDb, memoryWrite, memoryRecall, enqueueEnrich, memoryUpdate } from '@sox/memory-core';
-import { clusterStats, clusterSubset, buildFiltersClause, ENRICH_VERSION, dropSubsetLens, listSubsetLenses } from '@sox/memory-enrich';
-import type { MemoryFilter } from '@sox/memory-enrich';
-import { monotonicFactory } from 'ulid';
+import type { ToolDefinition, ToolResult } from '@adhd/sox-mcp-runtime';
+import { defineTool, serve } from '@adhd/sox-mcp-runtime';
+import { enqueueEnrich, memoryRecall, memoryUpdate, memoryWrite, openDb } from '@adhd/sox-memory-core';
+import type { MemoryFilter } from '@adhd/sox-memory-enrich';
+import { buildFiltersClause, clusterStats, clusterSubset, dropSubsetLens, ENRICH_VERSION, listSubsetLenses } from '@adhd/sox-memory-enrich';
 import Database from 'better-sqlite3';
+import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { monotonicFactory } from 'ulid';
 
 const ulid = monotonicFactory();
 
@@ -278,23 +278,23 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     inputSchema: {
       type: 'object',
       properties: {
-        content:          { type: 'string', description: 'The content to memorize. Required.' },
-        db_path:          { type: 'string', description: 'Path to the .db file.' },
-        summary:          { type: 'string', description: '(E2) Human-readable summary. Persisted to node.summary; no extractive fallback runs if supplied.' },
-        name:             { type: 'string', description: '(E2) Title/name for this episode (node.name).' },
-        topic:            { type: 'string', description: '(E5) Explicit topic override. Stored to node.topic; takes priority over [<topic>] prefix and cluster label.' },
-        tags:             { type: 'array', items: { type: 'string' }, description: '(E4) Concept/entity tags. Persisted as node.tags JSON array AND as entity nodes + MENTIONS edges.' },
-        metadata:         { type: 'object', additionalProperties: true, description: '(E3) Arbitrary caller metadata persisted as node.meta JSON. Queryable via json_extract.' },
-        project_path:     { type: 'string', description: '(E1) Caller project root path. Auto-detected from cwd+git if omitted.' },
+        content: { type: 'string', description: 'The content to memorize. Required.' },
+        db_path: { type: 'string', description: 'Path to the .db file.' },
+        summary: { type: 'string', description: '(E2) Human-readable summary. Persisted to node.summary; no extractive fallback runs if supplied.' },
+        name: { type: 'string', description: '(E2) Title/name for this episode (node.name).' },
+        topic: { type: 'string', description: '(E5) Explicit topic override. Stored to node.topic; takes priority over [<topic>] prefix and cluster label.' },
+        tags: { type: 'array', items: { type: 'string' }, description: '(E4) Concept/entity tags. Persisted as node.tags JSON array AND as entity nodes + MENTIONS edges.' },
+        metadata: { type: 'object', additionalProperties: true, description: '(E3) Arbitrary caller metadata persisted as node.meta JSON. Queryable via json_extract.' },
+        project_path: { type: 'string', description: '(E1) Caller project root path. Auto-detected from cwd+git if omitted.' },
         derived_from_uid: { type: 'string', description: '(E9) UID of a parent episode; emits a DERIVED_FROM edge from this episode to parent.' },
-        session_id:       { type: 'string' },
-        t_occurred:       { type: 'string', description: 'ISO timestamp when this occurred.' },
-        agent_id:         { type: 'string' },
+        session_id: { type: 'string' },
+        t_occurred: { type: 'string', description: 'ISO timestamp when this occurred.' },
+        agent_id: { type: 'string' },
         source: {
           type: 'string',
           enum: ['message', 'tool_output', 'observation', 'document', 'reflection', 'import'],
         },
-        importance:       { type: 'number', minimum: 1, maximum: 10, description: 'User-asserted importance (1–10). If supplied, batch enricher will not overwrite it.' },
+        importance: { type: 'number', minimum: 1, maximum: 10, description: 'User-asserted importance (1–10). If supplied, batch enricher will not overwrite it.' },
         chunk_size: {
           type: 'number',
           description: 'Approximate tokens per chunk (default: 500). Content exceeding this threshold is split at sentence boundaries; each chunk is stored as a separate episode with a DERIVED_FROM edge to the parent.',
@@ -311,14 +311,14 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     inputSchema: {
       type: 'object',
       properties: {
-        query:        { type: 'string', description: 'Semantic query text. If absent or empty, returns importance-ranked results (no vec/FTS, sorted by importance DESC).' },
-        db_path:      { type: 'string' },
-        scope:        { type: 'string', description: 'Store scope name: project/user/org/local.' },
-        agent_id:     { type: 'string' },
-        as_of:        { type: 'string', description: 'ISO timestamp for point-in-time recall.' },
+        query: { type: 'string', description: 'Semantic query text. If absent or empty, returns importance-ranked results (no vec/FTS, sorted by importance DESC).' },
+        db_path: { type: 'string' },
+        scope: { type: 'string', description: 'Store scope name: project/user/org/local.' },
+        agent_id: { type: 'string' },
+        as_of: { type: 'string', description: 'ISO timestamp for point-in-time recall.' },
         token_budget: { type: 'number', default: 4000 },
-        depth:        { type: 'number', default: 1 },
-        limit:        { type: 'number', default: 10 },
+        depth: { type: 'number', default: 1 },
+        limit: { type: 'number', default: 10 },
         filters: {
           type: 'object',
           description: 'Optional filter object.',
@@ -329,12 +329,12 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
                 { type: 'object', properties: { prefix: { type: 'string' } }, required: ['prefix'], description: 'Prefix match.' },
               ],
             },
-            topic:           { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }], description: 'Exact topic string or array of topics (OR semantics).' },
-            tags:            { type: 'array', items: { type: 'string' }, description: 'Any-match: episodes that have at least one of these tags.' },
-            tags_match_all:  { type: 'boolean', default: false },
-            importance_min:  { type: 'number', description: 'Only return episodes with importance >= this value.' },
+            topic: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }], description: 'Exact topic string or array of topics (OR semantics).' },
+            tags: { type: 'array', items: { type: 'string' }, description: 'Any-match: episodes that have at least one of these tags.' },
+            tags_match_all: { type: 'boolean', default: false },
+            importance_min: { type: 'number', description: 'Only return episodes with importance >= this value.' },
             t_created_after: { type: 'string', description: 'ISO timestamp; only episodes created after this.' },
-            t_created_before:{ type: 'string', description: 'ISO timestamp; only episodes created before this.' },
+            t_created_before: { type: 'string', description: 'ISO timestamp; only episodes created before this.' },
           },
         },
       },
@@ -386,10 +386,10 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     inputSchema: {
       type: 'object',
       properties: {
-        db_path:       { type: 'string' },
-        entity_uid:    { type: 'string', description: 'Resolve community for this episode/entity UID (via MEMBER_OF edge).' },
+        db_path: { type: 'string' },
+        entity_uid: { type: 'string', description: 'Resolve community for this episode/entity UID (via MEMBER_OF edge).' },
         community_uid: { type: 'string', description: 'Fetch a community directly by its UID.' },
-        level:         { type: 'number', default: 0 },
+        level: { type: 'number', default: 0 },
       },
       required: ['db_path'],
     },
@@ -416,23 +416,23 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     inputSchema: {
       type: 'object',
       properties: {
-        uid:            { type: 'string', description: 'UID of the live node to update. Required. Error E_NOT_FOUND if absent or invalidated.' },
-        db_path:        { type: 'string', description: 'Path to the .db file.' },
-        content:        { type: 'string', description: 'Replace node.content. Triggers re-embed and FTS update.' },
-        summary:        { type: 'string', description: 'Replace node.summary. Triggers re-embed and FTS update.' },
-        name:           { type: 'string', description: 'Replace node.name.' },
-        topic:          { type: 'string', description: 'Replace node.topic.' },
-        tags:           { type: 'array', items: { type: 'string' }, description: 'Replace node.tags (replaces existing tags wholesale — not additive).' },
-        importance:     { type: 'number', minimum: 1, maximum: 10, description: 'Replace node.importance.' },
-        metadata:       { type: 'object', additionalProperties: true, description: 'Metadata to merge into (or replace) existing node.meta. See metadata_merge.' },
+        uid: { type: 'string', description: 'UID of the live node to update. Required. Error E_NOT_FOUND if absent or invalidated.' },
+        db_path: { type: 'string', description: 'Path to the .db file.' },
+        content: { type: 'string', description: 'Replace node.content. Triggers re-embed and FTS update.' },
+        summary: { type: 'string', description: 'Replace node.summary. Triggers re-embed and FTS update.' },
+        name: { type: 'string', description: 'Replace node.name.' },
+        topic: { type: 'string', description: 'Replace node.topic.' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Replace node.tags (replaces existing tags wholesale — not additive).' },
+        importance: { type: 'number', minimum: 1, maximum: 10, description: 'Replace node.importance.' },
+        metadata: { type: 'object', additionalProperties: true, description: 'Metadata to merge into (or replace) existing node.meta. See metadata_merge.' },
         metadata_merge: {
           type: 'string',
           enum: ['deep', 'replace'],
           default: 'deep',
           description: "'deep' (default): recursive merge for nested objects; arrays are replaced not concatenated. 'replace': overwrites node.meta wholesale.",
         },
-        t_occurred:     { type: 'string', description: 'ISO timestamp — replace node.t_occurred.' },
-        t_valid:        { type: 'string', description: 'ISO timestamp — replace node.t_valid.' },
+        t_occurred: { type: 'string', description: 'ISO timestamp — replace node.t_occurred.' },
+        t_valid: { type: 'string', description: 'ISO timestamp — replace node.t_valid.' },
       },
       required: ['uid', 'db_path'],
     },
@@ -466,12 +466,12 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     inputSchema: {
       type: 'object',
       properties: {
-        db_path:      { type: 'string' },
+        db_path: { type: 'string' },
         project_path: { type: 'string', description: 'Filter to topics that have at least one episode from this project_path.' },
-        search:       { type: 'string', description: 'Partial topic name substring filter.' },
-        sort_by:      { type: 'string', enum: ['episode_count', 'avg_importance', 'last_written'], default: 'episode_count' },
-        limit:        { type: 'number', default: 20, maximum: 200 },
-        offset:       { type: 'number', default: 0 },
+        search: { type: 'string', description: 'Partial topic name substring filter.' },
+        sort_by: { type: 'string', enum: ['episode_count', 'avg_importance', 'last_written'], default: 'episode_count' },
+        limit: { type: 'number', default: 20, maximum: 200 },
+        offset: { type: 'number', default: 0 },
       },
       required: ['db_path'],
     },
@@ -483,8 +483,8 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
       type: 'object',
       properties: {
         db_path: { type: 'string' },
-        limit:   { type: 'number', default: 20, maximum: 200 },
-        offset:  { type: 'number', default: 0 },
+        limit: { type: 'number', default: 20, maximum: 200 },
+        offset: { type: 'number', default: 0 },
       },
       required: ['db_path'],
     },
@@ -496,12 +496,12 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     inputSchema: {
       type: 'object',
       properties: {
-        db_path:      { type: 'string' },
+        db_path: { type: 'string' },
         project_path: { type: 'string', description: 'Only count episodes from this project_path.' },
-        topic:        { type: 'string', description: 'Only count episodes in this topic.' },
-        search:       { type: 'string', description: 'Substring filter on entity name.' },
-        limit:        { type: 'number', default: 20, maximum: 200 },
-        offset:       { type: 'number', default: 0 },
+        topic: { type: 'string', description: 'Only count episodes in this topic.' },
+        search: { type: 'string', description: 'Substring filter on entity name.' },
+        limit: { type: 'number', default: 20, maximum: 200 },
+        offset: { type: 'number', default: 0 },
       },
       required: ['db_path'],
     },
@@ -513,11 +513,11 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     inputSchema: {
       type: 'object',
       properties: {
-        db_path:     { type: 'string' },
-        entity_uid:  { type: 'string', description: 'UID of the entity node.' },
+        db_path: { type: 'string' },
+        entity_uid: { type: 'string', description: 'UID of the entity node.' },
         entity_name: { type: 'string', description: 'Name of the entity (resolved to UID if entity_uid not supplied).' },
-        limit:       { type: 'number', default: 20, maximum: 200 },
-        offset:      { type: 'number', default: 0 },
+        limit: { type: 'number', default: 20, maximum: 200 },
+        offset: { type: 'number', default: 0 },
       },
       required: ['db_path'],
     },
@@ -529,10 +529,10 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     inputSchema: {
       type: 'object',
       properties: {
-        db_path:  { type: 'string' },
-        uid:      { type: 'string', description: 'UID of the source episode.' },
-        rel:      { type: 'array', items: { type: 'string' }, description: 'Filter by relation type(s). Default: all live relation types.' },
-        limit:    { type: 'number', default: 20, maximum: 100 },
+        db_path: { type: 'string' },
+        uid: { type: 'string', description: 'UID of the source episode.' },
+        rel: { type: 'array', items: { type: 'string' }, description: 'Filter by relation type(s). Default: all live relation types.' },
+        limit: { type: 'number', default: 20, maximum: 100 },
       },
       required: ['db_path', 'uid'],
     },
@@ -545,7 +545,7 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
       type: 'object',
       properties: {
         db_path: { type: 'string' },
-        uid:     { type: 'string', description: 'Any episode UID in the chain.' },
+        uid: { type: 'string', description: 'Any episode UID in the chain.' },
       },
       required: ['db_path', 'uid'],
     },
@@ -557,12 +557,12 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     inputSchema: {
       type: 'object',
       properties: {
-        db_path:      { type: 'string' },
+        db_path: { type: 'string' },
         project_path: { type: 'string' },
-        topic:        { type: 'string' },
-        threshold:    { type: 'number', description: 'Minimum cosine similarity stored in the SAME_AS edge meta.' },
-        limit:        { type: 'number', default: 20, maximum: 200 },
-        offset:       { type: 'number', default: 0 },
+        topic: { type: 'string' },
+        threshold: { type: 'number', description: 'Minimum cosine similarity stored in the SAME_AS edge meta.' },
+        limit: { type: 'number', default: 20, maximum: 200 },
+        offset: { type: 'number', default: 0 },
       },
       required: ['db_path'],
     },
@@ -574,22 +574,22 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     inputSchema: {
       type: 'object',
       properties: {
-        db_path:    { type: 'string' },
+        db_path: { type: 'string' },
         op: {
           type: 'string',
           enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster', 'drop_lens', 'list_lenses'],
           description: 'The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. list_lenses returns all live subset lenses.',
         },
-        uid:              { type: 'string', description: 'Target episode UID (required for retag, set_topic, set_importance).' },
-        tags:             { type: 'array', items: { type: 'string' }, description: '(retag) Tags to add. Additive; duplicates are ignored.' },
-        topic:            { type: 'string', description: '(set_topic) New topic string.' },
-        importance:       { type: 'number', minimum: 1, maximum: 10, description: '(set_importance) User-asserted importance.' },
-        uid_keep:         { type: 'string', description: '(merge_duplicates) UID of the episode to keep.' },
-        uid_drop:         { type: 'string', description: '(merge_duplicates) UID of the episode to invalidate.' },
-        filters:          { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: global async re-cluster via the daemon (unchanged).' },
-        threshold:        { type: 'number', description: '(recluster, filtered) Optional cosine similarity threshold override for the subset pass.' },
-        provenance_hash:  { type: 'string', description: '(drop_lens) The 16-hex provenance hash of the subset lens to drop (obtain from a prior recluster response).' },
-        dry_run:          { type: 'boolean', default: false, description: 'If true, return proposed changes without committing them.' },
+        uid: { type: 'string', description: 'Target episode UID (required for retag, set_topic, set_importance).' },
+        tags: { type: 'array', items: { type: 'string' }, description: '(retag) Tags to add. Additive; duplicates are ignored.' },
+        topic: { type: 'string', description: '(set_topic) New topic string.' },
+        importance: { type: 'number', minimum: 1, maximum: 10, description: '(set_importance) User-asserted importance.' },
+        uid_keep: { type: 'string', description: '(merge_duplicates) UID of the episode to keep.' },
+        uid_drop: { type: 'string', description: '(merge_duplicates) UID of the episode to invalidate.' },
+        filters: { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: global async re-cluster via the daemon (unchanged).' },
+        threshold: { type: 'number', description: '(recluster, filtered) Optional cosine similarity threshold override for the subset pass.' },
+        provenance_hash: { type: 'string', description: '(drop_lens) The 16-hex provenance hash of the subset lens to drop (obtain from a prior recluster response).' },
+        dry_run: { type: 'boolean', default: false, description: 'If true, return proposed changes without committing them.' },
       },
       required: ['db_path', 'op'],
     },
@@ -601,7 +601,7 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     inputSchema: {
       type: 'object',
       properties: {
-        db_path:      { type: 'string' },
+        db_path: { type: 'string' },
         project_path: { type: 'string', description: 'Scope stats to episodes from this project.' },
       },
       required: ['db_path'],
@@ -692,7 +692,7 @@ function parseTags(raw: string | null | undefined): string[] {
   return [];
 }
 
-// buildFiltersClause is now owned by @sox/memory-enrich (imported above).
+// buildFiltersClause is now owned by @adhd/sox-memory-enrich (imported above).
 // The local server still uses MemoryFilter for the recluster case type-cast.
 
 /** Resolve episode rowids → uids, preserving the input order. */
@@ -1247,16 +1247,16 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       }
       const updateResult = await memoryUpdate(db, {
         uid,
-        content:        args['content']        as string | undefined,
-        summary:        args['summary']        as string | undefined,
-        name:           args['name']           as string | undefined,
-        topic:          args['topic']          as string | undefined,
-        tags:           args['tags']           as string[] | undefined,
-        importance:     args['importance']     as number | undefined,
-        metadata:       args['metadata']       as Record<string, unknown> | undefined,
+        content: args['content'] as string | undefined,
+        summary: args['summary'] as string | undefined,
+        name: args['name'] as string | undefined,
+        topic: args['topic'] as string | undefined,
+        tags: args['tags'] as string[] | undefined,
+        importance: args['importance'] as number | undefined,
+        metadata: args['metadata'] as Record<string, unknown> | undefined,
         metadata_merge: args['metadata_merge'] as 'deep' | 'replace' | undefined,
-        t_occurred:     args['t_occurred']     as string | undefined,
-        t_valid:        args['t_valid']        as string | undefined,
+        t_occurred: args['t_occurred'] as string | undefined,
+        t_valid: args['t_valid'] as string | undefined,
       });
       if ('code' in updateResult) {
         return {
@@ -1604,11 +1604,13 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       }));
 
       return {
-        content: [{ type: 'text', text: JSON.stringify({
-          entity: { uid: resolvedEntityUid, name: resolvedEntityName },
-          episodes,
-          total,
-        }) }],
+        content: [{
+          type: 'text', text: JSON.stringify({
+            entity: { uid: resolvedEntityUid, name: resolvedEntityName },
+            episodes,
+            total,
+          })
+        }],
       };
     }
 
@@ -1780,11 +1782,13 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       });
 
       return {
-        content: [{ type: 'text', text: JSON.stringify({
-          canonical_uid: canonical.uid,
-          chain: chainWithReasons,
-          is_current: canonical.uid === uid,
-        }) }],
+        content: [{
+          type: 'text', text: JSON.stringify({
+            canonical_uid: canonical.uid,
+            chain: chainWithReasons,
+            is_current: canonical.uid === uid,
+          })
+        }],
       };
     }
 
@@ -2034,7 +2038,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           //
           // The structured filter is now passed directly to clusterSubset — the
           // engine owns buildFiltersClause and builds the SQL clause internally.
-          // This makes @sox/memory-enrich callable without server-private code.
+          // This makes @adhd/sox-memory-enrich callable without server-private code.
           if (filters && Object.keys(filters).length > 0) {
             const threshold = args['threshold'];
             const res = clusterSubset(db, {
@@ -2050,18 +2054,20 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
               members: rowidsToUids(db, c.member_rowids),
             }));
             return {
-              content: [{ type: 'text', text: JSON.stringify({
-                op: 'recluster',
-                scope: 'subset',
-                dry_run: dryRun,
-                persisted: res.persisted,
-                provenance_hash: res.provenance_hash,
-                candidate_count: res.candidate_count,
-                cluster_count: clusters.length,
-                unclustered_count: res.unclustered_count,
-                full_pass: res.full_pass,
-                clusters,
-              }) }],
+              content: [{
+                type: 'text', text: JSON.stringify({
+                  op: 'recluster',
+                  scope: 'subset',
+                  dry_run: dryRun,
+                  persisted: res.persisted,
+                  provenance_hash: res.provenance_hash,
+                  candidate_count: res.candidate_count,
+                  cluster_count: clusters.length,
+                  unclustered_count: res.unclustered_count,
+                  full_pass: res.full_pass,
+                  clusters,
+                })
+              }],
             };
           }
 
@@ -2097,24 +2103,28 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             const lenses = listSubsetLenses(db);
             const lens = lenses.find((l) => l.provenance_hash === provenanceHash);
             return {
-              content: [{ type: 'text', text: JSON.stringify({
-                op: 'drop_lens',
-                provenance_hash: provenanceHash,
-                dry_run: true,
-                communities_to_drop: lens?.community_count ?? 0,
-                found: lens !== undefined,
-              }) }],
+              content: [{
+                type: 'text', text: JSON.stringify({
+                  op: 'drop_lens',
+                  provenance_hash: provenanceHash,
+                  dry_run: true,
+                  communities_to_drop: lens?.community_count ?? 0,
+                  found: lens !== undefined,
+                })
+              }],
             };
           }
           const result = dropSubsetLens(db, provenanceHash);
           return {
-            content: [{ type: 'text', text: JSON.stringify({
-              op: 'drop_lens',
-              provenance_hash: result.provenance_hash,
-              communities_dropped: result.communities_dropped,
-              edges_dropped: result.edges_dropped,
-              dry_run: false,
-            }) }],
+            content: [{
+              type: 'text', text: JSON.stringify({
+                op: 'drop_lens',
+                provenance_hash: result.provenance_hash,
+                communities_dropped: result.communities_dropped,
+                edges_dropped: result.edges_dropped,
+                dry_run: false,
+              })
+            }],
           };
         }
 
@@ -2211,27 +2221,29 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         : 'hash';
 
       return {
-        content: [{ type: 'text', text: JSON.stringify({
-          // ADR-0003 Decision 5: capability presence by tool NAME — a client tests
-          // for the capability it needs (e.g. 'memory_update') rather than inferring
-          // it from a semver. `tool_version` (the old '1.1.0' surface marker) is gone.
-          tools: TOOL_NAMES,
-          enrich_version: ENRICH_VERSION,
-          embed_model: embedModel,
-          total_episodes: totalEpisodes,
-          with_topic: withTopicRow?.cnt ?? 0,
-          with_summary: withSummaryRow?.cnt ?? 0,
-          with_tags: withTagsRow?.cnt ?? 0,
-          with_project_path: withProjectPathRow?.cnt ?? 0,
-          with_community: withCommunityRow?.cnt ?? 0,
-          legacy_episodes: legacyRow?.cnt ?? 0,
-          stale_episodes: staleRow?.cnt ?? 0,
-          cluster_count: qStats.cluster_count,
-          largest_cluster_size: qStats.largest_cluster_size,
-          mean_intra_cluster_sim: qStats.mean_intra_sim,
-          coverage: qStats.coverage,
-          cluster_quality: qStats,
-        }) }],
+        content: [{
+          type: 'text', text: JSON.stringify({
+            // ADR-0003 Decision 5: capability presence by tool NAME — a client tests
+            // for the capability it needs (e.g. 'memory_update') rather than inferring
+            // it from a semver. `tool_version` (the old '1.1.0' surface marker) is gone.
+            tools: TOOL_NAMES,
+            enrich_version: ENRICH_VERSION,
+            embed_model: embedModel,
+            total_episodes: totalEpisodes,
+            with_topic: withTopicRow?.cnt ?? 0,
+            with_summary: withSummaryRow?.cnt ?? 0,
+            with_tags: withTagsRow?.cnt ?? 0,
+            with_project_path: withProjectPathRow?.cnt ?? 0,
+            with_community: withCommunityRow?.cnt ?? 0,
+            legacy_episodes: legacyRow?.cnt ?? 0,
+            stale_episodes: staleRow?.cnt ?? 0,
+            cluster_count: qStats.cluster_count,
+            largest_cluster_size: qStats.largest_cluster_size,
+            mean_intra_cluster_sim: qStats.mean_intra_sim,
+            coverage: qStats.coverage,
+            cluster_quality: qStats,
+          })
+        }],
       };
     }
 

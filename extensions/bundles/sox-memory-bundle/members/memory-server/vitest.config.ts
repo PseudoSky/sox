@@ -1,13 +1,13 @@
-import { defineConfig } from 'vitest/config';
 import { resolve } from 'node:path';
+import { defineConfig } from 'vitest/config';
 
 const repoRoot = resolve(__dirname, '../../../../..');
 
 export default defineConfig({
   resolve: {
     alias: {
-      '@sox/memory-core': resolve(repoRoot, 'libs/memory-core/dist/index.js'),
-      '@sox/memory-enrich': resolve(repoRoot, 'libs/memory-enrich/dist/index.js'),
+      '@adhd/sox-memory-core': resolve(repoRoot, 'libs/memory-core/dist/index.js'),
+      '@adhd/sox-memory-enrich': resolve(repoRoot, 'libs/memory-enrich/dist/index.js'),
     },
   },
   test: {

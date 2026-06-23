@@ -11,7 +11,7 @@
 
 The cross-project gate caught **two integration breakages the per-state guards structurally could not** (each executor ran only its own target subset):
 
-1. **`tokenguard-core:lint`** — the ported Vitest specs imported the engine via the package scope `@sox/tokenguard-core`; `@nx/enforce-module-boundaries` requires **relative** imports *within* a project. Fixed: 4 spec files → `from '../src/index'`. Tests still 63/63 green, lint clean. (Owning state: `core-invariants` — files already in its `mutates`; re-edit.)
+1. **`tokenguard-core:lint`** — the ported Vitest specs imported the engine via the package scope `@adhd/sox-tokenguard-core`; `@nx/enforce-module-boundaries` requires **relative** imports *within* a project. Fixed: 4 spec files → `from '../src/index'`. Tests still 63/63 green, lint clean. (Owning state: `core-invariants` — files already in its `mutates`; re-edit.)
 2. **`tokenguard:test`** — the extension declared a `vitest` test target pointing at a `vitest.config.ts` that never existed (tg-service's proof was the e2e demo, no unit target). Fixed: created `vitest.config.ts` + `test/smoke.spec.ts` with **10 real unit tests** (`resolveConfig` shape/overrides/seed-parsing; `genericAdapter` scope + reverse + exact round-trip). (Owning state: `tg-service` — expand-artifacts amendment.)
 
 Both are recorded as amendments. No assertion was weakened to pass; the fixes are real.

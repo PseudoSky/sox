@@ -79,7 +79,7 @@
         "libs/mcp-runtime/src/conformance.spec.ts"
       ],
       "context": "contexts/mcp-runtime.md",
-      "notes": "@sox/mcp-runtime WRAPS the official @modelcontextprotocol/sdk (decision #4 — do not reimplement). Author writes tools via serve(defineTool(...)); wrapper adds transport selection (stdio | sse/http via flag/env set by the install profile), health, shutdown, and C6 policy-env enforcement at the resource sink [inv:c6-holds] — uniform across claude-stdio + sox-service. Ships ONE generic conformance test inherited by every mcp extension. Parallel with install-lifecycle + generators.",
+      "notes": "@adhd/sox-mcp-runtime WRAPS the official @modelcontextprotocol/sdk (decision #4 — do not reimplement). Author writes tools via serve(defineTool(...)); wrapper adds transport selection (stdio | sse/http via flag/env set by the install profile), health, shutdown, and C6 policy-env enforcement at the resource sink [inv:c6-holds] — uniform across claude-stdio + sox-service. Ships ONE generic conformance test inherited by every mcp extension. Parallel with install-lifecycle + generators.",
       "changes": { "deletes": [], "resigns": [], "renames": [] }
     },
     "install-lifecycle": {
@@ -130,7 +130,7 @@
         "extensions/mcp-servers/memory-server/src/permission-guard.spec.ts"
       ],
       "context": "contexts/rehome-memory-server.md",
-      "notes": "Collapse memory-server onto @sox/mcp-runtime: replace the hand-rolled MCP loop + the vendored compilePolicyFromEnv/checkDbPathPolicy/getPolicy guard with serve(tools) + ctx policy accessors ([dod.6] — those symbols must be GONE, grep empty). Behavior + the C6 negative reality check must stay identical (e2e green). Depends on mcp-runtime.",
+      "notes": "Collapse memory-server onto @adhd/sox-mcp-runtime: replace the hand-rolled MCP loop + the vendored compilePolicyFromEnv/checkDbPathPolicy/getPolicy guard with serve(tools) + ctx policy accessors ([dod.6] — those symbols must be GONE, grep empty). Behavior + the C6 negative reality check must stay identical (e2e green). Depends on mcp-runtime.",
       "changes": { "deletes": ["checkDbPathPolicy", "getPolicy"], "resigns": ["handleToolCall"], "renames": [] }
     },
     "audit-enforcement": {

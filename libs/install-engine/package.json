@@ -1,5 +1,5 @@
 {
-  "name": "@sox/install-engine",
+  "name": "@adhd/sox-install-engine",
   "version": "0.1.0",
   "description": "Sox install engine — parseArgs, install, cascade, build-index, provider-capabilities",
   "private": true,

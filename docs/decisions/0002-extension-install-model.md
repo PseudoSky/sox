@@ -42,7 +42,7 @@ don't work for declarative content. Root cause: the **standard ran ahead of the 
    (+ repo `.mcp.json`), user → `~/.claude/…`, local → `settings.local.json`; **sox never writes the
    managed tier.**
 
-6. **MCP wrapper (`@sox/mcp-runtime`).** A shared lib (C7-clean) the generator scaffolds around:
+6. **MCP wrapper (`@adhd/sox-mcp-runtime`).** A shared lib (C7-clean) the generator scaffolds around:
    authors write tools only; the wrapper provides dual transport (stdio + sse/http, selected by install
    profile), MCP protocol, health, shutdown, and **C6 enforcement read from policy-env — applied
    uniformly whether Claude spawns it (stdio) or sox supervises it (sse).** `serves` becomes a derived,
@@ -85,7 +85,7 @@ don't work for declarative content. Root cause: the **standard ran ahead of the 
    and portable** — repo-relative paths / keyPaths / hashes only, **no** absolute or user paths.
    Machine-specific actions (e.g. `materialize` into `~/.sox/…`) live in the **gitignored user ledger**
    at `~/.sox/`.
-4. **`@sox/mcp-runtime` → wrap the official `@modelcontextprotocol/sdk`** (add transport-selection +
+4. **`@adhd/sox-mcp-runtime` → wrap the official `@modelcontextprotocol/sdk`** (add transport-selection +
    policy-env enforcement + health/shutdown; do not reimplement the protocol).
 5. **Verify before relying.** `rules`/`output-styles`/`keybindings` + project `.mcp.json` (Claude), and
    the **full codex surface matrix** (see #6), are verified against live docs/FS before any tooling

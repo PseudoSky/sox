@@ -1,5 +1,5 @@
 {
-  "name": "@sox/memory-enrich",
+  "name": "@adhd/sox-memory-enrich",
   "version": "1.0.0",
   "description": "Deterministic memory graph enrichment — no LLM, no provider, byte-reproducible outputs.",
   "private": true,

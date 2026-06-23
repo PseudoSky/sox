@@ -276,8 +276,8 @@ def phase_enforcement() -> None:
     # ---- rehome-memory-server ----
     check(
         "rehome-memory-server.1",
-        "memory-server uses serve() from @sox/mcp-runtime",
-        "grep -nE 'serve|@sox/mcp-runtime' extensions/mcp-servers/memory-server/src/index.ts",
+        "memory-server uses serve() from @adhd/sox-mcp-runtime",
+        "grep -nE 'serve|@adhd/sox-mcp-runtime' extensions/mcp-servers/memory-server/src/index.ts",
     )
     check(
         "rehome-memory-server.2",
@@ -294,7 +294,7 @@ def phase_enforcement() -> None:
     )
     check(
         "rehome-memory-server.4",
-        "extension.json declares @sox/mcp-runtime",
+        "extension.json declares @adhd/sox-mcp-runtime",
         "grep -nE 'mcp-runtime' extensions/mcp-servers/memory-server/extension.json",
     )
     check(

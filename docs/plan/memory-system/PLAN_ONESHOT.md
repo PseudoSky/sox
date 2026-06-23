@@ -10,13 +10,15 @@ These items have zero architectural risk and can be done in any order, in parall
 
 ---
 
-### P0-A: Export `reembedNodes` from `@sox/memory-core` (BL-12)
+### P0-A: Export `reembedNodes` from `@adhd/sox-memory-core` (BL-12)
 
 **Files to change:**
+
 - `libs/memory-core/src/index.ts`
 
 **Fix:**  
 Add `reembedNodes` to the embedding export block at line 22–33:
+
 ```
 export {
   EMBED_MODEL,
@@ -34,7 +36,8 @@ export {
 ```
 
 **Verification:**
-- `require('@sox/memory-core').reembedNodes` is a function, not `undefined`.
+
+- `require('@adhd/sox-memory-core').reembedNodes` is a function, not `undefined`.
 - `npx nx build memory-core` exits 0.
 - Existing unit tests pass.
 
@@ -43,10 +46,12 @@ export {
 ### P0-B: Fix `initScope` to use `getActiveEmbedModel()` (BL-10)
 
 **Files to change:**
+
 - `libs/memory-core/src/db.ts`
 
 **Fix:**  
 Import `getActiveEmbedModel` and use it in the `initScope` INSERT at line 71:
+
 ```typescript
 import { EMBED_MODEL, EMBED_DIM, getActiveEmbedModel } from './embed.js';
 // ...
@@ -63,6 +68,7 @@ Callers that need the real model pinned should call `await embed('warmup')` befo
 after the daemon initializes.
 
 **Verification:**
+
 - Unit test: call `initScope()` after `await embed('warmup')` with backend='real'; confirm
   `memory_scope.embed_model` row is `'bge-base-en-v1.5'`.
 - Existing initScope tests pass.
@@ -72,12 +78,14 @@ after the daemon initializes.
 ### P0-C: Document `db_path` allowlist in extension.json and CLAUDE.md (BL-15)
 
 **Files to change:**
+
 - `extensions/bundles/sox-memory-bundle/members/memory-server/extension.json`
 - `extensions/bundles/sox-memory-bundle/members/memory-server/CLAUDE.md`
 
 **Fix in extension.json:**  
 Add a `description` field to the `memory_write` and `memory_recall` tool `db_path` property
 clarifying the constraint:
+
 ```json
 "db_path": {
   "type": "string",
@@ -104,6 +112,7 @@ To use a db at a non-default path, either:
 ```
 
 **Verification:**
+
 - Verify the updated description appears in `tools/list` response from memory-server.
 - Verify CLAUDE.md renders with the new section.
 
@@ -112,16 +121,20 @@ To use a db at a non-default path, either:
 ### P0-D: Correct `EMBED_MODEL` naming drift (BL-2)
 
 **Files to change:**
+
 - `libs/memory-core/src/embed.ts`
 
 **Fix:**  
 Update the `EMBED_MODEL` constant to reflect what the real backend actually loads:
+
 ```typescript
 // Keep for backwards compat (exported constant); real model name when backend=hash
 export const EMBED_MODEL = 'nomic-embed-text-v1.5-hash';
 // When backend=real, getActiveEmbedModel() returns 'bge-base-en-v1.5'
 ```
+
 Add a comment at the `EMBED_MODEL` constant explaining the naming situation:
+
 ```typescript
 // The EMBED_MODEL constant is the *hash backend* identifier.
 // When backend='real' or 'auto' resolves to real, getActiveEmbedModel() returns
@@ -133,6 +146,7 @@ Also update `embed.ts` module-level comment (lines 1–22) to state: "real backe
 `fast-bge-base-en-v1.5` (BGE-base-en-v1.5, 768-dim, not nomic-embed-text)."
 
 **Verification:**
+
 - `getActiveEmbedModel()` returns `'bge-base-en-v1.5'` after `await embed('warmup')` with
   backend='real'.
 - `EMBED_MODEL` constant still exists (backwards compatibility for `import { EMBED_MODEL }`
@@ -143,11 +157,13 @@ Also update `embed.ts` module-level comment (lines 1–22) to state: "real backe
 ### P0-E: Add `memory_link` MCP tool to memory-server (BL-9)
 
 **Files to change:**
+
 - `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts`
 - `extensions/bundles/sox-memory-bundle/members/memory-server/extension.json`
 
 **Fix:**  
 Add a `memory_link` handler in `index.ts` alongside the existing `memoryWriteHandler`:
+
 ```typescript
 async function memoryLinkHandler(
   db: Database.Database,
@@ -173,6 +189,7 @@ Register `memory_link` in `handleToolCall` dispatch and in the `tools/list` resp
 Add the tool definition to `extension.json` tools array.
 
 **Verification:**
+
 - `tools/list` from memory-server includes `memory_link`.
 - `memory_link` with valid UIDs returns `{ edge_uid }`.
 - `memory_link` with unknown `src_uid` returns `{ isError: true }`.
@@ -190,21 +207,27 @@ but Phase 0-A and 0-B should land first so the correct model is in scope metadat
 ### P1-A: Raise `DEFAULT_TOKEN_BUDGET` and document (BL-8)
 
 **Files to change:**
+
 - `libs/memory-core/src/recall.ts`
 
 **Fix:**  
 Change line 55:
+
 ```typescript
 const DEFAULT_TOKEN_BUDGET = 32000;  // was 4000 — too small for doc-scale nodes
 ```
+
 Also update `extension.json` `memory_recall` tool schema to reflect the new default:
+
 ```json
 "token_budget": { "type": "number", "default": 32000 }
 ```
+
 Update `extensions/bundles/sox-memory-bundle/members/memory-server/extension.json`
 line 63 similarly.
 
 **Verification:**
+
 - Write 10 document-scale nodes (~1000 words each).
 - `memory_recall` with `limit: 10` and no explicit `token_budget` returns 10 results.
 - `memory_recall` with `token_budget: 100` still stops early (budget guard still works).
@@ -214,11 +237,13 @@ line 63 similarly.
 ### P1-B: Demote temporal RRF weight (BL-3)
 
 **Files to change:**
+
 - `libs/memory-core/src/recall.ts`
 
 **Fix:**  
 At lines 194–202, multiply each signal's RRF contribution by a configurable weight.
 Add per-signal weight constants and apply them:
+
 ```typescript
 const VEC_WEIGHT = 1.0;
 const FTS_WEIGHT = 0.8;
@@ -231,6 +256,7 @@ if (tr !== undefined) score += TEMPORAL_WEIGHT * rrfScore(tr);
 ```
 
 Expose as optional `RecallParams` fields so callers can override:
+
 ```typescript
 export interface RecallParams {
   ...
@@ -241,6 +267,7 @@ export interface RecallParams {
 ```
 
 **Verification:**
+
 - Write 10 nodes about "authentication" with timestamps 1 minute apart.
 - Write 1 node about "billing" 1 minute before the recall.
 - `memory_recall({ query: 'authentication' })` must rank authentication nodes above the
@@ -252,12 +279,14 @@ export interface RecallParams {
 ### P1-C: Add per-source diversity cap (BL-14)
 
 **Files to change:**
+
 - `libs/memory-core/src/recall.ts`
 
 **Fix:**  
 In the result assembly loop (lines 296–303), track how many results have come from each
 `source_doc` (derived from `provenance[0]` or a new `source_uid` column). Cap per-source
 at `max(2, Math.ceil(limit / 5))`:
+
 ```typescript
 const sourceCounts = new Map<string, number>();
 const MAX_PER_SOURCE = Math.max(2, Math.ceil(limit / 5));
@@ -273,6 +302,7 @@ Note: a proper MMR implementation requires embedding distances between candidate
 The diversity cap is a simpler proxy that does not require re-embedding.
 
 **Verification:**
+
 - Write 20 chunks all derived from the same document (same content_hash prefix).
 - `memory_recall` with `limit: 10` returns at most `max(2, 2)=2` results from that
   document and fills remaining 8 slots from other documents.
@@ -290,15 +320,17 @@ invariant of the subsystem and requires its own verification gate.
 ### P2-A: Document the process-boundary constraint for in-process callers (BL-11, part 1)
 
 **Files to change:**
+
 - `libs/memory-core/src/index.ts`
 - `libs/memory-core/README.md` (if exists, else add a section to the package's
   `package.json` description)
 
 **Fix:**  
 Add a prominent module-level comment to `libs/memory-core/src/index.ts`:
+
 ```typescript
 /**
- * @sox/memory-core — shared internal library for the sox-memory subsystem.
+ * @adhd/sox-memory-core — shared internal library for the sox-memory subsystem.
  *
  * PROCESS BOUNDARY CONSTRAINT:
  * Do NOT call `openDb()` and `await embed()` in the same process when using the
@@ -315,6 +347,7 @@ Add a prominent module-level comment to `libs/memory-core/src/index.ts`:
 ```
 
 **Verification:**
+
 - Documentation added.
 - Existing unit tests still pass (they use hash backend or mock embed, so are unaffected).
 
@@ -325,6 +358,7 @@ Add a prominent module-level comment to `libs/memory-core/src/index.ts`:
 **Status:** Needs spike before implementation.
 
 **What to investigate:**
+
 - Can `onnxruntime-node` be loaded in a Node `worker_thread` while `better-sqlite3`
   is loaded in the main thread, with only Float32Array results IPC'd back?
 - If worker_thread isolation prevents the mutex conflict, implement an `embedWorker.ts`
@@ -333,10 +367,12 @@ Add a prominent module-level comment to `libs/memory-core/src/index.ts`:
 - The `embed()` function in `embed.ts` would then proxy to the worker for backend='real'.
 
 **Files to change (after spike):**
+
 - `libs/memory-core/src/embed.ts` — add worker proxy path
 - `libs/memory-core/src/embedWorker.ts` — new worker thread
 
 **Verification:**
+
 - `openDb()` + `await embed(text, {backend:'real'})` + `db.prepare(...).run(...)` in a
   single Node process does not crash.
 - Existing unit tests pass.
@@ -355,6 +391,7 @@ in-process chunking until the addon constraint is resolved or explicitly accepte
 ### P3-A: Add optional chunking to `memory_write` (BL-13)
 
 **Files to change:**
+
 - `libs/memory-core/src/write.ts` (add chunking logic to `memoryWrite`)
 - `libs/memory-core/src/index.ts` (export `chunkContent` helper if extracted)
 - `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts`
@@ -364,6 +401,7 @@ in-process chunking until the addon constraint is resolved or explicitly accepte
 
 **Fix approach:**
 When `auto_chunk: true` or `chunk_size: N` is passed to `memory_write`:
+
 1. Split content at sentence boundaries every N tokens (default 256).
 2. For each chunk, call `memoryWrite` recursively without the chunking flag to
    get individual `episode_uid` values.
@@ -372,6 +410,7 @@ When `auto_chunk: true` or `chunk_size: N` is passed to `memory_write`:
 5. Return `{ episode_uid: parentUid, chunk_uids: [...] }`.
 
 **Verification:**
+
 - Write a 2000-word document with `auto_chunk: true`.
 - `memory_recall({ query: 'term from paragraph 8' })` returns a result from that chunk.
 - Without chunking, the same query returns at most 1 result (the whole document).

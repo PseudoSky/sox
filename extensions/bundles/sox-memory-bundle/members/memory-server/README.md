@@ -6,7 +6,7 @@
 
 `memory-server` is the keystone of the sox-memory subsystem. It runs as a long-lived background singleton (via `memoryd`) and exposes 19 MCP tools over a stdio JSON-RPC transport. All persistent state lives in a single SQLite file per scope, extended with the `sqlite-vec` vector extension (for approximate nearest-neighbour search) and FTS5 (for BM25 full-text search).
 
-The read path (`memory_recall`) is strictly deterministic: local hash embedding, parallel vec+BM25+temporal search, RRF fusion, recency × importance reranking — all in-process, no provider calls, target <50 ms. The write path (`memory_write`) inserts an episode, runs synchronous enrichment (provenance, tags, topic, near-dup), and enqueues an async batch-enrich task; it never blocks on any external call. The batch enrichment pipeline (clustering, auto-links, importance) runs deterministically in `memory-daemon` via `@sox/memory-enrich` — zero LLM calls, no provider required.
+The read path (`memory_recall`) is strictly deterministic: local hash embedding, parallel vec+BM25+temporal search, RRF fusion, recency × importance reranking — all in-process, no provider calls, target <50 ms. The write path (`memory_write`) inserts an episode, runs synchronous enrichment (provenance, tags, topic, near-dup), and enqueues an async batch-enrich task; it never blocks on any external call. The batch enrichment pipeline (clustering, auto-links, importance) runs deterministically in `memory-daemon` via `@adhd/sox-memory-enrich` — zero LLM calls, no provider required.
 
 ## When to use
 
@@ -63,6 +63,7 @@ Runs as a host-supervised background singleton (`lifecycle.background: true`, `l
 | `db_path` (tool argument) | Path to the `.db` file for each tool call           |
 
 Scope-to-path conventions:
+
 - `project` → `<cwd>/.memory/project.db`
 - `user`    → `~/.memory/user.db`
 - `org`     → `~/.memory/org.db`

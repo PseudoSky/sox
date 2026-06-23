@@ -25,7 +25,7 @@
 
 import type { FileSet } from '../../index.js';
 import type { TemplateOpts } from '../_shared.js';
-import { manifestJson, tsconfigJson, changelogMd, readmeMd } from '../_shared.js';
+import { changelogMd, manifestJson, readmeMd, tsconfigJson } from '../_shared.js';
 
 /** Default transports for a service: http. Override with --transport / --transports. */
 const DEFAULT_TRANSPORTS = ['http'];
@@ -135,7 +135,7 @@ export function serviceTemplate(opts: TemplateOpts): FileSet {
 
   const pkg = JSON.stringify(
     {
-      name: `@sox/extension-${opts.id}`,
+      name: `@adhd/sox-extension-${opts.id}`,
       version: '0.1.0',
       description: opts.description,
       private: true,

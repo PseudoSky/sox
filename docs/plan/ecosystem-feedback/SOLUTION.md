@@ -19,23 +19,23 @@ None require design decisions. They should be fixed in Phase 0.
 
 The third category is build hygiene: `memory-server/tsconfig.json` uses `composite: true`
 which enables incremental builds via `.tsbuildinfo`. A stale `.tsbuildinfo` causes `tsc` to
-emit no files after a source change. Vitest resolves `@sox/memory-core` to
+emit no files after a source change. Vitest resolves `@adhd/sox-memory-core` to
 `libs/memory-core/dist/index.js` (a static file path alias), so tests run against whatever
 is currently in `dist/`, not the live source. If `nx build` has not been run after a source
 change, tests pass against the stale build. This is a documentation/process gap rather than
 a code bug, but it has caused confusion when vitest green did not imply runtime correctness.
 
-The fourth category is the ADR-0002 `@sox/mcp-runtime` consolidation: `memory-server` has
+The fourth category is the ADR-0002 `@adhd/sox-mcp-runtime` consolidation: `memory-server` has
 a hand-rolled newline-delimited JSON-RPC stdio loop (a `readline` interface at
 `src/index.ts:548`) and a vendored `compilePolicyFromEnv` function (src/index.ts:113–145)
 duplicating policy logic from `libs/host-runtime`. ADR-0002 decision 6 calls for collapsing
-this into `@sox/mcp-runtime`, which already exists at `libs/mcp-runtime/src/serve.ts`. This
+this into `@adhd/sox-mcp-runtime`, which already exists at `libs/mcp-runtime/src/serve.ts`. This
 is the largest single refactor in this plan but is risk-bounded because the external contract
 (7 `memory_*` tools, stdio JSON-RPC transport) does not change.
 
 The fifth category is post-workspace-glob verification: BL-6 reports that the four other
 memory bundle members (`memory-cli`, `memory-flush`, `memory-daemon`, `memory-organizer`)
-were not explicitly verified after the workspace-glob widening that linked `@sox/memory-core`
+were not explicitly verified after the workspace-glob widening that linked `@adhd/sox-memory-core`
 into all members. Builds currently pass (nx cache shows success), but runtime verification
 against a live install has not been documented.
 
@@ -45,9 +45,11 @@ against a live install has not been documented.
 
 **What is broken:**  
 `cmdServe` in `apps/sox/src/main.ts:3126`:
+
 ```typescript
 const scope2 = flags['scope'] ?? 'project';
 ```
+
 It then calls `getScopePaths(scope2, root2)` for that single scope and reads exactly one
 lockfile. If the extension was installed at user scope, the project lockfile does not contain
 it and the command exits with `extension not found`. There is no fallback loop.
@@ -56,9 +58,11 @@ The correct behavior — which `cmdStart`, `cmdStatus`, and `buildExtConfigEnv` 
 implement — is to iterate `['org', 'user', 'project', 'local']` in precedence order (or
 `['project', 'user', 'org']` for serve resolution, highest-proximity first) until the
 extension is found. `buildExtConfigEnv` at line 46 already does this for config:
+
 ```typescript
 for (const cs of ['org', 'user', 'project', 'local'] as const) { ... }
 ```
+
 But the lockfile resolution immediately above it does not.
 
 **Which BLs it explains:** BL-7 directly. It also explains why `--scope=user` must be
@@ -74,6 +78,7 @@ project-specific installs take precedence). If `--scope` is explicitly given, us
 scope only (preserving current explicit-scope behavior).
 
 Implementation sketch:
+
 ```typescript
 const scope2 = flags['scope'];  // may be undefined
 const root2 = flags['root'] ?? ROOT2;
@@ -119,6 +124,7 @@ path. The test surface for `cmdServe` did not include cross-scope resolution.
 
 **What is broken:**  
 `pnpm typecheck` exits 2 with 9 errors spread across four files:
+
 - `extensions/services/tokenguard/src/cli.ts:23` — unused `readline` import (TS6133)
 - `extensions/services/tokenguard/src/mapstore.ts:32` — unused `now` variable (TS6133)
 - `extensions/services/tokenguard/src/proxy.ts:170` — unused `mapper`, `adapter` variables
@@ -148,7 +154,7 @@ project references. Scripts were not covered. The errors accumulated silently.
 **What is broken:**  
 `memory-server/tsconfig.json` uses `composite: true` (line 6). A `tsc` run that detects
 the `.tsbuildinfo` is current emits nothing, leaving `dist/` unchanged even after source
-edits. `memory-server/vitest.config.ts:9` resolves `@sox/memory-core` to
+edits. `memory-server/vitest.config.ts:9` resolves `@adhd/sox-memory-core` to
 `libs/memory-core/dist/index.js` — a static file path that is whatever was last emitted
 by `nx build memory-core`. If `memory-core` source changed since the last build, vitest
 tests load the stale compiled output.
@@ -158,6 +164,7 @@ out in the CLAUDE.md ("Vitest can PASS while dist is stale").
 
 **The correct design:**  
 This is primarily a process/documentation issue. The cache-busting solution is:
+
 1. Add a pre-test step that runs `tsc --build --force` (bypasses tsbuildinfo) or
    `nx build --skip-nx-cache memory-core` before running tests.
 2. Document in the monorepo CONTRIBUTING guide that `nx build` must precede `nx test`.
@@ -172,10 +179,10 @@ mark outputs stale) would close the gap automatically.
 
 **What is broken:**  
 `memory-server/src/index.ts:548–562` implements a `readline`-based newline-delimited
-JSON-RPC loop instead of using `@sox/mcp-runtime`. The file also vendors
+JSON-RPC loop instead of using `@adhd/sox-mcp-runtime`. The file also vendors
 `compilePolicyFromEnv` (lines 43–145, ~100 lines) which duplicates logic from
 `libs/host-runtime/src/policy.ts`. This means any policy bug fix must be applied in
-two places. The `@sox/mcp-runtime` library (`libs/mcp-runtime/src/serve.ts`) already
+two places. The `@adhd/sox-mcp-runtime` library (`libs/mcp-runtime/src/serve.ts`) already
 provides `serve()` and `defineTool()` which handle the transport, the protocol, and call
 the host-runtime policy enforcement uniformly.
 
@@ -185,11 +192,11 @@ into it."
 
 **The correct design:**  
 Rewrite `memory-server/src/index.ts` to use `serve()` and `defineTool()` from
-`@sox/mcp-runtime`. Each of the 7 handlers becomes a `defineTool(...)` call. The
+`@adhd/sox-mcp-runtime`. Each of the 7 handlers becomes a `defineTool(...)` call. The
 `compilePolicyFromEnv` vendor block is deleted; enforcement is provided by the wrapper.
 
 **Why the current design drifted here:**  
-`memory-server` was implemented before `@sox/mcp-runtime` existed. The vendored guard
+`memory-server` was implemented before `@adhd/sox-mcp-runtime` existed. The vendored guard
 was added when C6 permission enforcement was required (enforced before the lib was
 available). Now that the lib is present and the refactor was decided in ADR-0002, the
 work is simply not done yet.
@@ -199,10 +206,11 @@ work is simply not done yet.
 ## Design Flaw 5: Post-Glob-Widening Bundle Members Not Verified (BL-6)
 
 **What is broken:**  
-After the workspace-glob widening that linked `@sox/memory-core` into all five bundle
+After the workspace-glob widening that linked `@adhd/sox-memory-core` into all five bundle
 members, only `memory-server` was explicitly verified end-to-end. `memory-cli`,
 `memory-flush`, `memory-daemon`, and `memory-organizer` build green (nx cache shows
 success for all four), but the following has not been verified:
+
 - `memory-cli` can be invoked via `sox exec memory-cli -- init` and writes a valid DB.
 - `memory-flush` fires on `SessionEnd` and writes to the DB.
 - `memory-daemon` starts, binds its Unix socket, and drains the `organizer_queue`.
@@ -218,7 +226,7 @@ it is not a standalone extension (it is a library used by `memory-daemon`).
 ## Cross-References
 
 - **Flaw 1 (serve scope) × Flaw 4 (mcp-runtime consolidation):** When memory-server is
-  migrated to `@sox/mcp-runtime`, the `.mcp.json` command becomes
+  migrated to `@adhd/sox-mcp-runtime`, the `.mcp.json` command becomes
   `["sox", "serve", "memory-server"]`. If Flaw 1 is not fixed, this command only works
   for project-scoped installs. Fix Flaw 1 first.
 - **Flaw 2 (typecheck) × Flaw 3 (build hygiene):** Both are hygiene issues. Fixing Flaw 2

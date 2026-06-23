@@ -1,5 +1,5 @@
 /**
- * @sox/nx — nx plugin package providing generators for sox extensions and libs.
+ * @adhd/sox-nx — nx plugin package providing generators for sox extensions and libs.
  *
  * Generators:
  *   extension  — scaffolds any of the 6 active extension types (delegates to libs/authoring)
@@ -9,7 +9,8 @@
  * This package is the ONLY place @nx/devkit is imported.
  */
 
-export { extensionGenerator, applyFileSet } from './generators/extension/index.js';
+export { applyFileSet, extensionGenerator } from './generators/extension/index.js';
 export type { ExtensionGeneratorSchema } from './generators/extension/index.js';
 export { libraryGenerator } from './generators/library/index.js';
 export type { LibraryGeneratorSchema } from './generators/library/index.js';
+

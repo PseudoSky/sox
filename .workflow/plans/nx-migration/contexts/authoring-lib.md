@@ -1,4 +1,4 @@
-# authoring-lib — libs/authoring + @sox/nx GENERATORS + BORN-CONFORMANCE GATE
+# authoring-lib — libs/authoring + @adhd/sox-nx GENERATORS + BORN-CONFORMANCE GATE
 
 > **Slug is identity.** Immutable. Legacy P3.
 
@@ -10,8 +10,8 @@
 
 `libs/authoring` provides a **pure** `scaffold(opts) → FileSet` (no `@nx/devkit`
 import, [inv:nx-free-core], `[ref:nx-free-authoring-core]`) with templates for the
-6 active types ([def:active-types]; `prompt` parked). `@sox/nx` in
-`packages/sox-nx/` provides thin `@sox/nx:extension`/`:library` generators that
+6 active types ([def:active-types]; `prompt` parked). `@adhd/sox-nx` in
+`packages/sox-nx/` provides thin `@adhd/sox-nx:extension`/`:library` generators that
 call `scaffold()` and apply the FileSet to the nx Tree. A **parity test**
 ([inv:scaffold-parity], `[ref:scaffold-parity]`) asserts `sox init` and the
 generator emit byte-identical output. A born-conformance gate scaffolds one
@@ -22,7 +22,7 @@ the 6 demo extensions are deleted — generated output is the fixture.
 
 ## Semantic Distillation
 
-- **Primitive:** CREATE `libs/authoring/src/index.ts` (`scaffold`) + the `@sox/nx`
+- **Primitive:** CREATE `libs/authoring/src/index.ts` (`scaffold`) + the `@adhd/sox-nx`
   generators + the born-conformance gate.
 - **Reference Pattern:** ADR-0001 §Authoring, §The reflexive boundary, §D4;
   `libs/manifest/src/index.ts` (validate API); `scripts/new-extension.ts` (the
@@ -30,8 +30,8 @@ the 6 demo extensions are deleted — generated output is the fixture.
   `keywords`/`author`).
 - **Delta Spec:** `scaffold(opts): FileSet` (`Record<path,content>`); per-type
   templates under `libs/authoring/src/templates/<type>/`; a `writeFileSet(fs,outDir)`
-  helper; `@sox/nx:extension` maps FileSet → Tree + `project.json` + `type:<type>`
-  tag; `@sox/nx:library` wraps `@nx/js:lib`. The parity spec calls `scaffold()`
+  helper; `@adhd/sox-nx:extension` maps FileSet → Tree + `project.json` + `type:<type>`
+  tag; `@adhd/sox-nx:library` wraps `@nx/js:lib`. The parity spec calls `scaffold()`
   directly and via the generator in a dry-run Tree and asserts byte-equality.
   `tools/born-conformance.js` (nx target `sox-nx:born-conformance`) loops the 6
   types: scaffold → write → validate → assert ok. DELETE the 6 demo extensions.
@@ -46,7 +46,7 @@ the 6 demo extensions are deleted — generated output is the fixture.
 - [ ] **[authoring-lib.2]** `nx run sox-nx:build` clean.
 - [ ] **[authoring-lib.3]** All 6 active types scaffold to a manifest that
       validates (`nx run sox-nx:born-conformance`).
-- [ ] **[authoring-lib.4]** Parity test green: `sox init` == `@sox/nx:extension`
+- [ ] **[authoring-lib.4]** Parity test green: `sox init` == `@adhd/sox-nx:extension`
       (`nx run sox-nx:test`).
 - [ ] **[authoring-lib.5]** `libs/authoring/src` has zero `@nx/devkit`/`@nx/*` import.
 - [ ] **[authoring-lib.6]** The 6 demo extensions are deleted (no longer on disk).
@@ -82,8 +82,8 @@ The six `extensions/.../<demo>` entries are listed in `mutates` because this sta
 
 ## Contract Promise
 
-- **Added:** `scaffold`, `writeFileSet` (`libs/authoring`); `@sox/nx:extension`,
-  `@sox/nx:library`; `tools/born-conformance.js`; the parity test.
+- **Added:** `scaffold`, `writeFileSet` (`libs/authoring`); `@adhd/sox-nx:extension`,
+  `@adhd/sox-nx:library`; `tools/born-conformance.js`; the parity test.
 - **Modified:** none.
 - **Deleted:** the 6 demo extensions (`echo-agent`, `hello-world`, `hello-server`,
   `audit-hook`, `greeting-prompt`, `status-command`).
@@ -92,7 +92,7 @@ The six `extensions/.../<demo>` entries are listed in `mutates` because this sta
 
 ## Commit points
 
-- [ ] **After libs/authoring + @sox/nx generators** — `feat(nx-migration): authoring-lib — scaffold core + thin generators`
+- [ ] **After libs/authoring + @adhd/sox-nx generators** — `feat(nx-migration): authoring-lib — scaffold core + thin generators`
 - [ ] **After the parity test + born-conformance gate + demo deletion** — `feat(nx-migration): authoring-lib — parity + conformance gate; delete demos (D4)`
 - [ ] **After the guard passes** (mandatory) — `feat(nx-migration): authoring-lib complete — guard green`
 

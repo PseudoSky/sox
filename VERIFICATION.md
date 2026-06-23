@@ -45,11 +45,11 @@ EXIT: 0
 pnpm changeset status
 # result:
 🦋  info Packages to be bumped at minor:
-🦋  - @sox/extension-hello-world
+🦋  - @adhd/sox-extension-hello-world
 EXIT: 0
 ```
 
-Only `@sox/extension-hello-world` is pending — all other 5 extensions are unaffected.
+Only `@adhd/sox-extension-hello-world` is pending — all other 5 extensions are unaffected.
 
 **PASS.** Install from local path, lockfile idempotency, and independent versioning all confirmed.
 
@@ -107,7 +107,7 @@ vitest run scripts/install.test.ts
   ✓ P4: checksum verification > accepts an artifact with the correct checksum
 ```
 
-**PARTIAL.** The full publish→remote-install cycle is mechanically proven by the P4 test suite against a local HTTP server (byte-identical to a real CDN fetch). A live `changeset publish` to npm was not performed because no npm token is available in this environment. The changeset for `@sox/extension-hello-world` (minor bump, pending) exists and is publishable. The sha256 checksum verification, frozen-lockfile, and tamper-detection logic are exercised end-to-end.
+**PARTIAL.** The full publish→remote-install cycle is mechanically proven by the P4 test suite against a local HTTP server (byte-identical to a real CDN fetch). A live `changeset publish` to npm was not performed because no npm token is available in this environment. The changeset for `@adhd/sox-extension-hello-world` (minor bump, pending) exists and is publishable. The sha256 checksum verification, frozen-lockfile, and tamper-detection logic are exercised end-to-end.
 
 ---
 
@@ -194,7 +194,7 @@ The `prompt` type correctly uses `prompt.md` (not `src/index.ts`). The `hook` ty
 pnpm run validate-manifests   → EXIT 0 (6 extensions validated)
 pnpm run typecheck            → EXIT 0 (no type errors)
 pnpm test                     → 6 test files, 69 tests, all PASS
-pnpm changeset status         → EXIT 0 (1 pending: @sox/extension-hello-world minor)
+pnpm changeset status         → EXIT 0 (1 pending: @adhd/sox-extension-hello-world minor)
 ```
 
 ---

@@ -34,22 +34,26 @@ and keep the *novel* layer custom.
 ## 3. Architecture
 
 ### Authoring = lib-core ← generator-adapter ← nx-meta-generators
+
 - `libs/authoring` — **pure** `scaffold(opts) → FileSet` (no `@nx/devkit` dep) + templates. Single source of truth for "what a conformant extension of type X is."
 - `sox init` — writes the FileSet to disk (works **without nx**).
-- `@sox/nx:extension` / `:library` — thin devkit adapters: map FileSet → nx `Tree`, add tags + graph wiring.
+- `@adhd/sox-nx:extension` / `:library` — thin devkit adapters: map FileSet → nx `Tree`, add tags + graph wiring.
 - nx meta-generators (`@nx/plugin:plugin`, `@nx/plugin:generator`, `@nx/js:lib`) bootstrap the plugin, generators, and libs.
-- **Parity guard:** a test asserts `sox init` and `@sox/nx:extension` emit byte-identical output → the two paths can't drift.
+- **Parity guard:** a test asserts `sox init` and `@adhd/sox-nx:extension` emit byte-identical output → the two paths can't drift.
 
 ### bundle vs registry vs nx (don't conflate)
+
 - **`bundle`** = runtime/consumer primitive: `sox install <bundle>` expands to members at the consumer's machine. Stays.
 - **registry** = the data plane: bundle composition + all installable entries live here; `sox` ships the **install engine** that *reads* the registry, not the data. Keeps `sox` generic.
 - **nx release group** = dev-time version coherence for a bundle's members. Complements bundle; doesn't replace it.
 
 ### Cardinality
+
 High-cardinality types namespaced (`extensions/agents/<ns>/<id>`, `skills/<ns>/<id>`); low-cardinality flat
 (`commands/<id>`, `mcp-servers/<id>`). Tags `type:<t>` + `ns:<n>` keep scale tractable.
 
 ### Target layout
+
 ```
 sox-ecosystem/
 ├── nx.json · tsconfig.base.json · pnpm-workspace.yaml
@@ -62,13 +66,14 @@ sox-ecosystem/
 ├── extensions/
 │   ├── agents/<ns>/<id>/ · skills/<ns>/<id>/      # high-cardinality, namespaced
 │   ├── mcp-servers/<id>/ · commands/<id>/ · hooks/<id>/ · bundles/<id>/
-├── packages/sox-nx/                 # @sox/nx plugin: generators + executors + files/<type>/
+├── packages/sox-nx/                 # @adhd/sox-nx plugin: generators + executors + files/<type>/
 ├── schemas/ · registry/ · assets/ · docs/
 ```
 
 ## 4. Contract adjustments (the real corpus forces these)
 
 Inferred from the example sources; confirmed in per-type discovery (§5):
+
 - **`entrypoint` optional/typed** — markdown agent → its `.md`; shell hook → the script; bundle/prompt → none.
 - **`runtime` ∈ {node, shell, python, declarative}** — not node-only.
 - **install-target / host-discovery placement** — declarative extensions declare *where they install to*
@@ -100,7 +105,7 @@ Each phase: goal → key outputs → **acceptance** (verified, not self-reported
 - **P1 — gitnexus setup.** → *Acc: history-preserving move/refactor available.*
 - **P2 — nx init + configure.** target defaults, named inputs, cache, **tags/boundaries**, release config. → *Acc: `nx run-many -t build` works on the (pre-migration) tree; boundary lint active.*
 - **P3 — `libs/manifest`** (schema + validate) **incl. the §4 contract flexes** (entrypoint-optional, runtime breadth, install-target). Prereq for "conformant." → *Acc: validate runs as an nx target; flexes covered by tests.*
-- **P4 — `libs/authoring` + `@sox/nx` generators + `sox init` + born-conformance gate.** Pure FileSet core; thin adapters; **parity test** (`sox init`==generator). → *Acc: scaffold every type → build → validate green; parity test passes.*
+- **P4 — `libs/authoring` + `@adhd/sox-nx` generators + `sox init` + born-conformance gate.** Pure FileSet core; thin adapters; **parity test** (`sox init`==generator). → *Acc: scaffold every type → build → validate green; parity test passes.*
 - **P5 — Port engine libs** (`install-engine`, `host-runtime`, `registry`) — **carry this session's fixes forward**; **fix the flag parser (A12)** + `exec` routing while re-homing the CLI. → *Acc: lifecycle e2e green via documented flag forms; zero orphans (reality-checked).*
 - **P6 — Generate `sox`** (extension #0) wiring authoring + manifest + install-engine + host-runtime. → *Acc: `sox` validates as a conformant extension; CLI works.*
 - **P7 — Per-type discovery** against the §5 sources → refine generators + confirm §4 flexes. *(The large-repo exploration happens here.)* → *Acc: each type's generator produces output matching a real example shape.*
@@ -123,5 +128,6 @@ This migration **makes pass:** A1, A12, B1, B2, B3, B4, C7. **Holds green:** A2�
 - **Reality-gate erosion in translation** — P9 must preserve the process-table checks, not just move test files.
 
 ## 9. Explicitly out of scope
+
 Ingestion / normalization / reinjection of external extensions (your workflow, done outside the tool —
 though §4's install-target *is* the placement primitive it would build on); memory semantic quality.

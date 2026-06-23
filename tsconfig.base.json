@@ -29,14 +29,14 @@
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
-      "@sox/manifest": ["libs/manifest/src/index.ts", "libs/manifest/dist/index.js"],
-      "@sox/authoring": ["libs/authoring/dist/index.js"],
-      "@sox/install-engine": ["libs/install-engine/dist/index.js"],
-      "@sox/host-runtime": ["libs/host-runtime/dist/index.js"],
-      "@sox/registry": ["libs/registry/dist/index.js"],
-      "@sox/memory-core": ["libs/memory-core/dist/index.d.ts"],
-      "@sox/memory-enrich": ["libs/memory-enrich/dist/index.d.ts"],
-      "@sox/mcp-runtime": ["libs/mcp-runtime/dist/index.d.ts"]
+      "@adhd/sox-manifest": ["libs/manifest/src/index.ts", "libs/manifest/dist/index.js"],
+      "@adhd/sox-authoring": ["libs/authoring/dist/index.js"],
+      "@adhd/sox-install-engine": ["libs/install-engine/dist/index.js"],
+      "@adhd/sox-host-runtime": ["libs/host-runtime/dist/index.js"],
+      "@adhd/sox-registry": ["libs/registry/dist/index.js"],
+      "@adhd/sox-memory-core": ["libs/memory-core/dist/index.d.ts"],
+      "@adhd/sox-memory-enrich": ["libs/memory-enrich/dist/index.d.ts"],
+      "@adhd/sox-mcp-runtime": ["libs/mcp-runtime/dist/index.d.ts"]
     }
   },
   "include": ["scripts/**/*.ts", "extensions/**/*.ts"],

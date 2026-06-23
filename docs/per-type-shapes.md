@@ -24,7 +24,7 @@
 
 ## mcp-server
 
-**Entrypoint form:** `src/index.ts` with `#!/usr/bin/env node` shebang. Real production server (`@adhd/agent-mcp`) uses `@modelcontextprotocol/sdk` with `StdioServerTransport` and `server.setRequestHandler(ListToolsRequestSchema, ...)` / `server.setRequestHandler(CallToolRequestSchema, ...)`. The raw-readline approach in the previous template was a non-standard stub.
+**Entrypoint form:** `src/index.ts` with `#!/usr/bin/env node` shebang. Real production server (`@adhd/sox-agent-mcp`) uses `@modelcontextprotocol/sdk` with `StdioServerTransport` and `server.setRequestHandler(ListToolsRequestSchema, ...)` / `server.setRequestHandler(CallToolRequestSchema, ...)`. The raw-readline approach in the previous template was a non-standard stub.
 
 **Runtime:** `node`. Background singleton process.
 
@@ -34,7 +34,7 @@
 
 **SDK dependency:** `@modelcontextprotocol/sdk` (`>=1.0.0`) is a real runtime dependency. Added to the generated `package.json`.
 
-**Key refinements made:** Replaced raw `readline` JSON-RPC stub with proper `@modelcontextprotocol/sdk` `Server` + `StdioServerTransport` pattern. Added `#!/usr/bin/env node` to entry. Added `@modelcontextprotocol/sdk` to generated `package.json` dependencies. Pattern matches the real production `@adhd/agent-mcp` shape.
+**Key refinements made:** Replaced raw `readline` JSON-RPC stub with proper `@modelcontextprotocol/sdk` `Server` + `StdioServerTransport` pattern. Added `#!/usr/bin/env node` to entry. Added `@modelcontextprotocol/sdk` to generated `package.json` dependencies. Pattern matches the real production `@adhd/sox-agent-mcp` shape.
 
 ---
 

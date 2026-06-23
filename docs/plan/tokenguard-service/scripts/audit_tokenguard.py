@@ -143,7 +143,7 @@ def phase_service() -> None:
     check("tg-service.1", "extension is type:service transport http, born-conformant",
           "grep -qE '\"service\"|http' extensions/services/tokenguard/extension.json && echo OK", expect_ok=True)
     check("tg-service.2", "service consumes the engine via package scope (no reach-in)",
-          "grep -q '@sox/tokenguard-core' extensions/services/tokenguard/package.json && echo OK", expect_ok=True)
+          "grep -q '@adhd/sox-tokenguard-core' extensions/services/tokenguard/package.json && echo OK", expect_ok=True)
     check("tg-service.3", "config flows only through SOX_CONFIG_*",
           "grep -q 'SOX_CONFIG_' extensions/services/tokenguard/src/config.ts && echo OK", expect_ok=True)
     check("tg-service.4", "both provider adapters exist",

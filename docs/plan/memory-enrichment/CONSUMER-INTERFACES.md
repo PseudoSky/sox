@@ -16,6 +16,7 @@ to rely on. It does **not** define wire contracts, function signatures, or JSON 
 that is the API designer's job in `CONTRACTS.md`.
 
 The audience is the API designer and the implementation team. Each section answers:
+
 - Who is the consumer?
 - What do they want to accomplish?
 - What abstract operations enable it?
@@ -59,6 +60,7 @@ simultaneously gets noise from all of them.
 ### Operations needed
 
 **Filtered recall:**
+
 - Input: query (semantic text), plus optional `project_path` filter (exact match or
   prefix match for monorepos with sub-paths).
 - Filter semantics: `project_path = ?` (exact) OR `project_path LIKE '?/%'` (subtree).
@@ -66,6 +68,7 @@ simultaneously gets noise from all of them.
 - Output: ranked episodes, each carrying `project_path` in the result for transparency.
 
 **Project listing:**
+
 - Input: none (or scope filter).
 - Output: list of distinct `project_path` values present in the store, with episode
   counts and the most recent episode timestamp per path.
@@ -105,6 +108,7 @@ structure.
 ### Operations needed
 
 **Topic listing:**
+
 - Input: none (or `project_path` filter, `scope` filter).
 - Output: `[{ topic, episode_count, avg_importance, last_written, has_community }]`
   sorted by `episode_count` descending (or by `avg_importance`).
@@ -112,6 +116,7 @@ structure.
   (E6) vs. only by the `[<topic>]` prefix convention.
 
 **Topic drill-down (browse a topic):**
+
 - Input: `topic` string (exact match).
 - Output: episodes in that topic sorted by `importance` descending, `t_created`
   descending. Include `uid`, `summary` (or first 80 chars of `content`), `importance`,
@@ -119,6 +124,7 @@ structure.
 - Pagination: `limit` + `offset` or cursor.
 
 **Community membership (graph view):**
+
 - Input: `community_uid`.
 - Output: the community node (label, centroid quality metrics) + its member episodes
   (same fields as topic drill-down).
@@ -126,6 +132,7 @@ structure.
   grouping. Both are useful; the API should expose both.
 
 **Topic search:**
+
 - Input: partial topic name string.
 - Output: topics whose name matches (prefix or substring), with episode counts.
 
@@ -165,29 +172,34 @@ the schema but never auto-emitted.
 ### Operations needed
 
 **Entity lookup by name:**
+
 - Input: entity name string (exact or case-insensitive).
 - Output: entity node(s) matching the name: `uid`, `name`, `summary`, `t_created`.
 - Purpose: translate human-readable entity names to graph handles.
 
 **Episodes mentioning an entity:**
+
 - Input: entity `uid` (or name, resolved first).
 - Output: episodes with a `MENTIONS` edge to that entity. Fields: `uid`, `summary`,
   `topic`, `project_path`, `importance`, `t_created`.
 - Sorted by `importance` descending.
 
 **Related episodes (graph traversal):**
+
 - Input: episode `uid`, optional `rel` filter (e.g. only `RELATES_TO`, or all).
 - Output: neighbor episodes within depth=1, each with the edge relation type + weight.
 - Purpose: "show me what else is related to this episode" — the enrichment-derived
   graph connections.
 
 **Supersession chain:**
+
 - Input: episode `uid`.
 - Output: the chain of `SUPERSEDES` edges: `[{ superseded_by, t_invalid, reason }]`.
   Both directions: "what does this supersede?" and "is this superseded by something?"
 - Purpose: lets a consumer understand the belief lifecycle of a claim.
 
 **Entity list:**
+
 - Input: none (or `project_path` / `topic` filter).
 - Output: `[{ uid, name, mention_count, first_seen, last_seen }]` sorted by
   `mention_count` descending.
@@ -241,6 +253,7 @@ These are **internal** to the export function — not new consumer-facing tools.
 API designer should ensure the DB query interface supports them efficiently:
 
 **Episode with all enrichment fields:**
+
 - A single read query that returns `uid`, `content`, `name`, `summary`, `topic`,
   `tags`, `project_path`, `importance`, `t_created`, `agent_id`, `session_id` per live
   episode node.
@@ -248,6 +261,7 @@ API designer should ensure the DB query interface supports them efficiently:
   parents.
 
 **Auto-refresh trigger:**
+
 - The export should be triggerable after each write (or on a periodic basis). The
   `memory-cli` and `memory-server` should expose an explicit `export` operation
   (currently `export.ts` is called programmatically but not exposed as a tool).
@@ -257,6 +271,7 @@ API designer should ensure the DB query interface supports them efficiently:
 ### Discovery affordances
 
 The export's `INDEX.md` already lists topics with counts. After enrichment:
+
 - Add `project_path` breakdown per topic in the top-level `INDEX.md`.
 - Add an `ENTITIES.md` index listing the top-N entities across all topics.
 
@@ -286,6 +301,7 @@ by topic/entity across the federation. The `project_path` column doesn't exist y
 ### Operations needed
 
 **Cross-project topic query:**
+
 - Input: `topic` string (or embedding query), optional `exclude_project_path` to
   exclude the current project (to find what was learned *elsewhere*).
 - Output: ranked episodes across all stores with `project_path` in each result.
@@ -293,6 +309,7 @@ by topic/entity across the federation. The `project_path` column doesn't exist y
   the RRF fusion.
 
 **Agent-agnostic recall:**
+
 - Input: query + scope list; no `agent_id` filter.
 - Output: all matching episodes regardless of `agent_id`, with `agent_id` + `project_path`
   in the result for attribution.
@@ -301,6 +318,7 @@ by topic/entity across the federation. The `project_path` column doesn't exist y
   attribution.
 
 **Shared entity exploration:**
+
 - Input: entity name; no project filter.
 - Output: all episodes mentioning that entity across all accessible stores, with
   `project_path` per result.
@@ -328,6 +346,7 @@ include or exclude specific project contexts.
 ### Consumer
 
 A human operator (or a maintenance CLI command) who wants to:
+
 - Merge two near-duplicate episodes manually.
 - Promote an episode's importance.
 - Add or correct tags on an existing episode.
@@ -342,11 +361,13 @@ Today there is no curation surface. The only mutation operations are `memory_wri
 ### Operations needed
 
 **Tag an existing episode:**
+
 - Input: `uid`, `tags[]` to add.
 - Output: updated `node.tags`, new entity nodes + `MENTIONS` edges for any new tags.
 - Semantics: additive (append to existing tags, deduplicated).
 
 **Correct or set topic:**
+
 - Input: `uid`, `topic` string.
 - Output: `node.topic` updated; `MEMBER_OF` edge to the matching community updated
   (or a new ad-hoc community created if no embedding cluster covers this topic).
@@ -354,12 +375,14 @@ Today there is no curation surface. The only mutation operations are `memory_wri
   export and by topic-filtered recall.
 
 **Promote or demote importance:**
+
 - Input: `uid`, `importance` (1–10 float).
 - Output: `node.importance` overridden. The enrichment batch pass should not overwrite
   a user-set importance (add a `importance_locked BOOLEAN` flag or a convention:
   if `enrich_ver` contains `"user_override": true`, skip the automatic recalculation).
 
 **Merge near-duplicates:**
+
 - Input: `uid_keep`, `uid_drop`.
 - Output: invalidate `uid_drop` (`t_invalid` set), create `SAME_AS` edge from
   `uid_keep → uid_drop`. All edges formerly pointing to `uid_drop` are NOT rewritten
@@ -367,6 +390,7 @@ Today there is no curation surface. The only mutation operations are `memory_wri
   `SUPERSEDES`/`SAME_AS` suppression.
 
 **Force re-cluster:**
+
 - Input: none (or `project_path` filter).
 - Output: enqueues a full re-cluster op in `organizer_queue`. Returns immediately;
   cluster results available after the next daemon batch pass.
@@ -405,6 +429,7 @@ scores.
 ### Operations needed
 
 **Ranked feed:**
+
 - Input: optional `topic` filter, optional `project_path` filter, optional `tags`
   filter (any-match), `limit` (default 10).
 - Sort: `importance` descending, then `t_created` descending for ties.
@@ -412,6 +437,7 @@ scores.
   `tags`, `importance`, `t_created`, `project_path`.
 
 **Topic summary card:**
+
 - Input: `topic` string.
 - Output: the single highest-importance episode in that topic (the "representative
   memory"), plus metadata (episode count, avg importance, last written).
@@ -451,11 +477,13 @@ API surface (it's buried in `edge.meta`).
 ### Operations needed
 
 **Point-in-time recall:**
+
 - Input: query, `as_of` ISO timestamp.
 - Output: episodes valid at that timestamp (already supported; surface this affordance
   more prominently in the API).
 
 **Supersession chain for a uid:**
+
 - Input: `uid`.
 - Output: `{ uid, t_created, t_invalid, superseded_by: { uid, t_created, reason }? }`.
   Follows the chain until `superseded_by` is null (current canonical version).
@@ -463,6 +491,7 @@ API surface (it's buried in `edge.meta`).
   older claims).
 
 **Claim history summary:**
+
 - Input: `uid` (any point in the supersession chain).
 - Output: the full chain from oldest to newest, with timestamps and reasons.
   e.g.: `[v1 (2025-01-01, superseded 2025-02-15 reason="updated") → v2 (2025-02-15, current)]`.
@@ -470,6 +499,7 @@ API surface (it's buried in `edge.meta`).
 ### Discovery affordances
 
 Each episode result from any recall operation should include:
+
 - `is_superseded: boolean` (has a `SUPERSEDES` edge pointing to it).
 - `supersedes_uid: string | null` (the uid this episode supersedes, if any).
 These allow the consumer to immediately know if a result is current or historical.
@@ -492,6 +522,7 @@ An agent or operator that wants to see which episodes are nearly identical (E8:
 ### Operations needed
 
 **List near-duplicate pairs:**
+
 - Input: optional `topic` or `project_path` filter, `threshold` (default `0.95` real,
   `0.98` hash).
 - Output: `[{ uid_a, uid_b, cosine_sim, content_a_preview, content_b_preview }]`.
@@ -499,6 +530,7 @@ An agent or operator that wants to see which episodes are nearly identical (E8:
   linked (pre-dedup proposals).
 
 **Dedup status of a uid:**
+
 - Input: `uid`.
 - Output: `{ is_canonical: boolean, duplicate_of: uid | null, duplicates: uid[] }`.
   `is_canonical` = true if `t_invalid IS NULL` (the surviving copy).
@@ -530,8 +562,10 @@ model version?"
 ### Operations needed
 
 **Enrichment coverage report:**
+
 - Input: none (or `project_path` filter).
 - Output:
+
   ```
   {
     total_episodes: N,
@@ -550,14 +584,17 @@ model version?"
   ```
 
 **Cluster quality stats:**
+
 - Input: none.
 - Output: per-cluster `{ community_uid, label, member_count, mean_intra_sim, centroid_uid }`.
 
 **Stale-enrichment detection:**
+
 - Output: episodes where `enrich_ver` records an older pass version than the current
-  `@sox/memory-enrich` version. These are candidates for re-enrichment.
+  `@adhd/sox-memory-enrich` version. These are candidates for re-enrichment.
 
 **Re-enrich trigger:**
+
 - Input: optional `uids[]` (specific episodes) or none (all stale).
 - Output: enqueues re-enrichment ops. Returns `{ enqueued: N }`.
 
@@ -599,6 +636,7 @@ Minimum set for Phase 1: `project_path` (exact), `topic` (exact), `tags` (any-ma
 ### CI12.2 Pagination
 
 All list operations (topics, entities, projects, episodes) must support:
+
 - `limit` (max results per page, default 20, max 200).
 - `offset` or cursor-based pagination (cursor preferred for stable ordering).
 
@@ -651,7 +689,7 @@ batch pass:
 ### CI12.5 MCP tool vs. library API
 
 The MCP tools (`memory_write`, `memory_recall`, and new discovery tools) are the
-external interface used by agents via the Claude `.mcp.json` config. The `@sox/memory-enrich`
+external interface used by agents via the Claude `.mcp.json` config. The `@adhd/sox-memory-enrich`
 package API is the **internal** interface used by `memory-core`, `memory-daemon`, and
 `memory-cli`. The API designer should specify both layers; they need not have identical
 signatures.
@@ -659,12 +697,14 @@ signatures.
 ### CI12.6 Scope vs. store semantics
 
 Each store is a SQLite file for one `(scope, scope_id)` pair. In the current design:
+
 - A `project` store is scoped to the current project directory.
 - A `user` store is scoped to the user's home directory.
 
 `project_path` (the column) records the caller's repo root, which is finer-grained
 than the store's scope. A user store may contain episodes from multiple projects
 (if the user writes memory outside of project scope). The API must clearly distinguish:
+
 - **Store scope** (which `.db` file): controls federation, privacy.
 - **`project_path` column** (within a store): controls provenance filtering.
 

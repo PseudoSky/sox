@@ -36,7 +36,7 @@
   },
   "c7-no-reach-in": {
     "anchor": "eslint.config.js:no-restricted-syntax (C7 reach-in rule)",
-    "rule": "the tokenguard service imports the engine via the @sox/tokenguard-core package scope only — no cross-package ../dist reach-in (static or dynamic); enforced by @nx/enforce-module-boundaries + the C7 lint rule.",
+    "rule": "the tokenguard service imports the engine via the @adhd/sox-tokenguard-core package scope only — no cross-package ../dist reach-in (static or dynamic); enforced by @nx/enforce-module-boundaries + the C7 lint rule.",
     "discovered_via": "manual",
     "shared_ref": "[ref:c7-no-reach-in]",
     "audit_check": "[audit-final.ref-c7-no-reach-in]"

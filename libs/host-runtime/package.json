@@ -1,5 +1,5 @@
 {
-  "name": "@sox/host-runtime",
+  "name": "@adhd/sox-host-runtime",
   "version": "0.1.0",
   "description": "Sox host runtime — supervisor, event bus, hook loader, MCP registrar",
   "private": true,

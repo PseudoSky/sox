@@ -1,5 +1,5 @@
 {
-  "name": "@sox/cli",
+  "name": "@adhd/sox-cli",
   "version": "1.0.0",
   "description": "sox CLI — LLM extension ecosystem command-line interface (extension #0)",
   "private": true,
@@ -8,11 +8,11 @@
     "soxe": "../../bin/soxe"
   },
   "dependencies": {
-    "@sox/authoring": "workspace:*",
-    "@sox/host-runtime": "workspace:*",
-    "@sox/install-engine": "workspace:*",
-    "@sox/manifest": "workspace:*",
-    "@sox/registry": "workspace:*"
+    "@adhd/sox-authoring": "workspace:*",
+    "@adhd/sox-host-runtime": "workspace:*",
+    "@adhd/sox-install-engine": "workspace:*",
+    "@adhd/sox-manifest": "workspace:*",
+    "@adhd/sox-registry": "workspace:*"
   },
   "license": "MIT"
 }
