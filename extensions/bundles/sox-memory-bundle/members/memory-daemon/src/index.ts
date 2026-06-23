@@ -16,4 +16,4 @@
 import { MemoryDaemon, enqueueIngest, nudgeDaemon, SOCKET_PATH } from './memoryd.js';
 
 export { MemoryDaemon, enqueueIngest, nudgeDaemon, SOCKET_PATH };
-export { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
+export { PRAGMAS, DDL, FTS_TRIGGERS } from '@sox/memory-core';

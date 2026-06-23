@@ -62,7 +62,67 @@ export function openDb(dbPath: string): Database.Database {
   db.exec(`CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS ix_node_enrich_ver ON node(enrich_ver)   WHERE enrich_ver IS NOT NULL`);
 
+  // Idempotent migration: add 'enrich' to the organizer_queue CHECK constraint if
+  // the existing table was created before the 'enrich' op was added (BL-27 LOW-4).
+  // SQLite does not support ALTER TABLE ... MODIFY CONSTRAINT, so we must:
+  //   1. Detect whether the current CHECK is stale (does NOT include 'enrich').
+  //   2. If stale, do the safe rebuild dance inside a transaction:
+  //      rename → create-new → copy → drop-old → recreate index.
+  // This is a no-op on fresh stores (the DDL already contains 'enrich').
+  migrateOrganizerQueueCheckConstraint(db);
+
   return db;
+}
+
+/**
+ * Idempotently add 'enrich' to the organizer_queue CHECK constraint.
+ *
+ * SQLite cannot ALTER TABLE to change a CHECK, so we rename + recreate.
+ * Safe to call multiple times: exits immediately if the constraint already
+ * includes 'enrich' or if the table doesn't exist.
+ */
+function migrateOrganizerQueueCheckConstraint(db: Database.Database): void {
+  // Check if the table exists first.
+  const tableExists = db
+    .prepare<[], { name: string }>(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='organizer_queue'`,
+    )
+    .get();
+  if (!tableExists) return; // fresh DB — DDL will create it with the right constraint
+
+  // Retrieve the current CREATE statement to inspect the CHECK constraint.
+  const row = db
+    .prepare<[], { sql: string }>(
+      `SELECT sql FROM sqlite_master WHERE type='table' AND name='organizer_queue'`,
+    )
+    .get();
+  if (!row) return;
+
+  // If the current definition already includes 'enrich', nothing to do.
+  if (row.sql.includes("'enrich'")) return;
+
+  // Rebuild dance — wrapped in a transaction for atomicity.
+  db.transaction(() => {
+    db.exec(`ALTER TABLE organizer_queue RENAME TO organizer_queue_old`);
+    db.exec(`
+      CREATE TABLE organizer_queue (
+        seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+        op         TEXT NOT NULL CHECK (op IN ('ingest','enrich','extract','link','consolidate','decay','reindex')),
+        payload    TEXT NOT NULL,
+        priority   INTEGER NOT NULL DEFAULT 100,
+        enqueued   TEXT NOT NULL, claimed_at TEXT, done_at TEXT,
+        attempts   INTEGER DEFAULT 0
+      )
+    `);
+    db.exec(`
+      INSERT INTO organizer_queue (seq, op, payload, priority, enqueued, claimed_at, done_at, attempts)
+      SELECT seq, op, payload, priority, enqueued, claimed_at, done_at, attempts
+      FROM organizer_queue_old
+    `);
+    db.exec(`DROP TABLE organizer_queue_old`);
+    // Recreate the open-queue index (idempotent via IF NOT EXISTS).
+    db.exec(`CREATE INDEX IF NOT EXISTS ix_q_open ON organizer_queue(done_at, priority, seq) WHERE done_at IS NULL`);
+  })();
 }
 
 /** Add a column to a table if it does not already exist (idempotent migration). */

@@ -19,7 +19,7 @@ import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 
-import { clusterStore, clusterSubset, clusterStats } from './index.js';
+import { clusterStore, clusterSubset, clusterStats, dropSubsetLens, listSubsetLenses } from './index.js';
 
 const MINIMAL_DDL = `
 CREATE TABLE IF NOT EXISTS node (
@@ -325,5 +325,120 @@ describe('clusterSubset callable via structured filter alone (fix ④)', () => {
     const a = clusterSubset(db, { filter: { tags: ['skill:A'] } });
     const b = clusterSubset(db, { filter: { tags: ['skill:A'] } });
     expect(a.provenance_hash).toBe(b.provenance_hash);
+  });
+});
+
+// ── BL-26: drop_lens / list_lenses ───────────────────────────────────────────
+
+describe('dropSubsetLens + listSubsetLenses (BL-26)', () => {
+  it('dropSubsetLens removes the target lens while leaving global + other lenses intact', () => {
+    seedTwoGroups();
+
+    // 1. Persist global partition (2 communities: A-group, B-group).
+    const global = clusterStore(db);
+    expect(global.clusters).toHaveLength(2);
+    const globalUids = new Set(
+      liveCommunities()
+        .filter((c) => !c.meta || !JSON.parse(c.meta).cluster_scope || JSON.parse(c.meta).cluster_scope.kind !== 'subset')
+        .map((c) => c.uid),
+    );
+    expect(globalUids.size).toBe(2);
+
+    // 2. Persist subset lens for skill:A.
+    const subA = clusterSubset(db, { filter: { tags: ['skill:A'] }, persist: true });
+    expect(subA.persisted).toBe(true);
+    const hashA = subA.provenance_hash;
+
+    // 3. Persist a second subset lens for skill:B.
+    const subB = clusterSubset(db, { filter: { tags: ['skill:B'] }, persist: true });
+    expect(subB.persisted).toBe(true);
+    const hashB = subB.provenance_hash;
+    expect(hashA).not.toBe(hashB); // distinct lenses
+
+    // 4. DB now has 2 global + 2 subset = 4 live communities.
+    const before = liveCommunities();
+    expect(before).toHaveLength(4);
+
+    // 5. list_lenses sees exactly 2 subset lenses.
+    const lenses = listSubsetLenses(db);
+    expect(lenses).toHaveLength(2);
+    expect(lenses.map((l) => l.provenance_hash).sort()).toEqual([hashA, hashB].sort());
+
+    // 6. Drop lens A.
+    const result = dropSubsetLens(db, hashA);
+    expect(result.communities_dropped).toBe(1);
+    expect(result.edges_dropped).toBeGreaterThanOrEqual(2); // 2 skill:A episodes
+
+    // 7. Lens A's community is gone; global + lens B still live.
+    const after = liveCommunities();
+    expect(after).toHaveLength(3); // 2 global + 1 (B-lens)
+
+    // Global UIDs are untouched.
+    for (const uid of globalUids) {
+      expect(after.some((c) => c.uid === uid)).toBe(true);
+    }
+
+    // Lens B is still present.
+    const subsetAfter = after.filter(
+      (c) => c.meta && JSON.parse(c.meta).cluster_scope?.kind === 'subset',
+    );
+    expect(subsetAfter).toHaveLength(1);
+    expect(JSON.parse(subsetAfter[0]!.meta!).cluster_scope.hash).toBe(hashB);
+
+    // list_lenses now shows only B.
+    const lensesAfter = listSubsetLenses(db);
+    expect(lensesAfter).toHaveLength(1);
+    expect(lensesAfter[0]!.provenance_hash).toBe(hashB);
+  });
+
+  it('dropSubsetLens is a no-op on a non-existent hash (idempotent)', () => {
+    seedTwoGroups();
+    clusterStore(db);
+    const result = dropSubsetLens(db, 'deadbeef00000000');
+    expect(result.communities_dropped).toBe(0);
+    expect(result.edges_dropped).toBe(0);
+    // Global communities untouched.
+    expect(liveCommunities()).toHaveLength(2);
+  });
+
+  it('dropSubsetLens is idempotent when called twice with the same hash', () => {
+    seedTwoGroups();
+    clusterStore(db);
+    const sub = clusterSubset(db, { filter: { tags: ['skill:A'] }, persist: true });
+    const hash = sub.provenance_hash;
+
+    const first = dropSubsetLens(db, hash);
+    expect(first.communities_dropped).toBe(1);
+
+    const second = dropSubsetLens(db, hash);
+    expect(second.communities_dropped).toBe(0); // already gone
+  });
+
+  it('listSubsetLenses returns empty when no subset lenses are persisted', () => {
+    seedTwoGroups();
+    clusterStore(db);
+    const lenses = listSubsetLenses(db);
+    expect(lenses).toHaveLength(0);
+  });
+
+  it('listSubsetLenses returns one entry per distinct hash even with multiple communities per lens', () => {
+    // Seed 2 groups all tagged skill:X so the subset lens yields 2 communities.
+    // Content must be >= 50 chars to pass the clustering pre-filter (D5.1).
+    insertEpisode('lesson x-one about guard ordering and tool resolution chain', groupVec(2, 0.01), ['skill:X']);
+    insertEpisode('lesson x-two about guard ordering and tool resolution chain', groupVec(2, 0.02), ['skill:X']);
+    insertEpisode('lesson x-three about guard ordering and tool resolution', groupVec(2, 0.03), ['skill:X']);
+    insertEpisode('lesson y-one about embedding model drift on reindex operation', groupVec(3, 0.01), ['skill:X']);
+    insertEpisode('lesson y-two about embedding model drift on reindex operation', groupVec(3, 0.02), ['skill:X']);
+
+    clusterStore(db);
+    // Persist a lens over skill:X — 5 episodes in 2 groups → 2 communities.
+    const sub = clusterSubset(db, { filter: { tags: ['skill:X'] }, persist: true });
+    expect(sub.clusters.length).toBeGreaterThan(0);
+
+    const lenses = listSubsetLenses(db);
+    // Exactly one lens entry regardless of how many communities it contains.
+    expect(lenses).toHaveLength(1);
+    expect(lenses[0]!.provenance_hash).toBe(sub.provenance_hash);
+    expect(lenses[0]!.community_count).toBe(sub.clusters.length);
   });
 });

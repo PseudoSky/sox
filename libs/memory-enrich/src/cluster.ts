@@ -506,10 +506,6 @@ function computeClusters(
     attempts++;
   }
 
-  if (clusters.length === 0 && attempts === 3) {
-    return { clusters: [], full_pass: false, unclustered_count: candidateRowids.length };
-  }
-
   const totalClustered = clusters.reduce((sum, c) => sum + c.member_rowids.length, 0);
   return { clusters, full_pass: true, unclustered_count: candidateRowids.length - totalClustered };
 }
@@ -594,6 +590,22 @@ export function clusterSubset(
   db: Database,
   opts: ClusterSubsetOptions = {},
 ): ClusterSubsetResult {
+  // Guard: an empty/absent filter with persist:true would write a duplicate of the
+  // global partition under a non-global salt — creating a confusing, unreachable
+  // subset lens. Reject before writing. Read-only (persist:false) is still fine:
+  // a no-filter read is equivalent to "show me all clusters in memory", which is
+  // a valid synthesis query with no side effects.  (BL-27 LOW-1)
+  const hasFilter =
+    opts.filter != null && Object.keys(opts.filter).length > 0;
+  const hasRestrict = opts.restrict != null && opts.restrict.sql.trim() !== '';
+  if (opts.persist && !hasFilter && !hasRestrict) {
+    throw new Error(
+      'clusterSubset: persist:true requires at least one filter field (or a restrict clause). ' +
+      'An empty/absent filter would duplicate the global partition under a hashed name — ' +
+      'use clusterStore() to run the global pass instead.',
+    );
+  }
+
   // Build restrict clause from the structured filter when provided.
   // Fall back to a pre-built `restrict` for legacy callers, then empty (cluster-all).
   const restrict: { sql: string; params: unknown[] } | undefined =
@@ -778,6 +790,150 @@ export function clusterStats(db: Database): ClusterStats {
     mean_inter_sim: meanInterSim,
     largest_cluster_size: largestClusterSize,
     coverage,
+  };
+}
+
+// ── Subset-lens lifecycle (BL-26) ─────────────────────────────────────────────
+
+export interface SubsetLensDescriptor {
+  /** 16-hex provenance hash that identifies this lens. */
+  provenance_hash: string;
+  /** Number of live community nodes in this slice. */
+  community_count: number;
+  /** ISO timestamp of the most recently created community in this slice. */
+  last_updated: string;
+  /** The filter stored on the community nodes at persist time (may be null for legacy/raw). */
+  filter: unknown;
+}
+
+/**
+ * List all persisted subset lenses currently live in the store.
+ *
+ * Returns one descriptor per distinct `provenance_hash`. Cheap: reads only the
+ * community node metadata, no vec_node access.
+ *
+ * Note: only lenses with `cluster_scope.kind = 'subset'` are returned. The
+ * global partition is excluded.
+ */
+export function listSubsetLenses(db: Database): SubsetLensDescriptor[] {
+  const rows = db
+    .prepare<[], { meta: string | null; t_created: string }>(
+      `SELECT meta, t_created FROM node
+       WHERE kind = 'community' AND t_invalid IS NULL
+         AND json_extract(meta, '$.cluster_scope.kind') = 'subset'
+       ORDER BY t_created DESC`,
+    )
+    .all();
+
+  // Group by provenance_hash
+  const byHash = new Map<
+    string,
+    { community_count: number; last_updated: string; filter: unknown }
+  >();
+
+  for (const row of rows) {
+    if (!row.meta) continue;
+    let m: { cluster_scope?: { hash?: string; filter?: unknown }; [k: string]: unknown };
+    try {
+      m = JSON.parse(row.meta) as typeof m;
+    } catch {
+      continue;
+    }
+    const hash = m.cluster_scope?.hash;
+    if (typeof hash !== 'string') continue;
+
+    const existing = byHash.get(hash);
+    if (!existing) {
+      byHash.set(hash, {
+        community_count: 1,
+        last_updated: row.t_created,
+        filter: m.cluster_scope?.filter ?? null,
+      });
+    } else {
+      existing.community_count++;
+      // keep the latest t_created as last_updated
+      if (row.t_created > existing.last_updated) {
+        existing.last_updated = row.t_created;
+      }
+    }
+  }
+
+  return Array.from(byHash.entries()).map(([hash, v]) => ({
+    provenance_hash: hash,
+    community_count: v.community_count,
+    last_updated: v.last_updated,
+    filter: v.filter,
+  }));
+}
+
+export interface DropSubsetLensResult {
+  /** The provenance_hash that was dropped. */
+  provenance_hash: string;
+  /** Number of community nodes invalidated. */
+  communities_dropped: number;
+  /** Number of MEMBER_OF edges invalidated (as a consequence of community invalidation). */
+  edges_dropped: number;
+}
+
+/**
+ * Drop a persisted subset lens by its provenance hash.
+ *
+ * Invalidates ONLY the subset community nodes keyed to `provenanceHash` and
+ * their `MEMBER_OF` edges. Never touches the global partition or any other
+ * lens's communities.
+ *
+ * This is the GC operation for subset lenses whose member episodes were
+ * invalidated or whose filter is no longer relevant (BL-26).
+ *
+ * Returns a summary of what was invalidated.
+ *
+ * If no communities exist for the given hash, returns a result with counts of 0
+ * (not an error — idempotent).
+ */
+export function dropSubsetLens(
+  db: Database,
+  provenanceHash: string,
+): DropSubsetLensResult {
+  const now = new Date().toISOString();
+
+  // Find all live community nodes owned by this lens.
+  const priorIds = db
+    .prepare<[string], { rowid: number }>(
+      `SELECT rowid FROM node
+       WHERE kind = 'community' AND t_invalid IS NULL
+         AND json_extract(meta, '$.cluster_scope.hash') = ?`,
+    )
+    .all(provenanceHash)
+    .map((r) => r.rowid);
+
+  if (priorIds.length === 0) {
+    return { provenance_hash: provenanceHash, communities_dropped: 0, edges_dropped: 0 };
+  }
+
+  const ph = priorIds.map(() => '?').join(',');
+
+  // Count edges to be invalidated before writing.
+  const edgeCount = (
+    db
+      .prepare<unknown[], { cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM edge
+         WHERE rel = 'MEMBER_OF' AND t_invalid IS NULL AND dst IN (${ph})`,
+      )
+      .get(...priorIds)
+  )?.cnt ?? 0;
+
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE node SET t_invalid = ? WHERE rowid IN (${ph})`).run(now, ...priorIds);
+    db.prepare(
+      `UPDATE edge SET t_invalid = ? WHERE rel = 'MEMBER_OF' AND t_invalid IS NULL AND dst IN (${ph})`,
+    ).run(now, ...priorIds);
+  });
+  tx();
+
+  return {
+    provenance_hash: provenanceHash,
+    communities_dropped: priorIds.length,
+    edges_dropped: edgeCount,
   };
 }
 

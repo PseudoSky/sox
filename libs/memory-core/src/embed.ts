@@ -21,10 +21,9 @@
  *       a one-time model download on first use is acceptable.
  *   R2: EMBED_MODEL reflects the active backend so memory_scope pin is truthful.
  *
- * TODO: deduplicate with extensions/bundles/sox-memory-bundle/members/memory-server/src/embed.ts
- *       once memory-server adds @sox/memory-core as a dependency (nx migration C7).
  */
 
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
@@ -114,8 +113,29 @@ const _pending = new Map<number, { resolve: (v: number[]) => void; reject: (e: E
 function getEmbedWorker(config: EmbedConfig): Worker {
   if (_worker) return _worker;
 
-  // embedWorker.js lives alongside this file in dist/
-  const workerPath = path.join(__dirname, 'embedWorker.js');
+  // Resolve the absolute path to embedWorker.js robustly, independent of the
+  // process cwd and vitest's parallel fork pool cwd juggling (BL-29).
+  //
+  // Strategy:
+  //  1. Try `__dirname` first — correct at runtime (embed.js and embedWorker.js
+  //     are siblings in dist/).
+  //  2. If the file doesn't exist there (e.g. vitest transpiles from src/ so
+  //     __dirname = src/ but embedWorker.js was built to dist/), walk up to the
+  //     package root and resolve via dist/embedWorker.js.
+  //  3. As a final guard, use the raw __dirname join (which will produce a useful
+  //     error message if even that fails).
+  //
+  // All three branches produce an absolute path, so fork-cwd changes are irrelevant.
+  let workerPath = path.join(__dirname, 'embedWorker.js');
+  if (!fs.existsSync(workerPath)) {
+    // __dirname is src/ (vitest transpilation context); built worker is in dist/
+    const pkgRoot = path.resolve(__dirname, '..');
+    const distWorker = path.join(pkgRoot, 'dist', 'embedWorker.js');
+    if (fs.existsSync(distWorker)) {
+      workerPath = distWorker;
+    }
+    // else: keep the original path so the Worker constructor gives a clear error
+  }
   _worker = new Worker(workerPath, { workerData: { cacheDir: config.cacheDir } });
 
   // Do not let the embed worker keep the host event loop / test fork alive when idle.
