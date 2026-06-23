@@ -103,18 +103,18 @@ describe('host-registry.1 — HostModule interface', () => {
 // ─── [host-registry.2] scopePaths for project + user on both hosts ────────────
 
 describe('host-registry.2 — scopePaths: project and user on Claude', () => {
-  // Ensure SOX_HOME is unset for these tests so we assert real-HOME paths.
-  // (SOX_HOME may be set in the shell; we test the non-sandboxed default here.)
-  let _savedSoxHome: string | undefined;
+  // Ensure SOX_SANDBOX_ROOT is unset for these tests so we assert real-HOME paths.
+  // (SOX_SANDBOX_ROOT may be set in CI; we test the non-sandboxed default here.)
+  let _savedSandbox: string | undefined;
   beforeEach(() => {
-    _savedSoxHome = process.env['SOX_HOME'];
-    delete process.env['SOX_HOME'];
+    _savedSandbox = process.env['SOX_SANDBOX_ROOT'];
+    delete process.env['SOX_SANDBOX_ROOT'];
   });
   afterEach(() => {
-    if (_savedSoxHome === undefined) {
-      delete process.env['SOX_HOME'];
+    if (_savedSandbox === undefined) {
+      delete process.env['SOX_SANDBOX_ROOT'];
     } else {
-      process.env['SOX_HOME'] = _savedSoxHome;
+      process.env['SOX_SANDBOX_ROOT'] = _savedSandbox;
     }
   });
 
@@ -189,17 +189,17 @@ describe('host-registry.2 — scopePaths: project and user on Claude', () => {
 });
 
 describe('host-registry.2 — scopePaths: project and user on Codex', () => {
-  // Ensure SOX_HOME is unset for these tests so we assert real-HOME paths.
-  let _savedSoxHome: string | undefined;
+  // Ensure SOX_SANDBOX_ROOT is unset for these tests so we assert real-HOME paths.
+  let _savedSandbox: string | undefined;
   beforeEach(() => {
-    _savedSoxHome = process.env['SOX_HOME'];
-    delete process.env['SOX_HOME'];
+    _savedSandbox = process.env['SOX_SANDBOX_ROOT'];
+    delete process.env['SOX_SANDBOX_ROOT'];
   });
   afterEach(() => {
-    if (_savedSoxHome === undefined) {
-      delete process.env['SOX_HOME'];
+    if (_savedSandbox === undefined) {
+      delete process.env['SOX_SANDBOX_ROOT'];
     } else {
-      process.env['SOX_HOME'] = _savedSoxHome;
+      process.env['SOX_SANDBOX_ROOT'] = _savedSandbox;
     }
   });
 
@@ -460,84 +460,96 @@ describe('detect() — host detection from workspace fixtures', () => {
   });
 });
 
-// ─── [host-registry.6] SOX_HOME sandbox isolation — [inv:sandbox-isolation] ──
+// ─── [host-registry.6] SOX_SANDBOX_ROOT sandbox isolation — [inv:sandbox-isolation] ──
+// ADR-0004 §D3: the isolation switch is SOX_SANDBOX_ROOT (split off the data root).
 
-describe('host-registry.6 — SOX_HOME sandbox isolation [inv:sandbox-isolation]', () => {
+describe('host-registry.6 — SOX_SANDBOX_ROOT sandbox isolation [inv:sandbox-isolation]', () => {
   /**
-   * When SOX_HOME is set, ALL user-scope absolute paths must reroot under SOX_HOME
-   * so the probe_done assertion (zero real-home writes) holds.
-   * getBase() / getCodexBase() read the env at call time, not module load time.
+   * When SOX_SANDBOX_ROOT is set, ALL user-scope absolute paths must reroot under it
+   * so the probe_done assertion (zero real-home writes) holds. getBase() /
+   * getCodexBase() read the env at call time, not module load time.
    */
 
+  let savedSandbox: string | undefined;
+  let savedEcosystemHome: string | undefined;
   let savedSoxHome: string | undefined;
 
   beforeEach(() => {
-    savedSoxHome = process.env['SOX_HOME'];
+    savedSandbox = process.env['SOX_SANDBOX_ROOT'];
+    savedEcosystemHome = process.env['SOX_ECOSYSTEM_HOME'];
+    savedSoxHome = process.env['SOX_SANDBOX_ROOT'];
+    // Ensure a clean slate: no stray data-root/legacy vars leaking into placement.
+    delete process.env['SOX_SANDBOX_ROOT'];
+    delete process.env['SOX_ECOSYSTEM_HOME'];
+    delete process.env['SOX_SANDBOX_ROOT'];
   });
+
+  const restore = (key: string, val: string | undefined): void => {
+    if (val === undefined) delete process.env[key];
+    else process.env[key] = val;
+  };
 
   afterEach(() => {
-    if (savedSoxHome === undefined) {
-      delete process.env['SOX_HOME'];
-    } else {
-      process.env['SOX_HOME'] = savedSoxHome;
-    }
+    restore('SOX_SANDBOX_ROOT', savedSandbox);
+    restore('SOX_ECOSYSTEM_HOME', savedEcosystemHome);
+    restore('SOX_HOME', savedSoxHome);
   });
 
-  it('claude: scopePaths("user") reroots under SOX_HOME when set', () => {
+  it('claude: scopePaths("user") reroots under SOX_SANDBOX_ROOT when set', () => {
     const sbx = '/tmp/sox-sbx-test-sentinel';
-    process.env['SOX_HOME'] = sbx;
+    process.env['SOX_SANDBOX_ROOT'] = sbx;
     const result = claudeHost.scopePaths('user');
     expect(result.user).toBe(path.join(sbx, '.claude'));
     // Must NOT be the real home
     expect(result.user).not.toBe(path.join(HOME, '.claude'));
   });
 
-  it('claude: surfaces.agent.paths.user reroots under SOX_HOME when set', () => {
+  it('claude: surfaces.agent.paths.user reroots under SOX_SANDBOX_ROOT when set', () => {
     const sbx = '/tmp/sox-sbx-test-sentinel';
-    process.env['SOX_HOME'] = sbx;
+    process.env['SOX_SANDBOX_ROOT'] = sbx;
     const agentPath = claudeHost.surfaces['agent']?.paths.user;
     expect(agentPath).toBe(path.join(sbx, '.claude', 'agents'));
     expect(agentPath).not.toContain(HOME);
   });
 
-  it('claude: surfaces.skill.paths.user reroots under SOX_HOME when set', () => {
+  it('claude: surfaces.skill.paths.user reroots under SOX_SANDBOX_ROOT when set', () => {
     const sbx = '/tmp/sox-sbx-test-sentinel';
-    process.env['SOX_HOME'] = sbx;
+    process.env['SOX_SANDBOX_ROOT'] = sbx;
     const skillPath = claudeHost.surfaces['skill']?.paths.user;
     expect(skillPath).toBe(path.join(sbx, '.claude', 'skills'));
   });
 
-  it('claude: surfaces.command.paths.user reroots under SOX_HOME when set', () => {
+  it('claude: surfaces.command.paths.user reroots under SOX_SANDBOX_ROOT when set', () => {
     const sbx = '/tmp/sox-sbx-test-sentinel';
-    process.env['SOX_HOME'] = sbx;
+    process.env['SOX_SANDBOX_ROOT'] = sbx;
     const cmdPath = claudeHost.surfaces['command']?.paths.user;
     expect(cmdPath).toBe(path.join(sbx, '.claude', 'commands'));
   });
 
-  it('claude: project and local scopes are unaffected by SOX_HOME (relative paths)', () => {
+  it('claude: project and local scopes are unaffected by SOX_SANDBOX_ROOT (relative paths)', () => {
     const sbx = '/tmp/sox-sbx-test-sentinel';
-    process.env['SOX_HOME'] = sbx;
+    process.env['SOX_SANDBOX_ROOT'] = sbx;
     expect(claudeHost.scopePaths('project').project).toBe('.claude');
     expect(claudeHost.scopePaths('local').local).toBe('.claude');
   });
 
-  it('claude: [inv:never-managed] org scope returns empty even with SOX_HOME set', () => {
+  it('claude: [inv:never-managed] org scope returns empty even with SOX_SANDBOX_ROOT set', () => {
     const sbx = '/tmp/sox-sbx-test-sentinel';
-    process.env['SOX_HOME'] = sbx;
+    process.env['SOX_SANDBOX_ROOT'] = sbx;
     const result = claudeHost.scopePaths('org');
     expect(Object.keys(result)).toHaveLength(0);
   });
 
-  it('codex: scopePaths("user") reroots under SOX_HOME/.codex when set', () => {
+  it('codex: scopePaths("user") reroots under SOX_SANDBOX_ROOT/.codex when set', () => {
     const sbx = '/tmp/sox-sbx-test-sentinel';
-    process.env['SOX_HOME'] = sbx;
+    process.env['SOX_SANDBOX_ROOT'] = sbx;
     const result = codexHost.scopePaths('user');
     expect(result.user).toBe(path.join(sbx, '.codex'));
   });
 
-  it('codex: surfaces.skill.paths.user reroots under SOX_HOME/.codex/skills when set', () => {
+  it('codex: surfaces.skill.paths.user reroots under SOX_SANDBOX_ROOT/.codex/skills when set', () => {
     const sbx = '/tmp/sox-sbx-test-sentinel';
-    process.env['SOX_HOME'] = sbx;
+    process.env['SOX_SANDBOX_ROOT'] = sbx;
     const skillPath = codexHost.surfaces['skill']?.paths.user;
     expect(skillPath).toBe(path.join(sbx, '.codex', 'skills'));
   });
@@ -547,33 +559,71 @@ describe('host-registry.6 — SOX_HOME sandbox isolation [inv:sandbox-isolation]
     expect(codexHost.surfaces['skill']?.paths.project).toBe('.codex/skills');
   });
 
-  it('both hosts: paths restore to HOME-based values when SOX_HOME is unset', () => {
-    process.env['SOX_HOME'] = '/tmp/sox-sbx-test-sentinel';
+  it('both hosts: paths restore to HOME-based values when SOX_SANDBOX_ROOT is unset', () => {
+    process.env['SOX_SANDBOX_ROOT'] = '/tmp/sox-sbx-test-sentinel';
     // verify sandboxed
     expect(claudeHost.scopePaths('user').user).not.toBe(path.join(HOME, '.claude'));
     // unset
-    delete process.env['SOX_HOME'];
+    delete process.env['SOX_SANDBOX_ROOT'];
     // verify restored
     expect(claudeHost.scopePaths('user').user).toBe(path.join(HOME, '.claude'));
     const codexHome = process.env['CODEX_HOME'] ?? path.join(HOME, '.codex');
     expect(codexHost.scopePaths('user').user).toBe(codexHome);
+  });
+
+  // ─── [inv:data-root-never-reroutes] — ADR-0004 §D3 governing invariant ──────
+  // Setting SOX_ECOSYSTEM_HOME (the data root) must NEVER change a host placement
+  // path. This is the exact failure the founder hit (data var rerouting placement),
+  // encoded as a test.
+
+  it('[inv:data-root-never-reroutes]: SOX_ECOSYSTEM_HOME does NOT reroot claude user placement', () => {
+    process.env['SOX_ECOSYSTEM_HOME'] = '/tmp/sox-data-root-sentinel';
+    // SOX_SANDBOX_ROOT is unset (cleared in beforeEach) → placement must hit real HOME.
+    expect(claudeHost.scopePaths('user').user).toBe(path.join(HOME, '.claude'));
+    expect(claudeHost.surfaces['skill']?.paths.user).toBe(path.join(HOME, '.claude', 'skills'));
+    expect(claudeHost.surfaces['mcp-server']?.paths.user).toBe(path.join(HOME, '.claude.json'));
+  });
+
+  it('[inv:data-root-never-reroutes]: SOX_ECOSYSTEM_HOME does NOT reroot codex user placement', () => {
+    process.env['SOX_ECOSYSTEM_HOME'] = '/tmp/sox-data-root-sentinel';
+    const codexHome = process.env['CODEX_HOME'] ?? path.join(HOME, '.codex');
+    expect(codexHost.scopePaths('user').user).toBe(codexHome);
+    expect(codexHost.surfaces['skill']?.paths.user).toBe(path.join(codexHome, 'skills'));
+  });
+
+  it('[inv:data-root-never-reroutes]: legacy SOX_HOME does NOT reroot placement (retired)', () => {
+    // ADR-0004: SOX_HOME is retired. A still-set SOX_HOME must NOT reroot placement
+    // (only SOX_SANDBOX_ROOT does).
+    process.env['SOX_HOME'] = '/tmp/sox-legacy-sentinel';
+    expect(claudeHost.scopePaths('user').user).toBe(path.join(HOME, '.claude'));
+    expect(codexHost.scopePaths('user').user).toBe(
+      process.env['CODEX_HOME'] ?? path.join(HOME, '.codex'),
+    );
+  });
+
+  it('sandbox + data-root together: only SOX_SANDBOX_ROOT governs placement', () => {
+    process.env['SOX_SANDBOX_ROOT'] = '/tmp/sox-sbx';
+    process.env['SOX_ECOSYSTEM_HOME'] = '/tmp/sox-data';
+    // Placement follows SANDBOX, never the data root.
+    expect(claudeHost.scopePaths('user').user).toBe(path.join('/tmp/sox-sbx', '.claude'));
+    expect(claudeHost.scopePaths('user').user).not.toContain('sox-data');
   });
 });
 
 // ─── [host-registry.5] P0.6 path verification recorded ───────────────────────
 
 describe('host-registry.5 — P0.6 codex path verification', () => {
-  // Ensure SOX_HOME is unset so we assert real-HOME paths (not sandbox paths).
-  let _savedSoxHome: string | undefined;
+  // Ensure SOX_SANDBOX_ROOT is unset so we assert real-HOME paths (not sandbox paths).
+  let _savedSandbox: string | undefined;
   beforeEach(() => {
-    _savedSoxHome = process.env['SOX_HOME'];
-    delete process.env['SOX_HOME'];
+    _savedSandbox = process.env['SOX_SANDBOX_ROOT'];
+    delete process.env['SOX_SANDBOX_ROOT'];
   });
   afterEach(() => {
-    if (_savedSoxHome === undefined) {
-      delete process.env['SOX_HOME'];
+    if (_savedSandbox === undefined) {
+      delete process.env['SOX_SANDBOX_ROOT'];
     } else {
-      process.env['SOX_HOME'] = _savedSoxHome;
+      process.env['SOX_SANDBOX_ROOT'] = _savedSandbox;
     }
   });
 

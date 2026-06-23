@@ -42,9 +42,9 @@
  *   local   -> not applicable for Codex (CLI flags > profile > project > user)
  *   org     -> not applicable; no managed tier in Codex
  *
- * [inv:sandbox-isolation]: when SOX_HOME is set (sandbox/test mode), ALL absolute
- *   user-scope paths reroot under SOX_HOME so probe_done can assert zero real-home writes.
- *   getCodexBase() reads SOX_HOME at call time — NOT at module load time.
+ * [inv:sandbox-isolation]: when SOX_SANDBOX_ROOT is set (sandbox/test mode), ALL absolute
+ *   user-scope paths reroot under SOX_SANDBOX_ROOT so probe_done can assert zero real-home writes.
+ *   getCodexBase() reads SOX_SANDBOX_ROOT at call time — NOT at module load time.
  */
 
 import * as os from 'os';
@@ -111,18 +111,18 @@ const HOME = os.homedir();
  * [inv:sandbox-isolation]: Return the effective base directory for Codex user-scope paths.
  *
  * Priority:
- *   1. SOX_HOME (sandbox/test isolation — reroots ALL scopes under the sandbox)
+ *   1. SOX_SANDBOX_ROOT (sandbox/test isolation — reroots ALL scopes under the sandbox)
  *   2. CODEX_HOME (user-configured Codex home)
  *   3. ~/.codex (default per Codex binary)
  *
  * Reads at call time so env vars set after module load are honoured.
- * When SOX_HOME is set, skills go to $SOX_HOME/.codex/skills (not the real ~/.codex).
+ * When SOX_SANDBOX_ROOT is set, skills go to $SOX_SANDBOX_ROOT/.codex/skills (not the real ~/.codex).
  */
 function getCodexBase(): string {
-  const soxHome = process.env['SOX_HOME'];
-  if (soxHome !== undefined && soxHome !== '') {
-    // Sandbox mode: reroot under SOX_HOME/.codex
-    return path.join(soxHome, '.codex');
+  const sandbox = process.env['SOX_SANDBOX_ROOT'];
+  if (sandbox !== undefined && sandbox !== '') {
+    // Sandbox mode (ADR-0004 §D3): reroot under SOX_SANDBOX_ROOT/.codex.
+    return path.join(sandbox, '.codex');
   }
   // Normal mode: honour CODEX_HOME or fall back to ~/.codex
   return process.env['CODEX_HOME'] ?? path.join(HOME, '.codex');
@@ -144,7 +144,7 @@ function scopePaths(scope: HostScope): ScopePathMap {
       // .codex/ at repo root — trust-restricted AND key-restricted.
       return { project: '.codex' };
     case 'user':
-      // $CODEX_HOME (defaults to ~/.codex) — rerooted under SOX_HOME when set.
+      // $CODEX_HOME (defaults to ~/.codex) — rerooted under SOX_SANDBOX_ROOT when set.
       return { user: getCodexBase() };
     case 'local':
       // Codex has no local-override scope; local -> project for compat.
@@ -168,7 +168,7 @@ function scopePaths(scope: HostScope): ScopePathMap {
  *
  * All config surfaces use config-merge (toml) — [inv:format-aware-merge].
  * Literal ~/.codex/ paths live HERE — [ref:host-keyed-target].
- * User-scope absolute paths use getCodexBase() so SOX_HOME sandboxing is honoured.
+ * User-scope absolute paths use getCodexBase() so SOX_SANDBOX_ROOT sandboxing is honoured.
  *
  * P0.6 verified paths:
  *   Skills: $CODEX_HOME/skills/<skill-name>  (= ~/.codex/skills by default)
@@ -201,7 +201,7 @@ function buildSurfaces(): SurfaceMap {
       capability: 'file-drop',
       paths: {
         // P0.6: skills path is ALWAYS user-scoped ($CODEX_HOME); no project-scope skills path.
-        // When SOX_HOME is set, rerooted to $SOX_HOME/.codex/skills.
+        // When SOX_SANDBOX_ROOT is set, rerooted to $SOX_SANDBOX_ROOT/.codex/skills.
         // For guard test-4: `--scope project` will also look at project path first;
         // since codex skill has no project path, it falls through to user path.
         // But guard-4 uses `--scope project` and asserts $SBX/.codex/skills/<name>.
@@ -280,7 +280,7 @@ function buildSurfaces(): SurfaceMap {
     //   "Repo/team plugin: <repo-root>/.agents/plugins/marketplace.json"
     // Plugin structure: <plugin-dir>/.codex-plugin/plugin.json
     // config.toml [plugins."<p>@<m>"] holds toggles.
-    // NOTE: plugins use HOME (not SOX_HOME/codexBase) since they live in ~/.agents/,
+    // NOTE: plugins use HOME (not SOX_SANDBOX_ROOT/codexBase) since they live in ~/.agents/,
     // not ~/.codex/. The guard does not test plugin installs so this is safe.
     plugin: {
       capability: 'file-drop',
@@ -315,7 +315,7 @@ export const codexHost: HostModule = {
   detect,
   scopePaths,
   // [inv:sandbox-isolation]: surfaces is a getter that calls buildSurfaces() each time,
-  // so SOX_HOME set after import is honoured for all user-scope path lookups.
+  // so SOX_SANDBOX_ROOT set after import is honoured for all user-scope path lookups.
   get surfaces(): SurfaceMap {
     return buildSurfaces();
   },

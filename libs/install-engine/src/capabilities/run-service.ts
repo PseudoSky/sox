@@ -9,12 +9,16 @@
  * The capability layer creates/removes the service-manifest that the supervisor
  * reads to start/stop the service.
  *
- * Action  : write service-manifest at <scopeRoot>/.sox/services/<ext>.json
+ * Action  : write service-manifest at <dataDir>/services/<ext>.json
  * Reverse : remove the service-manifest (supervisor will stop the service)
  * Update  : compare manifest content vs desired
  * Verify  : manifest present and content matches
  *
  * No shared file — no ledger required.
+ *
+ * NOTE (ADR-0004 §D2): `target.scopeRoot` is the resolved `.adhd/sox-ecosystem`
+ * data directory for the scope. This capability writes directly under it (no
+ * extra `.sox` subdir).
  */
 
 import * as fs from 'fs';
@@ -35,7 +39,7 @@ export interface ServiceSpec {
 }
 
 export interface RunServiceTarget {
-  /** Absolute path to the scope root (where .sox/ lives). */
+  /** Resolved data directory (ADR-0004 §D2 `.adhd/sox-ecosystem` for the scope). */
   scopeRoot: string;
   /** Stable service ID (matches ext id). */
   serviceId: string;
@@ -66,7 +70,7 @@ export interface VerifyResult {
 // --- Helpers ---
 
 function manifestPath(scopeRoot: string, serviceId: string): string {
-  return path.join(scopeRoot, '.sox', 'services', `${serviceId}.json`);
+  return path.join(scopeRoot, 'services', `${serviceId}.json`);
 }
 
 function specHash(spec: ServiceSpec): string {
@@ -95,15 +99,15 @@ export async function apply(ctx: RunServiceCtx): Promise<void> {
     fs.writeFileSync(mp, desired, 'utf8');
   }
 
-  // [def:store-dir]: create <scopeRoot>/.sox/ext/<id>/ — the materialized bundle store.
-  const storeDir = path.join(scopeRoot, '.sox', 'ext', serviceId);
+  // [def:store-dir]: create <dataDir>/ext/<id>/ — the materialized bundle store.
+  const storeDir = path.join(scopeRoot, 'ext', serviceId);
   if (!fs.existsSync(storeDir)) {
     fs.mkdirSync(storeDir, { recursive: true });
   }
 
   // Write/update the global registry.json — the supervisor reads this for all services.
   // Format: { "<id>": { id, command, args, status, storePath } }
-  const registryPath = path.join(scopeRoot, '.sox', 'registry.json');
+  const registryPath = path.join(scopeRoot, 'registry.json');
   let registry: Record<string, unknown> = {};
   if (fs.existsSync(registryPath)) {
     try {

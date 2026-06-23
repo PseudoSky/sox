@@ -5,7 +5,8 @@
  * machine. Used by `sox list --all` and `sox stop` (daemon mode) to locate
  * supervisors without requiring a terminal reference.
  *
- * File location: $SOX_HOME/supervisors.json (defaults to ~/.sox/supervisors.json)
+ * File location: $userDataRoot/supervisors.json (ADR-0004 §D7; default
+ * ~/.adhd/sox-ecosystem/supervisors.json, or $SOX_ECOSYSTEM_HOME/supervisors.json)
  *
  * Locking: atomic rename (write to .tmp, then rename). Concurrent writers
  * last-write-win on the temp-rename race, which is acceptable because each
@@ -17,7 +18,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as os from 'node:os';
+import { supervisorsPath } from './data-paths.js';
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -50,12 +51,12 @@ export interface SupervisorsFile {
 // ─── Path resolution ──────────────────────────────────────────────────────────
 
 /**
- * Returns the path to ~/.sox/supervisors.json (or $SOX_HOME/supervisors.json).
- * Respects the SOX_HOME env var to keep the existing redirect contract intact.
+ * Returns the path to the global supervisors registry (ADR-0004 §D7).
+ * Resolved via the single data-root resolver: $SOX_ECOSYSTEM_HOME/supervisors.json
+ * (default ~/.adhd/sox-ecosystem/supervisors.json).
  */
 export function getSupervisorsFilePath(): string {
-  const soxHome = process.env['SOX_HOME'] ?? path.join(os.homedir(), '.sox');
-  return path.join(soxHome, 'supervisors.json');
+  return supervisorsPath();
 }
 
 // ─── Read / Write ─────────────────────────────────────────────────────────────

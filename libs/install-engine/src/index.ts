@@ -82,6 +82,27 @@ export { checkProviderCapabilities, loadCapabilityTable } from './provider-capab
 export type { LifecycleCtx, UpdateCtx, UpdateResult, HostScope as LifecycleHostScope } from './lifecycle.js';
 export { uninstall, update, ReverseAbortError } from './lifecycle.js';
 
+// ─── ADR-0004: ownership index ───────────────────────────────────────────────
+export {
+  OwnershipIndex,
+  readOwnership,
+  writeOwnershipAtomic,
+  supersededEntries,
+} from './ownership.js';
+export type { OwnedEntry, OwnershipRecord, OwnershipFile } from './ownership.js';
+
+// ─── ADR-0004: data-paths resolver (leaf) ────────────────────────────────────
+export {
+  dataRoot,
+  userDataRoot,
+  scopeConfigPaths,
+  ledgerPathFor,
+  ownershipPathFor,
+  storeRootFor,
+  installRegistryPath,
+} from './data-paths.js';
+export type { DataScope } from './data-paths.js';
+
 // ─── Re-export diff ──────────────────────────────────────────────────────────
 
 export type { ActionDiff, ExtensionDiff, DiffKind } from './diff.js';

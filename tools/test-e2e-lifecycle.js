@@ -31,7 +31,11 @@ const NODE = process.execPath;
 // ─── Temp dir (throwaway, not in .tmp-* which are reserved for other tools) ───
 
 const TMP_DIR = path.join(os.tmpdir(), `sox-e2e-${process.pid}-${Date.now()}`);
-const EXTENSIONS_DIR = path.join(TMP_DIR, '.extensions');
+// ADR-0004 §D2: project-scope data lives under <root>/.adhd/sox-ecosystem/ — the
+// canonical layout getScopePaths resolves to. Placing the harness config/lockfile
+// here means `sox list`/`enable` (which resolve via getScopePaths, no override) find
+// it without an explicit --lockfile/--config flag.
+const EXTENSIONS_DIR = path.join(TMP_DIR, '.adhd', 'sox-ecosystem');
 const RUNTIME_FILE = path.join(EXTENSIONS_DIR, 'runtime.json');
 
 // [process-boundary.exec] C6 enforcement: DB_PATH must be INSIDE the declared allowlist
@@ -953,9 +957,20 @@ async function main() {
     const declScopeRootProject = declTmpDir;
     const declScopeRootUser = path.join(os.tmpdir(), `sox-e2e-decl-user-${process.pid}-${Date.now()}`);
 
+    // ADR-0004 §D3: isolate USER-SCOPE host placements under SOX_SANDBOX_ROOT so the
+    // D2/D3 declarative installs reroot away from the real ~/.claude. Setting the data
+    // root (SOX_ECOSYSTEM_HOME) would NOT isolate placement ([inv:data-root-never-reroutes]);
+    // only the dedicated sandbox var does. A still-inherited legacy SOX_HOME is now inert.
+    const SANDBOX_ROOT = path.join(os.tmpdir(), `sox-e2e-sandbox-${process.pid}-${Date.now()}`);
+    const _priorSandbox = process.env['SOX_SANDBOX_ROOT'];
+    process.env['SOX_SANDBOX_ROOT'] = SANDBOX_ROOT;
+
     process.on('exit', () => {
       try { fs.rmSync(declTmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
       try { fs.rmSync(declScopeRootUser, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { fs.rmSync(SANDBOX_ROOT, { recursive: true, force: true }); } catch { /* ignore */ }
+      if (_priorSandbox === undefined) delete process.env['SOX_SANDBOX_ROOT'];
+      else process.env['SOX_SANDBOX_ROOT'] = _priorSandbox;
       // Remove agent files placed at user scope (~/.claude/agents/sox-e2e-agent-*.md)
       try {
         const claudeAgentsDir = path.join(os.homedir(), '.claude', 'agents');
@@ -1070,9 +1085,10 @@ async function main() {
           assert(content.includes('E2E User Agent'), 'D2: placed file contains expected content');
 
           // Verify target path is inside ~/.claude/agents/ ([ref:host-keyed-target])
-          // [inv:sandbox-isolation]: SOX_HOME reroots user-scope paths in test/probe
-          // environments; use the effective base rather than os.homedir() directly.
-          const effectiveBase = process.env['SOX_HOME'] || os.homedir();
+          // ADR-0004 §D3 [inv:sandbox-isolation]: SOX_SANDBOX_ROOT reroots user-scope
+          // host paths in test/probe environments; use it as the effective base. The
+          // data root (SOX_ECOSYSTEM_HOME) and the retired SOX_HOME never reroot here.
+          const effectiveBase = process.env['SOX_SANDBOX_ROOT'] || os.homedir();
           const homeAgentsDir = path.join(effectiveBase, '.claude', 'agents');
           assert(expectedTarget.startsWith(homeAgentsDir),
             `D2: target is inside ~/.claude/agents (got ${expectedTarget})`);
@@ -1149,7 +1165,7 @@ async function main() {
 
           // diff shows up-to-date
           // Debug: show ledger contents
-          const d3LedgerPath = path.join(d3ScopeRoot, '.sox', 'ledger.json');
+          const d3LedgerPath = path.join(d3ScopeRoot, 'ledger.json');
           if (fs.existsSync(d3LedgerPath)) {
             const d3Ledger = JSON.parse(fs.readFileSync(d3LedgerPath, 'utf8'));
             console.log(`  D3 ledger: ${JSON.stringify(d3Ledger).slice(0, 300)}`);
@@ -1331,8 +1347,9 @@ async function main() {
       assert(Array.isArray(eResults) && eResults.length > 0,
         'E1: declarativeInstall(service) returned a result');
 
-      // The copied store: <scopeRoot>/.sox/ext/memory-daemon/index.js
-      const storePath = path.join(eScopeRoot, '.sox', 'ext', 'memory-daemon');
+      // The copied store: <scopeRoot>/ext/memory-daemon/index.js
+      // ADR-0004 §D2: scopeRoot IS the data dir; the store lives directly under it.
+      const storePath = path.join(eScopeRoot, 'ext', 'memory-daemon');
       const storeEntry = path.join(storePath, 'index.js');
       assert(fs.existsSync(storeEntry),
         `E2: bundle materialized into copied store at ${storeEntry}`);
@@ -1345,7 +1362,8 @@ async function main() {
       }
 
       // 2. Read the run-service registry spec the install produced (the REAL command/env).
-      const registryPath = path.join(eScopeRoot, '.sox', 'registry.json');
+      // ADR-0004 §D2: run-service registry lives directly under the data dir.
+      const registryPath = path.join(eScopeRoot, 'registry.json');
       assert(fs.existsSync(registryPath), `E3: run-service registry written (${registryPath})`);
       const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
       const spec = registry['memory-daemon'];
@@ -1420,6 +1438,76 @@ async function main() {
       assertionsFailed++;
     } finally {
       cleanupSectionE();
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Section P3: ADR-0004 placement reality proof — user-scope install reaches the
+  // REAL ~/.claude (temp HOME), data lands under $SOX_ECOSYSTEM_HOME, sandbox unset.
+  // Runs in a child process so it can override HOME before any module loads.
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\n' + '═'.repeat(60));
+  console.log('Section P3: ADR-0004 placement → real ~/.claude [inv:data-root-never-reroutes]');
+  console.log('═'.repeat(60));
+  {
+    const probe = spawnSync(NODE, [path.join(ROOT, 'tools', 'probe-adr0004-placement.mjs')], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      // Strip any inherited sandbox/data vars; the probe sets its own.
+      env: { ...process.env, SOX_SANDBOX_ROOT: '', SOX_HOME: '', SOX_ECOSYSTEM_HOME: '' },
+    });
+    if (probe.stdout) process.stdout.write(probe.stdout);
+    if (probe.status === 0) {
+      assert(true, 'P3: user-scope placement reaches real ~/.claude; data under $SOX_ECOSYSTEM_HOME');
+    } else {
+      if (probe.stderr) process.stderr.write(probe.stderr);
+      assert(false, `P3: placement reality proof failed (exit ${probe.status})`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Section R: ADR-0004 §D6b reversibility gate — install → assert injected →
+  // uninstall → assert ZERO residue + host config byte-identical to pre-install.
+  // [inv:no-untracked-injection] / [inv:reversible-injection]. Child process so it
+  // can use a throwaway HOME.
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\n' + '═'.repeat(60));
+  console.log('Section R: ADR-0004 reversibility gate [inv:reversible-injection]');
+  console.log('═'.repeat(60));
+  {
+    const probe = spawnSync(NODE, [path.join(ROOT, 'tools', 'probe-adr0004-reversibility.mjs')], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: { ...process.env, SOX_SANDBOX_ROOT: '', SOX_HOME: '', SOX_ECOSYSTEM_HOME: '' },
+    });
+    if (probe.stdout) process.stdout.write(probe.stdout);
+    if (probe.status === 0) {
+      assert(true, 'R: install→uninstall leaves host files byte-clean (ownership index reversal)');
+    } else {
+      if (probe.stderr) process.stderr.write(probe.stderr);
+      assert(false, `R: reversibility gate failed (exit ${probe.status})`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Section M: ADR-0004 §D8 migrate-home — relocate old data + re-place skills/MCP
+  // into the real ~/.claude, idempotently. Fixture-based; child process.
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\n' + '═'.repeat(60));
+  console.log('Section M: ADR-0004 migrate-home (fixture proof)');
+  console.log('═'.repeat(60));
+  {
+    const probe = spawnSync(NODE, [path.join(ROOT, 'tools', 'probe-adr0004-migrate-home.mjs')], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: { ...process.env, SOX_SANDBOX_ROOT: '', SOX_HOME: '', SOX_ECOSYSTEM_HOME: '' },
+    });
+    if (probe.stdout) process.stdout.write(probe.stdout);
+    if (probe.status === 0) {
+      assert(true, 'M: migrate-home relocates data + re-places skills/MCP into real ~/.claude, idempotently');
+    } else {
+      if (probe.stderr) process.stderr.write(probe.stderr);
+      assert(false, `M: migrate-home fixture proof failed (exit ${probe.status})`);
     }
   }
 

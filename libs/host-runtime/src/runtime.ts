@@ -15,6 +15,7 @@ import type { McpAdapterHandle } from './adapters/mcp.js';
 import { acquireStartLock, computeSupervisorId } from './lock.js';
 import { registerSupervisor, deregisterSupervisor, readSupervisorsFile } from './registry.js';
 import { killAndVerify, reapBySource, reapByIdentity, identityToken, type KillOutcome } from './reaper.js';
+import { logDirFor, socketDir, scopeConfigPaths, type DataScope } from './data-paths.js';
 
 export interface RuntimeEntry {
   key: string;
@@ -102,9 +103,8 @@ async function _startRuntimeLocked(
   const sourceMap = readLockfileSourceMap(opts.lockfilePath);
   const loaderEnv = opts.env ?? {};
 
-  // R4: log directory for this supervisor's extensions.
-  const soxHomeForLogs = process.env['SOX_HOME'] ?? path.join(os.homedir(), '.sox');
-  const logDir = path.join(soxHomeForLogs, 'logs', supervisorId);
+  // R4: log directory for this supervisor's extensions (ADR-0004 §D2: under run/).
+  const logDir = logDirFor(supervisorId);
 
   const loaderResult = await loadFromLockfile({
     lockfilePath: opts.lockfilePath,
@@ -192,11 +192,10 @@ async function _startRuntimeLocked(
   // Request:  { "ext": string, "tool": string, "args": object }
   // Response: { "result": McpCallResult } | { "error": string }
   //
-  // Add-2: Canonical socket path in ~/.sox/supervisors/<supervisorId>.sock
-  // — avoids polluting project directories and is discoverable from the global
-  //   supervisor registry (R1/P4).
-  const soxHome = process.env['SOX_HOME'] ?? path.join(os.homedir(), '.sox');
-  const sockDir = path.join(soxHome, 'supervisors');
+  // Add-2: Canonical socket path under the user data root's run/supervisors/ dir
+  // (ADR-0004 §D2) — avoids polluting project directories and is discoverable from
+  // the global supervisor registry (R1/P4).
+  const sockDir = socketDir();
   fs.mkdirSync(sockDir, { recursive: true });
   const execSocketPath = path.join(sockDir, `${supervisorId}.sock`);
   // Remove stale socket file from a previous (unclean) shutdown.
@@ -815,24 +814,9 @@ export function getScopePaths(
   scope: string,
   root: string,
 ): { config: string; lockfile: string } {
-  const homedir = os.homedir();
-  switch (scope) {
-    case 'user':
-      return {
-        config: path.join(homedir, '.config', 'extensions', 'extensions.json'),
-        lockfile: path.join(homedir, '.config', 'extensions', 'extensions.lock'),
-      };
-    case 'project':
-      return {
-        config: path.join(root, '.extensions', 'extensions.json'),
-        lockfile: path.join(root, '.extensions', 'extensions.lock'),
-      };
-    case 'local':
-      return {
-        config: path.join(root, '.extensions', 'extensions.local.json'),
-        lockfile: path.join(root, '.extensions', 'extensions.local.lock'),
-      };
-    default:
-      throw new Error(`[runtime] Unknown scope '${scope}'. Valid: user, project, local`);
+  // ADR-0004 §D2: single resolver — all scopes under `.adhd/sox-ecosystem/`.
+  if (scope !== 'user' && scope !== 'project' && scope !== 'local' && scope !== 'org') {
+    throw new Error(`[runtime] Unknown scope '${scope}'. Valid: user, project, local, org`);
   }
+  return scopeConfigPaths(scope as DataScope, root);
 }

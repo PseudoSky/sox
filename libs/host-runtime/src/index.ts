@@ -76,6 +76,24 @@ export {
   getRuntimeFilePath,
   getScopePaths,
 } from './runtime.js';
+
+// ─── ADR-0004: single data-root resolver ──────────────────────────────────────
+export {
+  DATA_SUBDIR,
+  userDataRoot,
+  dataRoot,
+  scopeConfigPaths,
+  ledgerPathFor,
+  ownershipPathFor,
+  storeRootFor,
+  installRegistryPath,
+  supervisorsPath,
+  runDir,
+  logDirFor,
+  socketDir,
+} from './data-paths.js';
+export type { DataScope } from './data-paths.js';
+
 export type {
   RuntimeEntry,
   RuntimeRecord,

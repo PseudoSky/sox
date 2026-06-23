@@ -19,7 +19,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import * as os from 'os';
+import { storeRootFor } from '../data-paths.js';
 
 // --- Types ---
 
@@ -68,7 +68,8 @@ export interface VerifyResult {
 // --- Helpers ---
 
 export function defaultStoreRoot(): string {
-  return path.join(os.homedir(), '.sox', 'ext');
+  // ADR-0004 §D2/§D1: default store root = $userDataRoot/ext.
+  return storeRootFor('user');
 }
 
 function storePath(storeRoot: string, extRef: string): string {

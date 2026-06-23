@@ -15,6 +15,7 @@ import * as path from 'node:path';
 import type { ScopeConfig as CascadeScopeConfig, ResolvedConfigMap } from './cascade.js';
 import { cascade } from './cascade.js';
 import { upsertInstallRecord } from './install-registry.js';
+import { scopeConfigPaths } from './data-paths.js';
 import { checkProviderCapabilities } from './provider-capabilities.js';
 // verify-integrity imports from this module (install.ts); the cycle is safe
 // because verifyIntegrity is only invoked at runtime, never at module-eval time.
@@ -148,28 +149,9 @@ declare const __dirname: string;
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
 export function getScopePath(scope: Scope): { config: string; lockfile: string } {
-  switch (scope) {
-    case 'org':
-      return {
-        config: path.join(REPO_ROOT, '.extensions', 'org.extensions.json'),
-        lockfile: path.join(REPO_ROOT, '.extensions', 'org.extensions.lock'),
-      };
-    case 'user':
-      return {
-        config: path.join(os.homedir(), '.config', 'extensions', 'extensions.json'),
-        lockfile: path.join(os.homedir(), '.config', 'extensions', 'extensions.lock'),
-      };
-    case 'project':
-      return {
-        config: path.join(REPO_ROOT, '.extensions', 'extensions.json'),
-        lockfile: path.join(REPO_ROOT, '.extensions', 'extensions.lock'),
-      };
-    case 'local':
-      return {
-        config: path.join(REPO_ROOT, '.extensions', 'extensions.local.json'),
-        lockfile: path.join(REPO_ROOT, '.extensions', 'extensions.local.lock'),
-      };
-  }
+  // ADR-0004 §D2: single resolver — all scopes under `.adhd/sox-ecosystem/`.
+  // project/org/local root = REPO_ROOT (this CLI's workspace); user = data root.
+  return scopeConfigPaths(scope, REPO_ROOT);
 }
 
 // ─── Config loading ───────────────────────────────────────────────────────────
@@ -1073,6 +1055,8 @@ function resolveActiveProvider(configs: ScopeConfigWithMeta[]): string | undefin
 // [inv:never-managed]: managed/forbidden keys are blocked in the registry itself.
 // [inv:ledger-reversible]: every placement is recorded in the per-scope ledger.
 import { Ledger } from './ledger.js';
+// [inv:no-untracked-injection]: every placement is ALSO recorded in the ownership index.
+import { OwnershipIndex, type OwnedEntry } from './ownership.js';
 
 // ─── Host-registry: loaded at runtime from dist to avoid cross-lib rootDir ──
 // [ref:host-keyed-target]: all literal host paths live in libs/host-registry.
@@ -1152,6 +1136,12 @@ export interface InstallDescriptor {
   type: string;
   /** Which hosts to install on. */
   hosts: string[];
+  /**
+   * Bundle this extension is being installed as part of, if any (ADR-0004 §D5).
+   * Recorded in the ownership index so a bundle's owned things are grouped and
+   * removed as a unit on uninstall.
+   */
+  bundleId?: string | undefined;
   /** Source content path (absolute) for file-drop types. */
   srcPath?: string | undefined;
   /**
@@ -1215,7 +1205,8 @@ export async function declarativeInstall(
 
   // ── service: materialize bundle → store-dir + run-service registry ─────────
   // [mcp-install-modes.5]: runService is called from install.ts for type:service.
-  // [def:store-dir]: materialized extension at <scopeRoot>/.sox/ext/<id>/
+  // [def:store-dir]: materialized extension at <dataDir>/ext/<id>/ (ADR-0004 §D2;
+  // scopeRoot is the resolved `.adhd/sox-ecosystem` data dir for the scope).
   // Order:
   //   1. Materialize bundle (srcPath/bundle/ → storePath/)
   //   2. Copy extension.json (entrypoint updated to 'index.js')
@@ -1227,7 +1218,7 @@ export async function declarativeInstall(
 
   if (isServiceInstall) {
     const { apply: runServiceApply } = await import('./capabilities/run-service.js');
-    const storeDir = path.join(scopeRoot, '.sox', 'ext');
+    const storeDir = path.join(scopeRoot, 'ext');
     const storePath = path.join(storeDir, descriptor.ext);
 
     // 1. Materialize bundle: copy <srcPath>/bundle/ → <storePath>/
@@ -1315,8 +1306,16 @@ export async function declarativeInstall(
       target: storeDir,
       applied: true,
     });
+
+    // [inv:no-untracked-injection]: record the materialized store as an owned thing.
+    recordOwnership(scopeRoot, descriptor, scope, [
+      { kind: 'materialize', path: storePath },
+    ]);
     return results;
   }
+
+  // [inv:no-untracked-injection]: accumulate every owned thing placed below.
+  const ownedEntries: OwnedEntry[] = [];
 
   for (const hostName of descriptor.hosts) {
     const { getHost: _getHost, expandHome: _expandHome } = loadHostRegistry();
@@ -1423,6 +1422,8 @@ export async function declarativeInstall(
       ledger.save();
 
       results.push({ host: hostName, scope, capability: 'file-drop', target: destPath, applied });
+      // [inv:no-untracked-injection]: the placed file/dir is owned.
+      ownedEntries.push({ kind: 'file-drop', path: destPath });
 
     } else if (surface.capability === 'config-merge') {
       // config-merge: set keyPath to value in the shared config file.
@@ -1456,6 +1457,7 @@ export async function declarativeInstall(
         host: hostName,
         scope,
         scopeRoot,
+        workspaceRoot,
         isProject,
         ext: descriptor.ext,
         ledger,
@@ -1470,10 +1472,50 @@ export async function declarativeInstall(
         target: absTarget,
         applied: true,
       });
+      // [inv:no-untracked-injection]: the merged config key is owned. The applied-hash
+      // is recorded so update/uninstall reverse exactly the value sox set (the ledger
+      // holds the deny-wins reversal logic; the ownership index holds the inventory).
+      ownedEntries.push({
+        kind: 'config-key',
+        file: absTarget,
+        keyPath: resolvedKeyPath,
+      });
     }
   }
 
+  // [inv:no-untracked-injection]: persist the complete owned set for this install.
+  if (ownedEntries.length > 0) {
+    recordOwnership(scopeRoot, descriptor, scope, ownedEntries);
+  }
+
   return results;
+}
+
+/**
+ * recordOwnership — ADR-0004 §D5: upsert the owned-entry set for (ext, scope) into
+ * the ownership index at <scopeRoot>/ownership.json (scopeRoot is the data dir).
+ * Best-effort: a failure here must not fail the install, but it IS logged loudly
+ * because an unrecorded injection violates [inv:no-untracked-injection].
+ */
+function recordOwnership(
+  scopeRoot: string,
+  descriptor: InstallDescriptor,
+  scope: string,
+  entries: OwnedEntry[],
+): void {
+  try {
+    const idx = OwnershipIndex.loadFromFile(path.join(scopeRoot, 'ownership.json'));
+    const meta: { host?: string; bundleId?: string } = {};
+    if (descriptor.hosts[0] !== undefined) meta.host = descriptor.hosts[0];
+    if (descriptor.bundleId !== undefined) meta.bundleId = descriptor.bundleId;
+    idx.addEntries(descriptor.ext, scope, entries, meta);
+    idx.save();
+  } catch (e) {
+    console.error(
+      `[ownership] WARNING: failed to record ownership for ${descriptor.ext} (${scope}): ${String(e)} ` +
+      `— [inv:no-untracked-injection] at risk`,
+    );
+  }
 }
 
 // Internal hash helper for declarative install (does not write ledger).

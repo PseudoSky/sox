@@ -1,0 +1,219 @@
+/**
+ * libs/install-engine/src/ownership.ts — ADR-0004 §D5/§D6 ownership index.
+ *
+ * THE complete, machine-local record of EVERY filesystem location and config key an
+ * install owns, keyed by (extId, scope). Enforces the governing invariants:
+ *
+ *   [inv:no-untracked-injection] — nothing sox places (config key, file/dir, array
+ *     value, materialized store, lockfile key, install-registry record) exists without
+ *     a corresponding ownership entry, recorded at apply time from the capability's own
+ *     return value.
+ *   [inv:reversible-injection] — uninstall consumes this index and surgically reverses
+ *     EXACTLY what was placed, leaving host files byte-clean of sox-owned content while
+ *     preserving foreign entries.
+ *
+ * File: <dataRoot>/ownership.json (per scope, ADR-0004 §D2). Absolute paths on purpose
+ * (machine-local cleanup truth — deliberately NOT portable, unlike the project ledger).
+ *
+ * Leaf-ish module: node builtins + the ledger types only. The actual reversal of
+ * config-key/array-value entries is delegated to the ledger-reversal path in
+ * lifecycle.ts (which has the deny-wins array logic); this module owns the
+ * file/dir/store removal and the index bookkeeping.
+ */
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { ownershipPathFor, type DataScope } from './data-paths.js';
+
+// ─── Entry shapes ──────────────────────────────────────────────────────────────
+
+/** One owned thing. `kind` selects how uninstall reverses it. */
+export type OwnedEntry =
+  | { kind: 'file-drop'; path: string }
+  | { kind: 'materialize'; path: string }
+  | { kind: 'config-key'; file: string; keyPath: string; appliedHash?: string }
+  | { kind: 'array-values'; file: string; keyPath: string; values: string[] }
+  | { kind: 'lockfile-key'; file: string; keyPath: string }
+  | { kind: 'registry-record'; extId: string; scope: string; root: string };
+
+/** Everything one install (extId, scope) owns. */
+export interface OwnershipRecord {
+  extId: string;
+  scope: string;
+  /** Owning host (claude/codex) — informational; entries carry their own targets. */
+  host?: string;
+  /** Bundle this extension was installed as part of, if any (ADR-0004 store grouping). */
+  bundleId?: string;
+  /** Content address of the placed artifact (ADR-0003), when known. */
+  artifactChecksum?: string;
+  installedAt: string;
+  updatedAt: string;
+  entries: OwnedEntry[];
+}
+
+export interface OwnershipFile {
+  version: 1;
+  owned: OwnershipRecord[];
+}
+
+// ─── Read / write (atomic) ──────────────────────────────────────────────────────
+
+export function readOwnership(filePath: string): OwnershipFile {
+  if (!fs.existsSync(filePath)) return { version: 1, owned: [] };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as OwnershipFile;
+    if (!Array.isArray(parsed.owned)) return { version: 1, owned: [] };
+    return parsed;
+  } catch {
+    return { version: 1, owned: [] };
+  }
+}
+
+export function writeOwnershipAtomic(filePath: string, data: OwnershipFile): void {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const tmp = filePath + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
+  fs.renameSync(tmp, filePath);
+}
+
+// ─── Ownership index (per scope) ────────────────────────────────────────────────
+
+/**
+ * The ownership index for one scope. `dataDir` is the resolved `.adhd/sox-ecosystem`
+ * directory; the index lives at `<dataDir>/ownership.json`. Callers obtain `dataDir`
+ * from the data-paths resolver (dataRoot(scope, root)).
+ */
+export class OwnershipIndex {
+  private readonly filePath: string;
+  private data: OwnershipFile;
+
+  private constructor(filePath: string, data: OwnershipFile) {
+    this.filePath = filePath;
+    this.data = data;
+  }
+
+  /** Load (or create) the ownership index at an explicit ownership.json path. */
+  static loadFromFile(filePath: string): OwnershipIndex {
+    return new OwnershipIndex(filePath, readOwnership(filePath));
+  }
+
+  /** Load the ownership index for a scope via the data-paths resolver. */
+  static load(scope: DataScope, root?: string): OwnershipIndex {
+    return OwnershipIndex.loadFromFile(ownershipPathFor(scope, root));
+  }
+
+  get path(): string {
+    return this.filePath;
+  }
+
+  /** Return the record for (extId, scope), or undefined. */
+  get(extId: string, scope: string): OwnershipRecord | undefined {
+    return this.data.owned.find((r) => r.extId === extId && r.scope === scope);
+  }
+
+  /** Return a shallow copy of all records (for inspection/tests). */
+  all(): OwnershipRecord[] {
+    return [...this.data.owned];
+  }
+
+  /**
+   * Record (upsert) the complete owned set for (extId, scope). Replaces any prior
+   * record's `entries` with the new set (callers pass the full set produced by THIS
+   * install). `installedAt` is preserved across updates; `updatedAt` is refreshed.
+   * Enforces [inv:no-untracked-injection]: this is the single write path.
+   */
+  record(opts: {
+    extId: string;
+    scope: string;
+    host?: string;
+    bundleId?: string;
+    artifactChecksum?: string;
+    entries: OwnedEntry[];
+  }): void {
+    const now = new Date().toISOString();
+    const idx = this.data.owned.findIndex(
+      (r) => r.extId === opts.extId && r.scope === opts.scope,
+    );
+    if (idx === -1) {
+      this.data.owned.push({
+        extId: opts.extId,
+        scope: opts.scope,
+        ...(opts.host !== undefined ? { host: opts.host } : {}),
+        ...(opts.bundleId !== undefined ? { bundleId: opts.bundleId } : {}),
+        ...(opts.artifactChecksum !== undefined ? { artifactChecksum: opts.artifactChecksum } : {}),
+        installedAt: now,
+        updatedAt: now,
+        entries: opts.entries,
+      });
+    } else {
+      const prior = this.data.owned[idx]!;
+      this.data.owned[idx] = {
+        ...prior,
+        ...(opts.host !== undefined ? { host: opts.host } : {}),
+        ...(opts.bundleId !== undefined ? { bundleId: opts.bundleId } : {}),
+        ...(opts.artifactChecksum !== undefined ? { artifactChecksum: opts.artifactChecksum } : {}),
+        updatedAt: now,
+        entries: opts.entries,
+      };
+    }
+  }
+
+  /** Append entries to the existing record for (extId, scope) (creating it if absent). */
+  addEntries(extId: string, scope: string, entries: OwnedEntry[], meta?: {
+    host?: string; bundleId?: string; artifactChecksum?: string;
+  }): void {
+    const existing = this.get(extId, scope);
+    const merged = existing ? [...existing.entries, ...entries] : entries;
+    const host = meta?.host ?? existing?.host;
+    const bundleId = meta?.bundleId ?? existing?.bundleId;
+    const artifactChecksum = meta?.artifactChecksum ?? existing?.artifactChecksum;
+    this.record({
+      extId, scope, entries: merged,
+      ...(host !== undefined ? { host } : {}),
+      ...(bundleId !== undefined ? { bundleId } : {}),
+      ...(artifactChecksum !== undefined ? { artifactChecksum } : {}),
+    });
+  }
+
+  /** Remove the record for (extId, scope) entirely. */
+  remove(extId: string, scope: string): void {
+    this.data.owned = this.data.owned.filter(
+      (r) => !(r.extId === extId && r.scope === scope),
+    );
+  }
+
+  /** Persist atomically. */
+  save(): void {
+    writeOwnershipAtomic(this.filePath, this.data);
+  }
+}
+
+// ─── Diff helper for update/upgrade (ADR-0004 §D6) ──────────────────────────────
+
+/**
+ * Compute the set of owned entries present in `oldEntries` but NOT in `newEntries`
+ * — the SUPERSEDED entries an update must remove before placing the new artifact
+ * (e.g. a renamed skill dir, a relocated store). Identity is by kind + target.
+ */
+export function supersededEntries(
+  oldEntries: OwnedEntry[],
+  newEntries: OwnedEntry[],
+): OwnedEntry[] {
+  const key = (e: OwnedEntry): string => {
+    switch (e.kind) {
+      case 'file-drop':
+      case 'materialize':
+        return `${e.kind}:${e.path}`;
+      case 'config-key':
+      case 'array-values':
+        return `${e.kind}:${e.file}:${e.keyPath}`;
+      case 'lockfile-key':
+        return `${e.kind}:${e.file}:${e.keyPath}`;
+      case 'registry-record':
+        return `${e.kind}:${e.extId}:${e.scope}:${e.root}`;
+    }
+  };
+  const newKeys = new Set(newEntries.map(key));
+  return oldEntries.filter((e) => !newKeys.has(key(e)));
+}
