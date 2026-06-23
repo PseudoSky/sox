@@ -1,7 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "memory-server",
-  "version": "1.1.0",
   "type": "mcp-server",
   "visibility": "internal",
   "bundle_id": "sox-memory-bundle",

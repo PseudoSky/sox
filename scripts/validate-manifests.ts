@@ -465,7 +465,7 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
   }
 
   const {
-    id, type, version, config_schema,
+    id, type, config_schema,
     events, invocation, tools, parameters, template_engine, run_interface,
   } = manifest;
 
@@ -491,18 +491,15 @@ function validateSingleManifest(extDir: string): Diagnostic[] {
     }
   }
 
-  // Check 5: version sync (validate-manifests specific — not in libs/manifest)
+  // Check 5: ADR-0003 RETIRED the extension.json↔package.json version sync check.
+  // `version` is no longer an authored field in extension.json (identity is
+  // id + content checksum), so there is no second number to disagree with — the
+  // entire BL-30 dual-write failure class is structurally impossible. We still
+  // confirm package.json exists (it carries the derived display version + build
+  // metadata) and parses, but we DO NOT compare versions.
   if (fs.existsSync(packagePath)) {
-    let pkg: PackageJson;
     try {
-      pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8')) as PackageJson;
-      if (pkg.version !== version) {
-        diags.push({
-          path: manifestPath,
-          message: `version mismatch: extension.json="${version}" vs package.json="${pkg.version}"`,
-          severity: 'error',
-        });
-      }
+      JSON.parse(fs.readFileSync(packagePath, 'utf8'));
     } catch (e) {
       diags.push({
         path: packagePath,
@@ -1187,22 +1184,16 @@ function validateSingleExtensionDir(
     allErrors.push({ path: manifestPath, message: msg, severity: 'error' });
   }
 
-  const { type, version } = manifest;
+  const { type } = manifest;
 
   // Skip Check 4 (type/dir match) — no conventional layout in single-dir mode.
 
-  // Check 5: version sync (validate-manifests specific — not in libs/manifest)
+  // Check 5: ADR-0003 RETIRED the extension.json↔package.json version sync check
+  // (no authored version to disagree with). Confirm package.json exists + parses only.
   const packagePath = path.join(extDir, 'package.json');
   if (fs.existsSync(packagePath)) {
     try {
-      const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8')) as PackageJson;
-      if (pkg.version !== version) {
-        allErrors.push({
-          path: manifestPath,
-          message: `version mismatch: extension.json="${version}" vs package.json="${pkg.version}"`,
-          severity: 'error',
-        });
-      }
+      JSON.parse(fs.readFileSync(packagePath, 'utf8'));
     } catch (e) {
       allErrors.push({
         path: packagePath,

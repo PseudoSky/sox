@@ -1,7 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "memory-usage",
-  "version": "0.1.0",
   "type": "skill",
   "title": "Using the sox memory system",
   "description": "Use when an agent should recall prior knowledge or store durable findings in the sox graph-memory system via the memory_* MCP tools (memory_recall / memory_write / memory_search_entities / memory_invalidate).",

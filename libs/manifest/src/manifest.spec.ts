@@ -59,9 +59,20 @@ describe('validate() — required fields', () => {
     expect(result.errors.some((e) => e.includes('id'))).toBe(true);
   });
 
-  it('fails when version is missing', () => {
+  // ADR-0003: identity is `id` + content checksum. `version` is no longer a
+  // required field — a manifest without it is fully valid. If present, it must
+  // still be well-formed semver (display-only label).
+  it('is VALID when version is missing (ADR-0003: version is not an identity input)', () => {
     const m = minimal('skill');
     delete m['version'];
+    const result = validate(m);
+    expect(result.ok).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('still rejects a present-but-malformed version (display label must be sane)', () => {
+    const m = minimal('skill');
+    m['version'] = 'not-a-semver';
     const result = validate(m);
     expect(result.ok).toBe(false);
     expect(result.errors.some((e) => e.includes('version'))).toBe(true);
@@ -584,13 +595,23 @@ describe('validate() — bundle type', () => {
     expect(result.ok).toBe(false);
   });
 
-  it('fails for bundle member without version', () => {
+  // ADR-0003: members are referenced by `id` only.
+  it('is VALID for an id-only bundle member (no version)', () => {
     const result = validate(minimal('bundle', {
       id: 'my-bundle',
-      members: [{ id: 'other-ext', version: '' }],
+      members: [{ id: 'other-ext' }],
     }));
-    expect(result.ok).toBe(false);
-    expect(result.errors.some((e) => e.includes('version'))).toBe(true);
+    expect(result.ok).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('warns (does not error) when a bundle member still carries a version', () => {
+    const result = validate(minimal('bundle', {
+      id: 'my-bundle',
+      members: [{ id: 'other-ext', version: '^0.1.0' }],
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.includes('version'))).toBe(true);
   });
 });
 

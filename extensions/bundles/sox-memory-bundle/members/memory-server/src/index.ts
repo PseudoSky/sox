@@ -38,6 +38,8 @@ import { serve, defineTool } from '@sox/mcp-runtime';
 import type { ToolDefinition, ToolResult } from '@sox/mcp-runtime';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import * as fs from 'node:fs';
+import * as crypto from 'node:crypto';
 import { openDb, memoryWrite, memoryRecall, enqueueEnrich, memoryUpdate } from '@sox/memory-core';
 import { clusterStats, clusterSubset, buildFiltersClause, ENRICH_VERSION, dropSubsetLens, listSubsetLenses } from '@sox/memory-enrich';
 import type { MemoryFilter } from '@sox/memory-enrich';
@@ -45,6 +47,78 @@ import { monotonicFactory } from 'ulid';
 import Database from 'better-sqlite3';
 
 const ulid = monotonicFactory();
+
+// ─── ADR-0003: content-addressed self-identity ───────────────────────────────
+//
+// The server's identity is `id` + the sha256 content address of its RUNNING
+// entrypoint artifact — never a hand-typed version. `memory_ping` reports it so a
+// human (or CI) asking "what code is actually running?" gets a drift-proof answer.
+//
+// The running entrypoint is THIS executing file (__filename in the compiled CJS
+// bundle = the artifact registry/install pin against). We hash its bytes once and
+// memoize. `host_compat` is read from the sibling extension.json (copied next to
+// the bundle at install time) when present; otherwise a build-time fallback.
+
+const EXTENSION_ID = 'memory-server';
+const HOST_COMPAT_FALLBACK = '>=1.0.0 <2.0.0';
+
+interface ContentAddress {
+  id: string;
+  artifact: string; // "sha256:<full hex>"
+  short: string;    // first 12 hex chars of the digest
+  host_compat: string;
+}
+
+let _contentAddress: ContentAddress | undefined;
+
+/** Compute (and memoize) the content address of the running entrypoint artifact. */
+function getContentAddress(): ContentAddress {
+  if (_contentAddress !== undefined) return _contentAddress;
+
+  // The running artifact: prefer the entry script the process was launched with
+  // (process.argv[1], e.g. <storePath>/index.js), falling back to this module's
+  // own file. Both resolve to the pinned entrypoint in practice.
+  let entry = typeof __filename === 'string' ? __filename : '';
+  const argvEntry = process.argv[1];
+  if (typeof argvEntry === 'string' && argvEntry.length > 0 && fs.existsSync(argvEntry)) {
+    entry = argvEntry;
+  }
+
+  let digest = '';
+  try {
+    const bytes = fs.readFileSync(entry);
+    digest = crypto.createHash('sha256').update(bytes).digest('hex');
+  } catch {
+    // Unreadable artifact (should not happen): degrade to an empty-content hash so
+    // the shape stays valid rather than throwing inside a ping.
+    digest = crypto.createHash('sha256').update(Buffer.alloc(0)).digest('hex');
+  }
+
+  _contentAddress = {
+    id: EXTENSION_ID,
+    artifact: `sha256:${digest}`,
+    short: digest.slice(0, 12),
+    host_compat: readHostCompat(entry),
+  };
+  return _contentAddress;
+}
+
+/** Read compatibility.host from the extension.json sibling of the running artifact. */
+function readHostCompat(entry: string): string {
+  try {
+    const manifestPath = path.join(path.dirname(entry), 'extension.json');
+    if (fs.existsSync(manifestPath)) {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+        compatibility?: { host?: string };
+      };
+      const host = manifest.compatibility?.host;
+      if (typeof host === 'string' && host.length > 0) return host;
+    }
+  } catch {
+    /* fall through to the build-time fallback */
+  }
+  return HOST_COMPAT_FALLBACK;
+}
 
 // ─── Vendored compilePolicyFromEnv — matches [shape:policy-env] ───────────────
 //
@@ -523,7 +597,7 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_stats',
     description:
-      'Return enrichment coverage and cluster quality statistics. Use for health checks and CI gates. Returns tool_version: "1.1.0" signaling v1.1 surface (including memory_update) is present.',
+      'Return enrichment coverage and cluster quality statistics. Use for health checks and CI gates. Returns a `tools` capability list (tool-name presence) — to identify the running code, call memory_ping (content-addressed sha256).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -534,6 +608,13 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     },
   },
 ];
+
+/**
+ * ADR-0003 Decision 5: the set of registered tool NAMES — the capability surface.
+ * Clients test for the capability they need (e.g. `tools.includes('memory_update')`)
+ * instead of inferring it from a `tool_version` semver. Reported by `memory_stats`.
+ */
+const TOOL_NAMES: string[] = TOOLS.map((t) => t.name);
 
 
 /**
@@ -676,8 +757,22 @@ function isSuperseded(db: Database.Database, rowid: number): boolean {
 
 export async function handleToolCall(name: string, args: Record<string, unknown>): Promise<ToolResult> {
   // memory_ping: no db_path needed — handled before the db_path guard.
+  // ADR-0003 Decision 5: report the running server's CONTENT ADDRESS — the
+  // drift-proof answer to "what code is this?" — instead of a hand-typed version.
   if (name === 'memory_ping') {
-    return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };
+    const addr = getContentAddress();
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: true,
+          id: addr.id,
+          artifact: addr.artifact,
+          short: addr.short,
+          host_compat: addr.host_compat,
+        }),
+      }],
+    };
   }
 
   const dbPath = args['db_path'] as string | undefined;
@@ -2117,7 +2212,10 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
 
       return {
         content: [{ type: 'text', text: JSON.stringify({
-          tool_version: '1.1.0',
+          // ADR-0003 Decision 5: capability presence by tool NAME — a client tests
+          // for the capability it needs (e.g. 'memory_update') rather than inferring
+          // it from a semver. `tool_version` (the old '1.1.0' surface marker) is gone.
+          tools: TOOL_NAMES,
           enrich_version: ENRICH_VERSION,
           embed_model: embedModel,
           total_episodes: totalEpisodes,
@@ -2154,4 +2252,11 @@ const registeredTools = TOOLS.map((tool) =>
   }),
 );
 
-void serve(registeredTools, { name: 'memory-server', version: '1.1.0' });
+// ADR-0003 Decision 5: serverInfo.version is DERIVED from the running artifact's
+// content address (short hash) — never a hand-typed '1.1.0'. The MCP initialize
+// response now answers "what code is this?" with the same drift-proof signal as
+// memory_ping.
+void serve(registeredTools, {
+  name: 'memory-server',
+  version: getContentAddress().short,
+});

@@ -28,7 +28,7 @@ export interface RegistryIndexEntry {
     structured_output?: boolean;
     min_context_tokens?: number;
   };
-  members?: Array<{ id: string; version: string }>;
+  members?: Array<{ id: string }>;
 }
 
 export interface DriftReport {

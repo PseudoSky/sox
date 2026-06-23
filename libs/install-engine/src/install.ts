@@ -53,10 +53,19 @@ export interface LockfileExtendsPin {
 }
 
 export interface Lockfile {
-  lockfileVersion: 1;
+  /**
+   * Lockfile FORMAT version (not an extension version).
+   *   1 — legacy: keys are `id@version`.
+   *   2 — ADR-0003: keys are the bare `id`; integrity is the entrypoint checksum.
+   * `loadLockfile` reads both; `install` always writes 2 (migrating v1 on next install).
+   */
+  lockfileVersion: 1 | 2;
   extends?: LockfileExtendsPin | undefined;
   resolved: Record<string, LockfileEntry>;
 }
+
+/** Current lockfile format version written by `install`. */
+export const LOCKFILE_VERSION = 2 as const;
 
 export interface ResolvedEntry {
   version: string;
@@ -71,7 +80,8 @@ export type ResolvedSet = Record<string, ResolvedEntry>;
 export interface IndexEntry {
   id: string;
   type: string;
-  version: string;
+  /** ADR-0003: derived display-only label (from package.json); never an identity input. */
+  version?: string | undefined;
   title: string;
   description: string;
   source: string;
@@ -82,7 +92,7 @@ export interface IndexEntry {
     structured_output?: boolean | undefined;
     min_context_tokens?: number | undefined;
   } | undefined;
-  members?: Array<{ id: string; version: string }> | undefined;
+  members?: Array<{ id: string }> | undefined;
   /** R9: "public" (default if absent) or "internal" (bundle member, not independently installable). */
   visibility?: 'public' | 'internal' | undefined;
   /** R9: populated when visibility is "internal". The owning bundle's id. */
@@ -91,7 +101,8 @@ export interface IndexEntry {
 
 export interface ExtensionManifest {
   id: string;
-  version: string;
+  /** ADR-0003: removed as an authored field; optional/deprecated for back-compat reads. */
+  version?: string | undefined;
   type: string;
   title: string;
   description: string;
@@ -105,7 +116,7 @@ export interface ExtensionManifest {
   } | undefined;
   checksum?: string | undefined;
   private?: boolean | undefined;
-  members?: Array<{ id: string; version: string }> | undefined;
+  members?: Array<{ id: string }> | undefined;
   /**
    * JSON Schema (draft-07 subset) for install-time configuration.
    * Sox recognises two non-standard extension properties:
@@ -175,10 +186,34 @@ export function loadLockfile(lockPath: string): Lockfile | null {
   if (!fs.existsSync(lockPath)) return null;
   try {
     const raw = fs.readFileSync(lockPath, 'utf8');
-    return JSON.parse(raw) as Lockfile;
+    const parsed = JSON.parse(raw) as Lockfile;
+    return normalizeLockfile(parsed);
   } catch (_e) {
     return null;
   }
+}
+
+/**
+ * ADR-0003 back-compat reader. A legacy v1 lockfile keys entries by `id@version`.
+ * Normalize to the v2 shape — keys become the bare `id` — so every consumer
+ * (frozen verification, findLockKey, buildResolvedSet) is uniform regardless of
+ * the on-disk format. The on-disk file is NOT rewritten here; the next `install`
+ * writes v2 with bare keys. If a (corrupt) v1 file carries two `id@vA`/`id@vB`
+ * keys for one id, the first wins — the checksum gate will catch any real drift.
+ */
+export function normalizeLockfile(lock: Lockfile): Lockfile {
+  // v2 (or already-bare keys): nothing to do.
+  if (lock.lockfileVersion >= 2) return lock;
+
+  const normalized: Record<string, LockfileEntry> = {};
+  for (const [key, entry] of Object.entries(lock.resolved)) {
+    const atIdx = key.indexOf('@');
+    const bareId = atIdx === -1 ? key : key.slice(0, atIdx);
+    if (!(bareId in normalized)) {
+      normalized[bareId] = entry;
+    }
+  }
+  return { ...lock, resolved: normalized };
 }
 
 // ─── Env-var resolution ───────────────────────────────────────────────────────
@@ -220,69 +255,20 @@ export function loadRegistryIndex(root: string): IndexEntry[] {
   }
 }
 
+/**
+ * ADR-0003: resolution is a pure `id` lookup over the single registry build.
+ * Per-extension semver is retired — there is exactly one build per id (the
+ * invariant the registry already holds), so version-range matching is dead code
+ * and `semverSatisfies`/`compareSemver` are deleted. A future multi-build-per-id
+ * registry is an explicit, separately-decided change, not a latent capability we
+ * keep dead code for. `compatibility.host` (a different axis) is untouched.
+ */
 export function resolveFromRegistry(
   id: string,
-  versionSpec: string | undefined,
   index: IndexEntry[],
 ): IndexEntry | null {
   const candidates = index.filter((e) => e.id === id);
-  if (candidates.length === 0) return null;
-
-  if (!versionSpec || versionSpec === 'workspace:*') {
-    return candidates[0] ?? null;
-  }
-
-  for (const candidate of candidates) {
-    if (semverSatisfies(candidate.version, versionSpec)) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
-export function semverSatisfies(version: string, range: string): boolean {
-  if (range === 'workspace:*') return true;
-  if (range === version) return true;
-
-  const vParts = version.split('.').map(Number);
-  const major = vParts[0] ?? 0;
-  const minor = vParts[1] ?? 0;
-  const patch = vParts[2] ?? 0;
-
-  const caretMatch = /^\^(\d+)\.(\d+)\.(\d+)/.exec(range);
-  if (caretMatch) {
-    const rMajor = Number(caretMatch[1]);
-    const rMinor = Number(caretMatch[2]);
-    const rPatch = Number(caretMatch[3]);
-    if (major !== rMajor) return false;
-    if (minor < rMinor) return false;
-    if (minor === rMinor && patch < rPatch) return false;
-    return true;
-  }
-
-  const rangeMatch = /^>=(\d+\.\d+\.\d+)\s+<(\d+\.\d+\.\d+)$/.exec(range);
-  if (rangeMatch) {
-    const lowerParts = rangeMatch[1]!.split('.').map(Number);
-    const upperParts = rangeMatch[2]!.split('.').map(Number);
-    const lv: [number, number, number] = [lowerParts[0] ?? 0, lowerParts[1] ?? 0, lowerParts[2] ?? 0];
-    const uv: [number, number, number] = [upperParts[0] ?? 0, upperParts[1] ?? 0, upperParts[2] ?? 0];
-    const cmpLow = compareSemver([major, minor, patch], lv);
-    const cmpHigh = compareSemver([major, minor, patch], uv);
-    return cmpLow >= 0 && cmpHigh < 0;
-  }
-
-  return false;
-}
-
-function compareSemver(
-  a: [number, number, number],
-  b: [number, number, number],
-): number {
-  for (let i = 0; i < 3; i++) {
-    const diff = (a[i] ?? 0) - (b[i] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
+  return candidates[0] ?? null;
 }
 
 // ─── Fetch + verify artifact ──────────────────────────────────────────────────
@@ -477,8 +463,38 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
         );
         process.exit(1);
       }
+
+      // ADR-0003 B1: --frozen-lockfile verifies the CHECKSUM, not merely key
+      // presence. Hash the artifact at the pinned source and compare to the
+      // recorded checksum. Any drift fails identically in every scope — there is
+      // no version comparison; the content address IS the identity.
+      const lockEntryFrozen = existingLockForFrozen.resolved[lockKey];
+      if (lockEntryFrozen === undefined) {
+        console.error(
+          `install: --frozen-lockfile: lockfile entry for "${entry.id}" is missing at ${lockPath}.`,
+        );
+        process.exit(1);
+      }
+      try {
+        const { checksum: actualChecksum } = await fetchArtifact(lockEntryFrozen.source);
+        if (actualChecksum !== lockEntryFrozen.checksum) {
+          console.error(
+            `install: --frozen-lockfile: CHECKSUM MISMATCH (drift) for "${entry.id}" at ${lockPath}\n` +
+              `  source:   ${lockEntryFrozen.source}\n` +
+              `  expected: ${lockEntryFrozen.checksum}\n` +
+              `  got:      ${actualChecksum}\n` +
+              `The installed artifact has changed. Re-run without --frozen-lockfile to re-pin.`,
+          );
+          process.exit(1);
+        }
+      } catch (e) {
+        console.error(
+          `install: --frozen-lockfile: could not verify checksum for "${entry.id}": ${String(e)}`,
+        );
+        process.exit(1);
+      }
     }
-    console.log(`install: --frozen-lockfile: lockfile verified (${lockPath})`);
+    console.log(`install: --frozen-lockfile: lockfile verified (checksum) (${lockPath})`);
     return buildResolvedSetFromLock(existingLockForFrozen);
   }
 
@@ -503,7 +519,7 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
     } else if (entry.source !== undefined) {
       source = entry.source;
     } else {
-      const indexEntry = resolveFromRegistry(entry.id, entry.version, registryIndex);
+      const indexEntry = resolveFromRegistry(entry.id, registryIndex);
       if (!indexEntry) {
         const localPath = findLocalExtension(root, entry.id);
         if (localPath) {
@@ -512,7 +528,7 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
           // BL-19 resilience: skip + warn on an unresolvable entry instead of aborting the
           // whole install. One bad config line must not block every valid entry.
           console.warn(
-            `install: WARNING skipping "${entry.id}" @ "${entry.version ?? 'latest'}" — ` +
+            `install: WARNING skipping "${entry.id}" — ` +
               `not found in registry/index.json and not found locally. ` +
               `Run 'pnpm run build-index' to rebuild the registry, or remove this entry from the config.`,
           );
@@ -600,9 +616,10 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
     try {
       const { checksum, source: resolvedSource } = await fetchArtifact(source, expectedChecksum);
 
-      const indexEntry = resolveFromRegistry(entry.id, entry.version, registryIndex);
-      const resolvedVersion = indexEntry?.version ?? entry.version ?? '0.0.0';
-      const actualKey = `${entry.id}@${resolvedVersion}`;
+      // ADR-0003: the lockfile key is the BARE id. The checksum is the integrity
+      // authority; there is no `@version` decoration. One id ⇒ one artifact.
+      const indexEntry = resolveFromRegistry(entry.id, registryIndex);
+      const lockKey = entry.id;
 
       const lockEntry: LockfileEntry = {
         source: resolvedSource,
@@ -612,16 +629,19 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
       if (entry.bundleId !== undefined) {
         lockEntry.bundle_id = entry.bundleId;
       }
-      newResolved[actualKey] = lockEntry;
+      newResolved[lockKey] = lockEntry;
 
-      console.log(`install: resolved ${actualKey} from ${resolvedSource} (${checksum})`);
+      console.log(`install: resolved ${lockKey} from ${resolvedSource} (${checksum})`);
 
       // P9: upsert into global install ledger (~/.sox/install-registry.json).
-      // Best-effort: a failed write must never fail the install.
+      // Best-effort: a failed write must never fail the install. The ledger's
+      // `version` is mechanical release-bookkeeping ONLY (ADR-0003 Decision 6) —
+      // a derived display label, never an identity/integrity input. Derived from
+      // the registry's optional display version; empty when none is published.
       try {
         upsertInstallRecord({
           extId: entry.id,
-          version: resolvedVersion,
+          version: indexEntry?.version ?? '',
           scope: opts.scope as 'user' | 'project' | 'local',
           root,
           source: resolvedSource,
@@ -642,7 +662,7 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
   }
 
   const lockfile: Lockfile = {
-    lockfileVersion: 1,
+    lockfileVersion: LOCKFILE_VERSION,
     resolved: newResolved,
   };
   if (extendsPin !== undefined) {
@@ -738,7 +758,7 @@ function resolveBundleMembers(
   bundleId: string,
   registryIndex: IndexEntry[],
   root: string,
-): Array<{ id: string; version: string }> | null {
+): Array<{ id: string }> | null {
   const indexEntry = registryIndex.find((e) => e.id === bundleId && e.type === 'bundle');
   if (indexEntry?.members !== undefined && indexEntry.members.length > 0) {
     return indexEntry.members;
@@ -785,7 +805,6 @@ function expandBundles(
 
   const result: ResolvedInstallEntry[] = [];
   const seenIds = new Set<string>();
-  const seenMemberVersionSpec = new Map<string, { version: string | undefined; bundleId: string }>();
 
   function expandEntry(
     entry: ResolvedInstallEntry,
@@ -824,25 +843,18 @@ function expandBundles(
         continue;
       }
 
+      // ADR-0003: members are referenced by id only. With one build per id there is
+      // exactly one artifact to resolve, and the checksum gate catches any mismatch.
+      // The old "bundle version conflict" warning path is deleted — there is no
+      // per-member version to disagree about. De-dup on id is structural.
       if (seenIds.has(member.id)) {
-        const prior = seenMemberVersionSpec.get(member.id);
-        if (prior !== undefined && prior.version !== member.version) {
-          console.warn(
-            `install: BUNDLE VERSION CONFLICT for member "${member.id}": ` +
-              `bundle "${prior.bundleId}" requires version "${prior.version ?? 'any'}", ` +
-              `but bundle "${thisBundleId}" requires version "${member.version ?? 'any'}". ` +
-              `First-seen wins (bundle "${prior.bundleId}" version "${prior.version ?? 'any'}" is used). ` +
-              `Resolve by pinning "${member.id}" as an explicit install entry, or aligning bundle versions.`,
-          );
-        }
         continue;
       }
 
-      seenMemberVersionSpec.set(member.id, { version: member.version, bundleId: thisBundleId });
       expandEntry(
         {
           id: member.id,
-          version: member.version,
+          version: undefined,
           enabled: entry.enabled,
           source: undefined,
           bundleId: thisBundleId,
@@ -932,16 +944,27 @@ function buildInstallList(
   return entries;
 }
 
+/**
+ * Resolve the lockfile key for an id. `loadLockfile` normalizes to bare-`id`
+ * keys (ADR-0003 v2), so an exact match is the common case; the `id@…` prefix
+ * fallback handles a raw v1 lockfile passed without normalization (defensive).
+ */
 function findLockKey(lockfile: Lockfile, id: string): string | undefined {
+  if (id in lockfile.resolved) return id;
   return Object.keys(lockfile.resolved).find((k) => k.startsWith(`${id}@`));
+}
+
+/** Split a (possibly legacy) lockfile key into id + optional display version. */
+function splitLockKey(key: string): { id: string; version: string } {
+  const atIdx = key.lastIndexOf('@');
+  if (atIdx === -1) return { id: key, version: '' };
+  return { id: key.slice(0, atIdx), version: key.slice(atIdx + 1) };
 }
 
 function buildResolvedSetFromLock(lockfile: Lockfile): ResolvedSet {
   const result: ResolvedSet = {};
   for (const [key, entry] of Object.entries(lockfile.resolved)) {
-    const atIdx = key.lastIndexOf('@');
-    const id = key.slice(0, atIdx);
-    const version = key.slice(atIdx + 1);
+    const { id, version } = splitLockKey(key);
     result[id] = {
       version,
       enabled: true,
@@ -959,9 +982,7 @@ function buildResolvedSetFromInstallList(
 ): ResolvedSet {
   const result: ResolvedSet = {};
   for (const [key, entry] of Object.entries(resolved)) {
-    const atIdx = key.lastIndexOf('@');
-    const id = key.slice(0, atIdx);
-    const version = key.slice(atIdx + 1);
+    const { id, version } = splitLockKey(key);
     const cascaded = cascadedConfig[id];
     result[id] = {
       version,

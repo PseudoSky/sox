@@ -34,10 +34,9 @@ export interface ManifestLifecycle {
   health?: ManifestLifecycleHealth;
 }
 
-/** Bundle member entry */
+/** Bundle member entry. ADR-0003: referenced by `id` only — identity is id + checksum. */
 export interface ManifestMember {
   id: string;
-  version: string;
 }
 
 /** Runtime dependency entry */
@@ -153,7 +152,8 @@ export interface ManifestInstall {
 export interface Manifest {
   $schema?: string;
   id: string;
-  version: string;
+  /** ADR-0003: removed as an authored identity field. Optional/deprecated display label. */
+  version?: string;
   type: 'agent' | 'skill' | 'mcp-server' | 'prompt' | 'hook' | 'command' | 'bundle' | 'service';
   title: string;
   description: string;
@@ -233,8 +233,11 @@ const VALID_HOOK_EVENTS = new Set<string>([
   'PreToolUse', 'PostToolUse', 'SessionEnd', 'ScopePromotionProposed', 'Stop',
 ]);
 
+// ADR-0003: `version` is NO LONGER a required (or even meaningful) identity input.
+// Identity is `id` + content `checksum`. `version`, if present, is a deprecated,
+// display-only label and is validated for format only (below) — never required.
 const REQUIRED_FIELDS: ReadonlyArray<string> = [
-  'id', 'version', 'type', 'title', 'description', 'compatibility', 'license',
+  'id', 'type', 'title', 'description', 'compatibility', 'license',
 ];
 
 /**
@@ -321,7 +324,10 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
     errors.push(`id must be a string`);
   }
 
-  // ── version ───────────────────────────────────────────────────────────────
+  // ── version (ADR-0003: deprecated, optional, display-only) ─────────────────
+  // Not a required field and not an identity input. If present it must still be a
+  // well-formed semver string (so a derived display label stays sane), but its
+  // absence is fully valid — identity is `id` + content `checksum`.
 
   const version = raw['version'];
   if (typeof version === 'string') {
@@ -496,8 +502,13 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
         } else {
           memberIds.add(mid);
         }
-        if (typeof member['version'] !== 'string' || (member['version'] as string).length === 0) {
-          errors.push(`bundle member "${String(mid)}" must declare a "version" semver range`);
+        // ADR-0003: members are referenced by `id` only. No `version` / `^x.y.z`
+        // spec — identity is id + content checksum, and there is one build per id.
+        if ('version' in member) {
+          warnings.push(
+            `bundle member "${String(mid)}" declares a "version" — ignored (ADR-0003: ` +
+              `members are referenced by id only). Remove it from the manifest.`,
+          );
         }
       }
     }
@@ -762,7 +773,7 @@ export const ManifestSchema: Record<string, unknown> = {
     '{node,shell,python,declarative,stdio-any}, install-target for declarative host-placement.',
   type: 'object',
   additionalProperties: true,
-  required: ['id', 'version', 'type', 'title', 'description', 'compatibility', 'license'],
+  required: ['id', 'type', 'title', 'description', 'compatibility', 'license'],
   properties: {
     $schema: { type: 'string' },
     id: {
@@ -774,7 +785,10 @@ export const ManifestSchema: Record<string, unknown> = {
       type: 'string',
       pattern:
         '^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z-.]+)?(?:\\+[0-9A-Za-z-.]+)?$',
-      description: 'semver.',
+      deprecated: true,
+      description:
+        'DEPRECATED (ADR-0003): not an identity input. Identity is id + content checksum. ' +
+        'Optional, display-only label; if present must be valid semver. Will be removed.',
     },
     type: {
       type: 'string',
@@ -859,13 +873,15 @@ export const ManifestSchema: Record<string, unknown> = {
     capabilities: { type: 'array', items: { type: 'string' } },
     members: {
       type: 'array',
+      // ADR-0003: members are referenced by `id` only (identity = id + checksum).
+      // `version` is no longer required; it is accepted-but-ignored during migration
+      // (additionalProperties:true) and should be removed from manifests.
       items: {
         type: 'object',
-        additionalProperties: false,
-        required: ['id', 'version'],
+        additionalProperties: true,
+        required: ['id'],
         properties: {
           id: { type: 'string' },
-          version: { type: 'string' },
         },
       },
     },

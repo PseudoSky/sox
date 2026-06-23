@@ -1,7 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v1.json",
   "id": "dep-inject",
-  "version": "0.1.0",
   "type": "command",
   "title": "dep-inject",
   "description": "Use this when you need a slash command that demonstrates dependency injection patterns.",

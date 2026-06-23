@@ -148,12 +148,13 @@ function memberProjectJson(bundleId: string, memberId: string): string {
 export function bundleTemplate(opts: TemplateOpts): FileSet {
   const members = opts.members ?? [];
 
-  // Build the members array for the bundle manifest
+  // Build the members array for the bundle manifest.
+  // ADR-0003: members are referenced by `id` only (identity = id + checksum).
   const memberRefs = members.length > 0
-    ? members.map((m) => ({ id: m.id, version: '^0.1.0' }))
+    ? members.map((m) => ({ id: m.id }))
     : [
-        { id: 'example-member-a', version: '^0.1.0' },
-        { id: 'example-member-b', version: '^0.1.0' },
+        { id: 'example-member-a' },
+        { id: 'example-member-b' },
       ];
 
   // Bundles use a simplified package.json (no build/typecheck scripts needed)

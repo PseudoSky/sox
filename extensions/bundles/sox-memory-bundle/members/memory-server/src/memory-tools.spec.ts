@@ -292,9 +292,15 @@ describe('memory_list_entities (C2.5)', () => {
 });
 
 describe('memory_stats (C2.12)', () => {
-  it('returns tool_version 1.1.0 (updated from 1.0.0 when memory_update was added)', async () => {
+  it('reports capability presence by tool NAME, not a tool_version semver (ADR-0003)', async () => {
     const out = parseResult(await handleToolCall('memory_stats', { db_path: DB_PATH }));
-    expect(out['tool_version']).toBe('1.1.0');
+    // tool_version is gone — replaced by the registered tool-name surface.
+    expect(out).not.toHaveProperty('tool_version');
+    const tools = out['tools'] as string[];
+    expect(Array.isArray(tools)).toBe(true);
+    // The v1.1 capability is detected by the tool's presence, not a version string.
+    expect(tools).toContain('memory_update');
+    expect(tools).toContain('memory_ping');
   });
 
   it('returns all required C2.12 fields', async () => {
@@ -548,9 +554,18 @@ describe('memory_get_community v1 (C2.6)', () => {
 });
 
 describe('backward compat — existing tools unbroken', () => {
-  it('memory_ping still works', async () => {
+  it('memory_ping returns the content address (ADR-0003 Decision 5)', async () => {
     const out = parseResult(await handleToolCall('memory_ping', {}));
     expect(out['ok']).toBe(true);
+    expect(out['id']).toBe('memory-server');
+    // artifact is the full sha256 content address of the running entrypoint.
+    expect(out['artifact']).toMatch(/^sha256:[0-9a-f]{64}$/);
+    // short is the first 12 hex of that digest.
+    expect(out['short']).toMatch(/^[0-9a-f]{12}$/);
+    expect((out['artifact'] as string)).toContain(out['short'] as string);
+    // host_compat survives the version purge (a different axis).
+    expect(typeof out['host_compat']).toBe('string');
+    expect((out['host_compat'] as string).length).toBeGreaterThan(0);
   });
 
   it('memory_write still returns episode_uid', async () => {
@@ -923,9 +938,10 @@ describe('memory_update MCP tool', () => {
     expect('old' in meta).toBe(false);
   });
 
-  it('memory_stats still returns tool_version 1.1.0 after update ops', async () => {
+  it('memory_stats still reports the memory_update capability by tool name after update ops', async () => {
     const statsResult = await handleToolCall('memory_stats', { db_path: UPDATE_DB });
     const stats = parseResult(statsResult);
-    expect(stats['tool_version']).toBe('1.1.0');
+    expect(stats).not.toHaveProperty('tool_version');
+    expect(stats['tools']).toContain('memory_update');
   });
 });
