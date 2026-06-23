@@ -144,6 +144,20 @@ purges the leaked `fix-*` records as a one-off; this is the permanent fix.) Surf
 `sox list`/`status` may still mislabel services. Fix: record the real manifest `type` at start.
 Surfaced building the rolling-restart classifier.
 
+### BL-37 — `memory-daemon` service-store copy can't resolve `@sox/memory-core` → crashes on start
+
+**Severity:** High (the supervised daemon is fully down in service mode) · **Status:** Open
+BL-25 converged the daemon's `memoryd` onto `@sox/memory-core` (thin re-export →
+`require('@sox/memory-core')`). The **service-mode copied store** (`.sox/ext/memory-daemon/`) has
+no resolvable `@sox/memory-core` (not self-contained-bundled, no node_modules link), so the daemon
+crashes on start: `Error: Cannot find module '@sox/memory-core'` (exits immediately; `sox list`
+shows INACTIVE with a dead pid). **`memory-server` (stdio) is unaffected** — it runs from the repo
+where the dep resolves. **Gate gap:** the lifecycle e2e spawns the daemon from the *repo* (deps
+resolve), never from a copied service store, so this slipped all gates. Fix: self-contained-bundle
+the daemon (esbuild, C7-respecting — the bundled-extension-build-standard) so the copied store has
+zero external `@sox/*` deps, AND strengthen the e2e to spawn the daemon from a copied store.
+Discovered starting the daemon during the content-addressed deploy.
+
 
 > **BL-21, BL-22, BL-23, BL-24 are owned by `docs/plan/memory-enrichment/IMPLEMENTATION.md` (§0).**
 > Each is resolved by a plan phase: BL-23 metadata = done (`9728f6f`); BL-23 project-path + BL-24
