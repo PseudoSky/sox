@@ -1255,7 +1255,175 @@ async function main() {
     assertionsFailed++;
   }
 
-    // ═══════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Section E: SERVICE-STORE COPY + SPAWN — BL-37 regression gate
+  //
+  // The service-mode reality that ALL prior gates missed: a type:service extension
+  // is materialized into a COPIED store (.sox/ext/<id>/) and the supervisor spawns
+  // `node <storePath>/index.js` from that COPY — NOT from the repo. memory-daemon
+  // converged onto @adhd/sox-memory-core (BL-25); a plain-tsc dist carried bare
+  // require("@adhd/sox-memory-core") into the copy, which has no resolvable
+  // workspace dep → `Cannot find module '@adhd/sox-memory-core'` → crash on start.
+  //
+  // This step exercises the EXACT service path:
+  //   1. declarativeInstall(type:service) materializes the daemon's self-contained
+  //      esbuild bundle into <scopeRoot>/.sox/ext/memory-daemon/ and writes the
+  //      run-service registry spec (command/args/env — incl. the BL-37 NODE_PATH).
+  //   2. Spawn `node <storePath>/index.js` from the COPY using that exact spec env.
+  //   3. Assert it STARTS and STAYS UP (pid alive after a beat) with no module error.
+  //
+  // [inv:reality] verification is the real OS process, not a runtime record.
+  // [inv:self-contained] the copied store has ZERO external @adhd/sox-* deps.
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (declarativeInstall) {
+    console.log('\n' + '═'.repeat(60));
+    console.log('Section E: SERVICE-STORE COPY + SPAWN [BL-37]');
+    console.log('═'.repeat(60));
+
+    const daemonSrcDir = path.join(
+      ROOT, 'extensions', 'bundles', 'sox-memory-bundle', 'members', 'memory-daemon',
+    );
+    const eScopeRoot = path.join(os.tmpdir(), `sox-e2e-daemon-${process.pid}-${Date.now()}`);
+    // db_path / sock_path must live inside the daemon's fs allowlist (~/.memory/**).
+    const eDbPath = path.join(os.homedir(), '.memory', `sox-e2e-daemon-${process.pid}.db`);
+    const eSockPath = path.join(os.homedir(), '.memory', `sox-e2e-daemon-${process.pid}.sock`);
+    let eDaemonPid = null;
+
+    function cleanupSectionE() {
+      if (eDaemonPid != null && isAlive(eDaemonPid)) {
+        try { process.kill(eDaemonPid, 'SIGKILL'); } catch { /* ignore */ }
+      }
+      try { fs.rmSync(eScopeRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { if (fs.existsSync(eDbPath)) fs.rmSync(eDbPath, { force: true }); } catch { /* ignore */ }
+      try { if (fs.existsSync(eSockPath)) fs.rmSync(eSockPath, { force: true }); } catch { /* ignore */ }
+    }
+    process.on('exit', cleanupSectionE);
+
+    fs.mkdirSync(eScopeRoot, { recursive: true });
+    fs.mkdirSync(path.join(os.homedir(), '.memory'), { recursive: true });
+
+    // Precondition: the daemon must ship a self-contained bundle/ (the build target).
+    const daemonBundle = path.join(daemonSrcDir, 'bundle', 'index.js');
+    assert(fs.existsSync(daemonBundle),
+      `E0: memory-daemon ships a self-contained bundle (${daemonBundle})`);
+    if (fs.existsSync(daemonBundle)) {
+      const bundleSrc = fs.readFileSync(daemonBundle, 'utf8');
+      const hasBareSoxRequire = /require\(["']@adhd\/sox-/.test(bundleSrc);
+      assert(!hasBareSoxRequire,
+        'E0: bundle has ZERO bare @adhd/sox-* requires (fully inlined)');
+    }
+
+    try {
+      // 1. Real service install → materialize bundle into copied store + run-service spec.
+      const eResults = await declarativeInstall(
+        {
+          ext: 'memory-daemon',
+          type: 'service',
+          hosts: ['claude'],
+          srcPath: daemonSrcDir,
+          resolvedConfig: { db_path: eDbPath, sock_path: eSockPath },
+        },
+        'user',
+        eScopeRoot,   // workspaceRoot (NODE_PATH is derived from this; ROOT is the real one below)
+        eScopeRoot,   // scopeRoot
+        { isProject: false },
+      );
+      assert(Array.isArray(eResults) && eResults.length > 0,
+        'E1: declarativeInstall(service) returned a result');
+
+      // The copied store: <scopeRoot>/.sox/ext/memory-daemon/index.js
+      const storePath = path.join(eScopeRoot, '.sox', 'ext', 'memory-daemon');
+      const storeEntry = path.join(storePath, 'index.js');
+      assert(fs.existsSync(storeEntry),
+        `E2: bundle materialized into copied store at ${storeEntry}`);
+
+      // Store entrypoint must NOT reach back into the repo for @adhd/sox-* deps.
+      if (fs.existsSync(storeEntry)) {
+        const storeSrc = fs.readFileSync(storeEntry, 'utf8');
+        assert(!/require\(["']@adhd\/sox-/.test(storeSrc),
+          'E2: copied store entry has ZERO bare @adhd/sox-* requires (self-contained)');
+      }
+
+      // 2. Read the run-service registry spec the install produced (the REAL command/env).
+      const registryPath = path.join(eScopeRoot, '.sox', 'registry.json');
+      assert(fs.existsSync(registryPath), `E3: run-service registry written (${registryPath})`);
+      const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+      const spec = registry['memory-daemon'];
+      assert(spec && spec.command === 'node' && Array.isArray(spec.args),
+        'E3: registry spec has node command + args targeting the store');
+
+      // BL-37: the spec env must inject NODE_PATH so the bundle's createRequire can
+      // resolve the native addons (better-sqlite3, sqlite-vec) from any scope. The
+      // installer derives NODE_PATH from workspaceRoot; here workspaceRoot was the
+      // temp scope (no node_modules), so we point NODE_PATH at the REAL repo's
+      // node_modules — exactly what a real user-scope install (workspaceRoot=repo)
+      // produces. This proves the native-addon resolution path, not just JS deps.
+      const specEnv = spec.env ?? {};
+      const repoNodeModules = path.join(ROOT, 'node_modules');
+      const childEnv = {
+        ...process.env,
+        ...specEnv,
+        NODE_PATH: specEnv.NODE_PATH
+          ? `${repoNodeModules}${path.delimiter}${specEnv.NODE_PATH}`
+          : repoNodeModules,
+      };
+
+      // 3. Spawn from the COPY (not the repo), exactly as the supervisor does:
+      //    node --enable-source-maps <storePath>/index.js, cwd=storePath.
+      const daemonProc = spawn(
+        NODE,
+        ['--enable-source-maps', storeEntry],
+        {
+          cwd: storePath,
+          env: childEnv,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+      eDaemonPid = daemonProc.pid;
+      let daemonOut = '';
+      daemonProc.stdout.on('data', (d) => { daemonOut += d.toString(); });
+      daemonProc.stderr.on('data', (d) => { daemonOut += d.toString(); });
+
+      // Give it a beat to either start or crash-on-load.
+      await sleep(2500);
+
+      const aliveAfterBeat = eDaemonPid != null && isAlive(eDaemonPid);
+      assert(aliveAfterBeat,
+        `E4: daemon spawned from copied store STARTS + STAYS UP (pid=${eDaemonPid})`);
+
+      const hadModuleError = /Cannot find module/.test(daemonOut);
+      assert(!hadModuleError,
+        'E4: daemon log has NO "Cannot find module" error (self-contained resolves)');
+
+      const startedOk = /\[memoryd\] started/.test(daemonOut);
+      assert(startedOk,
+        'E5: daemon emitted "[memoryd] started" (real start path, not a no-op entry)');
+
+      if (!aliveAfterBeat || hadModuleError || !startedOk) {
+        console.error('  E daemon output (first 600 chars):');
+        console.error('  ' + daemonOut.slice(0, 600).replace(/\n/g, '\n  '));
+      }
+
+      // The DB file must exist (start() opened it via better-sqlite3 — native addon
+      // resolved from the copied store via the injected NODE_PATH).
+      assert(fs.existsSync(eDbPath),
+        `E6: daemon opened its SQLite db (native addon resolved) at ${eDbPath}`);
+
+      // Teardown: stop the daemon.
+      if (eDaemonPid != null && isAlive(eDaemonPid)) {
+        try { process.kill(eDaemonPid, 'SIGTERM'); } catch { /* ignore */ }
+        await sleep(300);
+        if (isAlive(eDaemonPid)) { try { process.kill(eDaemonPid, 'SIGKILL'); } catch { /* ignore */ } }
+      }
+    } catch (e) {
+      console.error('  Section E error:', String(e));
+      assertionsFailed++;
+    } finally {
+      cleanupSectionE();
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Summary
   // ═══════════════════════════════════════════════════════════════════════════
   console.log('\n' + '═'.repeat(60));

@@ -41,6 +41,7 @@ const esbuild = require(ESBUILD_PATH);
 const SOX_ALIASES = {
   '@adhd/sox-mcp-runtime':    path.join(REPO_ROOT, 'libs/mcp-runtime/dist/index.js'),
   '@adhd/sox-memory-core':    path.join(REPO_ROOT, 'libs/memory-core/dist/index.js'),
+  '@adhd/sox-memory-enrich':  path.join(REPO_ROOT, 'libs/memory-enrich/dist/index.js'),
   '@adhd/sox-install-engine': path.join(REPO_ROOT, 'libs/install-engine/dist/index.js'),
   '@adhd/sox-host-runtime':   path.join(REPO_ROOT, 'libs/host-runtime/dist/index.js'),
   '@adhd/sox-manifest':       path.join(REPO_ROOT, 'libs/manifest/dist/index.js'),

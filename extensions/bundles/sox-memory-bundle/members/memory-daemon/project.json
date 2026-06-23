@@ -9,9 +9,16 @@
   "targets": {
     "build": {
       "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/extensions/bundles/sox-memory-bundle/members/memory-daemon/dist"],
+      "outputs": [
+        "{workspaceRoot}/extensions/bundles/sox-memory-bundle/members/memory-daemon/dist",
+        "{workspaceRoot}/extensions/bundles/sox-memory-bundle/members/memory-daemon/bundle"
+      ],
       "options": {
-        "command": "tsc --project extensions/bundles/sox-memory-bundle/members/memory-daemon/tsconfig.json && printf '{\"type\":\"commonjs\"}\\n' > extensions/bundles/sox-memory-bundle/members/memory-daemon/dist/package.json && mkdir -p extensions/bundles/sox-memory-bundle/members/memory-daemon/node_modules/@adhd && ln -sfn $(pwd)/libs/memory-enrich extensions/bundles/sox-memory-bundle/members/memory-daemon/node_modules/@adhd/sox-memory-enrich",
+        "commands": [
+          "tsc --project extensions/bundles/sox-memory-bundle/members/memory-daemon/tsconfig.json && printf '{\"type\":\"commonjs\"}\\n' > extensions/bundles/sox-memory-bundle/members/memory-daemon/dist/package.json",
+          "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-daemon/src/bin.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-daemon/bundle --tsconfig extensions/bundles/sox-memory-bundle/members/memory-daemon/tsconfig.json --external better-sqlite3 --external sqlite-vec"
+        ],
+        "parallel": false,
         "cwd": "."
       },
       "cache": true,
@@ -19,7 +26,7 @@
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/tsconfig.json"
       ],
-      "dependsOn": ["memory-enrich:build"]
+      "dependsOn": ["memory-core:build", "memory-enrich:build"]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
