@@ -195,6 +195,13 @@ export function knownProjectRoots(): string[] {
   // junk `.mcp.json` files and pollutes the ownership index. A project root under
   // os.tmpdir() is never a real install consumer. (macOS reports os.tmpdir() as
   // `/var/folders/...` while realpath adds a `/private` prefix — check both forms.)
+  //
+  // BL-49: the #16728 auto-merge reality probe (tools/probe-mcp-project-automerge.mjs)
+  // legitimately records its throwaway FIXTURE project roots under os.tmpdir() and must
+  // be able to test propagation to them. It opts out via SOX_ALLOW_TMP_PROJECT_ROOTS=1,
+  // which production never sets — so the BL-35 leak guard stays fully in force everywhere
+  // except a test that explicitly asks for tmp roots to count.
+  const allowTmp = process.env['SOX_ALLOW_TMP_PROJECT_ROOTS'] === '1';
   const tmpDir = os.tmpdir();
   let tmpReal = tmpDir;
   try { tmpReal = fs.realpathSync(tmpDir); } catch { /* ignore */ }
@@ -205,7 +212,7 @@ export function knownProjectRoots(): string[] {
   const roots = new Set<string>();
   for (const r of records) {
     if (r.scope === 'project' && typeof r.root === 'string' && r.root.length > 0) {
-      if (underTmp(r.root)) continue;
+      if (!allowTmp && underTmp(r.root)) continue;
       roots.add(r.root);
     }
   }

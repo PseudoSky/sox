@@ -46,6 +46,11 @@ process.env['USERPROFILE'] = TMP_HOME;
 delete process.env['SOX_SANDBOX_ROOT'];
 delete process.env['SOX_HOME'];
 process.env['SOX_ECOSYSTEM_HOME'] = TMP_DATA;
+// BL-49: this probe's fixture project roots are throwaway temp dirs (mkdtempSync under
+// os.tmpdir()). knownProjectRoots() skips tmp roots by default (the BL-35 leak guard),
+// which would make auto-merge target 0 projects here. Opt in so the fixtures count —
+// production never sets this flag, so the BL-35 guard is unaffected outside this probe.
+process.env['SOX_ALLOW_TMP_PROJECT_ROOTS'] = '1';
 
 const engine = require(path.join(ROOT, 'libs/install-engine/dist/index.js'));
 const {

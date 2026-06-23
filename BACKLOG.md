@@ -13,9 +13,20 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 > phases (P1–P6), not as loose items. The metadata-drop half of BL-23 is already fixed (`9728f6f`).
 > **BL-21 (auto-export) and BL-22 (entity names) resolved by P5 (2026-06-22).**
 
-## Open — pre-existing e2e failure surfaced during BL-45..48 verification (2026-06-23)
+## Resolved — pre-existing e2e failure surfaced during BL-45..48 verification (2026-06-23, fixed fix/memory-server-bl45-48)
 
-### BL-49 — `#16728` auto-merge e2e fails: `syncResults.length === 0` (expected 2 project roots) — **Open (HIGH) — NOT caused by BL-45..48**
+### BL-49 — `#16728` auto-merge e2e fails: `syncResults.length === 0` (expected 2 project roots) — **Resolved**
+
+**Fix:** the BL-35 leak guard in `knownProjectRoots()` (`mcp-project-sync.ts`) skips project roots under
+`os.tmpdir()`, but the #16728 reality probe records its throwaway fixture roots there — so auto-merge
+targeted 0 projects. Added a scoped opt-out: `knownProjectRoots()` honors `SOX_ALLOW_TMP_PROJECT_ROOTS=1`
+(set only by `tools/probe-mcp-project-automerge.mjs`); production never sets it, so the BL-35 guard stays
+in force everywhere else. Spec test added (`mcp-project-sync.spec.ts`) locking both the default-skip and
+the opt-out. Verified: `host-runtime:test-e2e` → **93 passed, 0 failed** (auto-merge gate ALL PASS, got 2
+roots); `install-engine` lint+build+test green. Origin (traced): pre-existing in BL-35 work (`d6805cf`),
+not from BL-45..48.
+
+<details><summary>original report</summary>
 
 `npx nx run host-runtime:test-e2e` → 91 passed, **2 failed** (4 assertions): `AUTO-MERGE: targeted
 both known project roots (got 0)`, `MERGE: project1/.mcp.json carries the same server entry`,
@@ -32,6 +43,7 @@ known project roots to propagate the user-scope MCP entry into. Fix: investigate
 resolves 0 project roots from the install-registry in the sandboxed probe (likely a registry-root lookup
 / `SOX_ECOSYSTEM_HOME` resolution regression). The memory MCP lifecycle steps of the SAME e2e all pass
 (install→start→exec memory_ping/write/recall→disable→enable→uninstall, 19 tools, zero orphans).
+</details>
 
 ## Resolved — observability gap + daemon down (2026-06-23, fixed fix/memory-server-bl45-48 1a5f1ed)
 
