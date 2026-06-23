@@ -44,6 +44,9 @@ import {
   compilePolicy,
   computeSupervisorId,
   readGlobalRegistry,
+  killAndVerify,
+  pidAlive as pidAliveRT,
+  reapOrphansForExtension,
 } from '@sox/host-runtime';
 import type { PermissionsBlock, RuntimeEntry, RuntimeRecord } from '@sox/host-runtime';
 // @sox/host-registry is also lazy-required via install-engine; import it lazily here too
@@ -2461,6 +2464,43 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
     process.env['SOX_RUNTIME_FILE'] ??
     getRuntimeFilePath(lockfilePath);
 
+  // ── BL-31: pre-spawn dedup guard — never end up with two daemons ─────────────
+  // Before starting, reap any live/orphaned instance of the extension(s) we are
+  // about to spawn. The incident was: `sox stop` left an orphaned daemon alive,
+  // then `sox start` spawned a SECOND one. By reaping by identity here, a stale
+  // detached instance (even PPID-1, even absent from runtime.json) is killed
+  // before we spawn, so a start can never duplicate a daemon. Opt out with
+  // --no-reap (e.g. to deliberately run alongside, which we never want here).
+  if (flags['no-reap'] === undefined && flags['_daemon-child'] === undefined) {
+    const startId = flags['id'];
+    const lock0 = loadLockfile(lockfilePath);
+    const reapIds: string[] = startId
+      ? [startId]
+      : Object.keys(lock0?.resolved ?? {}).map((k) =>
+          k.includes('@') ? k.slice(0, k.lastIndexOf('@')) : k,
+        );
+    // Exclude the current live supervisor's own children — if a healthy
+    // supervisor is already running these, killAndVerify-by-identity would be
+    // disruptive. We only reap when there is NO live supervisor for this scope.
+    const rec0 = getRuntimeRecord(runtimeFilePath);
+    const supLive = typeof rec0?.supervisorPid === 'number' && pidAliveRT(rec0.supervisorPid);
+    if (!supLive) {
+      for (const rid of reapIds) {
+        const reap = await reapOrphansForExtension(rid, {
+          runtimeFilePath,
+          lockfilePath,
+          log: (m) => process.stdout.write(`sox: pre-start reap ${rid}: ${m}\n`),
+        });
+        for (const k of reap.killed) {
+          process.stdout.write(
+            `sox: pre-start reaped stale ${rid} pid=${k.pid}` +
+            `${k.orphaned ? ' (orphan, PPID 1)' : ''} → ${k.outcome}\n`,
+          );
+        }
+      }
+    }
+  }
+
   // ── R8: daemon mode ──────────────────────────────────────────────────────────
   // When --daemon is passed (and --_daemon-child is NOT), re-spawn ourselves
   // detached with stdio redirected to a log file, print the background PID and
@@ -2710,31 +2750,84 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
     process.exit(0);
   }
 
-  // stop-via-supervisor: signal the supervisor process (not children directly)
+  // ── BL-31: configurable grace period for SIGTERM→SIGKILL escalation ──────────
+  const graceMs = (() => {
+    const raw = flags['grace-ms'] ?? process.env['SOX_STOP_GRACE_MS'];
+    const n = raw !== undefined ? Number(raw) : NaN;
+    return Number.isFinite(n) && n >= 0 ? n : 5000;
+  })();
+
+  // ── stop-via-supervisor: signal the supervisor process, then VERIFY it died.
+  // The pre-BL-31 code signalled the supervisor and exited immediately — no
+  // confirmation, no escalation, and (critically) no reaping of a daemon whose
+  // supervisor had already exited (PPID-1 orphan). We now: signal the
+  // supervisor, poll-verify its exit (escalating to SIGKILL), and THEN run the
+  // identity-matched orphan reap so a detached daemon can never survive.
   if (id === undefined && typeof record.supervisorPid === 'number') {
-    try {
-      process.kill(record.supervisorPid, 'SIGTERM');
+    if (pidAliveRT(record.supervisorPid)) {
       process.stdout.write(
         `sox: signaling supervisor (pid=${record.supervisorPid}) to stop\n`,
       );
-    } catch (e) {
-      process.stderr.write(`sox: could not signal supervisor: ${String(e)}\n`);
-      // Supervisor gone — fall through to kill daemon pids directly from record
-      for (const entry of record.entries ?? []) {
-        if (typeof entry.pid === 'number') {
-          try {
-            process.kill(entry.pid, 'SIGTERM');
-            process.stdout.write(`sox: sent SIGTERM to ${entry.id} (pid=${entry.pid})\n`);
-          } catch { /* already gone */ }
-        }
+      const outcome = await killAndVerify(record.supervisorPid, {
+        graceMs,
+        group: false, // the supervisor's own shutdown signals its children's groups
+        log: (m) => process.stdout.write(`sox: supervisor ${m}\n`),
+      });
+      if (outcome === 'undead') {
+        process.stderr.write(
+          `sox: WARNING — supervisor (pid=${record.supervisorPid}) could not be killed; reaping its children directly\n`,
+        );
+      }
+    } else {
+      process.stdout.write(
+        `sox: supervisor (pid=${record.supervisorPid}) already gone\n`,
+      );
+    }
+    // Whether or not the supervisor was alive, reap every extension's orphans by
+    // identity. This catches a daemon whose supervisor died and left it detached.
+    let undead = false;
+    for (const entry of record.entries ?? []) {
+      const reap = await reapOrphansForExtension(entry.id, {
+        runtimeFilePath,
+        lockfilePath,
+        graceMs,
+        log: (m) => process.stdout.write(`sox: reap ${entry.id}: ${m}\n`),
+      });
+      for (const k of reap.killed) {
+        process.stdout.write(
+          `sox: reaped ${entry.id} pid=${k.pid}` +
+          `${k.orphaned ? ' (orphan, PPID 1)' : ''} → ${k.outcome}\n`,
+        );
+        if (k.outcome === 'undead') undead = true;
       }
     }
-    process.exit(0);
+    process.stdout.write(undead ? `sox: stop INCOMPLETE — see warnings above\n` : `sox: stop complete\n`);
+    process.exit(undead ? 1 : 0);
   }
 
+  // ── Non-supervisor path (per-id stop, or no supervisorPid recorded) ──────────
+  // stopRuntime now verifies + escalates + reaps by identity internally.
   await stopRuntime({ scope, runtimeFilePath, id });
-  process.stdout.write(`sox: stop complete\n`);
-  process.exit(0);
+
+  // Belt-and-suspenders: if an id was targeted, run an explicit identity reap in
+  // case the daemon was a detached orphan absent from runtime.json entirely.
+  let undead = false;
+  if (id !== undefined) {
+    const reap = await reapOrphansForExtension(id, {
+      runtimeFilePath,
+      lockfilePath,
+      graceMs,
+      log: (m) => process.stdout.write(`sox: reap ${id}: ${m}\n`),
+    });
+    for (const k of reap.killed) {
+      process.stdout.write(
+        `sox: reaped ${id} pid=${k.pid}${k.orphaned ? ' (orphan, PPID 1)' : ''} → ${k.outcome}\n`,
+      );
+      if (k.outcome === 'undead') undead = true;
+    }
+  }
+  process.stdout.write(undead ? `sox: stop INCOMPLETE — see warnings above\n` : `sox: stop complete\n`);
+  process.exit(undead ? 1 : 0);
 }
 
 // ─── status (R7 / P7) ─────────────────────────────────────────────────────────

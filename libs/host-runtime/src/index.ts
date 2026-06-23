@@ -68,6 +68,7 @@ export {
   startRuntime,
   stopRuntime,
   stopExtension,
+  reapOrphansForExtension,
   reconcileRuntime,
   getRuntimeRecord,
   getRegistrar,
@@ -80,7 +81,22 @@ export type {
   RuntimeRecord,
   StartRuntimeOptions,
   StopRuntimeOptions,
+  ReapExtensionResult,
 } from './runtime.js';
+
+// ─── BL-31: verified kill + orphan reaper ─────────────────────────────────────
+export {
+  pidAlive,
+  killAndVerify,
+  findOrphansByIdentity,
+  argvContainsToken,
+  snapshotProcesses,
+  identityToken,
+  storeDirFromSource,
+  reapByIdentity,
+  reapBySource,
+} from './reaper.js';
+export type { KillOutcome, KillOptions, PsProcess, OrphanMatch, ReapResult } from './reaper.js';
 
 // ─── Lock (R3) ────────────────────────────────────────────────────────────────
 export { acquireStartLock, computeSupervisorId } from './lock.js';
