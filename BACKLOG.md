@@ -169,9 +169,9 @@ treatment then. (2) `memory-server` ships a **stale, orphaned tracked `bundle/`*
 bundler run; its `project.json` build uses `tsc` and nothing references the dir — dead tracked
 output to delete + gitignore. Neither blocks anything today.
 
-### BL-39 — `upgrade --all` / `install(mode:update)` re-pins the lockfile but does NOT re-materialize the copied service store
+### ~~BL-39~~ — `upgrade --all` / `install(mode:update)` re-pins the lockfile but does NOT re-materialize the copied service store — **Resolved** (`ca20ecf`, ADR-0004)
 
-**Severity:** High (upgrade leaves a running service on stale code) · **Status:** Open
+**Severity:** High (upgrade leaves a running service on stale code) · **Status:** Resolved — ADR-0004's ownership index drives `rematerializeServiceStores`: `update`/`upgrade` now clear the old store and re-copy the new artifact (previously only fresh install re-materialized). The original Open writeup follows.
 A `type:service` extension runs from a **copied store** (`.sox/ext/<id>/`). `upgrade --all` (via
 `install({mode:'update'})`) re-pins the lockfile checksum but **never re-copies the store**, so after
 an upgrade the daemon keeps running the store copy from its **original** install. Observed live: post
