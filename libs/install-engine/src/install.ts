@@ -1441,7 +1441,19 @@ export async function declarativeInstall(
         } else {
           // stdio — sox serve <ext> keeps sox in the spawn chain so cascade config
           // (SOX_CONFIG_*) is injected fresh at each Claude Code session start.
-          const cliBin = process.env['SOX_CLI_BIN'] ?? 'sox';
+          //
+          // CLI bin resolution order (BL-mcp-cmd):
+          //   1. SOX_CLI_BIN env var (explicit override, useful in CI / tests)
+          //   2. process.argv[1] (the actual running CLI — bin/soxe or its abs path)
+          //   3. 'soxe' (last resort; requires soxe to be on PATH)
+          //
+          // We intentionally do NOT fall back to 'sox' — that collides with the
+          // system sox audio tool and causes every MCP server entry written during
+          // `soxe install` to spawn the wrong binary.
+          const cliBin =
+            process.env['SOX_CLI_BIN'] ??
+            (process.argv[1] && process.argv[1].length > 0 ? process.argv[1] : undefined) ??
+            'soxe';
           resolvedValue = { type: 'stdio', command: cliBin, args: ['serve', descriptor.ext] };
         }
       }
