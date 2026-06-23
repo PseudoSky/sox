@@ -13,6 +13,121 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 > phases (P1–P6), not as loose items. The metadata-drop half of BL-23 is already fixed (`9728f6f`).
 > **BL-21 (auto-export) and BL-22 (entity names) resolved by P5 (2026-06-22).**
 
+## Resolved — observability gap + daemon down (2026-06-23, fixed fix/memory-server-bl45-48 1a5f1ed)
+
+### BL-46 — production `serve` (stdio MCP) path captures NO logs — **Resolved**
+
+**Discovered while trying to diagnose BL-45 from server logs.** The logs do not reflect the running version.
+
+- The live memory-server is launched from `.mcp.json` as `soxe serve memory-server` (stdio). `cmdServe`
+  (`apps/sox/src/main.ts:4441-4454`) runs `execFileSync(node, [entrypoint], { stdio: 'inherit' })` —
+  **no LogManager, no `logDir`, no file logging.** stdout *is* the JSON-RPC channel (consumed by the
+  MCP client); stderr is whatever the client does with it (typically not persisted).
+- Therefore the running v1.1.0 stdio server writes **nothing** to `~/.sox/logs`. Every file under
+  `~/.sox/logs/*/memory-server-*.log` is from a *different* path — the supervisor/e2e LogManager
+  (`cmdStart` / loader with `logDir`) — and they are **stale**: all dated 2026-06-22, `serverInfo`
+  version **1.0.0** (the live server reports **v1.1.0**, artifact `67c4112f4518` via `memory_ping`).
+  Zero logs exist for 2026-06-23 despite heavy use.
+- **Consequence:** reading `~/.sox/logs` to debug the live server is a trap — it shows an *older*
+  version's behavior. There is effectively no runtime observability for the in-use MCP server: server
+  errors, embed warmup failures, hash-fallback warnings, permission denials, and the daemon's
+  `[memoryd]` output are not durably captured. The original BL-45 incident has **no logs at all**.
+- **Latent footgun:** because `serve` inherits stdout, ANY stray `console.log` in the server's request
+  path corrupts the JSON-RPC stream. Server diagnostics must never use stdout.
+
+**Fix sketch:** give `cmdServe` an opt-in durable log sink for stderr (e.g.
+`<logDir>/<extId>-serve-<date>.log` via the existing LogManager, stderr only — never stdout), or a
+`SOX_SERVE_LOG` env/flag. At minimum, document that `~/.sox/logs` does NOT cover the stdio `serve`
+path and stamp the served version into a discoverable place. Affected: `apps/sox/src/main.ts` (`cmdServe`),
+`libs/host-runtime/src/log-manager.ts`.
+
+### BL-47 — `memory-daemon` service is INACTIVE; async batch enrichment is not running — **Resolved**
+
+`node bin/soxe list` shows `memory-daemon  user  INACTIVE`. The daemon is a `service` with
+`lifecycle.background:true, singleton:true` (`members/memory-daemon/extension.json`) and owns the
+async enrichment loop (`runBatchEnrich`: clustering E6, auto-links E9, importance link-score E7,
+decay E11). With it down, write-path `nudgeDaemon()` connects to nothing (fails silently — the queue
+is durable but never drained), so **clustering / auto-links / importance / decay never run** for the
+live `~/.memory` store. The `memory_write` tool description still advertises "Batch enrichments …
+run asynchronously in the daemon" — which is currently false at runtime. Fix: ensure the daemon is
+started/supervised (and auto-restarted) wherever the memory MCP is used, or fold the batch loop into
+the server process on an interval. Relates to BL-45 (the contention there only manifests *when* the
+daemon runs).
+
+### BL-48 — `SOX_EMBED_BACKEND` default `auto` silently falls back to hash embedding; the only signal is an uncaptured stderr warning — **Resolved**
+
+Distinct from (but worsened by) BL-46. `embed()` defaults to backend `auto` (`embed.ts:72`): it tries
+the real ONNX/BGE worker and, if the worker can't spawn or the model isn't available, **silently
+falls back to deterministic hash embedding** (`embed.ts:255-265`) emitting only a `console.warn` to
+**stderr** — which the production `serve` path does not persist (BL-46). If a write process used real
+embeddings but a recall process falls back to hash (or vice versa), the query vector lives in a
+different space and **semantic recall degrades to near-random while still returning non-empty
+results** — easy to misdiagnose. NB: this is NOT the same as `provider_call_count` — that counter is
+**designed to stay 0** on reads (local inference never increments it; see "agent misdiagnosis" below).
+Fix: surface the resolved backend in `memory_stats`/`memory_ping` (already pinned in `memory_scope`),
+and emit a durable warning (or hard-fail when `SOX_EMBED_BACKEND=real` is required) on fallback.
+
+> **Agent misdiagnosis recorded (2026-06-23):** another agent claimed "the embedding provider is
+> offline (`provider_call_count: 0` on every recall) — semantic recall silently returns empty."
+> **Both halves are false.** `provider_call_count: 0` is the *designed* value (embed.ts:49-50: counts
+> external HTTP/provider calls only; the local ONNX backend deliberately does not increment it).
+> Live test this session: queries returned non-empty, correctly-ranked results with `provenance:["vec"]`
+> / `["vec","fts"]` — semantic recall works. The low score magnitudes (~0.01–0.03) are **RRF** fusion
+> scores (`recall.ts:212`, `1/(k+rank)`), not cosine — also normal, not weakness.
+
+## Resolved — concurrent-write stall (2026-06-23, fixed fix/memory-server-bl45-48 1a5f1ed)
+
+### BL-45 — concurrent `memory_write` batch stalls for minutes; daemon re-runs full O(n²) enrich on every nudge — **Resolved**
+
+**Symptom (reported):** a single parallel batch of 7 `memory_write` calls appeared to hang ~15 min
+(5/7 eventually returned, 2 cancelled); the same writes issued serially returned promptly.
+
+**Investigation (2026-06-23, evidence-backed — original "write-lock/embedding serialization within
+the write" hypothesis was DISPROVEN):**
+
+- The MCP server (`memory-server`) uses **synchronous** `better-sqlite3` on a **single cached
+  connection** (`getDb`, `index.ts:254-260`). There is no intra-server multi-writer contention, and
+  SQLite ops serialize harmlessly on the event loop.
+- The embedding path is **concurrency-safe**: probe of 7 concurrent vs serial `embed()` (real BGE/ONNX
+  backend, warm) = 2.10s vs 2.11s (slowdown 0.99×). fastembed/onnxruntime serializes `run()`
+  internally; no thread oversubscription. The embed worker has no concurrency guard but doesn't need one.
+- The in-server write path (`memoryWrite`: `await embed` + sync tx + sync `enrichOnWrite` KNN-21 +
+  non-blocking `nudgeDaemon`) is sub-second per call.
+- **Root cause (proven):** the separate `memoryd` daemon runs a **full-corpus** `runBatchEnrich` on
+  **every nudge** (every write nudges it; after a non-empty drain it immediately `scheduleLoop(0)`,
+  `memoryd.ts:148`). `runBatchEnrich` → `clusterStore` is **O(n²)** (pairwise cosine,
+  `cluster.ts:231-236`; the degenerate guard can re-run that pass up to 4×) plus a full-corpus
+  importance recompute wrapped in one write transaction. **Measured: ~10.5–11.0s per pass at the
+  current corpus of 2,209 live episodes** (probe on a copy of `~/.memory/memory.db`), growing
+  quadratically.
+- **Amplifier:** that batch pass holds the SQLite **write lock**. Because the MCP server's
+  better-sqlite3 calls are synchronous, a write that loses the lock race **blocks the entire server
+  event loop** up to `busy_timeout=5000ms` (`schema.ts:8`) — stalling *all* in-flight writes and their
+  embed-worker response handling, not just the contending one. N concurrent writes serialize behind
+  repeated ~11s full passes, each successful write triggering yet another pass → compounds to minutes.
+
+**Confidence caveat (added 2026-06-23):** the daemon contention above is the cause **only when
+memoryd is running**. Per BL-47, `memory-daemon` is currently **INACTIVE**, and there are no logs
+from the incident (BL-46), so this mechanism is a **proven latent defect** (measured O(n²), ~11s/pass,
+per-nudge full re-enrich) but is **not confirmed (unverified)** as the cause of the specific 7-write
+stall. If the daemon was down during the incident, the stall was likely client-side (parallel
+tool-call approval/queueing) and/or first-call cold model load, not daemon lock contention. Both the
+latent defect and the daemon-state question need fixing regardless.
+
+**Fix sketch (in priority order):**
+1. **Incremental write-triggered clustering.** `cluster.ts` already has an `incrementalOnly` option
+   (local-neighborhood check for new nodes). Route ingest-triggered enrich to incremental; reserve the
+   full O(n²) re-cluster for a periodic/time-based trigger or explicit `memory_curate recluster`.
+2. **Debounce/coalesce daemon passes.** Don't run one full `runBatchEnrich` per nudge — collapse a
+   burst of ingest rows into a single pass and add a cooldown before the next full pass (the immediate
+   `scheduleLoop(0)` after a non-empty batch is the back-to-back trigger).
+3. **Chunk the importance transaction** so the daemon yields the write lock between chunks instead of
+   holding it across all 2,209 episodes.
+
+**Affected:** `libs/memory-enrich/src/{batch,cluster}.ts`, `libs/memory-core/src/memoryd.ts`,
+`libs/memory-core/src/schema.ts` (busy_timeout). NB: any code change here triggers the full
+build → `registry:sync-index` → `upgrade --all` sequence (CLAUDE.md agent sequence).
+
 ## Open — surfaced by the filtered-clustering review (2026-06-22)
 
 > Deferred (non-blocking) findings from the architect + code review of branch
@@ -214,6 +329,143 @@ A `memory_*` call with `db_path: "~/.memory/memory.db"` (the literal string the 
 to the server's cwd (observed: `extensions/.../memory-server/~/.memory/memory.db`). The server must
 expand `~`→`$HOME` (consistently for the allowlist check AND the file open), or reject an unexpanded
 `~`. Surfaced cleaning a stray artifact during the MCP-availability work.
+
+### BL-42 — install model is checkout-bound: cannot publish packages or install on a fresh machine
+
+**Severity:** High (distribution blocker — nothing installs off this one working copy) · **Status:** Open
+
+Today every resolution path points at **this checkout on this machine**. A fresh machine
+(or any consumer that didn't build the repo locally) cannot install or run a single extension.
+Evidence (2026-06-23):
+
+- **`registry/index.json` sources are absolute local `file://` URLs** —
+  `file:///Users/nix/dev/ai/sox-ecosystem/extensions/...` for all 14 entries. The registry is
+  not a portable/publishable artifact; on another machine those paths don't exist.
+- **Lockfiles pin absolute local dist paths** —
+  `~/.adhd/sox-ecosystem/extensions.lock` resolves `memory-server` →
+  `file:///Users/nix/dev/ai/sox-ecosystem/.../dist/index.js`. Content-addressed identity
+  (ADR-0003) is computed against locally-built `dist`, so a fresh machine has neither the
+  artifact nor a way to fetch it.
+- **MCP spawn command is an absolute repo path** — `~/.claude.json` →
+  `mcpServers.memory-server.command = /Users/nix/dev/ai/sox-ecosystem/bin/soxe`. Won't exist
+  on a fresh machine; there is no globally-installed `soxe` to fall back to.
+- **Shipped extensions depend on `@adhd/sox-*` via `workspace:*`** (memory-server/cli/flush
+  package.json). `workspace:*` only resolves inside the pnpm workspace; a published package
+  carrying it 404s on `npm/pnpm install` (this exact failure already hit `@adhd/sox-tokenguard-core`
+  — see the protocol fix `dabe9ea`). Self-contained esbuild bundling (BL-37/BL-38) inlines these
+  for the *service* members, but the dependency-graph publish story is unsolved.
+- **Root `package.json` is `"private": true`** and no `@adhd/sox-*` lib is actually published; the
+  scope is owned but empty on npm.
+
+**What "publishable + fresh-machine-installable" requires (fix sketch):**
+1. **Decide the distribution substrate** — publish `@adhd/sox-*` libs + the `soxe` CLI to npm
+   (changesets is already wired: `version-packages`/`release` scripts), OR ship fully self-contained
+   bundles addressed by a fetchable URL/tarball, not `file://`.
+2. **Make the registry portable** — `build-index` should emit relative or resolvable
+   (registry-URL/tarball) sources, not absolute `file://` paths; add a publish step that uploads
+   artifacts and rewrites sources.
+3. **Rewrite `workspace:*` → real versions on publish** (changesets does this for libs; the
+   extension members need the same, or must bundle their deps).
+4. **Resolve the CLI command portably** — a globally-installed `soxe` (npm bin) or a per-install
+   shim, so `mcpServers.*.command` is `soxe`/`npx soxe`, not an absolute repo path.
+5. **Fresh-machine acceptance test** — `npm i -g @adhd/soxe` (or equivalent) → `soxe install
+   sox-memory-bundle --scope user` → `memory_ping` green, in a container with **no repo checkout**.
+   This is the reality gate; nothing is "publishable" until that passes.
+
+**Versioning-system findings (2026-06-23, confirmed while writing `PUBLISHING.md`).** The publish
+pipeline is Changesets (canonical — `.changeset/` + `@changesets/action` in `release.yml`, which
+DOES rewrite `registry/index.json` sources to npm-CDN URLs post-publish, i.e. the fix for blocker
+#1 above). The **safe, unambiguous defects are now fixed** (this turn):
+
+- ✅ **Changeset tooling was non-functional** — `pnpm-workspace.yaml`'s `libs/**`/`apps/**`/
+  `packages/**` recursed into gitignored `dist/` dirs whose build-emitted `package.json` (no `name`)
+  made `@manypkg`/`changeset status` error out. Fixed by excluding `!**/dist/**` + `!**/node_modules/**`;
+  `changeset status` now lists the 4 valid members.
+- ✅ **Dual versioning systems** — removed the conflicting, CI-unused `nx.json` `release` block;
+  Changesets is now the single source of truth.
+- ✅ **Stale changesets** — removed the deleted `@adhd/sox-extension-memory-organizer` refs from
+  `sox-memory-p0/p5.md`; deleted `hello-world-minor.md` (referenced non-existent
+  `@adhd/sox-extension-hello-world`).
+
+The remaining items are **strategy decisions**, split into **BL-43**.
+
+Playbook + full confirmation: [`PUBLISHING.md`](./PUBLISHING.md) → *Current state*.
+
+Surfaced answering "is there a backlog item about publishing for a fresh machine?" — there was not.
+
+### BL-43 — publish-strategy decisions for `@adhd/sox-*` (libs, CLI, bundle members, first release)
+
+**Severity:** High (gates BL-42 — nothing publishes until these are decided) · **Status:** Open
+
+The mechanical publish defects are fixed (see BL-42). What remains are **decisions** that only the
+owner can make, because they put code on the public `@adhd` npm scope:
+
+1. **Libs: publish vs. bundle.** `@adhd/sox-authoring|-host-runtime|-install-engine|-manifest|
+   -registry|-memory-core` are `private: true`, yet the public extensions depend on them via
+   `workspace:*` → those deps **404 on publish**. Pick one, consistently:
+   - **(a) Publish the libs** — flip `private:false` + add `publishConfig.access=public`; changesets
+     rewrites `workspace:*` → the real version at publish. Exposes the engine internals on npm.
+   - **(b) Bundle them** — esbuild-inline every `@adhd/sox-*` dep into each published extension (as
+     BL-37/38 already do for the service members) so published artifacts carry **no** `@adhd/sox-*`
+     runtime deps. Keeps libs private.
+2. **CLI publishability.** `@adhd/sox-cli` (apps/sox) is `private: true` with no published `bin`. The
+   fresh-machine entry point (`npm i -g @adhd/sox-cli` → `soxe …`) requires it published with a
+   `bin: { soxe }` and an `engines.node` pin.
+3. **Bundle-member publish model.** `memory-daemon` is `private: true` (internal to the bundle, no
+   independent publish). Confirm this is intentional for ALL non-server members, and that the bundle
+   artifact carries them — *then* no per-member changeset is needed (a daemon changeset was
+   deliberately NOT added for this reason). Document the rule in `PUBLISHING.md`.
+4. **First-release planning.** The surviving `sox-memory-p0/p5.md` changesets describe historical
+   "stubs only / Phase N" churn and would bump `memory-server` (already manually at 1.1.0) with a
+   misleading changelog. Before the first real publish, consolidate them into one coherent
+   first-release changeset reflecting the CURRENT shipped state, not the phase history.
+
+Acceptance: BL-42's fresh-machine container smoke passes.
+
+### ~~BL-44~~ — `nx test` caching was dependency-blind: an upstream source change did NOT invalidate a dependent's test cache — **Resolved** (this turn)
+
+**Severity:** High (cache lies — CI/local could report a stale green against changed upstream code) ·
+**Status:** Resolved 2026-06-23.
+
+All 15 `test` targets overrode `inputs` in their `project.json` with only their own
+`{projectRoot}/src/**/*.ts` (+ a couple of hardcodes). Project-level `inputs` **replace** (do not
+merge with) the `nx.json` targetDefaults `["default", "^production"]`, so every test target **dropped
+`^production`** and had **no `dependsOn`** → the test cache was keyed on the project's own files only.
+**Proven** (before fix): changed `libs/memory-core/src/index.ts` → `nx test memory-server` still served
+a **cache hit**, although nx knows the `memory-server → memory-core` edge. The exact "cache lies"
+hazard (cf. BL-4, MEMORY `eim-plan-cache-lies-reality-gates`). A change to `vitest.config.ts`/
+`vitest.setup.ts` also didn't invalidate (those files weren't in the narrowed inputs).
+
+**Fix (verified):**
+- Set every test target's `inputs` to `["default", "^production"]` — `default` tracks the project's
+  own files incl. vitest config/setup; `^production` tracks **upstream** sources. (install-engine keeps
+  its extra `{workspaceRoot}/libs/host-runtime/src/data-paths.ts` parity reach-in — it has no nx graph
+  edge to host-runtime.)
+- Added `dependsOn: ["^build"]` to the `test` targetDefault so a test runs against **freshly-built**
+  dependency `dist` (tests resolve `@adhd/sox-*` via a static `dist/index.js` alias — without this the
+  invalidation was hollow: the re-run would execute stale dist). This also closes the BL-4 stale-dist
+  hazard for tests.
+
+Verified by reality probes: upstream src change → test re-runs (was a hit); `nx test memory-server`
+now runs "test … and 4 tasks it depends on" (builds `memory-core` first); no-change → still a hit.
+
+**Across-the-board hardening (follow-up, same turn).** A conformance audit found the same class of
+defect in **`build`** targets: several declared a *hand-listed* `dependsOn: ["X:build"]` that
+**replaces** the inherited graph-resolved `^build` and had **drifted incomplete** — e.g.
+`memory-server` build listed only `memory-core:build` but the graph shows it also depends on
+`memory-enrich`. Normalized **every** `build`/`test` target to the graph-resolved `^build`
+(`nx build sox` now builds 6 dep tasks, not the 4 the hand-list named; `memory-server` 4). Fixed two
+genuinely dep-blind tests the first pass missed (`manifest` — local `dependsOn: ["test-scripts"]`
+shadowed `^build`; `packages/sox-nx` — outside the first sweep). Shipped the durable guards so it
+cannot regress:
+- **`docs/nx-cache-conformance.md`** — the principle (policy lives in `nx.json` targetDefaults;
+  per-project `inputs`/`dependsOn` *replace* not merge; prefer `^build` over hand-listed deps).
+- **`libs/authoring` bundle generator** — emits no narrowing per-target `inputs` (members inherit the
+  dep-aware defaults); so new extensions are born conformant.
+- **`tools/check-nx-cache.cjs`** (+ `pnpm check-nx-cache`, wired into `validate.yml`) — fails CI if any
+  cacheable `build`/`test` target's **effective** (defaults-merged) config is dependency-blind. Now
+  green: 19 project.json, all dependency-aware.
+- Generalized finding stored to memory (`nx-cache-dependency-awareness`, episode `01KVVAJKNYEKSDJ…`).
 
 > **BL-21, BL-22, BL-23, BL-24 are owned by `docs/plan/memory-enrichment/IMPLEMENTATION.md` (§0).**
 > Each is resolved by a plan phase: BL-23 metadata = done (`9728f6f`); BL-23 project-path + BL-24
