@@ -179,22 +179,32 @@ export class MemoryDaemon {
     const enrichRows = rows.filter((r) => r.op === 'ingest' || r.op === 'enrich');
     const otherRows = rows.filter((r) => r.op !== 'ingest' && r.op !== 'enrich');
 
-    // Process other deterministic ops (decay, reindex, etc.)
+    // Process other deterministic ops (decay, reindex, etc.) — mark each done immediately.
+    const doneAt = new Date().toISOString();
+    const doneOtherSeqs: number[] = [];
     for (const row of otherRows) {
       await this.processDeterministic(row);
+      doneOtherSeqs.push(row.seq);
+    }
+    if (doneOtherSeqs.length > 0) {
+      this.db.prepare(
+        `UPDATE organizer_queue SET done_at = ?
+         WHERE seq IN (${doneOtherSeqs.map(() => '?').join(',')})`,
+      ).run(doneAt, ...doneOtherSeqs);
     }
 
-    // Process enrich/ingest rows via deterministic batch enrichment (no LLM, no provider)
+    // Process enrich/ingest rows — only mark done on SUCCESS so transient failures
+    // are retried on the next drain cycle instead of being silently dropped.
     if (enrichRows.length > 0) {
-      this.processBatchEnrich();
+      const enrichSucceeded = this.processBatchEnrich();
+      if (enrichSucceeded) {
+        const enrichSeqs = enrichRows.map((r) => r.seq);
+        this.db.prepare(
+          `UPDATE organizer_queue SET done_at = ?
+           WHERE seq IN (${enrichSeqs.map(() => '?').join(',')})`,
+        ).run(doneAt, ...enrichSeqs);
+      }
     }
-
-    // Mark done
-    const doneAt = new Date().toISOString();
-    this.db.prepare(
-      `UPDATE organizer_queue SET done_at = ?
-       WHERE seq IN (${seqs.map(() => '?').join(',')})`,
-    ).run(doneAt, ...seqs);
 
     return rows.length;
   }
@@ -240,10 +250,11 @@ export class MemoryDaemon {
 
   /**
    * Run deterministic batch enrichment over the full live corpus.
-   * Called whenever enrich/ingest queue items are drained.
    * Delegates to @sox/memory-enrich runBatchEnrich — no LLM, no provider calls.
+   * Returns true on success, false on failure. Caller marks queue rows done only
+   * on success so transient failures are retried on the next drain cycle.
    */
-  private processBatchEnrich(): void {
+  private processBatchEnrich(): boolean {
     try {
       const result = runBatchEnrich(this.db);
       console.log(
@@ -253,8 +264,10 @@ export class MemoryDaemon {
         ` relates_to=${result.relates_to_edges}` +
         ` topics_backfilled=${result.topics_backfilled}`,
       );
+      return true;
     } catch (err) {
-      console.error('[memoryd] batch enrich error:', err);
+      console.error('[memoryd] batch enrich error — rows left for retry:', err);
+      return false;
     }
   }
 

@@ -418,6 +418,44 @@ describe('enrichOnWrite', () => {
     expect(parsed.pass).toBe(ENRICH_VERSION);
     expect(typeof parsed.ts).toBe('string');
   });
+
+  it('inserts a SAME_AS edge for a near-duplicate write without throwing (regression: edge column count)', () => {
+    // Real-backend threshold (0.95) with no shared-MENTIONS hash guard — so identical
+    // embeddings reliably trigger the SAME_AS insert path. No model load: embeddings are
+    // passed explicitly. afterEach clears the env.
+    process.env['SOX_EMBED_BACKEND'] = 'real';
+
+    // First episode.
+    const emb1 = seedEmbedding(11);
+    const content1 = 'The deployment pipeline runs lint, build, then test in order.';
+    const rowid1 = insertEpisode(db, 'dup1', content1, emb1);
+    enrichOnWrite(db, {
+      uid: 'dup1', rowid: rowid1, content: content1, summary: undefined, tags: [],
+      topic: undefined, metadata: undefined, project_path: '/p',
+      derived_from_uid: undefined, embedding: emb1, importance: undefined,
+    });
+
+    // Second episode: a near-duplicate (embedding ~identical) in the SAME db — this is the
+    // path that exercises the SAME_AS edge insert, which previously had a 7-col/8-value
+    // mismatch and threw a SQLite column-count error.
+    const emb2 = emb1; // identical vector → cosine 1.0 ≥ 0.98 hash threshold, guarantees near-dup fires
+    const content2 = 'The deployment pipeline runs lint, build and then tests in order.';
+    const rowid2 = insertEpisode(db, 'dup2', content2, emb2);
+    const result2 = enrichOnWrite(db, {
+      uid: 'dup2', rowid: rowid2, content: content2, summary: undefined, tags: [],
+      topic: undefined, metadata: undefined, project_path: '/p',
+      derived_from_uid: undefined, embedding: emb2, importance: undefined,
+    });
+
+    // near-dup detected and the SAME_AS edge persisted (new episode → existing neighbour).
+    expect(result2.near_dup).not.toBeNull();
+    const edge = db
+      .prepare<[number, number], { n: number }>(
+        "SELECT COUNT(*) AS n FROM edge WHERE src = ? AND dst = ? AND rel = 'SAME_AS'",
+      )
+      .get(rowid2, rowid1)!;
+    expect(edge.n).toBe(1);
+  });
 });
 
 // ── clusterStore ──────────────────────────────────────────────────────────────

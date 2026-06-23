@@ -55,6 +55,11 @@ export type {
   MaterializeOptions,
 } from './cluster.js';
 
+// ── C1.11 structured filter + SQL builder ─────────────────────────────────────
+
+export { buildFiltersClause } from './filters.js';
+export type { MemoryFilter } from './filters.js';
+
 // ── C1.9 auto-links ───────────────────────────────────────────────────────────
 
 export { buildAutoLinks } from './autolink.js';

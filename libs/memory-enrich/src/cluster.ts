@@ -15,6 +15,8 @@
 
 import * as crypto from 'node:crypto';
 import type { Database } from 'better-sqlite3';
+import { buildFiltersClause } from './filters.js';
+export type { MemoryFilter } from './filters.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -541,17 +543,24 @@ export function clusterStore(
 
 export interface ClusterSubsetOptions {
   /**
-   * Additive WHERE predicate over alias `n`, as produced by the recall path's
-   * `buildFiltersClause` — `{ sql, params }`. Selects the subset to cluster.
-   * Omit to cluster all live episodes (a global pass scoped to a named lens).
+   * Structured filter — the preferred way to call `clusterSubset`. The engine
+   * builds the SQL clause internally (`buildFiltersClause`) so callers need no
+   * knowledge of the internal table alias or SQL shape. The filter also drives
+   * the deterministic provenance hash and is stored on each community node's
+   * `meta` for traceability.
+   *
+   * Use `filter` instead of the lower-level `restrict` unless you have a
+   * pre-built clause from a legacy callsite.
+   */
+  filter?: import('./filters.js').MemoryFilter;
+  /**
+   * Low-level additive WHERE predicate over alias `n` — `{ sql, params }`.
+   * Prefer `filter` above; this exists for callers that pre-build the clause.
+   * When both are supplied, `filter` is used for the provenance hash and `restrict`
+   * provides the SQL (they must be consistent).
+   * @deprecated Pass `filter` and let the engine build the clause.
    */
   restrict?: { sql: string; params: unknown[] };
-  /**
-   * The originating filter object. Used to derive the deterministic provenance
-   * hash (so re-running the same filter idempotently replaces its communities)
-   * and stored on each community node's `meta` for traceability.
-   */
-  filter?: unknown;
   threshold?: number;
   nodeCap?: number;
   /**
@@ -585,8 +594,17 @@ export function clusterSubset(
   db: Database,
   opts: ClusterSubsetOptions = {},
 ): ClusterSubsetResult {
+  // Build restrict clause from the structured filter when provided.
+  // Fall back to a pre-built `restrict` for legacy callers, then empty (cluster-all).
+  const restrict: { sql: string; params: unknown[] } | undefined =
+    opts.filter != null
+      ? buildFiltersClause(opts.filter)
+      : opts.restrict;
+
+  // Provenance hash keys on the structured filter (preferred) or the raw SQL
+  // fragment (legacy). The hash must be stable across calls with the same intent.
   const provenanceHash = filterProvenanceHash(opts.filter ?? opts.restrict?.sql ?? '');
-  const episodes = selectEpisodes(db, opts.restrict);
+  const episodes = selectEpisodes(db, restrict);
 
   const result = computeClusters(db, episodes, {
     threshold: opts.threshold,
@@ -600,7 +618,8 @@ export function clusterSubset(
       materializeClusters(db, result.clusters, {
         scope: 'subset',
         provenanceHash,
-        filter: opts.filter ?? null,
+        // Store whichever filter representation is available for traceability.
+        filter: opts.filter ?? opts.restrict?.sql ?? null,
       }),
     );
     tx();
@@ -620,9 +639,18 @@ export function clusterSubset(
  * Read-only: no DB writes.
  */
 export function clusterStats(db: Database): ClusterStats {
+  // Scope all stats to GLOBAL communities only (kind='global' or legacy NULL scope).
+  // Persisted subset lenses must NOT inflate the health/CI-gate numbers reported here.
+  //
+  // Two variants of the scope predicate:
+  //  - `globalScopeUnaliased` — for single-table queries where `meta` is unambiguous.
+  //  - `globalScopeDst`       — for JOIN queries; qualifies meta with the `dst` alias.
+  const globalScopeUnaliased = `(json_extract(meta, '$.cluster_scope.kind') IS NULL OR json_extract(meta, '$.cluster_scope.kind') = 'global')`;
+  const globalScopeDst = `(json_extract(dst.meta, '$.cluster_scope.kind') IS NULL OR json_extract(dst.meta, '$.cluster_scope.kind') = 'global')`;
+
   const clusterCountRow = db
     .prepare<[], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'community' AND t_invalid IS NULL`,
+      `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'community' AND t_invalid IS NULL AND ${globalScopeUnaliased}`,
     )
     .get();
   const clusterCount = clusterCountRow?.cnt ?? 0;
@@ -632,6 +660,8 @@ export function clusterStats(db: Database): ClusterStats {
       `SELECT COUNT(*) AS cnt
        FROM edge e
        JOIN node src ON src.rowid = e.src AND src.kind = 'episode' AND src.t_invalid IS NULL
+       JOIN node dst ON dst.rowid = e.dst AND dst.kind = 'community' AND dst.t_invalid IS NULL
+         AND ${globalScopeDst}
        WHERE e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL`,
     )
     .get();
@@ -645,12 +675,17 @@ export function clusterStats(db: Database): ClusterStats {
   const totalEpisodes = totalEpisodeRow?.cnt ?? 0;
   const totalUnclustered = totalEpisodes - totalClustered;
 
+  // largest_cluster_size: scoped to global communities only.
   const largestRow = db
     .prepare<[], { max_count: number | null }>(
       `SELECT MAX(member_count) AS max_count FROM (
          SELECT COUNT(*) AS member_count
-         FROM edge WHERE rel = 'MEMBER_OF' AND t_invalid IS NULL
-         GROUP BY dst
+         FROM edge e
+         JOIN node dst ON dst.rowid = e.dst AND dst.kind = 'community' AND dst.t_invalid IS NULL
+           AND (json_extract(dst.meta, '$.cluster_scope.kind') IS NULL
+                OR json_extract(dst.meta, '$.cluster_scope.kind') = 'global')
+         WHERE e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+         GROUP BY e.dst
        )`,
     )
     .get();
@@ -661,10 +696,13 @@ export function clusterStats(db: Database): ClusterStats {
   const communityNodeCols = (db.prepare(`PRAGMA table_info(node)`).all() as { name: string }[]).map((c) => c.name);
   const hasMeta = communityNodeCols.includes('meta');
 
+  // Scoped to global communities only so subset lenses don't skew the metric.
   const communityMetas = hasMeta
     ? db
         .prepare<[], { meta: string | null }>(
-          `SELECT meta FROM node WHERE kind = 'community' AND t_invalid IS NULL AND meta IS NOT NULL`,
+          `SELECT meta FROM node WHERE kind = 'community' AND t_invalid IS NULL AND meta IS NOT NULL
+           AND (json_extract(meta, '$.cluster_scope.kind') IS NULL
+                OR json_extract(meta, '$.cluster_scope.kind') = 'global')`,
         )
         .all()
     : [];
@@ -686,11 +724,13 @@ export function clusterStats(db: Database): ClusterStats {
     }
   }
 
-  // Compute mean inter-sim from centroids (read centroid vectors from vec_node)
+  // Compute mean inter-sim from centroids — global communities only.
   const communityRows = hasMeta
     ? db
         .prepare<[], { meta: string | null }>(
-          `SELECT meta FROM node WHERE kind = 'community' AND t_invalid IS NULL AND meta IS NOT NULL`,
+          `SELECT meta FROM node WHERE kind = 'community' AND t_invalid IS NULL AND meta IS NOT NULL
+           AND (json_extract(meta, '$.cluster_scope.kind') IS NULL
+                OR json_extract(meta, '$.cluster_scope.kind') = 'global')`,
         )
         .all()
     : [];

@@ -177,7 +177,7 @@ export function enrichOnWrite(
       // Insert SAME_AS edge (idempotent)
       db.prepare(
         `INSERT INTO edge (src, dst, rel, origin, weight, t_created, meta)
-         SELECT ?, ?, 'SAME_AS', 'inferred', ?, ?, NULL, NULL
+         SELECT ?, ?, 'SAME_AS', 'inferred', ?, ?, NULL
          WHERE NOT EXISTS (
            SELECT 1 FROM edge WHERE src = ? AND dst = ? AND rel = 'SAME_AS' AND t_expired IS NULL
          )`,

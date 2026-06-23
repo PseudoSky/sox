@@ -19,7 +19,7 @@ import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 
-import { clusterStore, clusterSubset } from './index.js';
+import { clusterStore, clusterSubset, clusterStats } from './index.js';
 
 const MINIMAL_DDL = `
 CREATE TABLE IF NOT EXISTS node (
@@ -94,7 +94,7 @@ function insertEpisode(content: string, embedding: Float32Array, tags: string[])
   return row.rowid;
 }
 
-/** Mirrors buildFiltersClause's any-match tag predicate (alias `n`). */
+/** Low-level raw restrict clause (kept for backward-compat test coverage). */
 function tagRestrict(tag: string): { sql: string; params: unknown[] } {
   return { sql: ` AND EXISTS (SELECT 1 FROM json_each(n.tags) WHERE value = ?)`, params: [tag] };
 }
@@ -221,5 +221,109 @@ describe('clusterSubset — scoped persist coexists with the global partition', 
       (c) => c.meta && JSON.parse(c.meta).cluster_scope?.kind === 'subset',
     );
     expect(subsetCommunities).toHaveLength(1);
+  });
+});
+
+// ── Fix ①: persisted subset lens does NOT leak into global read paths ───────────
+// These tests prove the read-side isolation contract: clusterStats and
+// communityUidForRowid must report the GLOBAL partition only after a subset
+// lens is persisted.  A separate throwaway DB is built, a subset persisted,
+// and then global-scoped stats are asserted unchanged.
+
+describe('read-path scope isolation (fix ①)', () => {
+  it('clusterStats cluster_count reflects only global communities after subset persist', () => {
+    seedTwoGroups();
+    // One global pass → 2 global communities.
+    clusterStore(db);
+    const beforeStats = clusterStats(db);
+    expect(beforeStats.cluster_count).toBe(2);
+
+    // Persist a subset lens for skill:A → now 3 total communities in DB.
+    clusterSubset(db, { filter: { tags: ['skill:A'] }, persist: true });
+    const allLive = liveCommunities();
+    expect(allLive).toHaveLength(3); // 2 global + 1 subset
+
+    // clusterStats must still report 2 — only the global partition.
+    const afterStats = clusterStats(db);
+    expect(afterStats.cluster_count).toBe(2);
+  });
+
+  it('clusterStats coverage is scoped to global partition only', () => {
+    seedTwoGroups();
+    clusterStore(db);
+    const beforeCoverage = clusterStats(db).coverage;
+
+    // Persist a subset over skill:A — the 2 skill:A episodes now have an
+    // additional MEMBER_OF edge to the subset community.  Global coverage must
+    // remain unchanged (skill:B episodes unclustered = same ratio as before).
+    clusterSubset(db, { filter: { tags: ['skill:A'] }, persist: true });
+    const afterCoverage = clusterStats(db).coverage;
+
+    // Coverage is a fraction of episodes in GLOBAL communities — must not change.
+    expect(afterCoverage).toBeCloseTo(beforeCoverage, 6);
+  });
+
+  it('clusterStats largest_cluster_size ignores subset communities', () => {
+    // Seed 3 groups: 3 eps in group-0 (largest global), 2 in group-1, 2 in group-2.
+    insertEpisode('extra c-one for size test', groupVec(0, 0.03), ['skill:C']);
+    insertEpisode('lesson c-two text', groupVec(0, 0.04), ['skill:C']);
+    insertEpisode('lesson c-three text', groupVec(0, 0.05), ['skill:C']);
+    insertEpisode('lesson d-one about something', groupVec(1, 0.01), ['skill:D']);
+    insertEpisode('lesson d-two about something', groupVec(1, 0.02), ['skill:D']);
+
+    clusterStore(db);
+    const globalLargest = clusterStats(db).largest_cluster_size;
+
+    // Persist a subset that merges C+D into one "community" — but that's a subset
+    // community and must NOT inflate largest_cluster_size in global stats.
+    clusterSubset(db, { filter: { tags: ['skill:C', 'skill:D'] }, persist: true });
+    const afterLargest = clusterStats(db).largest_cluster_size;
+    expect(afterLargest).toBe(globalLargest);
+  });
+});
+
+// ── Fix ④: clusterSubset callable with only @sox/memory-enrich imported ────────
+// Proves the headline library feature is self-contained: no server-private code.
+
+describe('clusterSubset callable via structured filter alone (fix ④)', () => {
+  it('accepts MemoryFilter without a raw restrict clause', () => {
+    seedTwoGroups();
+    // Pass filter only — no restrict. Engine builds the SQL clause internally.
+    const res = clusterSubset(db, { filter: { tags: ['skill:A'] } });
+    expect(res.candidate_count).toBe(2);
+    expect(res.clusters).toHaveLength(1);
+    expect(res.persisted).toBe(false);
+  });
+
+  it('filter + persist writes a scoped community without restrict', () => {
+    seedTwoGroups();
+    clusterStore(db); // 2 global
+    const res = clusterSubset(db, { filter: { tags: ['skill:A'] }, persist: true });
+    expect(res.persisted).toBe(true);
+    // Global partition still has 2; 1 subset added.
+    expect(liveCommunities()).toHaveLength(3);
+  });
+
+  it('MemoryFilter tags_match_all selects the intersection', () => {
+    seedTwoGroups();
+    // Episodes tagged with BOTH 'kind:lesson' AND 'skill:A' = 2.
+    const res = clusterSubset(db, {
+      filter: { tags: ['kind:lesson', 'skill:A'], tags_match_all: true },
+    });
+    expect(res.candidate_count).toBe(2);
+  });
+
+  it('MemoryFilter with no matching episodes returns empty clusters', () => {
+    seedTwoGroups();
+    const res = clusterSubset(db, { filter: { tags: ['no-such-tag'] } });
+    expect(res.candidate_count).toBe(0);
+    expect(res.clusters).toHaveLength(0);
+  });
+
+  it('provenance hash is stable for the same MemoryFilter', () => {
+    seedTwoGroups();
+    const a = clusterSubset(db, { filter: { tags: ['skill:A'] } });
+    const b = clusterSubset(db, { filter: { tags: ['skill:A'] } });
+    expect(a.provenance_hash).toBe(b.provenance_hash);
   });
 });

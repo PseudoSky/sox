@@ -179,22 +179,34 @@ export class MemoryDaemon {
     const enrichRows = rows.filter((r) => r.op === 'ingest' || r.op === 'enrich');
     const otherRows = rows.filter((r) => r.op !== 'ingest' && r.op !== 'enrich');
 
-    // Process other deterministic ops (decay, reindex, etc.)
+    // Process other deterministic ops (decay, reindex, etc.) — mark each done immediately.
+    const doneAt = new Date().toISOString();
+    const doneOtherSeqs: number[] = [];
     for (const row of otherRows) {
       await this.processDeterministic(row);
+      doneOtherSeqs.push(row.seq);
+    }
+    if (doneOtherSeqs.length > 0) {
+      this.db.prepare(
+        `UPDATE organizer_queue SET done_at = ?
+         WHERE seq IN (${doneOtherSeqs.map(() => '?').join(',')})`,
+      ).run(doneAt, ...doneOtherSeqs);
     }
 
-    // Process enrich/ingest rows via deterministic batch enrichment (no LLM, no provider)
+    // Process enrich/ingest rows via deterministic batch enrichment (no LLM, no provider).
+    // Only mark done on SUCCESS — on failure leave done_at NULL so the next drain cycle
+    // retries. A transient runBatchEnrich failure must not silently drop enrichment work.
     if (enrichRows.length > 0) {
-      this.processBatchEnrich();
+      const enrichSucceeded = this.processBatchEnrich();
+      if (enrichSucceeded) {
+        const enrichSeqs = enrichRows.map((r) => r.seq);
+        this.db.prepare(
+          `UPDATE organizer_queue SET done_at = ?
+           WHERE seq IN (${enrichSeqs.map(() => '?').join(',')})`,
+        ).run(doneAt, ...enrichSeqs);
+      }
+      // On failure: enrichRows are left with done_at IS NULL → next drainBatch re-tries.
     }
-
-    // Mark done
-    const doneAt = new Date().toISOString();
-    this.db.prepare(
-      `UPDATE organizer_queue SET done_at = ?
-       WHERE seq IN (${seqs.map(() => '?').join(',')})`,
-    ).run(doneAt, ...seqs);
 
     return rows.length;
   }
@@ -282,8 +294,12 @@ export class MemoryDaemon {
    * Run deterministic batch enrichment over the full live corpus.
    * Called whenever enrich/ingest queue items are drained.
    * Delegates to @sox/memory-enrich runBatchEnrich — no LLM, no provider calls.
+   *
+   * Returns true on success, false on failure. The caller MUST only mark the
+   * corresponding queue rows as done when this returns true — on failure, rows
+   * retain done_at=NULL so the next drain cycle re-tries them automatically.
    */
-  private processBatchEnrich(): void {
+  private processBatchEnrich(): boolean {
     try {
       const result = runBatchEnrich(this.db);
       console.log(
@@ -293,9 +309,10 @@ export class MemoryDaemon {
         ` relates_to=${result.relates_to_edges}` +
         ` topics_backfilled=${result.topics_backfilled}`,
       );
+      return true;
     } catch (err) {
-      console.error('[memoryd] batch enrich error:', err);
-      // Don't re-throw — items are marked done; next cycle will retry
+      console.error('[memoryd] batch enrich error — rows left for retry:', err);
+      return false;
     }
   }
 
@@ -384,6 +401,25 @@ export function enqueueReindex(
     `INSERT INTO organizer_queue (op, payload, priority, enqueued)
      VALUES ('reindex', ?, 0, ?)`,
   ).run(payload, now);
+}
+
+/**
+ * Enqueue a global batch-enrich operation.
+ *
+ * This is the explicit trigger for a full `runBatchEnrich` pass over the whole
+ * store — re-clustering, auto-linking, importance, etc. Previously the global
+ * `memory_curate.recluster` op enqueued 'reindex', which was semantically incorrect
+ * (reindex = FTS/embedding rebuild; enrich = semantic enrichment pass). Wiring
+ * 'enrich' here gives the daemon an explicit enrichment trigger distinct from
+ * 'ingest' (write-triggered) and 'reindex' (embedding/FTS rebuild), and fulfils
+ * the schema CHECK constraint that lists 'enrich' as a valid op.
+ */
+export function enqueueEnrich(db: Database.Database): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO organizer_queue (op, payload, priority, enqueued)
+     VALUES ('enrich', '{}', 0, ?)`,
+  ).run(now);
 }
 
 /**

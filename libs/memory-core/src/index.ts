@@ -83,7 +83,7 @@ export type {
 } from './recall.js';
 
 // ── Daemon interop ────────────────────────────────────────────────────────────
-export { enqueueIngest, enqueueReindex, nudgeDaemon, MemoryDaemon, SOCKET_PATH } from './memoryd.js';
+export { enqueueIngest, enqueueReindex, enqueueEnrich, nudgeDaemon, MemoryDaemon, SOCKET_PATH } from './memoryd.js';
 
 // ── Extended functions (promotion, graphify, communities, entity search) ───────
 export {

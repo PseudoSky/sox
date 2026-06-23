@@ -648,3 +648,94 @@ describe('memory_curate recluster — filtered subset', () => {
     expect(out).toHaveProperty('enqueued');
   });
 });
+
+// ── Fix ①: server-level scope isolation ──────────────────────────────────────
+// After persisting a subset lens, the global-scoped read paths (memory_stats)
+// must NOT be influenced by the subset communities.
+//
+// We write directly to the DB (bypassing handleToolCall memoryWrite) to avoid
+// triggering the near-dup code path in enrich.ts which has a pre-existing
+// column-count bug unrelated to this feature.
+
+describe('read-path scope isolation at server layer (fix ①)', () => {
+  let ISO_DB_PATH: string;
+  let isoDir: string;
+
+  beforeAll(() => {
+    isoDir = path.join(os.tmpdir(), `sox-iso-spec-${process.pid}`);
+    fs.mkdirSync(isoDir, { recursive: true });
+    ISO_DB_PATH = path.join(isoDir, 'iso.db');
+
+    // Open DB directly (bypasses memoryWrite near-dup path) and insert raw episodes.
+    const isoDb = openDb(ISO_DB_PATH);
+    const now = new Date().toISOString();
+    type InsRow = { rowid: number };
+    const ins = (content: string, tags: string[]): number => {
+      const uid = `iso-ep-${Math.random().toString(36).slice(2)}`;
+      return (isoDb.prepare<unknown[], InsRow>(
+        `INSERT INTO node (uid, kind, content, t_created, t_valid, tags) VALUES (?, 'episode', ?, ?, ?, ?) RETURNING rowid`,
+      ).get(uid, content, now, now, JSON.stringify(tags)) as InsRow).rowid;
+    };
+    // Insert 4 episodes: 2 iso:A, 2 iso:B. Content is long and lexically distinct
+    // so hash embeddings don't collide at the 0.98 near-dup threshold.
+    const r0 = ins('Aerobic respiration in eukaryotic cells produces adenosine triphosphate via the citric acid cycle and oxidative phosphorylation in mitochondria.', ['iso:A']);
+    const r1 = ins('Plate tectonics describes the movement of lithospheric plates driven by mantle convection and ridge push and slab pull forces.', ['iso:A']);
+    const r2 = ins('The Fourier transform decomposes a signal into its constituent sinusoidal frequency components represented as complex amplitudes.', ['iso:B']);
+    const r3 = ins('A Byzantine fault tolerant consensus algorithm requires at least three f plus one nodes to tolerate f simultaneous Byzantine failures.', ['iso:B']);
+
+    // Insert synthetic hash embeddings (group-orthogonal so they cluster correctly).
+    const encodeVec = (group: number): string => {
+      const v = new Float32Array(768);
+      for (let i = 0; i < 100; i++) v[group * 100 + i] = 1;
+      let norm = 0;
+      for (let i = 0; i < 768; i++) norm += v[i]! * v[i]!;
+      norm = Math.sqrt(norm);
+      for (let i = 0; i < 768; i++) v[i] = v[i]! / norm;
+      return '[' + Array.from(v).map((x) => x.toFixed(8)).join(',') + ']';
+    };
+    for (const [rowid, g] of [[r0, 0], [r1, 0], [r2, 1], [r3, 1]] as [number, number][]) {
+      isoDb.prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(rowid, encodeVec(g));
+    }
+
+    // Run a global cluster pass — 2 communities (iso:A group, iso:B group).
+    clusterStore(isoDb);
+    isoDb.close();
+  });
+
+  afterAll(() => {
+    try { fs.rmSync(isoDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('memory_stats cluster_count unchanged after subset persist', async () => {
+    // Capture global stats before persisting a subset.
+    const before = parseResult(await handleToolCall('memory_stats', { db_path: ISO_DB_PATH }));
+    const clusterCountBefore = before['cluster_count'] as number;
+    expect(clusterCountBefore).toBeGreaterThan(0); // sanity: global pass ran
+
+    // Persist a subset lens for iso:A.
+    await handleToolCall('memory_curate', {
+      db_path: ISO_DB_PATH, op: 'recluster',
+      filters: { tags: ['iso:A'] }, dry_run: false,
+    });
+
+    // Global stats must be unchanged — subset communities must not inflate count.
+    const after = parseResult(await handleToolCall('memory_stats', { db_path: ISO_DB_PATH }));
+    expect(after['cluster_count']).toBe(clusterCountBefore);
+  });
+
+  it('memory_stats with_community unchanged after subset persist', async () => {
+    const before = parseResult(await handleToolCall('memory_stats', { db_path: ISO_DB_PATH }));
+    const withCommunityBefore = before['with_community'] as number;
+
+    // Re-persist the same subset (idempotent).
+    await handleToolCall('memory_curate', {
+      db_path: ISO_DB_PATH, op: 'recluster',
+      filters: { tags: ['iso:A'] }, dry_run: false,
+    });
+
+    const after = parseResult(await handleToolCall('memory_stats', { db_path: ISO_DB_PATH }));
+    // Episodes in a subset community must not be counted in the global with_community stat.
+    // The count must not grow beyond what the global pass established.
+    expect(after['with_community']).toBeLessThanOrEqual(withCommunityBefore);
+  });
+});
