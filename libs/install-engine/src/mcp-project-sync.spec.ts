@@ -60,4 +60,19 @@ describe('knownProjectRoots — #16728 scope guard', () => {
     const roots = knownProjectRoots().sort();
     expect(roots).toEqual(['/p/real']);
   });
+
+  it('includes tmp project roots when SOX_ALLOW_TMP_PROJECT_ROOTS=1 (BL-49 probe opt-out)', () => {
+    const tmpRoot = path.join(os.tmpdir(), 'adr3-scope-OPTIN');
+    upsertInstallRecord({ extId: 'fixture', version: '1', scope: 'project', root: tmpRoot, source: 'file://x' });
+    upsertInstallRecord({ extId: 'real', version: '1', scope: 'project', root: '/p/real', source: 'file://x' });
+    const prev = process.env['SOX_ALLOW_TMP_PROJECT_ROOTS'];
+    process.env['SOX_ALLOW_TMP_PROJECT_ROOTS'] = '1';
+    try {
+      const roots = knownProjectRoots().sort();
+      expect(roots).toEqual([tmpRoot, '/p/real'].sort());
+    } finally {
+      if (prev === undefined) delete process.env['SOX_ALLOW_TMP_PROJECT_ROOTS'];
+      else process.env['SOX_ALLOW_TMP_PROJECT_ROOTS'] = prev;
+    }
+  });
 });

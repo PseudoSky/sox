@@ -21,7 +21,7 @@ Do NOT use `memory_update` to change a node's identity (`uid` is always immutabl
 
 ### `memory_write` (v1 — MODIFIED)
 
-Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, near-dup, extractive summary). Batch enrichments (clustering, auto-links, importance) run asynchronously in the daemon. Never blocks on LLM.
+Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, near-dup, extractive summary). Batch enrichments (clustering, auto-links, importance) run asynchronously in the daemon when running, or via an in-process fallback interval when the daemon is absent. Never blocks on LLM.
 
 **New in v1:** `name`, `topic`, `project_path`, `derived_from_uid` inputs; `enrichment` in output.
 
@@ -192,11 +192,16 @@ Curation operations: retag, set topic, override importance, merge near-duplicate
 
 ### `memory_stats` (NEW — C2.12)
 
-Return enrichment coverage and cluster quality statistics. `tool_version: "1.1.0"` signals the v1.1 surface (including `memory_update`) is present.
+Return enrichment coverage and cluster quality statistics. Use `tools` (capability list) to check feature presence instead of `tool_version`.
 
 **Input:** `{ "db_path": "<string>", "project_path"?: string }`
 
-**Output:** `{ "tool_version", "enrich_version", "embed_model", "total_episodes", "with_topic", "with_summary", "with_tags", "with_project_path", "with_community", "legacy_episodes", "stale_episodes", "cluster_count", "largest_cluster_size", "mean_intra_cluster_sim", "coverage", "cluster_quality" }`
+**Output:** `{ "tools", "enrich_version", "embed_model", "embed_backend_configured", "embed_on_hash_fallback", "total_episodes", "with_topic", "with_summary", "with_tags", "with_project_path", "with_community", "legacy_episodes", "stale_episodes", "cluster_count", "largest_cluster_size", "mean_intra_cluster_sim", "coverage", "cluster_quality" }`
+
+**BL-48 fields:**
+- `embed_model` — the RESOLVED model id (e.g. `bge-base-en-v1.5` for real ONNX, `nomic-embed-text-v1.5-hash` for hash). Reflects actual runtime state, not the env var.
+- `embed_backend_configured` — value of `SOX_EMBED_BACKEND` env (or `'auto'` if unset).
+- `embed_on_hash_fallback` — `true` when backend is `auto`/`real` but hash is active (model unavailable / silent fallback). `false` when intentionally on hash or real backend confirmed.
 
 ---
 

@@ -30,6 +30,20 @@ export interface BatchEnrichOptions {
   /** Entity stoplist coverage threshold; entities in > this fraction of episodes are excluded
    *  from RELATES_TO linking (default 0.30). */
   entityStoplistThreshold?: number;
+  /**
+   * BL-45: When true, run incremental clustering only (local neighborhood check for
+   * newly-added nodes). Skip the full O(n²) re-cluster pass. Reserve the full pass
+   * for periodic/explicit triggers (memory_curate recluster / enqueueEnrich).
+   * Default false (full pass).
+   */
+  incrementalCluster?: boolean;
+  /**
+   * BL-45: Chunk size for the importance update transaction (default 500 episodes per
+   * chunk). Breaks the monolithic write transaction into smaller batches so the write
+   * lock is yielded between chunks rather than held across the full corpus.
+   * Set to 0 or Infinity to use a single transaction (original behaviour).
+   */
+  importanceChunkSize?: number;
 }
 
 export interface BatchEnrichResult {
@@ -85,6 +99,8 @@ export function runBatchEnrich(
     clusterNodeCap = 10000,
     importanceWeights,
     entityStoplistThreshold = 0.30,
+    incrementalCluster = false,
+    importanceChunkSize = 500,
   } = opts;
 
   const now = new Date().toISOString();
@@ -115,11 +131,15 @@ export function runBatchEnrich(
   const hasNullEnrichVer = (nullVerRow?.cnt ?? 0) > 0;
 
   // ── Step 3: Clustering (E6) ────────────────────────────────────────────────
+  // BL-45: write-triggered passes use incrementalCluster:true (local neighborhood
+  // check only, no O(n²) full pass). Full re-cluster is reserved for periodic or
+  // explicit triggers (memory_curate recluster / enqueueEnrich without the flag).
   if (!hasNullEnrichVer) {
     const defaultThreshold = resolveClusterThreshold(clusterThreshold);
     const clusterResult = clusterStore(db, {
       threshold: defaultThreshold,
       nodeCap: clusterNodeCap,
+      incrementalOnly: incrementalCluster,
     });
 
     if (clusterResult.clusters.length === 0 && !clusterResult.full_pass) {
@@ -148,6 +168,8 @@ export function runBatchEnrich(
 
   // ── Step 4: Importance update (E7) ────────────────────────────────────────
   // Recompute importance for all live episodes using current link degree + access count.
+  // BL-45: Process in chunks (importanceChunkSize, default 500) to yield the write
+  // lock between chunks rather than holding it across the full corpus in one transaction.
   const episodes = db
     .prepare<[], EpisodeRow>(
       `SELECT rowid, uid, content, access_count, importance, enrich_ver, topic
@@ -159,45 +181,61 @@ export function runBatchEnrich(
     `UPDATE node SET importance = ?, enrich_ver = ? WHERE rowid = ?`,
   );
 
-  const importanceTx = db.transaction(() => {
-    for (const ep of episodes) {
-      const wordCount = (ep.content ?? '').split(/\s+/).filter(Boolean).length;
+  /** Process one episode row and update importance if changed. */
+  const processEpisode = (ep: EpisodeRow): void => {
+    const wordCount = (ep.content ?? '').split(/\s+/).filter(Boolean).length;
 
-      const linkRow = db
-        .prepare<[number, number], { cnt: number }>(
-          `SELECT COUNT(*) AS cnt FROM edge WHERE (src = ? OR dst = ?) AND t_expired IS NULL`,
-        )
-        .get(ep.rowid, ep.rowid);
-      const linkDegree = linkRow?.cnt ?? 0;
+    const linkRow = db
+      .prepare<[number, number], { cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM edge WHERE (src = ? OR dst = ?) AND t_expired IS NULL`,
+      )
+      .get(ep.rowid, ep.rowid);
+    const linkDegree = linkRow?.cnt ?? 0;
 
-      const tagsRow = db
-        .prepare<[number], { tags: string | null }>(
-          `SELECT tags FROM node WHERE rowid = ?`,
-        )
-        .get(ep.rowid);
-      const tagCount = tagsRow?.tags
-        ? (JSON.parse(tagsRow.tags) as string[]).length
-        : 0;
+    const tagsRow = db
+      .prepare<[number], { tags: string | null }>(
+        `SELECT tags FROM node WHERE rowid = ?`,
+      )
+      .get(ep.rowid);
+    const tagCount = tagsRow?.tags
+      ? (JSON.parse(tagsRow.tags) as string[]).length
+      : 0;
 
-      const newImportance = computeImportance(
-        {
-          word_count: wordCount,
-          link_degree: linkDegree,
-          access_count: ep.access_count,
-          tag_count: tagCount,
-        },
-        importanceWeights,
-      );
+    const newImportance = computeImportance(
+      {
+        word_count: wordCount,
+        link_degree: linkDegree,
+        access_count: ep.access_count,
+        tag_count: tagCount,
+      },
+      importanceWeights,
+    );
 
-      // Only update if the value changed (avoid unnecessary writes)
-      if (Math.abs(newImportance - ep.importance) > 0.001) {
-        const newVer = JSON.stringify({ pass: ENRICH_VERSION, ts: now });
-        updateImportance.run(newImportance, newVer, ep.rowid);
-        result.importance_updated++;
-      }
+    // Only update if the value changed (avoid unnecessary writes)
+    if (Math.abs(newImportance - ep.importance) > 0.001) {
+      const newVer = JSON.stringify({ pass: ENRICH_VERSION, ts: now });
+      updateImportance.run(newImportance, newVer, ep.rowid);
+      result.importance_updated++;
     }
-  });
-  importanceTx();
+  };
+
+  const effectiveChunkSize =
+    importanceChunkSize > 0 && Number.isFinite(importanceChunkSize)
+      ? importanceChunkSize
+      : episodes.length; // single transaction (back-compat when set to 0/Infinity)
+
+  // Chunked transactions: each chunk acquires and releases the write lock independently,
+  // so a concurrent MCP write can interleave between chunks instead of stalling for the
+  // full-corpus transaction duration.
+  for (let i = 0; i < episodes.length; i += effectiveChunkSize) {
+    const chunk = episodes.slice(i, i + effectiveChunkSize);
+    const chunkTx = db.transaction(() => {
+      for (const ep of chunk) {
+        processEpisode(ep);
+      }
+    });
+    chunkTx();
+  }
 
   // ── Step 5: Auto-links (E9) ────────────────────────────────────────────────
   const autoLinkResult = buildAutoLinks(db, entityStoplistThreshold);

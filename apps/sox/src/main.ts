@@ -4334,7 +4334,7 @@ async function cmdServe(flags: Record<string, string>): Promise<void> {
     process.stdout.write(`${CLI} serve — launch an extension process with live cascade config
 
 Usage:
-  ${CLI} serve <ext-id> [--scope=<scope>] [--root=<dir>]
+  ${CLI} serve <ext-id> [--scope=<scope>] [--root=<dir>] [--log]
 
 Resolves the extension entrypoint, injects SOX_CONFIG_* env vars from the
 current cascade config, then exec()s the Node process (replaces this process).
@@ -4343,6 +4343,9 @@ Designed for use as the .mcp.json command for stdio MCP servers.
 Flags:
   --scope=<scope>   Restrict lookup to one scope (default: cascade project→user→org→local)
   --root=<dir>      Workspace root (default: cwd)
+  --log             Tee child stderr to <logDir>/<extId>-serve-<YYYY-MM-DD>.log (opt-in)
+                    Also enabled by setting SOX_SERVE_LOG=1 in the environment.
+                    NEVER tees stdout — stdout is the JSON-RPC channel.
   --help            Show this message
 `);
     process.exit(0);
@@ -4438,20 +4441,72 @@ Flags:
     serveEnv = { ...process.env, ...configEnv2 };
   }
 
-  // Replace the current process with the extension (stdio inherited — MCP server
-  // takes over stdin/stdout directly, no intermediary).
-  const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
-  try {
-    execFileSync(process.execPath, ['--enable-source-maps', entrypointPath2], {
-      stdio: 'inherit',
+  // BL-46: opt-in durable stderr sink for the served child process.
+  //
+  // When --log flag OR SOX_SERVE_LOG=1 env is set, we tee the child's STDERR
+  // to both process.stderr (so the MCP client still sees errors) AND a dated log
+  // file under <logDir>/<extId>-serve-<YYYY-MM-DD>.log via LogManager.
+  //
+  // NEVER tee stdout — stdout is the JSON-RPC channel; corrupting it breaks MCP.
+  // Default (no flag/env): stdio:'inherit' exactly as before — zero behaviour change.
+  const wantLog =
+    flags['log'] !== undefined || process.env['SOX_SERVE_LOG'] === '1';
+
+  if (!wantLog) {
+    // Default path: replace this process (stdio inherited) — MCP server takes over
+    // stdin/stdout directly with no intermediary.
+    const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
+    try {
+      execFileSync(process.execPath, ['--enable-source-maps', entrypointPath2], {
+        stdio: 'inherit',
+        env: serveEnv,
+        cwd: extDir2,
+      });
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException & { status?: number }).status ?? 1;
+      process.exit(code);
+    }
+    return;
+  }
+
+  // Log-tee path: spawn (not exec) with stderr piped; inherit stdin+stdout.
+  // supervisorId-style label "serve-<extId>" keeps log paths unique and discoverable.
+  const { LogManager } = require('@adhd/sox-host-runtime') as typeof import('@adhd/sox-host-runtime');
+  const serveLogDir = logDirFor(`serve-${extId}`);
+  const lm = new LogManager({ logDir: serveLogDir, extId: `${extId}-serve` });
+
+  process.stderr.write(
+    `[sox serve] stderr log: ${serveLogDir}/${extId}-serve-<date>.log\n`,
+  );
+
+  const { spawn } = require('node:child_process') as typeof import('node:child_process');
+  const child = spawn(
+    process.execPath,
+    ['--enable-source-maps', entrypointPath2],
+    {
+      stdio: ['inherit', 'inherit', 'pipe'],
       env: serveEnv,
       cwd: extDir2,
-    });
-  } catch (e) {
-    // execFileSync throws on non-zero exit; propagate the exit code.
-    const code = (e as NodeJS.ErrnoException & { status?: number }).status ?? 1;
-    process.exit(code);
-  }
+    },
+  );
+
+  // Pipe child stderr → parent stderr AND the log file.
+  child.stderr?.on('data', (chunk: Buffer) => {
+    process.stderr.write(chunk);
+    lm.write(chunk);
+  });
+
+  // Propagate exit code; close the log stream cleanly.
+  child.on('close', (code: number | null) => {
+    lm.close();
+    process.exit(code ?? 0);
+  });
+
+  child.on('error', (err: Error) => {
+    process.stderr.write(`[sox serve] spawn error: ${err.message}\n`);
+    lm.close();
+    process.exit(1);
+  });
 }
 
 /**
