@@ -47,6 +47,16 @@ From `REVIEW-code.md`: (1) an empty-filter subset duplicates the global partitio
 (`dry_run:false`) test; (4) no migration for the `organizer_queue` CHECK-constraint change on
 pre-existing DBs (`'enrich'` op added). Address opportunistically.
 
+### ~~BL-28~~ — near-dup `SAME_AS` edge insert had a 7-col/8-value mismatch — **Resolved** (`06579d4`)
+
+**Severity:** High (write-path crash) · **Status:** Resolved
+`libs/memory-enrich/src/enrich.ts` inserted the near-dup `SAME_AS` edge with `INSERT INTO edge
+(7 cols) SELECT … 8 values` (a spurious trailing `NULL`), throwing a SQLite column-count error on
+**any near-duplicate write** under `enrichOnWrite`. No test exercised the path (the hash-backend
+guard requires a shared MENTIONS entity, which `enrichOnWrite` alone never creates), so it slipped.
+Fixed (removed the extra `NULL`) + added a real-backend regression test in `enrich.spec.ts` that
+drives the `SAME_AS` insert. Found during the filtered-clustering review reconciliation.
+
 ## Folded into the memory-enrichment plan
 
 > **BL-21, BL-22, BL-23, BL-24 are owned by `docs/plan/memory-enrichment/IMPLEMENTATION.md` (§0).**
