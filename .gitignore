@@ -24,8 +24,9 @@ dist/
 # per-extension build/demo artifacts
 extensions/services/tokenguard/bundle/
 extensions/services/tokenguard/demo/out/
-# BL-37: memory-daemon self-contained esbuild bundle (build artifact, never committed)
+# BL-37/BL-38: self-contained esbuild bundles (build artifacts, never committed)
 extensions/bundles/sox-memory-bundle/members/memory-daemon/bundle/
+extensions/bundles/sox-memory-bundle/members/memory-server/bundle/
 # sox init test-scaffold output
 /test-*-init/
 # plan runtime event logs (append-only, machine-local)

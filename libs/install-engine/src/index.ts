@@ -91,6 +91,17 @@ export {
 } from './ownership.js';
 export type { OwnedEntry, OwnershipRecord, OwnershipFile } from './ownership.js';
 
+// ─── #16728 fix: auto-merge user-scope MCP servers into project .mcp.json ──────
+export {
+  syncUserMcpToProjects,
+  reverseUserMcpFromProjects,
+  knownProjectRoots,
+  resolveUserMcpConfigPath,
+  resolveProjectMcpConfigPath,
+  readGlobalServerEntry,
+} from './mcp-project-sync.js';
+export type { ProjectSyncResult, SyncMcpOptions } from './mcp-project-sync.js';
+
 // ─── ADR-0004: data-paths resolver (leaf) ────────────────────────────────────
 export {
   dataRoot,

@@ -1556,6 +1556,53 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // Section MCP: #16728 — a user/global-scope MCP server install is auto-merged
+  // into every KNOWN project's .mcp.json (install-registry roots), foreign servers
+  // preserved, and the merge is REVERSED byte-clean on uninstall. Child process so
+  // it can use a throwaway HOME + temp project roots.
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\n' + '═'.repeat(60));
+  console.log('Section MCP: #16728 user-scope MCP → project .mcp.json auto-merge + reversal');
+  console.log('═'.repeat(60));
+  {
+    const probe = spawnSync(NODE, [path.join(ROOT, 'tools', 'probe-mcp-project-automerge.mjs')], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: { ...process.env, SOX_SANDBOX_ROOT: '', SOX_HOME: '', SOX_ECOSYSTEM_HOME: '' },
+    });
+    if (probe.stdout) process.stdout.write(probe.stdout);
+    if (probe.status === 0) {
+      assert(true, 'MCP: user-scope MCP merges into project .mcp.json (foreign preserved); uninstall byte-clean');
+    } else {
+      if (probe.stderr) process.stderr.write(probe.stderr);
+      assert(false, `MCP: #16728 auto-merge gate failed (exit ${probe.status})`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Section BL41: a memory_* call with db_path "~/.memory/<x>.db" writes to
+  // $HOME/.memory and creates NO literal `~` dir relative to cwd (BL-41). Drives
+  // the materialized memory-server bundle over stdio in a throwaway HOME/cwd.
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\n' + '═'.repeat(60));
+  console.log('Section BL41: tilde db_path expanded — no literal ~ dir');
+  console.log('═'.repeat(60));
+  {
+    const probe = spawnSync(NODE, [path.join(ROOT, 'tools', 'probe-bl41-tilde-dbpath.mjs')], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: { ...process.env, SOX_SANDBOX_ROOT: '', SOX_HOME: '', SOX_ECOSYSTEM_HOME: '', SOX_EMBED_BACKEND: 'hash' },
+    });
+    if (probe.stdout) process.stdout.write(probe.stdout);
+    if (probe.status === 0) {
+      assert(true, 'BL41: ~ db_path writes under $HOME/.memory, no literal ~ dir created');
+    } else {
+      if (probe.stderr) process.stderr.write(probe.stderr);
+      assert(false, `BL41: tilde db_path gate failed (exit ${probe.status})`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Section M: ADR-0004 §D8 migrate-home — relocate old data + re-place skills/MCP
   // into the real ~/.claude, idempotently. Fixture-based; child process.
   // ═══════════════════════════════════════════════════════════════════════════

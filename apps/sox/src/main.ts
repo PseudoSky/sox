@@ -54,6 +54,8 @@ import {
   removeInstallRecord,
   resolveFromRegistry,
   verifyIntegrity,
+  syncUserMcpToProjects,
+  reverseUserMcpFromProjects,
 } from '@adhd/sox-install-engine';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 // @adhd/sox-host-registry is also lazy-required via install-engine; import it lazily here too
@@ -128,6 +130,9 @@ async function main(): Promise<void> {
       break;
     case 'uninstall':
       await cmdUninstall(flags);
+      break;
+    case 'sync-mcp':
+      await cmdSyncMcp(flags);
       break;
     case 'enable':
       await cmdEnable(flags);
@@ -259,6 +264,8 @@ Extension management:
                      Flags: --all (required)
   uninstall          Remove an extension
                      Flags: --id=<ext-id>  --scope=<scope>
+  sync-mcp           Propagate user/global MCP servers into project .mcp.json (#16728)
+                     Flags: --id=<ext-id>  --host=<host>  --dry-run
   enable             Enable a disabled extension
                      Flags: --id=<ext-id>  --scope=<scope>
   disable            Disable an extension
@@ -1002,6 +1009,9 @@ Options:
       process.exit(1);
     }
 
+    // #16728: propagate a user/global MCP server into known projects' .mcp.json.
+    await maybePropagateUserMcp(extType, scope, host, id);
+
     process.exit(0);
   }
 
@@ -1254,6 +1264,43 @@ async function hostPlaceExtension(
         process.stdout.write(`${CLI} install: up-to-date  ${r.host}/${r.scope}  ${r.target}\n`);
       }
     }
+
+    // ── #16728 durable fix: propagate a user/global MCP server into projects ──
+    // When a user/global-scope MCP server is registered globally (~/.claude.json),
+    // ALSO merge its entry into every known project's .mcp.json (which otherwise
+    // OVERRIDES — does not inherit — user-scope servers). Best-effort: a failure
+    // here must not fail the install.
+    await maybePropagateUserMcp(extType, scope, hostName, id);
+  }
+}
+
+/**
+ * #16728: if (extType is an mcp-server) AND (scope is user/global), merge the
+ * just-registered server entry into every known project's .mcp.json. Auto-hook
+ * shared by cmdInstall's host path and the no-host config/lockfile path.
+ * Best-effort + non-fatal — placement of the global entry already succeeded.
+ */
+async function maybePropagateUserMcp(
+  extType: string,
+  scope: 'org' | 'user' | 'project' | 'local',
+  host: string,
+  id: string,
+): Promise<void> {
+  if (extType !== 'mcp-server') return;
+  if (scope !== 'user' && scope !== 'org') return;
+  try {
+    const results = await syncUserMcpToProjects({ extId: id, host });
+    for (const r of results) {
+      if (r.action === 'merged') {
+        process.stdout.write(`${CLI} install: mcp-sync merged   ${id} → ${r.mcpJsonPath}\n`);
+      } else if (r.action === 'up-to-date') {
+        process.stdout.write(`${CLI} install: mcp-sync up-to-date ${id} → ${r.mcpJsonPath}\n`);
+      } else if (r.action === 'skipped') {
+        process.stderr.write(`${CLI} install: mcp-sync skipped   ${id} → ${r.projectRoot} (${r.reason ?? ''})\n`);
+      }
+    }
+  } catch (e) {
+    process.stderr.write(`${CLI} install: warning: mcp project-sync failed for '${id}' — ${String(e)}\n`);
   }
 }
 
@@ -1969,6 +2016,25 @@ Options:
   const ownership = OwnershipIndex.loadFromFile(pathMod.join(dataDir, 'ownership.json'));
   const owned = ownership.get(id, scope);
 
+  // ── #16728 durable fix: reverse the propagated project .mcp.json merges ─────
+  // For a user/global-scope MCP server, the install also merged its entry into
+  // every known project's .mcp.json (recorded in the user-scope ownership index,
+  // keyed per project). Reverse those FIRST so each project's .mcp.json is left
+  // byte-clean of the sox-owned entry while foreign servers are preserved. This
+  // is independent of the standard config-key reversal below (which handles the
+  // global ~/.claude.json entry).
+  if (scope === 'user' || scope === 'org') {
+    try {
+      const host0 = owned?.host ?? 'claude';
+      const reversed = await reverseUserMcpFromProjects({ extId: id, host: host0 });
+      for (const p of reversed) {
+        process.stdout.write(`${CLI} uninstall: mcp-sync removed  ${id} ← ${p}\n`);
+      }
+    } catch (e) {
+      process.stderr.write(`${CLI} uninstall: warning: mcp project-sync reversal failed for '${id}' — ${String(e)}\n`);
+    }
+  }
+
   if (owned !== undefined) {
     // 1. Reverse config-key / array-value merges via the ledger path
     //    (lifecycleUninstall preserves foreign keys — [inv:ledger-reversible]).
@@ -2035,6 +2101,112 @@ Options:
   }
 
   process.stdout.write(`${CLI} uninstall: removed '${id}' (${matchKey}) from scope '${scope}'\n`);
+  process.exit(0);
+}
+
+// ─── sync-mcp ───────────────────────────────────────────────────────────────────
+
+/**
+ * cmdSyncMcp — #16728: re-propagate a user/global-scope MCP server's entry into
+ * every project's `.mcp.json` that sox knows about (project roots in the install
+ * registry). Idempotent. Use after adding a new project, or to repair drift.
+ *
+ *   soxe sync-mcp [--id=<ext>] [--host=<host>] [--dry-run]
+ *
+ * With no --id, every user-scope mcp-server in the user ownership index is synced.
+ */
+async function cmdSyncMcp(flags: Record<string, string>): Promise<void> {
+  if (flags['help'] !== undefined || flags['h'] !== undefined) {
+    process.stdout.write(`${CLI} sync-mcp — propagate user/global MCP servers into project .mcp.json (#16728)
+
+Usage:
+  ${CLI} sync-mcp [--id=<ext>] [--host=<host>] [--dry-run]
+
+Options:
+  --id <ext>     Only sync this MCP server id (default: all user-scope mcp-servers)
+  --host <host>  Host whose surfaces resolve the config paths (default: claude)
+  --dry-run      Report what would change; write nothing
+  --help         Show this message
+
+A project's .mcp.json OVERRIDES (does not inherit) user-scope MCP servers, so a
+user-scope install is invisible in projects with their own .mcp.json. This merges
+the user-scope server entry into every known project's .mcp.json, preserving the
+project's other (foreign) MCP servers. Reversed cleanly on uninstall.
+`);
+    process.exit(0);
+  }
+
+  const host = flags['host'] ?? 'claude';
+  const dryRun = flags['dry-run'] === 'true' || flags['dry-run'] === '';
+  const explicitId = flags['id'] ?? flags['_'];
+
+  // Resolve the set of ids to sync.
+  let ids: string[];
+  if (explicitId !== undefined && explicitId !== '') {
+    ids = [explicitId];
+  } else {
+    // Every user-scope mcp-server we own: read the user ownership index and keep
+    // records that own a global ~/.claude.json mcpServers.<id> config-key OR already
+    // own project .mcp.json merges. We additionally confirm a global registration
+    // exists so we only propagate real servers.
+    const pathModS = require('node:path') as typeof import('node:path');
+    const dataDirS = dataRoot('user');
+    const idxS = OwnershipIndex.loadFromFile(pathModS.join(dataDirS, 'ownership.json'));
+    const candidate = new Set<string>();
+    for (const rec of idxS.all()) {
+      if (rec.scope !== 'user') continue;
+      const ownsMcp = rec.entries.some(
+        (e) => e.kind === 'config-key' && e.keyPath === `mcpServers.${rec.extId}`,
+      );
+      if (ownsMcp) candidate.add(rec.extId);
+    }
+    ids = [...candidate];
+  }
+
+  if (ids.length === 0) {
+    process.stdout.write(`${CLI} sync-mcp: no user-scope MCP servers to sync\n`);
+    process.exit(0);
+  }
+
+  let totalMerged = 0;
+  let totalUpToDate = 0;
+  let totalWould = 0;
+  for (const id of ids) {
+    let results;
+    try {
+      results = await syncUserMcpToProjects({ extId: id, host, dryRun });
+    } catch (e) {
+      process.stderr.write(`${CLI} sync-mcp: warning: sync failed for '${id}' — ${String(e)}\n`);
+      continue;
+    }
+    if (results.length === 0) {
+      process.stdout.write(`${CLI} sync-mcp: ${id}: no known projects (or no global registration)\n`);
+      continue;
+    }
+    for (const r of results) {
+      switch (r.action) {
+        case 'merged':
+          totalMerged++;
+          process.stdout.write(`${CLI} sync-mcp: merged      ${id} → ${r.mcpJsonPath}\n`);
+          break;
+        case 'would-merge':
+          totalWould++;
+          process.stdout.write(`${CLI} sync-mcp: would-merge ${id} → ${r.mcpJsonPath}\n`);
+          break;
+        case 'up-to-date':
+          totalUpToDate++;
+          process.stdout.write(`${CLI} sync-mcp: up-to-date  ${id} → ${r.mcpJsonPath}\n`);
+          break;
+        case 'skipped':
+          process.stderr.write(`${CLI} sync-mcp: skipped     ${id} → ${r.projectRoot} (${r.reason ?? ''})\n`);
+          break;
+      }
+    }
+  }
+
+  process.stdout.write(
+    `${CLI} sync-mcp: done (${dryRun ? 'dry-run, ' : ''}merged=${dryRun ? totalWould : totalMerged}, up-to-date=${totalUpToDate})\n`,
+  );
   process.exit(0);
 }
 
