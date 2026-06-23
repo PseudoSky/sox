@@ -16,6 +16,9 @@ import { cascade } from './cascade.js';
 import type { ScopeConfig as CascadeScopeConfig, ResolvedConfigMap } from './cascade.js';
 import { checkProviderCapabilities } from './provider-capabilities.js';
 import { upsertInstallRecord } from './install-registry.js';
+// verify-integrity imports from this module (install.ts); the cycle is safe
+// because verifyIntegrity is only invoked at runtime, never at module-eval time.
+import { verifyIntegrity } from './verify-integrity.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -465,9 +468,11 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
       }
 
       // ADR-0003 B1: --frozen-lockfile verifies the CHECKSUM, not merely key
-      // presence. Hash the artifact at the pinned source and compare to the
-      // recorded checksum. Any drift fails identically in every scope — there is
-      // no version comparison; the content address IS the identity.
+      // presence. This INHERITS the `verifyIntegrity` primitive (the sole
+      // is-this-current check) rather than reimplementing the comparison — so
+      // frozen-verify, `update`, and `upgrade --all` share one code path and
+      // the scope-parity suite tests one primitive. There is no version
+      // comparison; the content address IS the identity.
       const lockEntryFrozen = existingLockForFrozen.resolved[lockKey];
       if (lockEntryFrozen === undefined) {
         console.error(
@@ -475,21 +480,20 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
         );
         process.exit(1);
       }
-      try {
-        const { checksum: actualChecksum } = await fetchArtifact(lockEntryFrozen.source);
-        if (actualChecksum !== lockEntryFrozen.checksum) {
-          console.error(
-            `install: --frozen-lockfile: CHECKSUM MISMATCH (drift) for "${entry.id}" at ${lockPath}\n` +
-              `  source:   ${lockEntryFrozen.source}\n` +
-              `  expected: ${lockEntryFrozen.checksum}\n` +
-              `  got:      ${actualChecksum}\n` +
-              `The installed artifact has changed. Re-run without --frozen-lockfile to re-pin.`,
-          );
-          process.exit(1);
-        }
-      } catch (e) {
+      const verdict = await verifyIntegrity(opts.scope, entry.id, { lockfilePath: lockPath });
+      if (verdict.status === 'unresolvable') {
         console.error(
-          `install: --frozen-lockfile: could not verify checksum for "${entry.id}": ${String(e)}`,
+          `install: --frozen-lockfile: could not verify checksum for "${entry.id}": ${verdict.error ?? 'unresolvable'}`,
+        );
+        process.exit(1);
+      }
+      if (verdict.status === 'stale') {
+        console.error(
+          `install: --frozen-lockfile: CHECKSUM MISMATCH (drift) for "${entry.id}" at ${lockPath}\n` +
+            `  source:   ${verdict.source ?? lockEntryFrozen.source}\n` +
+            `  expected: ${verdict.expected ?? lockEntryFrozen.checksum}\n` +
+            `  got:      ${verdict.actual ?? '(unknown)'}\n` +
+            `The installed artifact has changed. Re-run without --frozen-lockfile to re-pin.`,
         );
         process.exit(1);
       }
