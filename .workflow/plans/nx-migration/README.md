@@ -159,7 +159,7 @@ in `contexts/_shared.md`.
   dependency. See `[ref:nx-never-runtime-dep]`.
 - **[inv:nx-free-core]** — `libs/authoring`'s `scaffold()` core is nx-free so
   `sox init` works without nx. See `[ref:nx-free-authoring-core]`.
-- **[inv:scaffold-parity]** — `sox init` == `@sox/nx:extension` (byte-identical
+- **[inv:scaffold-parity]** — `sox init` == `@adhd/sox-nx:extension` (byte-identical
   output from one `scaffold()` core). See `[ref:scaffold-parity]`.
 - **[inv:fix-carry-forward]** — all work is currently uncommitted incl. this
   session's fixes; `checkpoint-branch` commits + tags them, and every later state

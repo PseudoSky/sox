@@ -1,5 +1,5 @@
 {
-  "name": "@sox/extension-forbidden-skill",
+  "name": "@adhd/sox-extension-forbidden-skill",
   "version": "0.1.0",
   "description": "forbidden-skill extension",
   "private": true,

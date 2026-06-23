@@ -28,10 +28,10 @@ with `install-lifecycle`** — see Merge protocol.
 ## Semantic Distillation
 
 - **Primitive:** MODIFY `libs/authoring/src/templates/<type>/index.ts` (six types) + the
-  `@sox/nx` extension generator (`packages/sox-nx/src/generators/extension/`).
+  `@adhd/sox-nx` extension generator (`packages/sox-nx/src/generators/extension/`).
 
 - **Reference Pattern:** spec Appendix A (the full per-type option schema), §7 (nx-style
-  generators), the existing `libs/authoring` core + `@sox/nx` generator (the byte-identical parity
+  generators), the existing `libs/authoring` core + `@adhd/sox-nx` generator (the byte-identical parity
   gate, DoD A1/B1).
 
 - **Delta Spec:**

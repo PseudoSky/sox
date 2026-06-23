@@ -1,5 +1,5 @@
 {
-  "name": "@sox/memory-core",
+  "name": "@adhd/sox-memory-core",
   "version": "0.1.0",
   "description": "Shared internal library for the sox-memory subsystem (db, schema, embed, recall, write, memoryd, extensions)",
   "private": true,
@@ -14,6 +14,6 @@
   },
   "dependencies": {
     "fastembed": "^2.1.0",
-    "@sox/memory-enrich": "workspace:*"
+    "@adhd/sox-memory-enrich": "workspace:*"
   }
 }

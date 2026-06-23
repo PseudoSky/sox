@@ -32,9 +32,9 @@
 
 ---
 
-## C1. `@sox/memory-enrich` package API
+## C1. `@adhd/sox-memory-enrich` package API
 
-**Package location:** `libs/memory-enrich/` (new library, `@sox/memory-enrich`).
+**Package location:** `libs/memory-enrich/` (new library, `@adhd/sox-memory-enrich`).
 **Consumed by:** `libs/memory-core` (write path), `memory-server` (MCP tool write/batch),
 `memory-cli` (manual trigger). See DESIGN.md D4.1.
 
@@ -71,7 +71,7 @@ export interface EnrichableNode {
 
 /** Enrichment provenance stamp written by every pass (E12). */
 export interface EnrichmentProvenance {
-  /** Semver of @sox/memory-enrich that produced this. e.g. "1.0.0" */
+  /** Semver of @adhd/sox-memory-enrich that produced this. e.g. "1.0.0" */
   pass: string;
   /** ISO timestamp of enrichment run. */
   ts: string;
@@ -490,6 +490,7 @@ export function clusterSubset(
 ```
 
 **Determinism guarantees (inherited from clusterStore plus):**
+
 - `provenance_hash` = sha256(stableJSON(filter)).slice(0,16). Same filter → same hash. Stable JSON uses sorted keys recursively, so key ordering in the input does not affect the hash.
 - Subset community UIDs are salted: `communityUid(sortedRowids, provenanceHash)`. A subset community for the same member set as a global community has a DIFFERENT uid — they coexist as distinct nodes. (C3.7)
 - Re-running `persist:true` with the same filter idempotently replaces only this filter's prior slice, leaving everything else intact.
@@ -551,6 +552,7 @@ export function materializeClusters(
 ```
 
 **Community meta JSON shape** (stored in `node.meta` for every community node):
+
 ```typescript
 {
   mean_intra_sim: number;
@@ -568,7 +570,7 @@ This resolves OQ-4 (C3.3, C8): the exact JSON key names are `mean_intra_sim`, `c
 
 ### C1.8.3 Provenance helpers: `filterProvenanceHash`, `communityUid` — NEW (internal behaviour contracted)
 
-**Source of truth:** `libs/memory-enrich/src/cluster.ts`. Both functions are **module-internal** (not exported from `@sox/memory-enrich`). Their behaviour is contracted here because callers who interpret the `provenance_hash` returned by `clusterSubset` or stored in `community.meta.cluster_scope` need to understand the hashing and salting conventions.
+**Source of truth:** `libs/memory-enrich/src/cluster.ts`. Both functions are **module-internal** (not exported from `@adhd/sox-memory-enrich`). Their behaviour is contracted here because callers who interpret the `provenance_hash` returned by `clusterSubset` or stored in `community.meta.cluster_scope` need to understand the hashing and salting conventions.
 
 ```typescript
 // libs/memory-enrich/src/cluster.ts (internal — not exported)
@@ -578,7 +580,7 @@ This resolves OQ-4 (C3.3, C8): the exact JSON key names are `mean_intra_sim`, `c
  * Uses sorted-key JSON encoding so the same filter always hashes to the same value
  * regardless of key insertion order. Returns a 16-hex-char prefix of SHA-256.
  *
- * NOT exported from @sox/memory-enrich. The hash is exposed only as the
+ * NOT exported from @adhd/sox-memory-enrich. The hash is exposed only as the
  * `provenance_hash` field in ClusterSubsetResult and in community.meta.cluster_scope.hash.
  * Callers should not re-derive this hash; use the value returned by clusterSubset.
  */
@@ -597,7 +599,7 @@ function filterProvenanceHash(filter: unknown): string;
  *   the global community for the same episodes — they are different nodes
  *   (different lenses, intentionally coexistent).
  *
- * NOT exported from @sox/memory-enrich. Called internally by buildClusterResults
+ * NOT exported from @adhd/sox-memory-enrich. Called internally by buildClusterResults
  * with salt='' (global) or salt=provenanceHash (subset).
  */
 function communityUid(sortedRowids: number[], salt?: string): string;
@@ -678,9 +680,9 @@ triggers re-enrichment detection (UC10).
 
 **Source of truth:** `libs/memory-enrich/src/filters.ts`.
 
-Moving `buildFiltersClause` into `@sox/memory-enrich` makes `clusterSubset` self-contained:
+Moving `buildFiltersClause` into `@adhd/sox-memory-enrich` makes `clusterSubset` self-contained:
 any caller of the library can invoke filtered clustering without reaching into server-private
-code. `memory-server` imports the builder from `@sox/memory-enrich` and reuses it for both
+code. `memory-server` imports the builder from `@adhd/sox-memory-enrich` and reuses it for both
 `memory_recall` filtering and `recluster` subset selection — one predicate vocabulary, one
 implementation.
 
@@ -769,6 +771,7 @@ The MCP server's `serve()` call version bumps from `"0.1.0"` to `"1.0.0"` when t
 ### C2.1 `memory_write` — MODIFIED
 
 **Changes from v0:**
+
 - New optional inputs: `name`, `topic`, `project_path`, `derived_from_uid`.
 - Existing `summary` and `tags` already accepted; `summary` is now persisted to `node.summary`
   (v0 silently dropped it in some paths — confirmed it is passed through in current code at
@@ -809,6 +812,7 @@ The MCP server's `serve()` call version bumps from `"0.1.0"` to `"1.0.0"` when t
 ```
 
 **Output shape (success):**
+
 ```typescript
 {
   episode_uid: string;
@@ -836,6 +840,7 @@ The MCP server's `serve()` call version bumps from `"0.1.0"` to `"1.0.0"` when t
 ### C2.2 `memory_recall` — MODIFIED
 
 **Changes from v0:**
+
 - New optional `filters` object (project_path, topic, tags, importance_min, t_created_after,
   t_created_before).
 - `query` relaxed to optional (null/empty = importance-ranked listing per UC7).
@@ -884,6 +889,7 @@ The MCP server's `serve()` call version bumps from `"0.1.0"` to `"1.0.0"` when t
 ```
 
 **Output shape (v1 result item — superset of v0):**
+
 ```typescript
 interface RecallResultV1 {
   uid: string;
@@ -949,6 +955,7 @@ that only read `uid`/`content`/`score` are unaffected.
 ```
 
 **Output shape:**
+
 ```typescript
 interface TopicEntry {
   topic: string;
@@ -990,6 +997,7 @@ interface MemoryTopicsResponse {
 ```
 
 **Output shape:**
+
 ```typescript
 interface ProjectEntry {
   project_path: string;
@@ -1033,6 +1041,7 @@ for backward compat. `memory_list_entities` is the enrichment-aware discovery va
 ```
 
 **Output shape:**
+
 ```typescript
 interface EntityEntry {
   uid: string;
@@ -1090,6 +1099,7 @@ only one is logically intended. The schema does not use `oneOf` but the handler 
 the exclusion.
 
 **Output shape:**
+
 ```typescript
 interface CommunityNode {
   uid: string;
@@ -1155,6 +1165,7 @@ normal use but may use it to distinguish which lens a community belongs to.
 entities share the same name. Implementation team to decide on disambiguation behavior.
 
 **Output shape:**
+
 ```typescript
 interface MemoryEntityEpisodesResponse {
   entity: { uid: string; name: string };
@@ -1189,6 +1200,7 @@ interface MemoryEntityEpisodesResponse {
 ```
 
 **Output shape:**
+
 ```typescript
 interface RelatedEdge {
   episode: EpisodeSummary;
@@ -1225,6 +1237,7 @@ interface MemoryRelatedResponse {
 ```
 
 **Output shape:**
+
 ```typescript
 interface SupersessionLink {
   uid: string;
@@ -1270,6 +1283,7 @@ interface MemorySupersessionChainResponse {
 ```
 
 **Output shape:**
+
 ```typescript
 interface NearDupPair {
   uid_a: string;
@@ -1333,6 +1347,7 @@ The `recluster` op behaves differently depending on whether `filters` is present
 response discriminator `scope` tells the caller which mode ran.
 
 **Mode A — global async (filters absent or empty object):**
+
 - Enqueues an `enrich` op via `enqueueEnrich(db)` so the daemon runs a full
   `runBatchEnrich` pass (re-clusters + re-links the whole store).
 - `dry_run:true` → returns `{op, enqueued:false, dry_run:true}` without enqueuing.
@@ -1341,6 +1356,7 @@ response discriminator `scope` tells the caller which mode ran.
   notified only that the op was enqueued; completion is not signaled.
 
 **Mode B — filtered subset (filters present with at least one key):**
+
 - Runs `clusterSubset(db, { filter: filters, persist: !dry_run, threshold? })` **synchronously**.
 - `dry_run:true` → a **read-only synthesis query**: clusters the subset in memory and
   returns the result without writing any community nodes or edges to the DB.
@@ -1353,6 +1369,7 @@ response discriminator `scope` tells the caller which mode ran.
 the caller knows which mode ran and can switch on the return shape.
 
 **Output shape (by op):**
+
 ```typescript
 // retag
 interface CurateRetagResult {
@@ -1438,6 +1455,7 @@ Never touches the global partition or any other lens's communities. Idempotent.
 - **`dry_run:false`** (default): performs the invalidation.
 
 Output:
+
 ```typescript
 interface CurateDropLensResult {
   op: "drop_lens";
@@ -1465,6 +1483,7 @@ Return all live persisted subset lenses in the store. Use to find `provenance_ha
 for `drop_lens`, or to audit accumulated lenses.
 
 Output:
+
 ```typescript
 interface SubsetLensDescriptor {
   provenance_hash: string;
@@ -1507,10 +1526,11 @@ but the manual cleanup path is now available.
 ```
 
 **Output shape:**
+
 ```typescript
 interface MemoryStatsResponse {
   tool_version: string;            // e.g. "1.0.0" — signals v1 surface is present
-  enrich_version: string;          // current @sox/memory-enrich ENRICH_VERSION
+  enrich_version: string;          // current @adhd/sox-memory-enrich ENRICH_VERSION
   embed_model: string;
   total_episodes: number;
   with_topic: number;
@@ -1572,6 +1592,7 @@ affects `cluster_count`, `total_clustered`, `total_unclustered`, `largest_cluste
 ```
 
 **Output shape:**
+
 ```typescript
 interface MemoryEnrichTriggerResponse {
   op: string;
@@ -1803,6 +1824,7 @@ export interface CommunityNodeV1 {
 
 **OQ-4 resolved:** Community quality metrics and provenance are stored in `community.meta` as
 the following JSON shape (confirmed from `libs/memory-enrich/src/cluster.ts:371-376` and C1.8.2):
+
 ```json
 {
   "mean_intra_sim": 0.87,
@@ -1811,6 +1833,7 @@ the following JSON shape (confirmed from `libs/memory-enrich/src/cluster.ts:371-
   "cluster_scope": { "kind": "global" }
 }
 ```
+
 For subset communities, `cluster_scope` is `{ "kind": "subset", "hash": "<16-hex>", "filter": <MemoryFilter> }`.
 All four keys are always present on nodes written by this version of the library. Legacy nodes
 (written before the subset feature) may have `meta` absent or without `cluster_scope`; these
@@ -1822,7 +1845,7 @@ are treated as global by all scope predicates.
 // libs/memory-enrich/src/types.ts (already in C1.1 — reproduced here for completeness)
 
 export interface EnrichmentProvenance {
-  pass: string;         // semver of @sox/memory-enrich, e.g. "1.0.0"
+  pass: string;         // semver of @adhd/sox-memory-enrich, e.g. "1.0.0"
   ts: string;           // ISO timestamp of enrichment run
   note?: string;        // "legacy" for pre-migration nodes; "user_override" if importance is locked
 }
@@ -1934,6 +1957,7 @@ collision.
 #### Scope-keyed invalidation
 
 When `materializeClusters` runs:
+
 - `scope:'global'` → invalidates (`t_invalid = now`) only communities where
   `cluster_scope.kind = 'global'` or `cluster_scope IS NULL`. Subset communities are untouched.
 - `scope:'subset'` + `provenanceHash` → invalidates only communities where
@@ -1943,6 +1967,7 @@ When `materializeClusters` runs:
 #### Read defaults
 
 All read paths default to the global lens:
+
 - `communityUidForRowid` — returns the global community's uid for an episode.
 - `memory_recall.community_uid` — the episode's global community uid (C2.2).
 - `memory_get_community` with `entity_uid` — resolves the global community (C2.6).
@@ -2106,7 +2131,7 @@ The `memory-organizer` removal is not a gradual deprecation — it is a clean cu
 transition period where both the LLM organizer and the deterministic pipeline run simultaneously.
 The v0→v1 migration is:
 
-1. Implement `@sox/memory-enrich` + update `write.ts` + update `memoryd.ts`.
+1. Implement `@adhd/sox-memory-enrich` + update `write.ts` + update `memoryd.ts`.
 2. Run the migration (idempotent `ALTER TABLE` per D3.2).
 3. Remove `memory-organizer` entirely.
 4. Bump MCP server version to `"1.0.0"`.
@@ -2119,7 +2144,7 @@ conflict with the organizer's schema and do not need to be rolled back.
 
 ## C6. Versioning
 
-### C6.1 `@sox/memory-enrich` package versioning
+### C6.1 `@adhd/sox-memory-enrich` package versioning
 
 Follows semver. Version is exported as `ENRICH_VERSION` (C1.11) and written to `node.enrich_ver.pass`.
 
@@ -2142,6 +2167,7 @@ returning `{ tool_version }`.
 | `1.0.0` (post-enrichment) | `memory_write` + `memory_recall` enriched; 8 new tools added; `memory_get_community` response changed; `memory_link` gains `SAME_AS` rel. |
 
 **Breaking changes in `1.0.0`:**
+
 - `memory_get_community` response: `name` field replaced by `label`. Callers must update.
 
 All other changes are additive.

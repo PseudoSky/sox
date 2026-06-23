@@ -24,13 +24,13 @@
 
 import type { FileSet } from '../../index.js';
 import type { TemplateOpts } from '../_shared.js';
-import { manifestJson, buildInstallDescriptor, changelogMd, readmeMd } from '../_shared.js';
+import { buildInstallDescriptor, changelogMd, manifestJson, readmeMd } from '../_shared.js';
 
 export function skillTemplate(opts: TemplateOpts): FileSet {
   // Minimal package.json — declarative skills have no build step
   const skillPkg = JSON.stringify(
     {
-      name: `@sox/extension-${opts.id}`,
+      name: `@adhd/sox-extension-${opts.id}`,
       version: '0.1.0',
       description: opts.description,
       private: true,

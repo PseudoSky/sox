@@ -28,13 +28,13 @@
 
 import type { FileSet } from '../../index.js';
 import type { TemplateOpts } from '../_shared.js';
-import { manifestJson, buildInstallDescriptor, tsconfigJson, changelogMd, readmeMd } from '../_shared.js';
+import { buildInstallDescriptor, changelogMd, manifestJson, readmeMd, tsconfigJson } from '../_shared.js';
 
 export function commandTemplate(opts: TemplateOpts): FileSet {
   // package.json with bin field for direct CLI invocation
   const cmdPkg = JSON.stringify(
     {
-      name: `@sox/extension-${opts.id}`,
+      name: `@adhd/sox-extension-${opts.id}`,
       version: '0.1.0',
       description: opts.description,
       private: true,

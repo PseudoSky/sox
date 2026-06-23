@@ -12,45 +12,45 @@
  * [inv:nx-free-core]               — sox init uses libs/authoring scaffold(), not the old scaffolder
  */
 
-import { resolveBundleDir, registerBundleMember } from './bundle-init.js';
+import type { PermissionsBlock, RuntimeEntry, RuntimeRecord } from '@adhd/sox-host-runtime';
 import {
-  parseArgs,
-  install,
-  loadLockfile,
-  loadConfig,
-  getScopePath,
-  loadRegistryIndex,
-  resolveFromRegistry,
-  declarativeInstall,
-  DeclarativeDeniedError,
-  findLocalExtension,
-  loadExtensionManifest,
-  update as lifecycleUpdate,
-  diff as diffExtension,
-  diffAll,
-  readInstallRegistry,
-  removeInstallRecord,
-  verifyIntegrity,
-} from '@sox/install-engine';
-import type { InstallDescriptor, DeclarativeInstallResult, UpdateCtx, InstallRecord, Scope } from '@sox/install-engine';
-import {
-  getScopePaths,
-  getRuntimeFilePath,
-  startRuntime,
-  stopRuntime,
-  getRuntimeRecord,
-  resolveExtensionDir,
-  McpClient,
-  reconcileRuntime,
   compilePolicy,
   computeSupervisorId,
-  readGlobalRegistry,
+  getRuntimeFilePath,
+  getRuntimeRecord,
+  getScopePaths,
   killAndVerify,
+  McpClient,
   pidAlive as pidAliveRT,
+  readGlobalRegistry,
   reapOrphansForExtension,
-} from '@sox/host-runtime';
-import type { PermissionsBlock, RuntimeEntry, RuntimeRecord } from '@sox/host-runtime';
-// @sox/host-registry is also lazy-required via install-engine; import it lazily here too
+  reconcileRuntime,
+  resolveExtensionDir,
+  startRuntime,
+  stopRuntime,
+} from '@adhd/sox-host-runtime';
+import type { DeclarativeInstallResult, InstallDescriptor, InstallRecord, Scope, UpdateCtx } from '@adhd/sox-install-engine';
+import {
+  DeclarativeDeniedError,
+  declarativeInstall,
+  diffAll,
+  diff as diffExtension,
+  findLocalExtension,
+  getScopePath,
+  install,
+  update as lifecycleUpdate,
+  loadConfig,
+  loadExtensionManifest,
+  loadLockfile,
+  loadRegistryIndex,
+  parseArgs,
+  readInstallRegistry,
+  removeInstallRecord,
+  resolveFromRegistry,
+  verifyIntegrity,
+} from '@adhd/sox-install-engine';
+import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
+// @adhd/sox-host-registry is also lazy-required via install-engine; import it lazily here too
 // to avoid the NX "static import of lazy-loaded library" lint error.
 // [inv:host-registry-lazy]: getHost() used only in cmdInstall; require() at call site.
 
@@ -324,10 +324,10 @@ function printVersion(): void {
  * libs/manifest in all cases).
  */
 async function cmdInit(raw: string[]): Promise<void> {
-  // @sox/authoring is genuinely init-only — dynamic import is appropriate here.
+  // @adhd/sox-authoring is genuinely init-only — dynamic import is appropriate here.
   // This is NOT a circular or cross-lib import; it keeps the authoring lib out of
   // the module graph when sox is used for non-init verbs.
-  const { scaffold, writeFileSet, validateId } = await import('@sox/authoring');
+  const { scaffold, writeFileSet, validateId } = await import('@adhd/sox-authoring');
 
   const flagMap = parseArgs(raw);
 
@@ -462,23 +462,23 @@ async function cmdInit(raw: string[]): Promise<void> {
     // libs/manifest does not enforce the type-suffix restriction, so the
     // resulting extension.json is still fully conformant.
     if (msg.includes('must not end with the type name')) {
-      // Route through the @sox/authoring scope (C7-clean); the build's
+      // Route through the @adhd/sox-authoring scope (C7-clean); the build's
       // rewrite-paths step resolves it at runtime. Per-type template fns
       // (agentTemplate, hookTemplate, …) are re-exported from the package.
-      const templateMod = (await import('@sox/authoring')) as Record<string, unknown>;
+      const templateMod = (await import('@adhd/sox-authoring')) as Record<string, unknown>;
       // Template function name: hookTemplate, mcpServerTemplate, etc.
       const fnName =
         type.replace(/-([a-z])/g, (_, c: string) => (c as string).toUpperCase()) +
         'Template';
       const templateFn = templateMod[fnName] as
         | ((opts: {
-            type: string;
-            id: string;
-            title: string;
-            description: string;
-            author: string | undefined;
-            keywords: string[] | undefined;
-          }) => ReturnType<typeof scaffold>)
+          type: string;
+          id: string;
+          title: string;
+          description: string;
+          author: string | undefined;
+          keywords: string[] | undefined;
+        }) => ReturnType<typeof scaffold>)
         | undefined;
       if (typeof templateFn !== 'function') {
         process.stderr.write(
@@ -550,7 +550,7 @@ async function cmdInit(raw: string[]): Promise<void> {
  * Usage: sox validate [path-to-extension.json]
  *        sox validate --help
  *
- * @sox/manifest is init-only / validate-only — dynamic import keeps it lazy.
+ * @adhd/sox-manifest is init-only / validate-only — dynamic import keeps it lazy.
  */
 async function cmdValidate(raw: string[]): Promise<void> {
   // --help flag — exit 0 (A12: --help is a documented flag form)
@@ -573,7 +573,7 @@ Exit codes:
     process.exit(0);
   }
 
-  const { validate } = await import('@sox/manifest');
+  const { validate } = await import('@adhd/sox-manifest');
   const path = await import('node:path');
   const fs = await import('node:fs');
 
@@ -916,7 +916,7 @@ Options:
 
     // Validate the host exists in the registry.
     // [inv:host-registry-lazy] — require() at call site; see top-of-file comment.
-    const { getHost } = require('@sox/host-registry') as typeof import('@sox/host-registry');
+    const { getHost } = require('@adhd/sox-host-registry') as typeof import('@adhd/sox-host-registry');
     try {
       getHost(host);
     } catch (e) {
@@ -1021,7 +1021,7 @@ Options:
       process.exit(1);
     }
 
-    const fsMod2  = require('node:fs')   as typeof import('node:fs');
+    const fsMod2 = require('node:fs') as typeof import('node:fs');
     const pathMod2 = require('node:path') as typeof import('node:path');
 
     // Use the explicit --config path if provided; fall back to scope default.
@@ -1059,7 +1059,7 @@ Options:
 
   // Interactive config prompting: when stdout is a TTY, provide readline-based
   // prompt for missing required config keys declared in config_schema.
-  const installOpts: Parameters<typeof import('@sox/install-engine').install>[0] = {
+  const installOpts: Parameters<typeof import('@adhd/sox-install-engine').install>[0] = {
     scope,
     mode,
     ...(configPathFlag !== undefined ? { configPath: configPathFlag } : {}),
@@ -1094,7 +1094,7 @@ Options:
   // its source dir to the store dir so the next `sox start` picks up the
   // updated bundle without requiring `--profile=service` or a full reinstall.
   {
-    const fsMod3  = require('node:fs')   as typeof import('node:fs');
+    const fsMod3 = require('node:fs') as typeof import('node:fs');
     const pathMod3 = require('node:path') as typeof import('node:path');
 
     const registryPath3 = pathMod3.join(process.cwd(), '.sox', 'registry.json');
@@ -1119,10 +1119,10 @@ Options:
         if (!extDir3) continue;
 
         const bundleDir3 = pathMod3.join(extDir3, 'bundle');
-        const distDir3   = pathMod3.join(extDir3, 'dist');
+        const distDir3 = pathMod3.join(extDir3, 'dist');
         const srcDir3 = fsMod3.existsSync(bundleDir3) ? bundleDir3
-                      : fsMod3.existsSync(distDir3)   ? distDir3
-                      : null;
+          : fsMod3.existsSync(distDir3) ? distDir3
+            : null;
         if (!srcDir3) continue;
 
         const storePath3 = svc.storePath;
@@ -1163,7 +1163,7 @@ Options:
   // config/lockfile path. Service and mcp-server runtime types have no file-drop
   // surface and are skipped automatically by declarativeInstall.
   {
-    const fsMod4   = require('node:fs')   as typeof import('node:fs');
+    const fsMod4 = require('node:fs') as typeof import('node:fs');
     const pathMod4 = require('node:path') as typeof import('node:path');
 
     // Resolve the lockfile that install() just wrote.
@@ -1234,7 +1234,7 @@ Options:
 // and ledger-recorded. Non-fatal: placement errors are warnings; they do not
 // abort the install.
 //
-// [inv:host-registry-lazy]: @sox/host-registry loaded via require() inside
+// [inv:host-registry-lazy]: @adhd/sox-host-registry loaded via require() inside
 // declarativeInstall — no static import here.
 //
 async function hostPlaceExtension(
@@ -1246,7 +1246,7 @@ async function hostPlaceExtension(
   workspaceRoot: string,
 ): Promise<void> {
   const pathMod = require('node:path') as typeof import('node:path');
-  const { getHost } = require('@sox/host-registry') as typeof import('@sox/host-registry');
+  const { getHost } = require('@adhd/sox-host-registry') as typeof import('@adhd/sox-host-registry');
 
   for (const hostName of hosts) {
     // Validate the host is registered; skip unknown hosts gracefully.
@@ -1265,14 +1265,14 @@ async function hostPlaceExtension(
       ? workspaceRoot
       : (Object.values(hostScopePaths)[0] as string | undefined ?? workspaceRoot);
 
-    const descriptor: import('@sox/install-engine').InstallDescriptor = {
+    const descriptor: import('@adhd/sox-install-engine').InstallDescriptor = {
       ext: id,
       type: extType,
       hosts: [hostName],
       srcPath: pathMod.resolve(srcPath),
     };
 
-    let results: import('@sox/install-engine').DeclarativeInstallResult[];
+    let results: import('@adhd/sox-install-engine').DeclarativeInstallResult[];
     try {
       results = await declarativeInstall(
         descriptor,
@@ -1886,7 +1886,7 @@ Options:
 
   // Honor explicit --lockfile / --config overrides (used by e2e to operate on temp paths).
   const lockfilePath5 = flags['lockfile'] ?? scopePaths5.lockfile;
-  const configPath5   = flags['config']   ?? scopePaths5.config;
+  const configPath5 = flags['config'] ?? scopePaths5.config;
 
   const lockfile = loadLockfile(lockfilePath5);
 
@@ -1970,8 +1970,8 @@ async function cmdEnable(flags: Record<string, string>): Promise<void> {
     process.exit(1);
   }
 
-  const configPath3   = flags['config']       ?? scopePaths3.config;
-  const lockfilePath3 = flags['lockfile']     ?? scopePaths3.lockfile;
+  const configPath3 = flags['config'] ?? scopePaths3.config;
+  const lockfilePath3 = flags['lockfile'] ?? scopePaths3.lockfile;
   const runtimeFilePath3 =
     flags['runtime-file'] ??
     process.env['SOX_RUNTIME_FILE'] ??
@@ -1994,12 +1994,12 @@ async function cmdEnable(flags: Record<string, string>): Promise<void> {
   //    cleanly with process.exit(0), keeping exitCode === 0 (not null).
   const rtRaw3 = fsMod.existsSync(runtimeFilePath3)
     ? (() => {
-        try {
-          return JSON.parse(fsMod.readFileSync(runtimeFilePath3, 'utf8')) as {
-            supervisorPid?: number;
-          };
-        } catch { return null; }
-      })()
+      try {
+        return JSON.parse(fsMod.readFileSync(runtimeFilePath3, 'utf8')) as {
+          supervisorPid?: number;
+        };
+      } catch { return null; }
+    })()
     : null;
   const supPid3 = typeof rtRaw3?.supervisorPid === 'number' ? rtRaw3.supervisorPid : null;
 
@@ -2071,7 +2071,7 @@ async function cmdDisable(flags: Record<string, string>): Promise<void> {
     process.exit(1);
   }
 
-  const configPath4  = flags['config']   ?? scopePaths4.config;
+  const configPath4 = flags['config'] ?? scopePaths4.config;
   const lockfilePath4 = flags['lockfile'] ?? scopePaths4.lockfile;
   const runtimeFilePath4 =
     flags['runtime-file'] ??
@@ -2095,18 +2095,18 @@ async function cmdDisable(flags: Record<string, string>): Promise<void> {
 
   const rtRaw4 = fsMod.existsSync(runtimeFilePath4)
     ? (() => {
-        try {
-          return JSON.parse(fsMod.readFileSync(runtimeFilePath4, 'utf8')) as {
-            entries?: Array<{ id: string; key?: string; running?: boolean; pid?: number | null }>;
-            supervisorPid?: number;
-          };
-        } catch { return null; }
-      })()
+      try {
+        return JSON.parse(fsMod.readFileSync(runtimeFilePath4, 'utf8')) as {
+          entries?: Array<{ id: string; key?: string; running?: boolean; pid?: number | null }>;
+          supervisorPid?: number;
+        };
+      } catch { return null; }
+    })()
     : null;
 
   const rtEntry4 = (rtRaw4?.entries ?? []).find((e) => e.id === id || e.key === id);
   const childPid4 = (rtEntry4?.running && rtEntry4.pid != null) ? rtEntry4.pid : null;
-  const supPid4   = typeof rtRaw4?.supervisorPid === 'number' ? rtRaw4.supervisorPid : null;
+  const supPid4 = typeof rtRaw4?.supervisorPid === 'number' ? rtRaw4.supervisorPid : null;
 
   if (supPid4 !== null && pidAlive4(supPid4)) {
     // Signal supervisor to reconcile — it reads the updated config (enabled=false) and
@@ -2428,7 +2428,7 @@ Options:
       const entry = lf.resolved[lockKey];
       const atIdx = lockKey.lastIndexOf('@');
       const extId = atIdx === -1 ? lockKey : lockKey.slice(0, atIdx);
-      const ver   = atIdx === -1 ? '' : lockKey.slice(atIdx + 1);
+      const ver = atIdx === -1 ? '' : lockKey.slice(atIdx + 1);
 
       const rtEntry = runtimeEntries.find((r) => (r.key ?? r.id) === lockKey || r.id === extId);
       const pid = (rtEntry?.pid != null && typeof rtEntry.pid === 'number') ? rtEntry.pid : null;
@@ -2730,8 +2730,8 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
     const reapIds: string[] = startId
       ? [startId]
       : Object.keys(lock0?.resolved ?? {}).map((k) =>
-          k.includes('@') ? k.slice(0, k.lastIndexOf('@')) : k,
-        );
+        k.includes('@') ? k.slice(0, k.lastIndexOf('@')) : k,
+      );
     // Exclude the current live supervisor's own children — if a healthy
     // supervisor is already running these, killAndVerify-by-identity would be
     // disruptive. We only reap when there is NO live supervisor for this scope.
@@ -3170,13 +3170,15 @@ function readRunStats(logDir: string): Map<string, {
   const histPath = pathMod.join(logDir, 'run-history.json');
   if (!fsMod.existsSync(histPath)) return result;
 
-  let hist: { version: number; runs: Array<{
-    extId: string;
-    startedAt: string;
-    stoppedAt: string | null;
-    exitCode: number | null;
-    stopReason: string | null;
-  }> };
+  let hist: {
+    version: number; runs: Array<{
+      extId: string;
+      startedAt: string;
+      stoppedAt: string | null;
+      exitCode: number | null;
+      stopReason: string | null;
+    }>
+  };
   try {
     hist = JSON.parse(fsMod.readFileSync(histPath, 'utf8')) as typeof hist;
   } catch {
@@ -3742,7 +3744,7 @@ async function callViaExecSocket(
   timeoutMs = 30000,
 ): Promise<unknown> {
   const netMod = require('node:net') as typeof import('node:net');
-  const rlMod  = require('node:readline') as typeof import('node:readline');
+  const rlMod = require('node:readline') as typeof import('node:readline');
 
   return new Promise((resolve, reject) => {
     const socket = netMod.createConnection(socketPath);
@@ -3818,7 +3820,7 @@ async function listViaExecSocket(
   timeoutMs = 10000,
 ): Promise<ExecListResult> {
   const netMod = require('node:net') as typeof import('node:net');
-  const rlMod  = require('node:readline') as typeof import('node:readline');
+  const rlMod = require('node:readline') as typeof import('node:readline');
 
   return new Promise((resolve, reject) => {
     const socket = netMod.createConnection(socketPath);
@@ -3876,12 +3878,12 @@ function renderToolSchema(tool: ExecToolDescriptor): string[] {
   );
   const lines: string[] = [];
   for (const [propName, propDef] of Object.entries(props)) {
-    const typeStr  = typeof propDef['type'] === 'string' ? propDef['type'] : '';
+    const typeStr = typeof propDef['type'] === 'string' ? propDef['type'] : '';
     const enumVals = Array.isArray(propDef['enum'])
       ? (propDef['enum'] as unknown[]).map(String).join(' | ')
       : '';
     const desc = typeof propDef['description'] === 'string' ? propDef['description'] : '';
-    const req  = required.has(propName) ? '*' : ' ';
+    const req = required.has(propName) ? '*' : ' ';
     const typeDisplay = enumVals ? `${typeStr}: ${enumVals}` : typeStr;
     const descDisplay = desc ? `  — ${desc}` : '';
     lines.push(`      ${req} ${propName.padEnd(20)} ${typeDisplay.padEnd(18)}${descDisplay}`);
@@ -3922,7 +3924,7 @@ function printToolList(listResult: ExecListResult, scope: string): void {
   }
 
   // Print canonical example from the first tool of the first extension that has tools.
-  const firstExt  = listResult.extensions.find((e) => e.tools.length > 0);
+  const firstExt = listResult.extensions.find((e) => e.tools.length > 0);
   const firstTool = firstExt?.tools[0];
   if (firstExt && firstTool) {
     const reqProps = (() => {
@@ -4133,9 +4135,9 @@ Examples:
     process.exit(0);
   }
 
-  const ROOT  = process.cwd();
+  const ROOT = process.cwd();
   const scope = flags['scope'] ?? 'user';
-  const root  = flags['root']  ?? ROOT;
+  const root = flags['root'] ?? ROOT;
 
   // Resolve runtimeFilePath using same scope → lockfile → getRuntimeFilePath
   // chain as cmdStop / cmdList / cmdDetails, so the default is always correct.
@@ -4153,7 +4155,7 @@ Examples:
     process.env['SOX_RUNTIME_FILE'] ??
     getRuntimeFilePath(lockfilePath);
 
-  const fsMod   = require('node:fs')   as typeof import('node:fs');
+  const fsMod = require('node:fs') as typeof import('node:fs');
   const pathMod = require('node:path') as typeof import('node:path');
 
   // ── --list: show all tools from the live registrar ────────────────────────
@@ -4253,9 +4255,9 @@ Examples:
     }
   }
 
-  const extIdFlag  = flags['id'];
-  const toolFlag   = flags['tool'];
-  const argsJson   = flags['args'] ?? positionals[2] ?? '{}';
+  const extIdFlag = flags['id'];
+  const toolFlag = flags['tool'];
+  const argsJson = flags['args'] ?? positionals[2] ?? '{}';
 
   // ── Single positional with no --id / --tool → schema lookup ──────────────
   // `sox exec memory_write` — find the tool across all extensions, show schema.
@@ -4311,8 +4313,8 @@ Examples:
     process.exit(1);
   }
 
-  const extId    = extIdFlag  ?? positionals[0] ?? '';
-  const toolName = toolFlag   ?? positionals[1] ?? '';
+  const extId = extIdFlag ?? positionals[0] ?? '';
+  const toolName = toolFlag ?? positionals[1] ?? '';
 
   if (extId === '' || toolName === '') {
     if (extId === '') {
@@ -4406,8 +4408,8 @@ Examples:
     } catch (e) {
       const errMsg = String(e);
       const isToolNotFound = errMsg.toLowerCase().includes('no client found') ||
-                             errMsg.toLowerCase().includes('not found') ||
-                             errMsg.toLowerCase().includes('unknown tool');
+        errMsg.toLowerCase().includes('not found') ||
+        errMsg.toLowerCase().includes('unknown tool');
       if (isToolNotFound) {
         process.stderr.write(
           `${CLI} exec: tool '${toolName}' not found on '${extId}'.\n` +
@@ -4520,12 +4522,12 @@ Examples:
  * check validates the cascade-resolved config against the extension's config_schema.
  */
 async function cmdConfig(argv: string[], flags: Record<string, string>): Promise<void> {
-  const fsMod   = require('node:fs')   as typeof import('node:fs');
+  const fsMod = require('node:fs') as typeof import('node:fs');
   const pathMod = require('node:path') as typeof import('node:path');
-  const osMod   = require('node:os')   as typeof import('node:os');
+  const osMod = require('node:os') as typeof import('node:os');
 
-  const subVerb  = argv[1];
-  const ROOT     = flags['root'] ?? process.cwd();
+  const subVerb = argv[1];
+  const ROOT = flags['root'] ?? process.cwd();
 
   if (!subVerb || subVerb === '--help' || subVerb === '-h') {
     process.stdout.write(`${CLI} config — manage per-extension install-time configuration
@@ -4601,7 +4603,7 @@ Sensitive values should use env refs: \${VAR_NAME}
   const positionals = argv.slice(1).filter((a) => !a.startsWith('-'));
   // positionals: [subVerb, extId, key?, value?]
   const extId = positionals[1];
-  const key   = positionals[2];
+  const key = positionals[2];
   const value = positionals[3];
 
   switch (subVerb) {
@@ -4635,7 +4637,7 @@ Sensitive values should use env refs: \${VAR_NAME}
       cfgObj['config'] = configBlock;
       // Warn on likely secret values that aren't using env refs
       if (typeof value === 'string' && !value.startsWith('${') &&
-          /key|token|secret|password|api[-_]?key|credential/i.test(key)) {
+        /key|token|secret|password|api[-_]?key|credential/i.test(key)) {
         process.stderr.write(
           `${CLI} config set: warning: '${key}' looks like a secret — consider using an env ref instead: \${${key.toUpperCase().replace(/[-\s]/g, '_')}}\n`,
         );

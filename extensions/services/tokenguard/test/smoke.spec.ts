@@ -7,10 +7,10 @@
  *   - genericAdapter.reverseStream applies the reverse fn to the full body
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { Mapper, tokenizeStr, detokenizeText } from '@sox/tokenguard-core';
-import { resolveConfig } from '../src/config';
+import { detokenizeText, Mapper, tokenizeStr } from '@adhd/sox-tokenguard-core';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { genericAdapter } from '../src/adapters/generic';
+import { resolveConfig } from '../src/config';
 
 // ── resolveConfig — env-driven config shape ──────────────────────────────────
 

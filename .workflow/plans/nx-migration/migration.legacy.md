@@ -19,6 +19,7 @@ Skipping phases is forbidden. Each phase transitions `state: executing` on entry
 **Phases:** 11 (P0–P10).
 
 **Non-negotiable constraints carried into every phase:**
+
 - `$ROOT=/Users/nix/dev/ai/sox-ecosystem`. `pnpm` at
   `/Users/nix/.nvm/versions/node/v24.11.1/bin/pnpm` (use `pnpm` if on PATH, else that absolute path).
 - **Nx is dev-time only.** Never a consumer/runtime dependency. `libs/authoring`'s `scaffold()` is
@@ -48,6 +49,7 @@ that commit; a `feat/nx-migration` branch checked out and tracking the tag.
 **Verification:** acceptance check exits 0.
 
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 # working tree must be clean (no uncommitted changes):
@@ -62,6 +64,7 @@ branch=$(git rev-parse --abbrev-ref HEAD)
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** a clean, tagged, branched baseline from which every subsequent phase works. No code changes.
 The session's fixes are preserved in git history and cannot be accidentally lost or overwritten by later
 phase work.
@@ -118,6 +121,7 @@ rule active; `commitlint.config.js`; `pnpm-workspace.yaml` updated to include `a
 **Verification:** acceptance check exits 0.
 
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 # P0 guard: clean tree on migration branch:
@@ -135,6 +139,7 @@ node -e "const fs=require('fs');const y=fs.readFileSync('pnpm-workspace.yaml','u
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** Nx is alive in the repo, the module-boundary lint rule is wired, `nx release` is configured,
 and the workspace can host libs/apps — while every existing test still passes.
 
@@ -148,7 +153,7 @@ and the workspace can host libs/apps — while every existing test still passes.
 > Context you need cold: the repo is a pnpm monorepo today with `extensions/` packages and `scripts/`
 > engine. The migration target layout (from `docs/decisions/0001-nx-and-self-hosting.md` §Layout
 > mapping) adds `apps/sox/` (extension #0), `libs/{manifest,install-engine,registry,host-runtime,
-> authoring,memory-core}/`, and `packages/sox-nx/` (`@sox/nx` plugin). Tags: `type:extension`,
+> authoring,memory-core}/`, and `packages/sox-nx/` (`@adhd/sox-nx` plugin). Tags: `type:extension`,
 > `type:lib`, `type:app`. The boundary rule: extensions may depend on libs, never on each other
 > (cross-extension `../../../dist` reach-in must become a lint error). Nx is **dev-time only** — never a
 > consumer/runtime dep. Releases switch from Changesets to `nx release` + conventional commits
@@ -199,6 +204,7 @@ covering all existing validator test cases plus the new flex fields; `libs/manif
 **Verification:** acceptance check exits 0.
 
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 # P1 guard: nx resolves:
@@ -235,6 +241,7 @@ node -e "
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** `libs/manifest` is the canonical home for schema + validation logic; the three contract flexes
 (entrypoint-optional, multi-runtime, install-target) are encoded and tested; the existing validator
 behavior is preserved and re-verified. This is the prerequisite for all "born-conformant" work.
@@ -286,14 +293,14 @@ behavior is preserved and re-verified. This is the prerequisite for all "born-co
 
 ---
 
-## Phase 3 — `libs/authoring` + `@sox/nx` generators + born-conformance gate
+## Phase 3 — `libs/authoring` + `@adhd/sox-nx` generators + born-conformance gate
 
 **Phase ID:** P3
 **Phase goal:** `libs/authoring` provides a pure `scaffold(opts) → FileSet` function (no `@nx/devkit`
 import) with templates for all 6 active types (agent, skill, mcp-server, hook, command, bundle — `prompt`
-is parked). `@sox/nx` in `packages/sox-nx/` provides thin `@sox/nx:extension` and `@sox/nx:library`
+is parked). `@adhd/sox-nx` in `packages/sox-nx/` provides thin `@adhd/sox-nx:extension` and `@adhd/sox-nx:library`
 generators that call `scaffold()` and apply the FileSet to the nx Tree. A parity test asserts that
-`sox init <type> <id>` and `pnpm exec nx g @sox/nx:extension <type> <id>` produce byte-identical output
+`sox init <type> <id>` and `pnpm exec nx g @adhd/sox-nx:extension <type> <id>` produce byte-identical output
 from the same `scaffold()` core. A born-conformance gate scaffolds one extension per type, builds it, and
 validates it — all in one command.
 **Inputs:** P2 (green — `libs/manifest` with the contract flexes); `docs/decisions/0001-nx-and-self-hosting.md`
@@ -307,13 +314,14 @@ runs `scaffold → build → validate` and exits 0; a parity test asserting byte
 **Verification:** acceptance check exits 0.
 
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 # P2 guard: libs/manifest tests pass:
 pnpm exec nx run manifest:test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # libs/authoring builds clean:
 pnpm exec nx run authoring:build >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
-# @sox/nx plugin builds clean:
+# @adhd/sox-nx plugin builds clean:
 pnpm exec nx run sox-nx:build >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # scaffold each of the 6 active types via the generator and validate each output:
 for type in agent skill mcp-server hook command bundle; do
@@ -328,8 +336,9 @@ echo "all 6 types scaffold+validate"
 pnpm exec nx run sox-nx:test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** every active type scaffolds to a manifest that validates against `libs/manifest`; the parity
-invariant holds (`sox init` == `@sox/nx:extension` same core); the born-conformance gate is a runnable
+invariant holds (`sox init` == `@adhd/sox-nx:extension` same core); the born-conformance gate is a runnable
 target. The 6 demo extensions are no longer needed as fixtures — generated output is the fixture.
 
 **Phase prompt:**
@@ -340,13 +349,14 @@ target. The 6 demo extensions are no longer needed as fixtures — generated out
 > green: `libs/manifest` is the schema+validate source of truth with the three contract flexes.
 >
 > Context you need cold (from `docs/decisions/0001-nx-and-self-hosting.md`):
+>
 > - **`libs/authoring`** — pure `scaffold(opts) → FileSet` with NO `@nx/devkit` import. This is the
 >   single source of truth for "what a conformant extension of type X is." Both `sox init` and the nx
 >   generator call it.
-> - **`@sox/nx:extension` generator** — thin adapter: maps the FileSet returned by `scaffold()` onto the
+> - **`@adhd/sox-nx:extension` generator** — thin adapter: maps the FileSet returned by `scaffold()` onto the
 >   nx `Tree`, adds `project.json` with tags + nx target wiring.
 > - **Parity invariant** — a test MUST assert that `scaffold()` called directly (via `sox init`) and
->   called via `@sox/nx:extension` emit byte-identical output for the same inputs. This invariant must
+>   called via `@adhd/sox-nx:extension` emit byte-identical output for the same inputs. This invariant must
 >   never be broken.
 > - **`prompt` is parked** — no generator for prompt type until a real use case appears. Generate
 >   templates for: `agent`, `skill`, `mcp-server`, `hook`, `command`, `bundle`.
@@ -364,9 +374,9 @@ target. The 6 demo extensions are no longer needed as fixtures — generated out
 > `libs/authoring/src/templates/<type>/`. Templates use `libs/manifest` for the schema shape (import
 > `libs/manifest` — allowed: lib-to-lib). Implement a `writeFileSet(fs, outDir)` helper. (2) Generate
 > `packages/sox-nx`: `pnpm exec nx g @nx/plugin:plugin sox-nx --directory=packages/sox-nx
-> --tags="type:lib"`. Implement `@sox/nx:extension` generator — imports `scaffold()` from
+> --tags="type:lib"`. Implement `@adhd/sox-nx:extension` generator — imports `scaffold()` from
 > `libs/authoring`, maps FileSet to nx Tree, adds `project.json` with `type:<type>` tag. Implement
-> `@sox/nx:library` generator (wraps `@nx/js:lib` with sox-specific defaults + `type:lib` tag).
+> `@adhd/sox-nx:library` generator (wraps `@nx/js:lib` with sox-specific defaults + `type:lib` tag).
 > (3) Write the parity test in `packages/sox-nx/src/generators/extension/extension.spec.ts`: call
 > `scaffold()` directly, call the generator in a dry-run Tree, assert every file content is byte-identical.
 > (4) Delete the 6 demo extensions from `extensions/` (they are no longer needed). (5) Write
@@ -410,6 +420,7 @@ CLI (verb dispatch shell, no logic yet — that is P5); each lib tagged `type:li
 **Verification:** acceptance check exits 0.
 
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 # P3 guard: born-conformance still passes:
@@ -431,6 +442,7 @@ node -e "
 pnpm exec nx run-many -t lint --projects=install-engine,host-runtime,registry >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** the three engine libs build, test, and lint clean; the flag parser handles both documented
 forms (A12); the session's fixes (`fireIsolated`, enable-reactivation, stop-via-supervisor, drift gate)
 are provably present in the ported code; module-boundary lint is clean.
@@ -445,20 +457,21 @@ are provably present in the ported code; module-boundary lint is clean.
 > Context you need cold — **CRITICAL:**
 > (1) ALL of this session's fixes are in the P0 baseline commit. You must PORT them forward into the new
 > libs — do NOT re-grab code from before the P0 tag. Specifically:
->    - `fireIsolated` fix: the event bus must fire hooks in isolation so one failure cannot abort others
+>
+> - `fireIsolated` fix: the event bus must fire hooks in isolation so one failure cannot abort others
 >      (in `scripts/host/event-bus.ts` or equivalent).
->    - Enable-reactivation fix: `enable` on a disabled extension must re-spawn the process.
->    - Stop-via-supervisor fix: `stop` must go through the supervisor, not kill the process directly.
->    - Registry drift gate: checksums are re-verified before install/update; stale checksums cause a
+> - Enable-reactivation fix: `enable` on a disabled extension must re-spawn the process.
+> - Stop-via-supervisor fix: `stop` must go through the supervisor, not kill the process directly.
+> - Registry drift gate: checksums are re-verified before install/update; stale checksums cause a
 >      non-zero exit with a clear message.
->    - Typecheck fix: whatever typecheck error existed is already fixed — preserve the fixed typing.
+> - Typecheck fix: whatever typecheck error existed is already fixed — preserve the fixed typing.
 > (2) **Fix the flag parser (A12) while re-homing the CLI.** The documented `--help` output shows
->    `--flag value` forms; today `--flag value` mis-parses (only `--flag=value` works). The fix must
->    live in the CLI argument parser inside the new `libs/install-engine` or `apps/sox` layer.
+> `--flag value` forms; today `--flag value` mis-parses (only `--flag=value` works). The fix must
+> live in the CLI argument parser inside the new `libs/install-engine` or `apps/sox` layer.
 > (3) **Fix `exec` routing (A11)** to use the running server rather than spawning a throwaway session.
->    Port the existing exec path and fix it while doing so.
+> Port the existing exec path and fix it while doing so.
 > (4) The existing `scripts/` files are NOT deleted in this phase — they still run the existing
->    `validate-manifests.ts` etc. (those are cleaned up in P9). Port the logic; leave the originals.
+> `validate-manifests.ts` etc. (those are cleaned up in P9). Port the logic; leave the originals.
 >
 > Your task: (1) Generate three libs: `pnpm exec nx g @nx/js:lib install-engine`, `host-runtime`,
 > `registry` (all `--directory=libs/<name> --tags="type:lib"`). (2) Generate `apps/sox`:
@@ -509,6 +522,7 @@ CLI built by `nx run sox:build` and executable as `node dist/apps/sox/main.js`.
 **Verification:** acceptance check exits 0.
 
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 # P4 guard: engine libs tests pass:
@@ -530,6 +544,7 @@ rm -rf "$TMP"
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** `sox` is literally self-hosted: it is a conformant `command` extension whose own manifest
 validates. The A1 `init` command produces a born-conformant extension. The full command surface works
 with both flag forms.
@@ -541,6 +556,7 @@ with both flag forms.
 > `feat/nx-migration`. Phase 4 is green: three engine libs build and test clean with the flag-parser fix.
 >
 > Context you need cold (from `docs/decisions/0001-nx-and-self-hosting.md`):
+>
 > - **D1 — Literal self-hosting.** `sox` is extension #0: a real conformant extension with its own
 >   `extension.json`, validated by its own validator (`libs/manifest`). If `sox` cannot be expressed
 >   conformantly, the manifest contract is wrong.
@@ -554,16 +570,16 @@ with both flag forms.
 > - The `exec` verb must route through the running server (A11 fix from P4 must be wired here).
 >
 > Your task: (1) Create `apps/sox/extension.json` with `type:"command"`, a title and description, the
->   proper `entrypoint` pointing to the compiled CLI output, `runtime:"node"`, and a valid
->   `compatibility` block — validate it with `libs/manifest` and fix any errors. (2) Wire all verb
->   handlers in `apps/sox/src/main.ts`: `init` (calls `scaffold()` + disk writer), `validate`, `search`,
->   `install`, `start`, `list`, `details`, `enable`, `disable`, `update`, `uninstall`, `stop`, `exec`
->   (via running server — use the `libs/host-runtime` exec channel). Each verb delegates to the
->   appropriate engine lib; no logic is forked. (3) Add a `bin` field to `apps/sox/package.json` so
->   `node dist/apps/sox/main.js` and `bin/sox` both work. (4) Ensure A12: both `--flag value` and
->   `--flag=value` parse correctly (already fixed in P4 parser — just verify it flows through to the
->   live CLI). (5) Write an integration test scaffolding a hook with `init` and asserting the output
->   validates.
+> proper `entrypoint` pointing to the compiled CLI output, `runtime:"node"`, and a valid
+> `compatibility` block — validate it with `libs/manifest` and fix any errors. (2) Wire all verb
+> handlers in `apps/sox/src/main.ts`: `init` (calls `scaffold()` + disk writer), `validate`, `search`,
+> `install`, `start`, `list`, `details`, `enable`, `disable`, `update`, `uninstall`, `stop`, `exec`
+> (via running server — use the `libs/host-runtime` exec channel). Each verb delegates to the
+> appropriate engine lib; no logic is forked. (3) Add a `bin` field to `apps/sox/package.json` so
+> `node dist/apps/sox/main.js` and `bin/sox` both work. (4) Ensure A12: both `--flag value` and
+> `--flag=value` parse correctly (already fixed in P4 parser — just verify it flows through to the
+> live CLI). (5) Write an integration test scaffolding a hook with `init` and asserting the output
+> validates.
 >
 > Skills/tools you need: TypeScript, Node, the engine lib APIs (read the exported interfaces from P4),
 > `libs/authoring` scaffold() + writeFileSet() API, `libs/manifest` validate() API.
@@ -600,6 +616,7 @@ compatible only); an updated born-conformance gate (if template changes affect o
 **Verification:** acceptance check exits 0.
 
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 # P5 guard: sox extension.json still validates and CLI builds:
@@ -616,6 +633,7 @@ test -f docs/per-type-shapes.md; rc=$?; [ $rc -eq 0 ] || exit 1
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** templates reflect the real corpus shapes, the three contract flexes are confirmed (or any
 needed adjustments are applied and re-tested), and the born-conformance + parity invariants are
 unbroken. Discovery is bounded — ingestion is not done.
@@ -628,6 +646,7 @@ unbroken. Discovery is bounded — ingestion is not done.
 > green: `apps/sox` (extension #0) is fully wired and self-validated.
 >
 > Context you need cold — the real extension corpus (from `docs/plans/nx-self-hosting-migration.md` §5):
+>
 > | type | real example source |
 > |---|---|
 > | hook | `~/dev/ai/claude-agents/tools/hooks/{swarm-cost,agent-tool-logger.sh,budget-gate.sh}` |
@@ -673,7 +692,7 @@ unbroken. Discovery is bounded — ingestion is not done.
 
 **Phase ID:** P7
 **Phase goal:** the four memory extensions (`memory-server`, `memory-organizer`, `memory-flush`,
-`memory-cli`) and the `sox-memory-bundle` are generated via `@sox/nx:extension` in the new nx layout.
+`memory-cli`) and the `sox-memory-bundle` are generated via `@adhd/sox-nx:extension` in the new nx layout.
 Shared internal code is extracted into `libs/memory-core` (satisfying C7). All cross-extension
 `../../../dist` reach-in imports are re-pointed to `libs/memory-core` — and the module-boundary lint
 confirms they are now forbidden. The memory MCP end-to-end still works (C5: `memory_write` +
@@ -688,6 +707,7 @@ replaced with `libs/memory-core` imports; module-boundary lint clean; `nx run me
 **Verification:** acceptance check exits 0.
 
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 # P6 guard: born-conformance and parity pass:
@@ -721,6 +741,7 @@ node -e "
 rm -rf "$TMP"
 exit 0
 ```
+
 **Green =** the memory extensions are re-homed in the nx layout; all shared code lives in
 `libs/memory-core` (C7 satisfied); the cross-extension reach-in is eliminated and would be caught by
 module-boundary lint; memory write+recall works end-to-end (C5 still holds).
@@ -733,6 +754,7 @@ module-boundary lint; memory write+recall works end-to-end (C5 still holds).
 > green: generators are refined against the real corpus.
 >
 > Context you need cold (from `docs/decisions/0001-nx-and-self-hosting.md`):
+>
 > - **C7 fix**: today `memory-server` has shared db/schema/embed/recall/write code that other memory
 >   extensions reach into via `../../../dist` relative paths. The fix is `libs/memory-core` — an
 >   **internal library** (not published) that the 4 memory extensions depend on. Cross-extension
@@ -741,18 +763,18 @@ module-boundary lint; memory write+recall works end-to-end (C5 still holds).
 >   `extensions/mcp-servers/memory-server/`, `extensions/agents/memory-organizer/`,
 >   `extensions/hooks/memory-flush/`, `extensions/commands/memory-cli/` — they get `project.json` and
 >   `type:extension` tags added.
-> - **Approach:** generate shells first via `pnpm exec nx g @sox/nx:extension <type> <id>` (add tags),
+> - **Approach:** generate shells first via `pnpm exec nx g @adhd/sox-nx:extension <type> <id>` (add tags),
 >   then port the logic from the current extension sources, then re-point deps to `memory-core`. Verify
 >   last.
 > - **C5 must hold:** `memory_write` + `memory_recall` must continue to work end-to-end. The
 >   `libs/memory-core` extraction must not break the recall logic.
 >
-> Your task: (1) Generate `libs/memory-core`: `pnpm exec nx g @sox/nx:library memory-core
+> Your task: (1) Generate `libs/memory-core`: `pnpm exec nx g @adhd/sox-nx:library memory-core
 > --directory=libs/memory-core`. Port into it: SQLite schema + migrations, embed helpers, recall logic
 > (hybrid vec+BM25+graph depth-1), write logic (SHA-256 dedup, FTS index). Tag it `type:lib`. (2) Add
 > `project.json` and `type:extension` tags to each of the 4 existing memory extensions and the bundle.
 > Configure their nx `build` targets to use `@nx/js:tsc`. (3) In each extension, replace every
-> `../../../dist` import with an import from `@sox/memory-core` (or the monorepo path alias for
+> `../../../dist` import with an import from `@adhd/sox-memory-core` (or the monorepo path alias for
 > `libs/memory-core`). (4) Re-run `pnpm exec nx run-many -t lint` — every boundary violation must be
 > zero. If lint catches a violation, fix the import, do NOT disable the rule. (5) Run memory-server's
 > tests (and any other memory extension tests) and confirm green.
@@ -794,6 +816,7 @@ clean (no boundary violations).
 **Verification:** acceptance check exits 0.
 
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 # P7 guard: memory-core and memory extensions build clean:
@@ -809,6 +832,7 @@ pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 pnpm exec nx run manifest:test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** the complete nx graph is wired: every extension is an nx project, builds clean, and passes
 module-boundary lint. The old `scripts/validate-manifests.ts` is a thin wrapper (backward-compatible)
 and its 44 tests still pass.
@@ -868,7 +892,8 @@ present for all 6 active types. The scaffolder tests from `scripts/` are retired
 born-conformance gate).
 **Inputs:** P8 (green full-graph build); `.github/workflows/` (existing CI); `scripts/*.test.ts`
 (existing test suite — move, don't re-implement); `docs/plans/nx-self-hosting-migration.md` §6 P9 (CI
-+ reality-gates).
+
+- reality-gates).
 **Outputs:** updated `.github/workflows/ci.yml` running `nx affected -t build,lint,test,validate`; a
 `commitlint` pre-commit hook (husky or simple-git-hooks); `nx release` dry-run works in CI; per-type
 docs in `docs/guidelines/<type>.md` for agent, skill, mcp-server, hook, command, bundle; scaffolder
@@ -877,6 +902,7 @@ previously-green test removed.
 **Verification:** acceptance check exits 0.
 
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 # P8 guard: full nx graph builds and lints clean:
@@ -895,6 +921,7 @@ node -e "const fs=require('fs');const y=fs.readFileSync('.github/workflows/ci.ym
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** CI is incremental (affected only); `nx release` is wired; commitlint enforces conventional
 commits; all tests (including reality-gates) survive the re-homing; per-type docs exist for all 6 types.
 
@@ -907,6 +934,7 @@ commits; all tests (including reality-gates) survive the re-homing; per-type doc
 >
 > Context you need cold (from `docs/decisions/0001-nx-and-self-hosting.md` D3 and `docs/plans/
 > nx-self-hosting-migration.md` §6 P9):
+>
 > - **D3 — `nx release` replaces Changesets.** Conventional commits + commitlint enforce the commit
 >   format. Nx release does graph-aware bumps (change `memory-core` → all 4 memory extensions bump
 >   automatically). The `.changeset/` directory is deprecated.
@@ -919,17 +947,17 @@ commits; all tests (including reality-gates) survive the re-homing; per-type doc
 >   the gap that left `prompt`'s use case undiscoverable.
 >
 > Your task: (1) Update `.github/workflows/ci.yml` (or create it if absent) to run
->   `pnpm exec nx affected -t build,lint,test,validate --base=origin/main` as the primary CI step.
->   Remove any `pnpm -r build` or `pnpm test --all` steps that are not nx-affected-aware. (2) Wire
->   `nx release` in `nx.json` with conventional-commits version strategy, a changelog renderer, and
->   the memory extensions as a release group (so `memory-core` changes propagate). (3) Add commitlint +
->   husky (or `simple-git-hooks`): conventional-commits preset; `commit-msg` hook runs commitlint.
->   (4) Delete `scripts/scaffolder.test.ts` (the born-conformance gate in `packages/sox-nx` replaces
->   it). Ensure every OTHER test from `scripts/*.test.ts` is either already in its lib's test file
->   (from P4) or added now. (5) Re-home the process-table reality-gate tests as nx `test` targets on
->   the appropriate lib (`host-runtime` or `install-engine`). (6) Write
->   `docs/guidelines/{agent,skill,mcp-server,hook,command,bundle}.md` — each: purpose, when-to-use,
->   generator inputs, install-target (for declarative types), example invocation.
+> `pnpm exec nx affected -t build,lint,test,validate --base=origin/main` as the primary CI step.
+> Remove any `pnpm -r build` or `pnpm test --all` steps that are not nx-affected-aware. (2) Wire
+> `nx release` in `nx.json` with conventional-commits version strategy, a changelog renderer, and
+> the memory extensions as a release group (so `memory-core` changes propagate). (3) Add commitlint +
+> husky (or `simple-git-hooks`): conventional-commits preset; `commit-msg` hook runs commitlint.
+> (4) Delete `scripts/scaffolder.test.ts` (the born-conformance gate in `packages/sox-nx` replaces
+> it). Ensure every OTHER test from `scripts/*.test.ts` is either already in its lib's test file
+> (from P4) or added now. (5) Re-home the process-table reality-gate tests as nx `test` targets on
+> the appropriate lib (`host-runtime` or `install-engine`). (6) Write
+> `docs/guidelines/{agent,skill,mcp-server,hook,command,bundle}.md` — each: purpose, when-to-use,
+> generator inputs, install-target (for declarative types), example invocation.
 >
 > Skills/tools you need: GitHub Actions YAML, Nx release configuration, commitlint, husky/simple-git-hooks,
 > TypeScript, vitest.
@@ -963,6 +991,7 @@ before the phase is marked complete.
 **Verification:** acceptance check exits 0 — this is the final phase; it transitions `state: complete`.
 
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 # ---- B3: incremental build (only changed packages rebuild) ----
@@ -1031,6 +1060,7 @@ echo "Full suite: no regressions"
 echo "D5 ACCEPTANCE: A1 A12 B1 B2 B3 B4 C7 all pass; suite green"
 exit 0
 ```
+
 **Green =** the full D5 scope is verified from a real execution path: all 6 types born-conformant,
 lifecycle runs to zero orphans (OS-verified), both flag forms parse correctly, `libs/memory-core`
 eliminates the reach-in, adding a new extension doesn't red-bar validate, and incremental build works.

@@ -1,5 +1,5 @@
 {
-  "name": "@sox/manifest",
+  "name": "@adhd/sox-manifest",
   "version": "0.1.0",
   "description": "Extension manifest schema and validate() — single source of truth",
   "private": true,

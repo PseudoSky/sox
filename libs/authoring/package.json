@@ -1,5 +1,5 @@
 {
-  "name": "@sox/authoring",
+  "name": "@adhd/sox-authoring",
   "version": "0.1.0",
   "description": "Pure scaffold core — scaffold(opts) → FileSet (no @nx/devkit dependency)",
   "private": true,

@@ -1,5 +1,5 @@
 {
-  "name": "@sox/registry",
+  "name": "@adhd/sox-registry",
   "version": "0.1.0",
   "description": "Sox registry — drift gate, index, checksum",
   "private": true,

@@ -15,19 +15,19 @@
  *   - Fallback poll every 1000ms if no socket nudge.
  *
  * Loop (deterministic batch enrichment, ≤50 items/cycle):
- *   drain organizer_queue → runBatchEnrich(@sox/memory-enrich) → idle
+ *   drain organizer_queue → runBatchEnrich(@adhd/sox-memory-enrich) → idle
  *
  * Enrichment is fully deterministic — no LLM, no provider calls.
  */
 
-import * as net from 'node:net';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
+import { runBatchEnrich } from '@adhd/sox-memory-enrich';
 import Database from 'better-sqlite3';
+import * as fs from 'node:fs';
+import * as net from 'node:net';
+import * as path from 'node:path';
 import * as sqliteVec from 'sqlite-vec';
-import { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
 import { reembedNodes } from './embed.js';
-import { runBatchEnrich } from '@sox/memory-enrich';
+import { DDL, FTS_TRIGGERS, PRAGMAS } from './schema.js';
 
 export const SOCKET_PATH = path.join(process.env['HOME'] ?? '/tmp', '.memory', 'memoryd.sock');
 const POLL_INTERVAL_MS = 1000;
@@ -293,7 +293,7 @@ export class MemoryDaemon {
   /**
    * Run deterministic batch enrichment over the full live corpus.
    * Called whenever enrich/ingest queue items are drained.
-   * Delegates to @sox/memory-enrich runBatchEnrich — no LLM, no provider calls.
+   * Delegates to @adhd/sox-memory-enrich runBatchEnrich — no LLM, no provider calls.
    *
    * Returns true on success, false on failure. The caller MUST only mark the
    * corresponding queue rows as done when this returns true — on failure, rows

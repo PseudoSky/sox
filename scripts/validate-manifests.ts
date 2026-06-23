@@ -43,11 +43,11 @@
  *   Wrong-type / missing-required fields always emit severity:'error' in both modes.
  */
 
+import { Ajv } from 'ajv';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Ajv } from 'ajv';
 // [ref:manifest-single-source] — delegate structural validation to libs/manifest
-import { validate as libsValidate } from '@sox/manifest';
+import { validate as libsValidate } from '@adhd/sox-manifest';
 
 /** G-A: lifecycle block sub-types */
 interface LifecycleHealth {
@@ -1345,8 +1345,8 @@ if (_isValidateMainScript) {
     const extCount = isSingleDir ? 1 : findExtensionDirs(root).length;
     console.log(
       `validate-manifests: OK (${extCount} extension(s) validated` +
-        (warnings.length > 0 ? `, ${warnings.length} warning(s)` : '') +
-        `)`,
+      (warnings.length > 0 ? `, ${warnings.length} warning(s)` : '') +
+      `)`,
     );
     process.exit(0);
   }

@@ -1,5 +1,5 @@
 /**
- * @sox/tokenguard-core — Mapper
+ * @adhd/sox-tokenguard-core — Mapper
  *
  * Bijective real<->token store, per-type counters, origin-tagged entries.
  * Thread-safe (JS is single-threaded, but all mutations are synchronous and atomic).

@@ -22,10 +22,10 @@
  * emitting the warn on a version conflict, tests 1 and 4 will fail.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { install } from './install.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ function makeExtension(
   };
 
   fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
-  fs.writeFileSync(path.join(extDir, 'package.json'), JSON.stringify({ name: `@sox/${id}`, version }, null, 2));
+  fs.writeFileSync(path.join(extDir, 'package.json'), JSON.stringify({ name: `@adhd/sox-${id}`, version }, null, 2));
   fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
   fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), `// ${id} stub\nexport const id = '${id}';\n`);
   return extDir;
@@ -93,7 +93,7 @@ function makeBundle(
   };
 
   fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
-  fs.writeFileSync(path.join(extDir, 'package.json'), JSON.stringify({ name: `@sox/${id}`, version: '1.0.0' }, null, 2));
+  fs.writeFileSync(path.join(extDir, 'package.json'), JSON.stringify({ name: `@adhd/sox-${id}`, version: '1.0.0' }, null, 2));
   fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
   fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), `// ${id} bundle stub\n`);
 }

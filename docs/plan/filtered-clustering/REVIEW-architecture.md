@@ -124,7 +124,7 @@ the engine a raw `{sql, params}` over alias `n` (`index.ts:1949`, consumed at `c
 Weighing the three axes the brief names:
 
 - **DRY-with-recall (the pro):** real but shallow. The *vocabulary* is shared (`buildFiltersClause`
-  is reused), but the **predicate builder lives on the server, not in `@sox/memory-enrich`.** So the
+  is reused), but the **predicate builder lives on the server, not in `@adhd/sox-memory-enrich`.** So the
   engine's public contract (`clusterSubset`) is *not* reusable on its own — any other caller of the
   library must reimplement `buildFiltersClause` or reach into the server to get it. That is the
   opposite of "broadly useful": the library's most interesting new capability is **un-callable
@@ -139,7 +139,7 @@ Weighing the three axes the brief names:
   engine's internal table alias.
 - **Generic utility (the deciding axis):** a **structured** filter is *more* generic, not less. The
   brief's framing is exactly right. Move `buildFiltersClause` (or its structured input shape) **into
-  `@sox/memory-enrich`** so the engine accepts:
+  `@adhd/sox-memory-enrich`** so the engine accepts:
 
   ```ts
   clusterSubset(db, { filter: MemoryFilter, threshold?, persist? })
@@ -295,7 +295,7 @@ be amended before this is "done."**
   scoped, the contract's CI-gate guarantee is silently violated. Either way the contract should say
   which.
 
-- **`@sox/memory-enrich` library surface (MEMAPI engine side).** New exports `clusterSubset`,
+- **`@adhd/sox-memory-enrich` library surface (MEMAPI engine side).** New exports `clusterSubset`,
   `materializeClusters`, `ClusterSubsetOptions/Result`, `MaterializeOptions` (`index.ts:47-55`).
   These are new public API and should be recorded wherever the engine's exported surface is
   contracted. If §3 is taken (engine accepts structured filter), the `restrict` shape disappears from
@@ -308,7 +308,7 @@ be amended before this is "done."**
 | # | Recommendation | Severity | Effort | When |
 |---|---|---|---|---|
 | 1 | **Scope the read paths.** Default `communityUidForRowid`, `memory_get_community`, `memory_stats.with_community`, and `clusterStats` to `cluster_scope.kind='global'`; add optional lens selection. Without this, persisting a subset corrupts global recall + stats (§2, §5.1, §5.2). | **High / blocking for the `persist` path** | M | before exposing `dry_run:false` |
-| 2 | **Move the filter builder into `@sox/memory-enrich`; engine takes the structured filter, not raw `{sql,params}`.** Makes the library self-contained, removes cross-boundary SQL, strengthens DRY-with-recall (§3). | **High** | M | before merge (only caller is in-repo now) |
+| 2 | **Move the filter builder into `@adhd/sox-memory-enrich`; engine takes the structured filter, not raw `{sql,params}`.** Makes the library self-contained, removes cross-boundary SQL, strengthens DRY-with-recall (§3). | **High** | M | before merge (only caller is in-repo now) |
 | 3 | **Amend CONTRACTS C2.11 / C2.6 / C2.2 / C2.12** for the new `recluster` modes, output shape, and the global-vs-subset community semantics (§6). | **High** | S | before "done" |
 | 4 | **Add subset-lens lifecycle:** a `memory_curate` op to drop a lens by provenance hash + scope-aware GC for slices whose subset membership went stale — OR document persisted lenses as ephemeral with a manual cleanup path and accumulation caveat (§5.3). | **Medium** | M | this phase if `dry_run:false` ships; else backlog with explicit caveat |
 | 5 | **Make the `recluster` dispatch explicit** via `mode:'global'\|'subset'` instead of inferring from `filters` presence; rely on the already-emitted `scope` discriminator in responses (§4). | **Low / clarity** | S | optional, fold into #3 |

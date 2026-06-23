@@ -1,5 +1,5 @@
 /**
- * @sox/tokenguard-core — SSE delta reassembly + detokenization
+ * @adhd/sox-tokenguard-core — SSE delta reassembly + detokenization
  *
  * A token like <HOST_1> can be split across consecutive content_block_delta events
  * (e.g. text or tool-input streamed in fragments), so flat replacement on the raw
@@ -12,9 +12,9 @@
  * breaks the signature → API 400). Tokens in thinking are harmless.
  */
 
-import { detokenizeText } from './tokenize.js';
-import type { Mapper } from './mapper.js';
 import type { HitMap } from './detectors.js';
+import type { Mapper } from './mapper.js';
+import { detokenizeText } from './tokenize.js';
 
 /**
  * Delta types we reassemble + detokenize.

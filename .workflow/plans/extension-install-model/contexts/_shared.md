@@ -32,7 +32,7 @@ Terms used across contexts. Reference as **[def:term]** from any context file.
   sse). `--profile` selects it at install. Distinct from a **type**, which is the *build-layer*
   preset. Spec §3.3, §8.
 - **[def:serves]** — The transports an mcp extension implements (`stdio`, `sse`, `http`); derived
-  from building on `@sox/mcp-runtime`. `profiles ⊆ serves` is a validate-time invariant. Spec §8.
+  from building on `@adhd/sox-mcp-runtime`. `profiles ⊆ serves` is a validate-time invariant. Spec §8.
 - **[def:host-registry]** — Pluggable per-host module `{ host, detect(), scopePaths(scope),
   surfaces{} }` in `libs/host-registry/`. Holds the verified location matrix, the scope→path
   resolver, and the install-time host detector. Ships two modules: `claude.ts`, `codex.ts`. Spec
@@ -52,7 +52,7 @@ Terms used across contexts. Reference as **[def:term]** from any context file.
 - **[def:policy-env]** — The C6 contract: declared permissions are serialized to the spawned
   process environment via `toEnv` (in `libs/host-runtime/src/policy.ts`) and re-read by the server
   via `compilePolicyFromEnv`, enforced at the resource sink before the OS resource. Reused
-  unchanged by `@sox/mcp-runtime`. Spec §8, ADR decision #6. See **[inv:c6-holds]**,
+  unchanged by `@adhd/sox-mcp-runtime`. Spec §8, ADR decision #6. See **[inv:c6-holds]**,
   **[ref:policy-env-enforce]**.
 - **[def:managed-tier]** — The Claude **managed** settings tier (org/enterprise policy). sox
   **never** writes it. Spec §4 scope mapping. See **[inv:never-managed]**.
@@ -61,7 +61,7 @@ Terms used across contexts. Reference as **[def:term]** from any context file.
   `trust_level = "trusted"`. The registry encodes these per host. Spec §4b. See
   **[inv:never-managed]**.
 - **[def:born-conformant]** — Generator output validates clean immediately and is **byte-identical**
-  between `sox init` and the `@sox/nx` generator; `libs/authoring` is the single scaffolder (no
+  between `sox init` and the `@adhd/sox-nx` generator; `libs/authoring` is the single scaffolder (no
   hand-rolled layout). The existing DoD A1/B1 gate. See **[ref:born-conformant-scaffold]**.
 
 ---
@@ -93,7 +93,7 @@ are the README "Design invariants"; the canonical definitions live here.
   Codex **[def:project-forbidden-keys]** at project scope. **Check:** `validate` refuses a
   descriptor targeting a managed/forbidden key; the engine has no code path that writes them. Spec
   §4, §4b.
-- **[inv:c6-holds]** — `@sox/mcp-runtime` enforces declared permissions from **[def:policy-env]** in
+- **[inv:c6-holds]** — `@adhd/sox-mcp-runtime` enforces declared permissions from **[def:policy-env]** in
   **every** spawn path (claude-stdio + sox-service); no unenforced path is introduced. **Check:**
   the C6 negative reality test (an undeclared access is denied) passes for both transports. See
   **[ref:policy-env-enforce]**. Spec §8.
@@ -188,9 +188,9 @@ point at **[shape:name]** rather than repeating the signature.
   AND toml); no ad-hoc `JSON.parse` / `writeFileSync` or toml write of a host config elsewhere.
   Verified by `[audit-final.ref-config-merge-format]`.
 - **[ref:policy-env-enforce]** — Every mcp spawn path injects policy-env (`toEnv`) and every
-  `@sox/mcp-runtime` server self-enforces via `compilePolicyFromEnv` at the resource sink before the
+  `@adhd/sox-mcp-runtime` server self-enforces via `compilePolicyFromEnv` at the resource sink before the
   OS resource — no unenforced spawn path (claude-stdio or sox-service). Verified by
   `[audit-final.ref-policy-env-enforce]`.
 - **[ref:born-conformant-scaffold]** — Generator output validates clean and is byte-identical
-  between `sox init` and the `@sox/nx` generator; the `libs/authoring` core is the single
+  between `sox init` and the `@adhd/sox-nx` generator; the `libs/authoring` core is the single
   scaffolder (no hand-rolled layout). Verified by `[audit-final.ref-born-conformant-scaffold]`.

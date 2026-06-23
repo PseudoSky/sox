@@ -212,7 +212,7 @@ cluster label from E6 once it's been computed (populated on batch pass). If neit
 leave null. The regex `^\s*\[([^\]\n]{1,64})\]` is already used in `export.ts:93` —
 replicate at write time so `node.topic` is populated on insert when the prefix is present.
 
-### E6 — Embedding clustering: decided above (D1).
+### E6 — Embedding clustering: decided above (D1)
 
 ### E7 — Importance scoring: **deterministic, but requires redesign**
 
@@ -243,7 +243,7 @@ is incremented on recall). Initial importance is `length_score + tag_score`, upd
 on batch pass and on each recall access.
 
 **This is deterministic** for a fixed DB state. The formula constants are configurable
-via a `@sox/memory-enrich` config object (not env vars, to keep testability clean).
+via a `@adhd/sox-memory-enrich` config object (not env vars, to keep testability clean).
 
 **Risk**: link degree is sparse on a new store. Early episodes will have low
 `link_score`. This is acceptable: importance rises organically as knowledge grows.
@@ -281,8 +281,8 @@ of all episodes (global stoplist computed on batch pass).
 
 ### E10 — Extractive summary: **deterministic, quality-limited**
 
-Lead-N strategy: take the first 2 sentences of `content` (sentence boundary: `. `,
-`? `, `! ` followed by a capital letter, or a newline). If content < 100 chars, use
+Lead-N strategy: take the first 2 sentences of `content` (sentence boundary: `.`,
+`?`, `!` followed by a capital letter, or a newline). If content < 100 chars, use
 it as-is. This is deterministic and fast.
 
 TextRank (graph-based extractive summarization): produces better summaries but requires
@@ -386,9 +386,9 @@ per-tag queries become hot.
 
 ## D4. Architecture and removal
 
-### D4.1 Package boundary: `@sox/memory-enrich`
+### D4.1 Package boundary: `@adhd/sox-memory-enrich`
 
-**DECIDED: extract to a new `libs/memory-enrich/` library** (`@sox/memory-enrich`).
+**DECIDED: extract to a new `libs/memory-enrich/` library** (`@adhd/sox-memory-enrich`).
 
 Contents:
 
@@ -411,14 +411,14 @@ libs/memory-enrich/src/
   (MCP tool write), `memory-cli` (manual trigger), and future tooling.
 - Enforces the `@nx/enforce-module-boundaries` rule already in place (`CLAUDE.md` C7):
   `memory-server` cannot reach into `memory-core/src` directly; it must go through
-  the `@sox/memory-enrich` public API.
+  the `@adhd/sox-memory-enrich` public API.
 - Keeps `memory-core` focused on storage primitives (schema, write, recall, embed,
   export); enrichment logic is a higher-level concern.
 - Makes unit-testing enrichment algorithms trivial (no DB required for most tests).
 
 **memory-core dependency on memory-enrich:**
 
-`write.ts` will call `@sox/memory-enrich`'s `enrichOnWrite(params, db, rowid)` which
+`write.ts` will call `@adhd/sox-memory-enrich`'s `enrichOnWrite(params, db, rowid)` which
 is a synchronous or fast-async call covering E1–E5, E8, E10, E12 (write-time
 enrichments). `memoryd.ts`'s batch loop will call `runBatchEnrich(db)` which covers E6
 (clustering), E7 (link/access score update), E9 (auto-links), E11 (decay).
@@ -451,7 +451,7 @@ the deterministic Tier 2 batch.
 The daemon (`memory-daemon` service extension) remains. Its role shifts:
 
 - **Before:** drain `organizer_queue` → call `memory-organizer` LLM → apply results.
-- **After:** drain `organizer_queue` → call `@sox/memory-enrich`'s `runBatchEnrich(db)`
+- **After:** drain `organizer_queue` → call `@adhd/sox-memory-enrich`'s `runBatchEnrich(db)`
   → apply results (all deterministic, no provider calls).
 
 The daemon's socket + lifecycle infrastructure is unchanged. The `organizerFn` callback
@@ -460,6 +460,7 @@ batch enricher. The `memory-daemon` `extension.json` description is updated to r
 references to LLM/organizer.
 
 **Why not remove the daemon too:** the daemon provides:
+
 1. A singleton write-serializer (prevents concurrent writes from different callers).
 2. A durable queue for batch clustering (which can be expensive and should not block
    the write path).
@@ -475,7 +476,7 @@ When the deterministic pipeline is implemented and verified, remove in order:
 1. `extensions/bundles/sox-memory-bundle/members/memory-organizer/` — entire directory.
 2. `sox-memory-bundle/extension.json` `members[]` — remove `{ "id": "memory-organizer", ... }`.
 3. `memoryd.ts` — replace `organizerFn` callback type + `processIngestBatch` LLM call
-   with `@sox/memory-enrich` batch call. Remove `OrganizerFn` type, `OrganizerItem`,
+   with `@adhd/sox-memory-enrich` batch call. Remove `OrganizerFn` type, `OrganizerItem`,
    `OrganizerResult` exports (if not reused elsewhere).
 4. `memory-daemon/extension.json` — remove `requires`/config references to
    `provider_url`/`provider_key`/`MEMORY_PROVIDER_HOST`.
@@ -488,6 +489,7 @@ When the deterministic pipeline is implemented and verified, remove in order:
    changelogs/audit docs).
 
 **Acceptance criteria:**
+
 - `grep -ri "memory-organizer" extensions/ libs/ apps/ bin/` returns zero results
   (excluding historical docs and changelogs).
 - `grep -i "MEMORY_PROVIDER" extensions/ libs/ apps/` returns zero results in active code.
@@ -507,6 +509,7 @@ particularly tag-like or command-output episodes — the embedding space is spar
 and cosine similarities are unreliable.
 
 **Mitigation:**
+
 - Do not cluster episodes with `content.length < 50` chars. Leave them as singletons.
 - Weight the extractive summary (E10) into the clustering text when available: cluster
   on `content + ' ' + summary` rather than `content` alone to improve embedding quality
@@ -522,6 +525,7 @@ and cosine similarities are unreliable.
 A single user who has written 2 episodes will see no community structure.
 
 **Mitigation:**
+
 - Suppress cluster-label assignment when a cluster has only 1 member (D1.6).
 - Use `node.topic` from the `[<topic>]` prefix as the display topic regardless of
   cluster assignment. The consumer interface (CONSUMER-INTERFACES.md) must handle
@@ -540,7 +544,7 @@ cosine distances become meaningless.
 (`memoryd.ts:498`).
 
 **Gap:** there is no enforcement that prevents the clustering pass from running on a
-mixed-model `vec_node` table (e.g. after a partial reindex that stalled). 
+mixed-model `vec_node` table (e.g. after a partial reindex that stalled).
 
 **Recommended fix:** add a guard in `runBatchEnrich` that checks all `vec_node` rows
 have been indexed under the current `embed_model` before running the cluster pass.
@@ -554,6 +558,7 @@ nearest member, the cluster label changes. This would break external references 
 a topic by name (e.g. bookmarks, mirror export paths).
 
 **Mitigation:**
+
 - Topic labels in the export use slugified names (`export.ts:60–68`). A label change
   triggers a slug change, which causes the old topic directory to be pruned and a new
   one created. This is intentional (topics should reflect current understanding).
@@ -580,6 +585,7 @@ by 0.05 and retry (up to 3 retries, then log and bail).
 edges if a few entities appear in many episodes.
 
 **Mitigation:** entity stoplist + per-entity degree cap:
+
 - Compute the global entity frequency distribution on the batch pass.
 - Entities appearing in > 30% of all episodes are added to a per-DB stoplist
   (stored in `memory_scope.meta` as JSON, or in a new `enrich_config` key).
@@ -604,7 +610,7 @@ the API design phase (`CONTRACTS.md`).
    `memory_list_entities` — are these new MCP tools or sub-commands of an existing tool?
    What are the pagination and ordering contracts?
 
-4. **`@sox/memory-enrich` public TypeScript API**: the concrete function signatures,
+4. **`@adhd/sox-memory-enrich` public TypeScript API**: the concrete function signatures,
    parameter shapes, and return types for `enrichOnWrite()`, `runBatchEnrich()`, and
    `ClusterResult`. These are design-constrained by this document but not specified here.
 

@@ -66,4 +66,4 @@ mutates:    ["extensions/services/tokenguard/README.md",
 ## Notes for executor
 
 - If the negative grep is non-empty, do **not** suppress it — trace each hit to its source state and fix it there (an engine/service amendment), then re-run. A coupling hit is a real leak of WOP specifics into a tool meant to be generic.
-- The provider hostname belongs in config or an adapter default, never in `@sox/tokenguard-core`.
+- The provider hostname belongs in config or an adapter default, never in `@adhd/sox-tokenguard-core`.

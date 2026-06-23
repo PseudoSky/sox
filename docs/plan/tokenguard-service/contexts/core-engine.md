@@ -9,7 +9,7 @@
 
 ## Goal
 
-After this state, `@sox/tokenguard-core` exists as a **pure, IO-light TypeScript port** of `scripts/tokenguard/core.py`: the bijective, origin-tagged `Mapper`, the ordered detector pipeline, two-pass request tokenization, leak scoping, longest-first detokenization, and SSE delta reassembly. The WOP-specific `engagement_variants` logic is **generalized** into a neutral identifier-group helper with no red-team vocabulary. This is the single source of truth the proxy and any test share — runs fully parallel to the framework track (disjoint files).
+After this state, `@adhd/sox-tokenguard-core` exists as a **pure, IO-light TypeScript port** of `scripts/tokenguard/core.py`: the bijective, origin-tagged `Mapper`, the ordered detector pipeline, two-pass request tokenization, leak scoping, longest-first detokenization, and SSE delta reassembly. The WOP-specific `engagement_variants` logic is **generalized** into a neutral identifier-group helper with no red-team vocabulary. This is the single source of truth the proxy and any test share — runs fully parallel to the framework track (disjoint files).
 
 ---
 
@@ -18,7 +18,7 @@ After this state, `@sox/tokenguard-core` exists as a **pure, IO-light TypeScript
 - **Primitive:** CREATE `libs/tokenguard-core/src/*` — port the engine.
 - **Reference Pattern:** `scripts/tokenguard/core.py` (the whole file) — `Mapper`, `tokenize_str/walk_tokenize/tokenize_request`, `wire_leaks`, `detokenize_text/detokenize_sse`, the detector functions + regexes, `REQUEST_TOKENIZE_KEYS`, `_SKIP_VALUE_KEYS`, `_DELTA_FIELD`, `NEVER`, `BOUNDED_TYPES`. The `memory-core` lib (`libs/memory-core/`) for the nx-lib shape (project.json/package.json/tsconfig) and **[ref:c7-no-reach-in]**.
 - **Delta Spec:**
-  - nx library `libs/tokenguard-core` (project name `tokenguard-core`, package `@sox/tokenguard-core`), build target `tsc`, mirroring `memory-core`'s project.json/package.json/tsconfig.
+  - nx library `libs/tokenguard-core` (project name `tokenguard-core`, package `@adhd/sox-tokenguard-core`), build target `tsc`, mirroring `memory-core`'s project.json/package.json/tsconfig.
   - `src/types.ts` — `[shape:token-map]` (`MapEntry`, `TokenMap`), `IdType`, `Source`.
   - `src/mapper.ts` — `Mapper`: `getOrCreate(real,type,source)`, `registerExplicit`, `seed`, `tokenOf/realOf/typeFor`, `realsLongestFirst/tokensLongestFirst`, load/persist of `[shape:token-map]`. Bijective + idempotent + reload-stable per-type counters.
   - `src/detectors.ts` — `detectKnown/Email/Fqdn/Ipv4/Ipv6/Mac/Phone`, the regexes, `NEVER`, `BOUNDED_TYPES`, optional-detector toggles (phone/ipv6) read from config (not env-coupled in the lib).
@@ -61,7 +61,7 @@ mutates:    ["libs/tokenguard-core/project.json",
 
 ## Contract Promise
 
-- **Added:** the `@sox/tokenguard-core` library and its modules.
+- **Added:** the `@adhd/sox-tokenguard-core` library and its modules.
 - **Modified:** none (new project).
 - **Deleted:** none — the Python source stays in place until the service replaces its callers (out of scope for this plan; the Python tool is untouched).
 
@@ -69,7 +69,7 @@ mutates:    ["libs/tokenguard-core/project.json",
 
 ## Commit points
 
-- [ ] **After the lib compiles** — `feat(tokenguard-service): core-engine — port tokenguard engine to @sox/tokenguard-core`
+- [ ] **After the lib compiles** — `feat(tokenguard-service): core-engine — port tokenguard engine to @adhd/sox-tokenguard-core`
 - [ ] **After the guard passes** (mandatory) — `feat(tokenguard-service): core-engine complete — build green`
 
 ---

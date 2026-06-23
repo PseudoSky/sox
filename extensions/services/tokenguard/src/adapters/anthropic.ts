@@ -4,12 +4,12 @@
  * [shape:provider-adapter] — implements the ProviderAdapter interface.
  * [inv:wire-guarantee] — tokenizes ONLY system/messages/metadata; tools verbatim.
  * Thinking blocks are signed — never tokenized (modifying them breaks the signature).
- * Uses detokenizeSse from @sox/tokenguard-core for split-token SSE reassembly.
+ * Uses detokenizeSse from @adhd/sox-tokenguard-core for split-token SSE reassembly.
  *
- * [ref:c7-no-reach-in] — imports via @sox/tokenguard-core scope only.
+ * [ref:c7-no-reach-in] — imports via @adhd/sox-tokenguard-core scope only.
  */
 
-import { detokenizeSse } from '@sox/tokenguard-core';
+import { detokenizeSse } from '@adhd/sox-tokenguard-core';
 import type { ProviderAdapter } from './generic.js';
 
 export { type ProviderAdapter };

@@ -1,5 +1,5 @@
 ---
-"@sox/extension-hello-world": minor
+"@adhd/sox-extension-hello-world": minor
 ---
 
 Add hook-ordering infrastructure (Gap 2) and CI workflow scaffolding (P5).

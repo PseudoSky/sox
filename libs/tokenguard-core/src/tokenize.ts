@@ -1,5 +1,5 @@
 /**
- * @sox/tokenguard-core — tokenize / detokenize
+ * @adhd/sox-tokenguard-core — tokenize / detokenize
  *
  * Exports:
  *   identifierGroupVariants  — neutral replacement for the Python identifier variant helper
@@ -10,9 +10,9 @@
  *   detokenizeText           — token → real over a flat string (longest-first)
  */
 
-import type { Mapper } from './mapper.js';
 import type { DetectorConfig, HitMap } from './detectors.js';
-import { tokenizeStr, BOUNDED_TYPES, NEVER } from './detectors.js';
+import { BOUNDED_TYPES, NEVER, tokenizeStr } from './detectors.js';
+import type { Mapper } from './mapper.js';
 
 // ── Stoplist for identifierGroupVariants ──────────────────────────────────
 const LABEL_STOPLIST = new Set([
@@ -245,5 +245,6 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 // Re-export for convenience
-export { tokenizeStr, BOUNDED_TYPES, NEVER } from './detectors.js';
+export { BOUNDED_TYPES, NEVER, tokenizeStr } from './detectors.js';
 export type { DetectorConfig, HitMap } from './detectors.js';
+

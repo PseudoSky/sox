@@ -7,10 +7,10 @@
  * transient errors (REVIEW-code.md MED-2).
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openDb } from './db.js';
 
 // We need to test the private drainBatch behavior of MemoryDaemon.
@@ -25,8 +25,8 @@ import { openDb } from './db.js';
 // contract by importing the class, instantiating it with a DB that has the schema,
 // and then injecting a failure via vi.spyOn on the runBatchEnrich import.
 
+import * as batchModule from '@adhd/sox-memory-enrich';
 import { MemoryDaemon, enqueueIngest } from './memoryd.js';
-import * as batchModule from '@sox/memory-enrich';
 
 let tmpDir: string;
 let dbPath: string;

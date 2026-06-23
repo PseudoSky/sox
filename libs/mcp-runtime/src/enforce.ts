@@ -12,15 +12,15 @@
  * present in the environment. Absent → every allows*() returns true (legacy compat).
  */
 
-import { compilePolicyFromEnv } from '@sox/host-runtime';
-import type { Policy } from '@sox/host-runtime';
+import type { Policy } from '@adhd/sox-host-runtime';
+import { compilePolicyFromEnv } from '@adhd/sox-host-runtime';
 
 export type { Policy };
 
 /**
  * Derive the current enforcement policy from the process environment.
  *
- * This is the single enforcement point for @sox/mcp-runtime — called before
+ * This is the single enforcement point for @adhd/sox-mcp-runtime — called before
  * any resource sink in both the stdio and sse/http transport paths.
  *
  * [ref:policy-env-enforce]: reads SOX_PERM_ENFORCE + SOX_PERM_FS_* +

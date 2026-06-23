@@ -1,5 +1,5 @@
 {
-  "name": "@sox/extension-org-agent",
+  "name": "@adhd/sox-extension-org-agent",
   "version": "0.1.0",
   "description": "Declarative organisation-scoped memory agent",
   "private": true,

@@ -107,7 +107,7 @@
       "audit_criteria_passed": 0,
       "audit_criteria_total": 20,
       "by": "fullstack-developer",
-      "note": "Ported core.py to @sox/tokenguard-core (9 files); nx build green. In-spec deviations: seed uses neutral label/id types, DetectorConfig re-export, one intra-package require for a circular dep. 52751 subagent_tokens."
+      "note": "Ported core.py to @adhd/sox-tokenguard-core (9 files); nx build green. In-spec deviations: seed uses neutral label/id types, DetectorConfig re-export, one intra-package require for a circular dep. 52751 subagent_tokens."
     },
     {
       "ts": "2026-06-17T00:01:12.947Z",
@@ -356,7 +356,7 @@
       "state": "core-invariants",
       "class": "executor",
       "type": "fix-guard",
-      "reason": "code-review gate: spec imports @sox/tokenguard-core -> ../src/index for @nx/enforce-module-boundaries (relative within project)",
+      "reason": "code-review gate: spec imports @adhd/sox-tokenguard-core -> ../src/index for @nx/enforce-module-boundaries (relative within project)",
       "files_synced": [
         "libs/tokenguard-core/test"
       ],

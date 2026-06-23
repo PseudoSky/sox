@@ -43,7 +43,7 @@ flags:   --host <claude|codex>      # presence triggers declarative placement
 ```
 
 `diff` is **library-only** — there is no `sox diff` verb yet (the descriptor diff
-is exposed as a function in `@sox/install-engine`, not on the CLI). ⚠️
+is exposed as a function in `@adhd/sox-install-engine`, not on the CLI). ⚠️
 
 Active types: `agent`, `skill`, `mcp-server`, `command`, `hook`, `bundle`.
 `prompt` is parked by design. `service` is **not** a type — it is an mcp-server

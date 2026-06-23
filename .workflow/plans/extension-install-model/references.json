@@ -22,7 +22,7 @@
   },
   "policy-env-enforce": {
     "anchor": "[ref:policy-env-enforce]",
-    "rule": "every mcp spawn path injects policy-env (toEnv) and every @sox/mcp-runtime server self-enforces via compilePolicyFromEnv at the resource sink before the OS resource — no unenforced spawn path (claude-stdio or sox-service)",
+    "rule": "every mcp spawn path injects policy-env (toEnv) and every @adhd/sox-mcp-runtime server self-enforces via compilePolicyFromEnv at the resource sink before the OS resource — no unenforced spawn path (claude-stdio or sox-service)",
     "discovered_via": "manual",
     "shared_ref": "[ref:policy-env-enforce]",
     "audit_check": "[audit-final.ref-policy-env-enforce]"

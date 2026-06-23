@@ -111,8 +111,9 @@ _snapshot_realhome() {
 probe_init() {
   SBX="$(mktemp -d "${TMPDIR:-/tmp}/sox-sbx.XXXXXX")"
   FRESH="$(mktemp -d "${TMPDIR:-/tmp}/sox-fresh.XXXXXX")"
-  export SOX_HOME="$SBX"          # [inv:sandbox-isolation]: reroots ALL scopes
-  PROBE_PASS=0; PROBE_FAIL=0
+  export SOX_HOME="$SBX" # [inv:sandbox-isolation]: reroots ALL scopes
+  PROBE_PASS=0
+  PROBE_FAIL=0
   _snapshot_realhome
 }
 
@@ -121,25 +122,32 @@ sox() {
   pushd "$FRESH" >/dev/null 2>&1 || return 1
   LAST_OUT="$(SOX_HOME="$SBX" node "$REPO/bin/sox" "$@" --root "$SBX" 2>/tmp/sox-probe-err.$$)"
   LAST_RC=$?
-  LAST_ERR="$(cat /tmp/sox-probe-err.$$ 2>/dev/null)"; rm -f /tmp/sox-probe-err.$$
+  LAST_ERR="$(cat /tmp/sox-probe-err.$$ 2>/dev/null)"
+  rm -f /tmp/sox-probe-err.$$
   popd >/dev/null 2>&1
   return $LAST_RC
 }
 
 # --- assertions -------------------------------------------------------------
-_ok()  { PROBE_PASS=$((PROBE_PASS+1)); echo "    ok   $1"; }
-_bad() { PROBE_FAIL=$((PROBE_FAIL+1)); echo "    FAIL $1"; }
+_ok() {
+  PROBE_PASS=$((PROBE_PASS + 1))
+  echo "    ok   $1"
+}
+_bad() {
+  PROBE_FAIL=$((PROBE_FAIL + 1))
+  echo "    FAIL $1"
+}
 
-assert_exit0()       { [ "$LAST_RC" -eq 0 ] && _ok "exit 0: $1" || _bad "expected exit 0 (got $LAST_RC): $1 :: ${LAST_ERR:0:200}"; }
-assert_nonzero()     { [ "$LAST_RC" -ne 0 ] && _ok "exit!=0 (denied): $1" || _bad "expected nonzero exit: $1"; }
-assert_file()        { [ -f "$1" ] && _ok "file exists: $1" || _bad "missing file: $1"; }
-assert_dir()         { [ -d "$1" ] && _ok "dir exists: $1" || _bad "missing dir: $1"; }
-assert_absent()      { [ ! -e "$1" ] && _ok "absent: $1" || _bad "should NOT exist: $1"; }
-assert_stdout()      { case "$LAST_OUT" in *"$1"*) _ok "stdout has: $1";; *) _bad "stdout lacks '$1': ${LAST_OUT:0:200}";; esac; }
-assert_stderr_clean(){ case "$LAST_ERR" in *"MODULE_NOT_FOUND"*|*"Cannot find module '@sox"*) _bad "import error in stderr: ${LAST_ERR:0:200}";; *) _ok "no @sox import errors: $1";; esac; }
-assert_in_file()     { grep -q -- "$2" "$1" 2>/dev/null && _ok "file $1 contains $2" || _bad "file $1 missing $2"; }
+assert_exit0() { [ "$LAST_RC" -eq 0 ] && _ok "exit 0: $1" || _bad "expected exit 0 (got $LAST_RC): $1 :: ${LAST_ERR:0:200}"; }
+assert_nonzero() { [ "$LAST_RC" -ne 0 ] && _ok "exit!=0 (denied): $1" || _bad "expected nonzero exit: $1"; }
+assert_file() { [ -f "$1" ] && _ok "file exists: $1" || _bad "missing file: $1"; }
+assert_dir() { [ -d "$1" ] && _ok "dir exists: $1" || _bad "missing dir: $1"; }
+assert_absent() { [ ! -e "$1" ] && _ok "absent: $1" || _bad "should NOT exist: $1"; }
+assert_stdout() { case "$LAST_OUT" in *"$1"*) _ok "stdout has: $1" ;; *) _bad "stdout lacks '$1': ${LAST_OUT:0:200}" ;; esac }
+assert_stderr_clean() { case "$LAST_ERR" in *"MODULE_NOT_FOUND"* | *"Cannot find module '@adhd"*) _bad "import error in stderr: ${LAST_ERR:0:200}" ;; *) _ok "no @adhd import errors: $1" ;; esac }
+assert_in_file() { grep -q -- "$2" "$1" 2>/dev/null && _ok "file $1 contains $2" || _bad "file $1 missing $2"; }
 # [dod.5]: prove the REAL serve() ran, not the deleted fallback
-assert_serve_real_path() { case "$LAST_OUT$LAST_ERR" in *"[serve] real-path"*) _ok "real serve() path ran: $1";; *) _bad "serve real-path marker absent (fallback or crash): $1";; esac; }
+assert_serve_real_path() { case "$LAST_OUT$LAST_ERR" in *"[serve] real-path"*) _ok "real serve() path ran: $1" ;; *) _bad "serve real-path marker absent (fallback or crash): $1" ;; esac }
 
 probe_done() {
   # [dod.11] / [inv:sandbox-isolation]: real home must be byte-identical
@@ -191,7 +199,7 @@ probe_done() {
     ! -name ".last-update-result.json" \
     2>/dev/null | sort | xargs -I{} sh -c 'printf "%s %s\n" "$(shasum "{}" 2>/dev/null | cut -d" " -f1)" "{}"' 2>/dev/null | shasum | cut -d" " -f1)"
   [ "$c2" = "$_RH_CLAUDE_SNAP" ] && _ok "real ~/.claude untouched" || _bad "real ~/.claude WAS MODIFIED (sandbox leak)"
-  [ "$x2" = "$_RH_CODEX_SNAP" ]  && _ok "real ~/.codex untouched"  || _bad "real ~/.codex WAS MODIFIED (sandbox leak)"
+  [ "$x2" = "$_RH_CODEX_SNAP" ] && _ok "real ~/.codex untouched" || _bad "real ~/.codex WAS MODIFIED (sandbox leak)"
   # stop any spawned supervisor in the sandbox; leave zero orphans
   SOX_HOME="$SBX" node "$REPO/bin/sox" stop --root "$SBX" >/dev/null 2>&1 || true
   rm -rf "$SBX" "$FRESH" 2>/dev/null

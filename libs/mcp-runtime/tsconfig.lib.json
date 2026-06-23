@@ -11,7 +11,7 @@
     "sourceMap": true,
     "esModuleInterop": true,
     "paths": {
-      "@sox/host-runtime": ["libs/host-runtime/dist/index.d.ts"]
+      "@adhd/sox-host-runtime": ["libs/host-runtime/dist/index.d.ts"]
     }
   },
   "include": ["src/**/*.ts"],

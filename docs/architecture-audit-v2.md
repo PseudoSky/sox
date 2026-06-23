@@ -16,7 +16,7 @@ Files read: 47. Commands executed: 42. No plan/session/status files consulted.
 | C1 | No host runtime | CRITICAL | **Partial** | `scripts/host/loader.ts`, `supervisor.ts`, `registrar.ts`, adapters exist. But none are wired to `bin/sox`; no `sox start` verb; host runtime is library-only. See §E2E. |
 | C2 | No MCP tool registration | CRITICAL | **Partial** | `scripts/host/registrar.ts` implements `McpRegistrar` with `initialize`+`tools/list` over stdio. Tested only against a fake process (no actual spawn in tests). Not invoked from any product entrypoint. |
 | D1 | No per-package build; no build in CI | CRITICAL | **Partial** | Per-package `tsconfig.json` added to all 9 extension packages. `pnpm -r build` runs and succeeds. `dist/index.js` exists per-package. CI step "Build extension packages" added to `validate.yml`. However: (a) CI step ordering is wrong (validate-manifests runs before build, contradicting its own comment at line 63-68); (b) `pnpm typecheck` exits code 2 with 17 TS errors; CI is currently broken. |
-| A4 | Cross-package runtime import via relative path | HIGH | **Partial** | Changed from `../../../dist/memory-lib.js` (repo root) to `../../../mcp-servers/memory-server/dist/lib.js` (`memory-flush/src/index.ts` line 262, compiled output line 220). The new path resolves correctly within the monorepo (`extensions/hooks/memory-flush/dist/../../../mcp-servers/memory-server/dist/lib.js` = valid). Still a cross-package runtime dependency not mediated by npm packages — will break on npm publish of `@sox/extension-memory-flush` without `memory-server` dist present. |
+| A4 | Cross-package runtime import via relative path | HIGH | **Partial** | Changed from `../../../dist/memory-lib.js` (repo root) to `../../../mcp-servers/memory-server/dist/lib.js` (`memory-flush/src/index.ts` line 262, compiled output line 220). The new path resolves correctly within the monorepo (`extensions/hooks/memory-flush/dist/../../../mcp-servers/memory-server/dist/lib.js` = valid). Still a cross-package runtime dependency not mediated by npm packages — will break on npm publish of `@adhd/sox-extension-memory-flush` without `memory-server` dist present. |
 | C5 | Uninstall leaves stale lockfile entries | LOW | **Partial** | `loader.ts` line 300-306 skips entries whose `dist/index.js` is absent (Gap C5 hygiene). However, `install.ts` still does NOT read the `dependencies` field from manifests (confirmed by search: zero references to `manifest.dependencies` in `install.ts`). The lockfile source is still `src/index.ts` (verified: `.extensions/extensions.lock` line 5: `"source": "file:///.../src/index.ts"`), not `dist/index.js`. |
 | A1 | Hook event binding not in manifest schema | HIGH | **Closed** | `schemas/extension/v1.json` line 184-198 adds `events` array with closed enum `[PreToolUse, PostToolUse, SessionEnd, ScopePromotionProposed, Stop]`. `validate-manifests.ts` lines 726-743 enforces this. Both hooks declare `events`: `memory-flush/extension.json` line 15, `audit-hook/extension.json` line 10. |
 | D2 | No linter/formatter | MEDIUM | **Open** | No `.eslintrc*`, `eslint.config*`, `biome.json`, or `.prettier*` found. The CI `typecheck` step provides partial coverage via `noUnusedLocals/noUnusedParameters`, but currently exits code 2 with 17 errors, meaning it is effectively broken as a gate. No lint step in CI. |
@@ -141,7 +141,7 @@ The schema declares a complete permission model (`fs`, `network`, `socket`). The
 ### Severity: MEDIUM
 
 **9. Cross-package runtime import not mediated by npm package (A4 — Partial)**
-`memory-flush/dist/index.js` line 220 dynamically imports `../../../mcp-servers/memory-server/dist/lib.js`. Works inside the monorepo. Breaks on npm publish of `@sox/extension-memory-flush`.
+`memory-flush/dist/index.js` line 220 dynamically imports `../../../mcp-servers/memory-server/dist/lib.js`. Works inside the monorepo. Breaks on npm publish of `@adhd/sox-extension-memory-flush`.
 
 **10. Hash-based embedding produces semantically meaningless vectors (A6 — Open)**
 `embed.ts` uses FNV-1a hash projection. `memory_recall` claims `<50ms hybrid vec+BM25+temporal` but: (a) recall is unconditionally broken (NEW-1); (b) even if fixed, the vector component is not semantic.
@@ -183,6 +183,7 @@ The host runtime stack — loader, supervisor, registrar, adapters — is struct
 ## Appendix — Commands Run and Files Read
 
 **Commands run (representative):**
+
 - `pnpm -r build` → exit 0; all 11 packages built
 - `pnpm run test` → exit 0; 377 tests, 15 files
 - `pnpm typecheck` → exit 2; 17 TypeScript errors
@@ -192,6 +193,7 @@ The host runtime stack — loader, supervisor, registrar, adapters — is struct
 - `git ls-files extensions/mcp-servers/memory-server/dist/` → no tracked files (dist is git-ignored)
 
 **Key files read:**
+
 - `/Users/nix/dev/ai/sox-ecosystem/.github/workflows/validate.yml`
 - `/Users/nix/dev/ai/sox-ecosystem/scripts/install.ts` (lines 308-340, 490-530, 783-810)
 - `/Users/nix/dev/ai/sox-ecosystem/scripts/host/loader.ts`

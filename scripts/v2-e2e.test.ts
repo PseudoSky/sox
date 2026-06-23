@@ -22,10 +22,10 @@
  *   - docs/scope-promotion.md (G-C documentation artifact)
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { install } from './install.js';
 import { validateManifests } from './validate-manifests.js';
 
@@ -107,7 +107,7 @@ function makeExtension(
   fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
   fs.writeFileSync(
     path.join(extDir, 'package.json'),
-    JSON.stringify({ name: `@sox/extension-${id}`, version: '0.1.0' }, null, 2),
+    JSON.stringify({ name: `@adhd/sox-extension-${id}`, version: '0.1.0' }, null, 2),
   );
   fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
   fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), '// stub\n');
@@ -144,7 +144,7 @@ function makeBundle(
   fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
   fs.writeFileSync(
     path.join(extDir, 'package.json'),
-    JSON.stringify({ name: `@sox/extension-${bundleId}`, version: '0.1.0' }, null, 2),
+    JSON.stringify({ name: `@adhd/sox-extension-${bundleId}`, version: '0.1.0' }, null, 2),
   );
   fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
 }
@@ -602,7 +602,7 @@ describe('P11 v2-e2e — BACK-COMPAT: all v1 extensions validate + the bundle va
     expect(Array.isArray(manifest.members)).toBe(true);
     // sox-memory-bundle members: memory-daemon, memory-server,
     // memory-flush, memory-cli, memory-usage (P6: memory-organizer removed;
-    // deterministic enrichment pipeline via @sox/memory-enrich replaces LLM organizer).
+    // deterministic enrichment pipeline via @adhd/sox-memory-enrich replaces LLM organizer).
     expect(manifest.members).toHaveLength(5);
   });
 });

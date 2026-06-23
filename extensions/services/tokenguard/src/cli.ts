@@ -15,7 +15,7 @@
  *   node dist/cli.js summary
  *
  * [inv:bijective-roundtrip] — seed is just another origin-tagged entry.
- * [inv:c7-no-reach-in] — imports engine via @sox/tokenguard-core only.
+ * [inv:c7-no-reach-in] — imports engine via @adhd/sox-tokenguard-core only.
  */
 
 import * as fs from 'node:fs';
@@ -147,8 +147,8 @@ export const CLI_TOOLS = [
       type: 'object' as const,
       required: ['real', 'type'],
       properties: {
-        real:  { type: 'string', description: 'The real identifier to pseudonymize.' },
-        type:  { type: 'string', description: 'Identifier type (e.g. host, fqdn, id, label).' },
+        real: { type: 'string', description: 'The real identifier to pseudonymize.' },
+        type: { type: 'string', description: 'Identifier type (e.g. host, fqdn, id, label).' },
         token: { type: 'string', description: 'Optional explicit token override (custom entries only).' },
         map_path: { type: 'string', description: 'Override map file path (default: SOX_CONFIG_MAP_PATH or ~/.tokenguard/token-mapping.json).' },
       },
@@ -172,7 +172,7 @@ export const CLI_TOOLS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        map_path:   { type: 'string', description: 'Override map file path.' },
+        map_path: { type: 'string', description: 'Override map file path.' },
         audit_path: { type: 'string', description: 'Override audit log path.' },
       },
       additionalProperties: false,
@@ -203,7 +203,7 @@ export function handleCliTool(
     }
 
     if (name === 'summary') {
-      const mapPath   = typeof args['map_path']   === 'string' ? args['map_path']   : undefined;
+      const mapPath = typeof args['map_path'] === 'string' ? args['map_path'] : undefined;
       const auditPath = typeof args['audit_path'] === 'string' ? args['audit_path'] : undefined;
       const result = cmdSummary(mapPath, auditPath);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };

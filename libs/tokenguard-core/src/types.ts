@@ -1,5 +1,5 @@
 /**
- * @sox/tokenguard-core — types
+ * @adhd/sox-tokenguard-core — types
  *
  * [shape:token-map] — token-mapping.json v2 — the live bijective cache
  */

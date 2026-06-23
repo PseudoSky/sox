@@ -10,7 +10,7 @@
  *     --outdir <dir> \
  *     --external <pkg> [--external <pkg2> ...]
  *
- * All @sox/* packages are inlined (not external) — resolved to their pre-built
+ * All @adhd/sox-* packages are inlined (not external) — resolved to their pre-built
  * dist directories so the bundle runs without the monorepo on $NODE_PATH.
  *
  * Native addons (better-sqlite3, sqlite-vec) must be declared --external and
@@ -35,19 +35,19 @@ const ESBUILD_PATH = path.join(
 const esbuild = require(ESBUILD_PATH);
 
 // ---------------------------------------------------------------------------
-// @sox/* alias map — point every workspace package to its pre-built dist.
+// @adhd/sox-* alias map — point every workspace package to its pre-built dist.
 // These are NOT in node_modules so esbuild cannot resolve them automatically.
 // ---------------------------------------------------------------------------
 const SOX_ALIASES = {
-  '@sox/mcp-runtime':    path.join(REPO_ROOT, 'libs/mcp-runtime/dist/index.js'),
-  '@sox/memory-core':    path.join(REPO_ROOT, 'libs/memory-core/dist/index.js'),
-  '@sox/install-engine': path.join(REPO_ROOT, 'libs/install-engine/dist/index.js'),
-  '@sox/host-runtime':   path.join(REPO_ROOT, 'libs/host-runtime/dist/index.js'),
-  '@sox/manifest':       path.join(REPO_ROOT, 'libs/manifest/dist/index.js'),
-  '@sox/authoring':      path.join(REPO_ROOT, 'libs/authoring/dist/index.js'),
-  '@sox/registry':       path.join(REPO_ROOT, 'libs/registry/dist/index.js'),
-  '@sox/host-registry':  path.join(REPO_ROOT, 'libs/host-registry/dist/index.js'),
-  '@sox/tokenguard-core': path.join(REPO_ROOT, 'libs/tokenguard-core/dist/index.js'),
+  '@adhd/sox-mcp-runtime':    path.join(REPO_ROOT, 'libs/mcp-runtime/dist/index.js'),
+  '@adhd/sox-memory-core':    path.join(REPO_ROOT, 'libs/memory-core/dist/index.js'),
+  '@adhd/sox-install-engine': path.join(REPO_ROOT, 'libs/install-engine/dist/index.js'),
+  '@adhd/sox-host-runtime':   path.join(REPO_ROOT, 'libs/host-runtime/dist/index.js'),
+  '@adhd/sox-manifest':       path.join(REPO_ROOT, 'libs/manifest/dist/index.js'),
+  '@adhd/sox-authoring':      path.join(REPO_ROOT, 'libs/authoring/dist/index.js'),
+  '@adhd/sox-registry':       path.join(REPO_ROOT, 'libs/registry/dist/index.js'),
+  '@adhd/sox-host-registry':  path.join(REPO_ROOT, 'libs/host-registry/dist/index.js'),
+  '@adhd/sox-tokenguard-core': path.join(REPO_ROOT, 'libs/tokenguard-core/dist/index.js'),
 };
 
 // ---------------------------------------------------------------------------
@@ -70,19 +70,19 @@ function parseArgs(argv) {
 }
 
 // ---------------------------------------------------------------------------
-// esbuild plugin: resolve @sox/* to pre-built dist dirs
+// esbuild plugin: resolve @adhd/sox-* to pre-built dist dirs
 // ---------------------------------------------------------------------------
 function soxAliasPlugin() {
   return {
     name: 'sox-alias',
     setup(build) {
-      // Intercept any import path that starts with @sox/
-      build.onResolve({ filter: /^@sox\// }, (args) => {
+      // Intercept any import path that starts with @adhd/sox-
+      build.onResolve({ filter: /^@adhd\// }, (args) => {
         const resolved = SOX_ALIASES[args.path];
         if (resolved) {
           return { path: resolved };
         }
-        // Unknown @sox/* — let esbuild error naturally
+        // Unknown @adhd/sox-* — let esbuild error naturally
         return null;
       });
     },
@@ -185,11 +185,11 @@ async function main() {
       format: 'cjs',
       // Target a broad Node.js version range
       target: 'node18',
-      // Do NOT mark @sox/* external — they must be inlined.
+      // Do NOT mark @adhd/sox-* external — they must be inlined.
       // External list contains only native addons passed via --external.
       // (We intercept them in lazyExternalPlugin above.)
       external: [],
-      // Plugins: first resolve @sox/* aliases, then make externals lazy
+      // Plugins: first resolve @adhd/sox-* aliases, then make externals lazy
       plugins: [
         soxAliasPlugin(),
         lazyExternalPlugin(args.externals),

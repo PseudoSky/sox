@@ -13,14 +13,14 @@
  *
  * [inv:bijective-roundtrip] — appended entry is a standard MapEntry; the
  *   Mapper enforces bijection on load (existing real is never reassigned).
- * [inv:c7-no-reach-in] — imports engine via @sox/tokenguard-core only.
+ * [inv:c7-no-reach-in] — imports engine via @adhd/sox-tokenguard-core only.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { Mapper } from '@sox/tokenguard-core';
-import type { MapEntry, Source } from '@sox/tokenguard-core';
+import type { MapEntry, Source } from '@adhd/sox-tokenguard-core';
+import { Mapper } from '@adhd/sox-tokenguard-core';
 
 // ── TokenMap shape ────────────────────────────────────────────────────────────
 

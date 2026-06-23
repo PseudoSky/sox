@@ -48,6 +48,7 @@ call interleaving, making crashes more frequent.
 **The correct design:**  
 The embedding step must execute in a separate process from the SQLite write step. Two
 viable approaches:
+
 1. All writes go through the MCP server (a separate process): the MCP server is already
    across a process boundary from the caller, so each tool call issues one embed+write cycle
    without a caller that also holds an open DB handle.
@@ -57,7 +58,7 @@ viable approaches:
 
 The existing workaround ("bulk ingest must go through the MCP server") is correct but
 undocumented and not enforced. The real fix is to document the constraint and ensure the
-`@sox/memory-core` convenience wrappers (`write()`, `recall()`) either enforce the process
+`@adhd/sox-memory-core` convenience wrappers (`write()`, `recall()`) either enforce the process
 boundary or carry a clear warning.
 
 **Why the current design drifted here:**  
@@ -90,6 +91,7 @@ can fill all top-N slots. No per-source cap or MMR diversity filter exists in th
 post-ranking step (lines 271–313).
 
 **The correct design:**
+
 - Add `memory_link` MCP tool: `{src_uid, dst_uid, rel, weight?, meta?}` → insert into
   `edge` table. Guards: both UIDs must exist; rel must be a known enum.
 - Add optional chunking to `memory_write`: if `auto_chunk: true` or `chunk_size: N` is
@@ -112,6 +114,7 @@ TODOs that were not blocked behind an architectural gate.
 **What is broken:**  
 `libs/memory-core/src/embed.ts` exports two things with the same purpose but different
 values:
+
 - `EMBED_MODEL` (line 41): a frozen string constant `'nomic-embed-text-v1.5-hash'`
   that never changes.
 - `getActiveEmbedModel()` (line 35): a function that returns `_activeModel`, which is
@@ -128,7 +131,7 @@ wrong value, the comparison is always false and reindex is never triggered.
 `reembedNodes` is defined at `libs/memory-core/src/embed.ts` line 228 and imported by
 `libs/memory-core/src/memoryd.ts` line 29, but `libs/memory-core/src/index.ts` does not
 re-export it (the export block at line 22–33 omits `reembedNodes`). External callers
-(`require('@sox/memory-core').reembedNodes`) receive `undefined`.
+(`require('@adhd/sox-memory-core').reembedNodes`) receive `undefined`.
 
 **The correct design:**  
 `initScope` must call `getActiveEmbedModel()` (not the constant) when writing
@@ -149,6 +152,7 @@ at line 38–41 does not make the `initScope` call site risk obvious.
 
 **What is broken:**  
 `memoryRecall` fuses three signals via RRF with equal weight:
+
 - Vec KNN (semantic similarity)
 - FTS5 BM25 (keyword)  
 - Temporal recency (most recently created nodes)
@@ -165,6 +169,7 @@ on the first node that would exceed budget. For document-scale nodes (single lar
 one node can consume 4000 tokens, causing `limit: 10` to silently return 1 result.
 
 **The correct design:**  
+
 - Expose explicit per-signal RRF weights as parameters: `vec_weight`, `fts_weight`,
   `temporal_weight`, with defaults that demote temporal when the corpus is temporally
   clustered. A reasonable default: vec=1.0, fts=0.8, temporal=0.4 (not the current
@@ -211,7 +216,7 @@ independent of chunking and can be shipped in Phase 0.
 - Replacing the SQLite backend with a server database.
 - Redesigning the organizer pipeline or the LLM step.
 - Fixing `memory-organizer` type/role classification (tracked in ecosystem-feedback plan).
-- Any changes to the `@sox/mcp-runtime` consolidation (BL-5); that is tracked in
+- Any changes to the `@adhd/sox-mcp-runtime` consolidation (BL-5); that is tracked in
   ecosystem-feedback plan.
 - Performance benchmarking or SLA-setting for recall latency beyond what the existing
   `<50ms` invariant covers.

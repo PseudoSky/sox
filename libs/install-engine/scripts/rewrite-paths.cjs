@@ -1,7 +1,7 @@
 /**
  * Post-build path rewriter for libs/install-engine/dist.
  *
- * TypeScript compiles `require('@sox/host-registry')` to a bare specifier, but
+ * TypeScript compiles `require('@adhd/sox-host-registry')` to a bare specifier, but
  * there are no node_modules symlinks for these workspace libs at runtime. This
  * script rewrites the compiled dist to relative paths CJS can resolve, so the
  * SOURCE stays C7-clean (scoped import) while the running code resolves the
@@ -16,13 +16,13 @@ const path = require('path');
 const distDir = path.resolve(__dirname, '../dist');
 const libsDir = path.resolve(__dirname, '../../'); // .../libs
 
-// @sox alias → absolute path of the sibling lib's built entrypoint
+// @adhd alias → absolute path of the sibling lib's built entrypoint
 const targets = {
-  '@sox/host-registry': path.join(libsDir, 'host-registry/dist/index.js'),
-  '@sox/host-runtime': path.join(libsDir, 'host-runtime/dist/index.js'),
-  '@sox/manifest': path.join(libsDir, 'manifest/dist/index.js'),
-  '@sox/registry': path.join(libsDir, 'registry/dist/index.js'),
-  '@sox/memory-core': path.join(libsDir, 'memory-core/dist/index.js'),
+  '@adhd/sox-host-registry': path.join(libsDir, 'host-registry/dist/index.js'),
+  '@adhd/sox-host-runtime': path.join(libsDir, 'host-runtime/dist/index.js'),
+  '@adhd/sox-manifest': path.join(libsDir, 'manifest/dist/index.js'),
+  '@adhd/sox-registry': path.join(libsDir, 'registry/dist/index.js'),
+  '@adhd/sox-memory-core': path.join(libsDir, 'memory-core/dist/index.js'),
 };
 
 function rewriteFile(file) {

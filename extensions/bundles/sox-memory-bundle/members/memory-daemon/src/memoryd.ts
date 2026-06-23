@@ -1,5 +1,5 @@
 /**
- * memoryd — thin re-export from @sox/memory-core.
+ * memoryd — thin re-export from @adhd/sox-memory-core.
  *
  * The canonical `MemoryDaemon` implementation lives in `libs/memory-core/src/memoryd.ts`
  * (C7 single-source pattern). All callers import from there via this re-export so
@@ -10,10 +10,8 @@
  */
 
 export {
-  MemoryDaemon,
-  enqueueIngest,
-  enqueueReindex,
-  enqueueEnrich,
-  nudgeDaemon,
-  SOCKET_PATH,
-} from '@sox/memory-core';
+  enqueueEnrich, enqueueIngest,
+  enqueueReindex, MemoryDaemon, nudgeDaemon,
+  SOCKET_PATH
+} from '@adhd/sox-memory-core';
+

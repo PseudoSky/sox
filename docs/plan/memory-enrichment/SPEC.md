@@ -41,7 +41,7 @@ embeddings being present, and the structuring pipeline is LLM-dependent and non-
 
 1. **Replace the LLM `memory-organizer` with a deterministic, in-process enrichment pipeline.** No
    external provider, no daemon IPC, no LLM. Same-or-better structured output, reproducible, fast,
-   free. The pipeline MAY be extracted to a **shared package** (e.g. `@sox/memory-enrich`) so it is
+   free. The pipeline MAY be extracted to a **shared package** (e.g. `@adhd/sox-memory-enrich`) so it is
    reusable by the library, the MCP server, and the CLI.
 2. **If enrichment moves in-process / to a shared package, the `memory-organizer` member is FULLY
    removed** — the agent extension, its provider config, the daemon's organizer queue + `organizeItems`
@@ -88,7 +88,7 @@ reviewer should validate the algorithm choices and add any missing enrichments.
   the writing process — no `organizer_queue` round-trip, no daemon, no IPC, no provider. Clustering
   (E6) and maintenance (E11) MAY run as a periodic/triggered batch pass (still deterministic, still
   in-process or in a CLI/daemon-hosted loop) because they are O(corpus).
-- **Shared package option.** Extract the pipeline to `@sox/memory-enrich` consumed by `memory-core`
+- **Shared package option.** Extract the pipeline to `@adhd/sox-memory-enrich` consumed by `memory-core`
   (write path), the MCP server, and `memory-cli`. The architect should decide package boundary +
   whether the existing `memory-daemon` is repurposed (as a deterministic batch-cluster host) or also
   removed.
@@ -100,6 +100,7 @@ reviewer should validate the algorithm choices and add any missing enrichments.
 ## 6. Removal of the LLM organizer (mandatory if enrichment is in-process/shared)
 
 When the deterministic pipeline lands, remove **all** of:
+
 - `extensions/bundles/sox-memory-bundle/members/memory-organizer/` (the agent extension).
 - the `memory-daemon` provider config (`provider_url/key/model`) and the `organizeItems` IPC + the
   organizer LLM path in `memoryd.ts` (`processIngestBatch` LLM branch); the `organizer_queue`'s
@@ -113,6 +114,7 @@ installs + runs with zero LLM provider configured; enrichment output is byte-rep
 ## 7. Broadened use cases (drives the consumer-interface design — for the architect)
 
 The enrichment exists to enable these; the architect should expand and prioritize them:
+
 - **Provenance-scoped recall** — "recall X from project /Users/nix/dev/ai/foo" / "across all projects".
 - **Topic discovery & browsing** — list topics/communities with sizes + labels; drill into a topic.
 - **Entity & relationship navigation** — what mentions entity E; what supersedes/derives-from what.
@@ -144,6 +146,6 @@ plus the "organizer doesn't form communities / is LLM-gated / silently degrades"
 1. **This SPEC** → reviewed + extended by an architect/ML reviewer, who then authors
    `DESIGN.md` (algorithm choices, schema, removal plan, package boundary) and
    `CONSUMER-INTERFACES.md` (discovery + use-case-driven interface design).
-2. **API designer** authors `CONTRACTS.md` (the MCP tool contracts, the `@sox/memory-enrich` API
+2. **API designer** authors `CONTRACTS.md` (the MCP tool contracts, the `@adhd/sox-memory-enrich` API
    surface, the discovery/query interfaces, schema/types) from the extended spec + consumer interfaces.
 3. Implementation plan (phased) follows.

@@ -1,5 +1,5 @@
-import { defineConfig } from 'vitest/config';
 import { resolve } from 'node:path';
+import { defineConfig } from 'vitest/config';
 
 const root = resolve(__dirname, '../..');
 const sdkCjs = resolve(__dirname, 'node_modules/@modelcontextprotocol/sdk/dist/cjs');
@@ -7,7 +7,7 @@ const sdkCjs = resolve(__dirname, 'node_modules/@modelcontextprotocol/sdk/dist/c
 export default defineConfig({
   resolve: {
     alias: {
-      '@sox/host-runtime': resolve(root, 'libs/host-runtime/dist/index.js'),
+      '@adhd/sox-host-runtime': resolve(root, 'libs/host-runtime/dist/index.js'),
       '@modelcontextprotocol/sdk/server/index.js': resolve(sdkCjs, 'server/index.js'),
       '@modelcontextprotocol/sdk/server/stdio.js': resolve(sdkCjs, 'server/stdio.js'),
       '@modelcontextprotocol/sdk/server/sse.js': resolve(sdkCjs, 'server/sse.js'),

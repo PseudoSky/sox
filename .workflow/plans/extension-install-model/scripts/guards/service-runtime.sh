@@ -3,7 +3,7 @@
 # materialized SERVICE bundle with cwd = its store dir (no monorepo).
 # The hand-rolled stdio fallback is DELETED; serve() emits [shape:serve-marker].
 # Guard: install → start → exec a tool; assert tool output + real-path marker
-# + NO Cannot find module '@sox.
+# + NO Cannot find module '@adhd.
 # Sources [def:probe-harness].
 
 set -uo pipefail
@@ -34,7 +34,7 @@ assert_exit0 "sox exec memory_ping"
 # [shape:serve-marker]: serve() writes "[serve] real-path" to stderr on startup.
 assert_serve_real_path "memory-server from store dir"
 
-# --- 5. Assert no @sox import errors (self-contained bundle) -----------------
+# --- 5. Assert no @adhd import errors (self-contained bundle) -----------------
 assert_stderr_clean "memory-server bundle has no MODULE_NOT_FOUND"
 
 probe_done

@@ -13,20 +13,20 @@
  *   9. _resetExportThrottle() correctly resets throttle state for test isolation.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 // Import the handler and config helpers
 import {
+  _resetExportThrottle,
   handler,
   setExportConfig,
-  _resetExportThrottle,
 } from './index.js';
 
-// Import @sox/memory-core to set up test DBs
-import { openDb, memoryWrite } from '@sox/memory-core';
+// Import @adhd/sox-memory-core to set up test DBs
+import { memoryWrite, openDb } from '@adhd/sox-memory-core';
 
 // Force hash backend for deterministic, fast tests (no ONNX download)
 beforeEach(() => {

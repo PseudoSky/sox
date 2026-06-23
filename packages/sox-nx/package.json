@@ -1,5 +1,5 @@
 {
-  "name": "@sox/nx",
+  "name": "@adhd/sox-nx",
   "version": "0.1.0",
   "description": "Nx plugin for sox — thin generator adapters over libs/authoring",
   "private": true,
@@ -13,7 +13,7 @@
     }
   },
   "dependencies": {
-    "@sox/authoring": "workspace:*"
+    "@adhd/sox-authoring": "workspace:*"
   },
   "peerDependencies": {
     "@nx/devkit": ">=22.0.0",

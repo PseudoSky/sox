@@ -16,12 +16,12 @@
  *      hermetically by sandboxing HOME to a temp dir.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import * as os from 'node:os';
-import { cascade } from './cascade.js';
+import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ScopeConfig } from './cascade.js';
+import { cascade } from './cascade.js';
 import { HookLoader } from './hook-loader.js';
 import { install as installFn } from './install.js';
 
@@ -65,7 +65,7 @@ function makeExtension(
     entrypoint: 'dist/index.js',
   };
   fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify(manifest, null, 2));
-  fs.writeFileSync(path.join(extDir, 'package.json'), JSON.stringify({ name: `@sox/extension-${id}`, version }, null, 2));
+  fs.writeFileSync(path.join(extDir, 'package.json'), JSON.stringify({ name: `@adhd/sox-extension-${id}`, version }, null, 2));
   fs.writeFileSync(path.join(extDir, 'CHANGELOG.md'), '');
   fs.writeFileSync(path.join(extDir, 'src', 'index.ts'), `// ${id} stub\nexport const id = '${id}';\n`);
 }

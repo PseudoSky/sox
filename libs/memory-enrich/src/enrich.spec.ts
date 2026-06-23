@@ -1,5 +1,5 @@
 /**
- * enrich.spec.ts — unit tests for @sox/memory-enrich.
+ * enrich.spec.ts — unit tests for @adhd/sox-memory-enrich.
  *
  * Covers:
  *   - resolveProjectPath: determinism + override + fallback
@@ -14,23 +14,23 @@
  *   - ENRICH_VERSION: is a semver string
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  ENRICH_VERSION,
-  resolveProjectPath,
-  extractiveSummary,
+  buildAutoLinks,
+  clusterStats,
+  clusterStore,
   computeImportance,
   detectNearDup,
+  ENRICH_VERSION,
   enrichOnWrite,
-  clusterStore,
-  clusterStats,
-  buildAutoLinks,
+  extractiveSummary,
+  resolveProjectPath,
   runBatchEnrich,
 } from './index.js';
 

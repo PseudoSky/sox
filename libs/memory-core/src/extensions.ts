@@ -6,7 +6,7 @@
  *
  * Invariants:
  *   R1: zero provider/LLM calls on the read path
- *   R3: zero LLM calls — all enrichment is deterministic via @sox/memory-enrich
+ *   R3: zero LLM calls — all enrichment is deterministic via @adhd/sox-memory-enrich
  *   R5: bi-temporal — invalidation closes t_invalid, never deletes
  */
 
@@ -131,11 +131,11 @@ export function detectPromotionCandidates(
               (SELECT COUNT(*) FROM edge e WHERE e.dst = n.rowid AND e.rel = 'MENTIONS' AND e.t_expired IS NULL)) >= ?`,
     )
     .all(cutoff, minOccurrences) as Array<{
-    uid: string;
-    t_created: string;
-    occ: number;
-    age_days: number;
-  }>;
+      uid: string;
+      t_created: string;
+      occ: number;
+      age_days: number;
+    }>;
 
   const now = new Date().toISOString();
   let inserted = 0;
@@ -191,13 +191,13 @@ export async function proposePendingCandidates(
        WHERE pq.from_scope = ? AND pq.to_scope = ? AND pq.status = 'pending'`,
     )
     .all(fromScope, toScope) as Array<{
-    id: number;
-    node_uid: string;
-    content: string | null;
-    kind: string | null;
-    name: string | null;
-    summary: string | null;
-  }>;
+      id: number;
+      node_uid: string;
+      content: string | null;
+      kind: string | null;
+      name: string | null;
+      summary: string | null;
+    }>;
 
   if (pending.length === 0) return { proposed: 0 };
 
@@ -254,22 +254,22 @@ export async function applyPromotion(
        FROM node WHERE uid = ? AND t_invalid IS NULL`,
     )
     .get(nodeUid) as {
-    uid: string;
-    kind: string;
-    content: string | null;
-    name: string | null;
-    summary: string | null;
-    agent_id: string | null;
-    session_id: string | null;
-    source: string | null;
-    importance: number;
-    confidence: number | null;
-    content_hash: string | null;
-    level: number | null;
-    t_created: string;
-    t_occurred: string | null;
-    t_valid: string | null;
-  } | undefined;
+      uid: string;
+      kind: string;
+      content: string | null;
+      name: string | null;
+      summary: string | null;
+      agent_id: string | null;
+      session_id: string | null;
+      source: string | null;
+      importance: number;
+      confidence: number | null;
+      content_hash: string | null;
+      level: number | null;
+      t_created: string;
+      t_occurred: string | null;
+      t_valid: string | null;
+    } | undefined;
 
   if (!srcNode) {
     return { ok: false, error: `Source node not found or invalidated: ${nodeUid}` };
@@ -729,7 +729,7 @@ export interface BuildCommunitiesResult {
 /**
  * Deterministic label-propagation community detection (design.md §2.3, P4).
  * Community labels are derived deterministically from centroid member names.
- * Batch clustering runs in memory-daemon via @sox/memory-enrich runBatchEnrich.
+ * Batch clustering runs in memory-daemon via @adhd/sox-memory-enrich runBatchEnrich.
  */
 export function buildCommunities(
   db: Database.Database,
@@ -942,14 +942,14 @@ export function memoryGetCommunity(
 
   const members = commNode
     ? (db
-        .prepare(
-          `SELECT n.uid, n.name, n.content, n.kind
+      .prepare(
+        `SELECT n.uid, n.name, n.content, n.kind
            FROM edge e
            JOIN node n ON n.rowid = e.src
            WHERE e.dst = ? AND e.rel = 'MEMBER_OF'
              AND e.t_expired IS NULL AND n.t_invalid IS NULL`,
-        )
-        .all(commNode.rowid) as Array<{
+      )
+      .all(commNode.rowid) as Array<{
         uid: string;
         name: string | null;
         content: string | null;

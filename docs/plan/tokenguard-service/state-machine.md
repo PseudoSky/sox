@@ -12,7 +12,7 @@
 | `http-transport` | HTTP_TRANSPORT | framework | http transport routes through the unified service model; `http-get` health probe + clean stop on a port-holder |
 | `mcp-as-service` | MCP_AS_SERVICE | framework | `mcp-server` folded onto the unified model as `service[transport=stdio]`; memory-server non-regresses |
 | `audit-framework` | FRAMEWORK_AUDIT | **Audit** | Verify the service primitive, http transport, and stdio non-regression |
-| `core-engine` | CORE_ENGINE | core | `@sox/tokenguard-core` engine library ported (Mapper + detectors + tokenize/detokenize + SSE) |
+| `core-engine` | CORE_ENGINE | core | `@adhd/sox-tokenguard-core` engine library ported (Mapper + detectors + tokenize/detokenize + SSE) |
 | `core-invariants` | CORE_INVARIANTS | core | round-trip / zero-leak / SSE-split / passthrough invariants ported as red→green tests |
 | `audit-core` | CORE_AUDIT | **Audit** | Verify the engine invariants + no red-team vocabulary in the lib |
 | `tg-service` | TOKENGUARD_SERVICE | service | tokenguard `service` extension: http proxy on the engine, provider adapters, standardized config, live map |

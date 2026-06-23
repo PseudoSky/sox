@@ -6,28 +6,28 @@
  *   Mirrors memory-server's vendored compilePolicyFromEnv / checkDbPathCtx pattern.
  *
  * [inv:standard-config] — config only via SOX_CONFIG_*.
- * [inv:c7-no-reach-in] — imports engine via @sox/tokenguard-core only.
+ * [inv:c7-no-reach-in] — imports engine via @adhd/sox-tokenguard-core only.
  * [tg-service.5] — SOX_POLICY_ enforcement at the resource sink.
  * [tg-service.10] — config -> Mapper -> proxy -> continuously persist.
  */
 
 import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
 import * as http from 'node:http';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
-import { Mapper } from '@sox/tokenguard-core';
+import { Mapper } from '@adhd/sox-tokenguard-core';
 
-import { resolveConfig } from './config.js';
-import { startProxy } from './proxy.js';
 import { anthropicAdapter } from './adapters/anthropic.js';
 import { genericAdapter } from './adapters/generic.js';
-import { watchChanges, reloadIntoMapper } from './mapstore.js';
 import { CLI_TOOLS, handleCliTool, runCli } from './cli.js';
+import { resolveConfig } from './config.js';
+import { reloadIntoMapper, watchChanges } from './mapstore.js';
+import { startProxy } from './proxy.js';
 
 // ─── Vendored compilePolicyFromEnv — matches [shape:policy-env] ───────────────
 // Mirrors memory-server/src/index.ts pattern exactly.
-// vendored here because spawned tokenguard is a standalone process; @sox/host-runtime
+// vendored here because spawned tokenguard is a standalone process; @adhd/sox-host-runtime
 // is not available in child node_modules at runtime.
 
 function expandTilde(p: string): string {

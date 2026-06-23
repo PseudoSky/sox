@@ -14,24 +14,18 @@
  */
 
 import { agentTemplate } from './templates/agent/index.js';
-import { skillTemplate } from './templates/skill/index.js';
-import { mcpServerTemplate } from './templates/mcp-server/index.js';
-import { hookTemplate } from './templates/hook/index.js';
-import { commandTemplate } from './templates/command/index.js';
 import { bundleTemplate } from './templates/bundle/index.js';
+import { commandTemplate } from './templates/command/index.js';
+import { hookTemplate } from './templates/hook/index.js';
+import { mcpServerTemplate } from './templates/mcp-server/index.js';
 import { serviceTemplate } from './templates/service/index.js';
+import { skillTemplate } from './templates/skill/index.js';
 
 export { writeFileSet } from './writer.js';
 // Re-export per-type template functions so consumers (apps/sox init fallback)
-// can dispatch by name via the @sox/authoring scope — no ../dist reach-in (C7).
+// can dispatch by name via the @adhd/sox-authoring scope — no ../dist reach-in (C7).
 export {
-  agentTemplate,
-  skillTemplate,
-  mcpServerTemplate,
-  hookTemplate,
-  commandTemplate,
-  bundleTemplate,
-  serviceTemplate,
+  agentTemplate, bundleTemplate, commandTemplate, hookTemplate, mcpServerTemplate, serviceTemplate, skillTemplate
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────

@@ -12,14 +12,14 @@
  *  - Re-persisting the same filter is idempotent (replaces only its own slice).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { clusterStore, clusterSubset, clusterStats, dropSubsetLens, listSubsetLenses } from './index.js';
+import { clusterStats, clusterStore, clusterSubset, dropSubsetLens, listSubsetLenses } from './index.js';
 
 const MINIMAL_DDL = `
 CREATE TABLE IF NOT EXISTS node (
@@ -282,7 +282,7 @@ describe('read-path scope isolation (fix ①)', () => {
   });
 });
 
-// ── Fix ④: clusterSubset callable with only @sox/memory-enrich imported ────────
+// ── Fix ④: clusterSubset callable with only @adhd/sox-memory-enrich imported ────────
 // Proves the headline library feature is self-contained: no server-private code.
 
 describe('clusterSubset callable via structured filter alone (fix ④)', () => {

@@ -1,5 +1,5 @@
 <!-- markdownlint-disable MD013 MD033 -->
-# mcp-runtime — `@sox/mcp-runtime` wrapper with uniform C6 enforcement
+# mcp-runtime — `@adhd/sox-mcp-runtime` wrapper with uniform C6 enforcement
 
 > **Slug is identity.** This filename and the `mcp-runtime` slug are immutable once assigned.
 > Ordering comes from `dag.json` (`depends_on`), not from this name.
@@ -11,7 +11,7 @@
 
 ## Goal
 
-After this state `libs/mcp-runtime` (`@sox/mcp-runtime`) is a shared lib that **wraps** the official
+After this state `libs/mcp-runtime` (`@adhd/sox-mcp-runtime`) is a shared lib that **wraps** the official
 `@modelcontextprotocol/sdk` (ADR decision #4 — do not reimplement the protocol). Authors write tools
 only via `serve(defineTool(...))` (**[shape:mcp-tool]**); the wrapper provides transport selection
 (stdio | sse/http, chosen by a flag/env set by the install profile), health, graceful shutdown, and
@@ -38,7 +38,7 @@ It depends on `audit-foundation` (the descriptor + capabilities exist). It is th
   - `transport.ts`: stdio loop + sse/http listener around the official SDK.
   - `enforce.ts`: read **[def:policy-env]** via `compilePolicyFromEnv` and enforce at the resource
     sink **before** the OS resource, on **every** path (stdio + sse) (**[inv:c6-holds]**).
-  - `index.ts`: exports + the derived `serves` fact (built on `@sox/mcp-runtime` ⇒ stdio+sse).
+  - `index.ts`: exports + the derived `serves` fact (built on `@adhd/sox-mcp-runtime` ⇒ stdio+sse).
   - `conformance.spec.ts`: the ONE generic test every mcp extension inherits.
 
 - **Invariants:** **[inv:c6-holds]** (no unenforced spawn path), **[ref:policy-env-enforce]**.
@@ -90,7 +90,7 @@ states.
 
 ## Contract Promise
 
-- **Added:** `@sox/mcp-runtime` (`serve`, transport, enforce, conformance test).
+- **Added:** `@adhd/sox-mcp-runtime` (`serve`, transport, enforce, conformance test).
 - **Modified:** none (reuses `libs/host-runtime/src/policy.ts` read-only).
 - **Deleted:** none here (memory-server's duplication is removed in `rehome-memory-server`).
 

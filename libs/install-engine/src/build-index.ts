@@ -5,9 +5,9 @@
  * No CLI entry point here — that lives in apps/sox.
  */
 
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as crypto from 'node:crypto';
 
 interface ExtensionManifest {
   $schema: string;
@@ -92,7 +92,7 @@ function resolveSource(extDir: string, manifest: ExtensionManifest): string {
   const pkgPath = path.join(extDir, 'package.json');
   if (fs.existsSync(pkgPath)) {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string; version?: string };
-    const pkgName = pkg.name ?? `@sox/extension-${manifest.id}`;
+    const pkgName = pkg.name ?? `@adhd/sox-extension-${manifest.id}`;
     if (manifest.checksum) {
       // ADR-0003 Decision 6: derived display version from package.json.
       return `https://cdn.jsdelivr.net/npm/${pkgName}@${resolveDisplayVersion(extDir)}/dist/index.js`;

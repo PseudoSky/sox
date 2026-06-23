@@ -8,14 +8,14 @@
  * [inv:fix-carry-forward]: NEVER re-grab code from before pre-nx-baseline tag.
  */
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
 import * as os from 'node:os';
-import { cascade } from './cascade.js';
+import * as path from 'node:path';
 import type { ScopeConfig as CascadeScopeConfig, ResolvedConfigMap } from './cascade.js';
-import { checkProviderCapabilities } from './provider-capabilities.js';
+import { cascade } from './cascade.js';
 import { upsertInstallRecord } from './install-registry.js';
+import { checkProviderCapabilities } from './provider-capabilities.js';
 // verify-integrity imports from this module (install.ts); the cycle is safe
 // because verifyIntegrity is only invoked at runtime, never at module-eval time.
 import { verifyIntegrity } from './verify-integrity.js';
@@ -351,9 +351,9 @@ export async function fetchArtifact(
   if (expectedChecksum !== undefined && checksum !== expectedChecksum) {
     throw new Error(
       `install: CHECKSUM MISMATCH for source "${source}"\n` +
-        `  expected: ${expectedChecksum}\n` +
-        `  got:      ${checksum}\n` +
-        `This may indicate a corrupted or tampered artifact.`,
+      `  expected: ${expectedChecksum}\n` +
+      `  got:      ${checksum}\n` +
+      `This may indicate a corrupted or tampered artifact.`,
     );
   }
 
@@ -453,7 +453,7 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
     if (!existingLockForFrozen) {
       console.error(
         `install: --frozen-lockfile: no lockfile found at ${lockPath}. ` +
-          `Run without --frozen-lockfile first to generate one.`,
+        `Run without --frozen-lockfile first to generate one.`,
       );
       process.exit(1);
     }
@@ -462,7 +462,7 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
       if (!lockKey) {
         console.error(
           `install: --frozen-lockfile: extension "${entry.id}" not found in lockfile at ${lockPath}. ` +
-            `Re-run without --frozen-lockfile to update.`,
+          `Re-run without --frozen-lockfile to update.`,
         );
         process.exit(1);
       }
@@ -490,10 +490,10 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
       if (verdict.status === 'stale') {
         console.error(
           `install: --frozen-lockfile: CHECKSUM MISMATCH (drift) for "${entry.id}" at ${lockPath}\n` +
-            `  source:   ${verdict.source ?? lockEntryFrozen.source}\n` +
-            `  expected: ${verdict.expected ?? lockEntryFrozen.checksum}\n` +
-            `  got:      ${verdict.actual ?? '(unknown)'}\n` +
-            `The installed artifact has changed. Re-run without --frozen-lockfile to re-pin.`,
+          `  source:   ${verdict.source ?? lockEntryFrozen.source}\n` +
+          `  expected: ${verdict.expected ?? lockEntryFrozen.checksum}\n` +
+          `  got:      ${verdict.actual ?? '(unknown)'}\n` +
+          `The installed artifact has changed. Re-run without --frozen-lockfile to re-pin.`,
         );
         process.exit(1);
       }
@@ -533,8 +533,8 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
           // whole install. One bad config line must not block every valid entry.
           console.warn(
             `install: WARNING skipping "${entry.id}" — ` +
-              `not found in registry/index.json and not found locally. ` +
-              `Run 'pnpm run build-index' to rebuild the registry, or remove this entry from the config.`,
+            `not found in registry/index.json and not found locally. ` +
+            `Run 'pnpm run build-index' to rebuild the registry, or remove this entry from the config.`,
           );
           continue;
         }
@@ -605,7 +605,7 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
           console.error(warning);
           console.error(
             `install: hard-blocking due to strict_capabilities:true. ` +
-              `Switch to a capable provider or disable strict_capabilities.`,
+            `Switch to a capable provider or disable strict_capabilities.`,
           );
           process.exit(1);
         } else {
@@ -711,9 +711,9 @@ async function loadScopeCascade(opts: CascadeOpts): Promise<ScopeConfigWithMeta[
       if (pinnedSha256 !== fetchedSha256 && mode !== 'update') {
         console.error(
           `install: ERROR org baseline at ${url} changed\n` +
-            `  lock: ${pinnedSha256}\n` +
-            `  fetched: ${fetchedSha256}\n` +
-            `Re-run with --update to accept the new baseline.`,
+          `  lock: ${pinnedSha256}\n` +
+          `  fetched: ${fetchedSha256}\n` +
+          `Re-run with --update to accept the new baseline.`,
         );
         process.exit(1);
       }
@@ -834,7 +834,7 @@ function expandBundles(
       const chain = Array.from(ancestorChain).join(' → ');
       throw new Error(
         `install: bundle cycle detected: ${chain} → ${entry.id}. ` +
-          `Bundles must not reference each other cyclically.`,
+        `Bundles must not reference each other cyclically.`,
       );
     }
 
@@ -894,7 +894,7 @@ function expandBundles(
 function copyDirSync(src: string, dest: string): void {
   if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const srcChild  = path.join(src, entry.name);
+    const srcChild = path.join(src, entry.name);
     const destChild = path.join(dest, entry.name);
     if (entry.isDirectory()) {
       copyDirSync(srcChild, destChild);
@@ -1099,7 +1099,7 @@ export type RegistryHostScope = 'project' | 'user' | 'local' | 'org';
 
 /** Load host-registry at runtime.
  *
- * Source imports the clean '@sox/host-registry' scope — C7: no cross-package
+ * Source imports the clean '@adhd/sox-host-registry' scope — C7: no cross-package
  * ../dist reach-in, and lint-clean under @nx/enforce-module-boundaries. There
  * are no node_modules symlinks for workspace libs at runtime, so the build's
  * post-tsc step (scripts/rewrite-paths.cjs) rewrites this specifier in the
@@ -1115,7 +1115,7 @@ function loadHostRegistry(): {
   getHost(name: string): HostModuleLocal;
   expandHome(p: string): string;
 } {
-  const mod = require('@sox/host-registry') as {
+  const mod = require('@adhd/sox-host-registry') as {
     getHost(name: string): HostModuleLocal;
     expandHome(p: string): string;
   };
@@ -1234,10 +1234,10 @@ export async function declarativeInstall(
     //    Fall back to <srcPath>/dist/ if no bundle dir exists yet.
     if (descriptor.srcPath) {
       const bundleSrcDir = path.join(descriptor.srcPath, 'bundle');
-      const distSrcDir   = path.join(descriptor.srcPath, 'dist');
+      const distSrcDir = path.join(descriptor.srcPath, 'dist');
       const materializeSrc = fs.existsSync(bundleSrcDir) ? bundleSrcDir
-                           : fs.existsSync(distSrcDir)   ? distSrcDir
-                           : null;
+        : fs.existsSync(distSrcDir) ? distSrcDir
+          : null;
       if (materializeSrc) {
         copyDirSync(materializeSrc, storePath);
       }

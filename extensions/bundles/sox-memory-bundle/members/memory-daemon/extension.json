@@ -3,7 +3,7 @@
   "id": "memory-daemon",
   "type": "service",
   "title": "Memory Daemon",
-  "description": "Use this when you need the sox graph-memory enrichment pipeline running: a singleton Unix-socket service that drains the batch-enrich queue and runs deterministic clustering, importance scoring, and auto-links via @sox/memory-enrich — zero LLM calls, no provider required.",
+  "description": "Use this when you need the sox graph-memory enrichment pipeline running: a singleton Unix-socket service that drains the batch-enrich queue and runs deterministic clustering, importance scoring, and auto-links via @adhd/sox-memory-enrich — zero LLM calls, no provider required.",
   "keywords": ["memory", "daemon", "service", "enrichment", "graph", "socket"],
   "author": "sox-ecosystem",
   "compatibility": {

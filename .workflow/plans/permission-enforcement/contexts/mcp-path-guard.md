@@ -39,7 +39,7 @@ effect.
 
 - **Delta Spec:**
   - At server startup, build a Policy from the env:
-    `compilePolicyFromEnv(process.env)` (from `@sox/host-runtime` /
+    `compilePolicyFromEnv(process.env)` (from `@adhd/sox-host-runtime` /
     `libs/host-runtime` — import the published lib symbol). Cache it.
   - In `handleToolCall`, BEFORE `getDb(dbPath)`: if `policy.enforced` and NOT
     `policy.allowsFsWrite(resolvedDbPath)` (and/or `allowsFsRead` for read-only

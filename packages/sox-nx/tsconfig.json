@@ -12,7 +12,7 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "paths": {
-      "@sox/authoring": ["../../libs/authoring/dist/index.d.ts"]
+      "@adhd/sox-authoring": ["../../libs/authoring/dist/index.d.ts"]
     }
   },
   "include": ["src/**/*.ts"],

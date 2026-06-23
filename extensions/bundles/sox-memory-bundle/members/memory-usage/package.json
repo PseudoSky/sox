@@ -1,5 +1,5 @@
 {
-  "name": "@sox/extension-memory-usage",
+  "name": "@adhd/sox-extension-memory-usage",
   "version": "0.1.0",
   "description": "memory-usage extension",
   "private": true,

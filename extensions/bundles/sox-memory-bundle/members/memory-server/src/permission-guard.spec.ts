@@ -21,10 +21,10 @@
  * green ([inv:no-regress]).
  */
 
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 // These tests assert db_path permission ENFORCEMENT, not embedding quality — pin the fast,
 // deterministic hash backend so a `memory_write`'s cold real-ONNX model load never tips the
@@ -37,8 +37,8 @@ afterAll(() => { delete process.env['SOX_EMBED_BACKEND']; });
 // We test via the exported handleToolCall and compilePolicyFromEnv. The guard
 // logic lives in index.ts; compilePolicyFromEnv comes from policy-guard.ts (the
 // vendored minimal implementation inside this extension, [mcp-path-guard.5]).
-import { handleToolCall, compilePolicyFromEnv } from './index.js';
-import { openDb } from '@sox/memory-core';
+import { openDb } from '@adhd/sox-memory-core';
+import { compilePolicyFromEnv, handleToolCall } from './index.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

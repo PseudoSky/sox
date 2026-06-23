@@ -16,19 +16,19 @@
  * (SDK guarantees this for all transport types).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
-  ListToolsRequestSchema,
   CallToolRequestSchema,
+  ListToolsRequestSchema,
   type CallToolResult,
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
+import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getPolicy } from './enforce.js';
 import { defineTool, type ToolContext } from './serve.js';
-import * as path from 'node:path';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -177,7 +177,7 @@ function clearPolicyEnv(): void {
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-describe('@sox/mcp-runtime conformance', () => {
+describe('@adhd/sox-mcp-runtime conformance', () => {
   afterEach(() => {
     clearPolicyEnv();
   });

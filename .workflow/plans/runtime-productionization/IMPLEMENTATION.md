@@ -320,6 +320,7 @@ trivial to find all logs for a given scope+root. The date suffix enables daily r
 an external log rotation daemon.
 
 Startup log (the supervisor's own stdout/stderr, not extension output):
+
 ```
 ~/.sox/logs/<supervisorId>/supervisor-<YYYY-MM-DD>.log
 ```
@@ -665,6 +666,7 @@ live-probe every extension it manages. Output is a multi-row health table with o
 extension across all supervisors on the machine.
 
 **Filtering flags:**
+
 - `--id=<extId>` — filter rows to extensions whose id matches. May match across multiple
   projects (e.g. two projects both running `memory-server`). When exactly one match is found,
   the output switches to the detailed single-extension view (log tail, full uptime, run history).
@@ -1293,7 +1295,7 @@ that `sox upgrade --all` would otherwise blindly reinstall.
 
 ```typescript
 // In cmdUpgrade, for each InstallRecord before calling install():
-import { getScopePaths, loadLockfile } from '@sox/install-engine';
+import { getScopePaths, loadLockfile } from '@adhd/sox-install-engine';
 
 const { lockfile: lockfilePath } = getScopePaths(record.scope, record.root);
 const lockfile = loadLockfile(lockfilePath);

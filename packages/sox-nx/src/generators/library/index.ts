@@ -1,5 +1,5 @@
 /**
- * @sox/nx library generator — thin wrapper around @nx/js:lib.
+ * @adhd/sox-nx library generator — thin wrapper around @nx/js:lib.
  *
  * Wraps the @nx/js:lib generator with sox-specific defaults (type:lib tag, etc.)
  * This is intentionally minimal — it delegates to the upstream generator.

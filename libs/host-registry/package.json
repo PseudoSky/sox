@@ -1,5 +1,5 @@
 {
-  "name": "@sox/host-registry",
+  "name": "@adhd/sox-host-registry",
   "version": "0.1.0",
   "description": "Pluggable per-host registry: claude + codex modules with detect/scopePaths/surfaces",
   "private": true,

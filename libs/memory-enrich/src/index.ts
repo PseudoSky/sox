@@ -1,5 +1,5 @@
 /**
- * @sox/memory-enrich — deterministic memory graph enrichment.
+ * @adhd/sox-memory-enrich — deterministic memory graph enrichment.
  * No LLM, no provider, no network. Byte-reproducible outputs.
  *
  * Public API per CONTRACTS.md C1.
@@ -8,7 +8,7 @@
 // ── Package version (C1.11) ───────────────────────────────────────────────────
 
 /**
- * Semver of @sox/memory-enrich. Written into node.enrich_ver.pass on every enrichment pass.
+ * Semver of @adhd/sox-memory-enrich. Written into node.enrich_ver.pass on every enrichment pass.
  * A breaking change to the enrichment algorithm increments the major version and
  * triggers re-enrichment detection (UC10).
  */
@@ -17,11 +17,10 @@ export const ENRICH_VERSION = '1.0.0';
 // ── Types (C1.1, C3.1–C3.4) ──────────────────────────────────────────────────
 
 export type {
-  EnrichableNode,
+  CommunityNodeV1, EnrichableNode,
   EnrichmentProvenance,
   EpisodeSummary,
-  NodeV1,
-  CommunityNodeV1,
+  NodeV1
 } from './types.js';
 
 // ── C1.4 provenance ───────────────────────────────────────────────────────────
@@ -45,23 +44,14 @@ export { extractiveSummary } from './extractive.js';
 // ── C1.8 + C1.10 clustering ───────────────────────────────────────────────────
 
 export {
-  clusterStore,
-  clusterStats,
-  clusterSubset,
-  materializeClusters,
-  dropSubsetLens,
-  listSubsetLenses,
+  clusterStats, clusterStore, clusterSubset, dropSubsetLens,
+  listSubsetLenses, materializeClusters
 } from './cluster.js';
 export type {
-  ClusterResult,
-  ClusterStoreOptions,
-  ClusterStoreResult,
-  ClusterStats,
-  ClusterSubsetOptions,
-  ClusterSubsetResult,
-  MaterializeOptions,
-  SubsetLensDescriptor,
-  DropSubsetLensResult,
+  ClusterResult, ClusterStats, ClusterStoreOptions,
+  ClusterStoreResult, ClusterSubsetOptions,
+  ClusterSubsetResult, DropSubsetLensResult, MaterializeOptions,
+  SubsetLensDescriptor
 } from './cluster.js';
 
 // ── C1.11 structured filter + SQL builder ─────────────────────────────────────
@@ -83,3 +73,4 @@ export type { EnrichOnWriteParams, EnrichOnWriteResult } from './enrich.js';
 
 export { runBatchEnrich } from './batch.js';
 export type { BatchEnrichOptions, BatchEnrichResult } from './batch.js';
+

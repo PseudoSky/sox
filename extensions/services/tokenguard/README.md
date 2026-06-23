@@ -161,7 +161,7 @@ Client Code
 [PROVIDER_BASE_URL=http://localhost:9099]
     ↓
 TokenGuard Proxy
-    ├─ Tokenize request (detectors → mapper → @sox/tokenguard-core)
+    ├─ Tokenize request (detectors → mapper → @adhd/sox-tokenguard-core)
     ├─ Forward to upstream
     ├─ Receive response
     ├─ Detokenize response
@@ -170,7 +170,7 @@ TokenGuard Proxy
 Client sees original values
 ```
 
-The proxy is **provider-agnostic** — any HTTP API becomes a secure target. The engine (@sox/tokenguard-core) handles all cryptographic/string work; the service (@sox/tokenguard) handles HTTP forwarding and audit logging.
+The proxy is **provider-agnostic** — any HTTP API becomes a secure target. The engine (@adhd/sox-tokenguard-core) handles all cryptographic/string work; the service (@adhd/sox-tokenguard) handles HTTP forwarding and audit logging.
 
 ## Audit Log
 
@@ -182,6 +182,7 @@ Every request/response pair is logged to `audit.jsonl` (in the configured `SOX_C
 ```
 
 Fields:
+
 - `event`: `inbound` or `outbound`
 - `timestamp`: ISO 8601
 - `swap_count`: number of tokens that appeared in the outbound response

@@ -13,9 +13,9 @@
  *     Runs post-publish in CI.
  */
 
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as crypto from 'node:crypto';
 
 interface ExtensionManifest {
   $schema: string;
@@ -153,7 +153,7 @@ function findExtensionDirs(root: string): Array<{ extPath: string; bundleId?: st
  * For published extensions: npm CDN URL.
  * For local/unpublished extensions: file:// path.
  *
- * The NPM package name convention: @sox/extension-<id>
+ * The NPM package name convention: @adhd/sox-extension-<id>
  */
 function resolveSource(extDir: string, manifest: ExtensionManifest): string {
   // Check if there's an explicit source in the manifest
@@ -161,7 +161,7 @@ function resolveSource(extDir: string, manifest: ExtensionManifest): string {
   const pkgPath = path.join(extDir, 'package.json');
   if (fs.existsSync(pkgPath)) {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string; version?: string };
-    const pkgName = pkg.name ?? `@sox/extension-${manifest.id}`;
+    const pkgName = pkg.name ?? `@adhd/sox-extension-${manifest.id}`;
     // Convention: if the package has been published, use cdn.jsdelivr.net
     // For local development, use file:// path
     // We use the manifest checksum presence as a signal of publication

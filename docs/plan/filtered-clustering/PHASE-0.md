@@ -37,7 +37,7 @@ server domain-agnostic.
    community-materialization code the global batch pass uses — not a fork.
 2. **Coexistence, no clobber.** A filtered recluster must not destroy the global
    community partition (or other filters' communities), and vice-versa.
-3. **The server stays generic.** `memory-server` / `@sox/memory-enrich` must carry
+3. **The server stays generic.** `memory-server` / `@adhd/sox-memory-enrich` must carry
    **zero** claude-agent semantics. They know `node`/`episode`/`community`/`tag`/
    `filter` — never `lesson`, `reflection`, `subject:skill`, `curator`. All domain
    meaning lives client-side, in how the caller builds the filter and reads the
@@ -46,7 +46,7 @@ server domain-agnostic.
 
 ## What changed
 
-### 1. `@sox/memory-enrich` — the capability  (commit `dc30ee8`)
+### 1. `@adhd/sox-memory-enrich` — the capability  (commit `dc30ee8`)
 
 `libs/memory-enrich/src/cluster.ts`, `index.ts`, `cluster-subset.spec.ts`.
 
@@ -114,7 +114,7 @@ server domain-agnostic.
 ## API
 
 ```ts
-// @sox/memory-enrich
+// @adhd/sox-memory-enrich
 clusterSubset(db, {
   restrict?: { sql: string; params: unknown[] }, // additive WHERE over alias `n`
   filter?: unknown,        // opaque; drives provenance hash + stored in meta

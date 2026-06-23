@@ -1,5 +1,5 @@
 /**
- * @sox/tokenguard-core — detector pipeline
+ * @adhd/sox-tokenguard-core — detector pipeline
  *
  * Ordered detector pipeline (order is load-bearing — do NOT reorder):
  *   known reals → email → fqdn → ipv6 → ipv4 → mac → phone
@@ -8,10 +8,10 @@
  * Optional detectors (phone, ipv6) are toggled via DetectorConfig, NOT via process.env.
  */
 
+import type { Mapper } from './mapper.js';
 import type { DetectorConfig } from './types.js';
 
 export type { DetectorConfig };
-import type { Mapper } from './mapper.js';
 
 // ── Types that are never tokenized (loopback, unspecified addresses) ────────
 export const NEVER = new Set<string>(['127.0.0.1', '0.0.0.0', '::1', 'localhost']);
@@ -53,17 +53,17 @@ export const FQDN_RE =
 export const IPV6_RE = new RegExp(
   '(?<![:.\\.\\w])' +
   '(?:' +
-    '(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|' +
-    '(?:[0-9A-Fa-f]{1,4}:){1,7}:|' +
-    '(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|' +
-    '(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}|' +
-    '(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}|' +
-    '(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}|' +
-    '(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}|' +
-    '[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}|' +
-    ':(?::[0-9A-Fa-f]{1,4}){1,7}|' +
-    '::(?:ffff(?::0{1,4})?:)?(?:(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])\\.){3}(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])|' +
-    '(?:[0-9A-Fa-f]{1,4}:){1,4}:(?:(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])\\.){3}(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])' +
+  '(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|' +
+  '(?:[0-9A-Fa-f]{1,4}:){1,7}:|' +
+  '(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|' +
+  '(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}|' +
+  '(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}|' +
+  '(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}|' +
+  '(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}|' +
+  '[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}|' +
+  ':(?::[0-9A-Fa-f]{1,4}){1,7}|' +
+  '::(?:ffff(?::0{1,4})?:)?(?:(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])\\.){3}(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])|' +
+  '(?:[0-9A-Fa-f]{1,4}:){1,4}:(?:(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])\\.){3}(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])' +
   ')' +
   '(?![:.\\.\\w])',
   'g',
