@@ -63,6 +63,10 @@ export type {
   InvalidateError,
 } from './write.js';
 
+// ── Update (in-place editor) ──────────────────────────────────────────────────
+export { memoryUpdate, deepMerge } from './update.js';
+export type { UpdateParams, UpdateResult, UpdateError } from './update.js';
+
 // ── Recall + federation ───────────────────────────────────────────────────────
 export {
   memoryRecall,
