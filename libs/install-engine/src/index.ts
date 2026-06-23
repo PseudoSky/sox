@@ -53,6 +53,15 @@ export {
 } from './install.js';
 export type { InstallDescriptor, DeclarativeInstallResult } from './install.js';
 
+// ─── Re-export verify-integrity (ADR-0003 is-this-current primitive) ──────────
+
+export type {
+  IntegrityStatus,
+  IntegrityResult,
+  VerifyIntegrityOptions,
+} from './verify-integrity.js';
+export { verifyIntegrity } from './verify-integrity.js';
+
 // ─── Re-export build-index ────────────────────────────────────────────────────
 
 export type { IndexEntry as BuildIndexEntry } from './build-index.js';

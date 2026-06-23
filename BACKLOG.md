@@ -82,9 +82,9 @@ checksum-driven, not version-driven), but a three-way inconsistency. Fixed: bump
 to `^1.1.0` (a `^0.1.0` constraint would have rejected 1.1.0), and the stale `tool_version: "1.0.0"`
 line in CLAUDE.md → 1.1.0; resynced the registry. Surfaced when refreshing the user-scope install.
 
-### BL-31 — `sox stop` doesn't verify the kill or escalate to SIGKILL; orphaned daemons survive
+### ~~BL-31~~ — `sox stop` doesn't verify the kill or escalate to SIGKILL; orphaned daemons survive — **Resolved** (`b1d4005`)
 
-**Severity:** High (zombie process can keep hitting a removed dependency) · **Status:** Open
+**Severity:** High (zombie process can keep hitting a removed dependency) · **Status:** Resolved — `host-runtime/reaper.ts`: `killAndVerify` (SIGTERM → poll `process.kill(pid,0)` → SIGKILL escalation after grace → re-verify) + store-path orphan reaper (PPID-1, identity-matched, whitespace-bounded so unrelated processes are spared); `cmdStop` exits 1 on undead; `cmdStart` dedup-reap guard. e2e Step 7b reproduces the exact incident (real PPID-1 memory-server orphan DEAD after stop, unrelated SPARED). The original Open writeup follows.
 During the memory upgrade, the running pre-P6 `memory-daemon` (pid 33079, started before the
 store refresh) had been **orphaned (PPID 1 — its supervisor had exited)**. `sox stop
 --id=memory-daemon` sent it **SIGTERM, reported "stop complete", and returned** — but the process
@@ -99,6 +99,50 @@ This is the failure mode the `runtime-productionization` SIGKILL-escalation / st
 targets, but it does not cover an already-orphaned process whose supervisor is gone. Fix: `stop`
 must poll-verify exit and escalate to SIGKILL after a grace period; add a store-path-matched reaper
 for orphaned daemons. Discovered diagnosing "a ton of requests going to LM Studio."
+
+### ~~BL-32~~ — make per-extension versioning real (single-source propagation) — **Withdrawn** (superseded by ADR-0003)
+
+**Status:** Withdrawn. Investigating BL-30 surfaced that per-extension semver is **vestigial** — the registry holds one build per id (semver never resolves), `semverSatisfies` arrived with the nx migration, and the checksum is the sole integrity authority. **ADR-0003** retires per-extension version entirely (identity = `id + checksum`), so "make versioning real" is moot. See `docs/decisions/0003-extension-identity-is-content-addressed.md`.
+
+### BL-33 — `check-registry-sync.ts` scanner doesn't recurse into bundle members → false drift
+
+**Severity:** Medium (false CI-gate failure) · **Status:** Open
+`scripts/check-registry-sync.ts`'s inlined `findExtensionDirs` does **not** scan
+`extensions/bundles/<id>/members/`, so it flags `memory-cli/daemon/flush/server/usage` as "in
+registry, not on disk." Reproduces identically against HEAD (pre-ADR-0003) — a latent bug in the
+`check-registry` gate's scanner, not in the run-many/test/e2e gate. Fix: make its scanner recurse
+into `members/`, matching `scripts/build-index.ts`. Surfaced during the ADR-0003 implementation.
+
+### BL-34 — `sox` app entrypoint path is not index-resolvable → checksum hashes `extension.json`
+
+**Severity:** Low · **Status:** Open
+The `sox` app declares entrypoint `dist/apps/sox/main.js`, which isn't resolvable relative to
+`apps/sox/`, so `resolveChecksum` falls through to hashing the manifest (`extension.json`) instead
+of the built artifact. Works (and correctly changed when ADR-0003 removed `version`), but the sox
+entrypoint should be index-resolvable so its checksum tracks the *built* artifact like every other
+code type. Surfaced during the ADR-0003 implementation.
+
+### BL-35 — `install()` test runs pollute the real install-registry (no path injection)
+
+**Severity:** Medium (test isolation; live ledger pollution) · **Status:** Open
+Any spec that calls `install()` (e.g. `integrity.scope.spec.ts`) triggers `upsertInstallRecord`,
+which uses `resolveInstallRegistryPath()` and **ignores** the test's sandboxed `configPath`/
+`lockfilePath` — so it writes `fix-*` fixture records into the **real** install-registry under
+`SOX_HOME` (`/Users/nix/dev/ai/claude-agents/install-registry.json`, observed grown to ~441
+entries). Harmless to `upgrade --all` (polluted ids report `not-installed` and are skipped) but it
+corrupts the live consumer ledger. Fix: add `installRegistryPath?` to `InstallOptions`, thread it
+into `upsertInstallRecord`, and have the integrity spec point it at a tmp path. (The orchestrator
+purges the leaked `fix-*` records as a one-off; this is the permanent fix.) Surfaced building
+`upgrade --all`.
+
+### BL-36 — runtime record hardcodes `type: 'mcp-server'` for every detached service
+
+**Severity:** Low/Medium (misleading `sox list`/`status`; type unreliable) · **Status:** Open
+`cmdStart`'s service-registry start path writes `type: 'mcp-server'` into the runtime record for
+**every** detached service, so the runtime entry's `type` can't distinguish a `service` from an
+`mcp-server`. `rollingRestartConsumer` works around it by classifying from the manifest, but
+`sox list`/`status` may still mislabel services. Fix: record the real manifest `type` at start.
+Surfaced building the rolling-restart classifier.
 
 
 > **BL-21, BL-22, BL-23, BL-24 are owned by `docs/plan/memory-enrichment/IMPLEMENTATION.md` (§0).**

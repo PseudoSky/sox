@@ -30,8 +30,9 @@ import {
   diffAll,
   readInstallRegistry,
   removeInstallRecord,
+  verifyIntegrity,
 } from '@sox/install-engine';
-import type { InstallDescriptor, DeclarativeInstallResult, UpdateCtx, InstallRecord } from '@sox/install-engine';
+import type { InstallDescriptor, DeclarativeInstallResult, UpdateCtx, InstallRecord, Scope } from '@sox/install-engine';
 import {
   getScopePaths,
   getRuntimeFilePath,
@@ -1508,13 +1509,190 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
 // ─── upgrade ─────────────────────────────────────────────────────────────────
 
 /**
- * cmdUpgrade — P9: re-install an extension across all projects that have it.
+ * Resolve the lockfile path for an install-registry record's scope+root.
+ * Covers all four ADR-0003 scopes. `getScopePaths` (host-runtime) handles
+ * user/project/local; org is repo-rooted and resolved via install-engine's
+ * `getScopePath('org')`.
+ */
+function lockfilePathForRecord(scope: string, root: string): string {
+  if (scope === 'org') return getScopePath('org').lockfile;
+  return getScopePaths(scope, root).lockfile;
+}
+
+/**
+ * Resolve the config path for an install-registry record's scope+root.
+ * Symmetric with lockfilePathForRecord — the re-install during upgrade MUST
+ * target the consumer's actual config + lockfile (at record.root), never the
+ * scope default. (install()'s getScopePath is REPO_ROOT/homedir-based and would
+ * otherwise re-pin the wrong scope file for a project/local consumer whose root
+ * is not the repo — clobbering an unrelated lockfile.)
+ */
+function configPathForRecord(scope: string, root: string): string {
+  if (scope === 'org') return getScopePath('org').config;
+  return getScopePaths(scope, root).config;
+}
+
+/**
+ * Read an extension's declared `type` from the manifest at its store dir.
+ * `source` is a file:// URL to the built entrypoint (…/dist/index.js) or a
+ * declarative content file (…/SKILL.md). The extension.json sits at the
+ * directory that contains `dist/` (or the content file's directory). We walk
+ * up from the artifact until an extension.json is found (bounded to 3 levels).
+ * Returns null if it cannot be resolved.
+ */
+function manifestTypeForSource(source: string): string | null {
+  const fsM = require('node:fs') as typeof import('node:fs');
+  const pathM = require('node:path') as typeof import('node:path');
+  if (!source.startsWith('file://')) return null;
+  let dir = pathM.dirname(source.slice('file://'.length));
+  for (let i = 0; i < 4; i++) {
+    const ext = pathM.join(dir, 'extension.json');
+    if (fsM.existsSync(ext)) {
+      try {
+        const m = JSON.parse(fsM.readFileSync(ext, 'utf8')) as { type?: string };
+        return typeof m.type === 'string' ? m.type : null;
+      } catch { return null; }
+    }
+    const parent = pathM.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+export type RestartDisposition = 'restarted' | 'reconnect-needed' | 'placement-only' | 'not-running';
+
+export interface RestartResult {
+  disposition: RestartDisposition;
+  /** Human-readable detail for the report / logs. */
+  detail: string;
+}
+
+/**
+ * Roll a single just-upgraded consumer onto its new artifact.
  *
- * Usage: sox upgrade <ext-id> --all
+ * Classification (ADR-0003 + BL-31):
+ *   - `service` running as a live supervised pid → VERIFIED-STOP (BL-31
+ *     killAndVerify + reapOrphansForExtension so the old pid cannot survive) then
+ *     dedup-guarded START on the new code. Honest rolling handoff (the daemon is
+ *     a socket singleton; stop→start, not zero-downtime overlap).
+ *   - `mcp-server` (stdio / on-demand, spawned by the client) → 'reconnect-needed'.
+ *     The next client connection respawns it on the new code; we don't own its pid.
+ *   - declarative (skill/hook/command/prompt/agent) → 'placement-only'. The
+ *     re-install already refreshed placement; there is no process.
  *
- * Reads ~/.sox/install-registry.json, finds all InstallRecords for <ext-id>,
- * verifies each is still in that project's lockfile, then re-runs install()
- * with mode:'update' for each one. No shell subprocess is spawned.
+ * The stop and start are executed by shelling out to THIS CLI's own
+ * `stop --id` / `start --id` so the exact, tested BL-31 verified-stop and
+ * dedup-guarded start paths are reused verbatim — no signal logic is duplicated.
+ * Services are rolled SEQUENTIALLY by the caller (one at a time).
+ */
+async function rollingRestartConsumer(
+  extId: string,
+  scope: string,
+  root: string,
+  log: (m: string) => void,
+): Promise<RestartResult> {
+  const lockfilePath = lockfilePathForRecord(scope, root);
+  const runtimeFilePath = getRuntimeFilePath(lockfilePath);
+
+  // What is this extension? The MANIFEST type is authoritative — the
+  // service-registry start path hardcodes runtime entries to type 'mcp-server'
+  // for every detached service, so the runtime entry's `type` cannot be trusted
+  // to distinguish a long-running `service` from an on-demand `mcp-server`.
+  // Resolve from the lockfile `source` (→ store dir → extension.json) first,
+  // then the runtime entry's source, then the entry's own type as a last resort.
+  const record = getRuntimeRecord(runtimeFilePath);
+  const liveEntry = record?.entries?.find((e) => e.id === extId || e.key === extId);
+  const lockSource = (() => {
+    const lock = loadLockfile(lockfilePath);
+    if (!lock) return undefined;
+    const key = Object.keys(lock.resolved).find((k) => k === extId || k.startsWith(`${extId}@`));
+    return key ? lock.resolved[key]?.source : undefined;
+  })();
+  const declaredType =
+    (lockSource ? manifestTypeForSource(lockSource) : null) ??
+    (liveEntry?.source ? manifestTypeForSource(liveEntry.source) : null) ??
+    liveEntry?.type ??
+    null;
+
+  // Is it a running supervised service (live pid)?
+  const liveRunning =
+    liveEntry !== undefined &&
+    liveEntry.running === true &&
+    typeof liveEntry.pid === 'number' &&
+    pidAliveRT(liveEntry.pid);
+
+  if (declaredType === 'mcp-server') {
+    return {
+      disposition: 'reconnect-needed',
+      detail: 'stdio/on-demand server — respawns with new code on next client connection',
+    };
+  }
+
+  if (declaredType !== 'service') {
+    // declarative content type (skill/hook/command/prompt/agent) — placement already refreshed.
+    return { disposition: 'placement-only', detail: `${declaredType ?? 'declarative'} — placement refreshed, no process` };
+  }
+
+  if (!liveRunning) {
+    return { disposition: 'not-running', detail: 'service not currently running — nothing to restart' };
+  }
+
+  // ── Rolling restart: verified-stop → dedup-guarded start, via this CLI. ──────
+  const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
+  const selfArgv1 = process.argv[1] as string;
+
+  const stopArgs = [
+    '--enable-source-maps', selfArgv1, 'stop',
+    `--id=${extId}`, `--scope=${scope}`, `--root=${root}`,
+  ];
+  log(`verified-stop ${extId} (BL-31 killAndVerify + orphan reap)`);
+  const stop = spawnSync(process.execPath, stopArgs, { encoding: 'utf8' });
+  const stopOut = `${stop.stdout ?? ''}${stop.stderr ?? ''}`.trim();
+  if (stopOut) for (const line of stopOut.split('\n')) log(`  stop: ${line}`);
+  if (stop.status !== 0) {
+    return { disposition: 'restarted', detail: `STOP FAILED (exit ${String(stop.status)}) — old pid may survive; NOT restarted` };
+  }
+
+  const startArgs = [
+    '--enable-source-maps', selfArgv1, 'start',
+    `--id=${extId}`, `--scope=${scope}`, `--root=${root}`,
+  ];
+  log(`start ${extId} on new artifact (dedup-guarded)`);
+  const start = spawnSync(process.execPath, startArgs, { encoding: 'utf8' });
+  const startOut = `${start.stdout ?? ''}${start.stderr ?? ''}`.trim();
+  if (startOut) for (const line of startOut.split('\n')) log(`  start: ${line}`);
+  if (start.status !== 0) {
+    return { disposition: 'restarted', detail: `START FAILED (exit ${String(start.status)})` };
+  }
+
+  return { disposition: 'restarted', detail: 'verified-stop → start on new artifact (no orphan)' };
+}
+
+interface ConsumerOutcome {
+  extId: string;
+  scope: string;
+  root: string;
+  state: 'current' | 'upgraded' | 'restarted' | 'reconnect-needed' | 'not-installed' | 'unresolvable' | 'failed';
+  detail: string;
+}
+
+/**
+ * cmdUpgrade — content-addressed upgrade tooling (ADR-0003 + BL-31).
+ *
+ * Two modes:
+ *   sox upgrade <id> --all   — upgrade every install-registry consumer of <id>.
+ *   sox upgrade --all        — upgrade EVERY consumer of EVERY id (full deploy).
+ *
+ * For each consumer (extId × scope × root) the flow is uniform:
+ *   1. verifyIntegrity(scope, id) — the ONE is-this-current check (sha256 of the
+ *      artifact at the lockfile `source` vs the recorded checksum).
+ *   2. CURRENT → report current, make ZERO changes (idempotent — a fully-current
+ *      system is the verification; there is no separate doctor/verify command).
+ *   3. STALE → re-install (mode:'update' refreshes artifact + re-pins lockfile),
+ *      then ROLLING-RESTART the consumer if it is a running supervised service
+ *      (BL-31 verified-stop → dedup-guarded start; sequential, one at a time).
+ *      stdio servers → reconnect-needed; declarative → placement refreshed.
  */
 async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
   // Accept positional id as well as --id flag.
@@ -1525,15 +1703,9 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
   }
   const extId = flags['id'] ?? positionalUpg;
 
-  if (extId === undefined || extId === '') {
-    process.stderr.write(`${CLI} upgrade: extension id required (positional or --id)\n`);
-    process.stderr.write(`  Usage: ${CLI} upgrade <ext-id> --all\n`);
-    process.exit(1);
-  }
-
   if (flags['all'] === undefined) {
     process.stderr.write(`${CLI} upgrade: --all flag required\n`);
-    process.stderr.write(`  Usage: ${CLI} upgrade <ext-id> --all\n`);
+    process.stderr.write(`  Usage: ${CLI} upgrade [<ext-id>] --all\n`);
     process.exit(1);
   }
 
@@ -1542,56 +1714,135 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
   const registryPath = pathMod.join(soxHome, 'install-registry.json') as string;
   const registry = readInstallRegistry(registryPath);
 
-  const matches = registry.installs.filter((r) => r.extId === extId);
+  // Consumer set: every InstallRecord (optionally filtered to a single id).
+  const consumers = extId !== undefined && extId !== ''
+    ? registry.installs.filter((r) => r.extId === extId)
+    : registry.installs;
 
-  if (matches.length === 0) {
-    process.stdout.write(`${CLI} upgrade: no install records found for '${extId}'\n`);
+  if (consumers.length === 0) {
+    process.stdout.write(
+      extId
+        ? `${CLI} upgrade: no install records found for '${extId}'\n`
+        : `${CLI} upgrade: no install records found (nothing installed via this machine)\n`,
+    );
     process.exit(0);
   }
 
-  process.stdout.write(`Upgrading ${extId} in ${matches.length} project${matches.length === 1 ? '' : 's'}:\n`);
+  process.stdout.write(
+    `${CLI} upgrade --all${extId ? ` ${extId}` : ''}: verifying ${consumers.length} consumer${consumers.length === 1 ? '' : 's'}\n\n`,
+  );
 
-  let upgraded = 0;
+  const outcomes: ConsumerOutcome[] = [];
+  // Services that were upgraded AND need a rolling restart — rolled sequentially
+  // AFTER all re-installs so we never interleave artifact churn with a restart.
+  const toRestart: Array<{ extId: string; scope: string; root: string }> = [];
+
+  let changed = 0;
   let failed = 0;
 
-  for (let i = 0; i < matches.length; i++) {
-    const record = matches[i]!;
-    const label = `  [${i + 1}/${matches.length}] ${record.root} (scope: ${record.scope})`;
+  for (let i = 0; i < consumers.length; i++) {
+    const record = consumers[i]!;
+    const tag = `[${i + 1}/${consumers.length}] ${record.extId} (scope: ${record.scope}, root: ${record.root})`;
+    const lockfilePath = lockfilePathForRecord(record.scope, record.root);
 
-    // Upgrade safety check: verify the extension still appears in that project's lockfile.
-    // Guards against stale install-registry entries where sox uninstall ran but
-    // removeInstallRecord failed (best-effort write).
-    const { lockfile: lockfilePath } = getScopePaths(record.scope, record.root);
+    // Guard: stale install-registry entry where uninstall ran but removeInstallRecord
+    // failed (best-effort write). If the id is no longer in the lockfile, skip it.
     const currentLockfile = loadLockfile(lockfilePath);
     const inLockfile = currentLockfile !== null &&
       Object.keys(currentLockfile.resolved).some(
         (k) => k === record.extId || k.startsWith(`${record.extId}@`),
       );
-
     if (!inLockfile) {
-      process.stdout.write(
-        `${label} ... skipped (not in current lockfile — run ${CLI} install to re-add)\n`,
-      );
+      process.stdout.write(`  ${tag}\n    → not in lockfile (skipped — run ${CLI} install to re-add)\n`);
+      outcomes.push({ extId: record.extId, scope: record.scope, root: record.root, state: 'not-installed', detail: 'not in lockfile' });
       continue;
     }
 
-    process.stdout.write(`${label} ... `);
+    // 1. The ONE is-this-current check.
+    const verdict = await verifyIntegrity(record.scope as Scope, record.extId, { lockfilePath });
 
+    if (verdict.status === 'current') {
+      process.stdout.write(`  ${tag}\n    → current (${(verdict.actual ?? '').slice(0, 19)}…) — no change\n`);
+      outcomes.push({ extId: record.extId, scope: record.scope, root: record.root, state: 'current', detail: 'checksum matches' });
+      continue;
+    }
+
+    if (verdict.status === 'unresolvable') {
+      process.stdout.write(`  ${tag}\n    → UNRESOLVABLE: ${verdict.error ?? 'artifact missing'}\n`);
+      outcomes.push({ extId: record.extId, scope: record.scope, root: record.root, state: 'unresolvable', detail: verdict.error ?? 'artifact missing' });
+      failed++;
+      continue;
+    }
+
+    // 2. STALE — re-install (refresh artifact + re-pin lockfile).
+    process.stdout.write(
+      `  ${tag}\n    → STALE (expected ${(verdict.expected ?? '').slice(0, 19)}…, got ${(verdict.actual ?? '').slice(0, 19)}…) — re-installing\n`,
+    );
     try {
+      // Target the consumer's ACTUAL config + lockfile at record.root — not the
+      // scope default — so a project/local consumer outside the repo re-pins its
+      // own lockfile (never an unrelated one).
       await install({
-        scope: record.scope,
+        scope: record.scope as Scope,
         mode: 'update',
         root: record.root,
+        configPath: configPathForRecord(record.scope, record.root),
+        lockfilePath: lockfilePath,
       });
-      upgraded++;
-      process.stdout.write(`done\n`);
     } catch (e) {
+      process.stdout.write(`    → RE-INSTALL FAILED: ${String(e)}\n`);
+      outcomes.push({ extId: record.extId, scope: record.scope, root: record.root, state: 'failed', detail: String(e) });
       failed++;
-      process.stdout.write(`FAILED: ${String(e)}\n`);
+      continue;
+    }
+    changed++;
+    outcomes.push({ extId: record.extId, scope: record.scope, root: record.root, state: 'upgraded', detail: 're-pinned to new artifact' });
+    // Defer the restart decision to the sequential pass below.
+    toRestart.push({ extId: record.extId, scope: record.scope, root: record.root });
+  }
+
+  // 3. Rolling restart pass — SEQUENTIAL, one service at a time.
+  if (toRestart.length > 0) {
+    process.stdout.write(`\n${CLI} upgrade: rolling restart pass (${toRestart.length} upgraded consumer${toRestart.length === 1 ? '' : 's'})\n`);
+    for (const r of toRestart) {
+      process.stdout.write(`  ${r.extId} (scope: ${r.scope})\n`);
+      const res = await rollingRestartConsumer(
+        r.extId, r.scope, r.root,
+        (m) => process.stdout.write(`    ${m}\n`),
+      );
+      // Reflect the disposition back onto the matching outcome.
+      const oc = outcomes.find((o) => o.extId === r.extId && o.scope === r.scope && o.root === r.root && o.state === 'upgraded');
+      if (oc) {
+        if (res.disposition === 'restarted' && !res.detail.includes('FAILED')) {
+          oc.state = 'restarted';
+        } else if (res.disposition === 'reconnect-needed') {
+          oc.state = 'reconnect-needed';
+        }
+        oc.detail = res.detail;
+      }
+      if (res.detail.includes('FAILED')) failed++;
     }
   }
 
-  process.stdout.write(`\n${upgraded} upgraded, ${failed} failed.\n`);
+  // ── Per-consumer report ──────────────────────────────────────────────────────
+  process.stdout.write(`\n${CLI} upgrade — per-consumer report\n`);
+  process.stdout.write(
+    `  ${'EXTENSION'.padEnd(18)} ${'SCOPE'.padEnd(8)} ${'STATE'.padEnd(17)} DETAIL\n`,
+  );
+  process.stdout.write(`  ${'─'.repeat(18)} ${'─'.repeat(8)} ${'─'.repeat(17)} ${'─'.repeat(40)}\n`);
+  for (const o of outcomes) {
+    process.stdout.write(
+      `  ${o.extId.padEnd(18)} ${o.scope.padEnd(8)} ${o.state.padEnd(17)} ${o.detail}\n`,
+    );
+  }
+
+  const currentCount = outcomes.filter((o) => o.state === 'current').length;
+  process.stdout.write(
+    `\n${currentCount} current, ${changed} upgraded, ${failed} failed.\n`,
+  );
+  if (changed === 0 && failed === 0) {
+    process.stdout.write(`${CLI} upgrade: system fully current — zero changes.\n`);
+  }
   process.exit(failed > 0 ? 1 : 0);
 }
 
