@@ -10,6 +10,14 @@
 
 ---
 
+## Amendment log
+
+| Date | Branch | Author | Summary |
+|------|--------|--------|---------|
+| 2026-06-22 | `memory-enrich/filtered-clustering` | api-designer | **Review-driven amendment (REVIEW-architecture.md finding #6).** Added C1.8.1 (`clusterSubset` — exported), C1.8.2 (`materializeClusters` — exported), C1.8.3 (`filterProvenanceHash` + `communityUid(salt)` — internal, behaviour contracted) and C1.12 (`buildFiltersClause` + `MemoryFilter` — exported). Amended C2.2 (`memory_recall` `community_uid` now means global scope by default). Amended C2.6 (`memory_get_community` global-scope default for `entity_uid` resolution; OQ-1 resolved). Amended C2.11 (`memory_curate` `recluster` two-mode dispatch, new subset output shape; OQ-3 resolved). Amended C2.12 (`memory_stats` / `clusterStats` scoped to global communities only). Added C3.7 (`cluster_scope` provenance model). Updated C4.5 (global-scoped stats queries). Updated C7 traceability. Resolved OQ-1, OQ-3, OQ-4 in C8. No changes to code, `BACKLOG.md`, or other plan docs. |
+
+---
+
 ## C0. Document conventions
 
 - **E#** — enrichment from SPEC.md §4.
@@ -406,6 +414,197 @@ export function clusterStore(
 ): ClusterStoreResult;
 ```
 
+### C1.8.1 Filtered clustering: `clusterSubset` — NEW
+
+**Source of truth:** `libs/memory-enrich/src/cluster.ts` (`clusterSubset`, `ClusterSubsetOptions`, `ClusterSubsetResult`).
+
+```typescript
+// libs/memory-enrich/src/cluster.ts
+
+export interface ClusterSubsetOptions {
+  /**
+   * Structured filter — the preferred way to call clusterSubset.
+   * The engine builds the SQL predicate internally via buildFiltersClause
+   * (C1.12) so callers do not need to know the internal table alias or SQL shape.
+   * The filter also drives the deterministic provenance hash and is stored
+   * on each persisted community node's meta for traceability.
+   *
+   * Vocabulary (same as memory_recall filters):
+   *   project_path, topic, tags, tags_match_all,
+   *   importance_min, t_created_after, t_created_before
+   */
+  filter?: MemoryFilter;
+  /**
+   * Low-level additive WHERE fragment over alias `n` — {sql, params}.
+   * Prefer `filter`; this exists for callers with a pre-built clause.
+   * When both are supplied, `filter` drives the provenance hash and
+   * `restrict` provides the SQL (they must be semantically consistent).
+   * @deprecated Pass `filter` and let the engine build the clause.
+   */
+  restrict?: { sql: string; params: unknown[] };
+  /** Cosine threshold τ. Defaults to the active backend default (0.82 real, 0.70 hash). */
+  threshold?: number;
+  /** Soft cap on nodes per pass (default 10000; D1.7). */
+  nodeCap?: number;
+  /**
+   * When true, persist the produced communities as a provenance-scoped slice.
+   * Default false: a read-only synthesis query with no side effects.
+   *
+   * The scoped write NEVER touches the global community partition or any
+   * other filter's communities — only communities whose meta.cluster_scope.hash
+   * matches this filter's provenance hash are replaced.
+   */
+  persist?: boolean;
+}
+
+export interface ClusterSubsetResult extends ClusterStoreResult {
+  /** Whether communities were written to the DB (persist:true + clusters.length > 0). */
+  persisted: boolean;
+  /** Deterministic hash of the filter; identifies this filter's community slice. */
+  provenance_hash: string;
+  /** Number of live episodes the filter selected (before embedding/size guards). */
+  candidate_count: number;
+}
+
+/**
+ * Filtered clustering for synthesis: cluster ONLY the episodes matching `filter`
+ * (or `restrict`), and optionally persist the result as a provenance-scoped slice.
+ *
+ * Read mode (persist:false, default): returns synthesis candidates with no side
+ * effects — safe to call at any time for exploration.
+ *
+ * Write mode (persist:true): persists the communities using the SAME
+ * materializeClusters writer as the global batch pass (DRY), scoped so the global
+ * partition and other filters' slices are untouched. An episode may be MEMBER_OF
+ * both a global community and one or more subset communities — these are different
+ * lenses, not duplicates.
+ *
+ * @param db   Open better-sqlite3 Database (write-capable when persist:true).
+ * @param opts Filter + tuning parameters.
+ * @returns    ClusterSubsetResult with cluster descriptors, provenance_hash, candidate_count.
+ */
+export function clusterSubset(
+  db: Database,
+  opts?: ClusterSubsetOptions,
+): ClusterSubsetResult;
+```
+
+**Determinism guarantees (inherited from clusterStore plus):**
+- `provenance_hash` = sha256(stableJSON(filter)).slice(0,16). Same filter → same hash. Stable JSON uses sorted keys recursively, so key ordering in the input does not affect the hash.
+- Subset community UIDs are salted: `communityUid(sortedRowids, provenanceHash)`. A subset community for the same member set as a global community has a DIFFERENT uid — they coexist as distinct nodes. (C3.7)
+- Re-running `persist:true` with the same filter idempotently replaces only this filter's prior slice, leaving everything else intact.
+
+---
+
+### C1.8.2 Shared community materializer: `materializeClusters` — NEW
+
+**Source of truth:** `libs/memory-enrich/src/cluster.ts` (`materializeClusters`, `MaterializeOptions`).
+
+```typescript
+// libs/memory-enrich/src/cluster.ts
+
+export interface MaterializeOptions {
+  /**
+   * Which slice of communities this pass owns and is allowed to replace.
+   * - 'global' (default): the whole-store partition. Invalidates only communities
+   *   whose meta.cluster_scope.kind is 'global' or NULL (legacy). Leaves all
+   *   subset communities intact.
+   * - 'subset': a filtered lens. Invalidates only communities whose
+   *   meta.cluster_scope.hash equals `provenanceHash`. Leaves the global
+   *   partition and every other filter's communities intact.
+   */
+  scope?: 'global' | 'subset';
+  /** Required when scope='subset': identifies this filter's community slice. */
+  provenanceHash?: string;
+  /** Optional: originating filter stored in each community's meta for traceability. */
+  filter?: unknown;
+}
+
+/**
+ * Persist clusters as community nodes + MEMBER_OF edges.
+ *
+ * THIS IS THE SINGLE, SHARED COMMUNITY WRITER — both the global batch pass
+ * (clusterStore / runBatchEnrich) and the filtered synthesis path (clusterSubset)
+ * write through this function. There is exactly ONE place that knows how a
+ * community node is shaped on disk (DRY).
+ *
+ * Each persisted community records its provenance in meta.cluster_scope:
+ *   { kind: 'global' }
+ *   { kind: 'subset', hash: string, filter: unknown }
+ *
+ * Scoping ensures global and subset passes never clobber each other:
+ * - A global pass invalidates only communities where cluster_scope.kind = 'global'
+ *   or cluster_scope IS NULL (legacy).
+ * - A subset pass invalidates only communities where cluster_scope.hash = provenanceHash.
+ *
+ * Throws if scope='subset' and provenanceHash is absent.
+ *
+ * @param db       Open better-sqlite3 Database (write-capable).
+ * @param clusters ClusterResult[] from clusterSubset or clusterStore's compute step.
+ * @param opts     Scope options.
+ */
+export function materializeClusters(
+  db: Database,
+  clusters: ClusterResult[],
+  opts?: MaterializeOptions,
+): void;
+```
+
+**Community meta JSON shape** (stored in `node.meta` for every community node):
+```typescript
+{
+  mean_intra_sim: number;
+  centroid_rowid: number;
+  member_count: number;
+  /** Always present from this version onward. Global communities: { kind: 'global' }.
+   *  Subset communities: { kind: 'subset', hash: string, filter: unknown }. */
+  cluster_scope: { kind: 'global' } | { kind: 'subset'; hash: string; filter: unknown };
+}
+```
+
+This resolves OQ-4 (C3.3, C8): the exact JSON key names are `mean_intra_sim`, `centroid_rowid`, `member_count`, `cluster_scope`.
+
+---
+
+### C1.8.3 Provenance helpers: `filterProvenanceHash`, `communityUid` — NEW (internal behaviour contracted)
+
+**Source of truth:** `libs/memory-enrich/src/cluster.ts`. Both functions are **module-internal** (not exported from `@sox/memory-enrich`). Their behaviour is contracted here because callers who interpret the `provenance_hash` returned by `clusterSubset` or stored in `community.meta.cluster_scope` need to understand the hashing and salting conventions.
+
+```typescript
+// libs/memory-enrich/src/cluster.ts (internal — not exported)
+
+/**
+ * Stable provenance hash of a subset filter.
+ * Uses sorted-key JSON encoding so the same filter always hashes to the same value
+ * regardless of key insertion order. Returns a 16-hex-char prefix of SHA-256.
+ *
+ * NOT exported from @sox/memory-enrich. The hash is exposed only as the
+ * `provenance_hash` field in ClusterSubsetResult and in community.meta.cluster_scope.hash.
+ * Callers should not re-derive this hash; use the value returned by clusterSubset.
+ */
+function filterProvenanceHash(filter: unknown): string;
+// Algorithm: sha256(stableStringify(filter)).slice(0, 16)
+// stableStringify: recursive sorted-key JSON with no whitespace.
+
+/**
+ * Deterministic community UID.
+ *
+ * `salt` namespaces the UID to a clustering provenance:
+ * - Empty salt (global): sha256(sortedRowids.join(',')).slice(0,32).
+ *   Output is byte-identical to the pre-subset-feature global UID (back-compat).
+ * - Non-empty salt (subset): sha256(`${salt}:${sortedRowids.join(',')}`).slice(0,32).
+ *   Guarantees a subset community of identical membership NEVER collides with
+ *   the global community for the same episodes — they are different nodes
+ *   (different lenses, intentionally coexistent).
+ *
+ * NOT exported from @sox/memory-enrich. Called internally by buildClusterResults
+ * with salt='' (global) or salt=provenanceHash (subset).
+ */
+function communityUid(sortedRowids: number[], salt?: string): string;
+```
+
+---
+
 ### C1.9 Auto-links: `buildAutoLinks`
 
 ```typescript
@@ -474,6 +673,80 @@ export const ENRICH_VERSION: string; // e.g. "1.0.0"
 This value is written into `node.enrich_ver.pass` on every enrichment pass (E12). The version
 follows semver; a breaking change to the enrichment algorithm increments the major version and
 triggers re-enrichment detection (UC10).
+
+### C1.12 Structured filter type and SQL builder: `MemoryFilter`, `buildFiltersClause` — NEW
+
+**Source of truth:** `libs/memory-enrich/src/filters.ts`.
+
+Moving `buildFiltersClause` into `@sox/memory-enrich` makes `clusterSubset` self-contained:
+any caller of the library can invoke filtered clustering without reaching into server-private
+code. `memory-server` imports the builder from `@sox/memory-enrich` and reuses it for both
+`memory_recall` filtering and `recluster` subset selection — one predicate vocabulary, one
+implementation.
+
+```typescript
+// libs/memory-enrich/src/filters.ts
+
+/**
+ * Structured filter for episode subsets. All fields are optional and AND-combined.
+ * This is the shared vocabulary for both memory_recall filters and clusterSubset.
+ */
+export interface MemoryFilter {
+  /**
+   * Exact project_path match, or { prefix: string } for prefix + sub-path match
+   * (matches the path itself or any sub-path via `path LIKE 'prefix/%'`).
+   */
+  project_path?: string | { prefix: string };
+  /** Episode topic — single value or string[] (IN-match). */
+  topic?: string | string[];
+  /**
+   * Concept tags — any-match by default; all-match when tags_match_all:true.
+   * A bare string is coerced to [string].
+   */
+  tags?: string | string[];
+  /** When true, ALL supplied tags must be present (AND semantics). Default false = ANY. */
+  tags_match_all?: boolean;
+  /** Minimum importance score (inclusive). */
+  importance_min?: number;
+  /** Only episodes created AFTER this ISO timestamp (exclusive bound). */
+  t_created_after?: string;
+  /** Only episodes created BEFORE this ISO timestamp (exclusive bound). */
+  t_created_before?: string;
+}
+
+/**
+ * Build a parameterised WHERE clause fragment from a MemoryFilter.
+ *
+ * Returns { sql, params } where:
+ * - `sql` is either an empty string (no filters) or an AND-prefixed fragment
+ *   referencing node alias `n` (e.g. ' AND n.topic = ?').
+ * - `params` are the corresponding SQLite bind values in order.
+ *
+ * All values are passed as bind parameters — no SQL interpolation occurs,
+ * so there is no injection surface. The returned fragment is safe to append
+ * to any query that aliases the node table as `n`.
+ *
+ * @param filters  MemoryFilter or a plain Record (unknown extra keys ignored).
+ * @returns        { sql: string; params: unknown[] }
+ */
+export function buildFiltersClause(
+  filters: MemoryFilter | Record<string, unknown> | undefined,
+): { sql: string; params: unknown[] };
+```
+
+**Filter field SQL translation (confirmed from `filters.ts`):**
+
+| Field | SQL predicate |
+|-------|---------------|
+| `project_path` (string) | `n.project_path = ?` |
+| `project_path` (`{prefix}`) | `(n.project_path = ? OR n.project_path LIKE ?)` |
+| `topic` (string) | `n.topic = ?` |
+| `topic` (string[]) | `n.topic IN (?,…)` |
+| `tags` (any-match, default) | `(EXISTS (SELECT 1 FROM json_each(n.tags) WHERE value = ?) OR …)` |
+| `tags` (all-match when `tags_match_all:true`) | `(EXISTS … AND EXISTS …)` |
+| `importance_min` | `n.importance >= ?` |
+| `t_created_after` | `n.t_created > ?` (exclusive) |
+| `t_created_before` | `n.t_created < ?` (exclusive) |
 
 ---
 
@@ -638,6 +911,15 @@ interface RecallResponseV1 {
 }
 ```
 
+**`community_uid` field — AMENDED semantics (filtered-clustering feature):**
+The `community_uid` field in each result item now specifically means the episode's **global**
+community (where `meta.cluster_scope.kind = 'global'` or is NULL/legacy). An episode may also
+be a member of one or more subset (filtered-lens) communities, but those are never reflected
+here. Resolution is performed by `communityUidForRowid` which filters to global scope with an
+`ORDER BY e.rowid ASC LIMIT 1` tiebreak. The returned value is therefore deterministic and
+stable across subset persist operations — a caller's global `community_uid` does not change
+when someone runs `memory_curate recluster` with a `filters` object.
+
 **Backward compat note:** new fields are additive on the result items. Existing callers
 that only read `uid`/`content`/`score` are unaffected.
 
@@ -773,18 +1055,28 @@ interface MemoryListEntitiesResponse {
 **Changes from v0:** returns enrichment-aware fields (label, member_count, mean_intra_sim).
 Old interface accepted `entity_uid`; v1 also accepts `community_uid` directly.
 
+**Changes from original v1 contract (filtered-clustering amendment):** When resolving via
+`entity_uid`, the lookup now defaults to the **global** community partition
+(`meta.cluster_scope.kind = 'global'` or NULL/legacy). This is the resolved behavior for
+what was documented as OQ-1 — see below for the full resolution.
+
+With persisted subset lenses coexisting in the graph, a single episode may be `MEMBER_OF`
+both a global community and one or more subset communities. Callers who supply `entity_uid`
+always receive the episode's **global** community. To retrieve a subset community directly,
+supply its `community_uid` (obtained from a prior `memory_curate recluster` response).
+
 **Traces:** UC2 (community membership graph view).
 
 ```json
 {
   "name": "memory_get_community",
-  "description": "Get a community node (embedding-derived cluster) and its members.",
+  "description": "Get a community node (embedding-derived cluster) and its members. When entity_uid is supplied, resolves the episode's GLOBAL community (cluster_scope.kind='global'). To fetch a subset lens community, supply its community_uid directly.",
   "inputSchema": {
     "type": "object",
     "properties": {
       "db_path":       { "type": "string" },
-      "entity_uid":    { "type": "string", "description": "Resolve community for this episode/entity UID (via MEMBER_OF edge)." },
-      "community_uid": { "type": "string", "description": "Fetch a community directly by its UID." },
+      "entity_uid":    { "type": "string", "description": "Resolve the GLOBAL community for this episode/entity UID (via MEMBER_OF edge, scoped to cluster_scope.kind='global')." },
+      "community_uid": { "type": "string", "description": "Fetch a community directly by its UID — works for both global and subset communities." },
       "level":         { "type": "number", "default": 0 }
     },
     "required": ["db_path"]
@@ -792,15 +1084,16 @@ Old interface accepted `entity_uid`; v1 also accepts `community_uid` directly.
 }
 ```
 
-**Open question OQ-1:** `entity_uid` and `community_uid` are mutually exclusive but the schema
-does not express this with `oneOf`. Implementation should return an error if both are supplied
-and treat `community_uid` as taking precedence. Consider adding a `discriminator` in a later
-revision.
+**OQ-1 resolved:** `entity_uid` and `community_uid` are mutually exclusive. If both are
+supplied, the tool returns `{ code: 'E_AMBIGUOUS' }`. `community_uid` takes precedence if
+only one is logically intended. The schema does not use `oneOf` but the handler enforces
+the exclusion.
 
 **Output shape:**
 ```typescript
 interface CommunityNode {
   uid: string;
+  /** The community label (centroid-nearest episode's topic, name, or content prefix). */
   label: string;
   member_count: number;
   mean_intra_sim: number;
@@ -824,9 +1117,14 @@ interface MemoryGetCommunityResponse {
 }
 ```
 
-**Backward compat note:** the v0 response `{ community: { uid, name, summary, level } }` is
-replaced. The `name` field maps to `label`. Callers reading `name` will need to read `label` in v1.
+**Backward compat note (v0 → v1):** the v0 response `{ community: { uid, name, summary, level } }`
+is replaced. The `name` field maps to `label`. Callers reading `name` must update to `label` in v1.
 This is a **minor breaking change** on `memory_get_community` only. Callers should be updated.
+
+**Provenance note (subset-lens coexistence):** `meta.cluster_scope` on the returned community
+node indicates whether it is a global (`{ kind: 'global' }`) or subset
+(`{ kind: 'subset', hash, filter }`) community. Callers do not need to inspect this for
+normal use but may use it to distinguish which lens a community belongs to.
 
 ---
 
@@ -993,14 +1291,14 @@ interface MemoryNearDuplicatesResponse {
 
 ---
 
-### C2.11 `memory_curate` — NEW
+### C2.11 `memory_curate` — NEW (recluster op amended by filtered-clustering feature)
 
 **Traces:** UC6 (curation: merge, retag, promote/demote, set topic, force re-cluster).
 
 ```json
 {
   "name": "memory_curate",
-  "description": "Curation operations: retag, set topic, override importance, merge near-duplicates, or trigger a re-cluster pass.",
+  "description": "Curation operations: retag, set topic, override importance, merge near-duplicates, or trigger a re-cluster pass. The recluster op has two distinct modes keyed on whether `filters` is present — see recluster documentation below.",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -1016,12 +1314,42 @@ interface MemoryNearDuplicatesResponse {
       "importance": { "type": "number", "minimum": 1, "maximum": 10, "description": "(set_importance) User-asserted importance. Batch enricher will not overwrite this." },
       "uid_keep":   { "type": "string", "description": "(merge_duplicates) UID of the episode to keep as canonical." },
       "uid_drop":   { "type": "string", "description": "(merge_duplicates) UID of the episode to invalidate as a duplicate." },
-      "dry_run":    { "type": "boolean", "default": false, "description": "If true, return proposed changes without committing them." }
+      "filters":    {
+        "type": "object",
+        "description": "(recluster only) Restrict clustering to the subset of episodes matching these filters. Same vocabulary as memory_recall filters: project_path, topic, tags, tags_match_all, importance_min, t_created_after, t_created_before. When present, recluster runs SYNCHRONOUSLY over the subset and returns communities. combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped slice (leaves the global partition untouched). When absent, recluster triggers the standard async global re-cluster via the daemon."
+      },
+      "threshold":  { "type": "number", "description": "(recluster with filters) Optional cosine similarity threshold override for the subset pass." },
+      "dry_run":    { "type": "boolean", "default": false, "description": "If true, return proposed changes without committing them. For recluster: see two-mode behavior below." }
     },
     "required": ["db_path", "op"]
   }
 }
 ```
+
+#### `recluster` op — two-mode dispatch
+
+The `recluster` op behaves differently depending on whether `filters` is present. The
+response discriminator `scope` tells the caller which mode ran.
+
+**Mode A — global async (filters absent or empty object):**
+- Enqueues an `enrich` op via `enqueueEnrich(db)` so the daemon runs a full
+  `runBatchEnrich` pass (re-clusters + re-links the whole store).
+- `dry_run:true` → returns `{op, enqueued:false, dry_run:true}` without enqueuing.
+- `dry_run:false` → enqueues and returns `{op, enqueued:true}`.
+- This is an **asynchronous, fire-and-forget, mutating** operation. The caller is
+  notified only that the op was enqueued; completion is not signaled.
+
+**Mode B — filtered subset (filters present with at least one key):**
+- Runs `clusterSubset(db, { filter: filters, persist: !dry_run, threshold? })` **synchronously**.
+- `dry_run:true` → a **read-only synthesis query**: clusters the subset in memory and
+  returns the result without writing any community nodes or edges to the DB.
+- `dry_run:false` → persists the communities as a provenance-scoped slice via
+  `materializeClusters(scope:'subset')`. The global partition is untouched. Other
+  filters' subset slices are untouched.
+- The operation is **synchronous** and returns communities directly in the response.
+
+**Response discriminant:** the response always carries `scope: 'global' | 'subset'` so
+the caller knows which mode ran and can switch on the return shape.
 
 **Output shape (by op):**
 ```typescript
@@ -1058,31 +1386,67 @@ interface CurateMergeResult {
   dry_run: boolean;
 }
 
-// recluster
-interface CurateReclusterResult {
+// recluster — Mode A (no filters): global async
+interface CurateReclusterGlobalResult {
   op: "recluster";
+  scope: "global";
   enqueued: boolean;
+  dry_run?: boolean;  // present when dry_run:true was passed
+}
+
+// recluster — Mode B (filters present): subset synchronous
+interface CurateReclusterSubsetResult {
+  op: "recluster";
+  scope: "subset";
+  /** Whether communities were persisted (false when dry_run:true). */
+  persisted: boolean;
+  dry_run: boolean;
+  /** Stable hash identifying this filter's community slice (see C1.8.3). */
+  provenance_hash: string;
+  /** Number of candidate episodes the filter selected. */
+  candidate_count: number;
+  cluster_count: number;
+  unclustered_count: number;
+  full_pass: boolean;
+  clusters: Array<{
+    community_uid: string;
+    label: string;
+    /** Number of member episodes. */
+    size: number;
+    mean_intra_sim: number;
+    /** Episode UIDs of cluster members. */
+    members: string[];
+  }>;
 }
 ```
 
-**Open question OQ-3:** `dry_run` on `recluster` is undefined — re-cluster is a background op
-and has no immediate mutation to preview. Implementation should return `{ op: "recluster", enqueued: false, dry_run: true }` without enqueuing. Document this behavior.
+**OQ-3 superseded:** the original question was "what does `dry_run` mean on `recluster`?"
+This is now fully answered: in Mode A (global), `dry_run:true` skips the enqueue; in
+Mode B (filtered), `dry_run:true` skips the DB write. Both meanings are coherent: "don't
+commit the proposed change." The response shape differs between the two modes, discriminated
+by the `scope` field.
+
+**Lifecycle note — subset lens GC:** Persisted subset slices are only ever replaced by
+re-running the same filter (same `provenance_hash`). There is currently no automated reaper
+for slices whose member episodes are later invalidated, and no MCP op to drop a slice by hash.
+These are tracked as deferred work (BL-26). Callers should treat persisted subset lenses as
+best-effort / accumulating until a cleanup mechanism is added.
 
 ---
 
-### C2.12 `memory_stats` — NEW
+### C2.12 `memory_stats` — NEW (cluster metrics amended by filtered-clustering feature)
 
 **Traces:** UC10 (enrichment health and introspection), UC2 (cluster stats).
 
 ```json
 {
   "name": "memory_stats",
-  "description": "Return enrichment coverage and cluster quality statistics. Use for health checks and CI gates.",
+  "description": "Return enrichment coverage and cluster quality statistics. Use for health checks and CI gates. All cluster metrics (with_community, cluster_count, coverage, mean_intra_cluster_sim, largest_cluster_size) are scoped to the GLOBAL community partition only — persisted subset lenses do not inflate these numbers.",
   "inputSchema": {
     "type": "object",
     "properties": {
       "db_path":      { "type": "string" },
-      "project_path": { "type": "string", "description": "Scope stats to episodes from this project." }
+      "project_path": { "type": "string", "description": "Scope episode-coverage stats to this project. Cluster metrics (cluster_count, coverage, etc.) are always global-partition-scoped regardless of this filter." }
     },
     "required": ["db_path"]
   }
@@ -1100,18 +1464,37 @@ interface MemoryStatsResponse {
   with_summary: number;
   with_tags: number;
   with_project_path: number;
+  /**
+   * Episodes that have a MEMBER_OF edge to a live GLOBAL community
+   * (meta.cluster_scope.kind = 'global' or NULL/legacy).
+   * Persisted subset lenses (scope='subset') do NOT contribute to this count.
+   * This field is a CI-gate metric: its value is stable across subset persist
+   * operations and only changes when the global batch pass (runBatchEnrich) runs.
+   */
   with_community: number;
   /** Episodes where enrich_ver IS NULL or enrich_ver.note = "legacy". */
   legacy_episodes: number;
-  /** Episodes where enrich_ver.pass < current ENRICH_VERSION (stale, need re-enrich). */
+  /** Episodes where enrich_ver.pass != current ENRICH_VERSION (stale, need re-enrich). */
   stale_episodes: number;
+  /**
+   * All cluster_* metrics below are derived from clusterStats(db) (C1.10), which
+   * is explicitly scoped to global communities only (cluster_scope.kind='global'
+   * or NULL). Subset lenses never inflate these numbers.
+   */
   cluster_count: number;
   largest_cluster_size: number;
   mean_intra_cluster_sim: number;
-  coverage: number;                // fraction of episodes with community assignment
-  cluster_quality: ClusterStats;   // full ClusterStats from C1.10
+  coverage: number;                // fraction of all live episodes with a GLOBAL community assignment
+  cluster_quality: ClusterStats;   // full ClusterStats from C1.10 (global-scoped)
 }
 ```
+
+**`clusterStats` global-scope amendment (C1.10):** `clusterStats(db)` now scopes ALL its
+queries to `cluster_scope.kind = 'global'` (or NULL for legacy pre-subset nodes). This
+affects `cluster_count`, `total_clustered`, `total_unclustered`, `largest_cluster_size`,
+`mean_intra_sim`, `mean_inter_sim`, and `coverage`. The implementation at
+`libs/memory-enrich/src/cluster.ts:641+` confirms this with explicit
+`json_extract(meta, '$.cluster_scope.kind')` guards on every query.
 
 ---
 
@@ -1248,10 +1631,20 @@ export interface CommunityNodeV1 {
 }
 ```
 
-**Open question OQ-4:** Community quality metrics (`mean_intra_sim`, `centroid_rowid`,
-`member_count`) are stored in `community.meta` (a JSON blob). DESIGN does not define a
-normalized `community_stats` table. Implementation should document the exact JSON key names.
-Proposed: `{ "mean_intra_sim": number, "centroid_rowid": number, "member_count": number }`.
+**OQ-4 resolved:** Community quality metrics and provenance are stored in `community.meta` as
+the following JSON shape (confirmed from `libs/memory-enrich/src/cluster.ts:371-376` and C1.8.2):
+```json
+{
+  "mean_intra_sim": 0.87,
+  "centroid_rowid": 42,
+  "member_count": 7,
+  "cluster_scope": { "kind": "global" }
+}
+```
+For subset communities, `cluster_scope` is `{ "kind": "subset", "hash": "<16-hex>", "filter": <MemoryFilter> }`.
+All four keys are always present on nodes written by this version of the library. Legacy nodes
+(written before the subset feature) may have `meta` absent or without `cluster_scope`; these
+are treated as global by all scope predicates.
 
 ### C3.4 `EnrichmentProvenance` — `enrich_ver` column shape
 
@@ -1334,6 +1727,68 @@ WHERE json_extract(meta, '$.source_url') = :url
 scans is untested. DESIGN.md D3.4 deferred a FTS tag index. The implementation team should
 benchmark this and add a covering index if needed before the first production deploy at scale.
 
+### C3.7 `cluster_scope` provenance model — NEW
+
+**Source of truth:** `libs/memory-enrich/src/cluster.ts` (`materializeClusters`).
+
+This section documents the semantic model for coexisting community partitions introduced by the
+filtered-clustering feature. It is the foundation for how `communityUidForRowid`, `memory_get_community`,
+`memory_stats`, and `clusterStats` resolve scope.
+
+#### Provenance field on community nodes
+
+Every community node (kind='community') carries a `meta` JSON blob with a `cluster_scope` key:
+
+```typescript
+type ClusterScope =
+  | { kind: 'global' }
+  | { kind: 'subset'; hash: string; filter: unknown };
+```
+
+- **`kind: 'global'`** — written by `clusterStore` / `runBatchEnrich`. Represents the
+  whole-store partition. Only one global partition exists at a time; each global pass replaces it.
+- **`kind: 'subset'`** — written by `clusterSubset(persist:true)`. Represents a filtered lens.
+  `hash` is the 16-hex `filterProvenanceHash` of the originating filter; `filter` is the
+  structured `MemoryFilter` stored for traceability.
+- **Legacy / NULL** — nodes written before this feature have no `cluster_scope` key. All scope
+  predicates treat NULL/absent as equivalent to `{ kind: 'global' }`.
+
+#### Coexistence semantics
+
+An episode may be `MEMBER_OF` multiple communities simultaneously — one global and any number
+of subset-lens communities. These are intentionally distinct lenses over the same episode data,
+not duplicates. The salted UID (C1.8.3) guarantees that a subset community of identical
+membership as a global community has a **different** uid — the two nodes coexist without
+collision.
+
+#### Scope-keyed invalidation
+
+When `materializeClusters` runs:
+- `scope:'global'` → invalidates (`t_invalid = now`) only communities where
+  `cluster_scope.kind = 'global'` or `cluster_scope IS NULL`. Subset communities are untouched.
+- `scope:'subset'` + `provenanceHash` → invalidates only communities where
+  `cluster_scope.hash = provenanceHash`. The global partition and all other filters' communities
+  are untouched.
+
+#### Read defaults
+
+All read paths default to the global lens:
+- `communityUidForRowid` — returns the global community's uid for an episode.
+- `memory_recall.community_uid` — the episode's global community uid (C2.2).
+- `memory_get_community` with `entity_uid` — resolves the global community (C2.6).
+- `memory_stats.with_community` — counts episodes with a global MEMBER_OF edge (C2.12).
+- `clusterStats` — all metrics scoped to global communities (C1.10).
+
+To access a subset lens community, use its `community_uid` directly (obtainable from
+`memory_curate recluster` response `clusters[].community_uid`).
+
+#### Deferred: subset-lens lifecycle
+
+Subset lenses are re-run idempotently (same filter → same `provenance_hash` → prior slice
+replaced). There is no automated GC for slices whose member episodes are later invalidated,
+and no MCP op to drop a slice by provenance hash. These are tracked as **BL-26** and are
+deferred. Callers should expect subset slice accumulation over time until GC is implemented.
+
 ---
 
 ## C4. Discovery interfaces
@@ -1406,27 +1861,40 @@ LIMIT :limit OFFSET :offset
 
 ### C4.5 Cluster stats query
 
-Used by `memory_stats` and `clusterStats()`:
+Used by `memory_stats` and `clusterStats()`. **All queries are scoped to the global
+community partition** (`cluster_scope.kind = 'global'` or NULL/legacy) so that persisted
+subset lenses never inflate health/CI-gate metrics.
 
 ```sql
--- cluster_count, total_clustered
-SELECT COUNT(DISTINCT n.uid) AS cluster_count
-FROM node n
-WHERE n.kind = 'community' AND n.t_invalid IS NULL;
+-- cluster_count (global communities only)
+SELECT COUNT(*) AS cluster_count
+FROM node
+WHERE kind = 'community' AND t_invalid IS NULL
+  AND (json_extract(meta, '$.cluster_scope.kind') IS NULL
+       OR json_extract(meta, '$.cluster_scope.kind') = 'global');
 
+-- total_clustered (MEMBER_OF edges to global communities only)
 SELECT COUNT(*) AS total_clustered
 FROM edge e
 JOIN node src ON src.rowid = e.src AND src.kind = 'episode' AND src.t_invalid IS NULL
+JOIN node dst ON dst.rowid = e.dst AND dst.kind = 'community' AND dst.t_invalid IS NULL
+  AND (json_extract(dst.meta, '$.cluster_scope.kind') IS NULL
+       OR json_extract(dst.meta, '$.cluster_scope.kind') = 'global')
 WHERE e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL;
 
--- largest_cluster_size
+-- largest_cluster_size (global communities only)
 SELECT MAX(member_count) FROM (
   SELECT COUNT(*) AS member_count
-  FROM edge
-  WHERE rel = 'MEMBER_OF' AND t_invalid IS NULL
-  GROUP BY dst
+  FROM edge e
+  JOIN node dst ON dst.rowid = e.dst AND dst.kind = 'community' AND dst.t_invalid IS NULL
+    AND (json_extract(dst.meta, '$.cluster_scope.kind') IS NULL
+         OR json_extract(dst.meta, '$.cluster_scope.kind') = 'global')
+  WHERE e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+  GROUP BY e.dst
 );
 ```
+
+See `libs/memory-enrich/src/cluster.ts:641–782` for the complete implementation.
 
 ---
 
@@ -1527,25 +1995,30 @@ callers passing only required fields continue to work.
 | `detectNearDup` (C1.6) | E8 | UC9 |
 | `extractiveSummary` (C1.7) | E10 | UC4 |
 | `clusterStore` (C1.8) | E6 | UC2, UC10 |
+| `clusterSubset` (C1.8.1) | E6 (filtered) | UC2, UC6 |
+| `materializeClusters` (C1.8.2) | E6 (shared writer) | UC2, UC6 |
+| `filterProvenanceHash` / `communityUid(salt)` (C1.8.3) | E6 (provenance) | UC2, UC6 |
 | `buildAutoLinks` (C1.9) | E9 | UC3 |
-| `clusterStats` (C1.10) | E6 | UC10 |
+| `clusterStats` (C1.10, global-scoped) | E6 | UC10 |
+| `MemoryFilter` / `buildFiltersClause` (C1.12) | E1, E4, E5 (filter vocab) | UC1, UC2, UC6 |
 | `memory_write` v1 (C2.1) | E1–E5, E8, E10, E12 | UC1, UC4, UC6 |
-| `memory_recall` v1 (C2.2) | E1, E5 (filters) | UC1, UC5, UC7, UC8 |
+| `memory_recall` v1 (C2.2, community_uid=global) | E1, E5 (filters) | UC1, UC5, UC7, UC8 |
 | `memory_topics` (C2.3) | E5, E6 | UC2, UC7 |
 | `memory_list_projects` (C2.4) | E1 | UC1, UC5 |
 | `memory_list_entities` (C2.5) | E4 | UC3, UC5 |
-| `memory_get_community` v1 (C2.6) | E6 | UC2 |
+| `memory_get_community` v1 (C2.6, global default) | E6 | UC2 |
 | `memory_entity_episodes` (C2.7) | E4 | UC3 |
 | `memory_related` (C2.8) | E9 | UC3 |
 | `memory_supersession_chain` (C2.9) | E8 | UC8 |
 | `memory_near_duplicates` (C2.10) | E8 | UC9 |
-| `memory_curate` (C2.11) | E4, E5, E6, E7, E8 | UC6 |
-| `memory_stats` (C2.12) | E12 | UC10 |
+| `memory_curate` (C2.11, recluster two-mode) | E4, E5, E6, E7, E8 | UC6 |
+| `memory_stats` (C2.12, cluster metrics global-scoped) | E12 | UC10 |
 | `memory_enrich_trigger` (C2.13) | E12 | UC10 |
 | Schema `NodeV1` (C3.2) | E1–E5, E12 | UC4 |
-| Schema `CommunityNodeV1` (C3.3) | E6 | UC2 |
+| Schema `CommunityNodeV1` (C3.3, OQ-4 resolved) | E6 | UC2 |
 | `EnrichmentProvenance` (C3.4) | E12 | UC10 |
 | `WriteParams` v1 (C3.5) | E1–E5, E9 | UC1, UC4 |
+| `cluster_scope` provenance model (C3.7) | E6 (filtered) | UC2, UC6 |
 | Removal contract (C5) | — (organizer removal) | — |
 
 ---
@@ -1557,10 +2030,10 @@ point for the implementation team; they are not invented silently above.
 
 | # | Question | Where it surfaces | Stakes |
 |---|----------|-------------------|--------|
-| OQ-1 | `memory_get_community` `entity_uid` vs `community_uid` mutual-exclusion behavior (C2.6) | Tool inputSchema; handler logic | Minor — behavioral ambiguity on bad input |
+| OQ-1 | ~~`memory_get_community` `entity_uid` vs `community_uid` mutual-exclusion behavior~~ **RESOLVED (C2.6):** both supplied → `E_AMBIGUOUS`; `community_uid` takes precedence if only one intended; handler enforces exclusion. | — | Resolved |
 | OQ-2 | `memory_entity_episodes` entity name disambiguation when multiple entities share a name (C2.7) | Handler logic | Medium — affects correctness of entity-navigation use case |
-| OQ-3 | `memory_curate` `dry_run` on `recluster` semantics (C2.11) | Handler logic | Minor |
-| OQ-4 | `CommunityNodeV1.meta` JSON key names for quality metrics (C3.3) | DB schema + all cluster-read queries | Medium — must be consistent across `clusterStore`, `clusterStats`, `memory_get_community` |
+| OQ-3 | ~~`memory_curate` `dry_run` on `recluster` semantics~~ **RESOLVED (C2.11):** Mode A (global): `dry_run:true` skips enqueue; Mode B (filtered): `dry_run:true` skips DB write. Both mean "don't commit the proposed change." The two-mode response shape is discriminated by `scope: 'global'\|'subset'`. | — | Resolved |
+| OQ-4 | ~~`CommunityNodeV1.meta` JSON key names~~ **RESOLVED (C1.8.2, C3.3):** `{ mean_intra_sim, centroid_rowid, member_count, cluster_scope }`. The `cluster_scope` key is new in this feature version. | — | Resolved |
 | OQ-5 | `tags` filter performance at >50k nodes with `json_each` (C3.6) | Query planner; benchmark needed | High at scale — may need a covering index or generated column before production |
 | OQ-6 | `memory_recall` with `query: null` path (UC7): does this route through the existing `memoryRecall()` function or a new `memoryFeed()` function? `recall.ts` currently requires `query: string`. | `recall.ts` API; MCP handler | Medium — a new code path is needed for the importance-ranked feed |
 | OQ-7 | Cross-store `project_path` queries in federated recall (DESIGN.md D6.7): the `filters.project_path` field on `memory_recall` is per-store. How does the federated layer (`federatedRecall`) aggregate across stores? Is this Phase 1 or deferred? | `recall.ts` federated path | High — affects UC5 usefulness |
