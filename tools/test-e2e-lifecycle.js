@@ -1266,6 +1266,72 @@ async function main() {
     // Cleanup temp dirs
     try { fs.rmSync(d4ScopeRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 
+    // ── D5. STDIO MCP-SERVER USER-SCOPE → ~/.claude.json (BL-mcp-cmd) ──────────
+    // sox install writes { type:"stdio", command:<bin>, args:["serve",<id>] } into
+    // ~/.claude.json mcpServers. The command must NOT be 'sox' (the audio tool).
+    // Resolution order: SOX_CLI_BIN > process.argv[1] > 'soxe'.
+    console.log('\nD5: stdio mcp-server user-scope → ~/.claude.json command uses correct bin (BL-mcp-cmd)');
+
+    const d5SandboxRoot = path.join(os.tmpdir(), `sox-e2e-decl-d5-${process.pid}-${Date.now()}`);
+    fs.mkdirSync(d5SandboxRoot, { recursive: true });
+    const d5DataRoot = path.join(os.tmpdir(), `sox-e2e-decl-d5-data-${process.pid}-${Date.now()}`);
+    fs.mkdirSync(d5DataRoot, { recursive: true });
+    process.on('exit', () => {
+      try { fs.rmSync(d5SandboxRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { fs.rmSync(d5DataRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+    });
+
+    const prevSandbox5 = process.env['SOX_SANDBOX_ROOT'];
+    process.env['SOX_SANDBOX_ROOT'] = d5SandboxRoot;
+    const prevEcohome5 = process.env['SOX_ECOSYSTEM_HOME'];
+    process.env['SOX_ECOSYSTEM_HOME'] = d5DataRoot;
+
+    // Subtest A: SOX_CLI_BIN explicit override
+    process.env['SOX_CLI_BIN'] = '/custom/path/soxe';
+    const d5ResultA = await declarativeInstall(
+      { ext: 'test-mcp-server-a', type: 'mcp-server', hosts: ['claude'], transport: 'stdio' },
+      'user',
+      d5SandboxRoot,
+      d5DataRoot,
+      { isProject: false },
+    );
+    const d5ClaudeJsonA = path.join(d5SandboxRoot, '.claude.json');
+    assert(fs.existsSync(d5ClaudeJsonA), 'D5A: ~/.claude.json created');
+    const d5ConfigA = JSON.parse(fs.readFileSync(d5ClaudeJsonA, 'utf8'));
+    const d5EntryA = d5ConfigA?.mcpServers?.['test-mcp-server-a'];
+    assert(d5EntryA?.command === '/custom/path/soxe',
+      `D5A: SOX_CLI_BIN used as command (got ${d5EntryA?.command})`);
+    assert(d5EntryA?.command !== 'sox',
+      `D5A: command is NOT the audio tool 'sox'`);
+    console.log(`  D5A: SOX_CLI_BIN override → command=${d5EntryA?.command} (PASS)`);
+
+    // Subtest B: no SOX_CLI_BIN → process.argv[1] (the running CLI)
+    delete process.env['SOX_CLI_BIN'];
+    const d5ResultB = await declarativeInstall(
+      { ext: 'test-mcp-server-b', type: 'mcp-server', hosts: ['claude'], transport: 'stdio' },
+      'user',
+      d5SandboxRoot,
+      d5DataRoot,
+      { isProject: false },
+    );
+    const d5ConfigB = JSON.parse(fs.readFileSync(d5ClaudeJsonA, 'utf8'));
+    const d5EntryB = d5ConfigB?.mcpServers?.['test-mcp-server-b'];
+    assert(d5EntryB?.command !== 'sox',
+      `D5B: command is NOT the audio tool 'sox' (got: ${d5EntryB?.command})`);
+    assert(d5EntryB?.command === process.argv[1],
+      `D5B: process.argv[1] used as command (got ${d5EntryB?.command}, want ${process.argv[1]})`);
+    assert(Array.isArray(d5EntryB?.args) && d5EntryB.args[0] === 'serve' && d5EntryB.args[1] === 'test-mcp-server-b',
+      `D5B: args = ["serve","test-mcp-server-b"] (got ${JSON.stringify(d5EntryB?.args)})`);
+    console.log(`  D5B: argv[1] fallback → command=${d5EntryB?.command} (PASS)`);
+
+    // Restore env
+    if (prevSandbox5 !== undefined) process.env['SOX_SANDBOX_ROOT'] = prevSandbox5;
+    else delete process.env['SOX_SANDBOX_ROOT'];
+    if (prevEcohome5 !== undefined) process.env['SOX_ECOSYSTEM_HOME'] = prevEcohome5;
+    else delete process.env['SOX_ECOSYSTEM_HOME'];
+    try { fs.rmSync(d5SandboxRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(d5DataRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+
   } else {
     console.error('  SKIP: install-engine dist not available; declarative tests skipped');
     assertionsFailed++;
