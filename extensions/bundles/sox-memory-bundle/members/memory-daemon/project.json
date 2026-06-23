@@ -1,7 +1,7 @@
 {
   "$schema": "../../../../../../node_modules/nx/schemas/project-schema.json",
   "name": "memory-daemon",
-  "description": "Builds cleanly and resolves @sox/memory-core from workspace (verified 2026-06-22).",
+  "description": "Builds cleanly and resolves @sox/memory-core and @sox/memory-enrich from workspace (P6: LLM organizer removed, deterministic batch enrichment via runBatchEnrich).",
   "projectType": "library",
   "root": "extensions/bundles/sox-memory-bundle/members/memory-daemon",
   "sourceRoot": "extensions/bundles/sox-memory-bundle/members/memory-daemon/src",
@@ -11,7 +11,7 @@
       "executor": "nx:run-commands",
       "outputs": ["{workspaceRoot}/extensions/bundles/sox-memory-bundle/members/memory-daemon/dist"],
       "options": {
-        "command": "tsc --project extensions/bundles/sox-memory-bundle/members/memory-daemon/tsconfig.json && printf '{\"type\":\"commonjs\"}\\n' > extensions/bundles/sox-memory-bundle/members/memory-daemon/dist/package.json",
+        "command": "tsc --project extensions/bundles/sox-memory-bundle/members/memory-daemon/tsconfig.json && printf '{\"type\":\"commonjs\"}\\n' > extensions/bundles/sox-memory-bundle/members/memory-daemon/dist/package.json && mkdir -p extensions/bundles/sox-memory-bundle/members/memory-daemon/node_modules/@sox && ln -sfn $(pwd)/libs/memory-enrich extensions/bundles/sox-memory-bundle/members/memory-daemon/node_modules/@sox/memory-enrich",
         "cwd": "."
       },
       "cache": true,
@@ -19,13 +19,24 @@
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/tsconfig.json"
       ],
-      "dependsOn": []
+      "dependsOn": ["memory-enrich:build"]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
         "lintFilePatterns": ["extensions/bundles/sox-memory-bundle/members/memory-daemon/src/**/*.ts"]
       }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "echo 'memory-daemon: no unit tests (integration tested via e2e)'",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts"
+      ]
     }
   }
 }

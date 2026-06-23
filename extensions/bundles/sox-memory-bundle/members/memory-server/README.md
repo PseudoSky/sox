@@ -4,9 +4,9 @@
 
 ## Overview
 
-`memory-server` is the keystone of the sox-memory subsystem. It runs as a long-lived background singleton (via `memoryd`) and exposes 7 MCP tools over a stdio JSON-RPC transport. All persistent state lives in a single SQLite file per scope, extended with the `sqlite-vec` vector extension (for approximate nearest-neighbour search) and FTS5 (for BM25 full-text search).
+`memory-server` is the keystone of the sox-memory subsystem. It runs as a long-lived background singleton (via `memoryd`) and exposes 19 MCP tools over a stdio JSON-RPC transport. All persistent state lives in a single SQLite file per scope, extended with the `sqlite-vec` vector extension (for approximate nearest-neighbour search) and FTS5 (for BM25 full-text search).
 
-The read path (`memory_recall`) is strictly deterministic: local hash embedding, parallel vec+BM25+temporal search, RRF fusion, recency × importance reranking — all in-process, no provider calls, target <50 ms. The write path (`memory_write`) inserts an episode and enqueues an async organizer task; it never blocks on LLM. The organizer (a separate `memory-organizer` agent) is the sole LLM caller in the subsystem.
+The read path (`memory_recall`) is strictly deterministic: local hash embedding, parallel vec+BM25+temporal search, RRF fusion, recency × importance reranking — all in-process, no provider calls, target <50 ms. The write path (`memory_write`) inserts an episode, runs synchronous enrichment (provenance, tags, topic, near-dup), and enqueues an async batch-enrich task; it never blocks on any external call. The batch enrichment pipeline (clustering, auto-links, importance) runs deterministically in `memory-daemon` via `@sox/memory-enrich` — zero LLM calls, no provider required.
 
 ## When to use
 
@@ -18,15 +18,24 @@ Do NOT use `memory-server` for transient scratchpad data that does not need to s
 
 ## Tools
 
-| Tool name                  | Description                                                                 |
-| -------------------------- | --------------------------------------------------------------------------- |
-| `memory_write`             | Write a memory episode; enqueues organizer, never blocks on LLM             |
-| `memory_recall`            | Hybrid vec+BM25+temporal recall, <50 ms, zero LLM; returns ranked results  |
-| `memory_search_entities`   | Search entity nodes by name or summary                                      |
-| `memory_get_session_state` | Retrieve working-memory state for a session                                 |
-| `memory_save_session_state`| Upsert working-memory state for a session                                   |
-| `memory_get_community`     | Look up the community cluster for an entity node                            |
-| `memory_invalidate`        | Bi-temporally invalidate a claim (sets `t_invalid`; never deletes)          |
+| Tool name                     | Description                                                                 |
+| ----------------------------- | --------------------------------------------------------------------------- |
+| `memory_write`                | Write a memory episode; runs sync enrichment; enqueues batch pass           |
+| `memory_recall`               | Hybrid vec+BM25+temporal recall, <50 ms, zero LLM; returns ranked results  |
+| `memory_topics`               | List topics in the store with episode counts                                |
+| `memory_list_projects`        | List distinct project_path values with episode counts                       |
+| `memory_list_entities`        | List entity nodes ranked by mention count                                   |
+| `memory_search_entities`      | Search entity nodes by name or summary                                      |
+| `memory_entity_episodes`      | Return episodes that mention a given entity                                 |
+| `memory_related`              | Return graph neighbors of an episode at depth=1                             |
+| `memory_supersession_chain`   | Return the full supersession chain for an episode                           |
+| `memory_near_duplicates`      | List near-duplicate episode pairs (SAME_AS edges)                           |
+| `memory_curate`               | Curation: retag, set topic, set importance, merge dups, recluster           |
+| `memory_stats`                | Enrichment coverage and cluster quality statistics                          |
+| `memory_get_community`        | Look up the community cluster for an entity or community node               |
+| `memory_get_session_state`    | Retrieve working-memory state for a session                                 |
+| `memory_save_session_state`   | Upsert working-memory state for a session                                   |
+| `memory_invalidate`           | Bi-temporally invalidate a claim (sets `t_invalid`; never deletes)          |
 
 ## Recall algorithm
 

@@ -95,13 +95,13 @@ it so the founder can confirm the guideline is complete.
 tools/model + system prompt). Installs to the host-discovery path and is invocable. No persistent
 process; `lifecycle` block is vestigial on agents and ignored at runtime.
 
-**CAUTION — two agent shapes:** `memory-organizer` is a CODE agent (`runtime: node`, entrypoint,
-`function-export` invocation). Declarative agents (frontmatter + system prompt, `runtime:
-declarative`) are a different shape. For declarative agents, follow the `agent` guideline's
-declarative path; do NOT give the extension a `lifecycle` block.
+**CAUTION — two agent shapes:** CODE agents (`runtime: node`, entrypoint, `function-export`
+invocation) and DECLARATIVE agents (frontmatter + system prompt, `runtime: declarative`) are
+different shapes. For declarative agents, follow the `agent` guideline's declarative path;
+do NOT give the extension a `lifecycle` block.
 
-**Reference extension:** `extensions/agents/memory-organizer/` — use for manifest conventions
-only (id, version, compatibility, permissions structure). For the declarative shape, follow
+**Reference extension:** `extensions/agents/org-agent/` — use for manifest conventions
+(id, version, compatibility, permissions structure). For the declarative shape, follow
 the `agent` guideline.
 
 **Scaffold:**

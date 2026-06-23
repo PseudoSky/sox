@@ -6,7 +6,7 @@
  *
  * Five gap assertions (one per gap):
  *   G-A: lifecycle — an mcp-server with lifecycle.background:true validates.
- *   G-B: bundle — installing sox-memory-bundle resolves to exactly 4 members.
+ *   G-B: bundle — installing sox-memory-bundle resolves to exactly 3 members.
  *   G-C: promotion — ScopePromotionProposed event doc exists + approval-locus rule
  *         is present in docs/scope-promotion.md (documentation-only gap).
  *   G-D: runtime — runtime:'stdio-any' + requires.structured_output:true is rejected.
@@ -254,17 +254,16 @@ describe('P11 v2-e2e — G-B: bundle installs atomically (post-cascade expansion
     removeDirRecursive(root);
   });
 
-  it('G-B: installing sox-memory-bundle resolves to exactly 4 member extensions', async () => {
-    // Create the 4 member extensions (the memory subsystem fixture).
+  it('G-B: installing sox-memory-bundle resolves to exactly 3 member extensions', async () => {
+    // Create the 3 member extensions (the memory subsystem fixture).
+    // memory-organizer was removed in P6: deterministic enrichment pipeline replaces LLM.
     makeExtension(root, 'mcp-servers', 'memory-server');
-    makeExtension(root, 'agents', 'memory-organizer');
     makeExtension(root, 'skills', 'memory-recall');
     makeExtension(root, 'hooks', 'memory-promote');
 
     // Create the bundle manifest in extensions/bundles/
     makeBundle(root, 'sox-memory-bundle', [
       { id: 'memory-server', version: '^0.1.0' },
-      { id: 'memory-organizer', version: '^0.1.0' },
       { id: 'memory-recall', version: '^0.1.0' },
       { id: 'memory-promote', version: '^0.1.0' },
     ]);
@@ -290,14 +289,16 @@ describe('P11 v2-e2e — G-B: bundle installs atomically (post-cascade expansion
 
     const ids = Object.keys(resolved);
 
-    // Exactly 4 member extensions — the bundle itself is expanded away
-    expect(ids).toHaveLength(4);
+    // Exactly 3 member extensions — the bundle itself is expanded away
+    // memory-organizer was removed in P6 (deterministic enrichment pipeline)
+    expect(ids).toHaveLength(3);
     expect(ids).toContain('memory-server');
-    expect(ids).toContain('memory-organizer');
     expect(ids).toContain('memory-recall');
     expect(ids).toContain('memory-promote');
     // The bundle id itself must NOT appear — it is resolved away at install time
     expect(ids).not.toContain('sox-memory-bundle');
+    // memory-organizer must NOT appear — removed in P6
+    expect(ids).not.toContain('memory-organizer');
   });
 
   it('G-B BACK-COMPAT: cascade arrays-replace rule is intact (non-bundle installs unchanged)', async () => {
@@ -599,8 +600,9 @@ describe('P11 v2-e2e — BACK-COMPAT: all v1 extensions validate + the bundle va
     };
     expect(manifest.type).toBe('bundle');
     expect(Array.isArray(manifest.members)).toBe(true);
-    // sox-memory-bundle members: memory-daemon, memory-server, memory-organizer,
-    // memory-flush, memory-cli, memory-usage (BL-18: organizer added to members[]).
-    expect(manifest.members).toHaveLength(6);
+    // sox-memory-bundle members: memory-daemon, memory-server,
+    // memory-flush, memory-cli, memory-usage (P6: memory-organizer removed;
+    // deterministic enrichment pipeline via @sox/memory-enrich replaces LLM organizer).
+    expect(manifest.members).toHaveLength(5);
   });
 });

@@ -44,4 +44,4 @@ This supersedes and includes the earlier command-lifecycle DoD.
 
 ## Explicitly OUT of scope (not part of this DoD)
 - Ingestion / normalization / reinjection of external extensions (done *outside* the tool).
-- Memory semantic quality — real embeddings, LLM organizer enrichment.
+- Memory semantic quality — real embeddings, enrichment pipeline tuning.
