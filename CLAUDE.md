@@ -76,14 +76,18 @@ registry checksum stale and the global install will refuse to upgrade (C2/C4 rea
    `tsx scripts/build-index.ts` (the nx target guarantees the artifacts are built first).
 4. **Commit** the source changes **and** the regenerated `registry/index.json` together,
    by explicit path (the C2 drift gate fails CI if the registry lags the artifacts).
-5. **Ask the user before** the next two — do NOT do them unprompted:
-   - **Upgrade the global install** — `node bin/soxe install --scope=user` (refreshes the
-     user-scope lockfile to the new artifacts; `--update` does **not** bypass the checksum
-     gate — the registry must be resynced in step 3 first).
-   - **Restart the affected services** — so a running process picks up new code:
-     `node bin/soxe stop --id=<ext> --scope=user && node bin/soxe start --id=<ext> --scope=user`.
-     Note: stdio MCP servers (e.g. `memory-server`) are spawned on demand by the client and
-     respawn with new code on the next connection — flag that the user may need to reconnect.
+5. **Immediately upgrade all consumers** — after merging a change that modifies an installed
+   extension's artifact, run **`node bin/soxe upgrade --all`** (do NOT ask first; do NOT leave
+   the install stale). This is safe + idempotent under the content-addressed model (ADR-0003):
+   - It re-checks **every consumer** in the install-registry × all scopes via `verifyIntegrity`
+     (`sha256(artifact) == recorded checksum`), re-installs only the ones whose artifact actually
+     changed (idempotent — a current system makes zero changes), and **auto rolling-restarts** any
+     affected running service via the BL-31 verified-stop + dedup-start (so no zombie/orphan can
+     survive — the failure that motivated this rule).
+   - stdio MCP servers (e.g. `memory-server`) respawn with new code on the client's next
+     connection — flag that the user may need to **reconnect/reload plugins**.
+   - Leaving the user-scope install stale after a merge is now the bug. (`registry:sync-index` in
+     step 3 must run first so the checksums upgrade compares against are current.)
 
 ---
 
