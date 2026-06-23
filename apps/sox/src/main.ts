@@ -12,6 +12,7 @@
  * [inv:nx-free-core]               — sox init uses libs/authoring scaffold(), not the old scaffolder
  */
 
+import { resolveBundleDir, registerBundleMember } from './bundle-init.js';
 import {
   parseArgs,
   install,
@@ -210,7 +211,12 @@ Authoring:
   init <type> <id>   Scaffold a born-conformant extension (uses libs/authoring)
                      id: lowercase ^[a-z][a-z0-9-]*$, must not end in the type name
                      Types: agent | skill | mcp-server | hook | command | bundle | service
-                     Flags: --out=<dir>  --title=<str>  --description=<str>
+                     Flags: --out=<dir>       write into <dir>/<id>/ (default: cwd)
+                            --bundle=<name>   scaffold into a bundle's members/ dir and
+                                              auto-register the member in the bundle's
+                                              extension.json members[] array.
+                                              Mutually exclusive with --out.
+                            --title=<str>  --description=<str>
                             --author=<str>  --keywords=<k1,k2>
                             --events=<E1,E2>  --runtime=<runtime>
                             --transport=<t>  --transports=<t1,t2>  (service type)
@@ -292,8 +298,14 @@ function printVersion(): void {
 /**
  * cmdInit — A1: scaffold a born-conformant extension via libs/authoring.
  *
- * Usage: sox init <type> <id> [--out=<dir>] [--title=<str>] [--description=<str>]
+ * Usage: sox init <type> <id> [--out=<dir>] [--bundle=<bundle-name>]
+ *                             [--title=<str>] [--description=<str>]
  *                             [--author=<str>] [--keywords=<k1,k2>]
+ *
+ * --bundle=<name>: resolve the bundle's directory by name (from registry/index.json,
+ *   with filesystem fallback), scaffold the member into <bundle-dir>/members/<id>/,
+ *   and auto-register the new member in the bundle's extension.json members[] array.
+ *   Mutually exclusive with --out.
  *
  * Extra flags (--events, --runtime) are accepted and silently consumed for
  * forward-compatibility; the template governs the actual generated values.
@@ -333,10 +345,11 @@ async function cmdInit(raw: string[]): Promise<void> {
   const id = positionals[1];
 
   if (type === undefined || id === undefined) {
-    process.stderr.write(`${CLI} init: usage: ${CLI} init <type> <id> [--out=<dir>]\n`);
+    process.stderr.write(`${CLI} init: usage: ${CLI} init <type> <id> [--out=<dir>] [--bundle=<name>]\n`);
     process.stderr.write(`  Types: agent | skill | mcp-server | hook | command | bundle | service\n`);
     process.stderr.write(`  Id rules: lowercase ^[a-z][a-z0-9-]*$, and must NOT end in the type name\n`);
     process.stderr.write(`           (e.g. 'memory-skill' is rejected; name members by function: 'memory-usage').\n`);
+    process.stderr.write(`  --bundle=<name>: scaffold into a bundle's members/ dir and auto-register.\n`);
     process.exit(1);
   }
 
@@ -359,7 +372,51 @@ async function cmdInit(raw: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const outRoot = flagMap['out'] ?? process.cwd();
+  const bundleName = flagMap['bundle'];
+  const outFlag = flagMap['out'];
+
+  // --bundle and --out are mutually exclusive
+  if (bundleName !== undefined && outFlag !== undefined) {
+    process.stderr.write(
+      `${CLI} init: --bundle and --out are mutually exclusive.\n` +
+      `  Use --bundle=<name> to scaffold into a bundle's members/ directory,\n` +
+      `  or --out=<dir> to specify an output directory directly.\n`,
+    );
+    process.exit(1);
+  }
+
+  const path = await import('node:path');
+  const { existsSync: _exists, readFileSync: _readFile, readdirSync: _readdir, writeFileSync: _writeFile } = await import('node:fs');
+
+  // ── Bundle resolution (--bundle flag) ─────────────────────────────────────────
+  // When --bundle is given, resolve the bundle's source directory and set outRoot
+  // to <bundle-dir>/members/. Also register the new member in the bundle's
+  // extension.json after scaffolding.
+  let outRoot: string;
+  let resolvedBundleDir: string | undefined;
+
+  // Wrap fs functions into narrow-typed helpers for the bundle resolver helpers
+  // (avoids TypeScript overload-mismatch when passing fs.readFileSync/readdirSync directly).
+  const readFileStr = (p: string, enc: 'utf8'): string => _readFile(p, enc);
+  const writeFileStr = (p: string, data: string, enc: 'utf8'): void => _writeFile(p, data, enc);
+  const readdirStr = (p: string): string[] => _readdir(p) as string[];
+
+  if (bundleName !== undefined) {
+    resolvedBundleDir = resolveBundleDir(bundleName, process.cwd(), path, _exists, readFileStr, readdirStr);
+    if (resolvedBundleDir === undefined) {
+      process.stderr.write(
+        `${CLI} init: bundle '${bundleName}' not found.\n` +
+        `  Search registry/index.json for bundles: look for entries where "type" == "bundle".\n` +
+        `  Or check extensions/bundles/ for bundle directories containing extension.json files.\n` +
+        `  Run '${CLI} search ${bundleName}' to see what's in the registry.\n`,
+      );
+      process.exit(1);
+    }
+    outRoot = path.join(resolvedBundleDir, 'members');
+  } else {
+    outRoot = outFlag ?? process.cwd();
+  }
+
   const title = flagMap['title'];
   const description = flagMap['description'];
   const author = flagMap['author'];
@@ -379,8 +436,6 @@ async function cmdInit(raw: string[]): Promise<void> {
       : transportFlag !== undefined
         ? [transportFlag.trim()]
         : undefined;
-
-  const path = await import('node:path');
 
   type AuthoringType = Parameters<typeof scaffold>[0]['type'];
 
@@ -448,7 +503,6 @@ async function cmdInit(raw: string[]): Promise<void> {
   // This prevents the probe harness from inadvertently rewriting real repo source files
   // when process.cwd() resolves to the repo root (e.g. due to pushd failure in shell).
   const force = flagMap['force'] !== undefined;
-  const { existsSync: _exists } = await import('node:fs');
   if (!force && _exists(outDir)) {
     process.stderr.write(
       `${CLI} init: '${outDir}' already exists — use --force to reinitialize\n`,
@@ -463,7 +517,24 @@ async function cmdInit(raw: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // ── Auto-register in bundle's extension.json members[] ────────────────────────
+  // When --bundle was used, append the new member to the bundle's members[] array
+  // (idempotent: no-op if already present).
+  if (resolvedBundleDir !== undefined) {
+    const bundleManifestPath = path.join(resolvedBundleDir, 'extension.json');
+    try {
+      registerBundleMember(bundleManifestPath, id, readFileStr, writeFileStr);
+    } catch (e) {
+      process.stderr.write(`${CLI} init: member-register error — ${String(e)}\n`);
+      process.exit(1);
+    }
+  }
+
   process.stdout.write(`${CLI} init: scaffolded ${type} '${id}' → ${outDir}\n`);
+  if (resolvedBundleDir !== undefined) {
+    const bundleManifestPath = path.join(resolvedBundleDir, 'extension.json');
+    process.stdout.write(`${CLI} init: registered '${id}' in ${bundleManifestPath}\n`);
+  }
   process.exit(0);
 }
 
