@@ -21,10 +21,17 @@
  * green ([inv:no-regress]).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+
+// These tests assert db_path permission ENFORCEMENT, not embedding quality — pin the fast,
+// deterministic hash backend so a `memory_write`'s cold real-ONNX model load never tips the
+// default 5s test timeout (the embed worker would also fight the restricted fs policy). Also
+// avoids spawning the ONNX worker thread under a permission-scrubbed env.
+beforeAll(() => { process.env['SOX_EMBED_BACKEND'] = 'hash'; });
+afterAll(() => { delete process.env['SOX_EMBED_BACKEND']; });
 
 // ── Import the testable internals ─────────────────────────────────────────────
 // We test via the exported handleToolCall and compilePolicyFromEnv. The guard
