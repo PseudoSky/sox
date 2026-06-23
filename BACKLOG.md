@@ -144,9 +144,9 @@ purges the leaked `fix-*` records as a one-off; this is the permanent fix.) Surf
 `sox list`/`status` may still mislabel services. Fix: record the real manifest `type` at start.
 Surfaced building the rolling-restart classifier.
 
-### BL-37 — `memory-daemon` service-store copy can't resolve `@adhd/sox-memory-core` → crashes on start
+### ~~BL-37~~ — `memory-daemon` service-store copy can't resolve `@adhd/sox-memory-core` → crashes on start — **Resolved** (`b3bf0d8`)
 
-**Severity:** High (the supervised daemon is fully down in service mode) · **Status:** Open
+**Severity:** High (the supervised daemon is fully down in service mode) · **Status:** Resolved — dual-output build: `tsc` keeps `dist/index.js` as the registry-checksum anchor + `tools/bundle-extension.cjs --entry src/bin.ts --outdir bundle` produces a self-contained esbuild bundle (native addons external, resolved via an injected `NODE_PATH=<workspaceRoot>/node_modules` in the run-service spec). A **second stacked bug** was found: the manifest entrypoint `dist/index.js` only re-exports — the real `daemon.start()` is `bin.ts`, so spawning `index.js` was a no-op that exited immediately (the "started then gone" symptom); bundling from `bin.ts` fixes it. e2e **Section E** now spawns the daemon from a **copied store** and asserts it starts + stays up. The original Open writeup follows.
 BL-25 converged the daemon's `memoryd` onto `@adhd/sox-memory-core` (thin re-export →
 `require('@adhd/sox-memory-core')`). The **service-mode copied store** (`.sox/ext/memory-daemon/`) has
 no resolvable `@adhd/sox-memory-core` (not self-contained-bundled, no node_modules link), so the daemon
@@ -157,6 +157,17 @@ resolve), never from a copied service store, so this slipped all gates. Fix: sel
 the daemon (esbuild, C7-respecting — the bundled-extension-build-standard) so the copied store has
 zero external `@adhd/sox-*` deps, AND strengthen the e2e to spawn the daemon from a copied store.
 Discovered starting the daemon during the content-addressed deploy.
+
+### BL-38 — `memory-server` shares the daemon's latent `tsc`-bare-`@adhd/sox-*`-requires shape + a stale tracked `bundle/`
+
+**Severity:** Low (latent; not on a copied-store path today) · **Status:** Open
+Surfaced during the BL-37 fix. (1) `memory-server` builds with `tsc` and its `dist` carries bare
+`require("@adhd/sox-memory-core")` etc. — it only resolves because it runs **stdio from the repo**
+(`sox serve`), never from a copied store. If an `mcp-server` is ever materialized to a `.sox/ext/`
+store it will crash exactly like the daemon did — give it the same self-contained `bundle-extension`
+treatment then. (2) `memory-server` ships a **stale, orphaned tracked `bundle/`** dir from a one-off
+bundler run; its `project.json` build uses `tsc` and nothing references the dir — dead tracked
+output to delete + gitignore. Neither blocks anything today.
 
 > **BL-21, BL-22, BL-23, BL-24 are owned by `docs/plan/memory-enrichment/IMPLEMENTATION.md` (§0).**
 > Each is resolved by a plan phase: BL-23 metadata = done (`9728f6f`); BL-23 project-path + BL-24
