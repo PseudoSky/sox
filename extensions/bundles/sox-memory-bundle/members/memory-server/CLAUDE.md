@@ -192,7 +192,7 @@ Curation operations: retag, set topic, override importance, merge near-duplicate
 
 ### `memory_stats` (NEW — C2.12)
 
-Return enrichment coverage and cluster quality statistics. `tool_version: "1.0.0"` signals v1 surface is present.
+Return enrichment coverage and cluster quality statistics. `tool_version: "1.1.0"` signals the v1.1 surface (including `memory_update`) is present.
 
 **Input:** `{ "db_path": "<string>", "project_path"?: string }`
 

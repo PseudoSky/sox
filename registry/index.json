@@ -30,7 +30,7 @@
     "title": "sox-memory (graph memory subsystem)",
     "description": "Use this when you want the full sox-memory graph-memory subsystem installed in one command — expands to memory-daemon (supervised Unix-socket writer daemon with deterministic batch enrichment), memory-server (MCP tools, stdio), memory-flush (SessionEnd hook), memory-cli (store lifecycle commands), and memory-usage (how-to skill). Fully deterministic; zero LLM calls; no provider required.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle",
-    "checksum": "sha256:7fb055f0a06144fbd13951d1acdcce7ec2417bded53ed8e2a3f332f435a2a11a",
+    "checksum": "sha256:e2ca96bd4a27bfcb7d59690507dc31617563176cb11ac78ba78fd3d33fe7ee00",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -41,7 +41,7 @@
       },
       {
         "id": "memory-server",
-        "version": "^0.1.0"
+        "version": "^1.1.0"
       },
       {
         "id": "memory-flush",
@@ -102,7 +102,7 @@
   {
     "id": "memory-server",
     "type": "mcp-server",
-    "version": "0.1.0",
+    "version": "1.1.0",
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
