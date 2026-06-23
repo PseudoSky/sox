@@ -55,6 +55,8 @@ export function openDb(dbPath: string): Database.Database {
   migrateAddColumn(db, 'node', 'topic', 'TEXT');
   migrateAddColumn(db, 'node', 'project_path', 'TEXT');
   migrateAddColumn(db, 'node', 'enrich_ver', 'TEXT');
+  // memory_update timestamp (set on every in-place edit; immutable t_created is the audit anchor).
+  migrateAddColumn(db, 'node', 't_updated', 'TEXT');
   // D3.4 partial indices for enrichment columns
   db.exec(`CREATE INDEX IF NOT EXISTS ix_node_topic      ON node(topic)        WHERE topic IS NOT NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`);

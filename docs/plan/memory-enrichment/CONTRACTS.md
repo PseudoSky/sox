@@ -1528,6 +1528,123 @@ interface MemoryEnrichTriggerResponse {
 
 ---
 
+### C2.15 `memory_update` — NEW (v1.1)
+
+**In-place editor for an existing live node.** Distinct from supersession (which mints a new node + invalidates the old). The `uid` is the required selector and is **immutable** — it can never change, preserving identity by construction.
+
+#### Input schema
+
+```jsonc
+{
+  "name": "memory_update",
+  "inputSchema": {
+    "type": "object",
+    "required": ["uid", "db_path"],
+    "properties": {
+      "uid":            { "type": "string", "description": "UID of the live node to update. E_NOT_FOUND if absent or invalidated." },
+      "db_path":        { "type": "string" },
+      "content":        { "type": "string", "description": "Replace node.content. Triggers re-embed and FTS update." },
+      "summary":        { "type": "string", "description": "Replace node.summary. Triggers re-embed and FTS update." },
+      "name":           { "type": "string" },
+      "topic":          { "type": "string" },
+      "tags":           { "type": "array", "items": { "type": "string" }, "description": "Replaces existing tags wholesale." },
+      "importance":     { "type": "number", "minimum": 1, "maximum": 10 },
+      "metadata":       { "type": "object", "additionalProperties": true },
+      "metadata_merge": {
+        "type": "string",
+        "enum": ["deep", "replace"],
+        "default": "deep",
+        "description": "'deep': recursive merge for nested objects; arrays replaced not concatenated. 'replace': overwrites node.meta wholesale."
+      },
+      "t_occurred":     { "type": "string", "description": "ISO timestamp." },
+      "t_valid":        { "type": "string", "description": "ISO timestamp." }
+    }
+  }
+}
+```
+
+#### Output
+
+```typescript
+// Success:
+{
+  uid: string;
+  updated_fields: string[];   // names of node columns actually changed
+  reembedded: boolean;        // true when content or summary changed and vec_node was refreshed
+}
+
+// Error (isError: true):
+{ code: 'E_NOT_FOUND'; message: string }   // no live node with that uid
+{ code: 'E_NO_FIELDS'; message: string }   // no updatable fields supplied or all values identical
+{ code: 'E_MISSING';   message: string }   // uid not supplied
+```
+
+#### Immutability + merge semantics (locked)
+
+| Field | Immutable? | Notes |
+|-------|-----------|-------|
+| `uid` | **YES** — never changes | Identity anchor. |
+| `t_created` | **YES — audit anchor** | Never touched by update. |
+| `t_updated` | Set to `now()` on every successful update | Added by `migrateAddColumn` (idempotent). |
+| `content` | Replaceable | Triggers re-embed + FTS auto-sync. |
+| `summary` | Replaceable | Triggers re-embed + FTS auto-sync. |
+| `name`, `topic`, `tags`, `importance` | Replaceable | No re-embed. |
+| `metadata` / `meta` | Deep-merge default; `'replace'` to overwrite | Recursive merge for nested objects; **arrays replaced not concatenated**. |
+| `t_occurred`, `t_valid` | Replaceable | No re-embed. |
+
+#### Re-embed rule
+
+- `content` OR `summary` changed → call `embed(newContent)` → delete + re-insert `vec_node` row (virtual table has no UPDATE trigger; would silently go stale otherwise).
+- Metadata-only / timestamp-only / importance-only → skip embed (cheap path).
+- `fts_node` is auto-synced by the `fts_node_au` trigger on the node `UPDATE` — do NOT touch FTS manually.
+
+#### Schema: `t_updated` column
+
+```sql
+-- Added via migrateAddColumn (idempotent — no-op if column already exists):
+ALTER TABLE node ADD COLUMN t_updated TEXT;
+```
+
+Also present in the DDL (`schema.ts`) so new databases include it from the start.
+
+#### Library function
+
+```typescript
+// libs/memory-core/src/update.ts
+export async function memoryUpdate(
+  db: Database.Database,
+  params: UpdateParams,
+): Promise<UpdateResult | UpdateError>;
+
+export interface UpdateParams {
+  uid: string;
+  content?: string;
+  summary?: string;
+  name?: string;
+  topic?: string;
+  tags?: string[];
+  importance?: number;
+  metadata?: Record<string, unknown>;
+  metadata_merge?: 'deep' | 'replace';  // default 'deep'
+  t_occurred?: string;
+  t_valid?: string;
+}
+
+export interface UpdateResult {
+  uid: string;
+  updated_fields: string[];
+  reembedded: boolean;
+}
+
+export type UpdateError =
+  | { code: 'E_NOT_FOUND'; message: string }
+  | { code: 'E_NO_FIELDS'; message: string };
+```
+
+Exported from `libs/memory-core/src/index.ts` as `memoryUpdate`, `deepMerge`, `UpdateParams`, `UpdateResult`, `UpdateError`.
+
+---
+
 ### C2.14 Existing tools: no-change summary
 
 The following 5 tools are **unchanged** in contract. New optional fields on `memory_write` and
@@ -2014,6 +2131,7 @@ callers passing only required fields continue to work.
 | `memory_curate` (C2.11, recluster two-mode) | E4, E5, E6, E7, E8 | UC6 |
 | `memory_stats` (C2.12, cluster metrics global-scoped) | E12 | UC10 |
 | `memory_enrich_trigger` (C2.13) | E12 | UC10 |
+| `memory_update` (C2.15) | — (mutation, not enrichment) | UC1, UC4 |
 | Schema `NodeV1` (C3.2) | E1–E5, E12 | UC4 |
 | Schema `CommunityNodeV1` (C3.3, OQ-4 resolved) | E6 | UC2 |
 | `EnrichmentProvenance` (C3.4) | E12 | UC10 |

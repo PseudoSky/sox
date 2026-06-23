@@ -292,9 +292,9 @@ describe('memory_list_entities (C2.5)', () => {
 });
 
 describe('memory_stats (C2.12)', () => {
-  it('returns tool_version 1.0.0', async () => {
+  it('returns tool_version 1.1.0 (updated from 1.0.0 when memory_update was added)', async () => {
     const out = parseResult(await handleToolCall('memory_stats', { db_path: DB_PATH }));
-    expect(out['tool_version']).toBe('1.0.0');
+    expect(out['tool_version']).toBe('1.1.0');
   });
 
   it('returns all required C2.12 fields', async () => {
@@ -737,5 +737,147 @@ describe('read-path scope isolation at server layer (fix ①)', () => {
     // Episodes in a subset community must not be counted in the global with_community stat.
     // The count must not grow beyond what the global pass established.
     expect(after['with_community']).toBeLessThanOrEqual(withCommunityBefore);
+  });
+});
+
+// ── memory_update (CONTRACTS.md C2.15) ───────────────────────────────────────
+
+describe('memory_update MCP tool', () => {
+  const UPDATE_DIR = path.join(os.tmpdir(), `sox-mcp-update-${process.pid}`);
+  const UPDATE_DB = path.join(UPDATE_DIR, 'update.db');
+
+  beforeAll(() => {
+    fs.mkdirSync(UPDATE_DIR, { recursive: true });
+  });
+
+  afterAll(() => {
+    fs.rmSync(UPDATE_DIR, { recursive: true, force: true });
+  });
+
+  it('returns E_NOT_FOUND for an unknown uid', async () => {
+    const result = await handleToolCall('memory_update', {
+      db_path: UPDATE_DB,
+      uid: '01JXNONEXISTENT',
+      content: 'new',
+    });
+    expect(result.isError).toBe(true);
+    const body = JSON.parse((result.content[0] as { text: string }).text) as Record<string, unknown>;
+    expect(body['code']).toBe('E_NOT_FOUND');
+  });
+
+  it('returns E_MISSING when uid not provided', async () => {
+    const result = await handleToolCall('memory_update', {
+      db_path: UPDATE_DB,
+      content: 'oops',
+    });
+    expect(result.isError).toBe(true);
+  });
+
+  it('updates content and reports reembedded:true', async () => {
+    // Write a fresh episode
+    const wr = await handleToolCall('memory_write', {
+      db_path: UPDATE_DB,
+      content: 'initial mcp content',
+    });
+    const wrBody = parseResult(wr);
+    const uid = wrBody['episode_uid'] as string;
+
+    const result = await handleToolCall('memory_update', {
+      db_path: UPDATE_DB,
+      uid,
+      content: 'updated mcp content',
+    });
+    expect(result.isError).toBeFalsy();
+    const body = parseResult(result);
+    expect(body['uid']).toBe(uid);
+    expect((body['updated_fields'] as string[])).toContain('content');
+    expect(body['reembedded']).toBe(true);
+  });
+
+  it('updates name, topic, importance (no re-embed)', async () => {
+    const wr = await handleToolCall('memory_write', {
+      db_path: UPDATE_DB,
+      content: 'mcp field update test',
+      name: 'old name',
+      topic: 'old-topic',
+      importance: 2,
+    });
+    const uid = (parseResult(wr))['episode_uid'] as string;
+
+    const result = await handleToolCall('memory_update', {
+      db_path: UPDATE_DB,
+      uid,
+      name: 'new name',
+      topic: 'new-topic',
+      importance: 9,
+    });
+    expect(result.isError).toBeFalsy();
+    const body = parseResult(result);
+    expect(body['reembedded']).toBe(false);
+    const fields = body['updated_fields'] as string[];
+    expect(fields).toContain('name');
+    expect(fields).toContain('topic');
+    expect(fields).toContain('importance');
+  });
+
+  it('deep-merges metadata by default', async () => {
+    const wr = await handleToolCall('memory_write', {
+      db_path: UPDATE_DB,
+      content: 'mcp meta test',
+      metadata: { a: { x: 1 }, list: [1, 2, 3] },
+    });
+    const uid = (parseResult(wr))['episode_uid'] as string;
+
+    const result = await handleToolCall('memory_update', {
+      db_path: UPDATE_DB,
+      uid,
+      metadata: { a: { y: 2 }, list: [4, 5] },
+      // metadata_merge defaults to 'deep'
+    });
+    expect(result.isError).toBeFalsy();
+    const body = parseResult(result);
+    expect(body['reembedded']).toBe(false);
+    expect((body['updated_fields'] as string[])).toContain('meta');
+
+    // Verify DB state by reading back via a recall
+    const db = openDb(UPDATE_DB);
+    const row = db
+      .prepare<[string], { meta: string | null }>(`SELECT meta FROM node WHERE uid = ?`)
+      .get(uid);
+    db.close();
+    const meta = JSON.parse(row!.meta!) as Record<string, unknown>;
+    expect(meta['a']).toEqual({ x: 1, y: 2 });
+    expect(meta['list']).toEqual([4, 5]);
+  });
+
+  it("metadata_merge:'replace' overwrites meta wholesale", async () => {
+    const wr = await handleToolCall('memory_write', {
+      db_path: UPDATE_DB,
+      content: 'mcp meta replace test',
+      metadata: { old: true, nested: { deep: 1 } },
+    });
+    const uid = (parseResult(wr))['episode_uid'] as string;
+
+    await handleToolCall('memory_update', {
+      db_path: UPDATE_DB,
+      uid,
+      metadata: { brand_new: 42 },
+      metadata_merge: 'replace',
+    });
+
+    const db = openDb(UPDATE_DB);
+    const row = db
+      .prepare<[string], { meta: string | null }>(`SELECT meta FROM node WHERE uid = ?`)
+      .get(uid);
+    db.close();
+    const meta = JSON.parse(row!.meta!) as Record<string, unknown>;
+    expect(meta).toEqual({ brand_new: 42 });
+    expect('old' in meta).toBe(false);
+  });
+
+  it('memory_stats still returns tool_version 1.1.0 after update ops', async () => {
+    const statsResult = await handleToolCall('memory_stats', { db_path: UPDATE_DB });
+    const stats = parseResult(statsResult);
+    expect(stats['tool_version']).toBe('1.1.0');
   });
 });

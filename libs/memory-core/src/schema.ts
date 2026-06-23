@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS node (
   resume_state TEXT,
   t_created    TEXT NOT NULL, t_occurred TEXT,
   t_valid      TEXT,  t_invalid TEXT,
-  last_access  TEXT,  access_count INTEGER DEFAULT 0
+  last_access  TEXT,  access_count INTEGER DEFAULT 0,
+  t_updated    TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_node_kind       ON node(kind);
 CREATE INDEX IF NOT EXISTS ix_node_hash       ON node(content_hash);

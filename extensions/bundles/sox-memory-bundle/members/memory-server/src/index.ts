@@ -1,6 +1,6 @@
 /**
- * MCP Server: Agent Memory Server v1.0.0
- * 19 memory_* tools over a single-file SQLite graph store.
+ * MCP Server: Agent Memory Server v1.1.0
+ * 20 memory_* tools over a single-file SQLite graph store.
  * Transport: stdio JSON-RPC (tools/list + tools/call).
  *
  * v1.0.0 adds (P4 enrichment surface — CONTRACTS.md C2):
@@ -11,6 +11,10 @@
  *   - NEW: memory_topics, memory_list_projects, memory_list_entities, memory_entity_episodes,
  *          memory_related, memory_supersession_chain, memory_near_duplicates,
  *          memory_curate, memory_stats
+ *
+ * v1.1.0 adds:
+ *   - NEW: memory_update — in-place editor for an existing node (uid-keyed, immutable t_created,
+ *          deep-merge metadata, re-embed on content/summary change, t_updated audit column)
  *
  * [mcp-path-guard] C6 enforcement: a policy guard runs BEFORE the resource sink
  * (getDb → openDb) in handleToolCall. The guard reads [def:policy-env] injected
@@ -34,7 +38,7 @@ import { serve, defineTool } from '@sox/mcp-runtime';
 import type { ToolDefinition, ToolResult } from '@sox/mcp-runtime';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { openDb, memoryWrite, memoryRecall, enqueueEnrich } from '@sox/memory-core';
+import { openDb, memoryWrite, memoryRecall, enqueueEnrich, memoryUpdate } from '@sox/memory-core';
 import { clusterStats, clusterSubset, buildFiltersClause, ENRICH_VERSION } from '@sox/memory-enrich';
 import type { MemoryFilter } from '@sox/memory-enrich';
 import { monotonicFactory } from 'ulid';
@@ -332,6 +336,34 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     },
   },
   {
+    name: 'memory_update',
+    description:
+      'In-place editor for an existing live node. Distinct from supersession (which mints a new node). The uid is the required selector and is immutable — it can never change. Updates content, summary, name, topic, tags, importance, metadata (deep-merge by default), t_occurred, and t_valid. t_created is never modified (audit anchor). When content or summary changes, the embedding is refreshed automatically. FTS is auto-synced by the node UPDATE trigger. Returns {uid, updated_fields, reembedded}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        uid:            { type: 'string', description: 'UID of the live node to update. Required. Error E_NOT_FOUND if absent or invalidated.' },
+        db_path:        { type: 'string', description: 'Path to the .db file.' },
+        content:        { type: 'string', description: 'Replace node.content. Triggers re-embed and FTS update.' },
+        summary:        { type: 'string', description: 'Replace node.summary. Triggers re-embed and FTS update.' },
+        name:           { type: 'string', description: 'Replace node.name.' },
+        topic:          { type: 'string', description: 'Replace node.topic.' },
+        tags:           { type: 'array', items: { type: 'string' }, description: 'Replace node.tags (replaces existing tags wholesale — not additive).' },
+        importance:     { type: 'number', minimum: 1, maximum: 10, description: 'Replace node.importance.' },
+        metadata:       { type: 'object', additionalProperties: true, description: 'Metadata to merge into (or replace) existing node.meta. See metadata_merge.' },
+        metadata_merge: {
+          type: 'string',
+          enum: ['deep', 'replace'],
+          default: 'deep',
+          description: "'deep' (default): recursive merge for nested objects; arrays are replaced not concatenated. 'replace': overwrites node.meta wholesale.",
+        },
+        t_occurred:     { type: 'string', description: 'ISO timestamp — replace node.t_occurred.' },
+        t_valid:        { type: 'string', description: 'ISO timestamp — replace node.t_valid.' },
+      },
+      required: ['uid', 'db_path'],
+    },
+  },
+  {
     name: 'memory_link',
     description:
       'Create a directed edge between two existing nodes. Use for chunk→parent (DERIVED_FROM), claim replacement (SUPERSEDES), or explicit relationships (RELATES_TO, SUPPORTS, MENTIONS, SAME_AS).',
@@ -490,7 +522,7 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_stats',
     description:
-      'Return enrichment coverage and cluster quality statistics. Use for health checks and CI gates. Returns tool_version: "1.0.0" signaling v1 surface is present.',
+      'Return enrichment coverage and cluster quality statistics. Use for health checks and CI gates. Returns tool_version: "1.1.0" signaling v1.1 surface (including memory_update) is present.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1109,6 +1141,35 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           type: 'text',
           text: JSON.stringify({ ok: true, supersedes_edge_uid: supersedgesEdgeUid }),
         }],
+      };
+    }
+
+    case 'memory_update': {
+      const uid = args['uid'] as string | undefined;
+      if (!uid) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING', message: 'uid is required' }) }] };
+      }
+      const updateResult = await memoryUpdate(db, {
+        uid,
+        content:        args['content']        as string | undefined,
+        summary:        args['summary']        as string | undefined,
+        name:           args['name']           as string | undefined,
+        topic:          args['topic']          as string | undefined,
+        tags:           args['tags']           as string[] | undefined,
+        importance:     args['importance']     as number | undefined,
+        metadata:       args['metadata']       as Record<string, unknown> | undefined,
+        metadata_merge: args['metadata_merge'] as 'deep' | 'replace' | undefined,
+        t_occurred:     args['t_occurred']     as string | undefined,
+        t_valid:        args['t_valid']        as string | undefined,
+      });
+      if ('code' in updateResult) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: JSON.stringify(updateResult) }],
+        };
+      }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(updateResult) }],
       };
     }
 
@@ -2013,7 +2074,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
 
       return {
         content: [{ type: 'text', text: JSON.stringify({
-          tool_version: '1.0.0',
+          tool_version: '1.1.0',
           enrich_version: ENRICH_VERSION,
           embed_model: embedModel,
           total_episodes: totalEpisodes,
@@ -2050,4 +2111,4 @@ const registeredTools = TOOLS.map((tool) =>
   }),
 );
 
-void serve(registeredTools, { name: 'memory-server', version: '1.0.0' });
+void serve(registeredTools, { name: 'memory-server', version: '1.1.0' });

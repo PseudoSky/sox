@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Use this when an agent needs durable, searchable memory across sessions — exposes **19 `memory_*` tools** (v1.0.0) over a single-file SQLite graph store with hybrid recall (<50 ms, zero LLM), deterministic enrichment (provenance, tags, topic, near-dup detection), session state, community/cluster lookup, curation, and bi-temporal invalidation.
+Use this when an agent needs durable, searchable memory across sessions — exposes **20 `memory_*` tools** (v1.1.0) over a single-file SQLite graph store with hybrid recall (<50 ms, zero LLM), deterministic enrichment (provenance, tags, topic, near-dup detection), session state, community/cluster lookup, curation, bi-temporal invalidation, and in-place node editing.
 
 ## When to call tools from this server
 
@@ -13,8 +13,9 @@ Call tools from `memory-server` when:
 - You need to discover topics, projects, or entities in the memory store before filtering a recall.
 - You need to look up near-duplicate pairs, supersession chains, or graph neighbors.
 - You need to invalidate a claim that has been superseded without losing the historical record.
+- You need to correct or enrich an existing episode in-place (e.g. fix a typo, add metadata, override topic) without creating a new node — use `memory_update`.
 
-Do NOT call `memory_write` for transient scratchpad data — use context window state instead. Do NOT call `memory_recall` if you only need entity lookup by name — use `memory_search_entities` instead.
+Do NOT use `memory_update` to change a node's identity (`uid` is always immutable). Do NOT call `memory_write` for transient scratchpad data — use context window state instead. Do NOT call `memory_recall` if you only need entity lookup by name — use `memory_search_entities` instead.
 
 ## Available tools
 
@@ -199,6 +200,50 @@ Return enrichment coverage and cluster quality statistics. `tool_version: "1.0.0
 
 ---
 
+### `memory_update` (NEW — v1.1)
+
+In-place editor for an existing live node. Distinct from supersession: the `uid` is immutable and the existing node is modified rather than replaced. Use when you need to correct, enrich, or extend an existing episode. When `content` or `summary` changes, the embedding is refreshed automatically (re-embed). FTS is auto-synced by the database trigger.
+
+**Input:**
+```json
+{
+  "uid":            "<string, required — UID of the live node to update>",
+  "db_path":        "<string, required>",
+  "content":        "<string, optional — replaces node.content; triggers re-embed>",
+  "summary":        "<string, optional — replaces node.summary; triggers re-embed>",
+  "name":           "<string, optional>",
+  "topic":          "<string, optional>",
+  "tags":           "<string[], optional — replaces existing tags wholesale>",
+  "importance":     "<number 1–10, optional>",
+  "metadata":       "<object, optional — merged into or replaces node.meta>",
+  "metadata_merge": "<'deep'|'replace', default 'deep'>",
+  "t_occurred":     "<ISO timestamp, optional>",
+  "t_valid":        "<ISO timestamp, optional>"
+}
+```
+
+**`metadata_merge` semantics:**
+- `'deep'` (default): recursive merge — nested objects are merged field-by-field; **arrays are replaced** (not concatenated).
+- `'replace'`: overwrites `node.meta` wholesale with the supplied object.
+
+**Output (success):**
+```json
+{ "uid": "<string>", "updated_fields": ["content", "topic", ...], "reembedded": true }
+```
+
+**Output (error):**
+```json
+{ "code": "E_NOT_FOUND", "message": "..." }
+{ "code": "E_NO_FIELDS",  "message": "..." }
+```
+
+**Immutability contract:**
+- `uid` — never changes (identity anchor).
+- `t_created` — never touched (audit anchor).
+- `t_updated` — set to `now` on every successful update.
+
+---
+
 ### `memory_get_session_state` / `memory_save_session_state` (unchanged)
 
 Retrieve or upsert session working-memory state (a JSON blob keyed by session_id).
@@ -226,7 +271,7 @@ Implements: `initialize`, `tools/list`, `tools/call`.
 
 ## Server version
 
-`memory-server` v1.0.0. Check `memory_stats` → `tool_version` to confirm v1 surface is active.
+`memory-server` v1.1.0. Check `memory_stats` → `tool_version` to confirm the surface version: `"1.1.0"` signals v1.1 (including `memory_update`) is active.
 
 ## Permissions and db_path constraint
 
