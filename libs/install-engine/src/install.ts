@@ -1275,6 +1275,24 @@ export async function declarativeInstall(
       }
     }
 
+    // BL-37: a self-contained service bundle inlines all @adhd/sox-* workspace
+    // deps but CANNOT inline native addons (.node binaries — better-sqlite3,
+    // sqlite-vec). The bundle resolves those at runtime via createRequire, which
+    // walks up from the materialized store file (<scopeRoot>/.sox/ext/<id>/index.js)
+    // and consults NODE_PATH. For user/org scope the store lives under ~/.sox/ext/
+    // with no node_modules up-tree, so we inject NODE_PATH pointing at the
+    // workspace node_modules where pnpm hoists the native addons. createRequire
+    // honours NODE_PATH, so this resolves the addons portably across every scope.
+    // The supervisor preserves NODE_* env vars (it scrubs everything else under
+    // the enforced policy), so this reaches the spawned process intact.
+    const workspaceNodeModules = path.join(workspaceRoot, 'node_modules');
+    if (fs.existsSync(workspaceNodeModules)) {
+      const existingNodePath = specEnv['NODE_PATH'] ?? process.env['NODE_PATH'];
+      specEnv['NODE_PATH'] = existingNodePath
+        ? `${workspaceNodeModules}${path.delimiter}${existingNodePath}`
+        : workspaceNodeModules;
+    }
+
     // 3. Register with run-service — command always targets the store dir bundle.
     // [ref:run-service-spec]: preserve the registry entry shape {id,command,args,env,cwd,status,storePath}.
     await runServiceApply({
