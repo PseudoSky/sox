@@ -811,4 +811,64 @@ describe('runBatchEnrich', () => {
       t2.cleanup();
     }
   });
+
+  // BL-45: incrementalCluster option skips full O(n²) pass
+  it('incrementalCluster:true skips the full cluster pass (no communities written)', () => {
+    const { db, cleanup } = makeTmpDb();
+    try {
+      process.env['SOX_EMBED_BACKEND'] = 'hash';
+      const now = new Date().toISOString();
+      // Insert two similar episodes with vectors so clustering would fire
+      const ep1 = seedEmbedding(1);
+      const ep2 = nearDupEmbedding(ep1, 0.01);
+      insertEpisode(db, 'ep-inc-1', 'Incremental clustering test episode alpha with enough content.', ep1);
+      insertEpisode(db, 'ep-inc-2', 'Incremental clustering test episode beta with enough content.', ep2);
+      // First stamp enrich_ver so mixed-model guard passes
+      db.prepare(
+        `UPDATE node SET enrich_ver = ? WHERE kind = 'episode'`,
+      ).run(JSON.stringify({ pass: 'test', ts: now }));
+
+      const result = runBatchEnrich(db, { incrementalCluster: true });
+      // incremental mode: clusterStore called with incrementalOnly:true → no full O(n²) pass → 0 communities
+      expect(result.communities_upserted).toBe(0);
+      // cluster_pass_skipped=true because incrementalOnly returns clusters:[], full_pass:false
+      // (the batch orchestrator treats no-full-pass as skipped — expected for incremental mode)
+      expect(result.cluster_pass_skipped).toBe(true);
+      // importance should still be updated (chunked tx independent of clustering)
+      expect(typeof result.importance_updated).toBe('number');
+    } finally {
+      delete process.env['SOX_EMBED_BACKEND'];
+      cleanup();
+    }
+  });
+
+  // BL-45: importanceChunkSize splits the transaction but produces same results
+  it('importanceChunkSize:1 produces same importance updates as default (chunked tx)', () => {
+    const t1 = makeTmpDb();
+    const t2 = makeTmpDb();
+    try {
+      process.env['SOX_EMBED_BACKEND'] = 'hash';
+      const now = new Date().toISOString();
+      // Insert 3 episodes in each DB
+      for (let i = 1; i <= 3; i++) {
+        for (const t of [t1, t2]) {
+          const emb = seedEmbedding(i);
+          insertEpisode(t.db, `ep-chunk-${i}`, `Episode content number ${i} for chunk transaction testing here.`, emb);
+        }
+      }
+
+      // Default chunk (500): run first on t1
+      const r1 = runBatchEnrich(t1.db, { importanceChunkSize: 500 });
+      // Chunk size 1 (one episode per transaction): run on t2
+      const r2 = runBatchEnrich(t2.db, { importanceChunkSize: 1 });
+
+      // Both should produce the same importance_updated count
+      expect(r1.importance_updated).toBe(r2.importance_updated);
+      expect(r1.legacy_nodes_stamped).toBe(r2.legacy_nodes_stamped);
+    } finally {
+      delete process.env['SOX_EMBED_BACKEND'];
+      t1.cleanup();
+      t2.cleanup();
+    }
+  });
 });

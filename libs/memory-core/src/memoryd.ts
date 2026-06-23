@@ -35,6 +35,14 @@ const POLL_INTERVAL_MS = 1000;
 const BATCH_MAX = 50;
 const DECAY_FACTOR = 0.995; // per-hour recency decay
 
+// BL-45: debounce / cooldown constants.
+// After a write-triggered incremental pass we wait NUDGE_COOLDOWN_MS before
+// accepting another nudge-triggered pass — collapsing a burst of ingest writes
+// into one pass rather than running one O(n²) pass per write.
+// A periodic (non-nudge) full re-cluster runs at most every FULL_ENRICH_INTERVAL_MS.
+const NUDGE_COOLDOWN_MS = 5_000; // 5 s cooldown between nudge-triggered incremental passes
+const FULL_ENRICH_INTERVAL_MS = 30 * 60 * 1000; // 30 min between full cluster passes
+
 // Queue priority constants: project=0, agent-tagged=1, user/global=2.
 // Used in enqueueIngest (exported below) as inline logic.
 
@@ -53,6 +61,12 @@ export class MemoryDaemon {
   private stopping = false;
   private loopHandle: ReturnType<typeof setTimeout> | null = null;
   readonly dbPath: string;
+
+  // BL-45: debounce / cooldown tracking.
+  // lastNudgeProcessedAt: wall-clock time the last nudge-triggered pass completed.
+  // lastFullEnrichAt: wall-clock time the last full O(n²) cluster pass ran.
+  private lastNudgeProcessedAt = 0;
+  private lastFullEnrichAt = 0;
 
   constructor(dbPath: string) {
     // BL-41: expand ~ at the sink so the daemon never creates a literal `~` dir.
@@ -111,9 +125,14 @@ export class MemoryDaemon {
       }
 
       this.server = net.createServer((conn) => {
-        // Nudge: a client wrote to the socket — wake the loop
+        // Nudge: a client wrote to the socket — wake the loop.
+        // BL-45: respect the cooldown window. If we recently completed a nudge-triggered
+        // pass, schedule at the remaining cooldown time rather than immediately, so a
+        // write burst collapses into one pass rather than one O(n²) pass per write.
         conn.on('data', () => {
-          this.scheduleLoop(0); // immediate
+          const msSinceLastPass = Date.now() - this.lastNudgeProcessedAt;
+          const delay = Math.max(0, NUDGE_COOLDOWN_MS - msSinceLastPass);
+          this.scheduleLoop(delay);
         });
         conn.on('error', () => { /* ignore connection errors */ });
         conn.end(); // health: just accept+close proves liveness
@@ -136,16 +155,25 @@ export class MemoryDaemon {
 
   /**
    * Main drain loop — processes one batch then reschedules.
-   * 7-step deterministic-first pipeline.
+   * BL-45: after a non-empty drain, impose a cooldown before the next nudge-triggered
+   * pass (NUDGE_COOLDOWN_MS) instead of immediately re-scheduling at delay 0.
+   * This collapses a burst of ingest writes into a single enrichment pass rather than
+   * running one full O(n²) pass per write.
    */
   private async runLoop(): Promise<void> {
     if (this.stopping) return;
 
     try {
       const processed = await this.drainBatch();
-      // If we processed items, immediately try another batch;
-      // otherwise, poll after POLL_INTERVAL_MS.
-      this.scheduleLoop(processed > 0 ? 0 : POLL_INTERVAL_MS);
+      if (processed > 0) {
+        this.lastNudgeProcessedAt = Date.now();
+        // Cooldown: wait NUDGE_COOLDOWN_MS before the next nudge-triggered pass.
+        // This prevents back-to-back full passes on a write burst.
+        this.scheduleLoop(NUDGE_COOLDOWN_MS);
+      } else {
+        // Nothing to drain; poll on the normal interval.
+        this.scheduleLoop(POLL_INTERVAL_MS);
+      }
     } catch (err) {
       console.error('[memoryd] loop error:', err);
       this.scheduleLoop(POLL_INTERVAL_MS);
@@ -178,7 +206,11 @@ export class MemoryDaemon {
        WHERE seq IN (${seqs.map(() => '?').join(',')})`,
     ).run(claimedAt, ...seqs);
 
-    // Separate enrich rows (trigger batch enrichment) from other deterministic ops
+    // Separate enrich rows (trigger batch enrichment) from other deterministic ops.
+    // BL-45: 'enrich' op (explicit/periodic trigger) forces a full O(n²) cluster pass;
+    // 'ingest' op (write-triggered) uses the incremental path (no full re-cluster).
+    const explicitEnrichRows = rows.filter((r) => r.op === 'enrich');
+    const ingestRows = rows.filter((r) => r.op === 'ingest');
     const enrichRows = rows.filter((r) => r.op === 'ingest' || r.op === 'enrich');
     const otherRows = rows.filter((r) => r.op !== 'ingest' && r.op !== 'enrich');
 
@@ -197,10 +229,14 @@ export class MemoryDaemon {
     }
 
     // Process enrich/ingest rows via deterministic batch enrichment (no LLM, no provider).
+    // forceFullCluster=true when any explicit 'enrich' op is in the batch (full O(n²) pass);
+    // ingest-only batches use incremental clustering (no full re-cluster, much faster).
     // Only mark done on SUCCESS — on failure leave done_at NULL so the next drain cycle
     // retries. A transient runBatchEnrich failure must not silently drop enrichment work.
+    const forceFullCluster = explicitEnrichRows.length > 0;
+    void ingestRows; // referenced above for the flag; used here for linting
     if (enrichRows.length > 0) {
-      const enrichSucceeded = this.processBatchEnrich();
+      const enrichSucceeded = this.processBatchEnrich(forceFullCluster);
       if (enrichSucceeded) {
         const enrichSeqs = enrichRows.map((r) => r.seq);
         this.db.prepare(
@@ -294,19 +330,37 @@ export class MemoryDaemon {
   }
 
   /**
-   * Run deterministic batch enrichment over the full live corpus.
-   * Called whenever enrich/ingest queue items are drained.
-   * Delegates to @adhd/sox-memory-enrich runBatchEnrich — no LLM, no provider calls.
+   * Run deterministic batch enrichment over the live corpus.
+   * BL-45: chooses between incremental (write-triggered, fast) and full (periodic, O(n²))
+   * clustering mode based on how long ago the last full pass ran.
+   *
+   * - Incremental (incrementalCluster:true): local neighborhood check only — no O(n²)
+   *   pairwise scan. Used for write-triggered ingest drains.
+   * - Full (incrementalCluster:false): full O(n²) connected-components pass. Reserved
+   *   for periodic intervals (FULL_ENRICH_INTERVAL_MS) and explicit triggers
+   *   (memory_curate recluster / enqueueEnrich with op='enrich').
    *
    * Returns true on success, false on failure. The caller MUST only mark the
    * corresponding queue rows as done when this returns true — on failure, rows
    * retain done_at=NULL so the next drain cycle re-tries them automatically.
    */
-  private processBatchEnrich(): boolean {
+  private processBatchEnrich(forceFullCluster = false): boolean {
+    const now = Date.now();
+    const dueForFullPass =
+      forceFullCluster ||
+      now - this.lastFullEnrichAt >= FULL_ENRICH_INTERVAL_MS;
+
+    // Use incremental clustering for write-triggered passes unless a full pass is due.
+    const incrementalCluster = !dueForFullPass;
+
     try {
-      const result = runBatchEnrich(this.db);
+      const result = runBatchEnrich(this.db, { incrementalCluster });
+      if (dueForFullPass) {
+        this.lastFullEnrichAt = Date.now();
+      }
       console.log(
-        `[memoryd] batch enrich: communities=${result.communities_upserted}` +
+        `[memoryd] batch enrich (${incrementalCluster ? 'incremental' : 'full'}):` +
+        ` communities=${result.communities_upserted}` +
         ` member_of=${result.member_of_edges}` +
         ` importance_updated=${result.importance_updated}` +
         ` relates_to=${result.relates_to_edges}` +

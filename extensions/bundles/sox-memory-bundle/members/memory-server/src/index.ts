@@ -36,12 +36,13 @@
 
 import type { ToolDefinition, ToolResult } from '@adhd/sox-mcp-runtime';
 import { defineTool, serve } from '@adhd/sox-mcp-runtime';
-import { enqueueEnrich, memoryRecall, memoryUpdate, memoryWrite, openDb } from '@adhd/sox-memory-core';
+import { enqueueEnrich, getActiveEmbedModel, memoryRecall, memoryUpdate, memoryWrite, openDb, SOCKET_PATH } from '@adhd/sox-memory-core';
 import type { MemoryFilter } from '@adhd/sox-memory-enrich';
-import { buildFiltersClause, clusterStats, clusterSubset, dropSubsetLens, ENRICH_VERSION, listSubsetLenses } from '@adhd/sox-memory-enrich';
+import { buildFiltersClause, clusterStats, clusterSubset, dropSubsetLens, ENRICH_VERSION, listSubsetLenses, runBatchEnrich } from '@adhd/sox-memory-enrich';
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { monotonicFactory } from 'ulid';
@@ -274,7 +275,7 @@ const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_write',
     description:
-      'Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, near-dup, extractive summary). Returns {episode_uid}. Batch enrichments (clustering, auto-links, importance link-score) run asynchronously in the daemon.',
+      'Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, near-dup, extractive summary). Returns {episode_uid}. Batch enrichments (clustering, auto-links, importance link-score) run asynchronously in the daemon when it is running, or via an in-process fallback interval when the daemon is absent.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -761,6 +762,15 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
   // drift-proof answer to "what code is this?" — instead of a hand-typed version.
   if (name === 'memory_ping') {
     const addr = getContentAddress();
+    // BL-48: include the resolved embed backend so callers can detect hash-fallback
+    // without reading stderr. getActiveEmbedModel() returns the truthful model id
+    // (real or hash) as of the last embed() call; 'nomic-embed-text-v1.5-hash' means
+    // hash backend is active (possibly after a silent fallback from 'auto'/'real').
+    const pingEmbedModel = getActiveEmbedModel();
+    const pingConfiguredBackend = process.env['SOX_EMBED_BACKEND'] ?? 'auto';
+    const pingOnHashFallback =
+      pingConfiguredBackend !== 'hash' &&
+      pingEmbedModel === 'nomic-embed-text-v1.5-hash';
     return {
       content: [{
         type: 'text',
@@ -770,6 +780,9 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           artifact: addr.artifact,
           short: addr.short,
           host_compat: addr.host_compat,
+          embed_model: pingEmbedModel,
+          embed_backend_configured: pingConfiguredBackend,
+          embed_on_hash_fallback: pingOnHashFallback,
         }),
       }],
     };
@@ -2224,9 +2237,19 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
 
       const qStats = clusterStats(db);
 
-      const embedModel = process.env['SOX_EMBED_BACKEND'] === 'real'
-        ? 'onnx/all-MiniLM-L6-v2'
-        : 'hash';
+      // BL-48: report the RESOLVED backend (what is actually running), not the env var.
+      // getActiveEmbedModel() returns 'bge-base-en-v1.5' when real ONNX is in use,
+      // 'nomic-embed-text-v1.5-hash' when on hash. The 'auto' backend resolves at
+      // first embed() call — if no embed has been made yet it returns the hash model
+      // identifier (the safe default). A fallback indicator is included so callers can
+      // detect "running on hash unexpectedly" without parsing stderr.
+      const resolvedEmbedModel = getActiveEmbedModel();
+      const configuredBackend = process.env['SOX_EMBED_BACKEND'] ?? 'auto';
+      // on_hash_fallback=true when config is 'auto'/'real' but resolved to hash —
+      // signals silent fallback (model unavailable). false if intentionally hash or real.
+      const onHashFallback =
+        configuredBackend !== 'hash' &&
+        resolvedEmbedModel === 'nomic-embed-text-v1.5-hash';
 
       return {
         content: [{
@@ -2236,7 +2259,9 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             // it from a semver. `tool_version` (the old '1.1.0' surface marker) is gone.
             tools: TOOL_NAMES,
             enrich_version: ENRICH_VERSION,
-            embed_model: embedModel,
+            embed_model: resolvedEmbedModel,
+            embed_backend_configured: configuredBackend,
+            embed_on_hash_fallback: onHashFallback,
             total_episodes: totalEpisodes,
             with_topic: withTopicRow?.cnt ?? 0,
             with_summary: withSummaryRow?.cnt ?? 0,
@@ -2271,6 +2296,86 @@ const registeredTools = TOOLS.map((tool) =>
     handler: (_args, _ctx) => handleToolCall(tool.name, _args),
   }),
 );
+
+// ── BL-47: in-process fallback enrichment loop ────────────────────────────────
+//
+// When the memory-daemon service (memory-daemon) is absent (its Unix socket at
+// SOCKET_PATH is not connectable), batch enrichment never runs — clustering,
+// auto-links, importance, and topic backfill are silently skipped. This fallback
+// runs the enrichment loop IN the MCP server process on a periodic interval so
+// enrichment is not permanently dead when the daemon is down.
+//
+// Guard: before each pass we probe SOCKET_PATH. If the daemon IS reachable, we
+// skip the fallback pass — the daemon owns the batch loop in that case. This
+// prevents double-runs when both are active.
+//
+// The fallback uses incremental clustering (no full O(n²) pass) to keep each
+// pass fast. A full re-cluster is available via memory_curate recluster.
+//
+// The loop is debounced: if a pass is already running (blocking the event loop
+// via synchronous better-sqlite3), the timer fires after it completes naturally.
+//
+// This fallback iterates over ALL open DB connections in dbCache so enrichment
+// runs for every db_path that has been actively used this session.
+
+const FALLBACK_ENRICH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes between passes
+
+/** Returns true when the memory-daemon socket is reachable (daemon is up). */
+function isDaemonReachable(): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!fs.existsSync(SOCKET_PATH)) {
+      resolve(false);
+      return;
+    }
+    const conn = net.createConnection(SOCKET_PATH);
+    const timer = setTimeout(() => {
+      conn.destroy();
+      resolve(false);
+    }, 200);
+    conn.on('connect', () => {
+      clearTimeout(timer);
+      conn.destroy();
+      resolve(true);
+    });
+    conn.on('error', () => {
+      clearTimeout(timer);
+      resolve(false);
+    });
+  });
+}
+
+/** Run one in-process incremental enrichment pass over all open DBs. */
+async function runFallbackEnrichPass(): Promise<void> {
+  if (dbCache.size === 0) return;
+
+  const daemonUp = await isDaemonReachable();
+  if (daemonUp) {
+    // Daemon is alive — it owns the batch loop. Do not double-run.
+    return;
+  }
+
+  for (const [dbPath, db] of dbCache) {
+    try {
+      const result = runBatchEnrich(db, { incrementalCluster: true });
+      console.error(
+        `[memory-server] fallback enrich (daemon absent, ${dbPath}):` +
+        ` communities=${result.communities_upserted}` +
+        ` importance_updated=${result.importance_updated}` +
+        ` relates_to=${result.relates_to_edges}`,
+      );
+    } catch (err) {
+      // Log to stderr only — never stdout (JSON-RPC channel).
+      console.error(`[memory-server] fallback enrich error (${dbPath}):`, err);
+    }
+  }
+}
+
+// Schedule the fallback loop. unref() keeps the timer from holding the process
+// open past MCP client disconnect — the server exits cleanly on stdin close.
+const _fallbackTimer = setInterval(() => {
+  void runFallbackEnrichPass();
+}, FALLBACK_ENRICH_INTERVAL_MS);
+_fallbackTimer.unref();
 
 // ADR-0003 Decision 5: serverInfo.version is DERIVED from the running artifact's
 // content address (short hash) — never a hand-typed '1.1.0'. The MCP initialize
