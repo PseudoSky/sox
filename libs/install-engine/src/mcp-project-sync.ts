@@ -27,6 +27,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { readInstallRegistry, resolveInstallRegistryPath, type InstallRecord } from './install-registry.js';
 import { OwnershipIndex, type OwnedEntry } from './ownership.js';
@@ -106,6 +107,76 @@ export function readGlobalServerEntry(host: string, extId: string): unknown {
   }
 }
 
+// ─── Tracked global registration (the [inv:no-untracked-injection] counterpart) ──
+
+/**
+ * Register a user/global-scope MCP server entry into the host's user MCP config
+ * (`~/.claude.json` → `mcpServers.<extId>`) WITH full ownership + ledger tracking,
+ * so the injection is reversible on uninstall AND discoverable by tooling.
+ * Idempotent.
+ *
+ * This is the tracked counterpart to a raw JSON merge. Use it ANYWHERE a user-scope
+ * MCP server lands in `~/.claude.json` outside the normal `declarativeInstall` path
+ * (e.g. `sox migrate-home`'s skill/MCP re-placement). A raw `mcpServers.<id> = v`
+ * write leaves an UNTRACKED injection — invisible to discovery (the bug that made
+ * `sync-mcp`/`upgrade --force` find nothing for a migrated server) and irreversible
+ * (uninstall's ledger-driven reversal never removes a key no ledger action recorded).
+ *
+ * Records BOTH:
+ *   1. the ledger action (appliedHash) via `config-merge` — what uninstall's
+ *      `[inv:ledger-reversible]` reversal consumes to delete EXACTLY this key; and
+ *   2. the ownership `config-key` entry — the inventory used for discovery and
+ *      reversibility-by-inventory.
+ *
+ * @returns 'registered' on success, 'no-surface' if the host has no user MCP surface.
+ */
+export async function registerUserMcpServer(opts: {
+  extId: string;
+  serverEntry: unknown;
+  host?: string;
+  /** Data root holding ledger.json + ownership.json (default: dataRoot('user')). */
+  scopeRoot?: string;
+  /** Host placement base for ledger portability (default: $HOME). */
+  workspaceRoot?: string;
+}): Promise<'registered' | 'no-surface'> {
+  const host = opts.host ?? 'claude';
+  const userMcpPath = resolveUserMcpConfigPath(host);
+  if (userMcpPath === undefined) return 'no-surface';
+
+  const scopeRoot = opts.scopeRoot ?? dataRoot('user');
+  const workspaceRoot = opts.workspaceRoot ?? require('node:os').homedir() as string;
+  const keyPath = `mcpServers.${opts.extId}`;
+
+  // 1. Write the value AND record the ledger action (appliedHash) so uninstall's
+  //    ledger-driven reversal removes EXACTLY this key ([inv:ledger-reversible]).
+  await configMergeApply({
+    host,
+    scope: 'user',
+    scopeRoot,
+    workspaceRoot,
+    isProject: false,
+    ext: opts.extId,
+    target: { filePath: userMcpPath, keyPath },
+    payload: { value: opts.serverEntry },
+    // Backfill-safe: record the ledger reversal action even when the server entry
+    // is already byte-present (the pre-tracking migrate-home case).
+    recordWhenUnchanged: true,
+  });
+
+  // 2. Record the ownership config-key entry (inventory) — idempotent: never
+  //    double-record the same (file, keyPath).
+  const idx = OwnershipIndex.loadFromFile(path.join(scopeRoot, 'ownership.json'));
+  const existing = idx.get(opts.extId, 'user');
+  const already = (existing?.entries ?? []).some(
+    (e) => e.kind === 'config-key' && e.file === userMcpPath && e.keyPath === keyPath,
+  );
+  if (!already) {
+    idx.addEntries(opts.extId, 'user', [{ kind: 'config-key', file: userMcpPath, keyPath }], { host });
+    idx.save();
+  }
+  return 'registered';
+}
+
 // ─── Project enumeration (install-registry only — scope guard) ──────────────────
 
 /**
@@ -119,9 +190,22 @@ export function knownProjectRoots(): string[] {
   } catch {
     return [];
   }
+  // Skip ephemeral roots under the OS temp dir: test runs leak `/tmp/...` project
+  // roots into the install registry (BL-35), and propagating to them just re-creates
+  // junk `.mcp.json` files and pollutes the ownership index. A project root under
+  // os.tmpdir() is never a real install consumer. (macOS reports os.tmpdir() as
+  // `/var/folders/...` while realpath adds a `/private` prefix — check both forms.)
+  const tmpDir = os.tmpdir();
+  let tmpReal = tmpDir;
+  try { tmpReal = fs.realpathSync(tmpDir); } catch { /* ignore */ }
+  const underTmp = (p: string): boolean =>
+    p === tmpDir || p.startsWith(tmpDir + path.sep) ||
+    p === tmpReal || p.startsWith(tmpReal + path.sep);
+
   const roots = new Set<string>();
   for (const r of records) {
     if (r.scope === 'project' && typeof r.root === 'string' && r.root.length > 0) {
+      if (underTmp(r.root)) continue;
       roots.add(r.root);
     }
   }

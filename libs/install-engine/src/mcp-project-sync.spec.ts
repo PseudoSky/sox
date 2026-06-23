@@ -52,4 +52,12 @@ describe('knownProjectRoots — #16728 scope guard', () => {
     const roots = knownProjectRoots().sort();
     expect(roots).toEqual(['/p/one', '/p/two']);
   });
+
+  it('skips ephemeral project roots under the OS temp dir (BL-35 leak guard)', () => {
+    const tmpRoot = path.join(os.tmpdir(), 'adr3-scope-XXXX');
+    upsertInstallRecord({ extId: 'leak', version: '1', scope: 'project', root: tmpRoot, source: 'file://x' });
+    upsertInstallRecord({ extId: 'real', version: '1', scope: 'project', root: '/p/real', source: 'file://x' });
+    const roots = knownProjectRoots().sort();
+    expect(roots).toEqual(['/p/real']);
+  });
 });

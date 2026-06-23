@@ -735,8 +735,19 @@ describe('materialize — [capability-engine.1] [capability-engine.5]', () => {
   });
 
   it('defaultStoreRoot() returns the ext dir under the user data root (ADR-0004)', () => {
-    const root = materialize.defaultStoreRoot();
-    // ADR-0004 §D2: $userDataRoot/ext (default ~/.adhd/sox-ecosystem/ext).
-    expect(root).toContain(path.join('.adhd', 'sox-ecosystem', 'ext'));
+    // This test asserts the genuine DEFAULT path, so it must run with
+    // SOX_ECOSYSTEM_HOME unset (the suite-wide setup sandboxes it to a tmp dir for
+    // write-isolation — BL-35). defaultStoreRoot() only computes a string, no I/O,
+    // so temporarily clearing the override is side-effect-free.
+    const saved = process.env['SOX_ECOSYSTEM_HOME'];
+    delete process.env['SOX_ECOSYSTEM_HOME'];
+    try {
+      const root = materialize.defaultStoreRoot();
+      // ADR-0004 §D2: $userDataRoot/ext (default ~/.adhd/sox-ecosystem/ext).
+      expect(root).toContain(path.join('.adhd', 'sox-ecosystem', 'ext'));
+    } finally {
+      if (saved === undefined) delete process.env['SOX_ECOSYSTEM_HOME'];
+      else process.env['SOX_ECOSYSTEM_HOME'] = saved;
+    }
   });
 });

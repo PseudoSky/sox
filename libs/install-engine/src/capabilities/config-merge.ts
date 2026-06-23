@@ -56,6 +56,15 @@ export interface ConfigMergeCtx {
   target: ConfigMergeTarget;
   payload: ConfigMergePayload;
   ledger?: Ledger;
+  /**
+   * Record the ledger action even when the target key is ALREADY set to the
+   * byte-identical value (apply normally short-circuits the whole operation in
+   * that case). Used to BACKFILL tracking for an injection that landed in the
+   * config file outside the install path (e.g. a pre-tracking `migrate-home`),
+   * so the ledger gains the reversal action without rewriting the file.
+   * Idempotent: a matching ledger action is never double-recorded.
+   */
+  recordWhenUnchanged?: boolean;
 }
 
 export interface Diff {
@@ -356,11 +365,16 @@ export async function apply(ctx: ConfigMergeCtx): Promise<void> {
   const newHash = sha256(value);
   const currentHash = sha256(current);
 
-  // Idempotent: already set to the same value
-  if (current !== undefined && currentHash === newHash) return;
+  // Idempotent: already set to the same value. Normally a complete no-op; but a
+  // backfill (recordWhenUnchanged) still falls through to ensure the LEDGER carries
+  // the reversal action even though the file needs no rewrite.
+  const unchanged = current !== undefined && currentHash === newHash;
+  if (unchanged && ctx.recordWhenUnchanged !== true) return;
 
-  setByKeyPath(config, parts, value);
-  writeConfig(filePath, config);
+  if (!unchanged) {
+    setByKeyPath(config, parts, value);
+    writeConfig(filePath, config);
+  }
 
   // Record ledger action.
   // [inv:ledger-reversible]: project ledger must store repo-relative paths.
@@ -374,6 +388,11 @@ export async function apply(ctx: ConfigMergeCtx): Promise<void> {
   const ledgerFilePath = ctx.isProject
     ? path.relative(relBase, ctx.target.filePath)
     : ctx.target.filePath;
+  // Never double-record: a re-applied/backfilled key keeps a single action.
+  const already = ledger
+    .actionsFor(ctx.ext, ctx.host, ctx.scope)
+    .some((a) => a.cap === 'config-merge' && a.file === ledgerFilePath && a.keyPath === keyPath);
+  if (already) return;
   const action: LedgerAction = {
     cap: 'config-merge',
     file: ledgerFilePath,

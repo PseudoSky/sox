@@ -56,6 +56,7 @@ import {
   verifyIntegrity,
   syncUserMcpToProjects,
   reverseUserMcpFromProjects,
+  registerUserMcpServer,
 } from '@adhd/sox-install-engine';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 // @adhd/sox-host-registry is also lazy-required via install-engine; import it lazily here too
@@ -131,9 +132,6 @@ async function main(): Promise<void> {
     case 'uninstall':
       await cmdUninstall(flags);
       break;
-    case 'sync-mcp':
-      await cmdSyncMcp(flags);
-      break;
     case 'enable':
       await cmdEnable(flags);
       break;
@@ -158,7 +156,7 @@ async function main(): Promise<void> {
       await cmdLogs(flags);
       break;
     case 'migrate-home':
-      cmdMigrateHome(flags);
+      await cmdMigrateHome(flags);
       break;
 
     // ── Authoring (A1) ────────────────────────────────────────────────────────
@@ -260,12 +258,15 @@ Extension management:
                      Flags: --scope=<scope>  --frozen-lockfile  --update
   update             Update installed extensions
                      Flags: --scope=<scope>
-  upgrade <ext-id>   Re-install an extension across all projects (P9)
+  upgrade <ext-id>   Re-install stale consumers across all scopes/projects (P9):
+                     verify checksum → re-install if stale → rolling-restart.
                      Flags: --all (required)
+                            --force  also reconcile user-scope MCP servers into
+                                     every known project .mcp.json (#16728) —
+                                     unconditionally, even when nothing is stale
+                            --host=<host>  host for the --force reconcile (default: claude)
   uninstall          Remove an extension
                      Flags: --id=<ext-id>  --scope=<scope>
-  sync-mcp           Propagate user/global MCP servers into project .mcp.json (#16728)
-                     Flags: --id=<ext-id>  --host=<host>  --dry-run
   enable             Enable a disabled extension
                      Flags: --id=<ext-id>  --scope=<scope>
   disable            Disable an extension
@@ -1836,6 +1837,57 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
     }
   }
 
+  // 4. MCP propagation reconcile (--force) — the fold of the retired `sync-mcp` verb.
+  //    A project's `.mcp.json` OVERRIDES (does not inherit) user-scope MCP servers
+  //    (#16728), so a user-scope MCP install is invisible in any project that has its
+  //    own `.mcp.json`. Install/upgrade already propagate when the artifact changes;
+  //    `--force` re-propagates UNCONDITIONALLY across every known project — the
+  //    reconcile that catches a newly-created or drifted project whose artifact never
+  //    went stale (the only gap a plain `upgrade --all` leaves).
+  //
+  //    Discovery is driven from the install-registry consumers we just walked (the
+  //    user-scope records), NOT the ownership index — the ownership index can miss a
+  //    server's `mcpServers.<id>` config-key, whereas the install registry always has
+  //    the user-scope install record. `syncUserMcpToProjects` self-filters any id with
+  //    no global `~/.claude.json` registration, so non-MCP consumers are cheap no-ops.
+  if (flags['force'] !== undefined) {
+    const reconcileHost = flags['host'] ?? 'claude';
+    const userExtIds = [
+      ...new Set(consumers.filter((r) => r.scope === 'user').map((r) => r.extId)),
+    ];
+    process.stdout.write(
+      `\n${CLI} upgrade --force: MCP propagation reconcile (#16728) across known projects\n`,
+    );
+    let mcpMerged = 0;
+    let mcpUpToDate = 0;
+    for (const id of userExtIds) {
+      let results;
+      try {
+        results = await syncUserMcpToProjects({ extId: id, host: reconcileHost });
+      } catch (e) {
+        process.stderr.write(`  warning: reconcile failed for '${id}' — ${String(e)}\n`);
+        continue;
+      }
+      for (const r of results) {
+        switch (r.action) {
+          case 'merged':
+            mcpMerged++;
+            process.stdout.write(`  merged     ${id} → ${r.mcpJsonPath}\n`);
+            break;
+          case 'up-to-date':
+            mcpUpToDate++;
+            break;
+          case 'skipped':
+            process.stderr.write(`  skipped    ${id} → ${r.projectRoot} (${r.reason ?? ''})\n`);
+            break;
+          default:
+            break;
+        }
+      }
+    }
+    process.stdout.write(`  reconcile done (merged=${mcpMerged}, up-to-date=${mcpUpToDate})\n`);
+  }
+
   // ── Per-consumer report ──────────────────────────────────────────────────────
   process.stdout.write(`\n${CLI} upgrade — per-consumer report\n`);
   process.stdout.write(
@@ -2101,112 +2153,6 @@ Options:
   }
 
   process.stdout.write(`${CLI} uninstall: removed '${id}' (${matchKey}) from scope '${scope}'\n`);
-  process.exit(0);
-}
-
-// ─── sync-mcp ───────────────────────────────────────────────────────────────────
-
-/**
- * cmdSyncMcp — #16728: re-propagate a user/global-scope MCP server's entry into
- * every project's `.mcp.json` that sox knows about (project roots in the install
- * registry). Idempotent. Use after adding a new project, or to repair drift.
- *
- *   soxe sync-mcp [--id=<ext>] [--host=<host>] [--dry-run]
- *
- * With no --id, every user-scope mcp-server in the user ownership index is synced.
- */
-async function cmdSyncMcp(flags: Record<string, string>): Promise<void> {
-  if (flags['help'] !== undefined || flags['h'] !== undefined) {
-    process.stdout.write(`${CLI} sync-mcp — propagate user/global MCP servers into project .mcp.json (#16728)
-
-Usage:
-  ${CLI} sync-mcp [--id=<ext>] [--host=<host>] [--dry-run]
-
-Options:
-  --id <ext>     Only sync this MCP server id (default: all user-scope mcp-servers)
-  --host <host>  Host whose surfaces resolve the config paths (default: claude)
-  --dry-run      Report what would change; write nothing
-  --help         Show this message
-
-A project's .mcp.json OVERRIDES (does not inherit) user-scope MCP servers, so a
-user-scope install is invisible in projects with their own .mcp.json. This merges
-the user-scope server entry into every known project's .mcp.json, preserving the
-project's other (foreign) MCP servers. Reversed cleanly on uninstall.
-`);
-    process.exit(0);
-  }
-
-  const host = flags['host'] ?? 'claude';
-  const dryRun = flags['dry-run'] === 'true' || flags['dry-run'] === '';
-  const explicitId = flags['id'] ?? flags['_'];
-
-  // Resolve the set of ids to sync.
-  let ids: string[];
-  if (explicitId !== undefined && explicitId !== '') {
-    ids = [explicitId];
-  } else {
-    // Every user-scope mcp-server we own: read the user ownership index and keep
-    // records that own a global ~/.claude.json mcpServers.<id> config-key OR already
-    // own project .mcp.json merges. We additionally confirm a global registration
-    // exists so we only propagate real servers.
-    const pathModS = require('node:path') as typeof import('node:path');
-    const dataDirS = dataRoot('user');
-    const idxS = OwnershipIndex.loadFromFile(pathModS.join(dataDirS, 'ownership.json'));
-    const candidate = new Set<string>();
-    for (const rec of idxS.all()) {
-      if (rec.scope !== 'user') continue;
-      const ownsMcp = rec.entries.some(
-        (e) => e.kind === 'config-key' && e.keyPath === `mcpServers.${rec.extId}`,
-      );
-      if (ownsMcp) candidate.add(rec.extId);
-    }
-    ids = [...candidate];
-  }
-
-  if (ids.length === 0) {
-    process.stdout.write(`${CLI} sync-mcp: no user-scope MCP servers to sync\n`);
-    process.exit(0);
-  }
-
-  let totalMerged = 0;
-  let totalUpToDate = 0;
-  let totalWould = 0;
-  for (const id of ids) {
-    let results;
-    try {
-      results = await syncUserMcpToProjects({ extId: id, host, dryRun });
-    } catch (e) {
-      process.stderr.write(`${CLI} sync-mcp: warning: sync failed for '${id}' — ${String(e)}\n`);
-      continue;
-    }
-    if (results.length === 0) {
-      process.stdout.write(`${CLI} sync-mcp: ${id}: no known projects (or no global registration)\n`);
-      continue;
-    }
-    for (const r of results) {
-      switch (r.action) {
-        case 'merged':
-          totalMerged++;
-          process.stdout.write(`${CLI} sync-mcp: merged      ${id} → ${r.mcpJsonPath}\n`);
-          break;
-        case 'would-merge':
-          totalWould++;
-          process.stdout.write(`${CLI} sync-mcp: would-merge ${id} → ${r.mcpJsonPath}\n`);
-          break;
-        case 'up-to-date':
-          totalUpToDate++;
-          process.stdout.write(`${CLI} sync-mcp: up-to-date  ${id} → ${r.mcpJsonPath}\n`);
-          break;
-        case 'skipped':
-          process.stderr.write(`${CLI} sync-mcp: skipped     ${id} → ${r.projectRoot} (${r.reason ?? ''})\n`);
-          break;
-      }
-    }
-  }
-
-  process.stdout.write(
-    `${CLI} sync-mcp: done (${dryRun ? 'dry-run, ' : ''}merged=${dryRun ? totalWould : totalMerged}, up-to-date=${totalUpToDate})\n`,
-  );
   process.exit(0);
 }
 
@@ -3370,7 +3316,7 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
  *                        ~/.adhd/sox-ecosystem).
  *   --dry-run            Print the plan; change nothing.
  */
-function cmdMigrateHome(flags: Record<string, string>): void {
+async function cmdMigrateHome(flags: Record<string, string>): Promise<void> {
   if (flags['help'] !== undefined || flags['h'] !== undefined) {
     process.stdout.write(`${CLI} migrate-home — relocate sox data to the ADR-0004 layout
 
@@ -3465,7 +3411,13 @@ user-scope skills + ~/.claude.json MCP entries from the sandboxed path to the RE
         moved++;
       }
     }
-    // MCP: merge sandboxed <oldSandbox>/.claude.json mcpServers into the real ~/.claude.json.
+    // MCP: re-place sandboxed <oldSandbox>/.claude.json mcpServers into the real
+    // ~/.claude.json — WITH ownership + ledger tracking via registerUserMcpServer.
+    // A raw JSON merge here is an UNTRACKED injection ([inv:no-untracked-injection]
+    // violation): invisible to discovery (upgrade --force found nothing for a
+    // migrated server) and irreversible on uninstall. The tracked path records the
+    // ledger action (reversal) AND the ownership config-key (inventory/discovery),
+    // co-located in the destination data root (newHome), exactly like a fresh install.
     const sbxMcp = pathMod.join(oldSandbox, '.claude.json');
     const realMcp = pathMod.join(HOME, '.claude.json');
     if (fsMod.existsSync(sbxMcp)) {
@@ -3475,14 +3427,21 @@ user-scope skills + ~/.claude.json MCP entries from the sandboxed path to the RE
           ? JSON.parse(fsMod.readFileSync(realMcp, 'utf8')) as { mcpServers?: Record<string, unknown> }
           : {};
         const srcServers = sbxCfg.mcpServers ?? {};
-        realCfg.mcpServers = realCfg.mcpServers ?? {};
+        const realServers = realCfg.mcpServers ?? {};
         for (const [k, v] of Object.entries(srcServers)) {
-          if (realCfg.mcpServers[k] !== undefined) { skipped++; continue; }
-          log(`re-place MCP: mcpServers.${k} → ~/.claude.json`);
-          realCfg.mcpServers[k] = v;
+          if (realServers[k] !== undefined) { skipped++; continue; }
+          log(`re-place MCP: mcpServers.${k} → ~/.claude.json (tracked)`);
+          if (!dryRun) {
+            await registerUserMcpServer({
+              extId: k,
+              serverEntry: v,
+              host: 'claude',
+              scopeRoot: newHome,
+              workspaceRoot: HOME,
+            });
+          }
           moved++;
         }
-        if (!dryRun) fsMod.writeFileSync(realMcp, JSON.stringify(realCfg, null, 2) + '\n', 'utf8');
       } catch (e) {
         process.stderr.write(`${CLI} migrate-home: warning: could not re-place MCP from ${sbxMcp}: ${String(e)}\n`);
       }

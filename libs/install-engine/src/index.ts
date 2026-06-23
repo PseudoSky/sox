@@ -95,6 +95,7 @@ export type { OwnedEntry, OwnershipRecord, OwnershipFile } from './ownership.js'
 export {
   syncUserMcpToProjects,
   reverseUserMcpFromProjects,
+  registerUserMcpServer,
   knownProjectRoots,
   resolveUserMcpConfigPath,
   resolveProjectMcpConfigPath,

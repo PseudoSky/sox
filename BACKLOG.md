@@ -124,16 +124,26 @@ code type. Surfaced during the ADR-0003 implementation.
 
 ### BL-35 — `install()` test runs pollute the real install-registry (no path injection)
 
-**Severity:** Medium (test isolation; live ledger pollution) · **Status:** Open
+**Severity:** Medium (test isolation; live ledger pollution) · **Status:** RESOLVED (2026-06-23)
 Any spec that calls `install()` (e.g. `integrity.scope.spec.ts`) triggers `upsertInstallRecord`,
-which uses `resolveInstallRegistryPath()` and **ignores** the test's sandboxed `configPath`/
-`lockfilePath` — so it writes `fix-*` fixture records into the **real** install-registry under
-`SOX_HOME` (`/Users/nix/dev/ai/claude-agents/install-registry.json`, observed grown to ~441
-entries). Harmless to `upgrade --all` (polluted ids report `not-installed` and are skipped) but it
-corrupts the live consumer ledger. Fix: add `installRegistryPath?` to `InstallOptions`, thread it
-into `upsertInstallRecord`, and have the integrity spec point it at a tmp path. (The orchestrator
-purges the leaked `fix-*` records as a one-off; this is the permanent fix.) Surfaced building
-`upgrade --all`.
+which uses `resolveInstallRegistryPath()` → `installRegistryPath()` → `dataRoot('user')` →
+`$SOX_ECOSYSTEM_HOME`. The leaky specs (`integrity.scope.spec.ts` — `adr3-scope-*` roots,
+`lifecycle.spec.ts`, `verify-integrity.spec.ts`) sandboxed `configPath`/`lockfilePath` but NOT
+`SOX_ECOSYSTEM_HOME`, so the registry write escaped to the **real** `~/.adhd/sox-ecosystem/
+install-registry.json` (observed grown to ~480 records).
+
+**Permanent fix shipped (2026-06-23):** a suite-wide vitest `setupFiles`
+(`libs/install-engine/vitest.setup.ts`) now points `$SOX_ECOSYSTEM_HOME` at a throwaway temp dir
+for the whole install-engine test process — isolating the install-registry, ledger AND ownership
+writes of every spec (including ones not yet written, so the leak cannot regress). Verified: a full
+`nx test install-engine` run leaves the real registry record-count **unchanged (delta 0)**, 151/151
+green. The one spec that asserts the genuine DEFAULT data root (`capabilities.spec.ts ›
+defaultStoreRoot`) temporarily clears the override (string-only, no I/O). Defense-in-depth from the
+same engagement: `knownProjectRoots()` skips any project root under `os.tmpdir()` (regression test
+in `mcp-project-sync.spec.ts`), so even a stray leak can never fan `upgrade --force` out again. The
+~480 leaked live records + 120 junk `/tmp` `.mcp.json` were purged as a one-off (registry → 6,
+`memory-server` ownership → 2). Surfaced building `upgrade --all`; root-caused fixing the
+migrate-home untracked-MCP-injection bug.
 
 ### BL-36 — runtime record hardcodes `type: 'mcp-server'` for every detached service
 
