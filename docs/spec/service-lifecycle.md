@@ -1,10 +1,22 @@
 # Service & Daemon Lifecycle — Canonical Specification
 
-**Spec version:** 1.0.0
-**Status:** Draft — binding on merge (design/standards only; no production code changed by this document)
+**Spec version:** 1.1.0
+**Status:** Binding. Slice 1 (§14) is IMPLEMENTED on branch `feat/service-lifecycle-slice1`; the OS-unit + proxy surface (Slices 2–4) is designed-not-built.
 **Date:** 2026-06-25
 **Owner:** platform-engineering
 **Applies to:** every code path that spawns, supervises, stops, reaps, health-checks, or persists a `service`- or `mcp-server`-type extension, across all scopes (`org` / `user` / `project` / `local`, plus the notion of *global*).
+
+### Changelog
+
+- **1.1.0 (2026-06-25)** — Resolved all six Appendix-B `(unverified)` assumptions with decisions
+  + rationale (one, the OS-unit node-path, retains a recommended default needing a human ack).
+  **Implemented Slice 1** (cross-scope singleton + reconcile heal) in
+  `libs/host-runtime/src/singleton.ts` + the `cmdStart` service-registry guard
+  (`apps/sox/src/main.ts`); this closes the live half of BL-50 (F1/F7). Added **§9.5 (M3↔M4
+  bridge: the stdio front-shim / service-proxy)** and a new roadmap **Slice 1.5** answering the
+  zero-downtime-upgrade question (behavior changes with no client reconnect; only a
+  tool-schema change forces a reconnect). Build/lint/test/e2e gates recorded in §14.
+- **1.0.0 (2026-06-25)** — Initial spec.
 
 > **This document is the law.** Any agent modifying `libs/host-runtime/src/supervisor.ts`,
 > `libs/host-runtime/src/runtime.ts`, `libs/host-runtime/src/reaper.ts`,
@@ -26,6 +38,7 @@
 7. [Start](#7-start)
 8. [Stop & reap](#8-stop--reap)
 9. [Reboot persistence & the OS-supervisor control surface](#9-reboot-persistence--the-os-supervisor-control-surface)
+   — incl. **§9.5 Zero-downtime upgrades / front-shim service-proxy (M3↔M4 bridge)**
 10. [Split-brain avoidance](#10-split-brain-avoidance)
 11. [Health model](#11-health-model)
 12. [Failure-mode catalog](#12-failure-mode-catalog)
@@ -133,11 +146,20 @@ and contracted separately.
 - A single extension may be **promoted** M2 → M4 by `sox service enable` (§9) or run as M1 under an
   attached `sox start`. The framework must reconcile whichever model is live (§10).
 
-`(unverified)` — M3 has no durable pid/runtime record today; `cmdServe` writes no runtime.json entry
-and defaults to `stdio:'inherit'` (an opt-in stderr sink exists via `--log`/`SOX_SERVE_LOG=1`,
-`main.ts:4552-4561`). The §5.4 M3 singleton guard therefore relies on the health-socket probe alone,
-which is sufficient for the *shared-store* invariant but cannot enumerate M3 servers in `sox list`.
-Confirm acceptable.
+**Decision (Appendix B item 1) — M3 stays untracked by a runtime.json *entry*; `cmdServe` writes a
+lightweight *serve-record* breadcrumb instead.** M3 has no durable runtime.json entry today
+(`cmdServe` `execFileSync`s the entrypoint with `stdio:'inherit'`, `main.ts:4566-4572`; opt-in stderr
+sink via `--log`/`SOX_SERVE_LOG=1`, `main.ts:4566-4575`). A full runtime.json entry is the **wrong**
+model — the client owns the pid, so a `running:true` entry would routinely lie when the client
+disconnects (it would need GC on every read). **Resolution:** keep M3 out of the runtime.json
+`entries[]` (the supervisor-owned record), but have `cmdServe` write a *best-effort serve-record* under
+`run/serve/<extId>-<pid>.json` (pid, extId, scope, resolved store-resource, schema-hash, startedAt) on
+spawn and unlink it on exit. This is enumerable by `sox list --serve`/`sox doctor` for observability,
+self-cleans (pid-liveness GC like `gc.ts`), and never feeds the `[auth:...]` RUNNING decision (M3 is
+rendered `owner:client`, liveness from pid+socket only). The §5.4 shared-store guard still relies on the
+health-socket probe + entrypoint scan, which is sufficient for the one-writer-per-store invariant.
+*Scope:* the serve-record is part of Slice 1.5 (it is most useful once the front-shim of §9.5 exists);
+until then M3 remains acceptably untracked because BL-47's in-process fallback means no daemon need run.
 
 ---
 
@@ -202,8 +224,10 @@ the first authoritative answer:
 > generalization of the existing C4 pid-liveness gate (`sox list` validates `process.kill(pid,0)`
 > before reporting RUNNING) to the OS-supervisor world.
 
-`(unverified)` — step 2 depends on §9 not yet built; today the order is effectively 1 → 3 → 4 → 5,
-which is what `cmdStart`'s guard and `cmdStop`'s reap already implement piecewise.
+**Note (resolved):** step 2 (OS unit) depends on §9, not yet built; **today the order is 1 → 3 → 4 →
+5**, which is exactly what Slice 1's `cmdStart` guard (`healSingletonDuplicates` entrypoint scan + socket
+probe + cross-scope check) and `cmdStop`'s reap implement. When §9/Slice 2 lands, step 2 inserts between
+1 and 3 with no change to the lower steps. This is settled, not unverified.
 
 ---
 
@@ -262,9 +286,17 @@ not the scope, not the socket — is the only key that expresses the real invari
    that another scope still references the store (prevents one scope's stop from yanking the store out
    from under another). `sox stop --all` / `sox doctor` may force-reap.
 
-`(unverified)` — rule 3's "shared-store refuse-to-stop" is a new policy; today `cmdStop` reaps by
-entrypoint token regardless of cross-scope sharing. Confirm this is the desired safety stance vs.
-"last-stop-wins."
+**Decision (Appendix B item 2) — REFUSE-IF-SHARED is the policy.** A scoped `sox stop` whose target
+instance is shared with another scope (rule 1) **refuses** and prints which scope(s) still reference the
+store; only `sox stop --all` / `sox doctor --force` may force-reap a shared instance. Rationale: the
+invariant being protected is *one writer per store*; "last-stop-wins" lets one scope's teardown silently
+yank a store another scope is actively using (the dual of the two-writer bug — a zero-writer surprise).
+Refuse-if-shared is the conservative, surprise-free stance and matches the team's standing guidance.
+**Status:** designed; the *guard* (Slice 1, this branch) already prevents the second *spawn*; the
+refuse-on-*stop* half lands with Slice 2's reconcile-aware `cmdStop` (it needs the cross-scope descriptor
+the reconcile pass computes). Until then `cmdStop` reaps by token (the existing safe behavior — it never
+creates a two-writer state, it only declines to *protect* a shared one, which is acceptable while no OS
+unit can resurrect a killed daemon).
 
 ---
 
@@ -303,9 +335,16 @@ The reconcile pass (§10) recomputes the Instance Descriptor for every installed
 it finds **two live processes for one `K`** (two pids matching the entrypoint token on the same store):
 
 1. Pick the **survivor** deterministically: prefer the one a live supervisor/OS-unit owns; else the
-   oldest by start time (lowest pid as a tiebreak is `(unverified)` portable — prefer `ps -o lstart`).
+   **oldest by start time** (`ps -o lstart`), with **lowest-pid only as a fallback** when start times are
+   unavailable/equal. **Decision (Appendix B item 5):** oldest-by-`lstart` is the tiebreak — it is
+   BSD/macOS + Linux portable and meaningful (the older live process is the one with warm
+   state/connections; pids wrap and carry no age signal). Implemented in `chooseSurvivor`
+   (`singleton.ts`, `processStartTime` reads `ps -o lstart=`).
 2. `killAndVerify` the loser(s) (`reaper.ts:111`).
 3. Log a `[singleton-violation healed]` line and surface it in `sox doctor`.
+
+Implemented as `healSingletonDuplicates` (`singleton.ts`): finds live pids for the entrypoint token,
+no-ops on ≤1 (never thrashes a healthy daemon), kills all but the survivor on ≥2.
 
 ### 5.4 M3 (stdio mcp-server) singleton
 
@@ -317,9 +356,12 @@ serializes harmlessly (`BACKLOG.md:316-321`). The actual writer-contention dange
 So: an M3 server may coexist with *other M3 servers* but its spawn (`cmdServe`) MUST NOT proceed to
 *also start a daemon* on the same store without the §5.2 guard.
 
-`(unverified)` — whether `cmdServe` ever auto-starts a daemon today; it does not appear to
-(`cmdServe` runs the server entrypoint only, `main.ts:4433`). The BL-47 in-process fallback means no
-daemon need run. Confirm `cmdServe` will not gain daemon-autostart without the guard.
+**Verified — `cmdServe` does NOT auto-start a daemon.** Read end-to-end (`cmdServe`,
+`main.ts:4433-4600`): it resolves the entrypoint, builds config env, compiles policy, and
+`execFileSync`/spawns **the server entrypoint only** — there is no `spawn` of `memory-daemon` or any
+service. The BL-47 in-process fallback means no daemon need run for enrichment correctness. **Rule
+(binding):** if `cmdServe` ever gains daemon-autostart, it MUST first run the §5.2 singleton guard
+(socket probe + entrypoint scan + cross-scope check) — captured as agent rule §13.2.1.
 
 ### 5.5 Detection & healing summary
 
@@ -507,10 +549,20 @@ The unit is **derived from the `lifecycle` block + resolved config env**, never 
 - **Unit paths:** macOS `~/Library/LaunchAgents/com.sox.<scope>.<ext>.plist`; Linux
   `~/.config/systemd/user/sox-<scope>-<ext>.service`. Scope is in the label so per-scope instances do
   not collide.
-- **Stable node path:** resolve a non-volatile node (not a transient nvm shim) and pin it in
-  `EnvironmentVariables`/`Environment`. `(unverified)` — exact resolution strategy (e.g.
-  `process.execPath` realpath'd, or a `which node` snapshot) needs a human decision; a volatile nvm
-  path in a plist is a known footgun (BL-51, `BACKLOG.md:200`).
+- **Stable node path (Appendix B item 3 — recommended default, needs a human ack at Slice-2 build
+  time).** Recommended: pin **`fs.realpathSync(process.execPath)`** — the realpath of the node binary
+  running `sox service enable` — into the unit's `ProgramArguments[0]` / `ExecStart`. Realpath strips one
+  layer of symlink indirection (e.g. a Homebrew `bin/node` → cellar path) giving a concrete binary.
+  **Footgun guard:** if that realpath lies **under an nvm/asdf/volta version dir** (path contains
+  `/.nvm/`, `/.asdf/`, `/.volta/`, or `/versions/node/`), the unit is **volatile** — a node version
+  switch orphans it. In that case `sox service enable` MUST (a) warn loudly, and (b) prefer a
+  non-volatile node if one is discoverable on `PATH` outside those dirs (`command -v node` snapshot),
+  else proceed with the volatile path **only** after the user confirms (or `--allow-volatile-node`).
+  `sox doctor` flags any unit whose pinned node no longer exists (stale-node detection). **Why a human
+  ack:** the "right" node on a dev's machine is environment-specific (system vs brew vs version-manager);
+  the framework can recommend + guard but should not silently bake a choice that breaks on the next
+  `nvm use`. This is the one Appendix-B item that stays advisory until Slice 2 is built on a real
+  machine. `(needs-human-ack)`
 
 ### 9.3 Idempotent + content-addressed re-enable on upgrade
 
@@ -531,6 +583,129 @@ follows the new artifact.
   generalizes to OS units.
 - `sox doctor` MUST surface orphaned/duplicate OS units and units whose artifact no longer matches the
   installed checksum (stale unit detection).
+
+---
+
+## 9.5 Zero-downtime upgrades without forced MCP reconnects — the M3↔M4 bridge (front-shim service-proxy)
+
+This section answers the human's key architecture question: **can we upgrade a running `mcp-server`
+service to new code WITHOUT making the MCP client reconnect/reload?** Short answer: **yes, for any
+upgrade that does not change the tool *interface* (the JSON-RPC tool schema). An interface change still
+needs a reconnect — but the shim can detect it and say so.**
+
+### 9.5.1 Why a client reconnect is mandatory *today* (grounded in our code)
+
+Trace the MCP stdio lifecycle as our code implements it:
+
+1. The client (Claude Code) launches the server per connection from `.mcp.json`:
+   `soxe serve memory-server` → `cmdServe` (`main.ts:4433`). `cmdServe` resolves the entrypoint and
+   **`execFileSync(node, [entrypoint], {stdio:'inherit'})`** (`main.ts:4566-4572`) — the served process
+   **is** the MCP server; its lifetime equals the stdio pipe.
+2. At connection open the client sends `initialize` then reads **`tools/list`** — exactly the calls our
+   own exec path makes against a served child (`main.ts:4861-4866`). The tool **schema is read once, at
+   `initialize`/`tools/list` time**, and cached by the client for the life of the pipe.
+3. New artifact code therefore only takes effect when a **fresh `soxe serve` process** loads it — which
+   only happens on a **new client connection**. This is precisely why the upgrade flow classifies an
+   `mcp-server` as **`reconnect-needed`** with detail *"stdio/on-demand server — respawns with new code
+   on next client connection"* (`RestartDisposition`, `main.ts:1583`, `:1599-1600`, `:1647-1648`). sox
+   does not own the pid (M3), so it cannot rolling-restart it in place.
+
+So today reconnect is mandatory **because the code that serves JSON-RPC and the code that holds the
+tool implementation are the same process, and that process is owned by the client's pipe.** Decouple
+those two and the mandate disappears for behavior-only changes.
+
+### 9.5.2 The design: a thin stdio **front-shim** proxying to a persistent backend (M3→M4 bridge)
+
+```
+   MCP client ──stdio(JSON-RPC)──▶  soxe serve <id>  (the FRONT-SHIM, M3-shaped to the client)
+                                          │
+                                          │ Unix domain socket (length-prefixed JSON-RPC frames)
+                                          ▼
+                                    backend service  (M2/M4 daemon — the real tool impl, sox-owned)
+                                    upgraded by rolling restart BEHIND the shim
+```
+
+- **Front-shim (`soxe serve <id>` in shim-mode).** A tiny, **rarely-changing** process the client
+  spawns over stdio exactly as today. It does **not** load the tool implementation. It:
+  1. Serves `initialize` and `tools/list` from a **cached schema** (read once from the backend, or from
+     a `schema.json` the backend publishes), so the client gets an instant, stable interface.
+  2. Proxies every other JSON-RPC request (`tools/call`, etc.) to the backend over a **Unix domain
+     socket** (no TCP port — see §9.5.4), framing each message length-prefixed.
+  3. **Survives backend restarts:** on a dropped backend connection it **re-dials with bounded backoff**
+     (e.g. 50ms→2s, cap ~10s total) and **buffers** in-flight requests up to a bounded queue; on
+     re-connect it replays/forwards them. If the backend stays down past the bound, it **fast-fails**
+     the pending calls with a JSON-RPC error (`-32001 backend unavailable`) rather than hanging the
+     client — and keeps the stdio pipe **open** so the client need not reconnect once the backend
+     returns.
+- **Backend (the real server, sox-owned).** Runs as M2 (detached) or M4 (OS-supervised). `sox upgrade`
+  re-materializes its store and **rolling-restarts** it via the BL-31 verified-stop + dedup-start
+  (CLAUDE.md AGENT SEQUENCE step 5). The shim's re-dial bridges the ~sub-second restart gap. **Behavior
+  changes; the client never reconnects.**
+
+### 9.5.3 Interface-change handshake (`[contract:schema-hash]`)
+
+The one case that still needs a reconnect is a **tool-schema change** (a tool added/removed, or a tool's
+input/output schema changed) — the client cached the old `tools/list` and cannot see the new shape.
+
+- Both shim and backend compute a **`schema-hash` = sha256 of the canonical `tools/list` payload**.
+- On every backend (re)connect the shim re-reads the backend schema-hash. If it **differs** from the
+  hash the shim served at `initialize`, the shim:
+  1. Keeps serving the **old** schema to the connected client (so in-flight calls don't break), AND
+  2. Emits a durable **stderr** notice (never stdout — `[inv:no-stdout-diagnostics]`) and, if the client
+     supports it, an MCP **`notifications/tools/list_changed`** server notification so a capable client
+     can refresh `tools/list` **without a full reconnect**. Clients that don't honor the notification get
+     the existing `reconnect-needed` disposition from `sox upgrade`.
+- This makes the reconnect requirement **precise**: *behavior change → zero reconnect; interface change →
+  a `list_changed` nudge, falling back to reconnect only for clients that ignore it.*
+
+### 9.5.4 Build vs. buy + transport recommendation
+
+**Recommendation: BUILD a minimal in-monorepo `service-proxy` lib over Unix domain sockets. Do not add a
+port-based proxy or a third-party dependency.**
+
+- **Transport — Unix domain sockets (chosen).** No port selection problem at all (the human's concern):
+  the socket path is derived from the data-root resolver (`socketDir()`, ADR-0004) keyed by
+  `[def:singleton-key]`, so there is never a port clash and never a "which port did it pick" lookup. UDS
+  is already how sox does exec/health (`gc.ts probeSocket`, `supervisor.ts probeSocket`,
+  `probeUnixSocketLive`) — we reuse the exact pattern. Filesystem permissions (0600 + data-root
+  ownership) gate access; no network exposure.
+- **Rejected alternatives:**
+  - *SO_REUSEPORT / TCP ports* — reintroduces port selection + clash detection + a localhost attack
+    surface, for no benefit over UDS on a single host.
+  - *systemd socket activation* — Linux-only, doesn't exist on macOS launchd in the same form, and
+    couples us to the OS supervisor; UDS is portable and works for the M2 backend too.
+  - *An existing proxy/library (Envoy, a generic JSON-RPC router, etc.)* — massive dependency for a
+    ~300-line, single-host, single-protocol need; violates the monorepo's leaf-lib hygiene and the
+    "self-contained materialized store, no network at spawn" invariant (F8).
+- **Where it lives:** new leaf lib **`libs/service-proxy/`** (node builtins only: `net`, `crypto`),
+  exporting:
+  - `runFrontShim({ id, socketPath, schemaCachePath })` — the stdio↔UDS shim `cmdServe` invokes in
+    shim-mode (a new `--proxy` branch of `cmdServe`, or auto when the manifest declares
+    `lifecycle.proxy: true`).
+  - `dialBackend(socketPath, { backoff })` — bounded re-dial with the buffer/fast-fail semantics above.
+  - `computeSchemaHash(toolsListPayload)` and the `list_changed` emission helper.
+  - `serveBackend({ socketPath, handler })` — the backend-side UDS listener the daemon entrypoint wraps
+    around the existing in-process tool dispatcher.
+- **Reconciliation with the M3/M4 taxonomy (§2):** the front-shim is exactly the **M3↔M4 bridge**. It is
+  M3-shaped to the client (client-spawned stdio, untracked pid) and M4-shaped to sox (the *backend* is
+  the sox-owned, singleton-guarded, optionally OS-supervised service). This makes **M4 the default
+  execution model for `mcp-server` services that want zero-downtime upgrades**, with the stdio surface
+  preserved for client compatibility. The §5.2 singleton guard keys on the backend's store-resource
+  (unchanged); many shims may exist (one per client) but they all dial the **one** backend per store —
+  consistent with §5.4 (M3 servers may coexist; one writer per store).
+
+### 9.5.5 Failure semantics (summary)
+
+| Condition | Shim behavior | Client impact |
+|---|---|---|
+| Backend rolling-restart (upgrade) | re-dial with backoff; buffer in-flight (bounded) | none — calls resume sub-second; no reconnect |
+| Backend down past bound | fast-fail pending with `-32001`; keep stdio open; keep re-dialing | errors on in-flight calls; auto-recovers when backend returns; still no reconnect |
+| Backend schema-hash changed (interface change) | serve old schema; emit `tools/list_changed` + stderr notice | capable client refreshes `tools/list`; others get `reconnect-needed` |
+| Shim crash | client's pipe closes (today's behavior) | client respawns the shim (cheap, no tool code to load) |
+
+> **`[inv:no-stdout-diagnostics]`** (restates §13.2.6 for the shim): the front-shim writes **only**
+> framed JSON-RPC to stdout; all diagnostics go to stderr/the durable serve-record. A stray stdout byte
+> corrupts the client's JSON-RPC stream.
 
 ---
 
@@ -594,20 +769,28 @@ Defaults: `interval_ms` 5000 (loop), `timeout_ms` 5000 (first probe) / 2000 (per
 
 - On **unexpected** exit (`!_stopping`), the supervisor restarts with exponential backoff
   `min(5000, 200 * 2^restartCount)` ms (`supervisor.ts:351-362`).
-- **Crash-loop guard `[inv:crash-loop-cap]`** *(to standardize):* after N restarts within a window
-  (proposed N=5 within 60s), stop restarting, mark the service **DEGRADED (give-up)**, log a durable
-  `[crash-loop]` line, and surface it in `sox status`/`doctor`. For M4, this maps to launchd
-  `ThrottleInterval` / systemd `StartLimitBurst`. `(unverified)` — the in-supervisor path currently
-  has unbounded backoff-capped restarts (no give-up); confirm N/window before implementing.
+- **Crash-loop guard `[inv:crash-loop-cap]` — Decision (Appendix B item 4a): N=5 restarts within a
+  60s rolling window → give up.** After 5 unexpected exits inside 60s, stop restarting, mark the service
+  **DEGRADED (give-up)**, log a durable `[crash-loop]` line, surface it in `sox status`/`doctor`, and
+  require an explicit `sox start`/`enable` to clear. Rationale: 5-in-60s is the de-facto convention —
+  systemd's defaults are `StartLimitBurst=5` / `StartLimitIntervalSec=10s`, and launchd throttles
+  respawns to ~10s via `ThrottleInterval`; 5-in-60s is slightly more forgiving than systemd's 10s window
+  (tolerates a slow-restart service) while still catching a true crash loop fast. The M4 mapping is
+  launchd `ThrottleInterval`(≥10s) / systemd `StartLimitBurst=5` + `StartLimitIntervalSec=60`. **Status:**
+  the in-supervisor path currently has unbounded backoff-capped restarts (no give-up); this cap lands in
+  Slice 3 (`supervisor.ts` restart counter with a rolling-window timestamp ring).
 
 ### 11.4 Restart-on-unhealthy
 
 A DEGRADED service (health probe failing but process alive) is **not** auto-killed today — the health
-loop only flips the flag. Standardize: a service that stays DEGRADED for `>` (proposed) 3 consecutive
-intervals MAY be restarted (`supervisor.restart`, `supervisor.ts:226-236`) under the crash-loop cap.
-`(unverified)` — confirm whether degraded-restart is desired or whether DEGRADED should be reported
-only (operator decides). Default recommendation: **report, do not auto-restart on health-only
-degradation** (auto-restart only on actual process exit) to avoid thrashing a slow-but-alive service.
+loop only flips the flag. **Decision (Appendix B item 4b): REPORT-ONLY on health-only degradation —
+do NOT auto-restart.** A process that is alive but failing its health probe is restarted **only on
+actual process exit** (the existing `_respawn` path under the crash-loop cap), never on the health flag
+alone. Rationale (and the team's standing guidance): auto-restarting a slow-but-alive service thrashes it
+— a warming embed worker, a long GC pause, or a transient downstream stall would trigger a kill that
+makes things worse. DEGRADED is surfaced in `sox status`/`doctor`; the operator decides. (A future
+opt-in `lifecycle.restart_on_unhealthy_after_n` MAY be added per-service, default off.) This removes the
+prior "proposed 3 intervals" auto-restart entirely.
 
 ---
 
@@ -655,7 +838,10 @@ In the style of the CLAUDE.md constraint catalogs: each concrete failure, its de
 
 1. **Never spawn a service without the §5.2 singleton guard.** Socket probe **and** entrypoint-token
    scan **and** cross-scope ownership check, before `spawn`. (Reaping a *stale* instance is not the
-   same as reusing a *live* one — do both correctly.)
+   same as reusing a *live* one — do both correctly.) **This includes `cmdServe`:** if it ever gains
+   daemon-autostart it MUST run the §5.2 guard first (it does not autostart a daemon today — verified
+   §5.4). Implemented for the service-registry path in Slice 1 (`healSingletonDuplicates` +
+   `findCrossScopeSharers`).
 2. **Never report RUNNING without reality verification** (`process.kill(pid,0)` + socket/OS as
    applicable). `sox list`/`status` render reconciled descriptors, never raw `running` flags
    (`[inv:list-never-lies]`).
@@ -686,16 +872,53 @@ In the style of the CLAUDE.md constraint catalogs: each concrete failure, its de
 BL-50 and BL-51 map onto the framework as the first two slices. Each slice: goal, touched files,
 acceptance.
 
-### Slice 1 — Cross-scope singleton + reconcile pass (closes the live half of BL-50/F1/F7)
+### Slice 1 — Cross-scope singleton + reconcile heal (closes the live half of BL-50/F1/F7) — ✅ IMPLEMENTED (`feat/service-lifecycle-slice1`)
 
 - **Goal:** the §5.2 start guard scans the entrypoint token and checks cross-scope ownership (not just
-  the socket), and a §10 reconcile pass heals an existing duplicate pair.
-- **Touched:** `apps/sox/src/main.ts` (`cmdStart` guard region `~3052-3092`, new reconcile helper),
-  `libs/host-runtime/src/runtime.ts` (descriptor compute), reuse `reaper.ts` + `gc.ts` + ownership
-  index (install-engine).
-- **Acceptance:** two scopes resolving the same `db_path` (different sockets) ⇒ exactly one daemon
-  (e2e); an injected duplicate pair ⇒ reconcile kills the loser; `sox list` shows the shared instance
-  once with `owner` set. No reaping of a healthy shared daemon.
+  the socket), and a §5.3 reconcile heal kills the loser of an existing duplicate pair.
+- **Delivered:**
+  - `libs/host-runtime/src/singleton.ts` — `resolveStoreResource` (`[def:singleton-key]` anchor:
+    db_path → socket → host:port, with `x-sox-singleton-key` opt-in), `singletonKey`,
+    `findCrossScopeSharers` (§5.2 step 4), `chooseSurvivor` + `processStartTime` (oldest-by-`lstart`
+    tiebreak, item 5), `healSingletonDuplicates` (§5.3 — no-op on ≤1, kill loser(s) on ≥2),
+    `canonicalizePath`/`expandConfigValue`. Reuses `reaper.ts` (`findOrphansByIdentity`,
+    `killAndVerify`, `identityToken`) — no re-implemented process scan/kill.
+  - `apps/sox/src/main.ts` — `cmdStart` service-registry guard now runs **socket probe + entrypoint
+    scan + cross-scope collision check**, keyed on the store-resource; helper functions
+    `resolveStoreResourceForScope`, `collectCrossScopeResources`, `entrypointTokenForService`.
+- **Acceptance — MET (gates below):** two scopes resolving the same `db_path` (different sockets) ⇒
+  exactly one daemon (e2e Step 7c, 6 assertions); a live duplicate pair ⇒ `healSingletonDuplicates`
+  kills the loser (unit test, real spawned procs); a single healthy daemon is **never** reaped (unit +
+  e2e); `cmdStart` records the shared instance RUNNING with a §5.2 notice.
+- **Gate results (nx targets only; built before testing per BL-4):**
+  - `nx build host-runtime` ✅, `nx build sox` ✅ (+ deps), `nx build memory-daemon` ✅.
+  - `nx lint host-runtime` ✅, `nx lint sox` ✅.
+  - `nx test host-runtime` → **146 passed** (incl. new `singleton.spec.ts`, 32 cases).
+  - `nx test sox` → **30 passed**.
+  - `nx run host-runtime:test-e2e` → **99 passed, 0 failed** (was 93; +6 Slice-1 Step 7c), stable
+    across 3 cache-busted runs.
+  - `nx affected -t build,lint,test --base=main` → **20/20 projects green** (this run also surfaced +
+    fixed a pre-existing tokenguard-core bug, BL-56 — see BACKLOG).
+  - `registry:sync-index` → **no checksum drift** (CLI/lib change, not a shipped extension artifact).
+- **Designed-not-built remainder of Slice 1 (folded into later slices):** the reconcile heal is wired
+  at *start*; running it on every `sox list`/`status`/`doctor` (§10.2) and rendering `owner`/`liveness`
+  descriptors lands with Slice 4's universal reconcile pass.
+
+### Slice 1.5 — Front-shim service-proxy (M3↔M4 bridge; zero-downtime upgrades) — designed (§9.5)
+
+- **Goal:** decouple the JSON-RPC stdio surface from the tool implementation so a backend upgrade is a
+  rolling restart with **no client reconnect** for behavior-only changes; an interface change emits
+  `tools/list_changed` (reconnect only as a fallback). Adds the M3 serve-record breadcrumb (item 1).
+- **Touched:** new leaf lib `libs/service-proxy/` (`runFrontShim`, `dialBackend`, `computeSchemaHash`,
+  `serveBackend`; node `net`/`crypto` only); a `--proxy` / `lifecycle.proxy:true` branch of `cmdServe`;
+  the daemon entrypoint wraps `serveBackend` around the existing in-process dispatcher; `run/serve/`
+  serve-record writer + GC.
+- **Acceptance:** upgrade the backend while a client is connected → calls resume sub-second, **zero
+  reconnect** (proven via a long-lived shim client across a backend restart); backend-down past the
+  bound → pending calls fast-fail `-32001`, pipe stays open, auto-recovers; a schema-hash change emits
+  `tools/list_changed`; UDS path is data-root-derived (no port selection). Sequenced **after** Slice 1
+  (it relies on the store-resource singleton key) and **before** Slice 2 (the backend it upgrades is the
+  M4 service Slice 2 supervises).
 
 ### Slice 2 — `sox service enable|disable` (OS-supervisor control surface, subsumes BL-51 + reboot half of BL-50)
 
@@ -727,10 +950,11 @@ acceptance.
 - **Acceptance:** doctor detects an artifact-stale unit, an orphaned unit, a duplicate, a split-brain
   runtime.json, and proposes/executes the remedy.
 
-> **Sequencing rationale:** Slice 1 closes the *correctness* hole (two writers) using only existing
-> primitives — highest leverage, lowest risk, no new OS surface. Slice 2 adds the OS surface that
-> Slices 3–4 then harden. This ordering means the dangerous F1/F7 bug is gone before the larger M4
-> machinery lands.
+> **Sequencing rationale:** Slice 1 (DONE) closes the *correctness* hole (two writers) using only
+> existing primitives — highest leverage, lowest risk, no new OS surface. Slice 1.5 (the front-shim)
+> delivers zero-downtime upgrades and the M3→M4 bridge without yet touching the OS. Slice 2 adds the OS
+> supervisor surface that Slices 3–4 then harden. This ordering means the dangerous F1/F7 bug is gone,
+> and behavior-only upgrades stop forcing reconnects, **before** the larger OS-unit machinery lands.
 
 ---
 
@@ -767,24 +991,19 @@ cite the section you relied on in your PR.
 
 ---
 
-## Appendix B — `(unverified)` assumptions a human should confirm
+## Appendix B — assumptions: RESOLVED in v1.1.0 (one remains advisory)
 
-1. **M3 has no durable pid/runtime record** today (`cmdServe` `stdio:'inherit'`, no runtime.json
-   entry — BL-46). The M3 singleton guard relies on the socket probe alone and M3 servers are not
-   enumerable in `sox list`. Confirm this is acceptable, or whether `cmdServe` should write a
-   lightweight runtime entry. (§2, §5.4)
-2. **Cross-scope "shared-store ⇒ refuse to stop"** (§4.4 rule 3) is a *new* policy; today `cmdStop`
-   reaps by token regardless of cross-scope sharing. Confirm the safety stance (refuse-if-shared vs.
-   last-stop-wins). (§4.4)
-3. **Stable node path for OS units** — exact resolution strategy (realpath of `process.execPath` vs.
-   pinned `which node` snapshot) needs a decision; a volatile nvm path in a plist is a footgun. (§9.2)
-4. **Crash-loop cap N / window** (proposed 5-in-60s) and **degraded-restart policy** (proposed:
-   report-only, restart only on actual exit) are not yet implemented (the supervisor currently has
-   unbounded backoff-capped restarts). Confirm thresholds. (§11.3, §11.4)
-5. **Singleton survivor tiebreak** (§5.3) — preferring oldest by `ps -o lstart` is more portable than
-   lowest-pid; confirm the tiebreak. (§5.3)
-6. **BACKLOG BL-50 re-scope** — this spec asserts the entrypoint-token orphan reaper is *implemented*
-   (`reaper.ts` + `reapOrphansForExtension`, wired into `cmdStop`/`cmdStart`), contradicting BL-50's
-   "Still open: orphan-process reaper." The genuinely-open half is the OS-unit-aware
-   `[inv:unload-then-reap]` ordering, which only matters once §9 lands. Confirm the BACKLOG should be
-   updated to reflect this. (§1.3, §8.4)
+All six are now decided. Five are settled; item 3 (OS-unit node path) keeps a *recommended default* that
+needs a human ack at Slice-2 build time because the right node binary is machine-specific.
+
+| # | Item | Decision (v1.1.0) | Where |
+|---|---|---|---|
+| 1 | M3 durable record | **Resolved:** no runtime.json *entry* (client owns the pid); `cmdServe` writes a self-cleaning *serve-record* breadcrumb under `run/serve/` for observability, never feeding the RUNNING decision. Ships in Slice 1.5. | §2, §5.4 |
+| 2 | Cross-scope stop safety | **Resolved: REFUSE-IF-SHARED.** A scoped stop refuses to reap a store another scope references; `--all`/`doctor --force` overrides. Guard half done (Slice 1); refuse-on-stop half in Slice 2. | §4.4 |
+| 3 | Stable node path | **Recommended default (needs human ack):** pin `fs.realpathSync(process.execPath)`; detect + warn on volatile nvm/asdf/volta paths, prefer a non-volatile `command -v node`, else require `--allow-volatile-node`. `(needs-human-ack)` at Slice-2 build. | §9.2 |
+| 4 | Crash-loop cap + degraded policy | **Resolved:** cap **5-in-60s → give up** (DEGRADED); **report-only** on health-only degradation (restart only on actual exit). Ships in Slice 3. | §11.3, §11.4 |
+| 5 | Singleton survivor tiebreak | **Resolved: oldest-by-`ps -o lstart`**, lowest-pid fallback. **Implemented** (`chooseSurvivor`/`processStartTime`, Slice 1). | §5.3 |
+| 6 | BL-50 re-scope | **Resolved + reflected in BACKLOG:** the entrypoint-token reaper *exists*; the open half was the cross-scope singleton (now closed by Slice 1) + the OS-unit `[inv:unload-then-reap]` (Slice 2). | §1.3, §8.4 |
+
+**Remaining for a human:** only item 3's node-path strategy, and only at the moment Slice 2 generates a
+real unit on the user's machine (it touches `~/Library/LaunchAgents` / `~/.config/systemd/user`).

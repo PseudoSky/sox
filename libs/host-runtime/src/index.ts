@@ -119,6 +119,27 @@ export type { KillOutcome, KillOptions, PsProcess, OrphanMatch, ReapResult } fro
 // ─── Lock (R3) ────────────────────────────────────────────────────────────────
 export { acquireStartLock, computeSupervisorId } from './lock.js';
 
+// ─── Cross-scope singleton (service-lifecycle spec Slice 1) ───────────────────
+export {
+  expandConfigValue,
+  canonicalizePath,
+  resolveStoreResource,
+  singletonKey,
+  manifestDeclaresSingleton,
+  processStartTime,
+  chooseSurvivor,
+  healSingletonDuplicates,
+  findCrossScopeSharers,
+  entrypointTokenForStore,
+} from './singleton.js';
+export type {
+  StoreResource,
+  StoreResourceKind,
+  SurvivorChoice,
+  HealResult,
+  ScopeResource,
+} from './singleton.js';
+
 // ─── Global Supervisor Registry (R1) ─────────────────────────────────────────
 export {
   getSupervisorsFilePath,

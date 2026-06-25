@@ -9,6 +9,11 @@
 
 import * as fs from 'fs';
 import type { MapEntry, Source, TokenMap } from './types.js';
+// Static ESM import — tokenize.ts imports Mapper *type-only* (erased at compile),
+// so there is no runtime cycle. The prior lazy `require('./tokenize.js')` only
+// resolved against the built dist and broke under the vitest src transform
+// (BL-56: "Cannot find module './tokenize.js'").
+import { identifierGroupVariants } from './tokenize.js';
 
 const VALID_SOURCES = new Set<Source>(['seed', 'proxy', 'tooling', 'custom']);
 
@@ -116,10 +121,6 @@ export class Mapper {
 
     // Derive identifier-group variants from label-type + identifier seeds.
     // Mirrors the Python identifier-variant logic in a neutral way.
-    const { identifierGroupVariants } = require('./tokenize.js') as {
-      identifierGroupVariants: (label: string, members: string[]) => string[];
-    };
-
     const hosts = itemList
       .filter(it => it.type === 'host' || it.type === 'fqdn')
       .map(it => it.real!)

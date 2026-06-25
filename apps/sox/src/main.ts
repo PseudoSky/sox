@@ -32,6 +32,15 @@ import {
   startRuntime,
   stopRuntime,
   type DataScope,
+  // Slice 1 (docs/spec/service-lifecycle.md): cross-scope singleton.
+  resolveStoreResource,
+  singletonKey,
+  findCrossScopeSharers,
+  healSingletonDuplicates,
+  identityToken,
+  findOrphansByIdentity,
+  type StoreResource,
+  type ScopeResource,
 } from '@adhd/sox-host-runtime';
 import type { DeclarativeInstallResult, InstallDescriptor, InstallRecord, Scope, UpdateCtx } from '@adhd/sox-install-engine';
 import {
@@ -3051,31 +3060,70 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
       for (const svc of entries) {
         const svcConfigEnv = buildExtConfigEnv(svc.id, root);
 
-        // BL-50: singleton guard — refuse to spawn a second instance when one is
-        // already live on the service health socket.
+        // ── Singleton guard (spec §5.2: socket probe + entrypoint scan +
+        //    cross-scope ownership check), keyed on [def:singleton-key] =
+        //    (id, resolved-store-resource), NOT on scope or socket alone.
         //
-        // Resolves the declared health socket path from the manifest and checks it
-        // with a raw connection probe. If live: report the existing instance and skip
-        // spawning. This prevents the "two memory-daemons on the same db" scenario.
+        // The invariant protected is ONE WRITER PER BACKING STORE. Slice 1
+        // closes the genuinely-open half of BL-50 (F1/F7): a second scope that
+        // overrides sock_path but shares db_path used to slip past the
+        // socket-only guard and produce two writers.
+        const svcResource = resolveStoreResourceForScope(svc.id, svc.storePath, scope, root);
+        const svcKey = singletonKey(svc.id, svcResource);
+        const entrypointToken = entrypointTokenForService(svc);
+        const recordExisting = (note: string): void => {
+          process.stdout.write(`sox: ${svc.id} ${note} — skipping spawn (singleton guard §5.2)\n`);
+          const source = `file://${svc.storePath}`;
+          runtimeEntries.push({
+            key: svc.id, id: svc.id, type: 'mcp-server', scope, source,
+            pid: null, running: true, activatedAt: now,
+          });
+        };
+
+        // §5.2 step 4: a duplicate already-live PAIR for this key ⇒ heal it
+        // (kill the loser deterministically), never reap a single healthy daemon.
+        // Exclude our own pid; the survivor we keep is then the live instance.
+        if (svcKey && entrypointToken) {
+          const heal = await healSingletonDuplicates({
+            key: svcKey,
+            entrypointToken,
+            excludePids: [process.pid],
+            graceMs: 5000,
+            log: (m) => process.stdout.write(`sox: ${m}\n`),
+          });
+          if (heal.found.length >= 1) {
+            recordExisting(
+              `already live (entrypoint scan: pid=${heal.survivor}` +
+              `${heal.killed.length ? `, healed ${heal.killed.length} duplicate(s)` : ''})`,
+            );
+            continue;
+          }
+        }
+
+        // §5.2 step 4: cross-scope collision — another scope's install resolves
+        // the SAME store-resource and has a live instance ⇒ reuse, don't spawn.
+        if (svcResource.kind !== 'none') {
+          const others = collectCrossScopeResources(svc.id, root, scope);
+          const sharers = findCrossScopeSharers(scope, svcResource, others);
+          if (sharers.length > 0 && entrypointToken) {
+            const live = findOrphansByIdentity(entrypointToken, { excludePids: [process.pid] });
+            if (live.length > 0) {
+              recordExisting(
+                `shares store ${svcResource.kind}:${svcResource.value} with scope(s) ` +
+                `${sharers.join(', ')} (live pid=${live[0]!.pid})`,
+              );
+              continue;
+            }
+          }
+        }
+
+        // §5.2 step 2: socket probe — refuse a second instance already live on
+        // the declared health socket (BL-50 original guard, retained).
         const healthSockPath = resolveServiceHealthSocketPath(svc.storePath, svcConfigEnv);
         if (healthSockPath) {
           const alreadyLive = await probeUnixSocketLive(healthSockPath, 500);
           if (alreadyLive) {
-            process.stdout.write(
-              `sox: ${svc.id} health socket is already live at ${healthSockPath} — skipping spawn (singleton guard BL-50)\n`,
-            );
-            // Record it as running so sox list reflects the live instance.
-            const source = `file://${svc.storePath}`;
-            runtimeEntries.push({
-              key: svc.id,
-              id: svc.id,
-              type: 'mcp-server',
-              scope,
-              source,
-              pid: null, // pid unknown for pre-existing detached process
-              running: true,
-              activatedAt: now,
-            });
+            recordExisting(`health socket is already live at ${healthSockPath}`);
             continue;
           }
         }
@@ -3596,6 +3644,81 @@ function resolveServiceHealthSocketPath(
   }
 
   return endpoint;
+}
+
+/**
+ * Slice 1 (docs/spec/service-lifecycle.md §4.3/§5.2): resolve the canonical
+ * store-resource an extension binds AT a given scope. Builds that scope's config
+ * env, reads the manifest, and derives the `[def:singleton-key]` anchor
+ * (db_path → socket → host:port). Returns kind 'none' when no resource is
+ * declared or the scope has no install/config.
+ */
+function resolveStoreResourceForScope(
+  extId: string,
+  storePath: string,
+  scope: string,
+  root: string,
+): StoreResource {
+  const pathMod = require('node:path') as typeof import('node:path');
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const configEnv = buildExtConfigEnv(extId, root);
+  // Prefer the per-scope materialized store's manifest; fall back to the given
+  // storePath's manifest (they are the same for the live scope).
+  let manifestPath = pathMod.join(storePath, 'extension.json');
+  if (!fsMod.existsSync(manifestPath)) {
+    try {
+      const sp = getScopePaths(scope as DataScope, root);
+      const storeRoot = pathMod.join(pathMod.dirname(sp.lockfile), 'ext', extId);
+      manifestPath = pathMod.join(storeRoot, 'extension.json');
+    } catch { /* keep original */ }
+  }
+  return resolveStoreResource(manifestPath, configEnv);
+}
+
+/**
+ * Slice 1 (§5.2 step 4): collect the store-resource each OTHER scope resolves
+ * for `extId`, so the start guard can detect a cross-scope collision (two scopes
+ * sharing one backing store). Only scopes that actually have an install of the
+ * extension in their lockfile are considered.
+ */
+function collectCrossScopeResources(
+  extId: string,
+  root: string,
+  excludeScope: string,
+): ScopeResource[] {
+  const pathMod = require('node:path') as typeof import('node:path');
+  const out: ScopeResource[] = [];
+  for (const sc of ['org', 'user', 'project', 'local'] as const) {
+    if (sc === excludeScope) continue;
+    let sp: { lockfile: string };
+    try {
+      sp = getScopePaths(sc, root);
+    } catch {
+      continue;
+    }
+    const lf = loadLockfile(sp.lockfile);
+    const installed =
+      lf?.resolved?.[extId] !== undefined ||
+      Object.keys(lf?.resolved ?? {}).some((k) => k.startsWith(extId + '@'));
+    if (!installed) continue;
+    const storeRoot = pathMod.join(pathMod.dirname(sp.lockfile), 'ext', extId);
+    out.push({ scope: sc, resource: resolveStoreResourceForScope(extId, storeRoot, sc, root) });
+  }
+  return out;
+}
+
+/**
+ * Slice 1: derive the entrypoint identity token (the absolute artifact path the
+ * reaper matches in argv) for a service-registry entry. Prefers the `.js`
+ * entrypoint among the spawn args; falls back to `<storePath>/dist/index.js`.
+ */
+function entrypointTokenForService(
+  svc: { args?: string[]; storePath: string },
+): string {
+  const pathMod = require('node:path') as typeof import('node:path');
+  const jsArg = (svc.args ?? []).find((a) => a.endsWith('.js'));
+  if (jsArg) return identityToken(jsArg);
+  return identityToken(pathMod.join(svc.storePath, 'dist', 'index.js'));
 }
 
 /**

@@ -65,7 +65,13 @@ the BL-46 `--log` sink), then either ship the worker with the served artifact + 
 or accept hash and stop advertising real. Verify via `memory_ping.embed_on_hash_fallback` after the fix.
 </details>
 
-### BL-54 — `memory_ping` reports `embed_on_hash_fallback:true` BEFORE the first embed (lazy-init false positive) — **Open (MEDIUM)**
+### BL-54 — `memory_ping` reports `embed_on_hash_fallback:true` BEFORE the first embed (lazy-init false positive) — **Open (MEDIUM) — NOT in service-lifecycle Slice 1 (memory-server embed concern, not lifecycle)**
+
+> **Considered for the service-lifecycle Slice 1 engagement and deferred:** BL-54 lives in the
+> `memory-server`/`embed.ts` lazy-warmup path, not in the supervisor/start/stop lifecycle this branch
+> touches. The clean fix (option b: an `embed_state: uninitialized|real|hash-fallback` field, or a
+> warm-on-ping) belongs with a memory-server change, not the host-runtime singleton work — folding it in
+> would mix concerns and re-checksum the memory-server artifact for no lifecycle benefit. Left open.
 
 Surfaced 2026-06-25 while reality-verifying BL-52 — and it is the artifact that triggered the entire
 BL-52 "still on hash" false alarm. `memory_ping` computes `embed_on_hash_fallback` from
@@ -151,9 +157,10 @@ for orphaned `~/.memory/*.db-wal|-shm` whose base `.db` is absent. Safe to purge
 
 ### BL-50 — detached service-mode daemons survive `sox stop`, accumulate into multiple writers, and have no OS reboot supervisor — **Re-scoped by `docs/spec/service-lifecycle.md` (HIGH) — reaper EXISTS; open work = cross-scope singleton + OS-unit persistence**
 
-> **Governed by [`docs/spec/service-lifecycle.md`](docs/spec/service-lifecycle.md) (v1.0.0).** That spec
-> is now the canonical framework; BL-50's remaining work is Slice 1 (cross-scope singleton + reconcile)
-> and Slice 2 (OS-supervisor surface) of its §14 roadmap.
+> **Governed by [`docs/spec/service-lifecycle.md`](docs/spec/service-lifecycle.md) (v1.1.0).** That spec
+> is now the canonical framework. **Slice 1 (cross-scope singleton + reconcile heal) is IMPLEMENTED**
+> on `feat/service-lifecycle-slice1`; the remaining open work is Slice 1.5 (front-shim, designed) and
+> Slice 2 (OS-supervisor surface, designed-not-built) of its §14 roadmap.
 
 **Correction (2026-06-25, verified state-side).** The earlier "orphan-process reaper still open" claim
 was **wrong** — it conflated "mem-fixes-2's diff added no reaper" with "no reaper exists." The
@@ -167,14 +174,25 @@ entrypoint argv token and SIGTERM→SIGKILL-verifies them; `sox stop` exits 1 on
 service's `lifecycle.health` socket (`resolveServiceHealthSocketPath`) and probes it
 (`probeUnixSocketLive`); a live instance ⇒ refuse second spawn + record RUNNING. 15 tests.
 
-**Genuinely open (per spec):**
-- (a) **Cross-scope singleton** — the guard keys on the socket path, but the real invariant is one
-  writer per **store** (`[def:singleton-key] = (id, db_path)`, spec §4.3). Two scopes that override
-  `sock_path` but share `db_path` still get two writers. Fix = spec Slice 1 (token scan + cross-scope
-  ownership check + reconcile pass that heals an existing pair).
-- (b) **OS reboot persistence + `[inv:unload-then-reap]`** — no launchd/systemd surface; the *only*
-  reaper gap is unload-the-unit-before-kill (else resurrection loop), which matters once Slice 2 lands.
-  Folded into BL-51. Fix = spec Slice 2 (`sox service enable|disable`).
+**Status of each half (per spec v1.1.0):**
+- (a) **Cross-scope singleton — ✅ CLOSED by Slice 1 (`feat/service-lifecycle-slice1`).** The guard no
+  longer keys on the socket alone; it resolves `[def:singleton-key] = (id, resolved-store-resource)`
+  (db_path → socket → host:port) and runs **socket probe + entrypoint-token scan + cross-scope
+  ownership/collision check** before spawning, plus a §5.3 reconcile heal that kills the loser of a live
+  duplicate pair (survivor = oldest-by-`ps -o lstart`; a single healthy daemon is never reaped). Two
+  scopes that override `sock_path` but share `db_path` now collapse to one writer. Delivered:
+  `libs/host-runtime/src/singleton.ts` (+ `singleton.spec.ts`, 32 cases) and the `cmdStart`
+  service-registry guard (`resolveStoreResourceForScope`/`collectCrossScopeResources`/
+  `entrypointTokenForService`) in `apps/sox/src/main.ts`. Gates (nx targets, built-before-test per BL-4):
+  host-runtime test 146/146, sox 30/30, `host-runtime:test-e2e` 99/0 (+6 Slice-1 Step 7c, stable ×3),
+  `affected -t build,lint,test` 20/20 green, `registry:sync-index` no drift.
+- (b) **OS reboot persistence + `[inv:unload-then-reap]`** — STILL OPEN. No launchd/systemd surface; the
+  *only* reaper gap is unload-the-unit-before-kill (else resurrection loop), which matters once Slice 2
+  lands. Folded into BL-51. Fix = spec Slice 2 (`sox service enable|disable`), **designed-not-built**
+  (touches the user's machine + depends on the node-path human-ack, spec Appendix B item 3).
+- (c) **Zero-downtime upgrades without forced MCP reconnects** — newly designed as **spec Slice 1.5 /
+  §9.5** (front-shim service-proxy / M3↔M4 bridge over Unix domain sockets; behavior changes need no
+  reconnect, only a tool-schema change does). Designed, not built.
 
 Surfaced while wiring memory-daemon auto-supervision (the "item 3" cleanup). Two faults:
 
@@ -200,7 +218,15 @@ reverted (unloaded/deleted) in favor of a proper sox feature — see BL-51. Enri
 currently covered by BL-47's in-process fallback (no daemon required), so "no daemon running" is a safe
 state. The two faults above (orphan reaper + start-time singleton guard) remain open.
 
-### BL-51 — `sox` needs a launch-agent / OS-supervisor control surface for `service`-type extensions — **Open (FEATURE)**
+### BL-51 — `sox` needs a launch-agent / OS-supervisor control surface for `service`-type extensions — **Open (FEATURE) — = spec Slice 2, DESIGNED (v1.1.0 §9), NOT BUILT**
+
+> **Governed by [`docs/spec/service-lifecycle.md`](docs/spec/service-lifecycle.md) §9 + Slice 2.** Fully
+> designed there (unit generation table, `[inv:unload-then-reap]`, `[inv:os-unit-content-addressed]`,
+> teardown hooks). **Not built** — it writes to `~/Library/LaunchAgents` / `~/.config/systemd/user` on
+> the user's machine and depends on the **stable-node-path human-ack** (spec Appendix B item 3:
+> recommended `fs.realpathSync(process.execPath)` with volatile-nvm/asdf/volta detection + warn + opt-in
+> override). Left for a follow-up engagement with the orchestrator; the BL-47 in-process fallback remains
+> the supported path until then.
 
 Persistence for service-type extensions (e.g. memory-daemon) should be a first-class sox capability, not
 a hand-rolled per-service plist. Proposed surface:
@@ -223,6 +249,24 @@ a hand-rolled per-service plist. Proposed surface:
 
 This subsumes the "item 3" persistence work and the reboot-persistence half of BL-50. Until shipped,
 the BL-47 in-process fallback is the supported path and no daemon need run.
+
+### BL-58 — `tokenguard-core/src/mapper.ts` uses a lazy `require('./tokenize.js')` that breaks under vitest (`Cannot find module`) — **Resolved (`feat/service-lifecycle-slice1`)**
+
+**Surfaced** while running `nx affected -t build,lint,test` for the service-lifecycle Slice 1 work
+(tokenguard-core was marked affected only because the repo root `nx.json`/`package.json` are dirty from
+prior uncommitted changes — Slice 1 does NOT touch tokenguard-core; `git diff main -- libs/tokenguard-core/`
+was empty). `nx test tokenguard-core` failed 1/63: `Mapper.seed` did
+`const { identifierGroupVariants } = require('./tokenize.js')` (`mapper.ts:119`), a runtime CJS require of
+a `.js` sibling that only resolves against the built `dist/` — under vitest's `src` TS transform there is
+no `tokenize.js`, so it threw `Cannot find module './tokenize.js'`. The lazy require was a workaround for
+a **non-existent** cycle: `tokenize.ts` imports `Mapper` **type-only** (`import type`, erased at compile),
+so there is no runtime value cycle.
+
+**Fix:** converted to a static ESM `import { identifierGroupVariants } from './tokenize.js'` at the top of
+`mapper.ts` and removed the inline require. Gates: `nx build tokenguard-core` ✅, `nx lint` ✅,
+`nx test tokenguard-core` → **63/63** (was 62 + 1 failed). `registry:sync-index` → no drift (tokenguard's
+shipped artifact checksum unchanged). Pre-existing latent bug (unchanged vs `main`), fixed in passing per
+the zero-burying rule — NOT a Slice 1 regression.
 
 ## Resolved — pre-existing e2e failure surfaced during BL-45..48 verification (2026-06-23, fixed fix/memory-server-bl45-48)
 
@@ -258,7 +302,13 @@ resolves 0 project roots from the install-registry in the sandboxed probe (likel
 
 ## Resolved — observability gap + daemon down (2026-06-23, fixed fix/memory-server-bl45-48 1a5f1ed)
 
-### BL-46 — production `serve` (stdio MCP) path captures NO logs — **Resolved**
+### BL-46 — production `serve` (stdio MCP) path captures NO logs — **Resolved (opt-in sink); framework follow-up in spec Slice 1.5/3**
+
+> **Spec follow-up (v1.1.0):** the opt-in `--log`/`SOX_SERVE_LOG=1` stderr sink resolved the immediate
+> gap. The service-lifecycle spec makes the durable stderr sink the **default for M4 units** (§9.2) and
+> adds a self-cleaning M3 **serve-record breadcrumb** under `run/serve/<extId>-<pid>.json` (Appendix B
+> item 1 decision) so the live served version is observable + enumerable by `sox list --serve`/`doctor`
+> without a runtime.json lie. Designed in Slice 1.5/3; not yet built.
 
 **Discovered while trying to diagnose BL-45 from server logs.** The logs do not reflect the running version.
 
