@@ -1,6 +1,5 @@
 ---
 "@adhd/sox-extension-memory-server": patch
-"@adhd/sox-extension-memory-organizer": patch
 "@adhd/sox-extension-memory-flush": patch
 "@adhd/sox-extension-memory-cli": patch
 "@adhd/sox-extension-sox-memory-bundle": patch

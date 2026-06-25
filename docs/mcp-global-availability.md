@@ -62,6 +62,38 @@ To allow only specific tools: `mcp__memory-server__memory_recall, mcp__memory-se
 If a `tools:` line is present but `mcp__memory-server__*` is absent, the agent will see the tools
 as unavailable even though the server is running and trusted.
 
+## Propagating a user-scope MCP server into projects (#16728)
+
+A project's `.mcp.json` **overrides** (does not inherit) user-scope `mcpServers`. So a user-scope
+server registered in `~/.claude.json` is **invisible** in any project that has its own `.mcp.json`.
+Sox's durable fix merges the user-scope server entry into every **known** project's `.mcp.json`
+(the project roots in the install-registry), preserving each project's foreign servers and
+recording the merge in the ownership index so uninstall reverses it across every project.
+
+This propagation fires automatically on install/upgrade of the user-scope server. To **reconcile
+all projects on demand** — e.g. after creating a NEW project that should inherit the server:
+
+```bash
+node bin/soxe upgrade --all --force
+```
+
+`--force` re-propagates unconditionally (even when nothing is stale). It replaces the former
+`sync-mcp` verb (removed 2026-06-23). Discovery is driven off install records, so it finds the
+server even if the ownership index has not yet recorded its global config-key.
+
+> Note: temp/ephemeral project roots (under `os.tmpdir()`) are skipped — only real project
+> consumers are reconciled.
+
+## Tracked & reversible injection
+
+Every `~/.claude.json` / `.mcp.json` entry sox writes is recorded in the **ownership index**
+(`<data-root>/ownership.json`) plus the reversal **ledger** (`<data-root>/ledger.json`). This is
+what makes `uninstall` remove **exactly** the sox-owned `mcpServers.<id>` key (global + every
+propagated project) while leaving foreign servers byte-clean. Any path that writes a server entry
+**outside** the normal install path (e.g. `sox migrate-home`'s re-placement) routes through the
+same tracked primitive (`registerUserMcpServer`) — a raw JSON merge would be an untracked,
+irreversible injection (the bug fixed 2026-06-23).
+
 ## The git worktree trap
 
 Git worktrees check out the **committed** `.mcp.json`, not the working-tree version. If a repo's

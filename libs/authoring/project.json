@@ -4,11 +4,15 @@
   "projectType": "library",
   "root": "libs/authoring",
   "sourceRoot": "libs/authoring/src",
-  "tags": ["type:lib"],
+  "tags": [
+    "type:lib"
+  ],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/libs/authoring/dist"],
+      "outputs": [
+        "{workspaceRoot}/libs/authoring/dist"
+      ],
       "options": {
         "command": "tsc --project libs/authoring/tsconfig.lib.json",
         "cwd": "."
@@ -18,7 +22,9 @@
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/tsconfig.lib.json"
       ],
-      "dependsOn": ["manifest:build"]
+      "dependsOn": [
+        "^build"
+      ]
     },
     "test": {
       "executor": "nx:run-commands",
@@ -27,12 +33,17 @@
         "cwd": "."
       },
       "cache": true,
-      "inputs": ["{projectRoot}/src/**/*.ts"]
+      "inputs": [
+        "default",
+        "^production"
+      ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["libs/authoring/**/*.ts"]
+        "lintFilePatterns": [
+          "libs/authoring/**/*.ts"
+        ]
       }
     }
   }

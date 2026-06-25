@@ -4,11 +4,15 @@
   "projectType": "library",
   "root": "packages/sox-nx",
   "sourceRoot": "packages/sox-nx/src",
-  "tags": ["type:lib"],
+  "tags": [
+    "type:lib"
+  ],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/packages/sox-nx/dist"],
+      "outputs": [
+        "{workspaceRoot}/packages/sox-nx/dist"
+      ],
       "options": {
         "command": "tsc --project packages/sox-nx/tsconfig.lib.json",
         "cwd": "."
@@ -18,7 +22,9 @@
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/tsconfig.lib.json"
       ],
-      "dependsOn": ["authoring:build"]
+      "dependsOn": [
+        "^build"
+      ]
     },
     "test": {
       "executor": "nx:run-commands",
@@ -28,10 +34,12 @@
       },
       "cache": true,
       "inputs": [
-        "{projectRoot}/src/**/*.ts",
-        "{workspaceRoot}/libs/authoring/dist/**"
+        "default",
+        "^production"
       ],
-      "dependsOn": ["build"]
+      "dependsOn": [
+        "^build"
+      ]
     },
     "born-conformance": {
       "executor": "nx:run-commands",
@@ -40,12 +48,17 @@
         "cwd": "."
       },
       "cache": false,
-      "dependsOn": ["authoring:build", "manifest:build"]
+      "dependsOn": [
+        "authoring:build",
+        "manifest:build"
+      ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["packages/sox-nx/**/*.ts"]
+        "lintFilePatterns": [
+          "packages/sox-nx/**/*.ts"
+        ]
       }
     }
   }

@@ -4,3 +4,8 @@ packages:
   - 'apps/**'
   - 'libs/**'
   - 'packages/**'
+  # Exclude build output / deps: the `**` globs otherwise recurse into gitignored
+  # `dist/` dirs whose build-emitted `package.json` ({"type":"commonjs"}, no name)
+  # makes @manypkg/changesets error out (`changeset status`/`version` fail).
+  - '!**/dist/**'
+  - '!**/node_modules/**'

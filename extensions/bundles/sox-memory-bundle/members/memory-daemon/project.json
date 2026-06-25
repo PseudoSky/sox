@@ -5,7 +5,9 @@
   "projectType": "library",
   "root": "extensions/bundles/sox-memory-bundle/members/memory-daemon",
   "sourceRoot": "extensions/bundles/sox-memory-bundle/members/memory-daemon/src",
-  "tags": ["type:extension"],
+  "tags": [
+    "type:extension"
+  ],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
@@ -26,12 +28,16 @@
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/tsconfig.json"
       ],
-      "dependsOn": ["memory-core:build", "memory-enrich:build"]
+      "dependsOn": [
+        "^build"
+      ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["extensions/bundles/sox-memory-bundle/members/memory-daemon/src/**/*.ts"]
+        "lintFilePatterns": [
+          "extensions/bundles/sox-memory-bundle/members/memory-daemon/src/**/*.ts"
+        ]
       }
     },
     "test": {
@@ -42,7 +48,8 @@
       },
       "cache": true,
       "inputs": [
-        "{projectRoot}/src/**/*.ts"
+        "default",
+        "^production"
       ]
     }
   }

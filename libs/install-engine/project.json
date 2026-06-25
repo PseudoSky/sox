@@ -31,10 +31,7 @@
         "cwd": "."
       },
       "cache": true,
-      "inputs": [
-        "{projectRoot}/src/**/*.ts",
-        "{workspaceRoot}/libs/host-runtime/src/data-paths.ts"
-      ]
+      "inputs": ["default", "^production", "{workspaceRoot}/libs/host-runtime/src/data-paths.ts"]
     },
     "lint": {
       "executor": "@nx/eslint:lint",

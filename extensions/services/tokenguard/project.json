@@ -4,7 +4,9 @@
   "projectType": "library",
   "root": "extensions/services/tokenguard",
   "sourceRoot": "extensions/services/tokenguard/src",
-  "tags": ["type:extension"],
+  "tags": [
+    "type:extension"
+  ],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
@@ -25,7 +27,9 @@
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/tsconfig.json"
       ],
-      "dependsOn": ["tokenguard-core:build"]
+      "dependsOn": [
+        "^build"
+      ]
     },
     "test": {
       "executor": "nx:run-commands",
@@ -35,24 +39,30 @@
       },
       "cache": true,
       "inputs": [
-        "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/vitest.config.mts"
+        "default",
+        "^production"
       ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["extensions/services/tokenguard/src/**/*.ts"]
+        "lintFilePatterns": [
+          "extensions/services/tokenguard/src/**/*.ts"
+        ]
       }
     },
     "bundle": {
       "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/extensions/services/tokenguard/bundle"],
+      "outputs": [
+        "{workspaceRoot}/extensions/services/tokenguard/bundle"
+      ],
       "options": {
         "command": "node tools/bundle-extension.cjs --entry extensions/services/tokenguard/src/index.ts --outdir extensions/services/tokenguard/bundle --tsconfig extensions/services/tokenguard/tsconfig.json",
         "cwd": "."
       },
-      "dependsOn": ["build"]
+      "dependsOn": [
+        "build"
+      ]
     }
   }
 }

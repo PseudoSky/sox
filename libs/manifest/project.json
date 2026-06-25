@@ -4,11 +4,15 @@
   "projectType": "library",
   "root": "libs/manifest",
   "sourceRoot": "libs/manifest/src",
-  "tags": ["type:lib"],
+  "tags": [
+    "type:lib"
+  ],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/libs/manifest/dist"],
+      "outputs": [
+        "{workspaceRoot}/libs/manifest/dist"
+      ],
       "options": {
         "command": "tsc --project libs/manifest/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/manifest/dist/package.json",
         "cwd": "."
@@ -26,11 +30,13 @@
         "command": "vitest run --config libs/manifest/vitest.config.ts"
       },
       "cache": true,
-      "dependsOn": ["test-scripts"],
+      "dependsOn": [
+        "^build",
+        "test-scripts"
+      ],
       "inputs": [
-        "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/src/schema.json",
-        "{projectRoot}/vitest.config.ts"
+        "default",
+        "^production"
       ]
     },
     "test-scripts": {
@@ -40,10 +46,8 @@
       },
       "cache": true,
       "inputs": [
-        "{workspaceRoot}/scripts/validate-manifests.ts",
-        "{workspaceRoot}/scripts/validate-manifests.test.ts",
-        "{workspaceRoot}/extensions/**/*",
-        "{workspaceRoot}/registry/index.json"
+        "default",
+        "^production"
       ]
     },
     "check-registry": {
@@ -62,7 +66,9 @@
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["libs/manifest/**/*.ts"]
+        "lintFilePatterns": [
+          "libs/manifest/**/*.ts"
+        ]
       }
     }
   }

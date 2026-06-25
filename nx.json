@@ -24,62 +24,12 @@
     },
     "test": {
       "cache": true,
+      "dependsOn": ["^build"],
       "inputs": ["default", "^production"]
     },
     "lint": {
       "cache": true,
       "inputs": ["default", "{workspaceRoot}/eslint.config.js"]
-    }
-  },
-  "release": {
-    "releaseTagPattern": "{projectName}@{version}",
-    "changelog": {
-      "projectChangelogs": true,
-      "automaticFromRef": true
-    },
-    "version": {
-      "conventionalCommits": true,
-      "fallbackCurrentVersionResolver": "disk",
-      "generatorOptions": {
-        "currentVersionResolver": "git-tag"
-      }
-    },
-    "groups": {
-      "core": {
-        "projects": ["libs/authoring", "libs/host-runtime", "libs/install-engine", "libs/manifest", "libs/registry", "packages/*", "apps/*"],
-        "releaseTagPattern": "{projectName}@{version}",
-        "version": {
-          "conventionalCommits": true,
-          "fallbackCurrentVersionResolver": "disk",
-          "generatorOptions": {
-            "currentVersionResolver": "git-tag"
-          }
-        },
-        "changelog": {
-          "projectChangelogs": true
-        }
-      },
-      "memory-extensions": {
-        "projects": [
-          "memory-server",
-          "memory-daemon",
-          "memory-flush",
-          "memory-cli",
-          "sox-memory-bundle",
-          "memory-core"
-        ],
-        "releaseTagPattern": "memory-{projectName}@{version}",
-        "version": {
-          "conventionalCommits": true,
-          "fallbackCurrentVersionResolver": "disk",
-          "generatorOptions": {
-            "currentVersionResolver": "git-tag"
-          }
-        },
-        "changelog": {
-          "projectChangelogs": true
-        }
-      }
     }
   },
   "plugins": []

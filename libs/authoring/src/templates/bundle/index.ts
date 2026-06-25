@@ -127,10 +127,11 @@ function memberProjectJson(bundleId: string, memberId: string): string {
             cwd: '.',
           },
           cache: true,
-          inputs: [
-            '{projectRoot}/src/**/*.ts',
-            '{projectRoot}/tsconfig.json',
-          ],
+          // NB: no per-target `inputs` override. Cache policy lives in nx.json
+          // targetDefaults (`build`/`test` carry `^production` + `^build`). A narrow
+          // project-level `inputs` REPLACES (does not merge with) the defaults and
+          // silently drops dependency-awareness — an upstream source change would no
+          // longer invalidate this project's cache. See docs/nx-cache-conformance.md.
         },
         lint: {
           executor: '@nx/eslint:lint',

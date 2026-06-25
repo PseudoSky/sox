@@ -1,6 +1,5 @@
 ---
 "@adhd/sox-extension-memory-server": minor
-"@adhd/sox-extension-memory-organizer": minor
 "@adhd/sox-extension-memory-flush": minor
 "@adhd/sox-extension-memory-cli": minor
 "@adhd/sox-extension-sox-memory-bundle": minor

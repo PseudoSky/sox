@@ -26,7 +26,7 @@
         "cwd": "."
       },
       "cache": true,
-      "inputs": ["{projectRoot}/src/**/*.ts"]
+      "inputs": ["default", "^production"]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
@@ -41,10 +41,12 @@
         "cwd": "."
       },
       "cache": false,
-      "dependsOn": ["build", "sox:build"],
+      "dependsOn": ["build", "sox:build", "service-proxy:build"],
       "inputs": [
         "{workspaceRoot}/tools/test-e2e-lifecycle.js",
+        "{workspaceRoot}/tools/probe-service-proxy-zdt.mjs",
         "{workspaceRoot}/libs/host-runtime/dist/**",
+        "{workspaceRoot}/libs/service-proxy/dist/**",
         "{workspaceRoot}/dist/apps/sox/**"
       ]
     }
