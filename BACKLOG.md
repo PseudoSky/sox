@@ -13,6 +13,49 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 > phases (P1–P6), not as loose items. The metadata-drop half of BL-23 is already fixed (`9728f6f`).
 > **BL-21 (auto-export) and BL-22 (entity names) resolved by P5 (2026-06-22).**
 
+## Open — project_path mis-attribution for user-scoped memory-server (2026-06-25)
+
+### BL-56 — `project_path` is derived from the memory-server's launch cwd, not the write's actual context → user-scoped (global) writes collapse to "wherever the client started" — **Open (HIGH)**
+
+**Evidence (real store, 2026-06-25):** three project buckets in the single user-scoped store
+`~/.memory/memory.db` — `/Users/nix/dev/ai/sox-ecosystem` (46, this session), `/Users/nix/dev/ai/claude-agents`
+(215, a prior session), `/Users/nix/dev/node/adhd-agent-registry` (1, a worktree/other-launch). If
+`project_path` were the server's *own* fixed cwd it would be one bucket; it isn't, so it varies by
+**launching context** — but NOT per write/per sub-agent.
+
+**Mechanism (read state-side, not guessed):** `memory_write` → `enrichOnWrite` →
+`resolveProjectPath` (`libs/memory-enrich/src/provenance.ts:23-41`): (1) caller `project_path` override
+wins; else (2) `git rev-parse --show-toplevel` run in **`process.cwd()` of the memory-server process**;
+else (3) that `process.cwd()`. The served server's cwd is the **MCP client's launch cwd** —
+`cmdServe` does **not** `chdir` (`apps/sox/src/main.ts`), there is **no** `SOX_CONFIG_PROJECT_PATH`
+injection, and the server does **not** implement the MCP `roots` capability. So:
+
+1. **A user-scoped server is one global store but `project_path` = "the git root of the dir Claude Code
+   was started in."** Every write in a session collapses to that one path, even when the agent works
+   across multiple repos. `process.cwd()` is fixed at spawn — per-call / per-sub-agent context is
+   invisible (this is why a single shared server cannot distinguish writers).
+2. **No authoritative client-workspace signal.** The server guesses from its own cwd instead of using
+   MCP `roots` (which the client could advertise) or a host-injected project root.
+3. **Transient-path pollution.** If launched in a git **worktree** or a temp dir, `project_path`
+   becomes a path that later disappears (the BL-35 class of bug, now in the store's project dimension).
+   The lone `adhd-agent-registry` episode is almost certainly a worktree/other-launch write.
+4. **`~`-launch fallback.** Started outside any git repo ⇒ `project_path` = `process.cwd()` (e.g. `~`),
+   silently attributing everything to the home dir.
+
+**Fix options (principled → pragmatic):**
+- **Best — MCP `roots`:** implement the client `roots` capability so the server uses the client's
+  advertised workspace root per session, not its own cwd.
+- **Good — host-injected context:** `soxe serve` injects `SOX_CONFIG_PROJECT_PATH` resolved from the
+  client's real root; `resolveProjectPath` prefers it over cwd-git.
+- **Worktree hardening:** when the cwd is a linked worktree, resolve to the canonical repo
+  (`git rev-parse --git-common-dir` / `--show-superproject-working-tree`) and refuse transient/tmp
+  roots (mirror the BL-35 guard) so the store never records a path that will vanish.
+- **Caller override:** agents pass explicit `project_path` (reliable but most omit it; the new BL-55
+  default makes omission the norm, which makes this bug MORE visible).
+
+**Note:** the 4 reflections filed this session correctly landed in `sox-ecosystem` because this client
+launched there — but that is luck of the launch dir, not correct per-write attribution.
+
 ## Open — embed fallback + store pollution (2026-06-23, surfaced by BL-48 observability)
 
 ### BL-52 — live memory-server runs on HASH embeddings (`embed_on_hash_fallback:true`) despite real BGE being available — **Resolved + reality-verified (2026-06-25)**
