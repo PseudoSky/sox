@@ -149,17 +149,32 @@ for orphaned `~/.memory/*.db-wal|-shm` whose base `.db` is absent. Safe to purge
 
 ## Open — service supervision gaps (2026-06-23)
 
-### BL-50 — detached service-mode daemons survive `sox stop`, accumulate into multiple writers, and have no OS reboot supervisor — **Partially Resolved (HIGH) — singleton guard landed; orphan reaper + reboot persistence remain**
+### BL-50 — detached service-mode daemons survive `sox stop`, accumulate into multiple writers, and have no OS reboot supervisor — **Re-scoped by `docs/spec/service-lifecycle.md` (HIGH) — reaper EXISTS; open work = cross-scope singleton + OS-unit persistence**
 
-**Fix so far (fix/memory-bl50-52-53):** fault-1's **start-time singleton guard** is implemented —
-`cmdStart` resolves the service's declared `lifecycle.health` socket from its manifest
-(`resolveServiceHealthSocketPath`, with `${SOX_CONFIG_*}`/tilde expansion) and probes it
-(`probeUnixSocketLive`, connection-only); if a live instance answers, it **refuses to spawn a second**
-and records the existing one as RUNNING (no sox-list/launchd split-brain). 15 new
-`bl50-singleton-guard.spec.ts` tests cover both helpers. **Still open:** (a) the **orphan-process
-reaper** — `sox stop` still cannot reap an already-detached daemon whose supervisor is gone (find +
-SIGTERM by entrypoint/marker, cf. BL-31); (b) **reboot persistence** (fault 2), folded into BL-51.
-The singleton guard closes the *new*-two-writer hole; the *pre-existing*-orphan hole needs the reaper.
+> **Governed by [`docs/spec/service-lifecycle.md`](docs/spec/service-lifecycle.md) (v1.0.0).** That spec
+> is now the canonical framework; BL-50's remaining work is Slice 1 (cross-scope singleton + reconcile)
+> and Slice 2 (OS-supervisor surface) of its §14 roadmap.
+
+**Correction (2026-06-25, verified state-side).** The earlier "orphan-process reaper still open" claim
+was **wrong** — it conflated "mem-fixes-2's diff added no reaper" with "no reaper exists." The
+entrypoint-token orphan reaper **already exists** from the BL-31 work: `libs/host-runtime/src/reaper.ts`
+(`findOrphansByIdentity`, `reapByIdentity`, `identityToken`, `killAndVerify`, dated Jun 22) +
+`runtime.ts:reapOrphansForExtension`, and it **is wired** into `cmdStop` (`main.ts:3285,3311`) and the
+`cmdStart` pre-spawn dedup (`main.ts:2956`). It finds PPID-1 detached daemons by whitespace-bounded
+entrypoint argv token and SIGTERM→SIGKILL-verifies them; `sox stop` exits 1 on any `undead`.
+
+**What landed (fix/memory-bl50-52-53):** the **start-time singleton guard** — `cmdStart` resolves the
+service's `lifecycle.health` socket (`resolveServiceHealthSocketPath`) and probes it
+(`probeUnixSocketLive`); a live instance ⇒ refuse second spawn + record RUNNING. 15 tests.
+
+**Genuinely open (per spec):**
+- (a) **Cross-scope singleton** — the guard keys on the socket path, but the real invariant is one
+  writer per **store** (`[def:singleton-key] = (id, db_path)`, spec §4.3). Two scopes that override
+  `sock_path` but share `db_path` still get two writers. Fix = spec Slice 1 (token scan + cross-scope
+  ownership check + reconcile pass that heals an existing pair).
+- (b) **OS reboot persistence + `[inv:unload-then-reap]`** — no launchd/systemd surface; the *only*
+  reaper gap is unload-the-unit-before-kill (else resurrection loop), which matters once Slice 2 lands.
+  Folded into BL-51. Fix = spec Slice 2 (`sox service enable|disable`).
 
 Surfaced while wiring memory-daemon auto-supervision (the "item 3" cleanup). Two faults:
 

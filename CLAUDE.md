@@ -61,6 +61,20 @@ and prove runtime behavior against the built `dist`, never a vitest run alone.
 
 ---
 
+## ⛔ AGENT CONSTRAINT — SERVICE/SUPERVISOR EDITS MUST CONFORM TO THE LIFECYCLE SPEC
+
+Any change to service/daemon lifecycle code — `libs/host-runtime/src/{supervisor,runtime,reaper,lock,registry,gc,log-manager}.ts`, the `os-unit` generator, or the `cmdStart`/`cmdStop`/`cmdServe`/`cmdList`/`cmdStatus`/`cmdEnable`/`cmdDisable`/`cmdUninstall`/`cmdUpgrade`/`cmdService*` regions of `apps/sox/src/main.ts` — **MUST first be read against [`docs/spec/service-lifecycle.md`](./docs/spec/service-lifecycle.md)** and conform to its §13 invariants. In particular:
+
+- **Never spawn a service without the singleton guard** (socket probe + entrypoint-token scan + cross-scope ownership check) — `[inv:singleton]`, key on `(id, store-resource)`, never on scope.
+- **Never report RUNNING without reality verification** (`process.kill(pid,0)` + socket/OS unit) — `[inv:list-never-lies]`. Render reconciled descriptors, never a raw `running` flag.
+- **All teardown goes through verified-stop + the identity reaper** (`killAndVerify` + `reapOrphansForExtension`), exit 1 on `undead`. For OS-supervised services, **unload the unit before killing the pid** — `[inv:unload-then-reap]`.
+- **OS units are generated from the manifest by `sox service enable`, never hand-edited** — `[inv:os-unit-generated]` / `[inv:os-unit-content-addressed]` (re-enable on artifact change).
+- **Never widen the supervisor env-scrub allowlist silently** — document it in the spec §7 and mirror it into the OS unit env (§9.2).
+
+Deviating from the spec requires an ADR superseding the relevant section. The spec is versioned; cite the section you relied on in your PR.
+
+---
+
 ## ⛔ AGENT SEQUENCE — when you change extension/lib code that ships a `dist` artifact
 
 Editing any extension or lib that is checksummed in `registry/index.json` (every code-type
