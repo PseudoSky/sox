@@ -54,6 +54,15 @@ export interface FrontShimOptions {
   onDiagnostic?: (line: string) => void;
   /** Backoff override (forwarded to dialBackend). */
   backoff?: Parameters<typeof dialBackend>[0]['backoff'];
+  /**
+   * Auto-managed backend lifecycle hook (§9.5 step 3). When provided, the shim
+   * calls this BEFORE dialing (to ensure a backend exists) and AGAIN whenever the
+   * backend connection drops mid-flight (re-ensure after a crash). Idempotent —
+   * a no-op when a backend is already live (see {@link ensureBackend}). When
+   * omitted, the shim assumes the backend is managed externally (e.g. an M4 unit)
+   * and only dials.
+   */
+  ensure?: () => Promise<void>;
 }
 
 /** A running front-shim handle (for tests; in production the process lives until
@@ -104,6 +113,33 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
     output.write(JSON.stringify(resp) + '\n');
   }
 
+  /**
+   * Run the auto-managed backend ensure (§9.5 step 3), swallowing errors so a
+   * failed ensure never crashes the shim — the re-dial loop will keep retrying and
+   * a fast-fail (-32001) is surfaced to the client without closing the pipe.
+   * Serialized: overlapping ensure calls (start + a disconnect at the same time)
+   * collapse onto one in-flight promise so we never spawn a thundering herd.
+   */
+  let ensureInFlight: Promise<void> | null = null;
+  function ensureBackendLive(reason: string): void {
+    if (opts.ensure === undefined) return;
+    if (ensureInFlight !== null) return;
+    diag(`[service-proxy shim:${opts.id}] ensuring backend (${reason})`);
+    ensureInFlight = opts
+      .ensure()
+      .catch((e: unknown) => {
+        diag(`[service-proxy shim:${opts.id}] ensure-backend error: ${(e as Error).message}`);
+      })
+      .finally(() => {
+        ensureInFlight = null;
+      });
+  }
+
+  // Ensure a backend exists before (and concurrently with) the first dial. The
+  // dial layer retries with backoff, so it connects as soon as ensure brings the
+  // backend up — no ordering dependency.
+  ensureBackendLive('shim start');
+
   // Backend connection (re-dialing, survives restarts).
   const backend = dialBackend({
     socketPath: opts.socketPath,
@@ -113,6 +149,12 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
       // On every backend (re)connect, re-read the schema-hash and run the
       // interface-change handshake (§9.5.3).
       void refreshBackendSchema();
+    },
+    onDisconnect: () => {
+      // The backend dropped (crash or an upgrade rolling-restart). Re-ensure it so
+      // a CRASHED backend (not a clean rolling-restart, which respawns itself) is
+      // brought back up. Idempotent: a no-op if the restart already re-bound.
+      ensureBackendLive('backend disconnect');
     },
   });
 
