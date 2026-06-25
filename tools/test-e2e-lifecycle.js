@@ -1742,6 +1742,31 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // Section SP: Slice 1.5 (§9.5) front-shim service-proxy — ZERO-DOWNTIME upgrade.
+  // A real backend process listens on a UDS; the real front-shim runs over real
+  // stdio pipes; a client tools/call succeeds across a backend rolling-restart with
+  // the stdio pipe never closing (no client reconnect). Fixture-based child probe;
+  // drives the BUILT dist (libs/service-proxy/dist), per BL-4.
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\n' + '═'.repeat(60));
+  console.log('Section SP: service-proxy front-shim zero-downtime (real processes)');
+  console.log('═'.repeat(60));
+  {
+    const probe = spawnSync(NODE, [path.join(ROOT, 'tools', 'probe-service-proxy-zdt.mjs')], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: { ...process.env, SOX_SANDBOX_ROOT: '', SOX_HOME: '', SOX_ECOSYSTEM_HOME: '' },
+    });
+    if (probe.stdout) process.stdout.write(probe.stdout);
+    if (probe.status === 0) {
+      assert(true, 'SP: front-shim survives backend rolling-restart — tools/call succeeds, pipe never closes (zero reconnect)');
+    } else {
+      if (probe.stderr) process.stderr.write(probe.stderr);
+      assert(false, `SP: service-proxy zero-downtime gate failed (exit ${probe.status})`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Summary
   // ═══════════════════════════════════════════════════════════════════════════
   console.log('\n' + '═'.repeat(60));

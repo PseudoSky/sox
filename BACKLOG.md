@@ -13,6 +13,21 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 > phases (P1–P6), not as loose items. The metadata-drop half of BL-23 is already fixed (`9728f6f`).
 > **BL-21 (auto-export) and BL-22 (entity names) resolved by P5 (2026-06-22).**
 
+## Open — surfaced during service-proxy Slice 1.5 (2026-06-25, `feat/service-proxy-slice1_5`)
+
+### BL-59 — `cmdServe` local-discovery fallback calls `findLocalExtension(extId, root2)` with args REVERSED — **Open (LOW)**
+
+`apps/sox/src/main.ts` `cmdServe` calls `findLocalExtension(extId, root2)`, but the signature is
+`findLocalExtension(root, id)` (`libs/install-engine/src/install.ts:984`). The arguments are swapped,
+so `soxe serve <id>` can **never** discover an UNINSTALLED local extension by scanning
+`<root>/extensions/<typeDir>/<id>/` — it only works via the lockfile (installed) path. Surfaced while
+proving the Slice 1.5 `--proxy` opt-in against a throwaway local extension (discovery failed before the
+proxy branch was reached). **Not a Slice 1.5 regression** — the swap predates this branch (the proxy
+branch sits downstream of discovery and is reachability-proven via the lockfile path + the harness
+probe + direct require-resolution of the compiled `main.js`). Fix = swap the args to
+`findLocalExtension(root2, extId)`; add a `soxe serve` local-discovery e2e assertion. Left isolated
+(out of Slice 1.5 scope: a pre-existing CLI-discovery bug, not the proxy capability).
+
 ## Open — project_path mis-attribution for user-scoped memory-server (2026-06-25)
 
 ### BL-56 — `project_path` was derived from the memory-server's INSTALL dir, not the client workspace → user-scoped writes mis-attributed — **Resolved + reality-verified (2026-06-25)**
@@ -260,10 +275,11 @@ for orphaned `~/.memory/*.db-wal|-shm` whose base `.db` is absent. Safe to purge
 
 ### BL-50 — detached service-mode daemons survive `sox stop`, accumulate into multiple writers, and have no OS reboot supervisor — **Re-scoped by `docs/spec/service-lifecycle.md` (HIGH) — reaper EXISTS; open work = cross-scope singleton + OS-unit persistence**
 
-> **Governed by [`docs/spec/service-lifecycle.md`](docs/spec/service-lifecycle.md) (v1.1.0).** That spec
+> **Governed by [`docs/spec/service-lifecycle.md`](docs/spec/service-lifecycle.md) (v1.1.1).** That spec
 > is now the canonical framework. **Slice 1 (cross-scope singleton + reconcile heal) is IMPLEMENTED**
-> on `feat/service-lifecycle-slice1`; the remaining open work is Slice 1.5 (front-shim, designed) and
-> Slice 2 (OS-supervisor surface, designed-not-built) of its §14 roadmap.
+> on `feat/service-lifecycle-slice1`; **Slice 1.5 (front-shim service-proxy) is IMPLEMENTED** on
+> `feat/service-proxy-slice1_5` (lib + OPT-IN serve mode); the remaining open work is Slice 2
+> (OS-supervisor surface, designed-not-built) of its §14 roadmap.
 
 **Correction (2026-06-25, verified state-side).** The earlier "orphan-process reaper still open" claim
 was **wrong** — it conflated "mem-fixes-2's diff added no reaper" with "no reaper exists." The
@@ -293,9 +309,17 @@ service's `lifecycle.health` socket (`resolveServiceHealthSocketPath`) and probe
   *only* reaper gap is unload-the-unit-before-kill (else resurrection loop), which matters once Slice 2
   lands. Folded into BL-51. Fix = spec Slice 2 (`sox service enable|disable`), **designed-not-built**
   (touches the user's machine + depends on the node-path human-ack, spec Appendix B item 3).
-- (c) **Zero-downtime upgrades without forced MCP reconnects** — newly designed as **spec Slice 1.5 /
-  §9.5** (front-shim service-proxy / M3↔M4 bridge over Unix domain sockets; behavior changes need no
-  reconnect, only a tool-schema change does). Designed, not built.
+- (c) **Zero-downtime upgrades without forced MCP reconnects** — **✅ CLOSED (capability) by Slice 1.5
+  (`feat/service-proxy-slice1_5`).** Built as the leaf lib `libs/service-proxy/` (front-shim
+  service-proxy / M3↔M4 bridge over Unix domain sockets) + an OPT-IN `--proxy` /
+  `lifecycle.proxy:true` branch of `cmdServe`. Behavior-only backend upgrades resume sub-second with
+  **no client reconnect**; an interface change emits `notifications/tools/list_changed` (reconnect only
+  as a fallback). Zero-downtime is gate-proven by a real-process e2e (Section SP +
+  `tools/probe-service-proxy-zdt.mjs`) and unit specs (service-proxy `nx test` 30 passed; e2e 100/0).
+  **Deferred (separate future slice — NOT part of Slice 1.5):** migrating memory-server (or any
+  existing server) to proxy mode — that flip changes the running server's process topology and has
+  reconnect implications, so it ships as its own slice with the `run/serve/` serve-record breadcrumb
+  (spec §2 Appendix-B item 1, most useful once a backend actually runs behind the shim).
 
 Surfaced while wiring memory-daemon auto-supervision (the "item 3" cleanup). Two faults:
 
