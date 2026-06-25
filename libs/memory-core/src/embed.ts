@@ -93,6 +93,26 @@ function resolveConfig(): EmbedConfig {
 
 let _resolvedBackend: 'real' | 'hash' | null = null;
 
+/**
+ * BL-54: the truthful embed-subsystem state, distinguishing "the real worker has not
+ * warmed up yet" from "we actually fell back to hash". memory_ping / memory_stats use
+ * this so a freshly-served server (zero embeds yet) does NOT falsely report a hash
+ * fallback — the lazy-warmup artifact that triggered the BL-52 false alarm.
+ *
+ *   'real'          — the ONNX/BGE worker warmed up; real embeddings are active
+ *                     (_activeModel flipped to 'bge-base-en-v1.5').
+ *   'hash'          — hash embedding is the resolved backend: either configured
+ *                     (SOX_EMBED_BACKEND=hash) or an auto/real fallback that occurred.
+ *   'uninitialized' — no embed() has run yet (and no warmup completed); the backend is
+ *                     not yet determined. NOT a fallback.
+ */
+export type EmbedState = 'real' | 'hash' | 'uninitialized';
+export function getEmbedState(): EmbedState {
+  if (_activeModel === 'bge-base-en-v1.5') return 'real';
+  if (_resolvedBackend === 'hash') return 'hash';
+  return 'uninitialized';
+}
+
 interface WorkerEmbedResponse {
   id: number;
   embedding?: number[];

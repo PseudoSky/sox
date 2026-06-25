@@ -29,6 +29,7 @@ import {
   embed,
   embedText,
   getActiveEmbedModel,
+  getEmbedState,
   EMBED_DIM,
   _resetEmbedSingleton,
 } from './embed.js';
@@ -75,6 +76,25 @@ afterEach(() => {
     process.env['SOX_EMBED_BACKEND'] = savedBackend;
   }
   _resetEmbedSingleton();
+});
+
+// ── 0. BL-54: getEmbedState distinguishes uninitialized from hash fallback ──────
+
+describe('getEmbedState — BL-54 (no false hash-fallback before first embed)', () => {
+  it('reports "uninitialized" on a fresh singleton (no embed yet)', () => {
+    // This is the exact state that made memory_ping falsely report
+    // embed_on_hash_fallback:true on a freshly-served server.
+    _resetEmbedSingleton();
+    expect(getEmbedState()).toBe('uninitialized');
+  });
+
+  it('reports "hash" only AFTER an embed resolves to the hash backend', async () => {
+    process.env['SOX_EMBED_BACKEND'] = 'hash';
+    _resetEmbedSingleton();
+    expect(getEmbedState()).toBe('uninitialized'); // still nothing embedded
+    await embed('bl54 hash-backend probe');
+    expect(getEmbedState()).toBe('hash');
+  });
 });
 
 // ── 1. Config: backend selection ──────────────────────────────────────────────

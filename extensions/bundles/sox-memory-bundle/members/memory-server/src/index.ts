@@ -36,7 +36,7 @@
 
 import type { ToolDefinition, ToolResult } from '@adhd/sox-mcp-runtime';
 import { defineTool, serve } from '@adhd/sox-mcp-runtime';
-import { enqueueEnrich, getActiveEmbedModel, memoryRecall, memoryUpdate, memoryWrite, openDb, SOCKET_PATH } from '@adhd/sox-memory-core';
+import { enqueueEnrich, getActiveEmbedModel, getEmbedState, memoryRecall, memoryUpdate, memoryWrite, openDb, SOCKET_PATH } from '@adhd/sox-memory-core';
 import type { MemoryFilter } from '@adhd/sox-memory-enrich';
 import { buildFiltersClause, clusterStats, clusterSubset, dropSubsetLens, ENRICH_VERSION, listSubsetLenses, runBatchEnrich } from '@adhd/sox-memory-enrich';
 import Database from 'better-sqlite3';
@@ -788,15 +788,17 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
   // drift-proof answer to "what code is this?" — instead of a hand-typed version.
   if (name === 'memory_ping') {
     const addr = getContentAddress();
-    // BL-48: include the resolved embed backend so callers can detect hash-fallback
-    // without reading stderr. getActiveEmbedModel() returns the truthful model id
-    // (real or hash) as of the last embed() call; 'nomic-embed-text-v1.5-hash' means
-    // hash backend is active (possibly after a silent fallback from 'auto'/'real').
+    // BL-48/BL-54: report the resolved embed backend so callers can detect hash-fallback
+    // without reading stderr. BL-54: the embed worker warms LAZILY — getActiveEmbedModel()
+    // returns the default hash id until the first embed completes, so a fresh server (zero
+    // embeds) would FALSELY report embed_on_hash_fallback:true. getEmbedState() fixes this
+    // by distinguishing 'uninitialized' (no embed yet) from a real 'hash' fallback. A
+    // health check must therefore read embed_state, not embed_model, before the first embed.
     const pingEmbedModel = getActiveEmbedModel();
     const pingConfiguredBackend = process.env['SOX_EMBED_BACKEND'] ?? 'auto';
+    const pingEmbedState = getEmbedState();
     const pingOnHashFallback =
-      pingConfiguredBackend !== 'hash' &&
-      pingEmbedModel === 'nomic-embed-text-v1.5-hash';
+      pingConfiguredBackend !== 'hash' && pingEmbedState === 'hash';
     return {
       content: [{
         type: 'text',
@@ -808,6 +810,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           host_compat: addr.host_compat,
           embed_model: pingEmbedModel,
           embed_backend_configured: pingConfiguredBackend,
+          embed_state: pingEmbedState,
           embed_on_hash_fallback: pingOnHashFallback,
         }),
       }],
@@ -2262,19 +2265,20 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
 
       const qStats = clusterStats(db);
 
-      // BL-48: report the RESOLVED backend (what is actually running), not the env var.
-      // getActiveEmbedModel() returns 'bge-base-en-v1.5' when real ONNX is in use,
-      // 'nomic-embed-text-v1.5-hash' when on hash. The 'auto' backend resolves at
-      // first embed() call — if no embed has been made yet it returns the hash model
-      // identifier (the safe default). A fallback indicator is included so callers can
-      // detect "running on hash unexpectedly" without parsing stderr.
+      // BL-48/BL-54: report the RESOLVED backend (what is actually running), not the env
+      // var. getActiveEmbedModel() returns 'bge-base-en-v1.5' when real ONNX is in use,
+      // 'nomic-embed-text-v1.5-hash' otherwise. BL-54: the worker warms LAZILY, so before
+      // the first embed the model id is the default hash — getEmbedState() distinguishes
+      // 'uninitialized' (no embed yet) from a real 'hash' fallback so stats does not
+      // falsely report a fallback on a fresh server.
       const resolvedEmbedModel = getActiveEmbedModel();
       const configuredBackend = process.env['SOX_EMBED_BACKEND'] ?? 'auto';
-      // on_hash_fallback=true when config is 'auto'/'real' but resolved to hash —
-      // signals silent fallback (model unavailable). false if intentionally hash or real.
+      const resolvedEmbedState = getEmbedState();
+      // on_hash_fallback=true when config is 'auto'/'real' but actually resolved to hash —
+      // signals silent fallback (model unavailable). false if intentionally hash, real, or
+      // not-yet-initialized.
       const onHashFallback =
-        configuredBackend !== 'hash' &&
-        resolvedEmbedModel === 'nomic-embed-text-v1.5-hash';
+        configuredBackend !== 'hash' && resolvedEmbedState === 'hash';
 
       return {
         content: [{
@@ -2286,6 +2290,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             enrich_version: ENRICH_VERSION,
             embed_model: resolvedEmbedModel,
             embed_backend_configured: configuredBackend,
+            embed_state: resolvedEmbedState,
             embed_on_hash_fallback: onHashFallback,
             total_episodes: totalEpisodes,
             with_topic: withTopicRow?.cnt ?? 0,

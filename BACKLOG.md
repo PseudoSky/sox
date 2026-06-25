@@ -160,13 +160,20 @@ the BL-46 `--log` sink), then either ship the worker with the served artifact + 
 or accept hash and stop advertising real. Verify via `memory_ping.embed_on_hash_fallback` after the fix.
 </details>
 
-### BL-54 — `memory_ping` reports `embed_on_hash_fallback:true` BEFORE the first embed (lazy-init false positive) — **Open (MEDIUM) — NOT in service-lifecycle Slice 1 (memory-server embed concern, not lifecycle)**
+### BL-54 — `memory_ping` reports `embed_on_hash_fallback:true` BEFORE the first embed (lazy-init false positive) — **Resolved + reality-verified (2026-06-25)**
 
-> **Considered for the service-lifecycle Slice 1 engagement and deferred:** BL-54 lives in the
-> `memory-server`/`embed.ts` lazy-warmup path, not in the supervisor/start/stop lifecycle this branch
-> touches. The clean fix (option b: an `embed_state: uninitialized|real|hash-fallback` field, or a
-> warm-on-ping) belongs with a memory-server change, not the host-runtime singleton work — folding it in
-> would mix concerns and re-checksum the memory-server artifact for no lifecycle benefit. Left open.
+**Fix:** new `getEmbedState(): 'real' | 'hash' | 'uninitialized'` in `libs/memory-core/src/embed.ts`
+distinguishes "the lazy ONNX worker has not warmed up yet" (`uninitialized`) from an actual hash
+fallback (`hash`): `_activeModel === 'bge-base-en-v1.5'` ⇒ `real`; else `_resolvedBackend === 'hash'` ⇒
+`hash` (configured or auto-fellback); else `uninitialized`. `memory_ping` and `memory_stats` now emit an
+`embed_state` field and compute `embed_on_hash_fallback = (configured !== 'hash' && embed_state ===
+'hash')` — so a fresh server (zero embeds) reports `uninitialized`/`false`, not a false `true`. 2 new
+`embed.spec.ts` tests (uninitialized on fresh singleton; `hash` only after a hash embed resolves).
+Reality-verified: served `memory_ping` on a zero-embed server → `embed_state=uninitialized`,
+`embed_on_hash_fallback=false` (pre-fix: `true`). Gates: build (dist verified) + lint + test
+(memory-core 85/1-skip, memory-server 78) ; registry resynced (memory-server checksum changed).
+
+<details><summary>original report</summary>
 
 Surfaced 2026-06-25 while reality-verifying BL-52 — and it is the artifact that triggered the entire
 BL-52 "still on hash" false alarm. `memory_ping` computes `embed_on_hash_fallback` from
@@ -182,6 +189,7 @@ proactively trigger + await a one-token warmup embed before reporting; or (b) ad
 `embed_state: "uninitialized" | "real" | "hash-fallback"` so "not warmed up yet" is not conflated with
 "fell back to hash". Verification of real-vs-hash must use a **post-warmup** ping (embed first, then ping)
 or the absence of the `falling back to hash` stderr warning.
+</details>
 
 ### BL-55 — every `memory_*` tool requires `db_path` with NO default → agents guess the magic path and miss the store — **Resolved + reality-verified (2026-06-25)**
 

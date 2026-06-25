@@ -46,11 +46,12 @@ export {
   getProviderCallCount,
   resetProviderCallCount,
   getActiveEmbedModel,
+  getEmbedState,
   reembedNodes,
   _resetEmbedSingleton,
   _shutdownEmbedWorker,
 } from './embed.js';
-export type { EmbedBackend, EmbedConfig } from './embed.js';
+export type { EmbedBackend, EmbedConfig, EmbedState } from './embed.js';
 
 // ── Write + invalidate ────────────────────────────────────────────────────────
 export { memoryWrite, memoryInvalidate } from './write.js';
