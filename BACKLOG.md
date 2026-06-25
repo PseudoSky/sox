@@ -82,7 +82,26 @@ proactively trigger + await a one-token warmup embed before reporting; or (b) ad
 "fell back to hash". Verification of real-vs-hash must use a **post-warmup** ping (embed first, then ping)
 or the absence of the `falling back to hash` stderr warning.
 
-### BL-55 — every `memory_*` tool requires `db_path` with NO default → agents guess the magic path and miss the store — **Open (HIGH)**
+### BL-55 — every `memory_*` tool requires `db_path` with NO default → agents guess the magic path and miss the store — **Resolved + reality-verified (2026-06-25)**
+
+**Fix:** `db_path` is now **optional** on every tool. New exported `resolveDbPath(arg)` in
+`memory-server/src/index.ts` resolves: explicit arg → host-injected `SOX_CONFIG_DB_PATH` (the
+`config.memory-server.db_path` bundle property, already injected at serve time via `buildExtConfigEnv`,
+surviving the enforced env-scrub) → canonical `~/.memory/memory.db`. The half-built wiring is now
+complete: the config-based default property was always delivered to the server, but the tools ignored it
+and hard-required the arg — they now fall back to it. `db_path` removed from every `required` array in
+both the served schemas (index.ts) and the catalog manifest (extension.json); descriptions updated to
+"optional; defaults to the configured store"; `config_schema.required:["db_path"]` retained so the
+bundle is always configured with the default source. The permission guard remains the backstop (a wrong
+override is still denied loudly, no file created). 9 new `bl55-dbpath-default.spec.ts` tests (precedence
+incl. default, blank-fallthrough, end-to-end write+recall with no db_path, explicit override isolation).
+
+**Reality verification:** a served `node bin/soxe serve memory-server`, called `memory_recall` **without
+`db_path`** (the exact pattern an agent botched as `~/.sox/memory`), returned real `["vec"]` results from
+the injected configured store; the old `"db_path is required"` error is gone (absent from dist). Gates:
+memory-server build (dist verified) + lint + test green (78 incl. bl55 9/9).
+
+<details><summary>original report</summary>
 
 Surfaced 2026-06-25: an agent intuitively called `memory_recall(db_path: "~/.sox/memory", …)`. That path
 is wrong on two counts — the canonical single store is **`~/.memory/memory.db`** (19.6 MB, real), and
@@ -103,6 +122,7 @@ injects the `~/.memory/**` allowlist at spawn, so the server can default `db_pat
 `~/.memory/memory.db` (or a `SOX_CONFIG`-injected path) when omitted. Drop `db_path` from each tool's
 `required` array, document "omit to use the default store" in CLAUDE.md, and keep the guard as the
 backstop. This removes path-guessing entirely and is the permanent solve.
+</details>
 
 ### BL-53 — `~/.memory` polluted with 842 orphaned WAL/SHM test sidecars; tests write to the real store dir — **Resolved**
 
