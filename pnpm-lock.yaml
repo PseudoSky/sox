@@ -125,6 +125,9 @@ importers:
       '@adhd/sox-memory-enrich':
         specifier: workspace:*
         version: link:../../../../../libs/memory-enrich
+      '@adhd/sox-service-proxy':
+        specifier: workspace:*
+        version: link:../../../../../libs/service-proxy
 
   extensions/bundles/sox-memory-bundle/members/memory-usage: {}
 
@@ -148,19 +151,11 @@ importers:
 
   libs/host-registry: {}
 
-  libs/host-registry/dist: {}
-
   libs/host-runtime: {}
-
-  libs/host-runtime/dist: {}
 
   libs/install-engine: {}
 
-  libs/install-engine/dist: {}
-
   libs/manifest: {}
-
-  libs/manifest/dist: {}
 
   libs/mcp-runtime:
     dependencies:
@@ -171,8 +166,6 @@ importers:
         specifier: ^1.0.0
         version: 1.29.0(zod@4.4.3)
 
-  libs/mcp-runtime/dist: {}
-
   libs/memory-core:
     dependencies:
       '@adhd/sox-memory-enrich':
@@ -182,23 +175,17 @@ importers:
         specifier: ^2.1.0
         version: 2.1.0
 
-  libs/memory-core/dist: {}
-
   libs/memory-enrich:
     dependencies:
       better-sqlite3:
         specifier: '*'
         version: 12.10.0
 
-  libs/memory-enrich/dist: {}
-
   libs/registry: {}
 
-  libs/registry/dist: {}
+  libs/service-proxy: {}
 
   libs/tokenguard-core: {}
-
-  libs/tokenguard-core/dist: {}
 
   packages/sox-nx:
     dependencies:

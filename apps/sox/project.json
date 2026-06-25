@@ -10,7 +10,7 @@
       "executor": "nx:run-commands",
       "outputs": ["{workspaceRoot}/dist/apps/sox"],
       "options": {
-        "command": "tsc --project apps/sox/tsconfig.app.json && echo '{\"type\":\"commonjs\"}' > dist/apps/sox/package.json && node apps/sox/scripts/rewrite-paths.cjs",
+        "command": "tsc --project apps/sox/tsconfig.app.json && echo '{\"type\":\"commonjs\"}' > dist/apps/sox/package.json && node apps/sox/scripts/rewrite-paths.cjs && node apps/sox/scripts/stamp-build.cjs",
         "cwd": "."
       },
       "cache": true,
@@ -18,7 +18,8 @@
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/tsconfig.app.json",
         "{projectRoot}/extension.json",
-        "{projectRoot}/scripts/rewrite-paths.cjs"
+        "{projectRoot}/scripts/rewrite-paths.cjs",
+        "{projectRoot}/scripts/stamp-build.cjs"
       ],
       "dependsOn": ["install-engine:build", "host-runtime:build", "manifest:build", "authoring:build"]
     },

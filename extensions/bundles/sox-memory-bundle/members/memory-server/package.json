@@ -18,7 +18,8 @@
   "dependencies": {
     "@adhd/sox-memory-core": "workspace:*",
     "@adhd/sox-memory-enrich": "workspace:*",
-    "@adhd/sox-mcp-runtime": "workspace:*"
+    "@adhd/sox-mcp-runtime": "workspace:*",
+    "@adhd/sox-service-proxy": "workspace:*"
   },
   "license": "MIT"
 }

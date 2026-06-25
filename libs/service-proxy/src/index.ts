@@ -23,6 +23,14 @@ export type { ServeBackendOptions, BackendHandle, BackendHandler } from './backe
 export { dialBackend } from './dial.js';
 export type { DialOptions, BackendConnection, BackoffOptions } from './dial.js';
 
+// ── Auto-managed backend lifecycle (singleton-guarded ensure/spawn, §9.5 step 3)
+export { ensureBackend, probeSocketLive } from './ensure-backend.js';
+export type {
+  EnsureBackendOptions,
+  EnsureBackendResult,
+  EnsureBackendDisposition,
+} from './ensure-backend.js';
+
 // ── [contract:schema-hash] (§9.5.3) ───────────────────────────────────────────
 export { computeSchemaHash, canonicalize } from './schema-hash.js';
 

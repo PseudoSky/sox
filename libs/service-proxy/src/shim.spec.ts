@@ -211,4 +211,59 @@ describe('runFrontShim', () => {
     const list2 = await c.next((r) => r['id'] === 3);
     expect((list2['result'] as { tools: unknown[] }).tools).toHaveLength(1);
   });
+
+  it('calls the ensure hook on START (before any backend exists)', async () => {
+    const sock = tmpSock('ensure-start');
+    let ensured = 0;
+    // The backend does NOT exist yet; the ensure hook brings it up.
+    const c = makeClient({
+      id: 'e',
+      socketPath: sock,
+      backoff: { initialMs: 20, maxMs: 60 },
+      ensure: async () => {
+        ensured++;
+        // Bring the backend up on first ensure so the subsequent dial connects.
+        if (ensured === 1) await startBackend(sock, 'v1');
+      },
+    });
+
+    // Issue a call: the dial layer retries with backoff until the ensure-spawned
+    // backend binds, then answers — proving ensure ran at start.
+    c.send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { v: 'x' } });
+    const r1 = await c.next((r) => r['id'] === 1);
+    expect((r1['result'] as { version: string }).version).toBe('v1');
+    expect(ensured).toBeGreaterThanOrEqual(1);
+  });
+
+  it('RE-ensures on a dropped backend connection (crash recovery)', async () => {
+    const sock = tmpSock('ensure-redrop');
+    let backend = await startBackend(sock, 'v1');
+    let ensured = 0;
+    const c = makeClient({
+      id: 'r',
+      socketPath: sock,
+      backoff: { initialMs: 20, maxMs: 60 },
+      ensure: async () => {
+        ensured++;
+        // The first ensure (start) is a no-op (backend already live). On the
+        // disconnect ensure, respawn the backend so the shim re-dials successfully.
+        if (ensured >= 2) backend = await startBackend(sock, 'v2');
+      },
+    });
+
+    // Baseline against v1.
+    c.send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {} });
+    const r1 = await c.next((r) => r['id'] === 1);
+    expect((r1['result'] as { version: string }).version).toBe('v1');
+
+    // Drop the backend (simulate a crash, not a clean rolling-restart).
+    await backend.close();
+
+    // The shim's onDisconnect → ensure re-spawns v2; the SAME client call succeeds.
+    c.send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: {} });
+    const r2 = await c.next((r) => r['id'] === 2);
+    expect(r2['error']).toBeUndefined();
+    expect((r2['result'] as { version: string }).version).toBe('v2');
+    expect(ensured).toBeGreaterThanOrEqual(2);
+  });
 });

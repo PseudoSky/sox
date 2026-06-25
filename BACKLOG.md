@@ -9,7 +9,7 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ## Open — INCIDENT: the dev checkout's `dist` IS the live MCP source (2026-06-25)
 
-### BL-65 — building unverified WIP into the dev-repo `dist` breaks the LIVE memory-server for all sessions — **Open (HIGH)**
+### BL-65 — building unverified WIP into the dev-repo `dist` breaks the LIVE memory-server for all sessions — **PARTIAL (HIGH) — guard shipped; repoint is a human step**
 
 **Incident (2026-06-25):** while an agent was implementing proxy-on-by-default on a branch, its
 `nx build` wrote the WIP (proxy-default + a not-yet-working shim path) into `dist/apps/sox/main.js` and
@@ -35,8 +35,25 @@ and the running MCP server). This is the `$SKILL`-cache-vs-dev-checkout hazard g
 3. **A build guard** — refuse/ warn when building the serve path while a live MCP server resolves this
    `dist` (or stamp dist with a git-sha and have `serve` warn on a dirty/uncommitted dist).
 
-Until fixed: NEVER build the serve path on the live dev checkout while sessions are connected; validate
-in an isolated worktree and merge to `main` before any rebuild that the live server will pick up.
+**Shipped (this branch, `feat/proxy-default-memory-backend` rebased):**
+- Option 2 is enforced at the orchestrator level: risky serve-path work MUST run in an isolated git
+  worktree (the BL-65 constraint in the task brief); the current work was done in
+  `.claude/worktrees/agent-a43ff2972d1444cca/` which has its own `dist`.
+- Option 3 (build guard): `apps/sox/scripts/stamp-build.cjs` is now run as a post-build step in the
+  `sox:build` nx target. It writes `dist/apps/sox/build-info.json` with `{ gitSha, dirty, builtAt }`.
+  `cmdServe` calls `warnIfDistSha()` at startup (before any subprocess) and emits a loud WARNING to
+  stderr when the dist was built from a dirty tree or from a sha that differs from HEAD — so the
+  operator cannot silently serve stale/WIP code.
+
+**Remaining human/orchestrator step (option 1 — principled permanent fix):**
+- Point every `.mcp.json` / `~/.claude.json` `memory-server` entry at a content-addressed INSTALLED
+  `soxe` under `~/.adhd/sox-ecosystem/installs/<sha>/bin/soxe` (or equivalent), NOT the live dev
+  checkout. This decouples repo builds from the live MCP server: it only updates on an explicit
+  `soxe upgrade --all`. The mechanism: run `soxe install sox` (or `soxe upgrade --all`) to write a
+  pinned install, then repoint the MCP config entry from `/path/to/dev/sox-ecosystem/bin/soxe` to
+  the installed path. DO NOT repoint live config yourself — this is a documented orchestrator step.
+- Until that repoint: NEVER build the serve path on the live dev checkout while sessions are
+  connected; validate in an isolated worktree and merge to `main` before any rebuild.
 
 > **Status (2026-06-22): BL-1 … BL-22 all resolved.** BL-23/24 are now **folded into the
 > memory-enrichment plan** at `docs/plan/memory-enrichment/` (SPEC + DESIGN + CONSUMER-INTERFACES +
@@ -44,20 +61,88 @@ in an isolated worktree and merge to `main` before any rebuild that the live ser
 > phases (P1–P6), not as loose items. The metadata-drop half of BL-23 is already fixed (`9728f6f`).
 > **BL-21 (auto-export) and BL-22 (entity names) resolved by P5 (2026-06-22).**
 
+## Slice 1.6 — proxy-by-default + memory-server backend (2026-06-25, `feat/proxy-default-memory-backend`)
+
+### BL-61 — flipping memory-server to proxy default requires exactly ONE final client reconnect — **Migration note (expected, one-time)**
+
+memory-server is now served via the front-shim by DEFAULT (`type: mcp-server` →
+`lifecycle.serve_mode:"proxy"`). The running instance in any MCP client is still the OLD direct-stdio
+server (it owns the client's pipe). To pick up the shim, the client must reconnect/reload the
+memory-server MCP plugin **once**. After that single reconnect, every subsequent memory-server
+behaviour/code upgrade is a BACKEND rolling-restart behind the shim → **no further client reconnects**
+(the shim re-dials across the sub-second gap; spec §9.5, e2e Section SPM). An interface (tool-schema)
+change still emits `notifications/tools/list_changed` and falls back to reconnect only for clients that
+ignore it. **Action for the human:** after this merge + `sox upgrade --all`, reconnect/reload the
+memory-server MCP server once.
+
+### BL-62 — shared-backend `project_path` attribution is single-valued for the lifetime of the backend — **Open (MEDIUM) `(unverified)` multi-project correctness**
+
+The proxy backend is a SINGLETON per store (single-writer, by design). The BL-56 fix injects the
+client's workspace as `SOX_CONFIG_PROJECT_PATH` at **shim spawn**, but the shared backend captured the
+value of whichever shim's `ensure` first spawned it — a second shim from a DIFFERENT project dials the
+SAME backend and its `SOX_CONFIG_PROJECT_PATH` does NOT propagate to the already-running backend. So
+for a memory store shared across multiple project workspaces, episodes written via the second project's
+shim would be attributed to the FIRST project's path. Single-project use is unaffected (the common
+case). **Fix sketch:** thread the per-call workspace (MCP `roots` / a caller-supplied `project_path`
+arg) through `tools/call` so attribution is per-request, not per-backend-process; until then the shared
+backend's `project_path` is `(unverified)` for multi-project setups. Surfaced + flagged during Slice
+1.6; NOT silently regressed (BL-56's per-shim injection still happens, it just can't reach a shared
+running backend).
+
+### BL-63 — `host-runtime:test-e2e` BL-31 orphan scan uses a global `pgrep -f memory-server/dist/index.js`, so a CONCURRENT live proxy session on the dev box is mis-counted as a leaked orphan — **RESOLVED (2026-06-25, `feat/proxy-default-memory-backend`)**
+
+`tools/test-e2e-lifecycle.js` `liveServerPids()` does `pgrep -f 'memory-server/dist/index.js'` and
+subtracts a `BASELINE_PIDS` snapshot captured at import. With the Slice 1.6 proxy default LIVE in the
+operator's own `bin/soxe serve memory-server` session, that session's shim **re-ensures/respawns its
+backend during the ~minute e2e run** → the new backend pid post-dates the baseline → the BL-31 "no
+orphan after stop" + "BL-31 no orphan survive sox stop" assertions count it as leaked. This was the
+root cause of the reported **e2e 99/2** failure — **a test-environment confounder, NOT a code
+regression:** every reported "orphan" pid resolves to `ppid == <the operator's live serve session pid>`
+(correlated 3×: 18501→23210, 15408→23210, 15572→23210), never to the e2e's own install/start tree; on a
+clean machine the suite was already **101/0** (re-confirmed 3× this session, before the fix).
+
+**Fix (shipped):** `leakedServerPids({ excludeLiveParented: true })` for the two POST-STOP orphan
+assertions (Step 7 + Step 7b). After a `sox stop` this test's supervisor is already dead, so a genuine
+leak from THIS test is always orphaned (PPID 1) or dead-parented; a candidate whose parent is a LIVE
+non-init process is owned by another live manager (the operator's serve shim) and is excluded. This
+removes the false positive WITHOUT masking a real test leak (never live-parented after stop). The
+mid-lifecycle disable/enable checks keep the strict (no live-parent exclusion) form — a supervisor
+restart there MUST still be caught.
+
+### BL-64 — auto-spawned proxy backend (untracked, no runtime entry) survived `sox stop` — **RESOLVED (2026-06-25, `feat/proxy-default-memory-backend`)**
+
+A proxy-mode mcp-server (Slice 1.6 default) is fronted by a thin stdio shim; the real implementation
+runs in a persistent, detached, sox-owned BACKEND the shim AUTO-SPAWNS via `ensureBackend`
+(`SOX_PROXY_BACKEND=1`). That backend is created by the SHIM, not by `sox start`, so it is in NO
+`runtime.json` entry — `cmdStop`'s whole-scope reap loop iterates only `record.entries` and never
+touched it, so the detached backend SURVIVED `sox stop`, re-introducing the BL-31/BL-50 orphan leak
+once every spawning shim had exited. (Distinct from BL-63: BL-63 was the e2e *scan* mis-attributing a
+foreign live session; BL-64 is the real production gap that the e2e could not previously reach.)
+
+**Fix (shipped):** new `reapUntrackedProxyBackends()` in `apps/sox/src/main.ts` — enumerates every
+installed mcp-server from the lockfile (the source of truth for "what could have an auto-spawned
+backend"), and for each one served in proxy mode reaps any live process matching the backend's
+entrypoint IDENTITY token (the exact `node --enable-source-maps <entrypoint>` argv `ensureBackend`
+uses), via `reapByIdentity` → `killAndVerify` ([contract:signal] verified-stop). Wired into all three
+`cmdStop` exit paths: whole-scope, per-`--id`, and the no-runtime-record early-exit. Identity matching
+is the entrypoint PATH, which is stable across scopes, so a backend whose serve resolved a DIFFERENT
+scope than the stop target is still reaped (closes the suspected scope-mismatch leak). The manifest is
+read from the lockfile entry's source (honoring an explicit `--lockfile`), NOT re-derived via
+`getScopePaths` (which would miss a custom lockfile). Proven: new e2e **Step 7d** spawns the REAL
+backend as a true orphan (PPID 1) and asserts `sox stop` reaps it; full suite **107/0** across 3 runs.
+
 ## Open — surfaced during service-proxy Slice 1.5 (2026-06-25, `feat/service-proxy-slice1_5`)
 
-### BL-59 — `cmdServe` local-discovery fallback calls `findLocalExtension(extId, root2)` with args REVERSED — **Open (LOW)**
+### BL-59 — `cmdServe` local-discovery fallback calls `findLocalExtension(extId, root2)` with args REVERSED — **RESOLVED (2026-06-25, this branch)**
 
 `apps/sox/src/main.ts` `cmdServe` calls `findLocalExtension(extId, root2)`, but the signature is
 `findLocalExtension(root, id)` (`libs/install-engine/src/install.ts:984`). The arguments are swapped,
 so `soxe serve <id>` can **never** discover an UNINSTALLED local extension by scanning
-`<root>/extensions/<typeDir>/<id>/` — it only works via the lockfile (installed) path. Surfaced while
-proving the Slice 1.5 `--proxy` opt-in against a throwaway local extension (discovery failed before the
-proxy branch was reached). **Not a Slice 1.5 regression** — the swap predates this branch (the proxy
-branch sits downstream of discovery and is reachability-proven via the lockfile path + the harness
-probe + direct require-resolution of the compiled `main.js`). Fix = swap the args to
-`findLocalExtension(root2, extId)`; add a `soxe serve` local-discovery e2e assertion. Left isolated
-(out of Slice 1.5 scope: a pre-existing CLI-discovery bug, not the proxy capability).
+`<root>/extensions/<typeDir>/<id>/` — it only works via the lockfile (installed) path.
+
+**Fix (shipped):** swapped to `findLocalExtension(root2, extId)` in `cmdServe`. Also added the
+`resolveServeManifest` helper (used by `mcpServerIsProxyMode` and `reapUntrackedProxyBackends`) which
+uses the CORRECT argument order. e2e Step SPM-local verifies the local-discovery path reaches proxy mode.
 
 ## Open — project_path mis-attribution for user-scoped memory-server (2026-06-25)
 
