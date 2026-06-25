@@ -15,46 +15,98 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ## Open — project_path mis-attribution for user-scoped memory-server (2026-06-25)
 
-### BL-56 — `project_path` is derived from the memory-server's launch cwd, not the write's actual context → user-scoped (global) writes collapse to "wherever the client started" — **Open (HIGH)**
+### BL-56 — `project_path` was derived from the memory-server's INSTALL dir, not the client workspace → user-scoped writes mis-attributed — **Resolved + reality-verified (2026-06-25)**
 
 **Evidence (real store, 2026-06-25):** three project buckets in the single user-scoped store
-`~/.memory/memory.db` — `/Users/nix/dev/ai/sox-ecosystem` (46, this session), `/Users/nix/dev/ai/claude-agents`
-(215, a prior session), `/Users/nix/dev/node/adhd-agent-registry` (1, a worktree/other-launch). If
-`project_path` were the server's *own* fixed cwd it would be one bucket; it isn't, so it varies by
-**launching context** — but NOT per write/per sub-agent.
+`~/.memory/memory.db` — `/Users/nix/dev/ai/sox-ecosystem` (46), `/Users/nix/dev/ai/claude-agents`
+(215), `/Users/nix/dev/node/adhd-agent-registry` (1).
 
-**Mechanism (read state-side, not guessed):** `memory_write` → `enrichOnWrite` →
-`resolveProjectPath` (`libs/memory-enrich/src/provenance.ts:23-41`): (1) caller `project_path` override
-wins; else (2) `git rev-parse --show-toplevel` run in **`process.cwd()` of the memory-server process**;
-else (3) that `process.cwd()`. The served server's cwd is the **MCP client's launch cwd** —
-`cmdServe` does **not** `chdir` (`apps/sox/src/main.ts`), there is **no** `SOX_CONFIG_PROJECT_PATH`
-injection, and the server does **not** implement the MCP `roots` capability. So:
+**Mechanism (read state-side — and the first diagnosis was incomplete):** `memory_write` →
+`enrichOnWrite` → `resolveProjectPath` (`libs/memory-enrich/src/provenance.ts`): caller override → else
+`git rev-parse --show-toplevel` in **`process.cwd()` of the served process**. The decisive detail is the
+served process's cwd: `cmdServe` execs the entrypoint with **`cwd: extDir2`** (`apps/sox/src/main.ts:4694,4720`)
+— the **extension INSTALL directory**, not the client's workspace. So `project_path` was the git root of
+*wherever the extension is installed* (the dev repo `sox-ecosystem`; or `~/.adhd/...` → `~` for a
+user-scoped store copy), **not** where the user/agent is working. The launch dir (`root2` = the dir the
+MCP client started `soxe serve` from = the user's real project) was captured but **never used** for
+attribution; there was no `SOX_CONFIG_PROJECT_PATH` injection and no MCP `roots`. The buckets varied
+because each session's extension resolved to an extDir inside a different repo.
 
-1. **A user-scoped server is one global store but `project_path` = "the git root of the dir Claude Code
-   was started in."** Every write in a session collapses to that one path, even when the agent works
-   across multiple repos. `process.cwd()` is fixed at spawn — per-call / per-sub-agent context is
-   invisible (this is why a single shared server cannot distinguish writers).
-2. **No authoritative client-workspace signal.** The server guesses from its own cwd instead of using
-   MCP `roots` (which the client could advertise) or a host-injected project root.
-3. **Transient-path pollution.** If launched in a git **worktree** or a temp dir, `project_path`
-   becomes a path that later disappears (the BL-35 class of bug, now in the store's project dimension).
-   The lone `adhd-agent-registry` episode is almost certainly a worktree/other-launch write.
-4. **`~`-launch fallback.** Started outside any git repo ⇒ `project_path` = `process.cwd()` (e.g. `~`),
-   silently attributing everything to the home dir.
+**Fix:**
+1. `cmdServe` now injects **`SOX_CONFIG_PROJECT_PATH` = git root of `root2`** (the client launch
+   workspace), always defining it (empty string when `root2` is not a git repo) so the install-dir cwd
+   path is disabled in the served context (`apps/sox/src/main.ts`).
+2. `resolveProjectPath` treats a **defined** `SOX_CONFIG_PROJECT_PATH` as authoritative — non-empty ⇒
+   that path; empty ⇒ `null` (no project) with **no** cwd fallback. When the env var is *unset*
+   (non-served contexts: daemon, memory-cli, tests) it falls back to cwd-git, now with linked-worktree →
+   main-checkout canonicalization, and returns `null` (not the bare cwd) on a non-repo cwd
+   (`libs/memory-enrich/src/provenance.ts`). A project-scope `config.<id>.project_path` (via
+   `buildExtConfigEnv`) still wins over the auto-injected launch root.
 
-**Fix options (principled → pragmatic):**
-- **Best — MCP `roots`:** implement the client `roots` capability so the server uses the client's
-  advertised workspace root per session, not its own cwd.
-- **Good — host-injected context:** `soxe serve` injects `SOX_CONFIG_PROJECT_PATH` resolved from the
-  client's real root; `resolveProjectPath` prefers it over cwd-git.
-- **Worktree hardening:** when the cwd is a linked worktree, resolve to the canonical repo
-  (`git rev-parse --git-common-dir` / `--show-superproject-working-tree`) and refuse transient/tmp
-  roots (mirror the BL-35 guard) so the store never records a path that will vanish.
-- **Caller override:** agents pass explicit `project_path` (reliable but most omit it; the new BL-55
-  default makes omission the norm, which makes this bug MORE visible).
+**Reality verification (2026-06-25, served `node bin/soxe serve memory-server`, hash backend, probe db
+under `~/.memory`):** launched with cwd `=/Users/nix/dev/ai/claude-agents` ⇒ `project_path
+="/Users/nix/dev/ai/claude-agents"` (the **client workspace**, no longer the `sox-ecosystem` install
+repo); launched from a non-git tmp dir ⇒ `project_path=null` (no false attribution). 9 new
+`resolveProjectPath` BL-56 tests; gates: build (dist verified) + lint + test + `host-runtime:test-e2e`
+99/0.
 
-**Note:** the 4 reflections filed this session correctly landed in `sox-ecosystem` because this client
-launched there — but that is luck of the launch dir, not correct per-write attribution.
+**Remaining (follow-up, lower priority):** the principled per-session fix for a server whose client
+launches from a non-project dir is the MCP `roots` capability (the client advertises its workspace);
+until then a non-repo launch correctly records `null`. Also: the **daemon** re-enrich path runs with
+`cwd = store dir` but does not re-resolve `project_path` for existing nodes (set at write time), so it
+is unaffected; a future daemon-side write path must use the same injection.
+
+**Note:** the 4 reflections filed earlier this session landed in `sox-ecosystem` because this client
+launched there — which under the fix is now the *correct* attribution (the workspace), not luck.
+
+### BL-57 — sox data files pollute repo roots instead of nesting under `.adhd/sox-ecosystem/` (legacy `SOX_HOME` residue) — **Open (MEDIUM) — cleanup + migration pending**
+
+**Observed (2026-06-25):** `/Users/nix/dev/ai/claude-agents/` root holds `install-registry.json` (246 KB),
+`supervisors.json`, `logs/` (48 dirs), and a legacy `.sox/` (messages.db) — none nested under
+`.adhd/sox-ecosystem/` (which does not exist there). `/Users/nix/dev/ai/sox-ecosystem/` root has a
+legacy `.sox/` too. The repo roots are polluted with sox's own global/runtime state.
+
+**Root cause (verified):** `SOX_HOME=/Users/nix/dev/ai/claude-agents` is exported in the shell env.
+ADR-0004 **retired** `SOX_HOME` — the *current* code ignores it (prints the "SOX_HOME is set but RETIRED"
+warning) and writes correctly to `userDataRoot()` = `~/.adhd/sox-ecosystem/` (verified: that dir has
+current `install-registry.json`/`supervisors.json`, both mtime Jun 25). The claude-agents-root files are
+**stale residue** written by an *older* (pre-ADR-0004) binary that honored `SOX_HOME` and wrote
+`$SOX_HOME/{install-registry.json,supervisors.json,logs/}` = the repo root. They are 2 days old (Jun 23);
+current code is not re-polluting. So this is **not a live data-path bug** — `dataRoot()`/`userDataRoot()`
+(`libs/host-runtime/src/data-paths.ts`) are correct.
+
+**Actions needed (deferred per user — log only for now):**
+1. **Migrate/clean** the stale residue in `claude-agents` (and the legacy `.sox/` in both repos) via the
+   sanctioned `sox migrate-home` (ADR-0004 §D8; idempotent, non-destructive — `moveFile` skips when the
+   target already exists, so it won't clobber the current `~/.adhd` global state). Then remove the
+   now-empty residue from the repo roots.
+2. **Unset `SOX_HOME`** in the user's shell profile (it is retired and is the footgun behind both this and
+   the confusion; current code only warns). Cannot edit the user's rc autonomously — surface it.
+3. **Optional hardening:** when `SOX_HOME` is set, `sox` could escalate from a warning to an actionable
+   prompt (`run 'sox migrate-home'`) or auto-migrate once — evaluate.
+
+This is distinct from **BL-56** (project_path attribution, in the memory store) — that one is a live code
+bug and is being fixed first.
+
+## Resolved — surfaced during service-lifecycle Slice 1 (2026-06-25, `feat/service-lifecycle-slice1`)
+
+### BL-58 — `tokenguard-core/src/mapper.ts` uses a lazy `require('./tokenize.js')` that breaks under vitest (`Cannot find module`) — **Resolved**
+
+**Surfaced** while running `nx affected -t build,lint,test` for the Slice 1 work (tokenguard-core was
+marked affected only because the repo root `nx.json`/`package.json` are dirty from prior uncommitted
+changes — Slice 1 does NOT touch tokenguard-core; `git diff main -- libs/tokenguard-core/` was empty).
+`nx test tokenguard-core` failed 1/63: `Mapper.seed` did
+`const { identifierGroupVariants } = require('./tokenize.js')` (`mapper.ts:119`), a runtime CJS require of
+a `.js` sibling that only resolves against the built `dist/` — under vitest's `src` TS transform there is
+no `tokenize.js`, so it threw `Cannot find module './tokenize.js'`. The lazy require was a workaround for
+a **non-existent** cycle: `tokenize.ts` imports `Mapper` **type-only** (`import type`, erased at compile),
+so there is no runtime value cycle.
+
+**Fix:** converted to a static ESM `import { identifierGroupVariants } from './tokenize.js'` at the top of
+`mapper.ts` and removed the inline require. Gates: `nx build tokenguard-core` ✅, `nx lint` ✅,
+`nx test tokenguard-core` → **63/63** (was 62 + 1 failed). `registry:sync-index` → no drift (tokenguard's
+shipped artifact checksum unchanged). This was a pre-existing latent bug (unchanged vs `main`), fixed in
+passing per the zero-burying rule — it is NOT a Slice 1 regression.
 
 ## Open — embed fallback + store pollution (2026-06-23, surfaced by BL-48 observability)
 
@@ -108,7 +160,13 @@ the BL-46 `--log` sink), then either ship the worker with the served artifact + 
 or accept hash and stop advertising real. Verify via `memory_ping.embed_on_hash_fallback` after the fix.
 </details>
 
-### BL-54 — `memory_ping` reports `embed_on_hash_fallback:true` BEFORE the first embed (lazy-init false positive) — **Open (MEDIUM)**
+### BL-54 — `memory_ping` reports `embed_on_hash_fallback:true` BEFORE the first embed (lazy-init false positive) — **Open (MEDIUM) — NOT in service-lifecycle Slice 1 (memory-server embed concern, not lifecycle)**
+
+> **Considered for the service-lifecycle Slice 1 engagement and deferred:** BL-54 lives in the
+> `memory-server`/`embed.ts` lazy-warmup path, not in the supervisor/start/stop lifecycle this branch
+> touches. The clean fix (option b: an `embed_state: uninitialized|real|hash-fallback` field, or a
+> warm-on-ping) belongs with a memory-server change, not the host-runtime singleton work — folding it in
+> would mix concerns and re-checksum the memory-server artifact for no lifecycle benefit. Left open.
 
 Surfaced 2026-06-25 while reality-verifying BL-52 — and it is the artifact that triggered the entire
 BL-52 "still on hash" false alarm. `memory_ping` computes `embed_on_hash_fallback` from
@@ -194,9 +252,10 @@ for orphaned `~/.memory/*.db-wal|-shm` whose base `.db` is absent. Safe to purge
 
 ### BL-50 — detached service-mode daemons survive `sox stop`, accumulate into multiple writers, and have no OS reboot supervisor — **Re-scoped by `docs/spec/service-lifecycle.md` (HIGH) — reaper EXISTS; open work = cross-scope singleton + OS-unit persistence**
 
-> **Governed by [`docs/spec/service-lifecycle.md`](docs/spec/service-lifecycle.md) (v1.0.0).** That spec
-> is now the canonical framework; BL-50's remaining work is Slice 1 (cross-scope singleton + reconcile)
-> and Slice 2 (OS-supervisor surface) of its §14 roadmap.
+> **Governed by [`docs/spec/service-lifecycle.md`](docs/spec/service-lifecycle.md) (v1.1.0).** That spec
+> is now the canonical framework. **Slice 1 (cross-scope singleton + reconcile heal) is IMPLEMENTED**
+> on `feat/service-lifecycle-slice1`; the remaining open work is Slice 1.5 (front-shim, designed) and
+> Slice 2 (OS-supervisor surface, designed-not-built) of its §14 roadmap.
 
 **Correction (2026-06-25, verified state-side).** The earlier "orphan-process reaper still open" claim
 was **wrong** — it conflated "mem-fixes-2's diff added no reaper" with "no reaper exists." The
@@ -210,14 +269,25 @@ entrypoint argv token and SIGTERM→SIGKILL-verifies them; `sox stop` exits 1 on
 service's `lifecycle.health` socket (`resolveServiceHealthSocketPath`) and probes it
 (`probeUnixSocketLive`); a live instance ⇒ refuse second spawn + record RUNNING. 15 tests.
 
-**Genuinely open (per spec):**
-- (a) **Cross-scope singleton** — the guard keys on the socket path, but the real invariant is one
-  writer per **store** (`[def:singleton-key] = (id, db_path)`, spec §4.3). Two scopes that override
-  `sock_path` but share `db_path` still get two writers. Fix = spec Slice 1 (token scan + cross-scope
-  ownership check + reconcile pass that heals an existing pair).
-- (b) **OS reboot persistence + `[inv:unload-then-reap]`** — no launchd/systemd surface; the *only*
-  reaper gap is unload-the-unit-before-kill (else resurrection loop), which matters once Slice 2 lands.
-  Folded into BL-51. Fix = spec Slice 2 (`sox service enable|disable`).
+**Status of each half (per spec v1.1.0):**
+- (a) **Cross-scope singleton — ✅ CLOSED by Slice 1 (`feat/service-lifecycle-slice1`).** The guard no
+  longer keys on the socket alone; it resolves `[def:singleton-key] = (id, resolved-store-resource)`
+  (db_path → socket → host:port) and runs **socket probe + entrypoint-token scan + cross-scope
+  ownership/collision check** before spawning, plus a §5.3 reconcile heal that kills the loser of a live
+  duplicate pair (survivor = oldest-by-`ps -o lstart`; a single healthy daemon is never reaped). Two
+  scopes that override `sock_path` but share `db_path` now collapse to one writer. Delivered:
+  `libs/host-runtime/src/singleton.ts` (+ `singleton.spec.ts`, 32 cases) and the `cmdStart`
+  service-registry guard (`resolveStoreResourceForScope`/`collectCrossScopeResources`/
+  `entrypointTokenForService`) in `apps/sox/src/main.ts`. Gates (nx targets, built-before-test per BL-4):
+  host-runtime test 146/146, sox 30/30, `host-runtime:test-e2e` 99/0 (+6 Slice-1 Step 7c, stable ×3),
+  `affected -t build,lint,test` 20/20 green, `registry:sync-index` no drift.
+- (b) **OS reboot persistence + `[inv:unload-then-reap]`** — STILL OPEN. No launchd/systemd surface; the
+  *only* reaper gap is unload-the-unit-before-kill (else resurrection loop), which matters once Slice 2
+  lands. Folded into BL-51. Fix = spec Slice 2 (`sox service enable|disable`), **designed-not-built**
+  (touches the user's machine + depends on the node-path human-ack, spec Appendix B item 3).
+- (c) **Zero-downtime upgrades without forced MCP reconnects** — newly designed as **spec Slice 1.5 /
+  §9.5** (front-shim service-proxy / M3↔M4 bridge over Unix domain sockets; behavior changes need no
+  reconnect, only a tool-schema change does). Designed, not built.
 
 Surfaced while wiring memory-daemon auto-supervision (the "item 3" cleanup). Two faults:
 
@@ -243,7 +313,15 @@ reverted (unloaded/deleted) in favor of a proper sox feature — see BL-51. Enri
 currently covered by BL-47's in-process fallback (no daemon required), so "no daemon running" is a safe
 state. The two faults above (orphan reaper + start-time singleton guard) remain open.
 
-### BL-51 — `sox` needs a launch-agent / OS-supervisor control surface for `service`-type extensions — **Open (FEATURE)**
+### BL-51 — `sox` needs a launch-agent / OS-supervisor control surface for `service`-type extensions — **Open (FEATURE) — = spec Slice 2, DESIGNED (v1.1.0 §9), NOT BUILT**
+
+> **Governed by [`docs/spec/service-lifecycle.md`](docs/spec/service-lifecycle.md) §9 + Slice 2.** Fully
+> designed there (unit generation table, `[inv:unload-then-reap]`, `[inv:os-unit-content-addressed]`,
+> teardown hooks). **Not built** — it writes to `~/Library/LaunchAgents` / `~/.config/systemd/user` on
+> the user's machine and depends on the **stable-node-path human-ack** (spec Appendix B item 3:
+> recommended `fs.realpathSync(process.execPath)` with volatile-nvm/asdf/volta detection + warn + opt-in
+> override). Left for a follow-up engagement with the orchestrator; the BL-47 in-process fallback remains
+> the supported path until then.
 
 Persistence for service-type extensions (e.g. memory-daemon) should be a first-class sox capability, not
 a hand-rolled per-service plist. Proposed surface:
@@ -301,7 +379,13 @@ resolves 0 project roots from the install-registry in the sandboxed probe (likel
 
 ## Resolved — observability gap + daemon down (2026-06-23, fixed fix/memory-server-bl45-48 1a5f1ed)
 
-### BL-46 — production `serve` (stdio MCP) path captures NO logs — **Resolved**
+### BL-46 — production `serve` (stdio MCP) path captures NO logs — **Resolved (opt-in sink); framework follow-up in spec Slice 1.5/3**
+
+> **Spec follow-up (v1.1.0):** the opt-in `--log`/`SOX_SERVE_LOG=1` stderr sink resolved the immediate
+> gap. The service-lifecycle spec makes the durable stderr sink the **default for M4 units** (§9.2) and
+> adds a self-cleaning M3 **serve-record breadcrumb** under `run/serve/<extId>-<pid>.json` (Appendix B
+> item 1 decision) so the live served version is observable + enumerable by `sox list --serve`/`doctor`
+> without a runtime.json lie. Designed in Slice 1.5/3; not yet built.
 
 **Discovered while trying to diagnose BL-45 from server logs.** The logs do not reflect the running version.
 
