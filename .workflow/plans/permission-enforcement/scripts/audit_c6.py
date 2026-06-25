@@ -23,10 +23,28 @@ Checks that need a built artifact say so in their failure message.
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 import subprocess
 import sys
 import tempfile
+
+
+def _cleanup_memory_artifacts() -> None:
+    """Remove the db files this audit writes into the real ~/.memory store dir.
+
+    The [dod.1] positive check must write to an ALLOWED path (inside ~/.memory/**)
+    to prove a declared write SUCCEEDS — but it must not LEAVE that artifact behind.
+    Historically these accumulated (c6-allowed*.db{,-wal,-shm}) and bloated ~/.memory
+    to >0.5 GB. Glob-remove every c6-allowed artifact (any naming) plus the dedicated
+    audit subdir; never touches the canonical ~/.memory/memory.db.
+    """
+    mem = os.path.join(os.path.expanduser("~"), ".memory")
+    for p in glob.glob(os.path.join(mem, "c6-allowed*")):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
 
 
 def _run(cmd: str) -> tuple[int, str]:
@@ -570,7 +588,12 @@ def main() -> None:
         "final": phase_final,
     }[args.phase]
 
-    phase_fn()
+    try:
+        phase_fn()
+    finally:
+        # Never leave c6-allowed db artifacts in the real ~/.memory store dir,
+        # even if a check failed mid-run (prevents the >0.5 GB accumulation).
+        _cleanup_memory_artifacts()
 
     label = args.phase.upper()
     if failures:

@@ -5,9 +5,8 @@ dist/
 .extensions/extensions.local.json
 *.lock
 !pnpm-lock.yaml
-# sox-memory temp test dirs
-.tmp-mvp/
-.tmp-test/
+# sox-memory temp test dirs (any .tmp-* scratch dir — never belongs in git)
+.tmp-*/
 # nx machine-local state (never belongs in git)
 .nx/
 # macOS junk

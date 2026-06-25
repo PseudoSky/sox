@@ -7,6 +7,42 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ---
 
+## Mostly-resolved — test harnesses pollute the real `~/.memory` store dir + the repo root (2026-06-25)
+
+### BL-66 — C6/e2e test artifacts accumulated 1.5 GB in `~/.memory/`; 12 test DBs were committed to git under `.tmp-*/` — **Resolved (cleanup + 2 of 3 root causes); 1 root cause deferred**
+
+**Observed (2026-06-25):** `~/.memory/` held **843 test-artifact files / ~1.49 GB** of `*.db{,-wal,-shm}` triples
+beside the canonical `memory.db`: `c6-allowed*` (323 files, 579 MB), `sox-e2e-*` (514, 905 MB),
+`smoke-*`/`cli-demo*`/`test-verify*` (6, ~12 MB). Separately, **12 test DBs were tracked in git** under six
+`.tmp-*/.memory/project.db` dirs (committed via a past `git add -A` — the exact hazard CLAUDE.md bans), and
+`.gitignore` covered only `.tmp-mvp/`+`.tmp-test/` of the 8 `.tmp-*` dirs present. `~/.memory/registry.json`
+(federation registry) held a single stale entry pointing at a `.tmp-p2/.memory/project.db` test store.
+
+**Root cause:** the `db_path` permission allowlist is `~/.memory/**` (BL-15), so tests/audits that must prove a
+write to an *allowed* path write into the **real** store dir and never clean up. Culprits: (1) `audit_c6.py`
+([dod.1] positive write to `~/.memory/c6-allowed.db`), (2) `tools/test-e2e-lifecycle.js` (`sox-e2e-<pid>.db`),
+(3) `memory-server/src/permission-guard.spec.ts` (shared fixture names).
+
+**Fix (shipped 2026-06-25):**
+- **Swept** `~/.memory/`: removed all 843 artifacts (1.5 GB → 41 MB); canonical `memory.db` untouched
+  (`PRAGMA integrity_check` = ok, 2909 nodes, parity with the verified backup). Manifest of removed files at
+  `~/.memory/backups/swept-manifest-*.txt`. A verified backup exists at
+  `~/.memory/backups/memory-20260625-151943.db` (sha256 `7f213ec8…6c399e`).
+- **Reset** stale `~/.memory/registry.json` (pointed at a `.tmp-p2` test store) to `{}` (old saved to
+  `backups/registry.json.bak-*`).
+- **Untracked + deleted** the 12 committed `.tmp-*/.memory/*.db` files (`git rm --cached`) + removed all 8
+  `.tmp-*` dirs from disk (60 MB); **broadened `.gitignore`** `.tmp-mvp/`+`.tmp-test/` → `.tmp-*/` (verified a
+  fresh `.tmp-probe` is now ignored).
+- **Root cause (1):** `audit_c6.py` now has `_cleanup_memory_artifacts()` (glob-removes `~/.memory/c6-allowed*`)
+  called in a `finally` around the phase run, so it can never re-accumulate even on a failing check.
+
+**Deferred (1 root cause):** `tools/test-e2e-lifecycle.js` + `memory-server/src/permission-guard.spec.ts` still
+write `sox-e2e-<pid>.db` / fixtures into `~/.memory` without teardown. **Not fixed in this pass to avoid a
+write-collision** — the `svc-proxy-fix` platform-engineer agent is concurrently editing `tools/test-e2e-lifecycle.js`
+(its Step 7d / Section SPM / BL-59 e2e assertions). Fix after that agent merges: route test dbs to a sweepable
+`~/.memory/.e2e-tmp/` subdir (still inside the `~/.memory/**` allowlist) + `rm -rf` it in teardown, OR add a global
+afterAll cleanup. Track here until done.
+
 ## Open — INCIDENT: the dev checkout's `dist` IS the live MCP source (2026-06-25)
 
 ### BL-65 — building unverified WIP into the dev-repo `dist` breaks the LIVE memory-server for all sessions — **Open (HIGH)**
