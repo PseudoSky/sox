@@ -128,10 +128,12 @@ function cleanup() {
     fs.rmSync(TMP_DIR, { recursive: true, force: true });
   } catch { /* ignore */ }
 
-  // Remove the allowed DB we wrote into ~/.memory (pid-scoped; no other test entry polluted)
-  try {
-    if (fs.existsSync(DB_PATH)) fs.rmSync(DB_PATH, { force: true });
-  } catch { /* ignore */ }
+  // BL-53: Remove the allowed DB AND its SQLite WAL/SHM sidecars from ~/.memory.
+  // Sidecars linger when the process is SIGKILLed before the connection closes,
+  // producing orphaned *.db-wal / *.db-shm whose base .db is absent.
+  for (const suffix of ['', '-wal', '-shm']) {
+    try { fs.rmSync(DB_PATH + suffix, { force: true }); } catch { /* ignore */ }
+  }
 
   // Remove the evil DB if it somehow got created (should not exist — denial means no file)
   try {
@@ -1376,7 +1378,10 @@ async function main() {
         try { process.kill(eDaemonPid, 'SIGKILL'); } catch { /* ignore */ }
       }
       try { fs.rmSync(eScopeRoot, { recursive: true, force: true }); } catch { /* ignore */ }
-      try { if (fs.existsSync(eDbPath)) fs.rmSync(eDbPath, { force: true }); } catch { /* ignore */ }
+      // BL-53: remove the db AND its SQLite WAL/SHM sidecars
+      for (const suffix of ['', '-wal', '-shm']) {
+        try { fs.rmSync(eDbPath + suffix, { force: true }); } catch { /* ignore */ }
+      }
       try { if (fs.existsSync(eSockPath)) fs.rmSync(eSockPath, { force: true }); } catch { /* ignore */ }
     }
     process.on('exit', cleanupSectionE);

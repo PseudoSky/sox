@@ -445,3 +445,99 @@ describe('[process-boundary.5] carried-forward supervisor behaviors ([def:sessio
     expect(env['SOX_PERM_ENFORCE']).toBeUndefined();
   });
 });
+
+// ─── [BL-52] SOX_EMBED_* forwarded through enforced env scrub ─────────────────
+//
+// The enforced env allowlist previously stripped SOX_EMBED_BACKEND and
+// SOX_EMBED_CACHE_DIR, leaving the served/spawned server's embed() resolveConfig()
+// reading undefined → backend='auto' → worker fails → hash fallback (BL-52).
+// These tests assert the vars pass through the scrub.
+
+describe('[BL-52] SOX_EMBED_* forwarded through enforced env scrub', () => {
+  const EMBED_SENTINEL = 'SOX_EMBED_BACKEND';
+  const CACHE_SENTINEL = 'SOX_EMBED_CACHE_DIR';
+  const XDG_SENTINEL = 'XDG_CACHE_HOME';
+
+  const savedEmbed = process.env[EMBED_SENTINEL];
+  const savedCache = process.env[CACHE_SENTINEL];
+  const savedXdg = process.env[XDG_SENTINEL];
+
+  beforeEach(() => {
+    process.env[EMBED_SENTINEL] = 'real';
+    process.env[CACHE_SENTINEL] = '/tmp/sox-test-models';
+    process.env[XDG_SENTINEL] = '/tmp/sox-xdg-cache';
+  });
+
+  afterEach(() => {
+    if (savedEmbed === undefined) delete process.env[EMBED_SENTINEL];
+    else process.env[EMBED_SENTINEL] = savedEmbed;
+    if (savedCache === undefined) delete process.env[CACHE_SENTINEL];
+    else process.env[CACHE_SENTINEL] = savedCache;
+    if (savedXdg === undefined) delete process.env[XDG_SENTINEL];
+    else process.env[XDG_SENTINEL] = savedXdg;
+  });
+
+  it('SOX_EMBED_BACKEND is forwarded through the enforced env scrub', async () => {
+    const sup = makeEnforcedSupervisor();
+    await sup.start();
+
+    const env = spawnCalls[0]!.opts.env as Record<string, string>;
+    expect(env['SOX_EMBED_BACKEND']).toBe('real');
+  });
+
+  it('SOX_EMBED_CACHE_DIR is forwarded through the enforced env scrub', async () => {
+    const sup = makeEnforcedSupervisor();
+    await sup.start();
+
+    const env = spawnCalls[0]!.opts.env as Record<string, string>;
+    expect(env['SOX_EMBED_CACHE_DIR']).toBe('/tmp/sox-test-models');
+  });
+
+  it('XDG_CACHE_HOME is forwarded through the enforced env scrub', async () => {
+    const sup = makeEnforcedSupervisor();
+    await sup.start();
+
+    const env = spawnCalls[0]!.opts.env as Record<string, string>;
+    expect(env['XDG_CACHE_HOME']).toBe('/tmp/sox-xdg-cache');
+  });
+
+  it('SOX_EMBED_* absent → not injected (undefined from scrub, not "" empty string)', async () => {
+    delete process.env[EMBED_SENTINEL];
+    delete process.env[CACHE_SENTINEL];
+
+    const sup = makeEnforcedSupervisor();
+    await sup.start();
+
+    const env = spawnCalls[0]!.opts.env as Record<string, string>;
+    // Must be absent (undefined), not an injected empty string
+    expect(env[EMBED_SENTINEL]).toBeUndefined();
+    expect(env[CACHE_SENTINEL]).toBeUndefined();
+  });
+
+  it('SOX_EMBED_BACKEND=hash is forwarded (explicit hash is a valid, non-degraded choice)', async () => {
+    process.env[EMBED_SENTINEL] = 'hash';
+
+    const sup = makeEnforcedSupervisor();
+    await sup.start();
+
+    const env = spawnCalls[0]!.opts.env as Record<string, string>;
+    expect(env['SOX_EMBED_BACKEND']).toBe('hash');
+  });
+
+  it('unrelated secrets are still scrubbed even when SOX_EMBED_* is set', async () => {
+    const secret = 'MY_SECRET_TOKEN_' + Date.now().toString(36);
+    process.env[secret] = 'should-not-appear';
+
+    try {
+      const sup = makeEnforcedSupervisor();
+      await sup.start();
+
+      const env = spawnCalls[0]!.opts.env as Record<string, string>;
+      expect(env[secret]).toBeUndefined();
+      // But embed vars are still there
+      expect(env['SOX_EMBED_BACKEND']).toBe('real');
+    } finally {
+      delete process.env[secret];
+    }
+  });
+});

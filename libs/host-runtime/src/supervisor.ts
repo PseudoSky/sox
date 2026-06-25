@@ -264,6 +264,8 @@ export class ProcessSupervisor {
       // and shell fundamentals (PATH, HOME, USER, LOGNAME).
       // Footgun note: scrubbing NODE_OPTIONS breaks native add-ons (e.g.
       // better-sqlite3 native loader); we keep all NODE_* vars to avoid that.
+      // BL-52: SOX_EMBED_* and XDG_CACHE_HOME are forwarded so the embed backend
+      // resolves to real BGE (ONNX) instead of silently falling back to hash.
       const allowedKeys = new Set([
         'PATH',
         'HOME',
@@ -273,10 +275,13 @@ export class ProcessSupervisor {
         'LC_ALL',
         'LC_CTYPE',
         'TZ',
+        'SOX_EMBED_BACKEND',
+        'SOX_EMBED_CACHE_DIR',
+        'XDG_CACHE_HOME',
       ]);
       const baseEnv: Record<string, string> = {};
       for (const [k, v] of Object.entries(process.env)) {
-        if (v !== undefined && (allowedKeys.has(k) || k.startsWith('NODE_'))) {
+        if (v !== undefined && (allowedKeys.has(k) || k.startsWith('NODE_') || k.startsWith('SOX_EMBED_'))) {
           baseEnv[k] = v;
         }
       }
