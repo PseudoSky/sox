@@ -166,6 +166,59 @@ describe('resolveProjectPath', () => {
   });
 });
 
+// ── resolveProjectPath — BL-56 (injected root, non-repo null, precedence) ──────
+
+describe('resolveProjectPath — BL-56', () => {
+  let savedEnv: string | undefined;
+  let savedCwd: string;
+
+  beforeEach(() => {
+    savedEnv = process.env['SOX_CONFIG_PROJECT_PATH'];
+    savedCwd = process.cwd();
+  });
+  afterEach(() => {
+    if (savedEnv === undefined) delete process.env['SOX_CONFIG_PROJECT_PATH'];
+    else process.env['SOX_CONFIG_PROJECT_PATH'] = savedEnv;
+    process.chdir(savedCwd);
+  });
+
+  it('uses SOX_CONFIG_PROJECT_PATH (host/config-injected root) when no override is given', () => {
+    process.env['SOX_CONFIG_PROJECT_PATH'] = '/injected/workspace/root';
+    expect(resolveProjectPath()).toBe('/injected/workspace/root');
+  });
+
+  it('explicit override outranks SOX_CONFIG_PROJECT_PATH', () => {
+    process.env['SOX_CONFIG_PROJECT_PATH'] = '/injected/workspace/root';
+    expect(resolveProjectPath('/caller/explicit')).toBe('/caller/explicit');
+  });
+
+  it('treats a blank SOX_CONFIG_PROJECT_PATH as authoritative "no project" → null (no cwd fallback)', () => {
+    // cmdServe sets it to '' when the client launch dir is not a git repo; this must
+    // NOT fall through to cwd detection (the served cwd is the extension install dir).
+    process.env['SOX_CONFIG_PROJECT_PATH'] = '';
+    expect(resolveProjectPath()).toBeNull();
+  });
+
+  it('a defined non-empty SOX_CONFIG_PROJECT_PATH wins even when cwd is a git repo', () => {
+    // running here cwd IS a git repo (sox-ecosystem); the injected value must still win
+    process.env['SOX_CONFIG_PROJECT_PATH'] = '/some/other/workspace';
+    expect(resolveProjectPath()).toBe('/some/other/workspace');
+  });
+
+  it('returns null (not the bare cwd) when cwd is not a git repo', () => {
+    delete process.env['SOX_CONFIG_PROJECT_PATH'];
+    const nonRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-bl56-nonrepo-'));
+    try {
+      process.chdir(nonRepo);
+      // a non-repo cwd is not a project — null beats mis-attributing every write to it
+      expect(resolveProjectPath()).toBeNull();
+    } finally {
+      process.chdir(savedCwd);
+      fs.rmSync(nonRepo, { recursive: true, force: true });
+    }
+  });
+});
+
 // ── extractiveSummary ─────────────────────────────────────────────────────────
 
 describe('extractiveSummary', () => {
