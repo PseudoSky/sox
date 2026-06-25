@@ -102,9 +102,14 @@ const ALLOWED_DIR = path.dirname(ALLOWED_DB);
 // ── Suite ─────────────────────────────────────────────────────────────────────
 
 describe('permission-guard — mcp-path-guard enforcement', () => {
-  // Clean up allowed DB after tests to leave no test artefacts
+  // BL-53: clean up allowed DB AND its SQLite WAL/SHM sidecars after each test.
+  // The sidecars are created by SQLite in WAL mode; they linger when the process
+  // is killed before the connection is closed, polluting ~/.memory with orphaned
+  // *.db-wal / *.db-shm files whose base .db is absent.
   afterEach(() => {
-    try { fs.rmSync(ALLOWED_DB, { force: true }); } catch { /* ignore */ }
+    for (const suffix of ['', '-wal', '-shm']) {
+      try { fs.rmSync(ALLOWED_DB + suffix, { force: true }); } catch { /* ignore */ }
+    }
     // Do NOT remove ALLOWED_DIR (~/.memory/) — it is the user's own dir
   });
 

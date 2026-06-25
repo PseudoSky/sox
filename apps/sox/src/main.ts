@@ -3051,6 +3051,35 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
       for (const svc of entries) {
         const svcConfigEnv = buildExtConfigEnv(svc.id, root);
 
+        // BL-50: singleton guard — refuse to spawn a second instance when one is
+        // already live on the service health socket.
+        //
+        // Resolves the declared health socket path from the manifest and checks it
+        // with a raw connection probe. If live: report the existing instance and skip
+        // spawning. This prevents the "two memory-daemons on the same db" scenario.
+        const healthSockPath = resolveServiceHealthSocketPath(svc.storePath, svcConfigEnv);
+        if (healthSockPath) {
+          const alreadyLive = await probeUnixSocketLive(healthSockPath, 500);
+          if (alreadyLive) {
+            process.stdout.write(
+              `sox: ${svc.id} health socket is already live at ${healthSockPath} — skipping spawn (singleton guard BL-50)\n`,
+            );
+            // Record it as running so sox list reflects the live instance.
+            const source = `file://${svc.storePath}`;
+            runtimeEntries.push({
+              key: svc.id,
+              id: svc.id,
+              type: 'mcp-server',
+              scope,
+              source,
+              pid: null, // pid unknown for pre-existing detached process
+              running: true,
+              activatedAt: now,
+            });
+            continue;
+          }
+        }
+
         // Spawn detached: parent exits, child keeps running independently.
         const child = spawnChild(svc.command, svc.args, {
           detached: true,
@@ -3495,6 +3524,78 @@ interface HealthRecord {
   totalUptimeMs: number;
   /** Derived: 'healthy' | 'degraded' | 'dead' */
   status: 'healthy' | 'degraded' | 'dead';
+}
+
+/**
+ * BL-50: Probe a Unix domain socket for raw TCP-level reachability (connection-only,
+ * no application protocol). Used to test if a service health socket is already live
+ * before spawning a second instance.
+ *
+ * Returns true iff a connection can be established within `timeoutMs`.
+ * Does NOT send or read any data — pure connection test.
+ */
+async function probeUnixSocketLive(socketPath: string, timeoutMs = 1000): Promise<boolean> {
+  const net = require('node:net') as typeof import('node:net');
+  return new Promise<boolean>((resolve) => {
+    const sock = net.createConnection({ path: socketPath });
+    let settled = false;
+    const done = (v: boolean): void => {
+      if (settled) return;
+      settled = true;
+      try { sock.destroy(); } catch { /* ignore */ }
+      resolve(v);
+    };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    if (timer.unref) timer.unref();
+    sock.once('connect', () => { clearTimeout(timer); done(true); });
+    sock.once('error', () => { clearTimeout(timer); done(false); });
+  });
+}
+
+/**
+ * BL-50: Resolve the health socket path for a service from its manifest lifecycle block.
+ * Expands tilde and substitutes ${SOX_CONFIG_*} placeholders using the given config env.
+ * Returns null if no socket health check is declared.
+ */
+function resolveServiceHealthSocketPath(
+  storePath: string,
+  configEnv: Record<string, string>,
+): string | null {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+  const osMod = require('node:os') as typeof import('node:os');
+
+  const manifestPath = pathMod.join(storePath, 'extension.json');
+  if (!fsMod.existsSync(manifestPath)) return null;
+
+  let manifest: {
+    lifecycle?: {
+      health?: { type?: string; endpoint?: string };
+    };
+  };
+  try {
+    manifest = JSON.parse(fsMod.readFileSync(manifestPath, 'utf8')) as typeof manifest;
+  } catch {
+    return null;
+  }
+
+  const health = manifest.lifecycle?.health;
+  if (health?.type !== 'socket' || !health.endpoint) return null;
+
+  // Substitute ${SOX_CONFIG_*} placeholders with resolved config values.
+  let endpoint = health.endpoint;
+  endpoint = endpoint.replace(/\$\{([A-Z0-9_]+)\}/g, (_m: string, varName: string) => {
+    return configEnv[varName] ?? process.env[varName] ?? _m;
+  });
+
+  // Expand leading tilde.
+  if (endpoint.startsWith('~/')) {
+    endpoint = pathMod.join(osMod.homedir(), endpoint.slice(2));
+  } else if (endpoint === '~') {
+    endpoint = osMod.homedir();
+  }
+
+  return endpoint;
 }
 
 /**
@@ -4429,10 +4530,17 @@ Flags:
   const policy2 = compilePolicy(manifest2.permissions);
   let serveEnv: NodeJS.ProcessEnv;
   if (policy2.enforced) {
-    const allowedKeys2 = new Set(['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ']);
+    // BL-52: forward SOX_EMBED_* and XDG_CACHE_HOME so the embed backend resolves
+    // to real BGE (ONNX) instead of silently falling back to hash embedding when the
+    // served process inherits a scrubbed env. Also forward SOX_SERVE_LOG so the
+    // child's own diagnostics path is consistent if a sub-server is spawned.
+    const allowedKeys2 = new Set([
+      'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+      'SOX_EMBED_BACKEND', 'SOX_EMBED_CACHE_DIR', 'XDG_CACHE_HOME',
+    ]);
     const baseEnv2: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
-      if (v !== undefined && (allowedKeys2.has(k) || k.startsWith('NODE_'))) {
+      if (v !== undefined && (allowedKeys2.has(k) || k.startsWith('NODE_') || k.startsWith('SOX_EMBED_'))) {
         baseEnv2[k] = v;
       }
     }
@@ -4874,10 +4982,15 @@ Examples:
 
   let execEnv: NodeJS.ProcessEnv;
   if (policy.enforced) {
-    const allowedKeys = new Set(['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ']);
+    // BL-52: forward SOX_EMBED_* and XDG_CACHE_HOME so the embed backend resolves
+    // to real BGE (ONNX) instead of silently falling back to hash embedding.
+    const allowedKeys = new Set([
+      'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+      'SOX_EMBED_BACKEND', 'SOX_EMBED_CACHE_DIR', 'XDG_CACHE_HOME',
+    ]);
     const baseEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
-      if (v !== undefined && (allowedKeys.has(k) || k.startsWith('NODE_'))) {
+      if (v !== undefined && (allowedKeys.has(k) || k.startsWith('NODE_') || k.startsWith('SOX_EMBED_'))) {
         baseEnv[k] = v;
       }
     }

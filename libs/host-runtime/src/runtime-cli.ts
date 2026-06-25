@@ -540,6 +540,8 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
   let execEnv: NodeJS.ProcessEnv;
   if (policy.enforced) {
     // Scrub child env to the same minimal allowlist as supervisor._spawn enforced path.
+    // BL-52: SOX_EMBED_* and XDG_CACHE_HOME are forwarded so the embed backend
+    // resolves to real BGE (ONNX) instead of silently falling back to hash.
     const allowedKeys = new Set([
       'PATH',
       'HOME',
@@ -549,10 +551,13 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
       'LC_ALL',
       'LC_CTYPE',
       'TZ',
+      'SOX_EMBED_BACKEND',
+      'SOX_EMBED_CACHE_DIR',
+      'XDG_CACHE_HOME',
     ]);
     const baseEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
-      if (v !== undefined && (allowedKeys.has(k) || k.startsWith('NODE_'))) {
+      if (v !== undefined && (allowedKeys.has(k) || k.startsWith('NODE_') || k.startsWith('SOX_EMBED_'))) {
         baseEnv[k] = v;
       }
     }

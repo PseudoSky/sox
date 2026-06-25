@@ -13,6 +13,127 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 > phases (P1–P6), not as loose items. The metadata-drop half of BL-23 is already fixed (`9728f6f`).
 > **BL-21 (auto-export) and BL-22 (entity names) resolved by P5 (2026-06-22).**
 
+## Open — embed fallback + store pollution (2026-06-23, surfaced by BL-48 observability)
+
+### BL-52 — live memory-server runs on HASH embeddings (`embed_on_hash_fallback:true`) despite real BGE being available — **Resolved (code; live-verify pending upgrade --all + reconnect)**
+
+**Fix (fix/memory-bl50-52-53):** the enforced policy env-scrub now forwards `SOX_EMBED_BACKEND`,
+`SOX_EMBED_CACHE_DIR`, `XDG_CACHE_HOME` (and any `SOX_EMBED_*`) across **all four** enforced spawn
+paths — `apps/sox` `serve` + `exec`, `runtime-cli` exec, and `supervisor._spawn` — so the served
+server inherits the real-BGE backend selector + model-cache pointer instead of resolving to `auto`
+and silently falling back to FNV-hash. Covered by 6 new `supervisor-policy.spec.ts` tests (forwarded
+when set; absent when unset → not injected as `""`; explicit `hash` preserved; unrelated secrets still
+scrubbed). This fixes root-cause hypothesis (a) env-scrub stripping the selector/cache pointer; if a
+post-`upgrade --all` `memory_ping` still reports `embed_on_hash_fallback:true`, the residual cause is
+(b) worker-spawn from the served location (embedWorker.js sibling resolution / onnxruntime-node) and
+reopens here. **Live proof required:** after `sox upgrade --all` + client reconnect, confirm
+`memory_ping.embed_on_hash_fallback:false` / `embed_model:"bge-base-en-v1.5"`.
+
+<details><summary>original report</summary>
+
+The BL-48 observability fields (now in `memory_ping`) reveal the production server is on the **hash**
+backend: `{"embed_model":"nomic-embed-text-v1.5-hash","embed_backend_configured":"auto","embed_on_hash_fallback":true}`.
+Yet the real BGE/ONNX backend works on this machine (a standalone `SOX_EMBED_BACKEND=real` probe embedded
+7 texts in ~2.1s using the 635 MB cached model). So the server is **silently degraded** — semantic recall
+over `~/.memory/memory.db` is running on FNV-hash projections, not real embeddings (this is almost certainly
+what the other agent half-saw and misattributed to "provider offline"). Consequence: weaker semantic recall;
+and any episodes WRITTEN by the live server are hash-embedded, so they won't sit in the same vector space as
+real-embedded ones (mixed-space store).
+
+Root-cause hypotheses (unverified): the `soxe serve` policy env-scrub (allowlist PATH/HOME/USER/… + NODE_*)
+does not forward `SOX_EMBED_BACKEND`/`SOX_EMBED_CACHE_DIR`, so backend stays `auto`; `auto` then tries the
+worker_thread ONNX path and falls back to hash when the worker can't spawn from the installed/served location
+(embedWorker.js sibling resolution, or onnxruntime-node unavailable in the served context). Needs: confirm
+which (instrument the worker-spawn failure path — its warning currently goes only to stderr, now captured via
+the BL-46 `--log` sink), then either ship the worker with the served artifact + pin `SOX_EMBED_BACKEND=real`,
+or accept hash and stop advertising real. Verify via `memory_ping.embed_on_hash_fallback` after the fix.
+</details>
+
+### BL-53 — `~/.memory` polluted with 842 orphaned WAL/SHM test sidecars; tests write to the real store dir — **Resolved**
+
+**Fix (fix/memory-bl50-52-53):** (1) the two test paths that wrote per-pid dbs into the **real**
+`~/.memory` now tear down the WAL/SHM sidecars alongside the base `.db` (`permission-guard.spec.ts`
+afterEach + `test-e2e-lifecycle.js` cleanup, both iterating `['', '-wal', '-shm']`); (2) added a
+one-shot safe reaper `tools/reap-memory-sidecars.cjs` — dry-run by default, `--execute` to delete,
+removes only `*.db-wal`/`*.db-shm` whose base `.db` is absent, and **never** touches the canonical
+`memory.db` (PROTECTED_BASES guard). Run `node tools/reap-memory-sidecars.cjs` (then `--execute`) to
+purge the existing 842 orphans while the daemon is down.
+
+<details><summary>original report</summary>
+
+`~/.memory` holds **848 entries**: 421 `.db-wal` + 421 `.db-shm` (842 orphaned sidecars, base `.db` gone —
+160 are `c6-allowed-<pid>.db-wal` from C6 permission e2e, plus `smoke-*`, `test-verify`, `sox-e2e-*`), only
+**4 real `.db`** (`memory.db` canonical + 3 test artifacts), 1 `registry.json`, 1 `memory.db.bak`. Faults:
+(1) tests create per-pid dbs under the **real** `~/.memory` dir instead of an isolated tmpdir, and leak the
+WAL/SHM sidecars when the process is killed (no cleanup); (2) this miscounts as "848 per-scope stores" and
+spooks tooling/agents into thinking there's a store-routing ambiguity (there is not — the only real store is
+`~/.memory/memory.db`). Fix: point C6/e2e db fixtures at `os.tmpdir()` with teardown; add a one-shot reaper
+for orphaned `~/.memory/*.db-wal|-shm` whose base `.db` is absent. Safe to purge the orphaned sidecars now
+(never touch `memory.db`/`memory.db-wal`/`memory.db-shm` while the server/daemon is live).
+</details>
+
+## Open — service supervision gaps (2026-06-23)
+
+### BL-50 — detached service-mode daemons survive `sox stop`, accumulate into multiple writers, and have no OS reboot supervisor — **Partially Resolved (HIGH) — singleton guard landed; orphan reaper + reboot persistence remain**
+
+**Fix so far (fix/memory-bl50-52-53):** fault-1's **start-time singleton guard** is implemented —
+`cmdStart` resolves the service's declared `lifecycle.health` socket from its manifest
+(`resolveServiceHealthSocketPath`, with `${SOX_CONFIG_*}`/tilde expansion) and probes it
+(`probeUnixSocketLive`, connection-only); if a live instance answers, it **refuses to spawn a second**
+and records the existing one as RUNNING (no sox-list/launchd split-brain). 15 new
+`bl50-singleton-guard.spec.ts` tests cover both helpers. **Still open:** (a) the **orphan-process
+reaper** — `sox stop` still cannot reap an already-detached daemon whose supervisor is gone (find +
+SIGTERM by entrypoint/marker, cf. BL-31); (b) **reboot persistence** (fault 2), folded into BL-51.
+The singleton guard closes the *new*-two-writer hole; the *pre-existing*-orphan hole needs the reaper.
+
+Surfaced while wiring memory-daemon auto-supervision (the "item 3" cleanup). Two faults:
+
+1. **Orphaned detached daemons are unreapable + accumulate.** `sox start memory-daemon` runs the daemon
+   in *service mode* (detached, PPID→1, no live supervisor). When the supervisor process is gone,
+   `node bin/soxe stop` reports `supervisor (pid=…) already gone / stop complete` but **leaves the
+   daemon running** — `sox stop` only reaps processes a live supervisor tracks. Observed **two**
+   memory-daemon processes alive simultaneously (one started this session via `sox start`, one of
+   unknown prior origin) = **two writers on `~/.memory/memory.db`**, violating the singleton invariant
+   (design §2.4 R6: "host holds the per-(id,scope) singleton"). Need: a reaper that finds + SIGTERMs
+   orphaned detached service processes by entrypoint/marker (cf. the BL-31 verified-stop work for the
+   supervisor path), and a guard so `sox start` refuses to spawn a second instance when one is already
+   live on the socket.
+2. **No reboot persistence.** There is no launchd/OS supervisor registered on service install, so a
+   service does not survive logout/reboot. `sox install` of a `service`-type extension should register
+   an OS supervisor (macOS LaunchAgent), and `sox`'s runtime tracking should stay consistent with it
+   (avoid sox-list/launchd split-brain). BL-47's in-process fallback covers enrichment *correctness*
+   when the daemon is down, so this is robustness, not correctness.
+
+**Update (2026-06-23):** the two-writer state is resolved — both orphaned daemons (PPID 1; one 14 min,
+one 8.5 hr) were SIGTERM'd, socket removed, zero daemons now. A hand-rolled LaunchAgent was trialed then
+reverted (unloaded/deleted) in favor of a proper sox feature — see BL-51. Enrichment correctness is
+currently covered by BL-47's in-process fallback (no daemon required), so "no daemon running" is a safe
+state. The two faults above (orphan reaper + start-time singleton guard) remain open.
+
+### BL-51 — `sox` needs a launch-agent / OS-supervisor control surface for `service`-type extensions — **Open (FEATURE)**
+
+Persistence for service-type extensions (e.g. memory-daemon) should be a first-class sox capability, not
+a hand-rolled per-service plist. Proposed surface:
+
+- **`sox service enable|disable <ext> [-s <scope>]`** — register/unregister an OS supervisor for the
+  service: macOS LaunchAgent (`~/Library/LaunchAgents/com.sox.<ext>.plist`), Linux systemd user unit
+  (`~/.config/systemd/user/sox-<ext>.service`). `enable` writes the unit (RunAtLoad/KeepAlive +
+  throttle + durable logs under `~/.sox/logs/`), loads it, and records it in sox's runtime tracking so
+  `sox list` reflects launchd/systemd-supervised services (no split-brain). `disable` unloads + removes.
+- **Generated from the manifest** — derive `ProgramArguments`, `--db-path`/config env (the same
+  `SOX_CONFIG_*` injection `sox serve` does), `KeepAlive`, and `ThrottleInterval` from the extension's
+  `lifecycle` block; resolve a stable node path (not a volatile nvm path) or pin via `EnvironmentVariables`.
+- **Idempotent + content-addressed** — re-`enable` after an `upgrade` rewrites the unit if the resolved
+  entrypoint/args changed; never leaves a stale unit pointing at an old artifact.
+- **Reaper integration (BL-50 fault 1)** — `sox stop`/`disable` must also reap an OS-supervised instance
+  (unload the unit) so a service can't survive teardown, and `enable`/start must refuse a second instance
+  when one is already live on the health socket.
+- **Cross-platform + uninstall hook** — `sox uninstall` of a service tears down its OS unit; `sox doctor`
+  surfaces orphaned/duplicate supervised instances.
+
+This subsumes the "item 3" persistence work and the reboot-persistence half of BL-50. Until shipped,
+the BL-47 in-process fallback is the supported path and no daemon need run.
+
 ## Resolved — pre-existing e2e failure surfaced during BL-45..48 verification (2026-06-23, fixed fix/memory-server-bl45-48)
 
 ### BL-49 — `#16728` auto-merge e2e fails: `syncResults.length === 0` (expected 2 project roots) — **Resolved**
