@@ -345,6 +345,24 @@ a hand-rolled per-service plist. Proposed surface:
 This subsumes the "item 3" persistence work and the reboot-persistence half of BL-50. Until shipped,
 the BL-47 in-process fallback is the supported path and no daemon need run.
 
+### BL-58 — `tokenguard-core/src/mapper.ts` uses a lazy `require('./tokenize.js')` that breaks under vitest (`Cannot find module`) — **Resolved (`feat/service-lifecycle-slice1`)**
+
+**Surfaced** while running `nx affected -t build,lint,test` for the service-lifecycle Slice 1 work
+(tokenguard-core was marked affected only because the repo root `nx.json`/`package.json` are dirty from
+prior uncommitted changes — Slice 1 does NOT touch tokenguard-core; `git diff main -- libs/tokenguard-core/`
+was empty). `nx test tokenguard-core` failed 1/63: `Mapper.seed` did
+`const { identifierGroupVariants } = require('./tokenize.js')` (`mapper.ts:119`), a runtime CJS require of
+a `.js` sibling that only resolves against the built `dist/` — under vitest's `src` TS transform there is
+no `tokenize.js`, so it threw `Cannot find module './tokenize.js'`. The lazy require was a workaround for
+a **non-existent** cycle: `tokenize.ts` imports `Mapper` **type-only** (`import type`, erased at compile),
+so there is no runtime value cycle.
+
+**Fix:** converted to a static ESM `import { identifierGroupVariants } from './tokenize.js'` at the top of
+`mapper.ts` and removed the inline require. Gates: `nx build tokenguard-core` ✅, `nx lint` ✅,
+`nx test tokenguard-core` → **63/63** (was 62 + 1 failed). `registry:sync-index` → no drift (tokenguard's
+shipped artifact checksum unchanged). Pre-existing latent bug (unchanged vs `main`), fixed in passing per
+the zero-burying rule — NOT a Slice 1 regression.
+
 ## Resolved — pre-existing e2e failure surfaced during BL-45..48 verification (2026-06-23, fixed fix/memory-server-bl45-48)
 
 ### BL-49 — `#16728` auto-merge e2e fails: `syncResults.length === 0` (expected 2 project roots) — **Resolved**

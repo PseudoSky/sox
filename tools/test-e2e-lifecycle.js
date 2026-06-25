@@ -887,6 +887,118 @@ async function main() {
 
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // Step 7c: SLICE 1 (docs/spec/service-lifecycle.md) — CROSS-SCOPE SINGLETON.
+  //
+  // The genuinely-open half of BL-50 (F1/F7): two scopes that resolve the SAME
+  // backing store (db_path) but DIFFERENT sockets must NOT produce two writers.
+  // The pre-Slice-1 socket-only guard missed this — a project scope overriding
+  // sock_path but sharing db_path slipped past and spawned a second daemon.
+  //
+  // Proof: configure user + project to share db_path, differ on sock_path; spawn
+  // a live "scope A" daemon on the memory-daemon entrypoint token; then run the
+  // service-registry start for "scope B" and assert it does NOT spawn a second
+  // process (it records the existing one RUNNING via the §5.2 entrypoint scan /
+  // cross-scope check) and the live daemon SURVIVES (no healthy-daemon reap).
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\nStep 7c: Slice 1 — cross-scope singleton (one writer per store)');
+
+  const DAEMON_ENTRY = path.join(
+    ROOT, 'extensions', 'bundles', 'sox-memory-bundle', 'members',
+    'memory-daemon', 'dist', 'index.js',
+  );
+  if (!fs.existsSync(DAEMON_ENTRY)) {
+    assert(false, `Slice1: memory-daemon dist exists at ${DAEMON_ENTRY} (run nx build memory-daemon)`);
+  } else {
+    // A project root with a service registry.json describing memory-daemon.
+    const SLICE1_ROOT = path.join(TMP_DIR, 'slice1-proj');
+    const SLICE1_DATA = path.join(SLICE1_ROOT, '.adhd', 'sox-ecosystem');
+    const SLICE1_STORE = path.join(SLICE1_DATA, 'ext', 'memory-daemon');
+    fs.mkdirSync(SLICE1_STORE, { recursive: true });
+    // Materialize a manifest in the store so the singleton guard can read the
+    // lifecycle + config_schema (db_path is the store-resource anchor).
+    fs.copyFileSync(
+      path.join(path.dirname(DAEMON_ENTRY), '..', 'extension.json'),
+      path.join(SLICE1_STORE, 'extension.json'),
+    );
+
+    const SHARED_DB = path.join(os.homedir(), '.memory', `sox-e2e-slice1-${process.pid}.db`);
+    const PROJECT_SOCK = path.join(TMP_DIR, `slice1-project-${process.pid}.sock`);
+
+    // project-scope config: shares db_path, overrides sock_path.
+    fs.writeFileSync(path.join(SLICE1_DATA, 'extensions.json'), JSON.stringify({
+      install: [{ id: 'memory-daemon', version: '^0.1.0' }],
+      config: { 'memory-daemon': { db_path: SHARED_DB, sock_path: PROJECT_SOCK } },
+    }, null, 2) + '\n', 'utf8');
+    fs.writeFileSync(path.join(SLICE1_DATA, 'extensions.lock'), JSON.stringify({
+      version: 1,
+      resolved: { 'memory-daemon@0.1.0': { source: `file://${DAEMON_ENTRY}` } },
+    }, null, 2) + '\n', 'utf8');
+
+    // The service registry the start path reads (<root>/.sox/registry.json).
+    const SLICE1_REG_DIR = path.join(SLICE1_ROOT, '.sox');
+    fs.mkdirSync(SLICE1_REG_DIR, { recursive: true });
+    fs.writeFileSync(path.join(SLICE1_REG_DIR, 'registry.json'), JSON.stringify({
+      'memory-daemon': {
+        id: 'memory-daemon',
+        command: NODE,
+        args: ['--enable-source-maps', DAEMON_ENTRY],
+        env: {},
+        cwd: SLICE1_STORE,
+        status: 'installed',
+        storePath: SLICE1_STORE,
+      },
+    }, null, 2) + '\n', 'utf8');
+
+    // Spawn the live "scope A" daemon on the memory-daemon entrypoint token.
+    const scopeAPid = await spawnOrphan(DAEMON_ENTRY, `slice1-scopeA-${process.pid}`);
+    assert(isAlive(scopeAPid), `Slice1: scope-A daemon spawned + alive (pid=${scopeAPid})`);
+
+    const baselineDaemons = pidsMatching('memory-daemon/dist/index.js').length;
+
+    // Run the service-registry start for the project scope. The singleton guard
+    // must see the live entrypoint-token process and NOT spawn a second daemon.
+    const slice1Start = runSox([
+      'start', '-s', 'project', `--root=${SLICE1_ROOT}`,
+      `--runtime-file=${path.join(SLICE1_DATA, 'runtime.json')}`,
+      '--no-reap', // do not pre-reap; we are testing the live-instance guard, not stale cleanup
+    ]);
+    assert(slice1Start.status === 0,
+      `Slice1: sox start (project) exits 0 (got ${slice1Start.status}); stderr=${slice1Start.stderr.slice(0, 200)}`);
+
+    // The guard must report skipping the spawn (singleton §5.2), not a new pid.
+    const guardFired = /singleton guard §5\.2/.test(slice1Start.stdout) &&
+      /skipping spawn/.test(slice1Start.stdout);
+    assert(guardFired,
+      `Slice1: start refused the second spawn via the §5.2 singleton guard\n` +
+      `        stdout: ${slice1Start.stdout.split('\n').filter((l) => /memory-daemon/.test(l)).join(' | ')}`);
+
+    await sleep(400);
+    // REALITY: exactly ONE memory-daemon process on this entrypoint (no second writer).
+    const afterDaemons = pidsMatching('memory-daemon/dist/index.js').length;
+    assert(afterDaemons === baselineDaemons,
+      `Slice1: NO second daemon spawned — one writer per store (before=${baselineDaemons}, after=${afterDaemons})`);
+
+    // The healthy scope-A daemon must SURVIVE (we never reap a single live daemon).
+    assert(isAlive(scopeAPid),
+      `Slice1: the live scope-A daemon (pid=${scopeAPid}) SURVIVED — no healthy-daemon reap`);
+
+    // The project runtime.json records the shared instance as RUNNING.
+    try {
+      const r = JSON.parse(fs.readFileSync(path.join(SLICE1_DATA, 'runtime.json'), 'utf8'));
+      const e = (r.entries ?? []).find((/** @type {any} */ x) => x.id === 'memory-daemon');
+      assert(e?.running === true,
+        `Slice1: project runtime.json records memory-daemon RUNNING (shared instance)`);
+    } catch (e) {
+      assert(false, `Slice1: project runtime.json readable (${String(e)})`);
+    }
+
+    // Cleanup the scope-A daemon we spawned.
+    if (isAlive(scopeAPid)) { try { process.kill(scopeAPid, 'SIGKILL'); } catch { /* ignore */ } }
+    try { fs.rmSync(SHARED_DB, { force: true }); fs.rmSync(SHARED_DB + '-wal', { force: true }); fs.rmSync(SHARED_DB + '-shm', { force: true }); } catch { /* ignore */ }
+  }
+
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Section D: DECLARATIVE PLACEMENT — [dod.1], [dod.2]
   //
   // Exercises install() as the descriptor-driven entrypoint ([install-lifecycle.3]).
