@@ -4,21 +4,28 @@
   "projectType": "library",
   "root": "extensions/bundles/sox-memory-bundle/members/memory-server",
   "sourceRoot": "extensions/bundles/sox-memory-bundle/members/memory-server/src",
-  "tags": ["type:extension"],
+  "tags": [
+    "type:extension"
+  ],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/extensions/bundles/sox-memory-bundle/members/memory-server/dist"],
+      "outputs": [
+        "{workspaceRoot}/extensions/bundles/sox-memory-bundle/members/memory-server/dist"
+      ],
       "options": {
-        "command": "tsc --project extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json",
+        "command": "tsc --project extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json && node extensions/bundles/sox-memory-bundle/members/memory-server/scripts/gen-schema.cjs",
         "cwd": "."
       },
       "cache": true,
       "inputs": [
         "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/tsconfig.json"
+        "{projectRoot}/tsconfig.json",
+        "{projectRoot}/scripts/gen-schema.cjs"
       ],
-      "dependsOn": ["memory-core:build"]
+      "dependsOn": [
+        "^build"
+      ]
     },
     "test": {
       "executor": "nx:run-commands",
@@ -28,15 +35,16 @@
       },
       "cache": true,
       "inputs": [
-        "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/*.test.ts",
-        "{projectRoot}/vitest.config.ts"
+        "default",
+        "^production"
       ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["extensions/bundles/sox-memory-bundle/members/memory-server/src/**/*.ts"]
+        "lintFilePatterns": [
+          "extensions/bundles/sox-memory-bundle/members/memory-server/src/**/*.ts"
+        ]
       }
     }
   }

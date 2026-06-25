@@ -13,6 +13,50 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 > phases (P1–P6), not as loose items. The metadata-drop half of BL-23 is already fixed (`9728f6f`).
 > **BL-21 (auto-export) and BL-22 (entity names) resolved by P5 (2026-06-22).**
 
+## Slice 1.6 — proxy-by-default + memory-server backend (2026-06-25, `feat/proxy-default-memory-backend`)
+
+### BL-61 — flipping memory-server to proxy default requires exactly ONE final client reconnect — **Migration note (expected, one-time)**
+
+memory-server is now served via the front-shim by DEFAULT (`type: mcp-server` →
+`lifecycle.serve_mode:"proxy"`). The running instance in any MCP client is still the OLD direct-stdio
+server (it owns the client's pipe). To pick up the shim, the client must reconnect/reload the
+memory-server MCP plugin **once**. After that single reconnect, every subsequent memory-server
+behaviour/code upgrade is a BACKEND rolling-restart behind the shim → **no further client reconnects**
+(the shim re-dials across the sub-second gap; spec §9.5, e2e Section SPM). An interface (tool-schema)
+change still emits `notifications/tools/list_changed` and falls back to reconnect only for clients that
+ignore it. **Action for the human:** after this merge + `sox upgrade --all`, reconnect/reload the
+memory-server MCP server once.
+
+### BL-62 — shared-backend `project_path` attribution is single-valued for the lifetime of the backend — **Open (MEDIUM) `(unverified)` multi-project correctness**
+
+The proxy backend is a SINGLETON per store (single-writer, by design). The BL-56 fix injects the
+client's workspace as `SOX_CONFIG_PROJECT_PATH` at **shim spawn**, but the shared backend captured the
+value of whichever shim's `ensure` first spawned it — a second shim from a DIFFERENT project dials the
+SAME backend and its `SOX_CONFIG_PROJECT_PATH` does NOT propagate to the already-running backend. So
+for a memory store shared across multiple project workspaces, episodes written via the second project's
+shim would be attributed to the FIRST project's path. Single-project use is unaffected (the common
+case). **Fix sketch:** thread the per-call workspace (MCP `roots` / a caller-supplied `project_path`
+arg) through `tools/call` so attribution is per-request, not per-backend-process; until then the shared
+backend's `project_path` is `(unverified)` for multi-project setups. Surfaced + flagged during Slice
+1.6; NOT silently regressed (BL-56's per-shim injection still happens, it just can't reach a shared
+running backend).
+
+### BL-63 — `host-runtime:test-e2e` BL-31 orphan scan uses a global `pgrep -f memory-server/dist/index.js`, so a CONCURRENT live proxy session on the dev box is mis-counted as a leaked orphan — **Open (LOW, test-only; CI unaffected)**
+
+`tools/test-e2e-lifecycle.js` `liveServerPids()` does `pgrep -f 'memory-server/dist/index.js'` and
+subtracts a `BASELINE_PIDS` snapshot captured at import. With the Slice 1.6 proxy default LIVE in the
+operator's own `bin/soxe serve memory-server` session, that session's shim **re-ensures/respawns its
+backend during the ~minute e2e run** → the new backend pid post-dates the baseline → the BL-31 "no
+orphan after stop" + "BL-31 no orphan survive sox stop" assertions count it as leaked. **Proven a
+test-environment confounder, NOT a code regression:** every reported "orphan" pid resolves to
+`ppid == <the operator's live serve session pid>` (correlated 3×: 18501→23210, 15408→23210,
+15572→23210), never to the e2e's own install/start tree; on a clean machine the suite is **101/0**
+(observed before the operator's session picked up the flip). **Fix sketch:** scope the orphan scan to
+the e2e's own data root / SOX_SANDBOX_ROOT (match the spawned backend by its temp socket or a
+test-injected argv marker) instead of the global entrypoint token, OR re-snapshot the baseline
+immediately before the stop assertion. Surfaced during Slice 1.6; isolated (pre-existing e2e scan
+breadth, exposed — not caused — by the proxy default).
+
 ## Open — surfaced during service-proxy Slice 1.5 (2026-06-25, `feat/service-proxy-slice1_5`)
 
 ### BL-59 — `cmdServe` local-discovery fallback calls `findLocalExtension(extId, root2)` with args REVERSED — **Open (LOW)**

@@ -1,12 +1,35 @@
 # Service & Daemon Lifecycle — Canonical Specification
 
-**Spec version:** 1.1.1
-**Status:** Binding. Slice 1 (§14) is IMPLEMENTED on branch `feat/service-lifecycle-slice1`; **Slice 1.5 (the front-shim service-proxy, §9.5) is IMPLEMENTED** on branch `feat/service-proxy-slice1_5` (lib + OPT-IN serve mode; no existing server flipped). The OS-unit surface (Slices 2–4) is designed-not-built.
+**Spec version:** 1.2.0
+**Status:** Binding. Slice 1 (§14) is IMPLEMENTED on branch `feat/service-lifecycle-slice1`; Slice 1.5 (the front-shim service-proxy, §9.5) is IMPLEMENTED (lib + OPT-IN serve mode); **Slice 1.6 (the M3→M4 DEFAULT FLIP, §9.5) is IMPLEMENTED** on branch `feat/proxy-default-memory-backend` — proxy is now the DEFAULT for `mcp-server` services, memory-server is flipped onto it with an auto-managed singleton-guarded UDS backend, and a proxy-mode upgrade rolling-restarts the BACKEND (no client reconnect). The OS-unit surface (Slices 2–4) is designed-not-built.
 **Date:** 2026-06-25
 **Owner:** platform-engineering
 **Applies to:** every code path that spawns, supervises, stops, reaps, health-checks, or persists a `service`- or `mcp-server`-type extension, across all scopes (`org` / `user` / `project` / `local`, plus the notion of *global*).
 
 ### Changelog
+
+- **1.2.0 (2026-06-25)** — **Implemented Slice 1.6** (§9.5, the M3→M4 default flip). (1) **Proxy is
+  now the DEFAULT for `type: mcp-server`** in `cmdServe` (`apps/sox/src/main.ts`); explicit opt-OUT
+  via `--no-proxy` / `lifecycle.serve_mode:"direct"` / `lifecycle.proxy:false` (the rollback path
+  without a code revert). (2) **memory-server runs as a persistent UDS BACKEND**
+  (`SOX_PROXY_BACKEND=1` → `runBackend` in
+  `extensions/bundles/sox-memory-bundle/members/memory-server/src/backend.ts`, wrapping the existing
+  `TOOLS`+`handleToolCall` with `serveBackend`); it **publishes `dist/schema.json`**
+  (`lifecycle.schema_path`, generated postbuild from the canonical tool list) so the shim serves
+  `initialize`/`tools/list` instantly during a backend restart. (3) **Auto-managed backend
+  lifecycle**: new leaf primitive `ensureBackend` (`libs/service-proxy/src/ensure-backend.ts`) —
+  probe-then-spawn the backend detached, **singleton-guarded by an O_EXCL spawn lock keyed on
+  `[def:singleton-key]`** so many sessions' shims collapse to ONE backend per store (single-writer);
+  the shim ensures on start and re-ensures on a dropped connection (crash recovery). (4) **Upgrade =
+  zero reconnect**: a proxy-mode `mcp-server` upgrade now **rolling-restarts the BACKEND**
+  (verified-stop by entrypoint token + re-ensure on new code) and reports the new
+  `backend-restarted` disposition instead of `reconnect-needed`; the shims re-dial across the
+  sub-second gap. Proven by a real-process e2e (`tools/probe-memory-backend-zdt.mjs`, e2e Section
+  SPM): two shims share one backend, a backend rolling-restart, both `tools/call` succeed with the
+  stdio pipes never closing, single-writer holds before+after. **Migration note:** flipping
+  memory-server requires **exactly ONE final client reconnect** (to replace the running direct-stdio
+  server with the shim); thereafter behaviour upgrades restart only the backend → no further
+  reconnects. Gates in §14 (Slice 1.6).
 
 - **1.1.1 (2026-06-25)** — **Implemented Slice 1.5** (§9.5, the front-shim service-proxy / M3↔M4
   bridge) as the dependency-free leaf lib `libs/service-proxy/` (`runFrontShim`, `serveBackend`,
@@ -598,12 +621,16 @@ follows the new artifact.
 
 ## 9.5 Zero-downtime upgrades without forced MCP reconnects — the M3↔M4 bridge (front-shim service-proxy)
 
-> **Status: IMPLEMENTED (Slice 1.5, v1.1.1).** Delivered as the leaf lib
-> `libs/service-proxy/` (`runFrontShim`, `serveBackend`, `dialBackend`, `computeSchemaHash`,
-> `backendSocketPath`, length-prefixed frame codec) + an OPT-IN `--proxy` /
-> `lifecycle.proxy:true` branch of `cmdServe`. The proxy is available behind the opt-in; no
-> existing server is flipped to it by default (default `cmdServe` is byte-for-byte unchanged).
-> Zero-downtime is gate-proven (real-process e2e Section SP + unit specs). See §14 Slice 1.5.
+> **Status: IMPLEMENTED + FLIPPED TO DEFAULT (Slice 1.6, v1.2.0).** Delivered as the leaf lib
+> `libs/service-proxy/` (`runFrontShim`, `serveBackend`, `dialBackend`, `ensureBackend`,
+> `computeSchemaHash`, `backendSocketPath`, length-prefixed frame codec). As of Slice 1.6 the
+> front-shim is the **DEFAULT for `type: mcp-server`** in `cmdServe`, with an explicit opt-out
+> (`--no-proxy` / `serve_mode:"direct"` / `proxy:false`). **memory-server is flipped onto it**: it
+> runs as a persistent, singleton-guarded UDS BACKEND (`SOX_PROXY_BACKEND=1`) that the shim
+> auto-ensures (spawns detached, one per store via an O_EXCL spawn lock on `[def:singleton-key]`).
+> A behaviour upgrade rolling-restarts the BACKEND (`backend-restarted` disposition) with NO client
+> reconnect. Zero-downtime + multi-shim single-writer are gate-proven (real-process e2e Sections SP
+> and **SPM** + unit specs). See §14 Slice 1.5 / Slice 1.6.
 
 This section answers the human's key architecture question: **can we upgrade a running `mcp-server`
 service to new code WITHOUT making the MCP client reconnect/reload?** Short answer: **yes, for any
@@ -963,6 +990,67 @@ acceptance.
   - `nx run host-runtime:test-e2e` → **100 passed, 0 failed** (was 99; +1 Section SP zero-downtime),
     stable across 3 cache-busted runs; standalone probe `node tools/probe-service-proxy-zdt.mjs` → PASS.
   - `registry:sync-index` → **no checksum drift** (CLI/lib change, not a shipped extension artifact).
+
+### Slice 1.6 — M3→M4 DEFAULT FLIP: proxy-by-default + memory-server backend — ✅ IMPLEMENTED (`feat/proxy-default-memory-backend`)
+
+- **Goal:** make the front-shim the DEFAULT for `mcp-server` services and FLIP memory-server onto it,
+  so a behaviour/code upgrade of memory-server no longer forces the MCP client to reconnect. Completes
+  the M3→M4 bridge that Slice 1.5 left opt-in.
+- **Delivered:**
+  - `libs/service-proxy/src/ensure-backend.ts` — `ensureBackend({ socketPath, singletonKey, command,
+    args, env, … })`: the auto-managed, **singleton-guarded** backend lifecycle. Probe-then-spawn
+    (detached + `unref`, stderr inherited, NEVER stdout); an **O_EXCL spawn lock** keyed on the
+    `[def:singleton-key]` digest (with pid-liveness + TTL staleness reclaim) serializes concurrent
+    shims to ONE spawn per store (single-writer). Dispositions: `already-live` / `spawned` /
+    `adopted-after-wait` / `failed`. Also exports `probeSocketLive`.
+  - `libs/service-proxy/src/{shim,dial}.ts` — `runFrontShim` gains an `ensure` hook called on START and
+    re-called on a dropped backend connection (`dialBackend` gains `onDisconnect`), so a CRASHED
+    backend is brought back up (a clean rolling-restart respawns itself; the re-ensure is idempotent).
+  - `extensions/.../memory-server/src/backend.ts` — `runBackend` + `handleBackendRequest`: wraps the
+    existing `TOOLS` + `handleToolCall` with `serveBackend`, mirroring the MCP `serve()` surface
+    (`initialize` / `tools/list` / `tools/call`). The C6 permission guard is unchanged (it runs inside
+    `handleToolCall` before any db_path opens). `publishSchema` writes the canonical `tools/list` to
+    `dist/schema.json` (atomic tmp+rename). The entrypoint dispatches on `SOX_PROXY_BACKEND=1` (backend
+    mode) vs the unchanged direct-stdio `serve()` (opt-out / dev), guarded by `require.main === module`.
+  - `extensions/.../memory-server/scripts/gen-schema.cjs` — postbuild step generating `dist/schema.json`
+    from `buildToolsListResult()` so the published schema can never drift from the served surface
+    (`[contract:schema-hash]` — verified equal in `backend.spec.ts`).
+  - `extensions/.../memory-server/extension.json` — `lifecycle.serve_mode:"proxy"` +
+    `lifecycle.schema_path:"dist/schema.json"`; `package.json` adds `@adhd/sox-service-proxy` dep.
+  - `apps/sox/src/main.ts` — `cmdServe` flips to **proxy DEFAULT for `type: mcp-server`** with opt-out
+    (`--no-proxy` / `serve_mode:"direct"` / `proxy:false`); the shim is given the `ensure` callback that
+    spawns the backend with `SOX_PROXY_BACKEND=1` + the SAME policy-env + `SOX_CONFIG_*` the direct path
+    injects. `rollingRestartConsumer` routes a proxy-mode `mcp-server` upgrade through the new
+    `restartProxyBackend` (verified-stop the backend by entrypoint token → unlink stale socket →
+    re-ensure on new code), returning the new **`backend-restarted`** disposition. Direct-mode servers
+    keep the legacy `reconnect-needed` path.
+  - `tools/probe-memory-backend-zdt.mjs` — real-process e2e (Section **SPM**): two shims (two sessions)
+    share ONE real memory-server backend (single-writer, test-scoped pid accounting), a backend
+    rolling-restart, both `tools/call` succeed with stdio pipes never closing, single-writer holds
+    before+after.
+- **Acceptance — MET (gates below):** proxy default ON for mcp-server with a working opt-out hatch;
+  memory-server runs as a singleton-guarded UDS backend; multi-shim → one backend; behaviour upgrade =
+  backend rolling-restart with zero client reconnect.
+- **Migration note (one-time):** flipping memory-server requires **exactly ONE final client reconnect**
+  to replace the running direct-stdio server with the shim. After that, memory-server upgrades restart
+  only the backend → no further reconnects.
+- **Gate results (nx targets only; built before testing per BL-4):**
+  - `nx build service-proxy memory-core memory-enrich memory-server host-runtime sox` → **6/6 green**.
+  - `nx lint` (same 6) → **6/6 green**.
+  - `nx test service-proxy` → **37 passed** (was 30; +ensure-backend 5, +shim ensure 2).
+  - `nx test memory-server` → **84 passed** (+`backend.spec.ts` 6); `nx test host-runtime` → **146**;
+    `nx test sox` → **30**.
+  - `nx run host-runtime:test-e2e` → **101 passed, 0 failed** (was 100; +1 Section SPM); standalone
+    `node tools/probe-memory-backend-zdt.mjs` → PASS (8/8).
+  - `registry:sync-index` → **memory-server checksum drift EXPECTED** (its entrypoint artifact changed)
+    → regenerated `registry/index.json` (new `memory-server` checksum `sha256:c04806ae1ace…`); only
+    memory-server's checksum changed.
+- **`(unverified)` — shared-backend project_path attribution (carried from BL-56):** the backend is a
+  shared singleton per store, so a per-connecting-client workspace (`SOX_CONFIG_PROJECT_PATH`) injected
+  at shim spawn does NOT propagate to the already-running shared backend. Each shim still passes its own
+  `SOX_CONFIG_PROJECT_PATH`, but the FIRST shim's value is what the backend captured. Multi-project
+  attribution for a shared backend likely needs the per-call MCP-roots / caller path threaded through
+  `tools/call` — flagged for the human; NOT silently regressed (single-project use is unaffected).
 
 ### Slice 2 — `sox service enable|disable` (OS-supervisor control surface, subsumes BL-51 + reboot half of BL-50)
 

@@ -1577,12 +1577,176 @@ function manifestTypeForSource(source: string): string | null {
   return null;
 }
 
-export type RestartDisposition = 'restarted' | 'reconnect-needed' | 'placement-only' | 'not-running';
+export type RestartDisposition =
+  | 'restarted'
+  | 'backend-restarted'
+  | 'reconnect-needed'
+  | 'placement-only'
+  | 'not-running';
 
 export interface RestartResult {
   disposition: RestartDisposition;
   /** Human-readable detail for the report / logs. */
   detail: string;
+}
+
+/**
+ * Resolve the install directory of an mcp-server from the lockfile source, then
+ * read its manifest. Returns null when it cannot be resolved. Mirrors cmdServe's
+ * extDir resolution so proxy-mode detection matches the actual serve path.
+ */
+interface ServeManifestShape {
+  type?: string;
+  entrypoint?: string;
+  lifecycle?: { proxy?: boolean; serve_mode?: string; schema_path?: string };
+}
+
+function resolveServeManifest(
+  extId: string,
+  scope: string,
+  root: string,
+): { extDir: string; manifest: ServeManifestShape } | null {
+  const fsM = require('node:fs') as typeof import('node:fs');
+  const pathM = require('node:path') as typeof import('node:path');
+  let extDir: string | null = null;
+  try {
+    const sp = getScopePaths(scope, root);
+    const lf = loadLockfile(sp.lockfile);
+    const found =
+      lf?.resolved?.[extId] ??
+      Object.entries(lf?.resolved ?? {}).find(([k]) => k.startsWith(extId + '@'))?.[1];
+    if (found) extDir = resolveExtensionDir(found.source, root);
+  } catch {
+    extDir = null;
+  }
+  if (!extDir) {
+    // Signature is findLocalExtension(root, id) (install.ts:984) — correct order
+    // here (BL-59 documents the reversed call in cmdServe's discovery fallback).
+    const local = findLocalExtension(root, extId);
+    if (local) extDir = pathM.dirname(local);
+  }
+  if (!extDir) return null;
+  const manifestPath = pathM.join(extDir, 'extension.json');
+  if (!fsM.existsSync(manifestPath)) return null;
+  try {
+    const manifest = JSON.parse(fsM.readFileSync(manifestPath, 'utf8')) as ServeManifestShape;
+    return { extDir, manifest };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is this mcp-server served in PROXY mode? (Slice 1.6 §9.5.) Mirrors cmdServe's
+ * default: proxy ON for type:mcp-server unless explicitly opted out
+ * (serve_mode:"direct" / lifecycle.proxy:false); forced on by
+ * serve_mode:"proxy" / lifecycle.proxy:true.
+ */
+function mcpServerIsProxyMode(extId: string, scope: string, root: string): boolean {
+  const resolved = resolveServeManifest(extId, scope, root);
+  if (!resolved) return false;
+  const lc = resolved.manifest.lifecycle ?? {};
+  const forced = lc.proxy === true || lc.serve_mode === 'proxy';
+  const optedOut = lc.proxy === false || lc.serve_mode === 'direct';
+  const isMcpServer = resolved.manifest.type === 'mcp-server';
+  return forced || (isMcpServer && !optedOut);
+}
+
+/**
+ * Rolling-restart the PROXY BACKEND of a proxy-mode mcp-server (§9.5, step 4).
+ *
+ * The backend is the persistent, detached, sox-owned process running the server
+ * entrypoint with SOX_PROXY_BACKEND=1. We:
+ *   1. derive the [def:singleton-key]-keyed backend socket (the same path the shim
+ *      dials), and the entrypoint identity token (BL-31 reaper-compatible);
+ *   2. find every live backend pid by that token + verified-stop it (killAndVerify);
+ *   3. let the BACKEND come back up — the next shim's `ensure` respawns it; we also
+ *      proactively re-ensure here so the backend is live again immediately even if
+ *      no shim is currently connected.
+ *
+ * The shims re-dial across the sub-second gap → the MCP client NEVER reconnects.
+ * Returns 'backend-restarted'.
+ */
+async function restartProxyBackend(
+  extId: string,
+  scope: string,
+  root: string,
+  log: (m: string) => void,
+): Promise<RestartResult> {
+  const resolved = resolveServeManifest(extId, scope, root);
+  if (!resolved || !resolved.manifest.entrypoint) {
+    return { disposition: 'reconnect-needed', detail: 'proxy-mode mcp-server but entrypoint unresolvable — falling back to reconnect' };
+  }
+  const pathM = require('node:path') as typeof import('node:path');
+  const fsM = require('node:fs') as typeof import('node:fs');
+  const entrypointPath = pathM.resolve(resolved.extDir, resolved.manifest.entrypoint);
+
+  // Derive the backend socket + singleton key exactly as cmdServe does.
+  const configEnv = buildExtConfigEnv(extId, root);
+  const manifestPath = pathM.join(resolved.extDir, 'extension.json');
+  const storeResource = resolveStoreResource(manifestPath, configEnv);
+  const key = singletonKey(extId, storeResource) ?? `${extId} none:`;
+
+  const { backendSocketPath, ensureBackend } =
+    require('@adhd/sox-service-proxy') as typeof import('@adhd/sox-service-proxy');
+  const backendSock = backendSocketPath(socketDir(), key);
+
+  // Find + VERIFIED-STOP (await — the kill MUST complete before we re-ensure, or
+  // ensureBackend would see the old backend still live and no-op) the live
+  // backend(s) by the entrypoint identity token. The backend was spawned as
+  // `node --enable-source-maps <entrypointPath>` so the reaper matches the token.
+  const token = identityToken(`file://${entrypointPath}`);
+  const live = findOrphansByIdentity(token, { excludePids: [process.pid] });
+  if (live.length === 0) {
+    log(`proxy backend for ${extId}: none live; ensuring fresh backend on new code`);
+  } else {
+    for (const m of live) {
+      log(`verified-stop proxy backend pid ${m.pid} (${extId})`);
+      const outcome = await killAndVerify(m.pid, { graceMs: 5000, log: (s) => log(`  ${s}`) });
+      if (outcome === 'undead') {
+        return { disposition: 'reconnect-needed', detail: `proxy backend pid ${m.pid} did not die (undead) — NOT restarted; reconnect required` };
+      }
+    }
+  }
+  // Unlink the now-stale socket so the fresh backend binds cleanly.
+  try {
+    if (fsM.existsSync(backendSock)) fsM.unlinkSync(backendSock);
+  } catch {
+    /* serveBackend also unlinks; best-effort */
+  }
+
+  // Re-ensure the backend on the NEW code (detached, singleton-guarded). Build the
+  // backend env mirroring cmdServe (SOX_CONFIG_* + the backend-mode signal + socket).
+  let backendSchemaPath: string | undefined;
+  if (resolved.manifest.lifecycle?.schema_path) {
+    const sp = pathM.resolve(resolved.extDir, resolved.manifest.lifecycle.schema_path);
+    if (fsM.existsSync(sp)) backendSchemaPath = sp;
+  }
+  const backendEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...configEnv,
+    SOX_PROXY_BACKEND: '1',
+    SOX_PROXY_BACKEND_SOCKET: backendSock,
+    ...(backendSchemaPath !== undefined ? { SOX_PROXY_BACKEND_SCHEMA: backendSchemaPath } : {}),
+  };
+  const r = await ensureBackend({
+    socketPath: backendSock,
+    singletonKey: key,
+    command: process.execPath,
+    args: ['--enable-source-maps', entrypointPath],
+    cwd: resolved.extDir,
+    env: backendEnv,
+    onDiagnostic: (l) => log(l),
+  });
+  log(`ensure-backend: ${r.disposition} — ${r.detail}`);
+  if (r.disposition === 'failed') {
+    return { disposition: 'reconnect-needed', detail: `proxy backend re-ensure failed: ${r.detail}` };
+  }
+
+  return {
+    disposition: 'backend-restarted',
+    detail: 'proxy backend verified-stopped + re-ensured on new code — shims re-dial, NO client reconnect',
+  };
 }
 
 /**
@@ -1640,9 +1804,18 @@ async function rollingRestartConsumer(
     pidAliveRT(liveEntry.pid);
 
   if (declaredType === 'mcp-server') {
+    // Slice 1.6 (§9.5): a PROXY-mode mcp-server is insulated by the front-shim. The
+    // tool implementation lives in a persistent, sox-owned BACKEND that the shim
+    // proxies to over a UDS. An upgrade is a rolling restart of the BACKEND — the
+    // shims re-dial across the sub-second gap and the MCP client NEVER reconnects.
+    // A DIRECT-mode mcp-server (opt-out) keeps the legacy reconnect-needed path.
+    const proxyMode = mcpServerIsProxyMode(extId, scope, root);
+    if (proxyMode) {
+      return await restartProxyBackend(extId, scope, root, log);
+    }
     return {
       disposition: 'reconnect-needed',
-      detail: 'stdio/on-demand server — respawns with new code on next client connection',
+      detail: 'stdio/on-demand server (direct mode) — respawns with new code on next client connection',
     };
   }
 
@@ -1690,7 +1863,7 @@ interface ConsumerOutcome {
   extId: string;
   scope: string;
   root: string;
-  state: 'current' | 'upgraded' | 'restarted' | 'reconnect-needed' | 'not-installed' | 'unresolvable' | 'failed';
+  state: 'current' | 'upgraded' | 'restarted' | 'backend-restarted' | 'reconnect-needed' | 'not-installed' | 'unresolvable' | 'failed';
   detail: string;
 }
 
@@ -1834,6 +2007,9 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
       if (oc) {
         if (res.disposition === 'restarted' && !res.detail.includes('FAILED')) {
           oc.state = 'restarted';
+        } else if (res.disposition === 'backend-restarted') {
+          // Proxy-mode mcp-server: backend rolled, shims re-dial, NO client reconnect.
+          oc.state = 'backend-restarted';
         } else if (res.disposition === 'reconnect-needed') {
           oc.state = 'reconnect-needed';
         }
@@ -4564,13 +4740,17 @@ Designed for use as the .mcp.json command for stdio MCP servers.
 Flags:
   --scope=<scope>   Restrict lookup to one scope (default: cascade project→user→org→local)
   --root=<dir>      Workspace root (default: cwd)
-  --proxy           Run in front-shim proxy mode (spec §9.5, Slice 1.5): serve
-                    initialize + tools/list from a cached schema and proxy
-                    tools/call to a persistent sox-owned backend over a UDS, so a
-                    backend upgrade is a rolling restart with NO client reconnect.
-                    Also auto-enabled when the manifest declares
-                    lifecycle.proxy:true or lifecycle.serve_mode:"proxy".
-                    OPT-IN — default behaviour is unchanged (direct exec).
+  --proxy           Force front-shim proxy mode (spec §9.5): serve initialize +
+                    tools/list from a cached schema and proxy tools/call to a
+                    persistent sox-owned backend over a UDS, so a backend upgrade
+                    is a rolling restart with NO client reconnect. The shim
+                    auto-ensures (spawns, singleton-guarded) the backend.
+                    DEFAULT for type:mcp-server — pass this only to force proxy
+                    for a non-mcp-server type, or to be explicit.
+  --no-proxy        Opt OUT of proxy mode for an mcp-server (escape hatch / rollback):
+                    run the original direct-stdio exec path (this process IS the
+                    server). Equivalent to manifest lifecycle.serve_mode:"direct"
+                    or lifecycle.proxy:false.
   --log             Tee child stderr to <logDir>/<extId>-serve-<YYYY-MM-DD>.log (opt-in)
                     Also enabled by setting SOX_SERVE_LOG=1 in the environment.
                     NEVER tees stdout — stdout is the JSON-RPC channel.
@@ -4636,9 +4816,12 @@ Flags:
   }
 
   const manifest2 = JSON.parse(fsMod2.readFileSync(manifestPath2, 'utf8')) as {
+    type?: string;
     entrypoint?: string;
     permissions?: PermissionsBlock;
-    // Slice 1.5 (§9.5): manifest may opt the served process into proxy/shim mode.
+    // Slice 1.5 / Slice 1.6 (§9.5): manifest may opt the served process into (or
+    // out of) proxy/shim mode. serve_mode:"direct" + lifecycle.proxy:false are the
+    // explicit opt-OUT escape hatches now that proxy is the DEFAULT for mcp-server.
     lifecycle?: { proxy?: boolean; serve_mode?: string; schema_path?: string };
   };
   if (!manifest2.entrypoint) {
@@ -4704,31 +4887,49 @@ Flags:
     serveEnv['SOX_CONFIG_PROJECT_PATH'] = clientProjectRoot;
   }
 
-  // ── Slice 1.5 (§9.5): OPT-IN front-shim proxy mode ──────────────────────────
+  // ── Slice 1.6 (§9.5): front-shim proxy mode — DEFAULT for mcp-server ────────
   //
-  // When --proxy is passed OR the manifest declares lifecycle.proxy:true /
-  // lifecycle.serve_mode:"proxy", this served process runs as the thin stdio
-  // front-shim (it holds NO tool implementation): it serves initialize +
+  // For an mcp-server service, the served process runs by DEFAULT as the thin
+  // stdio front-shim (it holds NO tool implementation): it serves initialize +
   // tools/list from a cached schema and proxies tools/call to a persistent,
-  // sox-owned backend over a Unix domain socket. A backend upgrade then becomes a
+  // sox-owned BACKEND over a Unix domain socket. A backend upgrade then becomes a
   // rolling restart with NO client reconnect for behaviour-only changes; an
   // interface change emits notifications/tools/list_changed (§9.5.3).
+  //
+  // The shim AUTO-ENSURES the backend: if no backend is live on the store's UDS it
+  // spawns one detached, singleton-guarded per [def:singleton-key] (one backend per
+  // store, even across many sessions' shims → single-writer). On a dropped backend
+  // connection it re-ensures (a crashed backend is brought back up; a clean
+  // rolling-restart respawns itself).
   //
   // The backend socket path is derived from the data-root resolver (socketDir(),
   // ADR-0004) keyed by the [def:singleton-key] (id + canonical store-resource),
   // identical to the Slice-1 singleton key — so the shim dials the exact one
   // backend per store, with no port-selection problem.
   //
-  // OPT-IN ONLY: when not enabled, cmdServe falls through to the existing
-  // exec/--log paths below with ZERO behaviour change. memory-server (and any
-  // existing server) is NOT flipped to proxy mode by this change.
-  const wantProxy =
-    flags['proxy'] !== undefined ||
-    manifest2.lifecycle?.proxy === true ||
-    manifest2.lifecycle?.serve_mode === 'proxy';
+  // Resolution precedence (highest wins): CLI flag > manifest > type default.
+  //   1. CLI flag — `--no-proxy` (opt-OUT, the rollback path without a code revert)
+  //      or `--proxy` (force) is the operator's explicit override and beats the
+  //      manifest. `--no-proxy` wins if BOTH are somehow present (safest default).
+  //   2. Manifest — lifecycle.serve_mode:"direct"/proxy:false (opt out) or
+  //      serve_mode:"proxy"/proxy:true (force).
+  //   3. Type default — proxy ON for type:mcp-server, off for everything else.
+  const isMcpServer = manifest2.type === 'mcp-server';
+  let wantProxy: boolean;
+  if (flags['no-proxy'] !== undefined) {
+    wantProxy = false; // explicit operator opt-out — overrides the manifest
+  } else if (flags['proxy'] !== undefined) {
+    wantProxy = true; // explicit operator force — overrides the manifest
+  } else if (manifest2.lifecycle?.serve_mode === 'direct' || manifest2.lifecycle?.proxy === false) {
+    wantProxy = false; // manifest opt-out
+  } else if (manifest2.lifecycle?.serve_mode === 'proxy' || manifest2.lifecycle?.proxy === true) {
+    wantProxy = true; // manifest force
+  } else {
+    wantProxy = isMcpServer; // type default
+  }
 
   if (wantProxy) {
-    const { runFrontShim, backendSocketPath } =
+    const { runFrontShim, backendSocketPath, ensureBackend } =
       require('@adhd/sox-service-proxy') as typeof import('@adhd/sox-service-proxy');
 
     // Derive the [def:singleton-key] for the backend from the SAME resolver Slice 1
@@ -4740,14 +4941,31 @@ Flags:
     // A backend MAY publish a schema.json (manifest lifecycle.schema_path, relative
     // to the install dir) so the shim can serve tools/list instantly even while the
     // backend is mid-restart. Optional — absent ⇒ schema is read from the backend.
+    // We resolve the path even if the file does not exist yet: the BACKEND writes it
+    // on first start, and the shim re-reads through to the live backend until then.
     let schemaCachePath: string | undefined;
+    let backendSchemaPath: string | undefined;
     if (manifest2.lifecycle?.schema_path) {
       const sp = pathMod2.resolve(extDir2, manifest2.lifecycle.schema_path);
+      backendSchemaPath = sp;
       if (fsMod2.existsSync(sp)) schemaCachePath = sp;
     }
 
+    // The backend is spawned in BACKEND mode with the SAME entrypoint + policy-env +
+    // SOX_CONFIG_* this serve invocation resolved, so C6 enforcement + store
+    // resolution are byte-identical to the direct-stdio path. SOX_PROXY_BACKEND=1
+    // selects backend mode; the socket + schema paths are passed via env (the shim
+    // owns the [def:singleton-key]-derived paths). The backend entrypoint token is
+    // the SAME entrypointPath2 the reaper matches (BL-31 reaper-compatible).
+    const backendEnv: NodeJS.ProcessEnv = {
+      ...serveEnv,
+      SOX_PROXY_BACKEND: '1',
+      SOX_PROXY_BACKEND_SOCKET: backendSock,
+      ...(backendSchemaPath !== undefined ? { SOX_PROXY_BACKEND_SCHEMA: backendSchemaPath } : {}),
+    };
+
     process.stderr.write(
-      `[sox serve] proxy mode: shim → backend UDS ${backendSock} ` +
+      `[sox serve] proxy mode (DEFAULT for mcp-server): shim → backend UDS ${backendSock} ` +
         `(singleton-key: ${key})\n`,
     );
 
@@ -4755,6 +4973,19 @@ Flags:
       id: extId,
       socketPath: backendSock,
       ...(schemaCachePath !== undefined ? { schemaCachePath } : {}),
+      // §9.5 step 3: auto-managed, singleton-guarded backend lifecycle.
+      ensure: async () => {
+        const r = await ensureBackend({
+          socketPath: backendSock,
+          singletonKey: key,
+          command: process.execPath,
+          args: ['--enable-source-maps', entrypointPath2],
+          cwd: extDir2 as string,
+          env: backendEnv,
+          onDiagnostic: (l) => process.stderr.write(l + '\n'),
+        });
+        process.stderr.write(`[sox serve] ensure-backend: ${r.disposition} — ${r.detail}\n`);
+      },
     });
     // The shim lives until the client closes the stdio pipe.
     await handle.done;

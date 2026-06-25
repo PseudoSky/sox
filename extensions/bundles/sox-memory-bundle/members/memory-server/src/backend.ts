@@ -1,0 +1,159 @@
+/**
+ * memory-server/src/backend.ts — UDS backend mode (spec §9.5, M3→M4 bridge).
+ *
+ * The DEFAULT execution model for memory-server is now the front-shim service-proxy
+ * (§9.5): the MCP client spawns a thin stdio shim (`soxe serve memory-server`),
+ * which proxies tools/call to THIS persistent, sox-owned backend over a Unix domain
+ * socket. The backend holds the real tool implementation (the SQLite store, the
+ * embed worker, the in-process enrich loop). Because the backend's lifetime is the
+ * STORE — not the client's stdio pipe — a behaviour/code upgrade of memory-server is
+ * a rolling restart of the backend BEHIND the shim, with NO client reconnect.
+ *
+ * This module wraps the existing in-process tool dispatcher (`TOOLS` +
+ * `handleToolCall`) with `serveBackend` from @adhd/sox-service-proxy. It speaks the
+ * same JSON-RPC surface the MCP `serve()` path does — `initialize`, `tools/list`,
+ * `tools/call` — so the shim's cached schema and the backend's live schema match
+ * byte-for-byte (the [contract:schema-hash] handshake, §9.5.3).
+ *
+ * [inv:no-stdout-diagnostics]: the backend is a DETACHED daemon, not the client's
+ * pipe — it NEVER writes to stdout. All diagnostics go to stderr.
+ *
+ * The C6 permission guard is unchanged: `handleToolCall` runs the policy-env guard
+ * before any db_path is opened, exactly as it does on the direct-stdio path. The
+ * backend is spawned by the shim with the SAME policy-env + SOX_CONFIG_* the direct
+ * serve path injects, so enforcement parity holds.
+ */
+
+import type { ToolDefinition, ToolResult } from '@adhd/sox-mcp-runtime';
+import type { JsonRpcRequest, JsonRpcResponse } from '@adhd/sox-service-proxy';
+import { serveBackend } from '@adhd/sox-service-proxy';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+import { getContentAddress, handleToolCall, TOOLS } from './index.js';
+
+/**
+ * Build the canonical `tools/list` result — the EXACT shape the MCP `serve()` path
+ * returns ({ tools: [{ name, description, inputSchema }] }). The shim hashes this
+ * (computeSchemaHash) and serves it to the client; publishing it to schema.json
+ * lets the shim answer initialize/tools/list instantly during a backend restart.
+ */
+export function buildToolsListResult(): { tools: Array<Omit<ToolDefinition, 'handler'>> } {
+  return {
+    tools: TOOLS.map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+    })),
+  };
+}
+
+/** The MCP serverInfo the backend reports on initialize (content-addressed). */
+function serverInfo(): { name: string; version: string } {
+  return { name: 'memory-server', version: getContentAddress().short };
+}
+
+/**
+ * Publish the canonical tools/list to `schemaPath` so the shim can seed its cache
+ * (lifecycle.schema_path). Atomic write (tmp + rename) so a mid-restart shim never
+ * reads a half-written file. Best-effort: a failure only loses the instant-cache
+ * optimization (the shim falls back to reading the schema from the live backend).
+ */
+export function publishSchema(schemaPath: string): void {
+  try {
+    fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
+    const tmp = `${schemaPath}.tmp-${String(process.pid)}`;
+    fs.writeFileSync(tmp, JSON.stringify(buildToolsListResult()), 'utf8');
+    fs.renameSync(tmp, schemaPath);
+  } catch (e) {
+    process.stderr.write(`[memory-server backend] publishSchema failed: ${(e as Error).message}\n`);
+  }
+}
+
+/**
+ * The JSON-RPC handler the backend serves. Mirrors mcp-runtime serve():
+ *   - initialize → serverInfo + tools capability
+ *   - tools/list → the canonical tools list
+ *   - tools/call → handleToolCall(name, args) (which runs the C6 guard)
+ * Notifications (no id) get no response.
+ */
+export async function handleBackendRequest(
+  req: JsonRpcRequest,
+): Promise<JsonRpcResponse | undefined> {
+  const id = req.id ?? null;
+
+  if (req.method === 'initialize') {
+    return {
+      jsonrpc: '2.0',
+      id,
+      result: {
+        protocolVersion: '2024-11-05',
+        serverInfo: serverInfo(),
+        capabilities: { tools: {} },
+      },
+    };
+  }
+
+  if (req.method === 'tools/list') {
+    return { jsonrpc: '2.0', id, result: buildToolsListResult() };
+  }
+
+  if (req.method === 'tools/call') {
+    const params = (req.params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
+    const toolName = params.name ?? '';
+    const args = params.arguments ?? {};
+    let result: ToolResult;
+    try {
+      result = await handleToolCall(toolName, args);
+    } catch (err) {
+      result = {
+        isError: true,
+        content: [{ type: 'text', text: `Tool error: ${String(err)}` }],
+      };
+    }
+    // Shape the CallToolResult exactly as serve() does.
+    return {
+      jsonrpc: '2.0',
+      id,
+      result: { content: result.content, ...(result.isError !== undefined ? { isError: result.isError } : {}) },
+    };
+  }
+
+  // Notifications (no id) — best-effort, no response.
+  if (req.id === undefined) return undefined;
+
+  // Any other method (ping, etc.) — return an empty success rather than hang.
+  return { jsonrpc: '2.0', id, result: {} };
+}
+
+/**
+ * Run memory-server as a persistent UDS backend (§9.5.4). Binds `socketPath`,
+ * publishes the schema (if `schemaPath` given), and serves until SIGTERM/SIGINT.
+ * Resolves when the listener is bound (for tests); in production it runs forever.
+ */
+export async function runBackend(opts: {
+  socketPath: string;
+  schemaPath?: string;
+}): Promise<{ close: () => Promise<void> }> {
+  if (opts.schemaPath) publishSchema(opts.schemaPath);
+
+  const handle = await serveBackend({
+    socketPath: opts.socketPath,
+    handler: handleBackendRequest,
+    onDiagnostic: (l) => process.stderr.write(l + '\n'),
+  });
+
+  process.stderr.write(
+    `[memory-server backend] listening on ${handle.socketPath} ` +
+      `(version ${serverInfo().version})\n`,
+  );
+
+  const shutdown = (sig: string): void => {
+    process.stderr.write(`[memory-server backend] ${sig} — shutting down\n`);
+    void handle.close().finally(() => process.exit(0));
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+
+  return { close: () => handle.close() };
+}

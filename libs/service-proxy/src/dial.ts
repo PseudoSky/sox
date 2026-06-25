@@ -64,6 +64,9 @@ export interface DialOptions {
   /** Called whenever a fresh backend connection is established (for schema re-read /
    * list_changed handshake, §9.5.3). */
   onConnect?: () => void;
+  /** Called whenever an ESTABLISHED backend connection drops (not on a failed
+   * initial dial). Used by the shim to re-ensure a crashed backend (§9.5 step 3). */
+  onDisconnect?: () => void;
 }
 
 /** A live (re-dialing) backend connection. */
@@ -150,6 +153,11 @@ export function dialBackend(opts: DialOptions): BackendConnection {
         // In-flight (sent) requests will never get a response on this socket —
         // requeue them so they replay on reconnect.
         requeueUnanswered();
+        try {
+          opts.onDisconnect?.();
+        } catch (e) {
+          diag(`[service-proxy shim] onDisconnect threw: ${(e as Error).message}`);
+        }
       }
       maybeFastFail();
       scheduleRedial();

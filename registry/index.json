@@ -101,7 +101,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:4baabc9ded40ca473f3a1b0e49daa073fc78f2f4ee601297268c6ed59f63a135",
+    "checksum": "sha256:c04806ae1acec531ab73c10fe0e0f209674db53bfcd97c38103015e342a44400",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },

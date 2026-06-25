@@ -17,7 +17,9 @@
   "tags": ["memory", "rag", "graph", "sqlite"],
   "lifecycle": {
     "background": true,
-    "health": { "type": "stdio-ping" }
+    "health": { "type": "stdio-ping" },
+    "serve_mode": "proxy",
+    "schema_path": "dist/schema.json"
   },
   "install": {
     "type": "mcp-server",

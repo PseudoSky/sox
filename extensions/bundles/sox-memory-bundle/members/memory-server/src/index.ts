@@ -73,7 +73,7 @@ interface ContentAddress {
 let _contentAddress: ContentAddress | undefined;
 
 /** Compute (and memoize) the content address of the running entrypoint artifact. */
-function getContentAddress(): ContentAddress {
+export function getContentAddress(): ContentAddress {
   if (_contentAddress !== undefined) return _contentAddress;
 
   // The running artifact: prefer the entry script the process was launched with
@@ -262,7 +262,7 @@ function getDb(dbPath: string): Database.Database {
   return db;
 }
 
-const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
+export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_ping',
     description:
@@ -2407,11 +2407,49 @@ const _fallbackTimer = setInterval(() => {
 }, FALLBACK_ENRICH_INTERVAL_MS);
 _fallbackTimer.unref();
 
-// ADR-0003 Decision 5: serverInfo.version is DERIVED from the running artifact's
-// content address (short hash) — never a hand-typed '1.1.0'. The MCP initialize
-// response now answers "what code is this?" with the same drift-proof signal as
-// memory_ping.
-void serve(registeredTools, {
-  name: 'memory-server',
-  version: getContentAddress().short,
-});
+// ── Entrypoint dispatch: backend mode vs direct-stdio (spec §9.5) ─────────────
+//
+// memory-server has two run modes:
+//
+//   1. BACKEND mode (SOX_PROXY_BACKEND=1) — the DEFAULT under the front-shim
+//      service-proxy. This process is a persistent, sox-owned UDS backend holding
+//      the real tool implementation; the thin stdio shim (`soxe serve`) proxies
+//      tools/call to it. Upgrades = a rolling restart of THIS backend behind the
+//      shim, with NO client reconnect (§9.5.2). The shim passes the socket +
+//      schema paths via env (it derived them from the [def:singleton-key]).
+//
+//   2. DIRECT-STDIO mode (default when SOX_PROXY_BACKEND is unset) — the original
+//      M3 path: this process IS the MCP server over the client's stdio pipe. This
+//      is the opt-out escape hatch (serve_mode:"direct" / --no-proxy) AND the
+//      standalone/dev path. Byte-for-byte unchanged behaviour.
+//
+// The dispatch reads process.argv[1] guard so importing this module (e.g. from
+// backend.ts or tests) never auto-starts a server.
+if (require.main === module) {
+  if (process.env.SOX_PROXY_BACKEND === '1') {
+    const socketPath = process.env.SOX_PROXY_BACKEND_SOCKET;
+    if (!socketPath) {
+      process.stderr.write(
+        '[memory-server] SOX_PROXY_BACKEND=1 but SOX_PROXY_BACKEND_SOCKET is unset — cannot bind backend\n',
+      );
+      process.exit(2);
+    }
+    // Lazy-require so the direct-stdio path never loads service-proxy.
+    const { runBackend } = require('./backend.js') as typeof import('./backend.js');
+    void runBackend({
+      socketPath,
+      ...(process.env.SOX_PROXY_BACKEND_SCHEMA
+        ? { schemaPath: process.env.SOX_PROXY_BACKEND_SCHEMA }
+        : {}),
+    });
+  } else {
+    // ADR-0003 Decision 5: serverInfo.version is DERIVED from the running artifact's
+    // content address (short hash) — never a hand-typed '1.1.0'. The MCP initialize
+    // response now answers "what code is this?" with the same drift-proof signal as
+    // memory_ping.
+    void serve(registeredTools, {
+      name: 'memory-server',
+      version: getContentAddress().short,
+    });
+  }
+}

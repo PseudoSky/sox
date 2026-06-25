@@ -1767,6 +1767,32 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // Section SPM: Slice 1.6 (§9.5) memory-server PROXY-DEFAULT + auto-managed
+  // BACKEND zero-downtime. The REAL memory-server backend (SOX_PROXY_BACKEND=1)
+  // is auto-spawned + singleton-guarded by the shim's ensure hook; TWO shims (two
+  // sessions) share ONE backend (single-writer); a backend rolling-restart keeps
+  // both shims' tools/call working with the stdio pipes never closing (zero
+  // reconnect). Drives the BUILT memory-server + service-proxy dist (BL-4).
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\n' + '═'.repeat(60));
+  console.log('Section SPM: memory-server proxy-default backend zero-downtime + multi-shim single-writer');
+  console.log('═'.repeat(60));
+  {
+    const probe = spawnSync(NODE, [path.join(ROOT, 'tools', 'probe-memory-backend-zdt.mjs')], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: { ...process.env, SOX_SANDBOX_ROOT: '', SOX_HOME: '', SOX_ECOSYSTEM_HOME: '' },
+    });
+    if (probe.stdout) process.stdout.write(probe.stdout);
+    if (probe.status === 0) {
+      assert(true, 'SPM: real memory-server backend — two shims share ONE backend (single-writer); tools/call survives backend rolling-restart with zero reconnect');
+    } else {
+      if (probe.stderr) process.stderr.write(probe.stderr);
+      assert(false, `SPM: memory-server proxy-default backend gate failed (exit ${probe.status})`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Summary
   // ═══════════════════════════════════════════════════════════════════════════
   console.log('\n' + '═'.repeat(60));
