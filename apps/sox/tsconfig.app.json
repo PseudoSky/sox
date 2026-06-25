@@ -16,7 +16,8 @@
       "@adhd/sox-install-engine": ["libs/install-engine/dist/index.d.ts"],
       "@adhd/sox-host-runtime": ["libs/host-runtime/dist/index.d.ts"],
       "@adhd/sox-host-registry": ["libs/host-registry/dist/index.d.ts"],
-      "@adhd/sox-registry": ["libs/registry/dist/index.d.ts"]
+      "@adhd/sox-registry": ["libs/registry/dist/index.d.ts"],
+      "@adhd/sox-service-proxy": ["libs/service-proxy/dist/index.d.ts"]
     }
   },
   "include": ["src/**/*.ts"],

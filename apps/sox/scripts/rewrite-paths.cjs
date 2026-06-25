@@ -22,6 +22,7 @@ const aliases = {
   '@adhd/sox-manifest':       '../../../libs/manifest/dist/index.js',
   '@adhd/sox-authoring':      '../../../libs/authoring/dist/index.js',
   '@adhd/sox-registry':       '../../../libs/registry/dist/index.js',
+  '@adhd/sox-service-proxy':  '../../../libs/service-proxy/dist/index.js',
 };
 
 for (const [alias, rel] of Object.entries(aliases)) {

@@ -1,0 +1,15 @@
+{
+  "name": "@adhd/sox-service-proxy",
+  "version": "0.1.0",
+  "description": "Front-shim service-proxy (spec §9.5, Slice 1.5): stdio↔UDS MCP proxy enabling zero-downtime backend upgrades without client reconnects. Dependency-free leaf (node builtins only).",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  }
+}

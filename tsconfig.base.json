@@ -36,7 +36,8 @@
       "@adhd/sox-registry": ["libs/registry/dist/index.js"],
       "@adhd/sox-memory-core": ["libs/memory-core/dist/index.d.ts"],
       "@adhd/sox-memory-enrich": ["libs/memory-enrich/dist/index.d.ts"],
-      "@adhd/sox-mcp-runtime": ["libs/mcp-runtime/dist/index.d.ts"]
+      "@adhd/sox-mcp-runtime": ["libs/mcp-runtime/dist/index.d.ts"],
+      "@adhd/sox-service-proxy": ["libs/service-proxy/dist/index.js"]
     }
   },
   "include": ["scripts/**/*.ts", "extensions/**/*.ts"],

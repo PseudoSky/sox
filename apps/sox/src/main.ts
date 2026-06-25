@@ -19,6 +19,7 @@ import {
   dataRoot,
   installRegistryPath,
   logDirFor,
+  socketDir,
   getRuntimeFilePath,
   getRuntimeRecord,
   getScopePaths,
@@ -4567,6 +4568,13 @@ Designed for use as the .mcp.json command for stdio MCP servers.
 Flags:
   --scope=<scope>   Restrict lookup to one scope (default: cascade project→user→org→local)
   --root=<dir>      Workspace root (default: cwd)
+  --proxy           Run in front-shim proxy mode (spec §9.5, Slice 1.5): serve
+                    initialize + tools/list from a cached schema and proxy
+                    tools/call to a persistent sox-owned backend over a UDS, so a
+                    backend upgrade is a rolling restart with NO client reconnect.
+                    Also auto-enabled when the manifest declares
+                    lifecycle.proxy:true or lifecycle.serve_mode:"proxy".
+                    OPT-IN — default behaviour is unchanged (direct exec).
   --log             Tee child stderr to <logDir>/<extId>-serve-<YYYY-MM-DD>.log (opt-in)
                     Also enabled by setting SOX_SERVE_LOG=1 in the environment.
                     NEVER tees stdout — stdout is the JSON-RPC channel.
@@ -4634,6 +4642,8 @@ Flags:
   const manifest2 = JSON.parse(fsMod2.readFileSync(manifestPath2, 'utf8')) as {
     entrypoint?: string;
     permissions?: PermissionsBlock;
+    // Slice 1.5 (§9.5): manifest may opt the served process into proxy/shim mode.
+    lifecycle?: { proxy?: boolean; serve_mode?: string; schema_path?: string };
   };
   if (!manifest2.entrypoint) {
     process.stderr.write(`${CLI} serve: no entrypoint in manifest at ${manifestPath2}\n`);
@@ -4696,6 +4706,63 @@ Flags:
       clientProjectRoot = '';
     }
     serveEnv['SOX_CONFIG_PROJECT_PATH'] = clientProjectRoot;
+  }
+
+  // ── Slice 1.5 (§9.5): OPT-IN front-shim proxy mode ──────────────────────────
+  //
+  // When --proxy is passed OR the manifest declares lifecycle.proxy:true /
+  // lifecycle.serve_mode:"proxy", this served process runs as the thin stdio
+  // front-shim (it holds NO tool implementation): it serves initialize +
+  // tools/list from a cached schema and proxies tools/call to a persistent,
+  // sox-owned backend over a Unix domain socket. A backend upgrade then becomes a
+  // rolling restart with NO client reconnect for behaviour-only changes; an
+  // interface change emits notifications/tools/list_changed (§9.5.3).
+  //
+  // The backend socket path is derived from the data-root resolver (socketDir(),
+  // ADR-0004) keyed by the [def:singleton-key] (id + canonical store-resource),
+  // identical to the Slice-1 singleton key — so the shim dials the exact one
+  // backend per store, with no port-selection problem.
+  //
+  // OPT-IN ONLY: when not enabled, cmdServe falls through to the existing
+  // exec/--log paths below with ZERO behaviour change. memory-server (and any
+  // existing server) is NOT flipped to proxy mode by this change.
+  const wantProxy =
+    flags['proxy'] !== undefined ||
+    manifest2.lifecycle?.proxy === true ||
+    manifest2.lifecycle?.serve_mode === 'proxy';
+
+  if (wantProxy) {
+    const { runFrontShim, backendSocketPath } =
+      require('@adhd/sox-service-proxy') as typeof import('@adhd/sox-service-proxy');
+
+    // Derive the [def:singleton-key] for the backend from the SAME resolver Slice 1
+    // uses, so the shim and the backend agree on one socket per store-resource.
+    const storeResource = resolveStoreResource(manifestPath2, serveEnv as Record<string, string>);
+    const key = singletonKey(extId, storeResource) ?? `${extId} none:`;
+    const backendSock = backendSocketPath(socketDir(), key);
+
+    // A backend MAY publish a schema.json (manifest lifecycle.schema_path, relative
+    // to the install dir) so the shim can serve tools/list instantly even while the
+    // backend is mid-restart. Optional — absent ⇒ schema is read from the backend.
+    let schemaCachePath: string | undefined;
+    if (manifest2.lifecycle?.schema_path) {
+      const sp = pathMod2.resolve(extDir2, manifest2.lifecycle.schema_path);
+      if (fsMod2.existsSync(sp)) schemaCachePath = sp;
+    }
+
+    process.stderr.write(
+      `[sox serve] proxy mode: shim → backend UDS ${backendSock} ` +
+        `(singleton-key: ${key})\n`,
+    );
+
+    const handle = runFrontShim({
+      id: extId,
+      socketPath: backendSock,
+      ...(schemaCachePath !== undefined ? { schemaCachePath } : {}),
+    });
+    // The shim lives until the client closes the stdio pipe.
+    await handle.done;
+    process.exit(0);
   }
 
   // BL-46: opt-in durable stderr sink for the served child process.

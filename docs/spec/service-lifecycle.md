@@ -1,13 +1,23 @@
 # Service & Daemon Lifecycle — Canonical Specification
 
-**Spec version:** 1.1.0
-**Status:** Binding. Slice 1 (§14) is IMPLEMENTED on branch `feat/service-lifecycle-slice1`; the OS-unit + proxy surface (Slices 2–4) is designed-not-built.
+**Spec version:** 1.1.1
+**Status:** Binding. Slice 1 (§14) is IMPLEMENTED on branch `feat/service-lifecycle-slice1`; **Slice 1.5 (the front-shim service-proxy, §9.5) is IMPLEMENTED** on branch `feat/service-proxy-slice1_5` (lib + OPT-IN serve mode; no existing server flipped). The OS-unit surface (Slices 2–4) is designed-not-built.
 **Date:** 2026-06-25
 **Owner:** platform-engineering
 **Applies to:** every code path that spawns, supervises, stops, reaps, health-checks, or persists a `service`- or `mcp-server`-type extension, across all scopes (`org` / `user` / `project` / `local`, plus the notion of *global*).
 
 ### Changelog
 
+- **1.1.1 (2026-06-25)** — **Implemented Slice 1.5** (§9.5, the front-shim service-proxy / M3↔M4
+  bridge) as the dependency-free leaf lib `libs/service-proxy/` (`runFrontShim`, `serveBackend`,
+  `dialBackend`, `computeSchemaHash`, `backendSocketPath`, frame codec; node `net`/`crypto`/`fs`
+  only) plus an **OPT-IN** `--proxy` / `lifecycle.proxy:true` / `lifecycle.serve_mode:"proxy"`
+  branch of `cmdServe` (`apps/sox/src/main.ts`). Default `cmdServe` behaviour is UNCHANGED;
+  **no existing server (incl. memory-server) is flipped to proxy mode** — that migration is a
+  separate future slice. Zero-downtime proven by a real-process e2e probe
+  (`tools/probe-service-proxy-zdt.mjs`, wired as a new e2e Section): a backend rolling-restart
+  with the client's `tools/call` succeeding across it and the stdio pipe never closing. Gates
+  recorded in §14 (Slice 1.5).
 - **1.1.0 (2026-06-25)** — Resolved all six Appendix-B `(unverified)` assumptions with decisions
   + rationale (one, the OS-unit node-path, retains a recommended default needing a human ack).
   **Implemented Slice 1** (cross-scope singleton + reconcile heal) in
@@ -588,6 +598,13 @@ follows the new artifact.
 
 ## 9.5 Zero-downtime upgrades without forced MCP reconnects — the M3↔M4 bridge (front-shim service-proxy)
 
+> **Status: IMPLEMENTED (Slice 1.5, v1.1.1).** Delivered as the leaf lib
+> `libs/service-proxy/` (`runFrontShim`, `serveBackend`, `dialBackend`, `computeSchemaHash`,
+> `backendSocketPath`, length-prefixed frame codec) + an OPT-IN `--proxy` /
+> `lifecycle.proxy:true` branch of `cmdServe`. The proxy is available behind the opt-in; no
+> existing server is flipped to it by default (default `cmdServe` is byte-for-byte unchanged).
+> Zero-downtime is gate-proven (real-process e2e Section SP + unit specs). See §14 Slice 1.5.
+
 This section answers the human's key architecture question: **can we upgrade a running `mcp-server`
 service to new code WITHOUT making the MCP client reconnect/reload?** Short answer: **yes, for any
 upgrade that does not change the tool *interface* (the JSON-RPC tool schema). An interface change still
@@ -904,21 +921,48 @@ acceptance.
   at *start*; running it on every `sox list`/`status`/`doctor` (§10.2) and rendering `owner`/`liveness`
   descriptors lands with Slice 4's universal reconcile pass.
 
-### Slice 1.5 — Front-shim service-proxy (M3↔M4 bridge; zero-downtime upgrades) — designed (§9.5)
+### Slice 1.5 — Front-shim service-proxy (M3↔M4 bridge; zero-downtime upgrades) — ✅ IMPLEMENTED (`feat/service-proxy-slice1_5`)
 
 - **Goal:** decouple the JSON-RPC stdio surface from the tool implementation so a backend upgrade is a
   rolling restart with **no client reconnect** for behavior-only changes; an interface change emits
-  `tools/list_changed` (reconnect only as a fallback). Adds the M3 serve-record breadcrumb (item 1).
-- **Touched:** new leaf lib `libs/service-proxy/` (`runFrontShim`, `dialBackend`, `computeSchemaHash`,
-  `serveBackend`; node `net`/`crypto` only); a `--proxy` / `lifecycle.proxy:true` branch of `cmdServe`;
-  the daemon entrypoint wraps `serveBackend` around the existing in-process dispatcher; `run/serve/`
-  serve-record writer + GC.
-- **Acceptance:** upgrade the backend while a client is connected → calls resume sub-second, **zero
-  reconnect** (proven via a long-lived shim client across a backend restart); backend-down past the
-  bound → pending calls fast-fail `-32001`, pipe stays open, auto-recovers; a schema-hash change emits
-  `tools/list_changed`; UDS path is data-root-derived (no port selection). Sequenced **after** Slice 1
-  (it relies on the store-resource singleton key) and **before** Slice 2 (the backend it upgrades is the
-  M4 service Slice 2 supervises).
+  `tools/list_changed` (reconnect only as a fallback).
+- **Delivered:**
+  - `libs/service-proxy/` — dependency-free leaf lib (node `net`/`crypto`/`fs`/`path` only):
+    - `framing.ts` — `encodeFrame` / `FrameDecoder` (4-byte big-endian length-prefixed JSON frames,
+      streaming reassembly, 16 MiB cap).
+    - `jsonrpc.ts` — JSON-RPC 2.0 types + guards + `ERR_BACKEND_UNAVAILABLE` (-32001).
+    - `schema-hash.ts` — `computeSchemaHash` (canonical/recursive-key-sorted sha256 of `tools/list`;
+      `[contract:schema-hash]`).
+    - `backend.ts` — `serveBackend({ socketPath, handler })`: UDS listener (0600, stale-socket
+      unlink) the daemon wraps around its in-process dispatcher.
+    - `dial.ts` — `dialBackend`: bounded re-dial (50ms→2s, cap), in-flight requeue across reconnect,
+      bounded queue, fast-fail `-32001` past the give-up bound while keeping re-dialing (auto-recover).
+    - `shim.ts` — `runFrontShim`: stdio↔UDS shim; serves `initialize`+`tools/list` from cache; proxies
+      everything else; schema-hash handshake + `notifications/tools/list_changed` nudge;
+      `[inv:no-stdout-diagnostics]` (only framed JSON-RPC to stdout).
+    - `socket-path.ts` — `backendSocketPath(socketDir, singletonKey)`: data-root-derived UDS path
+      keyed by `[def:singleton-key]` (no port selection), sun_path-length-bounded.
+  - `apps/sox/src/main.ts` — OPT-IN `--proxy` / `lifecycle.proxy:true` / `lifecycle.serve_mode:"proxy"`
+    branch of `cmdServe`; backend socket derived via `resolveStoreResource` + `singletonKey` (the SAME
+    Slice-1 key) + `backendSocketPath`. **Default exec/`--log` paths unchanged when not opted in.**
+  - `tools/probe-service-proxy-zdt.mjs` — real-process zero-downtime e2e probe, wired as e2e Section SP.
+- **Acceptance — MET (gates below):** a client `tools/call` succeeds across a backend rolling-restart
+  with the stdio pipe never closing and the NEW backend answering (zero reconnect); backend-down past
+  the bound → pending fast-fail `-32001`, pipe stays open, auto-recovers; schema-hash change → cached
+  schema kept + `tools/list_changed` emitted; UDS path data-root-derived (no port selection);
+  no-stdout-diagnostics invariant proven. Sequenced **after** Slice 1 (reuses its store-resource
+  singleton key) and **before** Slice 2 (the backend it upgrades becomes the M4 service Slice 2
+  supervises). **NOT in scope (deferred):** flipping memory-server (or any server) to proxy mode (a
+  separate migration with reconnect implications); the `run/serve/` serve-record breadcrumb (folded
+  into the memory-server proxy migration, since it is most useful once a backend actually runs).
+- **Gate results (nx targets only; built before testing per BL-4):**
+  - `nx build service-proxy` ✅, `nx build sox` ✅ (+ deps, service-proxy ordered first).
+  - `nx lint service-proxy` ✅, `nx lint sox` ✅.
+  - `nx test service-proxy` → **30 passed** (framing 7, schema-hash 9, dial 5, shim 4, socket-path 5).
+  - `nx test sox` → **30 passed**; `nx test host-runtime` → **146 passed**.
+  - `nx run host-runtime:test-e2e` → **100 passed, 0 failed** (was 99; +1 Section SP zero-downtime),
+    stable across 3 cache-busted runs; standalone probe `node tools/probe-service-proxy-zdt.mjs` → PASS.
+  - `registry:sync-index` → **no checksum drift** (CLI/lib change, not a shipped extension artifact).
 
 ### Slice 2 — `sox service enable|disable` (OS-supervisor control surface, subsumes BL-51 + reboot half of BL-50)
 
