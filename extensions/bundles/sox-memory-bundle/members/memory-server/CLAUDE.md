@@ -4,6 +4,8 @@
 
 Use this when an agent needs durable, searchable memory across sessions — exposes **19 `memory_*` tools** (v1.1.0) over a single-file SQLite graph store with hybrid recall (<50 ms, zero LLM), deterministic enrichment (provenance, tags, topic, near-dup detection), session state, community/cluster lookup, curation, bi-temporal invalidation, and in-place node editing.
 
+> **`db_path` is OPTIONAL — omit it (BL-55).** Every tool defaults `db_path` to the bundle-configured store the host injects as `SOX_CONFIG_DB_PATH` (normally `~/.memory/memory.db`), falling back to `~/.memory/memory.db`. Do **not** guess a path like `~/.sox/memory` — just leave `db_path` out and the server uses the right store. Pass `db_path` only to target a non-default store inside the `~/.memory/**` allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.
+
 ## When to call tools from this server
 
 Call tools from `memory-server` when:
@@ -282,7 +284,7 @@ Implements: `initialize`, `tools/list`, `tools/call`.
 
 This extension declares an `fs` allowlist covering `~/.memory/**` (both read and write). The host runtime injects this allowlist as an environment policy at spawn time.
 
-The `db_path` parameter accepted by every tool is validated against this allowlist by the in-process permission guard before any database operation begins. If the resolved path falls outside `~/.memory/**`, the guard denies the operation and returns an error — no file is created, no partial write occurs, and no side effects are left on disk.
+The optional `db_path` parameter (BL-55) resolves as: explicit arg → host-injected `SOX_CONFIG_DB_PATH` (the `config.memory-server.db_path` bundle property) → `~/.memory/memory.db`. The resolved path is then validated against this allowlist by the in-process permission guard before any database operation begins. If the resolved path falls outside `~/.memory/**`, the guard denies the operation and returns an error — no file is created, no partial write occurs, and no side effects are left on disk.
 
 To use a `db_path` outside `~/.memory/`:
 - Reconfigure the `fs.write` and `fs.read` allowlist in this extension's `permissions` block to include the desired path, then re-install.

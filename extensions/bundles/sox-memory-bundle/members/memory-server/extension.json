@@ -41,14 +41,14 @@
         "type": "object",
         "properties": {
           "content":    { "type": "string", "description": "The content to memorize" },
-          "db_path":    { "type": "string", "description": "Absolute path to the SQLite memory store. Must be within ~/.memory/** (the fs allowlist in this extension's permissions block). Paths outside are denied by the host permission guard with no side effects." },
+          "db_path":    { "type": "string", "description": "Optional; defaults to the bundle-configured store (~/.memory/memory.db). Path to the SQLite memory store. Must be within ~/.memory/** (the fs allowlist in this extension's permissions block). Paths outside are denied by the host permission guard with no side effects." },
           "session_id": { "type": "string" },
           "t_occurred": { "type": "string", "description": "ISO timestamp when this occurred" },
           "agent_id":   { "type": "string" },
           "source":     { "type": "string", "enum": ["message", "tool_output", "observation", "document", "reflection", "import"] },
           "importance": { "type": "number", "minimum": 1, "maximum": 10 }
         },
-        "required": ["content", "db_path"]
+        "required": ["content"]
       }
     },
     {
@@ -58,7 +58,7 @@
         "type": "object",
         "properties": {
           "query":        { "type": "string", "description": "The query to recall" },
-          "db_path":      { "type": "string", "description": "Absolute path to the SQLite memory store. Must be within ~/.memory/** (the fs allowlist in this extension's permissions block). Paths outside are denied by the host permission guard with no side effects." },
+          "db_path":      { "type": "string", "description": "Optional; defaults to the bundle-configured store (~/.memory/memory.db). Path to the SQLite memory store. Must be within ~/.memory/** (the fs allowlist in this extension's permissions block). Paths outside are denied by the host permission guard with no side effects." },
           "scope":        { "type": "string", "description": "Scope name (project/user/org/local)" },
           "agent_id":     { "type": "string" },
           "as_of":        { "type": "string", "description": "ISO timestamp for point-in-time recall" },
@@ -66,7 +66,7 @@
           "depth":        { "type": "number", "default": 1 },
           "limit":        { "type": "number", "default": 10 }
         },
-        "required": ["query", "db_path"]
+        "required": ["query"]
       }
     },
     {
@@ -80,7 +80,7 @@
           "entity_type": { "type": "string" },
           "limit":       { "type": "number", "default": 10 }
         },
-        "required": ["query", "db_path"]
+        "required": ["query"]
       }
     },
     {
@@ -92,7 +92,7 @@
           "session_id": { "type": "string" },
           "db_path":    { "type": "string" }
         },
-        "required": ["session_id", "db_path"]
+        "required": ["session_id"]
       }
     },
     {
@@ -105,7 +105,7 @@
           "state":      { "type": "object" },
           "db_path":    { "type": "string" }
         },
-        "required": ["session_id", "state", "db_path"]
+        "required": ["session_id", "state"]
       }
     },
     {
@@ -118,7 +118,7 @@
           "db_path":    { "type": "string" },
           "level":      { "type": "number", "default": 0 }
         },
-        "required": ["entity_uid", "db_path"]
+        "required": ["entity_uid"]
       }
     },
     {
@@ -133,7 +133,7 @@
           "t_transition":    { "type": "string" },
           "replacement_uid": { "type": "string" }
         },
-        "required": ["claim_uid", "reason", "db_path"]
+        "required": ["claim_uid", "reason"]
       }
     }
   ],
