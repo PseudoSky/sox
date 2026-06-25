@@ -15,7 +15,7 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ## Open — embed fallback + store pollution (2026-06-23, surfaced by BL-48 observability)
 
-### BL-52 — live memory-server runs on HASH embeddings (`embed_on_hash_fallback:true`) despite real BGE being available — **Resolved (code; live-verify pending upgrade --all + reconnect)**
+### BL-52 — live memory-server runs on HASH embeddings (`embed_on_hash_fallback:true`) despite real BGE being available — **Resolved + reality-verified (2026-06-25)**
 
 **Fix (fix/memory-bl50-52-53):** the enforced policy env-scrub now forwards `SOX_EMBED_BACKEND`,
 `SOX_EMBED_CACHE_DIR`, `XDG_CACHE_HOME` (and any `SOX_EMBED_*`) across **all four** enforced spawn
@@ -23,11 +23,27 @@ paths — `apps/sox` `serve` + `exec`, `runtime-cli` exec, and `supervisor._spaw
 server inherits the real-BGE backend selector + model-cache pointer instead of resolving to `auto`
 and silently falling back to FNV-hash. Covered by 6 new `supervisor-policy.spec.ts` tests (forwarded
 when set; absent when unset → not injected as `""`; explicit `hash` preserved; unrelated secrets still
-scrubbed). This fixes root-cause hypothesis (a) env-scrub stripping the selector/cache pointer; if a
-post-`upgrade --all` `memory_ping` still reports `embed_on_hash_fallback:true`, the residual cause is
-(b) worker-spawn from the served location (embedWorker.js sibling resolution / onnxruntime-node) and
-reopens here. **Live proof required:** after `sox upgrade --all` + client reconnect, confirm
-`memory_ping.embed_on_hash_fallback:false` / `embed_model:"bge-base-en-v1.5"`.
+scrubbed). Root cause was (a) env-scrub stripping the model-cache pointer so the worker couldn't find
+the cached BGE model under serve.
+
+**Reality verification (2026-06-25, fresh `node bin/soxe serve memory-server`, enforced scrub, model
+cached at `~/.cache/sox-memory/models/fast-bge-base-en-v1.5`):**
+- `SOX_EMBED_BACKEND=real` → `memory_recall` returned `["vec"]` results **without error**. The `real`
+  branch of `embed()` *throws* on worker failure (no hash fallback), so a successful recall is positive
+  proof the ONNX worker loaded + embedded under serve.
+- **`SOX_EMBED_BACKEND` UNSET (production default `auto`)** → after warmup, `memory_ping` reports
+  **`embed_model:"bge-base-en-v1.5"`, `embed_backend_configured:"auto"`, `embed_on_hash_fallback:false`**
+  with no `falling back to hash` warning on stderr. Real BGE is active on the default path.
+
+Three earlier "still on hash" readings were measurement artifacts, not failures: (1) `memory_ping`
+called before the first embed reports `embed_on_hash_fallback:true` because the worker warms lazily and
+`_activeModel` only flips to `bge-base-en-v1.5` after warmup (→ new **BL-54**); (2) a grep miss on the
+backslash-escaped `\"results\"` in JSON; (3) EXIT 124 = the stdio server not exiting on stdin-EOF (the
+embed worker keeps it alive), not a recall hang. The running session server is the **pre-fix** binary
+and still reports hash until the **client reconnects/reloads plugins** (stdio servers respawn on next
+connection); the rebuilt `dist/apps/sox/main.js` carries the fix. No registry checksum changed (CLI/
+host-lib change, not an installed-extension entrypoint), so `upgrade --all` is a no-op — a client
+reconnect is the only step to put the fix live.
 
 <details><summary>original report</summary>
 
@@ -48,6 +64,45 @@ which (instrument the worker-spawn failure path — its warning currently goes o
 the BL-46 `--log` sink), then either ship the worker with the served artifact + pin `SOX_EMBED_BACKEND=real`,
 or accept hash and stop advertising real. Verify via `memory_ping.embed_on_hash_fallback` after the fix.
 </details>
+
+### BL-54 — `memory_ping` reports `embed_on_hash_fallback:true` BEFORE the first embed (lazy-init false positive) — **Open (MEDIUM)**
+
+Surfaced 2026-06-25 while reality-verifying BL-52 — and it is the artifact that triggered the entire
+BL-52 "still on hash" false alarm. `memory_ping` computes `embed_on_hash_fallback` from
+`getActiveEmbedModel()` (index.ts ~769-773), but `_activeModel` only flips from its default
+`'nomic-embed-text-v1.5-hash'` to `'bge-base-en-v1.5'` **after** the embed worker's async warmup
+resolves (embed.ts ~184-185), and the worker spawns **lazily on the first `embed()` call**. So a fresh
+server that has not yet served a recall/write — or one pinged *concurrently* with its first embed before
+warmup completes — reports `embed_model:"nomic-embed-text-v1.5-hash"` / `embed_on_hash_fallback:true`
+even though the real backend is fully available and will load on first use. This makes `memory_ping`
+**unreliable as a startup health check** (it cried "degraded" on a healthy server and sent two agents
+chasing a non-bug). Same flaw in `memory_stats` (index.ts ~2246). Fix options: (a) `memory_ping`/`stats`
+proactively trigger + await a one-token warmup embed before reporting; or (b) add a distinct
+`embed_state: "uninitialized" | "real" | "hash-fallback"` so "not warmed up yet" is not conflated with
+"fell back to hash". Verification of real-vs-hash must use a **post-warmup** ping (embed first, then ping)
+or the absence of the `falling back to hash` stderr warning.
+
+### BL-55 — every `memory_*` tool requires `db_path` with NO default → agents guess the magic path and miss the store — **Open (HIGH)**
+
+Surfaced 2026-06-25: an agent intuitively called `memory_recall(db_path: "~/.sox/memory", …)`. That path
+is wrong on two counts — the canonical single store is **`~/.memory/memory.db`** (19.6 MB, real), and
+`~/.sox/memory` is neither the right dir (`.sox` ≠ `.memory`) nor a `.db` file. Root cause: `db_path` is
+listed in the `required` array of **every** tool's input schema (index.ts: `required:['query','db_path']`,
+`required:['content','db_path']`, …) with **no default**, so every caller must already *know* the magic
+path. The CLAUDE.md guidance documents the `~/.memory/**` allowlist but never states "omit db_path to use
+the default store," because there is no default. Agents therefore guess, and guess wrong.
+
+Mitigation already in place (verified): the in-process permission guard hard-denies any `db_path` outside
+the `~/.memory/**` allowlist — `db_path:"~/.sox/memory"` returns `{isError:true,"permission denied: …
+outside declared fs allowlist"}` and creates **no file**. So a wrong guess fails *loudly*, it does NOT
+silently read/write an empty store. **Residual footgun:** a wrong-but-inside guess (e.g.
+`~/.memory/typo.db`) passes the guard and silently creates an empty db → empty results with no error.
+
+Fix: make `db_path` **optional** and default to the canonical store the server already knows — the host
+injects the `~/.memory/**` allowlist at spawn, so the server can default `db_path` to
+`~/.memory/memory.db` (or a `SOX_CONFIG`-injected path) when omitted. Drop `db_path` from each tool's
+`required` array, document "omit to use the default store" in CLAUDE.md, and keep the guard as the
+backstop. This removes path-guessing entirely and is the permanent solve.
 
 ### BL-53 — `~/.memory` polluted with 842 orphaned WAL/SHM test sidecars; tests write to the real store dir — **Resolved**
 
