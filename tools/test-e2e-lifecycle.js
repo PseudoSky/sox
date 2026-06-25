@@ -6,13 +6,13 @@
  * using a throwaway temp directory. Never touches ~/.sox, ~/.memory, or .tmp-* dirs.
  *
  * Steps:
- *   1. sox install memory-server -s project (into temp scope)
- *   2. sox start -s project → memory-server process spawned, runtime record written
- *   3. Use memory_write + memory_recall via sox exec (through the runtime record)
- *   4. sox list → shows memory-server as RUNNING
- *   5. sox disable memory-server → process is STOPPED
- *   6. sox uninstall memory-server → removed from lockfile
- *   7. sox stop -s project → cleans up; runtime record updated
+ *   1. soxe install memory-server -s project (into temp scope)
+ *   2. soxe start -s project → memory-server process spawned, runtime record written
+ *   3. Use memory_write + memory_recall via soxe exec (through the runtime record)
+ *   4. soxe list → shows memory-server as RUNNING
+ *   5. soxe disable memory-server → process is STOPPED
+ *   6. soxe uninstall memory-server → removed from lockfile
+ *   7. soxe stop -s project → cleans up; runtime record updated
  *
  * Exit: 0 if all assertions pass, 1 if any fail.
  * Cleanup: temp dir always removed (even on failure) via process.on('exit').
@@ -33,7 +33,7 @@ const NODE = process.execPath;
 const TMP_DIR = path.join(os.tmpdir(), `sox-e2e-${process.pid}-${Date.now()}`);
 // ADR-0004 §D2: project-scope data lives under <root>/.adhd/sox-ecosystem/ — the
 // canonical layout getScopePaths resolves to. Placing the harness config/lockfile
-// here means `sox list`/`enable` (which resolve via getScopePaths, no override) find
+// here means `soxe list`/`enable` (which resolve via getScopePaths, no override) find
 // it without an explicit --lockfile/--config flag.
 const EXTENSIONS_DIR = path.join(TMP_DIR, '.adhd', 'sox-ecosystem');
 const RUNTIME_FILE = path.join(EXTENSIONS_DIR, 'runtime.json');
@@ -313,9 +313,9 @@ async function main() {
   console.log(`EVIL_DB_PATH (denied, outside allowlist): ${EVIL_DB_PATH}`);
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Step 1: sox install memory-server -s project (into temp scope)
+  // Step 1: soxe install memory-server -s project (into temp scope)
   // ═══════════════════════════════════════════════════════════════════════════
-  console.log('\nStep 1: sox install memory-server -s project');
+  console.log('\nStep 1: soxe install memory-server -s project');
 
   const installResult = runSox([
     'install',
@@ -341,9 +341,9 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Step 2: sox start -s project → memory-server spawned, runtime record written
+  // Step 2: soxe start -s project → memory-server spawned, runtime record written
   // ═══════════════════════════════════════════════════════════════════════════
-  console.log('\nStep 2: sox start -s project');
+  console.log('\nStep 2: soxe start -s project');
 
   // Run start via the compiled canonical runtime-cli (background child).
   // The test will keep a reference to the child and kill it on cleanup.
@@ -380,7 +380,7 @@ async function main() {
   console.log('  Waiting for memory-server to start...');
   const isRunning = await waitForRunning('memory-server', 20000);
 
-  assert(isRunning, 'memory-server is RUNNING in runtime record after sox start');
+  assert(isRunning, 'memory-server is RUNNING in runtime record after soxe start');
 
   if (fs.existsSync(RUNTIME_FILE)) {
     const record = JSON.parse(fs.readFileSync(RUNTIME_FILE, 'utf8'));
@@ -400,7 +400,7 @@ async function main() {
 
   // ─── A11: exec socket assertions ──────────────────────────────────────────
   // Verify the supervisor opened an exec control socket and wrote its path into
-  // runtime.json.  sox exec will route tool calls through this socket rather than
+  // runtime.json.  soxe exec will route tool calls through this socket rather than
   // spawning a throwaway MCP session. ([inv:exec-socket])
   {
     const runtimeRaw = fs.existsSync(RUNTIME_FILE)
@@ -414,7 +414,7 @@ async function main() {
         `A11: exec socket file exists on disk at ${execSockPath}`);
       console.log(`  A11 exec socket: ${execSockPath}`);
 
-      // Ping through the live socket — this proves sox exec routes via the supervisor.
+      // Ping through the live socket — this proves soxe exec routes via the supervisor.
       const pingResult = runSox([
         'exec',
         '-s', 'project',
@@ -424,7 +424,7 @@ async function main() {
         '--args={}',
       ]);
       assert(pingResult.status === 0,
-        `A11: sox exec memory_ping via exec socket exits 0 (got ${pingResult.status}: ${pingResult.stderr.slice(0, 80)})`);
+        `A11: soxe exec memory_ping via exec socket exits 0 (got ${pingResult.status}: ${pingResult.stderr.slice(0, 80)})`);
       let pingOk = false;
       try {
         const pingOut = JSON.parse(pingResult.stdout.trim());
@@ -439,7 +439,7 @@ async function main() {
   }
 
     // ═══════════════════════════════════════════════════════════════════════════
-  // Step 3: Use memory_write + memory_recall via sox exec (through activated runtime)
+  // Step 3: Use memory_write + memory_recall via soxe exec (through activated runtime)
   // ═══════════════════════════════════════════════════════════════════════════
   console.log('\nStep 3: Use memory_write + memory_recall through activated runtime');
 
@@ -463,7 +463,7 @@ async function main() {
     console.error('write stderr:', writeResult.stderr);
   }
 
-  assert(writeResult.status === 0, `memory_write via sox exec exits 0 (got ${writeResult.status})`);
+  assert(writeResult.status === 0, `memory_write via soxe exec exits 0 (got ${writeResult.status})`);
 
   let episodeUid = null;
   if (writeResult.status === 0) {
@@ -501,7 +501,7 @@ async function main() {
     console.error('recall stderr:', recallResult.stderr);
   }
 
-  assert(recallResult.status === 0, `memory_recall via sox exec exits 0 (got ${recallResult.status})`);
+  assert(recallResult.status === 0, `memory_recall via soxe exec exits 0 (got ${recallResult.status})`);
 
   if (recallResult.status === 0) {
     try {
@@ -523,7 +523,7 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Step 3b: NEGATIVE enforcement test via the REAL sox exec path ([dod.2])
+  // Step 3b: NEGATIVE enforcement test via the REAL soxe exec path ([dod.2])
   //
   // [process-boundary.exec] closed the C6 hole: exec now injects policy.toEnv()
   // so the spawned child receives SOX_PERM_ENFORCE + the allowlist. A write to
@@ -534,7 +534,7 @@ async function main() {
   // This is the end-to-end reality proof that enforcement flows through the real
   // production exec path (not just the hand-wired _REALITY_DRIVER in audit_c6.py).
   // ═══════════════════════════════════════════════════════════════════════════
-  console.log('\nStep 3b: negative enforcement test — evil db_path MUST be denied via sox exec');
+  console.log('\nStep 3b: negative enforcement test — evil db_path MUST be denied via soxe exec');
 
   // Ensure no stale evil file from a previous run.
   try { if (fs.existsSync(EVIL_DB_PATH)) fs.rmSync(EVIL_DB_PATH, { force: true }); } catch { /* ignore */ }
@@ -560,7 +560,7 @@ async function main() {
   if (evilWriteResult.status !== 0) {
     // exec itself exited non-zero — enforcement at the transport level.
     evilDenied = true;
-    console.log(`  [enforcement] sox exec exited ${evilWriteResult.status} (denied at exec level)`);
+    console.log(`  [enforcement] soxe exec exited ${evilWriteResult.status} (denied at exec level)`);
   } else {
     // exec exited 0 — check whether the tool returned isError:true.
     try {
@@ -590,9 +590,9 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Step 4: sox list → memory-server shown as RUNNING with scope + source
+  // Step 4: soxe list → memory-server shown as RUNNING with scope + source
   // ═══════════════════════════════════════════════════════════════════════════
-  console.log('\nStep 4: sox list');
+  console.log('\nStep 4: soxe list');
 
   const listResult = runSox([
     'list',
@@ -601,18 +601,18 @@ async function main() {
     '--json',
   ]);
 
-  assert(listResult.status === 0, `sox list exits 0 (got ${listResult.status})`);
+  assert(listResult.status === 0, `soxe list exits 0 (got ${listResult.status})`);
 
   if (listResult.status === 0) {
     try {
       const listOutput = JSON.parse(listResult.stdout.trim());
-      assert(Array.isArray(listOutput), 'sox list --json returns an array');
+      assert(Array.isArray(listOutput), 'soxe list --json returns an array');
       const memEntry = listOutput.find(
         (/** @type {any} */ e) =>
           (e.id ?? '').startsWith('memory-server') ||
           (e.key ?? '').startsWith('memory-server')
       );
-      assert(memEntry != null, 'memory-server appears in sox list output');
+      assert(memEntry != null, 'memory-server appears in soxe list output');
       if (memEntry) {
         assert(memEntry.running === true,
           `memory-server is shown as RUNNING (got running=${String(memEntry.running)})`);
@@ -625,14 +625,14 @@ async function main() {
       }
     } catch (e) {
       console.error('Could not parse list output:', listResult.stdout);
-      assert(false, `sox list --json is valid JSON: ${String(e)}`);
+      assert(false, `soxe list --json is valid JSON: ${String(e)}`);
     }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Step 5: sox disable memory-server → process is STOPPED
+  // Step 5: soxe disable memory-server → process is STOPPED
   // ═══════════════════════════════════════════════════════════════════════════
-  console.log('\nStep 5: sox disable memory-server -s project');
+  console.log('\nStep 5: soxe disable memory-server -s project');
 
   // Get the PID before disable (to verify it's killed after)
   let preDisablePid = null;
@@ -655,7 +655,7 @@ async function main() {
     console.error('disable stderr:', disableResult.stderr);
   }
 
-  assert(disableResult.status === 0, `sox disable exits 0 (got ${disableResult.status})`);
+  assert(disableResult.status === 0, `soxe disable exits 0 (got ${disableResult.status})`);
 
   // Wait a moment for SIGTERM to take effect
   await sleep(800);
@@ -692,9 +692,9 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Step 5b: sox enable memory-server → process is RE-ACTIVATED (symmetry with disable)
+  // Step 5b: soxe enable memory-server → process is RE-ACTIVATED (symmetry with disable)
   // ═══════════════════════════════════════════════════════════════════════════
-  console.log('\nStep 5b: sox enable memory-server -s project (must re-activate, not just flag)');
+  console.log('\nStep 5b: soxe enable memory-server -s project (must re-activate, not just flag)');
 
   const enableResult = runSox([
     'enable', 'memory-server', '-s', 'project',
@@ -704,7 +704,7 @@ async function main() {
     console.error('enable stdout:', enableResult.stdout);
     console.error('enable stderr:', enableResult.stderr);
   }
-  assert(enableResult.status === 0, `sox enable exits 0 (got ${enableResult.status})`);
+  assert(enableResult.status === 0, `soxe enable exits 0 (got ${enableResult.status})`);
 
   await sleep(1500); // allow the restart to spawn + pass health
 
@@ -721,9 +721,9 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Step 6: sox uninstall memory-server → removed from lockfile
+  // Step 6: soxe uninstall memory-server → removed from lockfile
   // ═══════════════════════════════════════════════════════════════════════════
-  console.log('\nStep 6: sox uninstall memory-server -s project');
+  console.log('\nStep 6: soxe uninstall memory-server -s project');
 
   const uninstallResult = runSox([
     'uninstall',
@@ -739,7 +739,7 @@ async function main() {
     console.error('uninstall stderr:', uninstallResult.stderr);
   }
 
-  assert(uninstallResult.status === 0, `sox uninstall exits 0 (got ${uninstallResult.status})`);
+  assert(uninstallResult.status === 0, `soxe uninstall exits 0 (got ${uninstallResult.status})`);
 
   // Verify removed from lockfile
   if (fs.existsSync(LOCKFILE_PATH)) {
@@ -761,9 +761,9 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Step 7: sox stop -s project → cleans up
+  // Step 7: soxe stop -s project → cleans up
   // ═══════════════════════════════════════════════════════════════════════════
-  console.log('\nStep 7: sox stop -s project');
+  console.log('\nStep 7: soxe stop -s project');
 
   const stopResult = runSox([
     'stop',
@@ -772,7 +772,7 @@ async function main() {
     `--root=${TMP_DIR}`,
   ]);
 
-  assert(stopResult.status === 0, `sox stop exits 0 (got ${stopResult.status})`);
+  assert(stopResult.status === 0, `soxe stop exits 0 (got ${stopResult.status})`);
 
   // Kill the start process (supervisor) that's been keeping the runtime alive
   if (startProcess && startProcess.exitCode === null) {
@@ -799,14 +799,14 @@ async function main() {
 
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Step 7b: BL-31 — `sox stop --id` REAPS a PPID-1 orphan by store path,
+  // Step 7b: BL-31 — `soxe stop --id` REAPS a PPID-1 orphan by store path,
   //          and SPARES an unrelated node process.
   //
   // This is the exact incident: a daemon whose supervisor exited (PPID 1) and
-  // that is absent from runtime.json. The pre-fix `sox stop` could only signal a
+  // that is absent from runtime.json. The pre-fix `soxe stop` could only signal a
   // tracked pid and never found such an orphan. We spawn a REAL detached node
   // process running the actual memory-server entrypoint, orphan it (PPID 1),
-  // plus an UNRELATED detached node process, then prove `sox stop` reaps the
+  // plus an UNRELATED detached node process, then prove `soxe stop` reaps the
   // orphan and leaves the unrelated one alive. Real ps/kill, cleaned up after.
   // ═══════════════════════════════════════════════════════════════════════════
   console.log('\nStep 7b: BL-31 orphan reaper — PPID-1 daemon reaped by store path');
@@ -816,7 +816,7 @@ async function main() {
     ROOT, 'extensions', 'bundles', 'sox-memory-bundle', 'members',
     'memory-server', 'dist', 'index.js',
   );
-  // Re-write the lockfile + runtime record so `sox stop --id=memory-server`
+  // Re-write the lockfile + runtime record so `soxe stop --id=memory-server`
   // can resolve the entrypoint source (Step 6 uninstalled it). We rebuild a
   // minimal lockfile + a runtime.json with NO tracked pid for memory-server —
   // proving the reaper finds the orphan by IDENTITY, not by a tracked pid.
@@ -849,7 +849,7 @@ async function main() {
   assert(orphanPpid === 1,
     `BL-31 orphan is reparented to init (PPID=${orphanPpid}, expected 1)`);
 
-  // The fix under test: `sox stop --id=memory-server` must reap the orphan.
+  // The fix under test: `soxe stop --id=memory-server` must reap the orphan.
   const reapResult = runSox([
     'stop', '--id=memory-server', '-s', 'project',
     `--runtime-file=${RUNTIME_FILE}`,
@@ -858,7 +858,7 @@ async function main() {
     '--grace-ms=1500',
   ]);
   assert(reapResult.status === 0,
-    `BL-31 sox stop --id exits 0 (got ${reapResult.status}); stderr=${reapResult.stderr.slice(0, 200)}`);
+    `BL-31 soxe stop --id exits 0 (got ${reapResult.status}); stderr=${reapResult.stderr.slice(0, 200)}`);
   // The reap is reported by either the CLI (`sox: reaped …`) or the runtime
   // (`[runtime] … orphan … SIGKILL/SIGTERM`). Whichever path kills it first
   // emits a reap line for the orphan pid — assert the orphan pid appears in a
@@ -868,19 +868,19 @@ async function main() {
     new RegExp(`memory-server[^\\n]*orphan[^\\n]*pid=${orphanPid}`).test(reapResult.stdout) ||
     new RegExp(`reap[^\\n]*pid ${orphanPid}`).test(reapResult.stdout);
   assert(reapEvidence,
-    `BL-31 sox stop reports reaping the orphan (pid=${orphanPid}) in stdout`);
+    `BL-31 soxe stop reports reaping the orphan (pid=${orphanPid}) in stdout`);
 
   await sleep(400);
   // REALITY CHECK against the OS process table.
   assert(!isAlive(orphanPid),
-    `BL-31 orphaned memory-server daemon (pid=${orphanPid}) is DEAD after sox stop`);
+    `BL-31 orphaned memory-server daemon (pid=${orphanPid}) is DEAD after soxe stop`);
   assert(isAlive(unrelatedOrphanPid),
     `BL-31 unrelated daemon (pid=${unrelatedOrphanPid}) SPARED — reaper matched by store path only`);
 
   // Belt-and-suspenders: no leaked memory-server pid survives.
   const reapLeaks = leakedServerPids();
   assert(reapLeaks.length === 0,
-    `BL-31 no orphan memory-server processes survive sox stop (found: ${reapLeaks.join(', ') || 'none'})`);
+    `BL-31 no orphan memory-server processes survive soxe stop (found: ${reapLeaks.join(', ') || 'none'})`);
 
   // Cleanup the unrelated process we deliberately spared.
   if (isAlive(unrelatedOrphanPid)) { try { process.kill(unrelatedOrphanPid, 'SIGKILL'); } catch { /* ignore */ } }
@@ -963,7 +963,7 @@ async function main() {
       '--no-reap', // do not pre-reap; we are testing the live-instance guard, not stale cleanup
     ]);
     assert(slice1Start.status === 0,
-      `Slice1: sox start (project) exits 0 (got ${slice1Start.status}); stderr=${slice1Start.stderr.slice(0, 200)}`);
+      `Slice1: soxe start (project) exits 0 (got ${slice1Start.status}); stderr=${slice1Start.stderr.slice(0, 200)}`);
 
     // The guard must report skipping the spawn (singleton §5.2), not a new pid.
     const guardFired = /singleton guard §5\.2/.test(slice1Start.stdout) &&
@@ -1381,7 +1381,7 @@ async function main() {
     try { fs.rmSync(d4ScopeRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 
     // ── D5. STDIO MCP-SERVER USER-SCOPE → ~/.claude.json (BL-mcp-cmd) ──────────
-    // sox install writes { type:"stdio", command:<bin>, args:["serve",<id>] } into
+    // soxe install writes { type:"stdio", command:<bin>, args:["serve",<id>] } into
     // ~/.claude.json mcpServers. The command must NOT be 'sox' (the audio tool).
     // Resolution order: SOX_CLI_BIN > process.argv[1] > 'soxe'.
     console.log('\nD5: stdio mcp-server user-scope → ~/.claude.json command uses correct bin (BL-mcp-cmd)');

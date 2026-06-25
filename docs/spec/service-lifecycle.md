@@ -118,7 +118,7 @@ P1–P9 productionized the **in-supervisor** path. They do not close these four 
    (`BACKLOG.md:182-186`). (§9.)
 
 4. **Split-brain between sox runtime.json/global-registry and the OS supervisor.** Once an OS unit
-   exists, `sox list` reading runtime.json can disagree with launchd reality. There is no authority
+   exists, `soxe list` reading runtime.json can disagree with launchd reality. There is no authority
    order and no reconcile pass that includes the OS supervisor. (§10.)
 
 This spec defines the framework that closes all four, building on §1.2 primitives, never re-proposing them.
@@ -133,10 +133,10 @@ and contracted separately.
 
 | # | Model | Manifest signal | Who owns lifecycle | How liveness is known | How it is stopped |
 |---|---|---|---|---|---|
-| **M1** | **In-supervisor (tracked)** | `type: service`/`mcp-server`, started via `sox start` lockfile path → `startRuntime` (`main.ts:3144`) | The live sox supervisor process (`ProcessSupervisor`, `supervisor.ts:93`) | In-process `_proc.exitCode === null` + `_probeHealth` (`supervisor.ts:411-449`); registry GC verifies the **supervisor's** pid/socket | `supervisor.stop()` → `-pgid` SIGTERM→SIGKILL (`supervisor.ts:165-217`) |
+| **M1** | **In-supervisor (tracked)** | `type: service`/`mcp-server`, started via `soxe start` lockfile path → `startRuntime` (`main.ts:3144`) | The live sox supervisor process (`ProcessSupervisor`, `supervisor.ts:93`) | In-process `_proc.exitCode === null` + `_probeHealth` (`supervisor.ts:411-449`); registry GC verifies the **supervisor's** pid/socket | `supervisor.stop()` → `-pgid` SIGTERM→SIGKILL (`supervisor.ts:165-217`) |
 | **M2** | **Detached service-mode daemon (PPID→1)** | `type: service` started via the service-registry path (`main.ts:3030-3128`): `spawnChild(..., {detached:true, stdio:'ignore'}); child.unref()` (`main.ts:3084-3092`) | **Nobody live** — the spawning sox process exits 0; the daemon reparents to PID 1 | Health socket probe (`probeUnixSocketLive`, `main.ts:3537`) + identity-token process scan (`findOrphansByIdentity`, `reaper.ts:216`) | Identity-token reap (`reapOrphansForExtension`, `runtime.ts:575`) — find by entrypoint argv token, `killAndVerify` |
 | **M3** | **stdio / on-demand mcp-server (client-spawned)** | `type: mcp-server`, `lifecycle.health.type: stdio-ping` (e.g. `memory-server/extension.json`) | The **MCP client** (Claude Code) spawns `soxe serve <id>` (`cmdServe`, `main.ts:4433`) per connection; lifetime = the stdio pipe | The client owns the pipe; sox does not track it. (No durable pid record — see BL-46.) | Client closes stdin/the pipe → process exits. sox does not stop it. |
-| **M4** | **OS-supervised unit (launchd / systemd)** *(proposed, §9)* | `type: service` with `sox service enable` having generated a unit | The OS supervisor (launchd `KeepAlive` / systemd `Restart`) | OS query (`launchctl print` / `systemctl --user is-active`) **plus** the health socket | `sox service disable` (unload the unit) **then** identity reap any survivor |
+| **M4** | **OS-supervised unit (launchd / systemd)** *(proposed, §9)* | `type: service` with `soxe service enable` having generated a unit | The OS supervisor (launchd `KeepAlive` / systemd `Restart`) | OS query (`launchctl print` / `systemctl --user is-active`) **plus** the health socket | `soxe service disable` (unload the unit) **then** identity reap any survivor |
 
 **Key consequences of the taxonomy:**
 
@@ -153,8 +153,8 @@ and contracted separately.
   observable (BL-46, `BACKLOG.md:246-264`).
 - **M4 supersedes M2 for persistence.** Once §9 ships, a `service` that needs reboot persistence runs
   as M4, and M2 becomes a transitional/`--daemon`-only fallback. M4's stop is *unload-then-reap*.
-- A single extension may be **promoted** M2 → M4 by `sox service enable` (§9) or run as M1 under an
-  attached `sox start`. The framework must reconcile whichever model is live (§10).
+- A single extension may be **promoted** M2 → M4 by `soxe service enable` (§9) or run as M1 under an
+  attached `soxe start`. The framework must reconcile whichever model is live (§10).
 
 **Decision (Appendix B item 1) — M3 stays untracked by a runtime.json *entry*; `cmdServe` writes a
 lightweight *serve-record* breadcrumb instead.** M3 has no durable runtime.json entry today
@@ -164,7 +164,7 @@ model — the client owns the pid, so a `running:true` entry would routinely lie
 disconnects (it would need GC on every read). **Resolution:** keep M3 out of the runtime.json
 `entries[]` (the supervisor-owned record), but have `cmdServe` write a *best-effort serve-record* under
 `run/serve/<extId>-<pid>.json` (pid, extId, scope, resolved store-resource, schema-hash, startedAt) on
-spawn and unlink it on exit. This is enumerable by `sox list --serve`/`sox doctor` for observability,
+spawn and unlink it on exit. This is enumerable by `soxe list --serve`/`soxe doctor` for observability,
 self-cleans (pid-liveness GC like `gc.ts`), and never feeds the `[auth:...]` RUNNING decision (M3 is
 rendered `owner:client`, liveness from pid+socket only). The §5.4 shared-store guard still relies on the
 health-socket probe + entrypoint scan, which is sufficient for the one-writer-per-store invariant.
@@ -229,9 +229,9 @@ the first authoritative answer:
 5. **Else** → `liveness: dead`.
 
 > **Authority rule `[auth:supervisor-then-os-then-os-reality]`:** a live, GC-verified supervisor (1)
-> outranks an OS unit (2), which outranks bare socket/process reality (3–4). `sox list` MUST render
+> outranks an OS unit (2), which outranks bare socket/process reality (3–4). `soxe list` MUST render
 > the descriptor's `liveness`/`owner`, never a raw runtime.json `running` flag. This is the
-> generalization of the existing C4 pid-liveness gate (`sox list` validates `process.kill(pid,0)`
+> generalization of the existing C4 pid-liveness gate (`soxe list` validates `process.kill(pid,0)`
 > before reporting RUNNING) to the OS-supervisor world.
 
 **Note (resolved):** step 2 (OS unit) depends on §9, not yet built; **today the order is 1 → 3 → 4 →
@@ -291,14 +291,14 @@ not the scope, not the socket — is the only key that expresses the real invari
    the existing instance as RUNNING in their own runtime.json (mirroring the current S3 guard at
    `main.ts:3063-3080`) and emit a "shared with scope X" notice.
 2. **Different store, same id ⇒ independent instances** (legal; each has its own singleton key).
-3. **`sox stop` at a scope** stops/reaps only instances whose singleton key is owned by that scope's
+3. **`soxe stop` at a scope** stops/reaps only instances whose singleton key is owned by that scope's
    install **unless** the instance is shared (rule 1), in which case stop is refused with a notice
    that another scope still references the store (prevents one scope's stop from yanking the store out
-   from under another). `sox stop --all` / `sox doctor` may force-reap.
+   from under another). `soxe stop --all` / `soxe doctor` may force-reap.
 
-**Decision (Appendix B item 2) — REFUSE-IF-SHARED is the policy.** A scoped `sox stop` whose target
+**Decision (Appendix B item 2) — REFUSE-IF-SHARED is the policy.** A scoped `soxe stop` whose target
 instance is shared with another scope (rule 1) **refuses** and prints which scope(s) still reference the
-store; only `sox stop --all` / `sox doctor --force` may force-reap a shared instance. Rationale: the
+store; only `soxe stop --all` / `soxe doctor --force` may force-reap a shared instance. Rationale: the
 invariant being protected is *one writer per store*; "last-stop-wins" lets one scope's teardown silently
 yank a store another scope is actively using (the dual of the two-writer bug — a zero-writer surprise).
 Refuse-if-shared is the conservative, surprise-free stance and matches the team's standing guidance.
@@ -351,7 +351,7 @@ it finds **two live processes for one `K`** (two pids matching the entrypoint to
    state/connections; pids wrap and carry no age signal). Implemented in `chooseSurvivor`
    (`singleton.ts`, `processStartTime` reads `ps -o lstart=`).
 2. `killAndVerify` the loser(s) (`reaper.ts:111`).
-3. Log a `[singleton-violation healed]` line and surface it in `sox doctor`.
+3. Log a `[singleton-violation healed]` line and surface it in `soxe doctor`.
 
 Implemented as `healSingletonDuplicates` (`singleton.ts`): finds live pids for the entrypoint token,
 no-ops on ≤1 (never thrashes a healthy daemon), kills all but the survivor on ≥2.
@@ -378,7 +378,7 @@ service. The BL-47 in-process fallback means no daemon need run for enrichment c
 | When | Mechanism | Where |
 |---|---|---|
 | Start | §5.2 guard (socket + process scan + cross-scope) | `cmdStart` |
-| Reconcile / `sox list` / `sox doctor` | §5.3 — recompute descriptor, heal duplicates | reconcile pass (§10) |
+| Reconcile / `soxe list` / `soxe doctor` | §5.3 — recompute descriptor, heal duplicates | reconcile pass (§10) |
 | Stop | identity reap by token (`reapOrphansForExtension`) | `cmdStop` |
 | Crash | GC marks runtime.json `running:false`; next start re-guards | `gc.ts` |
 
@@ -389,7 +389,7 @@ service. The BL-47 in-process fallback means no daemon need run for enrichment c
 States and the **only** legal transitions. Each transition names the command/event that drives it.
 
 ```
-                 install                 sox start / service enable
+                 install                 soxe start / service enable
    (absent) ───────────────▶ INSTALLED ───────────────────────────▶ STARTING
                                   │  ▲                                   │
                           uninstall  │ disable (config)                 │ spawn ok + lock held
@@ -402,7 +402,7 @@ States and the **only** legal transitions. Each transition names the command/eve
                                       │ DEGRADED ──────────────────────────────▶─┘
                                       │   │  crash-loop / give-up                  ▲
                                       │   ▼                                        │ restart (backoff)
-                                      │ STOPPING ◀── sox stop / service disable / SIGTERM
+                                      │ STOPPING ◀── soxe stop / service disable / SIGTERM
                                       │   │
                                       │   ▼ verified exit (killAndVerify)
                                       └ STOPPED ──(orphan survives)──▶ REAPED ──▶ STOPPED
@@ -411,16 +411,16 @@ States and the **only** legal transitions. Each transition names the command/eve
 | Transition | Driver | Implementation anchor |
 |---|---|---|
 | absent → INSTALLED | `install()` | install-engine; ownership index recorded (ADR-0004 §D5) |
-| INSTALLED → STARTING | `sox start` / `sox service enable` | `cmdStart` (`main.ts:2851`) / §9 |
+| INSTALLED → STARTING | `soxe start` / `soxe service enable` | `cmdStart` (`main.ts:2851`) / §9 |
 | STARTING → HEALTHY | spawn ok + first health probe passes | `supervisor.start` → `_waitForHealth` (`supervisor.ts:135-154`) |
 | STARTING → STOPPED (failed) | spawn fails / health timeout | `_waitForHealth` throws (`supervisor.ts:406`) |
 | HEALTHY → DEGRADED | periodic health probe fails | `_startHealthLoop` (`supervisor.ts:451-458`) |
 | DEGRADED → HEALTHY | probe recovers | health loop |
 | DEGRADED → STARTING | restart on unexpected exit (backoff) | `_respawn` (`supervisor.ts:366`); §11.3 crash-loop guard |
-| any → STOPPING | `sox stop` / `service disable` / SIGTERM | `cmdStop` (`main.ts:3191`), `supervisor.stop` (`supervisor.ts:165`) |
+| any → STOPPING | `soxe stop` / `service disable` / SIGTERM | `cmdStop` (`main.ts:3191`), `supervisor.stop` (`supervisor.ts:165`) |
 | STOPPING → STOPPED | verified exit | `killAndVerify` (`reaper.ts:111`) |
 | STOPPED → REAPED → STOPPED | orphan survives stop, reaped by identity | `reapOrphansForExtension` (`runtime.ts:575`) |
-| INSTALLED ⇄ (disabled) | `sox disable` / `sox enable` | `cmdDisable`/`cmdEnable` (`main.ts:2161-2326`) — config flag + SIGHUP reconcile |
+| INSTALLED ⇄ (disabled) | `soxe disable` / `soxe enable` | `cmdDisable`/`cmdEnable` (`main.ts:2161-2326`) — config flag + SIGHUP reconcile |
 
 **Rule `[inv:no-illegal-transition]`:** code MUST NOT report or assume a state not reachable by an
 edge above. In particular, "RUNNING" in any UI maps to HEALTHY **or** DEGRADED with a live pid — never
@@ -436,7 +436,7 @@ and the future M4 path):
 1. **Resolve scope paths** (`getScopePaths`, `main.ts:2858`) and the runtime/lock/log paths via the
    ADR-0004 data-root resolver.
 2. **Acquire the start lock** (`acquireStartLock(computeSupervisorId(scope, root))`, `lock.ts:50`).
-   This serializes concurrent `sox start` for the same scope+root (R3). Released after the runtime
+   This serializes concurrent `soxe start` for the same scope+root (R3). Released after the runtime
    record is written.
 3. **Build config env** (`buildExtConfigEnv`, `main.ts:204`) → `SOX_CONFIG_*` for db_path, sock_path,
    port, etc. (cascade org→user→project→local, tilde + `${VAR}` expanded).
@@ -454,7 +454,7 @@ and the future M4 path):
 7. **Health gate** (§11): wait for first health probe (`_waitForHealth`, socket / stdio-ping /
    http-get / port.txt), then start the periodic loop.
 8. **Write the runtime record + register the supervisor** (`registerSupervisor`, `registry.ts:108`)
-   so `sox list --all` and the GC pass can see it. Release the start lock.
+   so `soxe list --all` and the GC pass can see it. Release the start lock.
 
 > **Concurrent-start safety** is the start lock (step 2) **plus** the singleton guard (step 4): the
 > lock prevents two *supervisors* for one scope+root; the guard prevents two *daemons* for one store
@@ -496,7 +496,7 @@ and the future M4 path):
 - **Per-id path:** `stopRuntime` (verifies + escalates internally) **plus** a belt-and-suspenders
   identity reap (`main.ts:3307-3323`).
 - **Exit code is honest:** `cmdStop` exits **1** if any reap returns `undead` (`main.ts:3300`, `:3324`)
-  — `sox stop` does not lie about success.
+  — `soxe stop` does not lie about success.
 
 ### 8.4 The orphan reaper (closing the genuinely-open half of BL-50)
 
@@ -510,7 +510,7 @@ daemons and `killAndVerify`s them, whitespace-bounded so unrelated processes are
 > respawn (resurrection loop). This is the missing piece the BACKLOG calls "the reaper" — the
 > token reaper exists; the *unload-first ordering* does not, because there is no OS unit yet.
 
-### 8.5 `sox stop` reap ordering (authoritative)
+### 8.5 `soxe stop` reap ordering (authoritative)
 
 ```
 stop(scope, [id]):
@@ -531,13 +531,13 @@ This subsumes **BL-51** and the reboot half of **BL-50**.
 ### 9.1 The control surface
 
 ```
-sox service enable  <ext> [-s <scope>]   # generate + load an OS unit; record ownership; record in runtime tracking
-sox service disable <ext> [-s <scope>]   # unload + remove the unit; reap survivor; clear ownership
-sox service status  <ext> [-s <scope>]   # show the unit state reconciled with sox (§10)
-sox service list                          # all sox-owned OS units across scopes
+soxe service enable  <ext> [-s <scope>]   # generate + load an OS unit; record ownership; record in runtime tracking
+soxe service disable <ext> [-s <scope>]   # unload + remove the unit; reap survivor; clear ownership
+soxe service status  <ext> [-s <scope>]   # show the unit state reconciled with sox (§10)
+soxe service list                          # all sox-owned OS units across scopes
 ```
 
-`sox service` is a **new top-level verb** routed in `apps/sox/src/main.ts` (alongside `start`/`stop`,
+`soxe service` is a **new top-level verb** routed in `apps/sox/src/main.ts` (alongside `start`/`stop`,
 `main.ts:98-144`). It is the **only** sanctioned way to create an OS unit. **Hand-writing a plist or
 unit file is forbidden** (`[inv:os-unit-generated]`) — exactly the trial-and-revert the BACKLOG
 records (`BACKLOG.md:182-186`).
@@ -561,14 +561,14 @@ The unit is **derived from the `lifecycle` block + resolved config env**, never 
   not collide.
 - **Stable node path (Appendix B item 3 — recommended default, needs a human ack at Slice-2 build
   time).** Recommended: pin **`fs.realpathSync(process.execPath)`** — the realpath of the node binary
-  running `sox service enable` — into the unit's `ProgramArguments[0]` / `ExecStart`. Realpath strips one
+  running `soxe service enable` — into the unit's `ProgramArguments[0]` / `ExecStart`. Realpath strips one
   layer of symlink indirection (e.g. a Homebrew `bin/node` → cellar path) giving a concrete binary.
   **Footgun guard:** if that realpath lies **under an nvm/asdf/volta version dir** (path contains
   `/.nvm/`, `/.asdf/`, `/.volta/`, or `/versions/node/`), the unit is **volatile** — a node version
-  switch orphans it. In that case `sox service enable` MUST (a) warn loudly, and (b) prefer a
+  switch orphans it. In that case `soxe service enable` MUST (a) warn loudly, and (b) prefer a
   non-volatile node if one is discoverable on `PATH` outside those dirs (`command -v node` snapshot),
   else proceed with the volatile path **only** after the user confirms (or `--allow-volatile-node`).
-  `sox doctor` flags any unit whose pinned node no longer exists (stale-node detection). **Why a human
+  `soxe doctor` flags any unit whose pinned node no longer exists (stale-node detection). **Why a human
   ack:** the "right" node on a dev's machine is environment-specific (system vs brew vs version-manager);
   the framework can recommend + guard but should not silently bake a choice that breaks on the next
   `nvm use`. This is the one Appendix-B item that stays advisory until Slice 2 is built on a real
@@ -576,22 +576,22 @@ The unit is **derived from the `lifecycle` block + resolved config env**, never 
 
 ### 9.3 Idempotent + content-addressed re-enable on upgrade
 
-> **`[inv:os-unit-content-addressed]`** — `sox service enable` is idempotent: re-running it (or an
+> **`[inv:os-unit-content-addressed]`** — `soxe service enable` is idempotent: re-running it (or an
 > `upgrade` that changes the resolved entrypoint/args/artifactHash) **rewrites** the unit only if the
 > generated content differs, then reloads it. It MUST NEVER leave a unit pointing at a stale artifact
 > (this is the launchd analogue of the BL-39 re-materialize fix, ADR-0004 §D6). The ownership index
 > (ADR-0004 §D5) records the unit as an owned `os-unit` entry with its `appliedHash`.
 
 The `upgrade --all` flow (CLAUDE.md AGENT SEQUENCE step 5) MUST, after re-materializing a changed
-service store, re-run `sox service enable` for any extension that has an owned OS unit, so the unit
+service store, re-run `soxe service enable` for any extension that has an owned OS unit, so the unit
 follows the new artifact.
 
 ### 9.4 Teardown hooks
 
-- `sox uninstall <service>` MUST tear down its OS unit (consume the ownership `os-unit` entry →
+- `soxe uninstall <service>` MUST tear down its OS unit (consume the ownership `os-unit` entry →
   unload + delete file) before removing the store — `[inv:reversible-injection]` (ADR-0004 §D6a)
   generalizes to OS units.
-- `sox doctor` MUST surface orphaned/duplicate OS units and units whose artifact no longer matches the
+- `soxe doctor` MUST surface orphaned/duplicate OS units and units whose artifact no longer matches the
   installed checksum (stale unit detection).
 
 ---
@@ -654,7 +654,7 @@ those two and the mandate disappears for behavior-only changes.
      the pending calls with a JSON-RPC error (`-32001 backend unavailable`) rather than hanging the
      client — and keeps the stdio pipe **open** so the client need not reconnect once the backend
      returns.
-- **Backend (the real server, sox-owned).** Runs as M2 (detached) or M4 (OS-supervised). `sox upgrade`
+- **Backend (the real server, sox-owned).** Runs as M2 (detached) or M4 (OS-supervised). `soxe upgrade`
   re-materializes its store and **rolling-restarts** it via the BL-31 verified-stop + dedup-start
   (CLAUDE.md AGENT SEQUENCE step 5). The shim's re-dial bridges the ~sub-second restart gap. **Behavior
   changes; the client never reconnects.**
@@ -671,7 +671,7 @@ input/output schema changed) — the client cached the old `tools/list` and cann
   2. Emits a durable **stderr** notice (never stdout — `[inv:no-stdout-diagnostics]`) and, if the client
      supports it, an MCP **`notifications/tools/list_changed`** server notification so a capable client
      can refresh `tools/list` **without a full reconnect**. Clients that don't honor the notification get
-     the existing `reconnect-needed` disposition from `sox upgrade`.
+     the existing `reconnect-needed` disposition from `soxe upgrade`.
 - This makes the reconnect requirement **precise**: *behavior change → zero reconnect; interface change →
   a `list_changed` nudge, falling back to reconnect only for clients that ignore it.*
 
@@ -729,7 +729,7 @@ port-based proxy or a third-party dependency.**
 ## 10. Split-brain avoidance
 
 "Split-brain" = sox's runtime.json/global-registry disagreeing with OS-supervisor reality, so
-`sox list` lies.
+`soxe list` lies.
 
 ### 10.1 Authority order
 
@@ -739,7 +739,7 @@ the descriptor's `owner`/`liveness`.
 
 ### 10.2 The reconcile pass
 
-Run on every `sox list`, `sox status`, `sox doctor`, and as a step inside `sox start`/`stop`:
+Run on every `soxe list`, `soxe status`, `soxe doctor`, and as a step inside `soxe start`/`stop`:
 
 1. `readGlobalRegistry()` — GC-prune dead supervisors (already implemented, `gc.ts:161`).
 2. For each installed singleton service across all scopes, compute the Instance Descriptor (§3.3).
@@ -747,14 +747,14 @@ Run on every `sox list`, `sox status`, `sox doctor`, and as a step inside `sox s
    - runtime.json says running, OS unit says not loaded, no live process → mark `running:false`
      (stale; GC already does this for dead supervisors, `gc.ts:114-132`).
    - OS unit loaded + healthy, runtime.json missing the entry → adopt it (write a runtime entry with
-     `owner: os-unit`) so `sox list` shows it.
+     `owner: os-unit`) so `soxe list` shows it.
    - **Two live processes for one singleton key** → heal per §5.3.
-4. Render `sox list` strictly from the reconciled descriptors. `running:true` in a file is **never**
+4. Render `soxe list` strictly from the reconciled descriptors. `running:true` in a file is **never**
    sufficient to render RUNNING (`[auth:...]`, the C4 generalization).
 
-### 10.3 `sox list` never lies
+### 10.3 `soxe list` never lies
 
-> **`[inv:list-never-lies]`** — `sox list` MUST render reality-verified descriptors only. A pid is
+> **`[inv:list-never-lies]`** — `soxe list` MUST render reality-verified descriptors only. A pid is
 > RUNNING iff `process.kill(pid,0)` succeeds **and** (for socket-health services) the socket answers
 > **and** (for M4) the OS unit is loaded. This already holds for M1 (C4); §9/§10 extend it to M4.
 
@@ -788,8 +788,8 @@ Defaults: `interval_ms` 5000 (loop), `timeout_ms` 5000 (first probe) / 2000 (per
   `min(5000, 200 * 2^restartCount)` ms (`supervisor.ts:351-362`).
 - **Crash-loop guard `[inv:crash-loop-cap]` — Decision (Appendix B item 4a): N=5 restarts within a
   60s rolling window → give up.** After 5 unexpected exits inside 60s, stop restarting, mark the service
-  **DEGRADED (give-up)**, log a durable `[crash-loop]` line, surface it in `sox status`/`doctor`, and
-  require an explicit `sox start`/`enable` to clear. Rationale: 5-in-60s is the de-facto convention —
+  **DEGRADED (give-up)**, log a durable `[crash-loop]` line, surface it in `soxe status`/`doctor`, and
+  require an explicit `soxe start`/`enable` to clear. Rationale: 5-in-60s is the de-facto convention —
   systemd's defaults are `StartLimitBurst=5` / `StartLimitIntervalSec=10s`, and launchd throttles
   respawns to ~10s via `ThrottleInterval`; 5-in-60s is slightly more forgiving than systemd's 10s window
   (tolerates a slow-restart service) while still catching a true crash loop fast. The M4 mapping is
@@ -805,7 +805,7 @@ do NOT auto-restart.** A process that is alive but failing its health probe is r
 actual process exit** (the existing `_respawn` path under the crash-loop cap), never on the health flag
 alone. Rationale (and the team's standing guidance): auto-restarting a slow-but-alive service thrashes it
 — a warming embed worker, a long GC pause, or a transient downstream stall would trigger a kill that
-makes things worse. DEGRADED is surfaced in `sox status`/`doctor`; the operator decides. (A future
+makes things worse. DEGRADED is surfaced in `soxe status`/`doctor`; the operator decides. (A future
 opt-in `lifecycle.restart_on_unhealthy_after_n` MAY be added per-service, default off.) This removes the
 prior "proposed 3 intervals" auto-restart entirely.
 
@@ -818,20 +818,20 @@ In the style of the CLAUDE.md constraint catalogs: each concrete failure, its de
 | # | Failure | Detection | Remedy |
 |---|---|---|---|
 | F1 | **Two writers on one store** (two daemons on `~/.memory/memory.db`) — BL-50 | `findOrphansByIdentity(token)` returns ≥2 live, or two pids on same `[def:singleton-key]` | §5.2 start guard prevents the *new* one; §5.3 reconcile heals an existing pair (kill loser); cross-scope check (§4.4) covers socket-overriding-db-sharing |
-| F2 | **Orphan survives `sox stop`** (PPID-1, supervisor gone) — BL-50/BL-31 | `cmdStop` runs `reapOrphansForExtension` per entry; post-stop `findOrphansByIdentity` non-empty | identity-token `killAndVerify` (implemented `main.ts:3284-3298`); exit 1 if `undead` |
+| F2 | **Orphan survives `soxe stop`** (PPID-1, supervisor gone) — BL-50/BL-31 | `cmdStop` runs `reapOrphansForExtension` per entry; post-stop `findOrphansByIdentity` non-empty | identity-token `killAndVerify` (implemented `main.ts:3284-3298`); exit 1 if `undead` |
 | F3 | **OS unit respawns a killed pid** (resurrection loop) — §9 | killed pid reappears with new pid under same token within seconds | `[inv:unload-then-reap]`: unload unit *before* kill (§8.4/§8.5) |
-| F4 | **Stale runtime.json** (RUNNING for a dead pid) | GC: `process.kill(pid,0)` fail OR socket dead (`gc.ts:68-88`) | `cleanUpDeadEntry`: mark `running:false`, unlink socket (`gc.ts:101-144`); `sox list` reconcile (§10) |
+| F4 | **Stale runtime.json** (RUNNING for a dead pid) | GC: `process.kill(pid,0)` fail OR socket dead (`gc.ts:68-88`) | `cleanUpDeadEntry`: mark `running:false`, unlink socket (`gc.ts:101-144`); `soxe list` reconcile (§10) |
 | F5 | **Socket leak** (stale `.sock` after crash) | socket file exists but connect fails (`probeUnixSocketLive` false) | GC unlinks stale socket (`gc.ts:135-137`); start guard distinguishes live-socket from stale-file |
 | F6 | **Split-brain** (runtime.json ⇄ launchd disagree) — §10 | reconcile pass compares descriptor `owner`/`liveness` vs runtime.json flag | §10.2 reconcile; `[auth:...]` authority order; `[inv:list-never-lies]` |
 | F7 | **Scope collision** (user + project resolve same db, different sockets) — §4.2 | cross-scope ownership-index check at start (§5.2 step 4) | refuse second spawn; record shared (§4.4 rule 1) |
 | F8 | **Download/build-on-spawn hang** | health first-probe timeout (`_waitForHealth` throws, `supervisor.ts:406`) | self-contained materialized store (ADR-0004 / bundled-extension-build-standard memory) — no network/build at spawn; fail fast on timeout |
-| F9 | **Concurrent `sox start` race** (two supervisors, one scope) — R3 | second `acquireStartLock` blocks/throws (`lock.ts:50-104`) | start lock; stale-holder auto-clear via `kill(pid,0)` |
+| F9 | **Concurrent `soxe start` race** (two supervisors, one scope) — R3 | second `acquireStartLock` blocks/throws (`lock.ts:50-104`) | start lock; stale-holder auto-clear via `kill(pid,0)` |
 | F10 | **Worker orphaned on stop** (child spawned grandchildren) — R5 | only direct child killed | `detached:true` pgid + `-pgid` signal (`supervisor.ts:182-202`) |
 | F11 | **SIGTERM ignored** (hung/D-state process) | `killAndVerify` still alive after grace | SIGKILL escalation; CRITICAL log + `undead` + exit 1 (`supervisor.ts:204-212`, `main.ts:3300`) |
-| F12 | **Stale OS unit after upgrade** (unit → old artifact) — §9.3 | `sox doctor`: unit `appliedHash` ≠ installed checksum | `[inv:os-unit-content-addressed]`: re-`enable` on upgrade rewrites unit |
+| F12 | **Stale OS unit after upgrade** (unit → old artifact) — §9.3 | `soxe doctor`: unit `appliedHash` ≠ installed checksum | `[inv:os-unit-content-addressed]`: re-`enable` on upgrade rewrites unit |
 | F13 | **M3 stderr lost** (stdio serve has no logs by default) — BL-46 | no `~/.sox/logs` entry for live `serve` version when neither `--log` nor `SOX_SERVE_LOG=1` is set | opt-in stderr sink exists (`main.ts:4552-4561`); make it the **default** for M4 units (§9.2); never write diagnostics to stdout (corrupts JSON-RPC) |
 | F14 | **Hash-fallback embedding** (scrubbed SOX_EMBED_*) — BL-48/BL-52 | `memory_ping` `embed_on_hash_fallback:true` | SOX_EMBED_* in scrub allowlist (`supervisor.ts:266-284`) + unit `EnvironmentVariables` (§9.2) |
-| F15 | **`sox list` reports RUNNING for OS-unit service it doesn't track** — §10 | reconcile finds OS unit not in runtime.json | adopt into descriptor with `owner:os-unit` (§10.2) |
+| F15 | **`soxe list` reports RUNNING for OS-unit service it doesn't track** — §10 | reconcile finds OS unit not in runtime.json | adopt into descriptor with `owner:os-unit` (§10.2) |
 
 ---
 
@@ -844,7 +844,7 @@ In the style of the CLAUDE.md constraint catalogs: each concrete failure, its de
 - `[auth:supervisor-then-os-then-os-reality]` — liveness authority order: live GC-verified supervisor > OS unit > socket/process reality (§3.3).
 - `[inv:list-never-lies]` — RUNNING requires reality-verified liveness; a file flag is never sufficient (§10.3, generalizes C4).
 - `[inv:unload-then-reap]` — unload the OS unit before killing the pid (§8.4).
-- `[inv:os-unit-generated]` — OS units are generated by `sox service enable` from the manifest; hand-authoring is forbidden (§9.1).
+- `[inv:os-unit-generated]` — OS units are generated by `soxe service enable` from the manifest; hand-authoring is forbidden (§9.1).
 - `[inv:os-unit-content-addressed]` — re-enable on artifact change; never point a unit at a stale artifact (§9.3).
 - `[inv:reversible-injection]` (ADR-0004) extends to OS units — uninstall reverses the owned `os-unit` entry (§9.4).
 - `[inv:crash-loop-cap]` — bounded restarts; give up + report after N-in-window (§11.3).
@@ -860,12 +860,12 @@ In the style of the CLAUDE.md constraint catalogs: each concrete failure, its de
    §5.4). Implemented for the service-registry path in Slice 1 (`healSingletonDuplicates` +
    `findCrossScopeSharers`).
 2. **Never report RUNNING without reality verification** (`process.kill(pid,0)` + socket/OS as
-   applicable). `sox list`/`status` render reconciled descriptors, never raw `running` flags
+   applicable). `soxe list`/`status` render reconciled descriptors, never raw `running` flags
    (`[inv:list-never-lies]`).
 3. **All teardown goes through verified-stop + the identity reaper.** Use `killAndVerify` and
    `reapOrphansForExtension`; honor exit-code honesty (`exit 1` on `undead`). Never signal-and-exit
    without verifying death.
-4. **OS units are generated, never hand-edited.** Only `sox service enable|disable` may create/remove
+4. **OS units are generated, never hand-edited.** Only `soxe service enable|disable` may create/remove
    them. Unload before reaping (`[inv:unload-then-reap]`).
 5. **Never widen the env-scrub allowlist silently.** Any new forwarded var (cf. BL-52 SOX_EMBED_*)
    must be added to `supervisor.ts` allowlist **and** documented in §7 step 5 **and** mirrored into
@@ -918,7 +918,7 @@ acceptance.
     fixed a pre-existing tokenguard-core bug, BL-56 — see BACKLOG).
   - `registry:sync-index` → **no checksum drift** (CLI/lib change, not a shipped extension artifact).
 - **Designed-not-built remainder of Slice 1 (folded into later slices):** the reconcile heal is wired
-  at *start*; running it on every `sox list`/`status`/`doctor` (§10.2) and rendering `owner`/`liveness`
+  at *start*; running it on every `soxe list`/`status`/`doctor` (§10.2) and rendering `owner`/`liveness`
   descriptors lands with Slice 4's universal reconcile pass.
 
 ### Slice 1.5 — Front-shim service-proxy (M3↔M4 bridge; zero-downtime upgrades) — ✅ IMPLEMENTED (`feat/service-proxy-slice1_5`)
@@ -964,7 +964,7 @@ acceptance.
     stable across 3 cache-busted runs; standalone probe `node tools/probe-service-proxy-zdt.mjs` → PASS.
   - `registry:sync-index` → **no checksum drift** (CLI/lib change, not a shipped extension artifact).
 
-### Slice 2 — `sox service enable|disable` (OS-supervisor control surface, subsumes BL-51 + reboot half of BL-50)
+### Slice 2 — `soxe service enable|disable` (OS-supervisor control surface, subsumes BL-51 + reboot half of BL-50)
 
 - **Goal:** generate/load/unload launchd (macOS) + systemd (Linux) units from the manifest;
   idempotent + content-addressed; ownership-tracked; `[inv:unload-then-reap]`.
@@ -972,8 +972,8 @@ acceptance.
   `apps/sox/src/main.ts` (new `service` verb routing + `cmdService*`), install-engine ownership index
   (`os-unit` entry kind), `cmdUninstall`/`cmdUpgrade` teardown/re-enable hooks, authoring scaffold
   (signal handler R6, manifest lifecycle defaults).
-- **Acceptance:** `sox service enable memory-daemon` writes + loads a plist/unit, survives a simulated
-  reboot (unit reload), `sox list` reconciles it (`owner:os-unit`); `disable` unloads + reaps + clears
+- **Acceptance:** `soxe service enable memory-daemon` writes + loads a plist/unit, survives a simulated
+  reboot (unit reload), `soxe list` reconciles it (`owner:os-unit`); `disable` unloads + reaps + clears
   ownership; `upgrade` rewrites the unit to the new artifact; `uninstall` leaves zero unit residue
   (reversibility gate, ADR-0004 §D6b style).
 
@@ -986,7 +986,7 @@ acceptance.
 - **Acceptance:** a crash-looping service gives up + reports after N-in-window; live `serve` version's
   stderr is durably captured; `memory_ping` hash-fallback is impossible to miss.
 
-### Slice 4 — `sox doctor` + full reconcile authority across all scopes (F6/F12/F15)
+### Slice 4 — `soxe doctor` + full reconcile authority across all scopes (F6/F12/F15)
 
 - **Goal:** one command that computes every descriptor across all scopes, surfaces split-brain, stale
   units, duplicates; the reconcile pass becomes the universal pre-step.
@@ -1024,7 +1024,7 @@ and conform to its §13 invariants. In particular:
 - **All teardown goes through verified-stop + the identity reaper** (`killAndVerify` +
   `reapOrphansForExtension`), exit 1 on `undead`. For OS-supervised services, **unload the unit
   before killing the pid** — `[inv:unload-then-reap]`.
-- **OS units are generated from the manifest by `sox service enable`, never hand-edited** —
+- **OS units are generated from the manifest by `soxe service enable`, never hand-edited** —
   `[inv:os-unit-generated]` / `[inv:os-unit-content-addressed]` (re-enable on artifact change).
 - **Never widen the supervisor env-scrub allowlist silently** — document it in the spec §7 and mirror
   it into the OS unit env (§9.2).

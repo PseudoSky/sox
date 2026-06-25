@@ -7,6 +7,37 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ---
 
+## Open — INCIDENT: the dev checkout's `dist` IS the live MCP source (2026-06-25)
+
+### BL-65 — building unverified WIP into the dev-repo `dist` breaks the LIVE memory-server for all sessions — **Open (HIGH)**
+
+**Incident (2026-06-25):** while an agent was implementing proxy-on-by-default on a branch, its
+`nx build` wrote the WIP (proxy-default + a not-yet-working shim path) into `dist/apps/sox/main.js` and
+`libs/*/dist`. Because **every `.mcp.json` / `~/.claude.json` points `memory-server` at the absolute
+`/Users/nix/dev/ai/sox-ecosystem/bin/soxe`** (→ that repo `dist`, which also runtime-resolves
+`@adhd/sox-memory-*` from the repo `libs/*/dist`), **every memory-server respawn loaded the broken WIP**
+and failed (`-32001 proxy closed`). Multiple agents/sessions reported memory failures. A detached WIP
+backend orphan was left holding `~/.memory/memory.db`.
+
+**Recovery performed:** switch tree to `main` → rebuild serve path (sox + memory-core/enrich/server,
+cache-busted) → reap all WIP memory-server processes (3 shims + 1 detached backend) gracefully → remove
+stale proxy socket → verified direct serve `memory_ping`/`recall` OK + SQLite `integrity_check: ok`.
+
+**Root cause:** the **dev checkout is the live MCP runtime** (no isolation between in-progress repo state
+and the running MCP server). This is the `$SKILL`-cache-vs-dev-checkout hazard generalized to MCP.
+
+**Fix options (need decision):**
+1. **Point `.mcp.json` at an installed/cached `soxe`** (a content-addressed install under `~/.adhd/...`),
+   not the live dev checkout — so repo builds never touch the running server (it only updates on an
+   explicit `soxe upgrade`/reinstall). This is the principled fix.
+2. **Isolate risky serve-path work in a git worktree** (`Agent isolation: "worktree"`) so its `nx build`
+   writes to a separate `dist`, never the live one. (Process discipline; the orchestrator now does this.)
+3. **A build guard** — refuse/ warn when building the serve path while a live MCP server resolves this
+   `dist` (or stamp dist with a git-sha and have `serve` warn on a dirty/uncommitted dist).
+
+Until fixed: NEVER build the serve path on the live dev checkout while sessions are connected; validate
+in an isolated worktree and merge to `main` before any rebuild that the live server will pick up.
+
 > **Status (2026-06-22): BL-1 … BL-22 all resolved.** BL-23/24 are now **folded into the
 > memory-enrichment plan** at `docs/plan/memory-enrichment/` (SPEC + DESIGN + CONSUMER-INTERFACES +
 > CONTRACTS + IMPLEMENTATION) and tracked there per `IMPLEMENTATION.md §0` — they are resolved by its
@@ -100,11 +131,11 @@ recommend unsetting `SOX_HOME`.
 
 **Remaining (cleanup only, independent of `SOX_HOME`):**
 1. The stale residue (`install-registry.json`, `supervisors.json`, `logs/`, legacy `.sox/`) at the
-   `claude-agents` / `sox-ecosystem` repo roots can be removed/relocated via `sox migrate-home`
+   `claude-agents` / `sox-ecosystem` repo roots can be removed/relocated via `soxe migrate-home`
    (ADR-0004 §D8; idempotent, non-destructive — skips when the target already exists, so it won't clobber
    the current `~/.adhd` global state) **with `--old-home <repo>` explicitly**, never by touching the
    user's `SOX_HOME`. Optional; the files are inert.
-2. **`sox doctor`** (future) should detect legacy repo-root residue from the default locations,
+2. **`soxe doctor`** (future) should detect legacy repo-root residue from the default locations,
    independent of `SOX_HOME`.
 
 This is distinct from **BL-56** (project_path attribution, in the memory store), which is fixed.
@@ -279,7 +310,7 @@ for orphaned `~/.memory/*.db-wal|-shm` whose base `.db` is absent. Safe to purge
 
 ## Open — service supervision gaps (2026-06-23)
 
-### BL-50 — detached service-mode daemons survive `sox stop`, accumulate into multiple writers, and have no OS reboot supervisor — **Re-scoped by `docs/spec/service-lifecycle.md` (HIGH) — reaper EXISTS; open work = cross-scope singleton + OS-unit persistence**
+### BL-50 — detached service-mode daemons survive `soxe stop`, accumulate into multiple writers, and have no OS reboot supervisor — **Re-scoped by `docs/spec/service-lifecycle.md` (HIGH) — reaper EXISTS; open work = cross-scope singleton + OS-unit persistence**
 
 > **Governed by [`docs/spec/service-lifecycle.md`](docs/spec/service-lifecycle.md) (v1.1.1).** That spec
 > is now the canonical framework. **Slice 1 (cross-scope singleton + reconcile heal) is IMPLEMENTED**
@@ -293,7 +324,7 @@ entrypoint-token orphan reaper **already exists** from the BL-31 work: `libs/hos
 (`findOrphansByIdentity`, `reapByIdentity`, `identityToken`, `killAndVerify`, dated Jun 22) +
 `runtime.ts:reapOrphansForExtension`, and it **is wired** into `cmdStop` (`main.ts:3285,3311`) and the
 `cmdStart` pre-spawn dedup (`main.ts:2956`). It finds PPID-1 detached daemons by whitespace-bounded
-entrypoint argv token and SIGTERM→SIGKILL-verifies them; `sox stop` exits 1 on any `undead`.
+entrypoint argv token and SIGTERM→SIGKILL-verifies them; `soxe stop` exits 1 on any `undead`.
 
 **What landed (fix/memory-bl50-52-53):** the **start-time singleton guard** — `cmdStart` resolves the
 service's `lifecycle.health` socket (`resolveServiceHealthSocketPath`) and probes it
@@ -313,7 +344,7 @@ service's `lifecycle.health` socket (`resolveServiceHealthSocketPath`) and probe
   `affected -t build,lint,test` 20/20 green, `registry:sync-index` no drift.
 - (b) **OS reboot persistence + `[inv:unload-then-reap]`** — STILL OPEN. No launchd/systemd surface; the
   *only* reaper gap is unload-the-unit-before-kill (else resurrection loop), which matters once Slice 2
-  lands. Folded into BL-51. Fix = spec Slice 2 (`sox service enable|disable`), **designed-not-built**
+  lands. Folded into BL-51. Fix = spec Slice 2 (`soxe service enable|disable`), **designed-not-built**
   (touches the user's machine + depends on the node-path human-ack, spec Appendix B item 3).
 - (c) **Zero-downtime upgrades without forced MCP reconnects** — **✅ CLOSED (capability) by Slice 1.5
   (`feat/service-proxy-slice1_5`).** Built as the leaf lib `libs/service-proxy/` (front-shim
@@ -329,18 +360,18 @@ service's `lifecycle.health` socket (`resolveServiceHealthSocketPath`) and probe
 
 Surfaced while wiring memory-daemon auto-supervision (the "item 3" cleanup). Two faults:
 
-1. **Orphaned detached daemons are unreapable + accumulate.** `sox start memory-daemon` runs the daemon
+1. **Orphaned detached daemons are unreapable + accumulate.** `soxe start memory-daemon` runs the daemon
    in *service mode* (detached, PPID→1, no live supervisor). When the supervisor process is gone,
    `node bin/soxe stop` reports `supervisor (pid=…) already gone / stop complete` but **leaves the
-   daemon running** — `sox stop` only reaps processes a live supervisor tracks. Observed **two**
-   memory-daemon processes alive simultaneously (one started this session via `sox start`, one of
+   daemon running** — `soxe stop` only reaps processes a live supervisor tracks. Observed **two**
+   memory-daemon processes alive simultaneously (one started this session via `soxe start`, one of
    unknown prior origin) = **two writers on `~/.memory/memory.db`**, violating the singleton invariant
    (design §2.4 R6: "host holds the per-(id,scope) singleton"). Need: a reaper that finds + SIGTERMs
    orphaned detached service processes by entrypoint/marker (cf. the BL-31 verified-stop work for the
-   supervisor path), and a guard so `sox start` refuses to spawn a second instance when one is already
+   supervisor path), and a guard so `soxe start` refuses to spawn a second instance when one is already
    live on the socket.
 2. **No reboot persistence.** There is no launchd/OS supervisor registered on service install, so a
-   service does not survive logout/reboot. `sox install` of a `service`-type extension should register
+   service does not survive logout/reboot. `soxe install` of a `service`-type extension should register
    an OS supervisor (macOS LaunchAgent), and `sox`'s runtime tracking should stay consistent with it
    (avoid sox-list/launchd split-brain). BL-47's in-process fallback covers enrichment *correctness*
    when the daemon is down, so this is robustness, not correctness.
@@ -364,20 +395,20 @@ state. The two faults above (orphan reaper + start-time singleton guard) remain 
 Persistence for service-type extensions (e.g. memory-daemon) should be a first-class sox capability, not
 a hand-rolled per-service plist. Proposed surface:
 
-- **`sox service enable|disable <ext> [-s <scope>]`** — register/unregister an OS supervisor for the
+- **`soxe service enable|disable <ext> [-s <scope>]`** — register/unregister an OS supervisor for the
   service: macOS LaunchAgent (`~/Library/LaunchAgents/com.sox.<ext>.plist`), Linux systemd user unit
   (`~/.config/systemd/user/sox-<ext>.service`). `enable` writes the unit (RunAtLoad/KeepAlive +
   throttle + durable logs under `~/.sox/logs/`), loads it, and records it in sox's runtime tracking so
-  `sox list` reflects launchd/systemd-supervised services (no split-brain). `disable` unloads + removes.
+  `soxe list` reflects launchd/systemd-supervised services (no split-brain). `disable` unloads + removes.
 - **Generated from the manifest** — derive `ProgramArguments`, `--db-path`/config env (the same
-  `SOX_CONFIG_*` injection `sox serve` does), `KeepAlive`, and `ThrottleInterval` from the extension's
+  `SOX_CONFIG_*` injection `soxe serve` does), `KeepAlive`, and `ThrottleInterval` from the extension's
   `lifecycle` block; resolve a stable node path (not a volatile nvm path) or pin via `EnvironmentVariables`.
 - **Idempotent + content-addressed** — re-`enable` after an `upgrade` rewrites the unit if the resolved
   entrypoint/args changed; never leaves a stale unit pointing at an old artifact.
-- **Reaper integration (BL-50 fault 1)** — `sox stop`/`disable` must also reap an OS-supervised instance
+- **Reaper integration (BL-50 fault 1)** — `soxe stop`/`disable` must also reap an OS-supervised instance
   (unload the unit) so a service can't survive teardown, and `enable`/start must refuse a second instance
   when one is already live on the health socket.
-- **Cross-platform + uninstall hook** — `sox uninstall` of a service tears down its OS unit; `sox doctor`
+- **Cross-platform + uninstall hook** — `soxe uninstall` of a service tears down its OS unit; `soxe doctor`
   surfaces orphaned/duplicate supervised instances.
 
 This subsumes the "item 3" persistence work and the reboot-persistence half of BL-50. Until shipped,
@@ -440,7 +471,7 @@ resolves 0 project roots from the install-registry in the sandboxed probe (likel
 > **Spec follow-up (v1.1.0):** the opt-in `--log`/`SOX_SERVE_LOG=1` stderr sink resolved the immediate
 > gap. The service-lifecycle spec makes the durable stderr sink the **default for M4 units** (§9.2) and
 > adds a self-cleaning M3 **serve-record breadcrumb** under `run/serve/<extId>-<pid>.json` (Appendix B
-> item 1 decision) so the live served version is observable + enumerable by `sox list --serve`/`doctor`
+> item 1 decision) so the live served version is observable + enumerable by `soxe list --serve`/`doctor`
 > without a runtime.json lie. Designed in Slice 1.5/3; not yet built.
 
 **Discovered while trying to diagnose BL-45 from server logs.** The logs do not reflect the running version.
@@ -623,14 +654,14 @@ checksum-driven, not version-driven), but a three-way inconsistency. Fixed: bump
 to `^1.1.0` (a `^0.1.0` constraint would have rejected 1.1.0), and the stale `tool_version: "1.0.0"`
 line in CLAUDE.md → 1.1.0; resynced the registry. Surfaced when refreshing the user-scope install.
 
-### ~~BL-31~~ — `sox stop` doesn't verify the kill or escalate to SIGKILL; orphaned daemons survive — **Resolved** (`b1d4005`)
+### ~~BL-31~~ — `soxe stop` doesn't verify the kill or escalate to SIGKILL; orphaned daemons survive — **Resolved** (`b1d4005`)
 
 **Severity:** High (zombie process can keep hitting a removed dependency) · **Status:** Resolved — `host-runtime/reaper.ts`: `killAndVerify` (SIGTERM → poll `process.kill(pid,0)` → SIGKILL escalation after grace → re-verify) + store-path orphan reaper (PPID-1, identity-matched, whitespace-bounded so unrelated processes are spared); `cmdStop` exits 1 on undead; `cmdStart` dedup-reap guard. e2e Step 7b reproduces the exact incident (real PPID-1 memory-server orphan DEAD after stop, unrelated SPARED). The original Open writeup follows.
 During the memory upgrade, the running pre-P6 `memory-daemon` (pid 33079, started before the
-store refresh) had been **orphaned (PPID 1 — its supervisor had exited)**. `sox stop
+store refresh) had been **orphaned (PPID 1 — its supervisor had exited)**. `soxe stop
 --id=memory-daemon` sent it **SIGTERM, reported "stop complete", and returned** — but the process
 **never died** (its old-code shutdown path hung on in-flight LLM/LM-Studio requests, or ignored the
-signal). `sox start` then spawned a *second* daemon (pid 43867) from the refreshed deterministic
+signal). `soxe start` then spawned a *second* daemon (pid 43867) from the refreshed deterministic
 store, leaving **two daemons** — the orphaned old one kept draining its organizer queue against
 LM Studio (`localhost:1234`) until manually `kill -9`'d. Root gaps: (1) `stop` is fire-and-forget
 SIGTERM with **no post-signal liveness check and no SIGTERM→SIGKILL escalation/timeout**; (2) the
@@ -688,11 +719,11 @@ migrate-home untracked-MCP-injection bug.
 
 ### BL-36 — runtime record hardcodes `type: 'mcp-server'` for every detached service
 
-**Severity:** Low/Medium (misleading `sox list`/`status`; type unreliable) · **Status:** Open
+**Severity:** Low/Medium (misleading `soxe list`/`status`; type unreliable) · **Status:** Open
 `cmdStart`'s service-registry start path writes `type: 'mcp-server'` into the runtime record for
 **every** detached service, so the runtime entry's `type` can't distinguish a `service` from an
 `mcp-server`. `rollingRestartConsumer` works around it by classifying from the manifest, but
-`sox list`/`status` may still mislabel services. Fix: record the real manifest `type` at start.
+`soxe list`/`status` may still mislabel services. Fix: record the real manifest `type` at start.
 Surfaced building the rolling-restart classifier.
 
 ### ~~BL-37~~ — `memory-daemon` service-store copy can't resolve `@adhd/sox-memory-core` → crashes on start — **Resolved** (`b3bf0d8`)
@@ -701,7 +732,7 @@ Surfaced building the rolling-restart classifier.
 BL-25 converged the daemon's `memoryd` onto `@adhd/sox-memory-core` (thin re-export →
 `require('@adhd/sox-memory-core')`). The **service-mode copied store** (`.sox/ext/memory-daemon/`) has
 no resolvable `@adhd/sox-memory-core` (not self-contained-bundled, no node_modules link), so the daemon
-crashes on start: `Error: Cannot find module '@adhd/sox-memory-core'` (exits immediately; `sox list`
+crashes on start: `Error: Cannot find module '@adhd/sox-memory-core'` (exits immediately; `soxe list`
 shows INACTIVE with a dead pid). **`memory-server` (stdio) is unaffected** — it runs from the repo
 where the dep resolves. **Gate gap:** the lifecycle e2e spawns the daemon from the *repo* (deps
 resolve), never from a copied service store, so this slipped all gates. Fix: self-contained-bundle
@@ -714,11 +745,11 @@ Discovered starting the daemon during the content-addressed deploy.
 **Severity:** Low (latent; not on a copied-store path today) · **Status:** Open
 Surfaced during the BL-37 fix. (1) `memory-server` builds with `tsc` and its `dist` carries bare
 `require("@adhd/sox-memory-core")` etc. — it only resolves because it runs **stdio from the repo**
-(`sox serve`), never from a copied store. If an `mcp-server` is ever materialized to a `.sox/ext/`
+(`soxe serve`), never from a copied store. If an `mcp-server` is ever materialized to a `.sox/ext/`
 store it will crash exactly like the daemon did — give it the same self-contained `bundle-extension`
 treatment then. (2) `memory-server` ships a **stale, orphaned tracked `bundle/`** dir from a one-off
 bundler run; its `project.json` build uses `tsc` and nothing references the dir — dead tracked
-output to delete + gitignore. Neither blocks anything today. **(2) RESOLVED** (`2867b4f`): the orphaned `bundle/` was untracked + gitignored (it was a 2.4MB dead artifact; runtime uses `dist` via `sox serve`); the BL-41 probe now builds a self-contained bundle on-demand. **(1) still open** — the latent `tsc`-bare-`@adhd/sox-*` shape (only matters if an mcp-server is ever materialized to a copied store).
+output to delete + gitignore. Neither blocks anything today. **(2) RESOLVED** (`2867b4f`): the orphaned `bundle/` was untracked + gitignored (it was a 2.4MB dead artifact; runtime uses `dist` via `soxe serve`); the BL-41 probe now builds a self-contained bundle on-demand. **(1) still open** — the latent `tsc`-bare-`@adhd/sox-*` shape (only matters if an mcp-server is ever materialized to a copied store).
 
 ### ~~BL-39~~ — `upgrade --all` / `install(mode:update)` re-pins the lockfile but does NOT re-materialize the copied service store — **Resolved** (`ca20ecf`, ADR-0004)
 
@@ -1072,7 +1103,7 @@ resolve `@adhd/sox-memory-core` at runtime too.
 `cmdServe` (`apps/sox/src/main.ts`, committed in `f4d3e48`) now resolves across scopes by
 precedence — `SERVE_SCOPE_ORDER = project → user → org → local`, innermost wins — when no
 `--scope` is given; an explicit `--scope` restricts to that scope. A user-scope install is
-found by `sox serve <id>` with no flag; help text updated. Build+lint verified cache-busted.
+found by `soxe serve <id>` with no flag; help text updated. Build+lint verified cache-busted.
 **Remaining follow-up below is a manual config cleanup, not code.**
 `soxe install --scope=user` writes the user-scope lockfile (`~/.config/extensions/extensions.lock`),
 but `soxe serve <id>` defaults to `--scope=project` (cwd-rooted). So a user-scope-installed
@@ -1178,7 +1209,7 @@ two escape hatches (reconfigure allowlist / symlink into `~/.memory/`).
    canonical `validateId` from `@adhd/sox-authoring` (pattern **and** no-type-suffix), exit 1 with a
    clear message; the legacy `scripts/new-extension.ts` (`bin/sox` path) suffix check was
    promoted from warn-only to a hard error (`idSuffixError`). Verified: `soxe init skill
-   memory-skill` and `sox init skill memory-skill` both exit 1; `memory-usage` scaffolds.
+   memory-skill` and `soxe init skill memory-skill` both exit 1; `memory-usage` scaffolds.
 2. **Documented:** id rules now appear in `init` usage + `--help` and in `docs/guidelines/bundle.md`.
 3. **Decision (re-evaluate):** the no-type-suffix rule is **kept globally** (not relaxed for
    bundle members) — one uniform contract; member type is already explicit in `extension.json`
@@ -1221,7 +1252,7 @@ green in `host-runtime:test-e2e` (63/63).
 upgrading `sox-memory-bundle` with the new `memory-usage` skill member, the skill was written
 to the lockfile (`memory-usage/SKILL.md`) but **not** dropped into `~/.claude/skills/`, so it
 was not loadable. Host file-drop only happens on the **declarative `--host` path**
-(`sox install <id> --host=claude --scope=user`, `main.ts:631`). Net: upgrading a bundle does
+(`soxe install <id> --host=claude --scope=user`, `main.ts:631`). Net: upgrading a bundle does
 not deploy its skill members; a separate per-member `--host` install is required (the workaround
 used here). Fix: the config/bundle install should host-place every member per its
 `install.hosts` (so `install --update` of a bundle deploys skills/agents/commands too), or this

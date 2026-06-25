@@ -76,7 +76,7 @@ import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 // ─── CLI name ─────────────────────────────────────────────────────────────────
 // Single source of truth for the CLI command name used in all usage strings.
 // To rename the CLI: change the bin key in apps/sox/package.json to match.
-const CLI = 'sox';
+const CLI = 'soxe';
 
 // ─── Entry ────────────────────────────────────────────────────────────────────
 
