@@ -7,9 +7,9 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ---
 
-## Open — regressions from the proxy-default flip, surfaced rolling it forward to live (2026-06-25)
+## Resolved — regressions from the proxy-default flip, fixed 2026-06-25
 
-### BL-67 — detached proxy backend inherits the parent's stdout fd → `soxe upgrade --all` (and any piped/CI invocation) HANGS forever — **Open (HIGH) — regression**
+### BL-67 — detached proxy backend inherits the parent's stdout fd → `soxe upgrade --all` (and any piped/CI invocation) HANGS forever — **RESOLVED**
 
 **Observed (2026-06-25, rolling the Slice 1.6 flip to live):** `node bin/soxe upgrade --all 2>&1 | tail -40`
 appeared to hang indefinitely. Diagnosis (state-side): the `upgrade --all` node process **had already exited
@@ -19,23 +19,37 @@ write-end**. `tail` therefore never received EOF (a live writer of the pipe rema
 never terminated. Any invocation that pipes sox output (`| tail`, `$(…)`, CI capture, the post-merge
 `upgrade --all` mandated by CLAUDE.md) now hangs whenever a proxy backend is (re)spawned.
 
-**Root cause:** `ensureBackend`/the detached-backend spawn does not fully sever inherited stdio — it must spawn
-with `stdio: 'ignore'` (or explicitly close/redirect fd 0/1/2 to the log file) + `detached:true` + `unref()`.
-A detached daemon must never hold a parent's pipe open.
+**Root cause:** `ensureBackend`/the detached-backend spawn did not fully sever inherited stdio — `stdio[2]` was
+`'inherit'` on non-Windows (stderr), which means when the spawner had `2>&1` active (piped), the backend
+inherited THAT pipe fd, keeping it open forever.
 
-**Fix sketch:** in `libs/service-proxy/src/ensure-backend.ts` (the auto-spawn) set `stdio: ['ignore','ignore','ignore']`
-(or redirect 1/2 to the `--log` sink) before `unref()`. Add an e2e assertion that `soxe serve` (proxy) piped
-through `head`/`tail` terminates. **Must fix** — it breaks the documented post-merge `upgrade --all` workflow.
+**Fix (committed):**
+- `libs/service-proxy/src/ensure-backend.ts`: removed `os` import; replaced `stdio: ['ignore', 'ignore',
+  os.platform() === 'win32' ? 'ignore' : 'inherit']` with full fd severance using a synchronously-opened log
+  fd (`fs.openSync`) or `'ignore'`. Added `stderrLogPath?: string` to `EnsureBackendOptions`.
+  Added `[inv:no-fd-inherit]` invariant documentation.
+- `apps/sox/src/main.ts` (`cmdServe` ensure callback + `restartProxyBackend`): both `ensureBackend` callers
+  now pass a dated `stderrLogPath` under `logDirFor('proxy-backend-<extId>')`.
+- `libs/service-proxy/src/ensure-backend.spec.ts`: added `[BL-67]` regression test that spawns a real child
+  process with `stdio:'pipe'`, triggers `ensureBackend`, and asserts the pipe closes within 12s (not hung).
 
-### BL-68 — BL-65 dirty-dist guard counts UNTRACKED files as "dirty" → false "built from DIRTY tree (uncommitted WIP)" warning on every serve — **Open (LOW)**
+**Proof:** E2E run in isolated tmp — pipeline returns in 143ms; `lsof -p <backend_pid>` confirms fd 0,1 = /dev/null,
+fd 2 = log file, no parent pipe fd inherited.
+
+### BL-68 — BL-65 dirty-dist guard counts UNTRACKED files as "dirty" → false "built from DIRTY tree (uncommitted WIP)" warning on every serve — **RESOLVED**
 
 The BL-65 `stamp-build.cjs` / `warnIfDistSha()` guard (correctly shipped) computes `dirty` from
 `git status --porcelain`, which includes **untracked** files (e.g. `README.md`, `PUBLISHING.md`,
 `.claude/skills/memory-usage/`). So a clean-tracked-tree build stamps `dirty=true`, and **every** live
 `soxe serve` then emits "dist was built from a DIRTY tree (uncommitted WIP)" — alarming false-positive noise
-for all sessions. Fix: base `dirty` on tracked changes only (`git status --porcelain --untracked-files=no`, or
-`git diff --quiet HEAD`). Keep the genuine stale-sha check (that one fired correctly: dist sha `ffe4a3d` vs
-HEAD `b479ebb`).
+for all sessions.
+
+**Fix (committed):**
+- `apps/sox/scripts/stamp-build.cjs`: changed `git status --porcelain` → `git status --porcelain --untracked-files=no`.
+  Untracked files are now excluded; only staged/unstaged modifications to tracked files count as dirty.
+- `apps/sox/src/stamp-build.spec.ts` (new): 5 tests covering the contract — clean tree → false, only-untracked →
+  false (regression), modified tracked → true, staged tracked → true, untracked + modified tracked → true.
+  All tests run in isolated tmp git repos (never touch the real repo's dist or worktree state).
 
 ## Mostly-resolved — test harnesses pollute the real `~/.memory` store dir + the repo root (2026-06-25)
 

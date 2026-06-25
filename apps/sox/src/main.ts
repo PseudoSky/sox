@@ -1827,6 +1827,14 @@ async function restartProxyBackend(
     SOX_PROXY_BACKEND_SOCKET: backendSock,
     ...(backendSchemaPath !== undefined ? { SOX_PROXY_BACKEND_SCHEMA: backendSchemaPath } : {}),
   };
+  // [inv:no-fd-inherit] The backend is detached; its stderr must NEVER inherit
+  // the upgrade process's fd 2. Redirect to a dated log file so diagnostics are
+  // preserved without holding any parent pipe open (BL-67 — the upgrade process's
+  // stderr may be piped: `soxe upgrade --all 2>&1 | tail`).
+  const pathMRB = require('node:path') as typeof import('node:path');
+  const backendLogDirRB = logDirFor(`proxy-backend-${extId}`);
+  const backendLogDateRB = new Date().toISOString().slice(0, 10);
+  const backendLogPathRB = pathMRB.join(backendLogDirRB, `${extId}-backend-${backendLogDateRB}.log`);
   const r = await ensureBackend({
     socketPath: backendSock,
     singletonKey: key,
@@ -1834,6 +1842,7 @@ async function restartProxyBackend(
     args: ['--enable-source-maps', entrypointPath],
     cwd: resolved.extDir,
     env: backendEnv,
+    stderrLogPath: backendLogPathRB,
     onDiagnostic: (l) => log(l),
   });
   log(`ensure-backend: ${r.disposition} — ${r.detail}`);
@@ -5210,6 +5219,12 @@ Flags:
       ...(schemaCachePath !== undefined ? { schemaCachePath } : {}),
       // §9.5 step 3: auto-managed, singleton-guarded backend lifecycle.
       ensure: async () => {
+        // [inv:no-fd-inherit] The backend is detached; its stderr must NEVER inherit
+        // the shim's fd 2. Redirect to a dated log file so diagnostics are
+        // preserved without holding any parent pipe open (BL-67).
+        const backendLogDir2 = logDirFor(`proxy-backend-${extId}`);
+        const backendLogDate2 = new Date().toISOString().slice(0, 10);
+        const backendLogPath2 = pathMod2.join(backendLogDir2, `${extId}-backend-${backendLogDate2}.log`);
         const r = await ensureBackend({
           socketPath: backendSock,
           singletonKey: key,
@@ -5217,6 +5232,7 @@ Flags:
           args: ['--enable-source-maps', entrypointPath2],
           cwd: extDir2 as string,
           env: backendEnv,
+          stderrLogPath: backendLogPath2,
           onDiagnostic: (l) => process.stderr.write(l + '\n'),
         });
         process.stderr.write(`[sox serve] ensure-backend: ${r.disposition} — ${r.detail}\n`);
