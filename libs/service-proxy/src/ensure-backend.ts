@@ -31,7 +31,6 @@
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
-import * as os from 'node:os';
 import * as path from 'node:path';
 
 /** Options for {@link ensureBackend}. */
@@ -62,6 +61,20 @@ export interface EnsureBackendOptions {
   /** Lock staleness TTL in ms — a lock older than this with no live socket is
    * reclaimed (default 30000). */
   lockTtlMs?: number;
+  /**
+   * Path to a log file for the detached backend's stderr output.
+   *
+   * [inv:no-fd-inherit] A detached daemon MUST fully sever inherited stdio so it
+   * never holds a parent pipe open. By default (when omitted) stderr goes to
+   * /dev/null. When provided, the backend's stderr is redirected to this file
+   * (append mode) — useful for diagnosing backend startup issues without
+   * inheriting the caller's fds (which would keep any piped caller's pipe open).
+   *
+   * NEVER use 'inherit' for a detached backend: if the spawning process has its
+   * stderr connected to a pipe (e.g. `soxe upgrade --all 2>&1 | tail`), the
+   * detached child holds that pipe open forever → the pipeline hangs (BL-67).
+   */
+  stderrLogPath?: string;
 }
 
 /** The disposition of an {@link ensureBackend} call. */
@@ -274,15 +287,46 @@ async function spawnUnderLock(
     }
 
     diag(`[service-proxy ensure] spawning backend: ${opts.command} ${opts.args.join(' ')}`);
+
+    // [inv:no-fd-inherit] Fully sever all inherited stdio fds. A detached daemon
+    // MUST NOT hold a parent pipe open — if the spawner has its stderr connected to
+    // a pipe (e.g. `soxe upgrade --all 2>&1 | tail`), an inherited fd 2 keeps the
+    // pipe open indefinitely, hanging the pipeline (BL-67).
+    //
+    // When opts.stderrLogPath is provided we redirect fd 2 to that file (append)
+    // so backend startup diagnostics are preserved without inheriting parent fds.
+    // Otherwise fd 2 is /dev/null (fully silent — the onDiagnostic callback above
+    // already captured the spawn initiation for the caller).
+    //
+    // We use a synchronously-opened fd (not a WriteStream) because `spawn` needs
+    // an integer fd or 'ignore'/'pipe'/'inherit' — a WriteStream object that hasn't
+    // been fully opened yet would yield an invalid fd and the backend would fail to
+    // start. After `spawn()` returns the child has inherited the fd; we close our
+    // copy immediately so this process doesn't keep the file open unnecessarily.
+    let stderrFd: number | 'ignore' = 'ignore';
+    if (opts.stderrLogPath) {
+      try {
+        fs.mkdirSync(path.dirname(opts.stderrLogPath), { recursive: true, mode: 0o700 });
+        stderrFd = fs.openSync(opts.stderrLogPath, 'a');
+      } catch {
+        stderrFd = 'ignore';
+      }
+    }
+
     const child = spawn(opts.command, opts.args, {
       cwd: opts.cwd,
       env: opts.env,
       // Detached so the backend survives the shim's exit (its lifetime = the store,
-      // not the client pipe). stdio ignored on stdin/stdout (NEVER inherit stdout —
-      // [inv:no-stdout-diagnostics]); stderr inherited so diagnostics are visible.
+      // not the client pipe). ALL fds are explicitly severed — never inherit from
+      // the parent ([inv:no-fd-inherit] — prevents BL-67 pipe-hold hang).
       detached: true,
-      stdio: ['ignore', 'ignore', os.platform() === 'win32' ? 'ignore' : 'inherit'],
+      stdio: ['ignore', 'ignore', stderrFd === 'ignore' ? 'ignore' : stderrFd],
     });
+    // Close our copy of the log fd immediately after spawn() so this process
+    // doesn't keep the file open unnecessarily. The child has already inherited it.
+    if (stderrFd !== 'ignore') {
+      try { fs.closeSync(stderrFd); } catch { /* ignore */ }
+    }
     const pid = child.pid;
     // Unref so this shim process can exit independently of the backend.
     child.unref();

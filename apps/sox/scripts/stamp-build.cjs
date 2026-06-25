@@ -33,8 +33,12 @@ try {
 }
 
 try {
-  // `git status --porcelain` is empty iff the tree is clean.
-  const status = execFileSync('git', ['status', '--porcelain'], {
+  // `git status --porcelain --untracked-files=no` is empty iff there are no
+  // tracked changes (staged or unstaged). Untracked files are intentionally
+  // excluded: a freshly cloned or worktree-checked-out repo always has some
+  // untracked editor/tooling files present; including them would stamp
+  // dirty=true on every otherwise-clean build (BL-68 false-positive).
+  const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], {
     encoding: 'utf8',
     timeout: 3000,
   });
