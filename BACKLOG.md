@@ -90,18 +90,24 @@ current `install-registry.json`/`supervisors.json`, both mtime Jun 25). The clau
 current code is not re-polluting. So this is **not a live data-path bug** — `dataRoot()`/`userDataRoot()`
 (`libs/host-runtime/src/data-paths.ts`) are correct.
 
-**Actions needed (deferred per user — log only for now):**
-1. **Migrate/clean** the stale residue in `claude-agents` (and the legacy `.sox/` in both repos) via the
-   sanctioned `sox migrate-home` (ADR-0004 §D8; idempotent, non-destructive — `moveFile` skips when the
-   target already exists, so it won't clobber the current `~/.adhd` global state). Then remove the
-   now-empty residue from the repo roots.
-2. **Unset `SOX_HOME`** in the user's shell profile (it is retired and is the footgun behind both this and
-   the confusion; current code only warns). Cannot edit the user's rc autonomously — surface it.
-3. **Optional hardening:** when `SOX_HOME` is set, `sox` could escalate from a warning to an actionable
-   prompt (`run 'sox migrate-home'`) or auto-migrate once — evaluate.
+**`SOX_HOME` is NOT sox's to reclaim (corrected 2026-06-25).** The user confirmed `SOX_HOME` is set for
+an **unrelated** purpose — it "was never a variable for this project to use." sox-ecosystem retired it
+(ADR-0004) and must be **fully inert** to it, including **no warning** (the name collides with the `sox`
+audio tool and may be claimed by other tooling — nagging about a var sox no longer reads is presumptuous
+noise). **Done:** the per-invocation `SOX_HOME … RETIRED` warning is **removed** (`apps/sox/src/main.ts`);
+data placement is governed solely by `SOX_ECOSYSTEM_HOME` / default `~/.adhd/sox-ecosystem/`. Do **not**
+recommend unsetting `SOX_HOME`.
 
-This is distinct from **BL-56** (project_path attribution, in the memory store) — that one is a live code
-bug and is being fixed first.
+**Remaining (cleanup only, independent of `SOX_HOME`):**
+1. The stale residue (`install-registry.json`, `supervisors.json`, `logs/`, legacy `.sox/`) at the
+   `claude-agents` / `sox-ecosystem` repo roots can be removed/relocated via `sox migrate-home`
+   (ADR-0004 §D8; idempotent, non-destructive — skips when the target already exists, so it won't clobber
+   the current `~/.adhd` global state) **with `--old-home <repo>` explicitly**, never by touching the
+   user's `SOX_HOME`. Optional; the files are inert.
+2. **`sox doctor`** (future) should detect legacy repo-root residue from the default locations,
+   independent of `SOX_HOME`.
+
+This is distinct from **BL-56** (project_path attribution, in the memory store), which is fixed.
 
 ## Resolved — surfaced during service-lifecycle Slice 1 (2026-06-25, `feat/service-lifecycle-slice1`)
 

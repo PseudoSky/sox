@@ -86,17 +86,13 @@ const verb = argv[0];
 const flags = parseArgs(argv.slice(1));
 
 async function main(): Promise<void> {
-  // ADR-0004: SOX_HOME is RETIRED. It used to mean two things at once (data root +
-  // host-path rerouting). It is replaced by SOX_ECOSYSTEM_HOME (data root only) and
-  // SOX_SANDBOX_ROOT (test isolation only). A still-set SOX_HOME is now inert for
-  // data resolution — warn loudly so a stale shell export does not mislead.
-  if (process.env['SOX_HOME'] && verb !== 'help' && verb !== undefined) {
-    process.stderr.write(
-      `[sox] WARNING: SOX_HOME is set but RETIRED (ADR-0004). It no longer affects data\n` +
-      `      location or placement. Use SOX_ECOSYSTEM_HOME for the data root, or run\n` +
-      `      '${CLI} migrate-home' to relocate existing data. Unset SOX_HOME to silence this.\n`,
-    );
-  }
+  // ADR-0004: SOX_HOME is RETIRED and fully INERT — data placement is governed solely
+  // by SOX_ECOSYSTEM_HOME (data root) and SOX_SANDBOX_ROOT (test isolation). We do NOT
+  // warn on a set SOX_HOME: the name is not exclusively ours (it collides with the
+  // `sox` audio tool and may be claimed by other tooling, e.g. an unrelated project),
+  // so nagging about a variable sox no longer reads is presumptuous noise (BL-57). If a
+  // user genuinely has legacy sox data to relocate, `sox migrate-home` / `sox doctor`
+  // detect it from the default locations, independent of SOX_HOME.
   if (process.env['SOX_ECOSYSTEM_HOME'] && verb !== 'help' && verb !== undefined) {
     process.stderr.write(
       `[sox] SOX_ECOSYSTEM_HOME is set — data root: ${process.env['SOX_ECOSYSTEM_HOME']} (placement unaffected)\n`,
