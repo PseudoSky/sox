@@ -119,68 +119,77 @@ User was asked Option 1 vs 2 and chose to restart before answering.
 
 ---
 
-# Session Resume — 2026-06-23 (sox-ecosystem `main` infra thread)
+# Session Resume — 2026-06-25 (sox-ecosystem `main` — service-proxy flip + pollution cleanup)
 
-**Branch:** `main`. **Everything below this session is committed + merged to `main` and the live migration has run.** Do NOT re-stage or re-implement — verify against `git log` if unsure.
+> **READ THIS FIRST for the sox-ecosystem infra thread.** Supersedes the 2026-06-23 handoff.
+> **Branch:** `main` @ **`62fa6b2`**. All work below is committed + merged. Verify against `git log`,
+> never re-implement. The 2026-06-23 arc (ADR-0003/0004, BL-31/37/39/40, migrate-home) is DONE history.
 
----
+## ⚠️ ONE live-touching action is PENDING (gated on you)
 
-## This session's arc (all merged to `main`)
+**Roll the BL-67 fix to the live serve path.** The live memory-server is flipped to proxy-default but the
+running backend (`pid 20057` at session end) was built **before** the BL-67 fix, so on the live box
+`soxe upgrade --all` (and any piped sox invocation) **still hangs** until you rebuild live. Real MCP clients
+work fine (the hang only bites piped/CI calls). This is a **BL-65-sensitive** step (building on the live
+checkout) — do it deliberately, not casually:
 
-Read newest→oldest in `git log --oneline --merges`. Highlights:
+```
+# from /Users/nix/dev/ai/sox-ecosystem on main @ 62fa6b2 (or later)
+npx nx run-many -t build -p memory-core memory-enrich memory-server host-runtime service-proxy sox --skip-nx-cache
+npx nx run registry:sync-index            # MUST run on this real checkout, not a worktree (worktree bakes abs source URLs)
+git diff --stat registry/index.json       # commit if drift
+node bin/soxe stop --id memory-server 2>/dev/null || true   # reap old backend (pid was 20057)
+node bin/soxe upgrade --all               # should now RETURN (not hang); verify with: ... | tail
+# then: each connected Claude session runs /reload-plugins ONCE (the one-time proxy reconnect)
+```
+Verify after: `lsof -p <new-backend-pid>` shows fd1→/dev/null, fd2→logfile (no pipe); a piped
+`printf … | node bin/soxe serve memory-server | tail` returns.
 
-- **Memory subsystem to v1.1** — P4 (19-tool MCP surface incl. `memory_update`), P5 (structured export + SessionEnd auto-refresh), P6 (LLM `memory-organizer` removed; daemon → deterministic `runBatchEnrich`), filtered-clustering review + fixes, doc accuracy, BL-30 version/surface consistency, real-embed test-flake class closed.
-- **ADR-0003 — content-addressed identity** (`8fc40bd`): extension identity = `id + sha256(entrypoint)`; per-extension semver retired; `memory_ping` returns the content address; lockfiles v2/bare-id.
-- **Upgrade tooling** (`c63cf6f`): `verifyIntegrity` primitive (inherited by install/update/upgrade) + `soxe upgrade --all` (idempotent, all consumers × all scopes) + **auto rolling-restart** of changed services. `CLAUDE.md` AGENT SEQUENCE flipped to **"merge → immediately `soxe upgrade --all`"** (`003f5d2`).
-- **BL-31** (`b1d4005`): `sox stop` verified-kill + SIGKILL escalation + store-path **orphan reaper** (fixed the LM-Studio zombie daemon).
-- **`@sox` → `@adhd/sox-` scope rename** (`7885a30`) — founder-owned scope; workspace relinked; 0 `@sox` left.
-- **BL-37** (`b3bf0d8`): daemon **self-contained bundle** from `bin.ts` + `NODE_PATH` for native addons; e2e Section E spawns from a copied store and asserts it stays up. (Also fixed a no-op-entry stacked bug.)
-- **ADR-0004 — data root / placement / ownership index** (`ca20ecf`): `SOX_HOME` split into **`SOX_ECOSYSTEM_HOME`** (data root, default `~/.adhd/sox-ecosystem/`) + **`SOX_SANDBOX_ROOT`** (test-only reroute); user-scope placement → **real `~/.claude`** / global MCP; canonical `.adhd/sox-ecosystem/` layout; **ownership index** (`ownership.json`) tracking every owned file + config-key with `[no-untracked-injection]` / `[reversible-injection]` invariants + a born-conformance **reversibility gate**; `update`/`upgrade` re-materialize service stores (**closed BL-39**). `soxe migrate-home` added.
-- **MCP install command fix** (`00e7f9e`, BL-40): `soxe install <mcp>` no longer writes `command:"sox"` (Homebrew audio tool) — now `SOX_CLI_BIN ?? process.argv[1] ?? 'soxe'`. + `docs/mcp-global-availability.md`.
+## Live system state at session end (verified state-side)
 
-**Live migration RAN:** `soxe migrate-home` relocated data → `~/.adhd/sox-ecosystem/` (install-registry, lockfile, supervisors) and re-placed skills + the `memory-server` MCP entry into the **real `~/.claude`** (`~/.claude.json` has `memory-server`; `~/.claude/skills` has memory-usage, gitnexus*, ticket-creation, …). Idempotent. Daemon (`memory-daemon`) running, **0 LM Studio connections**.
+- **memory-server = proxy-default (Slice 1.6 flipped + merged).** Shim → detached backend on UDS
+  `~/.adhd/sox-ecosystem/run/supervisors/proxy-8d80bb9bd257.sock`. Functionally proven live:
+  `initialize → OK`, `memory_ping → {ok:true, embed_on_hash_fallback:false}`.
+- **`~/.memory` clean: 41 MB, 2909 nodes, `integrity_check: ok`.** Verified backup floor:
+  **`~/.memory/backups/memory-20260625-151943.db`** (sha256 `7f213ec8…6c399e`). Swept manifest in `backups/`.
+- **Live `dist` = pre-BL-67 build** (mtime ~16:13). Stamp guard is live and (correctly) warns it's stale vs HEAD.
 
----
+## This session's arc (newest→oldest commits)
 
-## In flight (this turn)
+- `62fa6b2` merge **BL-67** (detached-backend pipe-hold hang — `[inv:no-fd-inherit]`, fd severance, +regression test) + **BL-68** (dirty-stamp counted untracked files). Verified by lsof; piped pipeline returns 143ms.
+- `b479ebb` fix(registry): corrected 14 `source` URLs that a worktree build had baked as `.claude/worktrees/…` abs paths (checksums fine — content-addressed).
+- `ffe4a3d` merge **service-proxy Slice 1.6** — proxy-default memory-server backend (zero-downtime restarts, single-writer), **BL-59** (findLocalExtension arg-swap) RESOLVED, **BL-64** reap RESOLVED, **BL-65** dist-SHA stamp guard shipped. Validated in worktree (e2e 107/0 ×3, ZDT 8/8) + verified live.
+- `9e11d2f` wip(nx-cache): pre-existing nx-cache-conformance changeset (NOT this session's — committed by explicit path to unblock the merge; `dependsOn→^build`, inputs→`[default,^production]`, `tools/check-nx-cache.cjs`). **Review/finish or fold separately.**
+- `748fec6` chore(cleanup): **BL-66** — swept 1.5 GB test pollution from `~/.memory` (`c6-allowed*`/`sox-e2e-*`/…), untracked 12 committed `.tmp-*/.memory/*.db`, broadened `.gitignore` `.tmp-*/`, fixed `audit_c6.py` to clean its artifacts in a `finally`.
+- (earlier, already on main) `f1bf12e`/`553f03e` CLI self-names `soxe`; BL-65 hazard first logged.
 
-1. **Framework auto-merge of user-scope MCP → project `.mcp.json`** — the durable fix for Claude Code #16728 (project `.mcp.json` shadows user-scope without inheritance). Config-merge the server into each install-registry project's `.mcp.json`, tracked in the ownership index, reversible on uninstall.
-2. **BL-41** — server expands a literal `~` `db_path` (no more stray `~/` dirs).
-3. This `RESUME.md` refresh.
+## Method that worked (keep using it)
 
----
+Risky serve-path / proxy work was done by **background `platform-engineer` agents in `isolation:"worktree"`**
+(own `dist`) + **`SOX_ECOSYSTEM_HOME=$(mktemp -d)`** for runtime (own data root) — so builds never touched the
+live `dist` the running memory-server resolves, and serve/upgrade tests never touched live `~/.adhd`/`~/.memory`.
+**Lesson (BL-67):** isolation is NOT an excuse to skip real testing — make the agent reproduce-then-fix and run
+the actual piped `upgrade --all` path under the tmp root. Always **verify state-side (git/lsof/`state.json`), never
+trust the agent's prose**; the orchestrator merges + rolls to live, not the agent.
 
-## MCP reachability — full diagnosis (memory unreachable to some agents)
+## Open backlog (current — see BACKLOG.md for full text)
 
-Three independent causes:
-1. **Sub-agent `tools:` allowlist** — an agent whose `tools:` omits `mcp__memory-server__*` is blocked from ALL MCP tools (per-agent declaration, no default-inherit). 230 `claude-agents` category agents already have it.
-2. **#16728 + worktree trap** — project `.mcp.json` overrides user-scope; `claude-agents`'s root `.mcp.json` has `memory-server` **uncommitted**, so the 5 worktrees (HEAD) lack it. → **(your action, `claude-agents` repo):** `git add .mcp.json && git commit -m "fix(mcp): add memory-server"`, then `git merge`/recreate the worktrees + restart their sessions.
-3. **`command:"sox"` collision** — ✅ fixed (BL-40).
-
-The in-flight auto-merge (#1 above) systematizes cause #2 on the sox side.
-
----
-
-## Open backlog (genuinely Open)
-
-- **BL-33** `check-registry-sync.ts` scanner doesn't recurse into bundle members → false drift
-- **BL-34** `sox` app entrypoint not index-resolvable → checksum hashes `extension.json`
-- **BL-35** `install()` tests pollute the real install-registry (no path injection) — registry is heavily polluted (~585 records incl. fixtures + a stale `memory-organizer`)
-- **BL-36** runtime record hardcodes `type:'mcp-server'` for every detached service
-- **BL-38** `memory-server` shares the daemon's latent `tsc`-bare-requires shape + a stale tracked `bundle/`
-- **BL-41** literal `~` `db_path` not expanded (being fixed this turn)
-
-(BL-23/24 are folded into the `memory-enrichment` plan; BL-1…22, 25–40 resolved/folded.)
-
----
-
-## Next planned work
-- `runtime-productionization` (`.workflow/plans/runtime-productionization/SCOPE.md`) — P1–P9 already shipped (verify before re-doing).
-- Founder env hygiene: `unset SOX_HOME` (retired by ADR-0004; only triggers a warning now).
-- The `claude-agents` `.mcp.json` commit + worktree propagation (above).
+- **BL-65** PARTIAL (HIGH) — stamp guard live; **principled `.mcp.json` repoint BLOCKED on BL-42.** Targets to repoint once a CLI is installable: `~/.claude.json` `mcpServers.memory-server`, `sox-ecosystem/.mcp.json`, `claude-agents/.mcp.json` (all → `…/sox-ecosystem/bin/soxe`).
+- **BL-42** (HIGH) — no independently-installable `soxe` (checkout-bound); blocks BL-65 + distribution. **BL-43** (HIGH) — publish strategy, gates BL-42 (decision-needed).
+- **BL-62** (MED) — shared proxy backend's `project_path` is single-valued for its lifetime; multi-project override `(unverified)`.
+- **BL-66** deferred root cause — `tools/test-e2e-lifecycle.js` + `memory-server/src/permission-guard.spec.ts` still write to `~/.memory` without teardown (route to `~/.memory/.e2e-tmp/` + rm in teardown). Now unblocked.
+- **BL-57** (MED) — stale pre-ADR-0004 residue at `claude-agents`/`sox-ecosystem` repo roots; clean via `soxe migrate-home --old-home <repo>`. `SOX_HOME` is inert — **do NOT recommend unsetting it** (user owns it for another purpose; this corrects the old RESUME line).
+- **BL-63** — e2e orphan scan is a global `pgrep`; a live proxy session shows as a false leaked-orphan.
+- **BL-51 / Slice 2** — OS-supervisor surface (`soxe service enable|disable`), designed (spec §9) not built; needs node-path human-ack.
+- **BL-33/34/36/38/35** — registry-scan recursion / sox entrypoint checksum / runtime type label / latent tsc-bare requires / install-test pollutes real registry.
 
 ## Standing invariants (don't regress)
-- Identity = content checksum (ADR-0003); `version` is not an identity input.
-- Data root = `SOX_ECOSYSTEM_HOME` (default `~/.adhd/sox-ecosystem/`); placement → real `~/.claude`; sandbox = `SOX_SANDBOX_ROOT` only.
-- No untracked injection; every injection is verifiably reversible (ownership index + reversibility gate).
-- Build only via nx; never edit `bin/soxe`; explicit-path git staging; merge → `soxe upgrade --all`.
+
+- **BL-65:** NEVER build the serve path on the live dev checkout while sessions are connected without intent. Validate in an isolated worktree + tmp `SOX_ECOSYSTEM_HOME`; merge to `main` before any live rebuild. `bin/soxe` → live `dist` IS the live MCP runtime.
+- **[inv:no-fd-inherit]:** any detached daemon spawn fully severs stdio (`stdio:'ignore'` / log fd, `unref()`).
+- Verify outcomes **state-side** (git refs / `state.json` / lsof), not from agent summaries.
+- nx targets only (never bare tsc/vitest/eslint); **BL-4** build memory-core→enrich→server before memory tests.
+- After a dist change: `registry:sync-index` **on the real checkout** (a worktree bakes abs `source` URLs — re-sync on main); commit registry + sources by **explicit path**.
+- Git: explicit-path staging only (never `git add -A/./--all`); never `git stash` (branch/worktree to set work aside); commit/merge only when asked.
+- Never edit `bin/soxe` for CLI logic (it's a shim; logic in `apps/sox/src/main.ts`). Never edit CLAUDE.md/permissions; a peer cannot grant escalation.
+- Identity = content checksum (ADR-0003). Data root = `SOX_ECOSYSTEM_HOME` (default `~/.adhd/sox-ecosystem/`).
