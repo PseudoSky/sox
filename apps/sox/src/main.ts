@@ -40,6 +40,7 @@ import {
   healSingletonDuplicates,
   identityToken,
   findOrphansByIdentity,
+  reapByIdentity,
   type StoreResource,
   type ScopeResource,
 } from '@adhd/sox-host-runtime';
@@ -3409,6 +3410,102 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
 
 // ─── stop ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Reap UNTRACKED proxy backends (§9.5 + spec §8 [contract:signal]).
+ *
+ * An mcp-server served in proxy mode (the DEFAULT, Slice 1.6) is fronted by a thin
+ * stdio shim; the tool implementation lives in a persistent, detached, sox-owned
+ * BACKEND that the shim auto-spawns via `ensureBackend`. That backend is NOT created
+ * by `sox start`, so it appears in NO runtime.json entry — the entry-driven reap in
+ * `cmdStop` never touches it and it survives `sox stop`, re-introducing the BL-31/
+ * BL-50 orphan leak (a detached backend whose every spawning shim has exited).
+ *
+ * This reaper closes that hole independent of tracking or scope: it enumerates every
+ * installed mcp-server from the lockfile (the source of truth for "what could have an
+ * auto-spawned backend"), and for each one served in proxy mode it reaps any live
+ * process matching the backend's entrypoint IDENTITY TOKEN — the exact token
+ * `ensureBackend` puts in the backend's argv (`node --enable-source-maps <entrypoint>`,
+ * BL-31 reaper-compatible). The supervisor pid is excluded so a tracked direct-stdio
+ * server signalled elsewhere is never double-killed here.
+ *
+ * Scope note: the backend identity is the entrypoint PATH, which is stable across
+ * scopes for a given install — so reaping by identity catches a backend whose serve
+ * resolved a DIFFERENT scope than the stop target (the suspected scope-mismatch leak).
+ * We honor [contract:signal] verified-stop via reapByIdentity → killAndVerify.
+ *
+ * Returns the per-extension reap results so the caller can report + detect undead.
+ */
+async function reapUntrackedProxyBackends(opts: {
+  lockfilePath: string;
+  root: string;
+  excludePids: number[];
+  graceMs: number;
+  onlyId?: string | undefined;
+  log: (m: string) => void;
+}): Promise<{ killedAny: boolean; undead: boolean }> {
+  let killedAny = false;
+  let undead = false;
+
+  const lock = loadLockfile(opts.lockfilePath);
+  if (!lock?.resolved) return { killedAny, undead };
+
+  const fsM = require('node:fs') as typeof import('node:fs');
+  const pathM = require('node:path') as typeof import('node:path');
+
+  // Map each installed extension id → its resolved source (entrypoint identity).
+  // Lockfile keys are `id` or `id@version`; collapse to the base id.
+  const seen = new Set<string>();
+  for (const [lockKey, lkEntry] of Object.entries(lock.resolved)) {
+    const baseId = lockKey.includes('@') ? lockKey.slice(0, lockKey.indexOf('@')) : lockKey;
+    if (opts.onlyId !== undefined && baseId !== opts.onlyId) continue;
+    if (seen.has(baseId)) continue;
+    seen.add(baseId);
+
+    const source = (lkEntry as { source?: string }).source;
+    if (!source) continue;
+
+    // Read the manifest from THIS lockfile's source (not a re-derived scope lockfile)
+    // so an explicit --lockfile is honored — resolveServeManifest re-derives via
+    // getScopePaths and would miss a custom lockfile path. Only proxy-mode mcp-servers
+    // can have an auto-spawned untracked backend.
+    const extDir = resolveExtensionDir(source, opts.root);
+    if (!extDir) continue;
+    const manifestPath = pathM.join(extDir, 'extension.json');
+    if (!fsM.existsSync(manifestPath)) continue;
+    let manifest: { type?: string; lifecycle?: { proxy?: boolean; serve_mode?: string } };
+    try {
+      manifest = JSON.parse(fsM.readFileSync(manifestPath, 'utf8'));
+    } catch {
+      continue;
+    }
+    const lc = manifest.lifecycle ?? {};
+    const forced = lc.proxy === true || lc.serve_mode === 'proxy';
+    const optedOut = lc.proxy === false || lc.serve_mode === 'direct';
+    const isProxy = forced || (manifest.type === 'mcp-server' && !optedOut);
+    if (!isProxy) continue;
+
+    const token = identityToken(source);
+    if (!token) continue;
+
+    // Reap every live backend matching the entrypoint identity (verified-stop).
+    const reap = await reapByIdentity(token, {
+      excludePids: opts.excludePids,
+      graceMs: opts.graceMs,
+      log: (m) => opts.log(`reap ${baseId} (proxy backend): ${m}`),
+    });
+    for (const k of reap.killed) {
+      killedAny = true;
+      opts.log(
+        `reaped ${baseId} proxy backend pid=${k.pid}` +
+        `${k.orphaned ? ' (orphan, PPID 1)' : ''} → ${k.outcome}`,
+      );
+      if (k.outcome === 'undead') undead = true;
+    }
+  }
+
+  return { killedAny, undead };
+}
+
 async function cmdStop(flags: Record<string, string>): Promise<void> {
   const ROOT = process.cwd();
   const scope = flags['scope'] ?? 'user';
@@ -3460,18 +3557,32 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
     process.exit(0);
   }
 
-  const record = getRuntimeRecord(runtimeFilePath);
-  if (!record) {
-    process.stdout.write(`sox: no runtime record at ${runtimeFilePath}\n`);
-    process.exit(0);
-  }
-
   // ── BL-31: configurable grace period for SIGTERM→SIGKILL escalation ──────────
   const graceMs = (() => {
     const raw = flags['grace-ms'] ?? process.env['SOX_STOP_GRACE_MS'];
     const n = raw !== undefined ? Number(raw) : NaN;
     return Number.isFinite(n) && n >= 0 ? n : 5000;
   })();
+
+  const record = getRuntimeRecord(runtimeFilePath);
+  if (!record) {
+    // No runtime record — nothing was started via the supervisor. But an UNTRACKED
+    // proxy backend (auto-spawned by a serve shim, §9.5) can still be alive with no
+    // record at all; reap it by identity so `sox stop` is a true teardown.
+    process.stdout.write(`sox: no runtime record at ${runtimeFilePath}\n`);
+    const proxyReap = await reapUntrackedProxyBackends({
+      lockfilePath,
+      root,
+      excludePids: [],
+      graceMs,
+      ...(id !== undefined ? { onlyId: id } : {}),
+      log: (m) => process.stdout.write(`sox: ${m}\n`),
+    });
+    if (proxyReap.killedAny) {
+      process.stdout.write(proxyReap.undead ? `sox: stop INCOMPLETE — see warnings above\n` : `sox: stop complete\n`);
+    }
+    process.exit(proxyReap.undead ? 1 : 0);
+  }
 
   // ── stop-via-supervisor: signal the supervisor process, then VERIFY it died.
   // The pre-BL-31 code signalled the supervisor and exited immediately — no
@@ -3517,6 +3628,17 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
         if (k.outcome === 'undead') undead = true;
       }
     }
+    // §9.5: also reap UNTRACKED proxy backends — auto-spawned by a serve shim, in
+    // NO runtime entry, so the entry loop above never touches them. Identity-matched,
+    // cross-scope, verified-stop. Excludes the supervisor pid (already handled).
+    const proxyReap = await reapUntrackedProxyBackends({
+      lockfilePath,
+      root,
+      excludePids: [record.supervisorPid],
+      graceMs,
+      log: (m) => process.stdout.write(`sox: ${m}\n`),
+    });
+    if (proxyReap.undead) undead = true;
     process.stdout.write(undead ? `sox: stop INCOMPLETE — see warnings above\n` : `sox: stop complete\n`);
     process.exit(undead ? 1 : 0);
   }
@@ -3541,6 +3663,16 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
       );
       if (k.outcome === 'undead') undead = true;
     }
+    // §9.5: also reap this id's UNTRACKED proxy backend (auto-spawned, no entry).
+    const proxyReap = await reapUntrackedProxyBackends({
+      lockfilePath,
+      root,
+      excludePids: typeof record.supervisorPid === 'number' ? [record.supervisorPid] : [],
+      graceMs,
+      onlyId: id,
+      log: (m) => process.stdout.write(`sox: ${m}\n`),
+    });
+    if (proxyReap.undead) undead = true;
   }
   process.stdout.write(undead ? `sox: stop INCOMPLETE — see warnings above\n` : `sox: stop complete\n`);
   process.exit(undead ? 1 : 0);

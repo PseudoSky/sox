@@ -20,6 +20,7 @@
 
 import { spawnSync, execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { createRequire } from 'node:module';
@@ -77,10 +78,54 @@ function liveServerPids() {
   }
 }
 
-/** Server pids that belong to THIS test = current live pids minus the pre-test baseline. */
-function leakedServerPids() {
+/** PPID of a pid via ps; NaN if gone. (Defined here for leak attribution; the
+ * full ppidOf below is identical — kept separate to avoid a forward reference.) */
+function ppidOfEarly(pid) {
+  try {
+    return Number(execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8' }).trim());
+  } catch { return NaN; }
+}
+
+/**
+ * Server pids that LEAKED FROM THIS TEST.
+ *
+ * = current live memory-server backends, minus:
+ *   (1) the pre-test baseline (servers already running at import — unrelated), and
+ *   (2) BL-63 attribution: any candidate whose parent is a LIVE, non-init process.
+ *       Every backend THIS test legitimately spawns is either (a) a tracked
+ *       supervisor child that `sox stop` kills, or (b) a PPID-1 orphan we create to
+ *       test the reaper. After a stop, a genuine leak from THIS test is therefore
+ *       always orphaned (PPID 1) or has a dead parent. A backend whose parent is
+ *       STILL ALIVE belongs to something else still managing it — most commonly the
+ *       operator's own `sox serve memory-server` session, whose shim re-ensures its
+ *       backend DURING the ~minute run (post-dating the baseline). Counting that as
+ *       a leak was the BL-63 false positive; excluding live-parented candidates
+ *       removes it WITHOUT masking a real test leak (which is never live-parented
+ *       after stop).
+ */
+function leakedServerPids(opts = {}) {
   const out = [];
-  for (const pid of liveServerPids()) if (!BASELINE_PIDS.has(pid)) out.push(pid);
+  for (const pid of liveServerPids()) {
+    if (BASELINE_PIDS.has(pid)) continue;
+    if (opts.excludeLiveParented) {
+      const ppid = ppidOfEarly(pid);
+      // Used ONLY for post-stop checks (Step 7/7b), where this test's supervisor is
+      // already dead — so a genuine leak from THIS test is orphaned (PPID 1) or has
+      // a dead parent. A backend with a LIVE non-init parent is owned by another
+      // live manager (the operator's serve shim that re-ensured its backend during
+      // the run → post-dates the baseline). Excluding it removes the BL-63 false
+      // positive WITHOUT masking a real test leak (never live-parented after stop).
+      // NB: NOT used mid-lifecycle (disable/enable), where the test's own backend is
+      // legitimately parented by the still-live supervisor and a leak there MUST be
+      // caught.
+      if (Number.isInteger(ppid) && ppid > 1) {
+        let parentAlive = false;
+        try { process.kill(ppid, 0); parentAlive = true; } catch { parentAlive = false; }
+        if (parentAlive) continue;
+      }
+    }
+    out.push(pid);
+  }
   return out;
 }
 
@@ -247,6 +292,59 @@ async function spawnOrphan(entrypoint, marker) {
   // Wait for reparenting to init.
   await sleep(500);
   return gpid;
+}
+
+/**
+ * Spawn the REAL memory-server backend (SOX_PROXY_BACKEND=1) as a TRUE orphan
+ * (PPID 1, like a serve shim that has exited) listening on its own UDS. This is
+ * the §9.5 auto-spawned backend the front-shim would `ensureBackend`. A unique
+ * `marker` is placed in argv so the backend can be matched + reaped in ISOLATION
+ * from any unrelated live memory-server (e.g. the operator's own serve session) —
+ * the BL-63 scoping fix: the assertion matches THIS test's backend by marker, not
+ * the global `memory-server/dist/index.js` token.
+ *
+ * Returns { pid, sock, db } once the backend's UDS is accepting connections.
+ * @param {string} entrypoint absolute path to memory-server/dist/index.js
+ * @param {string} marker     unique argv token to isolate this backend
+ * @param {string} sock       UDS path for the backend to bind
+ * @param {string} db         SQLite store path (inside the ~/.memory allowlist)
+ * @returns {Promise<number>} the orphaned backend pid (PPID becomes 1)
+ */
+async function spawnOrphanBackend(entrypoint, marker, sock, db) {
+  // setsid + nohup + background, then the launching shell exits → the node backend
+  // reparents to init (PPID 1). The marker is a trailing argv token so the precise
+  // identity match (`memory-server/dist/index.js` AND the marker) finds only ours.
+  const cmd =
+    `nohup "${NODE}" --enable-source-maps "${entrypoint}" "${marker}" ` +
+    `>/dev/null 2>&1 & echo $! ; exit 0`;
+  const child = spawn('/bin/sh', ['-c', cmd], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+    detached: true,
+    env: {
+      ...process.env,
+      SOX_PROXY_BACKEND: '1',
+      SOX_PROXY_BACKEND_SOCKET: sock,
+      SOX_CONFIG_DB_PATH: db,
+    },
+  });
+  let out = '';
+  child.stdout.on('data', (d) => { out += d.toString(); });
+  await new Promise((resolve) => child.on('exit', resolve));
+  const pid = Number(out.trim().split('\n').pop());
+  // Wait for the UDS to come live (the backend binds + listens on start).
+  for (let i = 0; i < 40; i++) {
+    await sleep(150);
+    const liveNow = await new Promise((res) => {
+      if (!fs.existsSync(sock)) return res(false);
+      const s = net.createConnection(sock);
+      let settled = false;
+      const t = setTimeout(() => { if (!settled) { settled = true; s.destroy(); res(false); } }, 200);
+      s.on('connect', () => { clearTimeout(t); if (!settled) { settled = true; s.destroy(); res(true); } });
+      s.on('error', () => { clearTimeout(t); if (!settled) { settled = true; res(false); } });
+    });
+    if (liveNow) break;
+  }
+  return pid;
 }
 
 /** Live pids whose argv contains a given marker token. */
@@ -789,7 +887,9 @@ async function main() {
   // REALITY CHECK (the gate): scan the actual process table, not the runtime record.
   // Assert BEFORE cleanup so a survivor FAILS the test instead of being silently killed.
   await sleep(500);
-  const orphans = leakedServerPids();
+  // BL-63: exclude live-parented backends (an operator's concurrent serve session)
+  // — this test's supervisor is dead by now, so a real leak is orphaned/dead-parented.
+  const orphans = leakedServerPids({ excludeLiveParented: true });
   assert(orphans.length === 0,
     `no orphan memory-server processes after stop (found: ${orphans.join(', ') || 'none'})`);
 
@@ -877,13 +977,107 @@ async function main() {
   assert(isAlive(unrelatedOrphanPid),
     `BL-31 unrelated daemon (pid=${unrelatedOrphanPid}) SPARED — reaper matched by store path only`);
 
-  // Belt-and-suspenders: no leaked memory-server pid survives.
-  const reapLeaks = leakedServerPids();
+  // Belt-and-suspenders: no leaked memory-server pid survives (BL-63: exclude an
+  // operator's concurrent live serve session — only orphaned/dead-parented count).
+  const reapLeaks = leakedServerPids({ excludeLiveParented: true });
   assert(reapLeaks.length === 0,
     `BL-31 no orphan memory-server processes survive sox stop (found: ${reapLeaks.join(', ') || 'none'})`);
 
   // Cleanup the unrelated process we deliberately spared.
   if (isAlive(unrelatedOrphanPid)) { try { process.kill(unrelatedOrphanPid, 'SIGKILL'); } catch { /* ignore */ } }
+
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Step 7d: §9.5 — `sox stop` REAPS the AUTO-SPAWNED PROXY BACKEND.
+  //
+  // The regression this guards: an mcp-server served in proxy mode (the DEFAULT,
+  // Slice 1.6) is fronted by a thin stdio shim; the real tool implementation runs
+  // in a persistent, detached, sox-owned BACKEND the shim AUTO-SPAWNS (ensureBackend,
+  // SOX_PROXY_BACKEND=1). That backend is created by the SHIM, not by `sox start`,
+  // so it is in NO runtime.json entry — the entry-driven reap never touches it and
+  // it survives `sox stop`, re-introducing the BL-31/BL-50 orphan leak.
+  //
+  // We spawn the REAL backend as a TRUE orphan (PPID 1, like a shim that has exited)
+  // with a UNIQUE marker in its argv, install memory-server in the lockfile (proxy
+  // mode), then run `sox stop -s project` and assert the backend is REAPED. The
+  // marker scopes the assertion to THIS test's backend so a concurrent operator
+  // serve session is never mis-counted (BL-63).
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\nStep 7d: §9.5 sox stop reaps the auto-spawned (untracked) proxy backend');
+
+  const BACKEND_MARKER = `sox-e2e-proxy-backend-${process.pid}`;
+  const BACKEND_SOCK = path.join(TMP_DIR, 'proxy-backend.sock');
+  const BACKEND_DB = path.join(os.homedir(), '.memory', `sox-e2e-proxy-${process.pid}.db`);
+
+  // memory-server's manifest declares lifecycle.serve_mode:"proxy" — confirm the
+  // install dir + manifest are present so the reaper recognizes proxy mode.
+  // MEMSERVER_ENTRY is <ext>/dist/index.js → the ext root (where extension.json
+  // lives) is TWO levels up (matches resolveExtensionDir stripping /dist/index.js).
+  const memExtDir = path.dirname(path.dirname(MEMSERVER_ENTRY));
+  const memManifestPath = path.join(memExtDir, 'extension.json');
+  let memIsProxy = false;
+  try {
+    const mm = JSON.parse(fs.readFileSync(memManifestPath, 'utf8'));
+    const lc = mm.lifecycle ?? {};
+    memIsProxy = lc.serve_mode === 'proxy' || lc.proxy === true ||
+      (mm.type === 'mcp-server' && lc.serve_mode !== 'direct' && lc.proxy !== false);
+  } catch { /* manifest unreadable — memIsProxy stays false */ }
+  assert(memIsProxy, 'Step7d: memory-server manifest resolves to PROXY mode (precondition)');
+
+  // Lockfile so `sox stop` resolves memory-server's entrypoint identity + proxy mode.
+  fs.writeFileSync(LOCKFILE_PATH, JSON.stringify({
+    version: 1,
+    resolved: { 'memory-server@0.1.0': { source: `file://${MEMSERVER_ENTRY}` } },
+  }, null, 2) + '\n', 'utf8');
+  // Runtime record with a supervisorPid but NO entry for memory-server — the exact
+  // untracked-backend condition (nothing in entries[] drives the entry reap).
+  fs.writeFileSync(RUNTIME_FILE, JSON.stringify({
+    version: 1, scope: 'project', supervisorPid: 999999, entries: [],
+  }, null, 2) + '\n', 'utf8');
+
+  const backendPid = await spawnOrphanBackend(MEMSERVER_ENTRY, BACKEND_MARKER, BACKEND_SOCK, BACKEND_DB);
+  // Match ONLY this test's backend by its unique marker (BL-63 isolation).
+  const backendLiveBefore = pidsMatching(BACKEND_MARKER);
+  assert(backendLiveBefore.includes(backendPid) && isAlive(backendPid),
+    `Step7d: real proxy backend spawned + alive (pid=${backendPid}, marker=${BACKEND_MARKER})`);
+  const backendPpid = ppidOf(backendPid);
+  assert(backendPpid === 1,
+    `Step7d: proxy backend is orphaned (PPID=${backendPpid}, expected 1 — shim exited)`);
+
+  // The fix under test: `sox stop -s project` must reap the UNTRACKED backend.
+  const proxyStop = runSox([
+    'stop', '-s', 'project',
+    `--runtime-file=${RUNTIME_FILE}`,
+    `--lockfile=${LOCKFILE_PATH}`,
+    `--root=${TMP_DIR}`,
+    '--grace-ms=3000',
+  ]);
+  assert(proxyStop.status === 0 || proxyStop.status === 1,
+    `Step7d: sox stop ran (status ${proxyStop.status})`);
+  // The reap is reported with the proxy-backend label for the matched pid.
+  const proxyReapEvidence =
+    new RegExp(`reaped memory-server proxy backend pid=${backendPid}`).test(proxyStop.stdout) ||
+    new RegExp(`reap memory-server \\(proxy backend\\)`).test(proxyStop.stdout);
+  assert(proxyReapEvidence,
+    `Step7d: sox stop reports reaping the proxy backend (pid=${backendPid})`);
+
+  // REALITY CHECK against the OS process table — the backend (by its unique marker)
+  // must be GONE. Poll briefly: the orphan's parent is init, which reaps the zombie
+  // promptly after exit (unlike a blocked test parent).
+  let backendGone = false;
+  for (let i = 0; i < 20; i++) {
+    await sleep(150);
+    if (pidsMatching(BACKEND_MARKER).length === 0) { backendGone = true; break; }
+  }
+  assert(backendGone,
+    `Step7d: auto-spawned proxy backend (marker=${BACKEND_MARKER}) is REAPED after sox stop ` +
+    `(survivors: ${pidsMatching(BACKEND_MARKER).join(', ') || 'none'})`);
+
+  // Cleanup (belt-and-suspenders) + remove the test DB sidecars.
+  for (const p of pidsMatching(BACKEND_MARKER)) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } }
+  for (const suffix of ['', '-wal', '-shm']) {
+    try { fs.rmSync(BACKEND_DB + suffix, { force: true }); } catch { /* ignore */ }
+  }
 
 
   // ═══════════════════════════════════════════════════════════════════════════

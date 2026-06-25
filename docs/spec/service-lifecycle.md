@@ -542,8 +542,33 @@ stop(scope, [id]):
     if D.owner == 'supervisor': killAndVerify(supervisorPid); supervisor signals its groups
     reapOrphansForExtension(D.id)                          # identity-token reap survivors (M2)
     verify: findOrphansByIdentity(token) == []            # nothing left
+  reapUntrackedProxyBackends(scope, [id])                  # §8.6 — auto-spawned, no entry
   exit 1 if any 'undead'                                   # honest exit code
 ```
+
+### 8.6 Reaping the auto-spawned proxy backend (untracked)
+
+A proxy-mode mcp-server (§9.5, the Slice 1.6 default) is fronted by a thin stdio shim; the tool
+implementation runs in a persistent, detached, sox-owned **backend** the shim AUTO-SPAWNS via
+`ensureBackend` (`SOX_PROXY_BACKEND=1`). Because the backend is created by the **shim**, not by
+`sox start`, it has **no `runtime.json` entry** — the entry-driven reap in §8.5 never iterates it, so
+the detached backend would SURVIVE `sox stop` once every spawning shim has exited (the BL-31/BL-50
+orphan leak, re-opened by the proxy default; resolved as **BL-64**).
+
+> **`[inv:reap-untracked-proxy-backend]`** — `sox stop` MUST reap auto-spawned proxy backends
+> independent of runtime tracking or scope. The stop path enumerates installed mcp-servers from the
+> **lockfile** (the source of truth for "what could have a backend"), and for each one served in
+> proxy mode reaps any live process matching the backend's **entrypoint identity token** — the exact
+> `node --enable-source-maps <entrypoint>` argv `ensureBackend` uses — via `reapByIdentity` →
+> `killAndVerify` (`[contract:signal]` verified-stop). Implemented as `reapUntrackedProxyBackends`
+> (`apps/sox/src/main.ts`), wired into all three `cmdStop` exit paths (whole-scope, per-`--id`, and
+> the no-runtime-record early-exit). The identity is the entrypoint PATH (stable across scopes), so a
+> backend whose serve resolved a DIFFERENT scope than the stop target is still reaped. The supervisor
+> pid is excluded so a tracked direct-stdio server signalled elsewhere is not double-killed.
+
+This is a **stop**, not a rolling restart: `ensureBackend`'s zero-downtime re-dial / backend
+rolling-restart on upgrade (§9.5) is unaffected — that path verified-stops + re-ensures the backend on
+new code; this path tears it down with no re-ensure.
 
 ---
 

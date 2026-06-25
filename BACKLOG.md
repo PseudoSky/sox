@@ -41,21 +41,47 @@ backend's `project_path` is `(unverified)` for multi-project setups. Surfaced + 
 1.6; NOT silently regressed (BL-56's per-shim injection still happens, it just can't reach a shared
 running backend).
 
-### BL-63 — `host-runtime:test-e2e` BL-31 orphan scan uses a global `pgrep -f memory-server/dist/index.js`, so a CONCURRENT live proxy session on the dev box is mis-counted as a leaked orphan — **Open (LOW, test-only; CI unaffected)**
+### BL-63 — `host-runtime:test-e2e` BL-31 orphan scan uses a global `pgrep -f memory-server/dist/index.js`, so a CONCURRENT live proxy session on the dev box is mis-counted as a leaked orphan — **RESOLVED (2026-06-25, `feat/proxy-default-memory-backend`)**
 
 `tools/test-e2e-lifecycle.js` `liveServerPids()` does `pgrep -f 'memory-server/dist/index.js'` and
 subtracts a `BASELINE_PIDS` snapshot captured at import. With the Slice 1.6 proxy default LIVE in the
 operator's own `bin/soxe serve memory-server` session, that session's shim **re-ensures/respawns its
 backend during the ~minute e2e run** → the new backend pid post-dates the baseline → the BL-31 "no
-orphan after stop" + "BL-31 no orphan survive sox stop" assertions count it as leaked. **Proven a
-test-environment confounder, NOT a code regression:** every reported "orphan" pid resolves to
-`ppid == <the operator's live serve session pid>` (correlated 3×: 18501→23210, 15408→23210,
-15572→23210), never to the e2e's own install/start tree; on a clean machine the suite is **101/0**
-(observed before the operator's session picked up the flip). **Fix sketch:** scope the orphan scan to
-the e2e's own data root / SOX_SANDBOX_ROOT (match the spawned backend by its temp socket or a
-test-injected argv marker) instead of the global entrypoint token, OR re-snapshot the baseline
-immediately before the stop assertion. Surfaced during Slice 1.6; isolated (pre-existing e2e scan
-breadth, exposed — not caused — by the proxy default).
+orphan after stop" + "BL-31 no orphan survive sox stop" assertions count it as leaked. This was the
+root cause of the reported **e2e 99/2** failure — **a test-environment confounder, NOT a code
+regression:** every reported "orphan" pid resolves to `ppid == <the operator's live serve session pid>`
+(correlated 3×: 18501→23210, 15408→23210, 15572→23210), never to the e2e's own install/start tree; on a
+clean machine the suite was already **101/0** (re-confirmed 3× this session, before the fix).
+
+**Fix (shipped):** `leakedServerPids({ excludeLiveParented: true })` for the two POST-STOP orphan
+assertions (Step 7 + Step 7b). After a `sox stop` this test's supervisor is already dead, so a genuine
+leak from THIS test is always orphaned (PPID 1) or dead-parented; a candidate whose parent is a LIVE
+non-init process is owned by another live manager (the operator's serve shim) and is excluded. This
+removes the false positive WITHOUT masking a real test leak (never live-parented after stop). The
+mid-lifecycle disable/enable checks keep the strict (no live-parent exclusion) form — a supervisor
+restart there MUST still be caught.
+
+### BL-64 — auto-spawned proxy backend (untracked, no runtime entry) survived `sox stop` — **RESOLVED (2026-06-25, `feat/proxy-default-memory-backend`)**
+
+A proxy-mode mcp-server (Slice 1.6 default) is fronted by a thin stdio shim; the real implementation
+runs in a persistent, detached, sox-owned BACKEND the shim AUTO-SPAWNS via `ensureBackend`
+(`SOX_PROXY_BACKEND=1`). That backend is created by the SHIM, not by `sox start`, so it is in NO
+`runtime.json` entry — `cmdStop`'s whole-scope reap loop iterates only `record.entries` and never
+touched it, so the detached backend SURVIVED `sox stop`, re-introducing the BL-31/BL-50 orphan leak
+once every spawning shim had exited. (Distinct from BL-63: BL-63 was the e2e *scan* mis-attributing a
+foreign live session; BL-64 is the real production gap that the e2e could not previously reach.)
+
+**Fix (shipped):** new `reapUntrackedProxyBackends()` in `apps/sox/src/main.ts` — enumerates every
+installed mcp-server from the lockfile (the source of truth for "what could have an auto-spawned
+backend"), and for each one served in proxy mode reaps any live process matching the backend's
+entrypoint IDENTITY token (the exact `node --enable-source-maps <entrypoint>` argv `ensureBackend`
+uses), via `reapByIdentity` → `killAndVerify` ([contract:signal] verified-stop). Wired into all three
+`cmdStop` exit paths: whole-scope, per-`--id`, and the no-runtime-record early-exit. Identity matching
+is the entrypoint PATH, which is stable across scopes, so a backend whose serve resolved a DIFFERENT
+scope than the stop target is still reaped (closes the suspected scope-mismatch leak). The manifest is
+read from the lockfile entry's source (honoring an explicit `--lockfile`), NOT re-derived via
+`getScopePaths` (which would miss a custom lockfile). Proven: new e2e **Step 7d** spawns the REAL
+backend as a true orphan (PPID 1) and asserts `sox stop` reaps it; full suite **107/0** across 3 runs.
 
 ## Open — surfaced during service-proxy Slice 1.5 (2026-06-25, `feat/service-proxy-slice1_5`)
 
