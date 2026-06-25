@@ -7,6 +7,36 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ---
 
+## Open — regressions from the proxy-default flip, surfaced rolling it forward to live (2026-06-25)
+
+### BL-67 — detached proxy backend inherits the parent's stdout fd → `soxe upgrade --all` (and any piped/CI invocation) HANGS forever — **Open (HIGH) — regression**
+
+**Observed (2026-06-25, rolling the Slice 1.6 flip to live):** `node bin/soxe upgrade --all 2>&1 | tail -40`
+appeared to hang indefinitely. Diagnosis (state-side): the `upgrade --all` node process **had already exited
+0** (work complete), but the rolling-restart of memory-server spawned the **detached proxy backend** (PPID 1,
+`node --enable-source-maps .../memory-server/dist/index.js`, pid 20057) which **inherited the parent's stdout
+write-end**. `tail` therefore never received EOF (a live writer of the pipe remained), so the shell pipeline
+never terminated. Any invocation that pipes sox output (`| tail`, `$(…)`, CI capture, the post-merge
+`upgrade --all` mandated by CLAUDE.md) now hangs whenever a proxy backend is (re)spawned.
+
+**Root cause:** `ensureBackend`/the detached-backend spawn does not fully sever inherited stdio — it must spawn
+with `stdio: 'ignore'` (or explicitly close/redirect fd 0/1/2 to the log file) + `detached:true` + `unref()`.
+A detached daemon must never hold a parent's pipe open.
+
+**Fix sketch:** in `libs/service-proxy/src/ensure-backend.ts` (the auto-spawn) set `stdio: ['ignore','ignore','ignore']`
+(or redirect 1/2 to the `--log` sink) before `unref()`. Add an e2e assertion that `soxe serve` (proxy) piped
+through `head`/`tail` terminates. **Must fix** — it breaks the documented post-merge `upgrade --all` workflow.
+
+### BL-68 — BL-65 dirty-dist guard counts UNTRACKED files as "dirty" → false "built from DIRTY tree (uncommitted WIP)" warning on every serve — **Open (LOW)**
+
+The BL-65 `stamp-build.cjs` / `warnIfDistSha()` guard (correctly shipped) computes `dirty` from
+`git status --porcelain`, which includes **untracked** files (e.g. `README.md`, `PUBLISHING.md`,
+`.claude/skills/memory-usage/`). So a clean-tracked-tree build stamps `dirty=true`, and **every** live
+`soxe serve` then emits "dist was built from a DIRTY tree (uncommitted WIP)" — alarming false-positive noise
+for all sessions. Fix: base `dirty` on tracked changes only (`git status --porcelain --untracked-files=no`, or
+`git diff --quiet HEAD`). Keep the genuine stale-sha check (that one fired correctly: dist sha `ffe4a3d` vs
+HEAD `b479ebb`).
+
 ## Mostly-resolved — test harnesses pollute the real `~/.memory` store dir + the repo root (2026-06-25)
 
 ### BL-66 — C6/e2e test artifacts accumulated 1.5 GB in `~/.memory/`; 12 test DBs were committed to git under `.tmp-*/` — **Resolved (cleanup + 2 of 3 root causes); 1 root cause deferred**
@@ -45,7 +75,20 @@ afterAll cleanup. Track here until done.
 
 ## Open — INCIDENT: the dev checkout's `dist` IS the live MCP source (2026-06-25)
 
-### BL-65 — building unverified WIP into the dev-repo `dist` breaks the LIVE memory-server for all sessions — **PARTIAL (HIGH) — guard shipped; repoint is a human step**
+### BL-65 — building unverified WIP into the dev-repo `dist` breaks the LIVE memory-server for all sessions — **PARTIAL (HIGH) — guard shipped + live; repoint BLOCKED on BL-42**
+
+**Update (2026-06-25, attempting the repoint):** the guard (option 3) is **shipped and verified live** —
+`soxe serve` now emits the dirty/stale-dist warning (confirmed firing: it caught dist sha `ffe4a3d` vs HEAD
+`b479ebb`). But the **principled repoint (option 1)** — point `.mcp.json`/`~/.claude.json` `memory-server`
+(currently `command: /Users/nix/dev/ai/sox-ecosystem/bin/soxe`, also in `sox-ecosystem/.mcp.json` and
+`claude-agents/.mcp.json`) at an installed `soxe` under `~/.adhd/...` — is **BLOCKED on BL-42**: there is **no
+independently-installable CLI** (`~/.adhd/sox-ecosystem/` holds only metadata; `bin/soxe` → `dist/apps/sox/main.js`
+which runtime-resolves `@adhd/sox-*` from the repo `libs/*/dist` + repo `node_modules` = checkout-bound). The
+real fix requires either (a) an esbuild-bundled self-contained CLI installed to `~/.adhd/.../cli/<sha>/`
+(the bundled-extension-build-standard applied to the CLI), or (b) a dedicated pinned checkout/clone the live
+MCP resolves and dev never builds in. Both are architectural choices gated on BL-42/BL-43 (publish strategy).
+Until then the guard is the interim protection; do NOT do a fragile dist-copy repoint (it risks re-breaking live).
+See also BL-67 (the flip's `upgrade --all` hang) + BL-68 (guard over-sensitivity).
 
 **Incident (2026-06-25):** while an agent was implementing proxy-on-by-default on a branch, its
 `nx build` wrote the WIP (proxy-default + a not-yet-working shim path) into `dist/apps/sox/main.js` and
