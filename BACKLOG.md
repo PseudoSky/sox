@@ -222,7 +222,23 @@ afterAll cleanup. Track here until done.
 
 ## Open — INCIDENT: the dev checkout's `dist` IS the live MCP source (2026-06-25)
 
-### BL-65 — building unverified WIP into the dev-repo `dist` breaks the LIVE memory-server for all sessions — **PARTIAL (HIGH) — guard shipped + live; repoint now UNBLOCKED (pending owner publish)**
+### BL-65 — building unverified WIP into the dev-repo `dist` breaks the LIVE memory-server for all sessions — **RESOLVED (HIGH) — principled repoint APPLIED 2026-06-26 (option 1); guard remains as defense-in-depth**
+
+**Resolved (2026-06-26):** after the first npm publish, the principled repoint (option 1) was
+applied. The published CLI was installed to a **stable, non-PATH prefix** `~/.adhd/sox-cli`
+(`npm i -g @adhd/sox-cli@1.1.1 --prefix ~/.adhd/sox-cli` → `~/.adhd/sox-cli/bin/soxe`), and
+`sox-memory-bundle` was installed through it (members + native deps resolve from npm via the
+`npm-package:` mode into `~/.adhd/sox-ecosystem/ext/`, never `libs/*/dist`). All three live
+`memory-server` references were repointed from the dev `/Users/nix/dev/ai/sox-ecosystem/bin/soxe`
+to `~/.adhd/sox-cli/bin/soxe` (backups `*.bl65-bak`): `~/.claude.json` (root mcpServers),
+`sox-ecosystem/.mcp.json` (gitignored, local), `claude-agents/.mcp.json` (gitignored, local).
+`memory_ping` verified `ok:true` (artifact `sha256:00cefb04…`) via the stable command before the
+swap. Effective on the next MCP reconnect (BL-61). A dev `nx build` no longer touches the running
+server — it updates ONLY on explicit `soxe upgrade --all` (or reinstall). The `warnIfDistSha`
+dirty-dist guard stays as defense-in-depth. The interactive dev `bin/soxe` (on PATH via `OUT_PATH`)
+is unchanged, so local extension development/install is unaffected.
+
+
 
 **Update (2026-06-26, publishing refactor):** the BL-42 blocker is resolved — there is now an
 independently-installable, self-contained CLI (`@adhd/sox-cli` → `soxe`, in-package bin + bundled
