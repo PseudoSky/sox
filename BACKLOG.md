@@ -337,6 +337,31 @@ a one-line warn), add a warmup timeout + health signal, and root-cause the faste
 init failure (candidate: the BL-11 onnxruntime libpthread isolation, or a fastembed 2.x API/model-format
 mismatch). Until fixed, real embeddings never engage even on a fully-provisioned box.
 
+### BL-90 — memory skill(s) lack "how to find memories scoped to YOU / your project / your task" recall recipes (and which work under degraded embeddings) — **Open (MEDIUM) docs/skill** (2026-06-26)
+
+**Observed:** the `memory-usage` (and `reflection`) skills document write conventions well but give little
+guidance on the *retrieval* side — specifically how an agent finds the memories relevant to its situation.
+Agents need ready recipes for the common scoping axes:
+- **Directed at you (the agent):** by `agent_id` (your own confirmed identity), and by `target:<name>` /
+  `audience:<name>` tags (e.g. ideas/lessons addressed to a specific agent or role like `workflow-researcher`).
+- **Scoped to your project:** `filters.project_path` (exact or `{prefix}`) — and the footgun that
+  `project_path` auto-resolves to cwd/git-root, so a write from the wrong dir mis-files the scope.
+- **Scoped to your task:** `filters.topic` (single or array OR-match) + `filters.tags` (`tags_match_all`
+  for AND) + `importance_min`; combine with the query for hybrid recall.
+- **By kind/lifecycle:** `kind:lesson|bug|fix|idea`, `actionable`, `state` (metadata).
+
+**Critical note to include:** **tag/topic/project filters use the FTS/structured index, not vectors — so
+they remain reliable even when the embedding backend is degraded (hash fallback, BL-86/87/89).** Semantic
+(`query`) recall is the part that degrades. So the recommended pattern when embeddings may be down is
+**filter-first** (tags/topic/project), optionally adding a query for ranking — never rely on a bare
+semantic query to surface directed/scoped memories.
+
+**Fix sketch:** add a "Finding the right memories" section to `memory-usage` (and cross-link from
+`reflection`) with copy-paste `memory_recall` recipes per axis above (self/agent, project, task, kind,
+directed-at-role), plus the filter-first-under-degraded-embeddings guidance and the `project_path`
+mis-resolution footgun. Pairs with BL-88 (per-record provenance) so "find records made under hash
+fallback" becomes a documented recall too.
+
 ---
 
 ## Resolved — regressions from the proxy-default flip, fixed 2026-06-25
