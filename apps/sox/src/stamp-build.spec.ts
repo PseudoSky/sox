@@ -52,13 +52,13 @@ function runStampInRepo(setup: (repoDir: string) => void): {
     // Let the test scenario apply its modifications.
     setup(repoDir);
 
-    // Monkeypatch the output path: stamp-build.cjs resolves output relative to
+    // Monkeypatch the output paths: stamp-build.cjs resolves output relative to
     // __dirname. We can't easily override that from outside. Instead we temporarily
-    // write a patched copy that uses our outPath.
+    // write a patched copy that uses our outPath (for testing, we just need one path).
     const original = fs.readFileSync(STAMP_BUILD, 'utf8');
     const patched = original.replace(
-      /const outPath = path\.resolve\(__dirname,.*?\);/,
-      `const outPath = ${JSON.stringify(outPath)};`,
+      /const outPaths = \[\s*path\.resolve\(__dirname,.*?\),\s*path\.resolve\(__dirname,.*?\),\s*\];/s,
+      `const outPaths = [${JSON.stringify(outPath)}];`,
     );
     const patchedScript = path.join(repoDir, 'stamp-build-patched.cjs');
     fs.writeFileSync(patchedScript, patched);

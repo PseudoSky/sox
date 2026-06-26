@@ -368,13 +368,16 @@ function printVersion(): void {
   try {
     const fs = require('node:fs') as typeof import('node:fs');
     const path = require('node:path') as typeof import('node:path');
-    // Two layouts to support:
+    // Three layouts to support:
     //   - PUBLISHED bundle: __dirname is <pkg>/dist → the CLI's own package.json
-    //     is one level up at <pkg>/package.json (name @adhd/sox-cli, version 1.0.0).
-    //   - DEV tsc build:   __dirname is dist/apps/sox → repo root is three up.
+    //     is one level up at <pkg>/package.json (name @adhd/sox-cli, version 1.1.1).
+    //   - DEV esbuild:      __dirname is apps/sox/dist → package.json is one level up.
+    //   - DEV tsc build:    __dirname is dist/apps/sox → apps/sox/package.json is
+    //     three levels up then into apps/sox/.
     // Prefer the @adhd/sox-cli package.json; otherwise the first that has a version.
     const candidates = [
       path.resolve(__dirname, '..', 'package.json'),
+      path.resolve(__dirname, '../../../apps/sox/package.json'),
       path.resolve(__dirname, '..', '..', '..', 'package.json'),
     ];
     for (const pkgPath of candidates) {
@@ -3177,7 +3180,10 @@ Exits non-zero if the id is not found.
 
   // ── Scope provenance: find which lockfiles contain this id ───────────────
   const fsDet = require('node:fs') as typeof import('node:fs');
-  const rootOverride = flags['root'];
+  // BL-78: resolve the workspace root from cwd (or --root flag) — not repo root.
+  // Use getScopePaths(scope, workspaceRoot) to get the correct lockfile paths for
+  // project and local scopes, matching the BL-73 fix in cmdInstall.
+  const workspaceRoot = require('node:path').resolve(flags['root'] ?? process.cwd()) as string;
 
   type InstalledEntry = {
     scope: string;
@@ -3192,13 +3198,7 @@ Exits non-zero if the id is not found.
     try {
       const sp = sc === 'user'
         ? getScopePath('user')
-        : sc === 'project'
-          ? (rootOverride !== undefined
-            ? { lockfile: require('node:path').join(rootOverride, '.extensions', 'extensions.lock') }
-            : getScopePath('project'))
-          : (rootOverride !== undefined
-            ? { lockfile: require('node:path').join(rootOverride, '.extensions', 'extensions.local.lock') }
-            : getScopePath('local'));
+        : getScopePaths(sc, workspaceRoot);
 
       const lock = loadLockfile(sp.lockfile);
       if (!lock || typeof lock.resolved !== 'object') continue;
