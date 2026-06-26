@@ -1,4 +1,4 @@
-# USAGE — sox CLI command surface
+# USAGE — soxe CLI command surface
 
 The host CLI is `bin/soxe` (run as `node bin/soxe <verb> [flags]`). This document
 walks **every command path the install model was designed for**, with the exact
@@ -83,6 +83,14 @@ node bin/soxe install <id|bundle> --scope org
   `docs/mcp-global-availability.md` for the stdio→`~/.claude.json` rule.
 - Re-running install after editing an extension's artifact re-pins the lockfile to
   the new checksum (the C2 drift gate enforces a current registry).
+- **`install <id>` reconciles the full scope set** — it does not only install the
+  named extension. The engine reads the scope's existing `extensions.json`, adds
+  `<id>` (if new), then re-resolves and re-places **every** member already declared
+  in that scope. Extensions already at their current checksum are no-op; those whose
+  artifact changed are re-pinned. This means running `install demo-creator --scope
+  project` may also re-place `memory-usage` and other extensions already recorded in
+  the project's `extensions.json`. This is by design (idempotency + integrity), not
+  an error.
 
 ### Uninstall (fully reversible — ADR-0004 `[inv:reversible-injection]`)
 

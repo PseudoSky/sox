@@ -48,10 +48,21 @@ export function skillTemplate(opts: TemplateOpts): FileSet {
       runtime: 'declarative',
       // [flex:entrypoint-optional] — present but points to the markdown skill file
       entrypoint: 'SKILL.md',
+      // [BL-71] run_interface — declares the skill's input/output contract so the
+      // registry and orchestrators can discover the interface without loading source.
+      // Fill in the actual JSON Schema shapes for your skill's inputs and outputs.
+      run_interface: {
+        input_schema: { type: 'object', properties: {} },
+        output_schema: { type: 'object', properties: {} },
+      },
       // [shape:install-descriptor] — host-agnostic; engine resolves target from
       // libs/host-registry (claude: file-drop at .claude/skills/<id>/; codex: config-merge).
       // [ref:host-keyed-target] — NO literal ~/.claude/skills/ path here.
-      install: buildInstallDescriptor('skill', opts),
+      // hosts defaults to ['claude']. Edit this array to add codex or other targets.
+      install: buildInstallDescriptor('skill', {
+        ...opts,
+        hosts: opts.hosts !== undefined && opts.hosts.length > 0 ? opts.hosts : ['claude'],
+      }),
     }),
 
     'package.json': skillPkg,
@@ -110,7 +121,7 @@ export function skillTemplate(opts: TemplateOpts): FileSet {
       '## Usage',
       '',
       '```bash',
-      `sox install ${opts.id}`,
+      `soxe install ${opts.id} --host claude --scope user`,
       '```',
     ]),
   };

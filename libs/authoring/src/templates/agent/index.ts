@@ -55,9 +55,9 @@ export function agentTemplate(opts: TemplateOpts): FileSet {
       requires: {
         tool_calling: true,
       },
-      // Install-time configuration schema. Agents are declarative (Role B) — sox
+      // Install-time configuration schema. Agents are declarative (Role B) — soxe
       // does not spawn them, so config is NOT injected as env vars. It IS available
-      // via `sox config get/set/list` and is prompted during `sox install`.
+      // via `soxe config get/set/list` and is prompted during `soxe install`.
       // Remove this block if your agent needs no persistent configuration.
       config_schema: {
         type: 'object',
@@ -138,7 +138,7 @@ export function agentTemplate(opts: TemplateOpts): FileSet {
       '## Usage',
       '',
       '```bash',
-      `sox install ${opts.id}`,
+      `soxe install ${opts.id} --host claude --scope user`,
       '```',
     ]),
   };

@@ -77,7 +77,7 @@ export function promptTemplate(opts: TemplateOpts): FileSet {
       '## Usage',
       '',
       '```bash',
-      `sox init prompt ${opts.id} --inject rules`,
+      `soxe init prompt ${opts.id} --inject rules`,
       '```',
     ]),
   };

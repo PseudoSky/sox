@@ -116,7 +116,7 @@ export function mcpServerTemplate(opts: TemplateOpts): FileSet {
       // [ref:host-keyed-target] — NO literal ~/.claude/ path here.
       install: installDescriptor,
       // Install-time configuration schema. Keys listed in "required" are prompted
-      // during `sox install` (interactive) or warned about (CI/non-TTY).
+      // during `soxe install` (interactive) or warned about (CI/non-TTY).
       // x-sox-prompt: text shown to the user; x-sox-default: value if user hits enter.
       // At spawn time, values are injected as SOX_CONFIG_<KEY> environment vars.
       // Remove this block if your server needs no persistent configuration.
@@ -249,7 +249,7 @@ export function mcpServerTemplate(opts: TemplateOpts): FileSet {
       '## Usage',
       '',
       '```bash',
-      `sox install ${opts.id}`,
+      `soxe install ${opts.id} --scope user`,
       '```',
     ]),
 

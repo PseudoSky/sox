@@ -254,8 +254,8 @@ export function serviceTemplate(opts: TemplateOpts): FileSet {
       '## Usage',
       '',
       '```bash',
-      `sox install ${opts.id}`,
-      `sox start --id=${opts.id}`,
+      `soxe install ${opts.id} --scope project`,
+      `soxe start --id=${opts.id}`,
       '```',
     ]),
   };
