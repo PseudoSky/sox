@@ -1,4 +1,4 @@
-# Changelog
+# @adhd/sox-host-registry
 
 ## 0.2.0
 
@@ -24,7 +24,3 @@
     version only selects which bytes to fetch (ADR-0003 intact; ADR-0005 ratifies the coexistence).
   - **Born-publishable golden path:** `soxe init` scaffolds publish + fresh-machine-install-ready
     packages; a `check-publishable` gate forbids the `workspace:*`/`@adhd`-runtime-dep 404 class.
-
-## 0.1.0
-
-- Initial release — bundles memory-server, memory-organizer, memory-recall, memory-promote

@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-authoring",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pure scaffold core — scaffold(opts) → FileSet (no @nx/devkit dependency)",
   "license": "MIT",
   "publishConfig": {

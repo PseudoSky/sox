@@ -1,4 +1,4 @@
-# Changelog
+# @adhd/sox-mcp-runtime
 
 ## 0.2.0
 
@@ -25,6 +25,7 @@
   - **Born-publishable golden path:** `soxe init` scaffolds publish + fresh-machine-install-ready
     packages; a `check-publishable` gate forbids the `workspace:*`/`@adhd`-runtime-dep 404 class.
 
-## 0.1.0
+### Patch Changes
 
-- Initial release — bundles memory-server, memory-organizer, memory-recall, memory-promote
+- Updated dependencies [05430d9]
+  - @adhd/sox-host-runtime@0.2.0

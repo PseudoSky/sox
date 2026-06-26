@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-memory-server",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "sox-memory MCP server (stdio) — 19 memory_* tools over a single-file SQLite graph store with hybrid recall and deterministic enrichment",
   "license": "MIT",
   "publishConfig": {

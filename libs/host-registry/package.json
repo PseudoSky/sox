@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-host-registry",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pluggable per-host registry: claude + codex modules with detect/scopePaths/surfaces",
   "license": "MIT",
   "publishConfig": {

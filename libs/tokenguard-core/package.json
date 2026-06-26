@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-tokenguard-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pure, IO-light TypeScript port of the TokenGuard bijective tokenize/detokenize engine",
   "license": "MIT",
   "publishConfig": {

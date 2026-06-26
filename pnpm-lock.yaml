@@ -176,6 +176,8 @@ importers:
         specifier: workspace:*
         version: link:../../../libs/tokenguard-core
 
+  extensions/skills/demo-creator: {}
+
   extensions/skills/di-codex-skill: {}
 
   extensions/skills/di-skill: {}
