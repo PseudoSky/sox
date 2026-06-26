@@ -135,8 +135,18 @@ def phase_final() -> None:
     # Reality: spawn the real built memory-server, tools/list diff-clean vs baseline,
     # real write→recall ranked by real vectors, cosine-sanity, degrade-to-BM25, reembed
     # dry-run on a memory.db copy, then the whole-repo gate. The executor implements these
-    # as live subprocess probes; this scaffold leaves the slots explicit.
-    print("  (final reality checks implemented by the audit-final executor)")
+    # as live subprocess probes ([audit-final.1]-[.3]); this scaffold leaves those slots
+    # explicit and wires the standalone-consumption guard now.
+    print("  (server/vector/degrade/reembed reality checks implemented by the executor)")
+    # [audit-final.5] standalone-consumption — the affirmative BL-87/F1 guard.
+    # Requires `nx run-many -t build` first so each data/* dist/ exists (BL-4).
+    rc, out = run(["node", str(PLAN / "scripts" / "pack-smoke.mjs")])
+    check("audit-final.5", rc == 0,
+          "pack-smoke: each public data/* installs from its tarball + exercises standalone")
+    if rc != 0:
+        for line in out.splitlines():
+            if "FAIL" in line or "BL-87" in line:
+                print("    " + line.strip())
 
 
 PHASES = ["baseline", "layout", "extraction", "routing", "final"]

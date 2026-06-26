@@ -40,3 +40,8 @@
 - 15 nodes, 5 audit phases, critical path 13 hops. See `state-machine.md`.
 - The physical `libs/platform/<group>/` relocation is intentionally a follow-on, not in
   this plan ([decision-A]).
+- **Demo-discovery step skipped — deliberate (unknowns == 0 on entry).** SCOPE Parts A–D
+  + pre-folded researcher findings + ratified A–E left nothing to drive out, so the
+  demo-creator *process* was skipped. The proof artifact it would have yielded is retained
+  as [def:standalone-proof] (`scripts/pack-smoke.mjs` + `[audit-final.5]`) — the affirmative
+  BL-87/F1 reuse guard. Recorded so the skip is judgment, not a silent gap.

@@ -69,6 +69,19 @@ Reference as **[def:term]** from any context file.
   the four bundle members (`memory-server`, `memory-daemon`, `memory-cli`, `memory-flush`)
   to import `data/*` directly; (3) **delete** the dead facade re-exports, leaving only the
   slim [def:domain-composer]. Each step is independently green.
+- **[def:standalone-proof]** — the **affirmative** acceptance that each PUBLIC `data/*`
+  package is reusable by a 3rd party via plain `npm i`, run by `scripts/pack-smoke.mjs` in
+  `audit-final`: `npm pack` the package → install the tarball into a clean tmp dir
+  **outside the workspace** (no parent `node_modules` reaching back into `libs/`) →
+  import-and-exercise it. This is distinct from — and not covered by — the negative/
+  invariant checks ([inv:boundary] lint, vectors↛graph dist-grep): a package can be
+  boundary-clean and still break on install via an **undeclared runtime dep that only
+  resolved in-workspace**. That is the **BL-87** failure class (the live `memory-server`
+  shipped without `fastembed` declared → permanent hash fallback on `npm-package:` install
+  → the failure that spawned this whole engagement). [def:standalone-proof] is the explicit
+  guard for it and the only runnable evidence for the F1 "public@0.x reusable" posture.
+  Native carriers (`embedding-provider`, `vector-store`) MUST prove their declared native
+  deps resolve from the tarball + run a real round-trip; the pure-JS three import + one call.
 - **[def:tool-contract]** — the external **19-tool `memory_*` MCP surface (v1.1.0)** exposed
   by `memory-server`. Its tool names + input/output shapes are the public contract; keeping
   it **byte-unchanged** across the entire plan is the extraction's headline acceptance

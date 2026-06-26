@@ -210,10 +210,10 @@
       "kind": "audit",
       "phase": "convergence",
       "depends_on": ["audit-routing"],
-      "guard": "python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase final",
-      "artifacts": ["docs/plan/memory-refactor/scripts/audit_memrefactor.py"],
+      "guard": "npx nx run-many -t build && python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase final",
+      "artifacts": ["docs/plan/memory-refactor/scripts/audit_memrefactor.py", "docs/plan/memory-refactor/scripts/pack-smoke.mjs"],
       "context": "contexts/audit-final.md",
-      "notes": "Cumulative reality audit ([inv:reality]): spawn the REAL built memory-server, list the 19 tools (diff-clean vs baseline), run a real write→recall ranked by real vectors, [fix:cosine-sanity] ~0, force vectors off and prove [def:degrade-to-bm25], run [def:reembed-core] dry-run on a [fix:memory-db] copy. Full gate: nx run-many build,lint,test + e2e zero-orphan + registry drift + boundary lint. Owner reviews after green; only THEN set state: complete + merge feat/memory-refactor."
+      "notes": "Cumulative reality audit ([inv:reality]): spawn the REAL built memory-server, list the 19 tools (diff-clean vs baseline), run a real write→recall ranked by real vectors, [fix:cosine-sanity] ~0, force vectors off and prove [def:degrade-to-bm25], run [def:reembed-core] dry-run on a [fix:memory-db] copy. PLUS [audit-final.5] [def:standalone-proof]: pack-smoke.mjs npm-packs each public data/* + installs the tarball into a clean tmp dir outside the workspace + exercises it (native carriers prove fastembed/onnxruntime + better-sqlite3/sqlite-vec resolve from declared deps — the BL-87 guard; the affirmative proof of the reuse thesis the negative checks can't give). Build first (BL-4) so dist/ exists for pack. Full gate: nx run-many build,lint,test + e2e zero-orphan + registry drift + boundary lint. Owner reviews after green; only THEN set state: complete + merge feat/memory-refactor."
     }
   }
 }

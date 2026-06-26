@@ -7,6 +7,17 @@
   ],
   "reference_plan": ".workflow/plans/permission-enforcement/",
   "scaffold": "scripts/scaffold-data-packages.mjs",
+  "standalone_proof": {
+    "script": "docs/plan/memory-refactor/scripts/pack-smoke.mjs",
+    "criterion": "audit-final.5",
+    "purpose": "Affirmative proof of the reuse thesis (data/* installable via plain npm i); the explicit BL-87 guard (boundary-clean but broken on install via an undeclared in-workspace runtime dep). Native carriers prove fastembed/onnxruntime-node + better-sqlite3/sqlite-vec resolve from the tarball.",
+    "rationale": "The invariant/negative audits (boundary lint, vectors-not-graph dist-grep) are necessary but not sufficient; this is the only affirmative evidence for the F1 public@0.x posture."
+  },
+  "demo_discovery_skipped": {
+    "deliberate": true,
+    "reason": "unknowns == 0 on entry (SCOPE Parts A-D decision-bearing + pre-folded researcher findings with cited uids + ratified decisions A-E); demo-creator process had nothing to drive out.",
+    "artifact_retained_instead": "standalone_proof (pack-smoke.mjs + audit-final.5) — the runnable proof a demo would have produced, kept because it is non-redundant (BL-87/F1 guard)."
+  },
   "research_memory_uids": [
     "01KW2CC69129D16M8X7Q27DA83",
     "01KW2E1N4NG5V4K8W59ABQJF66",

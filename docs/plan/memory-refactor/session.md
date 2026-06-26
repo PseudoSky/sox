@@ -34,4 +34,15 @@ server still hash pending an owner-gated npm republish). `p0-baseline` hard-gate
 `contexts/_shared.md` + 15 per-state contexts, `scripts/audit_memrefactor.py`,
 `references.json`, `README.md`, `status.md`, this log.
 
+**Demo-discovery step — deliberately skipped (recorded judgment, not a silent gap).**
+The standard pipeline is demo-driven (SCOPE → USE_CASES → iterate demo-creator until
+unknowns reach zero → research → author). For this plan the unknowns were already at
+**zero** on entry: SCOPE Parts A–D are decision-bearing, the workflow-researcher findings
+were pre-folded with cited memory uids, and decisions A–E were ratified by the orchestrator
+before authoring. The demo-creator *process* (drive out unknowns) therefore had nothing to
+find and was skipped. The *artifact* a demo would have produced — an affirmative, runnable
+proof of the reuse thesis — was NOT redundant and IS retained, as
+[def:standalone-proof] (`scripts/pack-smoke.mjs` + `[audit-final.5]`), the BL-87/F1 guard
+the invariant/negative audits don't cover.
+
 **Next:** orchestrator dispatch once the entry gate clears. Plan-builder does not execute.
