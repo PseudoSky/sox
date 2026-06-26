@@ -69,7 +69,7 @@
   {
     "id": "memory-daemon",
     "type": "service",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "title": "Memory Daemon",
     "description": "Use this when you need the sox graph-memory enrichment pipeline running: a singleton Unix-socket service that drains the batch-enrich queue and runs deterministic clustering, importance scoring, and auto-links via @adhd/sox-memory-enrich — zero LLM calls, no provider required.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-daemon",
@@ -97,7 +97,7 @@
   {
     "id": "memory-server",
     "type": "mcp-server",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",

@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "title": "Memory subsystem decomposition + agent-optimized workspace",
+  "dag": "dag.json",
+  "current_state": "p0-baseline",
+  "entry_blocked_on": "Quickfix merged + live user-scope memory-server reports embed_on_hash_fallback:false + bge-base-en-v1.5 (owner-gated npm republish pending). See [inv:quickfix-landed].",
+  "branch": "feat/memory-refactor",
+  "states": {
+    "p0-baseline": { "status": "blocked", "blocked_reason": "[inv:quickfix-landed] — awaiting quickfix merge + npm republish" },
+    "audit-baseline": { "status": "pending" },
+    "p1-layout": { "status": "pending" },
+    "audit-layout": { "status": "pending" },
+    "w2a-embedding-provider": { "status": "pending" },
+    "w2b-graph-store": { "status": "pending" },
+    "w2c-vector-store": { "status": "pending" },
+    "w2d-ingest": { "status": "pending" },
+    "w2d-analysis": { "status": "pending" },
+    "w2d-hybrid-search": { "status": "pending" },
+    "w2e-domain-rewire": { "status": "pending" },
+    "audit-extraction": { "status": "pending" },
+    "p4-routing": { "status": "pending" },
+    "audit-routing": { "status": "pending" },
+    "audit-final": { "status": "pending" }
+  },
+  "transition_log": []
+}

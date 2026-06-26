@@ -1,0 +1,219 @@
+{
+  "schema_version": 2,
+  "title": "Memory subsystem decomposition + agent-optimized workspace",
+  "spec_sources": [
+    "docs/plan/memory-refactor/SCOPE.md",
+    "docs/plan/memory-refactor/NX-GENERATOR-HANDOFF.md",
+    "docs/plan/memory-embedding-quickfix/SCOPE.md"
+  ],
+  "executor": "sox-active:typescript-pro",
+  "phases": ["baseline", "layout", "extraction", "routing", "convergence"],
+  "terminal": "done",
+  "branch": "feat/memory-refactor",
+  "nodes": {
+    "p0-baseline": {
+      "kind": "work",
+      "phase": "baseline",
+      "depends_on": [],
+      "guard": "npx nx run-many -t build,lint,test && npx nx run host-runtime:test-e2e && npx nx run registry:check-sync && python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase baseline",
+      "artifacts": [
+        "docs/plan/memory-refactor/scripts/space_invariant_check.mjs",
+        "docs/plan/memory-refactor/baseline/tool-snapshot.json",
+        "docs/plan/memory-refactor/baseline/baseline.md"
+      ],
+      "context": "contexts/p0-baseline.md",
+      "notes": "ENTRY-BLOCKED on [inv:quickfix-landed]: do not start until the quickfix is merged AND the live user-scope memory-server reports embed_on_hash_fallback:false + bge-base-en-v1.5 (owner-gated npm republish pending). Captures the green baseline (build/lint/test + e2e zero-orphan mind BL-63 + registry sync), snapshots the 19-tool memory_* contract ([fix:tool-snapshot]), runs the [fix:cosine-sanity] probe on the live server, and authors the modelId+dim [def:space-invariant] machine check. No source refactor here — pure baseline + guardrail.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "audit-baseline": {
+      "kind": "audit",
+      "phase": "baseline",
+      "depends_on": ["p0-baseline"],
+      "guard": "python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase baseline",
+      "artifacts": ["docs/plan/memory-refactor/scripts/audit_memrefactor.py"],
+      "context": "contexts/audit-baseline.md",
+      "notes": "Creates the phase-cumulative audit runner (mirrors audit_c6.py). Phase baseline asserts: live server real model on ([fix:cosine-sanity]), the tool snapshot exists + has 19 tools, the space-invariant check runs green, and the green-baseline command set passed. Likely failure: server still on hash (quickfix republish not landed)."
+    },
+    "p1-layout": {
+      "kind": "work",
+      "phase": "layout",
+      "depends_on": ["audit-baseline"],
+      "guard": "node scripts/scaffold-data-packages.mjs && npx nx run-many -t build,lint && python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase layout",
+      "artifacts": [
+        "eslint.config.js",
+        "libs/data/embed/embedding-provider/",
+        "libs/data/vectors/vector-store/",
+        "libs/data/graph/graph-store/",
+        "libs/data/search/hybrid-search/",
+        "libs/data/analysis/analysis/",
+        "libs/data/ingest/ingest/",
+        "libs/tokenguard-core/project.json"
+      ],
+      "context": "contexts/p1-layout.md",
+      "notes": "CONSUME the layout, do not build the generator. Run scripts/scaffold-data-packages.mjs (or `nx g sox-nx:library --area/--group` if the external generator shipped) to create the 6 data/* skeletons (born area:data + sox.* metadata). Add the 3 area depConstraints ([shape:depconstraints]) to BOTH eslint blocks, BEFORE the '*' catch-all. Tag tokenguard-core area:shared/group:codec in place; tag the 8 platform libs area:platform + group in place (verified safe: platform subgraph is clean of memory-core). Leave memory-core/memory-enrich UNTAGGED by area ([def:domain-composer]). If a new scanned dir is introduced, mirror build-index.ts↔check-registry-sync.ts (BL-33). The boundary becomes real here.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "audit-layout": {
+      "kind": "audit",
+      "phase": "layout",
+      "depends_on": ["p1-layout"],
+      "guard": "python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase layout",
+      "artifacts": ["docs/plan/memory-refactor/scripts/audit_memrefactor.py"],
+      "context": "contexts/audit-layout.md",
+      "notes": "Phase layout asserts: 6 data/* skeletons exist with area:data + group + sox.* metadata + compile; the 3 depConstraints present in both eslint blocks; tokenguard-core=area:shared; platform libs tagged; and the [fix:synthetic-boundary] data→platform import FAILS lint (run in a sandbox copy, never landed). Likely failure: depConstraint ordering after the catch-all (no-op) or a platform lib with a latent cross-area edge."
+    },
+    "w2a-embedding-provider": {
+      "kind": "work",
+      "phase": "extraction",
+      "depends_on": ["audit-layout"],
+      "guard": "npx nx build embedding-provider && npx nx test embedding-provider",
+      "artifacts": [
+        "libs/data/embed/embedding-provider/src/index.ts",
+        "libs/data/embed/embedding-provider/src/provider.ts",
+        "libs/data/embed/embedding-provider/src/deterministic.ts",
+        "libs/data/embed/embedding-provider/src/fastembed.ts",
+        "libs/data/embed/embedding-provider/src/index.spec.ts"
+      ],
+      "context": "contexts/w2a-embedding-provider.md",
+      "notes": "Extract embed.ts + embedWorker.ts into [shape:embedding-provider-api]. Carry the quickfix's BL-89 loud-fail + BL-86 deterministic provider (now first-class). Add the batch API (string[]→AsyncGenerator, default 256) + optional queryEmbed + startup Map cache (SCOPE Part D). Keep the BL-11 worker seam (ONNX off the main thread). resolveProvider THROWS on real-load-failure ([def:loud-fail]). Parallel with w2b-graph-store (disjoint source files).",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "w2b-graph-store": {
+      "kind": "work",
+      "phase": "extraction",
+      "depends_on": ["audit-layout"],
+      "guard": "npx nx build graph-store && npx nx test graph-store",
+      "artifacts": [
+        "libs/data/graph/graph-store/src/index.ts",
+        "libs/data/graph/graph-store/src/schema.ts",
+        "libs/data/graph/graph-store/src/graph-store.ts",
+        "libs/data/graph/graph-store/src/index.spec.ts"
+      ],
+      "context": "contexts/w2b-graph-store.md",
+      "notes": "Carve the bi-temporal node/edge DDL + FTS triggers + content-hash + the BL-27 organizer_queue CHECK migration out of schema.ts/db.ts. Expose applyGraphSchema(db) on an INJECTED Database ([def:connection-seam]) — graph-store does NOT own openDb and does NOT import vector-store. Records are never deleted (invalidation sets t_invalid). Parallel with w2a (disjoint source). The vec_node DDL stays OUT (that is w2c).",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "w2c-vector-store": {
+      "kind": "work",
+      "phase": "extraction",
+      "depends_on": ["w2a-embedding-provider", "w2b-graph-store"],
+      "guard": "npx nx build vector-store && npx nx test vector-store",
+      "artifacts": [
+        "libs/data/vectors/vector-store/src/index.ts",
+        "libs/data/vectors/vector-store/src/vec-schema.ts",
+        "libs/data/vectors/vector-store/src/knn.ts",
+        "libs/data/vectors/vector-store/src/reembed.ts",
+        "libs/data/vectors/vector-store/src/index.spec.ts"
+      ],
+      "context": "contexts/w2c-vector-store.md",
+      "notes": "Carve the vec0 virtual table + kNN/cosine into [shape:vector-store-api]. ENFORCE [def:space-invariant] (reject dim/modelId≠column); own per-record modelId provenance (BL-88). Pluggable similarity-backend seam (brute-force ONLY now — NO ANN, SCOPE Part D). applyVecSchema(db) + openVectorStore(path) (standalone). Implement [def:reembed-core], ABSORBING scripts/reembed-memory.mjs (do not duplicate). Sequenced after w2b (both carve db.ts/schema.ts) and needs w2a for the active provider dim/modelId.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "w2d-ingest": {
+      "kind": "work",
+      "phase": "extraction",
+      "depends_on": ["w2b-graph-store"],
+      "guard": "npx nx build ingest && npx nx test ingest",
+      "artifacts": [
+        "libs/data/ingest/ingest/src/index.ts",
+        "libs/data/ingest/ingest/src/index.spec.ts"
+      ],
+      "context": "contexts/w2d-ingest.md",
+      "notes": "Extract the write-path single-item transforms (extractive.ts summary, content-hash, deterministic tagging/topic from enrich.ts's deterministic pieces). Deterministic, zero-LLM, byte-reproducible. Depends only on graph types — parallel with w2c + the other w2d states. The batch-pass orchestrator (enrich.ts/batch.ts cross-item) goes to analysis, not here.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "w2d-analysis": {
+      "kind": "work",
+      "phase": "extraction",
+      "depends_on": ["w2c-vector-store"],
+      "guard": "npx nx build analysis && npx nx test analysis",
+      "artifacts": [
+        "libs/data/analysis/analysis/src/index.ts",
+        "libs/data/analysis/analysis/src/index.spec.ts"
+      ],
+      "context": "contexts/w2d-analysis.md",
+      "notes": "Extract batch derivation: cluster.ts (+ cluster-subset), neardup.ts, importance.ts, autolink.ts, batch.ts orchestrator. Operates over a corpus (batch), never per-query; similarity outputs must record the modelId they were computed under ([inv:space]). Needs vector-store (cosine) + graph-store. Parallel with w2d-analysis-sibling w2d-ingest and w2d-hybrid-search.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "w2d-hybrid-search": {
+      "kind": "work",
+      "phase": "extraction",
+      "depends_on": ["w2c-vector-store"],
+      "guard": "npx nx build hybrid-search && npx nx test hybrid-search",
+      "artifacts": [
+        "libs/data/search/hybrid-search/src/index.ts",
+        "libs/data/search/hybrid-search/src/index.spec.ts"
+      ],
+      "context": "contexts/w2d-hybrid-search.md",
+      "notes": "Extract recall.ts's vec+BM25+temporal fusion. Honor SCOPE Part D: normalize-before-combine (min_max/L2/z_score), MULTIPLICATIVE field boosting (topic 2.0/tags 1.5/name 1.2/summary 1.0/content 1.0), FTS5 bm25(col_weights) collapsing N queries to 1, opt-in explain (off by default), implicit topic boost, experimental cross-query dedup (mark experimental). MUST [def:degrade-to-bm25] when vectors unavailable. Federation/registry helpers stay in the domain composer, not here. Needs vector-store + graph-store.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "w2e-domain-rewire": {
+      "kind": "work",
+      "phase": "extraction",
+      "depends_on": ["w2d-ingest", "w2d-analysis", "w2d-hybrid-search"],
+      "guard": "npx nx build memory-core && npx nx build memory-server && npx nx build memory-daemon && npx nx run-many -t test && npx nx run registry:sync-index && npx nx run host-runtime:test-e2e",
+      "artifacts": [
+        "libs/memory-core/src/index.ts",
+        "libs/memory-core/src/db.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-daemon/src/index.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.ts",
+        "registry/index.json"
+      ],
+      "context": "contexts/w2e-domain-rewire.md",
+      "notes": "[def:facade-then-dissolve], 3 sub-steps each independently green: (1) memory-core/memory-enrich RE-EXPORT from data/* (zero consumer change — proves behavior-identical); (2) FLIP the 4 bundle members to import data/* directly; (3) DELETE the dead facades, leaving slim memory-core ([def:domain-composer], keeps openDb [def:connection-seam] + session-state + scope/promotion + memory_* composition). memory-enrich is fully dissolved. Rebuild bundle + registry:sync-index ([inv:registry-current]) + upgrade consumers. The memory_* tool contract is UNCHANGED ([inv:tool-contract-stable]). Wire the [def:reembed-core] daemon op + script wrapper. Conforms to service-lifecycle spec ([inv:lifecycle-spec]).",
+      "changes": {
+        "deletes": ["@adhd/sox-memory-enrich (package dissolved into analysis+ingest)"],
+        "resigns": ["openDb", "memoryRecall", "enrichOnWrite", "runBatchEnrich", "reembedNodes"],
+        "renames": []
+      }
+    },
+    "audit-extraction": {
+      "kind": "audit",
+      "phase": "extraction",
+      "depends_on": ["w2e-domain-rewire"],
+      "guard": "python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase extraction",
+      "artifacts": ["docs/plan/memory-refactor/scripts/audit_memrefactor.py"],
+      "context": "contexts/audit-extraction.md",
+      "notes": "Phase extraction asserts: the 19-tool memory_* snapshot DIFFS clean vs p0-baseline ([inv:tool-contract-stable]); the 6 data/* packages build + carry sox.* metadata; data/vectors does NOT import data/graph; [def:space-invariant] enforced (reject test); [def:degrade-to-bm25] returns results with vectors off; memory-enrich is gone; e2e green + zero orphans (mind BL-63); registry drift green. Likely failure: a tool-shape drift or a vectors→graph import sneaking in via the composer."
+    },
+    "p4-routing": {
+      "kind": "work",
+      "phase": "routing",
+      "depends_on": ["audit-extraction"],
+      "guard": "npx nx run routing:build-index && npx nx run routing:check-drift && python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase routing",
+      "artifacts": [
+        "scripts/build-routing-index.ts",
+        "scripts/check-routing-drift.ts",
+        "docs/routing/map.json",
+        "docs/routing/INDEX.md",
+        "docs/routing/ROUTER.md",
+        "CLAUDE.md",
+        "libs/data/CLAUDE.md"
+      ],
+      "context": "contexts/p4-routing.md",
+      "notes": "[def:routing-index]: GENERATE map.json + INDEX.md (root + per-area) from the nx graph + per-package sox.* metadata, behind a drift gate (build-routing-index ↔ check-routing-drift mirror, like BL-33). Author hierarchical CLAUDE.md (root→area→group, auto-scoped by cwd) + a hand-curated ROUTER.md (intent→scope). Soft sox-memory advisory layer: advisory ONLY, never gating, MUST NOT depend on embedding health. Never hand-maintain map.json/INDEX.md.",
+      "changes": { "deletes": [], "resigns": [], "renames": [] }
+    },
+    "audit-routing": {
+      "kind": "audit",
+      "phase": "routing",
+      "depends_on": ["p4-routing"],
+      "guard": "python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase routing",
+      "artifacts": ["docs/plan/memory-refactor/scripts/audit_memrefactor.py"],
+      "context": "contexts/audit-routing.md",
+      "notes": "Phase routing asserts: map.json/INDEX.md generated from sox.* with zero hand-edits; the drift gate FAILS on a synthetic metadata change then passes when regenerated; CLAUDE.md hierarchy present at root + area; ROUTER.md present; the soft-memory advisory does not gate (degrade-without-embedding test). Likely failure: a hand-edited index drifting from the generator."
+    },
+    "audit-final": {
+      "kind": "audit",
+      "phase": "convergence",
+      "depends_on": ["audit-routing"],
+      "guard": "python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase final",
+      "artifacts": ["docs/plan/memory-refactor/scripts/audit_memrefactor.py"],
+      "context": "contexts/audit-final.md",
+      "notes": "Cumulative reality audit ([inv:reality]): spawn the REAL built memory-server, list the 19 tools (diff-clean vs baseline), run a real write→recall ranked by real vectors, [fix:cosine-sanity] ~0, force vectors off and prove [def:degrade-to-bm25], run [def:reembed-core] dry-run on a [fix:memory-db] copy. Full gate: nx run-many build,lint,test + e2e zero-orphan + registry drift + boundary lint. Owner reviews after green; only THEN set state: complete + merge feat/memory-refactor."
+    }
+  }
+}
