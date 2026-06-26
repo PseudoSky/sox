@@ -1,0 +1,44 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "demo-creator",
+  "version": "0.1.0",
+  "type": "skill",
+  "title": "demo-creator — generate a project's DEMO.md acceptance script",
+  "description": "Use this skill to produce a project's demo script / DEMO.md / acceptance walkthrough / QA verification doc that both tells the product story like a live demo AND functions as a rigorous acceptance test. Turns a project spec (or PRD/README/landing copy/code) into a persona-narrated, presentation-grade DEMO.md with exact commands, exact data, binary pass/fail assertions, full happy/edge/recovery coverage, requirement->capability traceability, and a tracked UNRESOLVED.md ledger for any guessed interface.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "demo",
+    "acceptance-test",
+    "qa",
+    "walkthrough",
+    "verification",
+    "demo-script"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "SKILL.md",
+  "run_interface": {
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "project_root": { "type": "string", "description": "Path to the project to generate a demo for." },
+        "plan_slug": { "type": "string", "description": "Optional plan slug; derived from context when omitted." }
+      },
+      "required": ["project_root"]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "demo_path": { "type": "string", "description": "Path to the written DEMO.md." },
+        "unresolved_path": { "type": "string", "description": "Path to the UNRESOLVED.md ledger." }
+      }
+    }
+  },
+  "install": {
+    "type": "skill",
+    "hosts": ["claude"]
+  }
+}

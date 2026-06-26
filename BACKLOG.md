@@ -7,6 +7,107 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 
 ---
 
+## Open — extension-authoring docs & footguns (surfaced ingesting the `demo-creator` skill, 2026-06-25)
+
+> Surfaced while porting an external `demo-creator` skill into a born-conformant
+> `skill` extension and installing it to a project scope, following "read the how-to on
+> creating a skill → scaffold → validate → build-index → install". Each item is a place
+> the documentation or CLI output sent the author down the wrong path.
+
+### BL-69 — `docs/guidelines/skill.md` is a framework-contract audit, not an author-facing "how to create a skill" → authors have no authoring guide — **Open (MEDIUM) docs**
+
+**Observed:** told to "read the how-to on creating a skill," the only skill-specific doc is
+`docs/guidelines/skill.md`, which is a five-layer analysis of *framework holes* (what the
+framework does/doesn't enforce for the `skill` type) — valuable, but it contains zero steps
+for authoring one. The actual authoring shape (`runtime: "declarative"`, `entrypoint:
+"SKILL.md"`, `run_interface`, `install.hosts`, bundling `assets/`+`scripts/`) had to be
+reverse-engineered from `extensions/skills/di-skill` and `extensions/skills/sox-ingest`.
+
+**Fix sketch:** add an author quickstart (`docs/guidelines/authoring-skill.md` or a README
+"Authoring" section) covering the canonical flow: `soxe init skill <id>` → fill manifest
+fields → bundle assets/scripts → `soxe validate` → `pnpm run build-index` → `soxe install
+<id> --scope <scope>`. Cross-link it from `docs/guidelines/skill.md` so the audit doc and
+the how-to are not confused.
+
+### BL-70 — manifest `$schema` version drift: scaffold emits **v2**, committed example skills pin **v1** — **Open (LOW) docs/consistency**
+
+**Observed:** `soxe init` writes `"$schema": ".../schemas/extension/v2.json"`, but
+`extensions/skills/di-skill` and `extensions/skills/sox-ingest` both pin `.../v1.json`. An
+author copying an example to learn the shape adopts the stale schema. Relatedly, those
+examples carry no top-level `version` field while the scaffold includes `"version":
+"0.1.0"` — so "copy an example" and "use the scaffold" disagree on the field set.
+
+**Fix sketch:** re-stamp the committed example extensions to v2 (+ `version`), or document
+which schema URL is canonical and keep examples in lockstep with the scaffolder.
+
+### BL-71 — `soxe init` scaffolds a minimal manifest missing `run_interface` and `install.hosts` that real skills carry — **Open (LOW) docs/scaffold**
+
+**Observed:** `soxe init skill` emits an `extension.json` without `run_interface` or
+`install.hosts`, yet both `sox-ingest` and `di-skill` include them, and nothing enumerates
+the optional-but-expected field set. An author can't tell from the scaffold which fields a
+"good" skill should add.
+
+**Fix sketch:** either scaffold these fields (as empty/commented stubs) or enumerate the
+full optional field set in the authoring doc (BL-69).
+
+### BL-72 — `soxe --help` describes `install` as "from config"; real usage is `install <id|bundle> --scope`; README template says `sox` not `soxe` — **Open (LOW) docs**
+
+**Observed:** `soxe --help` reads `install   Install extensions from config`, omitting the
+`<id>` positional that `USAGE.md` and actual usage require (`soxe install demo-creator
+--scope project`). Separately, the scaffolded `README.md` emits `sox install demo-creator`
+while the binary is `soxe` (and `USAGE.md` is titled "USAGE — sox CLI" but calls `node
+bin/soxe`). The `sox`/`soxe` naming is inconsistent across help, README template, and USAGE.
+
+**Fix sketch:** align the `install` help line to show the `<id>` positional, and normalize
+`sox` vs `soxe` across `--help`, the README scaffold template, and `USAGE.md`.
+
+### BL-73 — `install --scope project` puts `.adhd` bookkeeping in the wrong repo because project-root resolution relies on git — **Open (HIGH) behavior/bug**
+
+**Observed:** running `soxe install demo-creator --scope project` from cwd
+`/Users/nix/dev/ai/agent-source` (which is **not** a git repo) placed host artifacts into
+`agent-source/.claude/skills/` (correct — cwd) but wrote the `extensions.json` install
+record and `extensions.lock` to `/Users/nix/dev/ai/sox-ecosystem/.adhd/sox-ecosystem/` —
+the **CLI's own repo**, not the target project. A project install from `agent-source`
+must clearly land its `.adhd/sox-ecosystem/` under `agent-source/`. The bookkeeping and
+the host placement are split across two different repos, which silently mis-scopes the
+install and breaks reversal/lockfile integrity for the actual project.
+
+**Root cause:** project-root resolution depends on finding a git repo (git-root walk). When
+cwd is not a git repo it falls back to some other root (here, the soxe repo) instead of the
+cwd project. **Project-root resolution must not rely on git** — a directory's status as a
+git repo is orthogonal to whether it's the target of a `--scope project` install.
+
+**Fix sketch:** resolve the project root from the **install target / cwd itself** (the same
+root used for host placement, e.g. where `.claude/` is written), NOT from a git-root walk,
+so `.adhd/sox-ecosystem/` always co-locates with the `.claude/` placement under the actual
+project (`agent-source/.adhd/sox-ecosystem/`). Bookkeeping and placement must share one
+resolved root. Add a regression test: project install from a non-git directory writes both
+`.claude/` and `.adhd/` under that directory. Until fixed, project installs from any non-git
+project mis-file their state under the CLI repo — **High**: corrupts scope state and
+uninstall/lockfile reversal for the real project.
+
+### BL-74 — `soxe install <id> --scope project` reconciles the WHOLE scope config, re-placing unrelated members — undocumented — **Open (LOW) docs**
+
+**Observed:** installing only `demo-creator` also re-resolved and re-placed `memory-usage`
+and the `sox-memory-bundle` members already recorded in the project's `extensions.json`
+(`soxe install: placed claude/project .../memory-usage`). `USAGE.md`'s Install section reads
+as "install the named id," not "reconcile the entire scope set," so the extra placements
+surprise the operator.
+
+**Fix sketch:** note in `USAGE.md` that `install <id>` reconciles the full scope set (adds
+the id, then re-pins/re-places everything already declared), not just the named extension.
+
+### BL-75 — `soxe init` prints a stray `rm: /Users/nix/dot/bin/node: No such file or directory` during scaffold — **Open (LOW) footgun**
+
+**Observed:** every `soxe init <type> <id>` run prints a failed `rm` against a hardcoded
+`/Users/nix/dot/bin/node` path before "scaffolded …". It looks like a real failure mid-flow
+(the documented authoring step) even though the scaffold succeeds.
+
+**Fix sketch:** remove/guard the hardcoded `/Users/nix/dot/bin/node` cleanup in the `init`
+codepath so the scaffolder emits no spurious error.
+
+---
+
 ## Resolved — regressions from the proxy-default flip, fixed 2026-06-25
 
 ### BL-67 — detached proxy backend inherits the parent's stdout fd → `soxe upgrade --all` (and any piped/CI invocation) HANGS forever — **RESOLVED**
