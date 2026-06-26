@@ -389,6 +389,23 @@ tag is NOT a reliable re-embed trigger — `scripts/reembed-memory.mjs` requires
 the tag already says real, and normalises the WHOLE store to real (idempotent: re-embedding an
 already-real row reproduces the same BGE vector). Pairs with BL-88 (add per-record `embed_model`).
 
+### BL-93 — `edge.rel` accepted-value set is INCONSISTENT across the `memory_link` tool, the `schema.ts` CHECK constraint, and the graph contract → `memory_link({rel:'ASSIGNED_TO'})` fails at the DB — **Open (MEDIUM) bug** (found by architect-reviewer authoring the memory-refactor contracts, 2026-06-26)
+
+**Observed (verified state-side):** three different `edge.rel` value sets are in play:
+- `memory_link` MCP tool — enum + `VALID_RELS` (memory-server `src/index.ts:452,1325`): `MENTIONS, SUPPORTS,
+  RELATES_TO, DERIVED_FROM, SUPERSEDES, SAME_AS, **ASSIGNED_TO**` (7; **no** `MEMBER_OF`/`PART_OF`).
+- `schema.ts` `edge.rel` CHECK (`libs/memory-core/src/schema.ts:58-59`): `MENTIONS, SUPPORTS, RELATES_TO,
+  SUPERSEDES, DERIVED_FROM, **MEMBER_OF, PART_OF**, SAME_AS` (8; **no** `ASSIGNED_TO`).
+So a `memory_link({rel:'ASSIGNED_TO'})` call **passes the tool's `VALID_RELS` then hits the SQLite CHECK
+constraint and errors** — the tool advertises a relation the DB rejects. (`[inv:tool-contract-stable]`
+guards the tool enum, so the *schema* is the side that's wrong.)
+
+**Fix:** reconcile to one authoritative set — the contract's `EdgeRel` (9 values = union) in
+`docs/plan/memory-refactor/contracts/graph-store.ts`. The **w2b graph-store extraction MUST add
+`ASSIGNED_TO` to the DDL CHECK** (and confirm `MEMBER_OF`/`PART_OF` are intentional internal rels the tool
+needn't expose). Add a test asserting every `memory_link` enum value is DDL-accepted. Pre-existing
+(predates the refactor); surfaced because the contract forced the three sets to be compared.
+
 ### BL-90 — memory skill(s) lack "how to find memories scoped to YOU / your project / your task" recall recipes (and which work under degraded embeddings) — **Open (MEDIUM) docs/skill** (2026-06-26)
 
 **Observed:** the `memory-usage` (and `reflection`) skills document write conventions well but give little
