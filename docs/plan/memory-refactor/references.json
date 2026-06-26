@@ -67,8 +67,8 @@
     "E_reembed_home": "vector-store owns the migration walk"
   },
   "financial_posture": {
-    "F1": "data/* published public at 0.x (unstable tier); publish action owner-gated",
+    "F1": "REFINED (ADR-0006): 3 PUBLIC (embedding-provider, vector-store, hybrid-search) @ 0.x, publish owner-gated; 3 PRIVATE (graph-store, analysis, ingest) never published. A public package consumes a private @adhd lib ONLY by bundling its stateless code (esbuild inline, zero @adhd runtime deps, native external); live objects cross via DI. hybrid-search bundles graph-store+vector-store helpers, Database via DI.",
     "F2": "no prebuild-CI matrix (rely on upstream prebuilds; quickfix validates live Node)",
-    "F3": "no paid/remote embedding provider; inference stays named-but-empty"
+    "F3": "no LIVE/paid remote provider; BUT the EmbedProvider contract is designed+implemented for local‖remote (isRemote) with a contract-conformant remote adapter that is NOT wired to a live/paid endpoint (no spend, not live-tested)"
   }
 }

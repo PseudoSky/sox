@@ -41,12 +41,18 @@ data package (and the composer) gets vectors from one place.
     by callers using batch where they have many texts.
   - optional `provider.queryEmbed(text)` (query-optimized) + a **startup Map cache** for
     hot/topic embeddings.
-  - every provider advertises `{providerId, modelId, dim, isDeterministic}`.
+  - every provider advertises `{providerId, modelId, dim, isDeterministic, isRemote}`.
+  - **Contract is local‖remote-agnostic (owner directive, SCOPE Part A/D):** async + batch-first,
+    no in-process assumptions, so the SAME `EmbedProvider` is valid for local AND network providers.
   - `deterministic.ts` — the first-class deterministic provider (carries the BL-86
     degeneracy fix; `isDeterministic:true`).
-  - `fastembed.ts` — the real BGE provider (bundled-ONNX, BGE-base-en-v1.5 default,
-    384/768 dims); externalize `fastembed`/`onnxruntime-node` as native deps
-    (engines `>=22`).
+  - `fastembed.ts` — the real provider (bundled-ONNX); **ship ≥3 local models SPANNING DIMS from the
+    gate** (e.g. bge-small 384, bge-base 768, e5-large 1024) — real+tested — to validate the interface
+    against >1 model AND force `dim` parameterization (the 1024 model makes the `vec0 FLOAT[768]`
+    hardcode a hard failure, not latent). Externalize `fastembed`/`onnxruntime-node` (engines `>=22`).
+  - `remote.ts` — a remote-provider **adapter implemented against the SAME contract but NOT wired to a
+    live/paid endpoint** (typed reference impl, `isRemote:true`; F3 — no spend, not live-tested). Proves
+    the contract is context-agnostic without incurring remote cost.
   - Preserve the BL-11 worker boundary: real `embed()` runs in the worker thread, never
     the main thread alongside `openDb`.
 - **Invariants added:** [inv:loud-fail], [inv:carry-fixes] (worker seam, BL-86),

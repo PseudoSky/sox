@@ -84,4 +84,11 @@ mutates:    ["libs/data/analysis/analysis/src/**"]
   filter clause with analysis.
 - `memory-enrich` is fully dissolved across this state + `w2d-ingest`; after both, nothing
   in `memory-enrich/src` lacks a new home. `w2e` deletes the package.
+- **Clustering = depend on a JS lib, do NOT hand-roll, NOT a SQLite extension (SCOPE Part A).** Read
+  vectors out of vector-store → cluster via an existing JS lib (`density-clustering`/`hdbscanjs`) →
+  write labels back. The package's value is the deterministic, zero-LLM, `modelId`-provenance-aware
+  *integration*, not reimplementing DBSCAN/HDBSCAN. (No new native code; clustering is a batch/daemon op,
+  not on the query hot path — perf is not the driver at Phase-0 <50K.)
+- **Packaging (ADR-0006): analysis is PRIVATE** (`private:true`, never published) — thin
+  off-the-shelf-algorithm wrapper; it gets bundled (stateless helpers) by whoever needs it.
 - Budget: 1-2 sessions.

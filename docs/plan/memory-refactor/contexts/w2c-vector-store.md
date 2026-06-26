@@ -93,9 +93,9 @@ mutates:    ["libs/data/vectors/vector-store/src/**"]
 
 ## Notes for executor
 
-- The `vec0` dim MUST be parameterized from the active provider's `dim` — the live store
-  is BGE (384 or 768); the hard-coded `FLOAT[768]` in the legacy DDL is a latent bug if
-  the model is 384. Drive it from `{dim}`.
+- The `vec0` dim MUST be parameterized from the active provider's `dim`. **w2a now ships ≥3 models
+  spanning 384/768/1024 (SCOPE Part D), so the hard-coded `FLOAT[768]` is a HARD failure, not latent** —
+  exercising the 1024 model breaks it. Drive the dim from `{dim}`; test with a non-768 dim.
 - One re-embed core, two entry points: implement it HERE; `w2e` wires the daemon op +
   the thin `scripts/reembed-memory.mjs` wrapper. Do not fork the logic.
 - Keep the BL-11 boundary in mind: `reembed` calls the provider's worker-backed
