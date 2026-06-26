@@ -61,30 +61,59 @@ bin/soxe`). The `sox`/`soxe` naming is inconsistent across help, README template
 **Fix sketch:** align the `install` help line to show the `<id>` positional, and normalize
 `sox` vs `soxe` across `--help`, the README scaffold template, and `USAGE.md`.
 
-### BL-73 — `install --scope project` puts `.adhd` bookkeeping in the wrong repo because project-root resolution relies on git — **Open (HIGH) behavior/bug**
+### BL-73 — `install --scope project` puts `.adhd` bookkeeping in the wrong repo because project-root resolution relies on git — **FIXED**
 
 **Observed:** running `soxe install demo-creator --scope project` from cwd
 `/Users/nix/dev/ai/agent-source` (which is **not** a git repo) placed host artifacts into
 `agent-source/.claude/skills/` (correct — cwd) but wrote the `extensions.json` install
 record and `extensions.lock` to `/Users/nix/dev/ai/sox-ecosystem/.adhd/sox-ecosystem/` —
-the **CLI's own repo**, not the target project. A project install from `agent-source`
-must clearly land its `.adhd/sox-ecosystem/` under `agent-source/`. The bookkeeping and
-the host placement are split across two different repos, which silently mis-scopes the
-install and breaks reversal/lockfile integrity for the actual project.
+the **CLI's own repo**, not the target project.
 
-**Root cause:** project-root resolution depends on finding a git repo (git-root walk). When
-cwd is not a git repo it falls back to some other root (here, the soxe repo) instead of the
-cwd project. **Project-root resolution must not rely on git** — a directory's status as a
-git repo is orthogonal to whether it's the target of a `--scope project` install.
+**Root cause (confirmed):** `getScopePath(scope)` in `libs/install-engine/src/install.ts`
+always used the module-level `REPO_ROOT` constant (derived from `__dirname` at import time)
+for project/local scopes. The `install()` function called `getScopePath(opts.scope)` at
+line 491, completely ignoring the `opts.root` it had already computed. The same applied in
+`loadScopeCascade()` at line 832 and in four call-sites in `apps/sox/src/main.ts` (lines
+1104, 1180, 1194, 1566).
 
-**Fix sketch:** resolve the project root from the **install target / cwd itself** (the same
-root used for host placement, e.g. where `.claude/` is written), NOT from a git-root walk,
-so `.adhd/sox-ecosystem/` always co-locates with the `.claude/` placement under the actual
-project (`agent-source/.adhd/sox-ecosystem/`). Bookkeeping and placement must share one
-resolved root. Add a regression test: project install from a non-git directory writes both
-`.claude/` and `.adhd/` under that directory. Until fixed, project installs from any non-git
-project mis-file their state under the CLI repo — **High**: corrupts scope state and
-uninstall/lockfile reversal for the real project.
+**Fix (2026-06-26):** changed `install()` to call `scopeConfigPaths(opts.scope, root)`
+instead of `getScopePath(opts.scope)`. Added `root` to `CascadeOpts` and fixed
+`loadScopeCascade`. In `main.ts`: introduced `workspaceRoot = process.cwd()` in the
+non-declarative install path and replaced all `getScopePath(scope).{config,lockfile}` calls
+with `getScopePaths(scope, workspaceRoot).{config,lockfile}`; passed `root: workspaceRoot`
+to `install()`. Fixed `cmdUpdate` (line 1563-1566) with the same pattern.
+
+**Files changed:** `libs/install-engine/src/install.ts`,
+`apps/sox/src/main.ts`, `libs/install-engine/src/project-root.spec.ts` (new regression
+test with 4 cases, all green). State-side proof: running from `/tmp/bl73-state-proof-*/`
+(no `.git`) writes lockfile to `/tmp/bl73-state-proof-*/.adhd/sox-ecosystem/extensions.lock`
+and does NOT touch `sox-ecosystem/.adhd/sox-ecosystem/`.
+
+### BL-78 — `cmdDetails` uses wrong lock path format (`.extensions/`) and `getScopePath(REPO_ROOT)` fallback — **Open (LOW) bug, surfaced during BL-73 fix**
+
+**Observed:** `apps/sox/src/main.ts` `cmdDetails` (line 3107-3117) has two problems:
+1. When `--root` is given: constructs the lock path as `<root>/.extensions/extensions.lock` — the
+   WRONG format (should be `<root>/.adhd/sox-ecosystem/extensions.lock`). This path will never
+   match any real lockfile, so `soxe details <id> --root=<dir>` always shows the extension
+   as uninstalled at the project scope even when it's installed there.
+2. When `--root` is absent: falls back to `getScopePath('project')` which uses REPO_ROOT (same
+   root cause as BL-73). So `soxe details <id>` with project scope reads the CLI's own repo
+   lockfile, not the user's project.
+
+**Fix sketch:** replace both with `getScopePaths(sc, rootOverride ?? process.cwd()).lockfile`.
+Same `getScopePaths` pattern applied in BL-73 fix.
+
+### BL-79 — `mcp-runtime:build` fails in worktree due to missing `@modelcontextprotocol/sdk` in node_modules — **Open (LOW) worktree-env**
+
+**Observed:** `npx nx build mcp-runtime` (and transitively `npx nx build sox`) fails with
+`TS2307: Cannot find module '@modelcontextprotocol/sdk/...'` in the agent worktrees because
+the symlinked `/node_modules/@modelcontextprotocol/sdk/` subdirs don't exist in the main
+repo's node_modules either. The sox build succeeds via nx cache, but a cold build in a fresh
+worktree will fail the mcp-runtime dependency.
+
+**Fix sketch:** ensure `@modelcontextprotocol/sdk` is properly installed in the main repo's
+`node_modules` (run `pnpm install` from the repo root), OR mark mcp-runtime's deps as
+`optional` in pnpm-workspace so the worktree setup doesn't require it.
 
 ### BL-74 — `soxe install <id> --scope project` reconciles the WHOLE scope config, re-placing unrelated members — undocumented — **Open (LOW) docs**
 

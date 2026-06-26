@@ -1073,6 +1073,12 @@ Options:
   // These are required by the e2e test which installs into a temp directory.
   const configPathFlag = flags['config'];
   const lockfilePathFlag = flags['lockfile'];
+  // BL-73: resolve the project root from cwd (or --root flag) — never from a git-root
+  // walk. For user scope this has no effect (userDataRoot() ignores workspaceRoot).
+  // For project/local scope, workspaceRoot drives both the bookkeeping paths
+  // (.adhd/sox-ecosystem/{extensions.json,extensions.lock}) AND the host-placement
+  // root (.claude/) so both always land under the same project directory.
+  const workspaceRoot = require('node:path').resolve(flags['root'] ?? process.cwd()) as string;
 
   // If a positional <id> was given (e.g. `sox install sox --scope=project`),
   // write it into the scope config before resolving — otherwise install() only
@@ -1101,7 +1107,9 @@ Options:
     const pathMod2 = require('node:path') as typeof import('node:path');
 
     // Use the explicit --config path if provided; fall back to scope default.
-    const cfgPath = configPathFlag ?? getScopePath(scope).config;
+    // BL-73: use getScopePaths(scope, workspaceRoot) — not getScopePath(scope) which
+    // always resolves relative to REPO_ROOT (the CLI's own repo), not the target project.
+    const cfgPath = configPathFlag ?? getScopePaths(scope, workspaceRoot).config;
 
     let cfg: { install?: Array<{ id: string }> } = { install: [] };
     if (fsMod2.existsSync(cfgPath)) {
@@ -1141,6 +1149,9 @@ Options:
   const installOpts: Parameters<typeof import('@adhd/sox-install-engine').install>[0] = {
     scope,
     mode,
+    // BL-73: pass workspaceRoot as root so install() derives config/lockfile paths
+    // relative to the target project, not the CLI's own REPO_ROOT.
+    root: workspaceRoot,
     ...(configPathFlag !== undefined ? { configPath: configPathFlag } : {}),
     ...(lockfilePathFlag !== undefined ? { lockfilePath: lockfilePathFlag } : {}),
     ...(resolvedRegistryForInstall.length > 0 ? { registryIndex: resolvedRegistryForInstall } : {}),
@@ -1176,8 +1187,8 @@ Options:
   // ADR-0004 §D2: the registry lives under the scope's data dir.
   rematerializeServiceStores(
     scope,
-    process.cwd(),
-    lockfilePathFlag ?? getScopePath(scope).lockfile,
+    workspaceRoot,
+    lockfilePathFlag ?? getScopePaths(scope, workspaceRoot).lockfile,
   );
 
   // ── Host-place declarative members (BL-17) ────────────────────────────────
@@ -1190,8 +1201,8 @@ Options:
     const fsMod4 = require('node:fs') as typeof import('node:fs');
     const pathMod4 = require('node:path') as typeof import('node:path');
 
-    // Resolve the lockfile that install() just wrote.
-    const lockfilePath4 = lockfilePathFlag ?? getScopePath(scope).lockfile;
+    // BL-73: read back from the same root install() just wrote to.
+    const lockfilePath4 = lockfilePathFlag ?? getScopePaths(scope, workspaceRoot).lockfile;
     const lockfile4 = loadLockfile(lockfilePath4);
 
     if (lockfile4 !== null) {
@@ -1559,11 +1570,13 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
 
   // ── Existing resolver path: --host absent (unchanged) ──────────────────────
   const scope = (flags['scope'] ?? 'user') as 'org' | 'user' | 'project' | 'local';
+  // BL-73: derive the project root from cwd (not REPO_ROOT).
+  const updateRoot = require('node:path').resolve(flags['root'] ?? process.cwd()) as string;
 
-  await install({ scope, mode: 'update' });
+  await install({ scope, mode: 'update', root: updateRoot });
   // BL-39 / ADR-0004 §D6: re-materialize service stores so an updated artifact is
   // re-copied into the store (a running daemon must not keep stale copied code).
-  rematerializeServiceStores(scope, process.cwd(), getScopePath(scope).lockfile);
+  rematerializeServiceStores(scope, updateRoot, getScopePaths(scope, updateRoot).lockfile);
   process.stdout.write(`${CLI} update: done (scope=${scope})\n`);
   process.exit(0);
 }
