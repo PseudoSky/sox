@@ -18,8 +18,8 @@
       "options": {
         "commands": [
           "rm -rf extensions/bundles/sox-memory-bundle/members/memory-daemon/dist",
-          "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-daemon/src/bin.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-daemon/dist --tsconfig extensions/bundles/sox-memory-bundle/members/memory-daemon/tsconfig.json --external better-sqlite3 --external sqlite-vec",
-          "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-daemon/src/bin.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-daemon/bundle --tsconfig extensions/bundles/sox-memory-bundle/members/memory-daemon/tsconfig.json --external better-sqlite3 --external sqlite-vec"
+          "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-daemon/src/bin.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-daemon/dist --tsconfig extensions/bundles/sox-memory-bundle/members/memory-daemon/tsconfig.json --worker libs/memory-core/src/embedWorker.ts --external better-sqlite3 --external sqlite-vec --external fastembed --external onnxruntime-node",
+          "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-daemon/src/bin.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-daemon/bundle --tsconfig extensions/bundles/sox-memory-bundle/members/memory-daemon/tsconfig.json --worker libs/memory-core/src/embedWorker.ts --external better-sqlite3 --external sqlite-vec --external fastembed --external onnxruntime-node"
         ],
         "parallel": false,
         "cwd": "."
@@ -27,7 +27,9 @@
       "cache": true,
       "inputs": [
         "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/tsconfig.json"
+        "{projectRoot}/tsconfig.json",
+        "{workspaceRoot}/tools/bundle-extension.cjs",
+        "{workspaceRoot}/libs/memory-core/src/embedWorker.ts"
       ],
       "dependsOn": [
         "^build"

@@ -21,6 +21,8 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.10.0",
-    "sqlite-vec": "^0.1.9"
+    "sqlite-vec": "^0.1.9",
+    "fastembed": "^2.1.0",
+    "onnxruntime-node": "1.21.0"
   }
 }

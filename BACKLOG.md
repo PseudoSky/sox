@@ -309,6 +309,22 @@ the npm-package install resolves them. Add the published-fresh-machine smoke ass
 `memory_ping` reports `embed_on_hash_fallback:false`. (Native onnxruntime-node also has the Node-version
 prebuild matrix concern — verify Node 22/24 coverage, cf. the engines decision.)
 
+**Quickfix IMPLEMENTED (2026-06-26, worktree `agent-ac3165b4897bcaa50`, NOT yet merged/published):**
+`fastembed@^2.1.0` + `onnxruntime-node@1.21.0` added as real `dependencies` of both `memory-server` and
+`memory-daemon` package.json; both externalized in the esbuild bundle (project.json `--external fastembed
+--external onnxruntime-node`). ALSO found a second root cause the deps alone don't fix: `embedWorker.js`
+was never emitted into the bundle — `embed.ts` spawns it via a runtime string path
+(`new Worker(path.join(__dirname,'embedWorker.js'))`) that esbuild does not trace, so the bundled server
+had only `index.js` and the Worker spawn failed → permanent hash fallback. Fixed by a new
+`--worker <entry>` flag in `tools/bundle-extension.cjs` that emits each worker as its own self-contained
+sibling bundle (`dist/embedWorker.js`, fastembed lazy-required at runtime). Verified onnxruntime-node
+ships napi-v3 darwin/arm64 prebuilds → loads on live Node v24.11.1. Clean-room proof (real `npm install`
+of the published dep set + the built bundle, temp HOME + temp db): `memory_ping` →
+`embed_on_hash_fallback:false`, `embed_model:"bge-base-en-v1.5"`, semantic recall returns the relevant
+result; real-model cosine of unrelated strings 0.39–0.42 (vs hash 0.97–0.99). **Landing on the live
+user-scope install (`@adhd/sox-extension-memory-server` via BL-65 npm install) REQUIRES an npm republish
+(owner-gated) — not done.**
+
 ### BL-88 — no PER-RECORD embedding provenance + no auto-upgrade when the real backend returns — **Open (MEDIUM) data-integrity** (2026-06-26)
 
 **Observed:** `embed_model` is stored only on `memory_scope` (one row per scope, set ONCE at scope
@@ -336,6 +352,42 @@ exist.
 a one-line warn), add a warmup timeout + health signal, and root-cause the fastembed 2.x / worker_thread
 init failure (candidate: the BL-11 onnxruntime libpthread isolation, or a fastembed 2.x API/model-format
 mismatch). Until fixed, real embeddings never engage even on a fully-provisioned box.
+
+**Quickfix IMPLEMENTED (2026-06-26, worktree, NOT merged):** Root cause was NOT a fastembed/onnxruntime
+hang on the dev box — reproduced `embed()` via the built `memory-core` dist returning a real BGE vector in
+~1s (state `real`, cosine 0.46), and the worker_thread path works in isolation (~650ms). The actual
+silent-fallback driver is the BUNDLE (the missing `embedWorker.js` — see BL-87). The loud/diagnosable
+work landed regardless: `embed.ts` now records `_lastEmbedError` (worker spawn/init/exit/timeout + the
+auto-fallback cause), adds a configurable warmup timeout (`SOX_EMBED_WARMUP_TIMEOUT_MS`, default 60s) so
+an indefinite hang can't wedge callers, and exposes `getLastEmbedError()` / `getEmbedHealth()` /
+`warmupEmbed()`. `backend='real'` now fail-LOUD (throws, never downgrades); `auto` fallback is
+`console.error` + recorded. The server warms up at startup (loud stderr) and `memory_ping` / `memory_stats`
+now include `last_embed_error`. Reality-verified in clean-room: `backend=real` + fastembed absent →
+`memory_ping.last_embed_error` carries the cause + stderr `FATAL`; `auto` + absent →
+`embed_on_hash_fallback:true` + cause. Tests added in `embed.spec.ts` (health surface + real-model
+non-degeneracy assertion |cos|<0.85).
+
+### BL-91 — `reembedNodes()` (and any vec_node re-embed) used `INSERT OR REPLACE` which FAILS on sqlite-vec vec0 tables → daemon `reindex --reembed` op silently broken — **FIXED in worktree (2026-06-26)**
+
+**Observed:** while building the re-embed quickfix, `INSERT OR REPLACE INTO vec_node(node_id, embedding)`
+raised `SqliteError: UNIQUE constraint failed on vec_node primary key` and rolled back the whole
+transaction (vectors stayed hash). sqlite-vec `vec0` virtual tables do not implement OR-REPLACE conflict
+resolution. `reembedNodes()` in `libs/memory-core/src/embed.ts` (called by memoryd's `reindex` op when
+`reembed=true`) used exactly this form — so the existing re-embed path was non-functional.
+
+**Fix (applied):** use `UPDATE vec_node SET embedding=? WHERE node_id=?` for the existing row, falling back
+to `INSERT` only when the row is absent (`changes===0`). Both `reembedNodes()` and the new
+`scripts/reembed-memory.mjs` use this form. Verified: UPDATE and DELETE+INSERT both work on vec0;
+INSERT OR REPLACE does not.
+
+### BL-92 — re-embed script note: per-record provenance gap (BL-88) means the real store's vectors are a HASH/real MIX while `memory_scope.embed_model` already (falsely) reads `bge-base-en-v1.5` — **Observed (2026-06-26)**
+
+**Observed:** the live `~/.memory/memory.db` `memory_scope.embed_model` already reads `bge-base-en-v1.5`
+(set once at scope creation, never updated — BL-88), yet the stored vectors are a mix: pairwise cosine over
+a 60-node sample is mean 0.64 / min 0.43 / max 0.96 (pure hash pins ~0.97+, pure real ~0.4). So the scope
+tag is NOT a reliable re-embed trigger — `scripts/reembed-memory.mjs` requires `--force` to re-embed when
+the tag already says real, and normalises the WHOLE store to real (idempotent: re-embedding an
+already-real row reproduces the same BGE vector). Pairs with BL-88 (add per-record `embed_model`).
 
 ### BL-90 — memory skill(s) lack "how to find memories scoped to YOU / your project / your task" recall recipes (and which work under degraded embeddings) — **Open (MEDIUM) docs/skill** (2026-06-26)
 

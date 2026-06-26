@@ -30,6 +30,9 @@ import {
   embedText,
   getActiveEmbedModel,
   getEmbedState,
+  getEmbedHealth,
+  getLastEmbedError,
+  warmupEmbed,
   EMBED_DIM,
   _resetEmbedSingleton,
 } from './embed.js';
@@ -94,6 +97,39 @@ describe('getEmbedState — BL-54 (no false hash-fallback before first embed)', 
     expect(getEmbedState()).toBe('uninitialized'); // still nothing embedded
     await embed('bl54 hash-backend probe');
     expect(getEmbedState()).toBe('hash');
+  });
+});
+
+// ── 0b. BL-89: loud, diagnosable embed health (getEmbedHealth/getLastEmbedError) ─
+
+describe('getEmbedHealth / getLastEmbedError — BL-89 (loud, not silent)', () => {
+  it('reports no error and uninitialized state on a fresh singleton', () => {
+    _resetEmbedSingleton();
+    expect(getLastEmbedError()).toBeNull();
+    const h = getEmbedHealth();
+    expect(h.state).toBe('uninitialized');
+    expect(h.on_hash_fallback).toBe(false);
+    expect(h.last_error).toBeNull();
+  });
+
+  it('on configured hash backend, on_hash_fallback stays false (intentional, not a downgrade)', async () => {
+    process.env['SOX_EMBED_BACKEND'] = 'hash';
+    _resetEmbedSingleton();
+    await embed('intentional hash');
+    const h = getEmbedHealth();
+    expect(h.state).toBe('hash');
+    expect(h.backend).toBe('hash');
+    expect(h.on_hash_fallback).toBe(false); // configured hash is NOT a fallback
+    expect(h.last_error).toBeNull();
+  });
+
+  it('warmupEmbed on hash backend is a no-op that returns hash health (no worker spawn)', async () => {
+    process.env['SOX_EMBED_BACKEND'] = 'hash';
+    _resetEmbedSingleton();
+    const h = await warmupEmbed();
+    expect(h.state).toBe('hash');
+    expect(h.on_hash_fallback).toBe(false);
+    expect(h.last_error).toBeNull();
   });
 });
 
@@ -201,6 +237,16 @@ describe('real backend — semantic similarity', () => {
     async () => {
       process.env['SOX_EMBED_BACKEND'] = 'real';
 
+      // BL-89: warmupEmbed engages the real backend up front and must report healthy.
+      // (Combined into this single real-worker test because onnxruntime-node does not
+      // re-init cleanly when a second worker is spawned in the same process — production
+      // only ever spawns one embed worker per process.)
+      const warm = await warmupEmbed();
+      expect(warm.state).toBe('real');
+      expect(warm.model).toBe('bge-base-en-v1.5');
+      expect(warm.on_hash_fallback).toBe(false);
+      expect(getLastEmbedError()).toBeNull();
+
       const dog1 = await embed('The dog ran across the field.');
       const dog2 = await embed('A puppy sprinted through the meadow.');
       const unrelated = await embed('The quarterly earnings report exceeded expectations.');
@@ -213,8 +259,19 @@ describe('real backend — semantic similarity', () => {
       expect(unrelated.length).toBe(EMBED_DIM);
       // Similar-meaning sentences must score higher than unrelated ones
       expect(simSimilar).toBeGreaterThan(simUnrelated);
+      // BL-86: the real model must NOT be degenerate. The hash fallback pins unrelated
+      // pairs at ~0.97–0.998; the real BGE model separates them with a wide margin.
+      expect(simUnrelated).toBeLessThan(0.85);
+      expect(simSimilar - simUnrelated).toBeGreaterThan(0.1);
+
+      // BL-89: when real engages, health reports real + no error.
+      const h = getEmbedHealth();
+      expect(h.state).toBe('real');
+      expect(h.model).toBe('bge-base-en-v1.5');
+      expect(h.on_hash_fallback).toBe(false);
+      expect(h.last_error).toBeNull();
     },
-    30_000, // 30 s timeout — first call loads the ONNX model
+    60_000, // first call loads the ONNX model
   );
 });
 

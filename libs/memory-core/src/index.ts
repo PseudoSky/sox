@@ -47,11 +47,14 @@ export {
   resetProviderCallCount,
   getActiveEmbedModel,
   getEmbedState,
+  getLastEmbedError,
+  getEmbedHealth,
+  warmupEmbed,
   reembedNodes,
   _resetEmbedSingleton,
   _shutdownEmbedWorker,
 } from './embed.js';
-export type { EmbedBackend, EmbedConfig, EmbedState } from './embed.js';
+export type { EmbedBackend, EmbedConfig, EmbedState, EmbedHealth } from './embed.js';
 
 // ── Write + invalidate ────────────────────────────────────────────────────────
 export { memoryWrite, memoryInvalidate } from './write.js';

@@ -36,7 +36,7 @@
 
 import type { ToolDefinition, ToolResult } from '@adhd/sox-mcp-runtime';
 import { defineTool, serve } from '@adhd/sox-mcp-runtime';
-import { enqueueEnrich, getActiveEmbedModel, getEmbedState, memoryRecall, memoryUpdate, memoryWrite, openDb, SOCKET_PATH } from '@adhd/sox-memory-core';
+import { enqueueEnrich, getActiveEmbedModel, getEmbedState, getLastEmbedError, warmupEmbed, memoryRecall, memoryUpdate, memoryWrite, openDb, SOCKET_PATH } from '@adhd/sox-memory-core';
 import type { MemoryFilter } from '@adhd/sox-memory-enrich';
 import { buildFiltersClause, clusterStats, clusterSubset, dropSubsetLens, ENRICH_VERSION, listSubsetLenses, runBatchEnrich } from '@adhd/sox-memory-enrich';
 import Database from 'better-sqlite3';
@@ -812,6 +812,9 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           embed_backend_configured: pingConfiguredBackend,
           embed_state: pingEmbedState,
           embed_on_hash_fallback: pingOnHashFallback,
+          // BL-89: the real-backend failure cause (worker spawn/init/timeout), so a
+          // hash downgrade is diagnosable from the health check, not just stderr.
+          last_embed_error: getLastEmbedError(),
         }),
       }],
     };
@@ -2292,6 +2295,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             embed_backend_configured: configuredBackend,
             embed_state: resolvedEmbedState,
             embed_on_hash_fallback: onHashFallback,
+            last_embed_error: getLastEmbedError(),
             total_episodes: totalEpisodes,
             with_topic: withTopicRow?.cnt ?? 0,
             with_summary: withSummaryRow?.cnt ?? 0,
@@ -2436,6 +2440,29 @@ if (require.main === module) {
     process.stdout.write(JSON.stringify(buildToolsListResult(), null, 2) + '\n');
     process.exit(0);
   }
+  // BL-89: proactively warm the real embedding backend at startup so a missing/broken
+  // embedding runtime is reported LOUDLY at boot (stderr + memory_ping.last_embed_error)
+  // instead of silently degrading to hash on the first write. Fire-and-forget: for
+  // backend='auto' this records the fallback cause; for backend='real' warmupEmbed throws,
+  // which we log prominently (the server keeps serving non-embed tools, but the failure is
+  // unmissable). Never writes to stdout (the JSON-RPC channel).
+  void warmupEmbed().then(
+    (h) => {
+      if (h.on_hash_fallback) {
+        process.stderr.write(
+          `[memory-server] WARNING: embeddings on HASH fallback (degraded recall). cause=${h.last_error ?? 'unknown'}\n`,
+        );
+      } else if (h.state === 'real') {
+        process.stderr.write(`[memory-server] embeddings: real model active (${h.model})\n`);
+      }
+    },
+    (err) => {
+      process.stderr.write(
+        `[memory-server] FATAL: SOX_EMBED_BACKEND=real but embedding warmup failed: ${String(err)}\n`,
+      );
+    },
+  );
+
   if (process.env.SOX_PROXY_BACKEND === '1') {
     const socketPath = process.env.SOX_PROXY_BACKEND_SOCKET;
     if (!socketPath) {

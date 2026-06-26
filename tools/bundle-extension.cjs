@@ -56,7 +56,7 @@ const SOX_ALIASES = {
 // Parse CLI arguments
 // ---------------------------------------------------------------------------
 function parseArgs(argv) {
-  const args = { entry: null, outdir: null, externals: [], tsconfig: null };
+  const args = { entry: null, outdir: null, externals: [], tsconfig: null, workers: [] };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--entry' && argv[i + 1]) {
       args.entry = path.resolve(REPO_ROOT, argv[++i]);
@@ -66,6 +66,13 @@ function parseArgs(argv) {
       args.externals.push(argv[++i]);
     } else if (argv[i] === '--tsconfig' && argv[i + 1]) {
       args.tsconfig = path.resolve(REPO_ROOT, argv[++i]);
+    } else if (argv[i] === '--worker' && argv[i + 1]) {
+      // Additional worker_thread entry. Bundled to <outdir>/<basename>.js as its own
+      // self-contained CJS file, so a `new Worker(path.join(__dirname,'<basename>.js'))`
+      // at runtime resolves. esbuild does NOT trace runtime-string Worker paths, so a
+      // worker referenced that way MUST be emitted explicitly here or it is missing from
+      // the bundle (the BL-87/BL-89 root cause: embedWorker.js was never emitted).
+      args.workers.push(path.resolve(REPO_ROOT, argv[++i]));
     }
   }
   return args;
@@ -177,11 +184,19 @@ async function main() {
   console.log(`bundle-extension: bundling ${args.entry}`);
   console.log(`bundle-extension: outdir   ${args.outdir}`);
   console.log(`bundle-extension: external ${args.externals.join(', ') || '(none)'}`);
+  if (args.workers.length) {
+    console.log(`bundle-extension: workers  ${args.workers.join(', ')}`);
+  }
 
-  try {
+  const tsconfig =
+    args.tsconfig ||
+    path.join(REPO_ROOT, 'extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json');
+
+  // Build a single entry → <outfile> as a self-contained CJS bundle.
+  async function buildOne(entry, outfile) {
     await esbuild.build({
-      entryPoints: [args.entry],
-      outfile: path.join(args.outdir, 'index.js'),
+      entryPoints: [entry],
+      outfile,
       bundle: true,
       platform: 'node',
       format: 'cjs',
@@ -196,9 +211,8 @@ async function main() {
         soxAliasPlugin(),
         lazyExternalPlugin(args.externals),
       ],
-      // tsconfig for TypeScript compilation (--tsconfig flag or default to memory-server)
-      tsconfig: args.tsconfig || path.join(REPO_ROOT, 'extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json'),
-      // Source maps: linked produces a separate index.js.map sidecar.
+      tsconfig,
+      // Source maps: linked produces a separate .map sidecar.
       // Node.js picks it up automatically with --enable-source-maps.
       sourcemap: 'linked',
       // Suppress "require() of ES Module" warnings for .js ext imports
@@ -208,10 +222,26 @@ async function main() {
       resolveExtensions: ['.ts', '.js', '.cjs', '.mjs'],
     });
 
-    const outfile = path.join(args.outdir, 'index.js');
     if (!fs.existsSync(outfile)) {
-      console.error('bundle-extension: esbuild succeeded but index.js not found');
+      console.error(`bundle-extension: esbuild succeeded but ${outfile} not found`);
       process.exit(1);
+    }
+    const size = fs.statSync(outfile).size;
+    const mapSize = fs.existsSync(outfile + '.map') ? fs.statSync(outfile + '.map').size : 0;
+    console.log(
+      `bundle-extension: OK — ${outfile} (${(size / 1024).toFixed(1)} KB)` +
+      (mapSize > 0 ? ` + ${(mapSize / 1024).toFixed(1)} KB sourcemap` : ''),
+    );
+  }
+
+  try {
+    await buildOne(args.entry, path.join(args.outdir, 'index.js'));
+
+    // Worker entries: each bundled to <outdir>/<basename>.js so a runtime
+    // `new Worker(path.join(__dirname,'<basename>.js'))` resolves (BL-87/BL-89).
+    for (const worker of args.workers) {
+      const base = path.basename(worker).replace(/\.(ts|mts|cts|js|mjs|cjs)$/i, '') + '.js';
+      await buildOne(worker, path.join(args.outdir, base));
     }
 
     // Emit a package.json sidecar so Node.js loads this CJS bundle correctly
@@ -220,13 +250,6 @@ async function main() {
     // ESM-root package and throws "ReferenceError: module is not defined in ES module scope".
     const pkgSidecar = path.join(args.outdir, 'package.json');
     fs.writeFileSync(pkgSidecar, JSON.stringify({ type: 'commonjs' }, null, 2) + '\n', 'utf8');
-
-    const size = fs.statSync(outfile).size;
-    const mapSize = fs.existsSync(outfile + '.map') ? fs.statSync(outfile + '.map').size : 0;
-    console.log(
-      `bundle-extension: OK — ${outfile} (${(size / 1024).toFixed(1)} KB)` +
-      (mapSize > 0 ? ` + ${(mapSize / 1024).toFixed(1)} KB sourcemap` : ''),
-    );
   } catch (err) {
     console.error('bundle-extension: build failed');
     console.error(err.message || err);

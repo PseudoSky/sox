@@ -16,7 +16,7 @@
       "options": {
         "commands": [
           "rm -rf extensions/bundles/sox-memory-bundle/members/memory-server/dist",
-          "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-server/dist --tsconfig extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json --external better-sqlite3 --external sqlite-vec",
+          "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-server/dist --tsconfig extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json --worker libs/memory-core/src/embedWorker.ts --external better-sqlite3 --external sqlite-vec --external fastembed --external onnxruntime-node",
           "node extensions/bundles/sox-memory-bundle/members/memory-server/scripts/gen-schema.cjs"
         ],
         "parallel": false,
@@ -27,7 +27,8 @@
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/tsconfig.json",
         "{projectRoot}/scripts/gen-schema.cjs",
-        "{workspaceRoot}/tools/bundle-extension.cjs"
+        "{workspaceRoot}/tools/bundle-extension.cjs",
+        "{workspaceRoot}/libs/memory-core/src/embedWorker.ts"
       ],
       "dependsOn": [
         "^build"
