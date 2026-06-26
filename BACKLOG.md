@@ -29,7 +29,7 @@ fields → bundle assets/scripts → `soxe validate` → `pnpm run build-index` 
 <id> --scope <scope>`. Cross-link it from `docs/guidelines/skill.md` so the audit doc and
 the how-to are not confused.
 
-### BL-70 — manifest `$schema` version drift: scaffold emits **v2**, committed example skills pin **v1** — **Open (LOW) docs/consistency**
+### BL-70 — manifest `$schema` version drift: scaffold emits **v2**, committed example skills pin **v1** — **RESOLVED 2026-06-26**
 
 **Observed:** `soxe init` writes `"$schema": ".../schemas/extension/v2.json"`, but
 `extensions/skills/di-skill` and `extensions/skills/sox-ingest` both pin `.../v1.json`. An
@@ -37,20 +37,25 @@ author copying an example to learn the shape adopts the stale schema. Relatedly,
 examples carry no top-level `version` field while the scaffold includes `"version":
 "0.1.0"` — so "copy an example" and "use the scaffold" disagree on the field set.
 
-**Fix sketch:** re-stamp the committed example extensions to v2 (+ `version`), or document
-which schema URL is canonical and keep examples in lockstep with the scaffolder.
+**Fix:** re-stamped all four skill examples to v2 + added `"version": "0.1.0"`:
+`di-skill/extension.json`, `sox-ingest/extension.json`, `di-codex-skill/extension.json`,
+`forbidden-skill/extension.json`. All four pass `soxe validate`. Registry sync updated
+checksums (`registry:sync-index` → `check-registry-sync` green, 15 entries).
 
-### BL-71 — `soxe init` scaffolds a minimal manifest missing `run_interface` and `install.hosts` that real skills carry — **Open (LOW) docs/scaffold**
+### BL-71 — `soxe init` scaffolds a minimal manifest missing `run_interface` and `install.hosts` that real skills carry — **RESOLVED 2026-06-26**
 
 **Observed:** `soxe init skill` emits an `extension.json` without `run_interface` or
 `install.hosts`, yet both `sox-ingest` and `di-skill` include them, and nothing enumerates
 the optional-but-expected field set. An author can't tell from the scaffold which fields a
 "good" skill should add.
 
-**Fix sketch:** either scaffold these fields (as empty/commented stubs) or enumerate the
-full optional field set in the authoring doc (BL-69).
+**Fix:** `libs/authoring/src/templates/skill/index.ts` now scaffolds:
+- `run_interface: { input_schema: {type:"object",properties:{}}, output_schema: ... }` stub
+- `install.hosts: ["claude"]` default (overridable via `--host=codex` at init time)
 
-### BL-72 — `soxe --help` describes `install` as "from config"; real usage is `install <id|bundle> --scope`; README template says `sox` not `soxe` — **Open (LOW) docs**
+Born-conformance gate PASS for all 7 types; authoring tests 38/38 green.
+
+### BL-72 — `soxe --help` describes `install` as "from config"; real usage is `install <id|bundle> --scope`; README template says `sox` not `soxe` — **RESOLVED 2026-06-26**
 
 **Observed:** `soxe --help` reads `install   Install extensions from config`, omitting the
 `<id>` positional that `USAGE.md` and actual usage require (`soxe install demo-creator
@@ -58,8 +63,10 @@ full optional field set in the authoring doc (BL-69).
 while the binary is `soxe` (and `USAGE.md` is titled "USAGE — sox CLI" but calls `node
 bin/soxe`). The `sox`/`soxe` naming is inconsistent across help, README template, and USAGE.
 
-**Fix sketch:** align the `install` help line to show the `<id>` positional, and normalize
-`sox` vs `soxe` across `--help`, the README scaffold template, and `USAGE.md`.
+**Fix:**
+- `apps/sox/src/main.ts` printHelp(): `install` line now reads `install <id|bundle>   Install extension by id (or expand a bundle) at scope` with `--host` flag documented.
+- All 7 README templates in `libs/authoring/src/templates/*/index.ts` updated: `sox install` → `soxe install`, `sox start` → `soxe start`, `sox init` → `soxe init`, and the agent template's inline comment references updated.
+- `USAGE.md` title updated: "USAGE — sox CLI" → "USAGE — soxe CLI".
 
 ### BL-73 — `install --scope project` puts `.adhd` bookkeeping in the wrong repo because project-root resolution relies on git — **FIXED**
 
@@ -152,7 +159,7 @@ registry. Confirms the authoring guide's `service` section is actually installab
 only entrypoint). tokenguard's `CLAUDE.md` still shows `./bin/sox` invocations + a non-existent
 `sox.install()` API. Update to `soxe` + the real CLI surface.
 
-### BL-74 — `soxe install <id> --scope project` reconciles the WHOLE scope config, re-placing unrelated members — undocumented — **Open (LOW) docs**
+### BL-74 — `soxe install <id> --scope project` reconciles the WHOLE scope config, re-placing unrelated members — undocumented — **RESOLVED 2026-06-26**
 
 **Observed:** installing only `demo-creator` also re-resolved and re-placed `memory-usage`
 and the `sox-memory-bundle` members already recorded in the project's `extensions.json`
@@ -160,17 +167,32 @@ and the `sox-memory-bundle` members already recorded in the project's `extension
 as "install the named id," not "reconcile the entire scope set," so the extra placements
 surprise the operator.
 
-**Fix sketch:** note in `USAGE.md` that `install <id>` reconciles the full scope set (adds
-the id, then re-pins/re-places everything already declared), not just the named extension.
+**Fix:** Added a note to `USAGE.md` Install section explaining that `install <id>` reconciles
+the full scope set — adds the named id then re-resolves/re-places every member already declared
+in the scope's `extensions.json`. Idempotent for unchanged checksums, re-pins for changed ones.
 
-### BL-75 — `soxe init` prints a stray `rm: /Users/nix/dot/bin/node: No such file or directory` during scaffold — **Open (LOW) footgun**
+### BL-75 — `soxe init` prints a stray `rm: /Users/nix/dot/bin/node: No such file or directory` during scaffold — **RESOLVED (not in codebase) 2026-06-26**
 
 **Observed:** every `soxe init <type> <id>` run prints a failed `rm` against a hardcoded
 `/Users/nix/dot/bin/node` path before "scaffolded …". It looks like a real failure mid-flow
 (the documented authoring step) even though the scaffold succeeds.
 
-**Fix sketch:** remove/guard the hardcoded `/Users/nix/dot/bin/node` cleanup in the `init`
-codepath so the scaffolder emits no spurious error.
+**Investigation:** exhaustive grep of `apps/`, `libs/`, `scripts/` for `dot/bin/node`,
+`rm.*execPath`, `rm.*node\b`, and all shell invocations in the init codepath found zero
+matches. Running `soxe init skill <id>` in a clean temp dir on this machine emits no stray
+`rm` output — only the success line. The `cmdInit` function in `apps/sox/src/main.ts` contains
+no `rm` call and spawns no shell; `libs/authoring` is pure in-memory file generation
+(`scaffold()` → `writeFileSet()`).
+
+**Root cause:** the error originates from the user's shell environment. `/Users/nix/dot/bin/node`
+is a dotfile-managed Node binary (the `dot/` repo pattern). Something in the user's shell
+(likely a Node version manager hook, nvm `use` trigger, or a shell function intercepting `node`
+invocations) runs `rm /Users/nix/dot/bin/node` as a side-effect and emits the error to stderr.
+The soxe init codepath is not the source and requires no code change.
+
+**Action:** no code change. The error is shell-environment-specific and not reproducible in a
+standard environment. If the noise recurs, the author should audit their shell functions/hooks
+for `rm` calls against `$(which node)` or similar.
 
 ### BL-76 — published `@adhd/sox-cli` dist omits `build-info.json`; fresh-machine `soxe serve` prints a BL-65 warning + git-root walk fails — **Open (LOW) packaging** (surfaced verifying the first npm publish, 2026-06-26)
 

@@ -163,7 +163,7 @@ export function commandTemplate(opts: TemplateOpts): FileSet {
       '## Usage',
       '',
       '```bash',
-      `sox install ${opts.id}`,
+      `soxe install ${opts.id} --host claude --scope user`,
       '```',
     ]),
   };

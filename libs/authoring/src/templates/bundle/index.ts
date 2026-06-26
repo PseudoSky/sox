@@ -221,7 +221,7 @@ export function bundleTemplate(opts: TemplateOpts): FileSet {
       '## Usage',
       '',
       '```bash',
-      `sox install ${opts.id}`,
+      `soxe install ${opts.id} --scope user`,
       '```',
       '',
       'The installer expands the bundle to its members — no entrypoint is required.',

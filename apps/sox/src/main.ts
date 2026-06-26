@@ -286,8 +286,8 @@ Registry / Search:
                      Flags: --scope=<scope>  --type=<type>
 
 Extension management:
-  install            Install extensions from config
-                     Flags: --scope=<scope>  --frozen-lockfile  --update
+  install <id|bundle>   Install extension by id (or expand a bundle) at scope
+                     Flags: --scope=<scope>  --host=<host>  --frozen-lockfile  --update
   update             Update installed extensions
                      Flags: --scope=<scope>
   upgrade <ext-id>   Re-install stale consumers across all scopes/projects (P9):
