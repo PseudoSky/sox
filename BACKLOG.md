@@ -89,7 +89,21 @@ afterAll cleanup. Track here until done.
 
 ## Open — INCIDENT: the dev checkout's `dist` IS the live MCP source (2026-06-25)
 
-### BL-65 — building unverified WIP into the dev-repo `dist` breaks the LIVE memory-server for all sessions — **PARTIAL (HIGH) — guard shipped + live; repoint BLOCKED on BL-42**
+### BL-65 — building unverified WIP into the dev-repo `dist` breaks the LIVE memory-server for all sessions — **PARTIAL (HIGH) — guard shipped + live; repoint now UNBLOCKED (pending owner publish)**
+
+**Update (2026-06-26, publishing refactor):** the BL-42 blocker is resolved — there is now an
+independently-installable, self-contained CLI (`@adhd/sox-cli` → `soxe`, in-package bin + bundled
+registry; proven via `npm i -g` with no checkout). The principled repoint (option 1) is therefore
+UNBLOCKED. Sequence (orchestrator, AFTER the owner publishes — `docs/plan/publishing/SCOPE.md` §8):
+1. `npm i -g @adhd/sox-cli` (or `soxe install sox` to a content-addressed store under `~/.adhd/...`).
+2. Repoint `.mcp.json` / `~/.claude.json` `mcpServers.memory-server.command` from
+   `/Users/nix/dev/ai/sox-ecosystem/bin/soxe` → the **installed** `soxe`; install
+   `sox-memory-bundle` via the published packages (members resolve from npm, native deps via the
+   `npm-package:` install mode), so memory-server runs from `~/.adhd/.../ext/`, never `libs/*/dist`.
+3. One final reconnect (BL-61). After repoint, a repo build never touches the running server; it
+   updates only on explicit `soxe upgrade --all`. The `warnIfDistSha` dirty-dist guard stays as
+   defense-in-depth. Do NOT do a fragile dist-copy repoint (still risks re-breaking live).
+
 
 **Update (2026-06-25, attempting the repoint):** the guard (option 3) is **shipped and verified live** —
 `soxe serve` now emits the dirty/stale-dist warning (confirmed firing: it caught dist sha `ffe4a3d` vs HEAD
@@ -854,18 +868,28 @@ for orphaned daemons. Discovered diagnosing "a ton of requests going to LM Studi
 
 **Status:** Withdrawn. Investigating BL-30 surfaced that per-extension semver is **vestigial** — the registry holds one build per id (semver never resolves), `semverSatisfies` arrived with the nx migration, and the checksum is the sole integrity authority. **ADR-0003** retires per-extension version entirely (identity = `id + checksum`), so "make versioning real" is moot. See `docs/decisions/0003-extension-identity-is-content-addressed.md`.
 
-### BL-33 — `check-registry-sync.ts` scanner doesn't recurse into bundle members → false drift
+### BL-33 — `check-registry-sync.ts` scanner doesn't recurse into bundle members → false drift — **RESOLVED** (publishing refactor)
 
-**Severity:** Medium (false CI-gate failure) · **Status:** Open
+**Severity:** Medium (false CI-gate failure) · **Status:** Resolved — `scripts/check-registry-sync.ts`'s
+`findExtDirs` now recurses into `extensions/bundles/<id>/members/` (BL-33 fix block, lines ~91-103),
+faithfully mirroring `scripts/build-index.ts` — bundle members are no longer false-flagged. The
+publishing refactor additionally mirrored the new `SOX_REGISTRY_PUBLISH` publication-signal branch of
+`resolveSource` into the gate so the two stay byte-identical under both dev (`file://`) and publish
+(`npm-package:`) modes. The original Open writeup follows.
 `scripts/check-registry-sync.ts`'s inlined `findExtensionDirs` does **not** scan
 `extensions/bundles/<id>/members/`, so it flags `memory-cli/daemon/flush/server/usage` as "in
 registry, not on disk." Reproduces identically against HEAD (pre-ADR-0003) — a latent bug in the
 `check-registry` gate's scanner, not in the run-many/test/e2e gate. Fix: make its scanner recurse
 into `members/`, matching `scripts/build-index.ts`. Surfaced during the ADR-0003 implementation.
 
-### BL-34 — `sox` app entrypoint path is not index-resolvable → checksum hashes `extension.json`
+### BL-34 — `sox` app entrypoint path is not index-resolvable → checksum hashes `extension.json` — **RESOLVED** (publishing refactor)
 
-**Severity:** Low · **Status:** Open
+**Severity:** Low · **Status:** Resolved — the publishing refactor made `@adhd/sox-cli` a
+self-contained, in-package esbuild bundle: `apps/sox/extension.json` `entrypoint` is now
+`dist/index.js` (resolvable relative to `apps/sox/` → `apps/sox/dist/index.js`, the bundle), so
+`resolveChecksum`/`fetchArtifact` checksum the *built artifact* like every other code type instead of
+falling through to the manifest. `apps/sox/package.json` `main`/`bin` are now in-package
+(`./dist/index.js`, `./bin/soxe.mjs`) — no more `../../`. The original Open writeup follows.
 The `sox` app declares entrypoint `dist/apps/sox/main.js`, which isn't resolvable relative to
 `apps/sox/`, so `resolveChecksum` falls through to hashing the manifest (`extension.json`) instead
 of the built artifact. Works (and correctly changed when ADR-0003 removed `version`), but the sox
@@ -918,9 +942,19 @@ the daemon (esbuild, C7-respecting — the bundled-extension-build-standard) so 
 zero external `@adhd/sox-*` deps, AND strengthen the e2e to spawn the daemon from a copied store.
 Discovered starting the daemon during the content-addressed deploy.
 
-### BL-38 — `memory-server` shares the daemon's latent `tsc`-bare-`@adhd/sox-*`-requires shape + a stale tracked `bundle/`
+### BL-38 — `memory-server` shares the daemon's latent `tsc`-bare-`@adhd/sox-*`-requires shape + a stale tracked `bundle/` — **RESOLVED** (publishing refactor)
 
-**Severity:** Low (latent; not on a copied-store path today) · **Status:** Open
+**Severity:** Low (latent; not on a copied-store path today) · **Status:** Resolved — the publishing
+refactor migrated `memory-server`'s build off bare `tsc` to a SELF-CONTAINED esbuild bundle
+(`tools/bundle-extension.cjs --entry src/index.ts --external better-sqlite3 --external sqlite-vec`),
+so `dist/index.js` carries **zero** bare `@adhd/sox-*` requires (verified: `grep -c 'require("@adhd'`
+= 0) — it now runs from a copied/npm-package store exactly like the daemon. `gen-schema.cjs` derives
+`dist/schema.json` from the bundle via a new `--emit-schema` flag (no separate `dist/backend.js`
+needed). `memory-cli` and `memory-flush` got the same treatment (they transitively use better-sqlite3
+via memory-core). Part (2) (stale `bundle/`) was already resolved (`2867b4f`). Proven offline: the
+published memory-server tarball installs with native deps via `npm install` and answers `memory_ping`
+with a content address; `sha256(local dist) == sha256(npm-installed dist) == ping.artifact`. The
+original Open writeup follows.
 Surfaced during the BL-37 fix. (1) `memory-server` builds with `tsc` and its `dist` carries bare
 `require("@adhd/sox-memory-core")` etc. — it only resolves because it runs **stdio from the repo**
 (`soxe serve`), never from a copied store. If an `mcp-server` is ever materialized to a `.sox/ext/`
@@ -965,9 +999,20 @@ to the server's cwd (observed: `extensions/.../memory-server/~/.memory/memory.db
 expand `~`→`$HOME` (consistently for the allowlist check AND the file open), or reject an unexpanded
 `~`. Surfaced cleaning a stray artifact during the MCP-availability work.
 
-### BL-42 — install model is checkout-bound: cannot publish packages or install on a fresh machine
+### BL-42 — install model is checkout-bound: cannot publish packages or install on a fresh machine — **RESOLVED (publish-ready; owner-gated for the real npm publish)**
 
-**Severity:** High (distribution blocker — nothing installs off this one working copy) · **Status:** Open
+**Severity:** High (distribution blocker) · **Status:** Resolved in the worktree — the publishing &
+distribution refactor (`docs/plan/publishing/`, ADR-0005) makes the whole system publishable +
+fresh-machine-installable: all 12 `@adhd/sox-*` libs + CLI + every extension/bundle member are
+publish-ready (private flipped, `publishConfig`/`engines`/`files`, in-package CLI `bin`/`dist`);
+`build-index` emits portable `npm-package:` sources under `SOX_REGISTRY_PUBLISH` (zero `file://`);
+the fetcher has an `npm-package:` install mode that runs a real `npm install` so native deps resolve;
+extensions are self-contained esbuild bundles (zero `@adhd` runtime deps); the CLI ships a bundled
+registry. **Proven offline** by `scripts/acceptance/clean-room-smoke.sh` (verdaccio clean room, no
+checkout): `npm i -g @adhd/sox-cli` → `soxe --version`/`search` (G1), `soxe install
+sox-memory-bundle` resolving every member from npm with native deps (G2), `memory_ping` green with a
+content address. The real `pnpm release` to PUBLIC npm is the one remaining owner-gated step (a
+one-way door) — see PUBLISHING.md. The original Open writeup follows.
 
 Today every resolution path points at **this checkout on this machine**. A fresh machine
 (or any consumer that didn't build the repo locally) cannot install or run a single extension.
@@ -1028,9 +1073,16 @@ Playbook + full confirmation: [`PUBLISHING.md`](./PUBLISHING.md) → *Current st
 
 Surfaced answering "is there a backlog item about publishing for a fresh machine?" — there was not.
 
-### BL-43 — publish-strategy decisions for `@adhd/sox-*` (libs, CLI, bundle members, first release)
+### BL-43 — publish-strategy decisions for `@adhd/sox-*` (libs, CLI, bundle members, first release) — **RESOLVED** (owner-ratified + implemented)
 
-**Severity:** High (gates BL-42 — nothing publishes until these are decided) · **Status:** Open
+**Severity:** High · **Status:** Resolved — the owner ratified the strategy in
+`docs/plan/publishing/DECISIONS.md` (D-A…D-F) and it is implemented by the publishing refactor:
+(1) **libs** → publish ALL 12 public (D-A=A1); extensions stay self-contained bundles (Model A,
+ADR-0005) so published artifacts carry zero `@adhd` runtime deps; (2) **CLI** → published with
+in-package `bin: { soxe }`, `engines.node>=20`, self-contained bundle (D-F=F2); (3) **bundle
+members** → all published incl. daemon/usage (Q3); (4) **first release** → stale `sox-memory-p0/p5`
+changesets removed, replaced by one coherent `publishing-refactor` changeset (R7). A
+`check-publishable` gate prevents the 404 class from regressing. The original Open writeup follows.
 
 The mechanical publish defects are fixed (see BL-42). What remains are **decisions** that only the
 owner can make, because they put code on the public `@adhd` npm scope:

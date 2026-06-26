@@ -203,6 +203,31 @@ async function main(): Promise<void> {
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
 /**
+ * Load the registry index with a fresh-machine fallback (D-D / BL-42).
+ *
+ * Primary source is `registry/index.json` under the invoking cwd (the dev/repo
+ * path — unchanged behaviour). When that is absent or empty (a consumer running
+ * the published `@adhd/sox-cli` with NO repo checkout), fall back to the registry
+ * copy embedded inside the CLI bundle at `<bundle dir>/registry/index.json`
+ * (written by apps/sox/scripts/embed-registry.cjs at build time). `__dirname` in
+ * the published CJS bundle is `.../sox/dist`, so the embedded copy sits at
+ * `.../sox/dist/registry/index.json` — i.e. `loadRegistryIndex(__dirname)`.
+ */
+function loadRegistryResolved(cwdRoot: string): ReturnType<typeof loadRegistryIndex> {
+  try {
+    const fromCwd = loadRegistryIndex(cwdRoot);
+    if (fromCwd.length > 0) return fromCwd;
+  } catch {
+    /* fall through to bundled copy */
+  }
+  try {
+    return loadRegistryIndex(__dirname);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Build SOX_CONFIG_* env vars from cascade-resolved config for a given extension.
  * Reads all four scopes (org→user→project→local, narrowest wins) and converts
  * each config key to SOX_CONFIG_<KEY>, with tilde and ${VAR} expansion.
@@ -323,10 +348,25 @@ function printVersion(): void {
   try {
     const fs = require('node:fs') as typeof import('node:fs');
     const path = require('node:path') as typeof import('node:path');
-    // __dirname is dist/apps/sox/ in CommonJS build; root is three levels up.
-    const pkgPath = path.resolve(__dirname, '..', '..', '..', 'package.json');
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
-    version = pkg.version ?? '0.0.0';
+    // Two layouts to support:
+    //   - PUBLISHED bundle: __dirname is <pkg>/dist → the CLI's own package.json
+    //     is one level up at <pkg>/package.json (name @adhd/sox-cli, version 1.0.0).
+    //   - DEV tsc build:   __dirname is dist/apps/sox → repo root is three up.
+    // Prefer the @adhd/sox-cli package.json; otherwise the first that has a version.
+    const candidates = [
+      path.resolve(__dirname, '..', 'package.json'),
+      path.resolve(__dirname, '..', '..', '..', 'package.json'),
+    ];
+    for (const pkgPath of candidates) {
+      if (!fs.existsSync(pkgPath)) continue;
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string; version?: string };
+        if (typeof pkg.version === 'string' && pkg.version.length > 0) {
+          version = pkg.version;
+          if (pkg.name === '@adhd/sox-cli') break;
+        }
+      } catch { /* try next candidate */ }
+    }
   } catch { /* fallback to 0.0.0 */ }
   process.stdout.write(`${version}\n`);
   process.exit(0);
@@ -788,7 +828,7 @@ function cmdSearch(flags: Record<string, string>): void {
 
   let entries: ReturnType<typeof loadRegistryIndex>;
   try {
-    entries = loadRegistryIndex(registryRoot);
+    entries = loadRegistryResolved(registryRoot);
   } catch {
     entries = [];
   }
@@ -901,7 +941,7 @@ Options:
     // not from workspaceRoot (which may be a temp dir when --root is given for sandboxing).
     // The registry/index.json always lives in the repo root where 'node bin/sox' is invoked.
     const repoRoot = process.cwd();
-    const registryIndex = loadRegistryIndex(repoRoot);
+    const registryIndex = loadRegistryResolved(repoRoot);
     const registryEntry = resolveFromRegistry(id, registryIndex);
 
     // Determine srcPath: the extension's content directory.
@@ -1075,7 +1115,7 @@ Options:
       // when the member is NOT already in the config. A config that explicitly lists
       // a bundle member (e.g. the e2e test config) is respected without blocking.
       const repoRootForGuard = process.cwd();
-      const registryIndexForGuard = loadRegistryIndex(repoRootForGuard);
+      const registryIndexForGuard = loadRegistryResolved(repoRootForGuard);
       const entryForGuard = resolveFromRegistry(positionalId, registryIndexForGuard);
       if (entryForGuard?.visibility === 'internal') {
         const owningBundle = entryForGuard.bundleId ?? 'the bundle that owns it';
@@ -1095,11 +1135,15 @@ Options:
 
   // Interactive config prompting: when stdout is a TTY, provide readline-based
   // prompt for missing required config keys declared in config_schema.
+  // BL-42 fresh-machine fallback: resolve the registry (cwd → CLI-bundled copy)
+  // and inject it so install() works with no repo checkout under its REPO_ROOT.
+  const resolvedRegistryForInstall = loadRegistryResolved(process.cwd());
   const installOpts: Parameters<typeof import('@adhd/sox-install-engine').install>[0] = {
     scope,
     mode,
     ...(configPathFlag !== undefined ? { configPath: configPathFlag } : {}),
     ...(lockfilePathFlag !== undefined ? { lockfilePath: lockfilePathFlag } : {}),
+    ...(resolvedRegistryForInstall.length > 0 ? { registryIndex: resolvedRegistryForInstall } : {}),
   };
 
   // Interactive config prompting: when stdout is a TTY, provide readline-based

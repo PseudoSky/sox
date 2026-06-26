@@ -2,7 +2,6 @@
   "name": "@adhd/sox-extension-memory-daemon",
   "version": "0.1.0",
   "description": "Supervised Unix-socket daemon that drains the enrichment queue and runs deterministic batch enrichment via @adhd/sox-memory-enrich",
-  "private": true,
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -13,5 +12,15 @@
     "typecheck": "tsc --noEmit --project tsconfig.json",
     "test": "vitest run"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.10.0",
+    "sqlite-vec": "^0.1.9"
+  }
 }

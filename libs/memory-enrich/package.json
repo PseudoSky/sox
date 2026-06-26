@@ -2,17 +2,27 @@
   "name": "@adhd/sox-memory-enrich",
   "version": "1.0.0",
   "description": "Deterministic memory graph enrichment — no LLM, no provider, byte-reproducible outputs.",
-  "private": true,
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist"
+  ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/index.js"
     }
   },
   "dependencies": {
-    "better-sqlite3": "*"
+    "better-sqlite3": "^12.10.0",
+    "sqlite-vec": "^0.1.9"
   }
 }

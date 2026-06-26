@@ -2,17 +2,38 @@
   "name": "@adhd/sox-cli",
   "version": "1.0.0",
   "description": "sox CLI — LLM extension ecosystem command-line interface (extension #0)",
-  "private": true,
-  "main": "../../dist/apps/sox/main.js",
-  "bin": {
-    "soxe": "../../bin/soxe"
+  "private": false,
+  "publishConfig": {
+    "access": "public"
   },
-  "dependencies": {
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "bin": {
+    "soxe": "./bin/soxe.mjs"
+  },
+  "files": [
+    "dist",
+    "bin"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
     "@adhd/sox-authoring": "workspace:*",
+    "@adhd/sox-host-registry": "workspace:*",
     "@adhd/sox-host-runtime": "workspace:*",
     "@adhd/sox-install-engine": "workspace:*",
     "@adhd/sox-manifest": "workspace:*",
-    "@adhd/sox-registry": "workspace:*"
+    "@adhd/sox-mcp-runtime": "workspace:*",
+    "@adhd/sox-registry": "workspace:*",
+    "@adhd/sox-service-proxy": "workspace:*"
   },
+  "keywords": [
+    "sox",
+    "cli",
+    "extension-manager",
+    "llm",
+    "mcp"
+  ],
   "license": "MIT"
 }

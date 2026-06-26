@@ -134,12 +134,15 @@ function resolveDisplayVersion(extDir: string): string {
   return '0.0.0';
 }
 
-/** Mirror of build-index.resolveSource. */
+/** Mirror of build-index.resolveSource (incl. the Slice 3 publication signal). */
 function resolveSource(extDir: string, manifest: Manifest): string {
   const pkgPath = path.join(extDir, 'package.json');
   if (fs.existsSync(pkgPath)) {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string };
     const pkgName = pkg.name ?? `@adhd/sox-extension-${manifest.id}`;
+    if (process.env['SOX_REGISTRY_PUBLISH']) {
+      return `npm-package:${pkgName}@${resolveDisplayVersion(extDir)}`;
+    }
     if (manifest.checksum) {
       return `https://cdn.jsdelivr.net/npm/${pkgName}@${resolveDisplayVersion(extDir)}/dist/index.js`;
     }

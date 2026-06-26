@@ -8,16 +8,28 @@
     "type:app"
   ],
   "implicitDependencies": [
-    "service-proxy"
+    "service-proxy",
+    "install-engine",
+    "host-registry",
+    "host-runtime",
+    "manifest",
+    "authoring",
+    "registry"
   ],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
       "outputs": [
-        "{workspaceRoot}/dist/apps/sox"
+        "{workspaceRoot}/dist/apps/sox",
+        "{projectRoot}/dist"
       ],
       "options": {
-        "command": "tsc --project apps/sox/tsconfig.app.json && echo '{\"type\":\"commonjs\"}' > dist/apps/sox/package.json && node apps/sox/scripts/rewrite-paths.cjs && node apps/sox/scripts/stamp-build.cjs",
+        "commands": [
+          "tsc --project apps/sox/tsconfig.app.json && echo '{\"type\":\"commonjs\"}' > dist/apps/sox/package.json && node apps/sox/scripts/rewrite-paths.cjs && node apps/sox/scripts/stamp-build.cjs",
+          "node tools/bundle-extension.cjs --entry apps/sox/src/main.ts --outdir apps/sox/dist --tsconfig apps/sox/tsconfig.app.json",
+          "node apps/sox/scripts/embed-registry.cjs"
+        ],
+        "parallel": false,
         "cwd": "."
       },
       "cache": true,
@@ -26,7 +38,10 @@
         "{projectRoot}/tsconfig.app.json",
         "{projectRoot}/extension.json",
         "{projectRoot}/scripts/rewrite-paths.cjs",
-        "{projectRoot}/scripts/stamp-build.cjs"
+        "{projectRoot}/scripts/stamp-build.cjs",
+        "{projectRoot}/scripts/embed-registry.cjs",
+        "{workspaceRoot}/tools/bundle-extension.cjs",
+        "{workspaceRoot}/registry/index.json"
       ],
       "dependsOn": [
         "^build"

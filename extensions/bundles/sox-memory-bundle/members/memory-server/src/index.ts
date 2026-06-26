@@ -2426,6 +2426,16 @@ _fallbackTimer.unref();
 // The dispatch reads process.argv[1] guard so importing this module (e.g. from
 // backend.ts or tests) never auto-starts a server.
 if (require.main === module) {
+  // Schema emission (build step). `node dist/index.js --emit-schema` prints the
+  // canonical tools/list result to stdout so gen-schema.cjs can write
+  // dist/schema.json from the SELF-CONTAINED bundle (BL-38: memory-server is now
+  // esbuild-bundled, so there is no separate dist/backend.js to require). Derives
+  // from buildToolsListResult() — never hand-maintained ([contract:schema-hash]).
+  if (process.argv.includes('--emit-schema')) {
+    const { buildToolsListResult } = require('./backend.js') as typeof import('./backend.js');
+    process.stdout.write(JSON.stringify(buildToolsListResult(), null, 2) + '\n');
+    process.exit(0);
+  }
   if (process.env.SOX_PROXY_BACKEND === '1') {
     const socketPath = process.env.SOX_PROXY_BACKEND_SOCKET;
     if (!socketPath) {

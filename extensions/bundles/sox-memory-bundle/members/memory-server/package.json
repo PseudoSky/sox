@@ -1,25 +1,30 @@
 {
   "name": "@adhd/sox-extension-memory-server",
   "version": "1.1.0",
-  "description": "",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "description": "sox-memory MCP server (stdio) — 19 memory_* tools over a single-file SQLite graph store with hybrid recall and deterministic enrichment",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./dist/index.js",
-    "./lib": "./dist/lib.js"
+    ".": "./dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "extension.json"
   ],
-  "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit"
-  },
   "dependencies": {
+    "better-sqlite3": "^12.10.0",
+    "sqlite-vec": "^0.1.9"
+  },
+  "devDependencies": {
     "@adhd/sox-memory-core": "workspace:*",
     "@adhd/sox-memory-enrich": "workspace:*",
     "@adhd/sox-mcp-runtime": "workspace:*",
     "@adhd/sox-service-proxy": "workspace:*"
-  },
-  "license": "MIT"
+  }
 }

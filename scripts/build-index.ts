@@ -156,23 +156,31 @@ function findExtensionDirs(root: string): Array<{ extPath: string; bundleId?: st
  * The NPM package name convention: @adhd/sox-extension-<id>
  */
 function resolveSource(extDir: string, manifest: ExtensionManifest): string {
-  // Check if there's an explicit source in the manifest
-  // (checksum present in extension.json means it was published)
   const pkgPath = path.join(extDir, 'package.json');
   if (fs.existsSync(pkgPath)) {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string; version?: string };
     const pkgName = pkg.name ?? `@adhd/sox-extension-${manifest.id}`;
-    // Convention: if the package has been published, use cdn.jsdelivr.net
-    // For local development, use file:// path
-    // We use the manifest checksum presence as a signal of publication
+
+    // D-D / Slice 3 — PUBLICATION SIGNAL. Set SOX_REGISTRY_PUBLISH (e.g. "npm")
+    // in the publish flow (CI post-`changeset publish`, or the offline acceptance
+    // harness) to emit a PORTABLE npm-package locator instead of a checkout-bound
+    // file:// path. This is the signal that was previously gated on a never-set
+    // `manifest.checksum` (the dormant CDN branch). The fetcher's `npm-package:`
+    // install mode runs a real `npm install` so transitive NATIVE deps
+    // (better-sqlite3, sqlite-vec) resolve on the target — which the single-file
+    // CDN fetch cannot deliver. ADR-0003/0005: the version here only SELECTS the
+    // bytes; the checksum (resolveChecksum, unchanged) is the integrity authority.
+    if (process.env['SOX_REGISTRY_PUBLISH']) {
+      return `npm-package:${pkgName}@${resolveDisplayVersion(extDir)}`;
+    }
+
+    // Legacy single-file CDN signal (pure-JS only): kept for back-compat. Gated on
+    // an explicit manifest.checksum, which the publish flow does not set.
     if (manifest.checksum) {
-      // ADR-0003 Decision 6: the published CDN path uses the nx package.json
-      // version (release bookkeeping) — a derived display label, never the
-      // extension's own (now-removed) authored version.
       return `https://cdn.jsdelivr.net/npm/${pkgName}@${resolveDisplayVersion(extDir)}/dist/index.js`;
     }
   }
-  // Default: local file path
+  // Default (local development): checkout-bound file:// path.
   return `file://${extDir}`;
 }
 
