@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-memory-daemon",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Supervised Unix-socket daemon that drains the enrichment queue and runs deterministic batch enrichment via @adhd/sox-memory-enrich",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
