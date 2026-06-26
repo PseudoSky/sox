@@ -101,7 +101,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:00cefb041a6b939e805e6c631eb83268e851770b5424a15d36a986a89d5ec362",
+    "checksum": "sha256:c8f83c9bc45ab0c26ffcdb0bd1b52b6c35afd6ffc581cf92b3fb49018c505c05",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -217,7 +217,7 @@
     "title": "sox CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/apps/sox",
-    "checksum": "sha256:9f551c46e2107179d671e11abeac5874c9c7c5662103887063018f26503def73",
+    "checksum": "sha256:13b09e6b411cea25d71fa3848dc4c8b45b2e70b2c505d8bda5a51f0e5731039c",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     }
