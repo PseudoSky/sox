@@ -14,14 +14,20 @@
         "{workspaceRoot}/extensions/bundles/sox-memory-bundle/members/memory-server/dist"
       ],
       "options": {
-        "command": "tsc --project extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json && node extensions/bundles/sox-memory-bundle/members/memory-server/scripts/gen-schema.cjs",
+        "commands": [
+          "rm -rf extensions/bundles/sox-memory-bundle/members/memory-server/dist",
+          "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-server/dist --tsconfig extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json --external better-sqlite3 --external sqlite-vec",
+          "node extensions/bundles/sox-memory-bundle/members/memory-server/scripts/gen-schema.cjs"
+        ],
+        "parallel": false,
         "cwd": "."
       },
       "cache": true,
       "inputs": [
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/tsconfig.json",
-        "{projectRoot}/scripts/gen-schema.cjs"
+        "{projectRoot}/scripts/gen-schema.cjs",
+        "{workspaceRoot}/tools/bundle-extension.cjs"
       ],
       "dependsOn": [
         "^build"

@@ -71,18 +71,25 @@ function memberManifestJson(bundleId: string, memberId: string, memberType: stri
   );
 }
 
-/** Minimal package.json for a bundle member */
+/**
+ * BORN-PUBLISHABLE package.json for a bundle member (G4 / SCOPE §7).
+ * No `private` (Q3: members publish too); publishConfig + engines + files so the
+ * tarball is publish + fresh-machine-install ready. No bare-`tsc` script — the nx
+ * project.json builds a SELF-CONTAINED esbuild bundle (Model A: zero `@adhd/sox-*`
+ * runtime deps). A member that imports `@adhd/sox-*` declares them in
+ * devDependencies (inlined by the bundler); a member with a native addon adds it
+ * to `dependencies` and `--external` in its project.json build.
+ */
 function memberPackageJson(memberId: string): string {
   return JSON.stringify(
     {
       name: `@adhd/sox-extension-${memberId}`,
       version: '0.1.0',
-      private: true,
-      main: 'dist/index.js',
-      scripts: {
-        build: 'tsc --project tsconfig.json',
-      },
       license: 'MIT',
+      publishConfig: { access: 'public' },
+      engines: { node: '>=20' },
+      files: ['dist', 'extension.json'],
+      main: 'dist/index.js',
     },
     null,
     2,
@@ -123,7 +130,16 @@ function memberProjectJson(bundleId: string, memberId: string): string {
           executor: 'nx:run-commands',
           outputs: [`{workspaceRoot}/${memberPath}/dist`],
           options: {
-            command: `tsc --project ${memberPath}/tsconfig.json`,
+            // Model A / BL-37/38: SELF-CONTAINED esbuild bundle — inlines every
+            // @adhd/sox-* (resolved from each lib's dist) so the published artifact
+            // carries ZERO @adhd runtime deps and runs from an npm-package store on
+            // a fresh machine. A native addon (e.g. better-sqlite3) is declared in
+            // package.json `dependencies` AND added here as `--external <pkg>`.
+            commands: [
+              `rm -rf ${memberPath}/dist`,
+              `node tools/bundle-extension.cjs --entry ${memberPath}/src/index.ts --outdir ${memberPath}/dist --tsconfig ${memberPath}/tsconfig.json`,
+            ],
+            parallel: false,
             cwd: '.',
           },
           cache: true,
@@ -158,14 +174,18 @@ export function bundleTemplate(opts: TemplateOpts): FileSet {
       { id: 'example-member-b' },
     ];
 
-  // Bundles use a simplified package.json (no build/typecheck scripts needed)
+  // Bundles are declarative (no build) but still PUBLISH as a tiny package so the
+  // manifest (members[]) is fetchable on a fresh machine (G4). Born-publishable:
+  // no `private`, publishConfig + engines, files carries extension.json.
   const bundlePkg = JSON.stringify(
     {
       name: `@adhd/sox-extension-${opts.id}`,
       version: '0.1.0',
       description: opts.description,
-      private: true,
       license: 'MIT',
+      publishConfig: { access: 'public' },
+      engines: { node: '>=20' },
+      files: ['extension.json'],
       ...(opts.author !== undefined && opts.author !== '' ? { author: opts.author } : {}),
       ...(opts.keywords !== undefined && opts.keywords.length > 0 ? { keywords: opts.keywords } : {}),
     },

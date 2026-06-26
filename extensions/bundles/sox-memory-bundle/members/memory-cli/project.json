@@ -15,13 +15,18 @@
         "{workspaceRoot}/extensions/bundles/sox-memory-bundle/members/memory-cli/dist"
       ],
       "options": {
-        "command": "tsc --project extensions/bundles/sox-memory-bundle/members/memory-cli/tsconfig.json",
+        "commands": [
+          "rm -rf extensions/bundles/sox-memory-bundle/members/memory-cli/dist",
+          "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-cli/dist --tsconfig extensions/bundles/sox-memory-bundle/members/memory-cli/tsconfig.json --external better-sqlite3 --external sqlite-vec"
+        ],
+        "parallel": false,
         "cwd": "."
       },
       "cache": true,
       "inputs": [
         "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/tsconfig.json"
+        "{projectRoot}/tsconfig.json",
+        "{workspaceRoot}/tools/bundle-extension.cjs"
       ],
       "dependsOn": [
         "^build"

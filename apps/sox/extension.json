@@ -5,7 +5,7 @@
   "title": "sox CLI",
   "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
   "runtime": "node",
-  "entrypoint": "dist/apps/sox/main.js",
+  "entrypoint": "dist/index.js",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },

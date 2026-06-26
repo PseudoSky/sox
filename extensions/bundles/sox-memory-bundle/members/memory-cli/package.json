@@ -5,14 +5,21 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "extension.json"
   ],
-  "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit"
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
   },
-  "dependencies": {
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
     "@adhd/sox-memory-core": "workspace:*"
   },
-  "license": "MIT"
+  "dependencies": {
+    "better-sqlite3": "^12.10.0",
+    "sqlite-vec": "^0.1.9"
+  }
 }

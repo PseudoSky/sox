@@ -160,22 +160,32 @@ export function manifestJson(opts: TemplateOpts, extra: Record<string, unknown> 
 
 // ─── package.json builder ─────────────────────────────────────────────────────
 
-/** Build a per-extension package.json. Includes tsconfig + scripts. */
+/**
+ * Build a BORN-PUBLISHABLE per-extension package.json (G4 / SCOPE §7).
+ *
+ * The previous shape (`private: true`, bare-`tsc` scripts, no publishConfig/engines)
+ * 404'd on publish and could not install on a fresh machine. The publishing refactor
+ * makes `soxe init` emit a package that is publish + fresh-machine-install ready by
+ * the SAME flow, with zero hand-edits:
+ *   - NO `private` (publishable) + `publishConfig.access: "public"`.
+ *   - `engines.node: ">=20"` (owner Q6).
+ *   - `files: ["dist", "extension.json"]` so the tarball carries the runtime
+ *     artifact AND the manifest the installer reads.
+ *   - NO bare-`tsc` scripts — the build runs through the nx target (project.json),
+ *     which produces a SELF-CONTAINED esbuild bundle (Model A: zero `@adhd/sox-*`
+ *     runtime deps; any `@adhd/sox-*` imports belong in devDependencies, inlined by
+ *     the bundler; native addons stay external + declared as real dependencies).
+ */
 export function packageJson(opts: TemplateOpts): string {
   const pkg: Record<string, unknown> = {
     name: `@adhd/sox-extension-${opts.id}`,
     version: '0.1.0',
     description: opts.description,
-    private: true,
-    main: 'dist/index.js',
-    types: 'dist/index.d.ts',
-    files: ['dist'],
-    scripts: {
-      build: 'tsc --project tsconfig.json',
-      typecheck: 'tsc --noEmit --project tsconfig.json',
-      test: 'vitest run',
-    },
     license: 'MIT',
+    publishConfig: { access: 'public' },
+    engines: { node: '>=20' },
+    files: ['dist', 'extension.json'],
+    main: 'dist/index.js',
   };
   if (opts.author !== undefined && opts.author !== '') {
     pkg['author'] = opts.author;

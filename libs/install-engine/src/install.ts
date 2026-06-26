@@ -15,7 +15,7 @@ import * as path from 'node:path';
 import type { ScopeConfig as CascadeScopeConfig, ResolvedConfigMap } from './cascade.js';
 import { cascade } from './cascade.js';
 import { upsertInstallRecord } from './install-registry.js';
-import { scopeConfigPaths } from './data-paths.js';
+import { scopeConfigPaths, storeRootFor } from './data-paths.js';
 import { checkProviderCapabilities } from './provider-capabilities.js';
 // verify-integrity imports from this module (install.ts); the cycle is safe
 // because verifyIntegrity is only invoked at runtime, never at module-eval time.
@@ -258,9 +258,85 @@ export function resolveFromRegistry(
 
 // ─── Fetch + verify artifact ──────────────────────────────────────────────────
 
+/**
+ * Resolve the entrypoint *file* inside an extension directory, using the C4
+ * resolution order shared with build-index.resolveChecksum:
+ *   1. manifest.entrypoint (explicit — dist/index.js, SKILL.md, …)
+ *   2. dist/index.js (built artifact fallback for code types)
+ *   3. prompt.md / SKILL.md (declarative content types)
+ *   4. extension.json (final fallback for bundles / bare manifests)
+ */
+function resolveEntrypointFile(dir: string): string {
+  const extJson = path.join(dir, 'extension.json');
+  if (fs.existsSync(extJson)) {
+    try {
+      const manifest = JSON.parse(fs.readFileSync(extJson, 'utf8')) as { entrypoint?: string };
+      if (typeof manifest.entrypoint === 'string' && manifest.entrypoint.trim() !== '') {
+        const declared = path.join(dir, manifest.entrypoint);
+        if (fs.existsSync(declared)) return declared;
+      }
+    } catch { /* fall through */ }
+  }
+  const distJs = path.join(dir, 'dist', 'index.js');
+  if (fs.existsSync(distJs)) return distJs;
+  const promptMd = path.join(dir, 'prompt.md');
+  if (fs.existsSync(promptMd)) return promptMd;
+  const skillMd = path.join(dir, 'SKILL.md');
+  if (fs.existsSync(skillMd)) return skillMd;
+  return extJson;
+}
+
+/**
+ * B3 / Slice 3 — `npm-package:` install mode.
+ *
+ * Native-addon extensions (memory-server → better-sqlite3, sqlite-vec) cannot be
+ * delivered by the single-file CDN fetch: a lone dist/index.js on a CDN has no
+ * node_modules, so the bundle's lazy createRequire walk finds nothing on a fresh
+ * machine. This mode publishes the extension as an npm *package* (tarball with
+ * native deps declared as real `dependencies`) and installs it with a real
+ * `npm install` into a per-extension content store, so node-gyp/prebuild lands a
+ * platform binary next to the bundle.
+ *
+ * Locator form: `npm-package:<name>@<version>` (e.g.
+ * `npm-package:@adhd/sox-extension-memory-server@1.1.0`). The npm REGISTRY is the
+ * ambient one (npm config / .npmrc / NPM_CONFIG_REGISTRY) — public npm in
+ * production, a local verdaccio in the offline acceptance test. ADR-0003/0005:
+ * the version in the locator only SELECTS which bytes to fetch; the checksum the
+ * fetcher recomputes over the entrypoint remains the SOLE integrity authority.
+ */
+function fetchNpmPackage(
+  spec: string,
+  storeDir: string,
+): { entryFile: string; pkgDir: string } {
+  const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
+  const at = spec.lastIndexOf('@');
+  const pkgName = at > 0 ? spec.slice(0, at) : spec;
+  fs.mkdirSync(storeDir, { recursive: true });
+  // A minimal package.json so npm treats storeDir as an install root (no warnings).
+  const storePkgJson = path.join(storeDir, 'package.json');
+  if (!fs.existsSync(storePkgJson)) {
+    fs.writeFileSync(
+      storePkgJson,
+      JSON.stringify({ name: 'sox-ext-store', private: true, version: '0.0.0' }, null, 2) + '\n',
+      'utf8',
+    );
+  }
+  execFileSync(
+    'npm',
+    ['install', spec, '--omit=dev', '--no-audit', '--no-fund', '--save', '--loglevel=error'],
+    { cwd: storeDir, stdio: ['ignore', 'inherit', 'inherit'] },
+  );
+  const pkgDir = path.join(storeDir, 'node_modules', ...pkgName.split('/'));
+  if (!fs.existsSync(pkgDir)) {
+    throw new Error(`install: npm-package "${spec}" did not materialize at ${pkgDir}`);
+  }
+  return { entryFile: resolveEntrypointFile(pkgDir), pkgDir };
+}
+
 export async function fetchArtifact(
   source: string,
   expectedChecksum?: string | undefined,
+  opts?: { storeDir?: string | undefined },
 ): Promise<{ bytes: Buffer; checksum: string; source: string }> {
   let bytes: Buffer;
   let resolvedSource = source;
@@ -315,6 +391,19 @@ export async function fetchArtifact(
       throw new Error(`install: fetch failed for ${source}: ${resp.status} ${resp.statusText}`);
     }
     bytes = Buffer.from(await resp.arrayBuffer());
+  } else if (source.startsWith('npm-package:')) {
+    // Slice 3 / B3: real npm install (tarball + transitive native deps) into a
+    // per-extension content store. Required for native-addon extensions whose
+    // better-sqlite3/sqlite-vec cannot ride a single-file CDN fetch.
+    const spec = source.slice('npm-package:'.length);
+    if (opts?.storeDir === undefined) {
+      throw new Error(
+        `install: npm-package source "${source}" requires a storeDir (internal: pass opts.storeDir)`,
+      );
+    }
+    const { entryFile } = fetchNpmPackage(spec, opts.storeDir);
+    bytes = fs.readFileSync(entryFile);
+    resolvedSource = `file://${entryFile}`;
   } else if (source.startsWith('npm:')) {
     const pkgSpec = source.slice('npm:'.length);
     const cdnUrl = `https://cdn.jsdelivr.net/npm/${pkgSpec}/dist/index.js`;
@@ -372,6 +461,14 @@ export interface InstallOptions {
   root?: string | undefined;
   overrideProvider?: string | undefined;
   /**
+   * BL-42 fresh-machine fallback: an already-resolved registry index. When the
+   * caller (the CLI) runs as a published, self-contained bundle there is no repo
+   * checkout under `root`, so the default `loadRegistryIndex(root)` would return
+   * `[]`. The CLI resolves the registry (cwd → CLI-bundled copy) and injects it
+   * here. When omitted, behaviour is unchanged: `loadRegistryIndex(root)`.
+   */
+  registryIndex?: IndexEntry[] | undefined;
+  /**
    * Called for each required config key that has no cascade-resolved value.
    * The CLI layer provides a readline implementation in interactive mode.
    * Return the string value to persist, or undefined to skip (with a warning).
@@ -411,7 +508,10 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
     return {};
   }
 
-  const registryIndex = loadRegistryIndex(root);
+  const registryIndex =
+    opts.registryIndex !== undefined && opts.registryIndex.length > 0
+      ? opts.registryIndex
+      : loadRegistryIndex(root);
   const existingLock = loadLockfile(lockPath);
 
   const singleScopeOnly = opts.configPath !== undefined;
@@ -600,7 +700,14 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
     }
 
     try {
-      const { checksum, source: resolvedSource } = await fetchArtifact(source, expectedChecksum);
+      // Slice 3: npm-package sources install into a per-extension content store
+      // under <dataRoot>/ext/<id>/ so the native deps land beside the bundle and
+      // the runtime can spawn from a node_modules-bearing dir on a fresh machine.
+      const fetchOpts =
+        source.startsWith('npm-package:')
+          ? { storeDir: path.join(storeRootFor(opts.scope, root), entry.id) }
+          : undefined;
+      const { checksum, source: resolvedSource } = await fetchArtifact(source, expectedChecksum, fetchOpts);
 
       // ADR-0003: the lockfile key is the BARE id. The checksum is the integrity
       // authority; there is no `@version` decoration. One id ⇒ one artifact.

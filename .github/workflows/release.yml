@@ -59,11 +59,22 @@ jobs:
       # @changesets/action handles two modes:
       #   - Changeset files present: creates/updates a "Version Packages" PR.
       #   - No changeset files (i.e. PR was already merged): publishes to npm.
+      - name: Build all packages
+        run: npx nx run-many -t build
+
+      - name: Born-publishable shape gate
+        run: pnpm run check-publishable
+
       - name: Create release PR or publish
         id: changesets
         uses: changesets/action@v1
         with:
-          publish: pnpm release
+          # publish uses `release:prepared`, which (1) regenerates registry/index.json
+          # with the portable npm-package: locators (SOX_REGISTRY_PUBLISH=npm), (2)
+          # rebuilds the CLI so it EMBEDS that portable registry, then (3) runs
+          # `changeset publish`. This ordering is required so the published @adhd/sox-cli
+          # ships a registry with ZERO file:// sources (D-D / SCOPE §6).
+          publish: pnpm release:prepared
           version: pnpm version-packages
           commit: "chore: version packages"
           title: "chore: version packages"
@@ -71,12 +82,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      # Rebuild registry/index.json after a successful publish.
-      # build-index updates each entry's `source` (npm-CDN URL) and `checksum` (sha256).
-      # Only runs when @changesets/action actually published packages.
-      - name: Rebuild registry/index.json
+      # Rebuild registry/index.json after a successful publish with the publication
+      # signal so each entry's `source` is a portable npm-package: locator (never
+      # file://) and `checksum` is the content sha256. Only runs on actual publish.
+      - name: Rebuild registry/index.json (portable sources)
         if: steps.changesets.outputs.published == 'true'
-        run: pnpm run build-index
+        run: pnpm run build-index:publish
 
       # Commit the updated registry/index.json back to main.
       # Skipped if build-index made no changes (nothing new published).

@@ -13,17 +13,24 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
+// BL-38: memory-server is now a SELF-CONTAINED esbuild bundle (dist/index.js with
+// @adhd/sox-* inlined) — there is no separate dist/backend.js to require. Derive
+// the schema by invoking the built bundle with --emit-schema, which prints the
+// canonical buildToolsListResult() to stdout ([contract:schema-hash] preserved).
 const distDir = path.resolve(__dirname, '..', 'dist');
-const backendPath = path.join(distDir, 'backend.js');
-if (!fs.existsSync(backendPath)) {
-  console.error(`[gen-schema] built backend not found at ${backendPath} — build first`);
+const bundlePath = path.join(distDir, 'index.js');
+if (!fs.existsSync(bundlePath)) {
+  console.error(`[gen-schema] built bundle not found at ${bundlePath} — build first`);
   process.exit(1);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { buildToolsListResult } = require(backendPath);
-const result = buildToolsListResult();
+const stdout = execFileSync(process.execPath, [bundlePath, '--emit-schema'], {
+  encoding: 'utf8',
+  maxBuffer: 16 * 1024 * 1024,
+});
+const result = JSON.parse(stdout);
 
 const out = path.join(distDir, 'schema.json');
 fs.writeFileSync(out, JSON.stringify(result, null, 2) + '\n', 'utf8');

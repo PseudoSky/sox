@@ -2,18 +2,29 @@
   "name": "@adhd/sox-memory-core",
   "version": "0.1.0",
   "description": "Shared internal library for the sox-memory subsystem (db, schema, embed, recall, write, memoryd, extensions)",
-  "private": true,
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist"
+  ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/index.js"
     }
   },
   "dependencies": {
     "fastembed": "^2.1.0",
-    "@adhd/sox-memory-enrich": "workspace:*"
+    "@adhd/sox-memory-enrich": "workspace:*",
+    "better-sqlite3": "^12.10.0",
+    "sqlite-vec": "^0.1.9"
   }
 }

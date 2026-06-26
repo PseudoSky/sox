@@ -77,10 +77,13 @@ importers:
         version: 4.4.3
 
   apps/sox:
-    dependencies:
+    devDependencies:
       '@adhd/sox-authoring':
         specifier: workspace:*
         version: link:../../libs/authoring
+      '@adhd/sox-host-registry':
+        specifier: workspace:*
+        version: link:../../libs/host-registry
       '@adhd/sox-host-runtime':
         specifier: workspace:*
         version: link:../../libs/host-runtime
@@ -90,9 +93,15 @@ importers:
       '@adhd/sox-manifest':
         specifier: workspace:*
         version: link:../../libs/manifest
+      '@adhd/sox-mcp-runtime':
+        specifier: workspace:*
+        version: link:../../libs/mcp-runtime
       '@adhd/sox-registry':
         specifier: workspace:*
         version: link:../../libs/registry
+      '@adhd/sox-service-proxy':
+        specifier: workspace:*
+        version: link:../../libs/service-proxy
 
   extensions/agents/org-agent: {}
 
@@ -102,20 +111,48 @@ importers:
 
   extensions/bundles/sox-memory-bundle/members/memory-cli:
     dependencies:
+      better-sqlite3:
+        specifier: ^12.10.0
+        version: 12.10.0
+      sqlite-vec:
+        specifier: ^0.1.9
+        version: 0.1.9
+    devDependencies:
       '@adhd/sox-memory-core':
         specifier: workspace:*
         version: link:../../../../../libs/memory-core
 
-  extensions/bundles/sox-memory-bundle/members/memory-daemon: {}
+  extensions/bundles/sox-memory-bundle/members/memory-daemon:
+    dependencies:
+      better-sqlite3:
+        specifier: ^12.10.0
+        version: 12.10.0
+      sqlite-vec:
+        specifier: ^0.1.9
+        version: 0.1.9
 
   extensions/bundles/sox-memory-bundle/members/memory-flush:
     dependencies:
+      better-sqlite3:
+        specifier: ^12.10.0
+        version: 12.10.0
+      sqlite-vec:
+        specifier: ^0.1.9
+        version: 0.1.9
+    devDependencies:
       '@adhd/sox-memory-core':
         specifier: workspace:*
         version: link:../../../../../libs/memory-core
 
   extensions/bundles/sox-memory-bundle/members/memory-server:
     dependencies:
+      better-sqlite3:
+        specifier: ^12.10.0
+        version: 12.10.0
+      sqlite-vec:
+        specifier: ^0.1.9
+        version: 0.1.9
+    devDependencies:
       '@adhd/sox-mcp-runtime':
         specifier: workspace:*
         version: link:../../../../../libs/mcp-runtime
@@ -171,15 +208,24 @@ importers:
       '@adhd/sox-memory-enrich':
         specifier: workspace:*
         version: link:../memory-enrich
+      better-sqlite3:
+        specifier: ^12.10.0
+        version: 12.10.0
       fastembed:
         specifier: ^2.1.0
         version: 2.1.0
+      sqlite-vec:
+        specifier: ^0.1.9
+        version: 0.1.9
 
   libs/memory-enrich:
     dependencies:
       better-sqlite3:
-        specifier: '*'
+        specifier: ^12.10.0
         version: 12.10.0
+      sqlite-vec:
+        specifier: ^0.1.9
+        version: 0.1.9
 
   libs/registry: {}
 

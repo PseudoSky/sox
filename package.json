@@ -10,11 +10,14 @@
     "validate-manifests": "npx tsx scripts/validate-manifests.ts",
     "check-nx-cache": "node tools/check-nx-cache.cjs",
     "build-index": "npx tsx scripts/build-index.ts",
+    "build-index:publish": "SOX_REGISTRY_PUBLISH=npm npx tsx scripts/build-index.ts",
+    "check-publishable": "npx tsx scripts/check-publishable.ts",
     "install-extensions": "npx tsx scripts/install.ts",
     "test": "vitest run",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "changeset publish"
+    "release": "changeset publish",
+    "release:prepared": "npm run build-index:publish && nx build sox && changeset publish"
   },
   "devDependencies": {
     "@changesets/cli": "2.31.0",

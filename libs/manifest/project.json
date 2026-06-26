@@ -63,6 +63,19 @@
         "{workspaceRoot}/registry/index.json"
       ]
     },
+    "check-publishable": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx tsx scripts/check-publishable.ts"
+      },
+      "cache": true,
+      "inputs": [
+        "{workspaceRoot}/scripts/check-publishable.ts",
+        "{workspaceRoot}/libs/*/package.json",
+        "{workspaceRoot}/apps/*/package.json",
+        "{workspaceRoot}/extensions/**/package.json"
+      ]
+    },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
