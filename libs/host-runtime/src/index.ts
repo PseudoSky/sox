@@ -140,6 +140,38 @@ export type {
   ScopeResource,
 } from './singleton.js';
 
+// ─── OS-supervisor control surface (service-lifecycle spec Slice 2) ──────────
+export {
+  detectOsSupervisor,
+  osUnitLabel,
+  deriveOsUnitSpec,
+  findNonVolatileNode,
+  resolveUnitNodePath,
+  unitContentHash,
+  readUnitMeta,
+  realOsExec,
+  LaunchdPlatform,
+  SystemdPlatform,
+  getOsUnitPlatform,
+  enableOsUnit,
+  disableOsUnit,
+  unloadThenReap,
+} from './os-unit.js';
+export type {
+  OsSupervisor,
+  OsUnitSpec,
+  NodePathResolution,
+  OsExecResult,
+  OsExec,
+  OsUnitPlatform,
+  EnableAction,
+  EnableResult,
+  EnableOptions,
+  DisableOptions,
+  DisableResult,
+  UnloadThenReapResult,
+} from './os-unit.js';
+
 // ─── Global Supervisor Registry (R1) ─────────────────────────────────────────
 export {
   getSupervisorsFilePath,

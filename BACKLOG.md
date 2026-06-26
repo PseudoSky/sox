@@ -140,6 +140,38 @@ with BL-76 (build-info stamp). Cosmetic; no behavior impact.
 
 ---
 
+### BL-78 — `@modelcontextprotocol/sdk` is absent from `node_modules`; `nx build mcp-runtime` and the memory-server self-contained bundle fail on a clean recompile — **Open (MEDIUM) repo-hygiene/deps** (surfaced building Slice 2, 2026-06-26)
+
+**Observed:** `@modelcontextprotocol/sdk` is not installed under `node_modules` (neither the
+shared checkout nor a worktree symlinked to it). `libs/mcp-runtime/src/{serve,transport}.ts`
+`import` it, so `npx nx build mcp-runtime --skip-nx-cache` fails with `TS2307: Cannot find module
+'@modelcontextprotocol/sdk/server/index.js'`, and the BL41/SPM e2e probes that esbuild a
+**self-contained memory-server bundle** fail with `Could not resolve "@modelcontextprotocol/sdk/..."`.
+It only stays green in normal runs because `libs/mcp-runtime/dist` is already built and nx serves it
+from cache — a clean machine (or any forced recompile) breaks. **Not caused by Slice 2** (which never
+touches mcp-runtime, memory-server, or deps); surfaced because the Slice-2 e2e forced these builds.
+
+**Fix sketch:** add `@modelcontextprotocol/sdk` to the workspace dependencies (the lockfile +
+`pnpm install`) so `mcp-runtime` compiles from source and the self-contained memory-server bundle
+builds without the prebuilt-dist crutch. Until then, those two e2e sections (BL41, SPM bundle build)
+are not runnable from a clean state in an isolated worktree.
+
+### BL-79 — nested git worktrees under `.claude/worktrees/` collide in the nx project graph (`@adhd/sox-nx` duplicate name), breaking `nx` in the SHARED checkout — **Open (MEDIUM) tooling/hazard** (surfaced building Slice 2, 2026-06-26)
+
+**Observed:** with two agent worktrees checked out under `.claude/worktrees/`
+(`agent-a434962d801ff1b5c`, `agent-a997b4af124c6f91f`), running any `nx` target in the SHARED
+checkout aborts with *"projects … located in different locations … set a unique name … `@adhd/sox-nx`:
+.claude/worktrees/agent-…/packages/sox-nx"* — nx scans into the nested worktrees and sees duplicate
+project names. Each worktree in isolation is fine (it scans only its own tree). Worktrees nested
+inside the repo are discoverable by the parent's nx project-graph globs.
+
+**Fix sketch:** either place agent worktrees OUTSIDE the repo root, or add `.claude/worktrees/` to
+nx's `workspaceLayout`/project-graph ignore globs (`.nxignore` / `nx.json` `pluginsConfig` exclusions)
+so the parent checkout never scans nested worktrees. Low blast radius but it makes the shared checkout's
+`nx` unusable while worktrees exist.
+
+---
+
 ## Resolved — regressions from the proxy-default flip, fixed 2026-06-25
 
 ### BL-67 — detached proxy backend inherits the parent's stdout fd → `soxe upgrade --all` (and any piped/CI invocation) HANGS forever — **RESOLVED**
@@ -635,13 +667,13 @@ for orphaned `~/.memory/*.db-wal|-shm` whose base `.db` is absent. Safe to purge
 
 ## Open — service supervision gaps (2026-06-23)
 
-### BL-50 — detached service-mode daemons survive `soxe stop`, accumulate into multiple writers, and have no OS reboot supervisor — **Re-scoped by `docs/spec/service-lifecycle.md` (HIGH) — reaper EXISTS; open work = cross-scope singleton + OS-unit persistence**
+### BL-50 — detached service-mode daemons survive `soxe stop`, accumulate into multiple writers, and have no OS reboot supervisor — **✅ CLOSED (all three halves) by `docs/spec/service-lifecycle.md` Slices 1/1.5/1.6/2**
 
-> **Governed by [`docs/spec/service-lifecycle.md`](docs/spec/service-lifecycle.md) (v1.1.1).** That spec
-> is now the canonical framework. **Slice 1 (cross-scope singleton + reconcile heal) is IMPLEMENTED**
-> on `feat/service-lifecycle-slice1`; **Slice 1.5 (front-shim service-proxy) is IMPLEMENTED** on
-> `feat/service-proxy-slice1_5` (lib + OPT-IN serve mode); the remaining open work is Slice 2
-> (OS-supervisor surface, designed-not-built) of its §14 roadmap.
+> **Governed by [`docs/spec/service-lifecycle.md`](docs/spec/service-lifecycle.md) (v1.3.0).** That spec
+> is the canonical framework. **Slice 1 (cross-scope singleton + reconcile heal)**, **Slice 1.5/1.6
+> (front-shim service-proxy + proxy default)**, and **Slice 2 (OS-supervisor control surface +
+> `[inv:unload-then-reap]`)** are all IMPLEMENTED. All three halves (a)/(b)/(c) below are now closed at
+> the capability level; real OS-unit activation needs the human node-path ack (Appendix B item 3).
 
 **Correction (2026-06-25, verified state-side).** The earlier "orphan-process reaper still open" claim
 was **wrong** — it conflated "mem-fixes-2's diff added no reaper" with "no reaper exists." The
@@ -667,10 +699,18 @@ service's `lifecycle.health` socket (`resolveServiceHealthSocketPath`) and probe
   `entrypointTokenForService`) in `apps/sox/src/main.ts`. Gates (nx targets, built-before-test per BL-4):
   host-runtime test 146/146, sox 30/30, `host-runtime:test-e2e` 99/0 (+6 Slice-1 Step 7c, stable ×3),
   `affected -t build,lint,test` 20/20 green, `registry:sync-index` no drift.
-- (b) **OS reboot persistence + `[inv:unload-then-reap]`** — STILL OPEN. No launchd/systemd surface; the
-  *only* reaper gap is unload-the-unit-before-kill (else resurrection loop), which matters once Slice 2
-  lands. Folded into BL-51. Fix = spec Slice 2 (`soxe service enable|disable`), **designed-not-built**
-  (touches the user's machine + depends on the node-path human-ack, spec Appendix B item 3).
+- (b) **OS reboot persistence + `[inv:unload-then-reap]`** — **✅ CLOSED (capability) by Slice 2
+  (this worktree).** Built `libs/host-runtime/src/os-unit.ts` (launchd LaunchAgent generator,
+  content-addressed; systemd seam pluggable) + `soxe service enable|disable|status|list` + the
+  `[inv:unload-then-reap]` ordering wired into `cmdStop` (all paths), `service disable`, and
+  `cmdUninstall` (unload the unit BEFORE the verified-stop reap → no resurrection loop), plus
+  re-enable-on-upgrade (§9.3) and the `os-unit` ownership entry (§9.4 reversibility). Gates:
+  host-runtime test 168/168 (+`os-unit.spec.ts` 22), install-engine 152/152, sox 42/42
+  (+`service-os-unit.spec.ts` 7), lint 3/3, build 3/3; e2e stop/reap/orphan/disable sections all PASS.
+  **`(needs-human-ack)` for REAL activation:** generating + `launchctl bootstrap`-ing on the user's
+  machine touches `~/Library/LaunchAgents` and pins a node binary (Appendix B item 3) — Slice 2 builds
+  + tests the capability only (sandboxed unit dir + fake exec, `--dry-run` in the CLI test); the human
+  runs `soxe service enable <svc>` to activate. **BL-50 is now fully closed across (a)/(b)/(c).**
 - (c) **Zero-downtime upgrades without forced MCP reconnects** — **✅ CLOSED (capability) by Slice 1.5
   (`feat/service-proxy-slice1_5`).** Built as the leaf lib `libs/service-proxy/` (front-shim
   service-proxy / M3↔M4 bridge over Unix domain sockets) + an OPT-IN `--proxy` /
@@ -707,15 +747,22 @@ reverted (unloaded/deleted) in favor of a proper sox feature — see BL-51. Enri
 currently covered by BL-47's in-process fallback (no daemon required), so "no daemon running" is a safe
 state. The two faults above (orphan reaper + start-time singleton guard) remain open.
 
-### BL-51 — `sox` needs a launch-agent / OS-supervisor control surface for `service`-type extensions — **Open (FEATURE) — = spec Slice 2, DESIGNED (v1.1.0 §9), NOT BUILT**
+### BL-51 — `sox` needs a launch-agent / OS-supervisor control surface for `service`-type extensions — **✅ IMPLEMENTED (= spec Slice 2, v1.3.0 §9); REAL activation needs human node-path ack**
 
-> **Governed by [`docs/spec/service-lifecycle.md`](docs/spec/service-lifecycle.md) §9 + Slice 2.** Fully
-> designed there (unit generation table, `[inv:unload-then-reap]`, `[inv:os-unit-content-addressed]`,
-> teardown hooks). **Not built** — it writes to `~/Library/LaunchAgents` / `~/.config/systemd/user` on
-> the user's machine and depends on the **stable-node-path human-ack** (spec Appendix B item 3:
-> recommended `fs.realpathSync(process.execPath)` with volatile-nvm/asdf/volta detection + warn + opt-in
-> override). Left for a follow-up engagement with the orchestrator; the BL-47 in-process fallback remains
-> the supported path until then.
+> **Governed by [`docs/spec/service-lifecycle.md`](docs/spec/service-lifecycle.md) §9 + Slice 2 — now
+> BUILT.** Delivered in this worktree: `libs/host-runtime/src/os-unit.ts` (platform-pluggable generator
+> — `LaunchdPlatform` rendering a content-addressed plist, `SystemdPlatform` proving the seam;
+> `deriveOsUnitSpec` from the manifest `lifecycle` block; `resolveUnitNodePath` stable-node-path guard;
+> idempotent `enableOsUnit`/`disableOsUnit`; `unloadThenReap` for `[inv:unload-then-reap]`) +
+> `soxe service enable|disable|status|list` (`cmdService` in `apps/sox/src/main.ts`) + the `os-unit`
+> ownership entry kind + teardown/re-enable hooks in `cmdStop`/`cmdUninstall`/`cmdUpgrade`. All effects
+> are seam-injected (`unitDir`/`exec`) so unit + CLI tests run against a SANDBOX (`SOX_OS_UNIT_DIR` +
+> `--dry-run`) — **no real `~/Library/LaunchAgents` write and no real `launchctl load` in any test**.
+> **Remaining: REAL activation** (`soxe service enable <svc>` without `--dry-run`) writes to
+> `~/Library/LaunchAgents` and pins a node binary — **needs the stable-node-path human-ack** (Appendix B
+> item 3: `fs.realpathSync(process.execPath)` with volatile nvm/asdf/volta detection + the
+> `--allow-volatile-node`/`--node-path` override). The orchestrator gates that on the user; the BL-47
+> in-process fallback remains the supported zero-config path until the user activates a unit.
 
 Persistence for service-type extensions (e.g. memory-daemon) should be a first-class sox capability, not
 a hand-rolled per-service plist. Proposed surface:

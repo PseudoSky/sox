@@ -1,13 +1,37 @@
 # Service & Daemon Lifecycle — Canonical Specification
 
-**Spec version:** 1.2.0
-**Status:** Binding. Slice 1 (§14) is IMPLEMENTED on branch `feat/service-lifecycle-slice1`; Slice 1.5 (the front-shim service-proxy, §9.5) is IMPLEMENTED (lib + OPT-IN serve mode); **Slice 1.6 (the M3→M4 DEFAULT FLIP, §9.5) is IMPLEMENTED** on branch `feat/proxy-default-memory-backend` — proxy is now the DEFAULT for `mcp-server` services, memory-server is flipped onto it with an auto-managed singleton-guarded UDS backend, and a proxy-mode upgrade rolling-restarts the BACKEND (no client reconnect). The OS-unit surface (Slices 2–4) is designed-not-built.
-**Date:** 2026-06-25
+**Spec version:** 1.3.0
+**Status:** Binding. Slice 1 (§14) is IMPLEMENTED on branch `feat/service-lifecycle-slice1`; Slice 1.5 (the front-shim service-proxy, §9.5) is IMPLEMENTED (lib + OPT-IN serve mode); **Slice 1.6 (the M3→M4 DEFAULT FLIP, §9.5) is IMPLEMENTED** on branch `feat/proxy-default-memory-backend`; **Slice 2 (the OS-supervisor control surface, §9.1–§9.4 + `[inv:unload-then-reap]`) is IMPLEMENTED** (`libs/host-runtime/src/os-unit.ts` + `soxe service enable|disable|status|list` in `apps/sox/src/main.ts`) — launchd LaunchAgent generator (systemd seam pluggable), content-addressed idempotent enable, ownership-tracked `os-unit` entry, unload-then-reap teardown in `cmdStop`/`service disable`/`cmdUninstall`, and re-enable-on-upgrade. Slices 3–4 (crash-loop cap, universal doctor reconcile) remain designed-not-built.
+**Date:** 2026-06-26
 **Owner:** platform-engineering
 **Applies to:** every code path that spawns, supervises, stops, reaps, health-checks, or persists a `service`- or `mcp-server`-type extension, across all scopes (`org` / `user` / `project` / `local`, plus the notion of *global*).
 
 ### Changelog
 
+- **1.3.0 (2026-06-26)** — **Implemented Slice 2** (§9.1–§9.4, §8.4/§8.5, the OS-supervisor control
+  surface — subsumes BL-51 + the reboot half of BL-50). (1) New leaf module
+  `libs/host-runtime/src/os-unit.ts`: a platform-pluggable OS-unit generator
+  (`LaunchdPlatform` first; `SystemdPlatform` proves the seam) rendering a unit from the manifest
+  `lifecycle` block + resolved config env (§9.2), **content-addressed** (every unit embeds a
+  `sox-os-unit content-hash`), with `deriveOsUnitSpec`, `resolveUnitNodePath` (the §9.2/Appendix-B
+  item 3 stable-node-path footgun guard — flags nvm/asdf/volta/`versions/node` and prefers a
+  non-volatile `node`), idempotent `enableOsUnit` ([inv:os-unit-content-addressed]: re-enable rewrites
+  only on content change, unloading the stale unit first), `disableOsUnit`, and **`unloadThenReap`**
+  ([inv:unload-then-reap]: unload the unit BEFORE the verified-stop reap so the OS supervisor cannot
+  resurrect the killed pid — the F3 fix). (2) New top-level **`soxe service enable|disable|status|list`**
+  verb (`cmdService`, `apps/sox/src/main.ts`) — the ONLY sanctioned OS-unit path
+  ([inv:os-unit-generated]); records the unit in the ownership index as a new `os-unit` `OwnedEntry`
+  kind ([inv:reversible-injection], §9.4); `--dry-run` renders-without-loading; `--unit-dir` /
+  `SOX_OS_UNIT_DIR` inject the unit dir for hermetic testing; volatile-node load is gated behind
+  `--allow-volatile-node` (the human ack, Appendix B item 3). (3) **`[inv:unload-then-reap]` wired
+  into the teardown paths**: `cmdStop` (all three exit paths) unloads any owned OS unit before the
+  identity reap; `service disable` does unload-then-reap then removes the unit + clears ownership;
+  `cmdUninstall` tears the unit down before store removal (§9.4); `cmdUpgrade`'s rolling-restart
+  re-`enable`s an owned unit so it tracks the new artifact (§9.3). (4) **Safety**: no real
+  `~/Library/LaunchAgents` write and no real `launchctl load` in any test — all unit tests
+  (`os-unit.spec.ts`, 22 cases) use a sandboxed unit dir + a fake `exec`; the CLI integration
+  (`service-os-unit.spec.ts`, 7 cases) drives the built CLI with `SOX_OS_UNIT_DIR` + `--dry-run`.
+  Gates in §14 (Slice 2).
 - **1.2.0 (2026-06-25)** — **Implemented Slice 1.6** (§9.5, the M3→M4 default flip). (1) **Proxy is
   now the DEFAULT for `type: mcp-server`** in `cmdServe` (`apps/sox/src/main.ts`); explicit opt-OUT
   via `--no-proxy` / `lifecycle.serve_mode:"direct"` / `lifecycle.proxy:false` (the rollback path
@@ -1077,18 +1101,55 @@ acceptance.
   attribution for a shared backend likely needs the per-call MCP-roots / caller path threaded through
   `tools/call` — flagged for the human; NOT silently regressed (single-project use is unaffected).
 
-### Slice 2 — `soxe service enable|disable` (OS-supervisor control surface, subsumes BL-51 + reboot half of BL-50)
+### Slice 2 — `soxe service enable|disable` (OS-supervisor control surface, subsumes BL-51 + reboot half of BL-50) — ✅ IMPLEMENTED
 
 - **Goal:** generate/load/unload launchd (macOS) + systemd (Linux) units from the manifest;
   idempotent + content-addressed; ownership-tracked; `[inv:unload-then-reap]`.
-- **Touched:** new `libs/host-runtime/src/os-unit.ts` (generator + load/unload, platform-split),
-  `apps/sox/src/main.ts` (new `service` verb routing + `cmdService*`), install-engine ownership index
-  (`os-unit` entry kind), `cmdUninstall`/`cmdUpgrade` teardown/re-enable hooks, authoring scaffold
-  (signal handler R6, manifest lifecycle defaults).
-- **Acceptance:** `soxe service enable memory-daemon` writes + loads a plist/unit, survives a simulated
-  reboot (unit reload), `soxe list` reconciles it (`owner:os-unit`); `disable` unloads + reaps + clears
-  ownership; `upgrade` rewrites the unit to the new artifact; `uninstall` leaves zero unit residue
-  (reversibility gate, ADR-0004 §D6b style).
+- **Delivered:**
+  - `libs/host-runtime/src/os-unit.ts` — platform-pluggable OS-unit generator. `OsUnitPlatform`
+    interface + `LaunchdPlatform` (plist, `launchctl bootstrap/bootout/print` via the `gui/<uid>`
+    domain) + `SystemdPlatform` (`[Service]` unit, `systemctl --user enable --now/disable/is-active`)
+    proving the seam; `detectOsSupervisor`/`getOsUnitPlatform` select per-platform.
+    `deriveOsUnitSpec` reads the manifest `lifecycle` block (background→RunAtLoad, singleton→KeepAlive,
+    ThrottleInterval≥10 for §11.3) and takes the resolved env/node/entrypoint/store; `render` is
+    **content-addressed** (embeds `sox-os-unit content-hash:<16hex> artifact-hash:<…>`); env keys are
+    sorted for a stable hash; XML-escaped. `resolveUnitNodePath`+`findNonVolatileNode` implement the
+    §9.2/Appendix-B item 3 stable-node-path guard. `enableOsUnit` is idempotent
+    ([inv:os-unit-content-addressed]); `disableOsUnit` unloads+removes; **`unloadThenReap`** enforces
+    [inv:unload-then-reap] (unload → `reapByIdentity`→`killAndVerify`, `undead`-aware), reusing the
+    BL-31 reaper (no re-implemented scan/kill).
+  - `apps/sox/src/main.ts` — new top-level **`service`** verb routed to `cmdService`
+    (`enable|disable|status|list`); `resolveOsUnitContext`/`buildOsUnitEnv` (the §9.2 env mirrors the
+    supervisor scrub allowlist + SOX_CONFIG_*); `--dry-run`/`--unit-dir`/`SOX_OS_UNIT_DIR`/`--supervisor`/
+    `--node-path`/`--allow-volatile-node` flags. `unloadOwnedOsUnitsBeforeReap` wired into all three
+    `cmdStop` exit paths; `cmdUninstall` tears the unit down before store removal (§9.4);
+    `reEnableOwnedOsUnit` in the `cmdUpgrade` rolling-restart (§9.3).
+  - `libs/install-engine/src/ownership.ts` — new `os-unit` `OwnedEntry` kind (`label`, `unitPath`,
+    `supervisor`, `appliedHash`) + `supersededEntries` case ([inv:reversible-injection]).
+- **Acceptance — MET (gates below):** `service enable` renders + records a content-addressed unit;
+  re-enable is a content-addressed no-op (idempotent); `service list`/`status` reconcile owner/loaded
+  ([inv:list-never-lies]); `disable` unloads-then-reaps + removes the unit + clears ownership;
+  `uninstall` leaves zero unit residue; the unload-before-kill ordering is asserted; **no real
+  `~/Library/LaunchAgents` write and no real `launchctl load` occurs in any test** (sandboxed unit dir
+  + fake exec; CLI integration uses `SOX_OS_UNIT_DIR` + `--dry-run`).
+- **Gate results (nx targets only; built before testing per BL-4):**
+  - `nx build host-runtime` ✅, `nx build install-engine` ✅, `nx build sox` ✅.
+  - `nx lint host-runtime` ✅, `nx lint install-engine` ✅, `nx lint sox` ✅.
+  - `nx test host-runtime` → **168 passed** (+`os-unit.spec.ts`, 22 cases; was 146).
+  - `nx test install-engine` → **152 passed**; `nx test sox` → **42 passed** (+`service-os-unit.spec.ts`,
+    7 cases; was 35).
+  - `nx run host-runtime:test-e2e` → all stop/reap/orphan/unload-then-reap/disable sections PASS; the
+    only failures are pre-existing/environmental in THIS worktree (the `@modelcontextprotocol/sdk`
+    dependency is absent from node_modules so the memory-server self-contained bundle cannot build —
+    BL41/SPM-bundle; and the SPM single-writer count is inflated by the dev box's own live
+    memory-server backends — BL-63). NONE are caused by Slice 2.
+- **`(needs-human-ack)` — real activation:** generating + `launchctl bootstrap`-ing a unit on the
+  user's machine touches `~/Library/LaunchAgents` and pins a node binary (Appendix B item 3). Slice 2
+  BUILDS + TESTS the capability only (sandboxed); the human must run `soxe service enable <svc>`
+  themselves (and accept/override the pinned node path) to activate.
+- **Designed-not-built remainder:** the authoring-scaffold lifecycle defaults + R6 SIGTERM handler
+  generation are folded into a later authoring pass; the universal `soxe list` os-unit reconcile merge
+  lands with Slice 4 (today the reconcile is surfaced via `service status`/`service list`).
 
 ### Slice 3 — Crash-loop cap + degraded policy + durable M3 logs (F13/F14, BL-46 closure in-framework)
 
