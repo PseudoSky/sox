@@ -266,6 +266,79 @@ so the parent checkout never scans nested worktrees. Low blast radius but it mak
 
 ---
 
+## Open — memory embedding subsystem (surfaced investigating hash-fallback, 2026-06-26)
+
+> The store has been running on hash-embedding fallback (`memory_ping` → `embed_state:"hash"`,
+> `embed_on_hash_fallback:true`). Investigation of `libs/memory-core/src/embed.ts` + the published
+> memory-server packaging surfaced four distinct defects. While on fallback, vector similarity
+> (near-dup `SAME_AS`, clustering, semantic recall ranking) is unreliable; BM25/FTS still works.
+
+### BL-86 — `hashEmbed()` produces near-collinear (degenerate) vectors → ~0.97–0.998 cosine between UNRELATED texts → near-dup flags everything — **Open (HIGH) bug** (2026-06-26)
+
+**Observed (numerically proven):** with `SOX_EMBED_BACKEND=hash`, cosine of three unrelated strings
+("the cat sat on the mat" / "quantum chromodynamics lagrangian renormalization" / "npm publish
+registry checksum drift") = **0.967 / 0.985 / 0.968** (should be ~0). In production (longer, more
+similar texts) this pins ~0.998 — so every `memory_write` reports `near_dup` ~0.998 and an async
+`SAME_AS` edge, regardless of content.
+
+**Root cause:** in `hashEmbed` (`libs/memory-core/src/embed.ts:352`), the per-dimension seed is
+`seed = (d * 0x9e3779b9 + h1) >>> 0` — the `d * 0x9e3779b9` term depends ONLY on the dimension index
+and is therefore IDENTICAL for every token and every text. After `^ h2` + `/2^31 - 1` it dominates the
+token-specific signal, so all vectors share a large common "d-pattern" component → near-collinear.
+
+**Consequence:** while on hash fallback, the `SAME_AS` near-dup graph, communities, and semantic recall
+ranking are garbage (corroboration metric is an artifact). **The SAME_AS edges written during fallback
+should be considered suspect and re-run after BL-87/89 restore real embeddings.**
+
+**Fix sketch:** hash `(token, d)` together with a proper avalanche (e.g. `hash32(token + ':' + d)` or
+mix h1/h2/d through an integer finalizer) so dimensions are independent — no shared d-only component.
+Add a test asserting cosine of unrelated strings is near 0 (e.g. |cos| < 0.2).
+
+### BL-87 — published `memory-server` omits `fastembed`/`onnxruntime-node` runtime deps → every npm-installed (incl. the BL-65-repointed) server is permanently on hash fallback — **Open (HIGH) packaging** (2026-06-26)
+
+**Observed:** the published `memory-server` `package.json` declares only `better-sqlite3` + `sqlite-vec`
+as `dependencies`; `@adhd/sox-memory-core` (which declares `fastembed: ^2.1.0` → pulls onnxruntime-node)
+is a **devDependency**, inlined as JS by the esbuild bundle. `fastembed`/`onnxruntime-node` are NOT in
+the bundle's `--external` list either. So on an `npm-package:`-mode install, the embed worker has no
+embedding runtime → `embed()` (auto) silently falls back to hash. The BL-65 repoint (live server now from
+`~/.adhd/.../ext`) therefore runs **permanently degraded**.
+
+**Fix sketch:** declare `fastembed` (and its native onnxruntime-node) as real `dependencies` of the
+published memory-server AND externalize them in the esbuild bundle (like better-sqlite3/sqlite-vec), so
+the npm-package install resolves them. Add the published-fresh-machine smoke assertion: after install,
+`memory_ping` reports `embed_on_hash_fallback:false`. (Native onnxruntime-node also has the Node-version
+prebuild matrix concern — verify Node 22/24 coverage, cf. the engines decision.)
+
+### BL-88 — no PER-RECORD embedding provenance + no auto-upgrade when the real backend returns — **Open (MEDIUM) data-integrity** (2026-06-26)
+
+**Observed:** `embed_model` is stored only on `memory_scope` (one row per scope, set ONCE at scope
+creation via `getActiveEmbedModel()` in `db.ts:191`, never updated). Individual `node`/`vec_node` rows
+carry NO model/backend tag. So there is no way to tell which records were embedded under hash fallback vs
+real, and a scope first created during fallback stays stamped `nomic-embed-text-v1.5-hash` even after real
+is restored. `reembedNodes()` + the reindex organizer op exist but are MANUAL (`reembed=true` payload) —
+nothing auto-re-embeds stale-model rows when the provider returns.
+
+**Fix sketch:** (1) record `embed_model` (or a backend flag) per node/vec row at write time; (2) a
+heal pass that re-embeds rows whose `embed_model` != the current real model once `embed_on_hash_fallback`
+clears; (3) surface a `degraded_record_count` in `memory_stats`. Closes "we should know which records were
+created on degraded services."
+
+### BL-89 — dev-box real embed worker warmup fails/hangs silently despite onnxruntime-node loading + model cached → silent auto→hash fallback — **Open (HIGH) bug** (2026-06-26)
+
+**Observed:** on the dev box (Node v24.11.1), `require('onnxruntime-node')` LOADS fine and the BGE model
+is fully cached (`~/.cache/sox-memory/models/fast-bge-base-en-v1.5/model_optimized.onnx` present), yet
+exercising `embed()` (auto) via the built memory-core dist did not return a real embedding within ~20s —
+the worker_thread warmup (`embedWorker.ts` / fastembed init) hangs or fails, and `embed()` (auto) swallows
+it into a hash fallback (`embed.ts:271-285`). This is why the live store is on hash even where the deps
+exist.
+
+**Fix sketch:** make the warmup failure LOUD and diagnosable (surface the worker error/timeout instead of
+a one-line warn), add a warmup timeout + health signal, and root-cause the fastembed 2.x / worker_thread
+init failure (candidate: the BL-11 onnxruntime libpthread isolation, or a fastembed 2.x API/model-format
+mismatch). Until fixed, real embeddings never engage even on a fully-provisioned box.
+
+---
+
 ## Resolved — regressions from the proxy-default flip, fixed 2026-06-25
 
 ### BL-67 — detached proxy backend inherits the parent's stdout fd → `soxe upgrade --all` (and any piped/CI invocation) HANGS forever — **RESOLVED**
