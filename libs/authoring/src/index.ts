@@ -10,7 +10,7 @@
  *   writeFileSet(fs, outDir)   — write a FileSet to disk (delegated to writer.ts)
  *   FileSet                    — type alias
  *   ScaffoldOpts               — input options type (with Appendix-A options)
- *   ActiveType                 — union of 6 active extension types
+ *   ActiveType                 — union of 7 active extension types
  */
 
 import { agentTemplate } from './templates/agent/index.js';
@@ -75,7 +75,7 @@ export const ACTIVE_TYPES: ReadonlyArray<ActiveType> = [
  *   not stored in the scaffold output.
  */
 export interface ScaffoldOpts {
-  /** One of the 6 active types. prompt is NOT accepted here (parked). */
+  /** One of the 7 active types. prompt is NOT accepted here (parked). */
   type: ActiveType;
   /** Extension id: must match ^[a-z][a-z0-9-]*$ and NOT end with the type name. */
   id: string;
