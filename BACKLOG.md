@@ -14,7 +14,7 @@ Observations below were surfaced during the sox-memory real-embedding / MCP-runt
 > creating a skill → scaffold → validate → build-index → install". Each item is a place
 > the documentation or CLI output sent the author down the wrong path.
 
-### BL-69 — `docs/guidelines/skill.md` is a framework-contract audit, not an author-facing "how to create a skill" → authors have no authoring guide — **Open (MEDIUM) docs**
+### BL-69 — `docs/guidelines/skill.md` is a framework-contract audit, not an author-facing "how to create a skill" → authors have no authoring guide — **RESOLVED (2026-06-26)** — `docs/guidelines/authoring.md` (all 8 types + bundle, worked examples) + the top-level README now provide the author how-to.
 
 **Observed:** told to "read the how-to on creating a skill," the only skill-specific doc is
 `docs/guidelines/skill.md`, which is a five-layer analysis of *framework holes* (what the
@@ -96,7 +96,7 @@ test with 4 cases, all green). State-side proof: running from `/tmp/bl73-state-p
 (no `.git`) writes lockfile to `/tmp/bl73-state-proof-*/.adhd/sox-ecosystem/extensions.lock`
 and does NOT touch `sox-ecosystem/.adhd/sox-ecosystem/`.
 
-### BL-78 — `cmdDetails` uses wrong lock path format (`.extensions/`) and `getScopePath(REPO_ROOT)` fallback — **Open (LOW) bug, surfaced during BL-73 fix**
+### BL-78 — `cmdDetails` uses wrong lock path format (`.extensions/`) and `getScopePath(REPO_ROOT)` fallback — **RESOLVED (2026-06-26)** — `cmdDetails` now resolves via `getScopePaths(scope, workspaceRoot)` (workspaceRoot = flags.root ?? cwd), mirroring the BL-73 fix.
 
 **Observed:** `apps/sox/src/main.ts` `cmdDetails` (line 3107-3117) has two problems:
 1. When `--root` is given: constructs the lock path as `<root>/.extensions/extensions.lock` — the
@@ -155,11 +155,11 @@ Added `transports` property to `install` with vocab `["stdio","http","sse","sock
 `npx nx test manifest` — 152/152 unit tests + 110/110 validate-manifests tests green.
 `soxe validate ./extensions/services/tokenguard` passes cleanly.
 
-### BL-83 — `libs/authoring/src/index.ts` comment says "union of 6 active extension types" but `ACTIVE_TYPES` lists 7 — **Open (LOW) cosmetic** (2026-06-26)
+### BL-83 — `libs/authoring/src/index.ts` comment says "union of 6 active extension types" but `ACTIVE_TYPES` lists 7 — **RESOLVED (2026-06-26)** — comments corrected to 7.
 
 **Fix sketch:** update the comment to match `ACTIVE_TYPES` (7 active = 8 types minus parked `prompt`).
 
-### BL-84 — `extensions/services/tokenguard/CLAUDE.md` (+ examples) reference the REMOVED `./bin/sox` binary and a `sox.install()` JS API that isn't the real surface — **Open (LOW) docs** (2026-06-26)
+### BL-84 — `extensions/services/tokenguard/CLAUDE.md` (+ examples) reference the REMOVED `./bin/sox` binary and a `sox.install()` JS API that isn't the real surface — **RESOLVED (2026-06-26)** — replaced with `node bin/soxe` + real CLI verbs.
 
 **Observed:** `bin/sox` was removed (collided with the system `sox` audio tool; `bin/soxe` is the
 only entrypoint). tokenguard's `CLAUDE.md` still shows `./bin/sox` invocations + a non-existent
@@ -200,7 +200,7 @@ The soxe init codepath is not the source and requires no code change.
 standard environment. If the noise recurs, the author should audit their shell functions/hooks
 for `rm` calls against `$(which node)` or similar.
 
-### BL-76 — published `@adhd/sox-cli` dist omits `build-info.json`; fresh-machine `soxe serve` prints a BL-65 warning + git-root walk fails — **Open (LOW) packaging** (surfaced verifying the first npm publish, 2026-06-26)
+### BL-76 — published `@adhd/sox-cli` dist omits `build-info.json`; fresh-machine `soxe serve` prints a BL-65 warning + git-root walk fails — **RESOLVED (2026-06-26)** — `stamp-build.cjs` now writes `build-info.json` to both `dist/apps/sox/` (tsc) and `apps/sox/dist/` (published esbuild). Ships on next republish. (git-root noise folds into BL-73, fixed.)
 
 **Observed:** the real-npm clean-room install of `@adhd/sox-cli@1.1.1` (no checkout) works
 end-to-end (G1/G2/G3 all PASS, `memory_ping` `{ok:true, artifact:sha256:00cefb04…}`), but
@@ -219,7 +219,7 @@ end-to-end (G1/G2/G3 all PASS, `memory_ping` `{ok:true, artifact:sha256:00cefb04
 to `files`, or inline the sha into the bundle so no sidecar file is needed; (2) suppress the
 git-root `fatal:` chatter (capture stderr) — folds into BL-73. Neither blocks the release.
 
-### BL-77 — dev `bin/soxe --version` reports the monorepo root `1.0.0`; published `@adhd/sox-cli` reports its own `1.1.1` — two entrypoints disagree — **Open (LOW) consistency** (surfaced switching back to the dev bin, 2026-06-26)
+### BL-77 — dev `bin/soxe --version` reports the monorepo root `1.0.0`; published `@adhd/sox-cli` reports its own `1.1.1` — two entrypoints disagree — **RESOLVED (2026-06-26)** — `printVersion()` reads `apps/sox/package.json`; `node bin/soxe --version` now reports `1.1.1`, matching the published CLI.
 
 **Observed:** the dev entrypoint `bin/soxe` (loads the tsc build `dist/apps/sox/main.js`)
 reports `--version` `1.0.0` — the **root `package.json` (`sox-ecosystem@1.0.0`)** — while the
@@ -234,7 +234,7 @@ with BL-76 (build-info stamp). Cosmetic; no behavior impact.
 
 ---
 
-### BL-79 — `@modelcontextprotocol/sdk` is absent from `node_modules`; `nx build mcp-runtime` and the memory-server self-contained bundle fail on a clean recompile — **Open (MEDIUM) repo-hygiene/deps** (surfaced building Slice 2, 2026-06-26)
+### BL-79 — `@modelcontextprotocol/sdk` is absent from `node_modules`; `nx build mcp-runtime` and the memory-server self-contained bundle fail on a clean recompile — **RESOLVED/NON-ISSUE (2026-06-26)** — the dep IS declared (`^1.0.0` in `libs/mcp-runtime/package.json`, resolves to 1.29.0 in the package's pnpm node_modules); `nx build mcp-runtime --skip-nx-cache` + `memory-server --skip-nx-cache` build clean on `main`. The earlier "missing" was an agent-worktree symlink artifact (folds into BL-85), not a main-checkout defect.
 
 **Observed:** `@modelcontextprotocol/sdk` is not installed under `node_modules` (neither the
 shared checkout nor a worktree symlinked to it). `libs/mcp-runtime/src/{serve,transport}.ts`
@@ -250,7 +250,7 @@ touches mcp-runtime, memory-server, or deps); surfaced because the Slice-2 e2e f
 builds without the prebuilt-dist crutch. Until then, those two e2e sections (BL41, SPM bundle build)
 are not runnable from a clean state in an isolated worktree.
 
-### BL-85 — nested git worktrees under `.claude/worktrees/` collide in the nx project graph (`@adhd/sox-nx` duplicate name), breaking `nx` in the SHARED checkout — **Open (MEDIUM) tooling/hazard** (surfaced building Slice 2, 2026-06-26)
+### BL-85 — nested git worktrees under `.claude/worktrees/` collide in the nx project graph (`@adhd/sox-nx` duplicate name), breaking `nx` in the SHARED checkout — **RESOLVED (2026-06-26)** — `.nxignore` at repo root excludes `.claude/worktrees`; `nx show projects` returns 28 unique projects with worktrees present.
 
 **Observed:** with two agent worktrees checked out under `.claude/worktrees/`
 (`agent-a434962d801ff1b5c`, `agent-a997b4af124c6f91f`), running any `nx` target in the SHARED
