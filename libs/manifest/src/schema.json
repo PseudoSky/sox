@@ -410,6 +410,7 @@
             "agent",
             "skill",
             "mcp-server",
+            "service",
             "prompt",
             "hook",
             "command",
@@ -432,6 +433,19 @@
           "type": "object",
           "additionalProperties": true,
           "description": "[def:profile] Install-layer presets over (capability + transport + host-target + config). Keys are profile names (e.g. 'standalone', 'shared'). profiles \u2286 serves is a validate-time invariant."
+        },
+        "transports": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "stdio",
+              "http",
+              "sse",
+              "socket"
+            ]
+          },
+          "description": "[def:transport] Transports declared by a service extension. Back-compat alias with serves; profiles \u2286 {serves\u222atransports} enforced by validate(). Required (\u22651) for type:service. [inv:never-managed]"
         },
         "serves": {
           "type": "array",

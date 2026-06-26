@@ -139,6 +139,18 @@
     }
   },
   {
+    "id": "tokenguard",
+    "type": "service",
+    "version": "0.1.1",
+    "title": "TokenGuard Pseudonymizing Proxy",
+    "description": "Generalized pseudonymizing HTTP proxy. Tokenizes PII in outbound API requests and detokenizes inbound responses — provider-agnostic via pluggable adapters. Seeded identifiers are mapped bijectively and never reach the wire.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/services/tokenguard",
+    "checksum": "sha256:17c60435e942576d3e1d52b845bc03d2e3c5b79ea6554c5ae281f862d8a6d110",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    }
+  },
+  {
     "id": "demo-creator",
     "type": "skill",
     "version": "0.1.0",

@@ -208,9 +208,10 @@ flags:   --host <claude|codex>      # presence triggers declarative placement
 `diff` is **library-only** — there is no `sox diff` verb yet (the descriptor diff
 is exposed as a function in `@adhd/sox-install-engine`, not on the CLI). ⚠️
 
-Active types: `agent`, `skill`, `mcp-server`, `command`, `hook`, `bundle`.
-`prompt` is parked by design. `service` is **not** a type — it is an mcp-server
-install profile (a sox-run execution mode).
+Active types: `agent`, `skill`, `mcp-server`, `service`, `command`, `hook`, `bundle`.
+`prompt` is parked by design. `service` is a first-class type — a long-running process
+extension supervised by the sox host runtime (`soxe start`/`stop`/`list`). It does not
+require the MCP wire protocol. See `docs/guidelines/authoring.md §service`.
 
 ---
 
@@ -222,7 +223,7 @@ node bin/soxe init <type> demo-<type>                      # ✅ scaffolds exten
 node bin/soxe validate extensions/<typedir>/demo-<type>    # ✅ asserts born-conformant manifest
 ```
 
-Run for each of: `agent skill mcp-server command hook bundle`.
+Run for each of: `agent skill mcp-server service command hook bundle`.
 
 ## B — Declarative placement on **claude** (project + user)
 
