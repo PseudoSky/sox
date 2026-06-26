@@ -115,6 +115,43 @@ worktree will fail the mcp-runtime dependency.
 `node_modules` (run `pnpm install` from the repo root), OR mark mcp-runtime's deps as
 `optional` in pnpm-workspace so the worktree setup doesn't require it.
 
+### BL-80 — `service`-type extensions are NEVER scanned into the registry → cannot be `soxe install`ed by id — **Open (MEDIUM) bug** (surfaced writing the authoring guide, 2026-06-26)
+
+**Observed:** `scripts/build-index.ts` `DIR_TO_TYPE` (and its `check-registry-sync.ts` mirror) has
+no `services` key, so `extensions/services/` is never walked. The shipped `service` extension
+`tokenguard` (type `service`, in `ACTIVE_TYPES`, with its own `serviceTemplate` + `validate()`
+support) is **absent from `registry/index.json`** and therefore cannot be resolved/installed by id —
+a whole active extension type is uninstallable through the registry. (tokenguard is `private:true`,
+so under the publish signal it would still be omitted, but in dev it should appear as `file://`.)
+
+**Fix sketch:** add `services: 'service'` to `DIR_TO_TYPE` in `scripts/build-index.ts` AND the
+BL-33 mirror in `scripts/check-registry-sync.ts` (they must stay identical), then
+`npx nx run registry:sync-index`. Add a test asserting a `service`-type extension lands in the
+registry. Confirms the authoring guide's `service` section is actually installable.
+
+### BL-81 — `USAGE.md` says "`service` is not a type — it's an mcp-server install profile"; the code treats `service` as a first-class type — **Open (LOW) docs/consistency** (2026-06-26)
+
+**Observed:** `USAGE.md` (~line 203-205) contradicts the code: `service` IS in the schema enum,
+`ACTIVE_TYPES`, `validate()`, has a dedicated `serviceTemplate`, and ships as `tokenguard`. The new
+`docs/guidelines/authoring.md` documents `service` as first-class (matching code). Reconcile USAGE.md.
+(USAGE.md is currently owned by the bldocs agent — fold this in there or as a follow-up.)
+
+### BL-82 — `libs/manifest/src/schema.json` drift: `install.type` enum omits `service`; `install.transports` missing under `additionalProperties:false`, yet `validate()` + `tokenguard` use both — **Open (LOW) consistency** (2026-06-26)
+
+**Observed:** the hand-rolled `validate()` is authoritative and accepts `install.type:service` +
+`install.transports`, but the JSON `schema.json` is stale (would reject tokenguard). Update
+`schema.json` to match `validate()` (add `service` to the enum, add `transports`).
+
+### BL-83 — `libs/authoring/src/index.ts` comment says "union of 6 active extension types" but `ACTIVE_TYPES` lists 7 — **Open (LOW) cosmetic** (2026-06-26)
+
+**Fix sketch:** update the comment to match `ACTIVE_TYPES` (7 active = 8 types minus parked `prompt`).
+
+### BL-84 — `extensions/services/tokenguard/CLAUDE.md` (+ examples) reference the REMOVED `./bin/sox` binary and a `sox.install()` JS API that isn't the real surface — **Open (LOW) docs** (2026-06-26)
+
+**Observed:** `bin/sox` was removed (collided with the system `sox` audio tool; `bin/soxe` is the
+only entrypoint). tokenguard's `CLAUDE.md` still shows `./bin/sox` invocations + a non-existent
+`sox.install()` API. Update to `soxe` + the real CLI surface.
+
 ### BL-74 — `soxe install <id> --scope project` reconciles the WHOLE scope config, re-placing unrelated members — undocumented — **Open (LOW) docs**
 
 **Observed:** installing only `demo-creator` also re-resolved and re-placed `memory-usage`
