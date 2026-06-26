@@ -6,22 +6,22 @@
 
 ```bash
 # Install once in your scope (org/user/project/local)
-./bin/sox install tokenguard --scope=org
+node bin/soxe install tokenguard --scope org
 
 # Verify it's conformant
-./bin/sox validate tokenguard
+node bin/soxe validate extensions/services/tokenguard
 
 # Start the service
-./bin/sox start tokenguard
+node bin/soxe start tokenguard
 
 # Check if it's running
-./bin/sox list | grep tokenguard
+node bin/soxe list | grep tokenguard
 
 # Stop it
-./bin/sox stop tokenguard
+node bin/soxe stop tokenguard
 
 # Uninstall (if needed)
-./bin/sox uninstall tokenguard
+node bin/soxe uninstall tokenguard
 ```
 
 ### Configuration Quick Start
@@ -41,11 +41,11 @@ If you want to proxy OpenAI instead, reconfigure:
 
 ```bash
 # Uninstall and reinstall with new config
-./bin/sox uninstall tokenguard
-./bin/sox install tokenguard --scope=org
+node bin/soxe uninstall tokenguard
+node bin/soxe install tokenguard --scope org
 # At the "upstream" prompt, enter: https://api.openai.com
 # At the "provider" prompt, enter: generic
-./bin/sox start tokenguard
+node bin/soxe start tokenguard
 ```
 
 ### Client Adoption
@@ -67,14 +67,14 @@ Three tools are exposed via `sox exec`:
 
 ```bash
 # Add a custom identifier to the live map
-./bin/sox exec tokenguard -- seed <real> <type> [optional-token]
-./bin/sox exec tokenguard -- seed internal.example.com host
+node bin/soxe exec tokenguard -- seed <real> <type> [optional-token]
+node bin/soxe exec tokenguard -- seed internal.example.com host
 
 # Print all entries currently mapped (JSON)
-./bin/sox exec tokenguard -- map
+node bin/soxe exec tokenguard -- map
 
 # Audit: per-token swap counts + total leak count
-./bin/sox exec tokenguard -- summary
+node bin/soxe exec tokenguard -- summary
 ```
 
 ### Audit Log
@@ -97,7 +97,7 @@ Use the `summary` CLI to get aggregate leak count.
 
 | Symptom | Likely Cause | Fix |
 |---|---|---|
-| "Connection refused" | Service not running | `./bin/sox start tokenguard` |
+| "Connection refused" | Service not running | `node bin/soxe start tokenguard` |
 | Port 9099 already in use | Another process owns it | Change `SOX_CONFIG_PORT` or stop the other service |
 | Tokens not reverting in response | Client not using proxied base URL | Check the env var (e.g., `ANTHROPIC_BASE_URL=http://localhost:9099`) |
 | `audit.jsonl` not created | Capture mode is `none` | Set `SOX_CONFIG_CAPTURE` to `full` or `truncated` |
@@ -152,42 +152,54 @@ The service is configured via `SOX_CONFIG_*` env vars injected by sox. Schema is
 
 **Setup Anthropic proxying:**
 
-```typescript
-// Pseudo-code for an agent workflow
-await sox.install('tokenguard', { scope: 'org', config: { upstream: 'https://api.anthropic.com' } });
-await sox.start('tokenguard');
-process.env.ANTHROPIC_BASE_URL = 'http://localhost:9099';
-// Now `anthropic` client uses the proxy.
+One-time CLI setup (run by operator):
+
+```bash
+node bin/soxe install tokenguard --scope org
+# At prompts, set upstream to: https://api.anthropic.com
+# At prompts, set provider to: anthropic
+node bin/soxe start tokenguard
+```
+
+Then agents set the env var:
+
+```bash
+export ANTHROPIC_BASE_URL='http://localhost:9099'
+# Now the anthropic client uses the proxy.
 ```
 
 **Setup OpenAI proxying:**
 
-```typescript
-await sox.install('tokenguard', { scope: 'org', config: { 
-  upstream: 'https://api.openai.com',
-  provider: 'generic'
-} });
-await sox.start('tokenguard');
-process.env.OPENAI_API_BASE = 'http://localhost:9099';
-// Now `openai` client uses the proxy.
+One-time CLI setup (run by operator):
+
+```bash
+node bin/soxe install tokenguard --scope org
+# At prompts, set upstream to: https://api.openai.com
+# At prompts, set provider to: generic
+node bin/soxe start tokenguard
+```
+
+Then agents set the env var:
+
+```bash
+export OPENAI_API_BASE='http://localhost:9099'
+# Now the openai client uses the proxy.
 ```
 
 **Seed identifiers before running a workflow:**
 
-```typescript
-// Invoke the seed tool three times
-await sox.exec('tokenguard', { tool: 'seed', args: { real: 'prod.db', type: 'host' } });
-await sox.exec('tokenguard', { tool: 'seed', args: { real: 'alice@internal.com', type: 'email' } });
-await sox.exec('tokenguard', { tool: 'seed', args: { real: '10.0.0.1', type: 'ipv4' } });
+```bash
+# Invoke the seed tool three times
+node bin/soxe exec tokenguard -- seed prod.db host
+node bin/soxe exec tokenguard -- seed alice@internal.com email
+node bin/soxe exec tokenguard -- seed 10.0.0.1 ipv4
 ```
 
 **Check for leaks after a run:**
 
-```typescript
-const { leak_count } = await sox.exec('tokenguard', { tool: 'summary' });
-if (leak_count > 0) {
-  console.warn(`⚠️ ${leak_count} real values leaked in responses`);
-}
+```bash
+node bin/soxe exec tokenguard -- summary | jq '.leak_count'
+# If leak_count > 0, real values may have leaked in responses
 ```
 
 ### State & Persistence
@@ -216,10 +228,9 @@ if (leak_count > 0) {
 
 **Check if running:**
 
-```typescript
-const state = await sox.list();
-const tg = state.find(s => s.name === 'tokenguard');
-console.log(tg.status);  // 'RUNNING' or 'STOPPED'
+```bash
+node bin/soxe list | grep tokenguard
+# Shows status (RUNNING, STOPPED, or INACTIVE)
 ```
 
 **Read audit log directly:**
@@ -236,12 +247,9 @@ for (const line of lines.slice(-5)) {
 
 **Inspect the live token map:**
 
-```typescript
-const { entries } = await sox.exec('tokenguard', { tool: 'map' });
-console.log('Tokens in use:', entries.length);
-for (const e of entries) {
-  console.log(`  ${e.real} → ${e.token} (source: ${e.source})`);
-}
+```bash
+node bin/soxe exec tokenguard -- map | jq '.entries | map("\(.real) → \(.token) (source: \(.source))")'
+# Shows all (real, token) pairs currently tracked
 ```
 
 ---
