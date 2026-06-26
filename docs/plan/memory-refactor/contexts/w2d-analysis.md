@@ -89,6 +89,8 @@ mutates:    ["libs/data/analysis/analysis/src/**"]
   write labels back. The package's value is the deterministic, zero-LLM, `modelId`-provenance-aware
   *integration*, not reimplementing DBSCAN/HDBSCAN. (No new native code; clustering is a batch/daemon op,
   not on the query hot path — perf is not the driver at Phase-0 <50K.)
-- **Packaging (ADR-0006): analysis is PRIVATE** (`private:true`, never published) — thin
-  off-the-shelf-algorithm wrapper; it gets bundled (stateless helpers) by whoever needs it.
+- **Packaging (ADR-0006, revised 2026-06-26): analysis is PUBLIC** (`private:false` +
+  `publishConfig.access:public`, publish owner-gated) — **promoted** on external demand (USE_CASES SYS-6
+  ingest-dedup, SYS-7 log-clustering, SYS-1/5/10 dedup/drift). Externalize native deps + the JS clustering
+  lib; ship a bundled `.d.ts`. `check-publishable` must show no `@adhd/sox-*` private runtime dep.
 - Budget: 1-2 sessions.

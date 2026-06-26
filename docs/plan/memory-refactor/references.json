@@ -67,7 +67,7 @@
     "E_reembed_home": "vector-store owns the migration walk"
   },
   "financial_posture": {
-    "F1": "REFINED (ADR-0006): 3 PUBLIC (embedding-provider, vector-store, hybrid-search) @ 0.x, publish owner-gated; 3 PRIVATE (graph-store, analysis, ingest) never published. A public package consumes a private @adhd lib ONLY by bundling its stateless code (esbuild inline, zero @adhd runtime deps, native external); live objects cross via DI. hybrid-search bundles graph-store+vector-store helpers, Database via DI.",
+    "F1": "REVISED 2026-06-26 (ADR-0006, external demand USE_CASES.md SYS-1..10): 5 PUBLIC (embedding-provider, vector-store, graph-store, hybrid-search, analysis) @ 0.x publish owner-gated; 1 PRIVATE (ingest — no use case pulled it). graph-store+analysis promoted (catalog/notes/agent-memory need graph-store; dedup/clustering/drift need analysis). hybrid-search depends on public graph-store+vector-store as normal deps (no longer bundles them). Bundle-a-private-dep rule (ADR-0006) retained for future private deps but no active instance now. Live objects cross via DI (decision C).",
     "F2": "no prebuild-CI matrix (rely on upstream prebuilds; quickfix validates live Node)",
     "F3": "no LIVE/paid remote provider; BUT the EmbedProvider contract is designed+implemented for local‖remote (isRemote) with a contract-conformant remote adapter that is NOT wired to a live/paid endpoint (no spend, not live-tested)"
   }

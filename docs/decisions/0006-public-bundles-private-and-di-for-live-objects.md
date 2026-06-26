@@ -50,10 +50,14 @@ public, defeating the "publish only what's genuinely reusable" goal.
 ## Consequences
 
 - **The public surface is exactly the reusable set.** Private internals never publish → smaller
-  supply-chain + semver-contract burden. (Memory-refactor: 3 public — `embedding-provider`,
-  `vector-store`, `hybrid-search`; 3 private — `graph-store`, `analysis`, `ingest`. `hybrid-search`
-  bundles `graph-store`/`vector-store` query helpers, externalizes the native deps, takes the `Database`
-  via DI.)
+  supply-chain + semver-contract burden. (Memory-refactor, **revised 2026-06-26 on external use-case
+  demand — see `USE_CASES.md` SYS-1..10**: **5 public** — `embedding-provider`, `vector-store`,
+  `graph-store`, `hybrid-search`, `analysis`; **1 private** — `ingest` (no use case pulled it; thinnest).
+  graph-store + analysis were promoted because real consumer systems require them: catalog/notes/agent-
+  memory pull graph-store (versioned nodes + composition edges + dedup), and dedup/clustering/drift pull
+  analysis. **Because graph-store is now public, `hybrid-search` depends on it (and `vector-store`) as
+  normal public deps — it no longer bundles them;** the bundle-private mechanism below now has no active
+  instance in this refactor but remains the canonical rule for any future private dep.)
 - **Code duplication is accepted, bounded.** A private lib bundled by N public packages ships N copies;
   fine for stateless helpers. A change to a bundled private lib requires **rebuild + republish of every
   public package that bundles it** — a versioning coupling to track.

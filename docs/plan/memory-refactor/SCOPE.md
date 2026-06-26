@@ -66,16 +66,17 @@ the handoff packet): place under `libs/<area>/<group>/<name>/`; stamp `area:*`+`
 (a rename breaks the content-address/registry contract). Module-boundary depConstraints:
 `data→data|shared`, `platform→platform|shared`, `shared→shared`.
 
-**Publish posture — 3 PUBLIC / 3 PRIVATE (refines F1; governed by ADR-0006).** Publish only packages with
-standalone third-party reuse value: **PUBLIC = `embedding-provider`, `vector-store`, `hybrid-search`**
-(public@0.x, publish owner-gated); **PRIVATE = `graph-store`, `analysis`, `ingest`** (`private:true`,
-never published — thin schema/algorithm-wrapper/transform libs). A public package depends on a private
-`@adhd` lib ONLY by **bundling its (stateless) code** (esbuild inline, Model A) — published public
-artifacts carry **zero `@adhd` runtime deps**, externalizing only native deps. **`hybrid-search` bundles
-`graph-store` + `vector-store` query helpers, externalizes `better-sqlite3`/`sqlite-vec`, and takes the
-`Database` via DI** — so `graph-store` stays private. `analysis` depends on a JS clustering lib +
-`vector-store`/`graph-store` (bundled). Live objects (DB connection, provider, vectors) cross via DI over
-shared externalized native deps, never via duplicated stateful bundled code.
+**Publish posture — 5 PUBLIC / 1 PRIVATE (refines F1; governed by ADR-0006; revised 2026-06-26 on
+external use-case demand — `USE_CASES.md` SYS-1..10).** **PUBLIC = `embedding-provider`, `vector-store`,
+`graph-store`, `hybrid-search`, `analysis`** (public@0.x, publish owner-gated). **PRIVATE = `ingest`**
+(`private:true`, never published — no use case pulled it; thinnest). graph-store + analysis were
+**promoted** because real consumer systems require them (catalog/notes/agent-memory → graph-store;
+dedup/clustering/drift → analysis). **Since graph-store + vector-store are public, `hybrid-search`
+depends on them as normal public deps — it no longer bundles them.** `analysis` depends on a JS
+clustering lib + (public) `vector-store`/`graph-store`. The **bundle-a-private-dep** rule (ADR-0006)
+still stands for any future private dep, but has **no active instance** in this refactor now (nothing
+public depends on `ingest`; only the private memory domain does). Live objects (DB connection, provider,
+vectors) still cross via **DI** over shared externalized native deps — decision C unchanged.
 
 **Removed from this plan's scope:** building the `--area`/`--group` generator (now the external team's).
 This plan consumes it + the scaffold script; its migration states relocate existing libs into the layout

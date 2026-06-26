@@ -87,10 +87,10 @@ mutates:    ["libs/data/search/hybrid-search/src/**"]
 - [def:degrade-to-bm25] is the most-likely-missed acceptance — write that test first.
 - Phase-0 scale only (SCOPE Part D): pure-JS FTS5 + sqlite-vec, <50K. Leave seams for
   usearch/simsimd (Phase 1+), build none of it.
-- **Packaging (ADR-0006): hybrid-search is PUBLIC; `graph-store` is PRIVATE.** This package
-  therefore **bundles `graph-store` + `vector-store` query helpers** (esbuild inline, Model A) and
-  externalizes ONLY native deps (`better-sqlite3`/`sqlite-vec`) — the published artifact has **zero
-  `@adhd` runtime deps**. Bundle only their **stateless** query/DDL helpers; take the live `Database`
-  **via DI** (composer-owned, decision C) — never duplicate a stateful object. Ship a bundled `.d.ts`.
-  `check-publishable` must show no `@adhd/sox-*` in this package's runtime `dependencies`.
+- **Packaging (ADR-0006, revised 2026-06-26): hybrid-search is PUBLIC; `graph-store` + `vector-store`
+  are now also PUBLIC.** So this package **depends on `@adhd/sox-graph-store` + `@adhd/sox-vector-store`
+  as normal public deps — it does NOT bundle them** (the earlier bundle-the-private-store plan is moot now
+  they're public). Externalize native deps; ship a bundled `.d.ts`. Take the live `Database` **via DI**
+  (composer-owned, decision C) — unchanged. `check-publishable`: the `@adhd` deps it declares must all be
+  PUBLIC (no private `@adhd` runtime dep).
 - Budget: 1-2 sessions.

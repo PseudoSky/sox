@@ -95,4 +95,9 @@ mutates:    ["libs/data/graph/graph-store/src/**"]
   `PRAGMAS` from here for the composer to apply, but do NOT open the file here.
 - Keep the `vec_node` line out entirely — if it sneaks in, [w2b.5] fails and the
   `data/vectors ↛ data/graph` boundary is moot.
+- **Packaging (ADR-0006, revised 2026-06-26): graph-store is PUBLIC** (`private:false` +
+  `publishConfig.access:public`, publish owner-gated) — **promoted** on external demand (USE_CASES SYS-1
+  prompt-catalog, SYS-2 second-brain backlinks, SYS-5 agent-memory: versioned nodes + composition edges +
+  content-hash dedup + FTS + supersession). Externalize `better-sqlite3`; ship a bundled `.d.ts`;
+  `check-publishable` must show no private `@adhd` runtime dep.
 - Budget: 1-2 sessions.
