@@ -110,17 +110,9 @@ and does NOT touch `sox-ecosystem/.adhd/sox-ecosystem/`.
 **Fix sketch:** replace both with `getScopePaths(sc, rootOverride ?? process.cwd()).lockfile`.
 Same `getScopePaths` pattern applied in BL-73 fix.
 
-### BL-79 — `mcp-runtime:build` fails in worktree due to missing `@modelcontextprotocol/sdk` in node_modules — **Open (LOW) worktree-env**
-
-**Observed:** `npx nx build mcp-runtime` (and transitively `npx nx build sox`) fails with
-`TS2307: Cannot find module '@modelcontextprotocol/sdk/...'` in the agent worktrees because
-the symlinked `/node_modules/@modelcontextprotocol/sdk/` subdirs don't exist in the main
-repo's node_modules either. The sox build succeeds via nx cache, but a cold build in a fresh
-worktree will fail the mcp-runtime dependency.
-
-**Fix sketch:** ensure `@modelcontextprotocol/sdk` is properly installed in the main repo's
-`node_modules` (run `pnpm install` from the repo root), OR mark mcp-runtime's deps as
-`optional` in pnpm-workspace so the worktree setup doesn't require it.
+> **BL-79** (`@modelcontextprotocol/sdk` absent → clean recompile fails) is documented in full
+> further down (upgraded to MEDIUM after Slice 2 surfaced the clean-recompile + memory-server
+> bundle failure). See the BL-79 entry near BL-85.
 
 ### BL-80 — `service`-type extensions are NEVER scanned into the registry → cannot be `soxe install`ed by id — **Open (MEDIUM) bug** (surfaced writing the authoring guide, 2026-06-26)
 
@@ -228,7 +220,7 @@ with BL-76 (build-info stamp). Cosmetic; no behavior impact.
 
 ---
 
-### BL-78 — `@modelcontextprotocol/sdk` is absent from `node_modules`; `nx build mcp-runtime` and the memory-server self-contained bundle fail on a clean recompile — **Open (MEDIUM) repo-hygiene/deps** (surfaced building Slice 2, 2026-06-26)
+### BL-79 — `@modelcontextprotocol/sdk` is absent from `node_modules`; `nx build mcp-runtime` and the memory-server self-contained bundle fail on a clean recompile — **Open (MEDIUM) repo-hygiene/deps** (surfaced building Slice 2, 2026-06-26)
 
 **Observed:** `@modelcontextprotocol/sdk` is not installed under `node_modules` (neither the
 shared checkout nor a worktree symlinked to it). `libs/mcp-runtime/src/{serve,transport}.ts`
@@ -244,7 +236,7 @@ touches mcp-runtime, memory-server, or deps); surfaced because the Slice-2 e2e f
 builds without the prebuilt-dist crutch. Until then, those two e2e sections (BL41, SPM bundle build)
 are not runnable from a clean state in an isolated worktree.
 
-### BL-79 — nested git worktrees under `.claude/worktrees/` collide in the nx project graph (`@adhd/sox-nx` duplicate name), breaking `nx` in the SHARED checkout — **Open (MEDIUM) tooling/hazard** (surfaced building Slice 2, 2026-06-26)
+### BL-85 — nested git worktrees under `.claude/worktrees/` collide in the nx project graph (`@adhd/sox-nx` duplicate name), breaking `nx` in the SHARED checkout — **Open (MEDIUM) tooling/hazard** (surfaced building Slice 2, 2026-06-26)
 
 **Observed:** with two agent worktrees checked out under `.claude/worktrees/`
 (`agent-a434962d801ff1b5c`, `agent-a997b4af124c6f91f`), running any `nx` target in the SHARED
