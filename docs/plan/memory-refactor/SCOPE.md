@@ -16,14 +16,25 @@ to its genuinely-unique domain glue.
 ## Part A — Package decomposition (`memory-core`/`memory-enrich` dissolve)
 Extract along verb/substrate seams (each independently reusable, no "memory" in its name):
 - **`embedding-provider`** — text→vector; model **resolution** (config-driven swap); runtime; exposes
-  `embed(text)→Float32Array` + `{providerId, modelId, dim, isDeterministic}`. The **deterministic
-  variant lives here as a first-class provider** (where the BL-86 degeneracy fix goes), not a scattered
-  fallback. Loud-fail enforcement: resolver throws if the configured real provider can't load.
+  `embed(text)→Float32Array` (+ batch `string[]→async generator`) + `{providerId, modelId, dim,
+  isDeterministic, isRemote}`. The **deterministic variant lives here as a first-class provider** (where
+  the BL-86 degeneracy fix goes), not a scattered fallback. Loud-fail: resolver throws if the configured
+  real provider can't load.
+  **Multi-model + multi-context from the gate (owner directive):** the contract is designed + implemented
+  to be valid for BOTH **local** (in-process) and **remote** (network) providers — async, batch-first, no
+  in-process assumptions. Ship **≥3 local fastembed models spanning dims** now (e.g. bge-small 384,
+  bge-base 768, e5-large 1024) — real + tested — to prove the interface is genuinely model-agnostic AND
+  to force `dim` parameterization (see invariant). Implement a **remote provider adapter against the same
+  contract but NOT wired to a live/paid endpoint** (typed reference impl; no F3 spend, not live-tested) —
+  enough to prove context-agnosticism, not to incur remote cost.
 - **`vector-store`** — `vec0` persistence + kNN/cosine; **enforces the space invariant** (rejects a
   vector whose `dim`/`modelId` ≠ the column's). Owns per-record `modelId` (→ BL-88 provenance).
 - **`graph-store`** — bi-temporal nodes+edges + content-hash + FTS-sync.
 - **`hybrid-search`** — the vec+BM25+temporal-decay fusion ranker (generic IR).
-- **`analysis`** — clustering, near-dup, importance/link-scoring (batch derivation).
+- **`analysis`** — clustering, near-dup, importance/link-scoring (batch derivation). **Clustering runs in
+  pure JS, in-process — NOT a SQLite extension:** read vectors out of vector-store → cluster via an
+  existing JS lib (`density-clustering`/`hdbscanjs`), don't hand-roll DBSCAN/HDBSCAN. The package's value
+  is the deterministic, zero-LLM, `modelId`-provenance-aware *integration*, not reimplementing the algorithm.
 - **`ingest`** — write-path single-item transforms (content-hash, extractive-summary, tagging, future
   chunk/normalize).
 - **memory domain** = what remains (session-state, scope/promotion policy, the `memory_*` tool surface)
@@ -80,7 +91,12 @@ sharpen the `data/*` package contracts and bound what to build NOW vs later.
   addition to single — `fastembed-js` (the runtime the quickfix wires in) solves serial-inference; a
   per-query single embed is the N×latency footgun.
 - Optional `queryEmbed` (query-optimized) + a **startup Map cache** for hot/topic embeddings.
-- Models are bundled-ONNX (BGE-base-en-v1.5 default, 384/768 dims); the provider abstracts model choice.
+- Models are bundled-ONNX; **ship ≥3 spanning dims (384/768/1024) from the gate** so the interface is
+  validated against >1 model and `dim` is provably parameterized. The contract is **local‖remote-agnostic**
+  (async, batch, `isRemote`); the remote provider is a contract-conformant adapter, not a live/paid impl.
+- **`dim` parameterization is now MANDATORY, not latent:** with a 384 and a 1024 model in the suite, the
+  legacy hard-coded `vec0 FLOAT[768]` MUST be derived from the active provider's `dim` (the latent bug the
+  plan flagged becomes a real failure the moment a non-768 model is exercised).
 
 **`vector-store`**
 - **Don't build ANN now.** `sqlite-vec` brute-force is sub-ms at <50K rows; the dominant cost is
