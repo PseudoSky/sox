@@ -63,9 +63,19 @@ Two-level `area/group/package` layout (so nx module-boundary tags enforce `data/
 Layout standard (the contract both the external generator and the scaffold script honor — full detail in
 the handoff packet): place under `libs/<area>/<group>/<name>/`; stamp `area:*`+`group:*` nx tags +
 `sox:{area,group,concerns,invariants,entrypoints}` metadata; **published npm name decoupled from path**
-(a rename breaks the content-address/registry contract); `data/*`+`shared/*` default public-ready (publish
-action owner-gated). Module-boundary depConstraints: `data→data|shared`, `platform→platform|shared`,
-`shared→shared`.
+(a rename breaks the content-address/registry contract). Module-boundary depConstraints:
+`data→data|shared`, `platform→platform|shared`, `shared→shared`.
+
+**Publish posture — 3 PUBLIC / 3 PRIVATE (refines F1; governed by ADR-0006).** Publish only packages with
+standalone third-party reuse value: **PUBLIC = `embedding-provider`, `vector-store`, `hybrid-search`**
+(public@0.x, publish owner-gated); **PRIVATE = `graph-store`, `analysis`, `ingest`** (`private:true`,
+never published — thin schema/algorithm-wrapper/transform libs). A public package depends on a private
+`@adhd` lib ONLY by **bundling its (stateless) code** (esbuild inline, Model A) — published public
+artifacts carry **zero `@adhd` runtime deps**, externalizing only native deps. **`hybrid-search` bundles
+`graph-store` + `vector-store` query helpers, externalizes `better-sqlite3`/`sqlite-vec`, and takes the
+`Database` via DI** — so `graph-store` stays private. `analysis` depends on a JS clustering lib +
+`vector-store`/`graph-store` (bundled). Live objects (DB connection, provider, vectors) cross via DI over
+shared externalized native deps, never via duplicated stateful bundled code.
 
 **Removed from this plan's scope:** building the `--area`/`--group` generator (now the external team's).
 This plan consumes it + the scaffold script; its migration states relocate existing libs into the layout

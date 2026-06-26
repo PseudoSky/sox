@@ -105,6 +105,31 @@ registry checksum stale and the global install will refuse to upgrade (C2/C4 rea
 
 ---
 
+## ⛔ AGENT CONSTRAINT — PUBLIC PACKAGES BUNDLE PRIVATE INTERNALS; LIVE OBJECTS CROSS VIA DI
+
+Governed by **[ADR-0006](./docs/decisions/0006-public-bundles-private-and-di-for-live-objects.md)**
+(with ADR-0003 identity + ADR-0005 publishing). When deciding whether a lib/package is published:
+
+- **Publish a package as PUBLIC (`private:false` + `publishConfig.access:public`) ONLY if a third party
+  can meaningfully `npm i` and use it standalone.** Everything else stays **PRIVATE** (`private:true`) —
+  extracted for structure, never published. Don't push thin schema/util/algorithm-wrapper libs onto the
+  public, semver-bound, one-way-door surface.
+- **A public package may depend on a private `@adhd/sox-*` lib ONLY by BUNDLING its code** (esbuild
+  inline via `tools/bundle-extension.cjs`, exactly like extensions — Model A). A published public artifact
+  MUST have **zero `@adhd/sox-*` in runtime `dependencies`**; only true third-party/native deps
+  (`better-sqlite3`, `sqlite-vec`, `fastembed`, `onnxruntime-node`, …) are `--external` + real deps. A
+  private `@adhd` dep in a public package's published `dependencies` is the bug (it 404s on `npm i`).
+- **Bundle only STATELESS code. Cross live/identity-sensitive objects via DEPENDENCY INJECTION** — an open
+  DB connection, a provider instance, anything `instanceof`-checked or singleton — passed in by the
+  composer over a **shared, externalized native dep**, NEVER via duplicated stateful bundled code (the
+  dual-package / multiple-copies hazard).
+- **Public libs still ship bundled `.d.ts`** (a bundle is not an excuse to drop types).
+- **Decision rule:** *"Does a third party gain from installing this alone?"* yes → public (bundle its
+  private deps); no → private (get bundled by whoever needs you). `check-publishable` enforces the
+  zero-`@adhd`-runtime-dep shape; stateless-bundle + DI-for-live-objects is a review rule.
+
+---
+
 A monorepo for an **LLM-extension ecosystem**: independently-versioned extensions of 8 types
 (`agent`, `skill`, `mcp-server`, `service`, `prompt`, `hook`, `command`, `bundle`), installed across scopes
 (`org`/`user`/`project`/`local`) and run by a host runtime. CLI: `bin/soxe`. Engine: `scripts/`.
