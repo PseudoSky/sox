@@ -31,7 +31,7 @@
 
 ## 1 · Cold Open — The Hook
 
-🎬 **Scene.** Every retrieval system forces a choice: keyword search finds exact terms but misses meaning; vector search captures semantics but buries precise matches; neither degrades gracefully when the other breaks. Riya is a backend engineer building an internal knowledge-base retrieval API. She cannot run a separate vector database, and she cannot afford for search to go dark if the embedding model misbehaves. `@adhd/sox-hybrid-search` fuses all three signals — vector cosine, BM25/FTS5, and temporal recency — into a single normalized score, bundles everything it needs into the tarball, and takes the SQLite `Database` her application already owns via dependency injection. Zero extra service, zero `@adhd` runtime dependencies.
+🎬 **Scene.** Every retrieval system forces a choice: keyword search finds exact terms but misses meaning; vector search captures semantics but buries precise matches; neither degrades gracefully when the other breaks. Riya is a backend engineer building an internal knowledge-base retrieval API. She cannot run a separate vector database, and she cannot afford for search to go dark if the embedding model misbehaves. `@adhd/sox-hybrid-search` fuses all three signals — vector cosine, BM25/FTS5, and temporal recency — into a single normalized score, depends on `@adhd/sox-graph-store` and `@adhd/sox-vector-store` (both public packages on npm), and takes the SQLite `Database` her application already owns via dependency injection. Zero extra service; one `npm install` resolves the full public `@adhd` dependency tree.
 
 > **The promise we will prove in the next 25 minutes:** a hybrid query beats both pure-keyword and pure-vector search on a fixture designed so each alone picks the wrong top result — and the package keeps returning results even when vectors go down.
 
@@ -86,7 +86,7 @@ added <N> packages, and audited <N> packages in <T>s
 found 0 vulnerabilities
 ```
 
-Then confirm no extra `@adhd` runtime dependencies were installed:
+Then confirm the three public `@adhd` packages installed and no private ones leaked:
 
 ```bash
 npm ls --depth=0 2>/dev/null | grep '@adhd/'
@@ -94,17 +94,20 @@ npm ls --depth=0 2>/dev/null | grep '@adhd/'
 
 👀 **Expect**
 ```
+@adhd/sox-graph-store@⟨0.x.x⟩
 @adhd/sox-hybrid-search@⟨0.x.x⟩
+@adhd/sox-vector-store@⟨0.x.x⟩
 ```
 
 ✅ **Verify**
 - [ ] `npm install` exits 0 with "found 0 vulnerabilities"
 - [ ] `ls node_modules/@adhd/sox-hybrid-search` prints the package directory (no ENOTFOUND / 404)
-- [ ] `npm ls --depth=0 | grep '@adhd/'` shows exactly one line: `@adhd/sox-hybrid-search@...` — no `@adhd/sox-graph-store`, `@adhd/sox-vector-store`, or other `@adhd/*` entries
-- [ ] `better-sqlite3` appears in `npm ls --depth=1` (transitively installed from the package)
+- [ ] `npm ls --depth=0 | grep '@adhd/'` shows exactly three lines: `@adhd/sox-graph-store`, `@adhd/sox-hybrid-search`, `@adhd/sox-vector-store` — all resolved from the public npm registry (no 404)
+- [ ] No additional `@adhd/sox-*` entries beyond these three appear (no private packages leaked as runtime deps)
+- [ ] `better-sqlite3` appears in `npm ls --depth=1` (transitively installed as a native dep)
 
 🔗 **Proves:** REQ-001 · CAP-001
-📎 **Source:** `docs/plan/memory-refactor/SCOPE.md` Part A publish posture (3 PUBLIC / 3 PRIVATE); `docs/decisions/0006-public-bundles-private-and-di-for-live-objects.md` §Decision 2; `docs/plan/memory-refactor/contexts/w2d-hybrid-search.md` §Packaging; `docs/plan/memory-refactor/scripts/pack-smoke.mjs` §hybrid-search smoke
+📎 **Source:** `docs/plan/memory-refactor/SCOPE.md` Part B "5 PUBLIC / 1 PRIVATE" publish posture; `docs/plan/memory-refactor/contexts/w2d-hybrid-search.md` §Packaging; `docs/plan/memory-refactor/scripts/pack-smoke.mjs` §hybrid-search smoke
 
 ---
 
@@ -112,7 +115,7 @@ npm ls --depth=0 2>/dev/null | grep '@adhd/'
 
 ### Act 1 — Schema Setup and Fixture Seeding
 
-Riya has installed the package. `@adhd/sox-hybrid-search` bundles the schema helpers for both the FTS5 node table and the vector store. She calls them on her injected `Database` handle — no DDL to write, no `@adhd` packages to import separately.
+Riya has installed the package. The schema helpers for the FTS5 node table and the vector store are available from the public peer packages (`@adhd/sox-graph-store`, `@adhd/sox-vector-store`) and may be re-exported as convenience imports from `@adhd/sox-hybrid-search`. She calls them on her injected `Database` handle — no DDL to write, no separate service to run.
 
 #### 1.1 · Apply Schema (happy)
 
@@ -141,7 +144,7 @@ console.log(JSON.stringify(tables));
 - [ ] Exit code 0; no error thrown
 
 🔗 **Proves:** REQ-007 · CAP-007
-📎 **Source:** ⟦U1⟧ inferred — see UNRESOLVED.md; `docs/decisions/0006-public-bundles-private-and-di-for-live-objects.md` §Decision 3 (DI for live objects, bundled stateless helpers); `docs/plan/memory-refactor/contexts/w2d-hybrid-search.md` §Packaging
+📎 **Source:** ⟦U1⟧ inferred — see UNRESOLVED.md; `docs/plan/memory-refactor/SCOPE.md` Part B (graph-store + vector-store now PUBLIC); `docs/plan/memory-refactor/contexts/w2d-hybrid-search.md` §Packaging; ADR-0006 §Decision 3 (DI for live Database)
 
 #### 1.2 · Seed Fixture (happy)
 
@@ -636,7 +639,7 @@ Teardown complete
 - [ ] No lingering `node` processes associated with this demo (check with `pgrep -af hs-demo`; expect empty)
 
 🔗 **Proves:** REQ-001 · CAP-001
-📎 **Source:** `docs/plan/memory-refactor/contexts/w2d-hybrid-search.md` §Packaging (stateless install, DI — no daemon, no side effects, no persistent state)
+📎 **Source:** `docs/plan/memory-refactor/contexts/w2d-hybrid-search.md` §Packaging (DI for live Database — no daemon, no side effects, no persistent state beyond the caller's own DB file)
 
 ---
 
@@ -646,7 +649,7 @@ Teardown complete
 
 | Req ID | Requirement (short) | Proven by beat(s) | Paths covered (H/E/R) | Status |
 |---|---|---|---|---|
-| REQ-001 | Standalone install — zero `@adhd` runtime deps | §2.4, §6 | H | ☐ |
+| REQ-001 | Standalone install — public `@adhd` dep tree resolves from npm | §2.4, §6 | H | ☐ |
 | REQ-002 | Fused ranked recall (vec + BM25 + temporal decay) | §2.1, §5.1, §5.2, climax | H/E | ☐ |
 | REQ-003 | Normalize-before-combine — scores in [0, 1] | §2.1, §4.2, climax | H/E | ☐ |
 | REQ-004 | Multiplicative field boosting (topic 2.0 / name 1.2 / …) | §2.2, climax | H | ☐ |
@@ -661,7 +664,7 @@ Teardown complete
 
 | Cap ID | Capability | Proven by beat(s) | Status |
 |---|---|---|---|
-| CAP-001 | Standalone install, zero @adhd runtime deps | §2.4, §6 | ☐ |
+| CAP-001 | Standalone install — public @adhd dep tree resolves | §2.4, §6 | ☐ |
 | CAP-002 | Hybrid recall (vec + BM25 + temporal fusion) | §2.1, §5.1, §5.2, climax | ☐ |
 | CAP-003 | Normalize-before-combine scoring | §2.1, §4.2, climax | ☐ |
 | CAP-004 | Multiplicative field boosting | §2.2, climax | ☐ |
