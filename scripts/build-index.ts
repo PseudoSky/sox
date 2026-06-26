@@ -70,6 +70,8 @@ const DIR_TO_TYPE: Record<string, string> = {
   agents: 'agent',
   skills: 'skill',
   'mcp-servers': 'mcp-server',
+  // BL-80: service is a first-class type; extensions/services/ must be scanned.
+  services: 'service',
   prompts: 'prompt',
   hooks: 'hook',
   commands: 'command',

@@ -35,13 +35,14 @@ const committedRaw = fs.readFileSync(registryPath, 'utf8');
 
 // ─── Mirror of scripts/build-index.ts (read-only) ────────────────────────────
 
-// MUST match scripts/build-index.ts DIR_TO_TYPE exactly. build-index does NOT
-// scan extensions/services/, so neither does this gate — adding a type here
-// that build-index omits would create false drift in the opposite direction.
+// MUST match scripts/build-index.ts DIR_TO_TYPE exactly (BL-33 mirror invariant).
+// Any type added to build-index MUST be added here in the same commit.
 const DIR_TO_TYPE: Record<string, string> = {
   agents: 'agent',
   skills: 'skill',
   'mcp-servers': 'mcp-server',
+  // BL-80: service is a first-class type; extensions/services/ must be scanned.
+  services: 'service',
   prompts: 'prompt',
   hooks: 'hook',
   commands: 'command',

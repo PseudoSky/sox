@@ -122,7 +122,7 @@ worktree will fail the mcp-runtime dependency.
 `node_modules` (run `pnpm install` from the repo root), OR mark mcp-runtime's deps as
 `optional` in pnpm-workspace so the worktree setup doesn't require it.
 
-### BL-80 — `service`-type extensions are NEVER scanned into the registry → cannot be `soxe install`ed by id — **Open (MEDIUM) bug** (surfaced writing the authoring guide, 2026-06-26)
+### BL-80 — `service`-type extensions are NEVER scanned into the registry → cannot be `soxe install`ed by id — **RESOLVED 2026-06-26**
 
 **Observed:** `scripts/build-index.ts` `DIR_TO_TYPE` (and its `check-registry-sync.ts` mirror) has
 no `services` key, so `extensions/services/` is never walked. The shipped `service` extension
@@ -131,23 +131,37 @@ support) is **absent from `registry/index.json`** and therefore cannot be resolv
 a whole active extension type is uninstallable through the registry. (tokenguard is `private:true`,
 so under the publish signal it would still be omitted, but in dev it should appear as `file://`.)
 
-**Fix sketch:** add `services: 'service'` to `DIR_TO_TYPE` in `scripts/build-index.ts` AND the
-BL-33 mirror in `scripts/check-registry-sync.ts` (they must stay identical), then
-`npx nx run registry:sync-index`. Add a test asserting a `service`-type extension lands in the
-registry. Confirms the authoring guide's `service` section is actually installable.
+**Fix (2026-06-26):** Added `services: 'service'` to `DIR_TO_TYPE` in `scripts/build-index.ts`
+AND its BL-33 mirror in `scripts/check-registry-sync.ts` (identical entries, same commit).
+Ran `npx nx run registry:sync-index` → registry grew from 15 to 16 entries with tokenguard
+appearing as `type: service`, `source: file://...`. Dev gate (`check-registry-sync`) green
+(16 entries). Publish gate (`SOX_REGISTRY_PUBLISH=npm`) green (7 entries; tokenguard correctly
+omitted because `package.json` is `private: true`). `soxe validate ./extensions/services/tokenguard`
+passes. New test `scripts/build-index.test.ts` (6 tests) covers: service dir walk, multi-type
+index, private skip, multiple services, stray-dir skip, and BL-33 mirror parity check.
 
-### BL-81 — `USAGE.md` says "`service` is not a type — it's an mcp-server install profile"; the code treats `service` as a first-class type — **Open (LOW) docs/consistency** (2026-06-26)
+### BL-81 — `USAGE.md` says "`service` is not a type — it's an mcp-server install profile"; the code treats `service` as a first-class type — **RESOLVED 2026-06-26**
 
-**Observed:** `USAGE.md` (~line 203-205) contradicts the code: `service` IS in the schema enum,
-`ACTIVE_TYPES`, `validate()`, has a dedicated `serviceTemplate`, and ships as `tokenguard`. The new
-`docs/guidelines/authoring.md` documents `service` as first-class (matching code). Reconcile USAGE.md.
-(USAGE.md is currently owned by the bldocs agent — fold this in there or as a follow-up.)
+**Observed:** `USAGE.md` contradicted the code: `service` IS in the schema enum, `ACTIVE_TYPES`,
+`validate()`, has a dedicated `serviceTemplate`, and ships as `tokenguard`. The
+`docs/guidelines/authoring.md` already documented `service` as first-class (matching code).
 
-### BL-82 — `libs/manifest/src/schema.json` drift: `install.type` enum omits `service`; `install.transports` missing under `additionalProperties:false`, yet `validate()` + `tokenguard` use both — **Open (LOW) consistency** (2026-06-26)
+**Fix (2026-06-26):** Updated `USAGE.md` to add `service` to the active types list and replace
+the incorrect "not a type / mcp-server install profile" description with accurate text:
+"`service` is a first-class type — a long-running process extension supervised by the sox host
+runtime". Also updated the authoring lifecycle `Run for each of:` line to include `service`.
+
+### BL-82 — `libs/manifest/src/schema.json` drift: `install.type` enum omits `service`; `install.transports` missing under `additionalProperties:false`, yet `validate()` + `tokenguard` use both — **RESOLVED 2026-06-26**
 
 **Observed:** the hand-rolled `validate()` is authoritative and accepts `install.type:service` +
-`install.transports`, but the JSON `schema.json` is stale (would reject tokenguard). Update
-`schema.json` to match `validate()` (add `service` to the enum, add `transports`).
+`install.transports`, but the JSON `schema.json` was stale (would reject tokenguard under strict
+JSON Schema validation).
+
+**Fix (2026-06-26):** Added `"service"` to `install.type` enum in `libs/manifest/src/schema.json`.
+Added `transports` property to `install` with vocab `["stdio","http","sse","socket"]` matching
+`validate()`'s `VALID_TRANSPORTS`. Built manifest (`npx nx build manifest`) and ran
+`npx nx test manifest` — 152/152 unit tests + 110/110 validate-manifests tests green.
+`soxe validate ./extensions/services/tokenguard` passes cleanly.
 
 ### BL-83 — `libs/authoring/src/index.ts` comment says "union of 6 active extension types" but `ACTIVE_TYPES` lists 7 — **Open (LOW) cosmetic** (2026-06-26)
 
