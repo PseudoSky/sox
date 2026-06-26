@@ -1,5 +1,16 @@
 # @adhd/sox-cli
 
+## 1.1.1
+
+### Patch Changes
+
+- Embedded registry fix: the published CLI now embeds the **portable** registry
+  (`npm-package:` locators for the 7 published extensions only), not checkout-bound
+  `file://` dev paths. `build-index`/`check-registry-sync` now gate the `npm-package:`
+  rewrite on `private !== true` and omit private/unpublished extensions from the
+  published registry entirely — so a fresh `npm i -g @adhd/sox-cli` resolves
+  `sox-memory-bundle` from npm with no `/Users` leak and no dangling locators.
+
 ## 1.1.0
 
 ### Minor Changes

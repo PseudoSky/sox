@@ -138,9 +138,10 @@ function resolveDisplayVersion(extDir: string): string {
 function resolveSource(extDir: string, manifest: Manifest): string {
   const pkgPath = path.join(extDir, 'package.json');
   if (fs.existsSync(pkgPath)) {
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string };
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string; private?: boolean };
     const pkgName = pkg.name ?? `@adhd/sox-extension-${manifest.id}`;
-    if (process.env['SOX_REGISTRY_PUBLISH']) {
+    // Mirror build-index: only NON-PRIVATE (published) packages get an npm-package: locator.
+    if (process.env['SOX_REGISTRY_PUBLISH'] && pkg.private !== true) {
       return `npm-package:${pkgName}@${resolveDisplayVersion(extDir)}`;
     }
     if (manifest.checksum) {
@@ -181,13 +182,19 @@ function buildLiveEntries(): unknown[] {
 
     if (manifest.private === true) continue;
 
+    const source = resolveSource(extDir, manifest);
+
+    // Mirror build-index: under the publication signal, omit any entry whose source
+    // is still file:// (private / unpublished package — not installable from npm).
+    if (process.env['SOX_REGISTRY_PUBLISH'] && source.startsWith('file://')) continue;
+
     const entry: Record<string, unknown> = {
       id: manifest.id,
       type: manifest.type,
       version: resolveDisplayVersion(extDir),
       title: manifest.title,
       description: manifest.description,
-      source: resolveSource(extDir, manifest),
+      source,
       checksum: resolveChecksum(extDir, manifest),
       compatibility: manifest.compatibility,
     };

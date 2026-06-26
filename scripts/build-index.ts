@@ -158,7 +158,7 @@ function findExtensionDirs(root: string): Array<{ extPath: string; bundleId?: st
 function resolveSource(extDir: string, manifest: ExtensionManifest): string {
   const pkgPath = path.join(extDir, 'package.json');
   if (fs.existsSync(pkgPath)) {
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string; version?: string };
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string; version?: string; private?: boolean };
     const pkgName = pkg.name ?? `@adhd/sox-extension-${manifest.id}`;
 
     // D-D / Slice 3 — PUBLICATION SIGNAL. Set SOX_REGISTRY_PUBLISH (e.g. "npm")
@@ -170,7 +170,11 @@ function resolveSource(extDir: string, manifest: ExtensionManifest): string {
     // (better-sqlite3, sqlite-vec) resolve on the target — which the single-file
     // CDN fetch cannot deliver. ADR-0003/0005: the version here only SELECTS the
     // bytes; the checksum (resolveChecksum, unchanged) is the integrity authority.
-    if (process.env['SOX_REGISTRY_PUBLISH']) {
+    // Only NON-PRIVATE packages are actually published to npm. A private package
+    // (example/test fixture, internal-only extension) is never on the registry, so
+    // emitting an `npm-package:` locator for it would dangle (npm 404 on install).
+    // Those keep a checkout-bound file:// source — clearly not installable from npm.
+    if (process.env['SOX_REGISTRY_PUBLISH'] && pkg.private !== true) {
       return `npm-package:${pkgName}@${resolveDisplayVersion(extDir)}`;
     }
 
@@ -269,6 +273,18 @@ export function buildIndex(opts: { root: string }): IndexEntry[] {
     }
 
     const source = resolveSource(extDir, manifest);
+
+    // Under the publication signal, a source that is STILL file:// means the package
+    // is private/unpublished (resolveSource only emits an npm-package: locator for a
+    // non-private, published package). Such an extension is not installable from npm,
+    // so OMIT it from the PORTABLE/published registry entirely — never ship an entry
+    // with a checkout-bound /Users path in the embedded CLI registry (the fresh-machine
+    // "no /Users path" + "no dangling npm-package:" invariants).
+    if (process.env['SOX_REGISTRY_PUBLISH'] && source.startsWith('file://')) {
+      console.log(`build-index: [publish] omitting unpublished extension "${manifest.id}" (private / no npm package)`);
+      continue;
+    }
+
     const checksum = resolveChecksum(extDir, manifest);
 
     const entry: IndexEntry = {
