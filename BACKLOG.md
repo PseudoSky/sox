@@ -106,6 +106,25 @@ the id, then re-pins/re-places everything already declared), not just the named 
 **Fix sketch:** remove/guard the hardcoded `/Users/nix/dot/bin/node` cleanup in the `init`
 codepath so the scaffolder emits no spurious error.
 
+### BL-76 — published `@adhd/sox-cli` dist omits `build-info.json`; fresh-machine `soxe serve` prints a BL-65 warning + git-root walk fails — **Open (LOW) packaging** (surfaced verifying the first npm publish, 2026-06-26)
+
+**Observed:** the real-npm clean-room install of `@adhd/sox-cli@1.1.1` (no checkout) works
+end-to-end (G1/G2/G3 all PASS, `memory_ping` `{ok:true, artifact:sha256:00cefb04…}`), but
+`soxe serve` emits two benign-but-noisy lines on a fresh machine:
+1. `BL-65 WARNING: dist/apps/sox/build-info.json missing — this dist was built before
+   sha-stamping was added` — the `stamp-build.cjs` output (`build-info.json`) is **not in the
+   published tarball** (`apps/sox` `files` allowlist / esbuild outdir ships `dist/index.js`
+   but not the sibling `build-info.json` written to `dist/apps/sox/`). So the published CLI
+   always thinks it's an unstamped/dirty build.
+2. `fatal: not a git repository` — the project-root git-root walk runs (and fails gracefully)
+   on a non-git fresh dir; same root cause as **BL-73** (project-root resolution must not rely
+   on git). Here `--scope user` made it irrelevant, but it's noise.
+
+**Fix sketch:** (1) include the build-info stamp in the CLI bundle — have `embed-registry`/
+`stamp-build` write `build-info.json` to the SAME `apps/sox/dist/` dir esbuild ships and add it
+to `files`, or inline the sha into the bundle so no sidecar file is needed; (2) suppress the
+git-root `fatal:` chatter (capture stderr) — folds into BL-73. Neither blocks the release.
+
 ---
 
 ## Resolved — regressions from the proxy-default flip, fixed 2026-06-25
