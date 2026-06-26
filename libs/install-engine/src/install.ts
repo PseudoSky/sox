@@ -488,7 +488,11 @@ export interface InstallOptions {
 
 export async function install(opts: InstallOptions): Promise<ResolvedSet> {
   const root = opts.root ?? REPO_ROOT;
-  const scopePaths = getScopePath(opts.scope);
+  // BL-73: derive config/lockfile paths from the caller-supplied root, not from the
+  // module-level REPO_ROOT constant. For user scope, scopeConfigPaths ignores root
+  // and returns userDataRoot() — unchanged. For project/local, root is honoured so
+  // bookkeeping lands under the target project, not the CLI's own repo.
+  const scopePaths = scopeConfigPaths(opts.scope, root);
   const configPath = opts.configPath ?? scopePaths.config;
   const lockPath = opts.lockfilePath ?? scopePaths.lockfile;
 
@@ -521,6 +525,7 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
     singleScopeOnly,
     existingLock,
     mode: opts.mode,
+    root,
   });
   const cascadedConfig = cascade(allScopeConfigs as CascadeScopeConfig[]);
 
@@ -785,10 +790,12 @@ interface CascadeOpts {
   singleScopeOnly: boolean;
   existingLock: Lockfile | null;
   mode: InstallMode;
+  /** Project/local root used to derive the correct data-path for each scope (BL-73). */
+  root: string;
 }
 
 async function loadScopeCascade(opts: CascadeOpts): Promise<ScopeConfigWithMeta[]> {
-  const { scope, primaryConfig, singleScopeOnly, existingLock, mode } = opts;
+  const { scope, primaryConfig, singleScopeOnly, existingLock, mode, root } = opts;
   const configs: ScopeConfigWithMeta[] = [];
 
   if (primaryConfig.extends !== undefined) {
@@ -829,7 +836,9 @@ async function loadScopeCascade(opts: CascadeOpts): Promise<ScopeConfigWithMeta[
     const s = scopeOrder[i];
     if (s === undefined || s === 'org') continue;
 
-    const paths = getScopePath(s);
+    // BL-73: use the caller-supplied root so project/local scope reads from the
+    // correct project directory, not the CLI's own REPO_ROOT.
+    const paths = scopeConfigPaths(s, root);
     const config = loadConfig(paths.config);
     if (config !== null) {
       configs.push(config);
