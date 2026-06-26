@@ -43,8 +43,20 @@ import {
   reapByIdentity,
   type StoreResource,
   type ScopeResource,
+  // Slice 2 (docs/spec/service-lifecycle.md §9): OS-supervisor control surface.
+  getOsUnitPlatform,
+  detectOsSupervisor,
+  osUnitLabel,
+  deriveOsUnitSpec,
+  resolveUnitNodePath,
+  enableOsUnit,
+  disableOsUnit,
+  unloadThenReap,
+  realOsExec,
+  type OsUnitPlatform,
+  type OsSupervisor,
 } from '@adhd/sox-host-runtime';
-import type { DeclarativeInstallResult, InstallDescriptor, InstallRecord, Scope, UpdateCtx } from '@adhd/sox-install-engine';
+import type { DeclarativeInstallResult, InstallDescriptor, InstallRecord, OwnedEntry, Scope, UpdateCtx } from '@adhd/sox-install-engine';
 import {
   DeclarativeDeniedError,
   declarativeInstall,
@@ -113,6 +125,9 @@ async function main(): Promise<void> {
       break;
     case 'serve':
       await cmdServe(flags);
+      break;
+    case 'service':
+      await cmdService(argv, flags);
       break;
 
     // ── Config management ─────────────────────────────────────────────────────
@@ -319,6 +334,11 @@ Runtime:
                      Flags: --scope=<scope>  --id=<ext-id>
   serve              Launch a stdio MCP server with live cascade config (for .mcp.json)
                      Flags: --scope=<scope>  --root=<dir>
+  service            OS-supervisor control (launchd/systemd) for reboot persistence
+                     Sub: enable | disable | status | list   (spec §9, Slice 2)
+                     Flags: --scope=<scope>  --dry-run  --unit-dir=<dir>
+                            --supervisor=<launchd|systemd>  --node-path=<path>
+                            --allow-volatile-node
   exec               Call a tool on a running extension (A11: via running server)
                      Flags: --scope=<scope>  --id=<ext-id>  --tool=<tool>  --args='<json>'
   list               List activated extensions
@@ -2020,7 +2040,45 @@ async function rollingRestartConsumer(
     return { disposition: 'restarted', detail: `START FAILED (exit ${String(start.status)})` };
   }
 
+  // §9.3 [inv:os-unit-content-addressed]: if this service has an owned OS unit,
+  // re-enable it so the unit follows the NEW artifact (content-addressed — a no-op
+  // when the rendered unit is unchanged).
+  reEnableOwnedOsUnit(extId, scope, root, log);
+
   return { disposition: 'restarted', detail: 'verified-stop → start on new artifact (no orphan)' };
+}
+
+/**
+ * §9.3: re-`enable` an extension's OS unit on upgrade so it tracks the new artifact.
+ * No-op when no OS unit is owned for (extId, scope). Content-addressed: enableOsUnit
+ * rewrites + reloads only when the generated unit differs. Honors SOX_OS_UNIT_DIR.
+ */
+function reEnableOwnedOsUnit(extId: string, scope: string, root: string, log: (m: string) => void): void {
+  const pathM = require('node:path') as typeof import('node:path');
+  let owned;
+  try {
+    const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
+    owned = own.get(extId, scope)?.entries.find((e) => e.kind === 'os-unit');
+  } catch {
+    return;
+  }
+  if (!owned || owned.kind !== 'os-unit') return;
+  const ctx = resolveOsUnitContext(extId, scope, root, {});
+  if (!ctx) return;
+  const unitDir = process.env['SOX_OS_UNIT_DIR'] ?? pathM.dirname(owned.unitPath);
+  const r = enableOsUnit(ctx.spec, ctx.platform, { unitDir, load: true, log: (m) => log(`os-unit: ${m}`) });
+  if (r.action !== 'unchanged') {
+    try {
+      const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
+      const rec = own.get(extId, scope);
+      if (rec) {
+        const kept: OwnedEntry[] = rec.entries.filter((e) => e.kind !== 'os-unit');
+        kept.push({ kind: 'os-unit', label: ctx.spec.label, unitPath: r.unitPath, supervisor: ctx.platform.kind, appliedHash: r.contentHash });
+        own.record({ extId, scope, entries: kept, ...(rec.host !== undefined ? { host: rec.host } : {}) });
+        own.save();
+      }
+    } catch { /* best-effort */ }
+  }
 }
 
 interface ConsumerOutcome {
@@ -2448,6 +2506,32 @@ Options:
     } catch (e) {
       process.stderr.write(`${CLI} uninstall: config reversal aborted: ${String(e)}\n`);
       process.exit(1);
+    }
+
+    // 2a. Tear down any owned OS unit FIRST (§9.4 / [inv:reversible-injection]
+    //     extends to OS units): unload-then-reap, then delete the unit file —
+    //     BEFORE the store is removed (else launchd could respawn against a
+    //     half-deleted store). [inv:unload-then-reap].
+    for (const entry of owned.entries) {
+      if (entry.kind !== 'os-unit') continue;
+      const platform = getOsUnitPlatform(entry.supervisor);
+      const unitDir = process.env['SOX_OS_UNIT_DIR'] ?? pathMod.dirname(entry.unitPath);
+      // Resolve the entrypoint identity token for the survivor reap (best-effort).
+      const ctx = resolveOsUnitContext(id, scope, root, {});
+      if (ctx?.entrypoint) {
+        const res = await unloadThenReap({
+          label: entry.label,
+          entrypoint: ctx.entrypoint,
+          platform,
+          unitDir,
+          excludePids: [process.pid],
+          log: (m) => process.stdout.write(`${CLI} uninstall: ${m}\n`),
+        });
+        if (res.undead) {
+          process.stderr.write(`${CLI} uninstall: warning: a survivor of '${entry.label}' could not be confirmed dead\n`);
+        }
+      }
+      disableOsUnit(entry.label, platform, { unitDir, log: (m) => process.stdout.write(`${CLI} uninstall: ${m}\n`) });
     }
 
     // 2. Remove owned file-drops and materialized stores directly.
@@ -3669,6 +3753,52 @@ async function reapUntrackedProxyBackends(opts: {
   return { killedAny, undead };
 }
 
+/**
+ * [inv:unload-then-reap] (§8.4/§8.5) for `sox stop`: before the identity reap
+ * runs, UNLOAD any OS unit (launchd/systemd) sox owns for the target service(s),
+ * so the OS supervisor will NOT immediately respawn the pid the reap is about to
+ * kill (the F3 resurrection loop). The unit FILE is left in place (stop is not
+ * disable — the unit persists for the next start/boot); only `sox service disable`
+ * / `sox uninstall` remove it. Best-effort + scope-scanning: an os-unit may exist
+ * in any scope's ownership index.
+ */
+function unloadOwnedOsUnitsBeforeReap(opts: {
+  root: string;
+  onlyId?: string | undefined;
+  log: (m: string) => void;
+}): void {
+  const pathM = require('node:path') as typeof import('node:path');
+  for (const sc of ['org', 'user', 'project', 'local'] as const) {
+    let dir: string;
+    try {
+      dir = dataRoot(sc as DataScope, opts.root);
+    } catch {
+      continue;
+    }
+    let own: OwnershipIndex;
+    try {
+      own = OwnershipIndex.loadFromFile(pathM.join(dir, 'ownership.json'));
+    } catch {
+      continue;
+    }
+    for (const rec of own.all()) {
+      if (opts.onlyId !== undefined && rec.extId !== opts.onlyId) continue;
+      for (const e of rec.entries) {
+        if (e.kind !== 'os-unit') continue;
+        const platform = getOsUnitPlatform(e.supervisor);
+        const unitDir = process.env['SOX_OS_UNIT_DIR'] ?? pathM.dirname(e.unitPath);
+        if (!platform.isLoaded(e.label, realOsExec)) continue;
+        // Unload only (removeFile:false) — stop ≠ disable.
+        disableOsUnit(e.label, platform, {
+          unitDir,
+          removeFile: false,
+          log: (m) => opts.log(`[unload-then-reap] ${m}`),
+        });
+      }
+    }
+  }
+}
+
 async function cmdStop(flags: Record<string, string>): Promise<void> {
   const ROOT = process.cwd();
   const scope = flags['scope'] ?? 'user';
@@ -3733,6 +3863,8 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
     // proxy backend (auto-spawned by a serve shim, §9.5) can still be alive with no
     // record at all; reap it by identity so `sox stop` is a true teardown.
     process.stdout.write(`sox: no runtime record at ${runtimeFilePath}\n`);
+    // [inv:unload-then-reap]: unload any OS unit before reaping its (untracked) pid.
+    unloadOwnedOsUnitsBeforeReap({ root, ...(id !== undefined ? { onlyId: id } : {}), log: (m) => process.stdout.write(`sox: ${m}\n`) });
     const proxyReap = await reapUntrackedProxyBackends({
       lockfilePath,
       root,
@@ -3773,6 +3905,9 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
         `sox: supervisor (pid=${record.supervisorPid}) already gone\n`,
       );
     }
+    // [inv:unload-then-reap] (§8.5): unload any OS unit BEFORE reaping, so the OS
+    // supervisor cannot resurrect the pid the reap is about to kill.
+    unloadOwnedOsUnitsBeforeReap({ root, log: (m) => process.stdout.write(`sox: ${m}\n`) });
     // Whether or not the supervisor was alive, reap every extension's orphans by
     // identity. This catches a daemon whose supervisor died and left it detached.
     let undead = false;
@@ -3814,6 +3949,8 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
   // case the daemon was a detached orphan absent from runtime.json entirely.
   let undead = false;
   if (id !== undefined) {
+    // [inv:unload-then-reap] (§8.5): unload this id's OS unit before reaping it.
+    unloadOwnedOsUnitsBeforeReap({ root, onlyId: id, log: (m) => process.stdout.write(`sox: ${m}\n`) });
     const reap = await reapOrphansForExtension(id, {
       runtimeFilePath,
       lockfilePath,
@@ -3839,6 +3976,361 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
   }
   process.stdout.write(undead ? `sox: stop INCOMPLETE — see warnings above\n` : `sox: stop complete\n`);
   process.exit(undead ? 1 : 0);
+}
+
+// ─── service: OS-supervisor control surface (spec §9, Slice 2) ─────────────────
+
+/**
+ * Resolve the unit directory the OS supervisor reads. INJECTABLE for safe testing:
+ *   --unit-dir <dir>  >  SOX_OS_UNIT_DIR env  >  platform default.
+ * The platform default is ~/Library/LaunchAgents (launchd) / ~/.config/systemd/user
+ * (systemd). Tests + e2e ALWAYS inject a sandbox so the real machine is untouched
+ * (spec Appendix B item 3 — real activation needs a human node-path ack).
+ */
+function resolveOsUnitDir(flags: Record<string, string>, platform: OsUnitPlatform): string {
+  return flags['unit-dir'] ?? process.env['SOX_OS_UNIT_DIR'] ?? platform.defaultUnitDir();
+}
+
+/**
+ * Build the OS-unit EnvironmentVariables (§9.2) — the SAME minimal scrub allowlist
+ * the supervisor uses (supervisor.ts §7 step 5) MERGED with the resolved
+ * SOX_CONFIG_* cascade. Mirrored here so the OS-supervised process sees the exact
+ * env the in-supervisor path would. [Never widen this silently — §13.2.5.]
+ */
+function buildOsUnitEnv(extId: string, root: string): Record<string, string> {
+  const allowedKeys = new Set([
+    'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+    'SOX_EMBED_BACKEND', 'SOX_EMBED_CACHE_DIR', 'XDG_CACHE_HOME',
+  ]);
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined && (allowedKeys.has(k) || k.startsWith('NODE_') || k.startsWith('SOX_EMBED_'))) {
+      env[k] = v;
+    }
+  }
+  Object.assign(env, buildExtConfigEnv(extId, root));
+  return env;
+}
+
+/**
+ * Resolve everything needed to render/enable an extension's OS unit at a scope:
+ * the install dir + manifest, the absolute entrypoint, the resolved env, the
+ * pinned node path (with volatility guard), the store/working dir, and the
+ * artifact content-address (from the ownership index). Returns null when the
+ * extension is not installed at that scope / has no manifest+entrypoint.
+ */
+function resolveOsUnitContext(
+  extId: string,
+  scope: string,
+  root: string,
+  flags: Record<string, string>,
+): {
+  platform: OsUnitPlatform;
+  spec: ReturnType<typeof deriveOsUnitSpec>;
+  extDir: string;
+  entrypoint: string;
+  nodeRes: ReturnType<typeof resolveUnitNodePath>;
+  manifestType: string;
+} | null {
+  const pathM = require('node:path') as typeof import('node:path');
+  const fsM = require('node:fs') as typeof import('node:fs');
+  const resolved = resolveServeManifest(extId, scope, root);
+  if (!resolved || !resolved.manifest.entrypoint) return null;
+  const entrypoint = pathM.resolve(resolved.extDir, resolved.manifest.entrypoint);
+
+  const platform = getOsUnitPlatform(
+    (flags['supervisor'] as OsSupervisor | undefined) ?? detectOsSupervisor(),
+  );
+
+  // Pinned node path (§9.2 / Appendix B item 3). --node-path overrides.
+  const nodeRes = flags['node-path']
+    ? { nodePath: flags['node-path'], volatile: false as const }
+    : resolveUnitNodePath();
+
+  // artifact content-address (ADR-0003) from the ownership index, if recorded.
+  let artifactHash: string | undefined;
+  try {
+    const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
+    artifactHash = own.get(extId, scope)?.artifactChecksum;
+  } catch { /* best-effort */ }
+
+  const manifestPath = pathM.join(resolved.extDir, 'extension.json');
+  const env = buildOsUnitEnv(extId, root);
+  const logDir = logDirFor(`os-${scope}-${extId}`);
+  const spec = deriveOsUnitSpec({
+    id: extId,
+    scope,
+    manifestPath,
+    nodePath: nodeRes.nodePath,
+    entrypoint,
+    env,
+    workingDirectory: resolved.extDir,
+    logDir,
+    ...(artifactHash !== undefined ? { artifactHash } : {}),
+  });
+  // sanity: entrypoint must exist on disk
+  if (!fsM.existsSync(entrypoint)) return null;
+  return { platform, spec, extDir: resolved.extDir, entrypoint, nodeRes, manifestType: resolved.manifest.type ?? '' };
+}
+
+/**
+ * `soxe service <enable|disable|status|list>` — the ONLY sanctioned way to create
+ * or remove an OS unit ([inv:os-unit-generated], §9.1). Hand-authoring a plist is
+ * forbidden. Reconciles the unit with sox tracking ([inv:list-never-lies]) and
+ * tears down via unload-then-reap ([inv:unload-then-reap], §8.5).
+ */
+async function cmdService(argvIn: string[], flags: Record<string, string>): Promise<void> {
+  const sub = argvIn[1];
+  if (sub === undefined || flags['help'] !== undefined || flags['h'] !== undefined) {
+    process.stdout.write(`${CLI} service — OS-supervisor control surface (launchd / systemd), spec §9
+
+Usage:
+  ${CLI} service enable  <ext> [-s <scope>]   Generate + load an OS unit (reboot persistence)
+  ${CLI} service disable <ext> [-s <scope>]   Unload + remove the unit; reap any survivor
+  ${CLI} service status  <ext> [-s <scope>]   Show the unit state reconciled with sox
+  ${CLI} service list                          All sox-owned OS units across scopes
+
+Options:
+  -s, --scope <scope>     Scope: org | user | project | local  (default: user)
+  --dry-run               enable: render + write the unit but do NOT load it (no launchctl)
+  --unit-dir <dir>        Override the unit directory (also SOX_OS_UNIT_DIR) — for testing
+  --supervisor <kind>     Force 'launchd' or 'systemd' (default: per-platform)
+  --node-path <path>      Override the pinned node binary baked into the unit
+  --allow-volatile-node   Proceed even if the pinned node is under nvm/asdf/volta
+  --help                  Show this message
+
+OS units are GENERATED from the manifest; hand-editing them is unsupported.
+`);
+    process.exit(sub === undefined ? 1 : 0);
+  }
+
+  const scope = flags['scope'] ?? 'user';
+  const root = flags['root'] ?? process.cwd();
+  const graceMs = (() => {
+    const raw = flags['grace-ms'] ?? process.env['SOX_STOP_GRACE_MS'];
+    const n = raw !== undefined ? Number(raw) : NaN;
+    return Number.isFinite(n) && n >= 0 ? n : 5000;
+  })();
+
+  if (sub === 'list') {
+    await cmdServiceList(flags);
+    return;
+  }
+
+  const extId = argvIn[2] ?? flags['id'];
+  if (!extId) {
+    process.stderr.write(`${CLI} service ${sub}: extension id required\n`);
+    process.exit(1);
+  }
+
+  if (sub === 'enable') {
+    const ctx = resolveOsUnitContext(extId, scope, root, flags);
+    if (!ctx) {
+      process.stderr.write(`${CLI} service enable: '${extId}' not installed at scope '${scope}', or no entrypoint\n`);
+      process.exit(1);
+    }
+    const dryRun = flags['dry-run'] !== undefined;
+
+    // §9.2 / Appendix B item 3 — node-path human ack for a VOLATILE node.
+    if (ctx.nodeRes.volatile) {
+      process.stderr.write(`${CLI} service enable: WARNING — ${ctx.nodeRes.volatileReason}\n`);
+      if (ctx.nodeRes.preferredNonVolatile) {
+        process.stderr.write(
+          `  A non-volatile node is available at ${ctx.nodeRes.preferredNonVolatile}; ` +
+          `re-run with --node-path=${ctx.nodeRes.preferredNonVolatile} to pin it.\n`,
+        );
+      }
+      if (flags['allow-volatile-node'] === undefined) {
+        process.stderr.write(
+          `  Refusing to pin a volatile node. Re-run with --allow-volatile-node to proceed anyway, ` +
+          `or --node-path=<stable node>.\n`,
+        );
+        process.exit(1);
+      }
+    }
+
+    const platform = ctx.platform;
+    const unitDir = resolveOsUnitDir(flags, platform);
+    const result = enableOsUnit(ctx.spec, platform, {
+      unitDir,
+      load: !dryRun,
+      log: (m) => process.stdout.write(`sox: ${m}\n`),
+    });
+
+    // Record the os-unit in the ownership index ([inv:reversible-injection], §9.4)
+    // so uninstall/disable can reverse it and `service list`/`doctor` enumerate it.
+    try {
+      const pathM = require('node:path') as typeof import('node:path');
+      const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
+      own.addEntries(extId, scope, [{
+        kind: 'os-unit',
+        label: ctx.spec.label,
+        unitPath: result.unitPath,
+        supervisor: platform.kind,
+        appliedHash: result.contentHash,
+      }]);
+      own.save();
+    } catch (e) {
+      process.stderr.write(`sox: warning: could not record os-unit ownership: ${String(e)}\n`);
+    }
+
+    process.stdout.write(
+      `${CLI} service enable: ${result.action} ${platform.kind} unit '${ctx.spec.label}'\n` +
+      `  unit:       ${result.unitPath}\n` +
+      `  node:       ${ctx.spec.nodePath}\n` +
+      `  entrypoint: ${ctx.entrypoint}\n` +
+      `  content:    ${result.contentHash}\n` +
+      (dryRun
+        ? `  (--dry-run: unit written but NOT loaded — no ${platform.kind === 'launchd' ? 'launchctl' : 'systemctl'} call)\n`
+        : `  loaded:     ${result.loaded ? 'yes' : 'NO (load failed — see warnings)'}\n`),
+    );
+    process.exit(!dryRun && !result.loaded ? 1 : 0);
+  }
+
+  if (sub === 'disable') {
+    const ctx = resolveOsUnitContext(extId, scope, root, flags);
+    const platform = ctx?.platform ?? getOsUnitPlatform(
+      (flags['supervisor'] as OsSupervisor | undefined) ?? detectOsSupervisor(),
+    );
+    const unitDir = resolveOsUnitDir(flags, platform);
+    const label = ctx?.spec.label ?? osUnitLabel(scope, extId);
+    // Resolve the entrypoint identity token from the ownership/lockfile even if the
+    // install is gone — fall back to a best-effort path.
+    const entrypoint = ctx?.entrypoint ?? '';
+
+    // [inv:unload-then-reap] (§8.5): unload the unit FIRST, THEN reap any survivor.
+    let undead = false;
+    if (entrypoint) {
+      const res = await unloadThenReap({
+        label,
+        entrypoint,
+        platform,
+        unitDir,
+        excludePids: [process.pid],
+        graceMs,
+        log: (m) => process.stdout.write(`sox: ${m}\n`),
+      });
+      undead = res.undead;
+    } else {
+      // No entrypoint resolvable — just unload + remove the unit file.
+      disableOsUnit(label, platform, { unitDir, log: (m) => process.stdout.write(`sox: ${m}\n`) });
+    }
+    // Remove the unit FILE + clear the ownership os-unit entry.
+    disableOsUnit(label, platform, { unitDir, log: (m) => process.stdout.write(`sox: ${m}\n`) });
+    try {
+      const pathM = require('node:path') as typeof import('node:path');
+      const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
+      const rec = own.get(extId, scope);
+      if (rec) {
+        const kept = rec.entries.filter((e) => e.kind !== 'os-unit');
+        own.record({ extId, scope, entries: kept, ...(rec.host !== undefined ? { host: rec.host } : {}) });
+        own.save();
+      }
+    } catch { /* best-effort */ }
+
+    process.stdout.write(
+      undead
+        ? `${CLI} service disable: INCOMPLETE — a survivor could not be confirmed dead (undead)\n`
+        : `${CLI} service disable: '${label}' unloaded + removed\n`,
+    );
+    process.exit(undead ? 1 : 0);
+  }
+
+  if (sub === 'status') {
+    const ctx = resolveOsUnitContext(extId, scope, root, flags);
+    const platform = ctx?.platform ?? getOsUnitPlatform(
+      (flags['supervisor'] as OsSupervisor | undefined) ?? detectOsSupervisor(),
+    );
+    const unitDir = resolveOsUnitDir(flags, platform);
+    const label = ctx?.spec.label ?? osUnitLabel(scope, extId);
+    const fsM = require('node:fs') as typeof import('node:fs');
+    const pathM = require('node:path') as typeof import('node:path');
+    const unitPath = pathM.join(unitDir, platform.unitFileName(label));
+    const fileExists = fsM.existsSync(unitPath);
+    const loaded = platform.isLoaded(label, realOsExec);
+    // Reality-verified liveness ([inv:list-never-lies], §10.3): the OS unit owns it
+    // only if the entrypoint process is actually live.
+    let livePids: number[] = [];
+    if (ctx?.entrypoint) {
+      livePids = findOrphansByIdentity(identityToken(`file://${ctx.entrypoint}`), { excludePids: [process.pid] })
+        .map((m) => m.pid);
+    }
+    const owner = loaded ? 'os-unit' : (livePids.length > 0 ? 'none' : 'none');
+    process.stdout.write(
+      `${CLI} service status: ${label} (scope ${scope}, ${platform.kind})\n` +
+      `  unit file:  ${fileExists ? unitPath : '(none)'}\n` +
+      `  loaded:     ${loaded ? 'yes' : 'no'}\n` +
+      `  owner:      ${owner}\n` +
+      `  live pids:  ${livePids.length ? livePids.join(', ') : '(none)'}\n` +
+      (ctx ? `  entrypoint: ${ctx.entrypoint}\n` : '') +
+      (ctx?.spec.artifactHash ? `  artifact:   ${ctx.spec.artifactHash}\n` : ''),
+    );
+    process.exit(0);
+  }
+
+  process.stderr.write(`${CLI} service: unknown subcommand '${sub}' (enable|disable|status|list)\n`);
+  process.exit(1);
+}
+
+/**
+ * `soxe service list` — enumerate every sox-owned OS unit across all scopes from
+ * the ownership index, reconciled with the OS supervisor's loaded state
+ * ([inv:list-never-lies]).
+ */
+async function cmdServiceList(flags: Record<string, string>): Promise<void> {
+  const pathM = require('node:path') as typeof import('node:path');
+  const root = flags['root'] ?? process.cwd();
+
+  type Row = { id: string; scope: string; label: string; supervisor: string; loaded: boolean; unitPath: string; appliedHash: string };
+  const rows: Row[] = [];
+  for (const sc of ['org', 'user', 'project', 'local'] as const) {
+    let dir: string;
+    try {
+      dir = dataRoot(sc as DataScope, root);
+    } catch {
+      continue;
+    }
+    const ownPath = pathM.join(dir, 'ownership.json');
+    let own: OwnershipIndex;
+    try {
+      own = OwnershipIndex.loadFromFile(ownPath);
+    } catch {
+      continue;
+    }
+    for (const rec of own.all()) {
+      for (const e of rec.entries) {
+        if (e.kind !== 'os-unit') continue;
+        const platform = getOsUnitPlatform(e.supervisor);
+        const unitDir = resolveOsUnitDir(flags, platform);
+        const probePath = pathM.join(unitDir, platform.unitFileName(e.label));
+        const loaded = platform.isLoaded(e.label, realOsExec);
+        rows.push({
+          id: rec.extId, scope: rec.scope, label: e.label, supervisor: e.supervisor,
+          loaded, unitPath: flags['unit-dir'] !== undefined || process.env['SOX_OS_UNIT_DIR'] ? probePath : e.unitPath,
+          appliedHash: e.appliedHash,
+        });
+      }
+    }
+  }
+
+  if (flags['json'] !== undefined) {
+    process.stdout.write(JSON.stringify(rows, null, 2) + '\n');
+    process.exit(0);
+  }
+  if (rows.length === 0) {
+    process.stdout.write(`${CLI} service list: no sox-owned OS units found\n`);
+    process.exit(0);
+  }
+  process.stdout.write(`\nsox-owned OS units\n\n`);
+  process.stdout.write(`  ${'EXTENSION'.padEnd(20)} ${'SCOPE'.padEnd(8)} ${'SUPERVISOR'.padEnd(10)} ${'LOADED'.padEnd(7)} LABEL\n`);
+  process.stdout.write(`  ${'─'.repeat(20)} ${'─'.repeat(8)} ${'─'.repeat(10)} ${'─'.repeat(7)} ${'─'.repeat(30)}\n`);
+  for (const r of rows) {
+    process.stdout.write(
+      `  ${r.id.padEnd(20)} ${r.scope.padEnd(8)} ${r.supervisor.padEnd(10)} ${(r.loaded ? 'yes' : 'no').padEnd(7)} ${r.label}\n`,
+    );
+  }
+  process.stdout.write('\n');
+  process.exit(0);
 }
 
 // ─── migrate-home (ADR-0004 §D8) ───────────────────────────────────────────────
