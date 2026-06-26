@@ -67,3 +67,50 @@ traceable into the per-state contexts and the standalone-consumption acceptance.
 - **Reuse thesis:** 22 of 30 use cases are **[standalone]** — a 3rd party consuming the package via `npm i` with no in-workspace deps. These are exactly what `scripts/pack-smoke.mjs` (`[audit-final.5]`) must affirmatively prove (esp. UC-EMB-1/2, UC-VEC-1/5 — the native-dep-resolves-from-tarball BL-87 guard).
 - **Composition:** the 8 **[compose]** cases are how the slim `memory-core` domain wires the packages back into the `memory_*` tool surface — verified unchanged by `[inv:tool-contract-stable]`.
 - **Invariant traceability:** UC-VEC-2 ↔ `[inv:space]`; UC-EMB-4 ↔ `[inv:loud-fail]`; UC-SRCH-3 ↔ `[inv:degrade-to-bm25]`; UC-VEC-4 ↔ BL-88/BL-92 provenance.
+
+---
+
+## System-level use cases — external products composing the packages
+
+The use cases above are *per-package* (one package's API). These are *whole external systems* a 3rd party
+would build by composing the **public** packages (`embedding-provider` = E, `vector-store` = V,
+`hybrid-search` = H) — the reuse thesis at product scale. Each notes any **private-package pull** (graph-store
+= G, analysis = A, ingest = I), because a real external consumer wanting a private package is the **evidence
+that should revisit the ADR-0006 public/private split** (graph-store/analysis are the recurring asks).
+
+- **SYS-1 — Prompt-segment catalog + on-the-fly task SP composition.** Catalog reusable LLM prompt segments;
+  search the corpus for task-context matching; compose/compile optimized system prompts per task.
+  **Uses E+V+H** (embed segments + task → hybrid-rank candidates under a token budget). **Pulls G** (versioned
+  segments, `REQUIRES`/`SUPERSEDES` composition edges, content-hash dedup) **+ A** (near-dup so two redundant
+  segments aren't composed into one SP). Compose/compile/optimize is the consumer's own engine — the packages
+  are the retrieve-and-rank layer.
+- **SYS-2 — Local-first "second brain" notes search.** Offline semantic + keyword search over personal notes.
+  **E+V+H.** **Pulls G** (backlinks + note versions).
+- **SYS-3 — "Ask your repo" code search.** Index symbols/docstrings; answer intent queries.
+  **E+V+H** — hybrid is essential here (exact identifier match via BM25 + intent via vectors; neither alone works).
+- **SYS-4 — Embedded RAG support/FAQ bot.** Ships *inside* an app, no vector-DB server, no embedding API bill.
+  **E+V+H.** Leans on **degrade-to-BM25** so the bot stays useful if the embedder is unavailable.
+- **SYS-5 — Long-term memory for a 3rd-party agent framework.** Episodic recall by similarity for someone
+  else's agent stack. **E+V+H. Pulls G** (episode relations/supersession) **+ A** (theme clustering) — i.e. a
+  consumer literally rebuilding a memory system from the primitives (the strongest reuse validation).
+- **SYS-6 — Ingest-time dedup (CMS / support-ticket / CRM-lead).** Flag near-duplicate incoming content.
+  **E+V + heavy A** (near-dup is the product). Strongest signal that **analysis wants to be public**.
+- **SYS-7 — Observability: semantic log/error clustering.** Group error messages/traces into incident families.
+  **E+V + A** (clustering). Another analysis pull.
+- **SYS-8 — "Related items" recommendations.** "Similar products" / "related articles" via nearest-neighbour.
+  **E+V** only — lightweight, no ranking-fusion needed; proves the packages work *minimally*, not just maximally.
+- **SYS-9 — Air-gapped / privacy-sensitive RAG (healthcare, legal, defense).** The **no-API + no-egress +
+  offline + deterministic** constraints ARE the product. **E** (local, no egress; multilingual-e5 model for
+  non-English corpora — exercises the multi-model design) **+V+H**. This is the use case the whole constraint
+  set exists for.
+- **SYS-10 — Prompt/model-output eval & drift harness.** Embed outputs, detect regression via cosine drift,
+  snapshot-test in CI. **E (deterministic provider — byte-stable, no download in CI) + V + A** (drift
+  clustering). Showcases the deterministic provider as a first-class consumer need, not just a test shim.
+
+### What these reveal
+- **All 10 use E+V; 7 use H** — the public three are the correct, sufficient *retrieval* backbone. None needs
+  the packages to *compose/compile/optimize/rerank* — that's always the consumer's domain (and reranking
+  would be the still-empty `inference` group).
+- **5 of 10 pull a PRIVATE package** (G: SYS-1/2/5; A: SYS-1/5/6/7/10). graph-store and analysis are the
+  recurring external asks → **concrete demand to reconsider their private status (ADR-0006 / F1)** — log it as
+  evidence rather than discovering it after they're locked private.
