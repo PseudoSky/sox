@@ -125,6 +125,19 @@ end-to-end (G1/G2/G3 all PASS, `memory_ping` `{ok:true, artifact:sha256:00cefb04
 to `files`, or inline the sha into the bundle so no sidecar file is needed; (2) suppress the
 git-root `fatal:` chatter (capture stderr) — folds into BL-73. Neither blocks the release.
 
+### BL-77 — dev `bin/soxe --version` reports the monorepo root `1.0.0`; published `@adhd/sox-cli` reports its own `1.1.1` — two entrypoints disagree — **Open (LOW) consistency** (surfaced switching back to the dev bin, 2026-06-26)
+
+**Observed:** the dev entrypoint `bin/soxe` (loads the tsc build `dist/apps/sox/main.js`)
+reports `--version` `1.0.0` — the **root `package.json` (`sox-ecosystem@1.0.0`)** — while the
+**published** CLI (esbuild bundle `apps/sox/dist/index.js`) reports `1.1.1` (its own
+`apps/sox/package.json`). So `node bin/soxe --version` and `npm i -g @adhd/sox-cli` disagree on
+the version string for the same code, which is misleading when debugging "which CLI am I running."
+
+**Fix sketch:** have `--version` resolve from `apps/sox/package.json` (the CLI's own package,
+the single source the published path already uses), not the monorepo root. Ideally read the
+embedded build-info sha + the `apps/sox` semver together so dev and published agree. Folds in
+with BL-76 (build-info stamp). Cosmetic; no behavior impact.
+
 ---
 
 ## Resolved — regressions from the proxy-default flip, fixed 2026-06-25
