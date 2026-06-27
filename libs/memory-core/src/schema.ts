@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS edge (
   src       INTEGER NOT NULL REFERENCES node(rowid) ON DELETE CASCADE,
   dst       INTEGER NOT NULL REFERENCES node(rowid) ON DELETE CASCADE,
   rel       TEXT NOT NULL CHECK (rel IN
-              ('MENTIONS','SUPPORTS','RELATES_TO','SUPERSEDES','DERIVED_FROM','MEMBER_OF','PART_OF','SAME_AS')),
+              ('MENTIONS','SUPPORTS','RELATES_TO','SUPERSEDES','DERIVED_FROM','MEMBER_OF','PART_OF','SAME_AS','ASSIGNED_TO')),
   weight     REAL DEFAULT 1.0, confidence REAL,
   origin     TEXT CHECK (origin IN ('extracted','inferred','user_asserted')),
   t_created  TEXT NOT NULL, t_expired TEXT,

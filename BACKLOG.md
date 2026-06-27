@@ -389,7 +389,14 @@ tag is NOT a reliable re-embed trigger — `scripts/reembed-memory.mjs` requires
 the tag already says real, and normalises the WHOLE store to real (idempotent: re-embedding an
 already-real row reproduces the same BGE vector). Pairs with BL-88 (add per-record `embed_model`).
 
-### BL-93 — `edge.rel` accepted-value set is INCONSISTENT across the `memory_link` tool, the `schema.ts` CHECK constraint, and the graph contract → `memory_link({rel:'ASSIGNED_TO'})` fails at the DB — **Open (MEDIUM) bug** (found by architect-reviewer authoring the memory-refactor contracts, 2026-06-26)
+### BL-93 — `edge.rel` accepted-value set is INCONSISTENT across the `memory_link` tool, the `schema.ts` CHECK constraint, and the graph contract → `memory_link({rel:'ASSIGNED_TO'})` fails at the DB — **FIXED at source (2026-06-26); existing-store migration is a follow-up** (found by architect-reviewer authoring the memory-refactor contracts)
+
+> **Fix (2026-06-26):** added `'ASSIGNED_TO'` to the `edge.rel` CHECK in `libs/memory-core/src/schema.ts`
+> (now the 9-value union matching the contract `EdgeRel`), rebuilt memory-core/server/daemon, registry
+> synced. NEW stores accept `ASSIGNED_TO`. **Follow-up:** SQLite CHECK constraints aren't retroactively
+> altered, so the EXISTING `~/.memory/memory.db` (created with the old 8-value CHECK) still rejects
+> `ASSIGNED_TO` until its `edge` table is recreated — a small migration (or left until next store rebuild),
+> low priority since `ASSIGNED_TO` was never successfully written. w2b inherits the fixed schema.
 
 **Observed (verified state-side):** three different `edge.rel` value sets are in play:
 - `memory_link` MCP tool — enum + `VALID_RELS` (memory-server `src/index.ts:452,1325`): `MENTIONS, SUPPORTS,

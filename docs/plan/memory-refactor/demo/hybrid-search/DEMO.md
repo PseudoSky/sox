@@ -115,7 +115,7 @@ npm ls --depth=0 2>/dev/null | grep '@adhd/'
 
 ### Act 1 — Schema Setup and Fixture Seeding
 
-Riya has installed the package. The schema helpers for the FTS5 node table and the vector store are available from the public peer packages (`@adhd/sox-graph-store`, `@adhd/sox-vector-store`) and may be re-exported as convenience imports from `@adhd/sox-hybrid-search`. She calls them on her injected `Database` handle — no DDL to write, no separate service to run.
+Riya has installed the package. The schema helpers for the FTS5 node table and the vector store are imported directly from the public peer packages (`@adhd/sox-graph-store`, `@adhd/sox-vector-store`) — `@adhd/sox-hybrid-search` does not re-export them. She calls them on her injected `Database` handle — no DDL to write, no separate service to run.
 
 #### 1.1 · Apply Schema (happy)
 
