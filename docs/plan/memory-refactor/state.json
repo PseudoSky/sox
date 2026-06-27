@@ -7,7 +7,7 @@
   "branch": "feat/memory-refactor",
   "states": {
     "p0-baseline": {
-      "status": "in_progress",
+      "status": "blocked",
       "blocked_reason": "[inv:quickfix-landed] — awaiting quickfix merge + npm republish",
       "started_at": "2026-06-27T00:54:46.215Z",
       "start_ref": "cd7ea5445415cb88756c3c50e4255bf2c524ce24"
@@ -60,5 +60,16 @@
     "plugin": "workflow",
     "version": "0.8.21",
     "hash": "1e4130a84aed"
-  }
+  },
+  "amendment_log": [
+    {
+      "ts": "2026-06-27T00:55:17.657Z",
+      "state": "p0-baseline",
+      "class": "planner",
+      "type": "note",
+      "reason": "[inv:quickfix-landed] verified met: fastembed+onnxruntime-node are real deps in memory-server+memory-daemon package.json; server startup confirms 'real model active (bge-base-en-v1.5)'. entry_blocked_on is now stale.",
+      "files_synced": [],
+      "by": "pseudosky"
+    }
+  ]
 }
