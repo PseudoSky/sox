@@ -7,10 +7,10 @@
   "branch": "feat/memory-refactor",
   "states": {
     "p0-baseline": {
-      "status": "blocked",
+      "status": "in_progress",
       "blocked_reason": "[inv:quickfix-landed] — awaiting quickfix merge + npm republish",
-      "started_at": "2026-06-27T00:54:46.215Z",
-      "start_ref": "cd7ea5445415cb88756c3c50e4255bf2c524ce24"
+      "started_at": "2026-06-27T00:55:24.179Z",
+      "start_ref": "962e993241c1d063715ec7a5949b55d4b54a35be"
     },
     "audit-baseline": {
       "status": "pending"
