@@ -1,9 +1,64 @@
 # Backlog
 
 Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and a fix sketch.
-Observations below were surfaced during the sox-memory real-embedding / MCP-runtime work
-(branches `feat/memory-real-embedding` → `fix/tokenguard-workspace-protocol` →
-`fix/memory-server-c7-dedupe`, 2026-06-21).
+
+---
+
+## Open — opencode-host implementation (surfaced 2026-06-29)
+
+### BL-108 — Multi-host `--host=claude --host=opencode` only uses last value — **Open (MEDIUM)**
+
+**Observed:** `soxe install memory-org --host=claude --host=opencode --scope=project --dry-run` only
+shows the opencode result. The claude host is silently dropped. Same for any multi-host install.
+Root cause: caps parseArgs treats `--host` as a single string, overwriting on repeat — not an array
+accumulation. Each host installs correctly when invoked separately, so the workaround is two commands.
+But the `soxe install --help` documents `--host=<h>` (no repeat indication), so the silent drop is a
+footgun.
+
+**Fix sketch:** switch `--host` to a string-array argparse type, or detect the comma-separated syntax
+`--host=claude,opencode`, or add a bespoke parser before the caps parseArgs layer. Update help text
+to show repeat syntax (`--host=<h1> --host=<h2>`).
+
+### BL-109 — `soxe uninstall` for mcp-server extensions fails with "not found in lockfile" — **Open (MEDIUM)**
+
+**Observed:** `soxe install memory-server --host=opencode --profile=sse --scope=project` wrote the
+correct MCP entry to `opencode.json` but did NOT create a lockfile entry. Subsequent `soxe uninstall
+memory-server --host=opencode --scope=project` (even with `--force`) reports "extension 'memory-server'
+not found in lockfile" and refuses to clean up the config entry. The MCP config entry was placed but
+is unreversible through the ledger — the `[inv:reversible-injection]` invariant is violated for this
+install path.
+
+**Root cause:** memory-server's `extension.json` does not declare `install.hosts` (it uses `serves`
+and `profiles` for transport selection). The install engine resolves it via the host-agnostic path,
+which places files but may bypass the lockfile/ledger write for config-merge placements when no hosts
+are declared.
+
+**Fix sketch:** ensure the declarative install path always writes a ledger entry for
+`config-merge` placements even when `hosts` is unset or when the extension is resolved through the
+host-agnostic resolver. Verify with an install→uninstall→reinstall round-trip for all host/scope
+combinations.
+
+### BL-110 — S6b post-install restart can unload OS unit without completing reload — **Open (HIGH)**
+
+**Observed:** `soxe install memory-server --host=opencode --profile=sse --scope=user` timed out
+after the post-install restart began. The `restartOsUnit` call unloaded the launchd unit (step 1:
+verified-stop + unload) but the install process timed out before steps 2-4 (reap, write new unit,
+reload) completed. This left the daemon UNLOADED — `soxe service status` reported `loaded: no`
+with no running process. Required manual `soxe service enable` to restore. This is a partial-failure
+state: the config was written correctly to opencode.json but the daemon was killed with no replacement.
+
+**Root cause:** `restartOsUnit()` is async with a 60s restart-loop guard. The install command has
+a timeout that may fire before the full unload→reap→write→load sequence completes. The unload is
+destructive (kills the running process) but the reload is deferred, so a timeout during restart
+leaves the system in a broken state.
+
+**Fix sketch:** make `restartOsUnit` atomic — if the reload cannot complete, revert to the
+last-known-good unit instead of leaving it unloaded. Add a timeout parameter to `restartOsUnit`
+that matches the install timeout. Or split the restart into two phases: (1) post-install
+detects the stale daemon and QUEUES a restart, (2) a separate async process picks up the queue
+and executes the restart independent of the install timeout. As a simpler interim fix: increase
+the install timeout when a restart is pending, or run the restart with a shorter poll interval
+in the restart-loop guard.
 
 ---
 
