@@ -623,6 +623,9 @@ export interface RestartOptions {
   log?: (m: string) => void;
   /** Reason for the restart (config key change, upgrade, etc.). */
   reason?: string;
+  /** Optional AbortSignal to cancel the restart. On abort after unload,
+   *  the function reverts to last-known-good before re-throwing. */
+  signal?: AbortSignal;
 }
 
 export interface RestartResult {
@@ -653,89 +656,119 @@ export async function restartOsUnit(
   const log = opts.log ?? (() => { /* no-op */ });
   const exec = opts.exec ?? realOsExec;
   const unitDir = opts.unitDir ?? platform.defaultUnitDir();
+  const signal = opts.signal;
 
   const unitPath = path.join(unitDir, platform.unitFileName(newSpec.label));
 
-  // 1. Unload current unit first ([inv:unload-then-reap]).
-  const wasLoaded = platform.isLoaded(newSpec.label, exec);
-  if (wasLoaded) {
-    const ur = platform.unload(unitPath, newSpec.label, exec);
-    log(`os-unit ${newSpec.label}: unloaded (code ${ur.code})`);
-    // Brief yield so the OS supervisor finishes teardown.
-    await new Promise((r) => setTimeout(r, 500));
-  }
+  // Track whether the new unit was loaded so the finally block knows
+  // whether to roll back to LKG (daemon down with no replacement).
+  let loaded = false;
 
-  // 2. If an OS-supervised dead process is still around, reap it.
-  const token = identityToken(newSpec.entrypoint);
-  if (token) {
-    await reapByIdentity(token, { log: (m: string) => log(`reaper: ${m}`) });
-  }
+  try {
+    // Abort before any destructive work.
+    if (signal?.aborted) throw new Error('Aborted');
 
-  // 3. Render + write new unit.
-  const rendered = platform.render(newSpec);
-  const contentHash = readUnitMeta(rendered).contentHash ?? unitContentHash(rendered);
-  writeFileAtomic(unitPath, rendered);
-  log(`os-unit ${newSpec.label}: written (content-hash ${contentHash})`);
+    // 1. Unload current unit first ([inv:unload-then-reap]).
+    const wasLoaded = platform.isLoaded(newSpec.label, exec);
+    if (wasLoaded) {
+      const ur = platform.unload(unitPath, newSpec.label, exec);
+      log(`os-unit ${newSpec.label}: unloaded (code ${ur.code})`);
+      // Brief yield so the OS supervisor finishes teardown.
+      await new Promise((r) => setTimeout(r, 500));
+    }
 
-  // 4. Load new unit.
-  const lr = platform.load(unitPath, newSpec.label, exec);
-  if (lr.code !== 0) {
-    log(`os-unit ${newSpec.label}: load FAILED (code ${lr.code})`);
-    if (lastKnownGoodPath && fs.existsSync(lastKnownGoodPath)) {
-      log(`os-unit ${newSpec.label}: reverting to last-known-good`);
-      writeFileAtomic(unitPath, fs.readFileSync(lastKnownGoodPath, 'utf8'));
-      const r2 = platform.load(unitPath, newSpec.label, exec);
+    // Abort after unload — daemon is down but not yet replaced.
+    if (signal?.aborted) throw new Error('Aborted');
+
+    // 2. If an OS-supervised dead process is still around, reap it.
+    const token = identityToken(newSpec.entrypoint);
+    if (token) {
+      await reapByIdentity(token, { log: (m: string) => log(`reaper: ${m}`) });
+    }
+
+    // Abort after reap.
+    if (signal?.aborted) throw new Error('Aborted');
+
+    // 3. Render + write new unit.
+    const rendered = platform.render(newSpec);
+    const contentHash = readUnitMeta(rendered).contentHash ?? unitContentHash(rendered);
+    writeFileAtomic(unitPath, rendered);
+    log(`os-unit ${newSpec.label}: written (content-hash ${contentHash})`);
+
+    // Abort after write.
+    if (signal?.aborted) throw new Error('Aborted');
+
+    // 4. Load new unit.
+    const lr = platform.load(unitPath, newSpec.label, exec);
+    if (lr.code !== 0) {
+      log(`os-unit ${newSpec.label}: load FAILED (code ${lr.code})`);
+      if (lastKnownGoodPath && fs.existsSync(lastKnownGoodPath)) {
+        log(`os-unit ${newSpec.label}: reverting to last-known-good`);
+        writeFileAtomic(unitPath, fs.readFileSync(lastKnownGoodPath, 'utf8'));
+        const r2 = platform.load(unitPath, newSpec.label, exec);
+        loaded = r2.code === 0;
+        return {
+          action: 'reverted_to_lkg',
+          label: newSpec.label,
+          unitPath,
+          contentHash,
+          loaded,
+          ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
+        };
+      }
       return {
-        action: 'reverted_to_lkg',
+        action: 'failed',
         label: newSpec.label,
         unitPath,
         contentHash,
-        loaded: r2.code === 0,
+        loaded: false,
         ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
       };
     }
-    return {
-      action: 'failed',
+
+    loaded = true;
+    log(`os-unit ${newSpec.label}: loaded`);
+
+    // 5. Restart loop guard: monitor for 60s. If the unit crashes ≥3 times,
+    //    revert to LKG.
+    if (newSpec.keepAlive && lastKnownGoodPath && fs.existsSync(lastKnownGoodPath)) {
+      const guard = new RestartLoopGuard(newSpec.label, platform, exec, 3, 60_000, log);
+      const guardResult = await guard.monitor();
+      if (guardResult === 'loop') {
+        log(`os-unit ${newSpec.label}: CRASH LOOP DETECTED — reverting to LKG`);
+        platform.unload(unitPath, newSpec.label, exec);
+        writeFileAtomic(unitPath, fs.readFileSync(lastKnownGoodPath, 'utf8'));
+        platform.load(unitPath, newSpec.label, exec);
+        return {
+          action: 'reverted_to_lkg',
+          label: newSpec.label,
+          unitPath,
+          contentHash,
+          loaded: true,
+          reason: `restart-loop-guard: ${opts.reason ?? 'unknown'}`,
+        };
+      }
+    }
+
+    const result: RestartResult = {
+      action: 'restarted',
       label: newSpec.label,
       unitPath,
       contentHash,
-      loaded: false,
-      ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
+      loaded: true,
     };
-  }
-
-  log(`os-unit ${newSpec.label}: loaded`);
-
-  // 5. Restart loop guard: monitor for 60s. If the unit crashes ≥3 times,
-  //    revert to LKG.
-  if (newSpec.keepAlive && lastKnownGoodPath && fs.existsSync(lastKnownGoodPath)) {
-    const guard = new RestartLoopGuard(newSpec.label, platform, exec, 3, 60_000, log);
-    const guardResult = await guard.monitor();
-    if (guardResult === 'loop') {
-      log(`os-unit ${newSpec.label}: CRASH LOOP DETECTED — reverting to LKG`);
+    if (opts.reason !== undefined) result.reason = opts.reason;
+    return result;
+  } finally {
+    // If the daemon was unloaded but not reloaded (interrupted/timeout/error),
+    // restore the last-known-good unit so the daemon is not left dead.
+    if (!loaded && lastKnownGoodPath && fs.existsSync(lastKnownGoodPath)) {
+      log(`os-unit ${newSpec.label}: INTERRUPTED — reverting to last-known-good`);
       platform.unload(unitPath, newSpec.label, exec);
       writeFileAtomic(unitPath, fs.readFileSync(lastKnownGoodPath, 'utf8'));
       platform.load(unitPath, newSpec.label, exec);
-      return {
-        action: 'reverted_to_lkg',
-        label: newSpec.label,
-        unitPath,
-        contentHash,
-        loaded: true,
-        reason: `restart-loop-guard: ${opts.reason ?? 'unknown'}`,
-      };
     }
   }
-
-  const result: RestartResult = {
-    action: 'restarted',
-    label: newSpec.label,
-    unitPath,
-    contentHash,
-    loaded: true,
-  };
-  if (opts.reason !== undefined) result.reason = opts.reason;
-  return result;
 }
 
 /**

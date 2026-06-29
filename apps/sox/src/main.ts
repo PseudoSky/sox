@@ -303,7 +303,7 @@ Registry / Search:
 
 Extension management:
   install <id|bundle>   Install extension by id (or expand a bundle) at scope
-                     Flags: --scope=<scope>  --host=<host>  --frozen-lockfile  --update
+                      Flags: --scope=<scope>  --host=<h1,h2,...>  --frozen-lockfile  --update
                             --no-restart
   update             Update installed extensions
                      Flags: --scope=<scope>
@@ -918,13 +918,13 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
 
 Usage:
   ${CLI} install [<id>] [-s <scope>] [--frozen-lockfile] [--update]
-  ${CLI} install <id> --host=<host> [--scope=project] [--root=<dir>]
+  ${CLI} install <id> --host=<h1,h2,...> [--scope=project] [--root=<dir>]
 
 Options:
   -s, --scope <scope>    Scope: user | project | local  (default: user)
   --frozen-lockfile      Use frozen-lockfile mode
   --update               Update pinned hashes
-  --host <host>          Declarative install to a specific host
+  --host=<h1,h2,...>     Target host(s) (claude, codex, opencode)
   --root <dir>           Workspace root override
   --no-restart           Skip daemon restart after install
   --help                 Show this message
@@ -932,13 +932,13 @@ Options:
     process.exit(0);
   }
 
-  const host = flags['host'];
+  const hostRaw = flags['host'];
 
   // ── Scope validation ────────────────────────────────────────────────────────
   // Validate early on the no-host path so we get a clean error before any
   // config reads. (The host path uses 'project' as default and validates
   // scope more loosely — declarativeInstall will catch invalid scopes.)
-  if (host === undefined || host === '') {
+  if (hostRaw === undefined || hostRaw === '') {
     const scopeRaw = flags['scope'] ?? 'user';
     const validScopes = new Set(['user', 'project', 'local']);
     if (!validScopes.has(scopeRaw)) {
@@ -949,7 +949,8 @@ Options:
   }
 
   // ── Declarative path: --host present ───────────────────────────────────────
-  if (host !== undefined && host !== '') {
+  const hosts = hostRaw !== undefined ? hostRaw.split(',').map((h: string) => h.trim()).filter(Boolean) : [];
+  if (hostRaw !== undefined && hostRaw !== '') {
     // id is the first positional argument (parseArgs stores it as flags['_']).
     const id = flags['_'];
 
@@ -973,7 +974,7 @@ Options:
     // Determine srcPath: the extension's content directory.
     let srcPath: string | undefined;
     let extType: string | undefined;
-    let extHosts: string[] = [host];
+    let extHosts: string[] = hosts;
 
     if (registryEntry !== undefined && registryEntry !== null) {
       // Registry has it — source is a file:// URI to the extension dir.
@@ -998,7 +999,7 @@ Options:
             | { type?: string; hosts?: string[]; profiles?: Record<string, unknown> }
             | undefined;
           if (installBlock?.hosts !== undefined && installBlock.hosts.length > 0) {
-            extHosts = [host]; // --host overrides the manifest hosts list
+            extHosts = hosts; // --host overrides the manifest hosts list
           }
         }
       }
@@ -1015,14 +1016,16 @@ Options:
       process.exit(1);
     }
 
-    // Validate the host exists in the registry.
+    // Validate the hosts exist in the registry.
     // [inv:host-registry-lazy] — require() at call site; see top-of-file comment.
     const { getHost } = require('@adhd/sox-host-registry') as typeof import('@adhd/sox-host-registry');
-    try {
-      getHost(host);
-    } catch (e) {
-      process.stderr.write(`${CLI} install: ${String(e)}\n`);
-      process.exit(1);
+    for (const h of extHosts) {
+      try {
+        getHost(h);
+      } catch (e) {
+        process.stderr.write(`${CLI} install: ${String(e)}\n`);
+        process.exit(1);
+      }
     }
 
     // ADR-0004 §D2: scopeRoot is the DATA dir (`.adhd/sox-ecosystem`) for the
@@ -1075,7 +1078,7 @@ Options:
     }
 
     if (results.length === 0) {
-      process.stderr.write(`${CLI} install: no install surfaces found for host='${host}' type='${extType}' scope='${scope}'\n`);
+      process.stderr.write(`${CLI} install: no install surfaces found for host(s)='${extHosts.join(',')}' type='${extType}' scope='${scope}'\n`);
       process.exit(1);
     }
 
@@ -1084,7 +1087,9 @@ Options:
     }
 
     // #16728: propagate a user/global MCP server into known projects' .mcp.json.
-    await maybePropagateUserMcp(extType, scope, host, id);
+    for (const h of extHosts) {
+      await maybePropagateUserMcp(extType, scope, h, id);
+    }
 
     // ── Restart daemons if artifact changed (Improvement E) ──
     const noRestartInstall = flags['no-restart'] !== undefined;
@@ -1106,10 +1111,14 @@ Options:
             }
           } catch { /* best-effort */ }
 
-          const result = await restartOsUnit(ctx.spec, ctx.platform, lkgPath, {
-            reason: `upgrade (scope=${scope})`,
-          });
-          process.stdout.write(`post-install: ${id} ${result.action} ${result.reason ?? ''}\n`);
+          try {
+            const result = await restartOsUnit(ctx.spec, ctx.platform, lkgPath, {
+              reason: `upgrade (scope=${scope})`,
+            });
+            process.stdout.write(`post-install: ${id} ${result.action} ${result.reason ?? ''}\n`);
+          } catch (e: unknown) {
+            process.stderr.write(`post-install: ${id} restart failed: ${String(e)}\n`);
+          }
         } else {
           process.stdout.write(`post-install: ${id} not running as os-unit (scope=${scope}) — no restart needed\n`);
         }
@@ -1584,10 +1593,10 @@ async function cmdDiff(flags: Record<string, string>): Promise<void> {
  * [cli-wiring.5]: verb is wired and exits 0.
  */
 async function cmdUpdate(flags: Record<string, string>): Promise<void> {
-  const host = flags['host'];
+  const hostRaw = flags['host'];
 
   // ── Declarative path: --host present ───────────────────────────────────────
-  if (host !== undefined && host !== '') {
+  if (hostRaw !== undefined && hostRaw !== '') {
     const pathMod = require('node:path') as typeof import('node:path');
 
     // Resolve id from positional arg.
@@ -1599,7 +1608,7 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
 
     if (id === undefined || id === '') {
       process.stderr.write(`${CLI} update: declarative path requires a positional <id>\n`);
-      process.stderr.write(`  Usage: ${CLI} update <id> --host=<host> [--scope=project] [--root=<dir>]\n`);
+      process.stderr.write(`  Usage: ${CLI} update <id> --host=<h1,h2,...> [--scope=project] [--root=<dir>]\n`);
       process.exit(1);
     }
 
@@ -1608,20 +1617,31 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
     // ADR-0004 §D2: scopeRoot = the DATA dir for the scope (ledger/store/ownership).
     const scopeRoot = dataRoot(scope as DataScope, workspaceRoot);
 
-    const ctx: UpdateCtx = {
-      ext: id,
-      host,
-      scope,
-      scopeRoot,
-      workspaceRoot,
-      isProject: scope === 'project',
-    };
-
-    const result = await lifecycleUpdate(ctx);
-    if (result.kind === 'updated') {
-      process.stdout.write(`${CLI} update: ${id} updated (${result.actions.join(', ')})\n`);
-    } else {
-      process.stdout.write(`${CLI} update: ${id} — up to date\n`);
+    const hosts = hostRaw !== undefined ? hostRaw.split(',').map((h: string) => h.trim()).filter(Boolean) : [];
+    if (hosts.length === 0) {
+      process.stderr.write(`${CLI} update: --host must specify at least one valid host\n`);
+      process.exit(1);
+    }
+    let updatedAny = false;
+    for (const h of hosts) {
+      const ctx: UpdateCtx = {
+        ext: id,
+        host: h,
+        scope,
+        scopeRoot,
+        workspaceRoot,
+        isProject: scope === 'project',
+      };
+      const result = await lifecycleUpdate(ctx);
+      if (result.kind === 'updated') {
+        process.stdout.write(`${CLI} update: ${id} updated on ${h} (${result.actions.join(', ')})\n`);
+        updatedAny = true;
+      } else {
+        process.stdout.write(`${CLI} update: ${id} — up to date on ${h}\n`);
+      }
+    }
+    if (!updatedAny) {
+      process.stdout.write(`${CLI} update: ${id} already up to date across all hosts\n`);
     }
     process.exit(0);
   }
@@ -2496,9 +2516,33 @@ Options:
   });
 
   if (matchKey === undefined) {
-    process.stderr.write(`${CLI} uninstall: extension '${id}' not found in lockfile\n`);
-    process.stderr.write(`  Installed: ${lockKeys.join(', ') || '(none)'}\n`);
-    process.exit(1);
+    // BL-109: fall back to ownership index for extensions installed via --host path
+    // (declarativeInstall writes to ownership/ledger but not to lockfile).
+    try {
+      const pathM4 = require('node:path') as typeof import('node:path');
+      const dataDir4 = dataRoot(scope as DataScope, root);
+      const ownPath4 = pathM4.join(dataDir4, 'ownership.json');
+      if (fsMod.existsSync(ownPath4)) {
+        const ownership4 = OwnershipIndex.loadFromFile(ownPath4);
+        const ownedRec = ownership4.get(id, scope);
+        if (ownedRec && ownedRec.entries.length > 0) {
+          process.stderr.write(`${CLI} uninstall: '${id}' found in ownership index (not lockfile) — proceeding with ledger reversal\n`);
+          // fall through — skip the exit, proceed to ownership/ledger reversal below
+        } else {
+          process.stderr.write(`${CLI} uninstall: extension '${id}' not found in lockfile or ownership index\n`);
+          process.stderr.write(`  Installed: ${lockKeys.join(', ') || '(none)'}\n`);
+          process.exit(1);
+        }
+      } else {
+        process.stderr.write(`${CLI} uninstall: extension '${id}' not found in lockfile\n`);
+        process.stderr.write(`  Installed: ${lockKeys.join(', ') || '(none)'}\n`);
+        process.exit(1);
+      }
+    } catch {
+      process.stderr.write(`${CLI} uninstall: extension '${id}' not found in lockfile\n`);
+      process.stderr.write(`  Installed: ${lockKeys.join(', ') || '(none)'}\n`);
+      process.exit(1);
+    }
   }
 
   // ── ADR-0004 §D6 [inv:reversible-injection]: consume the ownership index ────
@@ -2592,9 +2636,11 @@ Options:
     ownership.save();
   }
 
-  // Remove from lockfile.
+  // Remove from lockfile (matchKey may be undefined for --host path fallback — no-op).
   const updatedLock = { ...lockfile, resolved: { ...lockfile.resolved } };
-  delete updatedLock.resolved[matchKey];
+  if (matchKey !== undefined) {
+    delete updatedLock.resolved[matchKey];
+  }
   fsMod.writeFileSync(lockfilePath5, JSON.stringify(updatedLock, null, 2) + '\n', 'utf-8');
 
   // Also remove from extensions.json so the next `sox install` doesn't re-add it.
@@ -2620,7 +2666,8 @@ Options:
     );
   }
 
-  process.stdout.write(`${CLI} uninstall: removed '${id}' (${matchKey}) from scope '${scope}'\n`);
+  const matchLabel = matchKey ?? '(ownership-reversed)';
+  process.stdout.write(`${CLI} uninstall: removed '${id}' (${matchLabel}) from scope '${scope}'\n`);
   process.exit(0);
 }
 
@@ -6483,12 +6530,16 @@ Sensitive values should use env refs: \${VAR_NAME}
             }
           } catch { /* best-effort */ }
 
-          const result = await restartOsUnit(ctx.spec, ctx.platform, lkgPath, {
-            reason: `config change: ${key}=${value} (scope=${writeScope})`,
-          });
+          try {
+            const result = await restartOsUnit(ctx.spec, ctx.platform, lkgPath, {
+              reason: `config change: ${key}=${value} (scope=${writeScope})`,
+            });
 
-          if (result.action === 'restarted') restarted++;
-          process.stdout.write(`${extId}: ${result.action} (scope=${s}, ${result.reason ?? ''})\n`);
+            if (result.action === 'restarted') restarted++;
+            process.stdout.write(`${extId}: ${result.action} (scope=${s}, ${result.reason ?? ''})\n`);
+          } catch (e: unknown) {
+            process.stderr.write(`${extId}: restart failed in scope=${s}: ${String(e)}\n`);
+          }
         }
 
         if (restarted > 0) {

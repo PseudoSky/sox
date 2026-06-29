@@ -6,7 +6,13 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Open — opencode-host implementation (surfaced 2026-06-29)
 
-### BL-108 — Multi-host `--host=claude --host=opencode` only uses last value — **Open (MEDIUM)**
+### BL-108 — Multi-host `--host=claude --host=opencode` only uses last value — **FIXED (2026-06-29)**
+
+**Fix:** Changed `--host` parsing in `cmdInstall` and `cmdUpdate` to accept comma-separated values
+(`--host=claude,opencode`), following the same pattern used by `--keywords` and `--transports` in
+`cmdInit`. The host value is split on commas, trimmed, and iterated. Help text updated to show
+`--host=<h1,h2,...>` syntax. Verified: `soxe install memory-org --host=claude,opencode --scope=project
+--dry-run` now shows both hosts.
 
 **Observed:** `soxe install memory-org --host=claude --host=opencode --scope=project --dry-run` only
 shows the opencode result. The claude host is silently dropped. Same for any multi-host install.
@@ -19,7 +25,15 @@ footgun.
 `--host=claude,opencode`, or add a bespoke parser before the caps parseArgs layer. Update help text
 to show repeat syntax (`--host=<h1> --host=<h2>`).
 
-### BL-109 — `soxe uninstall` for mcp-server extensions fails with "not found in lockfile" — **Open (MEDIUM)**
+### BL-109 — `soxe uninstall` for mcp-server extensions fails with "not found in lockfile" — **FIXED (2026-06-29)**
+
+**Fix:** `cmdUninstall` now falls back to the ownership index when the lockfile key match fails.
+Extensions installed via the `--host` path (which calls `declarativeInstall()` directly without
+writing a lockfile entry) can now be uninstalled via ownership/ledger reversal. The fix queries
+`OwnershipIndex` at the data root; if the extension has an ownership record, it proceeds with
+ledger reversal. Verified: `soxe install memory-server --host=opencode --profile=sse --scope=project`
+→ `soxe uninstall memory-server --host=opencode --scope=project` now succeeds (logs "found in
+ownership index (not lockfile) — proceeding with ledger reversal").
 
 **Observed:** `soxe install memory-server --host=opencode --profile=sse --scope=project` wrote the
 correct MCP entry to `opencode.json` but did NOT create a lockfile entry. Subsequent `soxe uninstall
@@ -38,7 +52,7 @@ are declared.
 host-agnostic resolver. Verify with an install→uninstall→reinstall round-trip for all host/scope
 combinations.
 
-### BL-110 — S6b post-install restart can unload OS unit without completing reload — **Open (HIGH)**
+### BL-110 — S6b post-install restart can unload OS unit without completing reload — **FIXED**
 
 **Observed:** `soxe install memory-server --host=opencode --profile=sse --scope=user` timed out
 after the post-install restart began. The `restartOsUnit` call unloaded the launchd unit (step 1:
@@ -52,13 +66,14 @@ a timeout that may fire before the full unload→reap→write→load sequence co
 destructive (kills the running process) but the reload is deferred, so a timeout during restart
 leaves the system in a broken state.
 
-**Fix sketch:** make `restartOsUnit` atomic — if the reload cannot complete, revert to the
-last-known-good unit instead of leaving it unloaded. Add a timeout parameter to `restartOsUnit`
-that matches the install timeout. Or split the restart into two phases: (1) post-install
-detects the stale daemon and QUEUES a restart, (2) a separate async process picks up the queue
-and executes the restart independent of the install timeout. As a simpler interim fix: increase
-the install timeout when a restart is pending, or run the restart with a shorter poll interval
-in the restart-loop guard.
+**Fix (2026-06-29):**
+1. **`os-unit.ts`**: Added `signal?: AbortSignal` to `RestartOptions`. Wrapped `restartOsUnit` body
+   in try/finally: if the daemon was unloaded but not reloaded (interrupted/timeout/error), the
+   finally block restores the last-known-good unit file and loads it. Added `signal?.aborted` checks
+   between phases (after unload, after reap, after write). The existing load-failure LKG revert path
+   now also sets `loaded = true` when LKG reload succeeds, preventing double-restore in finally.
+2. **`main.ts`**: Wrapped `restartOsUnit` calls in `cmdInstall` and `cmdConfigSet` in try/catch
+   so interrupted/timeout restarts don't crash the CLI.
 
 ---
 
