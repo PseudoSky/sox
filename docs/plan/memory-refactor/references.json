@@ -1,74 +1,336 @@
 {
-  "plan": "memory-refactor",
-  "spec_sources": [
-    "docs/plan/memory-refactor/SCOPE.md",
-    "docs/plan/memory-refactor/NX-GENERATOR-HANDOFF.md",
-    "docs/plan/memory-embedding-quickfix/SCOPE.md"
-  ],
-  "reference_plan": ".workflow/plans/permission-enforcement/",
-  "scaffold": "scripts/scaffold-data-packages.mjs",
-  "standalone_proof": {
-    "script": "docs/plan/memory-refactor/scripts/pack-smoke.mjs",
-    "criterion": "audit-final.5",
-    "purpose": "Affirmative proof of the reuse thesis (data/* installable via plain npm i); the explicit BL-87 guard (boundary-clean but broken on install via an undeclared in-workspace runtime dep). Native carriers prove fastembed/onnxruntime-node + better-sqlite3/sqlite-vec resolve from the tarball.",
-    "rationale": "The invariant/negative audits (boundary lint, vectors-not-graph dist-grep) are necessary but not sufficient; this is the only affirmative evidence for the F1 public@0.x posture."
+  "memory-refactor": {
+    "type": "plan-identity",
+    "anchor": "docs/plan/memory-refactor/SCOPE.md",
+    "rule": "Plan identity + spec sources: SCOPE.md, NX-GENERATOR-HANDOFF.md, memory-embedding-quickfix/SCOPE.md.",
+    "discovered_via": "manual",
+    "audit_check": "p0-baseline.3",
+    "spec_sources": [
+      "docs/plan/memory-refactor/SCOPE.md",
+      "docs/plan/memory-refactor/NX-GENERATOR-HANDOFF.md",
+      "docs/plan/memory-embedding-quickfix/SCOPE.md"
+    ]
   },
-  "demo_discovery_skipped": {
-    "deliberate": true,
-    "reason": "unknowns == 0 on entry (SCOPE Parts A-D decision-bearing + pre-folded researcher findings with cited uids + ratified decisions A-E); demo-creator process had nothing to drive out.",
-    "artifact_retained_instead": "standalone_proof (pack-smoke.mjs + audit-final.5) — the runnable proof a demo would have produced, kept because it is non-redundant (BL-87/F1 guard)."
+  "reference-plan-permission-enforcement": {
+    "type": "reference-plan",
+    "anchor": ".workflow/plans/permission-enforcement/",
+    "rule": "Same plan-state-machine artifact set is the structural reference for this plan's authoring.",
+    "discovered_via": "manual",
+    "audit_check": "p0-baseline.3"
   },
-  "research_memory_uids": [
-    "01KW2CC69129D16M8X7Q27DA83",
-    "01KW2E1N4NG5V4K8W59ABQJF66",
-    "01KW2FNQGPCYPEKNTB5J0WEMRQ",
-    "01KW2G95V61N31TEV6PKN7JJWK"
-  ],
-  "research_topic": "hybrid-search-api-design",
-  "source_to_extract": {
-    "embedding-provider": ["libs/memory-core/src/embed.ts", "libs/memory-core/src/embedWorker.ts"],
-    "graph-store": ["libs/memory-core/src/schema.ts (graph half)", "libs/memory-core/src/db.ts", "libs/memory-core/src/write.ts (graph)"],
-    "vector-store": ["libs/memory-core/src/schema.ts (vec_node)", "libs/memory-core/src/embed.ts (reembedNodes)", "scripts/reembed-memory.mjs"],
-    "hybrid-search": ["libs/memory-core/src/recall.ts (single-store fusion)"],
-    "analysis": ["libs/memory-enrich/src/cluster.ts", "libs/memory-enrich/src/neardup.ts", "libs/memory-enrich/src/importance.ts", "libs/memory-enrich/src/autolink.ts", "libs/memory-enrich/src/batch.ts"],
-    "ingest": ["libs/memory-enrich/src/extractive.ts", "libs/memory-enrich/src/enrich.ts (per-item)"]
+  "scaffold-script": {
+    "type": "script",
+    "anchor": "scripts/scaffold-data-packages.mjs",
+    "rule": "Consume this scaffold to create the 6 data/* skeletons (born area:data + sox.* metadata); do not build the generator.",
+    "discovered_via": "manual",
+    "audit_check": "p1-layout.1"
   },
-  "consumers_to_flip": [
-    "extensions/bundles/sox-memory-bundle/members/memory-server",
-    "extensions/bundles/sox-memory-bundle/members/memory-daemon",
-    "extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "extensions/bundles/sox-memory-bundle/members/memory-flush"
-  ],
-  "backlog_refs": {
-    "BL-4": "stale-dist — nx build memory-core+memory-server before memory tests",
-    "BL-11": "openDb + real embed() must not share a thread — keep the worker seam",
-    "BL-27": "organizer_queue CHECK migration travels with graph-store",
-    "BL-33": "build-index.ts <-> check-registry-sync.ts byte-mirror pair",
-    "BL-41": "expandDbPath ~ expansion at the file-create sink (composer openDb)",
-    "BL-63": "live local memory-server proxy shows as a false leaked-orphan in e2e pgrep",
-    "BL-65": "live server runs from ~/.adhd/sox-cli (npm install)",
-    "BL-86": "hash degeneracy — now the first-class deterministic provider",
-    "BL-87": "packaging — fastembed/onnxruntime not externalized (quickfix)",
-    "BL-88": "per-record modelId provenance — vector-store",
-    "BL-89": "worker warmup hang silently swallowed to hash (quickfix loud-fail)"
+  "standalone-proof": {
+    "type": "proof",
+    "anchor": "docs/plan/memory-refactor/scripts/pack-smoke.mjs",
+    "rule": "Affirmative proof of the reuse thesis (data/* installable via plain npm i) — the explicit BL-87 guard (boundary-clean but broken on install via an undeclared in-workspace runtime dep). Native carriers prove fastembed/onnxruntime-node + better-sqlite3/sqlite-vec resolve from the tarball. The invariant/negative audits (boundary lint, vectors-not-graph dist-grep) are necessary but not sufficient; this is the only affirmative evidence for the F1 public@0.x posture.",
+    "discovered_via": "manual",
+    "audit_check": "audit-final.5",
+    "criterion": "audit-final.5"
   },
-  "ratified_decisions": {
-    "grouping": "platform/data/shared + the SCOPE Part B group set",
-    "two_level": "--area + --group (boundary tags)",
-    "embed_vs_inference": "keep both (output-is-a-vector rule); inference reserved, no folder",
-    "defer_knowledge": true,
-    "provenance": "per-record modelId; ONE re-embed core exposed as daemon op AND script wrapper",
-    "default_backend": "real-enforced (loud-fail); opt-in hash only via explicit config",
-    "quickfix_first": "P0 hard-gates on it",
-    "A_platform_migration": "tag-in-place now; physical relocation is a follow-on",
-    "B_branch": "one long-lived feat/memory-refactor off post-quickfix main",
-    "C_connection_seam": "composer owns openDb; graph-store+vector-store accept injected db; vector-store ships standalone openVectorStore; no data/store package",
-    "D_dissolve": "facade-then-dissolve; slim memory-core REMAINS (name kept); memory-enrich dissolves",
-    "E_reembed_home": "vector-store owns the migration walk"
+  "demo-discovery-skipped": {
+    "type": "note",
+    "anchor": "docs/plan/memory-refactor/references.json",
+    "rule": "Demo-creator deliberately skipped: unknowns==0 on entry (SCOPE Parts A-D decision-bearing + pre-folded researcher findings with cited uids + ratified decisions A-E); demo-creator had nothing to drive out. Retained instead: standalone_proof (pack-smoke.mjs + audit-final.5), the runnable proof a demo would have produced, kept because it is non-redundant (BL-87/F1 guard).",
+    "discovered_via": "manual",
+    "audit_check": "audit-final.5"
   },
-  "financial_posture": {
-    "F1": "REVISED 2026-06-26 (ADR-0006, external demand USE_CASES.md SYS-1..10): 5 PUBLIC (embedding-provider, vector-store, graph-store, hybrid-search, analysis) @ 0.x publish owner-gated; 1 PRIVATE (ingest — no use case pulled it). graph-store+analysis promoted (catalog/notes/agent-memory need graph-store; dedup/clustering/drift need analysis). hybrid-search depends on public graph-store+vector-store as normal deps (no longer bundles them). Bundle-a-private-dep rule (ADR-0006) retained for future private deps but no active instance now. Live objects cross via DI (decision C).",
-    "F2": "no prebuild-CI matrix (rely on upstream prebuilds; quickfix validates live Node)",
-    "F3": "no LIVE/paid remote provider; BUT the EmbedProvider contract is designed+implemented for local‖remote (isRemote) with a contract-conformant remote adapter that is NOT wired to a live/paid endpoint (no spend, not live-tested)"
+  "research-topic-hybrid-search": {
+    "type": "research-topic",
+    "anchor": "hybrid-search-api-design",
+    "rule": "Research topic driving the hybrid-search fusion/normalization design (SCOPE Part D).",
+    "discovered_via": "manual",
+    "audit_check": "w2c.6"
+  },
+  "research-hybrid-search-1": {
+    "type": "research-memory",
+    "anchor": "01KW2CC69129D16M8X7Q27DA83",
+    "rule": "Memory UID — pre-folded researcher finding for hybrid-search-api-design.",
+    "discovered_via": "manual",
+    "audit_check": "w2c.6"
+  },
+  "research-hybrid-search-2": {
+    "type": "research-memory",
+    "anchor": "01KW2E1N4NG5V4K8W59ABQJF66",
+    "rule": "Memory UID — pre-folded researcher finding for hybrid-search-api-design.",
+    "discovered_via": "manual",
+    "audit_check": "w2c.6"
+  },
+  "research-hybrid-search-3": {
+    "type": "research-memory",
+    "anchor": "01KW2FNQGPCYPEKNTB5J0WEMRQ",
+    "rule": "Memory UID — pre-folded researcher finding for hybrid-search-api-design.",
+    "discovered_via": "manual",
+    "audit_check": "w2c.6"
+  },
+  "research-hybrid-search-4": {
+    "type": "research-memory",
+    "anchor": "01KW2G95V61N31TEV6PKN7JJWK",
+    "rule": "Memory UID — pre-folded researcher finding for hybrid-search-api-design.",
+    "discovered_via": "manual",
+    "audit_check": "w2c.6"
+  },
+  "source-embedding-provider": {
+    "type": "source-extract",
+    "anchor": "libs/memory-core/src/embed.ts",
+    "rule": "Extract embedding-provider from libs/memory-core/src/embed.ts + embedWorker.ts.",
+    "discovered_via": "manual",
+    "audit_check": "p1-layout.1",
+    "sources": ["libs/memory-core/src/embed.ts", "libs/memory-core/src/embedWorker.ts"]
+  },
+  "source-graph-store": {
+    "type": "source-extract",
+    "anchor": "libs/memory-core/src/schema.ts",
+    "rule": "Extract graph-store from schema.ts (graph half) + db.ts + write.ts (graph).",
+    "discovered_via": "manual",
+    "audit_check": "w2b.5",
+    "sources": ["libs/memory-core/src/schema.ts (graph half)", "libs/memory-core/src/db.ts", "libs/memory-core/src/write.ts (graph)"]
+  },
+  "source-vector-store": {
+    "type": "source-extract",
+    "anchor": "libs/memory-core/src/schema.ts",
+    "rule": "Extract vector-store from schema.ts (vec_node) + embed.ts (reembedNodes) + scripts/reembed-memory.mjs.",
+    "discovered_via": "manual",
+    "audit_check": "w2c.6",
+    "sources": ["libs/memory-core/src/schema.ts (vec_node)", "libs/memory-core/src/embed.ts (reembedNodes)", "scripts/reembed-memory.mjs"]
+  },
+  "source-hybrid-search": {
+    "type": "source-extract",
+    "anchor": "libs/memory-core/src/recall.ts",
+    "rule": "Extract hybrid-search from recall.ts (single-store fusion).",
+    "discovered_via": "manual",
+    "audit_check": "w2c.6",
+    "sources": ["libs/memory-core/src/recall.ts (single-store fusion)"]
+  },
+  "source-analysis": {
+    "type": "source-extract",
+    "anchor": "libs/memory-enrich/src/batch.ts",
+    "rule": "Extract analysis from cluster.ts, neardup.ts, importance.ts, autolink.ts, batch.ts (corpus/batch derivation).",
+    "discovered_via": "manual",
+    "audit_check": "w2e.2",
+    "sources": ["libs/memory-enrich/src/cluster.ts", "libs/memory-enrich/src/neardup.ts", "libs/memory-enrich/src/importance.ts", "libs/memory-enrich/src/autolink.ts", "libs/memory-enrich/src/batch.ts"]
+  },
+  "source-ingest": {
+    "type": "source-extract",
+    "anchor": "libs/memory-enrich/src/extractive.ts",
+    "rule": "Extract ingest from extractive.ts + enrich.ts (per-item write-path transforms).",
+    "discovered_via": "manual",
+    "audit_check": "w2e.2",
+    "sources": ["libs/memory-enrich/src/extractive.ts", "libs/memory-enrich/src/enrich.ts (per-item)"]
+  },
+  "consumer-memory-server": {
+    "type": "consumer-flip",
+    "anchor": "extensions/bundles/sox-memory-bundle/members/memory-server",
+    "rule": "Flip memory-server to import data/* directly (w2e step 2).",
+    "discovered_via": "manual",
+    "audit_check": "w2e.2"
+  },
+  "consumer-memory-daemon": {
+    "type": "consumer-flip",
+    "anchor": "extensions/bundles/sox-memory-bundle/members/memory-daemon",
+    "rule": "Flip memory-daemon to import data/* directly (w2e step 2).",
+    "discovered_via": "manual",
+    "audit_check": "w2e.2"
+  },
+  "consumer-memory-cli": {
+    "type": "consumer-flip",
+    "anchor": "extensions/bundles/sox-memory-bundle/members/memory-cli",
+    "rule": "Flip memory-cli to import data/* directly (w2e step 2).",
+    "discovered_via": "manual",
+    "audit_check": "w2e.2"
+  },
+  "consumer-memory-flush": {
+    "type": "consumer-flip",
+    "anchor": "extensions/bundles/sox-memory-bundle/members/memory-flush",
+    "rule": "Flip memory-flush to import data/* directly (w2e step 2).",
+    "discovered_via": "manual",
+    "audit_check": "w2e.2"
+  },
+  "backlog-bl-4": {
+    "type": "backlog-ref",
+    "anchor": "BL-4",
+    "rule": "stale-dist — nx build memory-core+memory-server before memory tests.",
+    "discovered_via": "manual",
+    "audit_check": "w2e.2"
+  },
+  "backlog-bl-11": {
+    "type": "backlog-ref",
+    "anchor": "BL-11",
+    "rule": "openDb + real embed() must not share a thread — keep the worker seam.",
+    "discovered_via": "manual",
+    "audit_check": "p0-baseline.4"
+  },
+  "backlog-bl-27": {
+    "type": "backlog-ref",
+    "anchor": "BL-27",
+    "rule": "organizer_queue CHECK migration travels with graph-store.",
+    "discovered_via": "manual",
+    "audit_check": "w2b.5"
+  },
+  "backlog-bl-33": {
+    "type": "backlog-ref",
+    "anchor": "BL-33",
+    "rule": "build-index.ts <-> check-registry-sync.ts byte-mirror pair.",
+    "discovered_via": "manual",
+    "audit_check": "p1-layout.1"
+  },
+  "backlog-bl-41": {
+    "type": "backlog-ref",
+    "anchor": "BL-41",
+    "rule": "expandDbPath ~ expansion at the file-create sink (composer openDb).",
+    "discovered_via": "manual",
+    "audit_check": "w2e.2"
+  },
+  "backlog-bl-63": {
+    "type": "backlog-ref",
+    "anchor": "BL-63",
+    "rule": "live local memory-server proxy shows as a false leaked-orphan in e2e pgrep.",
+    "discovered_via": "manual",
+    "audit_check": "w2e.2"
+  },
+  "backlog-bl-65": {
+    "type": "backlog-ref",
+    "anchor": "BL-65",
+    "rule": "live server runs from ~/.adhd/sox-cli (npm install).",
+    "discovered_via": "manual",
+    "audit_check": "p0-baseline.3"
+  },
+  "backlog-bl-86": {
+    "type": "backlog-ref",
+    "anchor": "BL-86",
+    "rule": "hash degeneracy — now the first-class deterministic provider.",
+    "discovered_via": "manual",
+    "audit_check": "p0-baseline.4"
+  },
+  "backlog-bl-87": {
+    "type": "backlog-ref",
+    "anchor": "BL-87",
+    "rule": "packaging — fastembed/onnxruntime not externalized (quickfix); pack-smoke is the affirmative guard.",
+    "discovered_via": "manual",
+    "audit_check": "audit-final.5"
+  },
+  "backlog-bl-88": {
+    "type": "backlog-ref",
+    "anchor": "BL-88",
+    "rule": "per-record modelId provenance — vector-store.",
+    "discovered_via": "manual",
+    "audit_check": "w2c.6"
+  },
+  "backlog-bl-89": {
+    "type": "backlog-ref",
+    "anchor": "BL-89",
+    "rule": "worker warmup hang silently swallowed to hash (quickfix loud-fail).",
+    "discovered_via": "manual",
+    "audit_check": "p0-baseline.4"
+  },
+  "decision-grouping": {
+    "type": "ratified-decision",
+    "anchor": "SCOPE Part B",
+    "rule": "Grouping: platform/data/shared + the SCOPE Part B group set.",
+    "discovered_via": "manual",
+    "audit_check": "p1-layout.1"
+  },
+  "decision-two-level": {
+    "type": "ratified-decision",
+    "anchor": "NX-GENERATOR-HANDOFF.md",
+    "rule": "Two-level taxonomy: --area + --group (boundary tags).",
+    "discovered_via": "manual",
+    "audit_check": "p1-layout.3"
+  },
+  "decision-embed-vs-inference": {
+    "type": "ratified-decision",
+    "anchor": "SCOPE Part A",
+    "rule": "Keep both embed + inference (output-is-a-vector rule); inference reserved, no folder.",
+    "discovered_via": "manual",
+    "audit_check": "p1-layout.1"
+  },
+  "decision-defer-knowledge": {
+    "type": "ratified-decision",
+    "anchor": "SCOPE Part A",
+    "rule": "Defer the knowledge package (true).",
+    "discovered_via": "manual",
+    "audit_check": "p1-layout.1"
+  },
+  "decision-provenance": {
+    "type": "ratified-decision",
+    "anchor": "SCOPE Part D",
+    "rule": "Per-record modelId; ONE re-embed core exposed as daemon op AND script wrapper.",
+    "discovered_via": "manual",
+    "audit_check": "w2c.6"
+  },
+  "decision-default-backend": {
+    "type": "ratified-decision",
+    "anchor": "SCOPE Part D",
+    "rule": "Default backend real-enforced (loud-fail); opt-in hash only via explicit config.",
+    "discovered_via": "manual",
+    "audit_check": "p0-baseline.4"
+  },
+  "decision-quickfix-first": {
+    "type": "ratified-decision",
+    "anchor": "memory-embedding-quickfix/SCOPE.md",
+    "rule": "Quickfix lands first; P0 hard-gates on it.",
+    "discovered_via": "manual",
+    "audit_check": "p0-baseline.3"
+  },
+  "decision-a-platform-migration": {
+    "type": "ratified-decision",
+    "anchor": "SCOPE decision A",
+    "rule": "Platform migration: tag-in-place now; physical relocation is a follow-on.",
+    "discovered_via": "manual",
+    "audit_check": "p1-layout.3"
+  },
+  "decision-b-branch": {
+    "type": "ratified-decision",
+    "anchor": "SCOPE decision B",
+    "rule": "One long-lived feat/memory-refactor off post-quickfix main.",
+    "discovered_via": "manual",
+    "audit_check": "p0-baseline.3"
+  },
+  "decision-c-connection-seam": {
+    "type": "ratified-decision",
+    "anchor": "SCOPE decision C",
+    "rule": "Composer owns openDb; graph-store+vector-store accept injected db; vector-store ships standalone openVectorStore; no data/store package.",
+    "discovered_via": "manual",
+    "audit_check": "w2b.5"
+  },
+  "decision-d-dissolve": {
+    "type": "ratified-decision",
+    "anchor": "SCOPE decision D",
+    "rule": "Facade-then-dissolve; slim memory-core REMAINS (name kept); memory-enrich dissolves.",
+    "discovered_via": "manual",
+    "audit_check": "w2e.2"
+  },
+  "decision-e-reembed-home": {
+    "type": "ratified-decision",
+    "anchor": "SCOPE decision E",
+    "rule": "vector-store owns the migration walk (re-embed core).",
+    "discovered_via": "manual",
+    "audit_check": "w2c.6"
+  },
+  "financial-f1": {
+    "type": "financial-posture",
+    "anchor": "ADR-0006",
+    "rule": "REVISED 2026-06-26 (ADR-0006, external demand USE_CASES.md SYS-1..10): 5 PUBLIC (embedding-provider, vector-store, graph-store, hybrid-search, analysis) @ 0.x publish owner-gated; 1 PRIVATE (ingest — no use case pulled it). graph-store+analysis promoted. hybrid-search depends on public graph-store+vector-store as normal deps (no longer bundles them). Bundle-a-private-dep rule (ADR-0006) retained for future private deps but no active instance now. Live objects cross via DI (decision C).",
+    "discovered_via": "manual",
+    "audit_check": "audit-final.5"
+  },
+  "financial-f2": {
+    "type": "financial-posture",
+    "anchor": "SCOPE F2",
+    "rule": "no prebuild-CI matrix (rely on upstream prebuilds; quickfix validates live Node).",
+    "discovered_via": "manual",
+    "audit_check": "p0-baseline.3"
+  },
+  "financial-f3": {
+    "type": "financial-posture",
+    "anchor": "SCOPE F3",
+    "rule": "no LIVE/paid remote provider; BUT the EmbedProvider contract is designed+implemented for local‖remote (isRemote) with a contract-conformant remote adapter NOT wired to a live/paid endpoint (no spend, not live-tested).",
+    "discovered_via": "manual",
+    "audit_check": "p0-baseline.4"
   }
 }

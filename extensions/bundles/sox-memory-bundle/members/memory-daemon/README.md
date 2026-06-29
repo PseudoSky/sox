@@ -1,6 +1,6 @@
 # Memory Daemon
 
-> Supervised Unix-socket daemon that drains the batch-enrich queue and runs deterministic enrichment (clustering, importance, auto-links) via @adhd/sox-memory-enrich — zero LLM calls, no provider required.
+> Supervised Unix-socket daemon that drains the batch-enrich queue and runs deterministic enrichment (clustering, importance, auto-links) via `@adhd/sox-memory-core` — zero LLM calls, no provider required.
 
 ## Overview
 

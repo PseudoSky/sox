@@ -5,7 +5,9 @@
   "root": "packages/sox-nx",
   "sourceRoot": "packages/sox-nx/src",
   "tags": [
-    "type:lib"
+    "type:lib",
+    "area:platform",
+    "group:devtools"
   ],
   "targets": {
     "build": {

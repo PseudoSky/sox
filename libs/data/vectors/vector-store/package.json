@@ -1,0 +1,51 @@
+{
+  "name": "@adhd/sox-vector-store",
+  "version": "0.1.0",
+  "description": "Multi-space vector persistence (sqlite-vec vec0) + kNN/cosine search. Enforces the embedding space invariant: one (modelId, dim) pair per vec0 virtual table, rejects any upsert whose vec.length ≠ space.dim. Owns per-record modelId provenance. reembed() migrates vectors between spaces.",
+  "license": "MIT",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "better-sqlite3": "^12.10.0",
+    "sqlite-vec": "^0.1.9"
+  },
+  "sox": {
+    "area": "data",
+    "group": "vectors",
+    "concerns": [
+      "multi-space vec0 persistence (one virtual table per VectorSpace)",
+      "kNN/cosine search (VectorBackend.knn)",
+      "space invariant enforcement (SpaceInvariantError on dim mismatch)",
+      "per-record modelId provenance (VectorSpace.modelId)",
+      "corpus scan for clustering + reembed (iter)",
+      "reembed() — cross-space migration (walks old space, re-embeds, writes into target space)"
+    ],
+    "invariants": [
+      "ensureSpace(space) MUST be called before the first upsert on any new (modelId, dim) pair — idempotent on existing spaces",
+      "upsert() THROWS SpaceInvariantError when vec.length !== space.dim ([def:space-invariant] — all implementations must enforce this)",
+      "a model switch is a re-embed migration (explicit reembed() call), never a hot-swap into the same vec0 table",
+      "reembed() does NOT delete source vectors — caller decides when the old space is safe to drop",
+      "delete(id, modelId) is scoped to a single space — does not delete the node from other spaces"
+    ],
+    "entrypoints": [
+      "dist/index.js"
+    ]
+  }
+}

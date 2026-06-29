@@ -25,7 +25,7 @@ import { openDb } from './db.js';
 // contract by importing the class, instantiating it with a DB that has the schema,
 // and then injecting a failure via vi.spyOn on the runBatchEnrich import.
 
-import * as batchModule from '@adhd/sox-memory-enrich';
+import * as batchModule from './enrich-batch.js';
 import { MemoryDaemon, enqueueIngest } from './memoryd.js';
 
 let tmpDir: string;

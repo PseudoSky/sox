@@ -66,3 +66,34 @@ correct; otherwise it targets by scope `embed_model`.
 - Default backend policy: flip default to `real`-required (fail loud) now, or keep `auto` but make the
   fallback loud? Quickfix default: keep `auto`, make fallback loud + reported; the refactor makes `real`
   the enforced default.
+
+## Incident log — 2026-06-27: pnpm native binding miss (BL-TBD)
+
+**Symptom:** Session-wide `better-sqlite3` failure — `Could not locate the bindings file` for
+`node-v137-darwin-arm64`. All `memory_write` and `memory_recall` calls failing for both the primary
+session and subagent sessions.
+
+**Root cause:** The MCP server runs the extension from the dev checkout via
+`~/.adhd/sox-cli/bin/soxe serve memory-server` → resolves the bundle at
+`extensions/bundles/sox-memory-bundle/members/memory-server/dist/index.js`. That bundle externalizes
+`better-sqlite3`, so Node resolves it from the pnpm virtual store at
+`.pnpm/better-sqlite3@12.10.0/node_modules/better-sqlite3/`. That package had **never been compiled**
+— no `build/` dir — because pnpm does not run `node-gyp` automatically when the content-addressed store
+is populated. The user-scope ext installs at `~/.adhd/sox-ecosystem/ext/*/node_modules/` have their own
+working binaries (npm `postinstall` runs there) but sit on a different resolution path.
+
+**Fix applied (2026-06-27):**
+```
+cd /Users/nix/dev/ai/sox-ecosystem/node_modules/.pnpm/better-sqlite3@12.10.0/node_modules/better-sqlite3
+npx node-gyp rebuild
+```
+Binding now present for ABI 137 (Node 24.11.1). `sqlite-vec` was unaffected (already resolved).
+`memory_ping` confirms `ok: true`, `embed_on_hash_fallback: false` post-reconnect.
+
+**Permanent fix needed (→ refactor or post-install):** A fresh `pnpm install` on a new Node version
+silently breaks the MCP server. Add a root-level `postinstall` script (or an nx `setup` target) that
+rebuilds native deps in the pnpm store after install:
+```json
+"scripts": { "postinstall": "node-gyp-build" }
+```
+or drive it via `pnpm rebuild better-sqlite3 sqlite-vec` from an explicit nx target. Track as BL-TBD.

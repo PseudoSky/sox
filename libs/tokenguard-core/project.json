@@ -4,11 +4,17 @@
   "projectType": "library",
   "root": "libs/tokenguard-core",
   "sourceRoot": "libs/tokenguard-core/src",
-  "tags": ["type:lib"],
+  "tags": [
+    "type:lib",
+    "area:shared",
+    "group:codec"
+  ],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/libs/tokenguard-core/dist"],
+      "outputs": [
+        "{workspaceRoot}/libs/tokenguard-core/dist"
+      ],
       "options": {
         "command": "tsc --project libs/tokenguard-core/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/tokenguard-core/dist/package.json",
         "cwd": "."
@@ -26,12 +32,17 @@
         "cwd": "."
       },
       "cache": true,
-      "inputs": ["default", "^production"]
+      "inputs": [
+        "default",
+        "^production"
+      ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["libs/tokenguard-core/**/*.ts"]
+        "lintFilePatterns": [
+          "libs/tokenguard-core/**/*.ts"
+        ]
       }
     }
   }

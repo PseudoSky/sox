@@ -14,8 +14,7 @@
  */
 
 import type { RecallResponse } from '@adhd/sox-memory-core';
-import { _resetEmbedSingleton, _shutdownEmbedWorker, getActiveEmbedModel, memoryRecall, memoryWrite, openDb, SOCKET_PATH } from '@adhd/sox-memory-core';
-import { runBatchEnrich } from '@adhd/sox-memory-enrich';
+import { _resetEmbedSingleton, _shutdownEmbedWorker, getActiveEmbedModel, memoryRecall, memoryWrite, openDb, runBatchEnrich, SOCKET_PATH } from '@adhd/sox-memory-core';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';

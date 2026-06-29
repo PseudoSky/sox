@@ -21,6 +21,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { embed, vecToJson, getProviderCallCount } from './embed.js';
 import { openDbReadOnly } from './db.js';
+import { buildFilterClause } from '@adhd/sox-hybrid-search';
 
 export interface RecallParams {
   query: string;
@@ -51,6 +52,10 @@ export interface RecallResult {
 export interface RecallResponse {
   results: RecallResult[];
   provider_call_count: number;
+  filterStats?: {
+    candidates_before_filter: number;
+    candidates_after_filter: number;
+  };
 }
 
 const RRF_K = 60;
@@ -119,6 +124,7 @@ export async function memoryRecall(
     query,
     agent_id,
     as_of,
+    filters,
     token_budget = DEFAULT_TOKEN_BUDGET,
     depth = DEFAULT_DEPTH,
     limit = 10,
@@ -128,6 +134,98 @@ export async function memoryRecall(
   } = params;
 
   const beforeCount = getProviderCallCount();
+
+  // BL-100: resolve filters into SQL pre-filter clauses. Uses hybrid-search's
+  // buildFilterClause for the standard fields (topic, tags, importance_min,
+  // project_path, agent_id) and adds time-range + tags_match_all directly.
+  let filterSql = '';
+  let filterParams: unknown[] = [];
+  if (filters && Object.keys(filters).length > 0) {
+    // Separate fields that hybrid-search can handle natively from those it cannot.
+    // project_path objects {prefix: string} and tags_match_all bool are handled here.
+    const nativeFilters: Record<string, unknown> = {};
+    const nodeClauses: string[] = [];
+    const nodeParams: unknown[] = [];
+
+    for (const [key, value] of Object.entries(filters)) {
+      switch (key) {
+        case 'project_path': {
+          if (value !== undefined && value !== null && typeof value === 'object' && 'prefix' in (value as object)) {
+            const prefix = (value as { prefix: string }).prefix;
+            nodeClauses.push('(n.project_path = ? OR n.project_path LIKE ?)');
+            nodeParams.push(prefix, `${prefix}/%`);
+          } else if (typeof value === 'string') {
+            nativeFilters[key] = value;
+          }
+          break;
+        }
+        case 'tags_match_all':
+          // Handled separately below when tags are present
+          break;
+        case 't_created_after':
+          if (typeof value === 'string') {
+            nodeClauses.push('n.t_created > ?');
+            nodeParams.push(value);
+          }
+          break;
+        case 't_created_before':
+          if (typeof value === 'string') {
+            nodeClauses.push('n.t_created < ?');
+            nodeParams.push(value);
+          }
+          break;
+        default:
+          nativeFilters[key] = value;
+      }
+    }
+
+    // Use hybrid-search's builder for standard NodeFilter fields
+    const { nodeFilter, extraClauses } = buildFilterClause(nativeFilters);
+
+    // Build SQL from nodeFilter (fields that map to node table columns)
+    if (nodeFilter.topic !== undefined) {
+      if (Array.isArray(nodeFilter.topic)) {
+        nodeClauses.push(`n.topic IN (${nodeFilter.topic.map(() => '?').join(',')})`);
+        nodeParams.push(...nodeFilter.topic);
+      } else {
+        nodeClauses.push('n.topic = ?');
+        nodeParams.push(nodeFilter.topic);
+      }
+    }
+
+    if (nodeFilter.tags !== undefined && nodeFilter.tags.length > 0) {
+      const tagsMatchAll = (filters as Record<string, unknown>)['tags_match_all'] === true;
+      if (tagsMatchAll) {
+        const tagClauses = nodeFilter.tags.map(
+          () => `EXISTS (SELECT 1 FROM json_each(n.tags) WHERE value = ?)`,
+        );
+        nodeClauses.push(`(${tagClauses.join(' AND ')})`);
+        nodeParams.push(...nodeFilter.tags);
+      } else {
+        const tagClauses = nodeFilter.tags.map(
+          () => `EXISTS (SELECT 1 FROM json_each(n.tags) WHERE value = ?)`,
+        );
+        nodeClauses.push(`(${tagClauses.join(' OR ')})`);
+        nodeParams.push(...nodeFilter.tags);
+      }
+    }
+
+    if (nodeFilter.importanceMin !== undefined) {
+      nodeClauses.push('n.importance >= ?');
+      nodeParams.push(nodeFilter.importanceMin);
+    }
+
+    // Combine nodeFilter SQL + extraClauses (project_path as string, agent_id, etc.)
+    const allSqlParts = [...nodeClauses];
+    if (extraClauses.sql) {
+      allSqlParts.push(extraClauses.sql.replace(/^AND\s+/, ''));
+    }
+
+    if (allSqlParts.length > 0) {
+      filterSql = ' AND ' + allSqlParts.join(' AND ');
+      filterParams = [...nodeParams, ...extraClauses.params];
+    }
+  }
 
   // 1. Query embedding — zero per-query network calls (R1).
   //    Real backend: local ONNX inference; hash backend: deterministic projection.
@@ -139,18 +237,23 @@ export async function memoryRecall(
     ? `(n.t_valid IS NULL OR n.t_valid <= '${as_of}') AND (n.t_invalid IS NULL OR n.t_invalid > '${as_of}')`
     : 'n.t_invalid IS NULL';
 
+
   const agentFilter =
     agent_id ? `AND n.agent_id = '${agent_id.replace(/'/g, "''")}'` : '';
 
   // 2a. Vec0 KNN search
-  const vecRows = db
-    .prepare<[string, number], { node_id: number; distance: number }>(
-      `SELECT v.node_id, v.distance
+  const vecSql = `SELECT v.node_id, v.distance
        FROM vec_node v
+       JOIN node n ON n.rowid = v.node_id
        WHERE v.embedding MATCH ? AND k = ?
-       ORDER BY v.distance`,
-    )
-    .all(queryVecJson, KNN_LIMIT);
+         AND ${validityPred}
+         ${filterSql}
+       ORDER BY v.distance
+       LIMIT ?`;
+  const vecParams: unknown[] = [queryVecJson, KNN_LIMIT, ...filterParams, KNN_LIMIT];
+  const vecRows = db
+    .prepare(vecSql)
+    .all(...vecParams) as unknown as { node_id: number; distance: number }[];
 
   // Build rowid → vec rank map
   const vecRanks = new Map<number, number>();
@@ -168,10 +271,17 @@ export async function memoryRecall(
   if (ftsQuery) {
     try {
       const ftsRows = db
-        .prepare<[string, number], { rowid: number; rank: number }>(
-          `SELECT rowid, rank FROM fts_node WHERE fts_node MATCH ? ORDER BY rank LIMIT ?`,
+        .prepare<[string, ...unknown[]], { rowid: number; rank: number }>(
+          `SELECT fts_node.rowid, fts_node.rank
+           FROM fts_node
+           JOIN node n ON n.rowid = fts_node.rowid
+           WHERE fts_node MATCH ?
+             AND ${validityPred}
+             ${filterSql}
+           ORDER BY fts_node.rank
+           LIMIT ?`,
         )
-        .all(ftsQuery, FTS_LIMIT);
+        .all(ftsQuery, ...filterParams, FTS_LIMIT);
       ftsRows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
     } catch {
       // FTS query may fail on special chars — silently ignore
@@ -180,13 +290,13 @@ export async function memoryRecall(
 
   // 2c. Temporal filter: recently created nodes (recency signal)
   // NOTE: validityPred and agentFilter use the alias "n", so the table must be aliased as n here.
+  const temporalSql = `SELECT n.rowid, n.t_created FROM node n
+       WHERE ${validityPred} ${agentFilter} ${filterSql}
+       ORDER BY n.t_created DESC LIMIT ?`;
+  const temporalParams: unknown[] = [...filterParams, KNN_LIMIT];
   const temporalRows = db
-    .prepare<[number], { rowid: number; t_created: string }>(
-      `SELECT n.rowid, n.t_created FROM node n
-       WHERE ${validityPred} ${agentFilter}
-       ORDER BY n.t_created DESC LIMIT ?`,
-    )
-    .all(KNN_LIMIT) as { rowid: number; t_created: string }[];
+    .prepare(temporalSql)
+    .all(...temporalParams) as unknown as { rowid: number; t_created: string }[];
 
   const temporalRanks = new Map<number, number>();
   temporalRows.forEach((r, i) => temporalRanks.set(r.rowid, i + 1));
@@ -199,7 +309,28 @@ export async function memoryRecall(
   ]);
 
   if (allRowids.size === 0) {
-    return { results: [], provider_call_count: 0 };
+    // BL-100: compute filterStats even when results are empty, so callers can
+    // distinguish filtered-empty from empty-corpus.
+    let filterStats: RecallResponse['filterStats'] | undefined;
+    if (filterSql) {
+      const beforeCount = (
+        db.prepare<[], { cnt: number }>(
+          `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred}`,
+        ).get()
+      )?.cnt ?? 0;
+      const afterCount = (
+        db.prepare(
+          `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred} ${filterSql}`,
+        ).get(...filterParams) as { cnt: number } | undefined
+      )?.cnt ?? 0;
+      filterStats = {
+        candidates_before_filter: beforeCount,
+        candidates_after_filter: afterCount,
+      };
+    }
+    const response: RecallResponse = { results: [], provider_call_count: 0 };
+    if (filterStats) response.filterStats = filterStats;
+    return response;
   }
 
   // 3. RRF fusion scores
@@ -335,7 +466,29 @@ export async function memoryRecall(
   const afterCount = getProviderCallCount();
   const providerCallCount = afterCount - beforeCount; // must be 0
 
-  return { results, provider_call_count: providerCallCount };
+  // BL-100: compute filter stats so callers can distinguish filtered-empty from
+  // empty-corpus. This is an additive output field — does not change the tool contract.
+  let filterStats: RecallResponse['filterStats'] | undefined;
+    if (filterSql) {
+      const beforeCount = (
+        db.prepare<[], { cnt: number }>(
+          `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred}`,
+        ).get()
+      )?.cnt ?? 0;
+      const afterCount = (
+        db.prepare(
+          `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred} ${filterSql}`,
+        ).get(...filterParams) as { cnt: number } | undefined
+      )?.cnt ?? 0;
+      filterStats = {
+        candidates_before_filter: beforeCount,
+        candidates_after_filter: afterCount,
+      };
+    }
+
+  const response: RecallResponse = { results, provider_call_count: providerCallCount };
+  if (filterStats) response.filterStats = filterStats;
+  return response;
 }
 
 // ── Federation (design.md §2.7) ───────────────────────────────────────────────

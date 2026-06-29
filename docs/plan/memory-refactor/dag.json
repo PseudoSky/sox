@@ -15,7 +15,7 @@
       "kind": "work",
       "phase": "baseline",
       "depends_on": [],
-      "guard": "npx nx run-many -t build,lint,test && npx nx run host-runtime:test-e2e && npx nx run registry:check-sync && python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase baseline",
+      "guard": "npx --yes nx run-many -t build,lint,test && npx --yes nx run host-runtime:test-e2e && npx --yes nx run registry:check-sync && python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase baseline",
       "artifacts": [
         "docs/plan/memory-refactor/scripts/space_invariant_check.mjs",
         "docs/plan/memory-refactor/baseline/tool-snapshot.json",
@@ -38,16 +38,20 @@
       "kind": "work",
       "phase": "layout",
       "depends_on": ["audit-baseline"],
-      "guard": "node scripts/scaffold-data-packages.mjs && npx nx run-many -t build,lint && python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase layout",
+      "guard": "node scripts/scaffold-data-packages.mjs && npx --yes nx run-many -t build,lint && python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase layout",
       "artifacts": [
         "eslint.config.js",
-        "libs/data/embed/embedding-provider/",
-        "libs/data/vectors/vector-store/",
-        "libs/data/graph/graph-store/",
-        "libs/data/search/hybrid-search/",
-        "libs/data/analysis/analysis/",
-        "libs/data/ingest/ingest/",
-        "libs/tokenguard-core/project.json"
+        "libs/data/**",
+        "libs/tokenguard-core/project.json",
+        "libs/manifest/project.json",
+        "libs/install-engine/project.json",
+        "libs/registry/project.json",
+        "libs/host-registry/project.json",
+        "libs/host-runtime/project.json",
+        "libs/service-proxy/project.json",
+        "libs/mcp-runtime/project.json",
+        "libs/authoring/project.json",
+        "packages/sox-nx/project.json"
       ],
       "context": "contexts/p1-layout.md",
       "notes": "CONSUME the layout, do not build the generator. Run scripts/scaffold-data-packages.mjs (or `nx g sox-nx:library --area/--group` if the external generator shipped) to create the 6 data/* skeletons (born area:data + sox.* metadata). Add the 3 area depConstraints ([shape:depconstraints]) to BOTH eslint blocks, BEFORE the '*' catch-all. Tag tokenguard-core area:shared/group:codec in place; tag the 8 platform libs area:platform + group in place (verified safe: platform subgraph is clean of memory-core). Leave memory-core/memory-enrich UNTAGGED by area ([def:domain-composer]). If a new scanned dir is introduced, mirror build-index.ts↔check-registry-sync.ts (BL-33). The boundary becomes real here.",
@@ -66,13 +70,9 @@
       "kind": "work",
       "phase": "extraction",
       "depends_on": ["audit-layout"],
-      "guard": "npx nx build embedding-provider && npx nx test embedding-provider",
+      "guard": "npx --yes nx build embedding-provider && npx --yes nx test embedding-provider",
       "artifacts": [
-        "libs/data/embed/embedding-provider/src/index.ts",
-        "libs/data/embed/embedding-provider/src/provider.ts",
-        "libs/data/embed/embedding-provider/src/deterministic.ts",
-        "libs/data/embed/embedding-provider/src/fastembed.ts",
-        "libs/data/embed/embedding-provider/src/index.spec.ts"
+        "libs/data/embed/embedding-provider/src/**"
       ],
       "context": "contexts/w2a-embedding-provider.md",
       "notes": "Extract embed.ts + embedWorker.ts into [shape:embedding-provider-api]. Carry the quickfix's BL-89 loud-fail + BL-86 deterministic provider (now first-class). Add the batch API (string[]→AsyncGenerator, default 256) + optional queryEmbed + startup Map cache (SCOPE Part D). Keep the BL-11 worker seam (ONNX off the main thread). resolveProvider THROWS on real-load-failure ([def:loud-fail]). Parallel with w2b-graph-store (disjoint source files).",
@@ -82,12 +82,9 @@
       "kind": "work",
       "phase": "extraction",
       "depends_on": ["audit-layout"],
-      "guard": "npx nx build graph-store && npx nx test graph-store",
+      "guard": "npx --yes nx build graph-store && npx --yes nx test graph-store",
       "artifacts": [
-        "libs/data/graph/graph-store/src/index.ts",
-        "libs/data/graph/graph-store/src/schema.ts",
-        "libs/data/graph/graph-store/src/graph-store.ts",
-        "libs/data/graph/graph-store/src/index.spec.ts"
+        "libs/data/graph/graph-store/src/**"
       ],
       "context": "contexts/w2b-graph-store.md",
       "notes": "Carve the bi-temporal node/edge DDL + FTS triggers + content-hash + the BL-27 organizer_queue CHECK migration out of schema.ts/db.ts. Expose applyGraphSchema(db) on an INJECTED Database ([def:connection-seam]) — graph-store does NOT own openDb and does NOT import vector-store. Records are never deleted (invalidation sets t_invalid). Parallel with w2a (disjoint source). The vec_node DDL stays OUT (that is w2c).",
@@ -97,13 +94,9 @@
       "kind": "work",
       "phase": "extraction",
       "depends_on": ["w2a-embedding-provider", "w2b-graph-store"],
-      "guard": "npx nx build vector-store && npx nx test vector-store",
+      "guard": "npx --yes nx build vector-store && npx --yes nx test vector-store",
       "artifacts": [
-        "libs/data/vectors/vector-store/src/index.ts",
-        "libs/data/vectors/vector-store/src/vec-schema.ts",
-        "libs/data/vectors/vector-store/src/knn.ts",
-        "libs/data/vectors/vector-store/src/reembed.ts",
-        "libs/data/vectors/vector-store/src/index.spec.ts"
+        "libs/data/vectors/vector-store/src/**"
       ],
       "context": "contexts/w2c-vector-store.md",
       "notes": "Carve the vec0 virtual table + kNN/cosine into [shape:vector-store-api]. ENFORCE [def:space-invariant] (reject dim/modelId≠column); own per-record modelId provenance (BL-88). Pluggable similarity-backend seam (brute-force ONLY now — NO ANN, SCOPE Part D). applyVecSchema(db) + openVectorStore(path) (standalone). Implement [def:reembed-core], ABSORBING scripts/reembed-memory.mjs (do not duplicate). Sequenced after w2b (both carve db.ts/schema.ts) and needs w2a for the active provider dim/modelId.",
@@ -113,10 +106,9 @@
       "kind": "work",
       "phase": "extraction",
       "depends_on": ["w2b-graph-store"],
-      "guard": "npx nx build ingest && npx nx test ingest",
+      "guard": "npx --yes nx build ingest && npx --yes nx test ingest",
       "artifacts": [
-        "libs/data/ingest/ingest/src/index.ts",
-        "libs/data/ingest/ingest/src/index.spec.ts"
+        "libs/data/ingest/ingest/src/**"
       ],
       "context": "contexts/w2d-ingest.md",
       "notes": "Extract the write-path single-item transforms (extractive.ts summary, content-hash, deterministic tagging/topic from enrich.ts's deterministic pieces). Deterministic, zero-LLM, byte-reproducible. Depends only on graph types — parallel with w2c + the other w2d states. The batch-pass orchestrator (enrich.ts/batch.ts cross-item) goes to analysis, not here.",
@@ -126,10 +118,9 @@
       "kind": "work",
       "phase": "extraction",
       "depends_on": ["w2c-vector-store"],
-      "guard": "npx nx build analysis && npx nx test analysis",
+      "guard": "npx --yes nx build analysis && npx --yes nx test analysis",
       "artifacts": [
-        "libs/data/analysis/analysis/src/index.ts",
-        "libs/data/analysis/analysis/src/index.spec.ts"
+        "libs/data/analysis/analysis/src/**"
       ],
       "context": "contexts/w2d-analysis.md",
       "notes": "Extract batch derivation: cluster.ts (+ cluster-subset), neardup.ts, importance.ts, autolink.ts, batch.ts orchestrator. Operates over a corpus (batch), never per-query; similarity outputs must record the modelId they were computed under ([inv:space]). Needs vector-store (cosine) + graph-store. Parallel with w2d-analysis-sibling w2d-ingest and w2d-hybrid-search.",
@@ -139,10 +130,9 @@
       "kind": "work",
       "phase": "extraction",
       "depends_on": ["w2c-vector-store"],
-      "guard": "npx nx build hybrid-search && npx nx test hybrid-search",
+      "guard": "npx --yes nx build hybrid-search && npx --yes nx test hybrid-search",
       "artifacts": [
-        "libs/data/search/hybrid-search/src/index.ts",
-        "libs/data/search/hybrid-search/src/index.spec.ts"
+        "libs/data/search/hybrid-search/src/**"
       ],
       "context": "contexts/w2d-hybrid-search.md",
       "notes": "Extract recall.ts's vec+BM25+temporal fusion. Honor SCOPE Part D: normalize-before-combine (min_max/L2/z_score), MULTIPLICATIVE field boosting (topic 2.0/tags 1.5/name 1.2/summary 1.0/content 1.0), FTS5 bm25(col_weights) collapsing N queries to 1, opt-in explain (off by default), implicit topic boost, experimental cross-query dedup (mark experimental). MUST [def:degrade-to-bm25] when vectors unavailable. Federation/registry helpers stay in the domain composer, not here. Needs vector-store + graph-store.",
@@ -152,14 +142,15 @@
       "kind": "work",
       "phase": "extraction",
       "depends_on": ["w2d-ingest", "w2d-analysis", "w2d-hybrid-search"],
-      "guard": "npx nx build memory-core && npx nx build memory-server && npx nx build memory-daemon && npx nx run-many -t test && npx nx run registry:sync-index && npx nx run host-runtime:test-e2e",
+      "guard": "npx --yes nx build memory-core && npx --yes nx build memory-server && npx --yes nx build memory-daemon && npx --yes nx run-many -t test && npx --yes nx run registry:sync-index && npx --yes nx run host-runtime:test-e2e",
       "artifacts": [
-        "libs/memory-core/src/index.ts",
-        "libs/memory-core/src/db.ts",
-        "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts",
-        "extensions/bundles/sox-memory-bundle/members/memory-daemon/src/index.ts",
-        "extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts",
-        "extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.ts",
+        "libs/memory-core/src/**",
+        "libs/memory-enrich/** (deleted)",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/**",
+        "extensions/bundles/sox-memory-bundle/members/memory-daemon/src/**",
+        "extensions/bundles/sox-memory-bundle/members/memory-cli/src/**",
+        "extensions/bundles/sox-memory-bundle/members/memory-flush/src/**",
+        "scripts/reembed-memory.mjs",
         "registry/index.json"
       ],
       "context": "contexts/w2e-domain-rewire.md",
@@ -183,13 +174,11 @@
       "kind": "work",
       "phase": "routing",
       "depends_on": ["audit-extraction"],
-      "guard": "npx nx run routing:build-index && npx nx run routing:check-drift && python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase routing",
+      "guard": "npx --yes nx run routing:build-index && npx --yes nx run routing:check-drift && python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase routing",
       "artifacts": [
         "scripts/build-routing-index.ts",
         "scripts/check-routing-drift.ts",
-        "docs/routing/map.json",
-        "docs/routing/INDEX.md",
-        "docs/routing/ROUTER.md",
+        "docs/routing/**",
         "CLAUDE.md",
         "libs/data/CLAUDE.md"
       ],
@@ -210,10 +199,10 @@
       "kind": "audit",
       "phase": "convergence",
       "depends_on": ["audit-routing"],
-      "guard": "npx nx run-many -t build && python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase final",
+      "guard": "npx --yes nx run-many -t build && python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase final",
       "artifacts": ["docs/plan/memory-refactor/scripts/audit_memrefactor.py", "docs/plan/memory-refactor/scripts/pack-smoke.mjs"],
       "context": "contexts/audit-final.md",
-      "notes": "Cumulative reality audit ([inv:reality]): spawn the REAL built memory-server, list the 19 tools (diff-clean vs baseline), run a real write→recall ranked by real vectors, [fix:cosine-sanity] ~0, force vectors off and prove [def:degrade-to-bm25], run [def:reembed-core] dry-run on a [fix:memory-db] copy. PLUS [audit-final.5] [def:standalone-proof]: pack-smoke.mjs npm-packs each public data/* + installs the tarball into a clean tmp dir outside the workspace + exercises it (native carriers prove fastembed/onnxruntime + better-sqlite3/sqlite-vec resolve from declared deps — the BL-87 guard; the affirmative proof of the reuse thesis the negative checks can't give). Build first (BL-4) so dist/ exists for pack. Full gate: nx run-many build,lint,test + e2e zero-orphan + registry drift + boundary lint. Owner reviews after green; only THEN set state: complete + merge feat/memory-refactor."
+      "notes": "Cumulative reality audit ([inv:reality]): spawn the REAL built memory-server, list the 19 tools (diff-clean vs baseline), run a real write→recall ranked by real vectors, [fix:cosine-sanity] ~0, force vectors off and prove [def:degrade-to-bm25], run [def:reembed-core] dry-run on a [fix:memory-db] copy. PLUS [audit-final.5] [def:standalone-proof]: pack-smoke.mjs npm-packs each public data/* + installs the tarball into a clean tmp dir outside the workspace + exercises it (native carriers prove fastembed/onnx runtime + better-sqlite3/sqlite-vec resolve from declared deps — the BL-87 guard; the affirmative proof of the reuse thesis the negative checks can't give). Build first (BL-4) so dist/ exists for pack. Full gate: nx run-many build,lint,test + e2e zero-orphan + registry drift + boundary lint. Owner reviews after green; only THEN set state: complete + merge feat/memory-refactor."
     }
   }
 }

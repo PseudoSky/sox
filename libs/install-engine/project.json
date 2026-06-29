@@ -5,7 +5,9 @@
   "root": "libs/install-engine",
   "sourceRoot": "libs/install-engine/src",
   "tags": [
-    "type:lib"
+    "type:lib",
+    "area:platform",
+    "group:distribution"
   ],
   "targets": {
     "build": {
@@ -31,7 +33,11 @@
         "cwd": "."
       },
       "cache": true,
-      "inputs": ["default", "^production", "{workspaceRoot}/libs/host-runtime/src/data-paths.ts"]
+      "inputs": [
+        "default",
+        "^production",
+        "{workspaceRoot}/libs/host-runtime/src/data-paths.ts"
+      ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",

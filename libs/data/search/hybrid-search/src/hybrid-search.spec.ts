@@ -1,0 +1,564 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import {
+  normalize,
+  fuse,
+  search,
+  SqliteSearchBackend,
+} from './index.js';
+import type {
+  SearchBackend,
+  SearchQuery,
+} from './index.js';
+import { buildFilterClause } from './filter-utils.js';
+import Database from 'better-sqlite3';
+import * as sqliteVec from 'sqlite-vec';
+import { SqliteGraphBackend } from '@adhd/sox-graph-store';
+import { SqliteVectorBackend } from '@adhd/sox-vector-store';
+import type { VectorBackend } from '@adhd/sox-vector-store';
+import type { GraphBackend } from '@adhd/sox-graph-store';
+
+// ── Mock SearchBackend for testing ─────────────────────────────────────────────
+
+interface MockCandidate {
+  id: number;
+  textScore?: number;
+  vecScore?: number;
+  fields: Record<string, unknown>;
+}
+
+class MockSearchBackend implements SearchBackend {
+  private candidates: MockCandidate[];
+
+  constructor(candidates: MockCandidate[]) {
+    this.candidates = candidates;
+  }
+
+  search(
+    _query: SearchQuery,
+    _limit: number,
+  ): Array<{
+    id: number;
+    textScore?: number;
+    vecScore?: number;
+    fields: Record<string, unknown>;
+  }> {
+    return this.candidates;
+  }
+}
+
+// ── normalize ─────────────────────────────────────────────────────────────────
+
+describe('normalize', () => {
+  describe('min_max', () => {
+    it('normalizes values to [0, 1]', () => {
+      const result = normalize([1, 2, 3, 4, 5], 'min_max');
+      expect(result).toEqual([0, 0.25, 0.5, 0.75, 1]);
+    });
+
+    it('returns 1.0 for all when all scores are the same', () => {
+      const result = normalize([7, 7, 7], 'min_max');
+      expect(result).toEqual([1.0, 1.0, 1.0]);
+    });
+
+    it('handles negative scores', () => {
+      const result = normalize([-5, 0, 5], 'min_max');
+      expect(result).toEqual([0, 0.5, 1]);
+    });
+
+    it('handles single element', () => {
+      const result = normalize([42], 'min_max');
+      expect(result).toEqual([1.0]);
+    });
+
+    it('handles empty array', () => {
+      const result = normalize([], 'min_max');
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe('L2', () => {
+    it('normalizes by Euclidean norm', () => {
+      const result = normalize([3, 4], 'L2');
+      expect(result[0]).toBeCloseTo(0.6, 5);
+      expect(result[1]).toBeCloseTo(0.8, 5);
+    });
+
+    it('returns zeros when all scores are zero', () => {
+      const result = normalize([0, 0, 0], 'L2');
+      expect(result).toEqual([0, 0, 0]);
+    });
+
+    it('handles single element', () => {
+      const result = normalize([5], 'L2');
+      expect(result).toEqual([1.0]);
+    });
+
+    it('handles empty array', () => {
+      const result = normalize([], 'L2');
+      expect(result).toEqual([]);
+    });
+
+    it('handles large values', () => {
+      const result = normalize([100, 100], 'L2');
+      expect(result[0]).toBeCloseTo(0.7071, 3);
+      expect(result[1]).toBeCloseTo(0.7071, 3);
+    });
+  });
+
+  describe('z_score', () => {
+    it('standardizes values', () => {
+      const result = normalize([1, 2, 3, 4, 5], 'z_score');
+      const avg = 3;
+      const sd = Math.sqrt(2.5);
+      expect(result[0]).toBeCloseTo((1 - avg) / sd, 5);
+      expect(result[1]).toBeCloseTo((2 - avg) / sd, 5);
+      expect(result[2]).toBeCloseTo((3 - avg) / sd, 5);
+      expect(result[3]).toBeCloseTo((4 - avg) / sd, 5);
+      expect(result[4]).toBeCloseTo((5 - avg) / sd, 5);
+    });
+
+    it('returns 0.0 when stddev is zero', () => {
+      const result = normalize([5, 5, 5], 'z_score');
+      expect(result).toEqual([0.0, 0.0, 0.0]);
+    });
+
+    it('handles single element', () => {
+      const result = normalize([42], 'z_score');
+      expect(result).toEqual([0.0]);
+    });
+
+    it('handles empty array', () => {
+      const result = normalize([], 'z_score');
+      expect(result).toEqual([]);
+    });
+
+    it('handles two elements', () => {
+      const result = normalize([0, 10], 'z_score');
+      expect(result[0]).toBeCloseTo(-0.7071, 3);
+      expect(result[1]).toBeCloseTo(0.7071, 3);
+    });
+  });
+});
+
+// ── fuse ──────────────────────────────────────────────────────────────────────
+
+describe('fuse', () => {
+  const candidates = [
+    { id: 1, textScore: 0.9, vecScore: 0.8 },
+    { id: 2, textScore: 0.5, vecScore: 0.9 },
+    { id: 3, textScore: 0.1, vecScore: 0.2 },
+  ];
+
+  it('combines text + vec scores with default weights', () => {
+    const results = fuse(candidates);
+    expect(results).toHaveLength(3);
+    expect(results[0]!.id).toBeDefined();
+    expect(results[0]!.score).toBeGreaterThan(0);
+  });
+
+  it('sorts by fused score descending', () => {
+    const results = fuse(candidates);
+    for (let i = 1; i < results.length; i++) {
+      expect(results[i]!.score).toBeLessThanOrEqual(results[i - 1]!.score);
+    }
+  });
+
+  it('degrades to text-only when vec absent on all candidates', () => {
+    const textOnly = [
+      { id: 1, textScore: 0.9 },
+      { id: 2, textScore: 0.5 },
+      { id: 3, textScore: 0.1 },
+    ];
+    const results = fuse(textOnly);
+    expect(results).toHaveLength(3);
+    expect(results[0]!.id).toBe(1);
+  });
+
+  it('degrades to vec-only when text absent on all candidates', () => {
+    const vecOnly = [
+      { id: 1, vecScore: 0.8 },
+      { id: 2, vecScore: 0.9 },
+      { id: 3, vecScore: 0.2 },
+    ];
+    const results = fuse(vecOnly);
+    expect(results).toHaveLength(3);
+    expect(results[0]!.id).toBe(2);
+  });
+
+  it('handles empty candidates', () => {
+    const results = fuse([]);
+    expect(results).toEqual([]);
+  });
+
+  it('applies custom weights', () => {
+    const results = fuse(candidates, {
+      weights: { text: 2.0, vec: 0.5 },
+    });
+    expect(results).toHaveLength(3);
+    expect(results[0]!.score).toBeGreaterThan(0);
+  });
+
+  it('applies custom normalizer', () => {
+    const results = fuse(candidates, { normalizer: 'z_score' });
+    expect(results).toHaveLength(3);
+    expect(results[0]!.score).toBeGreaterThan(0);
+  });
+
+  it('handles single candidate', () => {
+    const results = fuse([{ id: 1, textScore: 0.5, vecScore: 0.3 }]);
+    expect(results).toHaveLength(1);
+    expect(results[0]!.id).toBe(1);
+  });
+
+  it('handles mix of signals (some text-only, some vec-only)', () => {
+    const mixed = [
+      { id: 1, textScore: 0.9 },
+      { id: 2, vecScore: 0.8 },
+      { id: 3, textScore: 0.5, vecScore: 0.6 },
+    ];
+    const results = fuse(mixed);
+    expect(results).toHaveLength(3);
+  });
+});
+
+// ── search() with mock backend ────────────────────────────────────────────────
+
+describe('search() with mock backend', () => {
+  const mockCandidates = [
+    {
+      id: 1,
+      textScore: 0.95,
+      vecScore: 0.85,
+      fields: { topic: 'python', content: 'Python async guide' },
+    },
+    {
+      id: 2,
+      textScore: 0.8,
+      vecScore: 0.92,
+      fields: { topic: 'rust', content: 'Rust ownership' },
+    },
+    {
+      id: 3,
+      textScore: 0.3,
+      vecScore: 0.4,
+      fields: { topic: 'typescript', content: 'TS generics' },
+    },
+  ];
+
+  it('returns SearchResult[] with scores', () => {
+    const backend = new MockSearchBackend(mockCandidates);
+    const results = search(
+      backend,
+      { text: 'python', vec: new Float32Array([0.1, 0.2]) },
+    );
+    expect(results).toHaveLength(mockCandidates.length);
+    expect(results[0]!.score).toBeGreaterThan(0);
+    expect(results[0]!.id).toBeDefined();
+    expect(results[0]!.fields).toBeDefined();
+  });
+
+  it('with explain: true returns signalScores', () => {
+    const backend = new MockSearchBackend(mockCandidates);
+    const results = search(
+      backend,
+      { text: 'python', vec: new Float32Array([0.1, 0.2]) },
+      { explain: true },
+    );
+    expect(results).toHaveLength(mockCandidates.length);
+    for (const r of results) {
+      expect(r.signalScores).toBeDefined();
+    }
+    expect(results[0]!.signalScores!.text).toBe(0.95);
+    expect(results[0]!.signalScores!.vec).toBe(0.85);
+  });
+
+  it('degrades to text-only when vec is absent', () => {
+    const backend = new MockSearchBackend(mockCandidates);
+    const results = search(
+      backend,
+      { text: 'python' },
+    );
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  it('degrades to vec-only when text is absent', () => {
+    const backend = new MockSearchBackend(mockCandidates);
+    const results = search(
+      backend,
+      { vec: new Float32Array([0.1, 0.2]) },
+    );
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  it('handles neither text nor vec gracefully', () => {
+    const backend = new MockSearchBackend(mockCandidates);
+    const results = search(backend, {});
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  it('respects limit option', () => {
+    const largeList = Array.from({ length: 50 }, (_, i) => ({
+      id: i + 1,
+      textScore: Math.random(),
+      vecScore: Math.random(),
+      fields: { content: `item ${i}` },
+    }));
+    const backend = new MockSearchBackend(largeList);
+    const results = search(
+      backend,
+      { text: 'test', vec: new Float32Array([0.1, 0.2]) },
+      { limit: 10 },
+    );
+    expect(results).toHaveLength(10);
+  });
+
+  it('defaults limit to 20', () => {
+    const largeList = Array.from({ length: 50 }, (_, i) => ({
+      id: i + 1,
+      textScore: Math.random(),
+      fields: { content: `item ${i}` },
+    }));
+    const backend = new MockSearchBackend(largeList);
+    const results = search(backend, { text: 'test' });
+    expect(results.length).toBeLessThanOrEqual(20);
+  });
+
+  it('respects normalizer option', () => {
+    const backend = new MockSearchBackend(mockCandidates);
+    const resultsMinMax = search(
+      backend,
+      { text: 'test', vec: new Float32Array([0.1, 0.2]) },
+      { normalizer: 'min_max' },
+    );
+    const resultsZ = search(
+      backend,
+      { text: 'test', vec: new Float32Array([0.1, 0.2]) },
+      { normalizer: 'z_score' },
+    );
+    expect(resultsMinMax[0]!.score).toBeGreaterThan(0);
+    expect(resultsZ[0]!.score).toBeGreaterThan(0);
+  });
+});
+
+// ── buildFilterClause ─────────────────────────────────────────────────────────
+
+describe('buildFilterClause', () => {
+  it('handles topic as string', () => {
+    const result = buildFilterClause({ topic: 'python' });
+    expect(result.nodeFilter.topic).toBe('python');
+  });
+
+  it('handles topic as array', () => {
+    const result = buildFilterClause({ topic: ['python', 'rust'] });
+    expect(result.nodeFilter.topic).toEqual(['python', 'rust']);
+  });
+
+  it('handles tags', () => {
+    const result = buildFilterClause({ tags: ['ai', 'ml'] });
+    expect(result.nodeFilter.tags).toEqual(['ai', 'ml']);
+  });
+
+  it('handles importance_min', () => {
+    const result = buildFilterClause({ importance_min: 5 });
+    expect(result.nodeFilter.importanceMin).toBe(5);
+  });
+
+  it('handles project_path as extra clause', () => {
+    const result = buildFilterClause({ project_path: '/home/user/project' });
+    expect(result.extraClauses.sql).toContain('project_path');
+    expect(result.extraClauses.params).toEqual(['/home/user/project']);
+  });
+
+  it('handles agent_id as extra clause', () => {
+    const result = buildFilterClause({ agent_id: 'agent-1' });
+    expect(result.extraClauses.sql).toContain('agent_id');
+    expect(result.extraClauses.params).toEqual(['agent-1']);
+  });
+
+  it('handles namespace', () => {
+    const result = buildFilterClause({ namespace: 'test-ns' });
+    expect(result.nodeFilter.namespace).toBe('test-ns');
+  });
+
+  it('handles ids', () => {
+    const result = buildFilterClause({ ids: [1, 2, 3] });
+    expect(result.nodeFilter.ids).toEqual([1, 2, 3]);
+  });
+
+  it('handles confidence', () => {
+    const result = buildFilterClause({ confidence: 'confirmed' });
+    expect(result.nodeFilter.confidence).toBe('confirmed');
+  });
+
+  it('handles combination of fields', () => {
+    const result = buildFilterClause({
+      topic: 'python',
+      tags: ['ai'],
+      importance_min: 3,
+      project_path: '/test',
+      agent_id: 'agent-42',
+    });
+    expect(result.nodeFilter.topic).toBe('python');
+    expect(result.nodeFilter.tags).toEqual(['ai']);
+    expect(result.nodeFilter.importanceMin).toBe(3);
+    expect(result.extraClauses.sql).toContain('project_path');
+    expect(result.extraClauses.sql).toContain('agent_id');
+  });
+
+  it('handles empty filters', () => {
+    const result = buildFilterClause({});
+    expect(result.extraClauses.sql).toBe('');
+    expect(result.extraClauses.params).toEqual([]);
+  });
+
+  it('passes through unknown filter keys', () => {
+    const result = buildFilterClause({ custom_field: 'value' });
+    expect(result.extraClauses.sql).toContain('custom_field');
+    expect(result.extraClauses.params).toEqual(['value']);
+  });
+});
+
+// ── SqliteSearchBackend integration ───────────────────────────────────────────
+
+describe('SqliteSearchBackend integration', () => {
+  let vec: VectorBackend;
+  let graph: GraphBackend;
+  let backend: SqliteSearchBackend;
+
+  function createTestDb() {
+    const db = new Database(':memory:');
+    sqliteVec.load(db);
+    db.pragma('journal_mode = WAL');
+    return db;
+  }
+
+  function createTestVecStore(db: Database.Database): VectorBackend {
+    const store = new SqliteVectorBackend(db);
+    store.ensureSpace({ modelId: 'test-model', dim: 4 });
+    return store;
+  }
+
+  function createTestGraphStore(db: Database.Database): GraphBackend {
+    const store = new SqliteGraphBackend(db);
+    store.applySchema();
+    return store;
+  }
+
+  beforeEach(() => {
+    const db = createTestDb();
+    vec = createTestVecStore(db);
+    graph = createTestGraphStore(db);
+    backend = new SqliteSearchBackend(vec, graph);
+  });
+
+  function seedNode(
+    content: string,
+    topic: string,
+    tags: string[],
+    vecValues: number[],
+  ): number {
+    const id = graph.writeNode(content, {
+      name: topic,
+      topic,
+      tags,
+      summary: content.slice(0, 100),
+      importance: 5,
+    });
+    vec.upsert(id, new Float32Array(vecValues), { modelId: 'test-model', dim: 4 });
+    return id;
+  }
+
+  it('performs text-only search', () => {
+    seedNode('Python is a great language for AI and data science', 'python', ['ai', 'programming'], [1.0, 0.0, 0.0, 0.0]);
+    seedNode('Rust is a systems language with memory safety', 'rust', ['systems', 'programming'], [0.0, 1.0, 0.0, 0.0]);
+    seedNode('TypeScript adds types to JavaScript', 'typescript', ['web', 'programming'], [0.0, 0.0, 1.0, 0.0]);
+
+    const results = backend.search({ text: 'python' }, 10);
+    expect(results.length).toBeGreaterThan(0);
+    const pythonResult = results.find((r) => r.fields.topic === 'python');
+    expect(pythonResult).toBeDefined();
+    expect(pythonResult!.textScore).toBeGreaterThan(0);
+  });
+
+  it('performs vec-only search', () => {
+    seedNode('Vector A — should match', 'topic-a', ['test'], [1.0, 0.5, 0.3, 0.1]);
+    seedNode('Vector B — far away', 'topic-b', ['test'], [-1.0, -0.5, -0.3, -0.1]);
+
+    const queryVec = new Float32Array([1.0, 0.5, 0.3, 0.1]);
+    const results = backend.search({ vec: queryVec }, 10);
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  it('performs hybrid text + vec search', () => {
+    seedNode('Python async programming guide', 'python', ['programming'], [1.0, 0.0, 0.0, 0.0]);
+    seedNode('Rust programming guide', 'rust', ['programming'], [0.0, 1.0, 0.0, 0.0]);
+
+    const queryVec = new Float32Array([1.0, 0.1, 0.0, 0.0]);
+    const results = backend.search(
+      { text: 'programming', vec: queryVec },
+      10,
+    );
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  it('applies topic boost on exact match', () => {
+    const id = seedNode('Python language details', 'python', ['programming'], [1.0, 0.0, 0.0, 0.0]);
+    seedNode('Other topics for contrast', 'other', ['misc'], [0.1, 0.1, 0.1, 0.1]);
+
+    const results = backend.search({ text: 'python' }, 10);
+    const pythonResult = results.find((r) => r.id === id);
+    expect(pythonResult).toBeDefined();
+  });
+
+  it('respects limit', () => {
+    for (let i = 0; i < 20; i++) {
+      seedNode(`Content ${i}`, `topic-${i}`, ['test'], [i * 0.05, (i % 4) * 0.25, 0, 0]);
+    }
+
+    const results = backend.search({ text: 'Content' }, 5);
+    expect(results.length).toBeLessThanOrEqual(5);
+  });
+
+  it('filters by topic via graph backend', () => {
+    const pyId = seedNode('Python async guide', 'python', ['ai'], [1.0, 0.0, 0.0, 0.0]);
+    seedNode('Rust ownership guide', 'rust', ['systems'], [0.0, 1.0, 0.0, 0.0]);
+
+    const results = backend.search(
+      { text: 'guide', filters: { topic: 'python' } },
+      10,
+    );
+    for (const r of results) {
+      if (r.fields.topic !== 'python') {
+        expect(r.id).toBe(pyId);
+      }
+    }
+  });
+
+  it('returns fields for each result', () => {
+    seedNode('Test content here', 'test-topic', ['demo'], [0.5, 0.5, 0.0, 0.0]);
+
+    const results = backend.search({ text: 'Test' }, 10);
+    expect(results.length).toBeGreaterThan(0);
+    for (const r of results) {
+      expect(r.fields).toBeDefined();
+      expect(r.fields.content).toBeDefined();
+      expect(r.fields.tags).toBeDefined();
+    }
+  });
+
+  it('handles no matching results', () => {
+    const results = backend.search({ text: 'zzz_nonexistent_zzz' }, 10);
+    expect(Array.isArray(results)).toBe(true);
+  });
+
+  it('returns results with correct id types', () => {
+    const id = seedNode('Number test', 'num', ['test'], [1.0, 0.0, 0.0, 0.0]);
+
+    const results = backend.search({ text: 'Number' }, 10);
+    for (const r of results) {
+      expect(typeof r.id).toBe('number');
+    }
+  });
+});
+
+

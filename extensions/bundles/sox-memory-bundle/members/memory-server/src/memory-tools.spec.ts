@@ -18,8 +18,7 @@
  * All operations are deterministic — no LLM, no provider calls (SOX_EMBED_BACKEND=hash).
  */
 
-import { openDb } from '@adhd/sox-memory-core';
-import { clusterStore } from '@adhd/sox-memory-enrich';
+import { clusterStore, openDb } from '@adhd/sox-memory-core';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -584,7 +583,7 @@ describe('backward compat — existing tools unbroken', () => {
 
 // ── memory_curate recluster — filtered (synchronous subset) wiring ───────────────
 // The deep clustering / scoped-persist / UID-collision correctness is covered by
-// the unit tests in @adhd/sox-memory-enrich (cluster-subset.spec.ts) with controlled
+// the unit tests in @adhd/sox-memory-core (cluster-subset.spec.ts) with controlled
 // embeddings. These integration tests verify only the SERVER WIRING: that
 // `recluster` with `filters` routes to the synchronous subset path, selects the
 // right candidate set, honours dry_run for persistence, and returns the generic

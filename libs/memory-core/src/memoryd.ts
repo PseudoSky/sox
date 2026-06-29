@@ -15,12 +15,12 @@
  *   - Fallback poll every 1000ms if no socket nudge.
  *
  * Loop (deterministic batch enrichment, ≤50 items/cycle):
- *   drain organizer_queue → runBatchEnrich(@adhd/sox-memory-enrich) → idle
+ *   drain organizer_queue → runBatchEnrich (memory-core batch enrichment) → idle
  *
  * Enrichment is fully deterministic — no LLM, no provider calls.
  */
 
-import { runBatchEnrich } from '@adhd/sox-memory-enrich';
+import { runBatchEnrich } from './enrich-batch.js';
 import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as net from 'node:net';

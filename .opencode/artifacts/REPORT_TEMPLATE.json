@@ -1,0 +1,50 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "flash|implement|pro",
+  "segment": "S1",
+  "label": "Engine: Surface.mcpConfig + install.ts wiring",
+  "completed_at": "ISO_TIMESTAMP",
+
+  "summary": "One-line summary of what was done",
+
+  "changes": [
+    {
+      "file": "libs/host-registry/src/internal.ts",
+      "kind": "added McpConfig interface + mcpConfig? field on Surface",
+      "lines": "+12"
+    },
+    {
+      "file": "libs/install-engine/src/install.ts",
+      "kind": "wrapped MCP auto-derivation in surface.mcpConfig check",
+      "lines": "+8 / -3"
+    }
+  ],
+
+  "tests": {
+    "project": "@adhd/sox-host-registry",
+    "command": "nx test @adhd/sox-host-registry",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Tests  14 passed (14)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "issues": [
+    "NONE or describe any discovered issues"
+  ],
+
+  "handoff_notes": [
+    "Segment 2 must import McpConfig from ./internal.js, not ./index.js",
+    "The clampod.json file requires a $schema property"
+  ],
+
+  "backlog_entries": []
+}

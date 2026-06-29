@@ -4,11 +4,17 @@
   "projectType": "library",
   "root": "libs/registry",
   "sourceRoot": "libs/registry/src",
-  "tags": ["type:lib"],
+  "tags": [
+    "type:lib",
+    "area:platform",
+    "group:distribution"
+  ],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/libs/registry/dist"],
+      "outputs": [
+        "{workspaceRoot}/libs/registry/dist"
+      ],
       "options": {
         "command": "tsc --project libs/registry/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/registry/dist/package.json",
         "cwd": "."
@@ -26,12 +32,17 @@
         "cwd": "."
       },
       "cache": true,
-      "inputs": ["default", "^production"]
+      "inputs": [
+        "default",
+        "^production"
+      ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["libs/registry/**/*.ts"]
+        "lintFilePatterns": [
+          "libs/registry/**/*.ts"
+        ]
       }
     },
     "sync-index": {
@@ -40,8 +51,15 @@
         "command": "npx tsx scripts/build-index.ts",
         "cwd": "."
       },
-      "dependsOn": [{ "projects": "*", "target": "build" }],
-      "outputs": ["{workspaceRoot}/registry/index.json"],
+      "dependsOn": [
+        {
+          "projects": "*",
+          "target": "build"
+        }
+      ],
+      "outputs": [
+        "{workspaceRoot}/registry/index.json"
+      ],
       "cache": false
     }
   }

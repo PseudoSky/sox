@@ -1,11 +1,12 @@
 {
   "name": "sox-ecosystem",
   "version": "1.0.0",
-  "description": "LLM extension ecosystem monorepo — agents, skills, mcp-servers, prompts, hooks, commands",
+  "description": "LLM extension ecosystem monorepo \u2014 agents, skills, mcp-servers, prompts, hooks, commands",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.11.1",
   "scripts": {
+    "postinstall": "pnpm rebuild better-sqlite3 sqlite-vec",
     "typecheck": "tsc --noEmit",
     "validate-manifests": "npx tsx scripts/validate-manifests.ts",
     "check-nx-cache": "node tools/check-nx-cache.cjs",
@@ -13,6 +14,8 @@
     "build-index:publish": "SOX_REGISTRY_PUBLISH=npm npx tsx scripts/build-index.ts",
     "check-publishable": "npx tsx scripts/check-publishable.ts",
     "install-extensions": "npx tsx scripts/install.ts",
+    "routing:build-index": "npx tsx scripts/build-routing-index.ts",
+    "routing:check-drift": "npx tsx scripts/check-routing-drift.ts",
     "test": "vitest run",
     "changeset": "changeset",
     "version-packages": "changeset version",
@@ -44,5 +47,12 @@
     "better-sqlite3": "^12.10.0",
     "sqlite-vec": "^0.1.9",
     "ulid": "^3.0.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "sqlite-vec",
+      "esbuild"
+    ]
   }
 }

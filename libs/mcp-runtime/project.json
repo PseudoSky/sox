@@ -4,11 +4,17 @@
   "projectType": "library",
   "root": "libs/mcp-runtime",
   "sourceRoot": "libs/mcp-runtime/src",
-  "tags": ["type:lib"],
+  "tags": [
+    "type:lib",
+    "area:platform",
+    "group:protocol"
+  ],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/libs/mcp-runtime/dist"],
+      "outputs": [
+        "{workspaceRoot}/libs/mcp-runtime/dist"
+      ],
       "options": {
         "command": "tsc --project libs/mcp-runtime/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/mcp-runtime/dist/package.json",
         "cwd": "."
@@ -26,12 +32,17 @@
         "cwd": "."
       },
       "cache": true,
-      "inputs": ["default", "^production"]
+      "inputs": [
+        "default",
+        "^production"
+      ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["libs/mcp-runtime/**/*.ts"]
+        "lintFilePatterns": [
+          "libs/mcp-runtime/**/*.ts"
+        ]
       }
     }
   }

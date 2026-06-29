@@ -10,11 +10,13 @@
  *   --db-path <path>   Path to .db file
  *   --scope <scope>    Scope for priority decisions (default: project)
  *
- * Enrichment is fully deterministic via @adhd/sox-memory-enrich — no LLM, no provider required.
+ * Enrichment is fully deterministic via @adhd/sox-analysis — no LLM, no provider required.
  */
 
 import { enqueueIngest, MemoryDaemon, nudgeDaemon, SOCKET_PATH } from './memoryd.js';
 
-export { DDL, FTS_TRIGGERS, PRAGMAS } from '@adhd/sox-memory-core';
+export { DDL } from '@adhd/sox-memory-core';
+export { PRAGMAS, FTS_TRIGGERS } from '@adhd/sox-graph-store';
+export { SqliteVectorBackend, reembed } from '@adhd/sox-vector-store';
 export { enqueueIngest, MemoryDaemon, nudgeDaemon, SOCKET_PATH };
 

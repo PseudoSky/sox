@@ -36,9 +36,8 @@
 
 import type { ToolDefinition, ToolResult } from '@adhd/sox-mcp-runtime';
 import { defineTool, serve } from '@adhd/sox-mcp-runtime';
-import { enqueueEnrich, getActiveEmbedModel, getEmbedState, getLastEmbedError, warmupEmbed, memoryRecall, memoryUpdate, memoryWrite, openDb, SOCKET_PATH } from '@adhd/sox-memory-core';
-import type { MemoryFilter } from '@adhd/sox-memory-enrich';
-import { buildFiltersClause, clusterStats, clusterSubset, dropSubsetLens, ENRICH_VERSION, listSubsetLenses, runBatchEnrich } from '@adhd/sox-memory-enrich';
+import { buildFiltersClause, clusterStats, clusterSubset, dropSubsetLens, ENRICH_VERSION, enqueueEnrich, getActiveEmbedModel, getEmbedState, getLastEmbedError, listSubsetLenses, memoryRecall, memoryUpdate, memoryWrite, openDb, runBatchEnrich, SOCKET_PATH, warmupEmbed } from '@adhd/sox-memory-core';
+import type { MemoryFilter } from '@adhd/sox-memory-core';
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -693,7 +692,7 @@ function parseTags(raw: string | null | undefined): string[] {
   return [];
 }
 
-// buildFiltersClause is now owned by @adhd/sox-memory-enrich (imported above).
+// buildFiltersClause is now owned by @adhd/sox-memory-core (imported above).
 // The local server still uses MemoryFilter for the recluster case type-cast.
 
 /** Resolve episode rowids → uids, preserving the input order. */
@@ -2090,7 +2089,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           //
           // The structured filter is now passed directly to clusterSubset — the
           // engine owns buildFiltersClause and builds the SQL clause internally.
-          // This makes @adhd/sox-memory-enrich callable without server-private code.
+          // This makes the enrichment engine callable without server-private code.
           if (filters && Object.keys(filters).length > 0) {
             const threshold = args['threshold'];
             const res = clusterSubset(db, {
@@ -2283,6 +2282,31 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       const onHashFallback =
         configuredBackend !== 'hash' && resolvedEmbedState === 'hash';
 
+      // BL-88: count nodes whose written embed model differs from the active
+      // provider's model. These are candidates for reembed — essential for
+      // operators to know after a model switch or recovery from hash fallback.
+      // Uses memory_scope.embed_model as proxy until per-record modelId is
+      // available in vec_node (planned in w2c-vector-store).
+      let degradedRecordCount = 0;
+      try {
+        // Compare scope's embed_model with the active model. If they differ,
+        // all nodes in this scope are candidates for reembed.
+        const scopeModel = db
+          .prepare<[], { embed_model: string }>(
+            `SELECT embed_model FROM memory_scope LIMIT 1`,
+          )
+          .get();
+        if (scopeModel && scopeModel.embed_model !== resolvedEmbedModel) {
+          degradedRecordCount = db
+            .prepare<[], { cnt: number }>(
+              `SELECT COUNT(*) as cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL`,
+            )
+            .get()?.cnt ?? 0;
+        }
+      } catch {
+        degradedRecordCount = 0;
+      }
+
       return {
         content: [{
           type: 'text', text: JSON.stringify({
@@ -2296,6 +2320,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             embed_state: resolvedEmbedState,
             embed_on_hash_fallback: onHashFallback,
             last_embed_error: getLastEmbedError(),
+            degraded_record_count: degradedRecordCount,
             total_episodes: totalEpisodes,
             with_topic: withTopicRow?.cnt ?? 0,
             with_summary: withSummaryRow?.cnt ?? 0,
@@ -2462,6 +2487,22 @@ if (require.main === module) {
       );
     },
   );
+
+  // BL-94: probe better-sqlite3 native binding at startup before accepting connections.
+  // A missing binding (new Node ABI without rebuild) would otherwise fail mid-session
+  // after an agent has already written several episodes — the crash is destructive.
+  // This probe exits 1 immediately with a clear message so the supervisor can restart.
+  try {
+    require('better-sqlite3');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `FATAL: better-sqlite3 native binding missing for this Node.js ABI.\n` +
+      `Run: pnpm rebuild better-sqlite3 from the sox-ecosystem root, then restart.\n` +
+      `Error: ${msg}\n`,
+    );
+    process.exit(1);
+  }
 
   if (process.env.SOX_PROXY_BACKEND === '1') {
     const socketPath = process.env.SOX_PROXY_BACKEND_SOCKET;

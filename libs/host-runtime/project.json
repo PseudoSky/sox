@@ -4,11 +4,17 @@
   "projectType": "library",
   "root": "libs/host-runtime",
   "sourceRoot": "libs/host-runtime/src",
-  "tags": ["type:lib"],
+  "tags": [
+    "type:lib",
+    "area:platform",
+    "group:runtime"
+  ],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/libs/host-runtime/dist"],
+      "outputs": [
+        "{workspaceRoot}/libs/host-runtime/dist"
+      ],
       "options": {
         "command": "tsc --project libs/host-runtime/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/host-runtime/dist/package.json",
         "cwd": "."
@@ -26,12 +32,17 @@
         "cwd": "."
       },
       "cache": true,
-      "inputs": ["default", "^production"]
+      "inputs": [
+        "default",
+        "^production"
+      ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["libs/host-runtime/**/*.ts"]
+        "lintFilePatterns": [
+          "libs/host-runtime/**/*.ts"
+        ]
       }
     },
     "test-e2e": {
@@ -41,7 +52,11 @@
         "cwd": "."
       },
       "cache": false,
-      "dependsOn": ["build", "sox:build", "service-proxy:build"],
+      "dependsOn": [
+        "build",
+        "sox:build",
+        "service-proxy:build"
+      ],
       "inputs": [
         "{workspaceRoot}/tools/test-e2e-lifecycle.js",
         "{workspaceRoot}/tools/probe-service-proxy-zdt.mjs",

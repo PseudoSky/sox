@@ -1,0 +1,49 @@
+{
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "name": "hybrid-search",
+  "projectType": "library",
+  "root": "libs/data/search/hybrid-search",
+  "sourceRoot": "libs/data/search/hybrid-search/src",
+  "tags": [
+    "type:lib",
+    "area:data",
+    "group:search"
+  ],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/libs/data/search/hybrid-search/dist"
+      ],
+      "options": {
+        "command": "tsc --project libs/data/search/hybrid-search/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/search/hybrid-search/dist/package.json",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.lib.json"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config libs/data/search/hybrid-search/vitest.config.ts",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": [
+          "libs/data/search/hybrid-search/**/*.ts"
+        ]
+      }
+    }
+  }
+}

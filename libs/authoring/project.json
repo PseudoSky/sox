@@ -5,7 +5,9 @@
   "root": "libs/authoring",
   "sourceRoot": "libs/authoring/src",
   "tags": [
-    "type:lib"
+    "type:lib",
+    "area:platform",
+    "group:authoring"
   ],
   "targets": {
     "build": {

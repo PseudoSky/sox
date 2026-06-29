@@ -4,11 +4,17 @@
   "projectType": "library",
   "root": "libs/host-registry",
   "sourceRoot": "libs/host-registry/src",
-  "tags": ["type:lib"],
+  "tags": [
+    "type:lib",
+    "area:platform",
+    "group:host"
+  ],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/libs/host-registry/dist"],
+      "outputs": [
+        "{workspaceRoot}/libs/host-registry/dist"
+      ],
       "options": {
         "command": "tsc --project libs/host-registry/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/host-registry/dist/package.json",
         "cwd": "."
@@ -26,12 +32,17 @@
         "cwd": "."
       },
       "cache": true,
-      "inputs": ["default", "^production"]
+      "inputs": [
+        "default",
+        "^production"
+      ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["libs/host-registry/**/*.ts"]
+        "lintFilePatterns": [
+          "libs/host-registry/**/*.ts"
+        ]
       }
     }
   }

@@ -156,3 +156,45 @@ window, Bayesian-BM25 Node port, libSQL migration, SQLite batch-filter reuse.)
 ## Non-goals
 The quickfix's runtime repair (separate); changing the memory domain's external tool contract; OS-kernel
 sandboxing; rewriting host-runtime lifecycle (governed by its own spec).
+
+## Incident log — 2026-06-27: pnpm native binding miss (BL-94)
+
+**Symptom:** Session-wide `better-sqlite3` failure — `Could not locate the bindings file` for
+`node-v137-darwin-arm64`. All `memory_write` and `memory_recall` calls failing for both primary and
+subagent sessions.
+
+**Root cause:** The MCP server runs the extension from the dev checkout via
+`~/.adhd/sox-cli/bin/soxe serve memory-server` → resolves the bundle at
+`extensions/bundles/sox-memory-bundle/members/memory-server/dist/index.js`. That bundle externalizes
+`better-sqlite3`, so Node resolves it from the pnpm virtual store at
+`.pnpm/better-sqlite3@12.10.0/node_modules/better-sqlite3/`. That package had **never been compiled**
+— no `build/` dir — because pnpm does not run `node-gyp` automatically when the content-addressed store
+is populated. The user-scope ext installs at `~/.adhd/sox-ecosystem/ext/*/node_modules/` have their own
+working binaries (npm `postinstall` runs there) but sit on a different resolution path than what the
+running MCP server uses.
+
+**Fix applied (2026-06-27):**
+```bash
+cd /Users/nix/dev/ai/sox-ecosystem/node_modules/.pnpm/better-sqlite3@12.10.0/node_modules/better-sqlite3
+npx node-gyp rebuild
+```
+Binding now compiled for ABI 137 (Node 24.11.1). `sqlite-vec` was unaffected. `memory_ping` confirms
+`ok: true`, `embed_on_hash_fallback: false` post-reconnect. **Reconnect the MCP client** (reload
+Claude Code session/plugin) to pick up the fixed server.
+
+**Impact on this plan:** `p0-baseline` depends on a working memory-server. The precondition
+`[inv:quickfix-landed]` is now verified met (fastembed + onnxruntime-node are real deps; real model
+active). The pnpm binding miss is independent of the quickfix — it must be fixed (or prevented) on any
+machine running the MCP server from the dev checkout.
+
+**Permanent fix needed (→ add as an explicit acceptance criterion in `p0-baseline`):** Add a root-level
+`postinstall` script or a dedicated nx `rebuild-native` target so `pnpm install` on a new Node version
+rebuilds native bindings automatically:
+```bash
+# Option A — root package.json postinstall:
+"postinstall": "pnpm rebuild better-sqlite3 sqlite-vec"
+# Option B — nx target:
+npx nx run-many -t rebuild-native
+```
+This is now an **in-scope deliverable for `p0-baseline`**: the baseline state must leave the native
+binding situation permanently resolved, not just manually patched. Track as BL-94.

@@ -1,0 +1,640 @@
+{
+  "schema_version": 4,
+  "plan_kind": "greenfield",
+  "description": "Build adhd-build: a self-driving, self-documenting plan execution CLI where agents only answer questions",
+  "problem": "Agent-based planning fails at scale: plans can't be resumed, vary in shape, don't verify completion, lose goals to context overflow, can't route to specialists, can't control resource consumption, and perform work that could be automated",
+  "approach": "Research existing tools before building → define the dag.json schema and dispatcher contract → build the non-LLM orchestration core → build the LLM adapter → build the CLI shell → wire end-to-end",
+  "executor": "workflow:plan-orchestrator",
+  "executor_model": "Sonnet",
+  "executor_effort": "high",
+  "terminal": "system-end-to-end",
+  "phases": ["research", "core", "dispatch", "cli", "integration"],
+
+  "milestones": {
+
+    // ── WAVE 0 ────────────────────────────────────────────────────────────────
+    // Must exist before any dispatch fires. Authored by the planner, not an LLM.
+    "scope-authored": {
+      "description": "GOAL.md and DEMO.md exist at docs/plan/adhd-build/ and together cover: the 10 problem statements, the target demo sequence, the definition of done, and all non-goals",
+      "rationale": "Every research dispatch reads these files as its primary context. Without them an agent receives only its milestone description — roughly 2 sentences — and will research in the wrong direction or produce generic output.",
+      "authored_by": "human",
+      "pending": null,
+      "triggered_by": null,
+      "phase": "research",
+      "depends_on": [],
+      "agent": null,
+      "model": null,
+      "effort": null,
+      "two_stage": false,
+      "read_only": [],
+      "guard": "test -f docs/plan/adhd-build/GOAL.md && test -f docs/plan/adhd-build/DEMO.md"
+    },
+
+    "research-cli-ux": {
+      "description": "Decision record: chosen interactive CLI library, with rationale covering Q&A loop, loading states, progress lines, and amend prompts; includes a minimal working code sample",
+      "rationale": "The cli-shell milestone cannot be scoped until we know whether the interactive surface is mostly library configuration or bespoke construction. Wrong choice here = rewrite.",
+      "authored_by": "human",
+      "pending": null,
+      "triggered_by": null,
+      "phase": "research",
+      "depends_on": ["scope-authored"],
+      "agent": "workflow:workflow-researcher",
+      "model": "Sonnet",
+      "effort": "medium",
+      "two_stage": false,
+      "read_only": [
+        "docs/plan/adhd-build/GOAL.md",
+        "docs/plan/adhd-build/DEMO.md"
+      ],
+      "guard": "test -f docs/plan/adhd-build/research/cli-ux.md && grep -q '## Decision' docs/plan/adhd-build/research/cli-ux.md"
+    },
+
+    "research-llm-structured-output": {
+      "description": "Decision record: most reliable mechanism for getting structured question+answer arrays back from an LLM call — tool use vs JSON mode vs constrained decoding — with failure mode analysis and chosen approach",
+      "rationale": "The ground-plan agent returns a structured list of questions with suggested answers. The reliability of parsing determines the entire llm-adapter contract. A wrong assumption here causes silent malformed output at runtime.",
+      "authored_by": "human",
+      "pending": null,
+      "triggered_by": null,
+      "phase": "research",
+      "depends_on": ["scope-authored"],
+      "agent": "workflow:workflow-researcher",
+      "model": "Sonnet",
+      "effort": "medium",
+      "two_stage": false,
+      "read_only": [
+        "docs/plan/adhd-build/GOAL.md",
+        "docs/plan/adhd-build/DEMO.md"
+      ],
+      "guard": "test -f docs/plan/adhd-build/research/structured-output.md && grep -q '## Decision' docs/plan/adhd-build/research/structured-output.md"
+    },
+
+    "research-dag-orchestration": {
+      "description": "Decision record: build the dispatcher from scratch vs adopt an existing DAG orchestration tool; if adopting, specifies which tool, what it handles, and what gap remains",
+      "rationale": "Building a correct topological sort + parallel wave executor + state writer is non-trivial. If Temporal, BullMQ, or a lighter tool already covers it, the dispatcher milestone scope changes dramatically.",
+      "authored_by": "human",
+      "pending": null,
+      "triggered_by": null,
+      "phase": "research",
+      "depends_on": ["scope-authored"],
+      "agent": "workflow:workflow-researcher",
+      "model": "Sonnet",
+      "effort": "medium",
+      "two_stage": false,
+      "read_only": [
+        "docs/plan/adhd-build/GOAL.md",
+        "docs/plan/adhd-build/DEMO.md"
+      ],
+      "guard": "test -f docs/plan/adhd-build/research/dag-orchestration.md && grep -q '## Decision' docs/plan/adhd-build/research/dag-orchestration.md"
+    },
+
+    "research-parallel-llm-dispatch": {
+      "description": "Decision record: pattern for parallel LLM call dispatch in Node.js — worker threads vs async Promise.all vs a task queue — covering back-pressure, failure isolation, and token budget enforcement",
+      "rationale": "The execution-loop dispatches multiple milestones in parallel. Without knowing the right concurrency model, the dispatcher core will either serialize everything (slow) or have races and dropped results (broken).",
+      "authored_by": "human",
+      "pending": null,
+      "triggered_by": null,
+      "phase": "research",
+      "depends_on": ["scope-authored"],
+      "agent": "workflow:workflow-researcher",
+      "model": "Haiku",
+      "effort": "low",
+      "two_stage": false,
+      "read_only": [
+        "docs/plan/adhd-build/GOAL.md",
+        "docs/plan/adhd-build/DEMO.md"
+      ],
+      "guard": "test -f docs/plan/adhd-build/research/parallel-dispatch.md && grep -q '## Decision' docs/plan/adhd-build/research/parallel-dispatch.md"
+    },
+
+    "dag-schema": {
+      "description": "dag.json TypeScript types, read/write helpers, and a validator that enforces: all pending milestones have resolver upstreams, no dependency cycles, all operations on pending:null milestones have shape, terminal milestone is reachable",
+      "rationale": "Every other component reads or writes dag.json. A shared typed schema with a validator is the foundation — without it, each component invents its own parsing and silent corruption is undetectable.",
+      "authored_by": "human",
+      "pending": null,
+      "triggered_by": null,
+      "phase": "core",
+      "depends_on": [],
+      "agent": "workflow:plan-orchestrator",
+      "model": "Sonnet",
+      "effort": "medium",
+      "two_stage": false,
+      "read_only": [],
+      "guard": "npx tsx scripts/validate-dag-schema.ts --self-test"
+    },
+
+    "dispatcher-core": {
+      "description": "Non-LLM orchestration engine: reads dag.json, computes eligible milestones (pending: null + deps complete), assigns wave numbers, writes dispatch_log entries, updates operation statuses, surfaces non-blocking questions",
+      "rationale": "The dispatcher is the only component that drives plan execution. It must never call an LLM itself — it only reads dag.json state and decides what to fire next. This is the system's reliability backbone.",
+      "authored_by": "human",
+      "pending": "dag-orchestration research decision: build vs adopt, and if adopt, which tool and what interface does it expose",
+      "triggered_by": null,
+      "phase": "core",
+      "depends_on": ["dag-schema", "research-dag-orchestration", "research-parallel-llm-dispatch"],
+      "agent": "workflow:plan-orchestrator",
+      "model": "Sonnet",
+      "effort": "high",
+      "two_stage": false,
+      "read_only": [],
+      "guard": "npx tsx scripts/test-dispatcher.ts --fixture fixtures/dispatcher-basic.dag.json"
+    },
+
+    "llm-adapter": {
+      "description": "Adapter that takes a packaged dispatch unit (operations[], context, model, effort) and returns structured results per operation; handles tool use or JSON mode depending on research decision; retries on malformed output",
+      "rationale": "This is the only component that talks to a model provider. Isolating it means every other component is testable without LLM calls, and the provider can be swapped without touching orchestration logic.",
+      "authored_by": "human",
+      "pending": "structured-output research decision: tool use vs JSON mode, and exact schema for question/answer arrays",
+      "triggered_by": null,
+      "phase": "dispatch",
+      "depends_on": ["dag-schema", "research-llm-structured-output"],
+      "agent": "workflow:plan-orchestrator",
+      "model": "Sonnet",
+      "effort": "high",
+      "two_stage": false,
+      "read_only": [],
+      "guard": "npx tsx scripts/test-llm-adapter.ts --dry-run --fixture fixtures/ground-plan-dispatch.json"
+    },
+
+    "ground-plan-agent": {
+      "description": "Prompt + structured output spec for the first LLM dispatch: reads goal file, returns (a) questions with suggested answers and (b) on second pass with Q&A filled in, returns milestone stubs with descriptions, rationale, depends_on, guard, and pending where unknown",
+      "rationale": "This is the only planning-specific agent in the system. It converts an unstructured goal into a structured dag.json skeleton. Its output format must be machine-parseable — no prose, only typed fields.",
+      "authored_by": "human",
+      "pending": "structured-output decision needed to define question/answer schema and milestone stub format",
+      "triggered_by": null,
+      "phase": "dispatch",
+      "depends_on": ["llm-adapter", "research-llm-structured-output"],
+      "agent": "workflow:plan-orchestrator",
+      "model": "Sonnet",
+      "effort": "medium",
+      "two_stage": false,
+      "read_only": [],
+      "guard": "npx tsx scripts/test-ground-plan.ts --goal fixtures/sample-goal.md"
+    },
+
+    "scaffolding": {
+      "description": "`adhd-build <goal-path>` parses the goal file, derives a slug, creates docs/plan/<slug>/, writes a skeleton dag.json with plan-level fields populated, and fires the first ground-plan dispatch",
+      "rationale": "This is the entry point a user touches. It must be idempotent (re-running on an existing plan resumes, doesn't overwrite), produce a valid dag.json on first run, and give the user immediate feedback that something is happening.",
+      "authored_by": "human",
+      "pending": null,
+      "triggered_by": null,
+      "phase": "cli",
+      "depends_on": ["dag-schema", "ground-plan-agent"],
+      "agent": "workflow:plan-orchestrator",
+      "model": "Haiku",
+      "effort": "low",
+      "two_stage": false,
+      "read_only": [],
+      "guard": "npx tsx scripts/test-scaffolding.ts --goal fixtures/sample-goal.md --expect-dag docs/plan/sample-goal/dag.json"
+    },
+
+    "cli-shell": {
+      "description": "Interactive shell surface: loading/progress lines, Q&A loop (answer / skip / use suggested), milestone summary display, 'Execute or amend?' prompt, non-blocking question surfacing during execution, completion summaries",
+      "rationale": "The CLI is the only human-facing component. It translates every dispatcher event into a shell line. It must never drive logic — it only renders state from dag.json and passes user input back to the dispatcher.",
+      "authored_by": "human",
+      "pending": "cli-ux research decision: which library, and whether Q&A loop and progress display are configuration or construction",
+      "triggered_by": null,
+      "phase": "cli",
+      "depends_on": ["dispatcher-core", "research-cli-ux"],
+      "agent": "workflow:plan-orchestrator",
+      "model": "Sonnet",
+      "effort": "high",
+      "two_stage": false,
+      "read_only": [],
+      "guard": "npx tsx scripts/test-cli-shell.ts --replay fixtures/cli-replay.json"
+    },
+
+    "amend-interface": {
+      "description": "Amendment flow: at 'Execute or amend?' the user can specify a playbook to apply before a named milestone; the system patches dag.json to insert the playbook's milestones as upstreams of the target and re-renders the milestone summary",
+      "rationale": "This is the human escape hatch. Without it, the user has no way to reshape the plan after ground-plan generates it. It must operate by mutating dag.json — not by re-running ground-plan — so the existing milestone work is preserved.",
+      "authored_by": "human",
+      "pending": "need to define playbook format: are they built-in named patterns (strings) or user-authored files?",
+      "triggered_by": null,
+      "phase": "cli",
+      "depends_on": ["cli-shell", "dispatcher-core"],
+      "agent": "workflow:plan-orchestrator",
+      "model": "Sonnet",
+      "effort": "medium",
+      "two_stage": false,
+      "read_only": [],
+      "guard": "npx tsx scripts/test-amend.ts --fixture fixtures/amend-playbook.json"
+    },
+
+    "system-end-to-end": {
+      "description": "Full run from goal file to completed plan: adhd-build → ground-plan → Q&A → milestones → amend → execute → completion summary. Two fixtures: a clean run and a run with a guard failure + correction loop.",
+      "rationale": "Unit tests on each component don't prove the system works end-to-end. This milestone runs the full demo flow and verifies the dag.json state at each transition matches expected shape.",
+      "authored_by": "human",
+      "pending": null,
+      "triggered_by": null,
+      "phase": "integration",
+      "depends_on": ["scaffolding", "cli-shell", "amend-interface", "dispatcher-core", "llm-adapter"],
+      "agent": "workflow:plan-orchestrator",
+      "model": "Sonnet",
+      "effort": "high",
+      "two_stage": false,
+      "read_only": [],
+      "guard": "npx tsx scripts/test-e2e.ts --fixture fixtures/e2e-clean.json && npx tsx scripts/test-e2e.ts --fixture fixtures/e2e-correction.json"
+    }
+
+  },
+
+  "operations": [
+
+    // ── scope-authored ────────────────────────────────────────────────────────
+    {
+      "id": "scope-authored.1",
+      "milestone": "scope-authored",
+      "depends_on": [],
+      "action": "create",
+      "file": "docs/plan/adhd-build/GOAL.md",
+      "symbol": null,
+      "authored_by": "human",
+      "status": "complete",
+      "provenance": "manual",
+      "confidence": "verified",
+      "shape": {
+        "kind": "doc",
+        "ops": [
+          { "op": "add-section", "target": "Problem",     "to": null },
+          { "op": "add-section", "target": "Goal",        "to": null },
+          { "op": "add-section", "target": "Constraints", "to": null },
+          { "op": "add-section", "target": "Non-Goals",   "to": null }
+        ]
+      },
+      "guard": null,
+      "ki_estimate": null,
+      "ki_source": null
+    },
+    {
+      "id": "scope-authored.2",
+      "milestone": "scope-authored",
+      "depends_on": [],
+      "action": "create",
+      "file": "docs/plan/adhd-build/DEMO.md",
+      "symbol": null,
+      "authored_by": "human",
+      "status": "complete",
+      "provenance": "manual",
+      "confidence": "verified",
+      "shape": {
+        "kind": "doc",
+        "ops": [
+          { "op": "add-section", "target": "Setup",             "to": null },
+          { "op": "add-section", "target": "The Run",           "to": null },
+          { "op": "add-section", "target": "What Proves It's Done", "to": null }
+        ]
+      },
+      "guard": null,
+      "ki_estimate": null,
+      "ki_source": null
+    },
+
+    // ── research-cli-ux ───────────────────────────────────────────────────────
+    {
+      "id": "research-cli-ux.1",
+      "milestone": "research-cli-ux",
+      "depends_on": [],
+      "action": "create",
+      "file": "docs/plan/adhd-build/research/cli-ux.md",
+      "symbol": null,
+      "authored_by": "human",
+      "status": "pending",
+      "provenance": "manual",
+      "confidence": "assumed",
+      "shape": {
+        "kind": "doc",
+        "ops": [
+          { "op": "add-section", "target": "Decision",           "to": null },
+          { "op": "add-section", "target": "Options Considered", "to": null },
+          { "op": "add-section", "target": "Tradeoffs",          "to": null },
+          { "op": "add-section", "target": "Code Sample",        "to": null }
+        ]
+      },
+      "guard": null,
+      "ki_estimate": 800,
+      "ki_source": "estimate"
+    },
+
+    // ── research-llm-structured-output ────────────────────────────────────────
+    {
+      "id": "research-llm-structured-output.1",
+      "milestone": "research-llm-structured-output",
+      "depends_on": [],
+      "action": "create",
+      "file": "docs/plan/adhd-build/research/structured-output.md",
+      "symbol": null,
+      "authored_by": "human",
+      "status": "pending",
+      "provenance": "manual",
+      "confidence": "assumed",
+      "shape": {
+        "kind": "doc",
+        "ops": [
+          { "op": "add-section", "target": "Decision",              "to": null },
+          { "op": "add-section", "target": "Options Considered",    "to": null },
+          { "op": "add-section", "target": "Failure Modes",         "to": null },
+          { "op": "add-section", "target": "Question Schema",       "to": null },
+          { "op": "add-section", "target": "Milestone Stub Schema", "to": null }
+        ]
+      },
+      "guard": null,
+      "ki_estimate": 1000,
+      "ki_source": "estimate"
+    },
+
+    // ── research-dag-orchestration ────────────────────────────────────────────
+    {
+      "id": "research-dag-orchestration.1",
+      "milestone": "research-dag-orchestration",
+      "depends_on": [],
+      "action": "create",
+      "file": "docs/plan/adhd-build/research/dag-orchestration.md",
+      "symbol": null,
+      "authored_by": "human",
+      "status": "pending",
+      "provenance": "manual",
+      "confidence": "assumed",
+      "shape": {
+        "kind": "doc",
+        "ops": [
+          { "op": "add-section", "target": "Decision",              "to": null },
+          { "op": "add-section", "target": "Options Considered",    "to": null },
+          { "op": "add-section", "target": "Build vs Adopt",        "to": null },
+          { "op": "add-section", "target": "Remaining Gap",         "to": null }
+        ]
+      },
+      "guard": null,
+      "ki_estimate": 800,
+      "ki_source": "estimate"
+    },
+
+    // ── research-parallel-llm-dispatch ────────────────────────────────────────
+    {
+      "id": "research-parallel-llm-dispatch.1",
+      "milestone": "research-parallel-llm-dispatch",
+      "depends_on": [],
+      "action": "create",
+      "file": "docs/plan/adhd-build/research/parallel-dispatch.md",
+      "symbol": null,
+      "authored_by": "human",
+      "status": "pending",
+      "provenance": "manual",
+      "confidence": "assumed",
+      "shape": {
+        "kind": "doc",
+        "ops": [
+          { "op": "add-section", "target": "Decision",          "to": null },
+          { "op": "add-section", "target": "Concurrency Model", "to": null },
+          { "op": "add-section", "target": "Back-pressure",     "to": null },
+          { "op": "add-section", "target": "Failure Isolation", "to": null }
+        ]
+      },
+      "guard": null,
+      "ki_estimate": 600,
+      "ki_source": "estimate"
+    },
+
+    // ── dag-schema ────────────────────────────────────────────────────────────
+    {
+      "id": "dag-schema.1",
+      "milestone": "dag-schema",
+      "depends_on": [],
+      "action": "create",
+      "file": "src/dag/types.ts",
+      "symbol": "DagJson",
+      "authored_by": "human",
+      "status": "pending",
+      "provenance": "manual",
+      "confidence": "verified",
+      "shape": {
+        "kind": "interface",
+        "ops": [
+          { "op": "add-field", "target": "schema_version", "to": "number",           "required": true },
+          { "op": "add-field", "target": "plan_kind",      "to": "PlanKind",         "required": true },
+          { "op": "add-field", "target": "description",    "to": "string",           "required": true },
+          { "op": "add-field", "target": "problem",        "to": "string",           "required": true },
+          { "op": "add-field", "target": "approach",       "to": "string",           "required": true },
+          { "op": "add-field", "target": "terminal",       "to": "string",           "required": true },
+          { "op": "add-field", "target": "phases",         "to": "string[]",         "required": true },
+          { "op": "add-field", "target": "milestones",     "to": "Record<string, Milestone>", "required": true },
+          { "op": "add-field", "target": "operations",     "to": "Operation[]",      "required": true },
+          { "op": "add-field", "target": "dispatch_log",   "to": "DispatchEntry[]",  "required": true }
+        ]
+      },
+      "guard": null,
+      "ki_estimate": 600,
+      "ki_source": "estimate"
+    },
+    {
+      "id": "dag-schema.2",
+      "milestone": "dag-schema",
+      "depends_on": ["dag-schema.1"],
+      "action": "create",
+      "file": "src/dag/types.ts",
+      "symbol": "Milestone",
+      "authored_by": "human",
+      "status": "pending",
+      "provenance": "manual",
+      "confidence": "verified",
+      "shape": {
+        "kind": "interface",
+        "ops": [
+          { "op": "add-field", "target": "description",  "to": "string",            "required": true },
+          { "op": "add-field", "target": "rationale",    "to": "string",            "required": true },
+          { "op": "add-field", "target": "authored_by",  "to": "string",            "required": true },
+          { "op": "add-field", "target": "pending",      "to": "string | null",     "required": true },
+          { "op": "add-field", "target": "triggered_by", "to": "string | null",     "required": true },
+          { "op": "add-field", "target": "phase",        "to": "string",            "required": true },
+          { "op": "add-field", "target": "depends_on",   "to": "string[]",          "required": true },
+          { "op": "add-field", "target": "agent",        "to": "string | null",     "required": true },
+          { "op": "add-field", "target": "model",        "to": "ModelTier | null",  "required": true },
+          { "op": "add-field", "target": "effort",       "to": "EffortLevel | null","required": true },
+          { "op": "add-field", "target": "two_stage",    "to": "boolean",           "required": true },
+          { "op": "add-field", "target": "read_only",    "to": "string[]",          "required": true },
+          { "op": "add-field", "target": "guard",        "to": "string | null",     "required": true }
+        ]
+      },
+      "guard": null,
+      "ki_estimate": 400,
+      "ki_source": "estimate"
+    },
+    {
+      "id": "dag-schema.3",
+      "milestone": "dag-schema",
+      "depends_on": ["dag-schema.1"],
+      "action": "create",
+      "file": "src/dag/types.ts",
+      "symbol": "Operation",
+      "authored_by": "human",
+      "status": "pending",
+      "provenance": "manual",
+      "confidence": "verified",
+      "shape": {
+        "kind": "interface",
+        "ops": [
+          { "op": "add-field", "target": "id",          "to": "string",                "required": true },
+          { "op": "add-field", "target": "milestone",   "to": "string",                "required": true },
+          { "op": "add-field", "target": "depends_on",  "to": "string[]",              "required": true },
+          { "op": "add-field", "target": "action",      "to": "OperationAction",       "required": true },
+          { "op": "add-field", "target": "file",        "to": "string",                "required": true },
+          { "op": "add-field", "target": "symbol",      "to": "string | null",         "required": true },
+          { "op": "add-field", "target": "provenance",  "to": "Provenance | null",     "required": true },
+          { "op": "add-field", "target": "confidence",  "to": "Confidence | null",     "required": true },
+          { "op": "add-field", "target": "shape",       "to": "OperationShape | null", "required": false },
+          { "op": "add-field", "target": "guard",       "to": "string | null",         "required": true },
+          { "op": "add-field", "target": "ki_estimate", "to": "number | null",         "required": false },
+          { "op": "add-field", "target": "authored_by", "to": "string",                "required": true },
+          { "op": "add-field", "target": "status",      "to": "OperationStatus",       "required": true }
+        ]
+      },
+      "guard": null,
+      "ki_estimate": 400,
+      "ki_source": "estimate"
+    },
+    {
+      "id": "dag-schema.4",
+      "milestone": "dag-schema",
+      "depends_on": ["dag-schema.1", "dag-schema.2", "dag-schema.3"],
+      "action": "create",
+      "file": "src/dag/io.ts",
+      "symbol": "readDag",
+      "authored_by": "human",
+      "status": "pending",
+      "provenance": "manual",
+      "confidence": "assumed",
+      "shape": {
+        "kind": "function",
+        "ops": [
+          { "op": "add-param",    "target": "path",   "to": "string",   "required": true },
+          { "op": "change-return","target": null,      "to": "DagJson",  "required": null }
+        ]
+      },
+      "guard": null,
+      "ki_estimate": 200,
+      "ki_source": "estimate"
+    },
+    {
+      "id": "dag-schema.5",
+      "milestone": "dag-schema",
+      "depends_on": ["dag-schema.1", "dag-schema.2", "dag-schema.3"],
+      "action": "create",
+      "file": "src/dag/io.ts",
+      "symbol": "writeDag",
+      "authored_by": "human",
+      "status": "pending",
+      "provenance": "manual",
+      "confidence": "assumed",
+      "shape": {
+        "kind": "function",
+        "ops": [
+          { "op": "add-param",    "target": "path", "to": "string",  "required": true },
+          { "op": "add-param",    "target": "dag",  "to": "DagJson", "required": true },
+          { "op": "change-return","target": null,    "to": "void",    "required": null }
+        ]
+      },
+      "guard": null,
+      "ki_estimate": 200,
+      "ki_source": "estimate"
+    },
+    {
+      "id": "dag-schema.6",
+      "milestone": "dag-schema",
+      "depends_on": ["dag-schema.1", "dag-schema.2", "dag-schema.3"],
+      "action": "create",
+      "file": "src/dag/io.ts",
+      "symbol": "appendDispatch",
+      "authored_by": "human",
+      "status": "pending",
+      "provenance": "manual",
+      "confidence": "assumed",
+      "shape": {
+        "kind": "function",
+        "ops": [
+          { "op": "add-param",    "target": "path",     "to": "string",        "required": true },
+          { "op": "add-param",    "target": "entry",    "to": "DispatchEntry", "required": true },
+          { "op": "change-return","target": null,        "to": "void",          "required": null }
+        ]
+      },
+      "guard": null,
+      "ki_estimate": 200,
+      "ki_source": "estimate"
+    },
+    {
+      "id": "dag-schema.7",
+      "milestone": "dag-schema",
+      "depends_on": ["dag-schema.1", "dag-schema.2", "dag-schema.3"],
+      "action": "create",
+      "file": "src/dag/validate.ts",
+      "symbol": "validateDag",
+      "authored_by": "human",
+      "status": "pending",
+      "provenance": "manual",
+      "confidence": "assumed",
+      "shape": {
+        "kind": "function",
+        "ops": [
+          { "op": "add-param",    "target": "dag",  "to": "DagJson",       "required": true },
+          { "op": "change-return","target": null,    "to": "ValidationResult", "required": null }
+        ]
+      },
+      "guard": null,
+      "ki_estimate": 1200,
+      "ki_source": "estimate"
+    },
+
+    // ── scaffolding ───────────────────────────────────────────────────────────
+    {
+      "id": "scaffolding.1",
+      "milestone": "scaffolding",
+      "depends_on": [],
+      "action": "create",
+      "file": "bin/adhd-build",
+      "symbol": null,
+      "authored_by": "human",
+      "status": "pending",
+      "provenance": "manual",
+      "confidence": "assumed",
+      "shape": {
+        "kind": "script",
+        "ops": [
+          { "op": "add-section", "target": "shebang + arg parse", "to": null },
+          { "op": "add-section", "target": "goal file read",      "to": null },
+          { "op": "add-section", "target": "slug derivation",     "to": null },
+          { "op": "add-section", "target": "scaffold call",       "to": null }
+        ]
+      },
+      "guard": null,
+      "ki_estimate": 300,
+      "ki_source": "estimate"
+    },
+    {
+      "id": "scaffolding.2",
+      "milestone": "scaffolding",
+      "depends_on": ["dag-schema.4", "dag-schema.5"],
+      "action": "create",
+      "file": "src/scaffold.ts",
+      "symbol": "scaffold",
+      "authored_by": "human",
+      "status": "pending",
+      "provenance": "manual",
+      "confidence": "assumed",
+      "shape": {
+        "kind": "function",
+        "ops": [
+          { "op": "add-param",    "target": "goalPath", "to": "string", "required": true },
+          { "op": "add-param",    "target": "slug",     "to": "string", "required": true },
+          { "op": "change-return","target": null,        "to": "Promise<string>", "required": null }
+        ]
+      },
+      "guard": null,
+      "ki_estimate": 600,
+      "ki_source": "estimate"
+    }
+
+    // dispatcher-core, llm-adapter, ground-plan-agent, cli-shell,
+    // amend-interface, system-end-to-end — operations pending research results.
+    // A replan dispatch after each research milestone clears the pending fields
+    // and authors operations for these milestones.
+
+  ],
+
+  "dispatch_log": []
+}

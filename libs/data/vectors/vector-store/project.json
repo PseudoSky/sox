@@ -1,0 +1,49 @@
+{
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "name": "vector-store",
+  "projectType": "library",
+  "root": "libs/data/vectors/vector-store",
+  "sourceRoot": "libs/data/vectors/vector-store/src",
+  "tags": [
+    "type:lib",
+    "area:data",
+    "group:vectors"
+  ],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/libs/data/vectors/vector-store/dist"
+      ],
+      "options": {
+        "command": "tsc --project libs/data/vectors/vector-store/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/vectors/vector-store/dist/package.json",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.lib.json"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config libs/data/vectors/vector-store/vitest.config.ts",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": [
+          "libs/data/vectors/vector-store/**/*.ts"
+        ]
+      }
+    }
+  }
+}

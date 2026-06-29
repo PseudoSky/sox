@@ -1,0 +1,729 @@
+{
+  "tools": [
+    {
+      "name": "memory_ping",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "memory_write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "The content to memorize. Required."
+          },
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "summary": {
+            "type": "string",
+            "description": "(E2) Human-readable summary. Persisted to node.summary; no extractive fallback runs if supplied."
+          },
+          "name": {
+            "type": "string",
+            "description": "(E2) Title/name for this episode (node.name)."
+          },
+          "topic": {
+            "type": "string",
+            "description": "(E5) Explicit topic override. Stored to node.topic; takes priority over [<topic>] prefix and cluster label."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "(E4) Concept/entity tags. Persisted as node.tags JSON array AND as entity nodes + MENTIONS edges."
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "(E3) Arbitrary caller metadata persisted as node.meta JSON. Queryable via json_extract."
+          },
+          "project_path": {
+            "type": "string",
+            "description": "(E1) Caller project root path. Auto-detected from cwd+git if omitted."
+          },
+          "derived_from_uid": {
+            "type": "string",
+            "description": "(E9) UID of a parent episode; emits a DERIVED_FROM edge from this episode to parent."
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "t_occurred": {
+            "type": "string",
+            "description": "ISO timestamp when this occurred."
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "message",
+              "tool_output",
+              "observation",
+              "document",
+              "reflection",
+              "import"
+            ]
+          },
+          "importance": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 10,
+            "description": "User-asserted importance (1\u201310). If supplied, batch enricher will not overwrite it."
+          },
+          "chunk_size": {
+            "type": "number",
+            "description": "Approximate tokens per chunk (default: 500). Content exceeding this threshold is split at sentence boundaries; each chunk is stored as a separate episode with a DERIVED_FROM edge to the parent.",
+            "default": 500
+          }
+        },
+        "required": [
+          "content"
+        ]
+      }
+    },
+    {
+      "name": "memory_recall",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Semantic query text. If absent or empty, returns importance-ranked results (no vec/FTS, sorted by importance DESC)."
+          },
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "scope": {
+            "type": "string",
+            "description": "Store scope name: project/user/org/local."
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "as_of": {
+            "type": "string",
+            "description": "ISO timestamp for point-in-time recall."
+          },
+          "token_budget": {
+            "type": "number",
+            "default": 4000
+          },
+          "depth": {
+            "type": "number",
+            "default": 1
+          },
+          "limit": {
+            "type": "number",
+            "default": 10
+          },
+          "filters": {
+            "type": "object",
+            "description": "Optional filter object.",
+            "properties": {
+              "project_path": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Exact match on node.project_path."
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "prefix": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "prefix"
+                    ],
+                    "description": "Prefix match."
+                  }
+                ]
+              },
+              "topic": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ],
+                "description": "Exact topic string or array of topics (OR semantics)."
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Any-match: episodes that have at least one of these tags."
+              },
+              "tags_match_all": {
+                "type": "boolean",
+                "default": false
+              },
+              "importance_min": {
+                "type": "number",
+                "description": "Only return episodes with importance >= this value."
+              },
+              "t_created_after": {
+                "type": "string",
+                "description": "ISO timestamp; only episodes created after this."
+              },
+              "t_created_before": {
+                "type": "string",
+                "description": "ISO timestamp; only episodes created before this."
+              }
+            }
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "memory_search_entities",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "entity_type": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "number",
+            "default": 10
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "memory_get_session_state",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          }
+        },
+        "required": [
+          "session_id"
+        ]
+      }
+    },
+    {
+      "name": "memory_save_session_state",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "object"
+          },
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          }
+        },
+        "required": [
+          "session_id",
+          "state"
+        ]
+      }
+    },
+    {
+      "name": "memory_get_community",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "entity_uid": {
+            "type": "string",
+            "description": "Resolve community for this episode/entity UID (via MEMBER_OF edge)."
+          },
+          "community_uid": {
+            "type": "string",
+            "description": "Fetch a community directly by its UID."
+          },
+          "level": {
+            "type": "number",
+            "default": 0
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "memory_invalidate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "claim_uid": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "t_transition": {
+            "type": "string"
+          },
+          "replacement_uid": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim_uid",
+          "reason"
+        ]
+      }
+    },
+    {
+      "name": "memory_update",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uid": {
+            "type": "string",
+            "description": "UID of the live node to update. Required. Error E_NOT_FOUND if absent or invalidated."
+          },
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "content": {
+            "type": "string",
+            "description": "Replace node.content. Triggers re-embed and FTS update."
+          },
+          "summary": {
+            "type": "string",
+            "description": "Replace node.summary. Triggers re-embed and FTS update."
+          },
+          "name": {
+            "type": "string",
+            "description": "Replace node.name."
+          },
+          "topic": {
+            "type": "string",
+            "description": "Replace node.topic."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Replace node.tags (replaces existing tags wholesale \u2014 not additive)."
+          },
+          "importance": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 10,
+            "description": "Replace node.importance."
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Metadata to merge into (or replace) existing node.meta. See metadata_merge."
+          },
+          "metadata_merge": {
+            "type": "string",
+            "enum": [
+              "deep",
+              "replace"
+            ],
+            "default": "deep",
+            "description": "'deep' (default): recursive merge for nested objects; arrays are replaced not concatenated. 'replace': overwrites node.meta wholesale."
+          },
+          "t_occurred": {
+            "type": "string",
+            "description": "ISO timestamp \u2014 replace node.t_occurred."
+          },
+          "t_valid": {
+            "type": "string",
+            "description": "ISO timestamp \u2014 replace node.t_valid."
+          }
+        },
+        "required": [
+          "uid"
+        ]
+      }
+    },
+    {
+      "name": "memory_link",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "src_uid": {
+            "type": "string",
+            "description": "UID of the source node"
+          },
+          "dst_uid": {
+            "type": "string",
+            "description": "UID of the destination node"
+          },
+          "rel": {
+            "type": "string",
+            "enum": [
+              "MENTIONS",
+              "SUPPORTS",
+              "RELATES_TO",
+              "DERIVED_FROM",
+              "SUPERSEDES",
+              "SAME_AS",
+              "ASSIGNED_TO"
+            ],
+            "description": "Relationship type"
+          },
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "weight": {
+            "type": "number",
+            "description": "Optional edge weight (0\u20131)"
+          },
+          "meta": {
+            "type": "object",
+            "description": "Optional JSON metadata"
+          }
+        },
+        "required": [
+          "src_uid",
+          "dst_uid",
+          "rel"
+        ]
+      }
+    },
+    {
+      "name": "memory_topics",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Filter to topics that have at least one episode from this project_path."
+          },
+          "search": {
+            "type": "string",
+            "description": "Partial topic name substring filter."
+          },
+          "sort_by": {
+            "type": "string",
+            "enum": [
+              "episode_count",
+              "avg_importance",
+              "last_written"
+            ],
+            "default": "episode_count"
+          },
+          "limit": {
+            "type": "number",
+            "default": 20,
+            "maximum": 200
+          },
+          "offset": {
+            "type": "number",
+            "default": 0
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "memory_list_projects",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "limit": {
+            "type": "number",
+            "default": 20,
+            "maximum": 200
+          },
+          "offset": {
+            "type": "number",
+            "default": 0
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "memory_list_entities",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Only count episodes from this project_path."
+          },
+          "topic": {
+            "type": "string",
+            "description": "Only count episodes in this topic."
+          },
+          "search": {
+            "type": "string",
+            "description": "Substring filter on entity name."
+          },
+          "limit": {
+            "type": "number",
+            "default": 20,
+            "maximum": 200
+          },
+          "offset": {
+            "type": "number",
+            "default": 0
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "memory_entity_episodes",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "entity_uid": {
+            "type": "string",
+            "description": "UID of the entity node."
+          },
+          "entity_name": {
+            "type": "string",
+            "description": "Name of the entity (resolved to UID if entity_uid not supplied)."
+          },
+          "limit": {
+            "type": "number",
+            "default": 20,
+            "maximum": 200
+          },
+          "offset": {
+            "type": "number",
+            "default": 0
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "memory_related",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "uid": {
+            "type": "string",
+            "description": "UID of the source episode."
+          },
+          "rel": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Filter by relation type(s). Default: all live relation types."
+          },
+          "limit": {
+            "type": "number",
+            "default": 20,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "uid"
+        ]
+      }
+    },
+    {
+      "name": "memory_supersession_chain",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "uid": {
+            "type": "string",
+            "description": "Any episode UID in the chain."
+          }
+        },
+        "required": [
+          "uid"
+        ]
+      }
+    },
+    {
+      "name": "memory_near_duplicates",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "project_path": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          },
+          "threshold": {
+            "type": "number",
+            "description": "Minimum cosine similarity stored in the SAME_AS edge meta."
+          },
+          "limit": {
+            "type": "number",
+            "default": 20,
+            "maximum": 200
+          },
+          "offset": {
+            "type": "number",
+            "default": 0
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "memory_curate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "retag",
+              "set_topic",
+              "set_importance",
+              "merge_duplicates",
+              "recluster",
+              "drop_lens",
+              "list_lenses"
+            ],
+            "description": "The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. list_lenses returns all live subset lenses."
+          },
+          "uid": {
+            "type": "string",
+            "description": "Target episode UID (required for retag, set_topic, set_importance)."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "(retag) Tags to add. Additive; duplicates are ignored."
+          },
+          "topic": {
+            "type": "string",
+            "description": "(set_topic) New topic string."
+          },
+          "importance": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 10,
+            "description": "(set_importance) User-asserted importance."
+          },
+          "uid_keep": {
+            "type": "string",
+            "description": "(merge_duplicates) UID of the episode to keep."
+          },
+          "uid_drop": {
+            "type": "string",
+            "description": "(merge_duplicates) UID of the episode to invalidate."
+          },
+          "filters": {
+            "type": "object",
+            "description": "(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: global async re-cluster via the daemon (unchanged)."
+          },
+          "threshold": {
+            "type": "number",
+            "description": "(recluster, filtered) Optional cosine similarity threshold override for the subset pass."
+          },
+          "provenance_hash": {
+            "type": "string",
+            "description": "(drop_lens) The 16-hex provenance hash of the subset lens to drop (obtain from a prior recluster response)."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, return proposed changes without committing them."
+          }
+        },
+        "required": [
+          "op"
+        ]
+      }
+    },
+    {
+      "name": "memory_stats",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Scope stats to episodes from this project."
+          }
+        },
+        "required": []
+      }
+    }
+  ]
+}

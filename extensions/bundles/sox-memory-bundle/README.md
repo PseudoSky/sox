@@ -6,7 +6,7 @@
 
 `sox-memory-bundle` is a meta-package that expands to five coordinated extensions at install time. Installing the bundle is exactly equivalent to installing all five members individually at their pinned versions, but lets you treat the subsystem as a single installable unit with its own version.
 
-The five members together form a complete, end-to-end proven agent memory subsystem built entirely on ecosystem primitives: a durable SQLite graph store, hybrid semantic recall under 50 ms, deterministic batch enrichment (clustering, importance, auto-links via `@adhd/sox-memory-enrich` — zero LLM calls, no provider required), session persistence on conversation end, and a shell CLI for store administration.
+The five members together form a complete, end-to-end proven agent memory subsystem built entirely on ecosystem primitives: a durable SQLite graph store, hybrid semantic recall under 50 ms, deterministic batch enrichment (clustering, importance, auto-links via `@adhd/sox-memory-core` — zero LLM calls, no provider required), session persistence on conversation end, and a shell CLI for store administration.
 
 ## When to use
 
@@ -29,7 +29,7 @@ The five members together form a complete, end-to-end proven agent memory subsys
 host
   └─ spawns memory-daemon (background singleton, Unix socket)
        ├─ reads/writes ~/.memory/memory.db  (SQLite + sqlite-vec + FTS5)
-       └─ runs runBatchEnrich(@adhd/sox-memory-enrich) on write queue drain
+        └─ runs runBatchEnrich (memory-core) on write queue drain
            └─ clustering, importance, auto-links (deterministic, zero LLM)
 
 memory-server (mcp-server, stdio)

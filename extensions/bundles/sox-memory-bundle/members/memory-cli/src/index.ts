@@ -26,6 +26,7 @@
 import { exportMarkdown, initScope, openDb, writeRegistry } from '@adhd/sox-memory-core';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 export type ScopeKind = 'project' | 'user' | 'org' | 'local';
@@ -185,6 +186,31 @@ function cmdStatus(basePath: string): void {
     }
   }
 
+  // BL-95: scan known store dirs for bare memory.db files that aren't
+  // registered in the registry. A live store at ~/.memory/memory.db that
+  // predates the scope-naming convention is silently skipped by the
+  // registry-only lookup, producing "No memory stores found."
+  const KNOWN_STORE_DIRS = [
+    path.join(os.homedir(), '.memory'),
+    path.join(process.cwd(), '.memory'),
+  ];
+  const registeredPaths = new Set(paths);
+  const unregisteredStores: Array<{ path: string; scope: string }> = [];
+
+  for (const dir of KNOWN_STORE_DIRS) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith('.db')) continue;
+        const p = path.join(dir, f);
+        if (registeredPaths.has(p)) continue;
+        const scopeName = f.replace('.db', '');
+        unregisteredStores.push({ path: p, scope: `(unregistered/${scopeName})` });
+        paths.push(p);
+      }
+    } catch { /* permission error */ }
+  }
+
   if (paths.length === 0) {
     console.log('No memory stores found.');
     return;
@@ -196,11 +222,23 @@ function cmdStatus(basePath: string): void {
         | { scope: string; embed_model: string; created_at: string }
         | undefined;
       const nodeCount = (db.prepare('SELECT COUNT(*) as c FROM node').get() as { c: number }).c;
-      console.log(`${path.basename(dbPath)}: scope=${meta?.scope ?? '?'} nodes=${nodeCount} model=${meta?.embed_model ?? '?'} path=${dbPath}`);
+
+      // BL-95: surface the unregistered note
+      const unreg = unregisteredStores.find((s) => s.path === dbPath);
+      const scopeLabel = unreg
+        ? unreg.scope
+        : (meta?.scope ?? '?');
+
+      console.log(`${path.basename(dbPath)}: scope=${scopeLabel} nodes=${nodeCount} model=${meta?.embed_model ?? '?'} path=${dbPath}`);
       db.close();
     } catch (e) {
       console.log(`${path.basename(dbPath)}: error - ${String(e)}`);
     }
+  }
+
+  // BL-95: if any bare stores found, print registration guidance
+  if (unregisteredStores.length > 0) {
+    console.log(`\n${unregisteredStores.length} unregistered store(s) found. Run 'memory init --scope <scope> --path <dir>' to register.`);
   }
 }
 

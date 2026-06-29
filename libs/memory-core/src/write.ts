@@ -14,7 +14,7 @@
  *   R6: no OS advisory lock (host holds singleton via lifecycle block).
  */
 
-import { enrichOnWrite } from '@adhd/sox-memory-enrich';
+import { enrichOnWrite } from './enrich.js';
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
 import { monotonicFactory } from 'ulid';

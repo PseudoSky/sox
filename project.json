@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/nx/schemas/project-schema.json",
+  "name": "sox-ecosystem",
+  "projectType": "application",
+  "root": ".",
+  "sourceRoot": ".",
+  "targets": {
+    "routing:build-index": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx tsx scripts/build-routing-index.ts",
+        "cwd": "."
+      },
+      "outputs": [
+        "{workspaceRoot}/docs/routing/map.json",
+        "{workspaceRoot}/docs/routing/INDEX.md",
+        "{workspaceRoot}/libs/data/INDEX.md"
+      ],
+      "cache": false
+    },
+    "routing:check-drift": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx tsx scripts/check-routing-drift.ts",
+        "cwd": "."
+      },
+      "cache": false
+    }
+  }
+}

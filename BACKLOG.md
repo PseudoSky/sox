@@ -273,6 +273,233 @@ so the parent checkout never scans nested worktrees. Low blast radius but it mak
 > memory-server packaging surfaced four distinct defects. While on fallback, vector similarity
 > (near-dup `SAME_AS`, clustering, semantic recall ranking) is unreliable; BM25/FTS still works.
 
+### BL-94 — `better-sqlite3` native binding missing for current Node.js ABI → memory-server crashes mid-session — **Open (HIGH) (2026-06-27)**
+
+**Observed:** `memory_write` and all other `mcp__memory-server__*` tool calls fail mid-session with:
+```
+Error: Could not locate the bindings file.
+→ .../better-sqlite3/lib/binding/node-v137-darwin-arm64/better_sqlite3.node
+```
+The binding directory `node-v137-darwin-arm64/` does not exist — the module was compiled against a different Node.js ABI version than what is currently running (ABI 137 = Node.js v24.x). `memory_ping` succeeds (it bypasses the DB), masking the failure until a write is attempted.
+
+**Observed impact:** workflow-researcher agents that survive long enough to need `memory_write` hit this at Step 3 or Step 5. Sub-Q nodes written before the crash survive; the summary and any remaining nodes are lost and must be handoff-persisted by the parent. Batch 3 workflow (wf_8fdc0fdf-1e3) is currently running — unknown how many of its 18 agents will hit this.
+
+**Root cause:** `better-sqlite3` was rebuilt/installed under one Node.js version; the runtime `node` binary changed (e.g. via nvm, Homebrew upgrade, or pnpm update) without re-running `node-gyp` / `npm rebuild`. The bound binary at `build/Release/better_sqlite3.node` was copied to the ABI-versioned path for the OLD version only.
+
+**Fix sketch:**
+1. `cd $(node -e "require.resolve('better-sqlite3')" | xargs dirname | xargs dirname)` then `npm rebuild better-sqlite3` under the current Node.js version.
+2. Or: `pnpm rebuild better-sqlite3` from the sox-ecosystem root.
+3. Verify: `node -e "require('better-sqlite3')"` should return without error.
+4. Then restart the memory-server MCP (`soxe stop memory-server && soxe start memory-server` or reconnect Claude).
+5. Long-term: add a startup check in memory-server that tests the binding before accepting MCP connections, returning a clear error instead of a mid-session crash.
+
+---
+
+### BL-100 — `memoryRecall` accepts `filters` in its signature but silently ignores them — filtering only works via the MCP server — **Open (HIGH) (2026-06-27)**
+
+**Observed:** `RecallParams.filters` is declared at `libs/memory-core/src/recall.ts:29` but never destructured or applied inside `memoryRecall`. The parameter is accepted with no error, no warning, and no effect. Filtering (tags, topic, project_path, importance_min, time range) only works when called through the MCP server (`memory-server/src/index.ts:954–1034`), which applies `buildFiltersClause` from `@adhd/sox-memory-enrich` via SQL pre-filtering before invoking `memoryRecall`. Any direct caller of `memoryRecall` — the REPL, tests, `federatedRecall`, any lib consumer — silently gets unfiltered results regardless of what they pass in `filters`.
+
+**Impact:** silent correctness failure. A caller passing `filters: { tags: ['kind:lesson'], importance_min: 5 }` to `memoryRecall` gets back all results as if no filter was specified, with no indication anything was ignored. `federatedRecall` (which calls `memoryRecall` internally) has the same gap.
+
+**Fix sketch:** move `buildFiltersClause` (currently in `@adhd/sox-memory-enrich`) or a minimal equivalent into `@adhd/sox-memory-core`, and apply the filter clause inside `memoryRecall` when `params.filters` is present — either as a SQL pre-filter on candidate rowids (matching what the server does) or as a post-recall JS filter on the ranked results. The server's pre-filter approach is preferred (excludes non-matching nodes before ranking, not after). Also add a `filterStats` field to `RecallResponse` so callers can tell a filtered recall from an empty-corpus recall.
+
+---
+
+### BL-95 — `memory-cli` `status` and `list` subcommands never find `memory.db` — scope-name mismatch — **Open (MEDIUM) (2026-06-27)**
+
+**Observed:** `memory-cli status` prints "No memory stores found." even with `~/.memory/memory.db` present and `memory_ping` returning `ok:true`. `registry` shows `~/.memory/registry.json` exists but its contents are `{}` (no scopes registered).
+
+**Root cause:** `cmdStatus` resolves stores from `registry.json` (which is empty) and the cwd's `.memory/` dir. `cmdList` looks for `<dir>/.memory/<scope>.db` files. The live store is named `memory.db` — not the scope-prefixed `user.db` / `project.db` that the CLI was designed around. The scope-naming convention was introduced after the store was created, and `memory init` was never run to register the live file.
+
+**Fix sketch:**
+1. `memory init --scope user` (or with `--path ~/.memory`) — this registers `~/.memory/user.db` in `registry.json` and creates the scoped DB. However this creates a *new* DB, not an alias to the existing `memory.db`.
+2. Longer-term: `cmdStatus` should also scan for a bare `memory.db` in known store dirs (`~/.memory/`, `.memory/`) and surface it with a `(unregistered)` flag rather than silently skipping it.
+3. Or: `memory init` could detect an existing `memory.db` and offer to register it under a scope alias rather than creating a new file.
+
+**Workaround:** use `memory-cli export --db ~/.memory/memory.db` (accepts explicit `--db`). For reads/writes use `soxe exec memory-server <tool> --args='{"db_path":"~/.memory/memory.db",...}'`.
+
+---
+
+### BL-96 — plan-state-machine: dod-confirmation audit runs from `cwd:planDir`, guard runs from repo-root → repo-relative checks fail; `parseDodIds` reads inline `[dod.N]` prose as phantom clause — **Open (HIGH) (2026-06-25)**
+
+**Observed (fullstack-developer, 2026-06-25; memory UID `01KVZHMEJHVVBYEGTSQ4AKFNQ6`):** executing a plan to DONE surfaced two terminal-transition defects:
+1. The dod-confirmation audit script runs from `cwd:planDir` (the plan directory) while the `guard` command runs from the repo root — any repo-root-relative path check inside the audit fails (4/128 checks failed in observed run).
+2. `parseDodIds` reads the literal token `[dod.N]` when it appears in prose (e.g., "see `[dod.6]` for details") as a real DoD clause ID, producing a phantom `dod_unconfirmed` that permanently blocks the terminal transition even when every real clause passes.
+
+**Impact:** a fully-passing, reality-verified plan cannot reach `done` without either (a) calling `os.chdir(repoRoot)` explicitly inside the audit script or (b) rewording every README prose reference to `[dod.N]` outside a real clause bullet.
+
+**Fix sketch:**
+- Audit subprocess should `cd` to the git repo root before running checks, or receive the repo root as an explicit `--repo-root` argument.
+- `parseDodIds` should only extract `[dod.N]` tokens that appear on a bullet-list line (start with `- ` or `* `), not from free prose.
+
+---
+
+### BL-97 — plan-state-machine: audits run against committed `end_ref` → working-tree-only approval artifacts silently fail the gate despite the working tree passing — **Open (HIGH) (2026-06-25)**
+
+**Observed (plan-orchestrator, 2026-06-25; memory UID `01KVZHM10QWB0XPE2112RE549B`):** under workflow 0.8.18, any artifact a guard checks (e.g. a human-checkpoint approval file, a generated snapshot) MUST be committed before `--complete` or the audit fails (exit 4) even though `git status` and the working tree show it present and correct.
+
+**Impact:** orchestrators that write checkpoint artifacts (approval files, baseline snapshots) without an intermediate commit step will see spurious exit-4 gate failures. The failure is silent — the working tree is clean, the audit output passes on local re-run, but `--complete` exits 4.
+
+**Fix sketch:**
+- Document the commit requirement explicitly in the work-order template and `--complete` help text: "all artifacts the guard checks must be staged and committed before `--complete`."
+- Or: run the audit against the working tree (not `end_ref`) for artifact-existence checks, reserving the ref check for diff/hash verification.
+- Or: `state-transition.js --complete` auto-stages and commits declared `artifacts[]` when they are unstaged, with a warning.
+
+---
+
+### BL-98 — reflection `SKILL.md` documents `memory_write` returning `E_DEDUP / existing_uid` on collision, but v1.1.0 actually returns `{episode_uid}` and links via async `SAME_AS` edge — **Open (LOW) (2026-06-23)**
+
+**Observed (memory UID `01KVSA4MFA99DNETTTZ9KX3MDB`):** the reflection skill's failure-mode catalog (SKILL.md lines 308-312) says `memory_write` returns `{code:"E_DEDUP", existing_uid}` on a content-hash collision. The running v1.1.0 `memory_write` schema and observed behavior return `{episode_uid}` on success and route near-duplicates through async `SAME_AS` enrichment edges, not a hard refusal. An agent written to handle `E_DEDUP` as a normal flow will mis-handle the actual `{episode_uid}` success shape.
+
+**Fix sketch:** update `skills/reflection/SKILL.md` failure-mode section to match the v1.1.0 return contract. Note that exact content-hash collisions may still short-circuit (needs verification against a real duplicate write), but the documented shape is wrong regardless.
+
+---
+
+### BL-99 — `compile-wave --stats` omits base dispatch overhead (B≈27k tokens) and source file bytes (Si) → merge-candidates optimization is invisible to the pack/no-pack decision — **Open (MEDIUM) (2026-06-27)**
+
+**Observed (plan-orchestrator; memory UID `01KW3F0GA02V058ZHDTDPJ4EEB`):** all three parallel waves in `memory-refactor` were correctly evaluated as no-pack (prose overlap ratios -0.081, -0.068, -0.088). However, the real dispatch cost is `Di = B + Si + Ki` where B ≈ 27k tokens (base model load + system prompt + transition scaffolding) and Si = source file bytes the executor reads. `compile-wave --stats` measures only Ki-overlap (shared prose invariants/refs/snapshots) — it never accounts for B or Si. This means `savings(i,j) = B + |Si∩Sj|` from merging two tasks into one dispatch is never computed, leaving ≈54k tokens of potential savings unquantified across 3 potential merges even at zero prose overlap.
+
+**Available plan fields that could power the measurement:**
+- `dag.json nodes[].artifacts` — `reserved_files` glob patterns → Si proxy at plan-compile time
+- `references.json` `source-extract` entries → explicit source file lists per extraction state (Si without disk reads)
+- `budget-estimate.js --reserved-bytes` input → already accepted but not fed into the merge decision
+- `state.json metrics.tokens_est` → historical cost floor before `emit-state-metrics` populates real actuals
+
+**Fix sketch:**
+1. Add `compile-wave --merge-candidates <slug1> <slug2> ...` mode: compute `savings(i,j) = B_estimate + |Si∩Sj|` for all pairs, where Si is sourced from `dag.json artifacts` or `references.json source-extract sources[]`; rank and surface merge opportunities.
+2. Expose `reduction_ratio_with_sources` as a separate `--stats` output field, computed as `(independent_cost_with_B_Si - merged_cost) / independent_cost_with_B_Si`.
+3. Calibrate B empirically from orchestration-ledger token actuals across ≥3 plan executions (currently ≈27k is a rough estimate).
+
+---
+
+## Open — dispatch-optimizer (surfaced during `docs/plan/dispatch-optimizer/` schema + compiler work, 2026-06-28)
+
+> All items below were found while designing the dag schema, implementing `src/compiler.ts`
+> (`snapshot()` + `optimize()`), and running the compiler against the adhd-build test dag.
+
+---
+
+### BL-101 — `normalizeOperations()` didn't default `type` to `"generative"` for pre-schema dags → all ops treated as tool-call → `compilePrompt()` returned `null` for every milestone — **FIXED (2026-06-28)**
+
+**Observed:** running the compiler against `docs/plan/adhd-build/dag.json` (authored before the
+`type` field was added to the operation schema) produced `prompt: null` for all dispatch units.
+The `compilePrompt` guard bails when `milestoneOps.some(op => op.type === "generative")` is
+false — with no `type` field, `op.type === undefined`, so every milestone appeared as tool-call-only.
+
+**Fix:** `normalizeOperations()` in `src/compiler.ts` now maps any op with `type === undefined`
+to `{ ...op, type: "generative" }` — applied immediately after the array/Record conversion,
+before any other compiler logic sees the ops.
+
+**Follow-up:** `run.ts` still contains a redundant manual patch that injects `type: "generative"`
+on each op. This patch is now dead code and should be removed to avoid confusion.
+
+---
+
+### BL-102 — Guard-only milestones (agent: null) produce a DispatchUnit with `provider: undefined`, `agent_name: ""`, `model: null` — the orchestrator has no typed code path to detect and run them locally — **Open (MEDIUM) (2026-06-28)**
+
+**Observed:** `scope-authored` in the adhd-build dag has `agent: null`. `optimize()` produces a
+DispatchUnit for it with `provider.type === undefined`, `agent_name === ""`,
+`model === null`, and `tokens_estimated === null`. An orchestrator reading this unit has no
+machine-readable signal to distinguish "run guard locally as a shell command" from
+"model call with missing provider config".
+
+**Fix sketch:**
+1. Add `execution_mode: "model" | "guard-local" | "tool-call"` to the `DispatchUnit` type.
+2. In `assembleDispatchUnit()`, set `execution_mode = "guard-local"` when
+   `milestone.agent === null` (D-12 guard-only class).
+3. The orchestrator branches on `execution_mode` before attempting provider resolution.
+4. Guard-only units should never enter the Sentinel-Fanout grouping (they're zero-cost, instant).
+
+---
+
+### BL-103 — `snapshot_version` always initialises to `1` — callers that persist snapshots have no way to get an incrementing version without reading the prior snapshot first — **Open (LOW) (2026-06-28)**
+
+**Observed (noted by the typescript-pro implementation agent):** `snapshot()` takes only a
+`DagJson` input and has no access to the prior snapshot. The schema spec says
+`snapshot_version` is "derived: incremented integer, persisted across regens" — but there
+is no mechanism to increment it.
+
+**Fix sketch:** Two options:
+- Pass an optional `priorVersion?: number` parameter to `snapshot()` and increment it.
+- Read the prior snapshot from disk inside `snapshotWithDag()` and forward the version.
+Option A is cleaner (keeps `snapshot()` pure). Add `snapshot(dag, { version?: number })` opts bag.
+
+---
+
+### BL-104 — `compilePrompt()` doesn't drill into complex nested type shapes → agents invent minimal/incorrect interpretations for fields whose type is itself a multi-field interface — **Open (MEDIUM) (2026-06-28)**
+
+**Observed:** dispatching the `dag-schema` milestone to a Haiku agent, two ops produced wrong
+output types:
+- `shape: OperationShape | null` — op spec said "add-field shape → OperationShape | null"
+  but didn't describe `OperationShape`'s internals. Agent generated a simple enum
+  `("read-only" | "write" | "transform")` instead of the rich polymorphic shape object
+  (`{ kind, ops[], description, objective, schema }`).
+- `dispatch_log → DispatchEntry[]` — agent generated `{ milestone, timestamp, dispatched_by,
+  model, effort, notes }` instead of the full `{ id, kind, milestone_slugs[], turns[], results[],
+  started_at, ... }`.
+
+**Root cause:** `compilePrompt()` renders `shape.ops[]` as a flat list of `action → type` pairs.
+When the target type of a field is itself a complex interface, that interface's shape is not
+included anywhere in the compiled prompt — the agent has no schema to work from.
+
+**Fix sketch:** For code/config kind ops, when an `add-field` op's `to` type is a known interface
+name (detected by capital-first or explicit annotation in the op), look up and inline that
+interface's own field specs as a nested block in the prompt. Alternatively, allow op authors
+to add a `type_spec: { field: type }[]` array on `add-field` ops for inline sub-typing.
+
+---
+
+### BL-105 — 7 stubs in `src/compiler.ts` with no external integrations wired — snapshot derived fields are incomplete — **Open (MEDIUM) (2026-06-28)**
+
+**Stubs (all return `null` or `[]` with TODO comments):**
+
+| Stub | Requires | Location |
+|---|---|---|
+| `blast_radius: []` | `gitnexus_impact` MCP call | `buildOperationSnapshot()` |
+| `from / breaking / severity: null` | TypeScript AST read (ts-morph) | `enrichShape()` |
+| `conflict: { detected: false }` | Same-wave op-key collision scan | `buildOperationSnapshot()` |
+| `attempt_count: 0` | Op-level dispatch_log scan | `buildOperationSnapshot()` |
+| `tokens_actual: null` (per-op) | ki_estimate-share prorating | `buildOperationSnapshot()` |
+| `mcp_servers: null` | Agent catalog lookup | `assembleDispatchUnit()` |
+| `raised_at_dispatch / raised_at_turn: null` | dispatch_log notes scan | `buildOpenQuestions()` |
+
+**Priority:** `mcp_servers` is HIGH — without it the orchestrator cannot create the agent-mcp
+agent definition and the dispatch fails. `blast_radius` is MEDIUM (gitnexus integration is
+the next planned milestone in adhd-build). Others are LOW (correctness impact is observability
+only, not dispatch correctness).
+
+---
+
+### BL-106 — `b_per_tier` cold-start values not seeded in the schema → `b_eff_per_tier` is null → `tokens_estimated` is null for all milestones on a fresh plan — **Open (LOW) (2026-06-28)**
+
+**Observed:** the adhd-build dag has no `optimization` block. After injecting the defaults in
+`run.ts`, `b_per_tier` was seeded with `{ Haiku: 8000, Sonnet: 15000, Opus: 27000 }` and
+`tokens_estimated` computed correctly. Without those seeds, every milestone shows
+`tokens_estimated: null` and the optimizer cannot rank units by size.
+
+**Fix sketch (per SCOPE.md Open Decision 2):** bake the recommended cold-start defaults into
+the schema as the `b_per_tier` initial value when the field is absent or null, applied in
+`normalizeOperations`-equivalent logic for the `optimization` block in `readDag()` or
+`validateDagJson()`. Document these as "uncalibrated baseline; real calibration overwrites via
+the calibration utility."
+
+---
+
+### BL-107 — `run.ts` backward-compat patches for missing `providers`, `optimization`, and `effort_max_tokens` blocks live in the runner, not in `readDag()` — consuming code outside `run.ts` gets no defaults — **Open (LOW) (2026-06-28)**
+
+**Observed:** `run.ts` manually injects three top-level dag blocks before calling
+`snapshotWithDag()`. These patches are necessary for any dag authored before the schema
+added `providers`, `optimization.sentinel_fanout`, `optimization.b_per_tier`,
+`optimization.context_window_per_tier`, and `effort_max_tokens`. Any other consumer of
+`readDag()` (future orchestrator, CLI tool) that doesn't know to apply the same patches
+will crash in `snapshotWithDag()`.
+
+**Fix sketch:** Move the defaults into `readDag()` as a post-parse normalization pass —
+applied after `validateDagJson()` succeeds (or as part of it). This makes the contract:
+"any syntactically valid dag.json, old or new, produces a usable DagJson from readDag()."
+
+---
+
 ### BL-86 — `hashEmbed()` produces near-collinear (degenerate) vectors → ~0.97–0.998 cosine between UNRELATED texts → near-dup flags everything — **Open (HIGH) bug** (2026-06-26)
 
 **Observed (numerically proven):** with `SOX_EMBED_BACKEND=hash`, cosine of three unrelated strings
@@ -2026,3 +2253,37 @@ subcommand added to `memory-cli`; user-scope `~/.config/extensions/extensions.js
 - **memory-server MCP fell back to hash at runtime** → workspace-glob widening links the
   bundle members so `@adhd/sox-memory-core` resolves; verified real semantic recall over the
   MCP stdio path. (`bec9914`, C7 dedupe `8c96865`)
+
+---
+
+## Memory-refactor baseline (Wave 0, 2026-06-28)
+
+### BL-xx1 — 6 skeleton data packages have no test files
+
+**Observed:** `npx nx run-many -t build,lint,test` fails for `embedding-provider`, `vector-store`,
+`graph-store`, `hybrid-search`, `analysis`, `ingest` — vitest exits 1 with "No test files found."
+The scaffold script creates valid TypeScript stubs but no `*.spec.ts` files.
+
+**Severity:** expected — these are interface stubs created by the scaffold during `p1-layout`.
+Tests land during the extraction waves (`w2a`–`w2d`). Not a bug.
+
+**Fix sketch:** implement tests in each extraction wave. Before `audit-extraction`, all 6 packages
+must have the full test suite per the COMPILED.md spec.
+
+### BL-xx2 — E2E test baseline: 82 passed, 13 failed
+
+**Observed:** `npx nx run host-runtime:test-e2e` produces 82 pass / 13 fail. The plan notes
+BL-63 false-positive (live local memory-server proxy shows as a leaked orphan) — at least
+one failure is the known BL-63 artifact.
+
+**Severity:** low — reconcile against the known BL-63 baseline. Do not chase the remaining
+failures unless they are new vs. the BL-63 reconciliation baseline.
+
+### BL-xx3 — `registry:check-sync` target does not exist
+
+**Observed:** The plan references `npx nx run registry:check-sync`, but the registry project
+has a `sync-index` target (not `check-sync`). The `sync-index` target was run successfully
+as a substitute.
+
+**Severity:** low — plan doc mismatch vs. actual nx target name. `sync-index` appears to be
+the equivalent operation (regenerates `registry/index.json`).

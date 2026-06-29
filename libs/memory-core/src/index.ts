@@ -93,6 +93,41 @@ export type {
 // ── Daemon interop ────────────────────────────────────────────────────────────
 export { enqueueIngest, enqueueReindex, enqueueEnrich, nudgeDaemon, MemoryDaemon, SOCKET_PATH } from './memoryd.js';
 
+// ── Enrichment (write-time + batch) ───────────────────────────────────────────
+export { enrichOnWrite } from './enrich.js';
+export type { EnrichOnWriteParams, EnrichOnWriteResult } from './enrich.js';
+export type { NearDupResult } from './neardup.js';
+export { runBatchEnrich } from './enrich-batch.js';
+export type { BatchEnrichOptions, BatchEnrichResult } from './enrich-batch.js';
+export type { ImportanceWeights } from './importance.js';
+export { ENRICH_VERSION } from './enrich-version.js';
+
+// ── Internal enrichment helpers (exported for tests) ──────────────────────────
+export { detectNearDup } from './neardup.js';
+export { computeImportance } from './importance.js';
+export { extractiveSummary } from './extractive.js';
+export { resolveProjectPath } from './provenance.js';
+
+// ── Filters ───────────────────────────────────────────────────────────────────
+export { buildFiltersClause } from './memory-filters.js';
+export type { MemoryFilter } from './memory-filters.js';
+
+// ── Clustering ────────────────────────────────────────────────────────────────
+export {
+  clusterStats, clusterStore, clusterSubset, dropSubsetLens,
+  listSubsetLenses, materializeClusters
+} from './cluster.js';
+export type {
+  ClusterResult, ClusterStats, ClusterStoreOptions,
+  ClusterStoreResult, ClusterSubsetOptions,
+  ClusterSubsetResult, DropSubsetLensResult, MaterializeOptions,
+  SubsetLensDescriptor
+} from './cluster.js';
+
+// ── Auto-links ────────────────────────────────────────────────────────────────
+export { buildAutoLinks } from './autolink.js';
+export type { AutoLinkResult } from './autolink.js';
+
 // ── Extended functions (promotion, graphify, communities, entity search) ───────
 export {
   validatePromotionConfig,

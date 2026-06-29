@@ -1,0 +1,51 @@
+{
+  "$schema": "dispatch-protocol-v1",
+  "plan": {
+    "title": "PLAN_TITLE",
+    "source": "docs/plan/PATH/SCOPE.md",
+    "impl_spec": "docs/plan/PATH/IMPL.md",
+    "created_at": "ISO_TIMESTAMP"
+  },
+  "segments": [
+    {
+      "id": "S1",
+      "label": "Engine: Surface.mcpConfig + install.ts wiring",
+      "agent": "implement",
+      "spec_section": "Segment 1 in IMPL.md",
+      "files": [
+        "libs/host-registry/src/internal.ts",
+        "libs/host-registry/src/index.ts",
+        "libs/install-engine/src/install.ts"
+      ],
+      "depends_on": [],
+      "status": "pending",
+      "report": null
+    },
+    {
+      "id": "S2",
+      "label": "OpenCode host module + register",
+      "agent": "flash",
+      "spec_section": "Segment 2 in IMPL.md",
+      "files": [
+        "libs/host-registry/src/opencode.ts",
+        "libs/host-registry/src/index.ts"
+      ],
+      "depends_on": ["S1"],
+      "status": "pending",
+      "report": null
+    },
+    {
+      "id": "S3",
+      "label": "Manifest schema: add opencode to hosts enum",
+      "agent": "flash",
+      "spec_section": "Segment 3 in IMPL.md",
+      "files": [
+        "libs/manifest/src/index.ts"
+      ],
+      "depends_on": [],
+      "status": "pending",
+      "report": null
+    }
+  ],
+  "status": "draft"
+}

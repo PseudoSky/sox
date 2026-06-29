@@ -1,0 +1,49 @@
+{
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "name": "embedding-provider",
+  "projectType": "library",
+  "root": "libs/data/embed/embedding-provider",
+  "sourceRoot": "libs/data/embed/embedding-provider/src",
+  "tags": [
+    "type:lib",
+    "area:data",
+    "group:embed"
+  ],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/libs/data/embed/embedding-provider/dist"
+      ],
+      "options": {
+        "command": "tsc --project libs/data/embed/embedding-provider/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/embed/embedding-provider/dist/package.json",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.lib.json"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config libs/data/embed/embedding-provider/vitest.config.ts",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": [
+          "libs/data/embed/embedding-provider/**/*.ts"
+        ]
+      }
+    }
+  }
+}

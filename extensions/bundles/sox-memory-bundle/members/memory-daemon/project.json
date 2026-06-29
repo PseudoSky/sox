@@ -1,7 +1,7 @@
 {
   "$schema": "../../../../../../node_modules/nx/schemas/project-schema.json",
   "name": "memory-daemon",
-  "description": "Builds cleanly and resolves @adhd/sox-memory-core and @adhd/sox-memory-enrich from workspace (P6: LLM organizer removed, deterministic batch enrichment via runBatchEnrich).",
+  "description": "Builds cleanly and resolves @adhd/sox-memory-core from workspace (P6: LLM organizer removed, deterministic batch enrichment via runBatchEnrich).",
   "projectType": "library",
   "root": "extensions/bundles/sox-memory-bundle/members/memory-daemon",
   "sourceRoot": "extensions/bundles/sox-memory-bundle/members/memory-daemon/src",

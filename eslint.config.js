@@ -25,6 +25,10 @@ export default [
           enforceBuildableLibDependency: true,
           allow: [],
           depConstraints: [
+            // area isolation: data↛platform, data↛shared only, platform↛platform|shared, shared↛shared
+            { sourceTag: 'area:data',     onlyDependOnLibsWithTags: ['area:data', 'area:shared'] },
+            { sourceTag: 'area:platform', onlyDependOnLibsWithTags: ['area:platform', 'area:shared'] },
+            { sourceTag: 'area:shared',   onlyDependOnLibsWithTags: ['area:shared'] },
             // libs may depend on other libs
             { sourceTag: 'type:lib', onlyDependOnLibsWithTags: ['type:lib'] },
             // apps may depend on libs
@@ -49,6 +53,9 @@ export default [
           enforceBuildableLibDependency: true,
           allow: [],
           depConstraints: [
+            { sourceTag: 'area:data',     onlyDependOnLibsWithTags: ['area:data', 'area:shared'] },
+            { sourceTag: 'area:platform', onlyDependOnLibsWithTags: ['area:platform', 'area:shared'] },
+            { sourceTag: 'area:shared',   onlyDependOnLibsWithTags: ['area:shared'] },
             { sourceTag: 'type:lib', onlyDependOnLibsWithTags: ['type:lib'] },
             { sourceTag: 'type:app', onlyDependOnLibsWithTags: ['type:lib', 'type:app'] },
             { sourceTag: 'type:extension', onlyDependOnLibsWithTags: ['type:lib'] },

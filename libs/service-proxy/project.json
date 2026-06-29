@@ -4,11 +4,17 @@
   "projectType": "library",
   "root": "libs/service-proxy",
   "sourceRoot": "libs/service-proxy/src",
-  "tags": ["type:lib"],
+  "tags": [
+    "type:lib",
+    "area:platform",
+    "group:runtime"
+  ],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/libs/service-proxy/dist"],
+      "outputs": [
+        "{workspaceRoot}/libs/service-proxy/dist"
+      ],
       "options": {
         "command": "tsc --project libs/service-proxy/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/service-proxy/dist/package.json",
         "cwd": "."
@@ -26,12 +32,17 @@
         "cwd": "."
       },
       "cache": true,
-      "inputs": ["default", "^production"]
+      "inputs": [
+        "default",
+        "^production"
+      ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["libs/service-proxy/**/*.ts"]
+        "lintFilePatterns": [
+          "libs/service-proxy/**/*.ts"
+        ]
       }
     }
   }

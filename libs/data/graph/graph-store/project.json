@@ -1,0 +1,49 @@
+{
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "name": "graph-store",
+  "projectType": "library",
+  "root": "libs/data/graph/graph-store",
+  "sourceRoot": "libs/data/graph/graph-store/src",
+  "tags": [
+    "type:lib",
+    "area:data",
+    "group:graph"
+  ],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/libs/data/graph/graph-store/dist"
+      ],
+      "options": {
+        "command": "tsc --project libs/data/graph/graph-store/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/graph/graph-store/dist/package.json",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.lib.json"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config libs/data/graph/graph-store/vitest.config.ts",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": [
+          "libs/data/graph/graph-store/**/*.ts"
+        ]
+      }
+    }
+  }
+}

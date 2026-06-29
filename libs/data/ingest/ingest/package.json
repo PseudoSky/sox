@@ -1,0 +1,41 @@
+{
+  "name": "@adhd/sox-ingest",
+  "version": "0.1.0",
+  "description": "Write-path single-item transforms for the memory domain — content-hash (SHA-256), extractive summary (sentence-scoring, zero LLM), deterministic tag extraction, and chunking/normalization. Pure stateless functions; no storage deps. Private: only the memory domain composer calls these before graph-store writes.",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sox": {
+    "area": "data",
+    "group": "ingest",
+    "concerns": [
+      "content-hash (SHA-256 of normalized content — used for graph-store dedup)",
+      "extractive summary (sentence-scoring, summaryMaxSentences, zero LLM)",
+      "deterministic tag extraction (noun phrases, high-frequency terms, tagMaxCount)",
+      "chunking (maxChars / overlapChars sliding window)",
+      "per-chunk contentHash for dedup at the chunk level"
+    ],
+    "invariants": [
+      "zero-LLM, zero-I/O, synchronous — ingest() is a pure function, always safe to call in the write path without latency budget concerns",
+      "deterministic + byte-reproducible — same input always produces the same hash, summary, and tags (no random or time-based components)",
+      "PRIVATE — never published to npm; only the memory domain composer may call this package"
+    ],
+    "entrypoints": [
+      "dist/index.js"
+    ]
+  }
+}

@@ -6,7 +6,7 @@
  *
  * Invariants:
  *   R1: zero provider/LLM calls on the read path
- *   R3: zero LLM calls — all enrichment is deterministic via @adhd/sox-memory-enrich
+ *   R3: zero LLM calls — all enrichment is deterministic via memory-core enrich-batch
  *   R5: bi-temporal — invalidation closes t_invalid, never deletes
  */
 
@@ -729,7 +729,7 @@ export interface BuildCommunitiesResult {
 /**
  * Deterministic label-propagation community detection (design.md §2.3, P4).
  * Community labels are derived deterministically from centroid member names.
- * Batch clustering runs in memory-daemon via @adhd/sox-memory-enrich runBatchEnrich.
+ * Batch clustering runs in memory-daemon via memory-core runBatchEnrich.
  */
 export function buildCommunities(
   db: Database.Database,

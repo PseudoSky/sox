@@ -1,0 +1,37 @@
+=== DAG loaded ===
+Milestones: 13
+Operations: 15
+Dispatch log entries: 1
+
+=== snapshot() ===
+  [wave 0] dag-schema: status=pending eligible=true ki=3200 tokens_est=6425
+  [wave 0] scope-authored: status=pending eligible=true ki=2000 tokens_est=null
+  [wave 1] research-cli-ux: status=pending eligible=false ki=800 tokens_est=4025
+  [wave 1] research-dag-orchestration: status=pending eligible=false ki=800 tokens_est=4025
+  [wave 1] research-llm-structured-output: status=pending eligible=false ki=1000 tokens_est=4225
+  [wave 1] research-parallel-llm-dispatch: status=pending eligible=false ki=600 tokens_est=2320
+  [wave 2] dispatcher-core: status=pending eligible=false ki=0 tokens_est=3225
+  [wave 2] llm-adapter: status=pending eligible=false ki=0 tokens_est=3225
+  [wave 3] cli-shell: status=pending eligible=false ki=0 tokens_est=3225
+  [wave 3] ground-plan-agent: status=pending eligible=false ki=0 tokens_est=3225
+  [wave 4] amend-interface: status=pending eligible=false ki=0 tokens_est=3225
+  [wave 4] scaffolding: status=pending eligible=false ki=900 tokens_est=2620
+  [wave 5] system-end-to-end: status=pending eligible=false ki=0 tokens_est=3225
+
+open_questions: 5
+  q:dispatcher-core: "dag-orchestration research decision: build vs adopt, and if adopt, which tool and what interface does it expose" blocking=dispatcher-core surfaced=false
+  q:llm-adapter: "structured-output research decision: tool use vs JSON mode, and exact schema for question/answer arrays" blocking=llm-adapter surfaced=false
+  q:cli-shell: "cli-ux research decision: which library, and whether Q&A loop and progress display are configuration or construction" blocking=cli-shell surfaced=false
+  q:ground-plan-agent: "structured-output decision needed to define question/answer schema and milestone stub format" blocking=ground-plan-agent surfaced=false
+  q:amend-interface: "are playbooks named built-in patterns the system ships with, or files the user authors? — asked of user during planning session, not yet answered" blocking=amend-interface surfaced=false
+
+=== optimize() ===
+Dispatch units: 2
+  [prewarm] dag-schema.dispatch.0: milestones=[dag-schema] model=Sonnet effort=medium tokens_est=6425 fits=true status=pending
+    agent_name=plan-orchestrator resolved_max_tokens=4096 background=true
+    provider.type=claudecli provider.model_id=claude-sonnet-4-5
+    prompt (first 200 chars): ## Milestone: dag-schema\ndag.json TypeScript types, read/write helpers, and a validator that enforces: all pending milestones have resolver upstreams, no dependency cycles, all operations on pending:n
+  [payload] scope-authored.dispatch.1: milestones=[scope-authored] model=null effort=null tokens_est=null fits=true status=pending
+    agent_name= resolved_max_tokens=null background=true
+    provider.type=undefined provider.model_id=undefined
+    prompt (first 200 chars): ## Milestone: scope-authored\nGOAL.md and DEMO.md exist at docs/plan/adhd-build/ and together cover: the 10 problem statements, the target demo sequence, the definition of done, and all non-goals\n\n*Rat

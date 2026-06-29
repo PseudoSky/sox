@@ -602,7 +602,7 @@ describe('P11 v2-e2e — BACK-COMPAT: all v1 extensions validate + the bundle va
     expect(Array.isArray(manifest.members)).toBe(true);
     // sox-memory-bundle members: memory-daemon, memory-server,
     // memory-flush, memory-cli, memory-usage (P6: memory-organizer removed;
-    // deterministic enrichment pipeline via @adhd/sox-memory-enrich replaces LLM organizer).
+    // deterministic enrichment pipeline via memory-core replaces LLM organizer).
     expect(manifest.members).toHaveLength(5);
   });
 });

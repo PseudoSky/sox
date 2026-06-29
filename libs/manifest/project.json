@@ -5,7 +5,9 @@
   "root": "libs/manifest",
   "sourceRoot": "libs/manifest/src",
   "tags": [
-    "type:lib"
+    "type:lib",
+    "area:platform",
+    "group:contract"
   ],
   "targets": {
     "build": {

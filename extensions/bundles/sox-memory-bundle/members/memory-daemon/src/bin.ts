@@ -14,7 +14,7 @@
  *
  * Invariants:
  *   R6: NO ~/.memory/memoryd.lock advisory lock file is ever created.
- *   Enrichment: fully deterministic via @adhd/sox-memory-enrich — no LLM, no provider.
+ *   Enrichment: fully deterministic via memory-core — no LLM, no provider.
  */
 
 import { MemoryDaemon } from './memoryd.js';
