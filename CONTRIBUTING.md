@@ -50,6 +50,28 @@ If unexpected symbols appear in the change set, investigate. They may be side ef
 After live verification is complete, uninstall any test installs and remove all test artifacts
 from host directories. Test artifacts left behind break the next session and confuse agent discovery.
 
+#### ⛔ CRITICAL — never corrupt the live host config file
+
+Host config files (`.mcp.json`, `opencode.json`, `.claude.json`) are read by the agent host
+at session start. **Mid-session writes to these files will disconnect active MCP connections.**
+Once disconnected, MCP tools are gone for the remainder of the session — only a full session
+restart can reconnect them.
+
+**Rules for config-merge testing:**
+
+1. **Always `--dry-run` first.** Verify the output before writing.
+2. **Back up the config file before any real install that touches it:**
+   ```
+   cp opencode.json opencode.json.bak
+   ```
+3. **After verification, restore the original:**
+   ```
+   cp opencode.json.bak opencode.json
+   ```
+4. **Never leave a modified config file behind.** The backup is your exit plan.
+5. **If you lose MCP tools mid-session:** they will not return until next session start.
+   The host does not hot-reload MCP connections.
+
 **Cleanup commands by host:**
 
 ```
@@ -61,8 +83,12 @@ rm -rf .opencode/agents/<test-id>/ .opencode/skills/<test-id>/ .opencode/tools/<
 node bin/soxe uninstall <test-id> --host=claude --scope=project 2>/dev/null
 rm -rf .claude/agents/<test-id>/ .claude/skills/<test-id>/
 
-# Remove orphaned MCP config entries if soxe uninstall can't reach them
-# (then validate opencode.json or .mcp.json is still valid JSON)
+# Restore host config files from backup if they were modified
+cp opencode.json.bak opencode.json 2>/dev/null
+cp .mcp.json.bak .mcp.json 2>/dev/null
+
+# Remove backup files
+rm -f opencode.json.bak .mcp.json.bak
 ```
 
 **Check before reporting done:**
@@ -71,11 +97,14 @@ rm -rf .claude/agents/<test-id>/ .claude/skills/<test-id>/
 ls .opencode/agents/    # should contain ONLY .md agent definitions (pro, implement, flash)
 ls .opencode/skills/    # should be empty or contain only committed skills
 ls .opencode/tools/     # should be empty or contain only committed tools
+cat opencode.json       # MCP section must match pre-test state; no orphaned test entries
+cat .mcp.json           # same for claude host
 ```
 
-Test artifacts left in these directories will be loaded by opencode on next session start
-and may cause errors or unexpected behavior. Forcing cleanup is mandatory — never leave
-test artifacts behind.
+Test artifacts left in these directories will be loaded by the host on next session start
+and may cause errors or unexpected behavior. **Mid-session config file corruption kills active
+MCP connections permanently for that session.** Forcing cleanup is mandatory — never leave
+test artifacts or modified config files behind.
 
 ### 1.6 Commit hygiene
 
@@ -816,4 +845,15 @@ npx nx run registry:sync-index
 node bin/soxe upgrade --all
 
 # Then follow the per-type playbook in §2
+
+# ⛔ BEFORE any config-merge test install:
+cp opencode.json opencode.json.bak    # back up host config
+cp .mcp.json .mcp.json.bak            # back up claude config
+
+# ⛔ AFTER verification:
+cp opencode.json.bak opencode.json    # restore original
+cp .mcp.json.bak .mcp.json            # restore original
+node bin/soxe uninstall <test-id> --host=<h> --scope=<s>
+rm -rf .opencode/agents/<test-id>/ .opencode/skills/<test-id>/
+rm -f opencode.json.bak .mcp.json.bak  # remove backups
 ```
