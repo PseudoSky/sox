@@ -45,7 +45,39 @@ gitnexus_detect_changes()   # verify only expected symbols changed
 
 If unexpected symbols appear in the change set, investigate. They may be side effects.
 
-### 1.5 Commit hygiene
+### 1.5 Cleanup — force removal of test artifacts
+
+After live verification is complete, uninstall any test installs and remove all test artifacts
+from host directories. Test artifacts left behind break the next session and confuse agent discovery.
+
+**Cleanup commands by host:**
+
+```
+# opencode host — remove test-installed agents, skills, and tools
+node bin/soxe uninstall <test-id> --host=opencode --scope=project 2>/dev/null
+rm -rf .opencode/agents/<test-id>/ .opencode/skills/<test-id>/ .opencode/tools/<test-id>/
+
+# claude host
+node bin/soxe uninstall <test-id> --host=claude --scope=project 2>/dev/null
+rm -rf .claude/agents/<test-id>/ .claude/skills/<test-id>/
+
+# Remove orphaned MCP config entries if soxe uninstall can't reach them
+# (then validate opencode.json or .mcp.json is still valid JSON)
+```
+
+**Check before reporting done:**
+
+```
+ls .opencode/agents/    # should contain ONLY .md agent definitions (pro, implement, flash)
+ls .opencode/skills/    # should be empty or contain only committed skills
+ls .opencode/tools/     # should be empty or contain only committed tools
+```
+
+Test artifacts left in these directories will be loaded by opencode on next session start
+and may cause errors or unexpected behavior. Forcing cleanup is mandatory — never leave
+test artifacts behind.
+
+### 1.6 Commit hygiene
 
 ```
 git diff --stat                # review every changed file
@@ -70,7 +102,7 @@ Verification:
 
 **Never commit:** `.nx/`, `.DS_Store`, `dist/`, `*.js`/`*.d.ts` in `src/`, secrets, tokens, API keys.
 
-### 1.6 Registry sync (if registry packages changed)
+### 1.7 Registry sync (if registry packages changed)
 
 If you changed a package registered in `registry/index.json` (libs/platform/*, apps/*, extensions/*), run:
 
@@ -80,7 +112,7 @@ npx nx run registry:sync-index
 
 Commit the regenerated `registry/index.json` alongside source changes.
 
-### 1.7 Backlog
+### 1.8 Backlog
 
 Write any discovered bugs, deferrals, or limitations to `BACKLOG.md` at discovery time.
 Format: `- [ ] <area>: <description> (discovered <date> during <change>)`
