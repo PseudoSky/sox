@@ -19,7 +19,8 @@
         "task": "allow",
         "todowrite": "deny",
         "question": "deny",
-        "skill": "deny"
+        "skill": "allow",
+        "memory_*": "allow"
       }
     },
     "implement": {
@@ -35,12 +36,13 @@
         "glob": "allow",
         "grep": "allow",
         "bash": "allow",
-        "webfetch": "deny",
+        "webfetch": "allow",
         "websearch": "deny",
         "task": "deny",
         "todowrite": "deny",
         "question": "deny",
-        "skill": "deny"
+        "skill": "allow",
+        "memory_*": "allow"
       }
     },
     "flash": {
@@ -61,14 +63,19 @@
         "task": "deny",
         "todowrite": "deny",
         "question": "deny",
-        "skill": "deny"
+        "skill": "allow",
+        "memory_*": "allow"
       }
     }
   },
   "mcp": {
     "memory-server": {
       "type": "local",
-      "command": ["soxe", "serve", "memory-server", "--log", "--no-proxy"]
+      "command": [
+        "/Users/nix/dev/ai/sox-ecosystem/bin/soxe",
+        "serve",
+        "memory-server"
+      ]
     }
   }
 }
