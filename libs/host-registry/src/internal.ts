@@ -63,9 +63,28 @@ export type CapabilityId =
  * NOTE: paths are relative to the workspace root for 'project'/'local' scopes
  * and absolute (home-expanded) for 'user' scope.
  */
+/** Per-host MCP config builder. When a host module sets this on its mcp-server
+ *  surface, declarativeInstall() uses it instead of the hardcoded Claude-format
+ *  auto-derivation (mcpServers.{id}, { type:'stdio', command, args }). */
+export interface McpConfig {
+  /** Returns the config key path for the MCP server entry.
+   *  e.g. 'mcpServers.{id}' for Claude, 'mcp.{id}' for OpenCode. */
+  keyPath(extId: string): string;
+
+  /** Returns the config value for the given profile + CLI bin.
+   *  - 'sse'/'http' profiles receive a remote URL.
+   *  - 'stdio' profile receives a command array or command+args object. */
+  value(profile: string, cliBin: string, extId: string): unknown;
+}
+
 export interface Surface {
   capability: CapabilityId;
   format?: 'json' | 'toml';
+  /** Optional per-host MCP config builder. */
+  mcpConfig?: McpConfig;
+  /** Optional post-install hint. Returned verbatim by declarativeInstall()
+   *  to the caller so the CLI can display host-specific guidance. */
+  postInstallHint?: string;
   paths: Partial<Record<HostScope, string>>;
 }
 

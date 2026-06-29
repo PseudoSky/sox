@@ -92,6 +92,22 @@ Templates: `.opencode/artifacts/DISPATCH_TEMPLATE.json`, `.opencode/artifacts/RE
 
 Agent prompts: `.opencode/agents/{pro,implement,flash}.md` and `.opencode/prompts/*-system.md`.
 
+## ⛔ AGENT CONSTRAINT — LIVE SHIP VERIFICATION (MANDATORY)
+
+**Every agent MUST read and follow [`CONTRIBUTING.md`](./CONTRIBUTING.md) before reporting any change as complete.**
+
+This is a non-negotiable gate. The document defines:
+- **§1 Universal Pre-Ship Checklist** — lint, build, test, impact analysis, commit hygiene, registry sync, backlog
+- **§2 Type-Based Live Verification** — per-extension-type playbooks (mcp-server, service, agent, skill, command, hook, bundle, data lib, platform lib, CLI, host-runtime)
+- **§3 Scope-Based Verification** — project/user/local/org, sandbox isolation
+- **§4 Host-Based Verification** — claude/opencode/codex config formats and paths
+
+Agents that skip live verification will produce code that may pass tests but fail at runtime.
+The playbook ensures every change is confirmed working against the live system using in-session
+tools — never scripts, never simulated results.
+
+---
+
 ## Definition of Done
 
 The bar for "the initial system is finished" is **[DOD.md](./DOD.md)**. Status: `[x]` done · `[~]` partial · `[ ]` not done.

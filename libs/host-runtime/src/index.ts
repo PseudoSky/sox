@@ -155,6 +155,7 @@ export {
   getOsUnitPlatform,
   enableOsUnit,
   disableOsUnit,
+  restartOsUnit,
   unloadThenReap,
 } from './os-unit.js';
 export type {
@@ -169,6 +170,8 @@ export type {
   EnableOptions,
   DisableOptions,
   DisableResult,
+  RestartOptions,
+  RestartResult,
   UnloadThenReapResult,
 } from './os-unit.js';
 

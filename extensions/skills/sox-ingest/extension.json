@@ -17,7 +17,7 @@
   },
   "install": {
     "type": "skill",
-    "hosts": ["claude"]
+    "hosts": ["claude", "opencode"]
   },
   "tags": ["ingestion", "authoring", "skill"]
 }

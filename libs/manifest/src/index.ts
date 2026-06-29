@@ -113,7 +113,7 @@ export interface ManifestInstall {
   /** Host-agnostic extension type. [inv:host-agnostic-type] */
   type?: 'agent' | 'skill' | 'mcp-server' | 'prompt' | 'hook' | 'command' | 'bundle' | 'service';
   /** Chosen host targets. Engine resolves target paths from libs/host-registry. */
-  hosts?: Array<'claude' | 'codex'>;
+  hosts?: Array<'claude' | 'codex' | 'opencode'>;
   /**
    * [def:profile] Install-layer presets over (capability + transport + host-target + config).
    * Keys are profile names (e.g. 'standalone', 'shared'). profiles ⊆ {serves∪transports}
@@ -688,7 +688,7 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
         if (!Array.isArray(hosts)) {
           errors.push(`install.hosts must be an array`);
         } else {
-          const knownHosts = new Set(['claude', 'codex']);
+          const knownHosts = new Set(['claude', 'codex', 'opencode']);
           for (const h of hosts as unknown[]) {
             if (typeof h !== 'string' || !knownHosts.has(h)) {
               errors.push(
@@ -994,7 +994,7 @@ export const ManifestSchema: Record<string, unknown> = {
           type: 'string',
           enum: ['agent', 'skill', 'mcp-server', 'prompt', 'hook', 'command', 'bundle', 'service'],
         },
-        hosts: { type: 'array', items: { type: 'string', enum: ['claude', 'codex'] } },
+        hosts: { type: 'array', items: { type: 'string', enum: ['claude', 'codex', 'opencode'] } },
         profiles: { type: 'object', additionalProperties: true },
         serves: { type: 'array', items: { type: 'string', enum: ['stdio', 'sse', 'http'] } },
         transports: { type: 'array', items: { type: 'string', enum: ['stdio', 'http', 'sse', 'socket'] } },

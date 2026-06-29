@@ -51,6 +51,7 @@ import {
   resolveUnitNodePath,
   enableOsUnit,
   disableOsUnit,
+  restartOsUnit,
   unloadThenReap,
   realOsExec,
   type OsUnitPlatform,
@@ -303,6 +304,7 @@ Registry / Search:
 Extension management:
   install <id|bundle>   Install extension by id (or expand a bundle) at scope
                      Flags: --scope=<scope>  --host=<host>  --frozen-lockfile  --update
+                            --no-restart
   update             Update installed extensions
                      Flags: --scope=<scope>
   upgrade <ext-id>   Re-install stale consumers across all scopes/projects (P9):
@@ -325,7 +327,7 @@ Config:
   config list  <ext>               Show all keys with cascade origin per key
   config unset <ext> <key>         Remove a key from a scope config
   config check <ext>               Validate config against extension's config_schema
-                     Flags: --scope=<scope>
+                     Flags: --scope=<scope>  --no-restart  --dry-run
 
 Runtime:
   start              Start the ${CLI} host runtime
@@ -924,6 +926,7 @@ Options:
   --update               Update pinned hashes
   --host <host>          Declarative install to a specific host
   --root <dir>           Workspace root override
+  --no-restart           Skip daemon restart after install
   --help                 Show this message
 `);
     process.exit(0);
@@ -1082,6 +1085,38 @@ Options:
 
     // #16728: propagate a user/global MCP server into known projects' .mcp.json.
     await maybePropagateUserMcp(extType, scope, host, id);
+
+    // ── Restart daemons if artifact changed (Improvement E) ──
+    const noRestartInstall = flags['no-restart'] !== undefined;
+    if (!noRestartInstall) {
+      const anyChanged = results.some((r) => r.applied && !r.denied);
+      if (anyChanged) {
+        const ctx = resolveOsUnitContext(id, scope, workspaceRoot, flags);
+        if (ctx) {
+          // Resolve the last-known-good unit path from the ownership index.
+          let lkgPath: string | undefined;
+          try {
+            const pathM3 = require('node:path') as typeof import('node:path');
+            const fsM3 = require('node:fs') as typeof import('node:fs');
+            const own = OwnershipIndex.loadFromFile(pathM3.join(dataRoot(scope as DataScope, workspaceRoot), 'ownership.json'));
+            const rec = own.get(id, scope);
+            const osUnitEntry = rec?.entries.find((e: OwnedEntry) => e.kind === 'os-unit');
+            if (osUnitEntry?.kind === 'os-unit') {
+              lkgPath = fsM3.existsSync(osUnitEntry.unitPath) ? osUnitEntry.unitPath : undefined;
+            }
+          } catch { /* best-effort */ }
+
+          const result = await restartOsUnit(ctx.spec, ctx.platform, lkgPath, {
+            reason: `upgrade (scope=${scope})`,
+          });
+          process.stdout.write(`post-install: ${id} ${result.action} ${result.reason ?? ''}\n`);
+        } else {
+          process.stdout.write(`post-install: ${id} not running as os-unit (scope=${scope}) — no restart needed\n`);
+        }
+      } else {
+        process.stdout.write(`post-install: ${id} up-to-date (scope=${scope}) — no restart needed\n`);
+      }
+    }
 
     process.exit(0);
   }
@@ -6315,7 +6350,9 @@ Sub-verbs:
   ${CLI} config check <ext> [--scope=<scope>]          Validate config against config_schema
 
 Flags:
-  --scope=<scope>  Scope: org | user | project | local  (default: user for set/unset, current for get/list/check)
+  --scope=<scope>       Scope: org | user | project | local  (default: user for set/unset, current for get/list/check)
+  --no-restart          config set: skip daemon restart after config change
+  --dry-run             config set: log what would be restarted without doing it
 
 Config is persisted in extensions.json under the "config" block.
 Sensitive values should use env refs: \${VAR_NAME}
@@ -6419,6 +6456,49 @@ Sensitive values should use env refs: \${VAR_NAME}
       }
       writeScopeConfig(writeScope, ROOT, cfgObj);
       process.stdout.write(`${CLI} config: set ${extId}.${key} = ${value}  (scope: ${writeScope})\n`);
+
+      // ── Restart affected daemons (Improvement E) ──
+      const noRestartCfg = flags['no-restart'] !== undefined;
+      const dryRunCfg = flags['dry-run'] !== undefined;
+      if (!noRestartCfg) {
+        let restarted = 0;
+        for (const s of (['org', 'user', 'project', 'local'] as const)) {
+          const ctx = resolveOsUnitContext(extId, s, ROOT, flags);
+          if (!ctx) continue;
+
+          if (dryRunCfg) {
+            process.stdout.write(`[dry-run] would restart ${extId} os-unit in scope=${s} (config ${key}=${value})\n`);
+            restarted++;
+            continue;
+          }
+
+          // Resolve the last-known-good unit path from the ownership index.
+          let lkgPath: string | undefined;
+          try {
+            const own = OwnershipIndex.loadFromFile(pathMod.join(dataRoot(s as DataScope, ROOT), 'ownership.json'));
+            const rec = own.get(extId, s);
+            const osUnitEntry = rec?.entries.find((e: OwnedEntry) => e.kind === 'os-unit');
+            if (osUnitEntry?.kind === 'os-unit') {
+              lkgPath = fsMod.existsSync(osUnitEntry.unitPath) ? osUnitEntry.unitPath : undefined;
+            }
+          } catch { /* best-effort */ }
+
+          const result = await restartOsUnit(ctx.spec, ctx.platform, lkgPath, {
+            reason: `config change: ${key}=${value} (scope=${writeScope})`,
+          });
+
+          if (result.action === 'restarted') restarted++;
+          process.stdout.write(`${extId}: ${result.action} (scope=${s}, ${result.reason ?? ''})\n`);
+        }
+
+        if (restarted > 0) {
+          process.stdout.write(`restarted ${restarted} daemon(s) affected by config change\n`);
+        }
+        if (dryRunCfg && restarted > 0) {
+          process.stdout.write(`[dry-run] ${restarted} daemon(s) would be restarted\n`);
+        }
+      }
+
       process.exit(0);
     }
 

@@ -615,6 +615,175 @@ export function disableOsUnit(
   return { label, unitPath, unloaded, removed };
 }
 
+// ─── restart (unload → reap → render → load → loop-guard) ────────────────────
+
+export interface RestartOptions {
+  unitDir?: string;
+  exec?: OsExec;
+  log?: (m: string) => void;
+  /** Reason for the restart (config key change, upgrade, etc.). */
+  reason?: string;
+}
+
+export interface RestartResult {
+  action: 'restarted' | 'unchanged' | 'failed' | 'reverted_to_lkg';
+  label: string;
+  unitPath: string;
+  contentHash: string;
+  loaded: boolean;
+  /** Reason for the restart (config key change, upgrade, etc.). */
+  reason?: string;
+}
+
+/**
+ * Restart an OS unit: unload the current unit, regenerate with new content,
+ * load the new unit. Implements the restart loop guard: if the unit crashes
+ * ≥3 times within 60s after restart, revert to the last-known-good spec.
+ *
+ * Callers must provide the NEW OsUnitSpec (reflecting the config change or
+ * artifact upgrade) and the path to the last-known-good unit file (from the
+ * ownership index's os-unit entry).
+ */
+export async function restartOsUnit(
+  newSpec: OsUnitSpec,
+  platform: OsUnitPlatform,
+  lastKnownGoodPath: string | undefined,
+  opts: RestartOptions = {},
+): Promise<RestartResult> {
+  const log = opts.log ?? (() => { /* no-op */ });
+  const exec = opts.exec ?? realOsExec;
+  const unitDir = opts.unitDir ?? platform.defaultUnitDir();
+
+  const unitPath = path.join(unitDir, platform.unitFileName(newSpec.label));
+
+  // 1. Unload current unit first ([inv:unload-then-reap]).
+  const wasLoaded = platform.isLoaded(newSpec.label, exec);
+  if (wasLoaded) {
+    const ur = platform.unload(unitPath, newSpec.label, exec);
+    log(`os-unit ${newSpec.label}: unloaded (code ${ur.code})`);
+    // Brief yield so the OS supervisor finishes teardown.
+    await new Promise((r) => setTimeout(r, 500));
+  }
+
+  // 2. If an OS-supervised dead process is still around, reap it.
+  const token = identityToken(newSpec.entrypoint);
+  if (token) {
+    await reapByIdentity(token, { log: (m: string) => log(`reaper: ${m}`) });
+  }
+
+  // 3. Render + write new unit.
+  const rendered = platform.render(newSpec);
+  const contentHash = readUnitMeta(rendered).contentHash ?? unitContentHash(rendered);
+  writeFileAtomic(unitPath, rendered);
+  log(`os-unit ${newSpec.label}: written (content-hash ${contentHash})`);
+
+  // 4. Load new unit.
+  const lr = platform.load(unitPath, newSpec.label, exec);
+  if (lr.code !== 0) {
+    log(`os-unit ${newSpec.label}: load FAILED (code ${lr.code})`);
+    if (lastKnownGoodPath && fs.existsSync(lastKnownGoodPath)) {
+      log(`os-unit ${newSpec.label}: reverting to last-known-good`);
+      writeFileAtomic(unitPath, fs.readFileSync(lastKnownGoodPath, 'utf8'));
+      const r2 = platform.load(unitPath, newSpec.label, exec);
+      return {
+        action: 'reverted_to_lkg',
+        label: newSpec.label,
+        unitPath,
+        contentHash,
+        loaded: r2.code === 0,
+        ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
+      };
+    }
+    return {
+      action: 'failed',
+      label: newSpec.label,
+      unitPath,
+      contentHash,
+      loaded: false,
+      ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
+    };
+  }
+
+  log(`os-unit ${newSpec.label}: loaded`);
+
+  // 5. Restart loop guard: monitor for 60s. If the unit crashes ≥3 times,
+  //    revert to LKG.
+  if (newSpec.keepAlive && lastKnownGoodPath && fs.existsSync(lastKnownGoodPath)) {
+    const guard = new RestartLoopGuard(newSpec.label, platform, exec, 3, 60_000, log);
+    const guardResult = await guard.monitor();
+    if (guardResult === 'loop') {
+      log(`os-unit ${newSpec.label}: CRASH LOOP DETECTED — reverting to LKG`);
+      platform.unload(unitPath, newSpec.label, exec);
+      writeFileAtomic(unitPath, fs.readFileSync(lastKnownGoodPath, 'utf8'));
+      platform.load(unitPath, newSpec.label, exec);
+      return {
+        action: 'reverted_to_lkg',
+        label: newSpec.label,
+        unitPath,
+        contentHash,
+        loaded: true,
+        reason: `restart-loop-guard: ${opts.reason ?? 'unknown'}`,
+      };
+    }
+  }
+
+  const result: RestartResult = {
+    action: 'restarted',
+    label: newSpec.label,
+    unitPath,
+    contentHash,
+    loaded: true,
+  };
+  if (opts.reason !== undefined) result.reason = opts.reason;
+  return result;
+}
+
+/**
+ * Restart loop guard: polls service liveness for `durationMs`. If the service
+ * is observed down ≥`crashThreshold` times within the window, reports 'loop'.
+ */
+class RestartLoopGuard {
+  private readonly label: string;
+  private readonly platform: OsUnitPlatform;
+  private readonly exec: OsExec;
+  private readonly threshold: number;
+  private readonly durationMs: number;
+  private readonly log: (m: string) => void;
+  private deaths = 0;
+
+  constructor(
+    label: string,
+    platform: OsUnitPlatform,
+    exec: OsExec,
+    threshold: number,
+    durationMs: number,
+    log: (m: string) => void,
+  ) {
+    this.label = label;
+    this.platform = platform;
+    this.exec = exec;
+    this.threshold = threshold;
+    this.durationMs = durationMs;
+    this.log = log;
+  }
+
+  /** Monitor for `durationMs`. Returns 'loop' if threshold exceeded, 'ok' otherwise. */
+  async monitor(): Promise<'loop' | 'ok'> {
+    const pollInterval = 500;
+    const polls = Math.floor(this.durationMs / pollInterval);
+    for (let i = 0; i < polls; i++) {
+      await new Promise((r) => setTimeout(r, pollInterval));
+      const live = this.platform.isLoaded(this.label, this.exec);
+      if (!live) {
+        this.deaths++;
+        this.log(`restart-guard ${this.label}: down (${this.deaths}/${this.threshold})`);
+        if (this.deaths >= this.threshold) return 'loop';
+      }
+    }
+    return 'ok';
+  }
+}
+
 // ─── [inv:unload-then-reap] (§8.4/§8.5) ──────────────────────────────────────────
 
 export interface UnloadThenReapResult {

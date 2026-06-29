@@ -217,7 +217,7 @@
     "title": "sox CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/apps/sox",
-    "checksum": "sha256:13b09e6b411cea25d71fa3848dc4c8b45b2e70b2c505d8bda5a51f0e5731039c",
+    "checksum": "sha256:6c894bdfe4449c0805ed56e61d2f1de4dd4b1ff80f1ed51c282302e9dd1401a0",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     }

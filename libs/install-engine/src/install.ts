@@ -1184,6 +1184,8 @@ import { OwnershipIndex, type OwnedEntry } from './ownership.js';
 interface HostSurface {
   capability: string;
   format?: string;
+  mcpConfig?: { keyPath(extId: string): string; value(profile: string, cliBin: string, extId: string): unknown };
+  postInstallHint?: string;
   paths: Partial<Record<string, string>>;
 }
 
@@ -1288,6 +1290,7 @@ export interface DeclarativeInstallResult {
   applied: boolean;
   denied?: boolean;
   denialReason?: string;
+  hints?: string[];
 }
 
 /**
@@ -1537,7 +1540,11 @@ export async function declarativeInstall(
       });
       ledger.save();
 
-      results.push({ host: hostName, scope, capability: 'file-drop', target: destPath, applied });
+      const fdResult: DeclarativeInstallResult = { host: hostName, scope, capability: 'file-drop', target: destPath, applied };
+      if (surface.postInstallHint) {
+        fdResult.hints = [surface.postInstallHint];
+      }
+      results.push(fdResult);
       // [inv:no-untracked-injection]: the placed file/dir is owned.
       ownedEntries.push({ kind: 'file-drop', path: destPath });
 
@@ -1550,27 +1557,39 @@ export async function declarativeInstall(
       let resolvedKeyPath = descriptor.configKeyPath;
       let resolvedValue = descriptor.configValue;
       if (descriptor.type === 'mcp-server' && (resolvedKeyPath === undefined || resolvedValue === undefined)) {
-        const profile = descriptor.profile ?? 'stdio';
-        resolvedKeyPath = `mcpServers.${descriptor.ext}`;
-        if (profile === 'sse' || profile === 'http') {
-          resolvedValue = { type: profile, url: 'http://localhost:3000/' + profile };
-        } else {
-          // stdio — sox serve <ext> keeps sox in the spawn chain so cascade config
-          // (SOX_CONFIG_*) is injected fresh at each Claude Code session start.
-          //
-          // CLI bin resolution order (BL-mcp-cmd):
-          //   1. SOX_CLI_BIN env var (explicit override, useful in CI / tests)
-          //   2. process.argv[1] (the actual running CLI — bin/soxe or its abs path)
-          //   3. 'soxe' (last resort; requires soxe to be on PATH)
-          //
-          // We intentionally do NOT fall back to 'sox' — that collides with the
-          // system sox audio tool and causes every MCP server entry written during
-          // `soxe install` to spawn the wrong binary.
+        // If the host provides an mcpConfig builder, use it.
+        if (surface.mcpConfig) {
           const cliBin =
             process.env['SOX_CLI_BIN'] ??
             (process.argv[1] && process.argv[1].length > 0 ? process.argv[1] : undefined) ??
             'soxe';
-          resolvedValue = { type: 'stdio', command: cliBin, args: ['serve', descriptor.ext] };
+          const profile = descriptor.profile ?? 'stdio';
+          resolvedKeyPath = surface.mcpConfig.keyPath(descriptor.ext);
+          resolvedValue = surface.mcpConfig.value(profile, cliBin, descriptor.ext);
+        } else {
+          // Default: Claude-format auto-derivation (preserved for backward compat).
+          const profile = descriptor.profile ?? 'stdio';
+          resolvedKeyPath = `mcpServers.${descriptor.ext}`;
+          if (profile === 'sse' || profile === 'http') {
+            resolvedValue = { type: profile, url: 'http://localhost:3000/' + profile };
+          } else {
+            // stdio — sox serve <ext> keeps sox in the spawn chain so cascade config
+            // (SOX_CONFIG_*) is injected fresh at each Claude Code session start.
+            //
+            // CLI bin resolution order (BL-mcp-cmd):
+            //   1. SOX_CLI_BIN env var (explicit override, useful in CI / tests)
+            //   2. process.argv[1] (the actual running CLI — bin/soxe or its abs path)
+            //   3. 'soxe' (last resort; requires soxe to be on PATH)
+            //
+            // We intentionally do NOT fall back to 'sox' — that collides with the
+            // system sox audio tool and causes every MCP server entry written during
+            // `soxe install` to spawn the wrong binary.
+            const cliBin =
+              process.env['SOX_CLI_BIN'] ??
+              (process.argv[1] && process.argv[1].length > 0 ? process.argv[1] : undefined) ??
+              'soxe';
+            resolvedValue = { type: 'stdio', command: cliBin, args: ['serve', descriptor.ext] };
+          }
         }
       }
 
@@ -1593,13 +1612,17 @@ export async function declarativeInstall(
         payload: { value: resolvedValue },
       });
 
-      results.push({
+      const cmResult: DeclarativeInstallResult = {
         host: hostName,
         scope,
         capability: 'config-merge',
         target: absTarget,
         applied: true,
-      });
+      };
+      if (surface.postInstallHint) {
+        cmResult.hints = [surface.postInstallHint];
+      }
+      results.push(cmResult);
       // [inv:no-untracked-injection]: the merged config key is owned. The applied-hash
       // is recorded so update/uninstall reverse exactly the value sox set (the ledger
       // holds the deny-wins reversal logic; the ownership index holds the inventory).

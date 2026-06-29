@@ -19,6 +19,6 @@
   },
   "install": {
     "type": "agent",
-    "hosts": ["claude"]
+    "hosts": ["claude", "opencode"]
   }
 }

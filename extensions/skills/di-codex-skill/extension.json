@@ -19,6 +19,6 @@
   },
   "install": {
     "type": "skill",
-    "hosts": ["codex"]
+    "hosts": ["codex", "opencode"]
   }
 }

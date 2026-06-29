@@ -4,12 +4,14 @@
  * Pluggable host registry — [def:host-registry], [ref:host-keyed-target].
  *
  * This is the ONLY package allowed to contain literal host-discovery paths
- * (.claude/, .codex/, ~/.claude/, ~/.codex/).  All other code must resolve
- * targets via this registry — never hard-code host paths elsewhere.
+ * (.claude/, .codex/, .opencode/, ~/.claude/, ~/.codex/, ~/.config/opencode/).
+ * All other code must resolve targets via this registry — never hard-code
+ * host paths elsewhere.
  *
- * The registry ships two modules:
- *   claude.ts — [inv:never-managed], MCP trust = prompt
- *   codex.ts  — [def:project-forbidden-keys], TOML config-merge
+ * The registry ships three modules:
+ *   claude.ts  — [inv:never-managed], MCP trust = prompt
+ *   codex.ts   — [def:project-forbidden-keys], TOML config-merge
+ *   opencode.ts — mcp.{id} key format, command array format, json config-merge
  *
  * [shape:host-registry]:
  *   interface HostModule {
@@ -21,10 +23,10 @@
  *
  * Circular-import note:
  *   All shared types and runtime helpers (existsIn, expandHome) live in
- *   ./internal.ts (a leaf with no imports from this file). claude.ts and
- *   codex.ts import only from ./internal.ts, so there is no import cycle.
- *   This file re-exports everything from internal.ts to keep the public API
- *   unchanged for external consumers.
+ *   ./internal.ts (a leaf with no imports from this file). claude.ts,
+ *   codex.ts, and opencode.ts import only from ./internal.ts, so there is
+ *   no import cycle. This file re-exports everything from internal.ts to
+ *   keep the public API unchanged for external consumers.
  */
 
 // ─── Re-export all types and helpers from the leaf internal module ────────────
@@ -37,6 +39,7 @@ export type {
   SurfaceMap,
   ScopePathMap,
   HostModule,
+  McpConfig,
 } from './internal.js';
 export { expandHome, existsIn } from './internal.js';
 
@@ -45,10 +48,12 @@ export { expandHome, existsIn } from './internal.js';
 import type { HostModule } from './internal.js';
 import { claudeHost } from './claude.js';
 import { codexHost } from './codex.js';
+import { opencodeHost } from './opencode.js';
 
 const _registry: Map<string, HostModule> = new Map([
   [claudeHost.host, claudeHost],
   [codexHost.host, codexHost],
+  [opencodeHost.host, opencodeHost],
 ]);
 
 /** Retrieve a registered host module by name, or throw. */
@@ -90,3 +95,4 @@ export function resolveWorkspaceRoot(workspaceRoot?: string): string {
 
 export { claudeHost } from './claude.js';
 export { codexHost } from './codex.js';
+export { opencodeHost } from './opencode.js';

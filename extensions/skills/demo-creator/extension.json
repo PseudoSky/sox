@@ -39,6 +39,6 @@
   },
   "install": {
     "type": "skill",
-    "hosts": ["claude"]
+    "hosts": ["claude", "opencode"]
   }
 }

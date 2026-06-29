@@ -20,7 +20,7 @@ import {
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getPolicy } from './enforce.js';
-import { resolveTransportMode, connectStdio, connectSse, type TransportOptions } from './transport.js';
+import { resolveTransportMode, connectStdio, connectStreamableHttp, type TransportOptions } from './transport.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -200,8 +200,8 @@ export async function serve(tools: RegisteredTool[], opts: ServeOptions): Promis
   // Select and connect transport
   const mode = resolveTransportMode(transportOpts);
   const handle =
-    mode === 'sse'
-      ? await connectSse(server, transportOpts)
+    mode === 'sse' || mode === 'http'
+      ? await connectStreamableHttp(server, transportOpts)
       : await connectStdio(server);
 
   // Graceful shutdown

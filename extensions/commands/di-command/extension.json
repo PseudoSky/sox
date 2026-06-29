@@ -19,6 +19,6 @@
   },
   "install": {
     "type": "command",
-    "hosts": ["claude"]
+    "hosts": ["claude", "opencode"]
   }
 }
