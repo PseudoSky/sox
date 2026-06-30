@@ -2,9 +2,8 @@ import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync, readFileSync } from 'node:fs';
 import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { MODEL_CONFIGS } from './fastembed.js';
 import { ResolutionError } from './index.js';
-import type { ModelCache } from './index.js';
+import type { FastEmbedModelConfig, ModelCache } from './index.js';
 
 export class EmbeddingCache {
   private cache = new Map<string, Float32Array>();
@@ -47,6 +46,21 @@ export class EmbeddingCache {
 }
 
 /**
+ * Lazily resolve MODEL_CONFIGS from fastembed.js to avoid forcing eager
+ * evaluation of fastembed's top-level import.meta.url in CJS bundles.
+ */
+async function getModelConfig(modelId: string): Promise<FastEmbedModelConfig> {
+  const { MODEL_CONFIGS } = await import('./fastembed.js');
+  const cfg = MODEL_CONFIGS[modelId];
+  if (!cfg) {
+    throw new ResolutionError(
+      `Unknown model: "${modelId}". Supported: ${Object.keys(MODEL_CONFIGS).join(', ')}`,
+    );
+  }
+  return cfg;
+}
+
+/**
  * FileSystemModelCache — downloads, caches, and verifies ONNX model binaries.
  *
  * Models are stored at:
@@ -71,13 +85,7 @@ export class FileSystemModelCache implements ModelCache {
   async ensure(modelId: string): Promise<void> {
     if (this.cached(modelId)) return;
 
-    const config = MODEL_CONFIGS[modelId];
-    if (!config) {
-      throw new ResolutionError(
-        `Unknown model: "${modelId}". Supported: ${Object.keys(MODEL_CONFIGS).join(', ')}`,
-      );
-    }
-
+    const config = await getModelConfig(modelId);
     await mkdir(this.modelDir(modelId), { recursive: true });
 
     const url = this.buildUrl(config.hfRepoId);
@@ -162,13 +170,7 @@ export class FileSystemModelCache implements ModelCache {
       return;
     }
 
-    const config = MODEL_CONFIGS[modelId];
-    if (!config) {
-      throw new ResolutionError(
-        `Unknown model: "${modelId}". Supported: ${Object.keys(MODEL_CONFIGS).join(', ')}`,
-      );
-    }
-
+    const config = await getModelConfig(modelId);
     await mkdir(this.modelDir(modelId), { recursive: true });
 
     const url = this.buildUrl(config.hfRepoId);

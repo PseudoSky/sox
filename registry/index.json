@@ -59,7 +59,7 @@
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "checksum": "sha256:3e2ed9b0d32d8f6fe20bef7e55c77f0efb0a73003488afce7f083387e46e9a23",
+    "checksum": "sha256:488f590311149dd613e7069648d7fe00a3a7c0a1998ee03e765293b22097ec07",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -73,7 +73,7 @@
     "title": "Memory Daemon",
     "description": "Use this when you need the sox graph-memory enrichment pipeline running: a singleton Unix-socket service that drains the batch-enrich queue and runs deterministic clustering, importance scoring, and auto-links via memory-core — zero LLM calls, no provider required.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-daemon",
-    "checksum": "sha256:ce876ed9b0ff7146938151ffe438aa04cad4a80f019f18cc9e4ce1336a27f3a0",
+    "checksum": "sha256:753493e308eb2a8dbaff03c8ce401aa10e2296f33df5a2aafc0a6996cf138823",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -87,7 +87,7 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-flush",
-    "checksum": "sha256:b7f35df1aa19f3fe76a25dbc31ebc5d8971941eb57f86e1894a4e1d3ccad5f59",
+    "checksum": "sha256:fbb414101a66e6a513a6eaa6909048d80047f990742e62032c273a517e695bce",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },

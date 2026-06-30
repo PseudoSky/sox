@@ -8,24 +8,25 @@ import {
   ResolutionError,
 } from '@adhd/sox-embedding-provider';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
 /**
- * Resolve the path to the cross-encoder worker file.
- *
- * At build time the worker compiles to crossEncoderWorker.js (sibling in dist/),
- * but during vitest/dev the source is crossEncoderWorker.ts. This function
- * probes both extensions and falls back to the compiled name for production.
+ * Resolve the path to the cross-encoder worker file, handling both ESM (vitest/dev)
+ * and CJS (bundled) environments. The dirname is computed at call time (not module
+ * level) so CJS bundles don't crash on undefined import.meta.url during module load.
  */
 function resolveWorkerPath(): string {
-  // Vitest / ts-node: source .ts file exists alongside this .ts source
-  const tsPath = join(__dirname, 'crossEncoderWorker.ts');
-  // Production build: compiled .js file in dist/
-  const jsPath = join(__dirname, 'crossEncoderWorker.js');
+  let baseDir: string;
+  try {
+    baseDir = dirname(fileURLToPath(import.meta.url));
+  } catch {
+    // CJS bundle or environment without import.meta.url — schema generation
+    // never calls rerank(), so this path is only exercised at runtime.
+    baseDir = '.';
+  }
 
-  // Probe for .ts first (dev/test), fall back to .js (production build)
+  const tsPath = join(baseDir, 'crossEncoderWorker.ts');
+  const jsPath = join(baseDir, 'crossEncoderWorker.js');
+
   if (existsSync(tsPath)) return tsPath;
-
   return jsPath;
 }
 
