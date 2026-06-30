@@ -150,7 +150,7 @@ export function getEmbedHealth(): EmbedHealth {
 /** Warmup timeout (ms) — bounds an indefinite worker/init hang (BL-89). Configurable. */
 function warmupTimeoutMs(): number {
   const raw = Number(process.env['SOX_EMBED_WARMUP_TIMEOUT_MS']);
-  return Number.isFinite(raw) && raw > 0 ? raw : 60_000;
+  return Number.isFinite(raw) && raw > 0 ? raw : 180_000;
 }
 
 /** Reject a promise if it does not settle within `ms`. */

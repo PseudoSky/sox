@@ -204,7 +204,7 @@ async function createRemoteProvider(
 
 function warmupTimeoutMs(): number {
   const raw = Number(process.env['SOX_EMBED_WARMUP_TIMEOUT_MS']);
-  return Number.isFinite(raw) && raw > 0 ? raw : 60_000;
+  return Number.isFinite(raw) && raw > 0 ? raw : 180_000;
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
