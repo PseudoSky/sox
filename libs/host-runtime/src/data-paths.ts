@@ -1,7 +1,7 @@
 /**
  * libs/host-runtime/src/data-paths.ts — ADR-0004 single data-root resolver.
  *
- * THE one place every sox data path is computed. Before ADR-0004 these were
+ * THE one place every soxe data path is computed. Before ADR-0004 these were
  * scattered across three roots (~/.sox, ~/.config/extensions, <scopeRoot>/.sox)
  * and overloaded onto SOX_HOME. This module collapses them into the canonical
  * per-scope layout `<scopeRoot>/.adhd/sox-ecosystem/` (ADR-0004 §D2).
@@ -11,7 +11,7 @@
  *
  * ── Two orthogonal env vars (ADR-0004 §D1, §D3) ──────────────────────────────
  *   SOX_ECOSYSTEM_HOME  — DATA ROOT override (this module). Default
- *                         ~/.adhd/sox-ecosystem/. Governs where sox keeps its OWN
+ *                         ~/.adhd/sox-ecosystem/. Governs where soxe keeps its OWN
  *                         bookkeeping. NEVER reroutes host placements.
  *   SOX_SANDBOX_ROOT    — test isolation switch (host-registry). The ONLY thing
  *                         that reroutes host discovery paths. NOT read here.

@@ -21,7 +21,7 @@ export interface LibraryGeneratorSchema {
 }
 
 /**
- * libraryGenerator — thin wrapper around @nx/js:lib with sox defaults.
+ * libraryGenerator — thin wrapper around @nx/js:lib with soxe defaults.
  *
  * Always adds type:lib to tags so module-boundary enforcement works.
  */

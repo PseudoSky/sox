@@ -106,7 +106,7 @@ by the in-process permission guard before the database is opened — no file is 
 no data is written.
 
 To use a db at a non-default path, either:
-1. Reconfigure the extension's fs allowlist via `sox config set memory-server` (adds to
+1. Reconfigure the extension's fs allowlist via `soxe config set memory-server` (adds to
    cascade; host regenerates policy on next spawn).
 2. Symlink the target directory into `~/.memory/`.
 ```

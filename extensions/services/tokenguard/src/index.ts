@@ -143,7 +143,7 @@ function enforceMapPathPolicy(mapPath: string, policy: Policy): void {
 /**
  * Run the MCP stdio handler for CLI tools (seed / map / summary).
  *
- * Entered when the process is spawned by `sox exec` (stdin is a pipe).
+ * Entered when the process is spawned by `soxe exec` (stdin is a pipe).
  * Speaks JSON-RPC 2.0 line-by-line over stdio — identical protocol to
  * memory-server/src/index.ts. [tg-cli.4] [def:live-map]
  */
@@ -300,10 +300,10 @@ async function main(): Promise<void> {
 //
 // 1. Direct CLI mode: process.argv[2] is a CLI subcommand (seed|map|summary).
 //    Invoked as: node bundle/index.js seed <real> <type>
-//    Used by demo/live-seed.sh for direct seeding without sox exec overhead.
+//    Used by demo/live-seed.sh for direct seeding without soxe exec overhead.
 //
-// 2. MCP exec mode: stdin is piped AND no SOX_CONFIG_PORT (spawned by sox exec).
-//    Speaks JSON-RPC 2.0 over stdio for the sox exec tool-call protocol.
+// 2. MCP exec mode: stdin is piped AND no SOX_CONFIG_PORT (spawned by soxe exec).
+//    Speaks JSON-RPC 2.0 over stdio for the soxe exec tool-call protocol.
 //
 // 3. Service mode: everything else — starts the HTTP proxy.
 //    Invoked by the supervisor with SOX_CONFIG_* env set.

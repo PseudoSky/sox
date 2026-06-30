@@ -170,12 +170,12 @@ plus the source they carried. State-by-state:
 - **capability-engine / host-registry / mcp-runtime / generators** — new files only (no destructive
   edits); `git revert` is clean.
 - **install-lifecycle** — re-signs `runInstall` + edits `bin/sox`/`main.ts`; revert restores the
-  single-string consumer. The *installed* host artifacts are reversed via the ledger (`sox uninstall`),
+  single-string consumer. The *installed* host artifacts are reversed via the ledger (`soxe uninstall`),
   not git. **[inv:ledger-reversible]** is the rollback guarantee for anything written to a host.
 - **rehome-memory-server** — rewrite; revert restores the vendored loop + guard. Behavior is held
   identical by `[inv:no-regress]`, so a revert does not change runtime behavior.
 - **ingestion-skill** — deletes `docs/ingestion/prompts/*` + `migration-plan.md`; revert restores
-  them from git history. The new skill is removable via `sox uninstall`.
+  them from git history. The new skill is removable via `soxe uninstall`.
 - **dod-reconcile** — docs only; `git revert`.
 
 **Irreversible action to watch:** any half-applied install whose capability cannot cleanly reverse —

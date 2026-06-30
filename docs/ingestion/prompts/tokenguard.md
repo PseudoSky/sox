@@ -40,7 +40,7 @@ lifecycle — it is declared-unimplemented/vestigial (see `docs/guidelines/agent
 long-running server, the type is `mcp-server` — do NOT use `agent` expecting supervision.
 The supervisor's health probe is PROTOCOL-AGNOSTIC (stdio-ping / socket / command), so a non-MCP
 server is supervised fine. `runtime` may be `node`/`shell`/`python`/`stdio-any` (use `stdio-any` for
-a non-MCP stdio server). MCP is only required for the `sox exec` TOOL-CALL surface — not for
+a non-MCP stdio server). MCP is only required for the `soxe exec` TOOL-CALL surface — not for
 supervision. (If you find the loader has since learned to supervise agents, report it — the docs say
 otherwise as of this writing.)
 
@@ -51,12 +51,12 @@ Read every file under the source dir, identify its interfaces, and decide:
      the ONLY type whose lifecycle the runtime honors — do not use `agent` for a service. Protocol
      fork for the TOOL surface:
      - It already speaks MCP (stdio JSON-RPC: initialize + tools/list + tools/call) → port directly;
-       supervised via lifecycle AND callable via `sox exec`. health: stdio-ping.
+       supervised via lifecycle AND callable via `soxe exec`. health: stdio-ping.
      - It is a server with a NON-MCP protocol (HTTP / socket / custom RPC):
          · supervision still works generically (lifecycle + socket/command health) — declare the
            port/socket in `permissions.socket`/`network`, runtime likely `stdio-any` or `node`;
          · for an AGENT-CALLABLE tool surface, add a thin MCP front (tools that call the core, kept
-           in a shared lib) so `sox exec` can reach it. If no agent-facing tool surface is wanted,
+           in a shared lib) so `soxe exec` can reach it. If no agent-facing tool surface is wanted,
            ship it supervised-only (no MCP front) and say so.
        Report whether it is a direct port, a supervised-only server, or a server + MCP wrap.
      - If `mcp-server` is conceptually a poor fit for what this server is → STOP and report: the only
@@ -96,8 +96,8 @@ STEP 1 — GROUND TRUTH FIRST (read before writing anything; do not assume conve
 
 STEP 2 — SCAFFOLD BORN-CONFORMANT (do not hand-roll the layout)
 For each extension in your chosen mapping:
-    node bin/sox init mcp-server <id>     # and/or
-    node bin/sox init command <id>        # alias: `new`
+    node bin/soxe init mcp-server <id>     # and/or
+    node bin/soxe init command <id>        # alias: `new`
 (or the nx generator the guideline names). If you extracted a shared lib, place it where the repo
 puts shared internal libs (mirror existing `libs/`). The scaffolder produces conformant skeletons;
 you fill in logic.
@@ -113,13 +113,13 @@ incorrect block either breaks it or hides its true footprint — get it exactly 
 
 STEP 5 — PROVE THE LIFECYCLE AGAINST REALITY (per extension; not just unit tests)
   1. `./node_modules/.bin/nx run <project>:build`        → builds clean.
-  2. `node bin/sox validate` (--strict if available)     → passes.
+  2. `node bin/soxe validate` (--strict if available)     → passes.
   3. Install into a sandboxed scope (temp dir + `-s project --config=... --lockfile=...`):
-       - mcp-server: `node bin/sox start ...`, confirm it's RUNNING (pid in `sox list`/runtime
-         record), then `node bin/sox exec --id=<id> --tool=<tool> --args='...'` returns a real
+       - mcp-server: `node bin/soxe start ...`, confirm it's RUNNING (pid in `soxe list`/runtime
+         record), then `node bin/soxe exec --id=<id> --tool=<tool> --args='...'` returns a real
          result; prove an undeclared-resource access is DENIED at runtime.
        - command: invoke it and confirm it produces the same result as the source tokenguard.
-  4. `node bin/sox stop ...` leaves zero orphan processes.
+  4. `node bin/soxe stop ...` leaves zero orphan processes.
   5. If you shipped a bundle: `install` the bundle resolves+installs all members; `start` runs them;
      `uninstall` removes them.
 Capture real command output as evidence.

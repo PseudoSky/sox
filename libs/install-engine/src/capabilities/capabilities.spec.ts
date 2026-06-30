@@ -14,18 +14,18 @@
  * Foreign-key-survives case is tested for both config-merge and array-merge.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
-import * as path from 'path';
 import * as os from 'os';
+import * as path from 'path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import * as fileDrop from './file-drop.js';
-import * as configMerge from './config-merge.js';
+import { Ledger, sha256 } from '../ledger.js';
 import * as arrayMerge from './array-merge.js';
 import * as binLink from './bin-link.js';
-import * as runService from './run-service.js';
+import * as configMerge from './config-merge.js';
+import * as fileDrop from './file-drop.js';
 import * as materialize from './materialize.js';
-import { Ledger, sha256 } from '../ledger.js';
+import * as runService from './run-service.js';
 
 // --- Test helpers ---
 
@@ -56,7 +56,7 @@ describe('ledger — [capability-engine.4]', () => {
     });
     ledger.save();
     // ADR-0004 §D2: Ledger.load(dataDir) writes <dataDir>/ledger.json directly
-    // (the caller passes the already-resolved data dir; no extra .sox subdir).
+    // (the caller passes the already-resolved data dir; no extra .soxe subdir).
     expect(fs.existsSync(path.join(dir, 'ledger.json'))).toBe(true);
   });
 
@@ -244,7 +244,7 @@ describe('config-merge JSON — [capability-engine.1] [capability-engine.3] [cap
     expect(r.ok).toBe(true);
   });
 
-  it('reverse: removes ONLY sox key; foreign key survives [capability-engine.3]', async () => {
+  it('reverse: removes ONLY soxe key; foreign key survives [capability-engine.3]', async () => {
     const fp = path.join(dir, 'settings.json');
     // Pre-populate with a foreign key
     fs.writeFileSync(fp, JSON.stringify({ mcpServers: { foreign: { command: 'other' } } }, null, 2));
@@ -262,7 +262,7 @@ describe('config-merge JSON — [capability-engine.1] [capability-engine.3] [cap
     await configMerge.reverse(ctx);
     const reversed = JSON.parse(fs.readFileSync(fp, 'utf8')) as { mcpServers: Record<string, unknown> };
     expect(reversed.mcpServers['foreign']).toBeDefined();   // foreign survives!
-    expect(reversed.mcpServers['sox-server']).toBeUndefined(); // sox key removed
+    expect(reversed.mcpServers['sox-server']).toBeUndefined(); // soxe key removed
   });
 
   it('apply is idempotent — records one ledger action only [capability-engine.5]', async () => {
@@ -462,7 +462,7 @@ describe('array-merge — [capability-engine.1] [capability-engine.3] [capabilit
     expect(actions[0]!.values).toEqual(['v1', 'v2']);
   });
 
-  it('reverse: removes ONLY sox values; foreign values survive [capability-engine.3]', async () => {
+  it('reverse: removes ONLY soxe values; foreign values survive [capability-engine.3]', async () => {
     const fp = path.join(dir, 'settings.json');
     // Pre-populate with a foreign value
     fs.writeFileSync(fp, JSON.stringify({ arr: ['foreign-value'] }, null, 2));
@@ -480,7 +480,7 @@ describe('array-merge — [capability-engine.1] [capability-engine.3] [capabilit
     await arrayMerge.reverse(ctx);
     const reversed = JSON.parse(fs.readFileSync(fp, 'utf8')) as { arr: string[] };
     expect(reversed.arr).toContain('foreign-value');   // foreign survives!
-    expect(reversed.arr).not.toContain('sox-value');   // sox value removed
+    expect(reversed.arr).not.toContain('sox-value');   // soxe value removed
   });
 
   it('verify: ok when all values present', async () => {

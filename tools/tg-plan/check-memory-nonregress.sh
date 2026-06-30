@@ -5,10 +5,10 @@
 # hold after mcp-server is folded onto the unified service model (mcp-as-service).
 #
 # Flow:
-#   1. sox install memory-server -s project  (config/lockfile resolver path)
+#   1. soxe install memory-server -s project  (config/lockfile resolver path)
 #   2. runtime-cli start  (full supervisor path with exec socket — matches e2e test)
-#   3. sox exec memory_ping → assert MEMORY OK
-#   4. sox exec memory_write with evil db_path (outside allowlist) → assert C6 DENY OK
+#   3. soxe exec memory_ping → assert MEMORY OK
+#   4. soxe exec memory_write with evil db_path (outside allowlist) → assert C6 DENY OK
 #   5. Stop + clean up
 #
 # Guard: guard_mcp_as_service.py
@@ -100,13 +100,13 @@ echo "[check-memory-nonregress] config written: ${CONFIG_PATH}"
 
 # ── 1. Install memory-server via config/lockfile resolver path ────────────────
 echo ""
-echo "[check-memory-nonregress] Step 1: sox install memory-server -s project"
+echo "[check-memory-nonregress] Step 1: soxe install memory-server -s project"
 if ! "${NODE}" "${SOX}" install \
       --scope=project \
       "--config=${CONFIG_PATH}" \
       "--lockfile=${LOCKFILE_PATH}" \
       2>&1; then
-  echo "[check-memory-nonregress] FAIL: sox install exited non-zero"
+  echo "[check-memory-nonregress] FAIL: soxe install exited non-zero"
   exit 1
 fi
 
@@ -164,7 +164,7 @@ sleep 1
 
 # ── 3. Ping memory-server — assert MEMORY OK ──────────────────────────────────
 echo ""
-echo "[check-memory-nonregress] Step 3: memory_ping via sox exec"
+echo "[check-memory-nonregress] Step 3: memory_ping via soxe exec"
 PING_OUT=""
 PING_EXIT=0
 PING_OUT="$("${NODE}" "${SOX}" exec \
@@ -216,7 +216,7 @@ echo "[check-memory-nonregress] evil write output: ${EVIL_OUT}"
 echo "[check-memory-nonregress] evil write exit:   ${EVIL_EXIT}"
 
 # Determine if the write was denied:
-# (a) sox exec exited non-zero (enforcement at exec level / MCP isError→exit 1), OR
+# (a) soxe exec exited non-zero (enforcement at exec level / MCP isError→exit 1), OR
 # (b) the MCP result contains isError:true or "permission denied" text
 EVIL_DENIED=0
 if [ "${EVIL_EXIT}" -ne 0 ]; then

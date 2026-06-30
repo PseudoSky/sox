@@ -13,7 +13,7 @@
  * DRIFT GUARD: `data-paths.parity.spec.ts` asserts this file is byte-identical to the
  * host-runtime original (below the header), so the two cannot silently diverge.
  *
- * Leaf module — node builtins only. No sox imports.
+ * Leaf module — node builtins only. No soxe imports.
  */
 
 import * as os from 'node:os';

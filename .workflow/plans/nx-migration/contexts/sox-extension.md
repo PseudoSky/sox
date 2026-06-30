@@ -42,7 +42,7 @@ born-conformant via `scaffold()`), A2–A10, A11 (`exec` via running server), A1
 - [ ] **[sox-extension.1]** `nx run sox:build` clean.
 - [ ] **[sox-extension.2]** `apps/sox/extension.json` validates against `libs/manifest` (D1).
 - [ ] **[sox-extension.3]** `apps/sox/extension.json` `type` is `command` (D2).
-- [ ] **[sox-extension.4]** A1: `sox init` scaffolds a born-conformant extension
+- [ ] **[sox-extension.4]** A1: `soxe init` scaffolds a born-conformant extension
       that validates.
 - [ ] **[sox-extension.5]** A12: the live CLI reaches `--help` (documented flag forms).
 

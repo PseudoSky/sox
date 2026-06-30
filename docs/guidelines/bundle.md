@@ -107,7 +107,7 @@ producer whose manifest Layers 2–4 trace back to.
 
 | Action | Owning system | Exists as a framework contract? |
 |---|---|---|
-| O1 Discover | Registry + discovery command | Registry record: **yes** — `build-index.ts` lines 207–210 include the `members` array in the index entry for `type: "bundle"`. Discovery command (`sox search`): **Absent** (bin/sox stubs it). |
+| O1 Discover | Registry + discovery command | Registry record: **yes** — `build-index.ts` lines 207–210 include the `members` array in the index entry for `type: "bundle"`. Discovery command (`soxe search`): **Absent** (bin/soxe stubs it). |
 | O2 Install | Install client + CLI + cascade + expansion + lockfile | Cascade: **Defined.** Expansion (`expandBundles()`): **Defined** for cycle detection and depth; **Implicit/Absent** for version-conflict semantics. Lockfile: **Defined** — but the bundle id itself does not appear in the lockfile; only expanded members do (`scripts/install.ts` lines 553–566; confirmed by `docs/architecture-audit.md` line 27: lockfile contains `memory-server@0.1.0`, not `sox-memory-bundle`). |
 | O3 Configure | Config cascade + capability gate + env resolution | Cascade + capability gate: **Defined** for member extensions post-expansion. No bundle-level config contract: **Absent**. |
 | O4 Expansion | Install client: `expandBundles()` → member install entries | **Defined** for mechanics (cycle guard, depth limit, explicit-entry override). **Absent** for version-conflict notification: silent first-seen-dedup is pinned behavior, not a specified contract with a defined operator signal. |
@@ -248,7 +248,7 @@ Implicit. This section is where bundle-specific drift enters.
   `package.json` with `"scripts": { "build": "tsc", "typecheck": "tsc --noEmit" }` for bundles
   (`new-extension.ts` lines 759–776), inherited from the runtime-type template. A bundle has no
   source to compile. The scaffolded `package.json` should either omit build/typecheck scripts or
-  emit bundle-specific scripts (`"validate": "sox validate-bundle"`), so that `pnpm -r typecheck`
+  emit bundle-specific scripts (`"validate": "soxe validate-bundle"`), so that `pnpm -r typecheck`
   and `pnpm -r build` do not silently no-op for bundles.
 
 - **Bundle-level lifecycle contract (#O5):** the framework must specify what "uninstall bundle X"

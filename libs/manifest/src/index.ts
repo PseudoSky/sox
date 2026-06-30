@@ -157,7 +157,7 @@ export interface Manifest {
   type: 'agent' | 'skill' | 'mcp-server' | 'prompt' | 'hook' | 'command' | 'bundle' | 'service';
   title: string;
   description: string;
-  /** Compatibility block — accepts any shape (host or sox key) for forward compatibility. */
+  /** Compatibility block — accepts any shape (host or soxe key) for forward compatibility. */
   compatibility: Record<string, string>;
   license: string;
 
@@ -253,15 +253,15 @@ const VALID_SERVES = new Set<string>(['stdio', 'sse', 'http']);
 const VALID_TRANSPORTS = new Set<string>(['stdio', 'http', 'sse', 'socket']);
 
 /**
- * [inv:never-managed] Claude managed-tier host keys sox must never write.
+ * [inv:never-managed] Claude managed-tier host keys soxe must never write.
  * Spec §4. validate() rejects install.overrides targeting these. [def:managed-tier]
  */
 const CLAUDE_MANAGED_KEYS = new Set<string>([
-  'managed', // Claude enterprise/org managed tier — sox never writes this
+  'managed', // Claude enterprise/org managed tier — soxe never writes this
 ]);
 
 /**
- * [inv:never-managed] Codex project-forbidden keys sox must never write at project scope.
+ * [inv:never-managed] Codex project-forbidden keys soxe must never write at project scope.
  * Spec §4b. validate() rejects install.overrides targeting these. [def:project-forbidden-keys]
  */
 const CODEX_PROJECT_FORBIDDEN_KEYS = new Set<string>([
@@ -507,7 +507,7 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
         if ('version' in member) {
           warnings.push(
             `bundle member "${String(mid)}" declares a "version" — ignored (ADR-0003: ` +
-              `members are referenced by id only). Remove it from the manifest.`,
+            `members are referenced by id only). Remove it from the manifest.`,
           );
         }
       }
@@ -656,7 +656,7 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
               if (CLAUDE_MANAGED_KEYS.has(key)) {
                 errors.push(
                   `install.overrides.claude["${key}"] targets a managed-tier key — ` +
-                  `sox never writes the Claude managed tier. [inv:never-managed] [def:managed-tier]`,
+                  `soxe never writes the Claude managed tier. [inv:never-managed] [def:managed-tier]`,
                 );
               }
             }
@@ -668,7 +668,7 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
               if (CODEX_PROJECT_FORBIDDEN_KEYS.has(key)) {
                 errors.push(
                   `install.overrides.codex["${key}"] is a project-forbidden key — ` +
-                  `sox must not set this at project scope. [inv:never-managed] [def:project-forbidden-keys]`,
+                  `soxe must not set this at project scope. [inv:never-managed] [def:project-forbidden-keys]`,
                 );
               }
             }
@@ -719,7 +719,7 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
       if (cs['additionalProperties'] === undefined || cs['additionalProperties'] === true) {
         warnings.push(
           `config_schema does not set additionalProperties: false — typos in config keys will not be detected. ` +
-          `Set "additionalProperties": false to enable unknown-key warnings from "sox config check".`,
+          `Set "additionalProperties": false to enable unknown-key warnings from "soxe config check".`,
         );
       }
       // Validate required array entries are strings
@@ -744,8 +744,8 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
     const processTypes = new Set(['mcp-server', 'agent', 'service']);
     if (processTypes.has(typeStr)) {
       warnings.push(
-        `type:"${typeStr}" has no config_schema — consider declaring one so "sox install" can ` +
-        `prompt for required configuration and "sox config check" can validate it.`,
+        `type:"${typeStr}" has no config_schema — consider declaring one so "soxe install" can ` +
+        `prompt for required configuration and "soxe config check" can validate it.`,
       );
     }
   }
@@ -799,7 +799,7 @@ export const ManifestSchema: Record<string, unknown> = {
     description: { type: 'string', minLength: 1 },
     compatibility: {
       type: 'object',
-      description: 'Host compatibility requirements. Accepts any shape (host or sox key).',
+      description: 'Host compatibility requirements. Accepts any shape (host or soxe key).',
       additionalProperties: true,
     },
     license: { type: 'string' },

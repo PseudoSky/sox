@@ -74,12 +74,12 @@ C1/C2 below is downstream of that unresolved ambiguity.
 
 | Action | Owning system | Exists as a framework contract? |
 |---|---|---|
-| O1 Discover | Registry + discovery command | Registry record: **yes**, but without a `verb` or invocation-surface field a command's entry point is undiscoverable at rest. Discovery command (`sox search`): **Absent** (`bin/sox` line 612: stubbed "not yet implemented"). |
+| O1 Discover | Registry + discovery command | Registry record: **yes**, but without a `verb` or invocation-surface field a command's entry point is undiscoverable at rest. Discovery command (`soxe search`): **Absent** (`bin/sox` line 612: stubbed "not yet implemented"). |
 | O2 Install | Install client + CLI + cascade + lockfile | **Defined.** |
 | O3 Configure | Config cascade + capability gate + env resolution | Cascade + capability gate: **Defined.** Per-extension config schema: **Absent.** |
 | O4 Activation | Host dispatcher: lockfile reader → verb router → process spawn or module `run()` call | **Absent** — no system reads the installed-command lockfile and exposes commands as invocable verbs. `bin/sox` knows no `run <id>` or `/<id>` verb. The `memory-cli` command bypasses the extension activation model entirely via a hand-maintained `dist/memory-cli.js` top-level entry (`docs/cli-build-decision.md` line 5). |
 | O5 Lifecycle | Install modes + promotion event + disable/uninstall | Install modes: **Defined.** Event bus + promotion: **Absent** (`docs/scope-promotion.md` notes no host event bus is implemented). |
-| C1 Invoke by verb | Host dispatcher: verb router → command entrypoint | **Absent** — the framework provides no verb router, no slash-command registrar, and no `sox run <id>` dispatch path. |
+| C1 Invoke by verb | Host dispatcher: verb router → command entrypoint | **Absent** — the framework provides no verb router, no slash-command registrar, and no `soxe run <id>` dispatch path. |
 | C2 Receive result | Host dispatcher: result contract | **Implicit** — the `{ stdout, exitCode }` shape exists by scaffold convention, not framework contract. |
 
 > **The seam.** Discovery/install/configure/cascade/capability are framework-owned and real. The
@@ -188,7 +188,7 @@ This is where command-specific drift enters.
 
 - **Verb/invocation-surface contract (#5) — manifest `verb` or `invocation` field:** the schema
   must require a command to declare, in its manifest, the invocation surface it binds to — whether a
-  CLI verb (`sox run <id>`), a slash-command name (`/<id>`), or a standalone executable path. This
+  CLI verb (`soxe run <id>`), a slash-command name (`/<id>`), or a standalone executable path. This
   declaration must be validated against a defined vocabulary of invocation surfaces. Currently both
   command tenants encode their invocation surface only in source comments and README prose
   (`status-command/src/index.ts` line 1: "invoked via slash command /status-command";

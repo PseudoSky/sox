@@ -1,5 +1,5 @@
 /**
- * libs/host-runtime/src/runtime-cli.ts — canonical CLI entry for sox start/stop/status/exec.
+ * libs/host-runtime/src/runtime-cli.ts — canonical CLI entry for soxe start/stop/status/exec.
  *
  * Canonical re-homing of the runtime CLI into the libs/host-runtime library.
  * Compiled to libs/host-runtime/dist/runtime-cli.js by the existing host-runtime build target.
@@ -22,15 +22,15 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { compilePolicy } from './policy.js';
 import {
+  getRuntimeFilePath,
+  getRuntimeRecord,
+  getScopePaths,
+  reconcileRuntime,
   startRuntime,
   stopRuntime,
-  reconcileRuntime,
-  getRuntimeRecord,
-  getRuntimeFilePath,
-  getScopePaths,
 } from './runtime.js';
-import { compilePolicy } from './policy.js';
 import type { PermissionsBlock } from './supervisor.js';
 
 // __dirname is available because tsconfig.lib.json compiles to CommonJS.
@@ -108,7 +108,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
   try {
     scopePaths = getScopePaths(scope, root);
   } catch (e) {
-    process.stderr.write(`sox start: ${String(e)}\n`);
+    process.stderr.write(`soxe start: ${String(e)}\n`);
     process.exit(1);
   }
 
@@ -148,9 +148,9 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
     }
 
     // Keep the process alive to maintain supervised children.
-    // Exit when the parent (bin/sox start) closes or sends SIGTERM/SIGINT.
+    // Exit when the parent (bin/soxe start) closes or sends SIGTERM/SIGINT.
     process.stdout.write(
-      `sox: runtime supervisor running (pid=${process.pid}) — Ctrl-C or 'sox stop' to stop\n`,
+      `sox: runtime supervisor running (pid=${process.pid}) — Ctrl-C or 'soxe stop' to stop\n`,
     );
 
     // Handle graceful shutdown
@@ -172,7 +172,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
       void shutdown('SIGINT');
     });
 
-    // SIGHUP = reconcile against config (raised by `sox disable` / `sox uninstall`
+    // SIGHUP = reconcile against config (raised by `soxe disable` / `soxe uninstall`
     // after they update the config). The supervisor stops any extension that is no
     // longer in the should-run set — in-process, so _stopping is set and there is NO restart.
     process.on('SIGHUP', () => {
@@ -193,7 +193,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
       // no-op
     }, 5000);
   } catch (e) {
-    process.stderr.write(`sox start: failed — ${String(e)}\n`);
+    process.stderr.write(`soxe start: failed — ${String(e)}\n`);
     process.exit(1);
   }
 }
@@ -207,7 +207,7 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
   try {
     scopePaths = getScopePaths(scope, root);
   } catch (e) {
-    process.stderr.write(`sox stop: ${String(e)}\n`);
+    process.stderr.write(`soxe stop: ${String(e)}\n`);
     process.exit(1);
   }
 
@@ -351,7 +351,7 @@ function cmdStatus(flags: Record<string, string>): void {
   try {
     scopePaths = getScopePaths(scope, root);
   } catch (e) {
-    process.stderr.write(`sox status: ${String(e)}\n`);
+    process.stderr.write(`soxe status: ${String(e)}\n`);
     process.exit(1);
   }
 
@@ -404,7 +404,7 @@ async function callViaExecSocket(
     };
 
     const timer = setTimeout(() => {
-      finish(() => reject(new Error(`sox exec: timeout waiting for exec socket response (${timeoutMs}ms)`)));
+      finish(() => reject(new Error(`soxe exec: timeout waiting for exec socket response (${timeoutMs}ms)`)));
     }, timeoutMs);
 
     rl.once('line', (line: string) => {
@@ -417,7 +417,7 @@ async function callViaExecSocket(
             resolve(resp.result);
           }
         } catch {
-          reject(new Error(`sox exec: invalid response from exec socket: ${line.slice(0, 120)}`));
+          reject(new Error(`soxe exec: invalid response from exec socket: ${line.slice(0, 120)}`));
         }
       });
     });
@@ -435,7 +435,7 @@ async function callViaExecSocket(
 /**
  * Call a tool on an extension from the activated runtime.
  *
- * Routing priority (mirrors apps/sox cmdExec):
+ * Routing priority (mirrors apps/soxe cmdExec):
  *   1. If runtime.json has execSocketPath and the socket file exists →
  *      route through the live supervisor session (zero throwaway spawn).
  *   2. Else → fresh MCP spawn with policy enforcement (service-mode or socket absent).
@@ -450,15 +450,15 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
   const argsJson = flags['args'] ?? '{}';
 
   if (!runtimeFilePath) {
-    process.stderr.write(`sox exec: --runtime-file is required\n`);
+    process.stderr.write(`soxe exec: --runtime-file is required\n`);
     process.exit(1);
   }
   if (!extId) {
-    process.stderr.write(`sox exec: --id is required\n`);
+    process.stderr.write(`soxe exec: --id is required\n`);
     process.exit(1);
   }
   if (!toolName) {
-    process.stderr.write(`sox exec: --tool is required\n`);
+    process.stderr.write(`soxe exec: --tool is required\n`);
     process.exit(1);
   }
 
@@ -466,19 +466,19 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
   try {
     toolArgs = JSON.parse(argsJson) as Record<string, unknown>;
   } catch {
-    process.stderr.write(`sox exec: invalid --args JSON: ${argsJson}\n`);
+    process.stderr.write(`soxe exec: invalid --args JSON: ${argsJson}\n`);
     process.exit(1);
   }
 
   const record = getRuntimeRecord(runtimeFilePath);
   if (!record) {
-    process.stderr.write(`sox exec: no runtime record at ${runtimeFilePath}. Run 'sox start' first.\n`);
+    process.stderr.write(`soxe exec: no runtime record at ${runtimeFilePath}. Run 'soxe start' first.\n`);
     process.exit(1);
   }
 
   const entry = record.entries.find((e) => e.id === extId || e.key === extId);
   if (!entry) {
-    process.stderr.write(`sox exec: extension '${extId}' not found in runtime record.\n`);
+    process.stderr.write(`soxe exec: extension '${extId}' not found in runtime record.\n`);
     process.stderr.write(`Available: ${record.entries.map((e) => e.id).join(', ')}\n`);
     process.exit(1);
   }
@@ -495,7 +495,7 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
       process.exit(mcpResult.isError ? 1 : 0);
     } catch (e) {
       // Socket error — fall through to fresh spawn with a warning.
-      process.stderr.write(`sox exec: exec socket failed (${String(e)}), falling back to fresh spawn\n`);
+      process.stderr.write(`soxe exec: exec socket failed (${String(e)}), falling back to fresh spawn\n`);
     }
   }
 
@@ -504,13 +504,13 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
 
   const extDir = resolveExtensionDir(entry.source, ROOT);
   if (!extDir) {
-    process.stderr.write(`sox exec: cannot resolve extension dir from source: ${entry.source}\n`);
+    process.stderr.write(`soxe exec: cannot resolve extension dir from source: ${entry.source}\n`);
     process.exit(1);
   }
 
   const manifestPath = path.join(extDir, 'extension.json');
   if (!existsSync(manifestPath)) {
-    process.stderr.write(`sox exec: manifest not found at ${manifestPath}\n`);
+    process.stderr.write(`soxe exec: manifest not found at ${manifestPath}\n`);
     process.exit(1);
   }
 
@@ -521,13 +521,13 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
     permissions?: PermissionsBlock;
   };
   if (!manifestFull.entrypoint) {
-    process.stderr.write(`sox exec: no entrypoint in manifest at ${manifestPath}\n`);
+    process.stderr.write(`soxe exec: no entrypoint in manifest at ${manifestPath}\n`);
     process.exit(1);
   }
 
   const entrypointPath = path.resolve(extDir, manifestFull.entrypoint);
   if (!existsSync(entrypointPath)) {
-    process.stderr.write(`sox exec: entrypoint not found at ${entrypointPath}\n`);
+    process.stderr.write(`soxe exec: entrypoint not found at ${entrypointPath}\n`);
     process.exit(1);
   }
 
@@ -608,7 +608,7 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
   } catch (e) {
     client.close();
     child.kill('SIGTERM');
-    process.stderr.write(`sox exec: tool call failed: ${String(e)}\n`);
+    process.stderr.write(`soxe exec: tool call failed: ${String(e)}\n`);
     process.exit(1);
   }
 }
@@ -633,6 +633,6 @@ switch (verb) {
     void cmdExec(flags);
     break;
   default:
-    process.stderr.write(`sox runtime-cli: unknown verb '${String(verb)}'\n`);
+    process.stderr.write(`soxe runtime-cli: unknown verb '${String(verb)}'\n`);
     process.exit(1);
 }

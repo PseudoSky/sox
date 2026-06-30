@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/schema",
   "$id": "ExtensionGenerator",
   "title": "Extension",
-  "description": "Scaffold a new sox extension using the libs/authoring core.",
+  "description": "Scaffold a new soxe extension using the libs/authoring core.",
   "type": "object",
   "properties": {
     "type": {

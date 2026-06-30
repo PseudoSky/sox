@@ -18,7 +18,7 @@ ScopePromotionProposed, etc.) and exits after handling it. No persistent process
 **Scaffold:**
 
 ```
-node bin/sox init hook <id>
+node bin/soxe init hook <id>
 ```
 
 **Born-conformant manifest shape** (required fields beyond the base):
@@ -32,8 +32,8 @@ node bin/sox init hook <id>
 **Permissions minimum:** declare every file glob the hook reads/writes + every socket path it
 connects to. Undeclared access is DENIED at runtime — an under-declared hook fails silently.
 
-**Enable:** `node bin/sox start <id>` — the runtime loads the hook and binds it to the declared
-events. Verify with `sox list` (state = RUNNING / loaded).
+**Enable:** `node bin/soxe start <id>` — the runtime loads the hook and binds it to the declared
+events. Verify with `soxe list` (state = RUNNING / loaded).
 
 **Decision point — hook + CLI:** if the source also has a CLI that provides genuine user-facing
 value, ship both as a `command` extension sharing a lib (DoD C7: no duplication), composed into a
@@ -63,13 +63,13 @@ authoritative contract.
 **Scaffold:**
 
 ```
-node bin/sox init skill <id>
+node bin/soxe init skill <id>
 ```
 
 or, with the `--from` primitive (when available):
 
 ```
-node bin/sox init skill <id> --from @<source-dir>
+node bin/soxe init skill <id> --from @<source-dir>
 ```
 
 **Born-conformant manifest shape:**
@@ -107,7 +107,7 @@ the `agent` guideline.
 **Scaffold:**
 
 ```
-node bin/sox init agent <id>
+node bin/soxe init agent <id>
 ```
 
 **Permissions:** map the `tools` list from the frontmatter to the manifest's `capabilities`
@@ -132,7 +132,7 @@ lifecycle block + health probe, permissions, and runtime field. Mirror exactly.
 **Scaffold:**
 
 ```
-node bin/sox init mcp-server <id>
+node bin/soxe init mcp-server <id>
 ```
 
 **Born-conformant manifest shape:**
@@ -145,14 +145,14 @@ node bin/sox init mcp-server <id>
 **Protocol fork (for tokenguard and similar):**
 
 - Source already speaks MCP (stdio JSON-RPC: initialize + tools/list + tools/call) → direct port;
-  health type `stdio-ping`; callable via `sox exec`.
+  health type `stdio-ping`; callable via `soxe exec`.
 - Source is a non-MCP server (HTTP / socket / custom RPC) → supervised via lifecycle + socket or
   command health; for a tool surface, add a thin MCP front (tools that call the core via a shared
   lib). Report whether it is a direct port, supervised-only, or server + MCP wrap.
 - If `mcp-server` is conceptually wrong for the source → stop and report; a `service` / `daemon`
   type is a founder decision.
 
-**Enable:** `node bin/sox start <id>` → RUNNING state in `sox list`; verify pid.
+**Enable:** `node bin/soxe start <id>` → RUNNING state in `soxe list`; verify pid.
 
 **Pilot:** `tokenguard` (source: `~/dev/security/wop/scripts/tokenguard/`) — decision point:
 type is TBD (mcp-server | command | both). Run Step 0 (resolve type mapping) before scaffolding.
@@ -171,10 +171,10 @@ entrypoint, and permissions.
 **Scaffold:**
 
 ```
-node bin/sox init command <id>
+node bin/soxe init command <id>
 ```
 
-**Enable:** `sox install <id>` makes it invocable. No `start` step.
+**Enable:** `soxe install <id>` makes it invocable. No `start` step.
 
 ---
 
@@ -189,13 +189,13 @@ server + organizer + hook + CLI. A bundle installs all members as one unit.
 **Scaffold:**
 
 ```
-node bin/sox init bundle <id>
+node bin/soxe init bundle <id>
 ```
 
 **Born-conformant manifest shape:** `"members": [{ "id": "<ext-id>", "version": "^<semver>" }, ...]`
 
-**Enable:** `sox install <id>` expands to installing all members; `sox start <id>` runs them.
-`sox uninstall <id>` removes all members.
+**Enable:** `soxe install <id>` expands to installing all members; `soxe start <id>` runs them.
+`soxe uninstall <id>` removes all members.
 
 ---
 

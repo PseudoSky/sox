@@ -1,6 +1,6 @@
-# Authoring Guide — building sox extensions
+# Authoring Guide — building soxe extensions
 
-This is the **how-to** for building, validating, installing, and publishing a sox extension of any
+This is the **how-to** for building, validating, installing, and publishing a soxe extension of any
 type, written for someone with **no prior repo context**. It is the practical companion to the
 per-type **framework-contract audits** in this directory (`agent.md`, `skill.md`, `mcp-server.md`,
 `service.md`, `hook.md`, `command.md`, `bundle.md`, `prompt.md`) — those grade *what the framework
@@ -105,7 +105,7 @@ ledger so `soxe uninstall <id>` reverses it exactly. See [§4](#4-scopes) and
   `soxe list` shows them `RUNNING`; `soxe exec <id> <tool> <json>` invokes a tool through the live
   runtime; `soxe stop` tears down with zero orphans.
 - **Declarative types** (`agent`, `skill`, `command`, `hook`) are *placed* at the host's discovery
-  path — the host (Claude Code / Codex) discovers and runs them; sox does not spawn them.
+  path — the host (Claude Code / Codex) discovers and runs them; soxe does not spawn them.
 
 ---
 
@@ -432,7 +432,7 @@ Manifest highlights (real shape — see the memory-server member,
 ```
 
 The `src/index.ts` stub uses `@modelcontextprotocol/sdk` `StdioServerTransport`, registers
-`ListTools` / `CallTool` handlers, and includes a `SIGTERM` handler (sox guarantees `SIGKILL` after
+`ListTools` / `CallTool` handlers, and includes a `SIGTERM` handler (soxe guarantees `SIGKILL` after
 `stop_timeout_ms`). Then:
 
 ```bash
@@ -560,7 +560,7 @@ narrowest globs that work. OS-kernel sandboxing is an explicit non-goal; enforce
 
 - **Runtime:** `declarative`. **Entrypoint:** `agent.md`. **Build:** none.
 - The `agent.md` is YAML frontmatter (`name`, `description`, `tools`, `model`) + a markdown body.
-  The host reads it as a subagent definition; sox does not spawn it.
+  The host reads it as a subagent definition; soxe does not spawn it.
 - **`tools:` footgun** — if the frontmatter lists a `tools:` allowlist, MCP tools not listed are
   invisible to the agent. Add `mcp__<server>__*` or omit `tools:` to inherit all. See the
   [README](../../README.md#if-youre-using-pre-built-agents--the-tools-footgun).

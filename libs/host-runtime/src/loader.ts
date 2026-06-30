@@ -12,19 +12,19 @@
  */
 
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import * as os from 'node:os';
-import { HookLoader } from './hook-loader.js';
-import { activateMcp } from './adapters/mcp.js';
-import { activateHook } from './adapters/hook.js';
-import { activateAgent, activateSkill } from './adapters/agent.js';
-import { activateCommand, CommandRegistry } from './adapters/command.js';
-import { ProcessSupervisor } from './supervisor.js';
-import { LogManager } from './log-manager.js';
-import type { McpAdapterHandle } from './adapters/mcp.js';
-import type { HookAdapterHandle } from './adapters/hook.js';
+import * as path from 'node:path';
 import type { AgentAdapterHandle, SkillAdapterHandle } from './adapters/agent.js';
+import { activateAgent, activateSkill } from './adapters/agent.js';
 import type { CommandAdapterHandle } from './adapters/command.js';
+import { activateCommand, CommandRegistry } from './adapters/command.js';
+import type { HookAdapterHandle } from './adapters/hook.js';
+import { activateHook } from './adapters/hook.js';
+import type { McpAdapterHandle } from './adapters/mcp.js';
+import { activateMcp } from './adapters/mcp.js';
+import { HookLoader } from './hook-loader.js';
+import { LogManager } from './log-manager.js';
+import { ProcessSupervisor } from './supervisor.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -117,7 +117,7 @@ export interface LoaderOptions {
   overrideMcpHealthToStdioPing?: boolean | undefined;
   /**
    * When set, only activate extensions whose lockfile key or base-id matches one of
-   * these strings. All others are skipped. Used by `sox start --id=<ext>`.
+   * these strings. All others are skipped. Used by `soxe start --id=<ext>`.
    */
   filterIds?: string[] | undefined;
   /**
@@ -277,7 +277,7 @@ async function processEntry(
   if (!fs.existsSync(entrypointPath)) {
     return {
       type: 'skipped',
-      reason: `built entrypoint not found at ${entrypointPath} (stale lockfile entry — run 'sox install' to refresh)`,
+      reason: `built entrypoint not found at ${entrypointPath} (stale lockfile entry — run 'soxe install' to refresh)`,
     };
   }
 
@@ -376,11 +376,11 @@ async function dispatchToAdapter(
       const rawLifecycle = manifest.lifecycle ?? {};
       const effectiveLifecycle: LifecycleBlock = overrideMcpHealthToStdioPing
         ? {
-            ...rawLifecycle,
-            health: rawLifecycle.health
-              ? { ...rawLifecycle.health, type: 'stdio-ping' as const }
-              : rawLifecycle.health,
-          }
+          ...rawLifecycle,
+          health: rawLifecycle.health
+            ? { ...rawLifecycle.health, type: 'stdio-ping' as const }
+            : rawLifecycle.health,
+        }
         : rawLifecycle;
 
       // R4: create a LogManager for background extensions when logDir is provided.
@@ -477,7 +477,7 @@ async function dispatchToAdapter(
     default:
       throw new Error(
         `[loader] Unknown extension type "${extType}" for "${key}". ` +
-          `Supported runtime types: mcp-server, hook, agent, skill, command, service.`,
+        `Supported runtime types: mcp-server, hook, agent, skill, command, service.`,
       );
   }
 }

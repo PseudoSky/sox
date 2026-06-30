@@ -92,7 +92,7 @@ For `http-get`: endpoint must be a full URL. The port is typically passed via `S
 
 ## Configuration
 
-Configuration flows through `config_schema` (`x-sox-prompt`/`x-sox-default`) → `sox install` prompt → `SOX_CONFIG_*` env vars at spawn time. Do not read config files directly.
+Configuration flows through `config_schema` (`x-sox-prompt`/`x-sox-default`) → `soxe install` prompt → `SOX_CONFIG_*` env vars at spawn time. Do not read config files directly.
 
 Example:
 
@@ -119,10 +119,10 @@ At runtime: `const port = process.env['SOX_CONFIG_PORT'] ?? '8080';`
 
 ## Supervision model
 
-- `sox start --id=<service-id>` spawns the service and registers it with the supervisor.
-- The supervisor emits SIGTERM on `sox stop`, waits `stop_timeout_ms`, then SIGKILL.
+- `soxe start --id=<service-id>` spawns the service and registers it with the supervisor.
+- The supervisor emits SIGTERM on `soxe stop`, waits `stop_timeout_ms`, then SIGKILL.
 - The service must handle SIGTERM cleanly (drain in-flight requests, close the port, exit 0).
-- `sox list` and `sox details` show the running state, pid, and scope.
+- `soxe list` and `soxe details` show the running state, pid, and scope.
 
 ### Signal contract
 
@@ -135,9 +135,9 @@ process.on('SIGINT',  () => { server.close(() => process.exit(0)); });
 
 ## Operator warning — concurrent start is a deferred non-goal
 
-> **WARNING:** Starting the same service twice simultaneously (two concurrent `sox start --id=<service-id>`) is **not** protected by the current runtime and may result in port conflicts, split supervisor state, or duplicate processes.
+> **WARNING:** Starting the same service twice simultaneously (two concurrent `soxe start --id=<service-id>`) is **not** protected by the current runtime and may result in port conflicts, split supervisor state, or duplicate processes.
 >
-> Concurrent-start safety is scoped to the `runtime-productionization` plan. Until that plan lands, operators must ensure only one `sox start` of a given service runs at a time. The `singleton: true` lifecycle flag is advisory at the manifest level; the supervisor does not yet enforce it as a hard lock against concurrent starts.
+> Concurrent-start safety is scoped to the `runtime-productionization` plan. Until that plan lands, operators must ensure only one `soxe start` of a given service runs at a time. The `singleton: true` lifecycle flag is advisory at the manifest level; the supervisor does not yet enforce it as a hard lock against concurrent starts.
 
 ---
 
@@ -160,11 +160,11 @@ Declare all resource access in `permissions`. The runtime enforces declared perm
 ## Scaffolding
 
 ```bash
-sox init service my-proxy
+soxe init service my-proxy
 # With explicit transport:
-sox init service my-proxy --transport=http
+soxe init service my-proxy --transport=http
 # Multi-transport:
-sox init service my-proxy --transports=http,sse
+soxe init service my-proxy --transports=http,sse
 ```
 
 The scaffold emits:
@@ -172,10 +172,10 @@ The scaffold emits:
 - `extension.json` — born-conformant manifest with `type:service`, `transports`, lifecycle, `config_schema`
 - `package.json`, `tsconfig.json`
 - `src/index.ts` — HTTP server stub (or stdio stub for `--transport=stdio`)
-- `dist/index.js` — pre-compiled stub so `sox validate` passes entrypoint-reachability immediately
+- `dist/index.js` — pre-compiled stub so `soxe validate` passes entrypoint-reachability immediately
 - `CHANGELOG.md`, `README.md`
 
-After scaffolding, `sox validate` passes without any manual edits.
+After scaffolding, `soxe validate` passes without any manual edits.
 
 ---
 

@@ -17,11 +17,11 @@
 
 Terms used across contexts. Reference as **[def:term]** from any context file.
 
-- **[def:role-a]** — *Runtime host.* sox loads / spawns / supervises / enforces / invokes the
-  extension (`service`, `mcp-server` in sox-run mode, in-process code). sox owns the whole stack.
+- **[def:role-a]** — *Runtime host.* soxe loads / spawns / supervises / enforces / invokes the
+  extension (`service`, `mcp-server` in sox-run mode, in-process code). soxe owns the whole stack.
   Spec §2.
 - **[def:role-b]** — *Package manager + reinjector.* The **foreign host** (Claude Code, Codex)
-  executes; sox only **materializes + versions + scopes + diffs** content into the host's own
+  executes; soxe only **materializes + versions + scopes + diffs** content into the host's own
   discovery locations. Execution is deferred to the host. Spec §2. See **[inv:boundary]**.
 - **[def:capability]** — A generic, idempotent installer operation implementing
   **apply / reverse / update(diff) / verify**, scope- and host-aware. The six: `file-drop`,
@@ -61,7 +61,7 @@ Terms used across contexts. Reference as **[def:term]** from any context file.
   `trust_level = "trusted"`. The registry encodes these per host. Spec §4b. See
   **[inv:never-managed]**.
 - **[def:born-conformant]** — Generator output validates clean immediately and is **byte-identical**
-  between `sox init` and the `@adhd/sox-nx` generator; `libs/authoring` is the single scaffolder (no
+  between `soxe init` and the `@adhd/sox-nx` generator; `libs/authoring` is the single scaffolder (no
   hand-rolled layout). The existing DoD A1/B1 gate. See **[ref:born-conformant-scaffold]**.
 
 ---
@@ -73,7 +73,7 @@ context lists only the *additional* invariants specific to it, and references th
 are the README "Design invariants"; the canonical definitions live here.
 
 - **[inv:boundary]** — Role B reinjection ends at *"the right bytes are at the host's discovery
-  path for the right scope."* sox never asserts the host *ran* the content. **Check:** no
+  path for the right scope."* soxe never asserts the host *ran* the content. **Check:** no
   capability `verify()` and no audit check asserts execution by the foreign host; verification tops
   out at present + valid at target. Spec §2.
 - **[inv:ledger-reversible]** — Every shared-file write (`config-merge` / `array-merge`) is recorded
@@ -89,7 +89,7 @@ are the README "Design invariants"; the canonical definitions live here.
 - **[inv:format-aware-merge]** — `config-merge` handles JSON **and** TOML; no json-only assumption.
   Codex `config.toml` round-trips through the same capability. **Check:** a toml apply→read→reverse
   round-trip preserves the table. See **[ref:config-merge-format]**. Spec §3.2, §4b.
-- **[inv:never-managed]** — sox never writes the Claude managed tier (**[def:managed-tier]**) nor
+- **[inv:never-managed]** — soxe never writes the Claude managed tier (**[def:managed-tier]**) nor
   Codex **[def:project-forbidden-keys]** at project scope. **Check:** `validate` refuses a
   descriptor targeting a managed/forbidden key; the engine has no code path that writes them. Spec
   §4, §4b.
@@ -151,8 +151,8 @@ point at **[shape:name]** rather than repeating the signature.
   { cap: "config-merge" | "array-merge" | "materialize" | "file-drop" | "bin-link",
     file: "<repo-relative path for project ledger | ~/.sox/... for user ledger>",
     keyPath: "<dot/array path within the shared file>",
-    values?: [...],            // array-merge: the exact values sox appended (deny-wins)
-    appliedHash?: "sha256:…"   // config-merge: hash of the value sox set
+    values?: [...],            // array-merge: the exact values soxe appended (deny-wins)
+    appliedHash?: "sha256:…"   // config-merge: hash of the value soxe set
   }
 ```
 
@@ -192,5 +192,5 @@ point at **[shape:name]** rather than repeating the signature.
   OS resource — no unenforced spawn path (claude-stdio or sox-service). Verified by
   `[audit-final.ref-policy-env-enforce]`.
 - **[ref:born-conformant-scaffold]** — Generator output validates clean and is byte-identical
-  between `sox init` and the `@adhd/sox-nx` generator; the `libs/authoring` core is the single
+  between `soxe init` and the `@adhd/sox-nx` generator; the `libs/authoring` core is the single
   scaffolder (no hand-rolled layout). Verified by `[audit-final.ref-born-conformant-scaffold]`.

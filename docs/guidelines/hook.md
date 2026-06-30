@@ -8,6 +8,7 @@
 ---
 
 ## Operating principle (read first)
+
 This document exists to find holes in the **framework**, not to grade any tenant.
 
 The causal direction is fixed: **tenant correctness is downstream of contract clarity.** A tenant can
@@ -29,6 +30,7 @@ A hole is any row that is not **Defined**. The rest of this document is the hole
 ---
 
 ## The layer model (type-agnostic)
+
 | Layer | Section | Question | Contract it governs |
 |---|---|---|---|
 | 0 | **Ecosystem User Actions (Usage)** | Who uses this type and what do they do? | The behaviors the framework promises consumers. |
@@ -62,7 +64,7 @@ execute deterministically with no LLM calls and are invisible to the agent's too
 
 | Action | Owning system | Exists as a framework contract? |
 |---|---|---|
-| O1 Discover | Registry + discovery command | Registry record: **yes**, but without an `event` field the hook's binding is undiscoverable at rest. Discovery command (`sox search`): **Absent** (`bin/sox` stubs it as "not yet implemented"). |
+| O1 Discover | Registry + discovery command | Registry record: **yes**, but without an `event` field the hook's binding is undiscoverable at rest. Discovery command (`soxe search`): **Absent** (`bin/sox` stubs it as "not yet implemented"). |
 | O2 Install | Install client + CLI + cascade + lockfile | **Defined.** |
 | O3 Configure | Config cascade + capability gate + env resolution | Cascade + capability gate: **Defined.** Per-extension config schema: **Absent.** |
 | O4 Activation | Host runtime: event emitter → `HookLoader.register()` + `HookLoader.fire()` | **Absent** — no host runtime emits lifecycle events or wires the `HookLoader` to an installed extension set. `tools/host-event-shim.js` is test scaffolding only (file line 9: "TEST SCAFFOLDING only"). |
@@ -217,6 +219,7 @@ Declared-unimplemented. This section is where hook-specific drift enters.
 ---
 
 ## Notes for the author of the NEXT type document
+
 The invariant spine (scaffold → schema → validate → build → version → install/cascade → capability
 gate) should read consistently across every `docs/guidelines/*.md`. The **activation + consumption**
 seam is what each type's document exists to specify. If your finding does NOT reproduce the

@@ -17,9 +17,9 @@ members — including native dependencies — straight from the registry.
 
 ---
 
-## What is a sox extension?
+## What is a soxe extension?
 
-A sox extension is a small, self-describing unit of LLM capability. Every extension carries an
+A soxe extension is a small, self-describing unit of LLM capability. Every extension carries an
 `extension.json` manifest (validated against the [`@adhd/sox-manifest`](./libs/manifest) schema) and
 is one of eight **types**:
 
@@ -181,7 +181,7 @@ Sox targets **macOS and Linux** (Node ≥ 20, `pnpm`). The cross-platform gotcha
 
 - **The CLI is `soxe`, never `sox`.** The bare name `sox` collides with the Homebrew/most-distros
   **`sox` audio tool** — so the shipped binary is **`soxe`** (`bin/soxe`, a ~10-line shim that loads
-  `dist/apps/sox/main.js`). A stdio MCP server registered by sox spawns via the resolved `soxe`
+  `dist/apps/sox/main.js`). A stdio MCP server registered by soxe spawns via the resolved `soxe`
   binary; the install engine resolves the command as `SOX_CLI_BIN` → the running CLI's
   `process.argv[1]` → `'soxe'`, and **never** falls back to `'sox'`. If `~/.claude.json` shows
   `command: "sox"`, re-install at user scope.

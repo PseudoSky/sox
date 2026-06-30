@@ -11,37 +11,37 @@ as they exist on `feat/nx-migration`.
 
 ---
 
-## 0. Command Boundary: `sox list` vs `sox status`
+## 0. Command Boundary: `soxe list` vs `soxe status`
 
 These two commands answer different questions and must not be conflated.
 
-**`sox list`** is an inventory command. It has three modes:
+**`soxe list`** is an inventory command. It has three modes:
 
-- `sox list` (no flags) — reads the lockfile and `runtime.json` for the current project.
+- `soxe list` (no flags) — reads the lockfile and `runtime.json` for the current project.
   Fast: disk reads only, one `process.kill(pid, 0)` per entry to flag dead entries. Answers:
   "what is installed here, at what version, is the supervisor running?"
-- `sox list --all` — reads `~/.sox/supervisors.json` and merges the runtime records of every
+- `soxe list --all` — reads `~/.sox/supervisors.json` and merges the runtime records of every
   live supervisor on the machine. Answers: "what is running across all my projects right now?"
   Requires at least one supervisor to be running to show anything useful.
-- `sox list --global` — reads `~/.sox/install-registry.json` (the install ledger written by
-  `sox install`). No live probing. Answers: "across every project I have ever installed
+- `soxe list --global` — reads `~/.sox/install-registry.json` (the install ledger written by
+  `soxe install`). No live probing. Answers: "across every project I have ever installed
   extensions in, what is installed and when was it last updated?" Works without any supervisor
   running.
 
-`sox list` is analogous to `npm list` or `dpkg -l`. All three modes support `--id=<ext>`,
+`soxe list` is analogous to `npm list` or `dpkg -l`. All three modes support `--id=<ext>`,
 `--scope=<scope>`, and `--json`.
 
-**`sox status`** is a health command. It reads `~/.sox/supervisors.json` (the global supervisor
+**`soxe status`** is a health command. It reads `~/.sox/supervisors.json` (the global supervisor
 registry) and live-probes each registered supervisor and its running extensions via pid check
 and exec socket ping. It answers: "what is running right now, is it healthy, how long has it
 been up?" It is analogous to `systemctl status`. It is slower — it opens a socket connection
-per supervisor to probe liveness. `sox status` can only show extensions that a supervisor has
+per supervisor to probe liveness. `soxe status` can only show extensions that a supervisor has
 activated; extensions that are installed but whose supervisor is not running will not appear.
 
 The two commands share the `--scope` and `--json` flags but are otherwise entirely independent
 pipelines. A summary of the distinction:
 
-| Dimension | `sox list` | `sox list --all` | `sox list --global` | `sox status` |
+| Dimension | `soxe list` | `soxe list --all` | `soxe list --global` | `soxe status` |
 |-----------|-----------|-----------------|---------------------|--------------|
 | Data source | Local lockfile + runtime.json | All supervisor runtime.json files | Install ledger (~/.sox/install-registry.json) | Supervisor registry + live socket probe |
 | Requires running supervisor | No | Yes | No | Yes |
@@ -133,7 +133,7 @@ Called inside `stopRuntime()` after all extensions are stopped and the exec sock
 Steps: read the file, filter out the entry whose `supervisorId` matches, write atomically.
 If the file is absent, skip silently.
 
-### `sox list --all`
+### `soxe list --all`
 
 Reads `~/.sox/supervisors.json`, then for each entry:
 
@@ -270,7 +270,7 @@ export function acquireStartLock(
 
       if (Date.now() >= deadline) {
         throw new Error(
-          `[runtime] Cannot start: another sox start is already running for this ` +
+          `[runtime] Cannot start: another soxe start is already running for this ` +
           `scope+root (lock held for ${timeoutMs}ms). ` +
           `If you are sure no other start is running, delete: ${lockPath}`,
         );
@@ -285,7 +285,7 @@ export function acquireStartLock(
 Rationale for `O_EXCL` over `flock`: `flock` requires keeping a file descriptor open for the
 lifetime of the lock, which works but adds state to track. `O_EXCL` + pid-inside is simpler,
 universally portable, and provides stale-lock detection (if the holder PID is dead, the lock
-is unconditionally stale). The 50ms spin is acceptable because `sox start` is a human-invoked
+is unconditionally stale). The 50ms spin is acceptable because `soxe start` is a human-invoked
 command, not a hot path.
 
 ### Integration point
@@ -300,7 +300,7 @@ fully registered and subsequent `startRuntime` calls will see it in the idempote
 
 ```
 sox: start: another supervisor is already starting for scope=project root=/path/to/project
-     (timeout after 10s). If no sox start is running, delete ~/.sox/locks/<id>.lock
+     (timeout after 10s). If no soxe start is running, delete ~/.sox/locks/<id>.lock
 ```
 
 ---
@@ -389,10 +389,10 @@ export class LogManager {
 The write stream is opened with `fs.createWriteStream(path, { flags: 'a' })` so that log
 files survive across supervisor restarts (append, not truncate).
 
-### `sox logs` command
+### `soxe logs` command
 
 ```
-sox logs --id=<extId> [--scope=<scope>] [--follow] [--lines=<n>] [--json]
+soxe logs --id=<extId> [--scope=<scope>] [--follow] [--lines=<n>] [--json]
 ```
 
 Implementation in `apps/sox/src/main.ts`:
@@ -424,7 +424,7 @@ not a structured event log.
 ### `--daemon` flag behavior: `child_process.spawn` detached + unref
 
 ```
-sox start --daemon [--scope=<scope>] [--root=<root>] [--id=<extId>]
+soxe start --daemon [--scope=<scope>] [--root=<root>] [--id=<extId>]
 ```
 
 Node.js's `child_process.spawn` with `detached: true` + `stdio: 'ignore'` + `.unref()` is the
@@ -433,7 +433,7 @@ correct cross-platform daemonization mechanism in Node.js. Double-fork (the Unix
 is unnecessary because `spawn(..., { detached: true })` already calls `setsid()` on Linux/macOS
 when `detached: true` is set.
 
-The daemon invocation re-runs the same `sox start` command without `--daemon`, with an
+The daemon invocation re-runs the same `soxe start` command without `--daemon`, with an
 additional internal flag `--_daemon-child` that suppresses the daemonize step:
 
 ```typescript
@@ -461,7 +461,7 @@ process.stdout.write(
   `[sox] Supervisor started in background.\n` +
   `  PID:     ${child.pid}\n` +
   `  Logs:    ${logPath}\n` +
-  `  Follow:  sox logs --id=<ext> --follow\n`,
+  `  Follow:  soxe logs --id=<ext> --follow\n`,
 );
 process.exit(0);
 ```
@@ -475,14 +475,14 @@ The child inherits the fd and writes to it from the start of execution — no ou
 [sox] Supervisor started in background.
   PID:     84213
   Logs:    ~/.sox/logs/a3f7b2c9d1e4/supervisor-2026-06-18.log
-  Follow:  sox logs --id=<ext> --follow
+  Follow:  soxe logs --id=<ext> --follow
 ```
 
 Exit code: 0. The caller's shell is returned immediately.
 
-### How `sox stop` finds the daemon
+### How `soxe stop` finds the daemon
 
-`sox stop` does not use signals from the terminal. It reads `~/.sox/supervisors.json`, finds
+`soxe stop` does not use signals from the terminal. It reads `~/.sox/supervisors.json`, finds
 the entry for the scope+root, and sends the stop request via the exec socket (existing
 `callViaExecSocket` pattern in `apps/sox/src/main.ts`). If the exec socket is unreachable,
 falls back to `process.kill(entry.pid, 'SIGTERM')`. The global registry is what makes daemon
@@ -628,15 +628,15 @@ This contract is enforced at two levels:
 scaffolded entrypoint:
 
 ```typescript
-// Generated in sox init mcp-server / service entrypoints:
+// Generated in soxe init mcp-server / service entrypoints:
 process.on('SIGTERM', () => {
   // TODO: complete in-flight requests, flush writes.
-  // sox guarantees SIGKILL after stop_timeout_ms if this handler does not exit.
+  // soxe guarantees SIGKILL after stop_timeout_ms if this handler does not exit.
   process.exit(0);
 });
 ```
 
-**Validate-time enforcement:** `sox validate` (and the `--strict` flag) checks that any
+**Validate-time enforcement:** `soxe validate` (and the `--strict` flag) checks that any
 `background: true` extension's entrypoint source file contains a `SIGTERM` handler. The check
 is textual (grep for `'SIGTERM'` or `"SIGTERM"`), not semantic. This is explicitly a weak
 check — it prevents accidental omission, not intentional bypass. The warning text:
@@ -654,10 +654,10 @@ all existing extensions to ensure compliance first.
 
 ## 8. Health Surface (R7)
 
-### `sox status` command
+### `soxe status` command
 
 ```
-sox status [--id=<extId>] [--project=<path>] [--scope=user|project|local] [--json] [--lines=<n>]
+soxe status [--id=<extId>] [--project=<path>] [--scope=user|project|local] [--json] [--lines=<n>]
 ```
 
 **Default behavior (no flags):** read `~/.sox/supervisors.json`, run the stale-GC probe on
@@ -688,7 +688,7 @@ interface HealthRecord {
   /** Versioned key as stored in the lockfile (e.g. "memory-server@0.1.0") */
   key: string;
   scope: string;
-  /** The supervisor's root directory (--root used at sox start time).
+  /** The supervisor's root directory (--root used at soxe start time).
    *  Required to distinguish two memory-server instances in different projects. */
   root: string;
   /** Basename of root — used in the table PROJECT column for readability */
@@ -778,11 +778,11 @@ Write path: the supervisor appends a new `RunRecord` (with `stoppedAt: null`) wh
 completes. On `stop()`, it patches the most recent matching record with `stoppedAt`, `exitCode`,
 and `stopReason`. Writes use the atomic-rename pattern.
 
-`sox status` reads this file to populate `lastStartedAt`, `lastStoppedAt`, `lastRunDurationMs`,
+`soxe status` reads this file to populate `lastStartedAt`, `lastStoppedAt`, `lastRunDurationMs`,
 and `totalUptimeMs` on the `HealthRecord`. If the file is absent (new supervisor, pre-P4), all
 four fields default to null/0.
 
-`sox logs --id=<extId> --history` prints the run history table:
+`soxe logs --id=<extId> --history` prints the run history table:
 
 ```
 EXT             STARTED                   STOPPED                   DURATION  REASON
@@ -951,10 +951,10 @@ registry index for `visibility: "internal"`. If found, abort with:
 
 ```
 sox: install: "memory-server" is a member of bundle "sox-memory-bundle".
-     Install the bundle instead: sox install sox-memory-bundle
+     Install the bundle instead: soxe install sox-memory-bundle
 ```
 
-**`sox search`:** By default excludes `visibility: "internal"` entries. Add `--all` flag to
+**`soxe search`:** By default excludes `visibility: "internal"` entries. Add `--all` flag to
 include them (useful for debugging). Bundle entries show their member types inline:
 
 ```
@@ -963,13 +963,13 @@ sox-memory-bundle  bundle  0.1.0  [mcp-server, agent, hook, command]  sox-memory
 
 ### Bundle start/stop atomicity
 
-`sox start <bundle-id>` and `sox stop <bundle-id>` are implemented as sequential iteration
+`soxe start <bundle-id>` and `soxe stop <bundle-id>` are implemented as sequential iteration
 over members, not as a single atomic supervisor unit. The supervisor model is one process per
 member extension — this does not change. "Atomic" from the user's perspective means a single
-`sox start sox-memory-bundle` command starts all four members without requiring four separate
+`soxe start sox-memory-bundle` command starts all four members without requiring four separate
 commands. At the OS level there are still four child processes.
 
-Start semantics: `sox start --id=memory-server --id=memory-organizer --id=memory-flush --id=memory-cli`
+Start semantics: `soxe start --id=memory-server --id=memory-organizer --id=memory-flush --id=memory-cli`
 (the existing `filterIds` option in `StartRuntimeOptions` already supports this). The CLI
 resolves `bundle-id → member ids` by reading the bundle's `extension.json` `members` array,
 then passes them as `filterIds`.
@@ -982,9 +982,9 @@ bundle start is considered failed. Members that DID start are NOT automatically 
 this phase — rollback adds complexity without sufficient benefit at current scale. The error
 message names which member failed.
 
-### `sox init bundle` authoring change
+### `soxe init bundle` authoring change
 
-`sox init bundle <bundle-id> --member=<type>:<member-id> [--member=...]` scaffolds:
+`soxe init bundle <bundle-id> --member=<type>:<member-id> [--member=...]` scaffolds:
 
 ```
 extensions/bundles/<bundle-id>/
@@ -1015,12 +1015,12 @@ from manifesting during R1/R4 work.
 | **P1** | R3 (start lock) | Isolated change to `runtime.ts` entry point. Prevents the concurrent-start race before any other work begins. Touches one file, zero schema changes. Also includes the `writeRuntimeRecord` atomic-write fix (Section 11, add-1) since both touch `runtime.ts`. |
 | **P2** | R5 (process group), R6 (two-phase shutdown + signal contract) | Both are changes to `supervisor.ts` `_spawn()` and `stop()`. They share the same diff. R5 adds `detached: true`; R6 extends the SIGTERM→SIGKILL sequence to use `process.kill(-pgid)`. Signal contract enforcement in `libs/authoring` templates goes here too. |
 | **P3** | R4 (log pipeline) | New `LogManager` class, changes to `supervisor.ts` data handlers, new `~/.sox/logs/` directory layout. Also introduces `run-history.json` write path in the supervisor (required by R7/P7). Standalone — no other phase depends on it being first, but R8 and R7 both block on it. |
-| **P4** | R1 (global registry) | New `~/.sox/supervisors.json`, self-registration in `startRuntime`, self-deregistration in `stopRuntime`. Also includes socket path canonicalization to `~/.sox/supervisors/<supervisorId>.sock` (Section 11, add-2). No GC logic yet. Adds `sox list --all`. |
+| **P4** | R1 (global registry) | New `~/.sox/supervisors.json`, self-registration in `startRuntime`, self-deregistration in `stopRuntime`. Also includes socket path canonicalization to `~/.sox/supervisors/<supervisorId>.sock` (Section 11, add-2). No GC logic yet. Adds `soxe list --all`. |
 | **P5** | R2 (stale GC) | New `gc.ts` probeEntryLiveness, integrated into `cmdList` and `cmdStatus`. Depends on R1 (registry file must exist). |
-| **P6** | R8 (daemon mode) | Depends on R4 (log file path known before spawn). Adds `--daemon` flag to `cmdStart`. Depends on R1 (registry must be written so `sox stop` can find the daemon). |
-| **P7** | R7 (health surface) | New `sox status` command (multi-row default, filter flags, detail view, run history). Depends on R1 (registry for supervisor enumeration and socket path), R4 (log tail and run-history.json). |
+| **P6** | R8 (daemon mode) | Depends on R4 (log file path known before spawn). Adds `--daemon` flag to `cmdStart`. Depends on R1 (registry must be written so `soxe stop` can find the daemon). |
+| **P7** | R7 (health surface) | New `soxe status` command (multi-row default, filter flags, detail view, run history). Depends on R1 (registry for supervisor enumeration and socket path), R4 (log tail and run-history.json). |
 | **P8** | R9 (bundle co-location) | Filesystem migration + registry/installer changes. Most cross-cutting. Isolated last because it requires coordinated changes to `build-index.ts`, `install.ts`, `main.ts`, `loader.ts`, and the authoring templates. A feature branch per-bundle-id is the safest approach. |
-| **P9** | Section 12 (global install registry) | New `~/.sox/install-registry.json`, `sox list --global` mode, and `sox upgrade --all`. Shares install engine touched in P8. Ships last because it depends on the install engine being stable after the R9 bundle changes, and adds no new runtime coupling. |
+| **P9** | Section 12 (global install registry) | New `~/.sox/install-registry.json`, `soxe list --global` mode, and `soxe upgrade --all`. Shares install engine touched in P8. Ships last because it depends on the install engine being stable after the R9 bundle changes, and adds no new runtime coupling. |
 
 ### Shared code changes by item
 
@@ -1032,7 +1032,7 @@ from manifesting during R1/R4 work.
 | `libs/host-runtime/src/log-manager.ts` (new) | R4 |
 | `libs/host-runtime/src/gc.ts` (new) | R2 |
 | `libs/host-runtime/src/registry.ts` (new) | R1 |
-| `apps/sox/src/main.ts` | R1 (`--all`), R4 (`sox logs`), R7 (`sox status`), R8 (`--daemon`), R9 (bundle start/stop dispatch), Section 12 (`--global` mode on `sox list`, `sox upgrade --all`) |
+| `apps/sox/src/main.ts` | R1 (`--all`), R4 (`soxe logs`), R7 (`soxe status`), R8 (`--daemon`), R9 (bundle start/stop dispatch), Section 12 (`--global` mode on `soxe list`, `soxe upgrade --all`) |
 | `libs/install-engine/src/install.ts` | R9 (visibility enforcement), Section 12 (install-registry write) |
 | `libs/authoring/src/templates/mcp-server/` | R6 (SIGTERM stub) |
 | `libs/authoring/src/templates/service/` | R6 (SIGTERM stub) |
@@ -1045,8 +1045,8 @@ from manifesting during R1/R4 work.
 
 | Change | Impact |
 |--------|--------|
-| Moving member extensions to `extensions/bundles/<bundle-id>/members/<id>/` | Existing lockfile `source` paths become invalid. Any installed environment must re-run `sox install`. |
-| `visibility: internal` on bundle members | `sox search` stops returning them by default. Operators using `sox install memory-server` directly get a hard error. |
+| Moving member extensions to `extensions/bundles/<bundle-id>/members/<id>/` | Existing lockfile `source` paths become invalid. Any installed environment must re-run `soxe install`. |
+| `visibility: internal` on bundle members | `soxe search` stops returning them by default. Operators using `soxe install memory-server` directly get a hard error. |
 | `detached: true` on spawned extensions | Extensions that assumed their parent PID was the supervisor's PID will see a different PGID. No known extension makes this assumption in the current codebase. |
 
 No lockfile version bump is required for any of these changes. The lockfile schema
@@ -1103,7 +1103,7 @@ characters even with a long home directory), globally locatable, and does not po
 directories.
 
 This change must land in P4 (R1) since R1 reads `execSocketPath` from the registry to
-implement `sox list --all` and `sox stop` for daemons.
+implement `soxe list --all` and `soxe stop` for daemons.
 
 ---
 
@@ -1115,7 +1115,7 @@ The global supervisor registry (Section 1) tracks what is running. The install r
 what has ever been installed, where, at what version, and when. Together they answer the full
 operational picture:
 
-- `sox upgrade memory-server --all` — re-run install for every project that has `memory-server`
+- `soxe upgrade memory-server --all` — re-run install for every project that has `memory-server`
   installed, updating to the latest registry version.
 - Audit: "which projects are still pinned to `memory-server@0.1.0`?"
 - Usage analytics: how widely is each extension deployed across the machine?
@@ -1150,7 +1150,7 @@ interface InstallRecord {
   root: string;
   /** ISO 8601 timestamp of the first install of this extId+scope+root combination */
   installedAt: string;
-  /** ISO 8601 timestamp of the most recent `sox install` that touched this record */
+  /** ISO 8601 timestamp of the most recent `soxe install` that touched this record */
   updatedAt: string;
   /** Source URI from the lockfile entry at install time (file:// or https://) */
   source: string;
@@ -1189,20 +1189,20 @@ try {
 
 ### CLI
 
-**`sox list --global`**
+**`soxe list --global`**
 
 Queries `~/.sox/install-registry.json` and displays one row per `InstallRecord`. No live
 probing — this mode works without any supervisor running. Accepts the same filter flags as
-other `sox list` modes: `--id=<ext>`, `--scope=<scope>`, `--json`.
+other `soxe list` modes: `--id=<ext>`, `--scope=<scope>`, `--json`.
 
 ```
-sox list --global
-sox list --global --id=memory-server
-sox list --global --scope=project
-sox list --global --json
+soxe list --global
+soxe list --global --id=memory-server
+soxe list --global --scope=project
+soxe list --global --json
 ```
 
-Human table output — note the column set differs from the default `sox list` view. STATUS and
+Human table output — note the column set differs from the default `soxe list` view. STATUS and
 PID are replaced by INSTALLED and UPDATED because install records carry no live running state:
 
 ```
@@ -1218,7 +1218,7 @@ available via `--json`.
 
 JSON output: a JSON array of `InstallRecord` objects.
 
-**`sox upgrade <ext-id> --all`**
+**`soxe upgrade <ext-id> --all`**
 
 For each `InstallRecord` matching `ext-id`, verify the extension is still present in that
 project's current lockfile before attempting an upgrade (see "Upgrade safety check" below),
@@ -1226,7 +1226,7 @@ then re-run install with the appropriate `root` and `scope`. Reports success/fai
 project:
 
 ```
-sox upgrade memory-server --all
+soxe upgrade memory-server --all
 
 Upgrading memory-server in 2 projects:
   [1/2] /Users/nix/dev/ai/sox-ecosystem (scope: project) ... done (0.1.0 → 0.2.0)
@@ -1235,13 +1235,13 @@ Upgrading memory-server in 2 projects:
 2 upgraded, 0 failed.
 ```
 
-`sox upgrade` does not modify `process.cwd()` — it invokes `install()` from
+`soxe upgrade` does not modify `process.cwd()` — it invokes `install()` from
 `libs/install-engine` directly with the appropriate `root` and `scope` options, the same
 way `cmdInstall` does for the current directory. No shell subprocess is spawned.
 
 ### Removal path
 
-`sox uninstall` must remove the corresponding `InstallRecord` from `~/.sox/install-registry.json`
+`soxe uninstall` must remove the corresponding `InstallRecord` from `~/.sox/install-registry.json`
 after successfully removing the lockfile entry.
 
 `libs/install-engine/src/install-registry.ts` exports:
@@ -1280,18 +1280,18 @@ try {
 }
 ```
 
-Root resolution: if `sox uninstall --id=<ext> --scope=<scope>` is invoked without `--root`,
+Root resolution: if `soxe uninstall --id=<ext> --scope=<scope>` is invoked without `--root`,
 default to `process.cwd()`. This matches the install-time behaviour — `getScopePaths` for
 `project` and `local` scopes already uses the cwd-derived root — so the `(extId, scope, root)`
-key will align with the record written at install time as long as the user runs `sox uninstall`
-from the same directory they ran `sox install`.
+key will align with the record written at install time as long as the user runs `soxe uninstall`
+from the same directory they ran `soxe install`.
 
 ### Upgrade safety check
 
-Before re-running install for a given `InstallRecord`, `sox upgrade --all` must verify the
+Before re-running install for a given `InstallRecord`, `soxe upgrade --all` must verify the
 extension still appears in that project's current lockfile. This guards against a race where
-`sox uninstall` ran but `removeInstallRecord` failed (best-effort write), leaving a stale entry
-that `sox upgrade --all` would otherwise blindly reinstall.
+`soxe uninstall` ran but `removeInstallRecord` failed (best-effort write), leaving a stale entry
+that `soxe upgrade --all` would otherwise blindly reinstall.
 
 ```typescript
 // In cmdUpgrade, for each InstallRecord before calling install():
@@ -1306,8 +1306,8 @@ const inLockfile = lockfile !== null &&
 
 if (!inLockfile) {
   process.stdout.write(
-    `sox upgrade: skipping ${record.extId} @ ${path.basename(record.root)} ` +
-    `(not in current lockfile — run sox install to re-add)\n`,
+    `soxe upgrade: skipping ${record.extId} @ ${path.basename(record.root)} ` +
+    `(not in current lockfile — run soxe install to re-add)\n`,
   );
   continue;
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# manifest-templates guard — [dod.1]: sox init <type> <id> produces an extension
-# that passes sox validate for every active type. Sources [def:probe-harness].
+# manifest-templates guard — [dod.1]: soxe init <type> <id> produces an extension
+# that passes soxe validate for every active type. Sources [def:probe-harness].
 
 set -uo pipefail
 source "$(dirname "$0")/../sox-probe.sh"
@@ -12,9 +12,9 @@ TYPES="agent skill mcp-server command hook bundle"
 for TYPE in $TYPES; do
   ID="test-${TYPE}-init"
 
-  # Run: sox init <type> <id> from $FRESH — uses the real CLI.
-  sox init "$TYPE" "$ID"
-  assert_exit0 "sox init $TYPE $ID"
+  # Run: soxe init <type> <id> from $FRESH — uses the real CLI.
+  soxe init "$TYPE" "$ID"
+  assert_exit0 "soxe init $TYPE $ID"
 
   # Find the created dir — types use different subdir names.
   case "$TYPE" in
@@ -29,9 +29,9 @@ for TYPE in $TYPES; do
   EXT_PATH="$FRESH/extensions/$SUBDIR/$ID"
   assert_dir "$EXT_PATH"
 
-  # Run: sox validate <path> — must exit 0 with no [ERROR] in stdout.
-  sox validate "$EXT_PATH"
-  assert_exit0 "sox validate $TYPE/$ID"
+  # Run: soxe validate <path> — must exit 0 with no [ERROR] in stdout.
+  soxe validate "$EXT_PATH"
+  assert_exit0 "soxe validate $TYPE/$ID"
 
   # Check stdout for [ERROR] tokens (validate must be clean).
   case "$LAST_OUT" in

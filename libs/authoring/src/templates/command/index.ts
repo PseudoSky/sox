@@ -116,7 +116,7 @@ export function commandTemplate(opts: TemplateOpts): FileSet {
       `}`,
     ].join('\n'),
 
-    // Pre-compiled stub so sox validate passes the P0 entrypoint-reachability gate
+    // Pre-compiled stub so soxe validate passes the P0 entrypoint-reachability gate
     // immediately after scaffold (before the author runs `npm run build`).
     // This file is overwritten by the real build; treat it as a placeholder.
     'dist/index.js': [
@@ -143,7 +143,7 @@ export function commandTemplate(opts: TemplateOpts): FileSet {
       '',
       '```bash',
       `# Via sox`,
-      `sox exec ${opts.id} [args...]`,
+      `soxe exec ${opts.id} [args...]`,
       '',
       `# Direct`,
       `${opts.id} [args...]`,

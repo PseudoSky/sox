@@ -27,11 +27,13 @@ packages** (non-coding generalization is a HARD requirement).
 a solution to one or more USE_CASE, (c) has base ABILITIES enabling consumption.
 
 **3 LENSES (depth axis — "how far will the user dig"):**
+
 - **Glance** — first surface only (README / landing / slide 1 / PDF p1 / package readme). 5-second-test behavior.
 - **Librarian** — thoroughly reads docs *discoverable by following described links* from the entry point; recurses into linked docs whose link text describes them; does NOT explore everything.
 - **Motivated** — **unrestricted access to ANY available source** (code, page view-source, network, linked externals, appendices) to reach fact-based conclusions; **logs every dig beyond the readily-surfaced docs** — each = a documentation-insufficiency signal. (This generalized form ABSORBS the originally-proposed 4th "Unrestricted" lens; there is NO 4th lens in v1. Persona-axis lenses deferred to v2.)
 
 **3 ACTIONS (operating modes), each lensed:**
+
 - **Audit** — ABILITIES (nothing too basic; generic→very specific) → Stated Use Cases (every one mentioned, even in passing) → Existing Generalization (true statements about current capability) → Target Market (who'd receive/buy/why/industry/pay) → User Definitions (profiles per stakeholder: discoverer / decider / executor) → assessment table (use cases = cols, profiles = rows; cells 🟢🟡⭐🔴) → gap tables for every non-🟢/⭐ cell → **Final synthesis: does this lens tell a compelling story? YES/NO**.
 - **Repair** — given an audit, resolve unanswered (🔴/🟡) items at the lens depth → gap analysis (solved / solvable / unsolved) → per-User ROI & LOE → exact task list for simple solved/solvable → for complex/unsolved, list what must be answered FIRST.
 - **Generalize** — problems solved → industry verticals with the *exact* problem → *similar* problems across industries → 3 adjacent-vertical pitches → 3 horizontal (out-of-set) target markets.
@@ -68,11 +70,13 @@ Per-event metrics: `chars_read`(int) · `importance`(1–5) · `effort`(`{step_c
 | Extensions adopted | E1 cross-lens synthesis · E2 metrics rollup · E3 optional first-person empathy trace |
 
 ### Skill Rubrics
+
 - **S0 cost class = `generative`.** COST.md ships `f(N,U,P,A,L,R)` (N=artifacts read under lens, U=use cases, P=profiles, A=abilities, L=lenses, R=re-reads). Dominant term ≈ O(U·P) matrix + gap tables. Tooling levers lower it; irreducible core = analytical prose.
 - **S5 determinism partition:** scripts (fail-closed) = JSONL append+validate, metrics rollup, fingerprint/version assignment, slug-registry CRUD. prose (judgment, template-constrained) = abilities/use-cases/generalization/market/profiles/scoring/gaps/ROI-LOE/synthesis.
 - **S6 description (≤80w, trigger-led):** simulate the USER from available material; near-neighbor ux-researcher studies *real humans*, this *simulates* from material.
 
 ### File tree to build (NOTHING written yet)
+
 ```
 tools/skills/user-thinking/
   SKILL.md            # core: when-to-use, invocation contract, 3 lenses, 3 actions, no-guess law, output contract → refs (progressive disclosure; load-bearing rules in primacy)
@@ -82,36 +86,42 @@ tools/skills/user-thinking/
   scripts/     version.mjs  log.mjs  metrics.mjs  slugs.mjs   # Node ESM, ZERO deps, run via `node`
   schemas/     event.schema.json  slugs.schema.json  audit-index.schema.json
 ```
+
 Run-time outputs under `--out`/`docs/usage/audit-<version>/`: `<process>-<lens>.md`,
 `<process>-<lens>.jsonl`, `metrics-<process>-<lens>.json`, `slugs.json`, and (≥2 lenses)
 `synthesis-<version>.md`. Every `.md` header: timestamp · agent name · skill version · git sha
 (if present) · lens · process · audited-target version.
 
 ### Script responsibilities (delegation-ready)
+
 - `version.mjs` — agent supplies a manifest of lens-applicable files/URLs + content hashes; script fingerprints, consults/updates `docs/usage/.audit-index.json`, returns the `audit-<version>` dir + overwrite-vs-new decision. (Script does NOT fetch — agent gathers, script fingerprints.)
 - `log.mjs` — append one schema-validated event to `<process>-<lens>.jsonl`; stamps timestamp (real Node `Date.now()` is fine here).
 - `metrics.mjs` — jsonl → `metrics-<process>-<lens>.json` (chars read, counts, doc-sufficiency = answered/(answered+unanswered), effort stats).
 - `slugs.mjs` — register/lookup namespaced slugs in `slugs.json` (dedup, stable).
 
 ### Smoke test (after build)
+
 Scripts run standalone on a fixture; then `audit Glance` against this repo's `README`/CLAUDE.md
 produces a valid `audit-1/audit-glance.md` + non-empty `.jsonl` + metrics rollup, with ≥1 🔴
 where the surface omits something.
 
 ### Protocol deviations (flagged, intentional)
-- No marketplace `sox sync` — workspace skill under `tools/`, not a registry-checksummed extension; C2/C4 sequence does not apply.
+
+- No marketplace `soxe sync` — workspace skill under `tools/`, not a registry-checksummed extension; C2/C4 sequence does not apply.
 - Catalog — see ⛳ OPEN QUESTION.
 
 ## ⛳ OPEN QUESTION blocking the build (answer FIRST on restart)
 
 `docs/catalog/` **does not exist in this repo** (verified — nothing named "catalog" anywhere).
 It's a construct from the `workflow-agent-builder` *home* project, not sox-ecosystem. So:
+
 - **Option 1 (plan as-is, recommended):** co-locate RATIONALE/COST/CHANGELOG inside `tools/skills/user-thinking/`. Matches existing repo skills (`memory-usage`, `di-skill`); consistent with the user's "README + RATIONALE + COST + CHANGELOG" choice.
 - **Option 2:** stand up `docs/catalog/` now — scaffold `docs/catalog/skills/user-thinking/` with full DESIGN/RATIONALE/COST/CHANGELOG/LEDGER + INDEX.md, establishing the convention repo-wide.
 
 User was asked Option 1 vs 2 and chose to restart before answering.
 
 ## Next steps on restart
+
 1. Get the Option 1 / Option 2 answer.
 2. On approval, build the entire tree (SKILL.md + references + templates + working zero-dep scripts + schemas + README/RATIONALE/COST/CHANGELOG).
 3. Run the smoke test; fix until green.
@@ -129,7 +139,7 @@ User was asked Option 1 vs 2 and chose to restart before answering.
 
 **Roll the BL-67 fix to the live serve path.** The live memory-server is flipped to proxy-default but the
 running backend (`pid 20057` at session end) was built **before** the BL-67 fix, so on the live box
-`soxe upgrade --all` (and any piped sox invocation) **still hangs** until you rebuild live. Real MCP clients
+`soxe upgrade --all` (and any piped soxe invocation) **still hangs** until you rebuild live. Real MCP clients
 work fine (the hang only bites piped/CI calls). This is a **BL-65-sensitive** step (building on the live
 checkout) — do it deliberately, not casually:
 
@@ -142,6 +152,7 @@ node bin/soxe stop --id memory-server 2>/dev/null || true   # reap old backend (
 node bin/soxe upgrade --all               # should now RETURN (not hang); verify with: ... | tail
 # then: each connected Claude session runs /reload-plugins ONCE (the one-time proxy reconnect)
 ```
+
 Verify after: `lsof -p <new-backend-pid>` shows fd1→/dev/null, fd2→logfile (no pipe); a piped
 `printf … | node bin/soxe serve memory-server | tail` returns.
 
@@ -181,7 +192,7 @@ trust the agent's prose**; the orchestrator merges + rolls to live, not the agen
 - **BL-57** (MED) — stale pre-ADR-0004 residue at `claude-agents`/`sox-ecosystem` repo roots; clean via `soxe migrate-home --old-home <repo>`. `SOX_HOME` is inert — **do NOT recommend unsetting it** (user owns it for another purpose; this corrects the old RESUME line).
 - **BL-63** — e2e orphan scan is a global `pgrep`; a live proxy session shows as a false leaked-orphan.
 - **BL-51 / Slice 2** — OS-supervisor surface (`soxe service enable|disable`), designed (spec §9) not built; needs node-path human-ack.
-- **BL-33/34/36/38/35** — registry-scan recursion / sox entrypoint checksum / runtime type label / latent tsc-bare requires / install-test pollutes real registry.
+- **BL-33/34/36/38/35** — registry-scan recursion / soxe entrypoint checksum / runtime type label / latent tsc-bare requires / install-test pollutes real registry.
 
 ## Standing invariants (don't regress)
 

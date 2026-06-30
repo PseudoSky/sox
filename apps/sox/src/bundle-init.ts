@@ -1,5 +1,5 @@
 /**
- * apps/sox/src/bundle-init.ts — Bundle-resolution helpers for `sox init --bundle`.
+ * apps/sox/src/bundle-init.ts — Bundle-resolution helpers for `soxe init --bundle`.
  *
  * Extracted from cmdInit so they can be unit-tested independently.
  *

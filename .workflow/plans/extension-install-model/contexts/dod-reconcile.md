@@ -11,7 +11,7 @@
 ## Goal
 
 After this state `DOD.md` and `CLAUDE.md` reflect the corrected bar: B2's "run" is split into
-**run (process)** (code/service types sox supervises — Role A, **[def:role-a]**) vs
+**run (process)** (code/service types soxe supervises — Role A, **[def:role-a]**) vs
 **placed + discoverable (declarative)** (content the foreign host runs — Role B, **[def:role-b]**,
 **[inv:boundary]**). The declarative half — placed + discoverable + updatable across scopes — is
 recorded as a **first-class** requirement and is reality-verified (it became real in

@@ -33,18 +33,17 @@
  *   - P0.6 codex paths recorded and asserted [host-registry.5]
  */
 
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import * as fs from 'fs';
-import * as tmp from 'fs';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   claudeHost,
   codexHost,
+  detectHosts,
   getHost,
   listHosts,
-  detectHosts,
 } from './index.js';
 
 import {
@@ -334,7 +333,7 @@ describe('host-registry.4 — Claude never-managed assertion [inv:never-managed]
    * NO managed/never-managed path is ever emitted".
    *
    * The Claude managed tier = org/enterprise policy (set by org admins).
-   * sox NEVER writes it. [inv:never-managed], [def:managed-tier].
+   * soxe NEVER writes it. [inv:never-managed], [def:managed-tier].
    */
 
   const ALL_SCOPES: Array<'project' | 'user' | 'local' | 'org'> = [
@@ -370,7 +369,7 @@ describe('host-registry.4 — Claude never-managed assertion [inv:never-managed]
   });
 
   it('no surface in claudeHost.surfaces emits an "org"-scoped path', () => {
-    // The org scope is the managed tier — sox never emits it as a target.
+    // The org scope is the managed tier — soxe never emits it as a target.
     for (const [surfaceName, surface] of Object.entries(claudeHost.surfaces)) {
       expect(
         surface.paths['org'],

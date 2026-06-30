@@ -22,7 +22,7 @@
   },
   "born-conformant-template": {
     "anchor": "libs/authoring/src/templates/mcp-server/index.ts:mcpServerTemplate",
-    "rule": "serviceTemplate emits a born-conformant fileset (extension.json + package.json + tsconfig.json + src/index.ts + dist stub + CHANGELOG.md + README.md) so `sox init service` -> build -> validate passes with zero manual edits, by analogy to mcpServerTemplate.",
+    "rule": "serviceTemplate emits a born-conformant fileset (extension.json + package.json + tsconfig.json + src/index.ts + dist stub + CHANGELOG.md + README.md) so `soxe init service` -> build -> validate passes with zero manual edits, by analogy to mcpServerTemplate.",
     "discovered_via": "manual",
     "shared_ref": "[ref:born-conformant-template]",
     "audit_check": "[audit-final.ref-born-conformant-template]"

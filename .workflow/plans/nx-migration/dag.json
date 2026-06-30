@@ -63,7 +63,7 @@
       "guard": "bash .workflow/plans/nx-migration/scripts/guards/engine-libs.sh",
       "artifacts": ["libs/install-engine/src", "libs/install-engine/project.json", "libs/host-runtime/src", "libs/host-runtime/project.json", "libs/registry/src", "libs/registry/project.json", "apps/sox/src", "apps/sox/project.json"],
       "context": "contexts/engine-libs.md",
-      "notes": "Legacy P4. CODE-MOVING STATE — run gitnexus impact/context on every symbol BEFORE moving, gitnexus detect-changes AFTER. Re-home scripts/{install,cascade,build-index,host/*,provider-capabilities} into 3 nx libs carrying [def:session-fixes] forward (inv:fix-carry-forward) — NEVER re-grab pre-fix code. Fix the flag parser (A12, [ref:dual-flag-form]) + exec routing while re-homing the CLI. apps/sox is a stub shell here; behavior wired in sox-extension. Do NOT delete scripts/ originals.",
+      "notes": "Legacy P4. CODE-MOVING STATE — run gitnexus impact/context on every symbol BEFORE moving, gitnexus detect-changes AFTER. Re-home scripts/{install,cascade,build-index,host/*,provider-capabilities} into 3 nx libs carrying [def:session-fixes] forward (inv:fix-carry-forward) — NEVER re-grab pre-fix code. Fix the flag parser (A12, [ref:dual-flag-form]) + exec routing while re-homing the CLI. apps/soxe is a stub shell here; behavior wired in sox-extension. Do NOT delete scripts/ originals.",
       "changes": {
         "deletes": [],
         "resigns": [],

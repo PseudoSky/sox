@@ -1,4 +1,4 @@
-# UNRESOLVED — sox memory primitives Demo
+# UNRESOLVED — soxe memory primitives Demo
 
 Interfaces this demo had to guess, and scope gaps found while authoring. The `data/*` packages are
 **not built yet** — this DEMO.md is the acceptance contract for the memory-refactor plan, so every
@@ -10,7 +10,7 @@ Resolve each before treating the corresponding DEMO.md step as authoritative.
 
 | ID  | Guessed interface | Used in | Basis | What would confirm it |
 |-----|-------------------|---------|-------|-----------------------|
-| U1  | Published package names/versions `@adhd/sox-{embedding-provider,vector-store,graph-store,hybrid-search,analysis,ingest}@0.1.0` | §2.4 | SCOPE Part B (public@0.x) — versions inferred, not yet published | the actual first-published versions after w2e/publish |
+| U1  | Published package names/versions `@adhd/sox-{embedding-provider,vector-store,graph-store,hybrid-search,analysis,ingest}@0.1.0` | §2.4 | SCOPE Part B (<public@0.x>) — versions inferred, not yet published | the actual first-published versions after w2e/publish |
 | U2  | `resolveProvider({backend})` → provider with `.embed(text):Float32Array`, `.modelId`, `.dim` | §1.1, §4 | `pack-smoke.mjs` §embedding-provider (shows `resolveProvider`, `embed`, `dim`, `isDeterministic`); `modelId` field name + exact return type inferred | the w2a embedding-provider public API / its `.d.ts` |
 | U3  | Loud-fail: `resolveProvider({backend:'real'})` THROWS when the runtime is unavailable; `SOX_EMBED_FORCE_UNAVAILABLE` env to simulate | §1.3 | `[inv:loud-fail]` (must fail loud, no silent hash) — exact throw + the simulation env var inferred | the w2a loud-fail implementation + its test |
 | U4  | Space-invariant rejection: `upsertVector` throws on dim/modelId mismatch with a `dimension mismatch: expected N, got M` style message | §2.2 | `[inv:space]` (reject mismatched vectors) — the exact error text inferred | the w2c vector-store invariant enforcement + its test |

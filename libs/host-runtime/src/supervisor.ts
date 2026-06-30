@@ -19,14 +19,14 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import * as net from 'node:net';
+import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as https from 'node:https';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
+import * as net from 'node:net';
 import * as os from 'node:os';
-import { compilePolicy, type Policy } from './policy.js';
+import * as path from 'node:path';
 import type { LogManager } from './log-manager.js';
+import { compilePolicy, type Policy } from './policy.js';
 
 export interface LifecycleHealth {
   type?: 'stdio-ping' | 'socket' | 'command' | 'http-get' | undefined;
@@ -313,7 +313,7 @@ export class ProcessSupervisor {
     // Do NOT call this._proc.unref() — the supervisor must keep the child alive.
 
     // R4: pipe stdout and stderr to the log stream if a LogManager is wired.
-    // Raw bytes are written verbatim — sox does not inject prefixes into extension output.
+    // Raw bytes are written verbatim — soxe does not inject prefixes into extension output.
     this._proc.stdout?.on('data', (d: Buffer) => {
       if (this._logManager) this._logManager.write(d);
     });
@@ -354,7 +354,7 @@ export class ProcessSupervisor {
         this._restartCount++;
         console.log(
           `[supervisor] "${this._key}" exited (code=${String(code)}, signal=${String(signal)}), ` +
-            `restarting in ${backoffMs}ms (attempt ${this._restartCount})`,
+          `restarting in ${backoffMs}ms (attempt ${this._restartCount})`,
         );
         setTimeout(() => {
           void this._respawn();

@@ -27,7 +27,7 @@
         "libs/manifest/src/manifest.spec.ts"
       ],
       "context": "contexts/service-type.md",
-      "notes": "Promote `service` to a declarable manifest type carrying a `transports` block (stdio|http|sse|socket). Add it to the VALID_TYPES set + the Manifest/ManifestInstall type unions, generalize the `profiles ⊆ serves` validation to `transports`, add a serviceTemplate + scaffold dispatch + `sox init service`, and a docs/guidelines/service.md contract. Do NOT remove `mcp-server` here — it stays valid; it is folded onto the service model in `mcp-as-service`. The whole-tree footgun: VALID_TYPES is duplicated in scripts/new-extension.ts — update both.",
+      "notes": "Promote `service` to a declarable manifest type carrying a `transports` block (stdio|http|sse|socket). Add it to the VALID_TYPES set + the Manifest/ManifestInstall type unions, generalize the `profiles ⊆ serves` validation to `transports`, add a serviceTemplate + scaffold dispatch + `soxe init service`, and a docs/guidelines/service.md contract. Do NOT remove `mcp-server` here — it stays valid; it is folded onto the service model in `mcp-as-service`. The whole-tree footgun: VALID_TYPES is duplicated in scripts/new-extension.ts — update both.",
       "changes": {
         "deletes": [],
         "resigns": [],
@@ -39,7 +39,7 @@
         { "id": "st-2", "desc": "inline JSON-schema enums + processTypes", "writes": ["libs/manifest/src/index.ts"], "criteria": ["service-type.7"], "needs": ["st-1"], "model": "sonnet", "effort": "medium" },
         { "id": "st-3", "desc": "validate() transports generalization + tests", "writes": ["libs/manifest/src/index.ts", "libs/manifest/src/manifest.spec.ts"], "criteria": ["service-type.3"], "needs": ["st-2"], "model": "sonnet", "effort": "medium" },
         { "id": "st-4", "desc": "serviceTemplate + scaffold dispatch", "writes": ["libs/authoring/src/templates/service/index.ts", "libs/authoring/src/index.ts"], "criteria": ["service-type.4"], "needs": ["st-1"], "model": "sonnet", "effort": "medium" },
-        { "id": "st-5", "desc": "sox init service + --transport flag", "writes": ["apps/sox/src/main.ts"], "criteria": [], "needs": ["st-4"], "model": "haiku", "effort": "low" },
+        { "id": "st-5", "desc": "soxe init service + --transport flag", "writes": ["apps/sox/src/main.ts"], "criteria": [], "needs": ["st-4"], "model": "haiku", "effort": "low" },
         { "id": "st-6", "desc": "docs/guidelines/service.md", "writes": ["docs/guidelines/service.md"], "criteria": ["service-type.5"], "needs": ["st-1"], "model": "haiku", "effort": "low" },
         { "id": "st-7", "desc": "check-service-scaffold.sh harness", "writes": ["tools/tg-plan/check-service-scaffold.sh"], "criteria": ["service-type.6"], "needs": ["st-5"], "model": "haiku", "effort": "low" }
       ]
@@ -59,7 +59,7 @@
         "scripts/install.ts"
       ],
       "context": "contexts/http-transport.md",
-      "notes": "Wire the missing http transport AND the runtime dispatch the install routing implies. (1) supervisor: add `http-get` to LifecycleHealth.type + _probeHealth (http.get vs lifecycle.health.endpoint, timeout) and have it resolve the actual bound port from storePath/port.txt, polling for the file before the first probe. (2) loader.ts dispatchToAdapter: add a `service` case — the BLOCKER the install routing alone misses; without it `sox start` on a type:service throws Unknown extension type. (3) install.ts: route transport:http through the unified run-service path, and inject SOX_CONFIG_* into spec.env at the run-service registration site (registry env is currently {} — required for [inv:standard-config]). (4) host-registry: a `service` surface. Footgun: SIGTERM->stop_timeout_ms->SIGKILL must hold for a port-holder; concurrent `sox start` is a deferred non-goal ([dod.10]).",
+      "notes": "Wire the missing http transport AND the runtime dispatch the install routing implies. (1) supervisor: add `http-get` to LifecycleHealth.type + _probeHealth (http.get vs lifecycle.health.endpoint, timeout) and have it resolve the actual bound port from storePath/port.txt, polling for the file before the first probe. (2) loader.ts dispatchToAdapter: add a `service` case — the BLOCKER the install routing alone misses; without it `soxe start` on a type:service throws Unknown extension type. (3) install.ts: route transport:http through the unified run-service path, and inject SOX_CONFIG_* into spec.env at the run-service registration site (registry env is currently {} — required for [inv:standard-config]). (4) host-registry: a `service` surface. Footgun: SIGTERM->stop_timeout_ms->SIGKILL must hold for a port-holder; concurrent `soxe start` is a deferred non-goal ([dod.10]).",
       "changes": {
         "deletes": [],
         "resigns": [],
@@ -222,11 +222,11 @@
         "extensions/services/tokenguard/src/index.ts"
       ],
       "context": "contexts/tg-cli.md",
-      "notes": "A simple CLI (invoked via `./bin/sox exec tokenguard -- <cmd>`) to seed + inspect identifiers, operating on the SAME live, continuously-persisted token map the running proxy reads. seed appends a custom entry; the running proxy reflects it without restart (file-watch or socket nudge, memoryd-style). map prints the current bijective entries. No MCP surface (out of scope by decision).",
+      "notes": "A simple CLI (invoked via `./bin/soxe exec tokenguard -- <cmd>`) to seed + inspect identifiers, operating on the SAME live, continuously-persisted token map the running proxy reads. seed appends a custom entry; the running proxy reflects it without restart (file-watch or socket nudge, memoryd-style). map prints the current bijective entries. No MCP surface (out of scope by decision).",
       "changes": { "deletes": [], "resigns": [], "renames": [] },
       "tasks": [
         { "id": "cli-1", "desc": "mapstore.ts (shared store + fs.watch/debounce/merge) + proxy subscription wiring in index.ts", "writes": ["extensions/services/tokenguard/src/mapstore.ts", "extensions/services/tokenguard/src/index.ts"], "criteria": ["tg-cli.2", "tg-cli.3"], "needs": ["tgs-10"], "model": "opus", "effort": "high" },
-        { "id": "cli-2", "desc": "cli.ts (seed/map/summary via sox exec)", "writes": ["extensions/services/tokenguard/src/cli.ts"], "criteria": ["tg-cli.1", "tg-cli.4"], "needs": ["cli-1"], "model": "sonnet", "effort": "medium" },
+        { "id": "cli-2", "desc": "cli.ts (seed/map/summary via soxe exec)", "writes": ["extensions/services/tokenguard/src/cli.ts"], "criteria": ["tg-cli.1", "tg-cli.4"], "needs": ["cli-1"], "model": "sonnet", "effort": "medium" },
         { "id": "cli-4", "desc": "demo live-seed.sh (LIVE SEED REFLECTED)", "writes": ["extensions/services/tokenguard/demo/live-seed.sh"], "criteria": ["tg-cli.5"], "needs": ["cli-2"], "model": "sonnet", "effort": "medium" }
       ]
     },
@@ -237,7 +237,7 @@
       "guard": "python3 docs/plan/tokenguard-service/scripts/audit_tokenguard.py --phase service",
       "artifacts": ["docs/plan/tokenguard-service/scripts/audit_tokenguard.py"],
       "context": "contexts/audit-service.md",
-      "notes": "Verify the service installs/starts/health(http)/stops via the real sox CLI with zero orphans, the proxy round-trips real->token->real through a mock upstream with zero leaks, both adapters work, and a CLI-seeded id is reflected in the running proxy. Likely failure: port.txt race or the live-reload not picking up a CLI seed."
+      "notes": "Verify the service installs/starts/health(http)/stops via the real soxe CLI with zero orphans, the proxy round-trips real->token->real through a mock upstream with zero leaks, both adapters work, and a CLI-seeded id is reflected in the running proxy. Likely failure: port.txt race or the live-reload not picking up a CLI seed."
     },
     "decouple-generalize": {
       "kind": "work",

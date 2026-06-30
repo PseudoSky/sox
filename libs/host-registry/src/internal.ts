@@ -29,7 +29,7 @@ import * as path from 'path';
  * - project : .claude/ or .codex/ at the repo root
  * - user    : <soxHome-or-home>/.claude/ or <soxHome-or-home>/.codex/
  * - local   : project-local overrides (settings.local.json etc.)
- * - org     : reserved; sox never writes the Claude managed tier ([inv:never-managed])
+ * - org     : reserved; soxe never writes the Claude managed tier ([inv:never-managed])
  */
 export type HostScope = 'project' | 'user' | 'local' | 'org';
 
@@ -41,7 +41,7 @@ export type HostScope = 'project' | 'user' | 'local' | 'org';
  *   config-merge  — merge a key into a shared JSON or TOML config file
  *   array-merge   — append to arrays (permissions/env) with deny-wins semantics
  *   bin-link      — executable on PATH
- *   run-service   — sox spawns + supervises (Role A only)
+ *   run-service   — soxe spawns + supervises (Role A only)
  *   materialize   — place built code at a stable store path
  */
 export type CapabilityId =

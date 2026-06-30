@@ -38,11 +38,11 @@ for (let i = 0; i < args.length; i++) {
 }
 
 if (!dbPath) {
-  // Fall back to SOX_CONFIG_DB_PATH injected by sox serve/start at launch time.
+  // Fall back to SOX_CONFIG_DB_PATH injected by soxe serve/start at launch time.
   dbPath = process.env['SOX_CONFIG_DB_PATH'] ?? null;
 }
 if (!dbPath) {
-  console.error('[memoryd] Error: --db-path is required (or set via: sox config set memory-daemon db_path <path>)');
+  console.error('[memoryd] Error: --db-path is required (or set via: soxe config set memory-daemon db_path <path>)');
   process.exit(1);
 }
 

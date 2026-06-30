@@ -46,7 +46,7 @@ Sox has **four scopes**, cascade-resolved **org → user → project → local**
 
 | Scope | Data dir | Config file | Lockfile | Host placement base |
 |-------|----------|-------------|----------|---------------------|
-| **org** | `$SOX_ECOSYSTEM_HOME` | `org.extensions.json` | `org.extensions.lock` | *(none — managed/read-only policy tier; sox never writes the host)* |
+| **org** | `$SOX_ECOSYSTEM_HOME` | `org.extensions.json` | `org.extensions.lock` | *(none — managed/read-only policy tier; soxe never writes the host)* |
 | **user** | `$SOX_ECOSYSTEM_HOME` (`~/.adhd/sox-ecosystem/`) | `extensions.json` | `extensions.lock` | `~/.claude/`, `~/.claude.json` |
 | **project** | `<repo>/.adhd/sox-ecosystem/` | `extensions.json` | `extensions.lock` | `<repo>/.claude/`, `<repo>/.mcp.json` |
 | **local** | `<repo>/.adhd/sox-ecosystem/` | `extensions.local.json` | `extensions.local.lock` | `<repo>/.claude/settings.local.json` |
@@ -205,12 +205,12 @@ flags:   --host <claude|codex>      # presence triggers declarative placement
 > **`sync-mcp` was removed (2026-06-23).** Its project-`.mcp.json` propagation is now
 > folded into `upgrade --all --force` (see *Keeping consumers current* below).
 
-`diff` is **library-only** — there is no `sox diff` verb yet (the descriptor diff
+`diff` is **library-only** — there is no `soxe diff` verb yet (the descriptor diff
 is exposed as a function in `@adhd/sox-install-engine`, not on the CLI). ⚠️
 
 Active types: `agent`, `skill`, `mcp-server`, `service`, `command`, `hook`, `bundle`.
 `prompt` is parked by design. `service` is a first-class type — a long-running process
-extension supervised by the sox host runtime (`soxe start`/`stop`/`list`). It does not
+extension supervised by the soxe host runtime (`soxe start`/`stop`/`list`). It does not
 require the MCP wire protocol. See `docs/guidelines/authoring.md §service`.
 
 ---
@@ -249,7 +249,7 @@ node bin/soxe install demo-agent --host codex --scope project --root "$T"   # �
 ```bash
 node bin/soxe install demo-mcp --host claude --scope project --profile sse     --root "$T"   # ⚠️ sse/http → $T/.mcp.json (config-merge, --trust prompt)
 node bin/soxe install demo-mcp --host claude --scope user    --profile stdio   --root "$T"   # ⚠️ stdio → $T/.claude.json (user-scope spawn), NOT .mcp.json
-node bin/soxe install demo-mcp --host claude --scope project --profile service --root "$T"   # ⚠️ sox service via run-service — UNWIRED: declarativeInstall only dispatches file-drop/config-merge today
+node bin/soxe install demo-mcp --host claude --scope project --profile service --root "$T"   # ⚠️ soxe service via run-service — UNWIRED: declarativeInstall only dispatches file-drop/config-merge today
 ```
 
 ## E — Process / service runtime lifecycle (supervisor path)
@@ -294,7 +294,7 @@ node bin/soxe install demo-agent --host claude --scope org --root "$T"          
 | B/G — hook config-merge half | settings.json hooks entry on hook install unverified | hook install completeness |
 | G — denials via the CLI verb | stdio-into-.mcp.json, codex-forbidden-key, org/managed no-write proven only as library calls | enforcement reality at the CLI |
 | F — declarative uninstall | `--host` uninstall reversal less exercised than install | reversal symmetry |
-| `diff` | no `sox diff` verb (library-only) | CLI completeness |
+| `diff` | no `soxe diff` verb (library-only) | CLI completeness |
 
 These are the same class of gap that recurred all session: the **capability is
 real at the library/unit layer, but the command a user actually types isn't

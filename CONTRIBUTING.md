@@ -61,13 +61,17 @@ restart can reconnect them.
 
 1. **Always `--dry-run` first.** Verify the output before writing.
 2. **Back up the config file before any real install that touches it:**
+
    ```
    cp opencode.json opencode.json.bak
    ```
+
 3. **After verification, restore the original:**
+
    ```
    cp opencode.json.bak opencode.json
    ```
+
 4. **Never leave a modified config file behind.** The backup is your exit plan.
 5. **If you lose MCP tools mid-session:** they will not return until next session start.
    The host does not hot-reload MCP connections.
@@ -114,6 +118,7 @@ git add <explicit/path> ...    # NEVER git add -A / git add .
 ```
 
 Commit message template:
+
 ```
 <area>: <imperative-verb summary>
 
@@ -290,6 +295,7 @@ node bin/soxe service status <ext-id>
 ```
 
 Verify:
+
 - `loaded: yes`
 - `live pids` list has a new pid (old pids should be reaped)
 - `entrypoint` path is unchanged (or changed if you moved it)
@@ -349,6 +355,7 @@ Verify YAML frontmatter and prompt content are present and correct.
 #### §2.4.4 Config verification (if agent has config-merge)
 
 Check the host config file for the agent entry:
+
 - opencode: `opencode.json` → `agent.{id}` key
 - claude: `.claude.json` → `agent.{id}` key
 
@@ -469,6 +476,7 @@ node bin/soxe install <bundle-id> --host=<host> --scope=<scope>
 
 Apply the per-type playbook for EACH member extension type (mcp-server, service, skill, command, hook).
 For example, `sox-memory-bundle` includes:
+
 - `memory-server` → follow §2.2 (MCP server)
 - `memory-daemon` → follow §2.3 (service)
 - `memory-usage` → follow §2.5 (skill)
@@ -506,11 +514,13 @@ npx nx affected:build --base=HEAD
 ```
 
 Verify the output shows:
+
 - The data library was rebuilt
 - memory-core was rebuilt
 - memory-server bundle was rebuilt
 
 If Nx cache prevents rebuild, force it:
+
 ```
 npx nx build memory-server --skip-nx-cache
 ```
@@ -518,9 +528,11 @@ npx nx build memory-server --skip-nx-cache
 #### §2.9.3 Verify the change shipped
 
 1. Confirm the data library dist has the new export or behavior:
+
    ```
    node -e "const m = require('<package>/dist/index.js'); console.log(m.<newExport>)"
    ```
+
 2. Run `soxe upgrade --all` to deploy to installed instances
 3. Use in-session MCP tools to verify the change is live:
    - `memory_ping` — confirm artifact hash changed
@@ -611,7 +623,7 @@ After disable, run `soxe service status <ext-id>`. Verify `loaded: no` and no st
 ### §2.12 CLI changes (apps/sox)
 
 **Context:** Changes to `apps/sox/src/main.ts` or `bin/soxe`. The CLI is the user-facing
-entry point for all sox operations.
+entry point for all soxe operations.
 
 #### §2.12.1 Build
 
@@ -697,6 +709,7 @@ Manifest tests validate all `extension.json` files against the schema. Verify 10
 #### §2.14.2 Extension round-trip
 
 If you added a new host, type, or field:
+
 ```
 node bin/soxe install <ext> --host=<newhost> --scope=project
 ```
@@ -738,6 +751,7 @@ Check the dry-run output or the config file for the correct format.
 #### §2.15.4 Detection
 
 Verify `detect()` returns true when the host's sentinel files exist:
+
 - claude: `.claude/` or `CLAUDE.md` or `.mcp.json`
 - opencode: `opencode.json` or `.opencode/`
 - codex: `.codex/` or `codex.json`
@@ -756,6 +770,7 @@ Some changes interact with scope resolution. Verify the change in each relevant 
 | `org` | `./.well-known/<host>/` | Read-only, remote | Verify org scope is NEVER written to (`[inv:never-managed]`) |
 
 For user scope, test with `SOX_SANDBOX_ROOT` to verify sandbox isolation:
+
 ```
 SOX_SANDBOX_ROOT=/tmp/sandbox node bin/soxe install <ext> --host=<host> --scope=user --dry-run
 ```

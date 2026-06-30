@@ -26,7 +26,7 @@
 ## Usage
 
 ```bash
-sox install di-codex-skill
+soxe install di-codex-skill
 ```
 
 ## Configuration

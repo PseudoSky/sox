@@ -243,7 +243,7 @@ is a no-op echo; `extension.json` lists `members[].id`). Each member already has
   install sox-memory-bundle` expands to member installs.
 
 **Why not a single carrier package:** one tarball carrying all five members would need new bundling
-+ a member-extraction installer + would re-entangle independent member versioning. Per-member reuses
+- a member-extraction installer + would re-entangle independent member versioning. Per-member reuses
 the existing independent-install machinery; the only new work is the private-member addressing
 (Q3).
 
@@ -338,6 +338,7 @@ the CLI's), so it can be a clean fully-self-contained bundle. Required changes (
 ```
 
 **Key properties:**
+
 - Identity/integrity unchanged (checksum gate). npm semver only selects *which bytes to fetch*.
 - The dev checkout is no longer in any consumer or live-MCP path (BL-65 severed — §8).
 - The same path serves the CLI, the memory bundle, and **any** future bundle (§7).
@@ -499,5 +500,5 @@ fallback risk (§11) must be accepted or a prebuild added.
 | **BL-65** (dev dist IS live MCP) | §8 cutover; principled repoint unblocked after S3. |
 | **BL-38** (memory-server bare-`tsc` requires) | S3 migrates memory-server to the self-contained bundle. |
 | **BL-33** (check-registry-sync skips members) | S3 (scanner recurses `members/`). |
-| **BL-34** (sox entrypoint not index-resolvable) | S1 (in-package `main`/`dist` makes it resolvable). |
+| **BL-34** (soxe entrypoint not index-resolvable) | S1 (in-package `main`/`dist` makes it resolvable). |
 | **BL-37** (daemon bundle) | Already resolved; the standard S3/S4 generalize. |

@@ -29,7 +29,7 @@
   },
   "born-conformant-scaffold": {
     "anchor": "[ref:born-conformant-scaffold]",
-    "rule": "generator output validates clean and is byte-identical between `sox init` and the nx generator; the libs/authoring core is the single scaffolder (no hand-rolled layout)",
+    "rule": "generator output validates clean and is byte-identical between `soxe init` and the nx generator; the libs/authoring core is the single scaffolder (no hand-rolled layout)",
     "discovered_via": "manual",
     "shared_ref": "[ref:born-conformant-scaffold]",
     "audit_check": "[audit-final.ref-born-conformant-scaffold]"

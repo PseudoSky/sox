@@ -7,7 +7,7 @@
  * developer's actual home):
  *
  *   1. SOX_SANDBOX_ROOT is UNSET → host placement targets the REAL host path.
- *   2. SOX_ECOSYSTEM_HOME is set to a temp data dir → sox DATA lands there.
+ *   2. SOX_ECOSYSTEM_HOME is set to a temp data dir → soxe DATA lands there.
  *   3. A user-scope skill file-drop lands in $HOME/.claude/skills (the real discovery
  *      path), NOT under SOX_ECOSYSTEM_HOME ([inv:data-root-never-reroutes]).
  *   4. A user-scope mcp-server config-merge lands in $HOME/.claude.json.
@@ -17,8 +17,8 @@
  * This is invoked by the host-runtime e2e (P3) and is also runnable standalone.
  */
 
-import { createRequire } from 'node:module';
 import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';

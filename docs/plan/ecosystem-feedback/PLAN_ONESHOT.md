@@ -216,10 +216,10 @@ directory.
 
 **Verification:**  
 
-- `sox install memory-server --scope=user` then `sox serve memory-server` (no --scope) resolves the user-scoped entry.
-- `sox install memory-server --scope=project` then `sox serve memory-server` resolves the project-scoped entry.
+- `soxe install memory-server --scope=user` then `soxe serve memory-server` (no --scope) resolves the user-scoped entry.
+- `soxe install memory-server --scope=project` then `soxe serve memory-server` resolves the project-scoped entry.
 - If installed at both scopes, project-scoped entry wins.
-- `sox serve memory-server --scope=user` with project-scoped-only install fails with a clear error naming the searched scope.
+- `soxe serve memory-server --scope=user` with project-scoped-only install fails with a clear error naming the searched scope.
 - Existing e2e tests (`host-runtime:test-e2e`) still pass (63/63).
 
 ---
@@ -243,14 +243,14 @@ Flags:
 Also update the main `helpText` function (around line 247) to match.
 
 **Verification:**  
-`sox serve --help` shows the updated cascade description.
+`soxe serve --help` shows the updated cascade description.
 
 ---
 
 ## Phase 2 — `@adhd/sox-mcp-runtime` Consolidation (BL-5)
 
 This is the largest single refactor. It depends on Phase 1 (scope cascade) being stable,
-because `sox serve memory-server` is the intended `.mcp.json` command after refactor and
+because `soxe serve memory-server` is the intended `.mcp.json` command after refactor and
 must work cross-scope first.
 
 ---

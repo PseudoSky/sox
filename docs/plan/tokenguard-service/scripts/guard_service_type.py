@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Guard for `service-type`: `sox init service` scaffolds a born-conformant service.
+"""Guard for `service-type`: `soxe init service` scaffolds a born-conformant service.
 
 Red until: manifest knows `service` + transports, serviceTemplate + scaffold
-dispatch exist, sox init/validate handle `service`, and the scaffold harness is
+dispatch exist, soxe init/validate handle `service`, and the scaffold harness is
 present. Green when the scaffold round-trip prints SCAFFOLD OK.
 """
 import subprocess
@@ -16,7 +16,7 @@ def run(cmd: str) -> int:
 def main() -> int:
     # Build the CLI so `./bin/sox` reflects the new type handling.
     if run("npx --yes nx build sox") != 0:
-        print("guard(service-type): sox build failed")
+        print("guard(service-type): soxe build failed")
         return 1
     # Drive the documented entrypoint: init -> build -> validate a fresh service.
     r = subprocess.run("bash tools/tg-plan/check-service-scaffold.sh",

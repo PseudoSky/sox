@@ -1,7 +1,7 @@
 /**
  * libs/host-runtime/src/lock.ts — concurrent-start lock (R3).
  *
- * Prevents two concurrent `sox start` invocations for the same scope+root from
+ * Prevents two concurrent `soxe start` invocations for the same scope+root from
  * racing during the brief window between process launch and `writeRuntimeRecord`
  * writing the `execSocketPath`. Uses O_EXCL-create with the holder PID written
  * inside the file so stale locks (from crashed processes) are auto-detected.
@@ -11,9 +11,9 @@
  * after writeRuntimeRecord writes the final runtime record with execSocketPath set.
  */
 
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as crypto from 'node:crypto';
 import { runDir } from './data-paths.js';
 
 /**
@@ -92,7 +92,7 @@ export function acquireStartLock(
 
       if (Date.now() >= deadline) {
         throw new Error(
-          `[runtime] Cannot start: another sox start is already running for this ` +
+          `[runtime] Cannot start: another soxe start is already running for this ` +
           `scope+root (lock held for ${timeoutMs}ms). ` +
           `If you are sure no other start is running, delete: ${lockPath}`,
         );

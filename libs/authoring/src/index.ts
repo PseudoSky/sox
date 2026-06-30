@@ -1,8 +1,8 @@
 /**
- * libs/authoring — pure scaffold core for sox extension scaffolding.
+ * libs/authoring — pure scaffold core for soxe extension scaffolding.
  *
  * Invariants:
- *   [inv:nx-free-core]     — zero nx-devkit or nx-packages imports (sox init runs without nx)
+ *   [inv:nx-free-core]     — zero nx-devkit or nx-packages imports (soxe init runs without nx)
  *   [ref:nx-free-authoring-core] — anchor: scaffold function below
  *
  * Exports:
@@ -22,7 +22,7 @@ import { serviceTemplate } from './templates/service/index.js';
 import { skillTemplate } from './templates/skill/index.js';
 
 export { writeFileSet } from './writer.js';
-// Re-export per-type template functions so consumers (apps/sox init fallback)
+// Re-export per-type template functions so consumers (apps/soxe init fallback)
 // can dispatch by name via the @adhd/sox-authoring scope — no ../dist reach-in (C7).
 export {
   agentTemplate, bundleTemplate, commandTemplate, hookTemplate, mcpServerTemplate, serviceTemplate, skillTemplate

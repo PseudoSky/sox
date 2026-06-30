@@ -21,7 +21,7 @@ before committing a plan. None of these have been read yet unless a prompt exist
 |---|---|---|---|
 | hook | `~/dev/ai/claude-agents/tools/hooks/swarm-cost` | one hook in the `tools/hooks/` dir | [`swarm-cost`](./prompts/swarm-cost.md) |
 | skill | `~/dev/ai/claude-agents/tools/skills/strategy/SKILL.md` | declarative; may be the first skill | [`strategy`](./prompts/strategy.md) |
-| agent | `~/dev/ai/claude-agents/categories/workflow/agents/workflow-researcher.md` | declarative agent; scaffold with `sox init agent` | [`workflow-researcher`](./prompts/workflow-researcher.md) |
+| agent | `~/dev/ai/claude-agents/categories/workflow/agents/workflow-researcher.md` | declarative agent; scaffold with `soxe init agent` | [`workflow-researcher`](./prompts/workflow-researcher.md) |
 | **server (→ mcp-server + lifecycle) \| command \| both** | `~/dev/security/wop/scripts/tokenguard/` | **decision point** — runs as a server; long-running = the `lifecycle` block (host-supervised, protocol-agnostic health) honored at runtime **only on `mcp-server`** (agent's is schema-permitted but runtime-ignored — vestigial); prompt forks on tool protocol (MCP=direct port · non-MCP=supervised-only or MCP wrap) + whether a CLI also ships (shared lib + bundle) | [`tokenguard`](./prompts/tokenguard.md) |
 | **hook (+ optional command)** | `~/dev/ai/claude-agents/tools/policy-enforcer/` | hook is primary; **decision point** on whether the bundled cli ships | [`policy-enforcer`](./prompts/policy-enforcer.md) |
 | mcp-server | `/Users/nix/dev/node/adhd/packages/ai/agent-mcp` | not yet prompted | — |
@@ -57,7 +57,7 @@ Every `prompts/<id>.md` follows the same skeleton:
    (`DOD.md`, `docs/guidelines/`, a reference extension of the same type, `libs/manifest`,
    `node bin/sox --help`) **and** the source itself.
 5. **Scaffold born-conformant from the source in one step** — use the generator with the content
-   primitive: `node bin/sox init <type> <id> --content @<source-file>` (or `--from @<source-dir>` for
+   primitive: `node bin/soxe init <type> <id> --content @<source-file>` (or `--from @<source-dir>` for
    directory-shaped artifacts like skills). This fills the artifact body directly from the source and
    records `source:` provenance — never hand-roll the layout or hand-copy content. (Pending the
    generator work in `../plans/extension-install-and-reinjection-model.md` P5; until then, scaffold

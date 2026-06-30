@@ -15,10 +15,10 @@ don't work for declarative content. Root cause: the **standard ran ahead of the 
 ## Decisions (Accepted)
 
 1. **Two roles, named explicitly.**
-   - **Role A — runtime host:** sox loads/spawns/supervises/enforces/invokes (`service`, `mcp-server`
+   - **Role A — runtime host:** soxe loads/spawns/supervises/enforces/invokes (`service`, `mcp-server`
      in sox-run mode, in-process code).
    - **Role B — package manager + reinjector:** the *foreign host* (Claude Code, Codex, …) executes;
-     sox only **materializes + versions + scopes + diffs** content into the host's own locations.
+     soxe only **materializes + versions + scopes + diffs** content into the host's own locations.
    - **Boundary:** for Role B, execution is **deferred to the host**; sox's reality-check tops out at
      *"the right bytes are at the host's discovery path for the right scope,"* never *"the host ran it."*
 
@@ -34,18 +34,18 @@ don't work for declarative content. Root cause: the **standard ran ahead of the 
    `service` is the base sox-run type; `mcp-server` is a service that also injects into hosts.
 
 4. **Provenance ledger.** Merge capabilities (`json-merge`/`array-merge`) write into shared host files;
-   sox records every write (file, keyPath, applied hash/values) per `(ext, host, scope)`. This is what
+   soxe records every write (file, keyPath, applied hash/values) per `(ext, host, scope)`. This is what
    makes uninstall and `diff` correct for shared-file merges.
 
 5. **Host registry.** Per-host module `{ detect(), scopePaths(scope), surfaces{} }` holds the location
    matrix + the install-time host detector + the scope→path resolver. Scope map: project → `.claude/…`
-   (+ repo `.mcp.json`), user → `~/.claude/…`, local → `settings.local.json`; **sox never writes the
+   (+ repo `.mcp.json`), user → `~/.claude/…`, local → `settings.local.json`; **soxe never writes the
    managed tier.**
 
 6. **MCP wrapper (`@adhd/sox-mcp-runtime`).** A shared lib (C7-clean) the generator scaffolds around:
    authors write tools only; the wrapper provides dual transport (stdio + sse/http, selected by install
    profile), MCP protocol, health, shutdown, and **C6 enforcement read from policy-env — applied
-   uniformly whether Claude spawns it (stdio) or sox supervises it (sse).** `serves` becomes a derived,
+   uniformly whether Claude spawns it (stdio) or soxe supervises it (sse).** `serves` becomes a derived,
    reality-tested fact; `memory-server`'s hand-rolled loop + vendored guard collapse into it.
 
 7. **Verified location facts** (real FS, 2026-06) recorded in the context doc §4; corrections noted

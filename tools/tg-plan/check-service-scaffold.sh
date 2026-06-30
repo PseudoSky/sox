@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-service-scaffold.sh — service scaffold round-trip harness
 #
-# Drives: sox init service tgprobe → build → sox validate
+# Drives: soxe init service tgprobe → build → soxe validate
 # Prints: SCAFFOLD OK on success / SCAFFOLD FAIL on any failure
 # Cleans up the temp dir unconditionally.
 #
@@ -22,13 +22,13 @@ trap cleanup EXIT
 echo "[check-service-scaffold] repo: ${REPO_ROOT}"
 echo "[check-service-scaffold] tmp:  ${TMPDIR_BASE}"
 
-# ── 1. sox init service tgprobe ───────────────────────────────────────────────
-echo "[check-service-scaffold] running: sox init service ${PROBE_ID}"
+# ── 1. soxe init service tgprobe ───────────────────────────────────────────────
+echo "[check-service-scaffold] running: soxe init service ${PROBE_ID}"
 if ! node "${REPO_ROOT}/bin/sox" init service "${PROBE_ID}" \
        --out="${TMPDIR_BASE}" \
        --title="TokenGuard Probe" \
        --description="Service scaffold probe for guard_service_type" 2>&1; then
-  echo "SCAFFOLD FAIL: sox init service failed"
+  echo "SCAFFOLD FAIL: soxe init service failed"
   exit 1
 fi
 
@@ -41,7 +41,7 @@ fi
 echo "[check-service-scaffold] extension.json found"
 
 # ── 2. Build the scaffolded extension ────────────────────────────────────────
-# The scaffold emits a pre-built dist/index.js stub so sox validate passes
+# The scaffold emits a pre-built dist/index.js stub so soxe validate passes
 # entrypoint-reachability immediately. We also attempt tsc build if node_modules
 # are available, but we don't fail on missing node_modules (the stub suffices).
 echo "[check-service-scaffold] checking dist/index.js stub"
@@ -50,14 +50,14 @@ if [ ! -f "${PROBE_DIR}/dist/index.js" ]; then
   exit 1
 fi
 
-# ── 3. sox validate ───────────────────────────────────────────────────────────
-echo "[check-service-scaffold] running: sox validate"
+# ── 3. soxe validate ───────────────────────────────────────────────────────────
+echo "[check-service-scaffold] running: soxe validate"
 VALIDATE_OUT="$(node "${REPO_ROOT}/bin/sox" validate "${PROBE_DIR}/extension.json" 2>&1)"
 VALIDATE_EXIT=$?
 echo "${VALIDATE_OUT}"
 
 if [ "${VALIDATE_EXIT}" -ne 0 ]; then
-  echo "SCAFFOLD FAIL: sox validate exited ${VALIDATE_EXIT}"
+  echo "SCAFFOLD FAIL: soxe validate exited ${VALIDATE_EXIT}"
   echo "validate output: ${VALIDATE_OUT}"
   exit 1
 fi

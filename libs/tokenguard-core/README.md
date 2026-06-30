@@ -155,4 +155,4 @@ const { count, body: auditBody } = wireLeaks(
 
 ## Integration
 
-Use with a **proxy service** (e.g., `tokenguard` sox extension) to transparently tokenize requests sent to any LLM provider and detokenize responses on the return path. The proxy selects the provider adapter (Anthropic vs. generic) and coordinates I/O; the core engine handles all string transformation.
+Use with a **proxy service** (e.g., `tokenguard` soxe extension) to transparently tokenize requests sent to any LLM provider and detokenize responses on the return path. The proxy selects the provider adapter (Anthropic vs. generic) and coordinates I/O; the core engine handles all string transformation.

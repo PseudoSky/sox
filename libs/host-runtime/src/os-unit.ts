@@ -407,7 +407,7 @@ export class SystemdPlatform implements OsUnitPlatform {
     const envLines = envKeys.map((k) => `Environment=${k}=${spec.env[k] ?? ''}`).join('\n');
     return [
       '[Unit]',
-      `Description=sox service ${spec.id} (${spec.scope})`,
+      `Description=soxe service ${spec.id} (${spec.scope})`,
       '',
       '[Service]',
       'Type=simple',

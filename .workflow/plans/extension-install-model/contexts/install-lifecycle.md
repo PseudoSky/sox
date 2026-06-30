@@ -11,7 +11,7 @@
 
 ## Goal
 
-After this state `sox install/update/diff/uninstall` are wired to the capability engine + host
+After this state `soxe install/update/diff/uninstall` are wired to the capability engine + host
 registry + ledger, scope- and host-aware, with host-detection defaulting `--host`
 (**[inv:host-agnostic-type]**). This is where Role B (**[def:role-b]**) finally fulfils its half —
 **placement** — for declarative content: a markdown agent installs into `.claude/agents/` (project +
@@ -43,7 +43,7 @@ protocol.
     `uninstall` (reverse ledger actions). `update`/`uninstall` are ledger-driven
     (**[inv:ledger-reversible]**); a capability that cannot cleanly reverse **aborts** (**[dod.12]**).
   - `diff.ts`: ledger vs disk → up-to-date / drifted / will-change, cross-scope.
-  - CLI: add `sox diff` / `sox update` (declarative-aware) + `--host` / `--profile` / `--scope` /
+  - CLI: add `soxe diff` / `soxe update` (declarative-aware) + `--host` / `--profile` / `--scope` /
     `--trust`; `runInstall` is **re-signed** to the descriptor-driven path.
   - Host detection defaults `--host` (spec §6).
 
@@ -68,8 +68,8 @@ Checked by `audit-enforcement`. One check per item; none deferred.
       `install-engine:test` cover install→diff(+drift)→update→uninstall of a markdown agent on the real FS.
 - [ ] **[install-lifecycle.3]** the exported `install()` is re-signed to the descriptor path; the old
       single-string `install-target` consumer is gone. `grep -nE 'install-target' apps/sox/src/main.ts` → empty.
-- [ ] **[install-lifecycle.4]** `sox diff` / `sox update` exist with `--host`/`--profile`/`--scope`/
-      `--trust`. `grep -nE 'diff|update' bin/sox apps/sox/src/main.ts` → non-empty.
+- [ ] **[install-lifecycle.4]** `soxe diff` / `soxe update` exist with `--host`/`--profile`/`--scope`/
+      `--trust`. `grep -nE 'diff|update' bin/soxe apps/sox/src/main.ts` → non-empty.
 - [ ] **[install-lifecycle.5]** A capability that cannot cleanly reverse aborts (**[dod.12]**).
       `grep -niE 'abort|cannot.*reverse|reversib' libs/install-engine/src/lifecycle.ts` → non-empty;
       `install-engine:test` covers the abort path.
@@ -111,7 +111,7 @@ dispatch). Coordinate via both context files.
 
 ## Contract Promise
 
-- **Added:** `install.ts`, `lifecycle.ts`, `diff.ts`; `sox diff` / `sox update` commands.
+- **Added:** `install.ts`, `lifecycle.ts`, `diff.ts`; `soxe diff` / `soxe update` commands.
 - **Modified:** `bin/sox`, `apps/sox/src/main.ts` — descriptor-driven dispatch.
 - **Re-signed:** `runInstall` — now takes the descriptor, not the single-string target.
 

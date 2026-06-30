@@ -198,11 +198,11 @@ export function mcpServerTemplate(opts: TemplateOpts): FileSet {
       `  throw new Error(\`Unknown tool: \${name}\`);`,
       `});`,
       ``,
-      `// [R6: signal-contract] sox guarantees SIGKILL after stop_timeout_ms if this handler`,
+      `// [R6: signal-contract] soxe guarantees SIGKILL after stop_timeout_ms if this handler`,
       `// does not exit. Complete in-flight requests and flush writes before calling process.exit(0).`,
       `process.on('SIGTERM', () => {`,
       `  // TODO: complete in-flight requests, flush writes.`,
-      `  // sox guarantees SIGKILL after stop_timeout_ms if this handler does not exit.`,
+      `  // soxe guarantees SIGKILL after stop_timeout_ms if this handler does not exit.`,
       `  process.exit(0);`,
       `});`,
       ``,
@@ -218,7 +218,7 @@ export function mcpServerTemplate(opts: TemplateOpts): FileSet {
       `});`,
     ].join('\n'),
 
-    // Pre-compiled stub so sox validate passes the P0 entrypoint-reachability gate
+    // Pre-compiled stub so soxe validate passes the P0 entrypoint-reachability gate
     // immediately after scaffold (before the author runs `npm run build`).
     // This file is overwritten by the real build; treat it as a placeholder.
     'dist/index.js': [

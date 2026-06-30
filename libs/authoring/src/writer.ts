@@ -2,7 +2,7 @@
  * writer.ts — filesystem helper for writing a FileSet to disk.
  *
  * Pure Node.js; zero nx-devkit imports. Used by:
- *   - sox init CLI (apps/sox or scripts/new-extension.ts wrapper)
+ *   - soxe init CLI (apps/soxe or scripts/new-extension.ts wrapper)
  *   - tools/born-conformance.js gate
  *
  * [inv:nx-free-core] maintained — no nx-packages imports.

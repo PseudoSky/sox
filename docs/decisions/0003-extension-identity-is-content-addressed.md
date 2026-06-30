@@ -53,6 +53,7 @@ Verified against the tree (branch `design/extension-identity-versioning`):
    - `version` is **forbidden as a hand-authored field** in `extension.json`. The manifest schema drops it as an authored input.
 
 3. **Lockfile key becomes `id`; the checksum is the integrity authority.** Lockfile shape:
+
    ```json
    { "lockfileVersion": 2,
      "resolved": {
@@ -63,6 +64,7 @@ Verified against the tree (branch `design/extension-identity-versioning`):
          "bundle_id": "sox-memory-bundle"   // optional
        } } }
    ```
+
    `lockfileVersion` bumps to `2` to mark the key-format change. Reads already key by id (`findLockKey`), so consumer churn is minimal. The `id@version` form is gone.
 
 4. **Bundles reference members by `id` (current build).** `members[]` becomes `[{ "id": "memory-daemon" }, …]` — no `version` / `^x.y.z` spec. The "bundle version conflict" machinery (`install.ts:827-841`) is deleted: with one build per id there is exactly one artifact to resolve, and the checksum gate catches any mismatch between what was pinned and what is on disk. (If two bundles must ever pin *different* artifacts of the same id, that is the same explicit multi-build decision as in Decision 2 — not solved by reintroducing per-extension semver.)
@@ -72,7 +74,7 @@ Verified against the tree (branch `design/extension-identity-versioning`):
    - `serve(..., { name, version })` no longer takes a hand-coded `version: '1.1.0'`. The MCP `serverInfo.version` is populated from the resolved artifact checksum (short hash) at startup, derived — never authored.
    - `memory_stats.tool_version: '1.1.0'` (the v1.1-surface signal at `index.ts:2120`) is replaced by **capability presence**, not a version string: report the set of registered tool names (e.g. `tools: [...]` already includes/excludes `memory_update`), so a client tests for the capability it needs rather than inferring it from a semver. `ENRICH_VERSION` (a genuine data-schema/enrichment-format version, not the extension's package version) is unaffected and stays.
 
-6. **`version` may exist only as a *derived* label, never authored in two files.** If a human-readable version is wanted for display (`sox list`, registry rows), it is **derived at build/index time** from a single source — the nx `package.json` (release bookkeeping) — and **never** written into `extension.json`. The registry MAY carry a `displayVersion` for `sox list` cosmetics, clearly non-identity. Resolution, lockfile, bundles, and integrity never read it. This eliminates the dual-write (BL-30 class) entirely: one source, display-only, not a gate input.
+6. **`version` may exist only as a *derived* label, never authored in two files.** If a human-readable version is wanted for display (`soxe list`, registry rows), it is **derived at build/index time** from a single source — the nx `package.json` (release bookkeeping) — and **never** written into `extension.json`. The registry MAY carry a `displayVersion` for `soxe list` cosmetics, clearly non-identity. Resolution, lockfile, bundles, and integrity never read it. This eliminates the dual-write (BL-30 class) entirely: one source, display-only, not a gate input.
 
 7. **`compatibility.host` is preserved unchanged as the one legitimate semver.** It is a distinct field on a distinct axis (extension ↔ host-runtime). This ADR neither adds nor removes its (currently absent) enforcement — it only guarantees the field survives the version purge and is not conflated with the extension's own version. Whether/where to *enforce* `compatibility.host` at install/runtime is tracked separately.
 
@@ -98,21 +100,25 @@ A new parameterized suite (`install-engine/src/integrity.scope.spec.ts`, matrix 
 ## Consequences
 
 **Less code, fewer drift surfaces.**
+
 - Deleted: `semverSatisfies`, `compareSemver` (`install.ts:243-286`), the size-1 version loop in `resolveFromRegistry`, the bundle-version-conflict warning path (`install.ts:827-841`), and the `versionSpec` plumbing through bundle expansion.
 - Eliminated: the `extension.json` ↔ `package.json` dual-write — the entire BL-30 failure class becomes structurally impossible (no authored version to disagree).
 - Simplified: lockfile key, bundle `members[]`, registry entry (version demoted to optional display label).
 
 **What gets better.**
+
 - `memory_ping` / serverInfo now answer "what code is actually running?" with the content address — the question a human asks during a drift incident, answered drift-proof. BL-30 ("manifest 0.1.0, surface 1.1.0, both green") could not recur: there is no second number to disagree with.
 - The integrity story is now *one* story (checksum), uniform across scopes, with a parameterized conformance gate instead of four ad-hoc paths.
 
 **What this explicitly does NOT do (carve-outs).**
+
 - `compatibility.host` stays; its enforcement is unchanged (still declared-not-checked) and tracked separately. This ADR forbids conflating it with the extension's own version.
 - `ENRICH_VERSION` (memory data/enrichment-format version) is a genuine schema version, not a package version — untouched.
 - `lockfileVersion` (the lockfile *format* version) is a format marker — untouched (bumped 1→2 to flag the key change).
 - No multi-build-per-id capability is introduced. If that need ever arrives it is a fresh, explicit ADR — we do not keep dead semver code "just in case."
 
 **Withdrawn by this decision.**
+
 - **BL-32 "make versioning real"** — the premise (extensions need working semver) is rejected; identity is content-addressed.
 - The **`SERVER_VERSION` one-off** — replaced by the derived content address in Decision 5.
 
@@ -123,20 +129,25 @@ A new parameterized suite (`install-engine/src/integrity.scope.spec.ts`, matrix 
 Phased; design-only here (do not implement under this ADR). Each phase is independently shippable and gated by `nx run-many build,lint,test` + the new scope-parity suite. Per the repo's C2/C4 sequence, any artifact touch is followed by `registry:sync-index` and an explicit-path commit.
 
 **Phase 0 — Schema + invariants (no behavior change).**
+
 - Mark `version` optional/deprecated in the manifest schema (`libs/manifest/src/index.ts`); add the scope-parity integrity suite (`integrity.scope.spec.ts`) asserting the checksum rule on **today's** code (it already holds — locks in the invariant before refactoring).
 
 **Phase 1 — Resolution + lockfile (the core).**
+
 - `resolveFromRegistry(id, index)` — drop `versionSpec`; delete `semverSatisfies`/`compareSemver`.
 - Lockfile key → bare `id`; bump `lockfileVersion` to `2`; add a one-time reader that accepts legacy `id@version` keys and rewrites to `id` on next install (back-compat for already-installed scopes).
 - Strengthen `--frozen-lockfile` to verify **checksum equality**, not key presence (B1).
 
 **Phase 2 — Bundles.**
+
 - `members[]` → `[{ id }]`; delete the bundle-version-conflict path. Re-emit `sox-memory-bundle`'s manifest; `registry:sync-index`.
 
 **Phase 3 — Runtime self-reporting.**
+
 - `serve()` derives `serverInfo.version` from the resolved artifact short hash; `memory_ping` returns the content-address object (Decision 5); replace `tool_version` with tool-name capability reporting. Remove the `'1.1.0'` literals (`index.ts:526,2120,2157`).
 
 **Phase 4 — Version demotion + cleanup.**
+
 - Remove `version` from `extension.json` files; if a display label is wanted, derive `displayVersion` at index time from `package.json` only. Regenerate `registry/index.json` via `registry:sync-index`; refresh per-scope lockfiles. Reality-verify a real spawned `memory-server` reports its checksum via `memory_ping`, and that `--frozen-lockfile` fails on a mutated artifact in all four scopes.
 
 **Rollback:** Phases are additive-then-subtractive; the legacy-key reader (Phase 1) means an old lockfile still resolves, so a partial migration is never bricked.

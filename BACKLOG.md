@@ -67,6 +67,7 @@ destructive (kills the running process) but the reload is deferred, so a timeout
 leaves the system in a broken state.
 
 **Fix (2026-06-29):**
+
 1. **`os-unit.ts`**: Added `signal?: AbortSignal` to `RestartOptions`. Wrapped `restartOsUnit` body
    in try/finally: if the daemon was unloaded but not reloaded (interrupted/timeout/error), the
    finally block restores the last-known-good unit file and loads it. Added `signal?.aborted` checks
@@ -84,7 +85,7 @@ leaves the system in a broken state.
 > creating a skill → scaffold → validate → build-index → install". Each item is a place
 > the documentation or CLI output sent the author down the wrong path.
 
-### BL-69 — `docs/guidelines/skill.md` is a framework-contract audit, not an author-facing "how to create a skill" → authors have no authoring guide — **RESOLVED (2026-06-26)** — `docs/guidelines/authoring.md` (all 8 types + bundle, worked examples) + the top-level README now provide the author how-to.
+### BL-69 — `docs/guidelines/skill.md` is a framework-contract audit, not an author-facing "how to create a skill" → authors have no authoring guide — **RESOLVED (2026-06-26)** — `docs/guidelines/authoring.md` (all 8 types + bundle, worked examples) + the top-level README now provide the author how-to
 
 **Observed:** told to "read the how-to on creating a skill," the only skill-specific doc is
 `docs/guidelines/skill.md`, which is a five-layer analysis of *framework holes* (what the
@@ -120,6 +121,7 @@ the optional-but-expected field set. An author can't tell from the scaffold whic
 "good" skill should add.
 
 **Fix:** `libs/authoring/src/templates/skill/index.ts` now scaffolds:
+
 - `run_interface: { input_schema: {type:"object",properties:{}}, output_schema: ... }` stub
 - `install.hosts: ["claude"]` default (overridable via `--host=codex` at init time)
 
@@ -129,14 +131,15 @@ Born-conformance gate PASS for all 7 types; authoring tests 38/38 green.
 
 **Observed:** `soxe --help` reads `install   Install extensions from config`, omitting the
 `<id>` positional that `USAGE.md` and actual usage require (`soxe install demo-creator
---scope project`). Separately, the scaffolded `README.md` emits `sox install demo-creator`
-while the binary is `soxe` (and `USAGE.md` is titled "USAGE — sox CLI" but calls `node
+--scope project`). Separately, the scaffolded `README.md` emits `soxe install demo-creator`
+while the binary is `soxe` (and `USAGE.md` is titled "USAGE — soxe CLI" but calls `node
 bin/soxe`). The `sox`/`soxe` naming is inconsistent across help, README template, and USAGE.
 
 **Fix:**
+
 - `apps/sox/src/main.ts` printHelp(): `install` line now reads `install <id|bundle>   Install extension by id (or expand a bundle) at scope` with `--host` flag documented.
-- All 7 README templates in `libs/authoring/src/templates/*/index.ts` updated: `sox install` → `soxe install`, `sox start` → `soxe start`, `sox init` → `soxe init`, and the agent template's inline comment references updated.
-- `USAGE.md` title updated: "USAGE — sox CLI" → "USAGE — soxe CLI".
+- All 7 README templates in `libs/authoring/src/templates/*/index.ts` updated: `soxe install` → `soxe install`, `soxe start` → `soxe start`, `soxe init` → `soxe init`, and the agent template's inline comment references updated.
+- `USAGE.md` title updated: "USAGE — soxe CLI" → "USAGE — soxe CLI".
 
 ### BL-73 — `install --scope project` puts `.adhd` bookkeeping in the wrong repo because project-root resolution relies on git — **FIXED**
 
@@ -166,9 +169,10 @@ test with 4 cases, all green). State-side proof: running from `/tmp/bl73-state-p
 (no `.git`) writes lockfile to `/tmp/bl73-state-proof-*/.adhd/sox-ecosystem/extensions.lock`
 and does NOT touch `sox-ecosystem/.adhd/sox-ecosystem/`.
 
-### BL-78 — `cmdDetails` uses wrong lock path format (`.extensions/`) and `getScopePath(REPO_ROOT)` fallback — **RESOLVED (2026-06-26)** — `cmdDetails` now resolves via `getScopePaths(scope, workspaceRoot)` (workspaceRoot = flags.root ?? cwd), mirroring the BL-73 fix.
+### BL-78 — `cmdDetails` uses wrong lock path format (`.extensions/`) and `getScopePath(REPO_ROOT)` fallback — **RESOLVED (2026-06-26)** — `cmdDetails` now resolves via `getScopePaths(scope, workspaceRoot)` (workspaceRoot = flags.root ?? cwd), mirroring the BL-73 fix
 
 **Observed:** `apps/sox/src/main.ts` `cmdDetails` (line 3107-3117) has two problems:
+
 1. When `--root` is given: constructs the lock path as `<root>/.extensions/extensions.lock` — the
    WRONG format (should be `<root>/.adhd/sox-ecosystem/extensions.lock`). This path will never
    match any real lockfile, so `soxe details <id> --root=<dir>` always shows the extension
@@ -210,7 +214,7 @@ index, private skip, multiple services, stray-dir skip, and BL-33 mirror parity 
 
 **Fix (2026-06-26):** Updated `USAGE.md` to add `service` to the active types list and replace
 the incorrect "not a type / mcp-server install profile" description with accurate text:
-"`service` is a first-class type — a long-running process extension supervised by the sox host
+"`service` is a first-class type — a long-running process extension supervised by the soxe host
 runtime". Also updated the authoring lifecycle `Run for each of:` line to include `service`.
 
 ### BL-82 — `libs/manifest/src/schema.json` drift: `install.type` enum omits `service`; `install.transports` missing under `additionalProperties:false`, yet `validate()` + `tokenguard` use both — **RESOLVED 2026-06-26**
@@ -225,11 +229,11 @@ Added `transports` property to `install` with vocab `["stdio","http","sse","sock
 `npx nx test manifest` — 152/152 unit tests + 110/110 validate-manifests tests green.
 `soxe validate ./extensions/services/tokenguard` passes cleanly.
 
-### BL-83 — `libs/authoring/src/index.ts` comment says "union of 6 active extension types" but `ACTIVE_TYPES` lists 7 — **RESOLVED (2026-06-26)** — comments corrected to 7.
+### BL-83 — `libs/authoring/src/index.ts` comment says "union of 6 active extension types" but `ACTIVE_TYPES` lists 7 — **RESOLVED (2026-06-26)** — comments corrected to 7
 
 **Fix sketch:** update the comment to match `ACTIVE_TYPES` (7 active = 8 types minus parked `prompt`).
 
-### BL-84 — `extensions/services/tokenguard/CLAUDE.md` (+ examples) reference the REMOVED `./bin/sox` binary and a `sox.install()` JS API that isn't the real surface — **RESOLVED (2026-06-26)** — replaced with `node bin/soxe` + real CLI verbs.
+### BL-84 — `extensions/services/tokenguard/CLAUDE.md` (+ examples) reference the REMOVED `./bin/sox` binary and a `sox.install()` JS API that isn't the real surface — **RESOLVED (2026-06-26)** — replaced with `node bin/soxe` + real CLI verbs
 
 **Observed:** `bin/sox` was removed (collided with the system `sox` audio tool; `bin/soxe` is the
 only entrypoint). tokenguard's `CLAUDE.md` still shows `./bin/sox` invocations + a non-existent
@@ -275,6 +279,7 @@ for `rm` calls against `$(which node)` or similar.
 **Observed:** the real-npm clean-room install of `@adhd/sox-cli@1.1.1` (no checkout) works
 end-to-end (G1/G2/G3 all PASS, `memory_ping` `{ok:true, artifact:sha256:00cefb04…}`), but
 `soxe serve` emits two benign-but-noisy lines on a fresh machine:
+
 1. `BL-65 WARNING: dist/apps/sox/build-info.json missing — this dist was built before
    sha-stamping was added` — the `stamp-build.cjs` output (`build-info.json`) is **not in the
    published tarball** (`apps/sox` `files` allowlist / esbuild outdir ships `dist/index.js`
@@ -289,7 +294,7 @@ end-to-end (G1/G2/G3 all PASS, `memory_ping` `{ok:true, artifact:sha256:00cefb04
 to `files`, or inline the sha into the bundle so no sidecar file is needed; (2) suppress the
 git-root `fatal:` chatter (capture stderr) — folds into BL-73. Neither blocks the release.
 
-### BL-77 — dev `bin/soxe --version` reports the monorepo root `1.0.0`; published `@adhd/sox-cli` reports its own `1.1.1` — two entrypoints disagree — **RESOLVED (2026-06-26)** — `printVersion()` reads `apps/sox/package.json`; `node bin/soxe --version` now reports `1.1.1`, matching the published CLI.
+### BL-77 — dev `bin/soxe --version` reports the monorepo root `1.0.0`; published `@adhd/sox-cli` reports its own `1.1.1` — two entrypoints disagree — **RESOLVED (2026-06-26)** — `printVersion()` reads `apps/sox/package.json`; `node bin/soxe --version` now reports `1.1.1`, matching the published CLI
 
 **Observed:** the dev entrypoint `bin/soxe` (loads the tsc build `dist/apps/sox/main.js`)
 reports `--version` `1.0.0` — the **root `package.json` (`sox-ecosystem@1.0.0`)** — while the
@@ -304,7 +309,7 @@ with BL-76 (build-info stamp). Cosmetic; no behavior impact.
 
 ---
 
-### BL-79 — `@modelcontextprotocol/sdk` is absent from `node_modules`; `nx build mcp-runtime` and the memory-server self-contained bundle fail on a clean recompile — **RESOLVED/NON-ISSUE (2026-06-26)** — the dep IS declared (`^1.0.0` in `libs/mcp-runtime/package.json`, resolves to 1.29.0 in the package's pnpm node_modules); `nx build mcp-runtime --skip-nx-cache` + `memory-server --skip-nx-cache` build clean on `main`. The earlier "missing" was an agent-worktree symlink artifact (folds into BL-85), not a main-checkout defect.
+### BL-79 — `@modelcontextprotocol/sdk` is absent from `node_modules`; `nx build mcp-runtime` and the memory-server self-contained bundle fail on a clean recompile — **RESOLVED/NON-ISSUE (2026-06-26)** — the dep IS declared (`^1.0.0` in `libs/mcp-runtime/package.json`, resolves to 1.29.0 in the package's pnpm node_modules); `nx build mcp-runtime --skip-nx-cache` + `memory-server --skip-nx-cache` build clean on `main`. The earlier "missing" was an agent-worktree symlink artifact (folds into BL-85), not a main-checkout defect
 
 **Observed:** `@modelcontextprotocol/sdk` is not installed under `node_modules` (neither the
 shared checkout nor a worktree symlinked to it). `libs/mcp-runtime/src/{serve,transport}.ts`
@@ -320,7 +325,7 @@ touches mcp-runtime, memory-server, or deps); surfaced because the Slice-2 e2e f
 builds without the prebuilt-dist crutch. Until then, those two e2e sections (BL41, SPM bundle build)
 are not runnable from a clean state in an isolated worktree.
 
-### BL-85 — nested git worktrees under `.claude/worktrees/` collide in the nx project graph (`@adhd/sox-nx` duplicate name), breaking `nx` in the SHARED checkout — **RESOLVED (2026-06-26)** — `.nxignore` at repo root excludes `.claude/worktrees`; `nx show projects` returns 28 unique projects with worktrees present.
+### BL-85 — nested git worktrees under `.claude/worktrees/` collide in the nx project graph (`@adhd/sox-nx` duplicate name), breaking `nx` in the SHARED checkout — **RESOLVED (2026-06-26)** — `.nxignore` at repo root excludes `.claude/worktrees`; `nx show projects` returns 28 unique projects with worktrees present
 
 **Observed:** with two agent worktrees checked out under `.claude/worktrees/`
 (`agent-a434962d801ff1b5c`, `agent-a997b4af124c6f91f`), running any `nx` target in the SHARED
@@ -346,10 +351,12 @@ so the parent checkout never scans nested worktrees. Low blast radius but it mak
 ### BL-94 — `better-sqlite3` native binding missing for current Node.js ABI → memory-server crashes mid-session — **Open (HIGH) (2026-06-27)**
 
 **Observed:** `memory_write` and all other `mcp__memory-server__*` tool calls fail mid-session with:
+
 ```
 Error: Could not locate the bindings file.
 → .../better-sqlite3/lib/binding/node-v137-darwin-arm64/better_sqlite3.node
 ```
+
 The binding directory `node-v137-darwin-arm64/` does not exist — the module was compiled against a different Node.js ABI version than what is currently running (ABI 137 = Node.js v24.x). `memory_ping` succeeds (it bypasses the DB), masking the failure until a write is attempted.
 
 **Observed impact:** workflow-researcher agents that survive long enough to need `memory_write` hit this at Step 3 or Step 5. Sub-Q nodes written before the crash survive; the summary and any remaining nodes are lost and must be handoff-persisted by the parent. Batch 3 workflow (wf_8fdc0fdf-1e3) is currently running — unknown how many of its 18 agents will hit this.
@@ -357,6 +364,7 @@ The binding directory `node-v137-darwin-arm64/` does not exist — the module wa
 **Root cause:** `better-sqlite3` was rebuilt/installed under one Node.js version; the runtime `node` binary changed (e.g. via nvm, Homebrew upgrade, or pnpm update) without re-running `node-gyp` / `npm rebuild`. The bound binary at `build/Release/better_sqlite3.node` was copied to the ABI-versioned path for the OLD version only.
 
 **Fix sketch:**
+
 1. `cd $(node -e "require.resolve('better-sqlite3')" | xargs dirname | xargs dirname)` then `npm rebuild better-sqlite3` under the current Node.js version.
 2. Or: `pnpm rebuild better-sqlite3` from the sox-ecosystem root.
 3. Verify: `node -e "require('better-sqlite3')"` should return without error.
@@ -382,6 +390,7 @@ The binding directory `node-v137-darwin-arm64/` does not exist — the module wa
 **Root cause:** `cmdStatus` resolves stores from `registry.json` (which is empty) and the cwd's `.memory/` dir. `cmdList` looks for `<dir>/.memory/<scope>.db` files. The live store is named `memory.db` — not the scope-prefixed `user.db` / `project.db` that the CLI was designed around. The scope-naming convention was introduced after the store was created, and `memory init` was never run to register the live file.
 
 **Fix sketch:**
+
 1. `memory init --scope user` (or with `--path ~/.memory`) — this registers `~/.memory/user.db` in `registry.json` and creates the scoped DB. However this creates a *new* DB, not an alias to the existing `memory.db`.
 2. Longer-term: `cmdStatus` should also scan for a bare `memory.db` in known store dirs (`~/.memory/`, `.memory/`) and surface it with a `(unregistered)` flag rather than silently skipping it.
 3. Or: `memory init` could detect an existing `memory.db` and offer to register it under a scope alias rather than creating a new file.
@@ -393,14 +402,16 @@ The binding directory `node-v137-darwin-arm64/` does not exist — the module wa
 ### BL-96 — plan-state-machine: dod-confirmation audit runs from `cwd:planDir`, guard runs from repo-root → repo-relative checks fail; `parseDodIds` reads inline `[dod.N]` prose as phantom clause — **Open (HIGH) (2026-06-25)**
 
 **Observed (fullstack-developer, 2026-06-25; memory UID `01KVZHMEJHVVBYEGTSQ4AKFNQ6`):** executing a plan to DONE surfaced two terminal-transition defects:
+
 1. The dod-confirmation audit script runs from `cwd:planDir` (the plan directory) while the `guard` command runs from the repo root — any repo-root-relative path check inside the audit fails (4/128 checks failed in observed run).
 2. `parseDodIds` reads the literal token `[dod.N]` when it appears in prose (e.g., "see `[dod.6]` for details") as a real DoD clause ID, producing a phantom `dod_unconfirmed` that permanently blocks the terminal transition even when every real clause passes.
 
 **Impact:** a fully-passing, reality-verified plan cannot reach `done` without either (a) calling `os.chdir(repoRoot)` explicitly inside the audit script or (b) rewording every README prose reference to `[dod.N]` outside a real clause bullet.
 
 **Fix sketch:**
+
 - Audit subprocess should `cd` to the git repo root before running checks, or receive the repo root as an explicit `--repo-root` argument.
-- `parseDodIds` should only extract `[dod.N]` tokens that appear on a bullet-list line (start with `- ` or `* `), not from free prose.
+- `parseDodIds` should only extract `[dod.N]` tokens that appear on a bullet-list line (start with `-` or `*`), not from free prose.
 
 ---
 
@@ -411,6 +422,7 @@ The binding directory `node-v137-darwin-arm64/` does not exist — the module wa
 **Impact:** orchestrators that write checkpoint artifacts (approval files, baseline snapshots) without an intermediate commit step will see spurious exit-4 gate failures. The failure is silent — the working tree is clean, the audit output passes on local re-run, but `--complete` exits 4.
 
 **Fix sketch:**
+
 - Document the commit requirement explicitly in the work-order template and `--complete` help text: "all artifacts the guard checks must be staged and committed before `--complete`."
 - Or: run the audit against the working tree (not `end_ref`) for artifact-existence checks, reserving the ref check for diff/hash verification.
 - Or: `state-transition.js --complete` auto-stages and commits declared `artifacts[]` when they are unstaged, with a warning.
@@ -430,12 +442,14 @@ The binding directory `node-v137-darwin-arm64/` does not exist — the module wa
 **Observed (plan-orchestrator; memory UID `01KW3F0GA02V058ZHDTDPJ4EEB`):** all three parallel waves in `memory-refactor` were correctly evaluated as no-pack (prose overlap ratios -0.081, -0.068, -0.088). However, the real dispatch cost is `Di = B + Si + Ki` where B ≈ 27k tokens (base model load + system prompt + transition scaffolding) and Si = source file bytes the executor reads. `compile-wave --stats` measures only Ki-overlap (shared prose invariants/refs/snapshots) — it never accounts for B or Si. This means `savings(i,j) = B + |Si∩Sj|` from merging two tasks into one dispatch is never computed, leaving ≈54k tokens of potential savings unquantified across 3 potential merges even at zero prose overlap.
 
 **Available plan fields that could power the measurement:**
+
 - `dag.json nodes[].artifacts` — `reserved_files` glob patterns → Si proxy at plan-compile time
 - `references.json` `source-extract` entries → explicit source file lists per extraction state (Si without disk reads)
 - `budget-estimate.js --reserved-bytes` input → already accepted but not fed into the merge decision
 - `state.json metrics.tokens_est` → historical cost floor before `emit-state-metrics` populates real actuals
 
 **Fix sketch:**
+
 1. Add `compile-wave --merge-candidates <slug1> <slug2> ...` mode: compute `savings(i,j) = B_estimate + |Si∩Sj|` for all pairs, where Si is sourced from `dag.json artifacts` or `references.json source-extract sources[]`; rank and surface merge opportunities.
 2. Expose `reduction_ratio_with_sources` as a separate `--stats` output field, computed as `(independent_cost_with_B_Si - merged_cost) / independent_cost_with_B_Si`.
 3. Calibrate B empirically from orchestration-ledger token actuals across ≥3 plan executions (currently ≈27k is a rough estimate).
@@ -474,6 +488,7 @@ machine-readable signal to distinguish "run guard locally as a shell command" fr
 "model call with missing provider config".
 
 **Fix sketch:**
+
 1. Add `execution_mode: "model" | "guard-local" | "tool-call"` to the `DispatchUnit` type.
 2. In `assembleDispatchUnit()`, set `execution_mode = "guard-local"` when
    `milestone.agent === null` (D-12 guard-only class).
@@ -490,6 +505,7 @@ machine-readable signal to distinguish "run guard locally as a shell command" fr
 is no mechanism to increment it.
 
 **Fix sketch:** Two options:
+
 - Pass an optional `priorVersion?: number` parameter to `snapshot()` and increment it.
 - Read the prior snapshot from disk inside `snapshotWithDag()` and forward the version.
 Option A is cleaner (keeps `snapshot()` pure). Add `snapshot(dag, { version?: number })` opts bag.
@@ -500,6 +516,7 @@ Option A is cleaner (keeps `snapshot()` pure). Add `snapshot(dag, { version?: nu
 
 **Observed:** dispatching the `dag-schema` milestone to a Haiku agent, two ops produced wrong
 output types:
+
 - `shape: OperationShape | null` — op spec said "add-field shape → OperationShape | null"
   but didn't describe `OperationShape`'s internals. Agent generated a simple enum
   `("read-only" | "write" | "transform")` instead of the rich polymorphic shape object
@@ -696,6 +713,7 @@ already-real row reproduces the same BGE vector). Pairs with BL-88 (add per-reco
 > low priority since `ASSIGNED_TO` was never successfully written. w2b inherits the fixed schema.
 
 **Observed (verified state-side):** three different `edge.rel` value sets are in play:
+
 - `memory_link` MCP tool — enum + `VALID_RELS` (memory-server `src/index.ts:452,1325`): `MENTIONS, SUPPORTS,
   RELATES_TO, DERIVED_FROM, SUPERSEDES, SAME_AS, **ASSIGNED_TO**` (7; **no** `MEMBER_OF`/`PART_OF`).
 - `schema.ts` `edge.rel` CHECK (`libs/memory-core/src/schema.ts:58-59`): `MENTIONS, SUPPORTS, RELATES_TO,
@@ -715,6 +733,7 @@ needn't expose). Add a test asserting every `memory_link` enum value is DDL-acce
 **Observed:** the `memory-usage` (and `reflection`) skills document write conventions well but give little
 guidance on the *retrieval* side — specifically how an agent finds the memories relevant to its situation.
 Agents need ready recipes for the common scoping axes:
+
 - **Directed at you (the agent):** by `agent_id` (your own confirmed identity), and by `target:<name>` /
   `audience:<name>` tags (e.g. ideas/lessons addressed to a specific agent or role like `workflow-researcher`).
 - **Scoped to your project:** `filters.project_path` (exact or `{prefix}`) — and the footgun that
@@ -746,7 +765,7 @@ appeared to hang indefinitely. Diagnosis (state-side): the `upgrade --all` node 
 0** (work complete), but the rolling-restart of memory-server spawned the **detached proxy backend** (PPID 1,
 `node --enable-source-maps .../memory-server/dist/index.js`, pid 20057) which **inherited the parent's stdout
 write-end**. `tail` therefore never received EOF (a live writer of the pipe remained), so the shell pipeline
-never terminated. Any invocation that pipes sox output (`| tail`, `$(…)`, CI capture, the post-merge
+never terminated. Any invocation that pipes soxe output (`| tail`, `$(…)`, CI capture, the post-merge
 `upgrade --all` mandated by CLAUDE.md) now hangs whenever a proxy backend is (re)spawned.
 
 **Root cause:** `ensureBackend`/the detached-backend spawn did not fully sever inherited stdio — `stdio[2]` was
@@ -754,6 +773,7 @@ never terminated. Any invocation that pipes sox output (`| tail`, `$(…)`, CI c
 inherited THAT pipe fd, keeping it open forever.
 
 **Fix (committed):**
+
 - `libs/service-proxy/src/ensure-backend.ts`: removed `os` import; replaced `stdio: ['ignore', 'ignore',
   os.platform() === 'win32' ? 'ignore' : 'inherit']` with full fd severance using a synchronously-opened log
   fd (`fs.openSync`) or `'ignore'`. Added `stderrLogPath?: string` to `EnsureBackendOptions`.
@@ -775,6 +795,7 @@ The BL-65 `stamp-build.cjs` / `warnIfDistSha()` guard (correctly shipped) comput
 for all sessions.
 
 **Fix (committed):**
+
 - `apps/sox/scripts/stamp-build.cjs`: changed `git status --porcelain` → `git status --porcelain --untracked-files=no`.
   Untracked files are now excluded; only staged/unstaged modifications to tracked files count as dirty.
 - `apps/sox/src/stamp-build.spec.ts` (new): 5 tests covering the contract — clean tree → false, only-untracked →
@@ -798,6 +819,7 @@ write to an *allowed* path write into the **real** store dir and never clean up.
 (3) `memory-server/src/permission-guard.spec.ts` (shared fixture names).
 
 **Fix (shipped 2026-06-25):**
+
 - **Swept** `~/.memory/`: removed all 843 artifacts (1.5 GB → 41 MB); canonical `memory.db` untouched
   (`PRAGMA integrity_check` = ok, 2909 nodes, parity with the verified backup). Manifest of removed files at
   `~/.memory/backups/swept-manifest-*.txt`. A verified backup exists at
@@ -835,12 +857,11 @@ server — it updates ONLY on explicit `soxe upgrade --all` (or reinstall). The 
 dirty-dist guard stays as defense-in-depth. The interactive dev `bin/soxe` (on PATH via `OUT_PATH`)
 is unchanged, so local extension development/install is unaffected.
 
-
-
 **Update (2026-06-26, publishing refactor):** the BL-42 blocker is resolved — there is now an
 independently-installable, self-contained CLI (`@adhd/sox-cli` → `soxe`, in-package bin + bundled
 registry; proven via `npm i -g` with no checkout). The principled repoint (option 1) is therefore
 UNBLOCKED. Sequence (orchestrator, AFTER the owner publishes — `docs/plan/publishing/SCOPE.md` §8):
+
 1. `npm i -g @adhd/sox-cli` (or `soxe install sox` to a content-addressed store under `~/.adhd/...`).
 2. Repoint `.mcp.json` / `~/.claude.json` `mcpServers.memory-server.command` from
    `/Users/nix/dev/ai/sox-ecosystem/bin/soxe` → the **installed** `soxe`; install
@@ -849,7 +870,6 @@ UNBLOCKED. Sequence (orchestrator, AFTER the owner publishes — `docs/plan/publ
 3. One final reconnect (BL-61). After repoint, a repo build never touches the running server; it
    updates only on explicit `soxe upgrade --all`. The `warnIfDistSha` dirty-dist guard stays as
    defense-in-depth. Do NOT do a fragile dist-copy repoint (still risks re-breaking live).
-
 
 **Update (2026-06-25, attempting the repoint):** the guard (option 3) is **shipped and verified live** —
 `soxe serve` now emits the dirty/stale-dist warning (confirmed firing: it caught dist sha `ffe4a3d` vs HEAD
@@ -880,6 +900,7 @@ stale proxy socket → verified direct serve `memory_ping`/`recall` OK + SQLite 
 and the running MCP server). This is the `$SKILL`-cache-vs-dev-checkout hazard generalized to MCP.
 
 **Fix options (need decision):**
+
 1. **Point `.mcp.json` at an installed/cached `soxe`** (a content-addressed install under `~/.adhd/...`),
    not the live dev checkout — so repo builds never touch the running server (it only updates on an
    explicit `soxe upgrade`/reinstall). This is the principled fix.
@@ -889,6 +910,7 @@ and the running MCP server). This is the `$SKILL`-cache-vs-dev-checkout hazard g
    `dist` (or stamp dist with a git-sha and have `serve` warn on a dirty/uncommitted dist).
 
 **Shipped (this branch, `feat/proxy-default-memory-backend` rebased):**
+
 - Option 2 is enforced at the orchestrator level: risky serve-path work MUST run in an isolated git
   worktree (the BL-65 constraint in the task brief); the current work was done in
   `.claude/worktrees/agent-a43ff2972d1444cca/` which has its own `dist`.
@@ -899,6 +921,7 @@ and the running MCP server). This is the `$SKILL`-cache-vs-dev-checkout hazard g
   operator cannot silently serve stale/WIP code.
 
 **Remaining human/orchestrator step (option 1 — principled permanent fix):**
+
 - Point every `.mcp.json` / `~/.claude.json` `memory-server` entry at a content-addressed INSTALLED
   `soxe` under `~/.adhd/sox-ecosystem/installs/<sha>/bin/soxe` (or equivalent), NOT the live dev
   checkout. This decouples repo builds from the live MCP server: it only updates on an explicit
@@ -925,7 +948,7 @@ memory-server MCP plugin **once**. After that single reconnect, every subsequent
 behaviour/code upgrade is a BACKEND rolling-restart behind the shim → **no further client reconnects**
 (the shim re-dials across the sub-second gap; spec §9.5, e2e Section SPM). An interface (tool-schema)
 change still emits `notifications/tools/list_changed` and falls back to reconnect only for clients that
-ignore it. **Action for the human:** after this merge + `sox upgrade --all`, reconnect/reload the
+ignore it. **Action for the human:** after this merge + `soxe upgrade --all`, reconnect/reload the
 memory-server MCP server once.
 
 ### BL-62 — shared-backend `project_path` attribution is single-valued for the lifetime of the backend — **Open (MEDIUM) `(unverified)` multi-project correctness**
@@ -948,27 +971,27 @@ running backend).
 subtracts a `BASELINE_PIDS` snapshot captured at import. With the Slice 1.6 proxy default LIVE in the
 operator's own `bin/soxe serve memory-server` session, that session's shim **re-ensures/respawns its
 backend during the ~minute e2e run** → the new backend pid post-dates the baseline → the BL-31 "no
-orphan after stop" + "BL-31 no orphan survive sox stop" assertions count it as leaked. This was the
+orphan after stop" + "BL-31 no orphan survive soxe stop" assertions count it as leaked. This was the
 root cause of the reported **e2e 99/2** failure — **a test-environment confounder, NOT a code
 regression:** every reported "orphan" pid resolves to `ppid == <the operator's live serve session pid>`
 (correlated 3×: 18501→23210, 15408→23210, 15572→23210), never to the e2e's own install/start tree; on a
 clean machine the suite was already **101/0** (re-confirmed 3× this session, before the fix).
 
 **Fix (shipped):** `leakedServerPids({ excludeLiveParented: true })` for the two POST-STOP orphan
-assertions (Step 7 + Step 7b). After a `sox stop` this test's supervisor is already dead, so a genuine
+assertions (Step 7 + Step 7b). After a `soxe stop` this test's supervisor is already dead, so a genuine
 leak from THIS test is always orphaned (PPID 1) or dead-parented; a candidate whose parent is a LIVE
 non-init process is owned by another live manager (the operator's serve shim) and is excluded. This
 removes the false positive WITHOUT masking a real test leak (never live-parented after stop). The
 mid-lifecycle disable/enable checks keep the strict (no live-parent exclusion) form — a supervisor
 restart there MUST still be caught.
 
-### BL-64 — auto-spawned proxy backend (untracked, no runtime entry) survived `sox stop` — **RESOLVED (2026-06-25, `feat/proxy-default-memory-backend`)**
+### BL-64 — auto-spawned proxy backend (untracked, no runtime entry) survived `soxe stop` — **RESOLVED (2026-06-25, `feat/proxy-default-memory-backend`)**
 
 A proxy-mode mcp-server (Slice 1.6 default) is fronted by a thin stdio shim; the real implementation
 runs in a persistent, detached, sox-owned BACKEND the shim AUTO-SPAWNS via `ensureBackend`
-(`SOX_PROXY_BACKEND=1`). That backend is created by the SHIM, not by `sox start`, so it is in NO
+(`SOX_PROXY_BACKEND=1`). That backend is created by the SHIM, not by `soxe start`, so it is in NO
 `runtime.json` entry — `cmdStop`'s whole-scope reap loop iterates only `record.entries` and never
-touched it, so the detached backend SURVIVED `sox stop`, re-introducing the BL-31/BL-50 orphan leak
+touched it, so the detached backend SURVIVED `soxe stop`, re-introducing the BL-31/BL-50 orphan leak
 once every spawning shim had exited. (Distinct from BL-63: BL-63 was the e2e *scan* mis-attributing a
 foreign live session; BL-64 is the real production gap that the e2e could not previously reach.)
 
@@ -982,7 +1005,7 @@ is the entrypoint PATH, which is stable across scopes, so a backend whose serve 
 scope than the stop target is still reaped (closes the suspected scope-mismatch leak). The manifest is
 read from the lockfile entry's source (honoring an explicit `--lockfile`), NOT re-derived via
 `getScopePaths` (which would miss a custom lockfile). Proven: new e2e **Step 7d** spawns the REAL
-backend as a true orphan (PPID 1) and asserts `sox stop` reaps it; full suite **107/0** across 3 runs.
+backend as a true orphan (PPID 1) and asserts `soxe stop` reaps it; full suite **107/0** across 3 runs.
 
 ## Open — surfaced during service-proxy Slice 1.5 (2026-06-25, `feat/service-proxy-slice1_5`)
 
@@ -1017,6 +1040,7 @@ attribution; there was no `SOX_CONFIG_PROJECT_PATH` injection and no MCP `roots`
 because each session's extension resolved to an extDir inside a different repo.
 
 **Fix:**
+
 1. `cmdServe` now injects **`SOX_CONFIG_PROJECT_PATH` = git root of `root2`** (the client launch
    workspace), always defining it (empty string when `root2` is not a git repo) so the install-dir cwd
    path is disabled in the served context (`apps/sox/src/main.ts`).
@@ -1043,7 +1067,7 @@ is unaffected; a future daemon-side write path must use the same injection.
 **Note:** the 4 reflections filed earlier this session landed in `sox-ecosystem` because this client
 launched there — which under the fix is now the *correct* attribution (the workspace), not luck.
 
-### BL-57 — sox data files pollute repo roots instead of nesting under `.adhd/sox-ecosystem/` (legacy `SOX_HOME` residue) — **Open (MEDIUM) — cleanup + migration pending**
+### BL-57 — soxe data files pollute repo roots instead of nesting under `.adhd/sox-ecosystem/` (legacy `SOX_HOME` residue) — **Open (MEDIUM) — cleanup + migration pending**
 
 **Observed (2026-06-25):** `/Users/nix/dev/ai/claude-agents/` root holds `install-registry.json` (246 KB),
 `supervisors.json`, `logs/` (48 dirs), and a legacy `.sox/` (messages.db) — none nested under
@@ -1062,12 +1086,13 @@ current code is not re-polluting. So this is **not a live data-path bug** — `d
 **`SOX_HOME` is NOT sox's to reclaim (corrected 2026-06-25).** The user confirmed `SOX_HOME` is set for
 an **unrelated** purpose — it "was never a variable for this project to use." sox-ecosystem retired it
 (ADR-0004) and must be **fully inert** to it, including **no warning** (the name collides with the `sox`
-audio tool and may be claimed by other tooling — nagging about a var sox no longer reads is presumptuous
+audio tool and may be claimed by other tooling — nagging about a var soxe no longer reads is presumptuous
 noise). **Done:** the per-invocation `SOX_HOME … RETIRED` warning is **removed** (`apps/sox/src/main.ts`);
 data placement is governed solely by `SOX_ECOSYSTEM_HOME` / default `~/.adhd/sox-ecosystem/`. Do **not**
 recommend unsetting `SOX_HOME`.
 
 **Remaining (cleanup only, independent of `SOX_HOME`):**
+
 1. The stale residue (`install-registry.json`, `supervisors.json`, `logs/`, legacy `.sox/`) at the
    `claude-agents` / `sox-ecosystem` repo roots can be removed/relocated via `soxe migrate-home`
    (ADR-0004 §D8; idempotent, non-destructive — skips when the target already exists, so it won't clobber
@@ -1113,6 +1138,7 @@ the cached BGE model under serve.
 
 **Reality verification (2026-06-25, fresh `node bin/soxe serve memory-server`, enforced scrub, model
 cached at `~/.cache/sox-memory/models/fast-bge-base-en-v1.5`):**
+
 - `SOX_EMBED_BACKEND=real` → `memory_recall` returned `["vec"]` results **without error**. The `real`
   branch of `embed()` *throws* on worker failure (no hash fallback), so a successful recall is positive
   proof the ONNX worker loaded + embedded under serve.
@@ -1269,6 +1295,7 @@ service's `lifecycle.health` socket (`resolveServiceHealthSocketPath`) and probe
 (`probeUnixSocketLive`); a live instance ⇒ refuse second spawn + record RUNNING. 15 tests.
 
 **Status of each half (per spec v1.1.0):**
+
 - (a) **Cross-scope singleton — ✅ CLOSED by Slice 1 (`feat/service-lifecycle-slice1`).** The guard no
   longer keys on the socket alone; it resolves `[def:singleton-key] = (id, resolved-store-resource)`
   (db_path → socket → host:port) and runs **socket probe + entrypoint-token scan + cross-scope
@@ -1278,7 +1305,7 @@ service's `lifecycle.health` socket (`resolveServiceHealthSocketPath`) and probe
   `libs/host-runtime/src/singleton.ts` (+ `singleton.spec.ts`, 32 cases) and the `cmdStart`
   service-registry guard (`resolveStoreResourceForScope`/`collectCrossScopeResources`/
   `entrypointTokenForService`) in `apps/sox/src/main.ts`. Gates (nx targets, built-before-test per BL-4):
-  host-runtime test 146/146, sox 30/30, `host-runtime:test-e2e` 99/0 (+6 Slice-1 Step 7c, stable ×3),
+  host-runtime test 146/146, soxe 30/30, `host-runtime:test-e2e` 99/0 (+6 Slice-1 Step 7c, stable ×3),
   `affected -t build,lint,test` 20/20 green, `registry:sync-index` no drift.
 - (b) **OS reboot persistence + `[inv:unload-then-reap]`** — **✅ CLOSED (capability) by Slice 2
   (this worktree).** Built `libs/host-runtime/src/os-unit.ts` (launchd LaunchAgent generator,
@@ -1286,11 +1313,11 @@ service's `lifecycle.health` socket (`resolveServiceHealthSocketPath`) and probe
   `[inv:unload-then-reap]` ordering wired into `cmdStop` (all paths), `service disable`, and
   `cmdUninstall` (unload the unit BEFORE the verified-stop reap → no resurrection loop), plus
   re-enable-on-upgrade (§9.3) and the `os-unit` ownership entry (§9.4 reversibility). Gates:
-  host-runtime test 168/168 (+`os-unit.spec.ts` 22), install-engine 152/152, sox 42/42
+  host-runtime test 168/168 (+`os-unit.spec.ts` 22), install-engine 152/152, soxe 42/42
   (+`service-os-unit.spec.ts` 7), lint 3/3, build 3/3; e2e stop/reap/orphan/disable sections all PASS.
   **`(needs-human-ack)` for REAL activation:** generating + `launchctl bootstrap`-ing on the user's
   machine touches `~/Library/LaunchAgents` and pins a node binary (Appendix B item 3) — Slice 2 builds
-  + tests the capability only (sandboxed unit dir + fake exec, `--dry-run` in the CLI test); the human
+  - tests the capability only (sandboxed unit dir + fake exec, `--dry-run` in the CLI test); the human
   runs `soxe service enable <svc>` to activate. **BL-50 is now fully closed across (a)/(b)/(c).**
 - (c) **Zero-downtime upgrades without forced MCP reconnects** — **✅ CLOSED (capability) by Slice 1.5
   (`feat/service-proxy-slice1_5`).** Built as the leaf lib `libs/service-proxy/` (front-shim
@@ -1324,7 +1351,7 @@ Surfaced while wiring memory-daemon auto-supervision (the "item 3" cleanup). Two
 
 **Update (2026-06-23):** the two-writer state is resolved — both orphaned daemons (PPID 1; one 14 min,
 one 8.5 hr) were SIGTERM'd, socket removed, zero daemons now. A hand-rolled LaunchAgent was trialed then
-reverted (unloaded/deleted) in favor of a proper sox feature — see BL-51. Enrichment correctness is
+reverted (unloaded/deleted) in favor of a proper soxe feature — see BL-51. Enrichment correctness is
 currently covered by BL-47's in-process fallback (no daemon required), so "no daemon running" is a safe
 state. The two faults above (orphan reaper + start-time singleton guard) remain open.
 
@@ -1345,7 +1372,7 @@ state. The two faults above (orphan reaper + start-time singleton guard) remain 
 > `--allow-volatile-node`/`--node-path` override). The orchestrator gates that on the user; the BL-47
 > in-process fallback remains the supported zero-config path until the user activates a unit.
 
-Persistence for service-type extensions (e.g. memory-daemon) should be a first-class sox capability, not
+Persistence for service-type extensions (e.g. memory-daemon) should be a first-class soxe capability, not
 a hand-rolled per-service plist. Proposed surface:
 
 - **`soxe service enable|disable <ext> [-s <scope>]`** — register/unregister an OS supervisor for the
@@ -1525,6 +1552,7 @@ tool-call approval/queueing) and/or first-call cold model load, not daemon lock 
 latent defect and the daemon-state question need fixing regardless.
 
 **Fix sketch (in priority order):**
+
 1. **Incremental write-triggered clustering.** `cluster.ts` already has an `incrementalOnly` option
    (local-neighborhood check for new nodes). Route ingest-triggered enrich to incremental; reserve the
    full O(n²) re-cluster for a periodic/time-based trigger or explicit `memory_curate recluster`.
@@ -1799,6 +1827,7 @@ Evidence (2026-06-23):
   scope is owned but empty on npm.
 
 **What "publishable + fresh-machine-installable" requires (fix sketch):**
+
 1. **Decide the distribution substrate** — publish `@adhd/sox-*` libs + the `soxe` CLI to npm
    (changesets is already wired: `version-packages`/`release` scripts), OR ship fully self-contained
    bundles addressed by a fetchable URL/tarball, not `file://`.
@@ -1816,7 +1845,7 @@ Evidence (2026-06-23):
 **Versioning-system findings (2026-06-23, confirmed while writing `PUBLISHING.md`).** The publish
 pipeline is Changesets (canonical — `.changeset/` + `@changesets/action` in `release.yml`, which
 DOES rewrite `registry/index.json` sources to npm-CDN URLs post-publish, i.e. the fix for blocker
-#1 above). The **safe, unambiguous defects are now fixed** (this turn):
+# 1 above). The **safe, unambiguous defects are now fixed** (this turn):
 
 - ✅ **Changeset tooling was non-functional** — `pnpm-workspace.yaml`'s `libs/**`/`apps/**`/
   `packages/**` recursed into gitignored `dist/` dirs whose build-emitted `package.json` (no `name`)
@@ -1885,6 +1914,7 @@ hazard (cf. BL-4, MEMORY `eim-plan-cache-lies-reality-gates`). A change to `vite
 `vitest.setup.ts` also didn't invalidate (those files weren't in the narrowed inputs).
 
 **Fix (verified):**
+
 - Set every test target's `inputs` to `["default", "^production"]` — `default` tracks the project's
   own files incl. vitest config/setup; `^production` tracks **upstream** sources. (install-engine keeps
   its extra `{workspaceRoot}/libs/host-runtime/src/data-paths.ts` parity reach-in — it has no nx graph
@@ -1906,6 +1936,7 @@ defect in **`build`** targets: several declared a *hand-listed* `dependsOn: ["X:
 genuinely dep-blind tests the first pass missed (`manifest` — local `dependsOn: ["test-scripts"]`
 shadowed `^build`; `packages/sox-nx` — outside the first sweep). Shipped the durable guards so it
 cannot regress:
+
 - **`docs/nx-cache-conformance.md`** — the principle (policy lives in `nx.json` targetDefaults;
   per-project `inputs`/`dependsOn` *replace* not merge; prefer `^build` over hand-listed deps).
 - **`libs/authoring` bundle generator** — emits no narrowing per-target `inputs` (members inherit the
@@ -2386,6 +2417,7 @@ bypass the `libs/data/` invariants (space invariance, BL-11 worker boundary, etc
 **Severity:** medium — not breaking but actively harmful for long-term maintenance.
 
 **Fix sketch:** For each duplicated module:
+
 1. Update `memory-core` to import from the corresponding `@adhd/sox-*` package
 2. Remove the local `src/*.ts` file from `memory-core`
 3. Run full test suite to verify nothing broke
@@ -2404,7 +2436,7 @@ impossible to publish to npm. The adhd monorepo's `agent-mcp-authoring` plan nee
 path reference is used instead of a published version.
 
 **Severity:** medium — workaround exists (local path `"file:../sox-ecosystem/..."`) but
-prevents standard npm resolution. Makes the adhd→sox dependency fragile.
+prevents standard npm resolution. Makes the adhd→soxe dependency fragile.
 
 **Fix sketch:** Either (a) set `"private": false` and publish, or (b) copy the
 `extractiveSummary()` function into `@adhd/sox-analysis` or a new public helper package

@@ -26,7 +26,7 @@ node bin/soxe uninstall tokenguard
 
 ### Configuration Quick Start
 
-The service reads **only** `SOX_CONFIG_*` environment variables (set by the sox supervisor from the install-time config schema). You configure it at install time via the prompted questions.
+The service reads **only** `SOX_CONFIG_*` environment variables (set by the soxe supervisor from the install-time config schema). You configure it at install time via the prompted questions.
 
 **Key variables:**
 
@@ -63,7 +63,7 @@ Then their code runs as-is; no logic changes, just env var redirection.
 
 ### CLI Usage
 
-Three tools are exposed via `sox exec`:
+Three tools are exposed via `soxe exec`:
 
 ```bash
 # Add a custom identifier to the live map
@@ -109,7 +109,7 @@ Use the `summary` CLI to get aggregate leak count.
 
 ### High-Level Overview
 
-TokenGuard is a **stateful proxy service** within sox that:
+TokenGuard is a **stateful proxy service** within soxe that:
 
 1. **Intercepts requests** between a client and an LLM API.
 2. **Tokenizes sensitive data** (hosts, emails, IPs) into stable pseudo-tokens (`<HOST_1>`, etc.).
@@ -119,7 +119,7 @@ TokenGuard is a **stateful proxy service** within sox that:
 
 ### API Surface
 
-When invoked via `sox exec tokenguard`, the service exposes three MCP tools:
+When invoked via `soxe exec tokenguard`, the service exposes three MCP tools:
 
 ```
 Name: seed
@@ -206,7 +206,7 @@ node bin/soxe exec tokenguard -- summary | jq '.leak_count'
 
 - **Token map** (`~/.tokenguard/token-mapping.json`): persistent, reload-stable. The same real always gets the same token, even across service restarts.
 - **Audit log** (`~/.tokenguard/audit.jsonl`): append-only. Every request/response pair logged (configurable capture size).
-- **Service process**: supervised by sox, restartable via `sox restart tokenguard`.
+- **Service process**: supervised by sox, restartable via `soxe restart tokenguard`.
 
 ### Key Invariants
 

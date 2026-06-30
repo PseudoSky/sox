@@ -53,7 +53,7 @@ export function applyFileSet(tree: Tree, fileSet: FileSet, rootPath: string): vo
  *
  * Calls scaffold() from libs/authoring and applies the resulting FileSet to the Tree.
  * The parity test ([ref:scaffold-parity]) confirms this produces byte-identical output
- * to the sox init path.
+ * to the soxe init path.
  */
 export async function extensionGenerator(
   tree: Tree,

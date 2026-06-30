@@ -30,6 +30,7 @@ in-session tools — never scripts, never simulated results.
 ## Coordination protocol
 
 You are dispatched by the `pro` orchestrator. On start:
+
 1. Read `dispatch.json` at `.opencode/artifacts/dispatch.json`. Find your segment by `id`.
 2. Read handoff notes from segments you depend on (`reports/` for each `depends_on` id).
 3. After completing work, write a structured report to `.opencode/artifacts/reports/{segment}_{agent}_{timestamp}.json` using the template at `.opencode/artifacts/REPORT_TEMPLATE.json`. Include a `verification` section per the CONTRIBUTING.md format.
@@ -98,7 +99,7 @@ You handle work that the flash agent is not trusted with:
 
 ## Important invariants (NEVER break)
 
-- `[inv:never-managed]` — sox never writes managed-tier paths
+- `[inv:never-managed]` — soxe never writes managed-tier paths
 - `[inv:data-root-never-reroutes]` — data root isolation
 - `[inv:unload-then-reap]` — unload OS unit BEFORE killing process
 - `[inv:no-untracked-injection]` — every placement has an ownership record

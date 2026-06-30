@@ -14,8 +14,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ScopeConfig as CascadeScopeConfig, ResolvedConfigMap } from './cascade.js';
 import { cascade } from './cascade.js';
-import { upsertInstallRecord } from './install-registry.js';
 import { scopeConfigPaths, storeRootFor } from './data-paths.js';
+import { upsertInstallRecord } from './install-registry.js';
 import { checkProviderCapabilities } from './provider-capabilities.js';
 // verify-integrity imports from this module (install.ts); the cycle is safe
 // because verifyIntegrity is only invoked at runtime, never at module-eval time.
@@ -600,7 +600,7 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
     // R9: visibility guard has moved to the CLI layer (cmdInstall in apps/sox/src/main.ts).
     // Entries explicitly listed in the scope config are allowed through here — that
     // covers both user-curated configs and the e2e test that lists members directly.
-    // The CLI blocks bare `sox install <member>` positionals before they reach install().
+    // The CLI blocks bare `soxe install <member>` positionals before they reach install().
 
     let source: string;
     let expectedChecksum: string | undefined;
@@ -669,14 +669,14 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
           } else {
             console.warn(
               `install: warning: required config key '${reqKey}' for '${entry.id}' was not set. ` +
-              `Run: sox config set ${entry.id} ${reqKey} <value>`,
+              `Run: soxe config set ${entry.id} ${reqKey} <value>`,
             );
           }
         } else {
           // Non-interactive: warn
           console.warn(
             `install: warning: required config key '${reqKey}' for '${entry.id}' is not set in any scope.\n` +
-            `  Run: sox config set ${entry.id} ${reqKey} <value>`,
+            `  Run: soxe config set ${entry.id} ${reqKey} <value>`,
           );
         }
       }
@@ -1163,7 +1163,7 @@ function resolveActiveProvider(configs: ScopeConfigWithMeta[]): string | undefin
 
 // ─── Declarative install (descriptor-driven, Role B) ─────────────────────────
 //
-// [def:role-b] — sox materialises bytes at the host's discovery path for the
+// [def:role-b] — soxe materialises bytes at the host's discovery path for the
 // right scope. Execution is deferred to the host. [inv:boundary].
 //
 // [ref:host-keyed-target]: all target paths resolved from libs/host-registry.
@@ -1332,7 +1332,7 @@ export async function declarativeInstall(
   //   3. Register with run-service (command = node <storePath>/index.js)
   //
   // mcp-server types are NOT supervised — they go through the host surface lookup
-  // below (config-merge → .mcp.json with "sox serve <id>" as the command).
+  // below (config-merge → .mcp.json with "soxe serve <id>" as the command).
   const isServiceInstall = descriptor.type === 'service';
 
   if (isServiceInstall) {
@@ -1352,7 +1352,7 @@ export async function declarativeInstall(
         copyDirSync(materializeSrc, storePath);
       }
       // 2. Copy extension.json to store dir, updating entrypoint to 'index.js'
-      //    so that sox exec can locate the bundle entry without knowing the source.
+      //    so that soxe exec can locate the bundle entry without knowing the source.
       const srcManifestPath = path.join(descriptor.srcPath, 'extension.json');
       if (fs.existsSync(srcManifestPath)) {
         const manifest = JSON.parse(fs.readFileSync(srcManifestPath, 'utf8')) as Record<string, unknown>;
@@ -1459,7 +1459,7 @@ export async function declarativeInstall(
 
     // [dod.2] Policy check: deny stdio mcp-server into .mcp.json.
     // Claude's .mcp.json only accepts SSE/HTTP transports. A stdio mcp-server placed
-    // into .mcp.json would expose an unmediated spawn path outside sox supervision.
+    // into .mcp.json would expose an unmediated spawn path outside soxe supervision.
     // Throw DeclarativeDeniedError BEFORE writing any file so there is no side effect.
     if (
       descriptor.type === 'mcp-server' &&
@@ -1573,7 +1573,7 @@ export async function declarativeInstall(
           if (profile === 'sse' || profile === 'http') {
             resolvedValue = { type: profile, url: 'http://localhost:3000/' + profile };
           } else {
-            // stdio — sox serve <ext> keeps sox in the spawn chain so cascade config
+            // stdio — soxe serve <ext> keeps soxe in the spawn chain so cascade config
             // (SOX_CONFIG_*) is injected fresh at each Claude Code session start.
             //
             // CLI bin resolution order (BL-mcp-cmd):
@@ -1582,7 +1582,7 @@ export async function declarativeInstall(
             //   3. 'soxe' (last resort; requires soxe to be on PATH)
             //
             // We intentionally do NOT fall back to 'sox' — that collides with the
-            // system sox audio tool and causes every MCP server entry written during
+            // system soxe audio tool and causes every MCP server entry written during
             // `soxe install` to spawn the wrong binary.
             const cliBin =
               process.env['SOX_CLI_BIN'] ??
@@ -1624,7 +1624,7 @@ export async function declarativeInstall(
       }
       results.push(cmResult);
       // [inv:no-untracked-injection]: the merged config key is owned. The applied-hash
-      // is recorded so update/uninstall reverse exactly the value sox set (the ledger
+      // is recorded so update/uninstall reverse exactly the value soxe set (the ledger
       // holds the deny-wins reversal logic; the ownership index holds the inventory).
       ownedEntries.push({
         kind: 'config-key',

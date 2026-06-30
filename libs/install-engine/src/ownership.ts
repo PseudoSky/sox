@@ -4,7 +4,7 @@
  * THE complete, machine-local record of EVERY filesystem location and config key an
  * install owns, keyed by (extId, scope). Enforces the governing invariants:
  *
- *   [inv:no-untracked-injection] — nothing sox places (config key, file/dir, array
+ *   [inv:no-untracked-injection] — nothing soxe places (config key, file/dir, array
  *     value, materialized store, lockfile key, install-registry record) exists without
  *     a corresponding ownership entry, recorded at apply time from the capability's own
  *     return value.

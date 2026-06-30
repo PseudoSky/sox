@@ -1,7 +1,7 @@
 /**
  * libs/host-runtime/src/reaper.ts — BL-31: verified kill + orphan reaper.
  *
- * Fixes the two gaps that let an orphaned daemon survive a `sox stop`:
+ * Fixes the two gaps that let an orphaned daemon survive a `soxe stop`:
  *
  *   (1) `stop` was fire-and-forget SIGTERM with no post-signal liveness check
  *       and no SIGTERM→SIGKILL escalation. A process whose shutdown path hangs
@@ -236,7 +236,7 @@ export function findOrphansByIdentity(
 export function argvContainsToken(argv: string, token: string): boolean {
   if (!token) return false;
   let from = 0;
-  for (;;) {
+  for (; ;) {
     const idx = argv.indexOf(token, from);
     if (idx === -1) return false;
     const before = idx === 0 ? ' ' : argv[idx - 1];

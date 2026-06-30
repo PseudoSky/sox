@@ -31,7 +31,7 @@
 ## Usage
 
 ```bash
-sox install di-command
+soxe install di-command
 ```
 
 ## License

@@ -6,7 +6,7 @@
  *
  * Deny-wins: if a value is already present, do NOT append it again.
  * Records the exact appended values in the ledger ([shape:ledger-action]).
- * Reverse removes ONLY the values sox appended — foreign values untouched.
+ * Reverse removes ONLY the values soxe appended — foreign values untouched.
  *
  * Works on both JSON and TOML targets (format detected from file extension).
  * Delegates JSON/TOML read-write to config-merge helpers.
@@ -200,7 +200,7 @@ export async function apply(ctx: ArrayMergeCtx): Promise<void> {
 }
 
 /**
- * reverse — remove ONLY the values sox appended (from ledger), leave others.
+ * reverse — remove ONLY the values soxe appended (from ledger), leave others.
  * Foreign values present before sox's apply are preserved ([inv:ledger-reversible]).
  */
 export async function reverse(ctx: ArrayMergeCtx): Promise<void> {
@@ -212,7 +212,7 @@ export async function reverse(ctx: ArrayMergeCtx): Promise<void> {
   );
   if (matched.length === 0) return;
 
-  // Collect all values sox appended across all ledger actions for this key
+  // Collect all values soxe appended across all ledger actions for this key
   const soxValues = new Set<string>(
     matched.flatMap((a) => a.values ?? [])
   );

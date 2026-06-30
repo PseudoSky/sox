@@ -44,6 +44,7 @@ as an anti-pattern; the build-vs-reuse matrix prescribes reusing the workspace t
 compiler [memory:extension-ecosystem-design/build-vs-reuse-and-build-plan.md].
 
 **Proposal:**
+
 - Add a per-package `tsconfig.json` (or workspace `tsconfig.packages.json` with project references)
   that compiles each `src/index.ts` to that package's own `dist/index.js` — the exact path the
   `entrypoint` field resolves to. This makes output **deterministic and uniform** across all nine
@@ -91,7 +92,8 @@ adapters, not separate engines [memory:plugin-taxonomies/multi-kind-vs-unified-m
 
 **Proposal:** Build a host runtime as a **new subsystem** (not an incremental edit), scoped as a
 *unified loader + supervisor* with per-type adapters:
-- A loader that reads the lockfile (the artifact `bin/sox install` already produces), resolves each
+
+- A loader that reads the lockfile (the artifact `bin/soxe install` already produces), resolves each
   entry's built `entrypoint`, and hands it to the right adapter.
 - A process supervisor honoring the already-designed `lifecycle{}` block (`background`, `singleton`,
   `stop_timeout_ms`, health probe) — promote `tools/supervisor-shim.js` from "TEST SCAFFOLDING"
@@ -144,6 +146,7 @@ within a known section → warn but accept" [same §3.7], i.e. ship the field op
 validator to required.
 
 **Proposal:** Per type, add the self-description field the guideline doc specifies and validate it:
+
 - **hook:** required `events: []` array + a **closed enum** of valid host event names (audit rec #3,
   Gap F1) — host discovers binding without running code.
 - **agent / command:** declare invocation protocol + handler interface (resolves `tools[]` vs
@@ -190,6 +193,7 @@ dispatch must register into the existing `bin/sox` verb surface — the consumer
 integration point [memory:extension-consumer-interface/consumer-interface-lifecycle-conformance.md].
 
 **Proposal:** On top of item 2's supervisor, add the per-type delivery layer:
+
 - **mcp registrar:** a host-side MCP client that discovers tools from spawned servers and exposes
   them into the agent's surface (closes Gap C2; the transport already exists in
   `memory-server/src/index.ts` lines 324–366).
@@ -229,6 +233,7 @@ throwing hook and returns per-hook error results. Memory's ordering rule for com
 analogue [memory:plugin-manifest-formats/cross-language-convergence.md §3.1].
 
 **Proposal:**
+
 - Implement `fireIsolated()` in `scripts/hook-loader.ts` exactly as specified in
   `docs/engine-defects-found.md` (continue-on-throw, collect `{id, error}` per hook); make it the
   call site the host uses for all lifecycle dispatch. Update the two pinned KNOWN-DEFECT tests in
@@ -270,6 +275,7 @@ The policy-enforcement topic supports a declared resource/permission contract as
 for fs/network/socket access [memory:policy-enforcement/INDEX.md].
 
 **Proposal:**
+
 - Let each manifest declare a JSON Schema for its `config` block; validate scope-resolved config
   against it at install time (closes Gap F3 — `extensions-config/v1.json` currently accepts any
   object). This makes row #10 Defined.
@@ -307,6 +313,7 @@ silent (OPA refuses to activate bundles with overlapping `roots` rather than sil
 references should be validated by id at parse time [same §2].
 
 **Proposal:**
+
 - **Member-existence validation:** the validator asserts every bundle member id resolves (row #5 for
   bundle → Defined).
 - **Version-conflict policy + signal:** replace silent first-seen dedup in `expandBundles()`
@@ -361,16 +368,16 @@ first-seen; consider warn-first then error, mirroring item 3's optional-first ro
 - **Schema changes (items 3, 6):** all 11 manifests + `scripts/validate-manifests.ts` + its tests;
   new *required* fields force a retrofit of every existing manifest.
 - **Host runtime (items 2, 4):** a **new subsystem**, not an incremental edit — loader + supervisor
-  + per-type adapters/registrar. The single largest work item; must integrate below `bin/sox`.
+  - per-type adapters/registrar. The single largest work item; must integrate below `bin/sox`.
 - **Build subsystem (item 1):** touches all nine process-type packages + CI + validator; retiring
   hand-maintained `dist/` is coupled to item 9-class import fixes (Gap A4).
 
 ## Consumer-interface integration points (CLI is complete; runtime integrates below it)
 
-- `bin/sox install` already produces the lockfile — item 2's loader is its missing runtime callee.
+- `bin/soxe install` already produces the lockfile — item 2's loader is its missing runtime callee.
 - Item 4's command dispatcher registers into `bin/sox` verbs and can fill the stubbed
   `update`/`search`/`enable`/`disable` (audit Gaps C3/C6).
-- Item 2 must address lockfile hygiene (audit Gap C5: `sox uninstall` leaves stale lock entries a
+- Item 2 must address lockfile hygiene (audit Gap C5: `soxe uninstall` leaves stale lock entries a
   naive host would load) and Gap C4 (lockfile pins `.ts` source — fixed by item 1's built artifacts).
 
 ## Research gaps
@@ -383,4 +390,5 @@ audit flags as out-of-scope here (recorded, not proposed):
   is a tenant-quality issue, not a framework-contract hole — out of scope for this engagement.
 - `Conjecture:` placeholder schema `$id` URLs (audit Gap D5) and absolute-local registry source URLs
   (Gap A8) are distribution-hygiene items orthogonal to the build→activation→consumption seam — defer.
+
 ```

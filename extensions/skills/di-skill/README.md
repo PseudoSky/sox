@@ -26,7 +26,7 @@
 ## Usage
 
 ```bash
-sox install di-skill
+soxe install di-skill
 ```
 
 ## Configuration

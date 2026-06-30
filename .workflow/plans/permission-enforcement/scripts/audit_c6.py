@@ -477,7 +477,7 @@ def phase_final() -> None:
     check(
         "audit-final.regress-e2e",
         "the lifecycle e2e must still pass under enforcement — now includes the negative "
-        "exec enforcement assertion ([dod.2] through the real sox exec path)",
+        "exec enforcement assertion ([dod.2] through the real soxe exec path)",
         "nx run host-runtime:test-e2e",
     )
 
@@ -485,7 +485,7 @@ def phase_final() -> None:
     #
     # The _REALITY_DRIVER above drives the child directly with hand-set env —
     # it exercises enforcement correctness but NOT the exec code path. The C6 hole
-    # was that sox exec's fresh-spawn never injected policy.toEnv(), so SOX_PERM_ENFORCE
+    # was that soxe exec's fresh-spawn never injected policy.toEnv(), so SOX_PERM_ENFORCE
     # was unset in the child and enforcement was absent. This check proves BOTH:
     #
     #   (a) STRUCTURAL: runtime-cli.ts exec path merges policy.toEnv() into the child
@@ -512,7 +512,7 @@ def phase_final() -> None:
     check(
         "audit-final.exec-path-enforced.regress-e2e",
         "the lifecycle e2e includes the negative exec enforcement assertion — EVIL_DB_PATH "
-        "denial + no-file proof through the real sox exec path ([dod.2] exec path)",
+        "denial + no-file proof through the real soxe exec path ([dod.2] exec path)",
         "node -e \""
         "const s=require('node:fs').readFileSync('tools/test-e2e-lifecycle.js','utf8');"
         "const hasEvil=s.includes('EVIL_DB_PATH');"
@@ -527,7 +527,7 @@ def phase_final() -> None:
     #
     # apps/sox/src/main.ts holds a SECOND, independent cmdExec implementation whose
     # fresh-spawn fallback was unenforced (env: { ...process.env }, no policy injected).
-    # This structural check proves that apps/sox now mirrors the runtime-cli enforcement
+    # This structural check proves that apps/soxe now mirrors the runtime-cli enforcement
     # pattern: compilePolicy( is called on the manifest permissions, and execEnv is built
     # and passed to spawn — so a future regression dropping the injection is immediately caught.
     check(

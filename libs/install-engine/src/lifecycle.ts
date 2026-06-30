@@ -9,9 +9,9 @@
  *   [inv:ledger-reversible]  — every shared-file write recorded in ledger;
  *                              uninstall reverses ONLY sox-owned entries.
  *   [inv:host-agnostic-type] — type is host-agnostic; targets resolve from registry.
- *   [inv:never-managed]      — sox never writes Claude managed tier or Codex
+ *   [inv:never-managed]      — soxe never writes Claude managed tier or Codex
  *                              project-forbidden keys.
- *   [inv:boundary]           — Role B: sox materialises bytes at discovery path;
+ *   [inv:boundary]           — Role B: soxe materialises bytes at discovery path;
  *                              it never asserts the host ran the content.
  *   [inv:no-regress]         — existing host-runtime e2e stays green.
  *
@@ -19,9 +19,9 @@
  * is signalled by throwing ReverseAbortError (checked by audit + install-engine:test).
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as crypto from 'crypto';
 import { Ledger, LedgerAction } from './ledger.js';
 
 // ─── Errors ───────────────────────────────────────────────────────────────────
@@ -223,7 +223,7 @@ async function reverseAction(action: LedgerAction, ctx: LifecycleCtx): Promise<v
     }
 
     case 'array-merge': {
-      // array-merge: remove ONLY the values sox appended (deny-wins semantics).
+      // array-merge: remove ONLY the values soxe appended (deny-wins semantics).
       // [inv:ledger-reversible]: other values in the array are untouched.
       if (!fs.existsSync(action.file)) break;
       if (!action.values || action.values.length === 0) break;
@@ -286,7 +286,7 @@ async function reverseAction(action: LedgerAction, ctx: LifecycleCtx): Promise<v
         action.cap,
         action.file,
         `capability '${action.cap}' cannot be cleanly reversed via the ledger; ` +
-          `use the appropriate runtime or bin management tool to undo this action`,
+        `use the appropriate runtime or bin management tool to undo this action`,
       );
     }
 

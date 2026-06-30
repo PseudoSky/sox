@@ -2,7 +2,7 @@
 
 **Status:** Accepted (2026-06-23). Refines the install/placement model of ADR-0002 and the scope/lockfile model touched by ADR-0003. Supersedes the overloaded `SOX_HOME` contract that conflated *data location* with *host-path rerouting*.
 
-**Decision (one sentence):** `SOX_HOME` is replaced by **two orthogonal variables** — `SOX_ECOSYSTEM_HOME` (the **data root**, default `~/.adhd/sox-ecosystem/`, governing *only* where sox keeps its own bookkeeping) and `SOX_SANDBOX_ROOT` (the **test isolation switch**, the *only* thing that reroutes host placements) — and the framework enforces **`[inv:no-untracked-injection]` / `[inv:reversible-injection]`**: every config key, file, array value, and materialized store sox writes is recorded in an **explicit ownership index** and is verifiably reversible, with all config contributions flowing through the one general `config-merge` capability and a reversibility gate proving install→uninstall leaves host files byte-clean.
+**Decision (one sentence):** `SOX_HOME` is replaced by **two orthogonal variables** — `SOX_ECOSYSTEM_HOME` (the **data root**, default `~/.adhd/sox-ecosystem/`, governing *only* where soxe keeps its own bookkeeping) and `SOX_SANDBOX_ROOT` (the **test isolation switch**, the *only* thing that reroutes host placements) — and the framework enforces **`[inv:no-untracked-injection]` / `[inv:reversible-injection]`**: every config key, file, array value, and materialized store soxe writes is recorded in an **explicit ownership index** and is verifiably reversible, with all config contributions flowing through the one general `config-merge` capability and a reversibility gate proving install→uninstall leaves host files byte-clean.
 
 **Requirements it serves:** `DOD.md` A4/A8/A9 (install/update/uninstall correctness), C4 (reality gates — placement reaches the real host; uninstall leaves zero residue), B-series (placement at scale without manual cleanup). Closes **BACKLOG BL-39** (upgrade must re-materialize the service store).
 
@@ -16,7 +16,7 @@
 
 2. **Host-path rerouting / test sandbox (a different thing entirely).** `host-registry` (`claude.ts:71 getBase()`, `codex.ts:121 getCodexBase()`, `internal.ts:117 expandHome()`) reroutes **every absolute user-scope host path** under `SOX_HOME` when it is set — `~/.claude/skills` becomes `$SOX_HOME/.claude/skills`. This exists so the install-probe e2e can assert *zero real-home writes* (`[inv:sandbox-isolation]`, tested in `host-registry.spec.ts:465`).
 
-These two meanings collide catastrophically. The founder set `SOX_HOME=/Users/nix/dev/ai/claude-agents` **for data** (meaning 1) and silently tripped meaning 2: **every user-scope placement was rerouted** — the global memory-usage skill landed under `claude-agents/.claude/skills` instead of the real `~/.claude/skills`, and the user-scope memory MCP was written into `claude-agents/.claude.json` instead of `~/.claude.json`. Result: the global skill is stale and the memory MCP is unreachable by other Claude Code sessions/agents. The data-root setting *worked*; the invisible side effect (rerouting placements) broke the system. **One variable cannot mean both "where sox keeps its files" and "pretend the user's home is somewhere else."**
+These two meanings collide catastrophically. The founder set `SOX_HOME=/Users/nix/dev/ai/claude-agents` **for data** (meaning 1) and silently tripped meaning 2: **every user-scope placement was rerouted** — the global memory-usage skill landed under `claude-agents/.claude/skills` instead of the real `~/.claude/skills`, and the user-scope memory MCP was written into `claude-agents/.claude.json` instead of `~/.claude.json`. Result: the global skill is stale and the memory MCP is unreachable by other Claude Code sessions/agents. The data-root setting *worked*; the invisible side effect (rerouting placements) broke the system. **One variable cannot mean both "where soxe keeps its files" and "pretend the user's home is somewhere else."**
 
 A second, independent defect compounds it. `cmdUninstall` (`apps/sox/src/main.ts:1851`) removes **only** the lockfile entry, the `extensions.json` entry, and the global install-registry record. It **never reverses the per-scope ledger** — so the placed skill files, the MCP config key, and the materialized `.sox/ext/<id>/` store **survive uninstall as orphans**. And `update`/`upgrade` (`install({mode:'update'})`) re-pins the lockfile checksum but **never re-materializes the service store** (BL-39) — leaving a running daemon on its *original* copied code after an "upgrade." The system can place files but cannot reliably *un*-place or *re*-place them, because **no single record says what an install owns.**
 
@@ -48,7 +48,7 @@ Rename `SOX_HOME` → **`SOX_ECOSYSTEM_HOME`**, an **optional** override read at
 
 ### D2 — Canonical per-scope layout: `.adhd/sox-ecosystem/`, rooted per scope
 
-All sox data for a scope lives under a single deterministic root `<scopeRoot>/.adhd/sox-ecosystem/`:
+All soxe data for a scope lives under a single deterministic root `<scopeRoot>/.adhd/sox-ecosystem/`:
 
 | Scope | `dataRoot(scope, root)` |
 |---|---|
@@ -137,7 +137,7 @@ Introduce an explicit **ownership manifest** — `<dataRoot>/ownership.json`, ke
 
 This is the **framework contract** (uniform across every extension type, not memory-specific):
 
-> **`[inv:no-untracked-injection]`** — *Nothing* sox places anywhere is allowed to exist without a corresponding ownership-index entry. "Anywhere" is exhaustive: a config key merged into a host file (global MCP registration in `~/.claude.json` / project `.mcp.json`, `.codex/config.toml` agent/MCP/hook keys, `settings.json` permissions), a file/dir dropped at a discovery path (`~/.claude/skills/<id>`, agents, commands, rules, hooks), an array value appended (MCP trust), and the materialized `ext/<id>` store — **all are recorded as first-class owned entries** at apply time, populated from the capability's own return value. An apply path that writes to a host without recording ownership is a framework defect, not a feature.
+> **`[inv:no-untracked-injection]`** — *Nothing* soxe places anywhere is allowed to exist without a corresponding ownership-index entry. "Anywhere" is exhaustive: a config key merged into a host file (global MCP registration in `~/.claude.json` / project `.mcp.json`, `.codex/config.toml` agent/MCP/hook keys, `settings.json` permissions), a file/dir dropped at a discovery path (`~/.claude/skills/<id>`, agents, commands, rules, hooks), an array value appended (MCP trust), and the materialized `ext/<id>` store — **all are recorded as first-class owned entries** at apply time, populated from the capability's own return value. An apply path that writes to a host without recording ownership is a framework defect, not a feature.
 
 > **`[inv:reversible-injection]`** — *Every* recorded injection has a verifiable removal. `uninstall` consumes the ownership index and surgically reverses **exactly** what it placed — config keys removed via the applied-hash-tracked, foreign-key-preserving config-merge/array-merge reversal (`[inv:ledger-reversible]`); files/stores `rm`'d — leaving the host files **byte-clean of sox-owned content** while preserving every entry the user (or another tool) authored. An injection that cannot be cleanly reversed must fail at install time (`ReverseAbortError` semantics, `[dod.12]`), never land un-removably.
 
@@ -179,15 +179,18 @@ Path resolution, ownership recording, and reversal MUST behave **identically acr
 ## Consequences
 
 **What gets fixed.**
+
 - The founder's exact failure becomes impossible: `SOX_ECOSYSTEM_HOME` relocates data and **never** reroutes a placement (`[inv:data-root-never-reroutes]`, tested). A user-scope install lands in the real `~/.claude` and is reachable by every session.
 - `uninstall` leaves **zero** owned residue (orphan class closed). `update`/`upgrade` remove superseded files and **re-materialize the service store** (BL-39 closed).
 - Three scattered data roots collapse to one deterministic, per-scope `.adhd/sox-ecosystem/` layout with a single resolver.
 
 **What changes for users.**
+
 - `SOX_HOME` no longer works; `SOX_ECOSYSTEM_HOME` replaces it (data only). `soxe migrate-home` performs the one-time move. Default data root moves from `~/.sox` to `~/.adhd/sox-ecosystem/`.
 - Tests/e2e use `SOX_SANDBOX_ROOT` for isolation (and optionally a temp `SOX_ECOSYSTEM_HOME` for a private data root).
 
 **Carve-outs.**
+
 - This ADR does not change *which* host paths exist (the §4 surface matrix is unchanged) — only that they are reached unrerouted when `SOX_SANDBOX_ROOT` is unset.
 - ADR-0003's content-addressed identity is the `artifactChecksum` the ownership index records; this ADR does not reintroduce semver.
 - OS-kernel sandboxing remains a non-goal (C6 in-process enforcement is unaffected).

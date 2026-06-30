@@ -88,7 +88,7 @@ commit, continue). **Yes** → planner-class: stop, record the reason in
 > final-audit check (the `dod.N` check named in parentheses); `gap-check.js`
 > Check 8 verifies the map.
 
-- `[dod.1]` **A1 — born-conformant `init`** — `sox init <type> <id>` scaffolds
+- `[dod.1]` **A1 — born-conformant `init`** — `soxe init <type> <id>` scaffolds
   an extension that validates against `libs/manifest` with **zero hand-edits**,
   for every active type. (Proven by audit check `dod.1`.)
 - `[dod.2]` **A12 — dual flag forms** — both `--flag value` and `--flag=value`
@@ -106,7 +106,7 @@ commit, continue). **Yes** → planner-class: stop, record the reason in
   touching one package rebuilds only the affected projects (`nx affected`).
   (Proven by audit check `dod.5`.)
 - `[dod.6]` **B4 — adding an extension never red-bars validate** — scaffolding a
-  new extension leaves `sox validate` green across the tree. (Proven by audit
+  new extension leaves `soxe validate` green across the tree. (Proven by audit
   check `dod.6`.)
 - `[dod.7]` **C7 — shared code without reach-in** — an extension reuses shared
   internal code via a `libs/*` internal library; **zero** cross-extension
@@ -158,8 +158,8 @@ in `contexts/_shared.md`.
 - **[inv:nx-dev-only]** — Nx is **dev-time only**; never a consumer/runtime
   dependency. See `[ref:nx-never-runtime-dep]`.
 - **[inv:nx-free-core]** — `libs/authoring`'s `scaffold()` core is nx-free so
-  `sox init` works without nx. See `[ref:nx-free-authoring-core]`.
-- **[inv:scaffold-parity]** — `sox init` == `@adhd/sox-nx:extension` (byte-identical
+  `soxe init` works without nx. See `[ref:nx-free-authoring-core]`.
+- **[inv:scaffold-parity]** — `soxe init` == `@adhd/sox-nx:extension` (byte-identical
   output from one `scaffold()` core). See `[ref:scaffold-parity]`.
 - **[inv:fix-carry-forward]** — all work is currently uncommitted incl. this
   session's fixes; `checkpoint-branch` commits + tags them, and every later state

@@ -23,8 +23,8 @@ stdio-ping
 ## Usage
 
 ```bash
-sox install memory-daemon
-sox start --id=memory-daemon
+soxe install memory-daemon
+soxe start --id=memory-daemon
 ```
 
 ## License

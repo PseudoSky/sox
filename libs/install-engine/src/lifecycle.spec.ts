@@ -13,14 +13,14 @@
  *   [install-lifecycle.5]   — abort path covered.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
 import * as crypto from 'crypto';
-import { Ledger } from './ledger.js';
-import { uninstall, update, ReverseAbortError } from './lifecycle.js';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { diff, diffAll } from './diff.js';
+import { Ledger } from './ledger.js';
+import { ReverseAbortError, uninstall, update } from './lifecycle.js';
 
 // ─── Test fixtures ────────────────────────────────────────────────────────────
 
@@ -162,7 +162,7 @@ describe('[inv:ledger-reversible] config-merge round-trip', () => {
     const soxValue = { command: 'node', args: ['/path/to/server.js'] };
     const foreign = { foreignKey: 'keep-this', nested: { a: 1 } };
 
-    // Simulate apply: write merged config with sox value + foreign key
+    // Simulate apply: write merged config with soxe value + foreign key
     const merged = { ...foreign, mcpServers: { 'my-server': soxValue } };
     fs.writeFileSync(configFile, JSON.stringify(merged, null, 2) + '\n', 'utf8');
 
@@ -194,7 +194,7 @@ describe('[dod.5] drift detection — external edit reported as drifted', () => 
     const soxValue = { command: 'node', args: ['server.js'] };
     const appliedHash = sha256OfValue(soxValue);
 
-    // Write initial config with sox value
+    // Write initial config with soxe value
     fs.writeFileSync(configFile, JSON.stringify({ mcpServers: { 'my-server': soxValue } }, null, 2) + '\n', 'utf8');
 
     const ledger = makeConfigMergeLedger(configFile, 'mcpServers.my-server', appliedHash);

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/schema",
   "$id": "LibraryGenerator",
   "title": "Library",
-  "description": "Create a new sox library with type:lib tag.",
+  "description": "Create a new soxe library with type:lib tag.",
   "type": "object",
   "properties": {
     "name": {

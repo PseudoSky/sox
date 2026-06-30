@@ -18,15 +18,15 @@ The result: your LLM provider sees pseudo-tokens; your code sees the real data; 
 ### 1. Install
 
 ```bash
-./bin/sox install tokenguard --scope=org
+./bin/soxe install tokenguard --scope=org
 # or --scope=user, --scope=project, --scope=local
 ```
 
-This scaffolds the extension in your sox ecosystem.
+This scaffolds the extension in your soxe ecosystem.
 
 ### 2. Configure
 
-Edit the extension's config (injected via `SOX_CONFIG_*` environment variables, set by the sox supervisor from the install-time schema):
+Edit the extension's config (injected via `SOX_CONFIG_*` environment variables, set by the soxe supervisor from the install-time schema):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -53,7 +53,7 @@ Example: if your client code uses `OPENAI_API_BASE` or `OPENAI_BASE_URL`, set it
 ### 3. Start
 
 ```bash
-./bin/sox start tokenguard
+./bin/soxe start tokenguard
 # Runs in service mode; spawns supervisor + proxy on the configured port
 ```
 
@@ -96,8 +96,8 @@ Pre-populate the token map with known identifiers:
 **Via CLI** (at any time):
 
 ```bash
-./bin/sox exec tokenguard -- seed prod.internal host
-./bin/sox exec tokenguard -- seed alice@example.com email
+./bin/soxe exec tokenguard -- seed prod.internal host
+./bin/soxe exec tokenguard -- seed alice@example.com email
 ```
 
 Both produce output like:
@@ -108,14 +108,14 @@ Both produce output like:
 
 ## CLI Tools
 
-The proxy exposes three CLI tools via `sox exec`:
+The proxy exposes three CLI tools via `soxe exec`:
 
 ### `seed — <real> <type> [token]`
 
 Append a custom entry to the live token map.
 
 ```bash
-./bin/sox exec tokenguard -- seed internal.db host
+./bin/soxe exec tokenguard -- seed internal.db host
 # Output: {"token":"<HOST_1>"}
 ```
 
@@ -124,7 +124,7 @@ Append a custom entry to the live token map.
 Print all current entries (JSON):
 
 ```bash
-./bin/sox exec tokenguard -- map
+./bin/soxe exec tokenguard -- map
 # Output: { "entries": [...] }
 ```
 
@@ -133,7 +133,7 @@ Print all current entries (JSON):
 Per-identifier swap counts from the audit log + leak check:
 
 ```bash
-./bin/sox exec tokenguard -- summary
+./bin/soxe exec tokenguard -- summary
 # Output: { "entries": [...], "leak_count": 0 }
 ```
 
@@ -205,13 +205,13 @@ Use the `summary` CLI tool to aggregate leak counts.
 
 ```bash
 # Install
-./bin/sox install tokenguard --scope=org
+./bin/soxe install tokenguard --scope=org
 
 # Configure for Anthropic (already default)
 # (leave SOX_CONFIG_UPSTREAM and SOX_CONFIG_PROVIDER as default)
 
 # Start
-./bin/sox start tokenguard
+./bin/soxe start tokenguard
 
 # In your client code:
 export ANTHROPIC_BASE_URL=http://localhost:9099
@@ -239,12 +239,12 @@ print(msg)
 
 ```bash
 # Install & start tokenguard
-./bin/sox install tokenguard --scope=org
+./bin/soxe install tokenguard --scope=org
 # Set config:
 SOX_CONFIG_UPSTREAM=https://api.openai.com
 SOX_CONFIG_PROVIDER=generic
 
-./bin/sox start tokenguard
+./bin/soxe start tokenguard
 
 # In your client:
 export OPENAI_API_BASE=http://localhost:9099
@@ -257,19 +257,19 @@ export OPENAI_API_KEY=sk-...  # your real key
 
 ```bash
 # Pre-seed a list of internal hosts
-./bin/sox exec tokenguard -- seed prod.internal host
-./bin/sox exec tokenguard -- seed staging.internal host
+./bin/soxe exec tokenguard -- seed prod.internal host
+./bin/soxe exec tokenguard -- seed staging.internal host
 
 # Run your workflow
 
 # Check what got tokenized and if there were leaks
-./bin/sox exec tokenguard -- summary
+./bin/soxe exec tokenguard -- summary
 # Output: entries (with swap_count), leak_count
 ```
 
 ## Troubleshooting
 
-- **"Connection refused"** — is the proxy running? `./bin/sox start tokenguard` or check logs.
+- **"Connection refused"** — is the proxy running? `./bin/soxe start tokenguard` or check logs.
 - **"Port already in use"** — the proxy walks up (9099 → 9100 → ...). Check `SOX_CONFIG_PORT` or let it auto-search.
 - **"Tokens not reverting"** — is the client using the proxied base URL? Check your env var (e.g., `ANTHROPIC_BASE_URL`).
 - **Audit log missing** — check the configured `SOX_CONFIG_CAPTURE_DIR` and that capture mode is not `none`.

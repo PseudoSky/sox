@@ -18,7 +18,7 @@ Install target resolved from host-registry at install time.
 ## Usage
 
 ```bash
-sox install forbidden-skill
+soxe install forbidden-skill
 ```
 
 ## License

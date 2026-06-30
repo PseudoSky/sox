@@ -33,7 +33,7 @@ After this state, `[dod.5]` is satisfied: the supervisor spawns the materialized
 
 Checked by audit-final (terminal gate).
 
-- [ ] **[service-runtime.1]** `sox install memory-server --profile service && sox start && sox exec memory-server memory_recall '{}'` exits 0 and returns tool output.
+- [ ] **[service-runtime.1]** `soxe install memory-server --profile service && soxe start && soxe exec memory-server memory_recall '{}'` exits 0 and returns tool output.
       Via guard: `bash .workflow/plans/extension-install-model/scripts/guards/service-runtime.sh`
 - [ ] **[service-runtime.2]** The `[serve] real-path` marker appears in combined output after exec (real serve() ran).
       Via guard.

@@ -45,7 +45,7 @@ STEP 1 — GROUND TRUTH FIRST (read before writing anything; do not assume conve
      anything the skill instructs that implies a resource (a path it tells the model to read/write).
 
 STEP 2 — SCAFFOLD BORN-CONFORMANT (do not hand-roll the layout)
-    node bin/sox init skill <chosen-id>        # alias: `new`  (id e.g. `strategy`)
+    node bin/soxe init skill <chosen-id>        # alias: `new`  (id e.g. `strategy`)
 (or the nx generator the guideline names). The scaffolder produces the conformant skeleton; you
 fill in content, you do not invent structure. Confirm it lands in the correct `extensions/<...>/`
 location and matches the reference skill's shape.
@@ -62,12 +62,12 @@ none. Be honest and minimal. Verify against the schema.
 
 STEP 5 — PROVE THE LIFECYCLE AGAINST REALITY (not just unit tests)
   1. `./node_modules/.bin/nx run <project>:build`        → builds clean.
-  2. `node bin/sox validate` (--strict if available)     → manifest + any entrypoint reachability pass.
+  2. `node bin/soxe validate` (--strict if available)     → manifest + any entrypoint reachability pass.
   3. Install into a sandboxed scope (temp dir + `-s project --config=... --lockfile=...`), then
      confirm the skill is actually placed at its host-discovery target (e.g. the files appear under
      `~/.claude/skills/<id>/` or wherever the guideline says) and is discoverable — verify the real
      files on disk, not a log line.
-  4. `node bin/sox uninstall <id> ...` cleanly removes the placed files.
+  4. `node bin/soxe uninstall <id> ...` cleanly removes the placed files.
 Capture real command output as evidence.
 
 CONSTRAINTS

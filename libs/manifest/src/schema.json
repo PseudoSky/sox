@@ -52,7 +52,7 @@
     },
     "compatibility": {
       "type": "object",
-      "description": "Host compatibility requirements. Accepts any shape (host or sox key).",
+      "description": "Host compatibility requirements. Accepts any shape (host or soxe key).",
       "additionalProperties": true
     },
     "license": {

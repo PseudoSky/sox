@@ -26,7 +26,7 @@ OpenCode (opencode-ai, v1.17.11, ~1.6M weekly npm downloads) is the dominant ope
 
 ### Scope path mapping
 
-| sox scope | opencode path | Writable? |
+| soxe scope | opencode path | Writable? |
 |---|---|---|
 | `project` | `<projectRoot>/opencode.json` | yes |
 | `project` | `<projectRoot>/.opencode/` | yes (file-drop dir) |
@@ -35,9 +35,9 @@ OpenCode (opencode-ai, v1.17.11, ~1.6M weekly npm downloads) is the dominant ope
 | `local` | `<projectRoot>/.opencode/` | yes |
 | `org` | `./.well-known/opencode/` | no (remote, read-only) |
 
-### Surface matrix: sox extension type → opencode surface
+### Surface matrix: soxe extension type → opencode surface
 
-| sox type | opencode equivalent | Capability | Target |
+| soxe type | opencode equivalent | Capability | Target |
 |---|---|---|---|
 | `agent` | Agent | `config-merge` | `opencode.json` → `agent.{id}` |
 | `agent` | Agent | `file-drop` | `.opencode/agents/{id}.md` |
@@ -52,7 +52,7 @@ OpenCode (opencode-ai, v1.17.11, ~1.6M weekly npm downloads) is the dominant ope
 ### MCP format translation
 
 ```jsonc
-// Claude (.mcp.json) — current sox output
+// Claude (.mcp.json) — current soxe output
 { "mcpServers": {
     "memory-server": {
       "command": "npx",
@@ -73,9 +73,9 @@ OpenCode (opencode-ai, v1.17.11, ~1.6M weekly npm downloads) is the dominant ope
 
 ### What the install engine will NOT bring over (and why it's fine)
 
-| sox feature | Verdict | OpenCode handles it |
+| soxe feature | Verdict | OpenCode handles it |
 |---|---|---|
-| **lifecycle** (background, singleton, health, stop_timeout_ms) | COUPLED to sox host-runtime `ProcessSupervisor` | MCP servers launched on-demand per transport; no daemon supervisor |
+| **lifecycle** (background, singleton, health, stop_timeout_ms) | COUPLED to soxe host-runtime `ProcessSupervisor` | MCP servers launched on-demand per transport; no daemon supervisor |
 | **permissions.fs / permissions.network** | COUPLED to sox `SOX_PERM_*` env protocol | opencode manages its own sandbox at tool-call boundaries |
 | **config_schema** / `x-sox-prompt` | SEPARABLE (install-time only, no runtime dep) | opencode has no interactive install wizard; values go into opencode.json directly |
 | **provider-capabilities** | SEPARABLE (static table lookup, pure function) | opencode model selection is the user's responsibility at config time |
@@ -96,7 +96,7 @@ OpenCode (opencode-ai, v1.17.11, ~1.6M weekly npm downloads) is the dominant ope
 | `dep-inject` | command | `claude` | Yes | `config-merge` → `opencode.json` `command.dep-inject` — requires `node` runtime available |
 | `tokenguard` | service | _(none)_ | Partial | Http-based, no agent host dependency. Could be wired as MCP proxy. `background/singleton/permissions` not portable. |
 | `sox-memory-bundle` | bundle | _(expands)_ | See members | Bundle expansion is host-agnostic |
-| `memory-daemon` | service | _(none)_ | No | Unix-socket daemon, tightly coupled to sox supervisor. Not installable standalone. |
+| `memory-daemon` | service | _(none)_ | No | Unix-socket daemon, tightly coupled to soxe supervisor. Not installable standalone. |
 | `memory-server` | mcp-server | _(none)_ | Yes | Stdio MCP server. Format adapter needed. `permissions.fs` not portable — opencode sandboxes at tool level. |
 | `memory-flush` | hook | _(none)_ | Partial | Hook triggered by `SessionEnd`. opencode has plugin event hooks — could map. Needs npm package format. |
 | `memory-cli` | command | _(none)_ | Yes | `config-merge` → `opencode.json` `command.memory-cli`. `node` runtime. |
@@ -105,6 +105,7 @@ OpenCode (opencode-ai, v1.17.11, ~1.6M weekly npm downloads) is the dominant ope
 ### Which extension manifests need updating
 
 Only extensions that declare `install.hosts: ["claude"]` or `["codex"]` without including `"opencode"`:
+
 - `memory-org`, `test-runner`, `sox-ingest`, `demo-creator`, `dep-injector`, `dep-inject`, `memory-usage` — add `"opencode"` to their `hosts` array
 - `di-codex` — add `"opencode"` (already targets codex, works identically)
 - `forbidden-access` — omit `hosts` (already default, no change needed)
@@ -288,6 +289,7 @@ Currently `memory-server` declares only `serves: ["stdio"]`. Adding `"sse"` enab
 ### D. Doctor command for cross-host config drift
 
 The `config_schema` / `x-sox-prompt` system captures install-time config but has no runtime validation across hosts. A `soxe config doctor [ext]` command that reads an extension's `config_schema`, compares against cascade-resolved config, and flags:
+
 - Missing required keys
 - Values outside schema range (port out of range, non-absolute path)
 - Inconsistencies between hosts (different port in claude config vs opencode config)
@@ -362,7 +364,7 @@ soxe service status memory-server
 
 ### What `soxe install` does NOT do
 
-- Does NOT auto-start services — `lifecycle.background` is consumed by the sox host runtime/OS supervisor, not by the install engine
+- Does NOT auto-start services — `lifecycle.background` is consumed by the soxe host runtime/OS supervisor, not by the install engine
 - Does NOT inspect `lifecycle.background` to prompt for `soxe service enable` (improvement B adds this)
 - Does NOT generate OS units — that's `soxe service enable`
 - Does NOT reconcile config between hosts — if you install to both claude AND opencode with different ports, that's a config drift the doctor command (improvement D) would catch
@@ -460,10 +462,10 @@ Only `mcp-server` and `service` types with transports beyond stdio need `soxe se
 ## What This Does NOT Cover
 
 - **Service daemon lifecycle** (`tokenguard`, `memory-daemon`) — these require the sox `ProcessSupervisor` or OS supervisor. opencode has no equivalent. Users run `soxe service enable <ext>` separately for daemons. The install engine will not auto-start daemons but will detect their state and guide the user.
-- **Plugin npm packaging** — opencode plugins are TypeScript modules. sox hooks would need to be repackaged as npm packages with `@opencode-ai/plugin` types. This is a future concern for hook-type extensions.
-- **OAuth / DCRM MCP servers** — opencode supports Dynamic Client Registration (RFC 7591) for remote MCP. sox currently only supports stdio/socket/http without OAuth. Remote MCP w/ OAuth is out of scope but the raw HTTP transport (improvement A) lays the foundation.
-- **`config_schema` interactive prompts** — opencode has no interactive install wizard. sox config values are set via `soxe config set` or written directly to the config-merge value. The doctor command (improvement D) would surface missing config.
-- **Agent mode/permissions** — opencode agents have `mode: "subagent"`, model, permission, etc. The sox manifest doesn't declare these; defaults would be hardcoded (`mode: "subagent"`, `permission: { edit: "deny" }` for declarative agents).
+- **Plugin npm packaging** — opencode plugins are TypeScript modules. soxe hooks would need to be repackaged as npm packages with `@opencode-ai/plugin` types. This is a future concern for hook-type extensions.
+- **OAuth / DCRM MCP servers** — opencode supports Dynamic Client Registration (RFC 7591) for remote MCP. soxe currently only supports stdio/socket/http without OAuth. Remote MCP w/ OAuth is out of scope but the raw HTTP transport (improvement A) lays the foundation.
+- **`config_schema` interactive prompts** — opencode has no interactive install wizard. soxe config values are set via `soxe config set` or written directly to the config-merge value. The doctor command (improvement D) would surface missing config.
+- **Agent mode/permissions** — opencode agents have `mode: "subagent"`, model, permission, etc. The soxe manifest doesn't declare these; defaults would be hardcoded (`mode: "subagent"`, `permission: { edit: "deny" }` for declarative agents).
 - **Auto-port discovery / allocation** — when installing with `--profile=sse`, the port is hardcoded or comes from config. There's no automatic free-port allocation. The user configures the port and both `soxe service enable` and the opencode MCP entry reference the same value.
 
 ## Effort

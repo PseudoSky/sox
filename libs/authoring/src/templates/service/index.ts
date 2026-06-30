@@ -13,7 +13,7 @@
  *   package.json
  *   tsconfig.json
  *   src/index.ts     (runnable HTTP service stub)
- *   dist/index.js    (pre-compiled stub for immediate sox validate entrypoint-reachability)
+ *   dist/index.js    (pre-compiled stub for immediate soxe validate entrypoint-reachability)
  *   CHANGELOG.md
  *   README.md
  *
@@ -221,7 +221,7 @@ export function serviceTemplate(opts: TemplateOpts): FileSet {
       `});`,
     ].join('\n'),
 
-    // Pre-compiled stub so sox validate passes the P0 entrypoint-reachability gate
+    // Pre-compiled stub so soxe validate passes the P0 entrypoint-reachability gate
     // immediately after scaffold (before the author runs `npm run build`).
     // This file is overwritten by the real build; treat it as a placeholder.
     'dist/index.js': [

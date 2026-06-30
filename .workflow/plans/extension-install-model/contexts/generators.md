@@ -11,7 +11,7 @@
 
 ## Goal
 
-After this state `sox init <type>` exposes the Appendix-A generator options
+After this state `soxe init <type>` exposes the Appendix-A generator options
 (`--content @path` / `--from`, `--inject`, `--profile` / `--mode`, `--surface`, `--host`,
 `--transports`, `--trust`) and emits the **[shape:install-descriptor]** (hybrid: type + serves +
 profiles + config) from the chosen options, born-conformant (**[def:born-conformant]**,
@@ -43,7 +43,7 @@ with `install-lifecycle`** — see Merge protocol.
     edits only `config` + overrides.
   - `--content @source` reads the body from a path and stamps `source:` provenance
     (**[def:source-provenance]**) for re-pull (**[dod.7]**).
-  - **Byte-identical parity preserved**: `sox init` and the nx generator produce identical output
+  - **Byte-identical parity preserved**: `soxe init` and the nx generator produce identical output
     (**[ref:born-conformant-scaffold]**).
 
 - **Invariants:** **[ref:born-conformant-scaffold]** (single scaffolder, byte-identical),
@@ -52,7 +52,7 @@ with `install-lifecycle`** — see Merge protocol.
 
 - **Validation:** `./node_modules/.bin/nx run sox-nx:test && ./node_modules/.bin/nx run authoring:test`
   — generator tests assert each new option lands in the emitted descriptor, `--content @path` fills
-  the body + stamps `source:`, and `sox init` ⇄ nx output is byte-identical.
+  the body + stamps `source:`, and `soxe init` ⇄ nx output is byte-identical.
 
 ---
 
@@ -68,7 +68,7 @@ Checked by `audit-enforcement`. One check per item; none deferred.
       (**[dod.7]**, **[def:source-provenance]**).
       `grep -niE 'source|content' packages/sox-nx/src/generators/extension/extension.ts` → non-empty;
       `sox-nx:test` covers the `--content @path` → `source:` stamp.
-- [ ] **[generators.4]** Output is born-conformant + byte-identical (`sox init` ⇄ nx)
+- [ ] **[generators.4]** Output is born-conformant + byte-identical (`soxe init` ⇄ nx)
       (**[ref:born-conformant-scaffold]**). `sox-nx:test` + `authoring:test` cover the parity gate.
 - [ ] **[generators.5]** All six type templates accept the new options.
       `for t in mcp-server agent skill command hook prompt; do test -f libs/authoring/src/templates/$t/index.ts || exit 1; done`
@@ -90,7 +90,7 @@ mutates:    ["libs/authoring/src/templates/mcp-server/index.ts",
              "packages/sox-nx/src/generators/extension/schema.json"]
 ```
 
-**Merge protocol:** This state and `install-lifecycle` both touch the sox CLI surface
+**Merge protocol:** This state and `install-lifecycle` both touch the soxe CLI surface
 (`bin/sox` / `apps/sox/src/main.ts`). `install-lifecycle` runs **first** and owns
 install/update/diff/uninstall dispatch; this state adds only `init` option wiring and must rebase
 onto lifecycle's committed `main.ts`. **Do not** edit `bin/sox` / `apps/sox/src/main.ts` here unless
@@ -117,7 +117,7 @@ forces a CLI edit, coordinate (executor-class amendment expanding artifacts in b
 ## Notes for executor
 
 - **Byte-identical parity is the trap** — adding an option to one path (nx) but not the other
-  (`sox init`) breaks `generators.4`. Both go through the single `libs/authoring` scaffolder
+  (`soxe init`) breaks `generators.4`. Both go through the single `libs/authoring` scaffolder
   (**[ref:born-conformant-scaffold]**); change the core once.
 - `--content @source` is the **ingestion primitive** — `ingestion-skill` (convergence) calls it. Get
   the `source:` provenance stamp right (**[dod.7]**) or the skill cannot re-pull.

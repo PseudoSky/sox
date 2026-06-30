@@ -69,7 +69,7 @@ currently performs that call.
 
 | Action | Owning system | Exists as a framework contract? |
 |---|---|---|
-| O1 Discover | Registry + discovery command | Registry record: **yes**. Discovery command (`sox search`): **Absent** (`bin/sox` line 366: `verb 'search' is not yet implemented`). `SKILL.md` contains invocation prose but is not indexed or machine-readable by any framework component. |
+| O1 Discover | Registry + discovery command | Registry record: **yes**. Discovery command (`soxe search`): **Absent** (`bin/sox` line 366: `verb 'search' is not yet implemented`). `SKILL.md` contains invocation prose but is not indexed or machine-readable by any framework component. |
 | O2 Install | Install client + CLI + cascade + lockfile | **Defined.** |
 | O3 Configure | Config cascade + capability gate + env resolution | Cascade + capability gate: **Defined.** Per-extension config schema: **Absent.** |
 | O4 Activation | Host runtime: skill loader → `run(input)` call site | **Absent** — no loader reads the lockfile, resolves the skill's `entrypoint`, imports the module, and calls `run`. No product-code caller of any skill's `run` function exists outside the skill's own `eval/` test fixture. |

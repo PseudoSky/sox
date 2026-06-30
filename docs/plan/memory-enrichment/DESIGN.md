@@ -464,7 +464,7 @@ references to LLM/organizer.
 1. A singleton write-serializer (prevents concurrent writes from different callers).
 2. A durable queue for batch clustering (which can be expensive and should not block
    the write path).
-3. The Unix socket health probe (used by `sox list` liveness check).
+3. The Unix socket health probe (used by `soxe list` liveness check).
 
 All three remain valuable without LLM. Removing the daemon would require rehosting
 these responsibilities, which is out of scope for this phase.

@@ -9,15 +9,15 @@
 
 ## Goal
 
-After this state, `sox init <type> <id>` produces an extension that passes `sox validate` for every active type (agent, skill, mcp-server, command, hook, bundle). `[dod.1]` is fully satisfied: validate exits 0 and emits no `[ERROR]` for all six types. This state eliminates the v1 failure mode where `sox init` output failed validate (missing `package.json`, `run_interface`, `README`).
+After this state, `soxe init <type> <id>` produces an extension that passes `soxe validate` for every active type (agent, skill, mcp-server, command, hook, bundle). `[dod.1]` is fully satisfied: validate exits 0 and emits no `[ERROR]` for all six types. This state eliminates the v1 failure mode where `soxe init` output failed validate (missing `package.json`, `run_interface`, `README`).
 
 ---
 
 ## Semantic Distillation
 
-- **Primitive:** MODIFY `libs/authoring/src/templates/<type>/index.ts` for all 6 types — ensure each template emits every field that `sox validate` requires.
+- **Primitive:** MODIFY `libs/authoring/src/templates/<type>/index.ts` for all 6 types — ensure each template emits every field that `soxe validate` requires.
 
-- **Reference Pattern:** `libs/authoring/src/templates/` — the per-type template modules. The current templates are the source to audit; `sox validate` at `apps/sox/src/main.ts` defines what fields are required. `packages/sox-nx/src/generators/extension/index.ts` is the nx generator path (must stay in parity per `[ref:scaffold-parity]`).
+- **Reference Pattern:** `libs/authoring/src/templates/` — the per-type template modules. The current templates are the source to audit; `soxe validate` at `apps/sox/src/main.ts` defines what fields are required. `packages/sox-nx/src/generators/extension/index.ts` is the nx generator path (must stay in parity per `[ref:scaffold-parity]`).
 
 - **Delta Spec:**
   - For each of `agent`, `skill`, `mcp-server`, `command`, `hook`, `bundle`: ensure the template emits:
@@ -25,12 +25,12 @@ After this state, `sox init <type> <id>` produces an extension that passes `sox 
     - A `package.json` (for code types: mcp-server, hook, bundle).
     - A `README.md`.
     - Any type-specific required file (skill → `SKILL.md`; agent → `agent.md` or the content file; command → `<id>.md`).
-  - Output must survive `sox validate --strict` with no `[ERROR]` lines.
+  - Output must survive `soxe validate --strict` with no `[ERROR]` lines.
   - `[ref:scaffold-parity]`: the nx generator must produce byte-identical output to `scaffold()`. If the generator lags, update it.
 
-- **Invariants:** `[inv:tier3-proof]` — the guard drives the real `node bin/sox init` + `node bin/sox validate`, not a unit test. `[inv:sandbox-isolation]` enforced by `probe_done`.
+- **Invariants:** `[inv:tier3-proof]` — the guard drives the real `node bin/soxe init` + `node bin/soxe validate`, not a unit test. `[inv:sandbox-isolation]` enforced by `probe_done`.
 
-- **Validation:** `bash .workflow/plans/extension-install-model/scripts/guards/manifest-templates.sh` — for each of 6 types: `sox init <type> <id>` exits 0; the created dir exists; `sox validate <path>` exits 0 with no `[ERROR]` in stdout.
+- **Validation:** `bash .workflow/plans/extension-install-model/scripts/guards/manifest-templates.sh` — for each of 6 types: `soxe init <type> <id>` exits 0; the created dir exists; `soxe validate <path>` exits 0 with no `[ERROR]` in stdout.
 
 ---
 
@@ -38,17 +38,17 @@ After this state, `sox init <type> <id>` produces an extension that passes `sox 
 
 Checked by audit-foundation (phase gate).
 
-- [ ] **[manifest-templates.1]** `sox init agent` + `sox validate` exits 0 with no `[ERROR]` (real CLI, fresh dir).
+- [ ] **[manifest-templates.1]** `soxe init agent` + `soxe validate` exits 0 with no `[ERROR]` (real CLI, fresh dir).
       Via guard: `bash .workflow/plans/extension-install-model/scripts/guards/manifest-templates.sh`
-- [ ] **[manifest-templates.2]** `sox init skill` + `sox validate` exits 0 with no `[ERROR]`.
+- [ ] **[manifest-templates.2]** `soxe init skill` + `soxe validate` exits 0 with no `[ERROR]`.
       Via guard (same invocation covers all 6 types).
-- [ ] **[manifest-templates.3]** `sox init mcp-server` + `sox validate` exits 0 with no `[ERROR]`.
+- [ ] **[manifest-templates.3]** `soxe init mcp-server` + `soxe validate` exits 0 with no `[ERROR]`.
       Via guard.
-- [ ] **[manifest-templates.4]** `sox init command` + `sox validate` exits 0 with no `[ERROR]`.
+- [ ] **[manifest-templates.4]** `soxe init command` + `soxe validate` exits 0 with no `[ERROR]`.
       Via guard.
-- [ ] **[manifest-templates.5]** `sox init hook` + `sox validate` exits 0 with no `[ERROR]`.
+- [ ] **[manifest-templates.5]** `soxe init hook` + `soxe validate` exits 0 with no `[ERROR]`.
       Via guard.
-- [ ] **[manifest-templates.6]** `sox init bundle` + `sox validate` exits 0 with no `[ERROR]`.
+- [ ] **[manifest-templates.6]** `soxe init bundle` + `soxe validate` exits 0 with no `[ERROR]`.
       Via guard.
 - [ ] **[manifest-templates.7]** nx generator output is byte-identical to `scaffold()` for agent and skill (parity gate per `[ref:scaffold-parity]`).
       `node -e "const {scaffold}=require('./libs/authoring/dist'); const a=scaffold('agent','parity-agent'); const b=require('./packages/sox-nx/dist/generators/extension').generate('agent','parity-agent'); JSON.stringify(a)===JSON.stringify(b) ? process.exit(0) : process.exit(1)"`

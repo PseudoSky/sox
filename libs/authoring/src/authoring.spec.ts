@@ -4,14 +4,14 @@
  * Covers:
  *   [generators.2] — init emits the hybrid install descriptor (serves/profiles/config)
  *   [generators.3] — --content @source fills the body + stamps source: provenance
- *   [generators.4] — output is born-conformant + byte-identical (sox init path)
+ *   [generators.4] — output is born-conformant + byte-identical (soxe init path)
  *   [generators.5] — all six type templates produce a FileSet (existence check)
  *   [ref:host-keyed-target] — no hardcoded ~/.claude/ in emitted extension.json
  */
 
-import { describe, it, expect } from 'vitest';
-import { scaffold, validateId, ACTIVE_TYPES } from './index.js';
+import { describe, expect, it } from 'vitest';
 import type { ActiveType } from './index.js';
+import { ACTIVE_TYPES, scaffold, validateId } from './index.js';
 
 // ─── [generators.5] All six type templates produce a FileSet ─────────────────
 

@@ -34,7 +34,7 @@
  *   model_providers, notify, profile, otel, base-URLs.
  *   Project config also no-ops until trust_level = "trusted".
  *   These are encoded as CODEX_PROJECT_FORBIDDEN_KEYS and checked by validate().
- *   [inv:never-managed]: parallel to Claude's managed-never; sox never writes these.
+ *   [inv:never-managed]: parallel to Claude's managed-never; soxe never writes these.
  *
  * Scope mapping (spec §4b):
  *   user    -> ~/.codex/config.toml  (unrestricted)
@@ -67,7 +67,7 @@ import { existsIn } from './internal.js';
  *   - otel            : telemetry config (user-level only)
  *   - base-URLs       : provider base URLs (security boundary; also under model_providers)
  *
- * [inv:never-managed]: sox never writes these keys at project scope.
+ * [inv:never-managed]: soxe never writes these keys at project scope.
  * This list is checked by validate() and tested in host-registry.spec.ts.
  */
 export const CODEX_PROJECT_FORBIDDEN_KEYS = [

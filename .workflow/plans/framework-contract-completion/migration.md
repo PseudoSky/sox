@@ -72,6 +72,7 @@ an entrypoint-reachability gate in `scripts/validate-manifests.ts` (+ tests in
 `scripts/validate-manifests.test.ts`) that, for every manifest declaring an `entrypoint`, asserts the
 resolved built path exists; a supersession note appended to `docs/cli-build-decision.md`.
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 # 1. workspace build succeeds for all packages (capture $? directly — never pipe):
@@ -89,6 +90,7 @@ grep -q -i "supersed" docs/cli-build-decision.md; rc=$?; [ $rc -eq 0 ] || exit 1
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** every process-type package compiles to a generated `dist/index.js`, the validator fails any
 manifest whose `entrypoint` does not resolve post-build, CI builds before validating, and the full test
 suite is green. No extension hand-maintains its build output anymore.
@@ -162,19 +164,21 @@ closes audit Gap D3 (hand-maintained `dist/`) and the precondition half of Gap A
 `extensions/hooks/memory-flush/src/index.ts:262` (`import('../../../dist/memory-lib.js')`) and any
 tests/tools that import `dist/*.js`; `bin/sox` still functioning over the engine.
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 pnpm -r build >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1     # P0 guard
 # no source file imports a hand-maintained dist mirror anymore (search returns no matches → grep exit 1):
 grep -rn "dist/memory-lib.js\|dist/memory-cli.js\|dist/memoryd.js" extensions scripts tools >/dev/null 2>&1; rc=$?; [ $rc -ne 0 ] || exit 1
-# bin/sox still runs over the engine:
+# bin/soxe still runs over the engine:
 node bin/sox --help >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
-node bin/sox validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # entrypoint gate still passes and full suite green after the repoint:
 pnpm -s validate-manifests >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** no source imports a hand-maintained mirror, the mirrors are gone, every importer resolves to
 built output, `bin/sox` works, and the full suite plus the entrypoint gate are green.
 
@@ -239,6 +243,7 @@ when absent; the closed host-event enum seeded from existing hook usage (audit t
 `dependencies` enforcement wired into the install client (Gap F2 — field exists, no consumer); tests in
 `scripts/validate-manifests.test.ts` asserting warn-not-error posture. NO manifest retrofit yet.
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 pnpm -r build >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1     # P0/P1 guard
@@ -247,11 +252,12 @@ pnpm -s validate-manifests >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # schema now declares the self-description surface (e.g. an events vocabulary):
 grep -q -i "events\|invocation\|self.\?descr\|tool" schemas/extension/v1.json; rc=$?; [ $rc -eq 0 ] || exit 1
 # the closed event enum exists and contains every event the current hooks declare:
-node bin/sox validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # new validator tests pass within the full suite:
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** the schema declares per-type self-description fields, the validator treats them as
 optional warnings, the closed event enum already covers all in-use events, `dependencies` is enforced,
 and all 11 existing (un-retrofitted) manifests still pass with exit 0.
@@ -326,12 +332,13 @@ error-level; `scripts/validate-manifests.test.ts` updated so the "missing self-d
 asserts an ERROR; the existing extensions' code reconciled to their now-declared interface where the
 declaration formalizes a divergence (e.g. align hook `event`/`events`).
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 pnpm -r build >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1     # build guard
 # strict self-description is now enforced and all 11 retrofitted manifests pass:
 pnpm -s validate-manifests >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
-node bin/sox validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # enforcement is real: a manifest stripped of its self-description must now FAIL.
 cp extensions/hooks/memory-flush/extension.json /tmp/fcc-p3-backup.json
 node -e "const f='extensions/hooks/memory-flush/extension.json';const m=require('fs').readFileSync(f,'utf8');const o=JSON.parse(m);delete o.events;require('fs').writeFileSync(f,JSON.stringify(o,null,2));"
@@ -343,6 +350,7 @@ pnpm -s validate-manifests >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** all 11 manifests carry their self-description fields, the validator now ERRORS (not warns)
 on a missing field, stripping a field reproducibly fails validation, and after restore the full suite
 is green.
@@ -389,7 +397,7 @@ is green.
 
 **Phase ID:** P4
 **Phase goal:** build a NEW host-runtime subsystem — a unified loader + process supervisor with per-type
-adapters — that reads the lockfile `bin/sox install` produces, resolves each entry's BUILT `entrypoint`,
+adapters — that reads the lockfile `bin/soxe install` produces, resolves each entry's BUILT `entrypoint`,
 and activates it via the right adapter, turning `installed` into `running`. This is row #8
 (`install → activated runtime`, Absent for hook/agent/skill/command, DU for mcp) becoming **Defined**.
 Promote the CI shim `tools/supervisor-shim.js` to product code as the supervisor's reference core.
@@ -405,6 +413,7 @@ convention (Gap A5: `~/.memory/memoryd.sock` tilde is not a Node path); lockfile
 uninstall entries (Gap C5) are not loaded; integration so `bin/sox` install's lockfile is the loader's
 input. Tests for the loader + supervisor.
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 pnpm -r build >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1     # build guard
@@ -415,10 +424,11 @@ grep -q -i "TEST SCAFFOLDING" tools/supervisor-shim.js >/dev/null 2>&1; rc=$?; [
 test -d scripts/host -o -f scripts/host-runtime.ts; rc=$?; [ $rc -eq 0 ] || exit 1
 # loader + supervisor + adapter tests pass within the full suite:
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
-# bin/sox unaffected:
+# bin/soxe unaffected:
 node bin/sox --help >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** a host-runtime subsystem reads the lockfile, resolves built entrypoints, and activates at
 least the mcp and hook adapters via a productized supervisor; the supervisor is no longer labeled test
 scaffolding; lockfile hygiene drops stale entries; and the full suite (incl. new loader/supervisor
@@ -436,7 +446,7 @@ tests) is green. `bin/sox` is unchanged.
 > THE CONTRACT GAP YOU ARE CLOSING (audit's "single most consequential finding", Gap C1): there is NO
 > host runtime that turns `installed` into `running`. The ecosystem "produces configuration only".
 > Build this as a NEW SUBSYSTEM, not an incremental edit. It integrates BELOW the complete `bin/sox`
-> CLI: `bin/sox install` already produces the lockfile — your loader is its missing runtime callee.
+> CLI: `bin/soxe install` already produces the lockfile — your loader is its missing runtime callee.
 > WRAP, do not fork, `bin/sox` and the engine (`install.ts`, `cascade.ts`).
 >
 > Best-practice (from research memory cited in suggestions item 2): use ONE unified loader + supervisor
@@ -450,7 +460,7 @@ tests) is green. `bin/sox` is unchanged.
 > per-type adapter. (2) Productize `tools/supervisor-shim.js` into the supervisor core. (3) Implement
 > per-type adapters, STAGED: start with mcp (spawn + stdio) and hook (register into the existing
 > HookLoader) — the two types with real tenants — then agent/skill (in-process invoke) and command
-> (verb registration that integrates with `bin/sox`). (4) Fix lockfile hygiene so a `sox uninstall`
+> (verb registration that integrates with `bin/sox`). (4) Fix lockfile hygiene so a `soxe uninstall`
 > that leaves a stale lock entry (Gap C5) does NOT get naively loaded. (5) Resolve the socket-endpoint
 > convention (Gap A5: `~/.memory/memoryd.sock` — the tilde is not a Node-resolvable path) as part of
 > the health-probe contract. Add loader + supervisor + adapter tests. Scope discipline: staging the
@@ -490,17 +500,19 @@ them into the agent surface — closes Gap C2); a command dispatcher wiring verb
 (which can also realize the stubbed `update`/`search`/`enable`/`disable` — Gaps C3/C6); an agent/skill
 invoker and a prompt renderer; tests for each delivery path.
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 pnpm -r build >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1     # build guard
 grep -q -i "TEST SCAFFOLDING" tools/supervisor-shim.js >/dev/null 2>&1; rc=$?; [ $rc -ne 0 ] || exit 1   # P4 guard
 # a previously-stubbed verb now does real work (exits 0 instead of stub error):
-node bin/sox list >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
-node bin/sox enable --help >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe list >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe enable --help >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # the registrar/dispatcher/renderer tests pass within the full suite:
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** the host delivers each runtime type to its consumer — mcp tools reachable from the agent
 surface, command verbs dispatched through `bin/sox` (stubs realized), agent/skill/prompt output
 delivered — and the full suite (incl. delivery-path tests) is green.
@@ -561,10 +573,11 @@ half); analysis row #12 + ordering step 6; audit Gap A2 + rec #11 + §6; `tools/
 mcp/agent/skill/command able to register reactions (converting mcp #12 from DU to Defined); tests for
 the bus, including a multi-hook test proving one throwing hook does NOT suppress the others.
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 pnpm -r build >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1     # build guard
-node bin/sox list >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1   # P5 guard
+node bin/soxe list >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1   # P5 guard
 # PA dependency present: fireIsolated exists in the engine:
 grep -q "fireIsolated" scripts/hook-loader.ts >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # the event-bus shim is now product code, not test scaffolding:
@@ -573,6 +586,7 @@ grep -q -i "test scaffolding\|scaffolding only" tools/host-event-shim.js >/dev/n
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** the host event bus fires lifecycle signals through `fireIsolated()` so a throwing hook no
 longer suppresses downstream reactions; mcp/agent/skill/command can react; the event-bus shim is
 product code; and the full suite (incl. the isolation test) is green.
@@ -635,6 +649,7 @@ fix spec, verbatim); analysis row #12 (`A+defect`); audit Gap A2 + rec #11; the 
 unchanged; the two `// KNOWN-DEFECT` tests in `scripts/hook-isolation.test.ts` rewritten to assert that
 hooks after a throwing hook DO execute.
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 # the new method exists:
@@ -647,6 +662,7 @@ grep -q -i "KNOWN-DEFECT" scripts/hook-isolation.test.ts >/dev/null 2>&1; rc=$?;
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** `fireIsolated()` exists and continues past a throwing hook, `fire()` is unchanged, the two
 formerly-pinned KNOWN-DEFECT tests now assert isolated behavior (and no longer carry the marker), and
 the full suite is green.
@@ -706,18 +722,20 @@ config schema + permission declarations where applicable; validator tests. NOTE:
 ENFORCEMENT (the host honoring declared bounds, e.g. sandboxing `db_path`, Gap F5) is performed by
 P4/P5 — this phase ships the DECLARATION; coordinate so it does not sit Declared-unimplemented.
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 # schema now declares a config-schema surface and a resource/permission block:
 grep -q -i "config.\?schema\|permission\|resource" schemas/extension/v1.json; rc=$?; [ $rc -eq 0 ] || exit 1
 # validator validates config against the declared schema and the 11 manifests pass:
 pnpm -s validate-manifests >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
-node bin/sox validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # enforcement is real: an extension whose config violates its declared schema must FAIL validation
 # (test fixture lives in the validator test suite):
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** each manifest can declare a config JSON Schema + a resource/permission block, scope-resolved
 config is validated against the declared schema (a violating config fails), all 11 manifests are
 retrofitted and pass, and the full suite is green.
@@ -789,11 +807,12 @@ then error mirroring the optional-first discipline); bundle provenance recorded 
 the lockfile (row #3 bundle-id → Defined); the two pinned collision tests in
 `scripts/bundle-collision.test.ts` updated from "silent dedup" to "operator-visible conflict signal".
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 # baseline validation passes:
 pnpm -s validate-manifests >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
-node bin/sox validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # the silent-dedup behavior is no longer pinned (the collision test no longer asserts silent first-seen):
 grep -q -i "first-seen\|silent" scripts/bundle-collision.test.ts >/dev/null 2>&1; rc=$?
 # (informational — not a gate; the real gate is the suite asserting the new operator-visible behavior)
@@ -801,6 +820,7 @@ grep -q -i "first-seen\|silent" scripts/bundle-collision.test.ts >/dev/null 2>&1
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** the validator rejects a bundle naming a non-existent member, `expandBundles()` emits an
 operator-visible signal on a version conflict (no longer silent), the lockfile records each member's
 originating bundle id, the collision tests assert the new behavior, and the full suite is green.
@@ -861,6 +881,7 @@ order and starting work at the first one that fails. All checks are deterministi
 `$?` captured directly, never piped).
 
 **Dependency graph.**
+
 ```
 PARALLEL (day one):  PA (fireIsolated)        PB (config+permission decl)     PC (bundle composition)
                        │                          │ (permission ENFORCEMENT half → P4/P5)
@@ -869,6 +890,7 @@ CRITICAL CHAIN:  P0 (build, linchpin) → P1 (retire dist) → P2 (self-descr op
                  P3 (retrofit 11 + flip required) → P4 (loader+supervisor #8) →
                  P5 (dispatcher/registrar/renderer #9) → P6 (event bus #12, consumes PA)
 ```
+
 - **Critical path:** P0 → P1 → P2 → P3 → P4 → P5 → P6 (7 phases).
 - **Parallel track:** PA, PB, PC (schedule from day one). Cross-edges: P6 REQUIRES PA (event bus
   dispatches through `fireIsolated()`); P4/P5 wire the ENFORCEMENT half of PB's permission declaration;

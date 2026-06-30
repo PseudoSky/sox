@@ -72,9 +72,9 @@ Scope-to-path conventions:
 ## Usage
 
 ```bash
-sox install memory-server
+soxe install memory-server
 # or install the full subsystem:
-sox install sox-memory-bundle
+soxe install sox-memory-bundle
 ```
 
 ## License

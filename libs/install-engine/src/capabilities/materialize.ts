@@ -4,7 +4,7 @@
  * materialize capability — place built extension code at a stable store path.
  * [def:capability], [inv:host-agnostic-type]
  *
- * Puts the compiled extension at a versioned, stable path in the sox store
+ * Puts the compiled extension at a versioned, stable path in the soxe store
  * (default: ~/.sox/ext/<ext>@<version>/) so that host pointers (MCP config,
  * bin-links) don't break when the source workspace moves.
  *
@@ -16,16 +16,16 @@
  * No shared file — no ledger for this capability (it owns its store path).
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as crypto from 'crypto';
 import { storeRootFor } from '../data-paths.js';
 
 // --- Types ---
 
 export interface MaterializeTarget {
   /**
-   * Absolute path to the sox store root (default: ~/.sox/ext/).
+   * Absolute path to the soxe store root (default: ~/.sox/ext/).
    * Allows tests to redirect to a temp dir.
    */
   storeRoot: string;

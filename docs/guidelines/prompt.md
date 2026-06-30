@@ -85,7 +85,7 @@ not as a running process. The **Author** is the producer whose outputs Layers 2�
 
 | Action | Owning system | Exists as a framework contract? |
 |---|---|---|
-| O1 Discover | Registry + discovery command | Registry record: **yes**, but without machine-readable parameter declarations. Discovery command (`sox search`): **Absent** — `bin/sox` line 612–613: "not yet implemented". |
+| O1 Discover | Registry + discovery command | Registry record: **yes**, but without machine-readable parameter declarations. Discovery command (`soxe search`): **Absent** — `bin/sox` line 612–613: "not yet implemented". |
 | O2 Install | Install client + CLI + cascade + lockfile | **Defined.** Install client recognizes `prompt.md` as the content file for `file://` sources (`scripts/install.ts` lines 312–316). |
 | O3 Configure | Config cascade + capability gate + env resolution | Cascade + capability gate: **Defined.** Per-prompt config schema: **Absent.** |
 | O4 Availability | Host runtime: lockfile reader → template file locator | **Implicit** — the install client stores `source` and `checksum` in the lockfile, but no runtime path reads the lockfile to locate and serve `prompt.md` on demand. The connection from "installed" to "loadable by id" is a convention only. |

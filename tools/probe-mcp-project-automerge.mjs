@@ -16,8 +16,8 @@
  * Exit 0 = the gate holds.
  */
 
-import { createRequire } from 'node:module';
 import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -140,7 +140,7 @@ ok(reversed.length === 2, `REVERSE: reversed both project merges (got ${reversed
 // ─── ASSERT zero residue in projects, foreign preserved ───────────────────────
 {
   const p1 = JSON.parse(fs.readFileSync(projMcp, 'utf8'));
-  ok(p1.mcpServers['memory-server'] == null, 'RESIDUE: sox entry removed from project1');
+  ok(p1.mcpServers['memory-server'] == null, 'RESIDUE: soxe entry removed from project1');
   ok(p1.mcpServers['project-local-server'] != null, 'RESIDUE: project1 foreign server preserved');
 
   const AFTER = fs.readFileSync(projMcp, 'utf8');
@@ -152,7 +152,7 @@ ok(reversed.length === 2, `REVERSE: reversed both project merges (got ${reversed
   // project2 had no .mcp.json; after reversal mcpServers.memory-server is gone.
   const p2 = JSON.parse(fs.readFileSync(proj2Mcp, 'utf8'));
   ok(p2.mcpServers == null || p2.mcpServers['memory-server'] == null,
-    'RESIDUE: sox entry removed from project2');
+    'RESIDUE: soxe entry removed from project2');
 }
 
 // Ownership project-merge entries are gone.

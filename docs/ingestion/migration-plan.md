@@ -28,7 +28,7 @@ prompts in [`prompts/`](./prompts/); this plan sequences them.
 - **Reality-verify, don't trust tests.** "Done" for an extension = it actually
   `init → build → validate → install → start → runs → stops cleanly`, with captured output.
   A green unit test is not acceptance.
-- **Born-conformant only.** Always scaffold via the generator (`node bin/sox init <type> <id>`);
+- **Born-conformant only.** Always scaffold via the generator (`node bin/soxe init <type> <id>`);
   never hand-roll layout. If the generator can't produce a conformant skeleton for a case,
   that's a generator gap to fix in sox-ecosystem first — not a thing to paper over per-extension.
 - **Declare permissions (C6).** Every ingested extension declares the exact fs/network/socket it
@@ -158,10 +158,10 @@ the same type.
 single scaffold step that pulls the source content directly:
 
 ```bash
-sox init agent <id>   --shape declarative --host claude --content @<source.md>
-sox init skill <id>   --from @<source-dir>                       # SKILL.md + supporting files
-sox init prompt <id>  --inject rules --paths "src/**" --content @<source.md>
-sox init bundle <id>  --from-plugin @<plugin-dir>                # whole plugin → member extensions
+soxe init agent <id>   --shape declarative --host claude --content @<source.md>
+soxe init skill <id>   --from @<source-dir>                       # SKILL.md + supporting files
+soxe init prompt <id>  --inject rules --paths "src/**" --content @<source.md>
+soxe init bundle <id>  --from-plugin @<plugin-dir>                # whole plugin → member extensions
 ```
 
 This collapses "scaffold → hand-copy the body" into one command and stamps `source:` provenance so

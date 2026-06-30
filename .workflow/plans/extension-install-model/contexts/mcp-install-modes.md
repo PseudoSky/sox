@@ -8,7 +8,7 @@
 
 ## Goal
 
-After this state, `sox install <mcp-id> --profile <sse|stdio|service>` installs an mcp-server in the correct mode: `sse`/`http` → config-merge into `.mcp.json`; `stdio` → merge into `.claude.json`; `service` → materialize the bundle into `[def:store-dir]` + write a supervisor service record. The `run-service` path is wired into the install dispatch (v1 never called it). This satisfies `[dod.4]`.
+After this state, `soxe install <mcp-id> --profile <sse|stdio|service>` installs an mcp-server in the correct mode: `sse`/`http` → config-merge into `.mcp.json`; `stdio` → merge into `.claude.json`; `service` → materialize the bundle into `[def:store-dir]` + write a supervisor service record. The `run-service` path is wired into the install dispatch (v1 never called it). This satisfies `[dod.4]`.
 
 ---
 
@@ -37,13 +37,13 @@ After this state, `sox install <mcp-id> --profile <sse|stdio|service>` installs 
 
 Checked by audit-install (phase gate).
 
-- [ ] **[mcp-install-modes.1]** `sox install <mcp> --profile sse` writes entry into `$SBX/.mcp.json`.
+- [ ] **[mcp-install-modes.1]** `soxe install <mcp> --profile sse` writes entry into `$SBX/.mcp.json`.
       Via guard: `bash .workflow/plans/extension-install-model/scripts/guards/mcp-install-modes.sh`
-- [ ] **[mcp-install-modes.2]** `sox install <mcp> --profile stdio` writes entry into `$SBX/.claude.json`.
+- [ ] **[mcp-install-modes.2]** `soxe install <mcp> --profile stdio` writes entry into `$SBX/.claude.json`.
       Via guard.
-- [ ] **[mcp-install-modes.3]** `sox install <mcp> --profile service` creates `[def:store-dir]` under `$SBX/.sox/ext/`.
+- [ ] **[mcp-install-modes.3]** `soxe install <mcp> --profile service` creates `[def:store-dir]` under `$SBX/.sox/ext/`.
       Via guard.
-- [ ] **[mcp-install-modes.4]** `sox install <mcp> --profile service` writes a registry entry at `$SBX/.sox/registry.json`.
+- [ ] **[mcp-install-modes.4]** `soxe install <mcp> --profile service` writes a registry entry at `$SBX/.sox/registry.json`.
       Via guard.
 - [ ] **[mcp-install-modes.5]** `run-service.ts` is called from `install.ts` for `--profile service` (not a no-op stub).
       `grep -n "runService\|run-service" libs/install-engine/src/install.ts | grep -q "runService" && echo OK`

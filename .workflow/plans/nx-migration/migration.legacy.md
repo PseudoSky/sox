@@ -23,7 +23,7 @@ Skipping phases is forbidden. Each phase transitions `state: executing` on entry
 - `$ROOT=/Users/nix/dev/ai/sox-ecosystem`. `pnpm` at
   `/Users/nix/.nvm/versions/node/v24.11.1/bin/pnpm` (use `pnpm` if on PATH, else that absolute path).
 - **Nx is dev-time only.** Never a consumer/runtime dependency. `libs/authoring`'s `scaffold()` is
-  nx-free so `sox init` works without nx installed.
+  nx-free so `soxe init` works without nx installed.
 - **Carry the session's fixes forward** — everything currently uncommitted (recall alias, `fireIsolated`,
   enable-reactivation, stop-via-supervisor, registry drift gate, typecheck) must be present in all work
   after P0. Never re-grab pre-fix code from git.
@@ -261,7 +261,7 @@ behavior is preserved and re-verified. This is the prerequisite for all "born-co
 > (2) **`runtime ∈ {node, shell, python, declarative}`** — not node-only.
 > (3) **`install-target`** — a declarative extension declares where it installs to (e.g.
 > `~/.claude/commands/`, `~/.claude/agents/`, skills dir). This is the generalized reinjection primitive
-> for the declarative family (prompt + markdown agents + skills). `sox install` = render/link the
+> for the declarative family (prompt + markdown agents + skills). `soxe install` = render/link the
 > artifact into the target location.
 > The existing `scripts/validate-manifests.ts` has 44 tests that must be re-expressed in
 > `libs/manifest/src/manifest.spec.ts` so this lib becomes the single source of truth.
@@ -300,7 +300,7 @@ behavior is preserved and re-verified. This is the prerequisite for all "born-co
 import) with templates for all 6 active types (agent, skill, mcp-server, hook, command, bundle — `prompt`
 is parked). `@adhd/sox-nx` in `packages/sox-nx/` provides thin `@adhd/sox-nx:extension` and `@adhd/sox-nx:library`
 generators that call `scaffold()` and apply the FileSet to the nx Tree. A parity test asserts that
-`sox init <type> <id>` and `pnpm exec nx g @adhd/sox-nx:extension <type> <id>` produce byte-identical output
+`soxe init <type> <id>` and `pnpm exec nx g @adhd/sox-nx:extension <type> <id>` produce byte-identical output
 from the same `scaffold()` core. A born-conformance gate scaffolds one extension per type, builds it, and
 validates it — all in one command.
 **Inputs:** P2 (green — `libs/manifest` with the contract flexes); `docs/decisions/0001-nx-and-self-hosting.md`
@@ -332,13 +332,13 @@ for type in agent skill mcp-server hook command bundle; do
   rm -rf "$TMP"
 done
 echo "all 6 types scaffold+validate"
-# parity test: sox init and nx generator produce identical output (run the parity test target):
+# parity test: soxe init and nx generator produce identical output (run the parity test target):
 pnpm exec nx run sox-nx:test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
 
 **Green =** every active type scaffolds to a manifest that validates against `libs/manifest`; the parity
-invariant holds (`sox init` == `@adhd/sox-nx:extension` same core); the born-conformance gate is a runnable
+invariant holds (`soxe init` == `@adhd/sox-nx:extension` same core); the born-conformance gate is a runnable
 target. The 6 demo extensions are no longer needed as fixtures — generated output is the fixture.
 
 **Phase prompt:**
@@ -351,11 +351,11 @@ target. The 6 demo extensions are no longer needed as fixtures — generated out
 > Context you need cold (from `docs/decisions/0001-nx-and-self-hosting.md`):
 >
 > - **`libs/authoring`** — pure `scaffold(opts) → FileSet` with NO `@nx/devkit` import. This is the
->   single source of truth for "what a conformant extension of type X is." Both `sox init` and the nx
+>   single source of truth for "what a conformant extension of type X is." Both `soxe init` and the nx
 >   generator call it.
 > - **`@adhd/sox-nx:extension` generator** — thin adapter: maps the FileSet returned by `scaffold()` onto the
 >   nx `Tree`, adds `project.json` with tags + nx target wiring.
-> - **Parity invariant** — a test MUST assert that `scaffold()` called directly (via `sox init`) and
+> - **Parity invariant** — a test MUST assert that `scaffold()` called directly (via `soxe init`) and
 >   called via `@adhd/sox-nx:extension` emit byte-identical output for the same inputs. This invariant must
 >   never be broken.
 > - **`prompt` is parked** — no generator for prompt type until a real use case appears. Generate
@@ -391,7 +391,7 @@ target. The 6 demo extensions are no longer needed as fixtures — generated out
 > scaffolder to port from — carry its logic forward, fix its known gaps: missing `tsconfig`, missing
 > `keywords`/`author`).
 > Success criteria: the Phase 3 acceptance check exits 0.
-> Hard constraints: `libs/authoring` MUST have zero `@nx/devkit` imports (pure lib; `sox init` must work
+> Hard constraints: `libs/authoring` MUST have zero `@nx/devkit` imports (pure lib; `soxe init` must work
 > without nx). `prompt` type gets NO generator. The parity test is MANDATORY — if it fails, the two
 > paths have drifted (fix it before exiting). Delete the 6 demos — do NOT keep them as reference
 > extensions. Capture `$?` directly; never pipe a tested exit.
@@ -425,7 +425,7 @@ CLI (verb dispatch shell, no logic yet — that is P5); each lib tagged `type:li
 cd "$ROOT"
 # P3 guard: born-conformance still passes:
 pnpm exec nx run sox-nx:born-conformance >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
-# all three engine libs + apps/sox build clean:
+# all three engine libs + apps/soxe build clean:
 pnpm exec nx run-many -t build --projects=install-engine,host-runtime,registry,sox >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # libs/host-runtime tests pass (incl. fireIsolated, enable-reactivation, stop-via-supervisor):
 pnpm exec nx run host-runtime:test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
@@ -527,15 +527,15 @@ CLI built by `nx run sox:build` and executable as `node dist/apps/sox/main.js`.
 cd "$ROOT"
 # P4 guard: engine libs tests pass:
 pnpm exec nx run-many -t test --projects=install-engine,host-runtime,registry >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
-# sox CLI builds:
+# soxe CLI builds:
 pnpm exec nx run sox:build >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # sox's own manifest validates (self-hosting invariant D1):
 node -e "const {validate}=require('./libs/manifest/dist/index');const m=require('./apps/sox/extension.json');const r=validate(m);if(!r.ok)console.error(r.errors);process.exit(r.ok?0:1)"; rc=$?; [ $rc -eq 0 ] || exit 1
-# sox type is 'command' (D2):
+# soxe type is 'command' (D2):
 node -e "const m=require('./apps/sox/extension.json');process.exit(m.type==='command'?0:1)"; rc=$?; [ $rc -eq 0 ] || exit 1
 # A12: both flag forms parse correctly via the live CLI:
 node dist/apps/sox/main.js validate --help >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
-# A1: sox init scaffolds a born-conformant extension:
+# A1: soxe init scaffolds a born-conformant extension:
 TMP="$ROOT/.tmp-init-a1"; rm -rf "$TMP"; mkdir -p "$TMP"
 node dist/apps/sox/main.js init hook smoke-hook --events SessionEnd --runtime shell --out "$TMP" >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 node -e "const {validate}=require('./libs/manifest/dist/index');const m=require('$TMP/smoke-hook/extension.json');const r=validate(m);process.exit(r.ok?0:1)"; rc=$?; [ $rc -eq 0 ] || exit 1
@@ -619,13 +619,13 @@ compatible only); an updated born-conformance gate (if template changes affect o
 
 ```bash
 cd "$ROOT"
-# P5 guard: sox extension.json still validates and CLI builds:
+# P5 guard: soxe extension.json still validates and CLI builds:
 node -e "const {validate}=require('./libs/manifest/dist/index');const m=require('./apps/sox/extension.json');const r=validate(m);process.exit(r.ok?0:1)"; rc=$?; [ $rc -eq 0 ] || exit 1
 # libs/manifest and libs/authoring rebuild after any template changes:
 pnpm exec nx run-many -t build --projects=manifest,authoring >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # born-conformance gate passes for all 6 types (with refined templates):
 pnpm exec nx run sox-nx:born-conformance >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
-# parity test still passes (sox init == nx generator):
+# parity test still passes (soxe init == nx generator):
 pnpm exec nx run sox-nx:test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # per-type-shapes doc exists:
 test -f docs/per-type-shapes.md; rc=$?; [ $rc -eq 0 ] || exit 1

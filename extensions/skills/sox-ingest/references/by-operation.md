@@ -14,9 +14,9 @@ invent structure. Born-conformance is enforced at init time.
 **CLI:**
 
 ```bash
-node bin/sox init <type> <id>              # basic scaffold
-node bin/sox init <type> <id> --content @<source-file>   # pull body from source (hook/command/agent)
-node bin/sox init skill <id> --from @<source-dir>        # dir-shaped source (SKILL.md + siblings)
+node bin/soxe init <type> <id>              # basic scaffold
+node bin/soxe init <type> <id> --content @<source-file>   # pull body from source (hook/command/agent)
+node bin/soxe init skill <id> --from @<source-dir>        # dir-shaped source (SKILL.md + siblings)
 ```
 
 - `nx` is NOT on PATH; use `./node_modules/.bin/nx`
@@ -39,7 +39,7 @@ node bin/sox init skill <id> --from @<source-dir>        # dir-shaped source (SK
 
 **`--content @<path>` / `--from @<dir>` (generator P5 primitive):** when available, this pulls
 the source content directly into the scaffold and records `source: <path>` provenance in the
-manifest so `sox update` can re-pull from origin. Until P5 lands, scaffold plain, then paste the
+manifest so `soxe update` can re-pull from origin. Until P5 lands, scaffold plain, then paste the
 body manually. The invariant is the same: never hand-roll the directory layout.
 
 **Post-scaffold checklist:**
@@ -56,8 +56,8 @@ body manually. The invariant is the same: never hand-roll the directory layout.
 ## §validate — Running the manifest validator
 
 ```bash
-node bin/sox validate            # validate all extensions
-node bin/sox validate --strict   # stricter checks (if available)
+node bin/soxe validate            # validate all extensions
+node bin/soxe validate --strict   # stricter checks (if available)
 ```
 
 **What the validator checks:**
@@ -178,16 +178,16 @@ Use `--host` to place the extension at the host's discovery path (file-drop):
 ```bash
 # Sandboxed install into a temp dir (avoids polluting real project config)
 T=$(mktemp -d)
-node bin/sox install <id> --host claude --scope project --root "$T"
+node bin/soxe install <id> --host claude --scope project --root "$T"
 
 # Verify the file landed on disk:
 find "$T/.claude" -type f
 
 # Real project install (writes into this workspace's .claude/)
-node bin/sox install <id> --host claude --scope project
+node bin/soxe install <id> --host claude --scope project
 
 # User-scope install (writes into ~/.claude/)
-node bin/sox install <id> --host claude --scope user
+node bin/soxe install <id> --host claude --scope user
 ```
 
 **Flags for declarative path (`--host` present):**
@@ -205,8 +205,8 @@ node bin/sox install <id> --host claude --scope user
 - File is at the host-discovery target on disk (e.g.
   `$T/.claude/skills/<id>/SKILL.md` for project-scoped skills,
   `~/.claude/agents/<id>.md` for user-scoped agents)
-- No `sox list` entry is created — declarative types activate at the host level,
-  not via the sox process registry
+- No `soxe list` entry is created — declarative types activate at the host level,
+  not via the soxe process registry
 
 ### Process-managed types: `mcp-server`, `hook`
 
@@ -214,10 +214,10 @@ Use the config/lockfile resolver path (no `--host`):
 
 ```bash
 # Project scope (writes to .extensions/extensions.json)
-node bin/sox install <id> -s project
+node bin/soxe install <id> -s project
 
 # User scope
-node bin/sox install <id> -s user
+node bin/soxe install <id> -s user
 ```
 
 **After install — registry must be current.** If `registry/index.json` does not include the
@@ -242,14 +242,14 @@ init -> validate -> install (= enable) -> (files verified on disk) -> uninstall
 **Capturing evidence per stage:**
 
 1. `nx run <project>:build` output — "0 errors, 0 warnings"
-2. `sox validate` output — "OK" or clean exit
-3. `sox install ...` output — "installed at scope"
-4. `sox list` output — extension present with correct state
-5. For process types: `sox start <id>` output + PID; for declarative types: `ls` of
+2. `soxe validate` output — "OK" or clean exit
+3. `soxe install ...` output — "installed at scope"
+4. `soxe list` output — extension present with correct state
+5. For process types: `soxe start <id>` output + PID; for declarative types: `ls` of
    the host-discovery target showing the file present
 6. For process types: trigger the observable behavior and capture real output (not a
    self-written log); for hook types: confirm the hook fires on its declared event
-7. `sox stop <id>` output; `ps` or equivalent showing zero orphans
+7. `soxe stop <id>` output; `ps` or equivalent showing zero orphans
 
 **Non-negotiable principle:** a passing unit test is NOT acceptance. Derive the contract from
 this repo's ground truth (`DOD.md`, `docs/guidelines/`, the manifest schema); prove done against

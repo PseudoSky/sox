@@ -7,6 +7,7 @@
 `memory-flush` binds two host lifecycle events and handles each deterministically (zero LLM calls):
 
 **SessionEnd** — when a conversation closes, the hook:
+
 1. Saves the session's working-memory state (upserts a `session` node in the graph store — invalidates the previous entry, inserts a new one).
 2. Enqueues any pending episode items into `organizer_queue` so `memoryd` can process them asynchronously.
 3. Nudges `memoryd` via its Unix socket doorbell (`~/.memory/memoryd.sock`). If the daemon is not running the nudge is silently discarded — the queue is durable on disk and will be processed at next startup.
@@ -46,9 +47,9 @@ The promotion approver is injected via `setPromotionApprover(fn)` from the host 
 ## Usage
 
 ```bash
-sox install memory-flush
+soxe install memory-flush
 # or install the full subsystem:
-sox install sox-memory-bundle
+soxe install sox-memory-bundle
 ```
 
 ## License

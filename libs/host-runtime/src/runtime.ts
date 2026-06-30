@@ -1,5 +1,5 @@
 /**
- * libs/host-runtime/src/runtime.ts — sox host runtime manager.
+ * libs/host-runtime/src/runtime.ts — soxe host runtime manager.
  *
  * Ported from the pre-nx host runtime. Imports adapted for lib-relative paths.
  * [def:session-fixes] stop-via-supervisor: supervisor.stop() prevents restart on teardown.
@@ -7,15 +7,15 @@
 
 import * as fs from 'node:fs';
 import * as net from 'node:net';
-import * as path from 'node:path';
 import * as os from 'node:os';
-import { loadFromLockfile, type LoaderResult } from './loader.js';
-import { McpRegistrar } from './registrar.js';
+import * as path from 'node:path';
 import type { McpAdapterHandle } from './adapters/mcp.js';
+import { logDirFor, scopeConfigPaths, socketDir, type DataScope } from './data-paths.js';
+import { loadFromLockfile, type LoaderResult } from './loader.js';
 import { acquireStartLock, computeSupervisorId } from './lock.js';
-import { registerSupervisor, deregisterSupervisor, readSupervisorsFile } from './registry.js';
-import { killAndVerify, reapBySource, reapByIdentity, identityToken, type KillOutcome } from './reaper.js';
-import { logDirFor, socketDir, scopeConfigPaths, type DataScope } from './data-paths.js';
+import { identityToken, killAndVerify, reapByIdentity, reapBySource, type KillOutcome } from './reaper.js';
+import { McpRegistrar } from './registrar.js';
+import { deregisterSupervisor, readSupervisorsFile, registerSupervisor } from './registry.js';
 
 export interface RuntimeEntry {
   key: string;
@@ -39,7 +39,7 @@ export interface RuntimeRecord {
    * Path to the exec control socket opened by the supervisor process.
    * [inv:exec-socket]: present only in supervisor mode (lockfile-based start);
    * absent in service mode (detached spawn) and on old runtime records.
-   * sox exec connects here to route tool calls through the live session.
+   * soxe exec connects here to route tool calls through the live session.
    */
   execSocketPath?: string | undefined;
 }
@@ -54,7 +54,7 @@ export interface StartRuntimeOptions {
   overrideHealthToStdioPing?: boolean | undefined;
   /**
    * When set, only activate extensions whose id matches one of the provided ids.
-   * All other lockfile entries are skipped. Used by `sox start --id=<ext>`.
+   * All other lockfile entries are skipped. Used by `soxe start --id=<ext>`.
    */
   filterIds?: string[] | undefined;
 }
@@ -186,7 +186,7 @@ async function _startRuntimeLocked(
 
   // ── Exec control socket ────────────────────────────────────────────────────
   // [inv:exec-socket]: The supervisor opens a Unix domain socket so that
-  // `sox exec` (a separate process) can route tool calls through the live
+  // `soxe exec` (a separate process) can route tool calls through the live
   // McpRegistrar session rather than spawning a throwaway process.
   // Protocol: client sends one JSON line → server replies one JSON line → close.
   // Request:  { "ext": string, "tool": string, "args": object }
@@ -219,7 +219,7 @@ async function _startRuntimeLocked(
         return;
       }
 
-      const ext  = typeof req.ext  === 'string' ? req.ext  : '';
+      const ext = typeof req.ext === 'string' ? req.ext : '';
       const tool = typeof req.tool === 'string' ? req.tool : '';
       const args = (req.args !== null && typeof req.args === 'object' && !Array.isArray(req.args))
         ? req.args as Record<string, unknown>
@@ -227,7 +227,7 @@ async function _startRuntimeLocked(
 
       // ── List request: { list: true } or { ext: "...", list: true } ────────────
       // Returns all registrar-cached tool descriptors (name, description, inputSchema)
-      // without spawning any process.  Used by `sox exec --list`.
+      // without spawning any process.  Used by `soxe exec --list`.
       if (req.list === true) {
         const active2 = _activeRuntimes.get(opts.runtimeFilePath);
         if (!active2) {
@@ -332,7 +332,7 @@ async function _startRuntimeLocked(
 
   // ── R1: Self-registration in global supervisor registry ────────────────────
   // Called after exec socket is listening and runtime.json is written, so the
-  // entry is immediately usable by `sox list --all` and `sox stop` (daemon mode).
+  // entry is immediately usable by `soxe list --all` and `soxe stop` (daemon mode).
   try {
     registerSupervisor({
       supervisorId,
@@ -417,7 +417,7 @@ export async function stopRuntime(opts: StopRuntimeOptions): Promise<void> {
 
   if (record) {
     // ── BL-31: verified kill + escalation + orphan reaping ───────────────────
-    // This is the NON-active path: a fresh CLI process (each `sox stop` is its
+    // This is the NON-active path: a fresh CLI process (each `soxe stop` is its
     // own process) with no in-memory supervisor. The pre-fix code sent SIGTERM
     // and immediately set running=false — fire-and-forget, no verification, no
     // SIGKILL escalation, no way to find a detached PPID-1 orphan. We now:
@@ -559,7 +559,7 @@ export interface ReapExtensionResult {
  * OS process table against the entrypoint identity resolved from the lockfile
  * (and/or runtime.json) — even when the supervisor is gone, the process is
  * detached (PPID 1), and the runtime record has been cleaned. This is exactly
- * the failure mode in BL-31: `sox stop` could only signal a tracked pid and had
+ * the failure mode in BL-31: `soxe stop` could only signal a tracked pid and had
  * no way to find a daemon by *what it is*.
  *
  * Resolution order for the identity token:
@@ -634,7 +634,7 @@ export async function reconcileRuntime(
     if (shouldRun.has(baseId)) {
       // Extension should run.  If it was stopped (e.g. by a previous disable),
       // restart it in-process so the supervisor keeps ownership and the test's
-      // startProcess reference stays alive until `sox stop` kills it cleanly.
+      // startProcess reference stays alive until `soxe stop` kills it cleanly.
       if (handle.type === 'mcp-server') {
         const mcpHandle = handle as McpAdapterHandle;
         if (!mcpHandle.supervisor.isHealthy()) {
@@ -718,7 +718,7 @@ export function getRuntimeRecord(runtimeFilePath: string): RuntimeRecord | null 
 /**
  * @deprecated getRegistrar() reads the in-process _activeRuntimes Map and is therefore
  * only non-null in the same process that called startRuntime(). Any separate CLI
- * invocation (e.g. `sox exec`) always sees an empty Map and receives null.
+ * invocation (e.g. `soxe exec`) always sees an empty Map and receives null.
  *
  * Use the exec socket instead: read `record.execSocketPath` from runtime.json and
  * call the supervisor process via the [inv:exec-socket] Unix domain socket protocol.

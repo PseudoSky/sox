@@ -55,7 +55,7 @@ STEP 2 — SCAFFOLD BORN-CONFORMANT (do not hand-roll the layout)
 From the repo root, scaffold the extension with the generator so it is conformant by
 construction:
 
-    node bin/sox init hook <chosen-id> --content @~/dev/ai/claude-agents/tools/hooks/swarm-cost/<script>   # alias: `new`
+    node bin/soxe init hook <chosen-id> --content @~/dev/ai/claude-agents/tools/hooks/swarm-cost/<script>   # alias: `new`
     # --content @<path> pulls the hook body straight from the source (records source: provenance).
     # (Pending generator P5; until then scaffold plain, then port the body.)
 
@@ -81,15 +81,15 @@ home-relative `~/` globs as the schema specifies). Verify against the manifest s
 STEP 5 — PROVE THE FULL LIFECYCLE AGAINST REALITY (not just unit tests)
 A passing unit test is NOT acceptance. Demonstrate each stage actually works:
   1. `./node_modules/.bin/nx run <project>:build`        → builds clean.
-  2. `node bin/sox validate` (use --strict if available) → the manifest + entrypoint
+  2. `node bin/soxe validate` (use --strict if available) → the manifest + entrypoint
      reachability pass; no errors.
   3. Install it into a sandboxed scope (use a temp dir + `-s project --config=... --lockfile=...`
-     so you don't pollute real config), then `node bin/sox start ...` and confirm the hook is
-     actually loaded/active in the runtime (check `sox list` / the runtime record / the loader
+     so you don't pollute real config), then `node bin/soxe start ...` and confirm the hook is
+     actually loaded/active in the runtime (check `soxe list` / the runtime record / the loader
      output — a real RUNNING/loaded state, not a log line you wrote).
   4. Trigger the hook's event for real and observe it fires and behaves identically to the
      source swarm-cost hook.
-  5. `node bin/sox stop ...` leaves zero orphan processes.
+  5. `node bin/soxe stop ...` leaves zero orphan processes.
 Capture the actual command output for each as evidence.
 
 CONSTRAINTS

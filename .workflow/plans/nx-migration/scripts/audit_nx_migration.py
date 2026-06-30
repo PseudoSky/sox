@@ -103,7 +103,7 @@ def phase_foundation() -> None:
           "pnpm exec nx run sox-nx:build")
     check("authoring-lib.3", "All 6 active types scaffold to a manifest that validates",
           "pnpm exec nx run sox-nx:born-conformance")
-    check("authoring-lib.4", "scaffold-parity: sox init == @adhd/sox-nx:extension (byte-identical)",
+    check("authoring-lib.4", "scaffold-parity: soxe init == @adhd/sox-nx:extension (byte-identical)",
           "pnpm exec nx run sox-nx:test")
     check("authoring-lib.5", "libs/authoring scaffold core is nx-free (no @nx/devkit or @nx/* import)",
           "grep -rn '@nx/devkit\\|@nx/' libs/authoring/src", expect_empty=True)
@@ -125,7 +125,7 @@ def phase_engine() -> None:
           "python3 -c \"print('OK')\"", expect_ok=True)
 
     # ---- engine-libs ----
-    check("engine-libs.1", "Three engine libs + apps/sox build clean",
+    check("engine-libs.1", "Three engine libs + apps/soxe build clean",
           "pnpm exec nx run-many -t build --projects=install-engine,host-runtime,registry,sox")
     check("engine-libs.2", "host-runtime tests pass (fireIsolated, enable-reactivation, stop-via-supervisor carried forward)",
           "pnpm exec nx run host-runtime:test")
@@ -137,13 +137,13 @@ def phase_engine() -> None:
           "pnpm exec nx run-many -t lint --projects=install-engine,host-runtime,registry")
 
     # ---- sox-extension ----
-    check("sox-extension.1", "sox CLI builds",
+    check("sox-extension.1", "soxe CLI builds",
           "pnpm exec nx run sox:build")
     check("sox-extension.2", "sox's own extension.json validates against libs/manifest (self-hosting D1)",
           "node -e \"const {validate}=require('./libs/manifest/dist/index');const r=validate(require('./apps/sox/extension.json'));process.exit(r.ok?0:1)\"")
-    check("sox-extension.3", "sox manifest type is 'command' (D2)",
+    check("sox-extension.3", "soxe manifest type is 'command' (D2)",
           "node -e \"process.exit(require('./apps/sox/extension.json').type==='command'?0:1)\"")
-    check("sox-extension.4", "A1: sox init scaffolds a born-conformant extension that validates",
+    check("sox-extension.4", "A1: soxe init scaffolds a born-conformant extension that validates",
           "T=$(pwd)/.tmp-audit-soxext; rm -rf \"$T\"; mkdir -p \"$T\"; "
           "node dist/apps/sox/main.js init hook event-probe --out \"$T\" >/dev/null 2>&1; "
           "node -e \"const {validate}=require('./libs/manifest/dist/index');process.exit(validate(require('$(pwd)/.tmp-audit-soxext/event-probe/extension.json')).ok?0:1)\"; rc=$?; rm -rf \"$T\"; exit $rc")
@@ -255,9 +255,9 @@ def phase_final() -> None:
           # (1) $ROOT unset -> '/.tmp-dod4' on read-only fs.  Use $(pwd).
           # (2) 'e2e-hook' ends with the type name 'hook' — id-validator rejects it.
           #     Use 'e2e-lifecycle01' (valid for type:hook, tested).
-          # (3) 'sox validate $T/e2e-hook' passes a DIRECTORY; cmdValidate expects the
+          # (3) 'soxe validate $T/e2e-hook' passes a DIRECTORY; cmdValidate expects the
           #     extension.json FILE path.  Fix: '$T/e2e-lifecycle01/extension.json'.
-          # (4) 'sox start' writes the runtime record then enters a keep-alive setInterval
+          # (4) 'soxe start' writes the runtime record then enters a keep-alive setInterval
           #     loop — it never exits, so the sequential '&& list && stop' commands never
           #     run.  Fix: background start with '&', capture START_PID, sleep 2,
           #     then run list+stop, check child-process orphans via pgrep -P $START_PID
@@ -281,7 +281,7 @@ def phase_final() -> None:
     check("dod.6", "[dod.6] B4 — adding a new extension does not red-bar validate",
           # fix-guard (2 issues, check-setup bugs):
           # (1) $ROOT unset -> '/.tmp-dod6' on read-only fs.  Use $(pwd).
-          # (2) 'sox validate' (no path) looks for ./extension.json in the CWD (repo root);
+          # (2) 'soxe validate' (no path) looks for ./extension.json in the CWD (repo root);
           #     there is none at repo root -> exit 2 (file not found), not a product failure.
           #     Fix: pass the scaffolded extension.json path explicitly so validate proofs the
           #     new extension validates cleanly (B4 assertion: new extension does not red-bar).
@@ -303,7 +303,7 @@ def phase_final() -> None:
     # ===== Reference-pattern conformance (one per references.json entry) =====
     check("audit-final.ref-nx-free-authoring-core", "[ref:nx-free-authoring-core] scaffold core has no @nx import",
           "grep -rn '@nx/devkit\\|@nx/' libs/authoring/src", expect_empty=True)
-    check("audit-final.ref-scaffold-parity", "[ref:scaffold-parity] byte-identical sox init vs generator output",
+    check("audit-final.ref-scaffold-parity", "[ref:scaffold-parity] byte-identical soxe init vs generator output",
           "pnpm exec nx run sox-nx:test")
     check("audit-final.ref-nx-never-runtime-dep", "[ref:nx-never-runtime-dep] no extension/lib lists nx in dependencies",
           "node -e \"const cp=require('child_process');const out=cp.execSync('grep -rl \\\"@nx/\\\\|\\\\\\\"nx\\\\\\\"\\\" extensions libs apps packages --include=package.json 2>/dev/null || true').toString().trim();const bad=out.split('\\n').filter(Boolean).filter(f=>{const p=require('./'+f);return Object.keys(p.dependencies||{}).some(k=>k==='nx'||k.startsWith('@nx/'))});process.exit(bad.length?1:0)\"")
@@ -313,7 +313,7 @@ def phase_final() -> None:
           "grep -rEl '\\.\\./.*dist/' extensions --include=*.ts 2>/dev/null", expect_empty=True)
     check("audit-final.ref-dual-flag-form", "[ref:dual-flag-form] parser accepts both flag forms",
           "node -e \"const {parseArgs}=require('./libs/install-engine/dist/index');const a=parseArgs(['--scope','user']);const b=parseArgs(['--scope=user']);process.exit((a.scope==='user'&&b.scope==='user')?0:1)\"")
-    check("audit-final.ref-self-hosted-extension-zero", "[ref:self-hosted-extension-zero] apps/sox manifest validates as type command",
+    check("audit-final.ref-self-hosted-extension-zero", "[ref:self-hosted-extension-zero] apps/soxe manifest validates as type command",
           "node -e \"const {validate}=require('./libs/manifest/dist/index');const m=require('./apps/sox/extension.json');process.exit((m.type==='command'&&validate(m).ok)?0:1)\"")
 
     # ===== Negative checks (the old system is gone) =====

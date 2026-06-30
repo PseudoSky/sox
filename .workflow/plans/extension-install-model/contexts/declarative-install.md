@@ -35,17 +35,17 @@ After this state, real-FS install/uninstall/update/diff for content types (agent
 
 Checked by audit-install (phase gate).
 
-- [ ] **[declarative-install.1]** `sox install <agent> --host claude --scope project` places the agent FILE at `$SBX/.claude/agents/<id>.md`.
+- [ ] **[declarative-install.1]** `soxe install <agent> --host claude --scope project` places the agent FILE at `$SBX/.claude/agents/<id>.md`.
       Via guard: `bash .workflow/plans/extension-install-model/scripts/guards/declarative-install.sh`
-- [ ] **[declarative-install.2]** `sox diff <agent>` exits 0 on a clean install (no drift).
+- [ ] **[declarative-install.2]** `soxe diff <agent>` exits 0 on a clean install (no drift).
       Via guard.
-- [ ] **[declarative-install.3]** After external edit, `sox diff <agent>` stdout names the drifted path.
+- [ ] **[declarative-install.3]** After external edit, `soxe diff <agent>` stdout names the drifted path.
       Via guard.
-- [ ] **[declarative-install.4]** `sox update <agent>` refreshes the placed artifact.
+- [ ] **[declarative-install.4]** `soxe update <agent>` refreshes the placed artifact.
       Via guard.
-- [ ] **[declarative-install.5]** `sox uninstall <skill>` removes the placed files; `$SBX/.claude/skills/<id>/SKILL.md` is absent.
+- [ ] **[declarative-install.5]** `soxe uninstall <skill>` removes the placed files; `$SBX/.claude/skills/<id>/SKILL.md` is absent.
       Via guard.
-- [ ] **[declarative-install.6]** `sox uninstall <codex-skill>` removes `$SBX/.codex/skills/<id>` dir.
+- [ ] **[declarative-install.6]** `soxe uninstall <codex-skill>` removes `$SBX/.codex/skills/<id>` dir.
       Via guard.
 - [ ] **[declarative-install.7]** Ledger file written at `$SBX/.sox/ledger/<id>.json` after install.
       `test -f "$SBX/.sox/ledger/<id>.json" && echo OK` (covered by guard teardown assertions)

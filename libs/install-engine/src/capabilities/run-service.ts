@@ -1,7 +1,7 @@
 /**
  * libs/install-engine/src/capabilities/run-service.ts
  *
- * run-service capability — sox spawns and supervises a process (Role A only).
+ * run-service capability — soxe spawns and supervises a process (Role A only).
  * [def:capability], [def:role-a]
  *
  * This capability records intent in a service-manifest file at the scope root.
@@ -21,9 +21,9 @@
  * extra `.sox` subdir).
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as crypto from 'crypto';
 
 // --- Types ---
 

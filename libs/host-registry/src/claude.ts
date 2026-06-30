@@ -18,9 +18,9 @@
  *     (settings.json -> hooks entry referencing the script by absolute path).
  *   - MCP trust is a prompt (no enableAllProjectMcpServers flag to auto-write).
  *   - User MCP lives in ~/.claude.json (not settings.json).
- *   - Project .mcp.json trust is an approval prompt — sox never auto-writes a trust flag.
+ *   - Project .mcp.json trust is an approval prompt — soxe never auto-writes a trust flag.
  *
- * [inv:never-managed]: sox NEVER writes the Claude managed tier (org/enterprise policy).
+ * [inv:never-managed]: soxe NEVER writes the Claude managed tier (org/enterprise policy).
  *   MANAGED tier paths are NEVER emitted by scopePaths() or surfaces.
  *   This guard is tested explicitly in host-registry.spec.ts (never-managed assertion).
  *
@@ -80,7 +80,7 @@ function getBase(): string {
  * Root discovery directory for each scope on the Claude host.
  *
  * [inv:never-managed]: The 'managed' (org/enterprise) tier is deliberately
- * ABSENT from this map. sox has no code path that writes managed-tier paths.
+ * ABSENT from this map. soxe has no code path that writes managed-tier paths.
  * If a caller passes scope='org', scopePaths() returns an empty object — not
  * a path to the managed tier.
  */
@@ -97,7 +97,7 @@ function scopePaths(scope: HostScope): ScopePathMap {
       // Local overrides sit inside the project .claude/ dir.
       return { local: '.claude' };
     case 'org':
-      // [inv:never-managed]: sox never writes the managed tier.
+      // [inv:never-managed]: soxe never writes the managed tier.
       // Return empty — callers must not receive a path to managed-tier config.
       return {};
     default: {
@@ -242,7 +242,7 @@ function buildSurfaces(): SurfaceMap {
 
     // MCP trust: project .mcp.json servers are trust-gated via
     // ~/.claude.json -> projects[<repo>].enabledMcpjsonServers (array-merge).
-    // DEFAULT trust = prompt (sox does NOT auto-write a trust flag).
+    // DEFAULT trust = prompt (soxe does NOT auto-write a trust flag).
     // P0.5: There is no enableAllProjectMcpServers flag — trust is per-approval.
     'mcp-trust': {
       capability: 'array-merge',

@@ -29,11 +29,11 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { readInstallRegistry, resolveInstallRegistryPath, type InstallRecord } from './install-registry.js';
-import { OwnershipIndex, type OwnedEntry } from './ownership.js';
-import { dataRoot, ownershipPathFor } from './data-paths.js';
-import { Ledger } from './ledger.js';
 import { apply as configMergeApply } from './capabilities/config-merge.js';
+import { dataRoot, ownershipPathFor } from './data-paths.js';
+import { readInstallRegistry, resolveInstallRegistryPath, type InstallRecord } from './install-registry.js';
+import { Ledger } from './ledger.js';
+import { OwnershipIndex, type OwnedEntry } from './ownership.js';
 
 // ─── Host resolution (lazy require — [inv:host-registry-lazy]) ──────────────────
 
@@ -117,7 +117,7 @@ export function readGlobalServerEntry(host: string, extId: string): unknown {
  *
  * This is the tracked counterpart to a raw JSON merge. Use it ANYWHERE a user-scope
  * MCP server lands in `~/.claude.json` outside the normal `declarativeInstall` path
- * (e.g. `sox migrate-home`'s skill/MCP re-placement). A raw `mcpServers.<id> = v`
+ * (e.g. `soxe migrate-home`'s skill/MCP re-placement). A raw `mcpServers.<id> = v`
  * write leaves an UNTRACKED injection — invisible to discovery (the bug that made
  * `sync-mcp`/`upgrade --force` find nothing for a migrated server) and irreversible
  * (uninstall's ledger-driven reversal never removes a key no ledger action recorded).
@@ -180,7 +180,7 @@ export async function registerUserMcpServer(opts: {
 // ─── Project enumeration (install-registry only — scope guard) ──────────────────
 
 /**
- * The distinct set of project roots sox knows about, from the install-registry.
+ * The distinct set of project roots soxe knows about, from the install-registry.
  * ONLY project-scope records are considered ([scope-guard]: never a fs scan).
  */
 export function knownProjectRoots(): string[] {

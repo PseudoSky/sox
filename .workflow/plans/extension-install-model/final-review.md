@@ -23,7 +23,7 @@ left unchecked.
 [x] External caller analysis done — BY HAND (see Architect note). NOTE: gap-check.js --discover is
     VACUOUS for a .workflow/plans/ plan — its oracle scans src/tests/lib/app RELATIVE to the plan dir,
     which has no repo source, so Check 10 effectively no-ops. Caller mapping was hand-verified:
-    changed symbols `install` (libs/install-engine/src/install.ts; callers: apps/sox cmdInstall, bin/sox),
+    changed symbols `install` (libs/install-engine/src/install.ts; callers: apps/soxe cmdInstall, bin/sox),
     `checkDbPathPolicy`/`getPolicy`/`handleToolCall` (memory-server-local; sole external importer is
     permission-guard.spec.ts — now a declared mutate of rehome-memory-server).
 [x] Every node changing a symbol declares it in dag.json `changes` (deletes/resigns/renames) —

@@ -57,7 +57,7 @@ const isPrivate = (p) => p.alwaysPrivate || GLOBAL_PRIVATE;
 // engines: native carriers (fastembed/better-sqlite3/sqlite-vec) → >=22 (no Node-20 prebuild).
 // Packages with workspace deps on native carriers inherit the >=22 constraint.
 // alwaysPrivate: true → private regardless of --private flag (ingest only).
-// Concerns + invariants → harvested into sox routing metadata + CLAUDE.md footguns.
+// Concerns + invariants → harvested into soxe routing metadata + CLAUDE.md footguns.
 const PACKAGES = [
   // ── embedding-provider ────────────────────────────────────────────────────
   {

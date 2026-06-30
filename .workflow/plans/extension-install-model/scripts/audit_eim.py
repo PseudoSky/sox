@@ -234,8 +234,8 @@ def phase_enforcement() -> None:
     )
     check(
         "install-lifecycle.4",
-        "sox diff / sox update exist with --host/--profile/--scope/--trust",
-        "grep -nE 'diff|update' bin/sox apps/sox/src/main.ts",
+        "soxe diff / soxe update exist with --host/--profile/--scope/--trust",
+        "grep -nE 'diff|update' bin/soxe apps/sox/src/main.ts",
     )
     check(
         "install-lifecycle.5",
@@ -263,7 +263,7 @@ def phase_enforcement() -> None:
     )
     check(
         "generators.4",
-        "Born-conformant + byte-identical (sox init ⇄ nx) [ref:born-conformant-scaffold]",
+        "Born-conformant + byte-identical (soxe init ⇄ nx) [ref:born-conformant-scaffold]",
         "nx run sox-nx:test && nx run authoring:test",
     )
     check(
@@ -364,7 +364,7 @@ def phase_final() -> None:
     )
     check(
         "dod.2",
-        "[dod.2] mcp stdio (.mcp.json, --trust prompt) AND sox service; undeclared access denied (C6)",
+        "[dod.2] mcp stdio (.mcp.json, --trust prompt) AND soxe service; undeclared access denied (C6)",
         # non-vacuous: the e2e must exercise the stdio-in-.mcp.json path, not only the sox-service path
         "grep -q '.mcp.json' tools/test-e2e-lifecycle.js && "
         "nx run mcp-runtime:test && nx run host-runtime:test-e2e",
@@ -475,7 +475,7 @@ def phase_final() -> None:
     )
     check(
         "audit-final.ref-born-conformant-scaffold",
-        "[ref:born-conformant-scaffold] sox init ⇄ nx byte-identical via the single scaffolder",
+        "[ref:born-conformant-scaffold] soxe init ⇄ nx byte-identical via the single scaffolder",
         "nx run sox-nx:test && nx run authoring:test",
     )
 

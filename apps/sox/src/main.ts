@@ -1,15 +1,15 @@
 /**
- * apps/sox/src/main.ts — sox CLI (extension #0, D1/D2 self-hosting)
+ * apps/sox/src/main.ts — soxe CLI (extension #0, D1/D2 self-hosting)
  *
  * Full command surface wired to engine libs (sox-extension state, legacy P5).
  *
  * Verbs: init, validate, search, install, start, list, details, enable,
  *        disable, update, uninstall, stop, serve, exec, help
  *
- * [ref:self-hosted-extension-zero] — apps/sox ships extension.json type:command
+ * [ref:self-hosted-extension-zero] — apps/soxe ships extension.json type:command
  * [ref:dual-flag-form]             — parseArgs accepts --flag=value AND --flag value (A12)
  * [inv:nx-dev-only]                — no nx or @nx/* imports anywhere here
- * [inv:nx-free-core]               — sox init uses libs/authoring scaffold(), not the old scaffolder
+ * [inv:nx-free-core]               — soxe init uses libs/authoring scaffold(), not the old scaffolder
  */
 
 import type { PermissionsBlock, RuntimeEntry, RuntimeRecord } from '@adhd/sox-host-runtime';
@@ -17,45 +17,45 @@ import {
   compilePolicy,
   computeSupervisorId,
   dataRoot,
-  installRegistryPath,
-  logDirFor,
-  socketDir,
+  deriveOsUnitSpec,
+  detectOsSupervisor,
+  disableOsUnit,
+  enableOsUnit,
+  findCrossScopeSharers,
+  findOrphansByIdentity,
+  // Slice 2 (docs/spec/service-lifecycle.md §9): OS-supervisor control surface.
+  getOsUnitPlatform,
   getRuntimeFilePath,
   getRuntimeRecord,
   getScopePaths,
+  healSingletonDuplicates,
+  identityToken,
+  installRegistryPath,
   killAndVerify,
+  logDirFor,
   McpClient,
+  osUnitLabel,
   pidAlive as pidAliveRT,
   readGlobalRegistry,
+  realOsExec,
+  reapByIdentity,
   reapOrphansForExtension,
   reconcileRuntime,
   resolveExtensionDir,
-  startRuntime,
-  stopRuntime,
-  type DataScope,
   // Slice 1 (docs/spec/service-lifecycle.md): cross-scope singleton.
   resolveStoreResource,
-  singletonKey,
-  findCrossScopeSharers,
-  healSingletonDuplicates,
-  identityToken,
-  findOrphansByIdentity,
-  reapByIdentity,
-  type StoreResource,
-  type ScopeResource,
-  // Slice 2 (docs/spec/service-lifecycle.md §9): OS-supervisor control surface.
-  getOsUnitPlatform,
-  detectOsSupervisor,
-  osUnitLabel,
-  deriveOsUnitSpec,
   resolveUnitNodePath,
-  enableOsUnit,
-  disableOsUnit,
   restartOsUnit,
+  singletonKey,
+  socketDir,
+  startRuntime,
+  stopRuntime,
   unloadThenReap,
-  realOsExec,
-  type OsUnitPlatform,
+  type DataScope,
   type OsSupervisor,
+  type OsUnitPlatform,
+  type ScopeResource,
+  type StoreResource,
 } from '@adhd/sox-host-runtime';
 import type { DeclarativeInstallResult, InstallDescriptor, InstallRecord, OwnedEntry, Scope, UpdateCtx } from '@adhd/sox-install-engine';
 import {
@@ -66,21 +66,21 @@ import {
   findLocalExtension,
   getScopePath,
   install,
-  update as lifecycleUpdate,
   uninstall as lifecycleUninstall,
-  OwnershipIndex,
+  update as lifecycleUpdate,
   loadConfig,
   loadExtensionManifest,
   loadLockfile,
   loadRegistryIndex,
+  OwnershipIndex,
   parseArgs,
   readInstallRegistry,
+  registerUserMcpServer,
   removeInstallRecord,
   resolveFromRegistry,
-  verifyIntegrity,
-  syncUserMcpToProjects,
   reverseUserMcpFromProjects,
-  registerUserMcpServer,
+  syncUserMcpToProjects,
+  verifyIntegrity,
 } from '@adhd/sox-install-engine';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 // @adhd/sox-host-registry is also lazy-required via install-engine; import it lazily here too
@@ -104,8 +104,8 @@ async function main(): Promise<void> {
   // by SOX_ECOSYSTEM_HOME (data root) and SOX_SANDBOX_ROOT (test isolation). We do NOT
   // warn on a set SOX_HOME: the name is not exclusively ours (it collides with the
   // `sox` audio tool and may be claimed by other tooling, e.g. an unrelated project),
-  // so nagging about a variable sox no longer reads is presumptuous noise (BL-57). If a
-  // user genuinely has legacy sox data to relocate, `sox migrate-home` / `sox doctor`
+  // so nagging about a variable soxe no longer reads is presumptuous noise (BL-57). If a
+  // user genuinely has legacy soxe data to relocate, `soxe migrate-home` / `soxe doctor`
   // detect it from the default locations, independent of SOX_HOME.
   if (process.env['SOX_ECOSYSTEM_HOME'] && verb !== 'help' && verb !== undefined) {
     process.stderr.write(
@@ -354,7 +354,7 @@ Runtime:
   logs               Tail or follow extension log output (R4)
                      Flags: --id=<ext-id>  --scope=<scope>  --lines=<n>
                             --follow  --history  --json
-  migrate-home       Relocate sox data to the ADR-0004 .adhd/sox-ecosystem layout
+  migrate-home       Relocate soxe data to the ADR-0004 .adhd/sox-ecosystem layout
                      Flags: --old-home  --old-config  --old-sandbox  --new-home
                             --dry-run
 
@@ -402,7 +402,7 @@ function printVersion(): void {
 /**
  * cmdInit — A1: scaffold a born-conformant extension via libs/authoring.
  *
- * Usage: sox init <type> <id> [--out=<dir>] [--bundle=<bundle-name>]
+ * Usage: soxe init <type> <id> [--out=<dir>] [--bundle=<bundle-name>]
  *                             [--title=<str>] [--description=<str>]
  *                             [--author=<str>] [--keywords=<k1,k2>]
  *
@@ -426,7 +426,7 @@ function printVersion(): void {
 async function cmdInit(raw: string[]): Promise<void> {
   // @adhd/sox-authoring is genuinely init-only — dynamic import is appropriate here.
   // This is NOT a circular or cross-lib import; it keeps the authoring lib out of
-  // the module graph when sox is used for non-init verbs.
+  // the module graph when soxe is used for non-init verbs.
   const { scaffold, writeFileSet, validateId } = await import('@adhd/sox-authoring');
 
   const flagMap = parseArgs(raw);
@@ -602,7 +602,7 @@ async function cmdInit(raw: string[]): Promise<void> {
 
   const outDir = path.resolve(outRoot, id);
 
-  // [guard:no-overwrite-existing] — sox init must never clobber existing extensions.
+  // [guard:no-overwrite-existing] — soxe init must never clobber existing extensions.
   // If outDir already exists and --force is not set, refuse to proceed.
   // This prevents the probe harness from inadvertently rewriting real repo source files
   // when process.cwd() resolves to the repo root (e.g. due to pushd failure in shell).
@@ -647,8 +647,8 @@ async function cmdInit(raw: string[]): Promise<void> {
 /**
  * cmdValidate — validate an extension.json against libs/manifest.
  *
- * Usage: sox validate [path-to-extension.json]
- *        sox validate --help
+ * Usage: soxe validate [path-to-extension.json]
+ *        soxe validate --help
  *
  * @adhd/sox-manifest is init-only / validate-only — dynamic import keeps it lazy.
  */
@@ -847,7 +847,7 @@ function cmdSearch(flags: Record<string, string>): void {
   // R9: --all includes internal (bundle member) entries. Default: exclude them.
   const showAll = flags['all'] !== undefined || flags['all'] === '';
 
-  // The registry/index.json always lives in the repo root where sox is invoked,
+  // The registry/index.json always lives in the repo root where soxe is invoked,
   // NOT in the scope config directory. Use process.cwd(), same as cmdInstall.
   const registryRoot = process.cwd();
 
@@ -904,9 +904,9 @@ function cmdSearch(flags: Record<string, string>): void {
  *
  * Two paths:
  *   --host present → declarative single-extension placement (new path).
- *     sox install <id> --host=<h> [--scope=project] [--root=<dir>] [--profile=<p>]
+ *     soxe install <id> --host=<h> [--scope=project] [--root=<dir>] [--profile=<p>]
  *   --host absent  → config/lockfile resolver (existing path, unchanged).
- *     sox install [--scope=<s>] [--frozen-lockfile] [--update]
+ *     soxe install [--scope=<s>] [--frozen-lockfile] [--update]
  *
  * The existing host-runtime e2e (memory-server) uses the no---host path, so keeping
  * it unchanged preserves all 59 passing tests.
@@ -1147,7 +1147,7 @@ Options:
   // root (.claude/) so both always land under the same project directory.
   const workspaceRoot = require('node:path').resolve(flags['root'] ?? process.cwd()) as string;
 
-  // If a positional <id> was given (e.g. `sox install sox --scope=project`),
+  // If a positional <id> was given (e.g. `soxe install sox --scope=project`),
   // write it into the scope config before resolving — otherwise install() only
   // re-resolves what's already in extensions.json and the new id is silently ignored.
   //
@@ -1249,7 +1249,7 @@ Options:
   // ── Re-materialize service-registered extensions ───────────────────────────
   // The main install() call only writes the lockfile. If any extension is
   // registered as a service in the scope's run-service registry.json, re-copy the
-  // bundle from its source dir to the store dir so the next `sox start` picks up
+  // bundle from its source dir to the store dir so the next `soxe start` picks up
   // the updated bundle without requiring `--profile=service` or a full reinstall.
   // ADR-0004 §D2: the registry lives under the scope's data dir.
   rematerializeServiceStores(
@@ -1439,13 +1439,13 @@ async function maybePropagateUserMcp(
 /**
  * cmdBuild — A: build an extension in the current working directory.
  *
- * Usage: sox build <id>
+ * Usage: soxe build <id>
  *
  * If the extension's built entrypoint already exists (e.g. dist/index.js pre-compiled
  * by the template), this exits 0 immediately.  Otherwise it attempts `npm run build`
  * in the extension directory.
  *
- * [cli-wiring.3]: verb is wired and exits 0 after `sox init mcp-server <id>`.
+ * [cli-wiring.3]: verb is wired and exits 0 after `soxe init mcp-server <id>`.
  */
 async function cmdBuild(_flags: Record<string, string>): Promise<void> {
   const pathMod = require('node:path') as typeof import('node:path');
@@ -1518,7 +1518,7 @@ async function cmdBuild(_flags: Record<string, string>): Promise<void> {
 /**
  * cmdDiff — diff ledger vs disk for an extension.
  *
- * Usage: sox diff <id> [--host=<h>] [--scope=<s>] [--root=<dir>]
+ * Usage: soxe diff <id> [--host=<h>] [--scope=<s>] [--root=<dir>]
  *
  * Compares the ledger's recorded state against what's on disk.
  * Exits 0 if clean (no drift), exits 1 if drift detected.
@@ -1586,9 +1586,9 @@ async function cmdDiff(flags: Record<string, string>): Promise<void> {
  *
  * Two paths:
  *   --host present → declarative single-extension update via lifecycle.update().
- *     sox update <id> --host=<h> [--scope=project] [--root=<dir>]
+ *     soxe update <id> --host=<h> [--scope=project] [--root=<dir>]
  *   --host absent  → config/lockfile update (existing path).
- *     sox update [--scope=<s>]
+ *     soxe update [--scope=<s>]
  *
  * [cli-wiring.5]: verb is wired and exits 0.
  */
@@ -1790,8 +1790,8 @@ function warnIfDistSha(): void {
     if (info === null) {
       process.stderr.write(
         `[${CLI} serve] BL-65 WARNING: dist/apps/sox/build-info.json missing — ` +
-          `this dist was built before sha-stamping was added. ` +
-          `Run 'npx nx build sox' in a CLEAN worktree, not in the live checkout.\n`,
+        `this dist was built before sha-stamping was added. ` +
+        `Run 'npx nx build sox' in a CLEAN worktree, not in the live checkout.\n`,
       );
       return;
     }
@@ -1800,22 +1800,22 @@ function warnIfDistSha(): void {
     if (info.dirty) {
       warnings.push(
         `dist was built from a DIRTY tree (uncommitted WIP at sha ${info.gitSha}) — ` +
-          `the running code may differ from HEAD; any MCP session spawned by this serve ` +
-          `will load the WIP code.`,
+        `the running code may differ from HEAD; any MCP session spawned by this serve ` +
+        `will load the WIP code.`,
       );
     }
     if (headSha !== 'unknown' && info.gitSha !== 'unknown' && headSha !== info.gitSha) {
       warnings.push(
         `dist was built from sha ${info.gitSha} but HEAD is now ${headSha} — ` +
-          `stale build; run 'npx nx build sox' to refresh.`,
+        `stale build; run 'npx nx build sox' to refresh.`,
       );
     }
 
     for (const w of warnings) {
       process.stderr.write(
         `[${CLI} serve] BL-65 WARNING: ${w}\n` +
-          `  SAFE path: build in an ISOLATED WORKTREE (not the live checkout) so ` +
-          `live MCP sessions are not disrupted. See BACKLOG BL-65.\n`,
+        `  SAFE path: build in an ISOLATED WORKTREE (not the live checkout) so ` +
+        `live MCP sessions are not disrupted. See BACKLOG BL-65.\n`,
       );
     }
   } catch {
@@ -2151,8 +2151,8 @@ interface ConsumerOutcome {
  * cmdUpgrade — content-addressed upgrade tooling (ADR-0003 + BL-31).
  *
  * Two modes:
- *   sox upgrade <id> --all   — upgrade every install-registry consumer of <id>.
- *   sox upgrade --all        — upgrade EVERY consumer of EVERY id (full deploy).
+ *   soxe upgrade <id> --all   — upgrade every install-registry consumer of <id>.
+ *   soxe upgrade --all        — upgrade EVERY consumer of EVERY id (full deploy).
  *
  * For each consumer (extId × scope × root) the flow is uniform:
  *   1. verifyIntegrity(scope, id) — the ONE is-this-current check (sha256 of the
@@ -2643,7 +2643,7 @@ Options:
   }
   fsMod.writeFileSync(lockfilePath5, JSON.stringify(updatedLock, null, 2) + '\n', 'utf-8');
 
-  // Also remove from extensions.json so the next `sox install` doesn't re-add it.
+  // Also remove from extensions.json so the next `soxe install` doesn't re-add it.
   if (fsMod.existsSync(configPath5)) {
     try {
       const cfg = JSON.parse(fsMod.readFileSync(configPath5, 'utf8')) as {
@@ -2720,7 +2720,7 @@ async function cmdEnable(flags: Record<string, string>): Promise<void> {
   // 2. Send SIGHUP to the running supervisor so it reconciles.
   //    reconcileRuntime (runtime.ts) now also *starts* newly-enabled extensions,
   //    so the original supervisor keeps ownership — it is NOT killed here.
-  //    This preserves the test's startProcess reference until `sox stop` kills it
+  //    This preserves the test's startProcess reference until `soxe stop` kills it
   //    cleanly with process.exit(0), keeping exitCode === 0 (not null).
   const rtRaw3 = fsMod.existsSync(runtimeFilePath3)
     ? (() => {
@@ -3082,7 +3082,7 @@ Options:
   }
 
   // When no explicit --scope is given, scan all scopes (user, project, local) —
-  // matching the old bin/sox behaviour and allowing `sox list --root=TMP` to find
+  // matching the old bin/soxe behaviour and allowing `soxe list --root=TMP` to find
   // project-scope extensions without requiring `-s project`.
   const scopeOverride = flags['scope'];
   const root = flags['root'] ?? ROOT2;
@@ -3445,8 +3445,8 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
 
   // ── BL-31: pre-spawn dedup guard — never end up with two daemons ─────────────
   // Before starting, reap any live/orphaned instance of the extension(s) we are
-  // about to spawn. The incident was: `sox stop` left an orphaned daemon alive,
-  // then `sox start` spawned a SECOND one. By reaping by identity here, a stale
+  // about to spawn. The incident was: `soxe stop` left an orphaned daemon alive,
+  // then `soxe start` spawned a SECOND one. By reaping by identity here, a stale
   // detached instance (even PPID-1, even absent from runtime.json) is killed
   // before we spawn, so a start can never duplicate a daemon. Opt out with
   // --no-reap (e.g. to deliberately run alongside, which we never want here).
@@ -3529,7 +3529,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
   }
 
   // ── [dod.5] Service-registry path ──────────────────────────────────────────
-  // When sox install --profile service was used, services are recorded in
+  // When soxe install --profile service was used, services are recorded in
   // <root>/.sox/registry.json (written by run-service.ts), NOT in the lockfile.
   // We spawn each service as a detached background process, write the runtime
   // record, then EXIT 0 — the service keeps running independently.
@@ -3643,7 +3643,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
         child.unref();
 
         const pid = child.pid ?? null;
-        // source points to the store dir so sox exec can find extension.json there.
+        // source points to the store dir so soxe exec can find extension.json there.
         const source = `file://${svc.storePath}`;
         runtimeEntries.push({
           key: svc.id,
@@ -3661,7 +3661,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
         );
       }
 
-      // Write runtime record so sox exec can find the entries.
+      // Write runtime record so soxe exec can find the entries.
       const record: RuntimeRecord = {
         version: 1,
         scope,
@@ -3745,8 +3745,8 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
  * An mcp-server served in proxy mode (the DEFAULT, Slice 1.6) is fronted by a thin
  * stdio shim; the tool implementation lives in a persistent, detached, sox-owned
  * BACKEND that the shim auto-spawns via `ensureBackend`. That backend is NOT created
- * by `sox start`, so it appears in NO runtime.json entry — the entry-driven reap in
- * `cmdStop` never touches it and it survives `sox stop`, re-introducing the BL-31/
+ * by `soxe start`, so it appears in NO runtime.json entry — the entry-driven reap in
+ * `cmdStop` never touches it and it survives `soxe stop`, re-introducing the BL-31/
  * BL-50 orphan leak (a detached backend whose every spawning shim has exited).
  *
  * This reaper closes that hole independent of tracking or scope: it enumerates every
@@ -3836,12 +3836,12 @@ async function reapUntrackedProxyBackends(opts: {
 }
 
 /**
- * [inv:unload-then-reap] (§8.4/§8.5) for `sox stop`: before the identity reap
- * runs, UNLOAD any OS unit (launchd/systemd) sox owns for the target service(s),
+ * [inv:unload-then-reap] (§8.4/§8.5) for `soxe stop`: before the identity reap
+ * runs, UNLOAD any OS unit (launchd/systemd) soxe owns for the target service(s),
  * so the OS supervisor will NOT immediately respawn the pid the reap is about to
  * kill (the F3 resurrection loop). The unit FILE is left in place (stop is not
- * disable — the unit persists for the next start/boot); only `sox service disable`
- * / `sox uninstall` remove it. Best-effort + scope-scanning: an os-unit may exist
+ * disable — the unit persists for the next start/boot); only `soxe service disable`
+ * / `soxe uninstall` remove it. Best-effort + scope-scanning: an os-unit may exist
  * in any scope's ownership index.
  */
 function unloadOwnedOsUnitsBeforeReap(opts: {
@@ -3943,7 +3943,7 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
   if (!record) {
     // No runtime record — nothing was started via the supervisor. But an UNTRACKED
     // proxy backend (auto-spawned by a serve shim, §9.5) can still be alive with no
-    // record at all; reap it by identity so `sox stop` is a true teardown.
+    // record at all; reap it by identity so `soxe stop` is a true teardown.
     process.stdout.write(`sox: no runtime record at ${runtimeFilePath}\n`);
     // [inv:unload-then-reap]: unload any OS unit before reaping its (untracked) pid.
     unloadOwnedOsUnitsBeforeReap({ root, ...(id !== undefined ? { onlyId: id } : {}), log: (m) => process.stdout.write(`sox: ${m}\n`) });
@@ -4158,7 +4158,7 @@ function resolveOsUnitContext(
 /**
  * `soxe service <enable|disable|status|list>` — the ONLY sanctioned way to create
  * or remove an OS unit ([inv:os-unit-generated], §9.1). Hand-authoring a plist is
- * forbidden. Reconciles the unit with sox tracking ([inv:list-never-lies]) and
+ * forbidden. Reconciles the unit with soxe tracking ([inv:list-never-lies]) and
  * tears down via unload-then-reap ([inv:unload-then-reap], §8.5).
  */
 async function cmdService(argvIn: string[], flags: Record<string, string>): Promise<void> {
@@ -4418,7 +4418,7 @@ async function cmdServiceList(flags: Record<string, string>): Promise<void> {
 // ─── migrate-home (ADR-0004 §D8) ───────────────────────────────────────────────
 
 /**
- * cmdMigrateHome — relocate an existing sox data dir to the ADR-0004 layout and
+ * cmdMigrateHome — relocate an existing soxe data dir to the ADR-0004 layout and
  * re-place user-scope skills/MCP that a prior sandboxed SOX_HOME wrote under the
  * WRONG root to the REAL ~/.claude. Idempotent: a second run is a no-op.
  *
@@ -4437,7 +4437,7 @@ async function cmdServiceList(flags: Record<string, string>): Promise<void> {
  */
 async function cmdMigrateHome(flags: Record<string, string>): Promise<void> {
   if (flags['help'] !== undefined || flags['h'] !== undefined) {
-    process.stdout.write(`${CLI} migrate-home — relocate sox data to the ADR-0004 layout
+    process.stdout.write(`${CLI} migrate-home — relocate soxe data to the ADR-0004 layout
 
 Usage:
   ${CLI} migrate-home [--old-home <dir>] [--old-config <dir>] [--old-sandbox <dir>] [--new-home <dir>] [--dry-run]
@@ -4583,7 +4583,7 @@ interface HealthRecord {
   /** Versioned key as stored in the lockfile (e.g. "memory-server@0.1.0") */
   key: string;
   scope: string;
-  /** The supervisor's root directory (--root used at sox start time) */
+  /** The supervisor's root directory (--root used at soxe start time) */
   root: string;
   /** Basename of root — used in the table PROJECT column for readability */
   project: string;
@@ -4874,7 +4874,7 @@ function findMostRecentLogFile(logDir: string, extId: string): string | null {
  * cmdStatus — R7 health surface.
  *
  * Usage:
- *   sox status [--id=<extId>] [--project=<path>] [--scope=user|project|local]
+ *   soxe status [--id=<extId>] [--project=<path>] [--scope=user|project|local]
  *              [--json] [--lines=<n>]
  *
  * Default (no flags): read ~/.sox/supervisors.json, GC stale entries, probe
@@ -5133,7 +5133,7 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
  * cmdLogs — stream or tail the log file for a running extension (R4).
  *
  * Usage:
- *   sox logs --id=<extId> [--scope=<scope>] [--lines=<n>] [--follow] [--json]
+ *   soxe logs --id=<extId> [--scope=<scope>] [--lines=<n>] [--follow] [--json]
  *            [--history]
  *
  * Log file location: ~/.sox/logs/<supervisorId>/<extId>-<YYYY-MM-DD>.log
@@ -5582,14 +5582,14 @@ function printToolList(listResult: ExecListResult, scope: string): void {
  *      route through the live supervisor session (McpRegistrar.call).
  *   2. Else if runtime.json exists but no socket (service-mode detached spawn) →
  *      fall back to fresh MCP spawn with policy enforcement.
- *   3. No runtime.json → hard error: "run sox start first."
+ *   3. No runtime.json → hard error: "run soxe start first."
  *
 /**
- * sox serve <id> [--scope=<scope>] [--root=<dir>]
+ * soxe serve <id> [--scope=<scope>] [--root=<dir>]
  *
  * Launch an extension as a long-lived process with live cascade config injected.
  * Resolves the entrypoint, builds SOX_CONFIG_* env from the current cascade,
- * then replaces the sox process image via execFileSync (stdio inherited).
+ * then replaces the soxe process image via execFileSync (stdio inherited).
  *
  * This is the correct command to use as the .mcp.json "command" entry for stdio
  * MCP servers — the process stays alive reading stdin/stdout, and config is always
@@ -5671,10 +5671,9 @@ Flags:
   }
 
   if (!extDir2) {
-    // BL-59 fix: signature is findLocalExtension(root, id) — root first, id second.
     const localExt2 = findLocalExtension(root2, extId);
     if (localExt2) {
-      extDir2 = pathMod2.dirname(localExt2);
+      extDir2 = localExt2;
     }
   }
 
@@ -5840,8 +5839,8 @@ Flags:
     };
 
     process.stderr.write(
-      `[sox serve] proxy mode (DEFAULT for mcp-server): shim → backend UDS ${backendSock} ` +
-        `(singleton-key: ${key})\n`,
+      `[soxe serve] proxy mode (DEFAULT for mcp-server): shim → backend UDS ${backendSock} ` +
+      `(singleton-key: ${key})\n`,
     );
 
     const handle = runFrontShim({
@@ -5866,7 +5865,7 @@ Flags:
           stderrLogPath: backendLogPath2,
           onDiagnostic: (l) => process.stderr.write(l + '\n'),
         });
-        process.stderr.write(`[sox serve] ensure-backend: ${r.disposition} — ${r.detail}\n`);
+        process.stderr.write(`[soxe serve] ensure-backend: ${r.disposition} — ${r.detail}\n`);
       },
     });
     // The shim lives until the client closes the stdio pipe.
@@ -5909,7 +5908,7 @@ Flags:
   const lm = new LogManager({ logDir: serveLogDir, extId: `${extId}-serve` });
 
   process.stderr.write(
-    `[sox serve] stderr log: ${serveLogDir}/${extId}-serve-<date>.log\n`,
+    `[soxe serve] stderr log: ${serveLogDir}/${extId}-serve-<date>.log\n`,
   );
 
   const { spawn } = require('node:child_process') as typeof import('node:child_process');
@@ -5936,24 +5935,24 @@ Flags:
   });
 
   child.on('error', (err: Error) => {
-    process.stderr.write(`[sox serve] spawn error: ${err.message}\n`);
+    process.stderr.write(`[soxe serve] spawn error: ${err.message}\n`);
     lm.close();
     process.exit(1);
   });
 }
 
 /**
- * sox exec — call a tool on a running extension (A11).
+ * soxe exec — call a tool on a running extension (A11).
  *
  * Routing:
  *   1. If runtime.json has execSocketPath and the socket file exists →
  *      route through the live supervisor session (McpRegistrar.call).
  *   2. Else if runtime.json exists but no socket (service-mode detached spawn) →
  *      fall back to fresh MCP spawn with policy enforcement.
- *   3. No runtime.json → hard error: "run sox start first."
+ *   3. No runtime.json → hard error: "run soxe start first."
  *
  * [inv:exec-socket]: The socket is only present in supervisor mode (lockfile-based
- * start where the sox process stays alive). Service-mode starts (detached via
+ * start where the soxe process stays alive). Service-mode starts (detached via
  * registry.json) legitimately have no socket — fresh spawn is correct there.
  */
 async function cmdExec(flags: Record<string, string>): Promise<void> {
@@ -6033,7 +6032,7 @@ Examples:
     }
 
     // ── Service-mode fallback: spawn fresh MCP per entry, call tools/list ───
-    // Used when sox start ran in service mode (no supervisor / no exec socket).
+    // Used when soxe start ran in service mode (no supervisor / no exec socket).
     {
       const pathMod2 = require('node:path') as typeof import('node:path');
       const { spawn: spawnMcp } = require('node:child_process') as typeof import('node:child_process');
@@ -6092,9 +6091,9 @@ Examples:
   }
 
   // Support both positional and flag form:
-  //   sox exec <ext-id> <tool> [args-json]
-  //   sox exec --id <ext-id> --tool <tool> [--args <json>]
-  //   sox exec <tool-name>   (single positional → show schema)
+  //   soxe exec <ext-id> <tool> [args-json]
+  //   soxe exec --id <ext-id> --tool <tool> [--args <json>]
+  //   soxe exec <tool-name>   (single positional → show schema)
   const rawAfterVerb = argv.slice(1);  // argv[0] = 'exec'
   const positionals: string[] = [];
   for (let i = 0; i < rawAfterVerb.length; i++) {
@@ -6112,7 +6111,7 @@ Examples:
   const argsJson = flags['args'] ?? positionals[2] ?? '{}';
 
   // ── Single positional with no --id / --tool → schema lookup ──────────────
-  // `sox exec memory_write` — find the tool across all extensions, show schema.
+  // `soxe exec memory_write` — find the tool across all extensions, show schema.
   if (positionals.length === 1 && extIdFlag === undefined && toolFlag === undefined) {
     const queryTool = positionals[0] ?? '';
     const record0 = getRuntimeRecord(runtimeFilePath);
@@ -6361,17 +6360,17 @@ Examples:
   }
 }
 
-// ─── sox config ───────────────────────────────────────────────────────────────
+// ─── soxe config ───────────────────────────────────────────────────────────────
 
 /**
  * cmdConfig — manage per-extension install-time configuration.
  *
  * Sub-verbs:
- *   sox config get   <ext> <key>           [--scope=<scope>]
- *   sox config set   <ext> <key> <value>   [--scope=<scope>]
- *   sox config list  <ext>                 [--scope=<scope>]
- *   sox config unset <ext> <key>           [--scope=<scope>]
- *   sox config check <ext>                 [--scope=<scope>]
+ *   soxe config get   <ext> <key>           [--scope=<scope>]
+ *   soxe config set   <ext> <key> <value>   [--scope=<scope>]
+ *   soxe config list  <ext>                 [--scope=<scope>]
+ *   soxe config unset <ext> <key>           [--scope=<scope>]
+ *   soxe config check <ext>                 [--scope=<scope>]
  *
  * Config is stored in extensions.json under the "config" block keyed by ext id.
  * get/list operate on the active scope's file (pass --scope to target another).

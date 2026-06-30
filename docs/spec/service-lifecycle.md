@@ -66,7 +66,7 @@
   with the client's `tools/call` succeeding across it and the stdio pipe never closing. Gates
   recorded in §14 (Slice 1.5).
 - **1.1.0 (2026-06-25)** — Resolved all six Appendix-B `(unverified)` assumptions with decisions
-  + rationale (one, the OS-unit node-path, retains a recommended default needing a human ack).
+  - rationale (one, the OS-unit node-path, retains a recommended default needing a human ack).
   **Implemented Slice 1** (cross-scope singleton + reconcile heal) in
   `libs/host-runtime/src/singleton.ts` + the `cmdStart` service-registry guard
   (`apps/sox/src/main.ts`); this closes the live half of BL-50 (F1/F7). Added **§9.5 (M3↔M4
@@ -164,7 +164,7 @@ P1–P9 productionized the **in-supervisor** path. They do not close these four 
    extension does not survive logout/reboot, and a hand-rolled plist was trialed then reverted
    (`BACKLOG.md:182-186`). (§9.)
 
-4. **Split-brain between sox runtime.json/global-registry and the OS supervisor.** Once an OS unit
+4. **Split-brain between soxe runtime.json/global-registry and the OS supervisor.** Once an OS unit
    exists, `soxe list` reading runtime.json can disagree with launchd reality. There is no authority
    order and no reconcile pass that includes the OS supervisor. (§10.)
 
@@ -180,9 +180,9 @@ and contracted separately.
 
 | # | Model | Manifest signal | Who owns lifecycle | How liveness is known | How it is stopped |
 |---|---|---|---|---|---|
-| **M1** | **In-supervisor (tracked)** | `type: service`/`mcp-server`, started via `soxe start` lockfile path → `startRuntime` (`main.ts:3144`) | The live sox supervisor process (`ProcessSupervisor`, `supervisor.ts:93`) | In-process `_proc.exitCode === null` + `_probeHealth` (`supervisor.ts:411-449`); registry GC verifies the **supervisor's** pid/socket | `supervisor.stop()` → `-pgid` SIGTERM→SIGKILL (`supervisor.ts:165-217`) |
-| **M2** | **Detached service-mode daemon (PPID→1)** | `type: service` started via the service-registry path (`main.ts:3030-3128`): `spawnChild(..., {detached:true, stdio:'ignore'}); child.unref()` (`main.ts:3084-3092`) | **Nobody live** — the spawning sox process exits 0; the daemon reparents to PID 1 | Health socket probe (`probeUnixSocketLive`, `main.ts:3537`) + identity-token process scan (`findOrphansByIdentity`, `reaper.ts:216`) | Identity-token reap (`reapOrphansForExtension`, `runtime.ts:575`) — find by entrypoint argv token, `killAndVerify` |
-| **M3** | **stdio / on-demand mcp-server (client-spawned)** | `type: mcp-server`, `lifecycle.health.type: stdio-ping` (e.g. `memory-server/extension.json`) | The **MCP client** (Claude Code) spawns `soxe serve <id>` (`cmdServe`, `main.ts:4433`) per connection; lifetime = the stdio pipe | The client owns the pipe; sox does not track it. (No durable pid record — see BL-46.) | Client closes stdin/the pipe → process exits. sox does not stop it. |
+| **M1** | **In-supervisor (tracked)** | `type: service`/`mcp-server`, started via `soxe start` lockfile path → `startRuntime` (`main.ts:3144`) | The live soxe supervisor process (`ProcessSupervisor`, `supervisor.ts:93`) | In-process `_proc.exitCode === null` + `_probeHealth` (`supervisor.ts:411-449`); registry GC verifies the **supervisor's** pid/socket | `supervisor.stop()` → `-pgid` SIGTERM→SIGKILL (`supervisor.ts:165-217`) |
+| **M2** | **Detached service-mode daemon (PPID→1)** | `type: service` started via the service-registry path (`main.ts:3030-3128`): `spawnChild(..., {detached:true, stdio:'ignore'}); child.unref()` (`main.ts:3084-3092`) | **Nobody live** — the spawning soxe process exits 0; the daemon reparents to PID 1 | Health socket probe (`probeUnixSocketLive`, `main.ts:3537`) + identity-token process scan (`findOrphansByIdentity`, `reaper.ts:216`) | Identity-token reap (`reapOrphansForExtension`, `runtime.ts:575`) — find by entrypoint argv token, `killAndVerify` |
+| **M3** | **stdio / on-demand mcp-server (client-spawned)** | `type: mcp-server`, `lifecycle.health.type: stdio-ping` (e.g. `memory-server/extension.json`) | The **MCP client** (Claude Code) spawns `soxe serve <id>` (`cmdServe`, `main.ts:4433`) per connection; lifetime = the stdio pipe | The client owns the pipe; soxe does not track it. (No durable pid record — see BL-46.) | Client closes stdin/the pipe → process exits. soxe does not stop it. |
 | **M4** | **OS-supervised unit (launchd / systemd)** *(proposed, §9)* | `type: service` with `soxe service enable` having generated a unit | The OS supervisor (launchd `KeepAlive` / systemd `Restart`) | OS query (`launchctl print` / `systemctl --user is-active`) **plus** the health socket | `soxe service disable` (unload the unit) **then** identity reap any survivor |
 
 **Key consequences of the taxonomy:**
@@ -190,7 +190,7 @@ and contracted separately.
 - **M2 is the dangerous one.** Because no live process tracks it, every guarantee (singleton, stop,
   health) must be reconstructed from OS reality (process table + socket + ownership index). This is
   the model behind the BL-50 two-writer incident (`BACKLOG.md:166-175`).
-- **M3 is intentionally untracked by sox.** sox must **never** try to "stop" an M3 server — the
+- **M3 is intentionally untracked by sox.** soxe must **never** try to "stop" an M3 server — the
   client owns it. sox's only M3 responsibility is the singleton guard at *spawn* time (a second
   client connection must reuse, not duplicate, the writer — see §5.4) and durable stderr logging.
   **BL-46 status:** `cmdServe` now has an **opt-in** durable stderr sink (`--log` flag or
@@ -575,11 +575,11 @@ stop(scope, [id]):
 A proxy-mode mcp-server (§9.5, the Slice 1.6 default) is fronted by a thin stdio shim; the tool
 implementation runs in a persistent, detached, sox-owned **backend** the shim AUTO-SPAWNS via
 `ensureBackend` (`SOX_PROXY_BACKEND=1`). Because the backend is created by the **shim**, not by
-`sox start`, it has **no `runtime.json` entry** — the entry-driven reap in §8.5 never iterates it, so
-the detached backend would SURVIVE `sox stop` once every spawning shim has exited (the BL-31/BL-50
+`soxe start`, it has **no `runtime.json` entry** — the entry-driven reap in §8.5 never iterates it, so
+the detached backend would SURVIVE `soxe stop` once every spawning shim has exited (the BL-31/BL-50
 orphan leak, re-opened by the proxy default; resolved as **BL-64**).
 
-> **`[inv:reap-untracked-proxy-backend]`** — `sox stop` MUST reap auto-spawned proxy backends
+> **`[inv:reap-untracked-proxy-backend]`** — `soxe stop` MUST reap auto-spawned proxy backends
 > independent of runtime tracking or scope. The stop path enumerates installed mcp-servers from the
 > **lockfile** (the source of truth for "what could have a backend"), and for each one served in
 > proxy mode reaps any live process matching the backend's **entrypoint identity token** — the exact
@@ -759,7 +759,7 @@ port-based proxy or a third-party dependency.**
 - **Transport — Unix domain sockets (chosen).** No port selection problem at all (the human's concern):
   the socket path is derived from the data-root resolver (`socketDir()`, ADR-0004) keyed by
   `[def:singleton-key]`, so there is never a port clash and never a "which port did it pick" lookup. UDS
-  is already how sox does exec/health (`gc.ts probeSocket`, `supervisor.ts probeSocket`,
+  is already how soxe does exec/health (`gc.ts probeSocket`, `supervisor.ts probeSocket`,
   `probeUnixSocketLive`) — we reuse the exact pattern. Filesystem permissions (0600 + data-root
   ownership) gate access; no network exposure.
 - **Rejected alternatives:**
@@ -1131,7 +1131,7 @@ acceptance.
   ([inv:list-never-lies]); `disable` unloads-then-reaps + removes the unit + clears ownership;
   `uninstall` leaves zero unit residue; the unload-before-kill ordering is asserted; **no real
   `~/Library/LaunchAgents` write and no real `launchctl load` occurs in any test** (sandboxed unit dir
-  + fake exec; CLI integration uses `SOX_OS_UNIT_DIR` + `--dry-run`).
+  - fake exec; CLI integration uses `SOX_OS_UNIT_DIR` + `--dry-run`).
 - **Gate results (nx targets only; built before testing per BL-4):**
   - `nx build host-runtime` ✅, `nx build install-engine` ✅, `nx build sox` ✅.
   - `nx lint host-runtime` ✅, `nx lint install-engine` ✅, `nx lint sox` ✅.

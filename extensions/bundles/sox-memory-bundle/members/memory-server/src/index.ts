@@ -2471,7 +2471,10 @@ if (require.main === module) {
   // backend='auto' this records the fallback cause; for backend='real' warmupEmbed throws,
   // which we log prominently (the server keeps serving non-embed tools, but the failure is
   // unmissable). Never writes to stdout (the JSON-RPC channel).
-  void warmupEmbed().then(
+  // setImmediate defers to the next event loop tick so the MCP transport starts serving
+  // before the synchronous portion of ONNX model loading blocks the event loop.
+  setImmediate(() => {
+    void warmupEmbed().then(
     (h) => {
       if (h.on_hash_fallback) {
         process.stderr.write(
@@ -2487,6 +2490,7 @@ if (require.main === module) {
       );
     },
   );
+  });
 
   // BL-94: probe better-sqlite3 native binding at startup before accepting connections.
   // A missing binding (new Node ABI without rebuild) would otherwise fail mid-session

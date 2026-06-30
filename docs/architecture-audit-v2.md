@@ -13,7 +13,7 @@ Files read: 47. Commands executed: 42. No plan/session/status files consulted.
 
 | ID | Original finding | Prior status | Current status | Evidence |
 |---|---|---|---|---|
-| C1 | No host runtime | CRITICAL | **Partial** | `scripts/host/loader.ts`, `supervisor.ts`, `registrar.ts`, adapters exist. But none are wired to `bin/sox`; no `sox start` verb; host runtime is library-only. See §E2E. |
+| C1 | No host runtime | CRITICAL | **Partial** | `scripts/host/loader.ts`, `supervisor.ts`, `registrar.ts`, adapters exist. But none are wired to `bin/sox`; no `soxe start` verb; host runtime is library-only. See §E2E. |
 | C2 | No MCP tool registration | CRITICAL | **Partial** | `scripts/host/registrar.ts` implements `McpRegistrar` with `initialize`+`tools/list` over stdio. Tested only against a fake process (no actual spawn in tests). Not invoked from any product entrypoint. |
 | D1 | No per-package build; no build in CI | CRITICAL | **Partial** | Per-package `tsconfig.json` added to all 9 extension packages. `pnpm -r build` runs and succeeds. `dist/index.js` exists per-package. CI step "Build extension packages" added to `validate.yml`. However: (a) CI step ordering is wrong (validate-manifests runs before build, contradicting its own comment at line 63-68); (b) `pnpm typecheck` exits code 2 with 17 TS errors; CI is currently broken. |
 | A4 | Cross-package runtime import via relative path | HIGH | **Partial** | Changed from `../../../dist/memory-lib.js` (repo root) to `../../../mcp-servers/memory-server/dist/lib.js` (`memory-flush/src/index.ts` line 262, compiled output line 220). The new path resolves correctly within the monorepo (`extensions/hooks/memory-flush/dist/../../../mcp-servers/memory-server/dist/lib.js` = valid). Still a cross-package runtime dependency not mediated by npm packages — will break on npm publish of `@adhd/sox-extension-memory-flush` without `memory-server` dist present. |
@@ -29,8 +29,8 @@ Files read: 47. Commands executed: 42. No plan/session/status files consulted.
 | A8 | Registry source URLs are absolute local paths | MEDIUM | **Open** | `registry/index.json` still uses `"source": "file:///Users/nix/dev/ai/sox-ecosystem/..."` (all 11 entries). Machine-specific. |
 | F2 | Extension dependencies not enforced at install | HIGH | **Partial** | `scripts/validate-manifests.ts` lines 966-996 add `checkDependencyExistence()` that warns when a declared dependency `id` is not in the registry. Severity is hardcoded `'warn'` and NOT promoted to `error` by `--strict` (only `checkDxConformance` uses the severity toggle). `install.ts` never reads `manifest.dependencies` — confirmed zero references. Dependency enforcement is manifest-validation-only (registry existence check), not install-time (graph resolution, version satisfaction). |
 | F3 | No per-extension config schema validation | MEDIUM | **Partial** | `scripts/host/loader.ts` lines 308-331 call `validateConfigAgainstSchema()` at activation. `schemas/extension/v1.json` line 300 adds `config_schema` property. `install.ts` still does NOT call `validateConfigAgainstSchema` — gap F3 is closed only at activation time (if a host runs), not at install time. |
-| C3 | No `sox search` | MEDIUM | **Closed** | `bin/sox` `cmdSearch()` function lines 533-605 implement full-text search over `registry/index.json` by `id`, `title`, `description`, `keywords`. Works correctly (verified by `node bin/sox search memory`). |
-| C6 | No `sox update` | LOW | **Closed** | `bin/sox` `cmdUpdate()` lines 613-644 delegate to `sox install --update`. |
+| C3 | No `soxe search` | MEDIUM | **Closed** | `bin/sox` `cmdSearch()` function lines 533-605 implement full-text search over `registry/index.json` by `id`, `title`, `description`, `keywords`. Works correctly (verified by `node bin/soxe search memory`). |
+| C6 | No `soxe update` | LOW | **Closed** | `bin/sox` `cmdUpdate()` lines 613-644 delegate to `soxe install --update`. |
 | C4 | Install client resolves to source files, not built artifacts | HIGH | **Open** | `scripts/install.ts` lines 313-317 still prefer `src/index.ts` over `dist/index.js` when resolving a `file://` directory source. The lockfile still records `"source": ".../src/index.ts"` (`.extensions/extensions.lock` line 5). The loader works around this by stripping the `/src/index.ts` suffix to find the extension dir (`scripts/host/loader.ts` lines 474-481), but the lockfile artifact path remains a TypeScript source file. |
 
 ---
@@ -39,13 +39,13 @@ Files read: 47. Commands executed: 42. No plan/session/status files consulted.
 
 ### Primary path: `memory-server` (mcp-server type)
 
-**Step 1 — Discover.** `sox search memory` returns results including `memory-server`. Source URLs in `registry/index.json` are absolute developer paths (`file:///Users/nix/...`), rendering remote search non-functional. **Holds for local dev only.**
+**Step 1 — Discover.** `soxe search memory` returns results including `memory-server`. Source URLs in `registry/index.json` are absolute developer paths (`file:///Users/nix/...`), rendering remote search non-functional. **Holds for local dev only.**
 
-**Step 2 — Install.** `sox install -s project` triggers `npx tsx scripts/install.ts`. The install client reads `.extensions/extensions.json`, resolves `memory-server` from `file://` source, checksums `src/index.ts`, and writes `.extensions/extensions.lock`. The lockfile records `"source": "file:///.../src/index.ts"`. **Holds, but records a .ts artifact, not a .js artifact.**
+**Step 2 — Install.** `soxe install -s project` triggers `npx tsx scripts/install.ts`. The install client reads `.extensions/extensions.json`, resolves `memory-server` from `file://` source, checksums `src/index.ts`, and writes `.extensions/extensions.lock`. The lockfile records `"source": "file:///.../src/index.ts"`. **Holds, but records a .ts artifact, not a .js artifact.**
 
 **Step 3 — Build.** `pnpm -r build` runs `tsc` in `extensions/mcp-servers/memory-server/` using `tsconfig.json` (rootDir: src, outDir: dist, composite: true). `dist/index.js` is produced at the correct path. **Holds if build step is run explicitly. CI runs validate-manifests before build, so on a fresh clone the entrypoint-reachability gate fires before dist exists.**
 
-**Step 4 — Activation (new).** `scripts/host/loader.ts` `loadFromLockfile()` reads `.extensions/extensions.lock`, strips `/src/index.ts` suffix to find the extension dir, reads `extension.json`, resolves `dist/index.js`, calls `activateMcp()`. `scripts/host/supervisor.ts` `ProcessSupervisor.start()` spawns `node dist/index.js` via `child_process.spawn`. **Holds in isolation** — the code is correct. **But `loadFromLockfile` is never called from `bin/sox` or any product entrypoint.** There is no `sox start` or `sox host` command. The loader exists only as a library imported by tests.
+**Step 4 — Activation (new).** `scripts/host/loader.ts` `loadFromLockfile()` reads `.extensions/extensions.lock`, strips `/src/index.ts` suffix to find the extension dir, reads `extension.json`, resolves `dist/index.js`, calls `activateMcp()`. `scripts/host/supervisor.ts` `ProcessSupervisor.start()` spawns `node dist/index.js` via `child_process.spawn`. **Holds in isolation** — the code is correct. **But `loadFromLockfile` is never called from `bin/sox` or any product entrypoint.** There is no `soxe start` or `soxe host` command. The loader exists only as a library imported by tests.
 
 **Step 5 — MCP registration (new).** `scripts/host/registrar.ts` `McpRegistrar.register()` sends `initialize` + `tools/list` over the spawned process's stdio, receives tool descriptors, and exposes them via `registrations()` / `allToolNames()`. Verified: spawning `dist/index.js` manually and sending `initialize` returns `{"serverInfo":{"name":"memory-server","version":"0.1.0"}}`. `tools/list` returns 7 tools. **Holds at the code level. Not invoked from any product entrypoint.**
 
@@ -176,7 +176,7 @@ This is the only observable output of the memory subsystem's read path. `memory_
 
 **Declared: host runtime (scripts/host/loader.ts) reads lockfile and activates extensions. Actual: `loadFromLockfile` is never called from any product entrypoint (NEW-5 / C1 Partial).**
 
-The host runtime stack — loader, supervisor, registrar, adapters — is structurally present and unit-tested. Every component correctly claims to close a prior audit finding. But the entire stack is library code with no caller. `bin/sox` has no `start`, `host`, or `activate` verb. `tools/supervisor-shim.js` claims to be backed by the productized supervisor but remains in `tools/` (test scaffolding territory) and is not invoked by CI or by `sox install`. The system's advertised contract — "install → activate → agent can call tools" — remains undelivered at the activation step, exactly as it was in the v1 audit. The new code closes the design gap; the product gap is open.
+The host runtime stack — loader, supervisor, registrar, adapters — is structurally present and unit-tested. Every component correctly claims to close a prior audit finding. But the entire stack is library code with no caller. `bin/sox` has no `start`, `host`, or `activate` verb. `tools/supervisor-shim.js` claims to be backed by the productized supervisor but remains in `tools/` (test scaffolding territory) and is not invoked by CI or by `soxe install`. The system's advertised contract — "install → activate → agent can call tools" — remains undelivered at the activation step, exactly as it was in the v1 audit. The new code closes the design gap; the product gap is open.
 
 ---
 
@@ -188,7 +188,7 @@ The host runtime stack — loader, supervisor, registrar, adapters — is struct
 - `pnpm run test` → exit 0; 377 tests, 15 files
 - `pnpm typecheck` → exit 2; 17 TypeScript errors
 - `pnpm run validate-manifests -- --strict` → exit 0
-- `node bin/sox search memory` → exit 0; 5 results
+- `node bin/soxe search memory` → exit 0; 5 results
 - Live spawn of `extensions/mcp-servers/memory-server/dist/index.js` → `memory_write` succeeds; `memory_recall` fails with `SqliteError: no such column: n.t_invalid`
 - `git ls-files extensions/mcp-servers/memory-server/dist/` → no tracked files (dist is git-ignored)
 

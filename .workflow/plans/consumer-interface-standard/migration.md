@@ -55,23 +55,25 @@ tools/tests, while `pnpm -r build` compiles `src/` to a SEPARATE `dist/extension
 tree.
 **Outputs:** a short `docs/cli-build-decision.md` (or an ADR block) stating the chosen discipline
 (wire a real build for the CLI, OR keep hand-maintained mirrors) and the src↔dist sync rule; a
-`bin/` entrypoint (e.g. `bin/sox` or a `bin` field in root `package.json`) that runs and prints
+`bin/` entrypoint (e.g. `bin/soxe` or a `bin` field in root `package.json`) that runs and prints
 help/version; no new engine behavior.
 **Verification:** acceptance check exits 0.
 
 **Acceptance check (deterministic)**
+
 ```bash
 cd "$ROOT"
 test -f docs/cli-build-decision.md; rc=$?; [ $rc -eq 0 ] || exit 1
 # bin entrypoint exists, runs, exits 0 on --help and --version (capture $? directly — never pipe):
-node bin/sox --help >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
-node bin/sox --version >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe --help >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe --version >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # unknown verb is a clean non-zero (not a crash/stacktrace path):
-node bin/sox bogus-verb >/dev/null 2>&1; rc=$?; [ $rc -ne 0 ] || exit 1
+node bin/soxe bogus-verb >/dev/null 2>&1; rc=$?; [ $rc -ne 0 ] || exit 1
 # engine untouched: full test suite still green
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** an inert host CLI runs, the build discipline is decided in writing, and the 131-test engine
 is unchanged. No verb does real work yet — this de-risks the build/sync question before code accretes.
 
@@ -95,10 +97,10 @@ is unchanged. No verb does real work yet — this de-risks the build/sync questi
 >
 > Your task: (1) Investigate the two build paths above (read root `package.json` scripts, any
 > `tsconfig*.json`, and how `dist/*.js` relate to `src/`), then write `docs/cli-build-decision.md` with
-> the chosen discipline + src↔dist sync rule. (2) Add a host `bin` entrypoint at `bin/sox` (and/or a
+> the chosen discipline + src↔dist sync rule. (2) Add a host `bin` entrypoint at `bin/soxe` (and/or a
 > `bin` field in root `package.json`) that parses argv, prints help on `--help`, prints the version on
 > `--version`, and on an unknown verb prints a one-line error and exits non-zero. It must run under the
-> discipline you chose (if you chose a build, ensure `node bin/sox` works after build; if hand-mirror,
+> discipline you chose (if you chose a build, ensure `node bin/soxe` works after build; if hand-mirror,
 > keep it directly runnable). Do NOT implement any real verb yet — `install`, `list`, etc. are P1.
 >
 > Skills/tools you need: Node, pnpm, tsx, TypeScript module/build config, argv parsing.
@@ -135,22 +137,24 @@ lands later); finding §1.3, §1.6, §6.1, §6.2.
 **Verification:** acceptance check exits 0.
 
 **Acceptance check**
+
 ```bash
 cd "$ROOT"
-node bin/sox --help >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1   # P0 guard
+node bin/soxe --help >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1   # P0 guard
 # validate delegates to the proven validator and passes on the clean repo:
-node bin/sox validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # list runs and exits 0 (capture $? directly; do not pipe):
-node bin/sox list >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe list >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # details of a known extension exits 0 and names it; unknown id exits non-zero:
-node bin/sox details hello-world >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
-node bin/sox details no-such-ext >/dev/null 2>&1; rc=$?; [ $rc -ne 0 ] || exit 1
+node bin/soxe details hello-world >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe details no-such-ext >/dev/null 2>&1; rc=$?; [ $rc -ne 0 ] || exit 1
 # the scope flag is accepted on install (dry/help form must not error on the flag itself):
-node bin/sox install --help -s user >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe install --help -s user >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # engine still proven:
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** the five Tier-1 verbs work as adapters over the proven engine, the `-s user|project|local`
 vocabulary parses, and the 131 engine tests plus the new CLI tests are green.
 
@@ -158,7 +162,7 @@ vocabulary parses, and the 131 engine tests plus the new CLI tests are green.
 
 > You are a TypeScript CLI engineer in the `sox-ecosystem` monorepo (`$ROOT =
 > /Users/nix/dev/ai/sox-ecosystem`; pnpm on PATH or at
-> `/Users/nix/.nvm/versions/node/v24.11.1/bin/pnpm`). An inert `bin/sox` entrypoint and a written
+> `/Users/nix/.nvm/versions/node/v24.11.1/bin/pnpm`). An inert `bin/soxe` entrypoint and a written
 > build discipline (`docs/cli-build-decision.md`) already exist (Phase 0). You are now adding the
 > minimal-complete verb subset.
 >
@@ -173,7 +177,7 @@ vocabulary parses, and the 131 engine tests plus the new CLI tests are green.
 > path, but do NOT change `install.ts` to do it. Honor whatever build/sync discipline
 > `docs/cli-build-decision.md` recorded.
 >
-> Your task: implement five verbs on `bin/sox`, each a thin adapter: (1) `install [<id>] [-s
+> Your task: implement five verbs on `bin/soxe`, each a thin adapter: (1) `install [<id>] [-s
 > user|project|local]` — invoke the existing install engine for the chosen scope (default `user`);
 > (2) `uninstall <id> [-s …]`; (3) `list` — show installed extensions from the resolved/lock state
 > (scope+source columns may be stubbed here; rich provenance is P6); (4) `validate [<path>]` — delegate
@@ -212,15 +216,16 @@ unchanged; `details` (from P1) renders the new fields when present.
 for advisory checks); analysis §3.4; finding §3.2, §3.3, §4.1, §6.3, §6.4.
 **Outputs:** edited `schemas/extension/v1.json` with new OPTIONAL properties (and, if
 `additionalProperties:false` is retained, the new keys declared so existing manifests validate);
-`description` documented as dual human+LLM "use this when X" guidance; `bin/sox details` extended to
+`description` documented as dual human+LLM "use this when X" guidance; `bin/soxe details` extended to
 print the new fields when present; updated/added validator+schema tests proving the 11 manifests still
 validate.
 **Verification:** acceptance check exits 0.
 
 **Acceptance check**
+
 ```bash
 cd "$ROOT"
-node bin/sox validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1   # P1 guard, repo still valid
+node bin/soxe validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1   # P1 guard, repo still valid
 # the schema declares the new self-description fields (assert presence, no pipe-to-grep exit masking):
 node -e "const s=require('./schemas/extension/v1.json').properties; const need=['keywords','author','homepage','repository']; process.exit(need.every(k=>k in s)?0:1)"; rc=$?; [ $rc -eq 0 ] || exit 1
 # ALL 11 existing manifests still validate (optional-first = non-breaking):
@@ -229,6 +234,7 @@ pnpm tsx scripts/validate-manifests.ts >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || 
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** the schema now carries the self-description contract, every one of the 11 manifests still
 validates (fields are optional), and the full test suite (incl. the 44 validator tests) is green.
 
@@ -258,7 +264,7 @@ validates (fields are optional), and the full test suite (incl. the 44 validator
 > and an OPTIONAL per-component `description` where behavioral components are declared (finding §3.3 —
 > the MCP `tools/list` → `description` model). Update the JSDoc/`description` of the existing top-level
 > `description` field to state it is DUAL human + LLM invocation guidance ("use this when X"), not
-> marketing copy (finding §3.3, §6.3). (2) Extend `bin/sox details` to print the new fields when
+> marketing copy (finding §3.3, §6.3). (2) Extend `bin/soxe details` to print the new fields when
 > present (and degrade gracefully when absent). (3) Add/extend tests proving all 11 manifests still
 > validate. Do NOT add any new field to `required`. Do NOT retrofit the 11 manifests' content in this
 > phase (that is P5).
@@ -287,20 +293,21 @@ validates (fields are optional), and the full test suite (incl. the 44 validator
 **Phase goal:** `scripts/new-extension.ts` emits type-specific doc stubs (README per extension;
 SKILL.md for skills; CLAUDE.md/AGENTS.md guidance) and pre-fills the P2 self-description fields from
 prompts/flags (`--description`, `--author`, `--keywords`), so a newly scaffolded extension is
-born-conformant; a `bin/sox init`/`new` alias points at it.
+born-conformant; a `bin/soxe init`/`new` alias points at it.
 **Inputs:** P2 (green — the fields the templates reference must exist first); suggestions S3 (extend the
 existing scaffolder; pairs with S1's `init` alias; must land before the CI flip so S4 has conformant
 output to validate); finding §1.1, §5.1, §6.4.
 **Outputs:** template assets + scaffolder changes emitting README/SKILL/CLAUDE/AGENTS stubs + a
-manifest pre-filled with P2 fields; a `bin/sox init <type> <id>` (or `new`) alias wrapping
+manifest pre-filled with P2 fields; a `bin/soxe init <type> <id>` (or `new`) alias wrapping
 `new-extension.ts`; a test that scaffolds a throwaway extension and asserts the docs + fields exist and
 the result passes `validate-manifests.ts`.
 **Verification:** acceptance check exits 0.
 
 **Acceptance check**
+
 ```bash
 cd "$ROOT"
-node bin/sox validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1   # P2 guard
+node bin/soxe validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1   # P2 guard
 # scaffold a throwaway skill non-interactively into a temp area:
 TMP="$ROOT/.tmp-scaffold"; rm -rf "$TMP"
 node scripts/new-extension.ts skill scaffold-probe --description "use this when probing" --author "QA" --out "$TMP" >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
@@ -314,6 +321,7 @@ pnpm tsx scripts/validate-manifests.ts "$TMP/scaffold-probe" >/dev/null 2>&1; rc
 rm -rf "$TMP"
 exit 0
 ```
+
 **Green =** the scaffolder emits type-correct docs + a self-describing manifest that validates, so every
 future extension is conformant by default (existing 11 are fixed in P5).
 
@@ -338,7 +346,7 @@ future extension is conformant by default (existing 11 are fixed in P5).
 > extension; `SKILL.md` for skills; `CLAUDE.md`/`AGENTS.md` guidance where appropriate. (2) Pre-fill the
 > P2 self-description fields in the generated `extension.json` from interactive prompts and
 > non-interactive flags (`--description`, `--author`, `--keywords`, and support an `--out <dir>` so it
-> can scaffold into a temp directory for tests). (3) Add a `bin/sox init <type> <id>` (or `new`) alias
+> can scaffold into a temp directory for tests). (3) Add a `bin/soxe init <type> <id>` (or `new`) alias
 > that wraps `new-extension.ts` (do not duplicate its logic). (4) Add a test that scaffolds a throwaway
 > extension and asserts the docs exist, the manifest carries the fields, and it passes
 > `validate-manifests.ts`. Keep generated prose as honest stubs with section headings (P4's doc-lint
@@ -374,12 +382,13 @@ promote them to errors — but `--strict` is NOT yet wired into CI (that flip is
 (the gate that makes S2/S3 stick; roll out fail-open first, then flip after retrofit); finding §5.1–§5.3
 (error-vs-warning table), §5.2 (fail-open-in-dev / fail-closed-in-CI), §6.4.
 **Outputs:** advisory rules in `validate-manifests.ts` emitting warnings in default mode and errors
-under `--strict`; a `bin/sox validate --strict` path; tests asserting default mode exits 0 WITH
+under `--strict`; a `bin/soxe validate --strict` path; tests asserting default mode exits 0 WITH
 warnings on the (still-unretrofitted) 11, and that `--strict` exits non-zero on them; CI `validate.yml`
 unchanged for now (no `--strict` step yet).
 **Verification:** acceptance check exits 0.
 
 **Acceptance check**
+
 ```bash
 cd "$ROOT"
 # P3 guard: scaffolder still emits a conformant extension
@@ -387,15 +396,16 @@ TMP="$ROOT/.tmp-scaffold"; rm -rf "$TMP"
 node scripts/new-extension.ts skill scaffold-probe --description "use this when probing" --author "QA" --out "$TMP" >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 rm -rf "$TMP"
 # default (fail-open) validate exits 0 EVEN THOUGH the 11 are not yet retrofitted:
-node bin/sox validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 pnpm tsx scripts/validate-manifests.ts >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # --strict exits NON-ZERO now (the 11 lack descriptions/keywords/READMEs) — proves the gate has teeth:
-node bin/sox validate --strict >/dev/null 2>&1; rc=$?; [ $rc -ne 0 ] || exit 1
+node bin/soxe validate --strict >/dev/null 2>&1; rc=$?; [ $rc -ne 0 ] || exit 1
 # CI workflow does NOT yet run --strict (the flip is P6):
 node -e "const fs=require('fs');const y=fs.readFileSync('.github/workflows/validate.yml','utf8');process.exit(y.includes('--strict')?1:0)"; rc=$?; [ $rc -eq 0 ] || exit 1
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** conformance rules exist and warn (fail-open keeps the repo green), `--strict` provably has
 teeth (non-zero on the un-retrofitted 11), and CI is deliberately NOT yet fail-closed.
 
@@ -421,7 +431,7 @@ teeth (non-zero on the un-retrofitted 11), and CI is deliberately NOT yet fail-c
 > Your task: (1) Add advisory conformance rules to `validate-manifests.ts`: non-empty `description`;
 > present `keywords`; set `author`; README existence + non-placeholder content (more than just file
 > existence — reject empty/lorem stubs). (2) In DEFAULT mode these emit warnings and the process exits
-> 0 (fail-open). (3) Add a `--strict` flag (and a `bin/sox validate --strict` path) that promotes those
+> 0 (fail-open). (3) Add a `--strict` flag (and a `bin/soxe validate --strict` path) that promotes those
 > warnings to errors and exits non-zero. (4) Add tests asserting: default mode exits 0 with warnings on
 > the current 11; `--strict` exits non-zero on the current 11; a freshly scaffolded (Phase-3)
 > extension passes even `--strict`. (5) Do NOT add a `--strict` step to `.github/workflows/validate.yml`
@@ -460,17 +470,19 @@ placeholder). The 11: `hello-world`, `hello-server`, `echo-agent`, `audit-hook`,
 **Verification:** acceptance check exits 0.
 
 **Acceptance check**
+
 ```bash
 cd "$ROOT"
-node bin/sox validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1   # P4 guard (fail-open still green)
+node bin/soxe validate >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1   # P4 guard (fail-open still green)
 # THE retrofit assertion: --strict now passes across ALL 11 (it failed in P4):
-node bin/sox validate --strict >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe validate --strict >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 pnpm tsx scripts/validate-manifests.ts --strict >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 # every extension dir has a README:
 node -e "const fs=require('fs'),p=require('path');const roots=['extensions/skills/hello-world','extensions/mcp-servers/hello-server','extensions/agents/echo-agent','extensions/hooks/audit-hook','extensions/prompts/greeting-prompt','extensions/commands/status-command','extensions/mcp-servers/memory-server','extensions/agents/memory-organizer','extensions/hooks/memory-flush','extensions/commands/memory-cli','extensions/bundles/sox-memory-bundle'];process.exit(roots.every(r=>fs.existsSync(p.join(r,'README.md')))?0:1)"; rc=$?; [ $rc -eq 0 ] || exit 1
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** all 11 extensions now satisfy the strict conformance rules (`--strict` exits 0) and each has
 a real README — the prerequisite for flipping CI fail-closed in P6.
 
@@ -531,25 +543,27 @@ and `details` shows provenance, answering "which scope did this come from?".
 **Inputs:** P5 (green — all 11 pass `--strict`); suggestions S6 (flip after retrofit) + S5 (named-scope
 provenance display; `list` must always show scope+source; default-scope parity across
 install/update/uninstall to avoid the §2.3 foot-guns); finding §2.1, §2.2, §5.2, §6.2.
-**Outputs:** a `validate --strict` step added to `validate.yml`; `bin/sox list` with mandatory
-scope+source columns; `bin/sox details <id>` showing source provenance; tests for the provenance output;
+**Outputs:** a `validate --strict` step added to `validate.yml`; `bin/soxe list` with mandatory
+scope+source columns; `bin/soxe details <id>` showing source provenance; tests for the provenance output;
 CI now fail-closed on conformance.
 **Verification:** acceptance check exits 0.
 
 **Acceptance check**
+
 ```bash
 cd "$ROOT"
-node bin/sox validate --strict >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1   # P5 guard: 11 conform
+node bin/soxe validate --strict >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1   # P5 guard: 11 conform
 # CI now runs --strict (the deliberate flip):
 node -e "const fs=require('fs');const y=fs.readFileSync('.github/workflows/validate.yml','utf8');process.exit(y.includes('--strict')?0:1)"; rc=$?; [ $rc -eq 0 ] || exit 1
 # list shows scope + source columns (machine-checkable header/JSON):
-node bin/sox list --json >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
-node -e "const {execSync}=require('child_process');const out=execSync('node bin/sox list --json',{cwd:process.cwd()}).toString();const j=JSON.parse(out);process.exit((Array.isArray(j)&&(j.length===0||('scope' in j[0] && 'source' in j[0])))?0:1)"; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe list --json >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node -e "const {execSync}=require('child_process');const out=execSync('node bin/soxe list --json',{cwd:process.cwd()}).toString();const j=JSON.parse(out);process.exit((Array.isArray(j)&&(j.length===0||('scope' in j[0] && 'source' in j[0])))?0:1)"; rc=$?; [ $rc -eq 0 ] || exit 1
 # details surfaces provenance for a known extension:
-node bin/sox details hello-world >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
+node bin/soxe details hello-world >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** CI is fail-closed on conformance with all 11 green, and the four-scope model is a usable,
 debuggable surface (`list` shows scope+source; `details` shows provenance) — no silent scope shadowing.
 
@@ -570,9 +584,9 @@ debuggable surface (`list` shows scope+source; `details` shows provenance) — n
 > made all 11 conform; doing it earlier would red-bar CI. Honor `docs/cli-build-decision.md`.
 >
 > Your task: (1) Add a `validate --strict` step to `.github/workflows/validate.yml` that blocks merge
-> on any conformance error (it is now safe — all 11 pass). (2) Make `bin/sox list` ALWAYS show scope +
+> on any conformance error (it is now safe — all 11 pass). (2) Make `bin/soxe list` ALWAYS show scope +
 > source per entry (human columns AND a `--json` form whose objects carry `scope` and `source` keys).
-> (3) Make `bin/sox details <id>` show source provenance (which scope/source the extension resolved
+> (3) Make `bin/soxe details <id>` show source provenance (which scope/source the extension resolved
 > from). (4) Confirm `install`/`uninstall` (and `update` if present) share the same default-scope logic
 > (finding §2.3). (5) Add tests for the provenance output. Derive scope/source from the engine's
 > resolved/cascade state — do NOT fork the cascade.
@@ -580,7 +594,7 @@ debuggable surface (`list` shows scope+source; `details` shows provenance) — n
 > Skills/tools you need: Node, TypeScript, the engine's cascade/resolution APIs (`install.ts`,
 > `cascade.ts`), GitHub Actions YAML, JSON output, vitest.
 > Files to read first: `.github/workflows/validate.yml`, `scripts/install.ts` (`getScopePath`, cascade
-> resolution), `scripts/cascade.ts`, `bin/sox` (P1 `list`/`details`), `suggestions.md` S5/S6, the
+> resolution), `scripts/cascade.ts`, `bin/soxe` (P1 `list`/`details`), `suggestions.md` S5/S6, the
 > finding §2.1/§2.2/§2.3/§5.2/§6.2.
 > Success criteria: the Phase 6 acceptance check exits 0.
 > Hard constraints: `list` MUST always surface scope + source (no silent shadowing). The CI `--strict`
@@ -616,6 +630,7 @@ engine bug is found, a written defect note (see hard constraints).
 **Verification:** acceptance check exits 0.
 
 **Acceptance check**
+
 ```bash
 cd "$ROOT"
 # the four new test areas must exist and pass (names illustrative; assert files + green run):
@@ -626,6 +641,7 @@ pnpm -s test >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || exit 1
 node -e "const fs=require('fs');const t=fs.readFileSync('scripts/install-multiscope.test.ts','utf8');process.exit(/4.?scope|org.*user.*project.*local/i.test(t)?0:1)"; rc=$?; [ $rc -eq 0 ] || exit 1
 exit 0
 ```
+
 **Green =** the four previously-unfalsified behaviors are now under real multi-scope integration tests
 and the full suite passes — the scope model the CLI exposes is proven, not just claimed.
 
@@ -693,7 +709,7 @@ and the full suite passes — the scope model the CLI exposes is proven, not jus
   `state: executing`. Each phase prompt's completion step encodes this conditional. No phase other than
   the genuine last finisher may set `complete`.
 - **File ownership (no file written by two phases):** P0 owns `bin/` skeleton + `docs/cli-build-decision.md`;
-  P1–P6 own `bin/sox` verb handlers (additively); P2 owns `schemas/extension/v1.json` (optional fields
+  P1–P6 own `bin/soxe` verb handlers (additively); P2 owns `schemas/extension/v1.json` (optional fields
   only); P3 owns `scripts/new-extension.ts` + doc templates; P4 owns the validator's advisory rules; P5
   owns the 11 extensions' docs+metadata; P6 owns `.github/workflows/validate.yml` (`--strict` step) +
   `list`/`details` provenance; P7 owns the new multi-scope test files + any `docs/engine-defects-found.md`.
@@ -720,7 +736,7 @@ and the full suite passes — the scope model the CLI exposes is proven, not jus
 - **2026-06-08** — Initial plan. 8 phases (P0–P7). Honors the optimizer's sequencing: S1 (host CLI)
   first (P0 build-decision + P1 Tier-1 verbs + scope vocab); S2 schema fields optional-first (P2) before
   S3 scaffolder docs (P3); doc-lint as warnings (P4) → retrofit all 11 (P5) → flip `--strict` fail-closed
-  + scope provenance UX (P6); S6 4-scope/collision test track (P7) independent/parallel. Every phase
+  - scope provenance UX (P6); S6 4-scope/collision test track (P7) independent/parallel. Every phase
   carries a deterministic acceptance check (exit-code only, no pipes on tested exits), a Green= line, a
   standalone executor prompt, and the mandatory status-update step. Canonical ROI set to
   `qualitative-only`.

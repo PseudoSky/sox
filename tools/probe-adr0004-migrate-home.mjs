@@ -3,7 +3,7 @@
  * tools/probe-adr0004-migrate-home.mjs — ADR-0004 §D8 migrate-home fixture proof.
  *
  * Builds an OLD-layout fixture (legacy data root + a sandboxed .claude tree), runs the
- * real `sox migrate-home` CLI against it, and asserts:
+ * real `soxe migrate-home` CLI against it, and asserts:
  *   - install-registry.json, supervisors.json, ext/ stores land in the NEW data root;
  *   - user-scope skills + ~/.claude.json MCP entries are RE-PLACED into the real ~/.claude;
  *   - a second run is a no-op (idempotent).

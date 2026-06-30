@@ -10,33 +10,33 @@ probe_init
 
 # --- 1. claude agent — project scope -----------------------------------------
 ID="test-agent"
-sox init agent "$ID"
+soxe init agent "$ID"
 assert_exit0 "init agent"
-sox install "$ID" --host claude --scope project
+soxe install "$ID" --host claude --scope project
 assert_exit0 "install agent claude project"
 assert_file "$SBX/.claude/agents/${ID}.md"
 
 # --- 2. claude skill — user scope --------------------------------------------
 ID="test-skill"
-sox init skill "$ID"
+soxe init skill "$ID"
 assert_exit0 "init skill"
-sox install "$ID" --host claude --scope user
+soxe install "$ID" --host claude --scope user
 assert_exit0 "install skill claude user"
 assert_file "$SBX/.claude/skills/${ID}/SKILL.md"
 
 # --- 3. claude command — local scope -----------------------------------------
 ID="test-command"
-sox init command "$ID"
+soxe init command "$ID"
 assert_exit0 "init command"
-sox install "$ID" --host claude --scope local
+soxe install "$ID" --host claude --scope local
 assert_exit0 "install command claude local"
 assert_file "$SBX/.claude/commands/${ID}.md"
 
 # --- 4. codex skill — project scope ------------------------------------------
 ID="test-codex-skill"
-sox init skill "$ID"
+soxe init skill "$ID"
 assert_exit0 "init codex skill"
-sox install "$ID" --host codex --scope project
+soxe install "$ID" --host codex --scope project
 assert_exit0 "install skill codex project"
 assert_dir "$SBX/.codex/skills/${ID}"
 

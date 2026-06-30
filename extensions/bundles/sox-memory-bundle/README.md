@@ -45,7 +45,7 @@ memory-cli (command)
 ## Usage
 
 ```bash
-sox install sox-memory-bundle
+soxe install sox-memory-bundle
 ```
 
 After installation, initialise a scope store:

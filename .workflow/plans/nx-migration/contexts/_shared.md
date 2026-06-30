@@ -42,9 +42,9 @@ Contracts every state must preserve throughout the migration.
   it appears only under root `devDependencies`, never under any extension's or
   lib's `dependencies`. Verified by `[ref:nx-never-runtime-dep]`.
 - **[inv:nx-free-core]** — `libs/authoring`'s `scaffold(opts) → FileSet` core
-  imports **no** `@nx/devkit` or `@nx/*` package, so `sox init` works without nx
+  imports **no** `@nx/devkit` or `@nx/*` package, so `soxe init` works without nx
   installed. Verified by `[ref:nx-free-authoring-core]`.
-- **[inv:scaffold-parity]** — `sox init <type> <id>` and
+- **[inv:scaffold-parity]** — `soxe init <type> <id>` and
   `@adhd/sox-nx:extension <type> <id>` emit **byte-identical** output from the same
   `scaffold()` core. Verified by `[ref:scaffold-parity]`.
 - **[inv:fix-carry-forward]** — after `checkpoint-branch`, all work happens on
@@ -92,11 +92,11 @@ each once.
 
 - **[ref:nx-free-authoring-core]** — anchor `libs/authoring/src/index.ts:scaffold`.
   Rule: `libs/authoring/src/**/*.ts` contains zero imports of `@nx/devkit` or any
-  `@nx/*` package. The scaffold core is pure TypeScript so `sox init` runs without
+  `@nx/*` package. The scaffold core is pure TypeScript so `soxe init` runs without
   nx. Audit: `[audit-final.ref-nx-free-authoring-core]`.
 - **[ref:scaffold-parity]** — anchor
   `packages/sox-nx/src/generators/extension/extension.spec.ts`. Rule: a passing
-  test asserts `scaffold()` (the `sox init` path) and `@adhd/sox-nx:extension` produce
+  test asserts `scaffold()` (the `soxe init` path) and `@adhd/sox-nx:extension` produce
   byte-identical FileSet output for identical inputs. Audit:
   `[audit-final.ref-scaffold-parity]`.
 - **[ref:nx-never-runtime-dep]** — anchor `package.json`. Rule: no extension or

@@ -4,7 +4,7 @@
 
 ## Overview
 
-A declarative how-to skill teaching agents to use the sox graph-memory system via the
+A declarative how-to skill teaching agents to use the soxe graph-memory system via the
 `memory_*` MCP tools (served by `memory-server`, a sibling member of `sox-memory-bundle`):
 recall prior knowledge before researching, write durable findings, and edit them in place.
 The full how-to lives in [`SKILL.md`](./SKILL.md); the per-tool schemas live in
@@ -24,7 +24,7 @@ Install target resolved from host-registry at install time.
 ## Usage
 
 ```bash
-sox install memory-usage
+soxe install memory-usage
 ```
 
 ## License

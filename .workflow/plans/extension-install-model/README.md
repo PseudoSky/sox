@@ -1,7 +1,7 @@
 <!-- markdownlint-disable MD013 MD033 -->
 # Extension Install & Reinjection Model — Implementation Plan
 
-> **Goal:** Make sox a working cross-scope package-manager/reinjector — declarative *and* code
+> **Goal:** Make soxe a working cross-scope package-manager/reinjector — declarative *and* code
 > extensions install/update/diff/uninstall across scopes into the right host surfaces (claude +
 > codex), via a capability engine + provenance ledger + host registry + an MCP wrapper — and ship a
 > dogfooded ingestion skill that lets an agent ingest any source on a one-line instruction.
@@ -59,7 +59,7 @@ python script) — never a bare `nx`/`tsc`.
   `update`s in place; `uninstall` removes it — reality-verified on the real FS for **claude
   (project + user)** and **codex**.
 + `[dod.2]` **MCP install modes** — an `mcp-server` installs as **stdio in `.mcp.json`** (materialize
-  + config-merge, `--trust prompt`) AND as a **sox service** (`run-service`), selected by `--profile`;
+  + config-merge, `--trust prompt`) AND as a **soxe service** (`run-service`), selected by `--profile`;
   both reality-verified, and an undeclared access is **denied** (C6 holds via `@adhd/sox-mcp-runtime`).
 + `[dod.3]` **Capabilities complete** — each of `file-drop`, `config-merge (json|toml)`,
   `array-merge`, `bin-link`, `run-service`, `materialize` implements **apply / reverse / update(diff)
@@ -73,7 +73,7 @@ python script) — never a bare `nx`/`tsc`.
   re-homed onto `@adhd/sox-mcp-runtime` (hand-rolled MCP loop + vendored `compilePolicyFromEnv` gone, grep
   empty); the vestigial `agent` `lifecycle` is **deprecated in the validator** (schema rejects it for
   `agent`).
-+ `[dod.7]` **Generators** — `sox init <type>` exposes the Appendix-A options (`--content @path`/
++ `[dod.7]` **Generators** — `soxe init <type>` exposes the Appendix-A options (`--content @path`/
   `--from`, `--inject`, `--profile`/`--mode`, `--surface`, `--host`), emits the hybrid descriptor,
   born-conformant; `--content @source` fills the body.
 + `[dod.8]` **No regression** — `nx run-many build,lint,test` green; C6 enforcement + its e2e intact;
@@ -87,7 +87,7 @@ python script) — never a bare `nx`/`tsc`.
   (positive + negative + live + conformance) **+ founder approval**. Partial ≠ done.
 + `[dod.12]` **Rollback** — any capability that cannot cleanly reverse via the ledger aborts; a
   half-applied install must be fully reversible.
-+ `[dod.13]` **Ingestion skill replaces `docs/ingestion/`** — one dogfooded sox skill (itself a
++ `[dod.13]` **Ingestion skill replaces `docs/ingestion/`** — one dogfooded soxe skill (itself a
   `type: skill` extension) encodes initialize → generalize+author → validate → publish → install →
   enable → remove-old, **delegating per-type/per-operation references**. An agent told "ingest
   `<source>` into sox" loads it and runs the full flow with no bespoke prompts. Reality check:
@@ -119,14 +119,14 @@ python script) — never a bare `nx`/`tsc`.
 (Full definitions in `contexts/_shared.md` as `[inv:*]`.)
 
 + **[inv:boundary]** Role B (reinjection) ends at *"right bytes at the host's discovery path for the
-  right scope"* — execution is the host's; sox never asserts the host ran the content.
+  right scope"* — execution is the host's; soxe never asserts the host ran the content.
 + **[inv:ledger-reversible]** Every shared-file write (`config-merge`/`array-merge`) is recorded in
-  the per-scope ledger and reversible to the exact key/value; uninstall never touches non-sox entries.
+  the per-scope ledger and reversible to the exact key/value; uninstall never touches non-soxe entries.
 + **[inv:host-agnostic-type]** The TYPE is host-agnostic; capability+target are host-specific, resolved
   from the registry. The same type maps to different capabilities per host (agent: file-drop on
   claude, config-merge on codex).
 + **[inv:format-aware-merge]** `config-merge` handles JSON *and* TOML; no json-only assumption.
-+ **[inv:never-managed]** sox never writes the managed tier (claude) or project-forbidden keys (codex).
++ **[inv:never-managed]** soxe never writes the managed tier (claude) or project-forbidden keys (codex).
 + **[inv:c6-holds]** `@adhd/sox-mcp-runtime` enforces declared permissions from policy-env in every spawn
   path (claude-stdio + sox-service); no unenforced path is introduced.
 + **[inv:no-regress]** `nx run-many build,lint,test`, the C6 e2e, and `memory-*` behavior stay green.

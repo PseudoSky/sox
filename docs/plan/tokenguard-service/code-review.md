@@ -23,11 +23,11 @@ Both are recorded as amendments. No assertion was weakened to pass; the fixes ar
 - **`tokenguard-core`** — pure engine, no IO beyond optional map persist. Bijective round-trip / zero-leak / SSE-reassembly invariants covered by 63 tests incl. labeled `[neg-ctrl]` controls. One intra-package dynamic `require()` (circular-dep break, `mapper`→`tokenize`); contained, not a cross-package reach-in. No WOP vocabulary (negative gate green). **OK.**
 - **`tokenguard`** (service) — proxy enforces the wire guarantee (verified live: `vulntarget.internal` → `<HOST_1>`, exact reversal); config flows only via `SOX_CONFIG_*`; C6 sink guard reads `SOX_POLICY_*`. The `ERR_HTTP_HEADERS_SENT` response-ordering bug was found by the guard and fixed (single `writeHead(status, headers)` with recomputed content-length). Self-contained bundle, no native deps. **OK.**
 - **`manifest`** — `service` type + `transports` added across all enumeration sites (VALID_TYPES ×2, unions, the 3 inline JSON-schema enums, `processTypes`); `validate()` generalized; 150 tests pass incl. mcp-server non-regression. **OK.**
-- **`authoring`** — `serviceTemplate` born-conformant; scaffold dispatch + `sox init service --transport`; mcp-server template emits `transports:['stdio']`. **OK.**
+- **`authoring`** — `serviceTemplate` born-conformant; scaffold dispatch + `soxe init service --transport`; mcp-server template emits `transports:['stdio']`. **OK.**
 - **`host-runtime`** — `http-get` probe (port.txt-aware, race-fixed), loader `service` dispatch case; SIGTERM→SIGKILL stop verified zero-orphan. mcp-server `activateMcp` path intact. **OK.**
 - **`install-engine`** — unified `run-service` routing for service + mcp-server (single registry preserved); `SOX_CONFIG_*` env injection; `typeDirs += services` (lib + live `scripts/install.ts` parity). **OK.**
 - **`host-registry`** — `service` surface, no literal host paths ([ref:host-keyed-target]). **OK.**
-- **`apps/sox`** — `init service` + `--transport`; CLI logic in `main.ts` (bin/sox shim untouched). **OK.**
+- **`apps/sox`** — `init service` + `--transport`; CLI logic in `main.ts` (bin/soxe shim untouched). **OK.**
 
 ## Invariant / reference spot-checks
 

@@ -8,7 +8,7 @@
 
 | Slug | Name | Phase | One-line goal |
 |---|---|---|---|
-| `service-type` | SERVICE_PRIMITIVE | framework | `type: "service"` is declarable with a `transports` block; `sox init service` scaffolds it born-conformant |
+| `service-type` | SERVICE_PRIMITIVE | framework | `type: "service"` is declarable with a `transports` block; `soxe init service` scaffolds it born-conformant |
 | `http-transport` | HTTP_TRANSPORT | framework | http transport routes through the unified service model; `http-get` health probe + clean stop on a port-holder |
 | `mcp-as-service` | MCP_AS_SERVICE | framework | `mcp-server` folded onto the unified model as `service[transport=stdio]`; memory-server non-regresses |
 | `audit-framework` | FRAMEWORK_AUDIT | **Audit** | Verify the service primitive, http transport, and stdio non-regression |
@@ -17,7 +17,7 @@
 | `audit-core` | CORE_AUDIT | **Audit** | Verify the engine invariants + no red-team vocabulary in the lib |
 | `tg-service` | TOKENGUARD_SERVICE | service | tokenguard `service` extension: http proxy on the engine, provider adapters, standardized config, live map |
 | `tg-cli` | TOKENGUARD_CLI | service | simple CLI to seed + inspect the live map; running proxy reflects CLI seeds without restart |
-| `audit-service` | SERVICE_AUDIT | **Audit** | Verify real sox lifecycle + live round-trip + CLI live-seed |
+| `audit-service` | SERVICE_AUDIT | **Audit** | Verify real soxe lifecycle + live round-trip + CLI live-seed |
 | `decouple-generalize` | DECOUPLE | final | zero WOP coupling (negative checks) + generic config-driven docs |
 | `code-review` | CODE_REVIEW | final | orchestrator code review of every touched project; reviewer gate |
 | `audit-final` | FINAL_AUDIT | **Audit** | Every `[dod.N]` + `[ref:]` proven; live demo produces the four founder-facing artifacts |
@@ -43,7 +43,7 @@ Two parallel tracks (framework, core) over disjoint files converge at `tg-servic
 
 | From (slug) | Guard | Unlocks |
 |---|---|---|
-| `service-type` | `python3 …/scripts/guard_service_type.py` — `sox init service` scaffolds + builds + validates | `http-transport` |
+| `service-type` | `python3 …/scripts/guard_service_type.py` — `soxe init service` scaffolds + builds + validates | `http-transport` |
 | `http-transport` | `python3 …/scripts/guard_http_transport.py` — http install routes + `http-get` health + clean stop | `mcp-as-service` |
 | `mcp-as-service` | `python3 …/scripts/guard_mcp_as_service.py` — memory-server full lifecycle + C6 green | `audit-framework` |
 | `audit-framework` | `python3 …/scripts/audit_tokenguard.py --phase framework` | `tg-service` |

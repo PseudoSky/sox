@@ -39,19 +39,19 @@ After this state, the full supervised lifecycle CLI works end to end: `install�
 
 Checked by audit-final (terminal gate).
 
-- [ ] **[lifecycle.1]** `sox install → start → list` shows `RUNNING` for the installed service.
+- [ ] **[lifecycle.1]** `soxe install → start → list` shows `RUNNING` for the installed service.
       Via guard: `bash .workflow/plans/extension-install-model/scripts/guards/lifecycle.sh`
-- [ ] **[lifecycle.2]** `sox details <id>` shows `pid` and `scope` in output.
+- [ ] **[lifecycle.2]** `soxe details <id>` shows `pid` and `scope` in output.
       Via guard.
-- [ ] **[lifecycle.3]** `sox exec <id> memory_recall '{}'` returns tool output (service running).
+- [ ] **[lifecycle.3]** `soxe exec <id> memory_recall '{}'` returns tool output (service running).
       Via guard.
-- [ ] **[lifecycle.4]** `sox disable <id>` stops the service; subsequent `list` no longer shows `RUNNING`.
+- [ ] **[lifecycle.4]** `soxe disable <id>` stops the service; subsequent `list` no longer shows `RUNNING`.
       Via guard.
-- [ ] **[lifecycle.5]** `sox enable <id>` restarts the service; `list` shows `RUNNING` again.
+- [ ] **[lifecycle.5]** `soxe enable <id>` restarts the service; `list` shows `RUNNING` again.
       Via guard.
-- [ ] **[lifecycle.6]** `sox stop` leaves zero orphan pids after the full suite.
+- [ ] **[lifecycle.6]** `soxe stop` leaves zero orphan pids after the full suite.
       Via guard (probe_done also catches any orphan via sandbox cleanup).
-- [ ] **[lifecycle.7]** `sox uninstall <id>` removes the registry entry.
+- [ ] **[lifecycle.7]** `soxe uninstall <id>` removes the registry entry.
       Via guard.
 
 ---
@@ -89,5 +89,5 @@ mutates:    ["apps/sox/src/main.ts",
 ## Notes for executor
 
 - The `stop` command must handle the case where no services are running (empty registry) gracefully — exit 0, no error.
-- Orphan detection: after `sox stop`, check that none of the pids from `details` are still alive via `kill -0 <pid>`. The guard verifies this by checking `list` shows no `RUNNING` entries after stop.
-- `uninstall` for a service must also call `sox stop <id>` first to avoid orphan pids — or refuse if still running. Coordinate the decision with the enforcement state (which runs later).
+- Orphan detection: after `soxe stop`, check that none of the pids from `details` are still alive via `kill -0 <pid>`. The guard verifies this by checking `list` shows no `RUNNING` entries after stop.
+- `uninstall` for a service must also call `soxe stop <id>` first to avoid orphan pids — or refuse if still running. Coordinate the decision with the enforcement state (which runs later).

@@ -63,13 +63,13 @@ Classify: *does it alter the dependency graph, target-state invariants, or final
 Two consumers walk through this change; the headline outcome is the operator's.
 
 - **The operator / red-teamer** — a person running an LLM agent who needs the model provider to never see real target identifiers, while their own tools and logs keep operating on the real values. They interact only through the `sox` command line and by pointing their client's base-URL environment variable at the proxy.
-- **The extension author** — an engineer who needs to ship a long-running networked background service (one that holds a port, is health-checked, and is stopped cleanly) as a first-class sox extension, scaffolded the same way every other extension is.
+- **The extension author** — an engineer who needs to ship a long-running networked background service (one that holds a port, is health-checked, and is stopped cleanly) as a first-class soxe extension, scaffolded the same way every other extension is.
 
 ---
 
 ## Value delta
 
-- **Before:** sox can only supervise stdio servers; there is no first-class, transport-parameterized way to ship a port-holding network service. Pseudonymizing model traffic requires the Python TokenGuard, which is welded to the red-team workspace layout (a rules-of-engagement file, engagement directories, an offensive test harness) and to one model provider.
+- **Before:** soxe can only supervise stdio servers; there is no first-class, transport-parameterized way to ship a port-holding network service. Pseudonymizing model traffic requires the Python TokenGuard, which is welded to the red-team workspace layout (a rules-of-engagement file, engagement directories, an offensive test harness) and to one model provider.
 - **After:** an author scaffolds a born-conformant `service` extension in one command; an operator installs, starts, health-checks, and stops a generalized TypeScript pseudonymizing proxy through the `sox` command line. Pointing the client base-URL variable at it makes real identifiers leave as placeholders and come back restored — exactly — for any model provider, in any repository, with zero red-team coupling, and with the running proxy keeping a live, operator-seedable token map.
 
 ---

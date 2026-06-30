@@ -2,7 +2,7 @@
  * libs/host-runtime/src/registry.ts — global supervisor registry (R1 / P4).
  *
  * Manages ~/.sox/supervisors.json, which tracks every live supervisor on the
- * machine. Used by `sox list --all` and `sox stop` (daemon mode) to locate
+ * machine. Used by `soxe list --all` and `soxe stop` (daemon mode) to locate
  * supervisors without requiring a terminal reference.
  *
  * File location: $userDataRoot/supervisors.json (ADR-0004 §D7; default

@@ -22,11 +22,11 @@ These two findings together mean the end-to-end chain from "user wants it" to "a
 
 The framing asks: trace one extension from "a user wants it" to "it runs and the agent can call it." I trace `memory-server`, the primary MCP server in the memory subsystem.
 
-**Step 1 — Discover.** `registry/index.json` contains a `memory-server` entry with a description, keywords, and a `file://` source path. The `sox details memory-server` command reads this file and prints it. Discovery is present-and-working for local lookups. There is no search verb: `bin/sox` line 612 stubs `'search'` as "not yet implemented (coming in a later phase)."
+**Step 1 — Discover.** `registry/index.json` contains a `memory-server` entry with a description, keywords, and a `file://` source path. The `soxe details memory-server` command reads this file and prints it. Discovery is present-and-working for local lookups. There is no search verb: `bin/sox` line 612 stubs `'search'` as "not yet implemented (coming in a later phase)."
 
-**Step 2 — Install.** `sox install -s project` spawns `npx tsx scripts/install.ts --scope=project` (bin/sox line 265). The install client reads `.extensions/extensions.json`, sees `{ id: "sox-memory-bundle", version: "^0.1.0" }`, expands the bundle to four members, fetches each from `file://...` paths, checksums them, and writes `.extensions/extensions.lock`. This works. The lockfile at `.extensions/extensions.lock` confirms the run produced one entry (`memory-server@0.1.0`).
+**Step 2 — Install.** `soxe install -s project` spawns `npx tsx scripts/install.ts --scope=project` (bin/soxe line 265). The install client reads `.extensions/extensions.json`, sees `{ id: "sox-memory-bundle", version: "^0.1.0" }`, expands the bundle to four members, fetches each from `file://...` paths, checksums them, and writes `.extensions/extensions.lock`. This works. The lockfile at `.extensions/extensions.lock` confirms the run produced one entry (`memory-server@0.1.0`).
 
-**BREAK — Step 3 — Activation.** Nothing reads the lockfile after it is written and launches any process. There is no host loader. `scripts/install.ts` returns a `ResolvedSet` to its caller but has no callee that acts on it at runtime. `tools/supervisor-shim.js` provides a shim that can spawn `dist/memoryd.js`, but it is explicitly labelled "TEST SCAFFOLDING, not a product workaround" (supervisor-shim.js line 9). It is never invoked by `sox install` or any CI step. The `lifecycle.background:true` flag on the `memory-server` manifest (`extensions/mcp-servers/memory-server/extension.json` line 15) documents a host contract that has no implementor.
+**BREAK — Step 3 — Activation.** Nothing reads the lockfile after it is written and launches any process. There is no host loader. `scripts/install.ts` returns a `ResolvedSet` to its caller but has no callee that acts on it at runtime. `tools/supervisor-shim.js` provides a shim that can spawn `dist/memoryd.js`, but it is explicitly labelled "TEST SCAFFOLDING, not a product workaround" (supervisor-shim.js line 9). It is never invoked by `soxe install` or any CI step. The `lifecycle.background:true` flag on the `memory-server` manifest (`extensions/mcp-servers/memory-server/extension.json` line 15) documents a host contract that has no implementor.
 
 **BREAK — Step 4 — Build.** Even if a host loader existed and tried to execute `dist/index.js` relative to the package root at `extensions/mcp-servers/memory-server/dist/index.js`, that file does not exist. The package declares `"scripts": { "build": "tsc" }` (memory-server/package.json line 8) but no per-package `tsconfig.json` exists under that directory. The root `tsconfig.json` compiles everything into `dist/` at the repo root (outDir: "dist", tsconfig.base.json line 26), producing `dist/extensions/mcp-servers/memory-server/src/index.js` — a structurally different path from what `entrypoint: "dist/index.js"` resolves to at install time. CI runs `pnpm typecheck` (tsc --noEmit) but never `pnpm -r build`.
 
@@ -88,7 +88,7 @@ All three schemas use `"$id": "https://your-registry/schemas/..."` (`schemas/ext
 
 The framing's Layer 1 maps "Activation (launch, supervise, register tools)" to "host runtime: loader → process supervisor (lifecycle) → MCP registrar." None of this exists as product code. What exists is:
 
-- `tools/supervisor-shim.js` — 230-line test scaffolding that can spawn `dist/memoryd.js` and probe the Unix socket health endpoint. Explicitly "not a product workaround" (line 9). Not invoked by `sox install`, not invoked by any CI step.
+- `tools/supervisor-shim.js` — 230-line test scaffolding that can spawn `dist/memoryd.js` and probe the Unix socket health endpoint. Explicitly "not a product workaround" (line 9). Not invoked by `soxe install`, not invoked by any CI step.
 - `tools/host-event-shim.js` — 80-line test scaffolding that stubs the `proposePromotion` API. Same status.
 - `scripts/hook-loader.ts` — A HookLoader class that can register and fire hooks in-process. This is framework code but has no integration point: no code loads installed extensions from the lockfile and calls `loader.register()` on them at host startup.
 
@@ -104,7 +104,7 @@ The `hello-server` demonstrates the same pattern: a correct MCP stdio server (`e
 
 ### Gap C3 — No search / catalog command (MEDIUM)
 
-`sox search` is stubbed as "not yet implemented" (bin/sox line 612–613). The registry `index.json` has `description`, `keywords`, and `tags` fields that could power text search, but the operator has no way to discover extensions beyond reading the JSON directly or knowing the exact `id` to pass to `sox details`.
+`soxe search` is stubbed as "not yet implemented" (bin/soxe line 612–613). The registry `index.json` has `description`, `keywords`, and `tags` fields that could power text search, but the operator has no way to discover extensions beyond reading the JSON directly or knowing the exact `id` to pass to `soxe details`.
 
 ### Gap C4 — The install client resolves to source files, not built artifacts (HIGH)
 
@@ -116,11 +116,11 @@ The lockfile at `.extensions/extensions.lock` confirms this: `"source": "file://
 
 ### Gap C5 — Uninstall does not clean up the lockfile (LOW)
 
-`sox uninstall` removes the extension entry from `extensions.json` (bin/sox lines 316–326) but explicitly does not touch the lockfile: "Does NOT touch the lockfile (stale lock entries are harmless until next install run)." This is defensible for simple cases but becomes a problem if a host reads the lockfile directly to determine what to load (which a host would naturally do), because the uninstalled extension remains present in the lockfile until the next `install` run is executed.
+`soxe uninstall` removes the extension entry from `extensions.json` (bin/soxe lines 316–326) but explicitly does not touch the lockfile: "Does NOT touch the lockfile (stale lock entries are harmless until next install run)." This is defensible for simple cases but becomes a problem if a host reads the lockfile directly to determine what to load (which a host would naturally do), because the uninstalled extension remains present in the lockfile until the next `install` run is executed.
 
 ### Gap C6 — No upgrade path (LOW)
 
-`sox update` is stubbed as "not yet implemented" (bin/sox line 609). The install client supports an `--update` mode that re-fetches and re-pins, but it is not wired to any user-facing command.
+`soxe update` is stubbed as "not yet implemented" (bin/soxe line 609). The install client supports an `--update` mode that re-fetches and re-pins, but it is not wired to any user-facing command.
 
 ---
 
@@ -164,7 +164,7 @@ Every manifest declares `compatibility.host: ">=1.0.0 <2.0.0"`, but nothing read
 
 ### Gap A8 — Registry source URLs are absolute local paths (MEDIUM)
 
-All entries in `registry/index.json` use `"source": "file:///Users/nix/dev/ai/sox-ecosystem/..."` with the developer's absolute filesystem path. This is machine-specific. Any operator on a different machine who clones the repo and runs `sox install` will receive a source URL that does not exist on their filesystem. The `build-index.ts` logic does generate these paths from the local filesystem at build time (build-index.ts lines 112–128), which is correct behavior for local development, but the committed `registry/index.json` contains a hardcoded developer path. A published registry should contain CDN or npm URLs for all entries.
+All entries in `registry/index.json` use `"source": "file:///Users/nix/dev/ai/sox-ecosystem/..."` with the developer's absolute filesystem path. This is machine-specific. Any operator on a different machine who clones the repo and runs `soxe install` will receive a source URL that does not exist on their filesystem. The `build-index.ts` logic does generate these paths from the local filesystem at build time (build-index.ts lines 112–128), which is correct behavior for local development, but the committed `registry/index.json` contains a hardcoded developer path. A published registry should contain CDN or npm URLs for all entries.
 
 ---
 
@@ -203,9 +203,9 @@ The MCP server reads from stdin with no authentication, no request signing, and 
 | Registry index builder | Present and working | `build-index.ts` runs, registry/index.json generated |
 | Scaffolder | Present and working | `new-extension.ts`, scaffolder.test.ts passes |
 | Changeset release pipeline | Present-but-untested in production | No live npm publish performed; VERIFICATION.md line 110 |
-| sox CLI (Tier-1 verbs) | Present and working | bin/sox tested by cli-adapter.test.ts |
-| sox search | Absent | Stubbed, bin/sox line 612 |
-| sox update / enable / disable | Absent | Stubbed, bin/sox lines 609–615 |
+| soxe CLI (Tier-1 verbs) | Present and working | bin/soxe tested by cli-adapter.test.ts |
+| soxe search | Absent | Stubbed, bin/soxe line 612 |
+| soxe update / enable / disable | Absent | Stubbed, bin/soxe lines 609–615 |
 | Per-package build (dist/) | Present-but-broken | Package build scripts exist, no per-package tsconfig, no build in CI |
 | Hook loader (HookLoader class) | Present-but-broken | DEFECT-1 abort-on-throw; engine-defects-found.md |
 | Host process supervisor | Absent (test scaffolding only) | supervisor-shim.js line 9 |
@@ -244,7 +244,7 @@ Change `lifecycle.health.endpoint` from `"~/.memory/memoryd.sock"` to a document
 **7. Add a build step to CI that produces per-package dist artifacts and validates entrypoint reachability**
 After `pnpm -r build`, add a step that for each extension with an `entrypoint` field, verifies the resolved path exists. This catches path mismatches before release.
 
-**8. Implement sox search**
+**8. Implement soxe search**
 Implement full-text search over `registry/index.json` using keywords, tags, and description fields. This is the minimum viable discovery path for operators who do not know extension IDs in advance.
 
 **9. Replace the hash-based embedding with a real embedding model**

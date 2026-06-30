@@ -160,25 +160,40 @@ No separate state.json exists.
       "id": "<milestone-slug>.<n>",
       "milestone": "<slug>",
       "depends_on": ["<op-id>"],
-      // Execution mode.
-      // tool-call: dispatcher runs deterministically — no model call. Used for
-      //   guards, file system ops, dag mutations, and scaffold commands.
-      // generative: model call required. shape defines the content spec,
-      //   prompt assembly rule, ki estimation formula, and verification contract.
+      // Execution mode — which executor the orchestrator routes this to.
+      //
+      // automated:   runs in-process in the orchestrator itself. No model call,
+      //              no MCP call. For shell commands (guard verification),
+      //              milestone injection (dag.inject), and barrier polling
+      //              (dag.wait). provider: "local", turns: [], ki_estimate: 0.
+      //
+      // tool-call:   dispatcher routes to an external executor — an MCP server
+      //              tool. No model call. For dag mutations (milestone_add,
+      //              pending_clear), file system ops, and scaffold commands.
+      //
+      // generative:  model call required via agent-mcp. shape defines the
+      //              content spec, prompt assembly rule, ki estimation formula,
+      //              and verification contract.
       //
       // tool-call on code kinds (function|interface|type|...) is RESERVED/FUTURE:
       //   the AST executor does not yet exist. All code kinds are generative today.
-      //   When an AST executor is registered, type flips tool-call without
+      //   When an AST executor is registered, type flips to tool-call without
       //   re-authoring shape — the shape is executor-agnostic by design.
-      "type": "tool-call | generative",
+      "type": "automated | tool-call | generative",
 
       // Semantic label for what this operation does.
-      // Generative: create | delete | move | rename | modify-signature |
-      //   modify-body | add-export | remove-export
-      // Tool-call: guard | exec | dag.add-milestone | dag.set-field |
-      //   dag.clear-pending | dag.append-dispatch-log | fs.move | fs.delete |
-      //   fs.scaffold
-      "action": "create | delete | move | rename | modify-signature | modify-body | add-export | remove-export | guard | exec | dag.add-milestone | dag.set-field | dag.clear-pending | dag.append-dispatch-log | fs.move | fs.delete | fs.scaffold",
+      // automated actions:
+      //   guard  — shell command that proves milestone completion (exit 0 = pass)
+      //   exec   — arbitrary shell command (non-guard)
+      //   dag.inject — create a new milestone from template (orchestrator-authored)
+      //   dag.wait  — poll a condition (dep threshold, wave threshold) with timeout
+      // generative actions:
+      //   create | delete | move | rename | modify-signature | modify-body |
+      //   add-export | remove-export
+      // tool-call actions:
+      //   dag.add-milestone | dag.set-field | dag.clear-pending |
+      //   dag.append-dispatch-log | fs.move | fs.delete | fs.scaffold
+      "action": "create | delete | move | rename | modify-signature | modify-body | add-export | remove-export | guard | exec | dag.add-milestone | dag.set-field | dag.clear-pending | dag.append-dispatch-log | dag.inject | dag.wait | fs.move | fs.delete | fs.scaffold",
 
       "file": "<file-path | null>",
       "symbol": "<exported-symbol | null>",
@@ -581,11 +596,16 @@ Generation sources:
   //   id:         "<slug>.guard"
   //   milestone:  "<slug>"
   //   depends_on: [<all other op ids in the milestone>]
+  //   type:       "automated"
   //   action:     "guard"
   //   guard:      <milestone.guard command>
   //   (all other fields: null)
   //
   // The synthesized guard op is the sole source of milestone completion truth.
+  // It is type: "automated" — the orchestrator runs it in-process, records
+  // the exit code + output in dispatch_log, and marks the milestone complete
+  // on exit 0. No model call, no MCP call. provider: "local", turns: [].
+  //
   // It has no shape, no blast_radius, no conflict block — only state fields.
 
   "operations": [
@@ -597,10 +617,10 @@ Generation sources:
       "milestone": "<slug>",
       // dag
       "depends_on": ["<op-id>"],
+      // dag — see DECISIONS.md D-18 for type routing
+      "type": "automated | tool-call | generative",
       // dag
-      "type": "tool-call | generative",
-      // dag
-      "action": "create | delete | move | rename | modify-signature | modify-body | add-export | remove-export | guard | exec | dag.add-milestone | dag.set-field | dag.clear-pending | dag.append-dispatch-log | fs.move | fs.delete | fs.scaffold",
+      "action": "create | delete | move | rename | modify-signature | modify-body | add-export | remove-export | guard | exec | dag.add-milestone | dag.set-field | dag.clear-pending | dag.append-dispatch-log | dag.inject | dag.wait | fs.move | fs.delete | fs.scaffold",
       // dag — null for synthesized guard ops and tool-call ops with no file target
       "file": "<file-path | null>",
       // dag

@@ -13,7 +13,7 @@ import, [inv:nx-free-core], `[ref:nx-free-authoring-core]`) with templates for t
 6 active types ([def:active-types]; `prompt` parked). `@adhd/sox-nx` in
 `packages/sox-nx/` provides thin `@adhd/sox-nx:extension`/`:library` generators that
 call `scaffold()` and apply the FileSet to the nx Tree. A **parity test**
-([inv:scaffold-parity], `[ref:scaffold-parity]`) asserts `sox init` and the
+([inv:scaffold-parity], `[ref:scaffold-parity]`) asserts `soxe init` and the
 generator emit byte-identical output. A born-conformance gate scaffolds one
 extension per type, builds it, and validates it against `libs/manifest`. Per D4,
 the 6 demo extensions are deleted — generated output is the fixture.
@@ -46,7 +46,7 @@ the 6 demo extensions are deleted — generated output is the fixture.
 - [ ] **[authoring-lib.2]** `nx run sox-nx:build` clean.
 - [ ] **[authoring-lib.3]** All 6 active types scaffold to a manifest that
       validates (`nx run sox-nx:born-conformance`).
-- [ ] **[authoring-lib.4]** Parity test green: `sox init` == `@adhd/sox-nx:extension`
+- [ ] **[authoring-lib.4]** Parity test green: `soxe init` == `@adhd/sox-nx:extension`
       (`nx run sox-nx:test`).
 - [ ] **[authoring-lib.5]** `libs/authoring/src` has zero `@nx/devkit`/`@nx/*` import.
 - [ ] **[authoring-lib.6]** The 6 demo extensions are deleted (no longer on disk).
@@ -100,7 +100,7 @@ The six `extensions/.../<demo>` entries are listed in `mutates` because this sta
 
 ## Notes for executor
 
-- `libs/authoring` MUST have zero `@nx/devkit` imports — `sox init` runs without nx.
+- `libs/authoring` MUST have zero `@nx/devkit` imports — `soxe init` runs without nx.
 - The parity test is MANDATORY — if it fails the two paths drifted; fix before exiting.
 - `prompt` gets NO generator or template.
 - Delete the 6 demos — do NOT keep them as reference extensions.

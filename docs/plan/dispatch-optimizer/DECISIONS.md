@@ -273,6 +273,154 @@ stores `remote_task_id`. No other files or config needed.
 
 ---
 
+## D-18 — Third operation type: `automated` (locally-run orchestrator actions)
+
+**Decision:** `type` gains a third discriminant: `"automated"`. These operations
+run in-process in the orchestrator — no MCP tool call, no model call. They are
+the orchestrator's own machinery made visible as first-class operations.
+
+**Type routing:**
+
+| `type` | Execution location | Token cost | Examples |
+|---|---|---|---|
+| `generative` | Agent via LLM (agent-mcp `task`) | Model call tokens | Code creation, doc writing, structured output |
+| `tool-call` | External MCP server (dispatcher routes to a named tool) | 0 (no model call) | `dag.milestone_add`, `dag.pending_clear`, gitnexus queries via `@adhd/dispatch-tools` |
+| `automated` | Orchestrator process itself | 0 | Shell command execution, dag injection, polling barriers |
+
+**`automated` actions:**
+
+| Action | Authored by | When | What the orchestrator does |
+|---|---|---|---|
+| `exec` | Plan-builder | Planning time (guard commands) | Spawn shell command, capture exit code + output, record in dispatch_log. Guard commands are `type: "automated" action: "exec"`. |
+| `dag.inject` | Orchestrator | Runtime (guard failure or replan trigger) | Create a new milestone from a template, set `triggered_by` to the current dispatch UUID, wire `depends_on` edges. The injected milestone's ops are themselves `type: "generative"` or `type: "tool-call"` — `automated` is only the injection act. |
+| `dag.wait` | Plan-builder | Planning time (explicit barrier) | Poll a condition (N deps complete, wave threshold, wall-clock timeout) with configurable timeout. Blocks the orchestrator's cycle until satisfied. |
+
+**Not `automated` (orchestrator loop internals):**
+These happen between dispatches and are not operation types — they're the
+orchestrator's implicit machinery: `snapshot()`, `optimize()`, `validate()`,
+`dispatch_log_append`. They are always the same sequence and never vary per plan.
+Making them operations would be ceremony without benefit.
+
+**Effect on D-03:** D-03 defined two types (`tool-call` and `generative`).
+D-18 adds `automated` as a third. The structured/unstructured distinction remains
+a property of `shape`, not a top-level type discriminant (per D-03 rationale).
+
+**Effect on D-12:** Guard-only milestones (`agent == null`, no authored ops)
+now have an explicit synthesized operation: `{ type: "automated", action: "exec",
+command: milestone.guard }`. The orchestrator no longer treats guards as a special
+path — it just routes `automated` operations.
+
+**Effect on D-13:** D-13 says dag-mutation actions are `tool-call` operations.
+`dag.inject` is `type: "automated"` because it runs in-process — the orchestrator
+mutates the dag it owns. The MCP tools (`@adhd/dispatch-tools`) handle
+agent-triggered mutations (`milestone_add`, `pending_clear`, etc.) which remain
+`type: "tool-call"` — external tool calls routed to the MCP server.
+
+### Dispatch records for `automated` operations
+
+Every automated operation produces a `dispatch_log` entry. The entry fields
+differ by action:
+
+**`exec` (shell command):**
+```jsonc
+{
+  "id": "<dispatch-uuid>",
+  "kind": "execution",
+  "provider": "local",
+  "model": null,
+  "agent": null,
+  "effort": null,
+  "started_at": "<ISO>",
+  "completed_at": "<ISO>",
+  "operations": ["<milestone>.guard"],
+  "turns": [],
+  "results": [
+    {
+      "op_id": "<milestone>.guard",
+      "status": "complete",         // command ran to completion
+      "guard_result": "pass",       // exit code 0 → pass; non-zero → fail
+      "guard_output": "<stdout+stderr, 8 KB cap>",
+      "guard_ran_at": "<ISO>"
+    }
+  ],
+  "notes": [
+    { "level": "info", "text": "guard command: npx nx build dispatch-spec" }
+  ]
+}
+```
+`kind: "execution"` (the dispatch is execution-phase work), `provider: "local"`
+(no external API), `turns: []` (no model call). The `guard_result` captures what
+was previously the special `kind: "guard"` path.
+
+**`dag.inject` (milestone creation by orchestrator):**
+```jsonc
+{
+  "id": "<dispatch-uuid>",
+  "kind": "execution",
+  "provider": "local",
+  "model": null,
+  "agent": null,
+  "effort": null,
+  "started_at": "<ISO>",
+  "completed_at": "<ISO>",
+  "operations": ["<triggering-milestone>.inject.0"],
+  "turns": [],
+  "results": [
+    {
+      "op_id": "<triggering-milestone>.inject.0",
+      "status": "complete",
+      "guard_result": null,
+      "guard_output": null,
+      "guard_ran_at": null
+    }
+  ],
+  "notes": [
+    { "level": "info", "text": "injected milestone review-embed-interface (triggered_by: d-007)" }
+  ]
+}
+```
+The injected milestone's `triggered_by` field references this dispatch's `id`.
+The injected milestone's own operations are `generative` or `tool-call` — they
+fire in a subsequent dispatch cycle.
+
+**`dag.wait` (barrier):**
+```jsonc
+{
+  "id": "<dispatch-uuid>",
+  "kind": "execution",
+  "provider": "local",
+  "model": null,
+  "agent": null,
+  "effort": null,
+  "started_at": "<ISO when wait began>",
+  "completed_at": "<ISO when condition met | null if timeout>",
+  "operations": ["<milestone>.wait.0"],
+  "turns": [],
+  "results": [
+    {
+      "op_id": "<milestone>.wait.0",
+      "status": "complete",                 // condition met
+      "guard_result": null,
+      "guard_output": null,
+      "guard_ran_at": null
+    }
+    // or on timeout:
+    // { "op_id": "...", "status": "failed", "guard_result": null, ... }
+  ],
+  "notes": [
+    { "level": "info", "text": "waited 23.4s for 3 deps to reach complete (3/3 satisfied)" }
+  ]
+}
+```
+
+**Effect on `kind` enum:** The existing `guard`, `replan`, and `correction`
+dispatch kinds are superseded by `type: "automated"` operations within
+`kind: "execution"` dispatches. The `kind` field now describes the *phase* of
+the plan (planning vs execution) rather than the execution mechanism. The
+mechanism is `operation.type`.
+
+---
+
 ## Open / deferred
 
 - **AST executor registration mechanism**: how the system knows a `tool-call`

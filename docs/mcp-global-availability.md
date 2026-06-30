@@ -29,7 +29,7 @@ prompt and ensure the server is always available without per-project trust cerem
 This is `[dod.2]` in the install engine — the denial that prevents stdio from accidentally landing
 in `.mcp.json`. Sox enforces it at install time.
 
-## What `sox install sox-memory-bundle --scope=user` actually does
+## What `soxe install sox-memory-bundle --scope=user` actually does
 
 For the `memory-server` member (type `mcp-server`, transport `stdio`):
 
@@ -86,11 +86,11 @@ server even if the ownership index has not yet recorded its global config-key.
 
 ## Tracked & reversible injection
 
-Every `~/.claude.json` / `.mcp.json` entry sox writes is recorded in the **ownership index**
+Every `~/.claude.json` / `.mcp.json` entry soxe writes is recorded in the **ownership index**
 (`<data-root>/ownership.json`) plus the reversal **ledger** (`<data-root>/ledger.json`). This is
 what makes `uninstall` remove **exactly** the sox-owned `mcpServers.<id>` key (global + every
 propagated project) while leaving foreign servers byte-clean. Any path that writes a server entry
-**outside** the normal install path (e.g. `sox migrate-home`'s re-placement) routes through the
+**outside** the normal install path (e.g. `soxe migrate-home`'s re-placement) routes through the
 same tracked primitive (`registerUserMcpServer`) — a raw JSON merge would be an untracked,
 irreversible injection (the bug fixed 2026-06-23).
 
@@ -108,12 +108,13 @@ the worktree `.mcp.json` directly.
 
 ## The `sox` audio-tool collision bug (BL-mcp-cmd)
 
-Before this fix (2026-06-23), when `sox install ... --scope=user` ran without `SOX_CLI_BIN` set,
+Before this fix (2026-06-23), when `soxe install ... --scope=user` ran without `SOX_CLI_BIN` set,
 the install engine fell back to `'sox'` as the command. On macOS, `sox` resolves to the Homebrew
 audio processing tool, not the extension CLI. Every MCP server entry written to `~/.claude.json`
-via sox install would point at the wrong binary and fail silently on spawn.
+via soxe install would point at the wrong binary and fail silently on spawn.
 
 **Fixed in:** `libs/install-engine/src/install.ts` — fallback order is now:
+
 1. `SOX_CLI_BIN` (explicit override)
 2. `process.argv[1]` (the actual running CLI binary path)
 3. `'soxe'` (requires soxe on PATH; last resort)

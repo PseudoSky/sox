@@ -69,7 +69,7 @@ system prompt and tool surface.
 
 | Action | Owning system | Exists as a framework contract? |
 |---|---|---|
-| O1 Discover | Registry + discovery command | Registry record: **yes** — `registry/index.json` projects `type`, `description`, `keywords`. Discovery command (`sox search`): **Absent** — `bin/sox` stubs it as "not yet implemented." No agent-specific discovery metadata (delegation conditions, input/output contract) is projected. |
+| O1 Discover | Registry + discovery command | Registry record: **yes** — `registry/index.json` projects `type`, `description`, `keywords`. Discovery command (`soxe search`): **Absent** — `bin/sox` stubs it as "not yet implemented." No agent-specific discovery metadata (delegation conditions, input/output contract) is projected. |
 | O2 Install | Install client + CLI + cascade + lockfile | **Defined.** |
 | O3 Configure | Config cascade + capability gate + env resolution | Cascade + capability gate: **Defined.** Per-extension config schema: **Absent.** |
 | O4 Activation | Host runtime: loader → entrypoint resolution → agent process or module | **Absent** — no host runtime exists. The `lifecycle` block is permitted for `agent` type (`schemas/extension/v1.json` line 200; `validate-manifests.ts` line 349) and its shape is schema-governed, but nothing honors it at runtime. `tools/supervisor-shim.js` is labelled "TEST SCAFFOLDING, not a product workaround" (line 9) and only covers `memory-server`, not any agent extension. |

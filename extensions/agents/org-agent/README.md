@@ -28,7 +28,7 @@
 ## Usage
 
 ```bash
-sox install org-agent
+soxe install org-agent
 ```
 
 ## Configuration

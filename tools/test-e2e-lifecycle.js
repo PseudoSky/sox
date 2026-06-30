@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * tools/test-e2e-lifecycle.js — End-to-end sox lifecycle test.
+ * tools/test-e2e-lifecycle.js — End-to-end soxe lifecycle test.
  *
  * Tests the COMPLETE install→start→use→disable→uninstall→stop lifecycle
  * using a throwaway temp directory. Never touches ~/.sox, ~/.memory, or .tmp-* dirs.
@@ -18,12 +18,12 @@
  * Cleanup: temp dir always removed (even on failure) via process.on('exit').
  */
 
-import { spawnSync, execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as net from 'node:net';
-import * as path from 'node:path';
-import * as os from 'node:os';
 import { createRequire } from 'node:module';
+import * as net from 'node:net';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const SOX_BIN = path.join(ROOT, 'bin', 'soxe');
@@ -93,11 +93,11 @@ function ppidOfEarly(pid) {
  *   (1) the pre-test baseline (servers already running at import — unrelated), and
  *   (2) BL-63 attribution: any candidate whose parent is a LIVE, non-init process.
  *       Every backend THIS test legitimately spawns is either (a) a tracked
- *       supervisor child that `sox stop` kills, or (b) a PPID-1 orphan we create to
+ *       supervisor child that `soxe stop` kills, or (b) a PPID-1 orphan we create to
  *       test the reaper. After a stop, a genuine leak from THIS test is therefore
  *       always orphaned (PPID 1) or has a dead parent. A backend whose parent is
  *       STILL ALIVE belongs to something else still managing it — most commonly the
- *       operator's own `sox serve memory-server` session, whose shim re-ensures its
+ *       operator's own `soxe serve memory-server` session, whose shim re-ensures its
  *       backend DURING the ~minute run (post-dating the baseline). Counting that as
  *       a leak was the BL-63 false positive; excluding live-parented candidates
  *       removes it WITHOUT masking a real test leak (which is never live-parented
@@ -395,7 +395,7 @@ async function waitForRunning(extId, timeoutMs = 15000) {
 // ─── Main test ────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('=== sox e2e lifecycle test ===');
+  console.log('=== soxe e2e lifecycle test ===');
   console.log(`TMP_DIR: ${TMP_DIR}`);
   console.log('');
 
@@ -542,7 +542,7 @@ async function main() {
   console.log('\nStep 3: Use memory_write + memory_recall through activated runtime');
 
   const writeArgs = JSON.stringify({
-    content: 'The sox lifecycle test wrote this memory entry successfully.',
+    content: 'The soxe lifecycle test wrote this memory entry successfully.',
     db_path: DB_PATH,
     importance: 8,
   });
@@ -580,7 +580,7 @@ async function main() {
 
   // Now recall
   const recallArgs = JSON.stringify({
-    query: 'sox lifecycle test memory entry',
+    query: 'soxe lifecycle test memory entry',
     db_path: DB_PATH,
     limit: 5,
   });
@@ -611,7 +611,7 @@ async function main() {
       const foundIt = results.some(
         (/** @type {any} */ r) =>
           typeof r.content === 'string' &&
-          r.content.includes('sox lifecycle test')
+          r.content.includes('soxe lifecycle test')
       );
       assert(foundIt, 'memory_recall result contains the written content');
     } catch (e) {
@@ -988,22 +988,22 @@ async function main() {
 
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Step 7d: §9.5 — `sox stop` REAPS the AUTO-SPAWNED PROXY BACKEND.
+  // Step 7d: §9.5 — `soxe stop` REAPS the AUTO-SPAWNED PROXY BACKEND.
   //
   // The regression this guards: an mcp-server served in proxy mode (the DEFAULT,
   // Slice 1.6) is fronted by a thin stdio shim; the real tool implementation runs
   // in a persistent, detached, sox-owned BACKEND the shim AUTO-SPAWNS (ensureBackend,
-  // SOX_PROXY_BACKEND=1). That backend is created by the SHIM, not by `sox start`,
+  // SOX_PROXY_BACKEND=1). That backend is created by the SHIM, not by `soxe start`,
   // so it is in NO runtime.json entry — the entry-driven reap never touches it and
-  // it survives `sox stop`, re-introducing the BL-31/BL-50 orphan leak.
+  // it survives `soxe stop`, re-introducing the BL-31/BL-50 orphan leak.
   //
   // We spawn the REAL backend as a TRUE orphan (PPID 1, like a shim that has exited)
   // with a UNIQUE marker in its argv, install memory-server in the lockfile (proxy
-  // mode), then run `sox stop -s project` and assert the backend is REAPED. The
+  // mode), then run `soxe stop -s project` and assert the backend is REAPED. The
   // marker scopes the assertion to THIS test's backend so a concurrent operator
   // serve session is never mis-counted (BL-63).
   // ═══════════════════════════════════════════════════════════════════════════
-  console.log('\nStep 7d: §9.5 sox stop reaps the auto-spawned (untracked) proxy backend');
+  console.log('\nStep 7d: §9.5 soxe stop reaps the auto-spawned (untracked) proxy backend');
 
   const BACKEND_MARKER = `sox-e2e-proxy-backend-${process.pid}`;
   const BACKEND_SOCK = path.join(TMP_DIR, 'proxy-backend.sock');
@@ -1024,7 +1024,7 @@ async function main() {
   } catch { /* manifest unreadable — memIsProxy stays false */ }
   assert(memIsProxy, 'Step7d: memory-server manifest resolves to PROXY mode (precondition)');
 
-  // Lockfile so `sox stop` resolves memory-server's entrypoint identity + proxy mode.
+  // Lockfile so `soxe stop` resolves memory-server's entrypoint identity + proxy mode.
   fs.writeFileSync(LOCKFILE_PATH, JSON.stringify({
     version: 1,
     resolved: { 'memory-server@0.1.0': { source: `file://${MEMSERVER_ENTRY}` } },
@@ -1044,7 +1044,7 @@ async function main() {
   assert(backendPpid === 1,
     `Step7d: proxy backend is orphaned (PPID=${backendPpid}, expected 1 — shim exited)`);
 
-  // The fix under test: `sox stop -s project` must reap the UNTRACKED backend.
+  // The fix under test: `soxe stop -s project` must reap the UNTRACKED backend.
   const proxyStop = runSox([
     'stop', '-s', 'project',
     `--runtime-file=${RUNTIME_FILE}`,
@@ -1053,13 +1053,13 @@ async function main() {
     '--grace-ms=3000',
   ]);
   assert(proxyStop.status === 0 || proxyStop.status === 1,
-    `Step7d: sox stop ran (status ${proxyStop.status})`);
+    `Step7d: soxe stop ran (status ${proxyStop.status})`);
   // The reap is reported with the proxy-backend label for the matched pid.
   const proxyReapEvidence =
     new RegExp(`reaped memory-server proxy backend pid=${backendPid}`).test(proxyStop.stdout) ||
     new RegExp(`reap memory-server \\(proxy backend\\)`).test(proxyStop.stdout);
   assert(proxyReapEvidence,
-    `Step7d: sox stop reports reaping the proxy backend (pid=${backendPid})`);
+    `Step7d: soxe stop reports reaping the proxy backend (pid=${backendPid})`);
 
   // REALITY CHECK against the OS process table — the backend (by its unique marker)
   // must be GONE. Poll briefly: the orphan's parent is init, which reaps the zombie
@@ -1070,7 +1070,7 @@ async function main() {
     if (pidsMatching(BACKEND_MARKER).length === 0) { backendGone = true; break; }
   }
   assert(backendGone,
-    `Step7d: auto-spawned proxy backend (marker=${BACKEND_MARKER}) is REAPED after sox stop ` +
+    `Step7d: auto-spawned proxy backend (marker=${BACKEND_MARKER}) is REAPED after soxe stop ` +
     `(survivors: ${pidsMatching(BACKEND_MARKER).join(', ') || 'none'})`);
 
   // Cleanup (belt-and-suspenders) + remove the test DB sidecars.
@@ -1212,7 +1212,7 @@ async function main() {
   console.log('═'.repeat(60));
 
   // Load the install-engine declarative API via the compiled dist.
-  // We use a fresh require of the compiled JS to match what bin/sox does in production.
+  // We use a fresh require of the compiled JS to match what bin/soxe does in production.
   const installEngineDistPath = path.join(ROOT, 'libs', 'install-engine', 'dist', 'install.js');
 
   // Compile first if not built yet.
@@ -1298,7 +1298,7 @@ async function main() {
 
     // Create a throwaway markdown agent file to place
     const agentSrcFile = path.join(declTmpDir, `sox-e2e-agent-${process.pid}.md`);
-    fs.writeFileSync(agentSrcFile, `# E2E Test Agent\n\nThis is a placeholder agent for sox e2e testing.\n`, 'utf8');
+    fs.writeFileSync(agentSrcFile, `# E2E Test Agent\n\nThis is a placeholder agent for soxe e2e testing.\n`, 'utf8');
 
     // ── D1. Claude agent — project scope (.claude/agents/) ──────────────────
     console.log('\nD1: claude agent install — project scope → .claude/agents/');
@@ -1363,7 +1363,7 @@ async function main() {
     // Use a unique agent name to avoid collisions with other tests
     const d2AgentId = `sox-e2e-agent-user-${process.pid}`;
     const d2SrcFile = path.join(declTmpDir, `${d2AgentId}.md`);
-    fs.writeFileSync(d2SrcFile, `# E2E User Agent\n\nUser-scope agent for sox e2e testing.\n`, 'utf8');
+    fs.writeFileSync(d2SrcFile, `# E2E User Agent\n\nUser-scope agent for soxe e2e testing.\n`, 'utf8');
 
     try {
       const d2Results = await declarativeInstall(

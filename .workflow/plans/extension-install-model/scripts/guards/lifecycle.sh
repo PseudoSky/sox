@@ -12,34 +12,34 @@ probe_init
 ID="memory-server"
 
 # --- 1. install --------------------------------------------------------------
-sox install "$ID" --host claude --scope project --profile service
+soxe install "$ID" --host claude --scope project --profile service
 assert_exit0 "install"
 
 # --- 2. start ----------------------------------------------------------------
-sox start
+soxe start
 assert_exit0 "start"
 sleep 2
 
 # --- 3. list → shows RUNNING -------------------------------------------------
-sox list
+soxe list
 assert_exit0 "list"
 assert_stdout "RUNNING"
 
 # --- 4. details → shows pid + scope -----------------------------------------
-sox details "$ID"
+soxe details "$ID"
 assert_exit0 "details"
 assert_stdout "pid"
 
 # --- 5. exec → returns tool output ------------------------------------------
 # memory_ping requires no database — fastest path to verify exec works end-to-end.
-sox exec "$ID" memory_ping '{}'
+soxe exec "$ID" memory_ping '{}'
 assert_exit0 "exec"
 
 # --- 6. disable → stops the pid ----------------------------------------------
-sox disable "$ID"
+soxe disable "$ID"
 assert_exit0 "disable"
 # After disable, list should NOT show RUNNING for this service.
-sox list
+soxe list
 assert_exit0 "list after disable"
 case "$LAST_OUT" in
   *"RUNNING"*) _bad "service still RUNNING after disable" ;;
@@ -47,19 +47,19 @@ case "$LAST_OUT" in
 esac
 
 # --- 7. enable → restarts the service ----------------------------------------
-sox enable "$ID"
+soxe enable "$ID"
 assert_exit0 "enable"
 sleep 2
-sox list
+soxe list
 assert_exit0 "list after enable"
 assert_stdout "RUNNING"
 
 # --- 8. stop → zero orphan pids ----------------------------------------------
-sox stop
+soxe stop
 assert_exit0 "stop"
 sleep 1
 # Verify the pid from details is no longer alive.
-sox list
+soxe list
 assert_exit0 "list after stop"
 case "$LAST_OUT" in
   *"RUNNING"*) _bad "orphan pid: service still RUNNING after stop" ;;
@@ -67,7 +67,7 @@ case "$LAST_OUT" in
 esac
 
 # --- 9. uninstall → removes registry entry ----------------------------------
-sox uninstall "$ID" --host claude --scope project --profile service
+soxe uninstall "$ID" --host claude --scope project --profile service
 assert_exit0 "uninstall"
 if grep -q "\"$ID\"" "$SBX/.sox/registry.json" 2>/dev/null; then
   _bad "registry entry for $ID still present after uninstall"

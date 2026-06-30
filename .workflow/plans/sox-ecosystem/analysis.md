@@ -161,7 +161,7 @@ flowchart TD
     Leads["lead agents (merge-resolver, planner)"]
     Forge["forge-master (opus, +web, outside SOX)"]
 
-    User -->|"sox start"| Supervisor
+    User -->|"soxe start"| Supervisor
     Supervisor -->|"poll / heartbeat"| CTO_dir
     Supervisor -->|"SIGNAL_CONTEXT"| Janitor
     Supervisor -->|"spawn"| Workers

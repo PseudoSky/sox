@@ -11,7 +11,7 @@
 # Usage:
 #   source scripts/sox-probe.sh
 #   probe_init                 # set REPO, make $SBX + $FRESH, snapshot real home
-#   sox install foo --host claude --scope project   # runs `node $REPO/bin/sox ... --root $SBX`
+#   soxe install foo --host claude --scope project   # runs `node $REPO/bin/sox ... --root $SBX`
 #   assert_file "$SBX/.claude/skills/foo/SKILL.md"
 #   probe_done                 # assert zero real-home writes, clean up, report
 #
@@ -31,7 +31,7 @@ LAST_ERR=""
 LAST_RC=0
 
 # --- real-home snapshot (so we can prove zero writes) -----------------------
-# Snapshot only the sub-paths that sox could WRITE to (install targets).
+# Snapshot only the sub-paths that soxe could WRITE to (install targets).
 # Excludes paths written continuously by the host toolchain (not by sox):
 #
 #   projects/            — session transcripts (*.jsonl)
@@ -39,7 +39,7 @@ LAST_RC=0
 #   hooks/               — swarm-cost hook session logs + state.json
 #   plugins/             — plugin cache (node_modules, static)
 #   .DS_Store            — macOS filesystem metadata (modified by Finder/Spotlight)
-#   .sox/                — sox ledger (written by sox but INSIDE SBX; excluded to prevent
+#   .sox/                — soxe ledger (written by soxe but INSIDE SBX; excluded to prevent
 #                          false positives from pre-existing project ledger entries)
 #   daemon.log           — Claude daemon log (written by daemon process)
 #   daemon.status.json   — Claude daemon status (updated by daemon)
@@ -57,7 +57,7 @@ LAST_RC=0
 #   CLAUDE.md            — Claude Code project memory file (written by the agent)
 #   backups/             — Claude Code config backups (written on settings changes)
 #
-# sox init/validate NEVER writes to ~/.claude; sox install writes only to:
+# soxe init/validate NEVER writes to ~/.claude; soxe install writes only to:
 #   ~/.claude/commands/, ~/.claude/skills/, ~/.claude/agents/, etc.
 # Those directories are covered by the hash of the remaining paths below.
 _snapshot_realhome() {

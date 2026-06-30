@@ -55,14 +55,14 @@ For each candidate:
 1. Scaffold with the generator — never hand-roll the layout:
 
    ```
-   node bin/sox init <type> <id>
+   node bin/soxe init <type> <id>
    ```
 
    or, when the generator's `--content` / `--from` option is available:
 
    ```
-   node bin/sox init <type> <id> --content @<source-file>
-   node bin/sox init skill <id> --from @<source-dir>
+   node bin/soxe init <type> <id> --content @<source-file>
+   node bin/soxe init skill <id> --from @<source-dir>
    ```
 
    The generator is the single scaffolder (`libs/authoring`); born-conformance is not optional.
@@ -86,14 +86,14 @@ Gate: the scaffolded extension matches the reference extension's shape; `validat
 Run the manifest + entrypoint validator:
 
 ```
-node bin/sox validate
+node bin/soxe validate
 ```
 
 Fix any errors before proceeding. The validator enforces: required manifest fields, `entrypoint`
 presence (built-type extensions), `lifecycle` prohibition on `skill` and `agent`, and `permissions`
 block shape. See `references/by-operation.md` §validate for error taxonomy.
 
-Gate: `node bin/sox validate` exits 0 with no warnings.
+Gate: `node bin/soxe validate` exits 0 with no warnings.
 
 ### Step 4 — Publish (build + registry)
 
@@ -122,22 +122,22 @@ discovery path using the `--host` flag:
 ```
 # Sandboxed install into a temp dir (avoids polluting real project config)
 T=$(mktemp -d)
-node bin/sox install <id> --host claude --scope project --root "$T"
+node bin/soxe install <id> --host claude --scope project --root "$T"
 # Verify the file landed:
 find "$T" -name "SKILL.md"   # or AGENT.md / command file, per type
 
 # Real project install (writes into the current workspace's .claude/)
-node bin/sox install <id> --host claude --scope project
+node bin/soxe install <id> --host claude --scope project
 
 # User-scope install (writes into ~/.claude/)
-node bin/sox install <id> --host claude --scope user
+node bin/soxe install <id> --host claude --scope user
 ```
 
 For process-managed types (`mcp-server`, `hook`, `command` with side-effects), use the
 config/lockfile resolver path (no `--host`):
 
 ```
-node bin/sox install <id> -s project
+node bin/soxe install <id> -s project
 ```
 
 Confirm the install target is present on disk (declarative types: file at host-discovery path;
@@ -150,10 +150,10 @@ Gate: install exits 0; install target verified on disk (use `find` or `ls`).
 For process-managed extensions (`mcp-server`, `hook`):
 
 ```
-node bin/sox start <id>
+node bin/soxe start <id>
 ```
 
-Confirm the runtime reports RUNNING (`sox list` shows the pid/state). For declarative types,
+Confirm the runtime reports RUNNING (`soxe list` shows the pid/state). For declarative types,
 install IS enablement — no start step needed. See `references/by-type.md` §enable per type.
 
 Gate: runtime state is RUNNING (process types) or file is at discovery path (declarative types).
@@ -165,9 +165,9 @@ After validating the new extension:
 1. If migrating FROM existing docs/prompts: delete the source files once their content is
    captured in the extension and references (this step was performed for `docs/ingestion/`).
 2. Verify no regression: `./node_modules/.bin/nx run-many -t build,lint,test` stays green.
-3. Confirm zero orphan processes: `node bin/sox stop <id>` leaves no lingering pids.
+3. Confirm zero orphan processes: `node bin/soxe stop <id>` leaves no lingering pids.
 
-Gate: `nx run-many -t build,lint,test` exits 0; `sox stop` leaves zero orphans.
+Gate: `nx run-many -t build,lint,test` exits 0; `soxe stop` leaves zero orphans.
 
 ---
 
@@ -200,7 +200,7 @@ Gate: `nx run-many -t build,lint,test` exits 0; `sox stop` leaves zero orphans.
 | `validate` rejects manifest | Missing required field; wrong type for a field | Read the per-type guideline and mirror the reference extension's `extension.json` exactly |
 | Build exits non-zero | TypeScript error or missing dependency | Fix the TS error; check the reference extension's `tsconfig.json` |
 | Install denied at runtime | Undeclared `permissions` | Declare the exact resource path(s) in `extension.json`; re-run install |
-| `sox list` shows no extension | Registry not rebuilt after source change | Run `npx tsx scripts/build-index.ts`; re-install |
+| `soxe list` shows no extension | Registry not rebuilt after source change | Run `npx tsx scripts/build-index.ts`; re-install |
 | Decision point blocked | Type mapping is ambiguous | Read `references/by-type.md` §decision-points; stop and report if product-level |
 | Lint fails after migration | New files violate ESLint config | Check the project ESLint config; adjust only the new files |
 

@@ -50,7 +50,7 @@ STEP 1 — GROUND TRUTH FIRST (read before writing anything; do not assume conve
      `tools` list, model) and its entire system prompt. Note any resources its prompt references.
 
 STEP 2 — SCAFFOLD BORN-CONFORMANT (do not hand-roll the layout)
-    node bin/sox init agent <chosen-id>        # alias: `new`  (id e.g. `workflow-researcher`)
+    node bin/soxe init agent <chosen-id>        # alias: `new`  (id e.g. `workflow-researcher`)
 (or the nx generator the guideline names). Confirm it lands in the correct `extensions/<...>/`
 location and matches `memory-organizer`'s shape.
 
@@ -66,11 +66,11 @@ agent's prompt implies concrete resource access; otherwise none. Be honest and m
 
 STEP 5 — PROVE THE LIFECYCLE AGAINST REALITY (not just unit tests)
   1. `./node_modules/.bin/nx run <project>:build`        → builds clean.
-  2. `node bin/sox validate` (--strict if available)     → manifest + entrypoint reachability pass.
+  2. `node bin/soxe validate` (--strict if available)     → manifest + entrypoint reachability pass.
   3. Install into a sandboxed scope (temp dir + `-s project --config=... --lockfile=...`), then
      confirm the agent definition is actually placed at its host-discovery target (e.g. appears at
      `~/.claude/agents/<id>.md`) and is discoverable/invocable — verify the real file on disk.
-  4. `node bin/sox uninstall <id> ...` cleanly removes it.
+  4. `node bin/soxe uninstall <id> ...` cleanly removes it.
 Capture real command output as evidence.
 
 CONSTRAINTS

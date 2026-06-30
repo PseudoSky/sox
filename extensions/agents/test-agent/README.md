@@ -28,7 +28,7 @@
 ## Usage
 
 ```bash
-sox install test-agent
+soxe install test-agent
 ```
 
 ## Configuration

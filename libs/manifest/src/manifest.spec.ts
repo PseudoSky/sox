@@ -10,14 +10,14 @@
  * (the 44-test suite) so that the lib carries the same regression bar.
  */
 
-import { describe, it, expect } from 'vitest';
-import { validate, isManifest, ManifestSchema } from './index.js';
+import { describe, expect, it } from 'vitest';
+import { isManifest, ManifestSchema, validate } from './index.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
  * Minimal valid manifest for a given type.
- * Uses compatibility.sox to verify the lib accepts any compatibility shape.
+ * Uses compatibility.soxe to verify the lib accepts any compatibility shape.
  */
 function minimal(type: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   const base: Record<string, unknown> = {
@@ -416,7 +416,7 @@ describe('validate() — compatibility accepts any shape', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('compatibility.sox key is accepted (guard uses this form)', () => {
+  it('compatibility.soxe key is accepted (guard uses this form)', () => {
     const result = validate(minimal('skill', { compatibility: { sox: '^0' } }));
     expect(result.ok).toBe(true);
   });
@@ -912,7 +912,7 @@ describe('[schema-delta] install descriptor — new hybrid fields', () => {
 
   it('[schema-delta.4] REJECTS install.overrides.claude with managed key — [inv:never-managed]', () => {
     // NEGATIVE: targeting the Claude managed tier must be refused.
-    // [def:managed-tier] sox never writes the managed settings tier.
+    // [def:managed-tier] soxe never writes the managed settings tier.
     const result = validate(minimal('agent', {
       install: {
         hosts: ['claude'],

@@ -1,14 +1,14 @@
 /**
  * [ref:scaffold-parity] — anchor for the scaffold-parity invariant.
  *
- * Asserts that scaffold() (the sox init path) and @adhd/sox-nx:extension (the generator path)
+ * Asserts that scaffold() (the soxe init path) and @adhd/sox-nx:extension (the generator path)
  * emit byte-identical FileSet output for the same inputs, for all 6 active types.
  *
- * Rule (from _shared.md): "a passing test asserts scaffold() (the sox init path) and
+ * Rule (from _shared.md): "a passing test asserts scaffold() (the soxe init path) and
  * @adhd/sox-nx:extension produce byte-identical FileSet output for identical inputs."
  *
  * Test methodology:
- *   1. Call scaffold(opts) directly — this is what sox init uses.
+ *   1. Call scaffold(opts) directly — this is what soxe init uses.
  *   2. Run extensionGenerator(tree, schema) on a dry-run nx Tree.
  *   3. Reconstruct the FileSet from the Tree.
  *   4. Assert every key/value pair is byte-identical.
@@ -72,7 +72,7 @@ describe('[ref:scaffold-parity] scaffold() == @adhd/sox-nx:extension for all act
         keywords: ['test', type],
       };
 
-      // Path 1: direct scaffold() call (sox init path)
+      // Path 1: direct scaffold() call (soxe init path)
       const directFileSet = scaffold(opts);
 
       // Path 2: nx generator path — apply to Tree then read back

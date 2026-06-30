@@ -14,7 +14,7 @@
 1. **Adopt Nx** for the monorepo / build / dependency-graph / generator layer. Keep the **novel layer custom** on top: manifest schema + `validate`, multi-scope install/cascade, host runtime (loader/supervisor/registrar/event-bus), registry, and the `sox` CLI. Nx does not touch those.
 2. **Self-host:** `sox` is **extension #0** — a conformant extension whose `entrypoint` *is* the CLI; its capabilities are libs it depends on. If `sox` can't be expressed as a conformant extension, the contract is wrong.
 3. **Authoring = lib-core + adapters.** Scaffolding logic + templates live in `libs/authoring` as a **pure** `scaffold(opts) → FileSet` (no `@nx/devkit` dependency). Two thin adapters consume it:
-   - `sox init` (writes the FileSet to disk) — so the product scaffolds **without nx installed**.
+   - `soxe init` (writes the FileSet to disk) — so the product scaffolds **without nx installed**.
    - `@adhd/sox-nx:extension` / `:library` (maps the FileSet onto the nx `Tree`, adds tags + graph wiring).
    The nx **meta-generators** (`@nx/plugin:plugin`, `@nx/plugin:generator`, `@nx/js:lib`) bootstrap the plugin, the generators, and the libs.
 4. **Module boundaries via tags** (`type:extension`, `type:lib`) enforced by `@nx/enforce-module-boundaries`: extensions may depend on libs, never on each other → the reach-in becomes a lint error.
@@ -33,7 +33,7 @@ The real corpus is multi-runtime and largely declarative, so the manifest contra
 
 - **`entrypoint` optional/typed** — a markdown agent's "entrypoint" is its `.md`, a shell hook's is the script, a bundle/prompt has none. Drop the "all behavioral types compile to `dist/index.js`" assumption.
 - **`runtime` broadened** — `node | shell | python | declarative` (markdown), not node-only.
-- **install-target / host-discovery placement** — a declarative extension declares **where it installs to** (e.g. `~/.claude/commands/`, `~/.claude/agents/`, the skills dir). `sox install` = render/link the artifact into the target host's discovery location. **This is the generalized reinjection primitive** for the declarative family (prompt + markdown agents + skills), not a prompt-only detail.
+- **install-target / host-discovery placement** — a declarative extension declares **where it installs to** (e.g. `~/.claude/commands/`, `~/.claude/agents/`, the skills dir). `soxe install` = render/link the artifact into the target host's discovery location. **This is the generalized reinjection primitive** for the declarative family (prompt + markdown agents + skills), not a prompt-only detail.
 
 ## Cardinality & docs
 
@@ -57,11 +57,11 @@ The real corpus is multi-runtime and largely declarative, so the manifest contra
 
 ## Where templates live
 
-`packages/sox-nx/` (publishable `@adhd/sox-nx` plugin): `src/generators/{extension,library}/` with `schema.json`, `generator.ts` (thin — calls `libs/authoring`), and `files/<type>/…` templates. `libs/authoring` is the single source of truth for templates + conformance; the generator and `sox init` both delegate to it.
+`packages/sox-nx/` (publishable `@adhd/sox-nx` plugin): `src/generators/{extension,library}/` with `schema.json`, `generator.ts` (thin — calls `libs/authoring`), and `files/<type>/…` templates. `libs/authoring` is the single source of truth for templates + conformance; the generator and `soxe init` both delegate to it.
 
 ## The reflexive boundary (keep it honest)
 
-core **lib** (nx-free) ← **generator** adapter (nx) ← nx **meta-generators**. A test asserts **`sox init` and `@adhd/sox-nx:extension` emit byte-identical output** (same `scaffold()` core) so the two paths cannot drift.
+core **lib** (nx-free) ← **generator** adapter (nx) ← nx **meta-generators**. A test asserts **`soxe init` and `@adhd/sox-nx:extension` emit byte-identical output** (same `scaffold()` core) so the two paths cannot drift.
 
 ## What stays custom (nx does not provide)
 
@@ -73,7 +73,7 @@ Manifest contract + `validate`; multi-scope install/cascade; host runtime; regis
 1. gitnexus setup.
 2. `nx init` + configure: target defaults, named inputs, **tags/boundaries**, cache, release.
 3. Establish **`libs/manifest`** (schema + `validate`) — prerequisite for "conformant" and for the gate.
-4. Generate + implement **`libs/authoring`** (+ `@adhd/sox-nx` generators); add the **born-conformance gate** (per-type `scaffold → build → validate`; `sox init`==generator parity).
+4. Generate + implement **`libs/authoring`** (+ `@adhd/sox-nx` generators); add the **born-conformance gate** (per-type `scaffold → build → validate`; `soxe init`==generator parity).
 5. Port **engine libs** (`install-engine`, `host-runtime`, `registry`) — carrying this session's **fixes forward** and fixing the **flag parser (A12)** + `exec` routing while re-homing the CLI.
 6. Generate **`sox`** (extension #0) wiring `authoring + manifest + install-engine + host-runtime`.
 7. Generate memory's **4 extensions + bundle + `libs/memory-core`**; gitnexus-port the logic in; re-point deps to `memory-core` (kills reach-in).

@@ -22,10 +22,10 @@
  *   on write so tests can verify it.
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
 import * as os from 'os';
+import * as path from 'path';
 import { ledgerPathFor } from './data-paths.js';
 
 // --- Shape: LedgerAction ([shape:ledger-action]) ---
@@ -43,8 +43,8 @@ export type CapabilityId =
  * A single recorded write in the ledger.
  * - file      : repo-relative path for project ledger; absolute for user ledger
  * - keyPath   : dot/bracket path within the shared file (e.g. "mcpServers.tokenguard")
- * - values    : array-merge only - the exact values sox appended (deny-wins)
- * - appliedHash: config-merge only - sha256 of the value sox set
+ * - values    : array-merge only - the exact values soxe appended (deny-wins)
+ * - appliedHash: config-merge only - sha256 of the value soxe set
  */
 export interface LedgerAction {
   cap: CapabilityId;

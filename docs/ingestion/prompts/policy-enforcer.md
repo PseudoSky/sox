@@ -54,8 +54,8 @@ STEP 1 — GROUND TRUTH FIRST (read before writing anything; do not assume conve
      this exactly — it is the main thing.
 
 STEP 2 — SCAFFOLD BORN-CONFORMANT (do not hand-roll the layout)
-    node bin/sox init hook policy-enforcer            # always
-    node bin/sox init command policy-enforcer-cli     # only if STEP 0 kept the cli
+    node bin/soxe init hook policy-enforcer            # always
+    node bin/soxe init command policy-enforcer-cli     # only if STEP 0 kept the cli
 (or the nx generator the guideline names). Put shared logic in a `libs/` lib if both ship.
 
 STEP 3 — PORT THE LOGIC
@@ -72,13 +72,13 @@ Declare exactly what's needed, minimally.
 STEP 5 — PROVE THE LIFECYCLE AGAINST REALITY (not just unit tests)
   Hook (mandatory):
     1. `./node_modules/.bin/nx run <project>:build`     → builds clean.
-    2. `node bin/sox validate` (--strict if available)  → passes.
+    2. `node bin/soxe validate` (--strict if available)  → passes.
     3. Install into a sandboxed scope (temp dir + `-s project --config=... --lockfile=...`),
-       `node bin/sox start ...`, confirm the hook is actually loaded/active in the runtime (real
+       `node bin/soxe start ...`, confirm the hook is actually loaded/active in the runtime (real
        state, not a self-written log).
     4. Trigger its event for real and observe it behaves identically to the source (incl. any
        block/deny behavior).
-    5. `node bin/sox stop ...` leaves zero orphans.
+    5. `node bin/soxe stop ...` leaves zero orphans.
   Command (only if kept): install + invoke it; confirm output matches the source cli.
   Bundle (only if both ship): install resolves+installs members; start runs them; uninstall removes.
 Capture real command output as evidence.

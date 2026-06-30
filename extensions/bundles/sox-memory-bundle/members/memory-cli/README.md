@@ -58,9 +58,9 @@ memory <command> [--scope project|user|org|local] [--path DIR]
 ## Usage
 
 ```bash
-sox install memory-cli
+soxe install memory-cli
 # or install the full subsystem:
-sox install sox-memory-bundle
+soxe install sox-memory-bundle
 
 # Initialise a project-scope store:
 memory init --scope project

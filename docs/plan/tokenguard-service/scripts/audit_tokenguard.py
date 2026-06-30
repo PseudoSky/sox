@@ -67,7 +67,7 @@ def phase_framework() -> None:
           "grep -q 'serviceTemplate' libs/authoring/src/index.ts && echo OK", expect_ok=True)
     check("service-type.5", "docs/guidelines/service.md exists",
           "test -f docs/guidelines/service.md && echo OK", expect_ok=True)
-    check("service-type.6", "scaffold harness drives sox init service",
+    check("service-type.6", "scaffold harness drives soxe init service",
           "grep -q 'init service' tools/tg-plan/check-service-scaffold.sh && echo OK", expect_ok=True)
     check("service-type.7", "inline JSON-schema enums + processTypes include service/http-get/socket",
           "grep -qE 'http-get' libs/manifest/src/index.ts && grep -q 'processTypes' libs/manifest/src/index.ts && echo OK", expect_ok=True)
@@ -164,7 +164,7 @@ def phase_service() -> None:
           "grep -qE 'mapstore|token-mapping' extensions/services/tokenguard/src/mapstore.ts && echo OK", expect_ok=True)
     check("tg-cli.3", "running proxy reloads on seed change",
           "grep -qE 'watch|nudge|reload|socket' extensions/services/tokenguard/src/mapstore.ts && echo OK", expect_ok=True)
-    check("tg-cli.4", "CLI reachable through sox exec",
+    check("tg-cli.4", "CLI reachable through soxe exec",
           "grep -qE 'exec|argv' extensions/services/tokenguard/src/cli.ts && echo OK", expect_ok=True)
     check("tg-cli.5", "live-seed demo asserts reflection",
           "grep -q 'LIVE SEED REFLECTED' extensions/services/tokenguard/demo/live-seed.sh && echo OK", expect_ok=True)

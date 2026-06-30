@@ -1,7 +1,7 @@
 /**
  * libs/install-engine/src/install-registry.ts — Global install ledger (P9)
  *
- * Tracks every successful `sox install` across all projects on this machine.
+ * Tracks every successful `soxe install` across all projects on this machine.
  * Written using atomic rename. All writes are best-effort — a failure here must
  * never fail the install.
  *
@@ -28,7 +28,7 @@ export interface InstallRecord {
   root: string;
   /** ISO 8601 timestamp of the first install of this extId+scope+root combination */
   installedAt: string;
-  /** ISO 8601 timestamp of the most recent `sox install` that touched this record */
+  /** ISO 8601 timestamp of the most recent `soxe install` that touched this record */
   updatedAt: string;
   /** Source URI from the lockfile entry at install time (file:// or https://) */
   source: string;

@@ -25,7 +25,7 @@ Cross-state deps cite the specific upstream ticket that produces the needed arti
 | ST-2 | Inline JSON-schema enums + `processTypes`: `service` in type/install.type, `http-get` in health.type, `socket` in transport vocab | Med | ST-1 |
 | ST-3 | Generalize `validate()`: `profiles ⊆ {serves∪transports}`, transport vocabulary, require ≥1 transport for `service` + unit tests | Med | ST-1, ST-2 |
 | ST-4 | `serviceTemplate` + scaffold dispatch + exports (born-conformant fileset, mirror `mcpServerTemplate`) | Med | ST-1 |
-| ST-5 | `sox init service` routing + `--transport` flag in `cmdInit` | Easy | ST-4 |
+| ST-5 | `soxe init service` routing + `--transport` flag in `cmdInit` | Easy | ST-4 |
 | ST-6 | `docs/guidelines/service.md` (transports/health/supervision + concurrent-start non-goal) | Easy | ST-1 |
 | ST-7 | `check-service-scaffold.sh` harness (init→build→validate→`SCAFFOLD OK`) | Easy | ST-5 |
 
@@ -96,7 +96,7 @@ Cross-state deps cite the specific upstream ticket that produces the needed arti
 | Ticket | Name / description | Diff | Depends on |
 |---|---|---|---|
 | CLI-1 | `mapstore.ts` — shared store owner + atomic append + `fs.watch`/debounce/merge signal | Hard | TGS-10 |
-| CLI-2 | `cli.ts` — `seed`/`map`/`summary` via `sox exec` | Med | CLI-1 |
+| CLI-2 | `cli.ts` — `seed`/`map`/`summary` via `soxe exec` | Med | CLI-1 |
 | CLI-3 | proxy subscription to the mapstore signal (live reload, no stale in-memory map) | Med | CLI-1, TGS-10 |
 | CLI-4 | `demo/live-seed.sh` — assert `LIVE SEED REFLECTED` | Med | CLI-2, CLI-3 |
 

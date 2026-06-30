@@ -7,7 +7,7 @@
  * self-report even when its scripts are vendored into a plan or external repo
  * where the plugin manifest is no longer adjacent.
  *
- * Run at publish time (wire into `sox sync`) and any time the skill's scripts/
+ * Run at publish time (wire into `soxe sync`) and any time the skill's scripts/
  * or templates/ change:
  *   node scripts/gen-skill-version.js [<skill-dir>]   # default: this skill
  *

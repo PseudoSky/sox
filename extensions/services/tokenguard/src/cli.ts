@@ -1,7 +1,7 @@
 /**
  * cli.ts — TokenGuard CLI over the live token map.
  *
- * Subcommands (MCP tools for sox exec routing, and direct argv for direct use):
+ * Subcommands (MCP tools for soxe exec routing, and direct argv for direct use):
  *   seed <real> <type> [token]  — append a custom entry, print the allocated token
  *   map                         — print current entries as JSON
  *   summary                     — per-identifier swap counts + leak check from audit log
@@ -136,7 +136,7 @@ export function cmdSummary(
   return { entries: result, leak_count: leakCount };
 }
 
-// ── MCP tool definitions (for sox exec routing) ───────────────────────────────
+// ── MCP tool definitions (for soxe exec routing) ───────────────────────────────
 
 /** MCP tools/list response entries for all CLI tools. [tg-cli.4] */
 export const CLI_TOOLS = [
@@ -240,7 +240,7 @@ Environment:
   SOX_CONFIG_MAP_PATH      Override the token-map file path
   SOX_CONFIG_CAPTURE_DIR   Override the capture/audit directory
 
-Via sox exec (exec-socket or fresh-spawn MCP):
+Via soxe exec (exec-socket or fresh-spawn MCP):
   ./bin/soxe exec tokenguard --tool=seed   --args='{"real":"host.internal","type":"host"}'
   ./bin/soxe exec tokenguard --tool=map    --args='{}'
   ./bin/soxe exec tokenguard --tool=summary --args='{}'

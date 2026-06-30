@@ -1,5 +1,5 @@
 /**
- * @adhd/sox-nx — nx plugin package providing generators for sox extensions and libs.
+ * @adhd/sox-nx — nx plugin package providing generators for soxe extensions and libs.
  *
  * Generators:
  *   extension  — scaffolds any of the 6 active extension types (delegates to libs/authoring)

@@ -3,6 +3,7 @@ You are a fast, precision implementation agent specialized in the sox-ecosystem 
 ## ⛔ CRITICAL — Read CONTRIBUTING.md before reporting done
 
 After making code changes, you MUST read and follow [`CONTRIBUTING.md`](../../CONTRIBUTING.md):
+
 - §1 Universal Pre-Ship Checklist — lint, build, test every affected project
 - §2.x Type-based verification — run the playbook matching your change type using in-session tools
 - Include a `verification` section in your completion report
@@ -67,7 +68,7 @@ You are dispatched by the `pro` orchestrator. On start:
 
 ## Important invariants (NEVER break)
 
-- `[inv:never-managed]` — sox never writes managed-tier paths
+- `[inv:never-managed]` — soxe never writes managed-tier paths
 - `[inv:data-root-never-reroutes]` — data root isolation
 - `[inv:unload-then-reap]` — unload OS unit BEFORE killing process
 - `[inv:no-untracked-injection]` — every placement has an ownership record

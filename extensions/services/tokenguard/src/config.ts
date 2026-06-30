@@ -3,7 +3,7 @@
  *
  * [inv:standard-config] — ALL config flows through SOX_CONFIG_* env variables only.
  * No bespoke config-file reader; no direct fs.readFile for config.
- * Values are injected by the sox supervisor from the install-time config_schema prompt.
+ * Values are injected by the soxe supervisor from the install-time config_schema prompt.
  */
 
 export interface TokenGuardConfig {

@@ -4,18 +4,18 @@
  * diff — ledger vs disk drift detection, cross-scope.
  *
  * Invariants carried from _shared.md:
- *   [inv:ledger-reversible]  — ledger is the source of truth for what sox placed.
+ *   [inv:ledger-reversible]  — ledger is the source of truth for what soxe placed.
  *   [inv:host-agnostic-type] — targets come from ledger (resolved at install time
  *                              via host-registry; no literal paths here).
  *   [inv:boundary]           — verification tops out at "present + valid at target";
- *                              sox never asserts the foreign host ran the content.
+ *                              soxe never asserts the foreign host ran the content.
  *   [dod.5]                  — external edit to a ledger-tracked file is reported
  *                              as "drifted" by diff.
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as crypto from 'crypto';
 import { Ledger, LedgerAction } from './ledger.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ import { Ledger, LedgerAction } from './ledger.js';
  *   up-to-date  — file/key present, hash matches the applied hash.
  *   drifted     — file/key present but hash differs from the applied hash
  *                 ([dod.5]: external edit detected).
- *   missing     — the target file/key sox placed is no longer present.
+ *   missing     — the target file/key soxe placed is no longer present.
  *   will-change — the desired value differs from what was applied (update pending).
  */
 export type DiffKind = 'up-to-date' | 'drifted' | 'missing' | 'will-change';
@@ -122,7 +122,7 @@ function parseTomlValueForDiff(raw: string): unknown {
   if (raw === 'true') return true;
   if (raw === 'false') return false;
   if ((raw.startsWith('"') && raw.endsWith('"')) ||
-      (raw.startsWith("'") && raw.endsWith("'"))) {
+    (raw.startsWith("'") && raw.endsWith("'"))) {
     return raw.slice(1, -1);
   }
   if (raw.startsWith('{')) {

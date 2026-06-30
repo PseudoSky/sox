@@ -30,7 +30,7 @@
 
 **Entrypoint:** `dist/index.js` (compiled from `src/index.ts`).
 
-**Install-target:** N/A — the host discovers MCP servers via registered stdio processes; `sox start` launches the process.
+**Install-target:** N/A — the host discovers MCP servers via registered stdio processes; `soxe start` launches the process.
 
 **SDK dependency:** `@modelcontextprotocol/sdk` (`>=1.0.0`) is a real runtime dependency. Added to the generated `package.json`.
 
@@ -90,7 +90,7 @@
 
 **Entrypoint form:** None. Bundles have no entrypoint and no source code. They are manifest-only: `extension.json` with a `members` array listing member extension ids and version constraints.
 
-**Runtime:** Absent — bundles have no runtime. `sox install <bundle>` expands to its members at the consumer's machine.
+**Runtime:** Absent — bundles have no runtime. `soxe install <bundle>` expands to its members at the consumer's machine.
 
 **Install-target:** N/A — bundles are expanded by the install engine, not placed at a host discovery path.
 

@@ -20,7 +20,7 @@ tooling, and the system's two roles were never named.** Concretely, today:
 
 - **`install-target` is declared but unimplemented** — the schema/generators describe placing
   declarative content (markdown agents/skills, slash-commands) into a host's discovery dirs, but
-  nothing consumes it. `sox install` of a declarative extension writes no bytes to the host.
+  nothing consumes it. `soxe install` of a declarative extension writes no bytes to the host.
 - **`agent` lifecycle is vestigial** — the manifest validator permits a `lifecycle` block on `agent`,
   but the runtime honors it only for `mcp-server`. Schema accepts what the runtime ignores.
 - **Versioning / update / diff don't work for declarative content** — versioning is metadata-only;
@@ -39,16 +39,16 @@ The fix is to **name the two roles**, **draw the boundary**, and **build the mis
 
 ## 2. The two roles (the boundary)
 
-sox is two systems under one type-system. Naming them is the core decision.
+soxe is two systems under one type-system. Naming them is the core decision.
 
-- **Role A — Extension *runtime host*.** sox itself loads, spawns, supervises, enforces, and invokes.
-  Applies to `service` / `mcp-server` (sox-run mode) and in-process code. sox owns the whole stack.
+- **Role A — Extension *runtime host*.** soxe itself loads, spawns, supervises, enforces, and invokes.
+  Applies to `service` / `mcp-server` (sox-run mode) and in-process code. soxe owns the whole stack.
 - **Role B — Cross-scope *package manager + reinjector* for foreign-host content.** The host (Claude
-  Code, Codex, …) executes; **sox only materializes + versions + scopes + diffs** the content into the
+  Code, Codex, …) executes; **soxe only materializes + versions + scopes + diffs** the content into the
   host's own config/discovery locations. **Execution is deferred to the host.**
 
 **Hard boundary for Role B:** sox's reality-check tops out at *"the right bytes are at the host's
-discovery path for the right scope"* — never *"the host actually ran it"* (sox cannot verify that, by
+discovery path for the right scope"* — never *"the host actually ran it"* (soxe cannot verify that, by
 design). The runtime already draws this correctly (declarative types are skipped as
 "install-time-only"); what's missing is the **install side fulfilling its half — placement.**
 
@@ -77,7 +77,7 @@ host-aware**:
 | `config-merge` (json \| **toml**) | set a key/sub-table in a shared config — JSON (`settings.json`/`.mcp.json`) **or** TOML (codex `config.toml`) | remove key | ⚠️ shared file → needs ledger |
 | `array-merge` | append to arrays (permissions/env), deny-wins | remove exact values | ⚠️ shared file → needs ledger |
 | `bin-link` | executable on PATH / referenced script | unlink | ✅ |
-| `run-service` | sox spawns + supervises (Role A only) | stop | ✅ |
+| `run-service` | soxe spawns + supervises (Role A only) | stop | ✅ |
 | `materialize` | place built code at a **stable** store path (so host pointers don't break) | delete | ✅ |
 
 (`materialize` is the helper that makes `json-merge` MCP pointers valid; "composite/plugin" = a `bundle`
@@ -95,7 +95,7 @@ of the above.)
 ### 3.4 Provenance ledger (makes merge-types reversible + diffable)
 
 `json-merge` / `array-merge` write into **shared host files** (`settings.json`, `.mcp.json`,
-`~/.claude.json`). Clean uninstall and `diff` are impossible without recording what sox wrote:
+`~/.claude.json`). Clean uninstall and `diff` are impossible without recording what soxe wrote:
 
 ```jsonc
 // .sox/ledger/<host>.<scope>.json   (granularity = open decision §9)
@@ -148,7 +148,7 @@ marketplace; project `.mcp.json` servers are **trust-gated** via `enabledMcpjson
 - MCP entry richer than noted: `type: stdio|http|sse|ws` + `timeout`, `alwaysLoad`.
 
 **Scope mapping:** project → `.claude/…` (and repo-root `.mcp.json`); user → `~/.claude/…`; local →
-`.claude/settings.local.json`; **managed tier → sox never writes it.**
+`.claude/settings.local.json`; **managed tier → soxe never writes it.**
 
 ### 4b. Codex host (verified live docs, 2026-06)
 
@@ -204,7 +204,7 @@ init ─► build ─► validate ─► install(host,scope,profile) ─► [run
 | **build** | compiles code / no-op for declarative; produces the payload. |
 | **validate** | L1 type/schema; L3 descriptor references *known capability × known host surface × allowed scope*; payload matches capability; `profiles ⊆ serves`; refuses `managed`. |
 | **install `-s <scope> [--host <h>] [--profile <p>]`** | detect host (§6) → resolve target via registry → run capability installers → merge `config` → write ledger entry. |
-| **run / inject** | `run-service` → sox supervises; injected → host runs (verify = present+valid at target). |
+| **run / inject** | `run-service` → soxe supervises; injected → host runs (verify = present+valid at target). |
 | **update** | re-resolve version → diff desired-vs-ledger → apply delta only. |
 | **diff / status** | ledger vs disk; supports drift + pending-change + cross-scope view. |
 | **uninstall** | reverse ledger actions; clean even for shared-file merges. |
@@ -221,9 +221,9 @@ content skips detection.
 `init` maps to nx generators with a `schema.json` (typed options + `x-prompt`). Examples:
 
 ```bash
-sox init mcp-server tokenguard --host claude,sox --transports stdio,sse --profiles standalone,shared
-sox init command codereview --with-slash-command --runtime node --bin-scope project
-sox init agent reviewer --host claude --runtime declarative
+soxe init mcp-server tokenguard --host claude,sox --transports stdio,sse --profiles standalone,shared
+soxe init command codereview --with-slash-command --runtime node --bin-scope project
+soxe init agent reviewer --host claude --runtime declarative
 ```
 
 `init` materializes the host-keyed `install` descriptor + `profiles` from the chosen options.
@@ -232,7 +232,7 @@ sox init agent reviewer --host claude --runtime declarative
 
 ## 8. MCP wrapper — `@adhd/sox-mcp-runtime` (the "build the template for them" lever)
 
-Because sox owns the template, dual-transport + dual-profile + enforcement is a property of a **shared
+Because soxe owns the template, dual-transport + dual-profile + enforcement is a property of a **shared
 wrapper lib**, not a burden on authors.
 
 - **Author writes only tools:** `serve(defineTool(...))`. No transport/protocol code.
@@ -240,7 +240,7 @@ wrapper lib**, not a burden on authors.
   `--transport` flag/env set by the install **profile**); MCP protocol + versioning (wrap the official
   `@modelcontextprotocol/sdk`, don't reimplement — *lean, see §9*); health (stdio-ping/socket);
   graceful shutdown; **C6 permission enforcement read from policy-env, applied uniformly whether Claude
-  spawns it (stdio) or sox supervises it (sse)** — generalizing memory-server's hand-rolled guard.
+  spawns it (stdio) or soxe supervises it (sse)** — generalizing memory-server's hand-rolled guard.
 - **`serves` becomes derived** ("built on `@adhd/sox-mcp-runtime@^1` ⇒ stdio+sse"), and the wrapper ships
   **one generic conformance test** every MCP extension inherits (start in each transport, run
   initialize + tools/list).

@@ -27,6 +27,7 @@ You NEVER edit files, create files, or write code. Your output is a structured r
 ## Review protocol
 
 When dispatched:
+
 1. Read the spec document(s) referenced in your task
 2. Read ALL source files in scope — every file the change touched
 3. For each file, evaluate against the review checklist below
@@ -36,12 +37,14 @@ When dispatched:
 ## Review checklist
 
 ### 1. Spec compliance
+
 - Does every exported interface/type match the spec exactly? (field names, types, optionality, defaults)
 - Are all methods from the spec implemented? Any missing?
 - Are there any extra methods/types not in the spec?
 - Do error types and error messages match the spec?
 
 ### 2. Correctness (bugs)
+
 - Concurrency bugs: shared mutable state without synchronization, race conditions, callback leaks
 - Edge cases: empty inputs, null/undefined, overflow, negative values, zero-length arrays
 - Error handling: caught exceptions logged? Uncaught rejections? Cleanup on error path?
@@ -49,23 +52,27 @@ When dispatched:
 - State machine: `open()` → `close()` → `open()` works? Double-open/double-close guarded?
 
 ### 3. Invariant violations
+
 - Check all `[inv:*]` markers from AGENTS.md, package CLAUDE.md files, and the code itself
 - BL-11 violations: ONNX inference on main thread alongside better-sqlite3?
 - Space invariant: upsert enforces dimension match?
 - Data isolation: data packages import only `area:data | area:shared` (not platform)?
 
 ### 4. Test coverage
+
 - Are there tests for the new code? What's the pass/fail count?
 - Are edge cases tested? (empty state, error paths, concurrent access)
 - Are integration/seams tested, or only unit?
 
 ### 5. Code style & conventions
+
 - Comments present only for documented invariants or warnings? (no unnecessary `// ──` headers)
 - Pattern consistency: follows existing package conventions (project.json, vitest config, tsconfig, exports)
 - `exactOptionalPropertyTypes` compliance: optional fields use conditional spread, not `undefined` assignment
 - Error names use `this.name = 'ErrorName'` pattern? Extend correct base class?
 
 ### 6. Security & safety
+
 - No `Math.random()` for security/collision-sensitive operations — use `crypto.randomUUID()`
 - No secrets, tokens, or API keys in source
 - Path traversal guards? (user-supplied paths validated?)
@@ -94,6 +101,7 @@ When dispatched:
 ## Verification commands
 
 Run these to validate the code under review:
+
 ```
 npx nx lint <project>       # check for lint errors
 npx nx build <project>      # check compilation  
@@ -105,6 +113,7 @@ grep -r "TODO\|FIXME\|HACK" <path>  # check for unresolved markers
 ## Report format
 
 Write reviews to `.opencode/artifacts/reviews/{task_id}_{timestamp}.json`:
+
 ```json
 {
   "$schema": "review-report-v1",
@@ -141,7 +150,7 @@ Write reviews to `.opencode/artifacts/reviews/{task_id}_{timestamp}.json`:
 
 ## Important invariants (check for violations)
 
-- `[inv:never-managed]` — sox never writes managed-tier paths
+- `[inv:never-managed]` — soxe never writes managed-tier paths
 - `[inv:data-root-never-reroutes]` — data root isolation
 - `[inv:unload-then-reap]` — unload OS unit BEFORE killing process
 - `[inv:no-untracked-injection]` — every placement has an ownership record

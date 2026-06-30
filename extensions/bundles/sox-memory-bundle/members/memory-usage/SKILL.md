@@ -1,13 +1,13 @@
 ---
 name: memory-usage
-description: How to recall prior knowledge and store durable findings in the sox graph-memory system via the memory_* MCP tools. Use whenever you are about to research, decide, or could benefit from what was learned before — recall first; and whenever you produce a durable, generalized, sourced finding worth carrying forward — write it.
+description: How to recall prior knowledge and store durable findings in the soxe graph-memory system via the memory_* MCP tools. Use whenever you are about to research, decide, or could benefit from what was learned before — recall first; and whenever you produce a durable, generalized, sourced finding worth carrying forward — write it.
 ---
 
-# memory-usage — using the sox graph memory system
+# memory-usage — using the soxe graph memory system
 
 <!-- markdownlint-disable MD013 -->
 
-The sox memory system is a local, bi-temporal **knowledge graph** with hybrid
+The soxe memory system is a local, bi-temporal **knowledge graph** with hybrid
 (vector + full-text + temporal) recall, served over MCP by `memory-server` (a
 member of this same `sox-memory-bundle`). Embeddings are local
 (bge-base-en-v1.5, 768-dim) — recall is offline and makes no network calls. The

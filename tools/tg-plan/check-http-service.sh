@@ -133,7 +133,7 @@ if ! node "${SOX}" install "${PROBE_ID}" \
       --profile=service \
       --scope=project \
       --root="${TMPDIR_BASE}" 2>&1; then
-  echo "HTTP SERVICE FAIL: sox install failed"
+  echo "HTTP SERVICE FAIL: soxe install failed"
   exit 1
 fi
 
@@ -152,16 +152,16 @@ fi
 echo "[check-http-service] store dir materialized: ${STORE_DIR}"
 
 # ── 3. Start the service ──────────────────────────────────────────────────────
-# sox start with the service-registry path exits 0 after spawning detached.
+# soxe start with the service-registry path exits 0 after spawning detached.
 echo "[check-http-service] starting ${PROBE_ID}"
 if ! node "${SOX}" start \
       --scope=project \
       --root="${TMPDIR_BASE}" 2>&1; then
-  echo "HTTP SERVICE FAIL: sox start failed"
+  echo "HTTP SERVICE FAIL: soxe start failed"
   exit 1
 fi
 
-# The service was spawned detached; sox start has exited.
+# The service was spawned detached; soxe start has exited.
 # Poll for port.txt to appear in the store dir (service binding its port).
 echo "[check-http-service] waiting for port.txt in store dir..."
 PORT_FILE="${STORE_DIR}/port.txt"
@@ -211,10 +211,10 @@ echo "HTTP SERVICE HEALTHY"
 # ── 5. Stop the service ───────────────────────────────────────────────────────
 echo "[check-http-service] stopping ${PROBE_ID}"
 
-# Write a minimal runtime record so sox stop knows the pid
+# Write a minimal runtime record so soxe stop knows the pid
 RUNTIME_FILE="${TMPDIR_BASE}/.sox/runtime.json"
 if [ -f "${RUNTIME_FILE}" ]; then
-  echo "[check-http-service] runtime.json found (written by sox start)"
+  echo "[check-http-service] runtime.json found (written by soxe start)"
 else
   echo "[check-http-service] runtime.json not found — constructing minimal record"
 fi

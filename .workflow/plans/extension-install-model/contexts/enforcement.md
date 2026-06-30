@@ -26,7 +26,7 @@ After this state, every denial path works via the CLI and the forbidden artifact
   - `codex.ts` — `validateKey(key, scope)`: returns `{allowed: boolean, reason?}`. The enforcement check calls this before any file write.
   - `permission-guard.spec.ts` — unit tests for `compilePolicyFromEnv` covering: undeclared `db_path` denied; declared path allowed; isError=true returned on denial.
 
-- **Invariants:** `[inv:never-managed]` — sox never writes the org/managed tier. `[inv:tier3-proof]` — guard drives real CLI for all four denial cases and asserts both nonzero exit AND absent artifact.
+- **Invariants:** `[inv:never-managed]` — soxe never writes the org/managed tier. `[inv:tier3-proof]` — guard drives real CLI for all four denial cases and asserts both nonzero exit AND absent artifact.
 
 - **Validation:** `bash .workflow/plans/extension-install-model/scripts/guards/enforcement.sh` — runs each of the four denial scenarios; asserts `assert_nonzero` + `assert_absent` for the forbidden artifact.
 
@@ -36,13 +36,13 @@ After this state, every denial path works via the CLI and the forbidden artifact
 
 Checked by audit-final (terminal gate).
 
-- [ ] **[enforcement.1]** `sox install <mcp> --profile stdio` does NOT write `.mcp.json`; exits non-zero if the profile→target mismatch is explicitly forbidden.
+- [ ] **[enforcement.1]** `soxe install <mcp> --profile stdio` does NOT write `.mcp.json`; exits non-zero if the profile→target mismatch is explicitly forbidden.
       Via guard: `bash .workflow/plans/extension-install-model/scripts/guards/enforcement.sh`
-- [ ] **[enforcement.2]** `sox exec <memory-server> memory_write '{"db_path":"/tmp/forbidden.sqlite"}'` exits non-zero; `/tmp/forbidden.sqlite` is absent.
+- [ ] **[enforcement.2]** `soxe exec <memory-server> memory_write '{"db_path":"/tmp/forbidden.sqlite"}'` exits non-zero; `/tmp/forbidden.sqlite` is absent.
       Via guard.
-- [ ] **[enforcement.3]** `sox install <skill> --host codex --scope project --forbidden-key test` exits non-zero; `$SBX/.codex/skills/<id>` is absent.
+- [ ] **[enforcement.3]** `soxe install <skill> --host codex --scope project --forbidden-key test` exits non-zero; `$SBX/.codex/skills/<id>` is absent.
       Via guard.
-- [ ] **[enforcement.4]** `sox install <agent> --host claude --scope org` exits non-zero; `$SBX/.claude/agents/<id>.md` is absent.
+- [ ] **[enforcement.4]** `soxe install <agent> --host claude --scope org` exits non-zero; `$SBX/.claude/agents/<id>.md` is absent.
       Via guard.
 - [ ] **[enforcement.5]** `permission-guard.spec.ts` exists and tests `compilePolicyFromEnv` undeclared-db denial.
       `test -f extensions/mcp-servers/memory-server/src/permission-guard.spec.ts && echo OK`
@@ -90,5 +90,5 @@ mutates:    ["libs/install-engine/src/install.ts",
 ## Notes for executor
 
 - Denial (a): a stdio install that writes to `.mcp.json` is a routing bug (stdio → `.claude.json`, sse/http → `.mcp.json`). The denial is that the wrong target is never written, not that stdio install fails. Make sure the check is "does stdio write `.mcp.json`?" = no.
-- Denial (b): the `exec` denial for an undeclared `db_path` is enforced by `compilePolicyFromEnv` inside the running service — the guard calls `sox exec` and the service itself returns `isError: true`. The guard then checks `assert_nonzero` (CLI propagates the error exit) and `assert_absent` the db file.
+- Denial (b): the `exec` denial for an undeclared `db_path` is enforced by `compilePolicyFromEnv` inside the running service — the guard calls `soxe exec` and the service itself returns `isError: true`. The guard then checks `assert_nonzero` (CLI propagates the error exit) and `assert_absent` the db file.
 - The `permission-guard.spec.ts` is a UNIT test (tier 2) — it may accompany the tier-3 guard but must NOT replace it. The guard's exec denial is tier 3.

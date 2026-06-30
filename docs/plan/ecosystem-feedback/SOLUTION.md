@@ -5,9 +5,9 @@
 Five categories of framework and DX debt emerge from BL-1, BL-2, BL-4, BL-5, BL-6, BL-7,
 and BL-15. The highest-impact item is BL-7: the `serve` command does a single-scope lockfile
 lookup with a hardcoded default of `'project'` and no fallback cascade. A user who runs
-`sox install memory-server --scope=user` then `sox serve memory-server` gets "extension not
+`soxe install memory-server --scope=user` then `soxe serve memory-server` gets "extension not
 found" because serve never looks in the user-scope lockfile. Every `.mcp.json` entry that
-uses `sox serve` must carry an explicit `--scope=` flag to work, which eliminates the value
+uses `soxe serve` must carry an explicit `--scope=` flag to work, which eliminates the value
 of default scope resolution everywhere else in the CLI. The root cause is that `cmdServe`
 (`apps/sox/src/main.ts:3099–3210`) calls `getScopePaths(scope2, root2)` for one scope and
 stops; no scope-cascade loop exists in this path.
@@ -66,7 +66,7 @@ for (const cs of ['org', 'user', 'project', 'local'] as const) { ... }
 But the lockfile resolution immediately above it does not.
 
 **Which BLs it explains:** BL-7 directly. It also explains why `--scope=user` must be
-passed to `sox serve` in every `.mcp.json` entry for user-scoped installs, which is
+passed to `soxe serve` in every `.mcp.json` entry for user-scoped installs, which is
 a silent DX trap: the install step does not write the scope back anywhere, so the serve
 step has no way to discover which scope was used.
 
@@ -211,7 +211,7 @@ members, only `memory-server` was explicitly verified end-to-end. `memory-cli`,
 `memory-flush`, `memory-daemon`, and `memory-organizer` build green (nx cache shows
 success for all four), but the following has not been verified:
 
-- `memory-cli` can be invoked via `sox exec memory-cli -- init` and writes a valid DB.
+- `memory-cli` can be invoked via `soxe exec memory-cli -- init` and writes a valid DB.
 - `memory-flush` fires on `SessionEnd` and writes to the DB.
 - `memory-daemon` starts, binds its Unix socket, and drains the `organizer_queue`.
 - `memory-organizer` is correctly identified as an internal library, not a bundle member.

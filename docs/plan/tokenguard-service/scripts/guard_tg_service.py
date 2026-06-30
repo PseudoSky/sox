@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Guard for `tg-service`: the tokenguard service installs/starts/health(http)/
-stops via the real sox CLI and pseudonymizes a request end-to-end through a mock
+stops via the real soxe CLI and pseudonymizes a request end-to-end through a mock
 upstream. Red until the service + proxy + adapters exist. Green when the demo
 prints ROUNDTRIP OK + LEAKS 0.
 """

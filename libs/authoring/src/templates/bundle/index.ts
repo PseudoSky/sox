@@ -34,7 +34,7 @@ function memberStubSrc(memberId: string, memberType: string): string {
     `// Replace with real implementation.`,
     ``,
     `// R6: SIGTERM handler (required for background extensions).`,
-    `// sox guarantees SIGKILL after stop_timeout_ms if this handler does not exit.`,
+    `// soxe guarantees SIGKILL after stop_timeout_ms if this handler does not exit.`,
     `process.on('SIGTERM', () => {`,
     `  // TODO: complete in-flight requests, flush writes.`,
     `  process.exit(0);`,

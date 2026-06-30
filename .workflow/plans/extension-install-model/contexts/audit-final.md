@@ -18,6 +18,7 @@ The reality audit that operationalizes the **Definition of Done**. It proves **e
 hosts — positive (the new system works), negative (the old system is gone), live-data (real
 artifacts, not fixtures), and conformance (each `[ref:]` rule holds). It also runs the convergence
 criteria (`[ingestion-skill.*]`, `[dod-reconcile.*]`) and, being phase-cumulative, every foundation
+
 + enforcement criterion. This is the last state before `done`; the **founder** reviews after it is
 green (**[dod.11]**), and only then is `state: complete` set.
 
@@ -27,14 +28,14 @@ green (**[dod.11]**), and only then is `state: complete` set.
 
 ## Semantic Distillation
 
-- **Primitive:** EXTEND `scripts/audit_eim.py` — add `phase_final()`, which calls
++ **Primitive:** EXTEND `scripts/audit_eim.py` — add `phase_final()`, which calls
   `phase_enforcement()` first, then runs the DoD/reference/live checks.
 
-- **Reference Pattern:** the `## Definition of Done` clauses `[dod.1]`–`[dod.13]` in `README.md`; the
++ **Reference Pattern:** the `## Definition of Done` clauses `[dod.1]`–`[dod.13]` in `README.md`; the
   five idioms in `references.json` (each `audit_check` `[audit-final.ref-<slug>]`); the convergence
   states' criteria; **[fix:ingest-source]** + **[fix:c6-e2e]**.
 
-- **Delta Spec:** `scripts/audit_eim.py --phase final` runs `phase_enforcement()` then:
++ **Delta Spec:** `scripts/audit_eim.py --phase final` runs `phase_enforcement()` then:
 
   ```text
   Convergence criteria:
@@ -43,7 +44,7 @@ green (**[dod.11]**), and only then is `state: complete` set.
 
   Definition-of-Done proofs (one check id literally containing each [dod.N]):
     [dod.1]  declarative reinject end-to-end (claude project+user, codex) — on disk
-    [dod.2]  mcp stdio (.mcp.json, --trust prompt) AND sox service; undeclared access denied
+    [dod.2]  mcp stdio (.mcp.json, --trust prompt) AND soxe service; undeclared access denied
     [dod.3]  six capabilities each apply/reverse/update/verify, idempotent, scope+host-aware
     [dod.4]  host registry ships claude + codex; detection + forbidden-key refusal
     [dod.5]  provenance ledger drives diff/uninstall; external edit detected; foreign keys untouched
@@ -61,7 +62,7 @@ green (**[dod.11]**), and only then is `state: complete` set.
     [audit-final.ref-host-keyed-target]       no literal host path outside libs/host-registry
     [audit-final.ref-config-merge-format]     host configs touched only via config-merge (json+toml)
     [audit-final.ref-policy-env-enforce]      every mcp spawn path enforces policy-env at the sink
-    [audit-final.ref-born-conformant-scaffold] sox init ⇄ nx byte-identical, single scaffolder
+    [audit-final.ref-born-conformant-scaffold] soxe init ⇄ nx byte-identical, single scaffolder
 
   Live-data check:
     [live] ingest swarm-cost driven solely by sox-ingest; assert the extension lands + validates
@@ -70,24 +71,24 @@ green (**[dod.11]**), and only then is `state: complete` set.
   Same `_run` PATH augmentation. Collects all failures, prints each with its ID + fix, exits with the
   failure count.
 
-- **Invariants:** runs without ML models or network (the live ingest uses local sources + the real
++ **Invariants:** runs without ML models or network (the live ingest uses local sources + the real
   FS, no network); read-only over source; every failure names the file/symbol; the boundary
   (**[inv:boundary]**) is asserted negatively — **no** check claims the foreign host executed
   content.
 
-- **Validation:** `python3 scripts/audit_eim.py --phase final` exits 0 and prints
++ **Validation:** `python3 scripts/audit_eim.py --phase final` exits 0 and prints
   `FINAL AUDIT PASSED`; then the founder reviews (**[dod.11]**) before `state: complete`.
 
 ---
 
 ## Acceptance criteria (audit-specific)
 
-- [ ] `phase_final()` calls `phase_enforcement()` first (cumulative across all three phases).
-- [ ] Every `[dod.1]`–`[dod.13]` clause has a proving check whose id contains that clause id.
-- [ ] Every `references.json` idiom's `[audit-final.ref-<slug>]` check is present.
-- [ ] At least one negative check (old system gone) and at least one live-data check are present.
-- [ ] The script exits 0 and prints `FINAL AUDIT PASSED`.
-- [ ] No criterion is marked "skipped" or "manual-only".
++ [ ] `phase_final()` calls `phase_enforcement()` first (cumulative across all three phases).
++ [ ] Every `[dod.1]`–`[dod.13]` clause has a proving check whose id contains that clause id.
++ [ ] Every `references.json` idiom's `[audit-final.ref-<slug>]` check is present.
++ [ ] At least one negative check (old system gone) and at least one live-data check are present.
++ [ ] The script exits 0 and prints `FINAL AUDIT PASSED`.
++ [ ] No criterion is marked "skipped" or "manual-only".
 
 ---
 
@@ -102,31 +103,31 @@ mutates:    ["scripts/audit_eim.py"]
 
 ## Contract Promise
 
-- **Added:** `phase_final()` in `scripts/audit_eim.py` (DoD + reference + live checks).
-- **Modified:** `scripts/audit_eim.py` (extends the one accumulating script; audit stays read-only
++ **Added:** `phase_final()` in `scripts/audit_eim.py` (DoD + reference + live checks).
++ **Modified:** `scripts/audit_eim.py` (extends the one accumulating script; audit stays read-only
   over source).
 
 ---
 
 ## Commit points
 
-- [ ] **After each source fix** to satisfy a failing DoD/reference/live check — `fix(eim): <id> — <what was corrected>`
-- [ ] **After the audit passes** (mandatory) — commit the audit script plus `state.json` /
++ [ ] **After each source fix** to satisfy a failing DoD/reference/live check — `fix(eim): <id> — <what was corrected>`
++ [ ] **After the audit passes** (mandatory) — commit the audit script plus `state.json` /
       `dag.json`: `chore(eim): audit-final green — all DoD + references + live verified`
-- [ ] **After founder approval** (**[dod.11]**) — set `state: complete` and commit:
++ [ ] **After founder approval** (**[dod.11]**) — set `state: complete` and commit:
       `chore(eim): plan complete — founder accepted`
 
 ---
 
 ## Notes for executor
 
-- This audit spawns **real hosts** where possible: place a markdown agent into `.claude/agents/`
++ This audit spawns **real hosts** where possible: place a markdown agent into `.claude/agents/`
   (claude) + the codex equivalent; run an mcp-server as stdio in `.mcp.json` (assert undeclared
-  access denied) AND as a sox service; ingest `swarm-cost` via the `sox-ingest` skill. Verify against
+  access denied) AND as a soxe service; ingest `swarm-cost` via the `sox-ingest` skill. Verify against
   the FS, not test output (the project rule).
-- **The boundary check is a negative** (`[dod.10]`): confirm NO check asserts "the foreign host ran
++ **The boundary check is a negative** (`[dod.10]`): confirm NO check asserts "the foreign host ran
   it" (**[inv:boundary]**). A check that tries to prove execution is itself a defect.
-- `[dod.11]` is satisfied by the audit exiting 0 **and** the founder approving — the script proves
++ `[dod.11]` is satisfied by the audit exiting 0 **and** the founder approving — the script proves
   the mechanical half; do not set `state: complete` before the founder signs off.
-- Keep one accumulating script: `phase_final()` MUST call `phase_enforcement()` (which calls
++ Keep one accumulating script: `phase_final()` MUST call `phase_enforcement()` (which calls
   `phase_foundation()`), so `--phase final` re-runs all 30 prior-phase criteria too.
