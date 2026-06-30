@@ -228,12 +228,21 @@ importers:
 
   libs/data/search/hybrid-search:
     dependencies:
+      '@adhd/sox-embedding-provider':
+        specifier: workspace:*
+        version: link:../../embed/embedding-provider
       '@adhd/sox-graph-store':
         specifier: workspace:*
         version: link:../../graph/graph-store
       '@adhd/sox-vector-store':
         specifier: workspace:*
         version: link:../../vectors/vector-store
+
+  libs/data/store/blob-store:
+    dependencies:
+      better-sqlite3:
+        specifier: ^12.10.0
+        version: 12.10.0
 
   libs/data/vectors/vector-store:
     dependencies:
@@ -243,6 +252,12 @@ importers:
       sqlite-vec:
         specifier: ^0.1.9
         version: 0.1.9
+
+  libs/data/verify/claim-verification:
+    devDependencies:
+      '@adhd/sox-embedding-provider':
+        specifier: workspace:*
+        version: link:../../embed/embedding-provider
 
   libs/host-registry: {}
 

@@ -81,6 +81,7 @@ export {
   readRegistry,
   writeRegistry,
   discoverStores,
+  ExpansionOverflowError,
 } from './recall.js';
 export type {
   RecallParams,
@@ -88,6 +89,8 @@ export type {
   RecallResponse,
   StoreDescriptor,
   FederatedRecallResponse,
+  ParentContextConfig,
+  LateChunkingConfig,
 } from './recall.js';
 
 // ── Daemon interop ────────────────────────────────────────────────────────────

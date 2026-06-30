@@ -1,0 +1,100 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "re-review_claim-verification",
+  "label": "Claim-verification re-review — 5 issues check + new issue audit",
+  "reviewed_at": "2026-06-29T21:32:00Z",
+  "files_reviewed": [
+    "docs/plan/claim-verification/SPEC.md",
+    "libs/data/verify/claim-verification/src/types.ts",
+    "libs/data/verify/claim-verification/src/errors.ts",
+    "libs/data/verify/claim-verification/src/normalizer.ts",
+    "libs/data/verify/claim-verification/src/index.ts",
+    "libs/data/verify/claim-verification/src/cache.ts",
+    "libs/data/verify/claim-verification/src/worker.ts",
+    "libs/data/verify/claim-verification/src/verifierWorker.ts",
+    "libs/data/verify/claim-verification/src/prefilter.ts",
+    "libs/data/verify/claim-verification/src/claim-verification.spec.ts",
+    "libs/data/verify/claim-verification/package.json",
+    "libs/data/verify/claim-verification/project.json"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": {
+      "passed": 10,
+      "failed": 0,
+      "skipped": 0
+    },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "correctness",
+      "file": "libs/data/verify/claim-verification/src/verifierWorker.ts",
+      "line": 71,
+      "description": "shutdownComplete message is silently dropped: `parentPort.close()` is called BEFORE `parentPort.postMessage({ type: 'shutdownComplete' })`. Node.js `MessagePort.close()` disables further message sending — any postMessage after close is silently dropped. The main thread's `WorkerProxy.shutdown()` never receives shutdownComplete and always falls back to the 2s timeout.",
+      "fix_sketch": "Swap the order: postMessage shutdownComplete FIRST, then close the port. Change line 71-72 to:\n```ts\nparentPort!.postMessage({ type: 'shutdownComplete' });\ntry { parentPort!.close(); } catch { /* ignore */ }\nprocess.exit(0);\n```"
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/verify/claim-verification/src/worker.ts",
+      "line": 232,
+      "description": "shutdown() listener leak: The `on('message', ...)` handler registered in `Promise.race` is never removed after resolution. If shutdownComplete arrives, `resolve()` fires but the listener stays attached to the worker. If the 2s timeout wins, the listener stays attached forever. In practice the worker exits immediately so GC eventually cleans up, but it violates best practice and can cause phantom references.",
+      "fix_sketch": "Use `worker.once('message', ...)` instead of `worker.on('message', ...)` for the shutdownComplete listener. Alternatively, save the listener reference and call `worker.removeListener(...)` after resolution."
+    },
+    {
+      "severity": "high",
+      "category": "spec-compliance",
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "line": 85,
+      "description": "VerifierBusyError is exported but NEVER thrown. The spec §Error taxonomy defines `VerifierBusyError` with `retryAfterMs`, and `ClaimVerifierConfig.maxQueueDepth` (default 100) specifies the queue depth threshold. However, neither `WorkerProxy.send()` nor `ClaimVerifierImpl.verify()` ever checks `maxQueueDepth` against `_queuedJobs`. The config field exists but is dead code — the error is never instantiated.",
+      "fix_sketch": "In `WorkerProxy.send()`, check if `this._queuedJobs >= maxQueueDepth` before incrementing and throw `VerifierBusyError` with an estimated retry delay. Pass `maxQueueDepth` through the WorkerProxy constructor or `start()` config."
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "line": 315,
+      "description": "verifyBatch aggregateConfidence spec mismatch: The spec says `aggregateConfidence` is \"Weighted across sources (min for 'contradicts')\" — meaning the min of contradictions' confidences is the aggregate. The current implementation at line 315 always computes `minConfidence` across ALL source results regardless of entailment label (`if (sr.confidence < minConfidence) minConfidence = sr.confidence`). This means a 'neutral' or 'unverifiable' result with confidence 0 resets the aggregate to 0 even if a contradicting source has high confidence. The single-source `aggregateConfidence` at lines 277-282 correctly applies the per-label logic (contradicts→confidence, entails→confidence, else→0), but verifyBatch does not reuse it.",
+      "fix_sketch": "Reuse each `VerificationResult.aggregateConfidence` from the single-source result rather than recomputing from raw confidences. For contradiction results, apply min across contradicts only. Alternatively, restructure batch to use per-source aggregate values."
+    },
+    {
+      "severity": "medium",
+      "category": "test-coverage",
+      "file": "libs/data/verify/claim-verification/src/claim-verification.spec.ts",
+      "line": 1,
+      "description": "Critical paths untested: The following have zero test coverage — (a) cached aggregateConfidence path (issue 3 fix has no regression test); (b) normalizeSource quote removal (test only checks source marker preservation at line 34, but not that quotes are stripped); (c) verify(), verifyBatch(), verifyStream() behaviors; (d) healthCheck(); (e) shutdown(); (f) pre-filter logic; (g) language mismatch downgrade; (h) cache hit/TTL expiry; (i) worker error path. Only 10 tests exist covering normalizer, cache CRUD, model registry lifecycle, and factory empty-modelId guard.",
+      "fix_sketch": "Add tests: (1) normalizeSource strips curly/straight quotes, (2) verify() cache-hit returns aggregateConfidence matching non-cached path, (3) verifyBatch aggregateConfidence follows spec semantics, (4) shutdown resolves within timeout, (5) language mismatch sets languageMismatch flag and neutral entailment."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/data/verify/claim-verification/src/worker.ts",
+      "line": 176,
+      "description": "Worker error/exit handlers don't update busy/queued state: When `worker.on('error', ...)` fires (thread-level crash), all pending promises are rejected but `_isBusy` and `_queuedJobs` are NOT reset. If the worker is recreated (not currently supported), these counters would be stale. The per-message error handler at line 166-172 correctly updates these, but only for message-level errors, not thread-level crashes.",
+      "fix_sketch": "In both the 'error' and 'exit' handlers, reset `_isBusy = false` and `_queuedJobs = 0` after draining the pending map."
+    },
+    {
+      "severity": "info",
+      "category": "style",
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "line": 364,
+      "description": "Math.random() for worker selection: `this.workers[Math.floor(Math.random() * this.workers.length)]` uses `Math.random()` for load-balanced worker selection. While not security-sensitive, `crypto.randomInt()` provides better distribution for load-balancing. Minor — workers typically default to 1.",
+      "fix_sketch": "Replace with `crypto.randomInt(this.workers.length)`."
+    }
+  ],
+  "summary": {
+    "critical": 1,
+    "high": 2,
+    "medium": 2,
+    "low": 1,
+    "info": 1
+  },
+  "backlog_entries": [
+    "BL-claim-verification-001 — verifierWorker.ts: parentPort.close() before postMessage(shutdownComplete) drops the message (CRITICAL)",
+    "BL-claim-verification-002 — WorkerProxy.shutdown() on('message') listener never cleaned up (HIGH)",
+    "BL-claim-verification-003 — VerifierBusyError never thrown despite maxQueueDepth config (HIGH)"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "segment_id": "S5-fix",
+  "agent": "flash",
+  "status": "complete",
+  "files_changed": [
+    {
+      "path": "libs/data/ingest/ingest/src/chunker-registry.ts",
+      "lines_added": 10,
+      "lines_removed": 57,
+      "summary": "Removed duplicate type declarations (SourceMap, Chunk, Chunker, ChunkerOptions, ChunkerPriority, ChunkStaleReason, StaleChunkConfig) that duplicated chunker.ts. Added import type + re-export from ./chunker.js so the types are sourced from the canonical location."
+    }
+  ],
+  "verification": {
+    "build": "pass (npx nx build ingest)",
+    "test": "pass — 2 test files, 48 tests passed (npx nx test ingest)",
+    "lint": "pass — all files pass linting (npx nx lint ingest)"
+  },
+  "handoff_notes": [
+    "chunker-registry.ts now imports types from chunker.ts via `import type { ... } from './chunker.js'` and re-exports them.",
+    "ChunkerFactory remains defined locally in chunker-registry.ts (it is NOT in chunker.ts) — it references Chunker which is now sourced from chunker.ts via the import.",
+    "ast-chunker.ts and heading-chunker.ts import from './chunker-registry.js' — unchanged, still resolve correctly.",
+    "index.ts re-exports ChunkerFactory from './chunker-registry.js' — works because chunker-registry.ts defines it locally.",
+    "registry.ts is a separate file that imports Chunker from './chunker.js' and defines its own ChunkerFactory — unaffected.",
+    "No other files were touched."
+  ]
+}

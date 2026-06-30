@@ -122,7 +122,54 @@
       "assumed_baseline": [],
       "depends_on": [],
       "updated_at": "2026-06-27T00:41:22.978Z"
+    },
+    {
+      "plan": "blob-store",
+      "dir": "blob-store",
+      "status": "complete",
+      "mutate_set": [
+        "docs/plan/blob-store/SPEC.md",
+        "libs/data/store/blob-store/"
+      ],
+      "references": ["docs/specs/approved-source-platform-spec.md"],
+      "assumed_baseline": [],
+      "depends_on": [],
+      "updated_at": "2026-06-29T21:00:00.000Z"
+    },
+    {
+      "plan": "claim-verification",
+      "dir": "claim-verification",
+      "status": "complete",
+      "mutate_set": [
+        "docs/plan/claim-verification/SPEC.md",
+        "libs/data/verify/claim-verification/"
+      ],
+      "references": ["docs/specs/agent-integration-spec.md"],
+      "assumed_baseline": [],
+      "depends_on": [],
+      "updated_at": "2026-06-29T21:00:00.000Z"
+    },
+    {
+      "plan": "retrieval-infrastructure",
+      "dir": "retrieval-infrastructure",
+      "status": "complete",
+      "mutate_set": [
+        "docs/plan/retrieval-infrastructure/SPEC.md",
+        "libs/data/embed/embedding-provider/",
+        "libs/data/vectors/vector-store/",
+        "libs/data/ingest/ingest/",
+        "libs/data/search/hybrid-search/",
+        "libs/memory-core/"
+      ],
+      "references": [
+        "docs/specs/approved-source-platform-spec.md",
+        "docs/plan/blob-store/SPEC.md",
+        "docs/plan/claim-verification/SPEC.md"
+      ],
+      "assumed_baseline": [],
+      "depends_on": ["blob-store", "claim-verification"],
+      "updated_at": "2026-06-29T21:00:00.000Z"
     }
   ],
-  "updated_at": "2026-06-27T00:41:22.985Z"
+  "updated_at": "2026-06-29T21:00:00.000Z"
 }

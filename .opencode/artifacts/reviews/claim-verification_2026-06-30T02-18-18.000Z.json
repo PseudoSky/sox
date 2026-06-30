@@ -1,0 +1,182 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "claim-verification-review",
+  "label": "claim-verification package code review — spec compliance, correctness, invariants, test coverage",
+  "reviewed_at": "2026-06-30T02:18:18.000Z",
+  "files_reviewed": [
+    "libs/data/verify/claim-verification/src/index.ts",
+    "libs/data/verify/claim-verification/src/types.ts",
+    "libs/data/verify/claim-verification/src/errors.ts",
+    "libs/data/verify/claim-verification/src/normalizer.ts",
+    "libs/data/verify/claim-verification/src/cache.ts",
+    "libs/data/verify/claim-verification/src/prefilter.ts",
+    "libs/data/verify/claim-verification/src/worker.ts",
+    "libs/data/verify/claim-verification/src/verifierWorker.ts",
+    "libs/data/verify/claim-verification/src/claim-verification.spec.ts"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 10, "failed": 0, "skipped": 0 },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "high",
+      "category": "spec-compliance",
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "line": 90,
+      "description": "maxQueueDepth config field (spec-defined with default 100) is accepted in ClaimVerifierConfig but never read or enforced. The spec says 'Maximum queue depth per worker before VerifierBusyError' — the implementation should check queue depth in WorkerProxy.send() and throw VerifierBusyError when exceeded.",
+      "fix_sketch": "In WorkerProxy.send(), check _queuedJobs against config.maxQueueDepth before posting message. If exceeded, throw VerifierBusyError with retryAfterMs from config or default. Import VerifierBusyError from errors.ts."
+    },
+    {
+      "severity": "high",
+      "category": "spec-compliance",
+      "file": "libs/data/verify/claim-verification/src/normalizer.ts",
+      "line": 17,
+      "description": "normalizeSource does NOT match the spec. The spec says 'Same pipeline as normalizeClaim, but preserves source-level markers (section headings, line numbers)'. Current implementation only normalizes whitespace (calls normalizeWhitespace directly). It should run the same pipeline as normalizeClaim (strip quotes, normalize whitespace) but skip stripCitationMarkers to preserve source markers.",
+      "fix_sketch": "Change normalizeSource to call removeQuotes then normalizeWhitespace (but NOT stripCitationMarkers). Example: return this.normalizeWhitespace(this.removeQuotes(text));"
+    },
+    {
+      "severity": "high",
+      "category": "spec-compliance",
+      "file": "libs/data/verify/claim-verification/src/verifierWorker.ts",
+      "line": 69,
+      "description": "Worker thread does not handle the 'verifyBatch' message type. The spec defines WorkerVerifyBatchMessage for batch processing within the worker. The main thread's verifyBatch() currently calls verify() per-source serially instead of sending a batch message to the worker. This is a performance issue and spec gap — the worker protocol defines batch support but neither the worker nor the proxy routes it.",
+      "fix_sketch": "Add a handler for msg.type === 'verifyBatch' in verifierWorker.ts that iterates the pairs array and sends individual result messages (or a combined batch result). Update WorkerProxy.send() to route WorkerVerifyBatchMessage to the worker."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "line": 176,
+      "description": "Pre-filter embedding provider runs on the main thread via embedSingle(). The spec D1 states: 'The pre-filter provider runs in its own worker thread, separate from both the NLI worker pool and the retrieval pipeline's embedding workers.' If the embedding provider uses ONNX locally, this violates BL-11 (ONNX/NLP on main thread alongside potential better-sqlite3).",
+      "fix_sketch": "Wrap the embedding provider call in its own worker thread or delegate to a dedicated embedding worker. The existing @adhd/sox-embedding-provider already has worker thread support — use it. Alternatively, document that the embedding provider must be configured for remote inference when BL-11 isolation is required."
+    },
+    {
+      "severity": "high",
+      "category": "spec-compliance",
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "line": 6,
+      "description": "VerifierBusyError is defined in errors.ts but never exported from index.ts (only ModelNotLoadedError, UnsupportedLanguageError, PreFilterSkippedError, and InvalidClaimInputError are exported). The spec defines VerifierBusyError as part of the public error taxonomy.",
+      "fix_sketch": "Add VerifierBusyError to the export block in index.ts: export { ... VerifierBusyError, ... } from './errors.js';"
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "line": 122,
+      "description": "ModelRegistration during warmUp() omits several spec-defined fields: displayName, providerUri, dimensions. These are documented in the spec and should be available for audit traceability.",
+      "fix_sketch": "Pass along the optional fields from config or leave them undefined: add displayName (not in config — could be derived from modelId), providerUri (not in config — could be 'local:onnx' by default), and dimensions (not applicable for NLI model, but should be set if available)."
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "line": 149,
+      "description": "Claim.context field is defined in the Claim interface spec for 'disambiguation' but is never read or used in verify()/verifyBatch(). The context paragraph is supposed to help disambiguate the claim but is silently ignored.",
+      "fix_sketch": "Either use claim.context in the verification pipeline (e.g., prepend to claimText with a separator before NLI) or remove the context field from the Claim interface if it's out of scope for initial implementation. If deferring, add a comment and backlog entry."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "line": 270,
+      "description": "aggregateConfidence in verify() for cached results uses cached.confidence directly. For single-source results this is fine, but the cached result has already had its entailment label potentially modified by minConfidenceThreshold logic. The correct cached aggregate should account for entailment label: 0 for neutral/unverifiable, confidence for entails, min(confidence, 1) for contradicts (spec: 'min for contradicts').",
+      "fix_sketch": "Apply the same aggregateConfidence logic to cached results: if cached.entailment === 'contradicts' → Math.min(cached.confidence, 1); if 'entails' → cached.confidence; otherwise → 0."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "line": 296,
+      "description": "verifyBatch aggregateConfidence uses simple min across all source confidences regardless of entailment label. Spec says 'Weighted across sources (min for 'contradicts')' — implying that only 'contradicts' results use min, while 'entails' results keep their own confidence.",
+      "fix_sketch": "Replace minConfidence tracking with spec-compliant logic: for 'contradicts' results use min(confidence, currentMinForContradicts), for 'entails' keep highest confidence, for 'neutral'/'unverifiable' use 0 as the aggregate."
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "line": 319,
+      "description": "verifyStream implements serial iteration (yield await for one at a time) instead of concurrent batch processing. Spec says 'Streaming batch — caller processes results as they complete. Order is not guaranteed to match input order.' The current implementation processes pairs sequentially, which doesn't take advantage of multiple workers for parallelism.",
+      "fix_sketch": "Implement concurrent processing: launch async processing for each pair, track in a Map, and yield results as they resolve using Promise.race or a completion callback pattern."
+    },
+    {
+      "severity": "medium",
+      "category": "test-coverage",
+      "file": "libs/data/verify/claim-verification/src/claim-verification.spec.ts",
+      "line": 87,
+      "description": "Severe test coverage gap. Only 10 tests covering normalizer (4), cache (3), registry (1), factory (1), and basic error (1). Zero tests for: ClaimVerifierImpl.verify(), verifyBatch(), verifyStream(), healthCheck(), shutdown(), cosineSimilarity edge cases, cacheKey, language mismatch, minConfidenceThreshold, pre-filter flow, worker timeout, worker error handling, concurrent access, edge cases (empty text, negative threshold, zero-length arrays).",
+      "fix_sketch": "Add test suites: (a) verify() — mock WorkerProxy, test full pipeline (pre-filter skip, NLI result, error result, cache hit/miss, language mismatch, minConfidence downgrade); (b) verifyBatch() — multi-source claims; (c) verifyStream() — async iterable input; (d) cosineSimilarity() — zero vectors, same vectors, orthogonal vectors; (e) shutdown/healthCheck lifecycle; (f) worker proxy — timeout, error propagation."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/data/verify/claim-verification/src/worker.ts",
+      "line": 227,
+      "description": "WorkerProxy.shutdown() does not await the spec-defined WorkerShutdownCompleteMessage. Instead it waits for the 'exit' event with a 2s timeout. If the worker is busy processing a verify request and the shutdown message arrives after a verify message, the worker may process.exit(0) before sending the result back, causing a pending promise to hang until timeout.",
+      "fix_sketch": "Send shutdown message, then listen for 'shutdownComplete' message from the worker (which should finish pending work before exiting). Keep the 2s timeout as a safety fallback but prefer the shutdownComplete signal."
+    },
+    {
+      "severity": "low",
+      "category": "spec-compliance",
+      "file": "libs/data/verify/claim-verification/src/verifierWorker.ts",
+      "line": 71,
+      "description": "Worker shutdown calls process.exit(0) immediately without sending shutdownComplete. Spec defines WorkerShutdownCompleteMessage but it's never emitted.",
+      "fix_sketch": "Before process.exit(0), postMessage({ type: 'shutdownComplete' }) so the proxy can confirm clean shutdown."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "line": 354,
+      "description": "selectWorker() uses Math.random() for round-robin-ish selection. When all workers are busy, a random worker is chosen. This means jobs pile up on random workers instead of the least-loaded one, increasing latency. Load-balanced selection (round-robin or least-recently-used) would be more predictable.",
+      "fix_sketch": "Replace random selection with round-robin (increment an index counter) or least-queued selection (pick worker with minimum _queuedJobs)."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/data/verify/claim-verification/src/prefilter.ts",
+      "line": 6,
+      "description": "cosineSimilarity does not guard against vectors of different lengths (a.length !== b.length). If the embedding provider returns mismatched dimensions, this will either produce NaN (via out-of-bounds undefined) or compute incorrect similarity. The spec D2 explicitly warns about different embedding dimensions.",
+      "fix_sketch": "Add length check: if (a.length !== b.length) throw new Error('Dimension mismatch in cosineSimilarity: ' + a.length + ' vs ' + b.length);"
+    },
+    {
+      "severity": "low",
+      "category": "spec-compliance",
+      "file": "libs/data/verify/claim-verification/src/worker.ts",
+      "line": 6,
+      "description": "package.json declares node engines >= 22, while the tech stack in the reviewer spec says Node.js ≥20. Minor version inconsistency.",
+      "fix_sketch": "Align package.json engines.node with the monorepo convention (>=20 or >=22 based on root tsconfig target). This is a non-breaking alignment."
+    },
+    {
+      "severity": "info",
+      "category": "style",
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "line": 267,
+      "description": "Cached results bypass minConfidenceThreshold re-evaluation. If the threshold changes between runs, the cache returns results that may have been computed with a different threshold. This is a design tradeoff (cache is TTL-bound) but worth documenting.",
+      "fix_sketch": "Document that cache entries store the result at the time of initial computation and are not re-evaluated on subsequent retrievals. If dynamic threshold is required, set shorter TTL or bypass cache."
+    },
+    {
+      "severity": "info",
+      "category": "test-coverage",
+      "file": "libs/data/verify/claim-verification/src/claim-verification.spec.ts",
+      "line": 1,
+      "description": "The single integration test createClaimVerifier('throws when modelId is missing') is the only test exercising the real module import path. No test coverage for the actual ClaimVerifierImpl verify/verifyBatch/verifyStream lifecycle, worker communication, or error propagation.",
+      "fix_sketch": "See the high-priority test-coverage finding. Add at minimum a lifecycle test: createClaimVerifier → warmUp → healthCheck (isReady true) → verify (with deterministic worker) → shutdown."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 5,
+    "medium": 7,
+    "low": 4,
+    "info": 2
+  },
+  "backlog_entries": [
+    "BL-CV-01 — verifierWorker.ts uses hash-based deterministic stub instead of real ONNX NLI inference (noted as acceptable in spec, but blocks production use).",
+    "BL-CV-02 — Pre-filter embedding provider runs on main thread; violates BL-11 if embedding provider uses local ONNX (spec D1 calls for dedicated worker thread). Requires embedding provider integration decision.",
+    "BL-CV-03 — Claim.context field is accepted but never consumed. Spec says 'Surrounding paragraph for disambiguation' but no pipeline stage uses it.",
+    "BL-CV-04 — Test gap: only 10 unit tests, zero integration tests for ClaimVerifierImpl lifecycle, worker communication, or vertex cases (validation: empty arrays, null fields, language mismatch)."
+  ]
+}

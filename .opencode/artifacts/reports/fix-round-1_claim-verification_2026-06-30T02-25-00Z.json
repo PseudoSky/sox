@@ -1,0 +1,45 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "fix-round-1",
+  "label": "Fix shutdown-complete ordering and listener leak in claim-verification",
+  "completed_at": "2026-06-30T02:25:00Z",
+
+  "summary": "Fixed two bugs in claim-verification worker shutdown: (1) verifierWorker.ts swapped close/postMessage order so shutdownComplete is not silently dropped, (2) worker.ts changed worker.on to worker.once to prevent listener leak",
+
+  "changes": [
+    {
+      "file": "libs/data/verify/claim-verification/src/verifierWorker.ts",
+      "kind": "moved parentPort!.postMessage before parentPort!.close() in shutdown handler",
+      "lines": "-1 / +1"
+    },
+    {
+      "file": "libs/data/verify/claim-verification/src/worker.ts",
+      "kind": "changed worker.on('message', ...) to worker.once('message', ...) in shutdown() to prevent listener leak",
+      "lines": "-1 / +1"
+    }
+  ],
+
+  "tests": {
+    "project": "claim-verification",
+    "command": "nx test claim-verification",
+    "passed": 10,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Tests  10 passed (10)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "issues": [],
+
+  "handoff_notes": [],
+
+  "backlog_entries": []
+}

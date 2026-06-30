@@ -1,0 +1,97 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "verify-final_all",
+  "label": "Consolidated verification — all 4 remaining fixes",
+  "reviewed_at": "2026-06-30T03:43:19Z",
+  "files_reviewed": [
+    "libs/data/store/blob-store/src/store.ts",
+    "libs/data/vectors/vector-store/src/lancedb.ts",
+    "libs/data/ingest/ingest/project.json",
+    "libs/memory-core/src/recall.spec.ts"
+  ],
+  "verification_summary": {
+    "blob-store": {
+      "status": "PASS",
+      "build": "passed",
+      "test": { "passed": 36, "failed": 0, "skipped": 0 },
+      "lint": "passed",
+      "findings": []
+    },
+    "vector-store": {
+      "status": "PASS",
+      "build": "passed",
+      "test": { "passed": 35, "failed": 0, "skipped": 0 },
+      "lint": "passed",
+      "findings": []
+    },
+    "ingest": {
+      "status": "PASS",
+      "build": "passed",
+      "test": { "passed": 48, "failed": 0, "skipped": 0 },
+      "lint": "passed",
+      "findings": []
+    },
+    "memory-core": {
+      "status": "PASS",
+      "build": "passed",
+      "test": { "passed": 160, "failed": 0, "skipped": 1 },
+      "lint": "passed",
+      "findings": []
+    }
+  },
+  "per_package_analysis": [
+    {
+      "package": "blob-store",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "checks": [
+        {
+          "check": "getStream() FD leak — fileHandle.stat() throw path",
+          "result": "PASS",
+          "detail": "At line 309, `fileHandle` is declared as `let fileHandle: fsp.FileHandle | undefined` outside the try block. At lines 378-386, the outer catch block closes the handle (line 379: `if (fileHandle) await fileHandle.close().catch(() => {})`) before calling release() (line 380). If `fileHandle.stat()` throws at line 313, control jumps to the outer catch which cleans up correctly."
+        }
+      ]
+    },
+    {
+      "package": "vector-store",
+      "file": "libs/data/vectors/vector-store/src/lancedb.ts",
+      "checks": [
+        {
+          "check": "Constructor db parameter required (no `?`)",
+          "result": "PASS",
+          "detail": "Line 104: `constructor(config: LanceDbVectorBackendConfig & { db: Database.Database })` — `db` is in an intersection type with no optional marker. The parameter is required at the type level."
+        }
+      ]
+    },
+    {
+      "package": "ingest",
+      "file": "libs/data/ingest/ingest/project.json",
+      "checks": [
+        {
+          "check": "Build command starts with rm -rf stale dist",
+          "result": "PASS",
+          "detail": "Line 19: `command: \"rm -rf libs/data/ingest/ingest/dist/ && tsc ...\"` — confirmed the build command begins with the clean step. Stale files check: `ls libs/data/ingest/ingest/dist/errors.*` returned 'No such file or directory'."
+        }
+      ]
+    },
+    {
+      "package": "memory-core",
+      "file": "libs/memory-core/src/recall.spec.ts",
+      "checks": [
+        {
+          "check": "session_id fallback integration test present",
+          "result": "PASS",
+          "detail": "Lines 69-132: `describe('Parent-context expansion — session_id fallback')` block contains test `'expands child node via session_id when no DERIVED_FROM edge exists'`. Creates a child node with `session_id: parentUid` and no `derived_from_uid` (line 88), verifies no DERIVED_FROM edge exists (line 100), runs recall with parentContext expansion, and asserts expandedText includes both child and parent content (lines 118-119). Test count: 160 passed (1 skipped — expected)."
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "info": 0
+  },
+  "backlog_entries": []
+}

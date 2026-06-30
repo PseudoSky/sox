@@ -1,6 +1,6 @@
 ---
 description: System design + tool research + orchestration. Plans large features, decomposes into dispatchable segments, knows when to use flash vs implement
-mode: subagent
+mode: all
 model: deepseek/deepseek-v4-pro
 temperature: 0
 steps: 20

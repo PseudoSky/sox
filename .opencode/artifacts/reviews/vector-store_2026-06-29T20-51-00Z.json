@@ -1,0 +1,100 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "vector-store-review",
+  "label": "vector-store package code review — LanceDbVectorBackend adapter, spec compliance, test coverage",
+  "reviewed_at": "2026-06-29T20:51:00Z",
+  "files_reviewed": [
+    "libs/data/vectors/vector-store/src/index.ts",
+    "libs/data/vectors/vector-store/src/lancedb.ts",
+    "libs/data/vectors/vector-store/src/vector-store.spec.ts"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 35, "failed": 0, "skipped": 0 },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "invariant",
+      "file": "libs/data/vectors/vector-store/src/lancedb.ts",
+      "line": 119,
+      "description": "SpaceInvariantError not thrown on dimension mismatch — LanceDbVectorBackend.upsert() throws a generic Error instead of the contract-required SpaceInvariantError. The [def:space-invariant] invariant (COMPILED_INTERFACES.md) requires ALL implementations to throw SpaceInvariantError when vec.length !== space.dim. SqliteVectorBackend correctly throws SpaceInvariantError; LanceDbVectorBackend does not. Any caller catching SpaceInvariantError will miss LanceDB dim mismatches.",
+      "fix_sketch": "Replace `throw new Error(...)` with `throw new SpaceInvariantError(id, space, vec.length)` in LanceDbVectorBackend.upsert() line 119. Import SpaceInvariantError from './index.js'."
+    },
+    {
+      "severity": "high",
+      "category": "test-coverage",
+      "file": "libs/data/vectors/vector-store/src/vector-store.spec.ts",
+      "line": 1,
+      "description": "Zero test coverage for LanceDbVectorBackend. The entire adapter (196 lines of production code in lancedb.ts, plus exports in index.ts) has no tests. This means: (1) the SpaceInvariantError bug is undetected, (2) the auto-create side-effect behavior is unverified, (3) the eventual swap from in-memory simulation to real @lancedb/lancedb has no regression safety net. All 35 existing tests cover only SqliteVectorBackend, openVectorStore, and reembed.",
+      "fix_sketch": "Add a describe('LanceDbVectorBackend', ...) block with tests mirroring the SqliteVectorBackend coverage: ensureSpace, listSpaces, upsert (insert/update/dim-mismatch), delete (single/cross-space/no-op), get (existing/nonexistent/unknown-model), knn (sort/k-limit/filter/empty), iter (basic/for-of/filter/unknown/empty), multiple spaces, and edge cases (special chars, round-trip)."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/vectors/vector-store/src/lancedb.ts",
+      "line": 189,
+      "description": "LanceDbVectorBackend.getTable() auto-creates spaces as a silent side effect. Calling knn(), get(), or iter() on a non-ensured space calls ensureSpace() internally, pushing to this.spaces and creating an empty InMemoryLanceTable. SqliteVectorBackend's equivalent methods fail (SQLITE_ERROR) when the vec0 table doesn't exist. This behavioral divergence makes the two backends NOT swappable, violating spec D3 ('Both backends implement the same interface').",
+      "fix_sketch": "Remove the ensureSpace() fallback from getTable(). Instead, if the table doesn't exist, return null/undefined and have knn()/get()/iter() handle the missing-table case. Alternatively, add a guard that throws SpaceNotFoundError — consistent with SqliteVectorBackend throwing on missing vec0 table."
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/vectors/vector-store/src/index.ts",
+      "line": 328,
+      "description": "openLanceDbVectorStore return type diverges from spec. SPEC.md §2B specifies return type `LanceDbVectorBackend & VectorBackend` but implementation returns `LanceDbVectorBackend` only. While structurally compatible (LanceDbVectorBackend implements VectorBackend), the intersection type communicates intent explicitly.",
+      "fix_sketch": "Change return type to `LanceDbVectorBackend & VectorBackend`: `export function openLanceDbVectorStore(config: ...): LanceDbVectorBackend & VectorBackend`"
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/vectors/vector-store/src/index.ts",
+      "line": 329,
+      "description": "Spec §2B defines openLanceDbVectorStore config as `{ db: Database }` (required). Implementation has `db?` (optional). The LanceDbVectorBackend constructor accepts but never uses the db parameter — it's dead in the current in-memory simulation. This misleads callers into thinking the backend uses a SQLite database.",
+      "fix_sketch": "Either (a) remove `db` from the config type entirely until real LanceDB is implemented, or (b) add a runtime guard at the factory that requires db (consistent with the spec). If the in-memory placeholder is intentional, remove db from the type and add a comment explaining the placeholder."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/data/vectors/vector-store/src/lancedb.ts",
+      "line": 127,
+      "description": "LanceDbVectorBackend.delete() is internally inconsistent with other methods — it does NOT auto-create spaces (finds space then returns silently if not found), while get(), knn(), and iter() all auto-create via getTable(). Either delete() should also auto-create, or all methods should consistently fail on missing space (preferred — matches SqliteVectorBackend behavior).",
+      "fix_sketch": "Apply the same fix as for getTable(). If getTable() stops auto-creating, delete() is already correct (silent no-op on missing space). If auto-creation is kept, delete() should use getTable() too for consistency — but auto-creation is the wrong behavior overall."
+    },
+    {
+      "severity": "low",
+      "category": "spec-compliance",
+      "file": "libs/data/vectors/vector-store/src/lancedb.ts",
+      "line": 94,
+      "description": "The LanceDbVectorBackend is an in-memory simulation, not a real LanceDB backend. SPEC.md §2 promises a 'LanceDB backend (adapter)' with 'HNSW and IVF-PQ ANN indexes, configurable per-space'. The implementation stores vectors in a Map with brute-force cosine similarity — it is an in-memory VectorBackend, not a LanceDB adapter. The comment at line 30 acknowledges this but the public API (exported class name, config shape) implies LanceDB integration.",
+      "fix_sketch": "Either (1) rename to InMemoryVectorBackend and add a real LanceDbVectorBackend when @lancedb/lancedb becomes available, or (2) clearly document in JSDoc that this is a placeholder simulation with no persistent storage or ANN indexes."
+    },
+    {
+      "severity": "info",
+      "category": "style",
+      "file": "libs/data/vectors/vector-store/src/lancedb.ts",
+      "line": 98,
+      "description": "Constructor accepts `db?: Database.Database` parameter but never uses it. The parameter exists only because the factory signature requires it. Dead parameters increase API surface area and confuse callers.",
+      "fix_sketch": "Remove the `db` parameter from both the constructor and factory type. If a DB-independent in-memory backend is the intent, don't pretend it takes a DB."
+    }
+  ],
+  "summary": {
+    "critical": 1,
+    "high": 2,
+    "medium": 2,
+    "low": 2,
+    "info": 1
+  },
+  "backlog_entries": [
+    "BL-XXX — LanceDbVectorBackend throws generic Error on dim mismatch instead of SpaceInvariantError (critical)",
+    "BL-XXX — No test coverage for LanceDbVectorBackend (high)",
+    "BL-XXX — LanceDbVectorBackend.getTable() auto-creates spaces as silent side effect — inconsistent with SqliteVectorBackend (high)",
+    "BL-XXX — openLanceDbVectorStore return type diverges from spec (medium)",
+    "BL-XXX — openLanceDbVectorStore db parameter optional when spec says required (medium)",
+    "BL-XXX — LanceDbVectorBackend.delete() internally inconsistent with other methods (low)",
+    "BL-XXX — LanceDbVectorBackend is in-memory simulation, not real LanceDB adapter (low)",
+    "BL-XXX — LanceDbVectorBackend constructor accepts unused db parameter (info)"
+  ]
+}

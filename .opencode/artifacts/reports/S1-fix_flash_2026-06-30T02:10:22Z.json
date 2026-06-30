@@ -1,0 +1,72 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "flash",
+  "segment": "S1",
+  "label": "Fix 3 bugs in blob-store/src/store.ts",
+  "completed_at": "2026-06-30T02:10:22Z",
+
+  "summary": "Three bugfixes applied to libs/data/store/blob-store/src/store.ts: verifyAll() concurrency pattern (Promise.race never-shrinking bug → proper batch-wait with Promise.allSettled), acquireGcLock() cross-process serialization (added exclusive file creation lock with 30s timeout), allocateTempPath() PRNG (Math.random → crypto.randomUUID).",
+
+  "verification": {
+    "pre_ship": {
+      "lint_passed": true,
+      "build_passed": true,
+      "test_passed": true,
+      "test_results": "36 passed, 0 failed (2 test files)",
+      "impact_checked": false,
+      "registry_synced": false,
+      "backlog_updated": false
+    },
+    "type_based": {
+      "type": "data lib",
+      "playbook_applied": true,
+      "notes": "Data lib playbook: nx build → nx test → nx lint. No registry sync needed (data packages not in registry/index.json). No scope/host verification needed."
+    }
+  },
+
+  "changes": [
+    {
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "kind": "Bug 1: verifyAll() — replaced Promise.race + never-matching findIndex with Promise.allSettled batch-wait pattern; pending array now properly shrinks via splice(0, concurrency); drain loop uses same batch pattern instead of sequential await each.",
+      "lines": "+38 / -33"
+    },
+    {
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "kind": "Bug 2: acquireGcLock() — added cross-process GC serialization via exclusive file creation lock (fsp.open(path, 'wx') with retry + 30s timeout). Replaced no-op open-a-with-datasync pattern.",
+      "lines": "+31 / -14"
+    },
+    {
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "kind": "Bug 3: allocateTempPath() — replaced Math.random().toString(36).slice(2,8) with crypto.randomUUID().replace(/-/g,'').slice(0,8). Added randomUUID import from node:crypto.",
+      "lines": "+1 / -1"
+    }
+  ],
+
+  "tests": {
+    "project": "blob-store",
+    "command": "npx nx test blob-store",
+    "passed": 36,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files  2 passed (2)\nTests  36 passed (36)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "issues": [
+    "NODE: flock() from node:fs is not available in this Node.js runtime (v24.11.1 on macOS). The spec called for flock(fd, LOCK_EX), but fs.flock and fs.constants.LOCK_EX/LOCK_UN are absent. Fixed by using exclusive file creation (fsp.open(path, 'wx') with O_EXCL semantics) which provides equivalent cross-process serialization."
+  ],
+
+  "handoff_notes": [
+    "The acquireGcLock() implementation uses exclusive file create (.lock.acquire) instead of flock() because the runtime lacks it. Compatible interface: returns { close } where close() releases the lock (closes fd + unlinks .lock.acquire).",
+    "verifyAll() now batches via pending.splice(0, concurrency) + Promise.allSettled. Rejected promises are silently dropped (no reject handling in the original code either — the spec didn't add any)."
+  ],
+
+  "backlog_entries": []
+}

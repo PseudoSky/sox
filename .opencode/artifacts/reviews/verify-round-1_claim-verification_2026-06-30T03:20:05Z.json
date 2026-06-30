@@ -1,0 +1,46 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "verify-round-1_claim-verification",
+  "label": "claim-verification shutdown protocol re-review",
+  "reviewed_at": "2026-06-30T03:20:05Z",
+  "files_reviewed": [
+    "libs/data/verify/claim-verification/src/worker.ts",
+    "libs/data/verify/claim-verification/src/verifierWorker.ts"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 10, "failed": 0, "skipped": 0 },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "correctness",
+      "file": "libs/data/verify/claim-verification/src/verifierWorker.ts",
+      "line": 70,
+      "description": "Bug 1 — shutdownComplete posted after parentPort.close(): POSTED BEFORE. Line 71 posts shutdownComplete BEFORE line 72 calls close(). This is correct.",
+      "fix_sketch": "Already fixed — message is posted before the port is closed."
+    },
+    {
+      "severity": "critical",
+      "category": "correctness",
+      "file": "libs/data/verify/claim-verification/src/worker.ts",
+      "line": 233,
+      "description": "Bug 2 — Listener leak in shutdown(): Uses once('message') correctly. Line 233 registers a one-shot listener via .once(), not .on(). No persistent listener leak.",
+      "fix_sketch": "Already fixed — once('message') prevents listener accumulation across repeated shutdown() calls."
+    }
+  ],
+  "verdict": {
+    "issue_1_shutdownComplete_order": "PASS — shutdownComplete posted before port.close()",
+    "issue_2_listener_leak": "PASS — shutdown() uses once('message'), not on('message')",
+    "overall": "PASS — both bugs confirmed fixed, no regressions detected"
+  },
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "info": 0
+  }
+}

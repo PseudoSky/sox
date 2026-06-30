@@ -1,0 +1,15 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "flash",
+  "task_id": "group-F",
+  "label": "memory-core — parentDocId fallback, agent_id filter, expansionTruncated, optional fields",
+  "completed_at": "2026-06-29T21:23:00Z",
+  "changes": [
+    { "file": "libs/memory-core/src/recall.ts", "kind": "fixed parentDocId fallback, agent_id filter in vec+FTS, expansionTruncated flag, made maxDepth/maxContextTokens optional", "lines": "+35/-10" }
+  ],
+  "tests": { "project": "memory-core", "command": "nx test memory-core", "passed": 159, "failed": 0, "skipped": 1 },
+  "lint": { "passed": true },
+  "build": { "passed": true },
+  "issues": [],
+  "backlog_entries": []
+}

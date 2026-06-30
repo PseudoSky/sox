@@ -1,0 +1,75 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "ingest",
+  "label": "Fix 8 issues in libs/data/ingest/ingest/src",
+  "completed_at": "2026-06-29T21:24:15.000Z",
+
+  "summary": "Fixed 8 issues across libs/data/ingest/ingest/src/: RST heading detection, preamble emission for both chunkers, Python indentation boundary detection, short declaration merging, ChunkerRegistry seal, vacuous test assertions, and removed dead files.",
+
+  "changes": [
+    {
+      "file": "libs/data/ingest/ingest/src/heading-chunker.ts",
+      "kind": "Fix 1: RST heading detection — added underline (=====/-----) detection in the line loop; Fix 2: preamble emission before first heading",
+      "lines": "+30 / -1"
+    },
+    {
+      "file": "libs/data/ingest/ingest/src/ast-chunker.ts",
+      "kind": "Fix 3: preamble emission before first declaration; Fix 6: Python indentation-based boundary detection; Fix 7: short declarations merged into preceding chunk",
+      "lines": "+74 / -17"
+    },
+    {
+      "file": "libs/data/ingest/ingest/src/chunker-registry.ts",
+      "kind": "Fix 5: added `sealed` field, `seal()` method, and guard on `register()`",
+      "lines": "+11 / -2"
+    },
+    {
+      "file": "libs/data/ingest/ingest/src/index.ts",
+      "kind": "Fix 5: call registry.seal() after auto-registration",
+      "lines": "+3 / -0"
+    },
+    {
+      "file": "libs/data/ingest/ingest/src/chunker-registry.spec.ts",
+      "kind": "Fix 4: fixed vacuous assertions — use unsupported/unknown syntax and added .toThrow()",
+      "lines": "+2 / -2"
+    },
+    {
+      "file": "libs/data/ingest/ingest/src/errors.ts",
+      "kind": "Fix 8: deleted — duplicate of chunker-registry.ts classes",
+      "lines": "-28"
+    },
+    {
+      "file": "libs/data/ingest/ingest/src/registry.ts",
+      "kind": "Fix 8: deleted — duplicate of chunker-registry.ts classes",
+      "lines": "-73"
+    }
+  ],
+
+  "tests": {
+    "project": "ingest",
+    "command": "npx nx test ingest",
+    "passed": 48,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files  2 passed (2)\nTests  48 passed (48)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "issues": [
+    "NONE"
+  ],
+
+  "handoff_notes": [
+    "ChunkerRegistry.seal() is now called in index.ts after auto-registration — any late regs will throw",
+    "errors.ts and registry.ts were deleted — nothing imported them, verify no downstream breakage"
+  ],
+
+  "backlog_entries": []
+}

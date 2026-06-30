@@ -1,0 +1,156 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "embedding-provider-review",
+  "label": "embedding-provider — SPEC.md §1 compliance & correctness review",
+  "reviewed_at": "2026-06-29T21:14:00.000Z",
+  "files_reviewed": [
+    "libs/data/embed/embedding-provider/src/index.ts",
+    "libs/data/embed/embedding-provider/src/deterministic.ts",
+    "libs/data/embed/embedding-provider/src/remote.ts",
+    "libs/data/embed/embedding-provider/src/cache.ts",
+    "libs/data/embed/embedding-provider/src/embedWorker.ts",
+    "libs/data/embed/embedding-provider/src/fastembed.ts",
+    "libs/data/embed/embedding-provider/src/embedding-provider.spec.ts"
+  ],
+  "spec_documents_reviewed": [
+    "docs/plan/retrieval-infrastructure/SPEC.md §1",
+    "docs/plan/memory-refactor/COMPILED_INTERFACES.md (EmbeddingProvider section)",
+    "libs/data/embed/embedding-provider/CLAUDE.md"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": {
+      "passed": 30,
+      "failed": 0,
+      "skipped": 0
+    },
+    "lint": "passed",
+    "notes": "All verification passed from cache — no regressions detected."
+  },
+  "findings": [
+    {
+      "severity": "high",
+      "category": "spec-compliance",
+      "file": "docs/plan/memory-refactor/COMPILED_INTERFACES.md",
+      "line": 125,
+      "description": "COMPILED_INTERFACES.md (the authoritative interface spec per CLAUDE.md) omits `maxTokens` from `EmbeddingProviderMetadata`. SPEC.md §1 (line 47) and the code in `index.ts` (line 14) both include `maxTokens: number`. The authoritative spec is stale — any implementer reading COMPILED_INTERFACES.md would produce an incomplete provider.",
+      "fix_sketch": "Add `maxTokens: number` to `EmbeddingProviderMetadata` in COMPILED_INTERFACES.md, matching SPEC.md §1 and the code."
+    },
+    {
+      "severity": "high",
+      "category": "test-coverage",
+      "file": "libs/data/embed/embedding-provider/src/fastembed.ts",
+      "line": 112,
+      "description": "FastembedProvider (ONNX real provider) has zero test coverage. The entire ONNX path — `MODEL_CONFIGS`, worker thread lifecycle, `embedSingle`, `embedBatch` with chunk-then-mean-pool, `meanPool`, `chunkText`, `sendBatch`, `toFloat32Normalised`, worker error/exit handlers — is untested. The spec's D7 (chunk-then-mean-pool, no truncation) is not validated.",
+      "fix_sketch": "Add tests for: (a) MODEL_CONFIGS registration for bge-m3 and codexembed-400m, (b) chunkText produces correct boundaries, (c) meanPool normalizes correctly, (d) toFloat32Normalised handles empty/different-length arrays, (e) worker error propagation."
+    },
+    {
+      "severity": "high",
+      "category": "test-coverage",
+      "file": "libs/data/embed/embedding-provider/src/cache.ts",
+      "line": 61,
+      "description": "FileSystemModelCache has zero test coverage despite implementing the `ModelCache` interface required by SPEC.md §1. Download, SHA-256 verification, streaming (`ensureStream`), error recovery (cleanup on failed download), and the `cached()` integrity check are all unverified.",
+      "fix_sketch": "Add tests for: (a) cached() detects missing files, (b) cached() detects SHA-256 mismatch, (c) ensure() throws ResolutionError on HTTP failure, (d) ensureStream() yields progress updates, (e) clear() removes directory."
+    },
+    {
+      "severity": "medium",
+      "category": "test-coverage",
+      "file": "libs/data/embed/embedding-provider/src/cache.ts",
+      "line": 9,
+      "description": "EmbeddingCache has zero test coverage despite being used by DeterministicProvider. The LRU eviction logic (maxSize boundary, get-touches-LRU, set-evicts-oldest) is unverified.",
+      "fix_sketch": "Add unit tests for: (a) evicts when exceeding maxSize, (b) get() promotes entry to most-recent, (c) clear() resets size to zero."
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/embed/embedding-provider/src/index.ts",
+      "line": 78,
+      "description": "`FastEmbedPoolConfig` is defined in `index.ts` with `maxWorkers`, `preloadModels`, and `batchSizes` fields matching SPEC.md §1, but no pool manager is implemented. `FastembedProvider` creates a single worker per instance (line 280-283) with no shared pool. The interface is dead code — callers that pass `maxWorkers` or `preloadModels` to `createEmbeddingProvider` will have them silently ignored.",
+      "fix_sketch": "Either remove `FastEmbedPoolConfig` from the exports if pool semantics are deferred, or implement `FastEmbedPool` as a shared worker manager that `FastembedProvider` acquires from."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/data/embed/embedding-provider/src/fastembed.ts",
+      "line": 209,
+      "description": "`warmUp()` in FastembedProvider has a self-contradictory comment. Line 211 says \"No-op: isDeterministic is false, cache would be unreliable\" but line 212 immediately says \"Pre-warm the model by embedding the texts, priming ONNX inference\" — then does nothing with the `texts` parameter (line 213: `void texts`). This is technically correct per the contract (warmUp is a no-op for non-deterministic providers) but the comment is actively misleading: a reader would believe the model is being warmed.",
+      "fix_sketch": "Remove the misleading comment on line 212 or implement actual worker pre-warming (send an init + embed batch to the worker before the first caller's request)."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/data/embed/embedding-provider/src/deterministic.ts",
+      "line": 43,
+      "description": "DeterministicProvider hardcodes `maxTokens: 512` without accepting it as a constructor parameter. Since the deterministic provider does not actually enforce any token limit, the metadata is misleading — callers relying on `maxTokens` to govern chunking boundaries (per SPEC.md §1 D7) would incorrectly believe the hash provider enforces a 512-token limit.",
+      "fix_sketch": "Accept `maxTokens` as an optional constructor parameter defaulting to a reasonable value (e.g., 8192 for parity with real models), or set it to `Infinity` / `Number.MAX_SAFE_INTEGER` with a comment that the hash provider has no meaningful token limit."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/data/embed/embedding-provider/src/fastembed.ts",
+      "line": 358,
+      "description": "`ensureReady()` has a subtle bug: if `this.readyPromise` is null (no init in progress) and `this.ready` is false, the method resolves immediately without error — but the worker may not be initialized. `ensureReady()` is always called after `getWorker()` (which sets `readyPromise`), so in practice this path never fires. But if someone calls a method before `getWorker()`, there is no guard.",
+      "fix_sketch": "Add a guard in `ensureReady()` that throws if `readyPromise` is null and `ready` is false: `if (!this.readyPromise) throw new ResolutionError('Provider not initialized — call embedSingle or embedBatch first')`."
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "file": "libs/data/embed/embedding-provider/src/remote.ts",
+      "line": 94,
+      "description": "`simulatedRemoteEmbed()` checks `text.length > 8192` as a character limit, but `maxTokens` metadata is declared as 8192 tokens (line 19). Characters ≠ tokens. This is a simulated reference implementation so it has no runtime impact, but it's inconsistent with the metadata contract.",
+      "fix_sketch": "Either make the check use a token estimator (matching `fastembed.ts` char/4 heuristic) or document that this is a character-based limit in the reference implementation."
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "file": "libs/data/embed/embedding-provider/src/fastembed.ts",
+      "line": 88,
+      "description": "`MODEL_DIMS` and `MODEL_MAX_TOKENS` are exported with `@deprecated` JSDoc tags but are never imported anywhere in the codebase (confirmed by grep). They add dead API surface to the package exports.",
+      "fix_sketch": "Remove the deprecated exports. Callers should read `MODEL_CONFIGS[modelId].dim` and `MODEL_CONFIGS[modelId].maxTokens` directly."
+    },
+    {
+      "severity": "info",
+      "category": "invariant",
+      "file": "libs/data/embed/embedding-provider/src/fastembed.ts",
+      "line": 276,
+      "description": "Worker path resolution uses `__dirname` pointing to `dist/embedWorker.js`. Verified: `dist/embedWorker.js` exists. The tsconfig includes `embedWorker.ts` in compilation (no `.spec.ts` exclusion applies), so the compiled output is correct. No BL-11 issue: ONNX runtime is only dynamically imported inside the worker thread.",
+      "fix_sketch": "No action needed — confirmed working."
+    },
+    {
+      "severity": "info",
+      "category": "invariant",
+      "file": "libs/data/embed/embedding-provider/src/index.ts",
+      "line": 118,
+      "description": "Area boundary verified: all imports from `data/embed/embedding-provider/src/` import only from within the same package (`./index.js`, `./cache.js`, `./fastembed.js`, `./deterministic.js`, `./remote.js`) or Node.js stdlib. No `area:platform` imports found. `nx lint` passes. ✓",
+      "fix_sketch": "No action needed."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/data/embed/embedding-provider/src/fastembed.ts",
+      "line": 50,
+      "description": "MODEL_CONFIGS correctly registers bge-m3 (line 72-78) and codexembed-400m (line 79-85) per SPEC.md §1 requirements. Both have correct dim (1024), maxTokens (8192), and hfRepoId values.",
+      "fix_sketch": "No action needed."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/data/embed/embedding-provider/src/fastembed.ts",
+      "line": 144,
+      "description": "Chunk-then-mean-pool implemented per SPEC.md §1 D7 (line 578 of SPEC.md). `embedSingle()` checks `estimateTokens(text) > maxTokensVal`, splits via `chunkText()`, embeds each chunk, then `meanPool()` normalizes the result. Correct behavior: exceeding maxTokens triggers mean-pool, NOT truncation. ✓",
+      "fix_sketch": "No action needed."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 3,
+    "medium": 5,
+    "low": 2,
+    "info": 4
+  },
+  "backlog_entries": [
+    "BL-NEW — embedding-provider: FastEmbedPoolConfig interface defined but no pool manager implemented (maxWorkers, preloadModels, batchSizes silently ignored)",
+    "BL-NEW — embedding-provider: COMPILED_INTERFACES.md missing maxTokens field from EmbeddingProviderMetadata (stale authoritative spec)"
+  ]
+}

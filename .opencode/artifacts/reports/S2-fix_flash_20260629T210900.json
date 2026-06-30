@@ -1,0 +1,54 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "flash",
+  "segment": "S2-fix",
+  "label": "Fix: claim-verification worker timeout, dual-handler comment, unused VerifierBusyError",
+  "completed_at": "2026-06-29T21:09:00.000Z",
+
+  "summary": "Applied three fixes to libs/data/verify/claim-verification: (1) configurable timeout in WorkerProxy.send() defaulting to 30s (spec §D8); (2) explanatory comment on the dual message-handler pattern in start(); (3) removed unused VerifierBusyError re-export from index.ts.",
+
+  "changes": [
+    {
+      "file": "libs/data/verify/claim-verification/src/worker.ts",
+      "kind": "added timeout guard to send() method + configurable timeoutMs param (default 30s)",
+      "lines": "+24 / -9"
+    },
+    {
+      "file": "libs/data/verify/claim-verification/src/worker.ts",
+      "kind": "added comment explaining dual-handler pattern (warmupPromise vs general message handler)",
+      "lines": "+6 / -1"
+    },
+    {
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "kind": "removed VerifierBusyError from re-export (class exists but never used)",
+      "lines": "-1"
+    }
+  ],
+
+  "tests": {
+    "project": "claim-verification",
+    "command": "npx nx test claim-verification",
+    "passed": 10,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Tests  10 passed (10)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "issues": [],
+
+  "handoff_notes": [
+    "VerifierBusyError class retained in errors.ts for API compatibility (external consumers may import it); only the re-export from index.ts was removed.",
+    "maxQueueDepth in ClaimVerifierConfig (types.ts) is not referenced in ClaimVerifierImpl — no change needed per spec guidance.",
+    "The dual-handler pattern in start() is documented with a [inv:no-untracked-injection] invariant marker."
+  ],
+
+  "backlog_entries": []
+}

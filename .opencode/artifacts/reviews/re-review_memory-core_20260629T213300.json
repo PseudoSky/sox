@@ -1,0 +1,103 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "re-review_memory-core",
+  "label": "Re-review of memory-core (recall.ts + index.ts) — 4 specific issues",
+  "reviewed_at": "2026-06-29T21:33:00.000Z",
+  "files_reviewed": [
+    "libs/memory-core/src/recall.ts",
+    "libs/memory-core/src/index.ts",
+    "libs/memory-core/src/schema.ts",
+    "libs/memory-core/src/write.ts",
+    "libs/memory-core/src/recall.spec.ts"
+  ],
+  "spec_files_consulted": [
+    "docs/plan/retrieval-infrastructure/SPEC.md"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": {
+      "passed": 159,
+      "failed": 0,
+      "skipped": 1
+    },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "correctness",
+      "file": "libs/memory-core/src/recall.ts",
+      "line": 591,
+      "description": "Issue 1 (REMAINING): session_id fallback uses wrong SQL — looks up sibling nodes (WHERE session_id = ?) instead of the parent document (WHERE uid = ?). The comment on line 536 states 'Uses Chunk.parentDocId (session_id) as the join key for parent lookups', which implies session_id IS the parent's UID. Therefore the fallback should query `WHERE uid = currentNode.session_id` to find the parent document. The current query `WHERE session_id = currentNode.session_id AND rowid != currentNode.rowid` finds sibling chunks sharing the same session_id, not the parent document.",
+      "fix_sketch": "Change line 591 from `WHERE session_id = ? AND rowid != ?` to `WHERE uid = ?` using `currentNode.session_id` as the parameter. Additionally, after finding the parent via this corrected query, add it to the `sources` array (like the DERIVED_FROM path does on lines 635-641) — currently the `continue` on line 595 skips the parent entirely, so its content is never included in the expansion."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/memory-core/src/recall.ts",
+      "line": 593,
+      "description": "Issue 1 (REMAINING): Even if the session_id fallback found the parent document, the parent's content is never added to the expansion sources array. Line 594 sets `currentRowid = parentDocRow.rowid` then `continue`s (line 595), which jumps back to the for-loop increment without adding the parent to `sources`. The parent found via fallback acts as a transparent stepping-stone to further ancestors but its own content is omitted from the expansion output.",
+      "fix_sketch": "After setting `currentRowid` on line 594 (and after the corrected `WHERE uid = ?` query), fetch the parent row's content and push it to `sources` (analogous to lines 635-641 for the DERIVED_FROM path). Only then `continue` to check for further ancestors."
+    },
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "libs/memory-core/src/recall.ts",
+      "line": 536,
+      "description": "Discrepancy between comment and spec: The comment on line 536 says session_id is the 'join key for parent lookups'. But the spec (docs/plan/retrieval-infrastructure/SPEC.md line 563) says 'Chunks sharing a parentDocId form the expansion pool' — suggesting SIBLING expansion (all chunks with same parentDocId), not parent-child traversal. The fallback searches by session_id for a sibling, while the comment says it should find a parent. This ambiguity between expansion models should be clarified.",
+      "fix_sketch": "Clarify whether the intended expansion model is (a) hierarchical parent chain via DERIVED_FROM with session_id as parent-UID fallback, or (b) flat sibling-group expansion where all chunks sharing a session_id are included. Update the comment and fix the SQL accordingly."
+    },
+    {
+      "severity": "high",
+      "category": "test-coverage",
+      "file": "libs/memory-core/src/recall.spec.ts",
+      "line": 1,
+      "description": "No functional tests exist for parent-context expansion. The only tests in recall.spec.ts are 3 trivial shape/interface tests (ExpansionOverflowError, ParentContextConfig, LateChunkingConfig). Zero tests cover: session_id fallback, any of the 4 join strategies (contiguous, separator, structured, truncate-tail), token budget enforcement, expansionTruncated flag behavior at limits, multiple-depth expansion, or the agent_id filter applied to vec/FTS queries.",
+      "fix_sketch": "Add integration tests using a real in-memory SQLite DB that: (a) creates nodes with DERIVED_FROM edges and session_id values; (b) tests expansion via DERIVED_FROM with all 4 join strategies; (c) tests the session_id fallback path (no DERIVED_FROM edges, just matching session_id); (d) verifies expansionTruncated=true when maxContextTokens is exceeded in truncate-tail mode; (e) verifies ExpansionOverflowError for non-truncate-tail strategies; (f) verifies agent_id filtering in vec, FTS, and temporal result counts."
+    },
+    {
+      "severity": "medium",
+      "category": "test-coverage",
+      "file": "libs/memory-core/src/recall.spec.ts",
+      "line": 1,
+      "description": "No tests verify the agent_id filter is correctly applied. The agent_id filter was added to vec and FTS queries in this diff, but no test confirms that (a) results are correctly filtered when agent_id is set, or (b) all three query paths (vec, FTS, temporal) consistently apply the filter.",
+      "fix_sketch": "Add recall integration tests that insert episodes with different agent_ids and verify: (1) setting agent_id in RecallParams correctly filters results; (2) the filter is applied across all three query paths by inspecting provenance arrays."
+    },
+    {
+      "severity": "low",
+      "category": "test-coverage",
+      "file": "libs/memory-core/src/recall.spec.ts",
+      "line": 1,
+      "description": "No tests for the metadata fields: expansionTruncated, totalChunksAfterExpansion, totalTokensAfterExpansion, lateChunkingApplied. These are computed in memoryRecall but untested.",
+      "fix_sketch": "Verify metadata output in integration tests across various expansion configurations."
+    },
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "libs/memory-core/src/recall.ts",
+      "line": 688,
+      "description": "Late chunking is a no-op placeholder that only sets lateChunkingApplied=true but performs no actual aggregation. This is flagged as an intentional placeholder in the code comments, but there are no tests or integration points that validate downstream consumers handle this correctly.",
+      "fix_sketch": "Deferred to PR #5.2. Add a task to BACKLOG.md if not already tracked."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/memory-core/src/recall.ts",
+      "line": 501,
+      "description": "FederatedRecallResponse lacks the metadata block that RecallResponse has. The federation wrapper at line 765 only returns {results, provider_call_count} without expansion metadata. This means federation consumers don't see expansionTruncated or other metadata fields. This may be intentional (federation is a v1 wrapper), but it creates an inconsistency.",
+      "fix_sketch": "Consider extending FederatedRecallResponse with metadata: RecallResponse['metadata'] or a subset."
+    }
+  ],
+  "summary": {
+    "critical": 1,
+    "high": 2,
+    "medium": 1,
+    "low": 1,
+    "info": 3
+  },
+  "backlog_entries": [
+    "BL-?? — Late chunking in memoryRecall is a no-op placeholder (recall.ts:688); real implementation deferred to PR #5.2",
+    "BL-?? — FederatedRecallResponse lacks metadata block that RecallResponse has; federation consumers can't see expansionTruncated"
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "flash",
+  "segment": "S3-fix",
+  "label": "embedding-provider — FileSystemModelCache implementation",
+  "completed_at": "2026-06-29T21:11:12Z",
+
+  "summary": "Implemented FileSystemModelCache class in cache.ts per SPEC.md §1C (Model cache). Downloads ONNX model binaries from HuggingFace, verifies SHA-256 via sidecar .sha256 file, and provides ensure/cached/clear/ensureStream API matching the ModelCache interface.",
+
+  "changes": [
+    {
+      "file": "libs/data/embed/embedding-provider/src/cache.ts",
+      "kind": "added FileSystemModelCache class implementing ModelCache — 208 lines",
+      "lines": "+208"
+    },
+    {
+      "file": "libs/data/embed/embedding-provider/src/index.ts",
+      "kind": "added re-export of FileSystemModelCache from cache.js",
+      "lines": "+3"
+    }
+  ],
+
+  "tests": {
+    "project": "@adhd/sox-embedding-provider",
+    "command": "npx nx test embedding-provider",
+    "passed": 30,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files  1 passed (1)\n     Tests  30 passed (30)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "issues": [
+    "NONE"
+  ],
+
+  "handoff_notes": [
+    "FileSystemModelCache is exported from index.ts for all package consumers",
+    "Models are stored at <baseDir>/<modelId>/main/{model.onnx, model.onnx.sha256}",
+    "SHA-256 is computed on download and verified on every cached() call",
+    "The async ensure() and ensureStream() clean up partial downloads on error",
+    "The sync cached() method reads the full model binary into memory for hash verification — acceptable for the synchronous interface"
+  ],
+
+  "backlog_entries": []
+}

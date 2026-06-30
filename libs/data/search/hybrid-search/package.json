@@ -23,8 +23,9 @@
     "dist"
   ],
   "dependencies": {
-    "@adhd/sox-vector-store": "workspace:*",
-    "@adhd/sox-graph-store": "workspace:*"
+    "@adhd/sox-embedding-provider": "workspace:*",
+    "@adhd/sox-graph-store": "workspace:*",
+    "@adhd/sox-vector-store": "workspace:*"
   },
   "sox": {
     "area": "data",

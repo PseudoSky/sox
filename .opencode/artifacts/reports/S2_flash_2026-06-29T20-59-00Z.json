@@ -1,0 +1,41 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "flash",
+  "segment": "S2",
+  "label": "claim-verification — new leaf data package",
+  "completed_at": "2026-06-29T20:59:00Z",
+  "summary": "Created @adhd/sox-claim-verification package with NLI-based claim grounding engine, worker thread protocol, pre-filter, normalizer, and verification cache",
+  "changes": [
+    { "file": "libs/data/verify/claim-verification/package.json", "kind": "created", "lines": "+42" },
+    { "file": "libs/data/verify/claim-verification/project.json", "kind": "created", "lines": "+49" },
+    { "file": "libs/data/verify/claim-verification/tsconfig.json", "kind": "created", "lines": "+10" },
+    { "file": "libs/data/verify/claim-verification/tsconfig.lib.json", "kind": "created", "lines": "+10" },
+    { "file": "libs/data/verify/claim-verification/vitest.config.ts", "kind": "created + fixed root", "lines": "+11" },
+    { "file": "libs/data/verify/claim-verification/src/index.ts", "kind": "created + cleaned (removed inline duplications)", "lines": "+86/-400" },
+    { "file": "libs/data/verify/claim-verification/src/types.ts", "kind": "created", "lines": "+122" },
+    { "file": "libs/data/verify/claim-verification/src/errors.ts", "kind": "created", "lines": "+68" },
+    { "file": "libs/data/verify/claim-verification/src/cache.ts", "kind": "created + fixed TTL", "lines": "+78" },
+    { "file": "libs/data/verify/claim-verification/src/normalizer.ts", "kind": "created + fixed order-of-ops bug", "lines": "+39" },
+    { "file": "libs/data/verify/claim-verification/src/prefilter.ts", "kind": "created + fixed unused param", "lines": "+68" },
+    { "file": "libs/data/verify/claim-verification/src/worker.ts", "kind": "created + fixed start() hang bug", "lines": "+198" },
+    { "file": "libs/data/verify/claim-verification/src/verifierWorker.ts", "kind": "created + dead code cleanup", "lines": "+157" },
+    { "file": "libs/data/verify/claim-verification/src/claim-verification.spec.ts", "kind": "created", "lines": "+248" }
+  ],
+  "tests": {
+    "project": "claim-verification",
+    "command": "nx test claim-verification",
+    "passed": 10,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Tests 10 passed"
+  },
+  "lint": { "passed": true },
+  "build": { "passed": true },
+  "issues": ["NONE — all build/lint/test errors resolved"],
+  "handoff_notes": [
+    "The ONNX/NLI path is stubbed with a DeterministicProvider-style fallback for tests",
+    "Worker thread protocol mirrors libs/data/embed/embedding-provider/src/embedWorker.ts exactly",
+    "Pre-filter uses a dedicated EmbeddingProvider instance separate from the retrieval pipeline"
+  ],
+  "backlog_entries": []
+}

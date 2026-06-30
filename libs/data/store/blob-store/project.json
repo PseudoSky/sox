@@ -1,0 +1,49 @@
+{
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "name": "blob-store",
+  "projectType": "library",
+  "root": "libs/data/store/blob-store",
+  "sourceRoot": "libs/data/store/blob-store/src",
+  "tags": [
+    "type:lib",
+    "area:data",
+    "group:store"
+  ],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/libs/data/store/blob-store/dist"
+      ],
+      "options": {
+        "command": "tsc --project libs/data/store/blob-store/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/store/blob-store/dist/package.json",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.lib.json"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config libs/data/store/blob-store/vitest.config.ts",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": [
+          "libs/data/store/blob-store/**/*.ts"
+        ]
+      }
+    }
+  }
+}

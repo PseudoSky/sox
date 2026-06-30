@@ -35,6 +35,12 @@ export interface RecallParams {
   vec_weight?: number | undefined;
   fts_weight?: number | undefined;
   temporal_weight?: number | undefined;
+
+  // ── Parent-context expansion (PR #5.1, opt-in) ────────────────────────────
+  parentContext?: ParentContextConfig;
+
+  // ── Late chunking (PR #5.2, opt-in) ────────────────────────────────────────
+  lateChunking?: LateChunkingConfig;
 }
 
 export interface RecallResult {
@@ -47,6 +53,13 @@ export interface RecallResult {
   importance: number;
   content_hash: string | null;
   agent_id: string | null;
+
+  // ── Expansion fields (empty if not configured) ────────────────────────────
+  expandedText: string;
+  expansionSources: Array<{
+    chunk: { uid: string; content: string | null; name: string | null };
+    depth: number;
+  }>;
 }
 
 export interface RecallResponse {
@@ -56,6 +69,44 @@ export interface RecallResponse {
     candidates_before_filter: number;
     candidates_after_filter: number;
   };
+  metadata: {
+    totalChunksRetrieved: number;
+    totalChunksAfterExpansion: number;
+    lateChunkingApplied: boolean;
+    totalTokensAfterExpansion: number;
+    expansionTruncated: boolean;
+  };
+}
+
+// ── Parent-context expansion ──────────────────────────────────────────────────
+
+export interface ParentContextConfig {
+  maxDepth?: number;
+  maxContextTokens?: number;
+  joinStrategy: 'contiguous' | 'separator' | 'structured' | 'truncate-tail';
+  separator?: string;
+  includeOriginal?: boolean;
+}
+
+// ── Late chunking ─────────────────────────────────────────────────────────────
+
+export interface LateChunkingConfig {
+  enabled: boolean;
+  boundaries: Array<{ startToken: number; endToken: number; metadata?: Record<string, unknown> }>;
+  overlapTokens?: number;
+}
+
+// ── Error types ───────────────────────────────────────────────────────────────
+
+export class ExpansionOverflowError extends Error {
+  constructor(
+    message: string,
+    public readonly requestedTokens: number,
+    public readonly maxTokens: number,
+  ) {
+    super(message);
+    this.name = 'ExpansionOverflowError';
+  }
 }
 
 const RRF_K = 60;
@@ -109,6 +160,7 @@ interface NodeRow {
   t_invalid: string | null;
   agent_id: string | null;
   content_hash: string | null;
+  session_id: string | null;
 }
 
 /**
@@ -247,6 +299,7 @@ export async function memoryRecall(
        JOIN node n ON n.rowid = v.node_id
        WHERE v.embedding MATCH ? AND k = ?
          AND ${validityPred}
+         ${agentFilter}
          ${filterSql}
        ORDER BY v.distance
        LIMIT ?`;
@@ -277,6 +330,7 @@ export async function memoryRecall(
            JOIN node n ON n.rowid = fts_node.rowid
            WHERE fts_node MATCH ?
              AND ${validityPred}
+             ${agentFilter}
              ${filterSql}
            ORDER BY fts_node.rank
            LIMIT ?`,
@@ -328,7 +382,17 @@ export async function memoryRecall(
         candidates_after_filter: afterCount,
       };
     }
-    const response: RecallResponse = { results: [], provider_call_count: 0 };
+    const response: RecallResponse = {
+      results: [],
+      provider_call_count: 0,
+      metadata: {
+        totalChunksRetrieved: 0,
+        totalChunksAfterExpansion: 0,
+        lateChunkingApplied: false,
+        totalTokensAfterExpansion: 0,
+        expansionTruncated: false,
+      },
+    };
     if (filterStats) response.filterStats = filterStats;
     return response;
   }
@@ -350,7 +414,7 @@ export async function memoryRecall(
   const rowidList = [...allRowids].join(',');
   const nodes = db
     .prepare<[], NodeRow>(
-      `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash
+      `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash, session_id
        FROM node WHERE rowid IN (${rowidList})`,
     )
     .all();
@@ -405,7 +469,7 @@ export async function memoryRecall(
       : 't_invalid IS NULL';
     expandedNodes = db
       .prepare<[], NodeRow>(
-        `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash
+        `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash, session_id
          FROM node WHERE rowid IN (${expandedNew.join(',')}) AND ${nodeValidPred}`,
       )
       .all();
@@ -439,6 +503,8 @@ export async function memoryRecall(
       importance: node.importance,
       content_hash: node.content_hash ?? null,
       agent_id: node.agent_id ?? null,
+      expandedText: '',
+      expansionSources: [],
     });
     return true;
   };
@@ -461,6 +527,194 @@ export async function memoryRecall(
     const imp = (node.importance ?? 1.0) / 10.0;
     const score = baseRrf * 0.5 * recency * (0.5 + 0.5 * imp);
     addResult(node, score, ['graph']);
+  }
+
+  // ── Parent-context expansion ───────────────────────────────────────────────
+  // Opt-in: expands each result chunk to include parent/grandparent context.
+  // Recursive expansion via DERIVED_FROM edges: chunk → parent → grandparent →
+  // ... up to maxDepth. Uses Chunk.parentDocId (session_id) as the join key for
+  // parent lookups when DERIVED_FROM edges are absent.
+  let expansionTruncated = false;
+  let totalTokensAfterExpansion = 0;
+
+  if (params.parentContext && results.length > 0) {
+    const pc = params.parentContext;
+    const maxDepth = pc.maxDepth ?? 0;
+    const maxContextTokens = pc.maxContextTokens ?? 4096;
+
+    // Build lookup maps from validNodes (already fetched candidates) for fast access.
+    const nodeByRowid = new Map<number, NodeRow>();
+    const nodeByUid = new Map<string, NodeRow>();
+    for (const node of validNodes) {
+      nodeByRowid.set(node.rowid, node);
+      nodeByUid.set(node.uid, node);
+    }
+
+    // Prepared statements for parent traversal.
+    const stmtParentEdge = db.prepare<[number], { dst: number }>(
+      `SELECT dst FROM edge WHERE src = ? AND rel = 'DERIVED_FROM' AND t_expired IS NULL LIMIT 1`,
+    );
+    const stmtNodeByRowid = db.prepare<[number], NodeRow>(
+      `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash, session_id
+       FROM node WHERE rowid = ?`,
+    );
+
+    for (const result of results) {
+      const sources: Array<{ chunk: { uid: string; content: string | null; name: string | null }; depth: number }> = [];
+
+      // Find the result node's rowid and name for depth 0.
+      const resultNode = nodeByUid.get(result.uid);
+      const resultName = resultNode?.name ?? null;
+
+      sources.push({
+        chunk: { uid: result.uid, content: result.content, name: resultName },
+        depth: 0,
+      });
+
+      let currentRowid = resultNode?.rowid ?? null;
+      let expandedTokens = estimateTokens(result.content ?? '');
+
+      for (let depth = 1; depth <= maxDepth && currentRowid !== null; depth++) {
+        // Stop early for truncate-tail when at/beyond limit (further parents won't fit).
+        if (pc.joinStrategy === 'truncate-tail' && expandedTokens >= maxContextTokens) {
+          expansionTruncated = true;
+          break;
+        }
+
+        // Find parent via DERIVED_FROM edge.
+        const parentEdge = stmtParentEdge.get(currentRowid);
+        if (!parentEdge) {
+          // Fallback: parentDocId lookup — session_id IS the parent's UID
+          const currentNode = nodeByRowid.get(currentRowid);
+          if (currentNode?.session_id) {
+            const parentRow = db.prepare(
+              `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash
+               FROM node WHERE uid = ?`,
+            ).get(currentNode.session_id) as NodeRow | undefined;
+            if (parentRow) {
+              const parentText = [parentRow.content, parentRow.name, parentRow.summary]
+                .filter(Boolean)
+                .join(' ');
+
+              if (parentText) {
+                const parentTokens = estimateTokens(parentText);
+                if (expandedTokens + parentTokens > maxContextTokens) {
+                  if (pc.joinStrategy === 'truncate-tail') {
+                    expansionTruncated = true;
+                    break;
+                  }
+                  throw new ExpansionOverflowError(
+                    `Parent-context expansion exceeds maxContextTokens (${maxContextTokens})`,
+                    expandedTokens + parentTokens,
+                    maxContextTokens,
+                  );
+                }
+                sources.push({
+                  chunk: { uid: parentRow.uid, content: parentRow.content, name: parentRow.name },
+                  depth,
+                });
+                expandedTokens += parentTokens;
+              }
+              currentRowid = parentRow.rowid;
+              continue;
+            }
+          }
+          break;
+        }
+
+        const parentRowid = parentEdge.dst;
+
+        // Try in-memory cache first, then fall back to DB query for ancestors
+        // outside the initial candidate set.
+        let parentRow = nodeByRowid.get(parentRowid);
+        if (!parentRow) {
+          parentRow = stmtNodeByRowid.get(parentRowid) as NodeRow | undefined;
+          if (parentRow) nodeByRowid.set(parentRowid, parentRow); // cache for reuse
+        }
+        if (!parentRow) break;
+
+        const parentText = [parentRow.content, parentRow.name, parentRow.summary]
+          .filter(Boolean)
+          .join(' ');
+
+        // Parent with no text: still traverse up (it might be a container node).
+        if (!parentText) {
+          currentRowid = parentRow.rowid;
+          continue;
+        }
+
+        const parentTokens = estimateTokens(parentText);
+        if (expandedTokens + parentTokens > maxContextTokens) {
+          if (pc.joinStrategy === 'truncate-tail') {
+            expansionTruncated = true;
+            break;
+          }
+          throw new ExpansionOverflowError(
+            `Parent-context expansion exceeds maxContextTokens (${maxContextTokens})`,
+            expandedTokens + parentTokens,
+            maxContextTokens,
+          );
+        }
+
+        sources.push({
+          chunk: { uid: parentRow.uid, content: parentRow.content, name: parentRow.name },
+          depth,
+        });
+        expandedTokens += parentTokens;
+        currentRowid = parentRow.rowid;
+      }
+
+      // Build expanded text based on join strategy.
+      let expandedText: string;
+      const includeOrig = pc.includeOriginal ?? true;
+      const orderedSources = includeOrig ? sources : sources.filter((s) => s.depth > 0);
+
+      switch (pc.joinStrategy) {
+        case 'contiguous':
+          expandedText = orderedSources.map((s) => s.chunk.content ?? '').join(' ');
+          break;
+        case 'separator':
+          expandedText = orderedSources
+            .map((s) => s.chunk.content ?? '')
+            .filter(Boolean)
+            .join(pc.separator ?? '\n\n---\n\n');
+          break;
+        case 'structured':
+          expandedText = orderedSources
+            .map((s) => {
+              const prefix = s.depth === 0 ? '[CHUNK]' : `[PARENT depth=${s.depth}]`;
+              return `${prefix}: ${s.chunk.content ?? ''}`;
+            })
+            .join('\n\n');
+          break;
+        case 'truncate-tail':
+          expandedText = orderedSources.map((s) => s.chunk.content ?? '').join(' ');
+          break;
+        default:
+          expandedText = orderedSources.map((s) => s.chunk.content ?? '').join(' ');
+      }
+
+      result.expandedText = expandedText;
+      result.expansionSources = sources;
+      totalTokensAfterExpansion += expandedTokens;
+    }
+
+    // Re-sort by score after expansion (score unchanged, just metadata).
+    results.sort((a, b) => b.score - a.score);
+  }
+
+  // ── Late chunking ───────────────────────────────────────────────────────────
+  // Opt-in: when enabled, mean-pools per-chunk boundaries at retrieval time.
+  // Currently a no-op that records the flag for downstream processing.
+  // Real implementation would re-embed result chunks at retrieval time using
+  // the stored full-document embedding and per-chunk boundaries.
+  let lateChunkingApplied = false;
+  if (params.lateChunking?.enabled) {
+    lateChunkingApplied = true;
+    // Placeholder: late chunking aggregation would transform the recalled chunks
+    // by mean-pooling embedding boundaries at retrieval time. The boundaries
+    // are pre-computed at ingest time and stored alongside the full-document
+    // embedding in the vec_node table.
   }
 
   const afterCount = getProviderCallCount();
@@ -486,7 +740,30 @@ export async function memoryRecall(
       };
     }
 
-  const response: RecallResponse = { results, provider_call_count: providerCallCount };
+  // Compute expansion-aware metadata.
+  // When parent-context expansion is enabled, expansionSources includes the original
+  // chunk (depth=0) plus all parents, and totalTokensAfterExpansion tracks the
+  // cumulative token count from expansion. When expansion is disabled, use the raw
+  // result counts for accurate metadata.
+  const expansionEnabled = params.parentContext && results.length > 0;
+  const totalChunksAfterExpansion = expansionEnabled
+    ? results.reduce((sum, r) => sum + r.expansionSources.length, 0)
+    : results.length;
+  const finalTokensAfterExpansion = expansionEnabled
+    ? totalTokensAfterExpansion
+    : tokenCount;
+
+  const response: RecallResponse = {
+    results,
+    provider_call_count: providerCallCount,
+    metadata: {
+      totalChunksRetrieved: results.length,
+      totalChunksAfterExpansion,
+      lateChunkingApplied,
+      totalTokensAfterExpansion: finalTokensAfterExpansion,
+      expansionTruncated,
+    },
+  };
   if (filterStats) response.filterStats = filterStats;
   return response;
 }

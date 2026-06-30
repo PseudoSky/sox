@@ -1,0 +1,68 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "flash",
+  "segment": "group-B",
+  "label": "Claim verification — 5 bugfixes (normalizer, exports, cached confidence, registration, shutdown protocol)",
+  "completed_at": "2026-06-30T02:23:10Z",
+
+  "summary": "Fixed 5 issues in claim-verification: normalizeSource now preserves source-level markers while stripping quotes; VerifierBusyError exported from index.ts; cached results use proper aggregateConfidence logic (contradicts→min, entails→confidence, else→0); ModelRegistration extended with displayName/providerUri; WorkerProxy.shutdown awaits shutdownComplete message before falling back to exit event.",
+
+  "changes": [
+    {
+      "file": "libs/data/verify/claim-verification/src/normalizer.ts",
+      "kind": "normalizeSource chains this.removeQuotes before this.normalizeWhitespace",
+      "lines": "+1 / -1"
+    },
+    {
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "kind": "Added VerifierBusyError to re-export block (without local import, avoiding TS6133)",
+      "lines": "+1 / -0"
+    },
+    {
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "kind": "Cached result aggregateConfidence uses entailment-conditional logic instead of raw cached.confidence",
+      "lines": "+4 / -1"
+    },
+    {
+      "file": "libs/data/verify/claim-verification/src/index.ts",
+      "kind": "ModelRegistration call in warmUp() now includes displayName and providerUri fields",
+      "lines": "+2 / -0"
+    },
+    {
+      "file": "libs/data/verify/claim-verification/src/worker.ts",
+      "kind": "shutdown() awaits shutdownComplete message before 2s timeout fallback (instead of raw exit listener)",
+      "lines": "+6 / -4"
+    },
+    {
+      "file": "libs/data/verify/claim-verification/src/verifierWorker.ts",
+      "kind": "Added parentPort.postMessage({ type: 'shutdownComplete' }) before process.exit(0)",
+      "lines": "+1 / -0"
+    }
+  ],
+
+  "tests": {
+    "project": "claim-verification",
+    "command": "npx nx test claim-verification --skip-nx-cache",
+    "passed": 10,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Tests  10 passed (10)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "issues": [],
+
+  "handoff_notes": [
+    "embedding-provider/src/fastembed.ts has a co-mingled diff from parallel agent work (ResolutionError + BGE-M3/CodeXEmbed models). The import of ResolutionError on line 4 is used on line 366 via `throw new ResolutionError(...)` — the build passes on fresh compile (--skip-nx-cache), so the earlier cache-hit failure was a stale-dist artifact.",
+    "VerifierBusyError is re-exported via `export { VerifierBusyError } from './errors.js'` in the export block — NOT via import+re-export, to avoid TS6133 unused-import error."
+  ],
+
+  "backlog_entries": []
+}

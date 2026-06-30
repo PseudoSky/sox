@@ -1,0 +1,48 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "flash",
+  "segment": "fix-round-3",
+  "label": "BlobStore.getStream — resource leak fix (abandoned-stream FD guard + file handle)",
+  "completed_at": "2026-06-29T22:28:00Z",
+
+  "summary": "Fixed resource leak in BlobStore.getStream where abandoned ReadableStream (never read, never cancelled) leaked FD guard entries and file handles indefinitely",
+
+  "changes": [
+    {
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "kind": "refactored getStream() — unified cleanup function, abandon timeout, verified cleanup on all paths",
+      "lines": "~15 net changed"
+    }
+  ],
+
+  "tests": {
+    "project": "blob-store",
+    "command": "nx test blob-store",
+    "passed": 36,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files  2 passed (2)\nTests  36 passed (36)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "issues": [
+    "NONE"
+  ],
+
+  "handoff_notes": [
+    "getStream() now uses a single `cleanup()` function that both releases the FD guard slot and closes the file handle",
+    "A 60-second unreferenced abandon timeout fires cleanup if the stream is never read and never cancelled",
+    "The `cleanedUp` boolean guard prevents double-cleanup across all paths (pull end, pull error, cancel, timeout)",
+    "Outer catch block also calls `release()` directly on construction failures (unchanged behavior)",
+    "The `isNotFound` check was added to the outer catch so that a race condition (file deleted between access check and open) returns null instead of throwing"
+  ],
+
+  "backlog_entries": []
+}

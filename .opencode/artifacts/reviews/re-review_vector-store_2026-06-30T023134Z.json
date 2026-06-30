@@ -1,0 +1,90 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "re-review-vector-store",
+  "label": "Re-review of libs/data/vectors/vector-store — 4 issues check",
+  "reviewed_at": "2026-06-30T02:31:34Z",
+  "files_reviewed": [
+    "libs/data/vectors/vector-store/src/index.ts",
+    "libs/data/vectors/vector-store/src/lancedb.ts",
+    "libs/data/vectors/vector-store/src/vector-store.spec.ts",
+    "libs/data/vectors/vector-store/CLAUDE.md",
+    "libs/data/vectors/vector-store/package.json",
+    "docs/plan/memory-refactor/COMPILED_INTERFACES.md"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 35, "failed": 0, "skipped": 0 },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "invariant",
+      "file": "libs/data/vectors/vector-store/src/index.ts",
+      "line": 204,
+      "description": "ISSUE 1 — SpaceInvariantError: FIXED. SqliteVectorBackend.upsert() now throws SpaceInvariantError (not generic Error) when vec.length !== space.dim. Test at spec.ts:152-165 verifies type, nodeId, space, and actualDim.",
+      "fix_sketch": "Already resolved. No action needed."
+    },
+    {
+      "severity": "critical",
+      "category": "invariant",
+      "file": "libs/data/vectors/vector-store/src/lancedb.ts",
+      "line": 120,
+      "description": "ISSUE 1 (LanceDb) — SpaceInvariantError: FIXED. LanceDbVectorBackend.upsert() also throws SpaceInvariantError (imported from index.ts) on dim mismatch. Note: InMemoryLanceTable.upsert() at lancedb.ts:45 still throws generic Error, but the code path is unreachable since LanceDbVectorBackend.upsert() validates first.",
+      "fix_sketch": "Already resolved for the public API. InMemoryLanceTable.upsert() is a private internal class; its generic Error is a minor style concern, not a bug."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/vectors/vector-store/src/lancedb.ts",
+      "line": 188,
+      "description": "ISSUE 2 — getTable() auto-creates spaces: FIXED. getTable() now throws Error('Space not found: ... — call ensureSpace() first') instead of silently creating the table. In index.ts, knn/get/iter all use tableExists() guards and return []/null without auto-creation.",
+      "fix_sketch": "Already resolved. No action needed."
+    },
+    {
+      "severity": "high",
+      "category": "spec-compliance",
+      "file": "libs/data/vectors/vector-store/src/index.ts",
+      "line": 330,
+      "description": "ISSUE 3 — openLanceDbVectorStore return type: FIXED. Return type is 'LanceDbVectorBackend & VectorBackend' as required.",
+      "fix_sketch": "Already resolved. No action needed."
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/vectors/vector-store/src/index.ts",
+      "line": 329,
+      "description": "ISSUE 4 — db param optional: PARTIALLY FIXED. The factory openLanceDbVectorStore requires db via 'config: LanceDbVectorBackendConfig & { db: Database.Database }'. However, the LanceDbVectorBackend constructor at lancedb.ts:99 still accepts db? (optional). The factory boundary enforces the requirement, but the constructor signature itself is not tightened.",
+      "fix_sketch": "Change LanceDbVectorBackend constructor parameter from '{ db?: Database.Database }' to '{ db: Database.Database }' at lancedb.ts:99 if db is truly required for the implementation. Otherwise, leave the factory-level enforcement as sufficient."
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/vectors/vector-store/src/index.ts",
+      "line": 348,
+      "description": "NEW FINDING — Spec gap: ReembedOpts.getText missing from COMPILED_INTERFACES.md. The code defines getText?: (id: number) => string | null on ReembedOpts (line 348) and requires it for non-dry-run reembed (lines 423-433). The spec at COMPILED_INTERFACES.md lines 456-471 does not include getText in ReembedOpts. The spec comment 'walks vec.iter(sourceModelId) → provider.embedBatch()' is also misleading — embedBatch takes strings, not Float32Arrays, so getText is necessary to map vector IDs back to source text.",
+      "fix_sketch": "Add getText?: (id: number) => string | null to ReembedOpts in COMPILED_INTERFACES.md. Update the reembed() docstring to clarify the flow: 'walks vec.iter(sourceModelId) → getText() for each ID → provider.embedBatch() → vec.upsert(targetSpace)'."
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "file": "libs/data/vectors/vector-store/src/lancedb.ts",
+      "line": 45,
+      "description": "NEW FINDING — InMemoryLanceTable.upsert() throws generic Error instead of SpaceInvariantError. While the code path is unreachable (LanceDbVectorBackend.upsert() validates first), this internal implementation does not follow the '[def:space-invariant] — all implementations must enforce this' invariant pattern. For consistency and defense-in-depth, it should throw SpaceInvariantError.",
+      "fix_sketch": "Replace 'throw new Error(...)' with 'throw new SpaceInvariantError(id, { modelId: '', dim: this.dimension }, vec.length)' at lancedb.ts:45. Note: SpaceInvariantError takes 'space: VectorSpace' but InMemoryLanceTable doesn't have the modelId — either add it to the table or accept this as an internal implementation detail."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 2,
+    "low": 1,
+    "info": 0
+  },
+  "backlog_entries": [
+    "ReembedOpts.getText is present in code but absent from the COMPILED_INTERFACES.md spec — update the spec to match implementation.",
+    "InMemoryLanceTable.upsert() at lancedb.ts:45 uses generic Error instead of SpaceInvariantError for dim mismatch (defense-in-depth path).",
+    "LanceDbVectorBackend constructor still accepts db? optional at lancedb.ts:99, though the factory openLanceDbVectorStore requires it."
+  ]
+}

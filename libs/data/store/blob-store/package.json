@@ -1,0 +1,52 @@
+{
+  "name": "@adhd/sox-blob-store",
+  "version": "0.1.0",
+  "description": "Content-addressable blob storage: SHA-256 CAS write, SQLite reference tracking, stream-based API, mark-and-sweep GC with grace periods, FD guard, integrity verification.",
+  "license": "MIT",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "better-sqlite3": "^12.10.0"
+  },
+  "sox": {
+    "area": "data",
+    "group": "store",
+    "concerns": [
+      "content-addressable blob storage (SHA-256 CAS)",
+      "two-phase write (temp → atomic rename)",
+      "SQLite reference tracking (refs, blob_meta, gc_runs)",
+      "mark-and-sweep GC with configurable grace period",
+      "stream-based API (putStream / getStream)",
+      "in-process FD guard (prevents GC of open blobs)",
+      "cross-process GC lock (flock)",
+      "integrity verification on read (default) and write (optional)"
+    ],
+    "invariants": [
+      "put() is always idempotent — content-hash dedup is universal",
+      "rename() is atomic when tempDir and basePath are on the same filesystem",
+      "GC never deletes a blob that has an open FD in the in-process guard",
+      "get() returns null for not-found; throws IntegrityMismatch for corruption",
+      "orphan temp files are cleaned up on next open() (crash recovery)"
+    ],
+    "entrypoints": [
+      "dist/index.js"
+    ]
+  }
+}

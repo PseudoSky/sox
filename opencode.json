@@ -3,7 +3,7 @@
   "agent": {
     "pro": {
       "description": "System design + tool research + orchestration. Plans large features, decomposes into dispatchable segments, knows when to use flash vs implement",
-      "mode": "subagent",
+      "mode": "all",
       "model": "deepseek/deepseek-v4-pro",
       "prompt": "{file:.opencode/prompts/pro-system.md}",
       "temperature": 0,
@@ -25,7 +25,7 @@
     },
     "implement": {
       "description": "Complex implementation agent (pro model) — multi-file changes, interface design, refactors, debugging. For well-specified simple tasks, use flash instead",
-      "mode": "subagent",
+      "mode": "all",
       "model": "deepseek/deepseek-v4-pro",
       "prompt": "{file:.opencode/prompts/implement-system.md}",
       "temperature": 0.1,
@@ -47,7 +47,7 @@
     },
     "flash": {
       "description": "Fast implementation agent (flash model) — single-file changes, manifest edits, boilerplate, well-specified tasks with exact code provided",
-      "mode": "subagent",
+      "mode": "all",
       "model": "deepseek/deepseek-v4-flash",
       "prompt": "{file:.opencode/prompts/flash-system.md}",
       "temperature": 0.1,

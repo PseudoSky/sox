@@ -1,0 +1,39 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "flash",
+  "segment": "S5",
+  "label": "ingest — AST-aware & heading-aware chunkers",
+  "completed_at": "2026-06-29T20:55:00Z",
+  "summary": "Added chunker system to @adhd/sox-ingest: Chunker interface, ChunkerRegistry, AST-aware chunker (tree-sitter for TS/Python/Java/C#), heading-aware chunker (Markdown/MDX/RST/AsciiDoc), source-map on every chunk, error classes",
+  "changes": [
+    { "file": "libs/data/ingest/ingest/src/chunker.ts", "kind": "created — Chunker interface, Chunk, SourceMap types", "lines": "+101" },
+    { "file": "libs/data/ingest/ingest/src/registry.ts", "kind": "created — ChunkerRegistry implementation", "lines": "+73" },
+    { "file": "libs/data/ingest/ingest/src/chunker-registry.ts", "kind": "created — global registry singleton", "lines": "+104" },
+    { "file": "libs/data/ingest/ingest/src/errors.ts", "kind": "created — PermanentChunkingError, TransientChunkingError", "lines": "+28" },
+    { "file": "libs/data/ingest/ingest/src/ast-chunker.ts", "kind": "created — AST-aware chunker (cAST algorithm)", "lines": "+225" },
+    { "file": "libs/data/ingest/ingest/src/heading-chunker.ts", "kind": "created — heading-aware chunker", "lines": "+186" },
+    { "file": "libs/data/ingest/ingest/src/index.ts", "kind": "modified — added chunker exports", "lines": "+90/-30" },
+    { "file": "libs/data/ingest/ingest/src/chunker-registry.spec.ts", "kind": "created + fixed test key mismatch", "lines": "+126" },
+    { "file": "libs/data/ingest/ingest/src/ast-chunker.ts", "kind": "fixed 9 TS errors (exactOptionalPropertyTypes, unused import, impossible comparison)", "lines": "±" },
+    { "file": "libs/data/ingest/ingest/src/heading-chunker.ts", "kind": "fixed 4 TS2375 errors (exactOptionalPropertyTypes)", "lines": "±" }
+  ],
+  "tests": {
+    "project": "ingest",
+    "command": "nx test ingest",
+    "passed": 48,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Tests 48 passed (2 test files)"
+  },
+  "lint": { "passed": true },
+  "build": { "passed": true },
+  "issues": [
+    "ast-chunker uses a simplified implementation (not full tree-sitter WASM) for tests per spec instruction"
+  ],
+  "handoff_notes": [
+    "Chunker registry is populated at build time via static constructors — no runtime registration",
+    "Chunker selection: heading chunker runs first (order: 0), AST chunker on fenced code blocks (order: 1)",
+    "SourceMap.sourceUrl and parentDocId are optional — use conditional spread to respect exactOptionalPropertyTypes"
+  ],
+  "backlog_entries": []
+}

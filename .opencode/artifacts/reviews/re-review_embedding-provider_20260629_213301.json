@@ -1,0 +1,60 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "re-review_embedding-provider",
+  "label": "Embedding provider re-review — 3-issue fix verification",
+  "reviewed_at": "2026-06-29T21:33:01.000Z",
+  "files_reviewed": [
+    "libs/data/embed/embedding-provider/src/index.ts",
+    "libs/data/embed/embedding-provider/src/deterministic.ts",
+    "libs/data/embed/embedding-provider/src/cache.ts",
+    "libs/data/embed/embedding-provider/src/remote.ts",
+    "libs/data/embed/embedding-provider/src/embedWorker.ts",
+    "libs/data/embed/embedding-provider/src/fastembed.ts",
+    "libs/data/embed/embedding-provider/src/embedding-provider.spec.ts"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 30, "failed": 0, "skipped": 0 },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "info",
+      "category": "test-coverage",
+      "file": "libs/data/embed/embedding-provider/src/embedding-provider.spec.ts",
+      "line": 201,
+      "description": "Test 'is not a no-op for deterministic provider — pre-computes into cache' claims to verify caching but the assertions are too weak to prove cache population. The test calls warmUp() then embedSingle() and only checks vec instanceof Float32Array + vec.length === 768 — both of which would pass even without caching (embedSingle's normal behavior). The test does NOT assert on reference equality (same object from cache) or timing (faster on cache hit). It should assert that two consecutive embedSingle('warmup text one') calls return the same Float32Array reference via expect(a).toBe(b).",
+      "fix_sketch": "Change the cache-hit assertion on line 206 from 'toBeInstanceOf/toBeCloseTo' to a reference-equality check: const v1 = await provider.embedSingle('warmup text one'); const v2 = await provider.embedSingle('warmup text one'); expect(v1).toBe(v2);"
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/data/embed/embedding-provider/src/fastembed.ts",
+      "line": 145,
+      "description": "In the chunk-then-mean-pool branch of embedSingle(), ensureReady() is called inside the for-chunks loop on every iteration instead of once before the loop. Since ensureReady() is idempotent after first call (returns immediately when ready is true), this is not a correctness bug but wastes microtasks on each chunk.",
+      "fix_sketch": "Move await this.ensureReady() to before the for-of loop on line 151, matching the structure of the non-chunked path below it."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/data/embed/embedding-provider/src/fastembed.ts",
+      "line": 252,
+      "description": "meanPool() returns new Float32Array(0) when vectors is empty. If chunkText() ever produces zero chunks (which shouldn't happen with current logic but could with future changes), the caller would receive a zero-length vector. Prefer throwing or returning a correctly-dimensioned zero vector for safety.",
+      "fix_sketch": "Change the early return to: if (vectors.length === 0) return new Float32Array(this.embedDim); (throw new Error(...)) would also be acceptable."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 2,
+    "info": 1
+  },
+  "backlog_entries": [],
+  "re_review_issues": {
+    "issue1_warmUp_misleading_comment": "FIXED — DeterministicProvider.warmUp() now iterates over texts and calls embedSingle(), which computes and caches each vector. It is a real warmUp, not a no-op. FastembedProvider/RemoteProvider warmUp are legitimately no-ops with clear accurate comments per the CLAUDE.md spec (warmUp() is a no-op when isDeterministic === false).",
+    "issue2_maxTokens_512_hardcoded": "FIXED — DeterministicProvider constructor accepts maxTokens as parameter with default Number.MAX_SAFE_INTEGER. Factory at index.ts:182 passes Infinity. No hardcoded 512 in deterministic.ts. The model-specific maxToken limits in fastembed.ts MODEL_CONFIGS are per-model values, not a hash provider issue.",
+    "issue3_ensureReady_silent_resolve": "FIXED — ensureReady() at fastembed.ts:360-367 now correctly throws ResolutionError('Fastembed provider not initialized') when ready is false AND readyPromise is null, instead of silently resolving. State machine covers all three cases: ready (return), pending (await), uninitialized (throw). Verified that worker error/exit handlers properly reset both ready and readyPromise to null."
+  }
+}

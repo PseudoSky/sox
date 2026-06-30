@@ -1,0 +1,46 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "fix-final",
+  "label": "Add test for parentDocId fallback path in recall.spec.ts",
+  "completed_at": "2026-06-30T03:42:03Z",
+
+  "summary": "Added integration test for the session_id fallback path in parent-context expansion. The test creates a child node with session_id pointing to the parent's UID, verifies no DERIVED_FROM edge exists, runs memoryRecall with parent-context expansion, and asserts that expandedText includes parent content and expansionSources has both depth=0 (child) and depth=1 (parent).",
+
+  "changes": [
+    {
+      "file": "libs/memory-core/src/recall.spec.ts",
+      "kind": "added import declarations + DB helpers + parent-context expansion session_id fallback test",
+      "lines": "+101"
+    }
+  ],
+
+  "tests": {
+    "project": "memory-core",
+    "command": "nx test memory-core",
+    "passed": 160,
+    "failed": 0,
+    "skipped": 1,
+    "output_snippet": "Tests  160 passed | 1 skipped (161)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "issues": [],
+
+  "handoff_notes": [
+    "The new test follows the same tmpDb()/cleanup() pattern as update.spec.ts",
+    "SOX_EMBED_BACKEND=hash is forced at module scope (same as update.spec.ts)",
+    "AfterAll calls _shutdownEmbedWorker() to clean up the embed worker thread",
+    "The test does NOT create any DERIVED_FROM edge — exercises the session_id fallback path at recall.ts:587-621",
+    "Relies on the temporal recall signal to surface the child node; child is most-recent-created in a 2-node DB"
+  ],
+
+  "backlog_entries": []
+}

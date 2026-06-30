@@ -1,0 +1,65 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "group-A",
+  "label": "Fix 4 bugs in blob-store: getStream resource leak, gcProgress deadlock, put() missing O_EXCL, FdGuard existence check",
+  "completed_at": "2026-06-30T02:24:10Z",
+
+  "summary": "Fixed 4 bugs across store.ts and fd-guard.ts in @adhd/sox-blob-store. All changes pass build, test (36/36), and lint.",
+
+  "changes": [
+    {
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "kind": "Bug 1 (high) — getStream resource leak: wrapped fdGuard.acquire() + file handle setup in try/catch so release() is always called on setup failure",
+      "lines": "+6 / -3"
+    },
+    {
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "kind": "Bug 2 (high) — gcProgress() deadlock: added guard check before await to prevent hang when GC is not running; added emitGcProgress() in gc() finally block to wake up listeners on GC end",
+      "lines": "+5 / -3"
+    },
+    {
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "kind": "Bug 3 (medium) — put() missing O_EXCL: replaced fsp.writeFile() with fsp.open('wx') + fd.writeFile() + fd.close()",
+      "lines": "+3 / -1"
+    },
+    {
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "kind": "Bug 4 (medium) — pass this.has as existsChecker to InProcessFdGuard constructor",
+      "lines": "+2 / -1"
+    },
+    {
+      "file": "libs/data/store/blob-store/src/fd-guard.ts",
+      "kind": "Bug 4 (medium) — FdGuard.acquire() existence check: added optional existsChecker parameter; acquire() throws BlobNotFound if blob doesn't exist on disk",
+      "lines": "+7 / -1"
+    }
+  ],
+
+  "tests": {
+    "project": "@adhd/sox-blob-store",
+    "command": "nx test blob-store",
+    "passed": 36,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Tests  36 passed (36)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "issues": [
+    "NONE"
+  ],
+
+  "handoff_notes": [
+    "InProcessFdGuard now imports BlobNotFound from ./errors.js — any downstream consumers constructing InProcessFdGuard directly must account for the new optional constructor parameter",
+    "The InProcessFdGuard is instantiated in BlobStore field initializer with `async (hash: string) => this.has(hash)` as the existsChecker — this is safe because acquire() is only called after store.open()"
+  ],
+
+  "backlog_entries": []
+}

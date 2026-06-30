@@ -1,0 +1,161 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "ingest-review",
+  "label": "ingest package — SPEC §3 compliance review",
+  "reviewed_at": "2026-06-30T02:19:28Z",
+  "files_reviewed": [
+    "libs/data/ingest/ingest/src/index.ts",
+    "libs/data/ingest/ingest/src/chunker.ts",
+    "libs/data/ingest/ingest/src/chunker-registry.ts",
+    "libs/data/ingest/ingest/src/errors.ts",
+    "libs/data/ingest/ingest/src/registry.ts",
+    "libs/data/ingest/ingest/src/ast-chunker.ts",
+    "libs/data/ingest/ingest/src/heading-chunker.ts",
+    "libs/data/ingest/ingest/src/chunker-registry.spec.ts",
+    "libs/data/ingest/ingest/src/ingest.spec.ts",
+    "docs/plan/retrieval-infrastructure/SPEC.md",
+    "docs/plan/memory-refactor/COMPILED_INTERFACES.md"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 48, "failed": 0, "skipped": 0 },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "correctness",
+      "file": "libs/data/ingest/ingest/src/heading-chunker.ts",
+      "line": 24,
+      "description": "RST heading detection broken: RST patterns use multi-line regex (/^(.+)\\n[=]+\\s*$/m) but the code iterates single lines (line 74: for each line). A single line never contains \\n, so the regex never matches. RST documents always fall through to the 'no headings found' branch (line 93) and return as a single chunk. The spec (§3A, Feature changes) lists RST as a supported heading format.",
+      "fix_sketch": "Reformulate RST detection as two-pass: find underline-like lines (=====, -----, etc.) by line inspection, then pair each underline with the preceding non-blank line as the heading. Alternatively, match against raw document (not line-split) using the existing regex, then map match positions back to line numbers."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/ingest/ingest/src/heading-chunker.ts",
+      "line": 128,
+      "description": "Document preamble silently dropped: text before the first heading is never emitted as a chunk. The loop starts from the first heading (headings[0]), and buildHeadingPath only produces chunks for heading-delimited sections. Lines 0 through (firstHeading.line - 1) are discarded. This affects documents with title blocks, YAML front matter, or introductory paragraphs before any heading.",
+      "fix_sketch": "Before the heading loop, check if the first heading is at line > 0. If so, emit lines[0..firstHeading.line-1] as a preamble chunk with metadata.isHeadingRoot = true."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/ingest/ingest/src/ast-chunker.ts",
+      "line": 94,
+      "description": "Code preamble silently dropped: non-declaration lines before the first declaration (e.g. imports, module-level config) are skipped and not emitted as chunks. The 'emit preceding non-declaration lines' logic (line 94) only runs when chunks.length > 0, so it never fires for the first declaration. This discards imports, directives, and top-level constants.",
+      "fix_sketch": "Add a preamble check before the first declaration: if the first declaration starts at line > 0, emit lines[0..firstDecl.startLine-1] as a preamble chunk before processing declarations."
+    },
+    {
+      "severity": "high",
+      "category": "test-coverage",
+      "file": "libs/data/ingest/ingest/src/chunker-registry.spec.ts",
+      "line": 54,
+      "description": "Vacuous test: 'throws for unsupported language' uses AstChunker('typescript') (which IS a supported language) and calls expect(() => chunker.chunk('code', {})) without .toThrow() matcher. The assertion is a no-op — the test always passes regardless of whether the chunker throws. The unsupported-language code path is never exercised.",
+      "fix_sketch": "Change to: const chunker = new AstChunker('unsupported'); expect(() => chunker.chunk('code')).toThrow(PermanentChunkingError);"
+    },
+    {
+      "severity": "high",
+      "category": "test-coverage",
+      "file": "libs/data/ingest/ingest/src/chunker-registry.spec.ts",
+      "line": 108,
+      "description": "Vacuous test: 'throws for unsupported syntax' uses HeadingChunker('markdown') (supported) and calls expect(() => chunker.chunk('text')) without .toThrow() matcher. The assertion is a no-op. The unsupported-syntax error path is never exercised.",
+      "fix_sketch": "Change to: const chunker = new HeadingChunker('unknown'); expect(() => chunker.chunk('text')).toThrow(PermanentChunkingError);"
+    },
+    {
+      "severity": "high",
+      "category": "spec-compliance",
+      "file": "libs/data/ingest/ingest/src/chunker-registry.ts",
+      "line": 45,
+      "description": "ChunkerRegistry not sealed: SPEC §3A requires 'Chunker registry is append-only at build time — no runtime registration from untrusted sources' and Decision D4 says 'registry is sealed after module initialization'. The instance-based ChunkerRegistry in chunker-registry.ts has no seal() mechanism — register() can be called at any time. A separate static/sealed ChunkerRegistry exists in registry.ts but is unused.",
+      "fix_sketch": "Either: (a) add a seal() method and static sealed flag to the instance-based ChunkerRegistry, calling it after auto-registration in index.ts, or (b) replace the instance-based registry with the static sealed one from registry.ts."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/data/ingest/ingest/src/ast-chunker.ts",
+      "line": 196,
+      "description": "Python chunking uses brace-depth tracking but Python uses indentation, not braces. extractDeclaration() counts {/(/}/) for boundary detection. For Python code, depth never increases from braces (Python has no braces), and counting parentheses causes false boundaries (e.g. a multi-line function call would terminate the declaration early). The spec lists Python as a supported language.",
+      "fix_sketch": "For Python, replace brace-depth tracking with indentation-based boundary detection: track the indentation level of the declaration line, then find the first subsequent line with equal or lesser indentation."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/data/ingest/ingest/src/ast-chunker.ts",
+      "line": 92,
+      "description": "Short declarations (< minFunctionLines) silently dropped: when extractDeclaration returns a declaration whose body is shorter than minFunctionLines, the code does NOT emit it as a chunk AND does NOT re-attach its lines to another chunk. The lines of a short function/class are simply skipped. The spec says 'Functions shorter than this are merged into the preceding chunk' (ChunkerOptions.minFunctionLines description), not dropped.",
+      "fix_sketch": "When declLines < minLines, do not skip — instead, merge the declaration's lines into the preceding chunk (or buffer them to merge into the next declaration)."
+    },
+    {
+      "severity": "medium",
+      "category": "style",
+      "file": "libs/data/ingest/ingest/src/errors.ts",
+      "line": 1,
+      "description": "Dead code: errors.ts defines PermanentChunkingError and TransientChunkingError identical to those in chunker-registry.ts. No file imports from errors.ts. It is compiled into dist/ (errors.js, errors.d.ts), polluting the build artifact.",
+      "fix_sketch": "Delete errors.ts. The canonical error classes are in chunker-registry.ts and are re-exported from index.ts."
+    },
+    {
+      "severity": "medium",
+      "category": "style",
+      "file": "libs/data/ingest/ingest/src/registry.ts",
+      "line": 1,
+      "description": "Dead code: registry.ts defines a completely separate static/sealed ChunkerRegistry that is never imported or referenced by any other file. It is compiled into dist/ (registry.js, registry.d.ts).",
+      "fix_sketch": "Either delete registry.ts (if chunker-registry.ts is the canonical version) or wire it into index.ts with a seal() call after auto-registration."
+    },
+    {
+      "severity": "medium",
+      "category": "test-coverage",
+      "file": "libs/data/ingest/ingest/src/chunker-registry.spec.ts",
+      "line": 69,
+      "description": "HeadingChunker tests only cover Markdown. No tests for MDX, RST, or AsciiDoc. The RST bug (see critical finding) would have been caught with an RST test.",
+      "fix_sketch": "Add unit tests for each format: MDX (similar to markdown), RST (with underline-style headings), AsciiDoc (with =-style headings)."
+    },
+    {
+      "severity": "medium",
+      "category": "test-coverage",
+      "file": "libs/data/ingest/ingest/src/chunker-registry.spec.ts",
+      "line": 37,
+      "description": "AstChunker tests only cover TypeScript. No tests for Python, Java, or C#. The Python boundary-detection issue (see above) would have been caught with a Python test.",
+      "fix_sketch": "Add unit tests for Python (def/class, indentation), Java (class/method declarations), and C# (class/interface/struct declarations)."
+    },
+    {
+      "severity": "low",
+      "category": "test-coverage",
+      "file": "libs/data/ingest/ingest/src/chunker-registry.spec.ts",
+      "line": 7,
+      "description": "No test asserts that sourceMap is present and non-null on every chunk. SPEC requires 'every chunk carries a source map — zero chunks without provenance.'",
+      "fix_sketch": "In each chunking test, add: chunks.forEach(c => { expect(c.sourceMap).toBeDefined(); expect(typeof c.sourceMap.sourceStartLine).toBe('number'); expect(typeof c.sourceMap.sourceEndLine).toBe('number'); });"
+    },
+    {
+      "severity": "low",
+      "category": "test-coverage",
+      "file": "libs/data/ingest/ingest/src/chunker-registry.spec.ts",
+      "line": 30,
+      "description": "estimate() only tested for HeadingChunker. AstChunker.estimate() is untested. The estimate returns coarse counts that may be inaccurate for nested or multi-line declarations.",
+      "fix_sketch": "Add test: const chunker = new AstChunker('typescript'); expect(chunker.estimate('function foo() {}')).toBe(1); expect(chunker.estimate('')).toBe(1);"
+    },
+    {
+      "severity": "low",
+      "category": "test-coverage",
+      "file": "libs/data/ingest/ingest/src/chunker-registry.spec.ts",
+      "line": 105,
+      "description": "maxHeadingDepth test (line 95-106) assertion is weak: expect(chunks.length).toBeGreaterThanOrEqual(1) vacuously passes even if H3 is split on. A stronger assertion would count chunks or verify which headings appear as split points.",
+      "fix_sketch": "Replace with: expect(h3Chunks).toHaveLength(0) — H3 should NOT be a split point when maxHeadingDepth is 2."
+    }
+  ],
+  "summary": {
+    "critical": 1,
+    "high": 5,
+    "medium": 5,
+    "low": 3,
+    "info": 0
+  },
+  "backlog_entries": [
+    "RST heading detection completely broken — multi-line regex can't match line-by-line iteration",
+    "Preamble content dropped by both AST and heading chunkers before first declaration/heading",
+    "Two test assertions are no-ops (missing .toThrow() matchers)",
+    "ChunkerRegistry not sealed despite spec requirement; two competing ChunkerRegistry implementations",
+    "Python chunking uses brace-depth tracking incompatible with indentation-based syntax"
+  ]
+}

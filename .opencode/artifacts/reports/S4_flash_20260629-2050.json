@@ -1,0 +1,54 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "flash",
+  "segment": "S4",
+  "label": "vector-store LanceDB backend — fix build errors",
+  "completed_at": "2026-06-29T20:50:00.000Z",
+
+  "summary": "Fixed 5 build errors in vector-store: imported LanceDbVectorBackend/Config locally in index.ts (re-exports don't create local bindings), removed unused private fields in lancedb.ts (in-memory stub doesn't need config/db storage), and simplified openLanceDbVectorStore to pass config directly (exactOptionalPropertyTypes mismatch).",
+
+  "changes": [
+    {
+      "file": "libs/data/vectors/vector-store/src/index.ts",
+      "kind": "added local imports + re-exports for LanceDbVectorBackend/Config",
+      "lines": "+14 / -2"
+    },
+    {
+      "file": "libs/data/vectors/vector-store/src/lancedb.ts",
+      "kind": "removed unused private fields _config and _db",
+      "lines": "-4"
+    },
+    {
+      "file": "libs/data/vectors/vector-store/src/index.ts",
+      "kind": "simplified openLanceDbVectorStore — pass config directly (exactOptionalPropertyTypes)",
+      "lines": "-1"
+    }
+  ],
+
+  "tests": {
+    "project": "vector-store",
+    "command": "npx nx test vector-store",
+    "passed": 35,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files  1 passed (1)\nTests  35 passed (35)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "issues": [],
+
+  "handoff_notes": [
+    "LanceDbVectorBackend is exported from index.ts as re-export from lancedb.js — importers use `import { LanceDbVectorBackend } from '@adhd/sox-vector-store'`",
+    "openLanceDbVectorStore accepts optional `db` property for when a shared SQLite connection is needed alongside LanceDB",
+    "The lancedb.ts implementation is an in-memory simulation (no @lancedb/lancedb dep yet). When the real client is added, _config and _db fields must be restored"
+  ],
+
+  "backlog_entries": []
+}

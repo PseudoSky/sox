@@ -1,0 +1,22 @@
+{
+  "segment": "fix-final_ingest",
+  "agent": "default",
+  "timestamp": "2026-06-30T03:40:45.3NZ",
+  "files_changed": [
+    "libs/data/ingest/ingest/project.json"
+  ],
+  "verification": {
+    "build": "PASS - npx nx build ingest succeeds, dist cleaned before tsc",
+    "stale_artifacts": "PASS - ls libs/data/ingest/ingest/dist/errors.* returns No such file or directory",
+    "test": "PASS - 2 files, 48 tests passed",
+    "lint": "PASS - All files pass linting",
+    "cache": "PASS - nx cache serves clean output (no stale artifacts)"
+  },
+  "handoff": {
+    "notes": [
+      "Build command now runs `rm -rf libs/data/ingest/ingest/dist/` before tsc, using explicit workspace-relative path (not bare `dist/` which would target workspace root since cwd=.)",
+      "Used --skip-nx-cache on first run to invalidate stale cached dist output; subsequent builds use cache correctly",
+      "The initial bare `dist/` path was wrong — cwd is workspace root (.), so `rm -rf dist/` would delete {workspaceRoot}/dist/ not the package dist"
+    ]
+  }
+}

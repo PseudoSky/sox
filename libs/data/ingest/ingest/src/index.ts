@@ -145,3 +145,76 @@ export function ingest(content: string, opts?: IngestOpts): IngestResult {
 
   return { contentHash, summary, tags };
 }
+
+// ── Chunker exports ──────────────────────────────────────────────────────────
+
+export {
+  ChunkerRegistry,
+  globalChunkerRegistry,
+  PermanentChunkingError,
+  TransientChunkingError,
+} from './chunker-registry.js';
+export type {
+  SourceMap,
+  Chunk,
+  Chunker,
+  ChunkerOptions,
+  ChunkerFactory,
+  ChunkerPriority,
+  ChunkStaleReason,
+  StaleChunkConfig,
+} from './chunker-registry.js';
+
+export { AstChunker } from './ast-chunker.js';
+export { HeadingChunker } from './heading-chunker.js';
+
+// ── Auto-register chunkers at module load time ───────────────────────────────
+// Static constructors populate the registry at build time, no runtime reflection.
+
+import { AstChunker as AstChunkerImpl } from './ast-chunker.js';
+import { HeadingChunker as HeadingChunkerImpl } from './heading-chunker.js';
+import { globalChunkerRegistry as registry } from './chunker-registry.js';
+
+registry.register(
+  'ast:treesitter:ts',
+  () => new AstChunkerImpl('typescript'),
+  ['typescript'],
+);
+registry.register(
+  'ast:treesitter:python',
+  () => new AstChunkerImpl('python'),
+  ['python'],
+);
+registry.register(
+  'ast:treesitter:java',
+  () => new AstChunkerImpl('java'),
+  ['java'],
+);
+registry.register(
+  'ast:treesitter:csharp',
+  () => new AstChunkerImpl('csharp'),
+  ['csharp'],
+);
+registry.register(
+  'heading:markdown',
+  () => new HeadingChunkerImpl('markdown'),
+  ['markdown'],
+);
+registry.register(
+  'heading:mdx',
+  () => new HeadingChunkerImpl('mdx'),
+  ['mdx'],
+);
+registry.register(
+  'heading:rst',
+  () => new HeadingChunkerImpl('rst'),
+  ['rst'],
+);
+registry.register(
+  'heading:asciidoc',
+  () => new HeadingChunkerImpl('asciidoc'),
+  ['asciidoc'],
+);
+
+// Seal the registry — no more registrations after module init
+registry.seal();

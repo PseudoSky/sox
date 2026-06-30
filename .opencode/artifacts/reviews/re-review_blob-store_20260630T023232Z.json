@@ -1,0 +1,121 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "re-review_blob-store",
+  "label": "blob-store re-review — 4-fix verification + new findings",
+  "reviewed_at": "2026-06-30T02:32:32Z",
+  "files_reviewed": [
+    "libs/data/store/blob-store/src/store.ts",
+    "libs/data/store/blob-store/src/gc.ts",
+    "libs/data/store/blob-store/src/fd-guard.ts",
+    "libs/data/store/blob-store/src/errors.ts",
+    "libs/data/store/blob-store/src/schema.ts",
+    "libs/data/store/blob-store/src/index.ts",
+    "libs/data/store/blob-store/src/blob-store.spec.ts",
+    "libs/data/store/blob-store/src/errors.spec.ts"
+  ],
+  "spec_reviewed": [
+    "docs/plan/blob-store/SPEC.md"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 36, "failed": 0, "skipped": 0 },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 294,
+      "description": "Issue 1 — getStream resource leak: fdGuard.release() never called if stream consumer never reads or cancels.\n\nThe `getStream()` method at line 307 acquires `release = await this.fdGuard.acquire(hash)`, but there is no safeguard if the caller obtains the returned `ReadableStream` and then never calls `read()` nor `cancel()`. Neither `pull()` nor `cancel()` will ever fire, so `doRelease()` (which calls `release()`) is never invoked. The fdGuard permanently holds the hash, and GC will skip this blob forever.\n\nThe SPEC §8 explicitly prescribes the pattern:\n```\n// Ensure release even if the caller never reads or cancels\nguarded.closed.then(release, release)\n```\nThis pattern is not implemented. No `FinalizationRegistry`, no timeout fallback, no `.closed` tracking exists.",
+      "fix_sketch": "At minimum, add a FinalizationRegistry that calls release() when the ReadableStream object is GC'd. Alternatively, use a WeakRef-based approach or proactively track stream lifecycle. Any approach must ensure release() is called regardless of whether the consumer reads, cancels, or drops the stream reference."
+    },
+    {
+      "severity": "high",
+      "category": "spec-compliance",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 152,
+      "description": "`put()` does not enforce maxBlobSize. Spec §2 says 'put() and get() check this before allocating memory' but only putStream() (line 197-211) performs the check. A caller can put() a blob of any size regardless of configured maxBlobSize.",
+      "fix_sketch": "Add a size gate at the top of put(): `if (data.byteLength > maxSize) throw new BlobStoreSystemError(...)`"
+    },
+    {
+      "severity": "high",
+      "category": "spec-compliance",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 269,
+      "description": "`get()` does not enforce maxBlobSize. Spec §2 says 'put() and get() check this before allocating memory' but readFile will allocate however much memory the file requires regardless of configured maxBlobSize.",
+      "fix_sketch": "Check sizeOf() before reading, or use a size-limited stream. If the blob exceeds maxBlobSize, reject with BlobStoreSystemError."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 1150,
+      "description": "Cross-process GC lock uses `wx` (exclusive file create) instead of `flock(LOCK_EX)` as specified. Spec §4 says 'flock(fd, LOCK_EX) on <basePath>/.lock' with the invariant that 'the OS automatically releases the flock when the holding process terminates'. The implementation uses `fsp.open(lockFilePath, 'wx')` at line 1160, which creates a lock file at `.lock.acquire`. If the process crashes during GC, `.lock.acquire` persists on disk. All subsequent GC attempts see EEXIST, wait 30s, then throw BlobStoreSystemError — a permanent lockout until manual cleanup.\n\nAdditionally, the variable `lockPath` is set to `<basePath>/.lock` (line 1151) but the actual lock file is `lockPath + '.acquire'` (`.lock.acquire`). The `.lock` base file is never created, creating confusion.",
+      "fix_sketch": "Replace the file-creation-based lock with `flock` via `fs.promises.open` + `fs.futimes` or use a proper advisory lock library. Ensure the lock file is at `.lock` as specified, and the OS auto-releases on crash. If staying with wx-based approach, add a crash-recovery mechanism (check lock file staleness with mtime/heartbeat)."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 613,
+      "description": "`verifyAll()` silently drops rejected promises. In both the main batch loop (line 613-645) and the drain loop (line 649-677), `Promise.allSettled()` results are iterated but only `s.status === 'fulfilled'` is handled. Rejected settles (e.g. a blob's `verify()` call throwing due to disk I/O error) are silently dropped with no logging, no error handling, and no yield.",
+      "fix_sketch": "Add a handler for `s.status === 'rejected'`: log the error, and depending on `onCorrupt`, either warn, fail, or skip. Consider yielding a VerificationResult with `match: false` for verification errors."
+    },
+    {
+      "severity": "low",
+      "category": "test-coverage",
+      "file": "libs/data/store/blob-store/src/blob-store.spec.ts",
+      "line": 244,
+      "description": "No test coverage for `gcProgress()`. The GC tests only call `gc()` — they never exercise `gcProgress()` at all. Missing scenarios: called before GC starts (should yield empty and finish), during GC (should stream events), after GC finishes (should yield empty), cancelled GC, concurrent gcProgress() from multiple consumers.",
+      "fix_sketch": "Add tests: gcProgress() before gc() returns empty; gcProgress() during gc() yields events; gcProgress() after gc() returns empty; two concurrent gcProgress() consumers each get all events."
+    },
+    {
+      "severity": "low",
+      "category": "test-coverage",
+      "file": "libs/data/store/blob-store/src/blob-store.spec.ts",
+      "line": 101,
+      "description": "No test for `FdGuard.acquire()` throwing `BlobNotFound` on non-existent hash. The fdGuard existence check is only present in the production code path via getStream(), but no test verifies the error.",
+      "fix_sketch": "Add test: call `store.fdGuard.acquire(randomHex(64))` and expect `BlobNotFound`."
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "file": "libs/data/store/blob-store/src/blob-store.spec.ts",
+      "line": 16,
+      "description": "`randomHex()` test helper uses `Math.random()` for generating test hex strings. AGENTS.md §6 says 'No Math.random() for security/collision-sensitive operations — use crypto.randomUUID()'. While test-only, `crypto.randomUUID()` is already imported in `store.ts` and using it here aligns with conventions.",
+      "fix_sketch": "Replace `Math.random()` in the test helper with `crypto.randomUUID()` or use `crypto.randomBytes()` via import."
+    }
+  ],
+  "original_issues_verification": {
+    "issue1_getStream_resource_leak": {
+      "fixed": false,
+      "line": 294,
+      "detail": "fdGuard.release() is never called if the stream consumer never reads or cancels. No FinalizationRegistry, no timeout fallback, no guarded.closed.then(release, release). The SPEC explicitly prescribes this pattern. See high-severity finding above."
+    },
+    "issue2_gcProgress_deadlock": {
+      "fixed": true,
+      "line": 975,
+      "detail": "gc() now emits a final progress event after setting gcInProgress = false (line 975-977), and gcProgress() checks `!gcInProgress && queue.length === 0` to break (line 1018). Called before gc → returns empty immediately. Called during gc → streams events. Called after gc → returns empty immediately. No hang."
+    },
+    "issue3_put_o_excl": {
+      "fixed": true,
+      "line": 163,
+      "detail": "put() uses `fsp.open(tempPath, 'wx')` (line 163), putStream() uses `fsp.open(tempPath, 'wx')` (line 194). Both use the exclusive-create flag correctly."
+    },
+    "issue4_fdguard_acquire_existence": {
+      "fixed": true,
+      "line": 24,
+      "detail": "InProcessFdGuard is constructed with an existsChecker (store.ts line 69: `async (hash: string) => this.has(hash)`), and acquire() calls `if (this.existsChecker && !(await this.existsChecker(hash)))` at line 25, throwing BlobNotFound."
+    }
+  },
+  "summary": {
+    "critical": 0,
+    "high": 3,
+    "medium": 2,
+    "low": 3,
+    "info": 0
+  },
+  "backlog_entries": []
+}

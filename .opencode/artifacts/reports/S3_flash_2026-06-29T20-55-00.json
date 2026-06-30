@@ -1,0 +1,67 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "flash",
+  "segment": "S3",
+  "label": "Fix three build errors in embedding-provider (FastEmbedPoolConfig, batchSizeHint, MODEL_CONFIGS export)",
+  "completed_at": "2026-06-29T20:55:00.000Z",
+
+  "summary": "Fixed three TypeScript build errors in embedding-provider: removed unused FastEmbedPoolConfig import, removed unused batchSizeHint field and dead poolConfig constructor parameter, exported MODEL_CONFIGS from fastembed.ts. All existing changes for BGE-M3/CodeXEmbed models preserved. Build, test, lint all pass.",
+
+  "changes": [
+    {
+      "file": "libs/data/embed/embedding-provider/src/fastembed.ts",
+      "kind": "removed unused FastEmbedPoolConfig import (line 4)",
+      "lines": "-1 (import) and -2 (usage removal)"
+    },
+    {
+      "file": "libs/data/embed/embedding-provider/src/fastembed.ts",
+      "kind": "removed unused batchSizeHint field and dead poolConfig constructor parameter (was only used to seed batchSizeHint)",
+      "lines": "-2 field declarations, -1 constructor param, -1 assignment"
+    },
+    {
+      "file": "libs/data/embed/embedding-provider/src/fastembed.ts",
+      "kind": "added MODEL_CONFIGS to named export list",
+      "lines": "+1 (line 396 export added)"
+    },
+    {
+      "file": "libs/data/embed/embedding-provider/src/index.ts",
+      "kind": "removed poolConfig variable declaration and 4th arg from new FastembedProvider() call",
+      "lines": "-3 (variable) + -1 (arg removal)"
+    }
+  ],
+
+  "tests": {
+    "project": "embedding-provider",
+    "command": "nx test embedding-provider",
+    "passed": 30,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files  1 passed (1)\nTests  30 passed (30)"
+  },
+
+  "lint": {
+    "passed": true,
+    "command": "nx lint embedding-provider",
+    "output": "All files pass linting"
+  },
+
+  "build": {
+    "passed": true,
+    "command": "nx build embedding-provider",
+    "dist_embedWorker_exists": true,
+    "dist_embedWorker_bytes": 4203
+  },
+
+  "issues": [
+    "NONE — all three build errors resolved cleanly"
+  ],
+
+  "handoff_notes": [
+    "MODEL_CONFIGS is now exported from fastembed.ts — index.ts imports it as `const { FastembedProvider, MODEL_CONFIGS, DEFAULT_MODEL } = await import('./fastembed.js')`",
+    "FastEmbedPoolConfig type was removed from fastembed.ts import (constructor no longer accepts poolConfig). The type is still exported from index.ts for consumers that need it.",
+    "The batchSizeHint field was removed entirely — embedBatch batch size is set via the opts parameter at call time only.",
+    "Verify that no caller passes poolConfig to new FastembedProvider(model, dim, cacheDir) — constructor signature is now 3-arg."
+  ],
+
+  "backlog_entries": []
+}

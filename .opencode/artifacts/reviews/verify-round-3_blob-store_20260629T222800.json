@@ -1,0 +1,85 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "verify-round-3",
+  "label": "blob-store getStream FD guard leak fix — round 3 verification",
+  "reviewed_at": "2026-06-29T22:28:00.000Z",
+  "files_reviewed": [
+    "libs/data/store/blob-store/src/store.ts",
+    "libs/data/store/blob-store/src/fd-guard.ts",
+    "libs/data/store/blob-store/src/blob-store.spec.ts"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 36, "failed": 0, "skipped": 0 },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 294,
+      "description": "getStream FD guard leak fix — exit path audit",
+      "fix_sketch": "N/A — review only; all exit paths are covered."
+    },
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 315,
+      "description": "Double-release guard: `cleanedUp` flag prevents `release()` and `fileHandle.close()` from being called more than once across all exit paths (pull end, pull error, cancel, abandon timer)",
+      "fix_sketch": "N/A — correct as implemented."
+    },
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 319,
+      "description": "Guard entry release via `release()` call inside `cleanup()` — confirmed on all four stream exit paths: pull end-of-stream (line 357), pull error (line 369), cancel (line 374), abandon timer (line 327-334)",
+      "fix_sketch": "N/A — correct as implemented."
+    },
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 321,
+      "description": "File handle close via `fileHandle.close().catch(() => {})` inside `cleanup()` — confirmed on all four stream exit paths",
+      "fix_sketch": "N/A — correct as implemented."
+    },
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 327,
+      "description": "Abandon timer (60s, unref'd) provides safety net for the 'never read, never cancelled' case — forces cleanup and logs a warning",
+      "fix_sketch": "N/A — correct as implemented."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 312,
+      "description": "Pre-existing minor issue: if `fileHandle.stat()` throws after `fsp.open()` succeeded (line 311), the outer catch (line 377) calls `release()` but `fileHandle.close()` is never called because the `cleanup` closure is defined after line 312. File descriptor is leaked. This is not part of the FD guard leak fix — it is a pre-existing condition that existed before the fix.",
+      "fix_sketch": "Move lines 315-323 (cleanedUp/cleanup) before lines 311-312 (open/stat), or add a separate `fileHandle.close()` in the outer catch block."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 1,
+    "info": 5
+  },
+  "exit_path_trace": {
+    "path_1_blob_missing": { "acquire": false, "release": false, "close": false, "guard_ok": true },
+    "path_2_open_fail": { "acquire": true, "release": true, "close": false, "guard_ok": true, "fd_leak": false },
+    "path_3_stat_fail": { "acquire": true, "release": true, "close": false, "guard_ok": true, "fd_leak": true, "note": "pre-existing, not part of this fix" },
+    "path_4_pull_end": { "acquire": true, "release": true, "close": true, "guard_ok": true },
+    "path_5_pull_mismatch": { "acquire": true, "release": true, "close": true, "guard_ok": true },
+    "path_6_pull_error": { "acquire": true, "release": true, "close": true, "guard_ok": true },
+    "path_7_cancel": { "acquire": true, "release": true, "close": true, "guard_ok": true },
+    "path_8_abandon": { "acquire": true, "release": true, "close": true, "guard_ok": true },
+    "double_release_guard": "cleanedUp flag at line 317 prevents double cleanup on all paths"
+  }
+}

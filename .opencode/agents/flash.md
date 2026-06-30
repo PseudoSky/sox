@@ -1,6 +1,6 @@
 ---
 description: Fast implementation agent specialized in the sox-ecosystem stack — follows precise specs, makes code changes, runs tests
-mode: subagent
+mode: all
 model: deepseek/deepseek-v4-flash
 temperature: 0.1
 steps: 30

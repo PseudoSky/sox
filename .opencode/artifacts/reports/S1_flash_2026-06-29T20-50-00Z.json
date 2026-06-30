@@ -1,0 +1,76 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "flash",
+  "segment": "S1",
+  "label": "blob-store — new leaf data package (fix build + test config)",
+  "completed_at": "2026-06-29T20:50:00.000Z",
+
+  "summary": "Fixed tsconfig.lib.json missing rootDir + vitest.config.ts missing root + removed unused declarations in store.ts. Build, test (36/36), and lint all pass.",
+
+  "changes": [
+    {
+      "file": "libs/data/store/blob-store/tsconfig.lib.json",
+      "kind": "added rootDir: ./src",
+      "lines": "+1"
+    },
+    {
+      "file": "libs/data/store/blob-store/vitest.config.ts",
+      "kind": "added root: project path, removed unnecessary globals/node options",
+      "lines": "+1 / -2"
+    },
+    {
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "kind": "removed unused TwoPhaseWriteResult interface + unused resolvedDbPath field",
+      "lines": "-13"
+    }
+  ],
+
+  "tests": {
+    "project": "blob-store",
+    "command": "nx test blob-store",
+    "passed": 36,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files  2 passed (2) · Tests  36 passed (36)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "verification": {
+    "universal": {
+      "nx_affected_lint": "passed (npx nx lint blob-store)",
+      "nx_affected_build": "passed (npx nx build blob-store)",
+      "nx_affected_test": "passed (36 passed, 0 failed)",
+      "git_diff_stat": "3 files changed (blob-store/ as new untracked package)"
+    },
+    "type_specific": {
+      "playbook_section": "§2.9 — Data library changes",
+      "note": "New leaf data package with zero consumers — no build-chain propagation needed. register:sync-index is NOT required for data packages per CLAUDE.md libs/data/"
+    }
+  },
+
+  "issues": [
+    "verifyAll() (store.ts:601-672) uses a buggy Promise.race + findIndex pattern — Promise.resolve(result) creates a new reference so findIndex always returns -1, causing pending array to never shrink. No test exercises this path currently, so tests pass. Should be fixed before production use."
+  ],
+
+  "handoff_notes": [
+    "All blob-store source files are new (untracked). The package@adhd/sox-blob-store is a standalone data library with zero deps on other @adhd/* packages.",
+    "The pinned column and pin/unpin/isPinned API are fully implemented per SPEC.md §12 gap resolution #3.",
+    "The verifyAll method has a known Promise.race bug (see issues). No tests exercise it, so it doesn't block but should be addressed in a follow-up."
+  ],
+
+  "backlog_entries": [
+    {
+      "area": "blob-store",
+      "description": "verifyAll() uses Promise.race + findIndex with Promise.resolve(result) which never matches the original promise. Pending promises never drain. Marked for fix.",
+      "discovered_at": "2026-06-29",
+      "severity": "medium"
+    }
+  ]
+}

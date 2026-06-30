@@ -1,0 +1,110 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "blob-store-code-review",
+  "label": "blob-store — full code review against SPEC.md",
+  "reviewed_at": "2026-06-30T02:19:03.000Z",
+  "files_reviewed": [
+    "libs/data/store/blob-store/src/index.ts",
+    "libs/data/store/blob-store/src/errors.ts",
+    "libs/data/store/blob-store/src/errors.spec.ts",
+    "libs/data/store/blob-store/src/schema.ts",
+    "libs/data/store/blob-store/src/fd-guard.ts",
+    "libs/data/store/blob-store/src/gc.ts",
+    "libs/data/store/blob-store/src/store.ts",
+    "libs/data/store/blob-store/src/blob-store.spec.ts",
+    "libs/data/store/blob-store/vitest.config.ts",
+    "libs/data/store/blob-store/package.json",
+    "libs/data/store/blob-store/project.json",
+    "libs/data/store/blob-store/tsconfig.json",
+    "libs/data/store/blob-store/tsconfig.lib.json"
+  ],
+  "spec_reviewed": "docs/plan/blob-store/SPEC.md",
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 36, "failed": 0, "skipped": 0 },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 290,
+      "description": "getStream resource leak: missing closed.then(release, release) fallback mandated by §8 spec pseudocode. The implementation releases the FD guard only in the `pull()` handler (on stream end/error) and `cancel()` handler. If a consumer gets the stream but never reads (no pull invoked) and never cancels, the FD guard entry and file handle are leaked indefinitely — neither `cancel()` nor `pull()`'s cleanup code ever runs.",
+      "fix_sketch": "Add `closed.then(release, release)` handler after constructing the ReadableStream, matching the §8 spec pseudocode. Alternatively, use a WeakRef finalizer pattern with a registry callback. The simplest fix: after `return new ReadableStream(...)`, attach `.then(release, release)` to the stream's internal `closed` promise (or use a teardown via AbortSignal)."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 971,
+      "description": "gcProgress() deadlock: the method can hang forever when called before GC starts (gcInProgress === false, queue empty) or after GC completes (no end-of-GC marker event emitted). The while-true loop reaches `await new Promise(...)` with no mechanism to wake it — the listener only fires when `emitGcProgress()` is called during gc(), and gc() does not emit a final event when gcInProgress transitions to false in its finally block. The only exit path is consumer-side generator return() (cancellation).",
+      "fix_sketch": "Add a guard check BEFORE `await new Promise(...)`: `if (!this.gcInProgress && queue.length === 0) break;`. Also emit a sentinel end-of-GC event from gc()'s finally block after setting gcInProgress = false, or add a dedicated resolve callback array that gc() triggers on completion. Optionally, wrap the promise with a timeout that re-checks the guard."
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 160,
+      "description": "put() does not create temp file with O_EXCL as required by SPEC §4 (concurrent collision handling, step 1). Uses `fsp.writeFile(tempPath, data)` which does not set O_EXCL, so two concurrent writers could write to the same temp path without getting EEXIST. By contrast, putStream() correctly uses `fsp.open(tempPath, 'wx')` (line 190) which provides O_EXCL semantics.",
+      "fix_sketch": "Replace `fsp.writeFile(tempPath, data)` with `fsp.open(tempPath, 'wx').then(fd => fd.write(data).then(() => fd.close()))` to ensure O_EXCL on temp file creation. This matches putStream()'s pattern."
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/store/blob-store/src/fd-guard.ts",
+      "line": 20,
+      "description": "FdGuard.acquire() does not check blob existence on disk. SPEC §8 specifies: 'THROWS BlobNotFound if the hash does not exist on disk.' The InProcessFdGuard implementation unconditionally increments a counter without verifying the blob exists. If a caller acquires a guard for a non-existent hash, the guard won't protect against anything meaningful, and GC won't skip it.",
+      "fix_sketch": "Add an injected `existsChecker: (hash: string) => Promise<boolean>` parameter to InProcessFdGuard's constructor. In acquire(), await the checker and throw BlobNotFound if it returns false. The BlobStore should pass a bound `this.has` when constructing the guard."
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 1139,
+      "description": "GC lock implementation differs from SPEC §4 cross-process GC lock description. The spec mandates `flock(fd, LOCK_EX)` on `<basePath>/.lock`. The implementation uses `fsp.open(lockFilePath, 'wx')` (exclusive-create file atom) on `<basePath>/.lock.acquire`. While both provide mutual exclusion, the flock mechanism offers crash-safe automatic release (OS releases the lock when the holding process dies). The wx-file approach leaves a `.lock.acquire` file on the filesystem if the process crashes mid-GC (recovered on next gc() because 'wx' succeeds if the stale file is deleted, but the stale file is never deleted).",
+      "fix_sketch": "Replace the exclusive-create file lock with a proper flock using Node.js `fs.open()` with `fs.constants.O_CREAT | fs.constants.O_RDWR`, then call `flock(fd, LOCK_EX)` via (for example) `proper-lockfile` or a cross-platform flock binding. The lock file should be `<basePath>/.lock` as specced. Alternatively, document the deviation in an ADR if the create-file approach is intentional."
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 1,
+      "description": "Unnecessary `// ──` section divider comments throughout the file (lines 1, 19, 61, 66, 96, 148, 263, 365, 381, 402, 488, 526, 564, 671, 802, 1052, 1079, 1192, 1206). Per the review checklist, comments should only document invariants or warnings — these decorative headers add visual noise. Similar pattern in errors.ts, fd-guard.ts, gc.ts, index.ts, schema.ts.",
+      "fix_sketch": "Remove all `// ──` divider comments. Replace with no comment at all, or at most a brief one-line comment per section where clarification of non-obvious behavior is needed."
+    },
+    {
+      "severity": "low",
+      "category": "test-coverage",
+      "file": "libs/data/store/blob-store/src/blob-store.spec.ts",
+      "line": 1,
+      "description": "Missing test coverage for several methods: verifyAll() (full integration, onCorrupt modes), export(), gcProgress(), cancelGc(), getGcHistory(), addRefs() with multiple hashes where some don't exist, concurrent write scenarios, put() with verifyOnWrite: true, empty blob (0 bytes), maxBlobSize enforcement for putStream, listBlobs() with prefix/limit/offset, metrics() accuracy (orphanCount, gcRuns, gcBytesFreed, dedupSavings). The 36 existing tests cover the happy path well but miss edge cases.",
+      "fix_sketch": "Add test blocks: (1) verifyAll with onCorrupt='warn'|'delete'|'fail' + corrupt file injection via direct fs write, (2) export to a second BlobStore instance, (3) gcProgress full cycle, (4) cancelGc mid-sweep with large blob set, (5) getGcHistory returns rows, (6) addRefs with one missing hash rolls back, (7) two concurrent put() calls with same content, (8) put with verifyOnWrite:true, (9) putStream with blob exceeding maxBlobSize, (10) listBlobs with prefix filter matching exactly 2 hex chars, (11) metrics() checks after known writes."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "line": 1054,
+      "description": "pin/unpin/isPinned methods implemented ahead of spec gap resolution. SPEC §12 (Spec gaps) lists blob pinning as a future resolution item. The implementation already includes these methods. While functionally correct and useful, they should either be reconciled in the spec (mark gap as resolved) with the precise interface, or gated behind a feature flag.",
+      "fix_sketch": "Update SPEC.md §12 to mark the blob pinning gap as resolved, documenting the exact interface and its guarantees (pinned blobs survive GC regardless of ref count)."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/data/store/blob-store/src/schema.ts",
+      "line": 15,
+      "description": "Extra `pinned INTEGER NOT NULL DEFAULT 0` column on blob_meta table and corresponding `idx_blob_meta_pinned` index. These are not in the base SPEC §5 schema but support the pin/unpin feature (also a spec gap). The refs table structure matches the spec exactly. No spec gaps exist for the refs schema.",
+      "fix_sketch": "Either (a) document the column in the spec as part of resolving the pinning gap, or (b) remove pinning and revert the schema to match the base spec exactly."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 2,
+    "medium": 3,
+    "low": 2,
+    "info": 2
+  },
+  "backlog_entries": []
+}

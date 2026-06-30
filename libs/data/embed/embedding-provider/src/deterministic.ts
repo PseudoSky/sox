@@ -38,10 +38,11 @@ export class DeterministicProvider implements EmbeddingProvider {
   readonly metadata: EmbeddingProviderMetadata;
   private cache: EmbeddingCache;
 
-  constructor(modelId: string, dimensions: number) {
+  constructor(modelId: string, dimensions: number, maxTokens = Number.MAX_SAFE_INTEGER) {
     this.metadata = {
       modelId,
       dimensions,
+      maxTokens,
       isRemote: false,
       isDeterministic: true,
       providerUri: `local:hash-${dimensions}d`,

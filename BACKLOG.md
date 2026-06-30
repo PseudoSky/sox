@@ -2357,3 +2357,133 @@ as a substitute.
 
 **Severity:** low — plan doc mismatch vs. actual nx target name. `sync-index` appears to be
 the equivalent operation (regenerates `registry/index.json`).
+
+---
+
+## Open — memory-core stale dedup from `libs/data/` (surfaced 2026-06-29)
+
+### BL-112 — memory-core has stale duplicate copies of primitives extracted to `libs/data/`
+
+**Observed:** `libs/memory-core/src/` contains duplicate implementations of primitives that
+were extracted to `libs/data/` packages:
+
+| File in `memory-core/src/` | Extracted to | Status |
+|---|---|---|
+| `extractive.ts` | `@adhd/sox-ingest` `extractiveSummary()` | Stale duplicate — memory-core version differs from data/ version |
+| `importance.ts` | `@adhd/sox-analysis` `computeImportance()` | Stale duplicate — memory-core version differs from data/ version |
+| `neardup.ts` | `@adhd/sox-analysis` near-dup detection | Stale duplicate |
+| `cluster.ts` | `@adhd/sox-analysis` density-clustering | Stale duplicate |
+| `autolink.ts` | `@adhd/sox-analysis` auto-linking | Stale duplicate |
+| `embed.ts` | `@adhd/sox-embedding-provider` | Thin wrapper — acceptable, but could delegate |
+
+Additionally, `@adhd/sox-ingest` is `private: true` which prevents adhd (the main monorepo)
+from consuming its `extractiveSummary()` as a proper dependency (see BL-113).
+
+**Impact:** Technical debt — two divergent copies of the same algorithm creates maintenance
+burden, bug-fix drift, and confusion about which is canonical. The memory-core versions
+bypass the `libs/data/` invariants (space invariance, BL-11 worker boundary, etc.).
+
+**Severity:** medium — not breaking but actively harmful for long-term maintenance.
+
+**Fix sketch:** For each duplicated module:
+1. Update `memory-core` to import from the corresponding `@adhd/sox-*` package
+2. Remove the local `src/*.ts` file from `memory-core`
+3. Run full test suite to verify nothing broke
+4. If the memory-core version diverged intentionally, reconcile before removing
+
+Priority order: `extractive.ts` (simplest — pure function, no DB) → `importance.ts` →
+`neardup.ts` → `cluster.ts` → `autolink.ts`.
+
+### BL-113 — `@adhd/sox-ingest` is `private: true`, un-publishable from adhd
+
+**Observed:** `libs/data/ingest/ingest/package.json` has `"private": true`, making it
+impossible to publish to npm. The adhd monorepo's `agent-mcp-authoring` plan needs
+`extractiveSummary()` from this package (via `@adhd/sox-ingest`).
+
+**Impact:** Blocks the `enrichment-pipeline` state in agent-mcp-authoring unless a local
+path reference is used instead of a published version.
+
+**Severity:** medium — workaround exists (local path `"file:../sox-ecosystem/..."`) but
+prevents standard npm resolution. Makes the adhd→sox dependency fragile.
+
+**Fix sketch:** Either (a) set `"private": false` and publish, or (b) copy the
+`extractiveSummary()` function into `@adhd/sox-analysis` or a new public helper package
+and deprecate `@adhd/sox-ingest` as internal-only. Option (b) is cleaner since
+`@adhd/sox-ingest` was designed as a private memory-domain ingest helper.
+
+---
+
+## Open — stub/placeholder items from blob-store + claim-verification + retrieval-infra dispatch (2026-06-29)
+
+### BL-114 — LanceDbVectorBackend is in-memory only, not backed by real LanceDB
+
+**Observed:** `libs/data/vectors/vector-store/src/lancedb.ts` implements `VectorBackend` but
+backed by an `InMemoryLanceTable` (in-memory `Map<number, Float32Array>`). The real
+`@lancedb/lancedb` dependency is not added to `package.json`. HNSW/IVF-PQ index config is
+parsed but never applied. ANN search falls back to brute-force cosine similarity.
+
+**Impact:** The adapter compiles and passes tests (35/35) but provides none of the
+production query performance (ANN indexes, disk-persistence) that callers expect from
+a LanceDB backend. Only suitable as a test stub or prototype.
+
+**Severity:** medium — not breaking but functionally incomplete.
+
+**Fix sketch:** Either (a) add `@lancedb/lancedb` dependency and wire real LanceDB API
+calls in `LanceDbVectorBackend`, or (b) rename to `InMemoryVectorBackend` and document
+it as a test-only adapter. Decision depends on whether LanceDB is the intended
+production backend or an evaluation candidate.
+
+### BL-115 — AST chunker uses regex-based heuristics, not tree-sitter AST parsing
+
+**Observed:** `libs/data/ingest/ingest/src/ast-chunker.ts` implements a simplified
+cAST algorithm using regex pattern matching and brace-depth counting. The spec requires
+tree-sitter backed AST parsing. The brace-walking heuristic (`extractDeclaration()`)
+is fragile: mismatched braces inside strings, comments, or template literals produce
+wrong declaration boundaries.
+
+**Impact:** Chunks may split function bodies incorrectly on code with complex string
+literals or nested generics. Not a production issue for well-formed code but will
+produce incorrect source maps on edge cases.
+
+**Severity:** low — adequate for the current test corpus, but should be replaced with
+tree-sitter before production use on untrusted code.
+
+**Fix sketch:** Replace `extractDeclaration()` with a tree-sitter WASM parser
+(`web-tree-sitter`). Use the CST to find exact declaration boundaries. Maintain the
+`Chunker` interface contract unchanged.
+
+### BL-116 — Cross-encoder worker uses token-overlap heuristic, not ONNX model
+
+**Observed:** `libs/data/search/hybrid-search/src/crossEncoderWorker.ts` `computeRerankScores()`
+uses token-overlap (intersection of token sets) instead of a real ONNX NLI cross-encoder.
+`ensureModel()` is a no-op that records the `_modelId` but never loads an ONNX session.
+
+**Impact:** Cross-encoder reranking is a token-overlap similarity measure, not an NLI
+entailment score. For `threshold-gated` mode in hybrid search, this will produce no
+better relevance signal than the BM25/vector fusion already provides.
+
+**Severity:** low — adequate as a test stub for the adapter shape. The real ONNX model
+loading (MiniCheck/flan-t5-large) should be wired before production deployment.
+
+**Fix sketch:** Load the ONNX model via `onnxruntime-node` in the worker thread
+(per BL-11 isolation). Implement `session.run()` for query-candidate pair scoring.
+Model download falls through `ModelCache.ensure()`.
+
+### BL-117 — Late chunking in memory-core is a no-op flag
+
+**Observed:** `libs/memory-core/src/recall.ts` `lateChunking.enabled` sets
+`lateChunkingApplied = true` but performs no actual mean-pooling or boundary-based
+aggregation. The spec (§5) requires storing per-chunk boundaries alongside the
+full-document embedding and mean-pooling at retrieval time.
+
+**Impact:** The `lateChunking` option is accepted but silently ignored — callers get
+standard chunk recall with no late chunking behavior.
+
+**Severity:** low — documented as "Placeholder" in code comments. Complete
+implementation requires changes to the ingest pipeline (store boundaries) and the
+recall pipeline (mean-pool at query time).
+
+**Fix sketch:** Phase 1: store chunk boundaries in `blob_meta` or a new `chunk_boundary`
+table at ingest time. Phase 2: in `memoryRecall()`, when `lateChunking.enabled`, fetch
+the full-document embedding and mean-pool per the stored boundaries before returning
+results.

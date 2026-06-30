@@ -1,0 +1,16 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "flash",
+  "task_id": "group-E",
+  "label": "hybrid-search — timeout, race, typed errors, workers config, dep wiring",
+  "completed_at": "2026-06-30T02:25:00Z",
+  "changes": [
+    { "file": "libs/data/search/hybrid-search/src/cross-encoder.ts", "kind": "fixed timeoutMs enforcement, getWorker() race, typed error imports, removed unused workers config", "lines": "+40/-15" },
+    { "file": "libs/data/search/hybrid-search/package.json", "kind": "no changes — dep already declared" }
+  ],
+  "tests": { "project": "hybrid-search", "command": "nx test hybrid-search", "passed": 56, "failed": 0, "skipped": 0 },
+  "lint": { "passed": true },
+  "build": { "passed": true },
+  "issues": ["@adhd/sox-embedding-provider module resolution required pnpm install to link workspace dependency"],
+  "backlog_entries": []
+}

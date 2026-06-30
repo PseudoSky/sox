@@ -1,0 +1,117 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "hybrid-search-review",
+  "label": "hybrid-search package code review — CrossEncoder, worker isolation, spec compliance",
+  "reviewed_at": "2026-06-29T21:19:00Z",
+  "files_reviewed": [
+    "libs/data/search/hybrid-search/src/index.ts",
+    "libs/data/search/hybrid-search/src/cross-encoder.ts",
+    "libs/data/search/hybrid-search/src/crossEncoderWorker.ts",
+    "libs/data/search/hybrid-search/src/filter-utils.ts",
+    "libs/data/search/hybrid-search/src/cross-encoder.spec.ts",
+    "libs/data/search/hybrid-search/src/hybrid-search.spec.ts",
+    "libs/data/search/hybrid-search/package.json",
+    "libs/data/search/hybrid-search/project.json",
+    "libs/data/search/hybrid-search/tsconfig.lib.json",
+    "libs/data/search/hybrid-search/vitest.config.ts"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 56, "failed": 0, "skipped": 0 },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "high",
+      "category": "spec-compliance",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 48,
+      "description": "timeoutMs parameter is declared but silently ignored — rerank() accepts opts?.timeoutMs but never uses it. If the ONNX worker hangs (model download, inference stall, OOM), the Promise will never settle. The spec §4B defines timeout support and SPEC.md §4A latency budgets (e.g. <500ms) imply timeout enforcement.",
+      "fix_sketch": "Wrap worker.postMessage with Promise.race([workerCall, timeoutPromise]). Use AbortController or a simple setTimeout to reject after opts.timeoutMs. Pass the timeout to the worker thread so it can cancel the ONNX session.run()."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 273,
+      "description": "Race condition in getWorker(): if rerank() and rerankBatch() (or two concurrent rerank() calls) are invoked before the worker is created, both calls will see this.worker === null, both create new CrossEncoderWorker instances, and both call start(). The second assignment to this.worker orphans the first worker (no reference, never terminated). This leaks worker threads and can cause duplicate ONNX model loads.",
+      "fix_sketch": "Guard getWorker() with a deferred/promise-based mutex. Use a 'starting' promise: if (this.startingPromise) return this.startingPromise; else create the worker, store the promise, and await it. All concurrent callers share the same promise."
+    },
+    {
+      "severity": "high",
+      "category": "spec-compliance",
+      "file": "libs/data/search/hybrid-search/package.json",
+      "line": 26,
+      "description": "@adhd/sox-embedding-provider is declared as a dependency but NEVER imported in any source file. SPEC.md §4 and §D2 require cross-encoder to reuse TransientEmbeddingError / PermanentEmbeddingError / ResolutionError from the embedding-provider package. The dependency is dead weight and the error type requirement is unimplemented.",
+      "fix_sketch": "Import TransientEmbeddingError, PermanentEmbeddingError, and ResolutionError from @adhd/sox-embedding-provider. Replace all new Error(...) throws in cross-encoder.ts with appropriate typed errors. Or, if the errors are not yet needed at this implementation stage, remove the unused dependency from package.json."
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 67,
+      "description": "CrossEncoderRerankerConfig.workers is defined in the interface but never consumed. Similarly CrossEncoderConfig.options.workers (line 38). The spec says 'Worker thread pool size for cross-encoder inference. Default: 1.' If a user sets workers: 3, the value is silently ignored — a single worker is always used.",
+      "fix_sketch": "Remove the field if multi-worker is deferred, or implement a worker pool (e.g., round-robin across N workers, each loading the model independently). Round-robin requires N separate Worker instances and request dispatch across them."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 250,
+      "description": "Error types violate SPEC.md §4 error taxonomy. The spec says cross-encoder errors reuse TransientEmbeddingError, PermanentEmbeddingError, and ResolutionError from @adhd/sox-embedding-provider. The implementation throws plain Error('CrossEncoder has been disposed'), Error('CrossEncoder worker not started'), and forwards worker errors as new Error(msg.error). These are not distinguishable by callers.",
+      "fix_sketch": "Import typed errors from @adhd/sox-embedding-provider (once that dependency is actually used). Throw ResolutionError for dispose-state errors, TransientEmbeddingError for worker failures. See SPEC.md §4 'Error taxonomy — reuses TransientEmbeddingError, PermanentEmbeddingError, ResolutionError'."
+    },
+    {
+      "severity": "medium",
+      "category": "test-coverage",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.spec.ts",
+      "line": 1,
+      "description": "CrossEncoder test coverage is minimal: 3 tests (creation, rerank basic shape, dispose guard). Missing: rerankBatch, empty candidates, error handling (worker failure), timeout behavior, concurrent calls, multiple dispose calls, worker crash recovery, and behavior without init.",
+      "fix_sketch": "Add tests for rerankBatch with multiple query-candidate sets. Add tests for empty candidates array, worker error propagation, concurrent rerank calls (stress test), and double dispose()."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 128,
+      "description": "Worker thread is unref()ed immediately after creation. In the default Node.js lifecycle, unref() means the worker won't keep the process alive. If all other refs are cleared before the init/rerk request completes, the process may exit mid-inference, dropping the response silently. This could produce hard-to-debug intermittent failures in short-lived CLI commands.",
+      "fix_sketch": "Remove unref() or defer it until after the first successful response. Alternatively, keep a ref count of outstanding requests and only unref when zero."
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 15,
+      "description": "resolveWorkerPath() calls existsSync on every start(). In production the .ts path will never exist, so the .stat call is wasted I/O on every worker start. Minor — not a hot path.",
+      "fix_sketch": "Cache the resolved path at module level, or use a simple environment check (process.env.VITEST === 'true' || import.meta.url.endsWith('.ts'))."
+    },
+    {
+      "severity": "low",
+      "category": "spec-compliance",
+      "file": "libs/data/search/hybrid-search/src/crossEncoderWorker.ts",
+      "line": 86,
+      "description": "BL-116 (already in BACKLOG.md) — ensureModel() is a no-op stub and computeRerankScores() uses token-overlap heuristic, not real ONNX cross-encoder inference. The spec describes MiniCheck (770M params), debeVTA-v3, and MiniLM2 models. Noted here for completeness; the existing BACKLOG entry covers the fix.",
+      "fix_sketch": "See BL-116 fix sketch: load ONNX model via onnxruntime-node in the worker thread, implement session.run() for query-candidate scoring."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 119,
+      "description": "readyPromise is not reset when worker crashes. If the worker emits 'error', this.worker is set to null (line 146) but readyPromise retains its resolved state. A subsequent getWorker() call will see !this.worker, create a new worker, call start() which sets a fresh readyPromise — so it works. However, if the crash happens before init completes, the init resolve from the crashed worker may already have resolved readyPromise, leaving the new worker's init promise shadowed.",
+      "fix_sketch": "In the worker 'error' handler, also set this.readyPromise = null so the recovery path creates a fresh initialization sequence."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 3,
+    "medium": 3,
+    "low": 4,
+    "info": 0
+  },
+  "backlog_entries": [
+    "BL-116 — Cross-encoder worker uses token-overlap heuristic, not ONNX model (already in BACKLOG.md)"
+  ],
+  "spec_gap_summary": "The most significant spec gap is the missing timeout enforcement for rerank/rerankBatch (opts.timeoutMs silently ignored). Second is the race condition in getWorker() that orphans workers under concurrent access. Third is the unused @adhd/sox-embedding-provider dependency and corresponding missing typed error classes. The workers config field and ONNX implementation (BL-116) are tracked gaps but lower urgency."
+}

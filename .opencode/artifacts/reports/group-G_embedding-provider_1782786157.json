@@ -1,0 +1,61 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "group-G",
+  "label": "EmbeddingProvider - 3 fixes: warmUp comment, DeterministicProvider maxTokens, ensureReady guard",
+  "completed_at": "2026-06-29T21:22:37Z",
+
+  "summary": "Fixed 3 issues in libs/data/embed/embedding-provider/src/: misleading warmUp comment in fastembed.ts, hardcoded maxTokens:512 in DeterministicProvider, and silent resolve in ensureReady() when worker not initialized",
+
+  "changes": [
+    {
+      "file": "libs/data/embed/embedding-provider/src/fastembed.ts",
+      "kind": "Fix 1: replaced misleading warmUp comment with accurate explanation of the no-op",
+      "lines": "-2 / +3"
+    },
+    {
+      "file": "libs/data/embed/embedding-provider/src/fastembed.ts",
+      "kind": "Fix 3: added ResolutionError import and guard in ensureReady() — throws if neither ready nor readyPromise is set",
+      "lines": "+5 / -2"
+    },
+    {
+      "file": "libs/data/embed/embedding-provider/src/deterministic.ts",
+      "kind": "Fix 2: added maxTokens parameter (defaults to Number.MAX_SAFE_INTEGER) to constructor, uses it in metadata instead of hardcoded 512",
+      "lines": "+1 / -1"
+    },
+    {
+      "file": "libs/data/embed/embedding-provider/src/index.ts",
+      "kind": "Fix 2: passes Infinity as maxTokens to DeterministicProvider from factory",
+      "lines": "+1 / -1"
+    }
+  ],
+
+  "tests": {
+    "project": "embedding-provider",
+    "command": "npx nx test embedding-provider",
+    "passed": 30,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files  1 passed (1) | Tests  30 passed (30)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "issues": [
+    "NONE — all 30 tests pass, lint clean, build clean"
+  ],
+
+  "handoff_notes": [
+    "DeterministicProvider constructor now accepts 3rd param maxTokens (default Number.MAX_SAFE_INTEGER) — callers passing positional args after dimensions are unaffected.",
+    "FastembedProvider.ensureReady() now throws ResolutionError if neither ready nor readyPromise is set — previously it resolved silently.",
+    "ResolutionError is now imported by fastembed.ts from index.js."
+  ],
+
+  "backlog_entries": []
+}

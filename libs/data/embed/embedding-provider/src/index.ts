@@ -11,6 +11,7 @@ export type EmbedRole = 'document' | 'query';
 export interface EmbeddingProviderMetadata {
   modelId: string;
   dimensions: number;
+  maxTokens: number;
   isRemote: boolean;
   isDeterministic: boolean;
   providerUri?: string;
@@ -57,6 +58,61 @@ export class ResolutionError extends Error {
   }
 }
 
+// ── Model config & pool types ──────────────────────────────────────────────────
+
+/**
+ * Static registration for a fastembed ONNX model.
+ * Each model has a known HF repo, dimension, context window, and description.
+ */
+export interface FastEmbedModelConfig {
+  modelId: string;               // 'bge-m3' | 'codexembed-400m' | etc.
+  hfRepoId: string;              // HuggingFace repo for ONNX binary download
+  dim: number;
+  maxTokens: number;
+  description: string;           // human-readable label for observability / tooling
+}
+
+/**
+ * Worker thread pool configuration for fastembed ONNX inference.
+ */
+export interface FastEmbedPoolConfig {
+  /** Maximum number of ONNX inference workers. Default: os.cpus().length / 2, minimum 1. */
+  maxWorkers?: number;
+  /** Models to preload at pool init. Lazy-load on first use if omitted. */
+  preloadModels?: string[];
+  /** Per-model batch size hint. Overrides the default 32. */
+  batchSizes?: Record<string, number>;
+}
+
+/**
+ * Policy for migrating vectors from one embedding model to another.
+ */
+export interface ReembedPolicy {
+  sourceModel: string;           // modelId of the old model whose vectors need re-embedding
+  targetModel: string;           // modelId of the new model
+  batchSize: number;             // number of vectors to re-embed per batch (default: 64)
+  dryRun: boolean;               // when true, report what would be re-embedded without executing
+}
+
+/**
+ * Local model cache: download, verify SHA-256, and manage model binaries.
+ * Binaries are stored at <dataRoot>/models/<modelId>/<version>/ with a sidecar .sha256 file.
+ */
+export interface ModelCache {
+  /** Download and verify model binary. Returns once the model is ready. Throws ResolutionError on SHA-256 mismatch. */
+  ensure(modelId: string): Promise<void>;
+  /** Check whether the model binary is already in local cache. */
+  cached(modelId: string): boolean;
+  /** Remove a single model from cache. Does not affect other models. */
+  clear(modelId: string): Promise<void>;
+  /** Streaming download with progress. Yields byte-level progress updates. */
+  ensureStream(modelId: string): AsyncIterable<{ bytesDownloaded: number; totalBytes: number }>;
+}
+
+// ── Re-exports ────────────────────────────────────────────────────────────────
+
+export { FileSystemModelCache } from './cache.js';
+
 // ── Factory ───────────────────────────────────────────────────────────────────
 
 export async function createEmbeddingProvider(
@@ -85,14 +141,13 @@ export async function createEmbeddingProvider(
 async function createFastembedProvider(
   config: EmbeddingProviderConfig,
 ): Promise<EmbeddingProvider> {
-  const { FastembedProvider, MODEL_DIMS, DEFAULT_MODEL } = await import('./fastembed.js');
+  const { FastembedProvider, MODEL_CONFIGS, DEFAULT_MODEL } = await import('./fastembed.js');
   const modelId = config.model || DEFAULT_MODEL;
-  const knownDim = MODEL_DIMS[modelId];
-  const dimensions = knownDim ?? 0;
+  const cfg = MODEL_CONFIGS[modelId];
 
-  if (!knownDim) {
+  if (!cfg) {
     throw new ResolutionError(
-      `Unknown fastembed model: "${modelId}". Supported: ${Object.keys(MODEL_DIMS).join(', ')}`,
+      `Unknown fastembed model: "${modelId}". Supported: ${Object.keys(MODEL_CONFIGS).join(', ')}`,
     );
   }
 
@@ -102,7 +157,7 @@ async function createFastembedProvider(
     joinDefaultCacheDir();
 
   try {
-    const provider = new FastembedProvider(modelId, dimensions, cacheDir);
+    const provider = new FastembedProvider(modelId, cfg.dim, cacheDir);
     await withTimeout(
       provider.embedSingle('warmup'),
       warmupTimeoutMs(),
@@ -124,7 +179,7 @@ async function createDeterministicProvider(
   const { DeterministicProvider } = await import('./deterministic.js');
   const modelId = config.model || 'hash-768';
   const dimensions = (config.options?.['dimensions'] as number) ?? 768;
-  return new DeterministicProvider(modelId, dimensions);
+  return new DeterministicProvider(modelId, dimensions, Infinity);
 }
 
 async function createRemoteProvider(

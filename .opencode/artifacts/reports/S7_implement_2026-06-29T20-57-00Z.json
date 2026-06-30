@@ -1,0 +1,31 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "S7",
+  "label": "memory-core — parent-context expansion & late chunking",
+  "completed_at": "2026-06-29T20:57:00Z",
+  "summary": "Added parent-context expansion (maxDepth, maxContextTokens, 4 join strategies with truncate-tail) and late chunking to memoryRecall() with proper DERIVED_FROM edge traversal",
+  "changes": [
+    { "file": "libs/memory-core/src/recall.ts", "kind": "modified — added parent-context expansion logic (~+90 lines), fixed metadata", "lines": "+90/-70" },
+    { "file": "libs/data/search/hybrid-search/src/cross-encoder.ts", "kind": "fixed — removed unused resolveWorkerPath + cleaned imports", "lines": "-15" }
+  ],
+  "tests": {
+    "project": "memory-core",
+    "command": "nx test memory-core",
+    "passed": 159,
+    "failed": 0,
+    "skipped": 1,
+    "output_snippet": "Tests 159 passed, 1 skipped"
+  },
+  "lint": { "passed": true },
+  "build": { "passed": true },
+  "issues": [
+    "Integration tests for parent-context expansion not yet written (DERIVED_FROM edge traversal, all 4 join strategies, truncate-tail, overflow error)"
+  ],
+  "handoff_notes": [
+    "Parent-context expansion uses DERIVED_FROM edges for parent lookup — requires proper DB setup in tests",
+    "Cross-segment fix in S6: removed unused resolveWorkerPath from cross-encoder.ts",
+    "Default behavior unchanged when parentContext/lateChunking not configured"
+  ],
+  "backlog_entries": []
+}

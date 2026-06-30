@@ -1,0 +1,81 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "verify-round-4_ingest",
+  "label": "Short-declaration fix verification: ast-chunker.ts",
+  "reviewed_at": "2026-06-29T22:33:00.000Z",
+  "files_reviewed": [
+    "libs/data/ingest/ingest/src/ast-chunker.ts"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 48, "failed": 0, "skipped": 0 },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/ingest/ingest/src/ast-chunker.ts",
+      "line": 177,
+      "description": "SHORT DECLARATION AT START OF FILE — VERIFIED FIX. Previously, lines 172-176 were an `if (chunks.length > 0)` guard with no `else` branch, meaning a short declaration encountered when `chunks` was empty would fall through to `i++` (line 201) and be silently dropped. The fix (lines 177-194) adds an `else` branch that creates a proper chunk. Trace confirms: when `chunks.length === 0` and a short decl is found, a new chunk is emitted with correct text, sourceMap, and sourceSha. The declaration line at `decl.startLine` is not skipped. ✅ PASS",
+      "fix_sketch": "N/A — fix is correctly applied"
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/ingest/ingest/src/ast-chunker.ts",
+      "line": 182,
+      "description": "SOURCEMAP VERIFICATION — The chunk created in the `else` branch has proper sourceMap: sourceStartLine=decl.startLine, sourceEndLine=decl.endLine, sourceSha=document hash. Also conditionally includes sourceUrl when provided. ✅ PASS",
+      "fix_sketch": "N/A"
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/ingest/ingest/src/ast-chunker.ts",
+      "line": 172,
+      "description": "NON-FIRST SHORT DECLARATIONS MERGE INTO PRECEDING CHUNK — VERIFIED. When chunks.length > 0 (preamble or prior declaration already emitted), short decls append text to `prev.text` and extend `prev.sourceMap.sourceEndLine`. This preserves the pre-fix merge behavior intact. ✅ PASS",
+      "fix_sketch": "N/A"
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/ingest/ingest/src/ast-chunker.ts",
+      "line": 125,
+      "description": "NORMAL DECLARATIONS (≥ minLines) EMIT STANDALONE CHUNKS — VERIFIED. The ≥-minLines branch remains unchanged: standalone chunk with gap emission between disjoint declarations. Leads/blank lines handled via preamble. ✅ PASS",
+      "fix_sketch": "N/A"
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/ingest/ingest/src/ast-chunker.ts",
+      "line": 196,
+      "description": "CONTROL FLOW AFTER SHORT DECLARATION — Both branches (merge and standalone) correctly set `i = decl.endLine + 1; continue;`, preventing the declaration from being re-scanned. ✅ PASS",
+      "fix_sketch": "N/A"
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/data/ingest/ingest/src/ast-chunker.ts",
+      "line": 127,
+      "description": "POTENTIAL ISSUE: Short preamble + short declaration merges into preamble. When a preamble exists (chunks.length > 0 from preamble emission) and the very first declaration is short, it merges into the preamble chunk rather than getting its own chunk. Example: a license header on line 0-1 followed by `const fn = () => {}` on line 2 results in the short decl being appended to the license text. This is consistent with the existing 'merge into preceding chunk' design for non-first short decls, but it means a short declaration after a preamble does NOT get its own chunk. The task spec only requires handling 'chunks.length === 0' which is done — the behavior here is the pre-existing merge logic. Not a regression but worth noting.",
+      "fix_sketch": "If standalone short-decl chunks are desired even after preamble, the if-condition should be `chunks.length > 1 || (chunks.length === 1 && chunks[0].metadata.chunkIndex > 0)` or similar, but this changes the existing merge semantics."
+    },
+    {
+      "severity": "medium",
+      "category": "test-coverage",
+      "file": "libs/data/ingest/ingest/src/chunker-registry.spec.ts",
+      "line": 37,
+      "description": "MISSING TEST COVERAGE FOR SHORT DECLARATION BEHAVIOR. The AstChunker tests (lines 37-66) only cover: function declarations existence check, unsupported language, and no-declarations whole-document fallback. There are no tests for: (a) short declaration at start of file gets its own chunk, (b) non-first short declaration merges into preceding chunk, (c) preamble emission with sourceMap accuracy, (d) gap emission between long declarations, (e) chunkIndex monotonicity, (f) sourceSha propagation across chunks. The fix has no dedicated test to prevent regression.",
+      "fix_sketch": "Add test cases: (1) file with only a short function → 1 chunk with proper sourceMap; (2) short decl after preamble → verify merge or standalone per design; (3) short decl between long decls → verify merge into preceding; (4) verify chunkIndex is sequential; (5) verify sourceSha is consistent across chunks."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 5,
+    "medium": 2,
+    "low": 0,
+    "info": 0
+  },
+  "backlog_entries": []
+}

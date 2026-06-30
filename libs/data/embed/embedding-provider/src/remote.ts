@@ -16,6 +16,7 @@ export class RemoteProvider implements EmbeddingProvider {
     this.metadata = {
       modelId,
       dimensions,
+      maxTokens: 8192,
       isRemote: true,
       isDeterministic: false,
       providerUri: endpoint,

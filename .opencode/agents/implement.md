@@ -1,6 +1,6 @@
 ---
 description: Complex implementation agent (pro model) — multi-file changes, interface design, refactors, debugging. For well-specified simple tasks, use flash instead
-mode: subagent
+mode: all
 model: deepseek/deepseek-v4-pro
 temperature: 0.1
 steps: 40

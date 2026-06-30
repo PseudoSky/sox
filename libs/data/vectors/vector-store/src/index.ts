@@ -3,6 +3,7 @@ import * as sqliteVec from 'sqlite-vec';
 
 type SQLiteDB = Database.Database;
 
+
 // ── Public types ────────────────────────────────────────────────────────────
 
 export interface VectorSpace {
@@ -315,6 +316,19 @@ export function openVectorStore(
   const backend = new SqliteVectorBackend(db);
   backend.ensureSpace({ modelId: opts.modelId, dim: opts.dim });
   return backend;
+}
+
+// ── LanceDbVectorBackend ──────────────────────────────────────────────────────
+
+import { LanceDbVectorBackend } from './lancedb.js';
+import type { LanceDbVectorBackendConfig } from './lancedb.js';
+
+export { LanceDbVectorBackend, type LanceDbVectorBackendConfig } from './lancedb.js';
+
+export function openLanceDbVectorStore(
+  config: LanceDbVectorBackendConfig & { db: Database.Database },
+): LanceDbVectorBackend & VectorBackend {
+  return new LanceDbVectorBackend(config);
 }
 
 // ── reembed — cross-space migration ─────────────────────────────────────────

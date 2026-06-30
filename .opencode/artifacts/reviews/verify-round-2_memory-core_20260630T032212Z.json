@@ -1,0 +1,49 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "verify-round-2_memory-core",
+  "label": "memory-core parentDocId fallback fix — round 2 re-review",
+  "reviewed_at": "2026-06-30T03:22:12Z",
+  "files_reviewed": ["libs/memory-core/src/recall.ts"],
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 159, "failed": 0, "skipped": 1 },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "libs/memory-core/src/recall.ts",
+      "line": 592,
+      "description": "Bug 1 (Wrong SQL) — CONFIRMED FIXED. The fallback query now reads `WHERE uid = ?` instead of the incorrect `WHERE session_id = ? AND rowid != ?`. The parameter is correctly supplied as `currentNode.session_id`, which holds the parent's UID. This correctly fetches the parent node, not siblings.",
+      "fix_sketch": "Already applied — no action needed."
+    },
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "libs/memory-core/src/recall.ts",
+      "line": 612,
+      "description": "Bug 2 (Missing source addition) — CONFIRMED FIXED. The parent row is now pushed to `sources[]` at line 612-615 (`sources.push({chunk: {uid: parentRow.uid, content: parentRow.content, name: parentRow.name}, depth})`) before the `continue` at line 619. The token budget (`expandedTokens`) is also correctly incremented at line 616 before continuing the loop.",
+      "fix_sketch": "Already applied — no action needed."
+    },
+    {
+      "severity": "medium",
+      "category": "test-coverage",
+      "file": "libs/memory-core/src/recall.ts",
+      "line": 587,
+      "description": "The parentDocId fallback path (lines 587-622, exercised when `stmtParentEdge.get()` returns undefined) has no dedicated test coverage. Existing parent-child recall tests in write.spec.ts create DERIVED_FROM edges, so they exercise the primary edge-based path, not the fallback. The fallback is a degradation path for when the graph edge is missing but `session_id` still references the parent UID.",
+      "fix_sketch": "Add a test in recall.spec.ts (or a new recall.expand.spec.ts) that: (1) inserts a parent node and a child node with `session_id` set to the parent's UID but WITHOUT a DERIVED_FROM edge in the graph; (2) calls `recall()` with expand-context enabled; (3) asserts the parent appears in the expanded sources array."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 1,
+    "low": 0,
+    "info": 2
+  },
+  "backlog_entries": [
+    "BL-XX — memory-core parentDocId fallback path in recall.ts (lines 587-622) lacks test coverage; add a test without DERIVED_FROM edge to exercise the fallback"
+  ]
+}

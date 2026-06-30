@@ -1,0 +1,49 @@
+{
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "name": "claim-verification",
+  "projectType": "library",
+  "root": "libs/data/verify/claim-verification",
+  "sourceRoot": "libs/data/verify/claim-verification/src",
+  "tags": [
+    "type:lib",
+    "area:data",
+    "group:verify"
+  ],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/libs/data/verify/claim-verification/dist"
+      ],
+      "options": {
+        "command": "tsc --project libs/data/verify/claim-verification/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/verify/claim-verification/dist/package.json",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.lib.json"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config libs/data/verify/claim-verification/vitest.config.ts",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": [
+          "libs/data/verify/claim-verification/**/*.ts"
+        ]
+      }
+    }
+  }
+}

@@ -16,7 +16,7 @@
         "{workspaceRoot}/libs/data/ingest/ingest/dist"
       ],
       "options": {
-        "command": "tsc --project libs/data/ingest/ingest/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/ingest/ingest/dist/package.json",
+        "command": "rm -rf libs/data/ingest/ingest/dist/ && tsc --project libs/data/ingest/ingest/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/ingest/ingest/dist/package.json",
         "cwd": "."
       },
       "cache": true,

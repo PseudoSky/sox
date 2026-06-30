@@ -1,0 +1,52 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "flash",
+  "segment": "S6",
+  "label": "hybrid-search — fix cross-encoder worker path resolution (resolveWorkerPath)",
+  "completed_at": "2026-06-29T20:57:59.000Z",
+
+  "summary": "Fixed cross-encoder.ts worker path resolution: added resolveWorkerPath() function and wired it into start(), so vitest can find the .ts worker file and production uses .js",
+
+  "changes": [
+    {
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "kind": "added import { existsSync } from 'node:fs'",
+      "lines": "+1"
+    },
+    {
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "kind": "added resolveWorkerPath() function that probes .ts first (dev/test), falls back to .js (production)",
+      "lines": "+19"
+    },
+    {
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "kind": "changed start() to use resolveWorkerPath() instead of direct join(__dirname, …)",
+      "lines": "-1 / +1"
+    }
+  ],
+
+  "tests": {
+    "project": "hybrid-search",
+    "command": "nx test hybrid-search --skip-nx-cache",
+    "passed": 56,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files  2 passed (2)\nTests  56 passed (56)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "issues": [
+    "NONE"
+  ],
+
+  "handoff_notes": [],
+
+  "backlog_entries": []
+}

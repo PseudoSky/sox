@@ -1,0 +1,28 @@
+{
+  "segmentId": "fix-round-2",
+  "agent": "memory-core",
+  "timestamp": "2026-06-30T03:21:20Z",
+  "status": "success",
+  "filesChanged": [
+    "libs/memory-core/src/recall.ts"
+  ],
+  "summary": "Fixed 2 bugs in parentDocId fallback recall logic (lines 586-623). Bug 1: SQL query was using `WHERE session_id = ? AND rowid != ?` (sibling lookup) instead of `WHERE uid = ?` (parent lookup). Bug 2: `continue` skipped source-addition logic (token estimation, overflow check, push to sources) — replaced with full pattern matching DERIVED_FROM parent behavior.",
+  "details": {
+    "bug1": {
+      "old": "`SELECT rowid FROM node WHERE session_id = ? AND rowid != ? ORDER BY rowid LIMIT 1` — queried siblings sharing same session_id, not parent",
+      "new": "`SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash FROM node WHERE uid = ?` — looks up parent by UID (currentNode.session_id is the parent's UID)"
+    },
+    "bug2": {
+      "old": "`if (parentDocRow) { currentRowid = parentDocRow.rowid; continue; }` — skipped source text extraction, token estimation, overflow check, and sources array push",
+      "new": "Full source-addition block: extract parentText from content/name/summary, estimateTokens, overflow check with ExpansionOverflowError or truncate-tail break, push to sources, increment expandedTokens, then set currentRowid and continue"
+    }
+  },
+  "verification": {
+    "build": "passed (npx nx build memory-core)",
+    "test": "passed — 9 test files, 159 passed, 1 skipped (npx nx test memory-core)",
+    "lint": "passed — all files pass (npx nx lint memory-core)"
+  },
+  "handoff": {
+    "notes": "No regressions. The fix is purely within the parent-context fallback branch that fires when DERIVED_FROM edges are absent. All existing tests continue to pass, and the runtime behavior now correctly adds parent document content to sources with proper token budget accounting."
+  }
+}

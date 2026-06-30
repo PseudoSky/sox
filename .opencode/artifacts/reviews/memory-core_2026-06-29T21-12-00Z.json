@@ -1,0 +1,111 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "memory-core-review",
+  "label": "memory-core — parent-context expansion & late chunking code review",
+  "reviewed_at": "2026-06-29T21:12:00Z",
+  "files_reviewed": [
+    "libs/memory-core/src/recall.ts",
+    "libs/memory-core/src/index.ts",
+    "libs/memory-core/src/recall.spec.ts"
+  ],
+  "spec_documents": [
+    "docs/plan/retrieval-infrastructure/SPEC.md §5"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": {
+      "passed": 159,
+      "failed": 0,
+      "skipped": 1
+    },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "high",
+      "category": "spec-compliance",
+      "file": "libs/memory-core/src/recall.ts",
+      "line": 549,
+      "description": "Missing parentDocId fallback for parent traversal. SPEC.md §5 (line 563-564) and the code comment at line 532-533 both state that Chunk.parentDocId (session_id) should be used as the join key for parent lookups when DERIVED_FROM edges are absent. The implementation only uses DERIVED_FROM edge lookup (line 550: `rel = 'DERIVED_FROM'`). When no DERIVED_FROM edge exists, traversal stops immediately (`if (!parentEdge) break;` line 578) with no fallback to parentDocId-based lookup. This means chunks whose parent relationship is only represented by a shared parentDocId (not an edge table row) will never be expanded — the feature silently does nothing for those documents.",
+      "fix_sketch": "Add a fallback query after the DERIVED_FROM edge check: when !parentEdge and the current node has a session_id (parentDocId), query for sibling nodes sharing that parentDocId and select the one whose chunkIndex is closest (presumably the parent document/granule). The parentDocId is stored in node.session_id per the existing schema. Implement as: `SELECT rowid FROM node WHERE session_id = ? AND rowid != ? ORDER BY chunk_index LIMIT 1`."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/memory-core/src/recall.ts",
+      "line": 293,
+      "description": "agent_id filter inconsistently applied across the three search signals. The agentFilter (line 293) is only injected into the temporal SQL query (line 345), but is NOT applied to the vec KNN query (lines 296-303) or the FTS query (lines 325-335). When a caller specifies agent_id in RecallParams, only the temporal retrieval signal is filtered by agent — vec and FTS can return results from other agents. Since RRF fusion (line 398-408) includes all candidates from all three signals, results from non-matching agents can enter the final candidate pool through vec/FTS signals even when agent_id is specified.",
+      "fix_sketch": "Add `${agentFilter}` to the vec SQL WHERE clause (after line 300) and to the FTS SQL WHERE clause (after line 330). This ensures consistent agent_id filtering across all three retrieval pathways."
+    },
+    {
+      "severity": "high",
+      "category": "spec-compliance",
+      "file": "libs/memory-core/src/recall.ts",
+      "line": 666,
+      "description": "Late chunking is a no-op placeholder. SPEC.md §5 requires late chunking to 'mean-pool per-chunk boundaries at retrieval time' using 'the stored full-document embedding.' The implementation (lines 666-673) only sets `lateChunkingApplied = true` but never reads the `boundaries` array from `LateChunkingConfig`, never fetches the full-document embedding, and never performs mean-pooling. Already tracked as BL-117 in BACKLOG.md, but the spec has no 'placeholder' caveat — it describes late chunking as a functional feature.",
+      "fix_sketch": "Already documented in BL-117. Phase 1: store chunk boundaries (startToken, endToken) alongside the full-document embedding at ingest time. Phase 2: in memoryRecall(), when lateChunking.enabled, fetch the full-document embedding from vec_node and mean-pool it into per-chunk vectors using the stored boundaries before returning results."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/memory-core/src/recall.ts",
+      "line": 574,
+      "description": "expansionTruncated flag not set on early truncate-tail exit at line 574. When the truncate-tail join strategy is used and accumulated expandedTokens >= maxContextTokens at the start of a depth iteration (line 574), the loop breaks without setting `expansionTruncated = true`. The flag is only set when a specific parent would overflow (line 604). This means expansionTruncated reports false even though expansion was truncated — the flag is inconsistent between the two truncation paths. Trace: after adding parent D-1 tokens (line 618), if expandedTokens >= maxContextTokens, the check at line 574 in the next iteration breaks without setting expansionTruncated.",
+      "fix_sketch": "Add `expansionTruncated = true;` before `break;` at line 574: ```ts\nif (pc.joinStrategy === 'truncate-tail' && expandedTokens >= pc.maxContextTokens) {\n  expansionTruncated = true;\n  break;\n}\n```"
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/memory-core/src/recall.ts",
+      "line": 83,
+      "description": "maxDepth and maxContextTokens are required fields in ParentContextConfig but the spec lists defaults (0 and 4096 respectively). SPEC.md §5 documents: `maxDepth: number  // default: 0` and `maxContextTokens: number  // default: 4096`, implying these are optional with documented defaults. The code requires both fields to be explicitly provided. Any caller constructing a ParentContextConfig must supply both values even if they want defaults.",
+      "fix_sketch": "Make maxDepth and maxContextTokens optional in the interface and apply defaults at consumption: `const maxDepth = pc.maxDepth ?? 0;` and `const maxContextTokens = pc.maxContextTokens ?? 4096;`. Alternatively, document that these are required (deviating from the spec)."
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "file": "libs/memory-core/src/recall.ts",
+      "lines": [365, 381, 681, 696],
+      "description": "Filter stats computation is duplicated. The same `candidates_before_filter`/`candidates_after_filter` calculation appears in the early-exit path (lines 366-380) and the main return path (lines 681-695). Identical ~14-line code block duplicated verbatim. This creates a maintenance hazard if the filter stats logic needs updating.",
+      "fix_sketch": "Extract into a local helper function, e.g., `function computeFilterStats(db, validityPred, filterSql, filterParams): RecallResponse['filterStats'] | undefined`, and call it from both paths."
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "file": "libs/memory-core/src/recall.ts",
+      "lines": [367, 371, 687, 690],
+      "description": "Shadowed variable names. `beforeCount` (lines 367, 687) and `afterCount` (lines 371, 690) shadow the function-scope variables declared at lines 187 and 675-676. While TypeScript block scoping prevents runtime bugs, the shadowing reduces readability and could confuse maintainers.",
+      "fix_sketch": "Rename the filter-stats variables to `statsBefore`/`statsAfter` or `preFilterCount`/`postFilterCount` to avoid shadowing."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/memory-core/src/recall.ts",
+      "line": 382,
+      "description": "Empty-results path hardcodes `provider_call_count: 0` instead of computing it. In the early-exit path (line 382-394), `provider_call_count: 0` is hardcoded instead of using `afterCount - beforeCount` like the main path does (line 676). While the result is the same (0 provider calls after embedding the query), the inconsistency could mask a future bug where the embed call happens before the early-exit check.",
+      "fix_sketch": "Move the early-exit block to before the embed call (lines 283-284), or compute provider_call_count consistently: `const providerCallCount = getProviderCallCount() - beforeCount;` before the early-exit and reuse it."
+    },
+    {
+      "severity": "info",
+      "category": "test-coverage",
+      "file": "libs/memory-core/src/recall.spec.ts",
+      "line": 1,
+      "description": "Minimal test coverage for new features. Only 3 tests exist: ExpansionOverflowError construction (unit), ParentContextConfig shape (trivial), LateChunkingConfig shape (trivial). There are zero tests for: parent-context expansion logic (DERIVED_FROM traversal, all 4 join strategies, truncate-tail overflow, expansionTruncated flag), late chunking behavior, expansion metadata computation, the nodeByRowid/nodeByUid lookup maps, or the re-sort after expansion. The implementer's report (S7) acknowledged this as a known gap.",
+      "fix_sketch": "Add integration tests with a seeded in-memory SQLite database containing DERIVED_FROM edges at various depths. Cover: (1) basic depth-1 expansion, (2) depth-2 expansion, (3) all 4 join strategies with expected output, (4) truncate-tail overflow sets expansionTruncated=true, (5) non-truncate strategies throw ExpansionOverflowError, (6) includeOriginal=false excludes depth-0, (7) maxDepth=0 produces no expansion, (8) no DERIVED_FROM edge produces no expansion, (9) metadata field correctness (totalChunksAfterExpansion, totalTokensAfterExpansion, expansionTruncated)."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 3,
+    "medium": 2,
+    "low": 3,
+    "info": 1
+  },
+  "backlog_entries": [
+    "BL-117 already tracks the late chunking no-op (re-confirmed in this review)",
+    "New: expansionTruncated flag not set on all truncation paths in truncate-tail strategy — file as BL-118",
+    "New: agent_id filter inconsistently applied across vec/FTS/temporal signals — file as BL-119",
+    "New: parentDocId fallback for parent expansion missing — file as BL-120"
+  ]
+}

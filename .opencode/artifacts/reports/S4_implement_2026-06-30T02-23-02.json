@@ -1,0 +1,61 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "S4",
+  "label": "vector-store — 4 LanceDbVectorBackend fixes (SpaceInvariantError, getTable, return type, db param)",
+  "completed_at": "2026-06-30T02:23:02Z",
+
+  "summary": "Fixed 4 issues in LanceDbVectorBackend: SpaceInvariantError thrown on dim mismatch, getTable() throws on missing space instead of auto-creating, openLanceDbVectorStore returns LanceDbVectorBackend & VectorBackend, db param made required.",
+
+  "changes": [
+    {
+      "file": "libs/data/vectors/vector-store/src/lancedb.ts",
+      "kind": "added SpaceInvariantError import; replaced generic Error with SpaceInvariantError in upsert()",
+      "lines": "+2 / -4"
+    },
+    {
+      "file": "libs/data/vectors/vector-store/src/lancedb.ts",
+      "kind": "changed getTable() to throw on missing space instead of auto-creating via ensureSpace()",
+      "lines": "+3 / -2"
+    },
+    {
+      "file": "libs/data/vectors/vector-store/src/index.ts",
+      "kind": "changed openLanceDbVectorStore return type from LanceDbVectorBackend to LanceDbVectorBackend & VectorBackend",
+      "lines": "+1 / -1"
+    },
+    {
+      "file": "libs/data/vectors/vector-store/src/index.ts",
+      "kind": "made db param required (removed ?) in openLanceDbVectorStore config type",
+      "lines": "+1 / -1"
+    }
+  ],
+
+  "tests": {
+    "project": "@adhd/sox-vector-store",
+    "command": "nx test vector-store",
+    "passed": 35,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Tests  1 file passed, 35 tests passed"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "issues": [],
+
+  "handoff_notes": [
+    "lancedb.ts is an untracked file — ensure it is staged before commit",
+    "InMemoryLanceTable.upsert() has its own dimension check with generic Error (internal guard, not SpaceInvariantError) — this is correct because InMemoryLanceTable is a private implementation detail; the public-facing LanceDbVectorBackend.upsert() now correctly throws SpaceInvariantError",
+    "getTable() now throws on missing space — callers (knn, delete, get, iter) require ensureSpace() to be called first, matching the SqliteVectorBackend contract"
+  ],
+
+  "backlog_entries": [
+    "InMemoryLanceTable.upsert() throws generic Error on internal dim mismatch — consider promoting to SpaceInvariantError if InMemoryLanceTable becomes public"
+  ]
+}

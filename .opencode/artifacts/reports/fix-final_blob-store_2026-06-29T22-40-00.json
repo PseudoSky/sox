@@ -1,0 +1,26 @@
+{
+  "segment": "fix-final",
+  "agent": "implement",
+  "timestamp": "2026-06-29T22:40:00.000Z",
+  "project": "blob-store",
+  "summary": "Fix FD leak in BlobStore.getStream() — fileHandle left open if stat() throws after open() succeeds",
+  "changes": [
+    {
+      "file": "libs/data/store/blob-store/src/store.ts",
+      "operations": [
+        "Move `fileHandle` from `const` inside try block to `let` outside try (line 309)",
+        "Close fileHandle in catch block before release() if it was opened (line 379)",
+        "Add `err instanceof IntegrityMismatch` re-throw in catch (line 381)",
+        "Add non-null assertions `fileHandle!` for closure usage sites (lines 322, 341) since TS cannot prove the control-flow guarantee across closures"
+      ],
+      "lines_added": 4,
+      "lines_removed": 3
+    }
+  ],
+  "verification": {
+    "build": "PASS (npx nx build blob-store)",
+    "test": "PASS — 36 passed (npx nx test blob-store)",
+    "lint": "PASS — All files pass linting (npx nx lint blob-store)",
+    "note": "No registry sync needed — blob-store is a libs/data package, not an extension"
+  }
+}

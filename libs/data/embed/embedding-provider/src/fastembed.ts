@@ -1,7 +1,8 @@
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import type { EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole } from './index.js';
+import { ResolutionError } from './index.js';
+import type { EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole, FastEmbedModelConfig } from './index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -47,11 +48,53 @@ interface ErrorResponse {
 
 type WorkerMessage = InitOkResponse | EmbedResponse | EmbedBatchResponse | ErrorResponse;
 
-const MODEL_DIMS: Record<string, number> = {
-  'bge-small-en-v1.5': 384,
-  'bge-base-en-v1.5': 768,
-  'multilingual-e5-large': 1024,
+const MODEL_CONFIGS: Record<string, FastEmbedModelConfig> = {
+  'bge-small-en-v1.5': {
+    modelId: 'bge-small-en-v1.5',
+    hfRepoId: 'fast-bge-small-en-v1.5',
+    dim: 384,
+    maxTokens: 512,
+    description: 'BGE Small English v1.5 — lightweight 384-dim embedding, ~33M params',
+  },
+  'bge-base-en-v1.5': {
+    modelId: 'bge-base-en-v1.5',
+    hfRepoId: 'fast-bge-base-en-v1.5',
+    dim: 768,
+    maxTokens: 512,
+    description: 'BGE Base English v1.5 — balanced 768-dim embedding, ~110M params',
+  },
+  'multilingual-e5-large': {
+    modelId: 'multilingual-e5-large',
+    hfRepoId: 'fast-multilingual-e5-large',
+    dim: 1024,
+    maxTokens: 512,
+    description: 'Multilingual E5 Large — 1024-dim, 100+ languages, ~335M params',
+  },
+  'bge-m3': {
+    modelId: 'bge-m3',
+    hfRepoId: 'BAAI/bge-m3',
+    dim: 1024,
+    maxTokens: 8192,
+    description: 'BGE-M3 — 570M params, 8192-token context, 100+ languages, ONNX INT8',
+  },
+  'codexembed-400m': {
+    modelId: 'codexembed-400m',
+    hfRepoId: 'microsoft/codexembed-400m',
+    dim: 1024,
+    maxTokens: 8192,
+    description: 'CodeXEmbed-400M — code-only CPU, ~1.6GB RAM, 8192-token context',
+  },
 };
+
+/** @deprecated Use MODEL_CONFIGS[modelId].dim instead. */
+const MODEL_DIMS: Record<string, number> = Object.fromEntries(
+  Object.entries(MODEL_CONFIGS).map(([id, cfg]) => [id, cfg.dim]),
+);
+
+/** @deprecated Use MODEL_CONFIGS[modelId].maxTokens instead. */
+const MODEL_MAX_TOKENS: Record<string, number> = Object.fromEntries(
+  Object.entries(MODEL_CONFIGS).map(([id, cfg]) => [id, cfg.maxTokens]),
+);
 
 const DEFAULT_MODEL = 'bge-base-en-v1.5';
 const DEFAULT_BATCH_SIZE = 256;
@@ -80,14 +123,18 @@ export class FastembedProvider implements EmbeddingProvider {
   private ready = false;
   private readyPromise: Promise<void> | null = null;
   private embedDim = 0;
+  private maxTokensVal = 512;
 
   constructor(model: string, dimensions: number, cacheDir: string) {
     this.model = model;
     this.cacheDir = cacheDir;
     this.embedDim = dimensions;
+    const cfg = MODEL_CONFIGS[model];
+    this.maxTokensVal = cfg?.maxTokens ?? 512;
     this.metadata = {
       modelId: model,
       dimensions,
+      maxTokens: this.maxTokensVal,
       isRemote: false,
       isDeterministic: false,
       providerUri: `local:onnx:${model}`,
@@ -95,6 +142,28 @@ export class FastembedProvider implements EmbeddingProvider {
   }
 
   async embedSingle(text: string, _role?: EmbedRole): Promise<Float32Array> {
+    // Chunk-then-mean-pool for text exceeding maxTokens (D7: no truncation)
+    if (this.estimateTokens(text) > this.maxTokensVal) {
+      const chunks = this.chunkText(text, this.maxTokensVal);
+      const embeddings: Float32Array[] = [];
+      const worker = this.getWorker();
+      await this.ensureReady();
+      for (const chunk of chunks) {
+        const vec = await new Promise<Float32Array>((resolve, reject) => {
+          const id = this.nextId++;
+          this.pending.set(id, {
+            resolve: (v: number[] | number[][] | { dim: number }) => {
+              resolve(this.toFloat32Normalised(v as number[]));
+            },
+            reject,
+          });
+          worker.postMessage({ id, type: 'embed', text: chunk } satisfies EmbedWorkerRequest);
+        });
+        embeddings.push(vec);
+      }
+      return this.meanPool(embeddings);
+    }
+
     const worker = this.getWorker();
     await this.ensureReady();
 
@@ -121,18 +190,89 @@ export class FastembedProvider implements EmbeddingProvider {
 
     const batchSize = opts?.batchSize ?? DEFAULT_BATCH_SIZE;
     for (let i = 0; i < texts.length; i += batchSize) {
-      const chunk = texts.slice(i, i + batchSize);
-      const embeddings = await this.sendBatch(worker, chunk);
-      for (const vec of embeddings) {
-        yield this.toFloat32Normalised(vec);
+      const batch = texts.slice(i, i + batchSize);
+      // Check if any text in the batch exceeds maxTokens
+      const needsChunking = batch.some((t) => this.estimateTokens(t) > this.maxTokensVal);
+      if (needsChunking) {
+        // Process each text individually with chunk-then-mean-pool
+        for (const text of batch) {
+          yield await this.embedSingle(text, opts?.role);
+        }
+      } else {
+        const embeddings = await this.sendBatch(worker, batch);
+        for (const vec of embeddings) {
+          yield this.toFloat32Normalised(vec);
+        }
       }
     }
   }
 
   async warmUp(texts: string[]): Promise<void> {
     // No-op: isDeterministic is false, cache would be unreliable.
-    // Pre-warm the model by embedding the texts, priming ONNX inference.
+    // Real warmup requires the worker to be initialized, which happens
+    // lazily on the first embedSingle/embedBatch call.
     void texts;
+  }
+
+  /**
+   * Rough token estimation: ~4 characters per token.
+   * Used for chunk-then-mean-pool boundary detection.
+   */
+  private estimateTokens(text: string): number {
+    return Math.ceil(text.length / 4);
+  }
+
+  /**
+   * Split text into chunks that fit within maxTokens.
+   * Splits on whitespace boundaries near the token limit for clean breaks.
+   */
+  private chunkText(text: string, maxTokens: number): string[] {
+    const maxChars = maxTokens * 4;
+    if (text.length <= maxChars) return [text];
+
+    const chunks: string[] = [];
+    let start = 0;
+    while (start < text.length) {
+      let end = Math.min(start + maxChars, text.length);
+      // Back up to nearest whitespace if not at end of text
+      if (end < text.length) {
+        const lastSpace = text.lastIndexOf(' ', end);
+        if (lastSpace > start) end = lastSpace;
+      }
+      chunks.push(text.slice(start, end));
+      start = end;
+    }
+    return chunks;
+  }
+
+  /**
+   * Mean-pool multiple embedding vectors into one.
+   * All vectors must have the same length.
+   */
+  private meanPool(vectors: Float32Array[]): Float32Array {
+    if (vectors.length === 0) return new Float32Array(0);
+    if (vectors.length === 1) return vectors[0]!;
+    const dim = vectors[0]!.length;
+    const pooled = new Float32Array(dim);
+    for (const vec of vectors) {
+      for (let i = 0; i < dim; i++) {
+        pooled[i]! += vec[i]!;
+      }
+    }
+    const n = vectors.length;
+    for (let i = 0; i < dim; i++) {
+      pooled[i] = pooled[i]! / n;
+    }
+    // Normalise the pooled vector
+    let norm = 0;
+    for (let i = 0; i < dim; i++) {
+      norm += pooled[i]! * pooled[i]!;
+    }
+    norm = Math.sqrt(norm) || 1;
+    for (let i = 0; i < dim; i++) {
+      pooled[i] = pooled[i]! / norm;
+    }
+    return pooled;
   }
 
   private getWorker(): Worker {
@@ -221,7 +361,9 @@ export class FastembedProvider implements EmbeddingProvider {
     if (this.ready) return;
     if (this.readyPromise) {
       await this.readyPromise;
+      return;
     }
+    throw new ResolutionError('Fastembed provider not initialized');
   }
 
   private sendBatch(worker: Worker, texts: string[]): Promise<number[][]> {
@@ -255,4 +397,4 @@ export class FastembedProvider implements EmbeddingProvider {
   }
 }
 
-export { MODEL_DIMS, DEFAULT_MODEL, DEFAULT_BATCH_SIZE };
+export { MODEL_CONFIGS, MODEL_DIMS, MODEL_MAX_TOKENS, DEFAULT_MODEL, DEFAULT_BATCH_SIZE };

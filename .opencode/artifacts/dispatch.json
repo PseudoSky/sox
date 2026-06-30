@@ -1,0 +1,81 @@
+{
+  "$schema": "dispatch-protocol-v1",
+  "plan": {
+    "title": "Blob Store + Claim Verification + Retrieval Infrastructure",
+    "source": "docs/plan/{blob-store,claim-verification,retrieval-infrastructure}/SPEC.md",
+    "created_at": "2026-06-29T12:00:00.000Z"
+  },
+  "segments": [
+    {
+      "id": "S1",
+      "label": "blob-store — new leaf data package",
+      "agent": "flash",
+      "spec_section": "docs/plan/blob-store/SPEC.md (full document)",
+      "files": ["libs/data/store/blob-store/"],
+      "depends_on": [],
+      "status": "complete",
+      "report": ".opencode/artifacts/reports/S1_flash_2026-06-29T20-50-00Z.json"
+    },
+    {
+      "id": "S2",
+      "label": "claim-verification — new leaf data package",
+      "agent": "flash",
+      "spec_section": "docs/plan/claim-verification/SPEC.md (full document)",
+      "files": ["libs/data/verify/claim-verification/"],
+      "depends_on": [],
+      "status": "complete",
+      "report": ".opencode/artifacts/reports/S2_flash_2026-06-29T20-59-00Z.json"
+    },
+    {
+      "id": "S3",
+      "label": "embedding-provider — BGE-M3 & CodeXEmbed models",
+      "agent": "flash",
+      "spec_section": "docs/plan/retrieval-infrastructure/SPEC.md §1",
+      "files": ["libs/data/embed/embedding-provider/"],
+      "depends_on": [],
+      "status": "complete",
+      "report": ".opencode/artifacts/reports/S3_flash_2026-06-29T20-55-00.json"
+    },
+    {
+      "id": "S4",
+      "label": "vector-store — LanceDB backend adapter",
+      "agent": "flash",
+      "spec_section": "docs/plan/retrieval-infrastructure/SPEC.md §2",
+      "files": ["libs/data/vectors/vector-store/"],
+      "depends_on": [],
+      "status": "complete",
+      "report": ".opencode/artifacts/reports/S4_flash_20260629-2050.json"
+    },
+    {
+      "id": "S5",
+      "label": "ingest — AST-aware & heading-aware chunkers",
+      "agent": "flash",
+      "spec_section": "docs/plan/retrieval-infrastructure/SPEC.md §3",
+      "files": ["libs/data/ingest/ingest/"],
+      "depends_on": [],
+      "status": "complete",
+      "report": ".opencode/artifacts/reports/S5_flash_2026-06-29T20-55-00Z.json"
+    },
+    {
+      "id": "S6",
+      "label": "hybrid-search — cross-encoder reranker",
+      "agent": "flash",
+      "spec_section": "docs/plan/retrieval-infrastructure/SPEC.md §4",
+      "files": ["libs/data/search/hybrid-search/"],
+      "depends_on": [],
+      "status": "complete",
+      "report": ".opencode/artifacts/reports/S6_flash_20260629T205759.json"
+    },
+    {
+      "id": "S7",
+      "label": "memory-core — parent-context expansion & late chunking",
+      "agent": "implement",
+      "spec_section": "docs/plan/retrieval-infrastructure/SPEC.md §5",
+      "files": ["libs/memory-core/"],
+      "depends_on": [],
+      "status": "complete",
+      "report": ".opencode/artifacts/reports/S7_implement_2026-06-29T20-57-00Z.json"
+    }
+  ],
+  "status": "complete"
+}

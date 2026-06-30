@@ -66,6 +66,8 @@ const MODEL_MAP: Record<string, string> = {
   'bge-small-en-v1.5': 'fast-bge-small-en-v1.5',
   'bge-base-en-v1.5': 'fast-bge-base-en-v1.5',
   'multilingual-e5-large': 'fast-multilingual-e5-large',
+  'bge-m3': 'BAAI/bge-m3',
+  'codexembed-400m': 'CodeXEmbed-400M',
 };
 
 interface EmbedderInstance {

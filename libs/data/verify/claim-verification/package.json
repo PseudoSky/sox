@@ -1,0 +1,52 @@
+{
+  "name": "@adhd/sox-claim-verification",
+  "version": "0.1.0",
+  "description": "NLI-based (Natural Language Inference) claim grounding engine. Cross-encoder NLI via worker thread, embedding pre-filter, configurable truncation strategy, LRU result cache. Worker-thread isolated from better-sqlite3 (BL-11).",
+  "license": "MIT",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "devDependencies": {
+    "@adhd/sox-embedding-provider": "workspace:*"
+  },
+  "sox": {
+    "area": "data",
+    "group": "verify",
+    "concerns": [
+      "NLI claim grounding via cross-encoder",
+      "worker-thread ONNX inference (BL-11 isolation)",
+      "embedding pre-filter for topic gating",
+      "configurable truncation (tail/head)",
+      "LRU verification cache",
+      "multi-source verification (one claim, many sources)",
+      "streaming batch verification",
+      "model registry with version tracking"
+    ],
+    "invariants": [
+      "ONNX inference runs exclusively in worker threads - never on main thread",
+      "pre-filter uses its OWN embedding provider instance (not coupled to retrieval pipeline)",
+      "warmUp() must complete before verify* calls",
+      "language mismatch downgrades to 'neutral' with warning flag - never throws",
+      "claim normalization strips citation markers and quotation marks before NLI"
+    ],
+    "entrypoints": [
+      "dist/index.js"
+    ]
+  }
+}

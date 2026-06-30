@@ -1,0 +1,126 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "reviewer",
+  "task_id": "re-review-hybrid-search",
+  "label": "hybrid-search re-review — 5 issues from first review checked after fixes",
+  "reviewed_at": "2026-06-29T21:33:00Z",
+  "files_reviewed": [
+    "libs/data/search/hybrid-search/src/index.ts",
+    "libs/data/search/hybrid-search/src/cross-encoder.ts",
+    "libs/data/search/hybrid-search/src/crossEncoderWorker.ts",
+    "libs/data/search/hybrid-search/src/filter-utils.ts",
+    "libs/data/search/hybrid-search/src/cross-encoder.spec.ts",
+    "libs/data/search/hybrid-search/src/hybrid-search.spec.ts",
+    "libs/data/search/hybrid-search/package.json",
+    "libs/data/search/hybrid-search/project.json",
+    "libs/data/search/hybrid-search/tsconfig.lib.json",
+    "libs/data/search/hybrid-search/vitest.config.ts",
+    "libs/data/search/hybrid-search/CLAUDE.md"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 56, "failed": 0, "skipped": 0 },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 256,
+      "description": "ISSUE 1 FIXED ✓ — timeoutMs silently ignored. rerank() now uses opts?.timeoutMs ?? 30000 and wraps the worker call in Promise.race with a timeout Promise. rerankBatch() has the same fix at line 270. Both methods enforce the timeout correctly.",
+      "fix_sketch": "No further action needed."
+    },
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 287,
+      "description": "ISSUE 2 FIXED ✓ — Race condition in getWorker(). CrossEncoderImpl.getWorker() uses a startingPromise guard: concurrent callers check this.startingPromise and return the shared promise, preventing duplicate worker creation. The promise sets this.worker after start() resolves and clears startingPromise.",
+      "fix_sketch": "No further action needed. Note: if start() rejects, startingPromise is never cleared — subsequent calls return the same rejected promise permanently (permanent failure, no retry). Consider clearing startingPromise on rejection if retry semantics are desired."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 6,
+      "description": "ISSUE 3 FIXED ✓ — Unused @adhd/sox-embedding-provider dep. Both TransientEmbeddingError and ResolutionError are imported from '@adhd/sox-embedding-provider'. TransientEmbeddingError wraps worker error messages (line 138). ResolutionError is thrown for disposed-state access (lines 254, 269). The dependency is now properly consumed.",
+      "fix_sketch": "No further action needed."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 39,
+      "description": "ISSUE 4 FIXED ✓ — workers config field ignored. CrossEncoderConfig.options no longer has a 'workers' field — it only declares maxTokens. The field has been cleanly removed rather than left as a no-op. No parsing or ignoring of workers exists anywhere in the package (grep confirms zero matches).",
+      "fix_sketch": "No further action needed."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 259,
+      "description": "ISSUE 5 PARTIALLY FIXED ⚠️ — Wrong error types. Worker errors now use TransientEmbeddingError ✓. Disposed-state errors now use ResolutionError ✓. However, timeout rejections still use plain new Error(...) at lines 259 and 274 instead of TransientEmbeddingError. A cross-encoder timeout is a transient condition (worker hung, model stalled) and should use TransientEmbeddingError for consistent error taxonomy.",
+      "fix_sketch": "Replace new Error(`CrossEncoder rerank timed out after ${timeoutMs}ms`) with new TransientEmbeddingError(...) at line 259. Same fix at line 274 for rerankBatch."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 258,
+      "description": "NEW FINDING — Timeout timer not unref'd. The setTimeout in rerank() (line 258) and rerankBatch() (line 273) creates a timer that keeps the event loop alive until it fires. If the worker completes before the timeout (normal case), the outer promise resolves but the timer is never cleared — it holds the event loop for up to 30s. When dispose() is called while inflight: worker terminates, pending promises reject via on('error'), but the timeout timer remains alive with no cancellation path. This prevents clean process exit.",
+      "fix_sketch": "Store the timeout handle (NodeJS.Timeout) as a property on CrossEncoderImpl, clear it with clearTimeout() when the worker responds or when dispose() is called. Also add unref() to the timeout so it doesn't block process exit: setTimeout(...).unref()."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 146,
+      "description": "NEW FINDING — Worker error recovery gap. When the worker thread emits 'error', CrossEncoderWorker.on('error') sets this.worker to null (inner Worker ref), but CrossEncoderImpl retains its reference to the CrossEncoderWorker instance. On subsequent rerank calls, CrossEncoderImpl.getWorker() returns the same CrossEncoderWorker instance whose getWorker() throws 'CrossEncoder worker not started'. There is no path to recover or recreate the worker.",
+      "fix_sketch": "CrossEncoderImpl should listen for worker errors and set this.worker = null, allowing getWorker() to create a fresh worker on the next call. Alternatively, CrossEncoderWorker could implement auto-recovery internally."
+    },
+    {
+      "severity": "low",
+      "category": "test-coverage",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.spec.ts",
+      "line": 1,
+      "description": "CrossEncoder test coverage still minimal: 3 tests only (create, rerank shape, dispose guard). Missing: rerankBatch, empty candidates, timeout enforcement test, error propagation from worker, concurrent rerank calls, double dispose(), dispose-while-inflight. The rerank test does not verify the timeoutMs opt is actually respected.",
+      "fix_sketch": "Add tests for: rerankBatch, empty/zero-length candidate arrays, timeoutMs opt (verify race), concurrent rerank calls (stress test that startingPromise guard works), dispose during inflight, and error responses from the worker."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 114,
+      "description": "Inner class state not reset on stop(). CrossEncoderWorker.stop() sets this.worker = null and this.readyPromise = null, but does not clear this.pending map or this.nextId. If the worker is reused after stop(), the pending map from the previous lifecycle may contain stale entries that could cause memory pressure. Also this.nextId continues incrementing across lifecycles, which is harmless but sloppy.",
+      "fix_sketch": "Add this.pending.clear() in stop() after terminating the worker. Optionally reset this.nextId = 1."
+    },
+    {
+      "severity": "info",
+      "category": "style",
+      "file": "libs/data/search/hybrid-search/src/cross-encoder.ts",
+      "line": 130,
+      "description": "Worker thread unref() still present. The first review flagged this as a potential issue where unref() could cause premature process exit mid-inference. The pattern remains unchanged. In long-running server contexts this is fine (other refs keep the loop alive), but short-lived CLI commands that call rerank without a keepalive could still exit early.",
+      "fix_sketch": "Defer unref() until after the first response, or keep a request counter and only unref when zero."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 2,
+    "low": 2,
+    "info": 5
+  },
+  "fix_status": {
+    "1_timeoutMs_ignored": "fixed",
+    "2_race_getWorker": "fixed",
+    "3_unused_embedding_dep": "fixed",
+    "4_workers_field_ignored": "fixed",
+    "5_wrong_error_types": "partial — timeout still uses plain Error"
+  },
+  "backlog_entries": [
+    "BL-116 — Cross-encoder worker uses token-overlap heuristic, not ONNX model (pre-existing, already in BACKLOG.md)",
+    "BL-NEW — Timeout timer in rerank/rerankBatch is never unref()'d or cancelled on dispose(), keeping event loop alive for up to 30s",
+    "BL-NEW — Worker error recovery gap: CrossEncoderImpl retains stale CrossEncoderWorker reference after thread crash; no recovery path"
+  ]
+}

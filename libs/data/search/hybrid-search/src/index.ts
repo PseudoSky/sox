@@ -4,6 +4,13 @@ import type { NodeRecord, NodeFilter } from '@adhd/sox-graph-store';
 import { buildFilterClause } from './filter-utils.js';
 
 export { buildFilterClause } from './filter-utils.js';
+export { createCrossEncoder } from './cross-encoder.js';
+export type {
+  CrossEncoder,
+  CrossEncoderMetadata,
+  CrossEncoderConfig,
+  CrossEncoderRerankerConfig,
+} from './cross-encoder.js';
 
 export type { VectorBackend, VectorSpace, VecFilter } from '@adhd/sox-vector-store';
 export type { GraphBackend, NodeRecord, NodeFilter } from '@adhd/sox-graph-store';
