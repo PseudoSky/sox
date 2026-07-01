@@ -23,10 +23,16 @@
   },
   "install": {
     "type": "mcp-server",
-    "serves": ["stdio"],
+    "serves": ["stdio", "sse", "http"],
     "profiles": {
       "stdio": {
         "transport": "stdio"
+      },
+      "sse": {
+        "transport": "sse"
+      },
+      "http": {
+        "transport": "http"
       }
     }
   },
