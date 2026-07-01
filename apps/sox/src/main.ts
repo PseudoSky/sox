@@ -926,8 +926,10 @@ Options:
   --update               Update pinned hashes
   --host=<h1,h2,...>     Target host(s) (claude, codex, opencode)
   --root <dir>           Workspace root override
-  --no-restart           Skip daemon restart after install
-  --help                 Show this message
+   --profile=<p>          MCP transport profile (stdio, sse, http; default: stdio)
+   --npm=<version>        Install from npm package instead of local source
+   --no-restart           Skip daemon restart after install
+   --help                 Show this message
 `);
     process.exit(0);
   }
@@ -963,6 +965,7 @@ Options:
     const scope = (flags['scope'] ?? 'project') as 'org' | 'user' | 'project' | 'local';
     const workspaceRoot = require('node:path').resolve(flags['root'] ?? process.cwd()) as string;
     const profile = flags['profile'];
+    const npmVersion = flags['npm'];
 
     // Resolve the extension: load registry from the REAL repo root (process.cwd()),
     // not from workspaceRoot (which may be a temp dir when --root is given for sandboxing).
@@ -1009,6 +1012,19 @@ Options:
       process.stderr.write(`${CLI} install: cannot find extension '${id}' in registry or local extensions/\n`);
       process.stderr.write('  Run \'npx tsx scripts/build-index.ts\' to rebuild the registry, or check the id.\n');
       process.exit(1);
+    }
+
+    // --npm: override srcPath with an npm-package source.
+    // Fetches the published npm package and installs into the content store.
+    if (npmVersion !== undefined) {
+      const npmSpec = `npm-package:${id}@${npmVersion}`;
+      const pathModNpm = require('node:path') as typeof import('node:path');
+      const npmStoreDir = pathModNpm.join(dataRoot(scope as DataScope, workspaceRoot), 'npm-store');
+      const { fetchArtifact: fetchNpm } = require('@adhd/sox-install-engine') as typeof import('@adhd/sox-install-engine');
+      const result = await fetchNpm(npmSpec, undefined, { storeDir: npmStoreDir });
+      const entryPath = result.source.startsWith('file://') ? result.source.slice('file://'.length) : result.source;
+      srcPath = pathModNpm.dirname(pathModNpm.dirname(entryPath));
+      process.stderr.write(`${CLI} install: resolved from npm-package ${npmSpec} → ${srcPath}\n`);
     }
 
     if (extType === undefined) {

@@ -25,14 +25,19 @@ soxe serve memory-server                     # per-session, dies with session
 
 This is the default. The host spawns the server at session start via `soxe serve`. No background daemon needed. Config lands in project-scope `opencode.json` as `type: "local"`.
 
-### Published path (user scope, remote)
+### Published path (user scope, remote from npm)
 
 ```bash
-soxe install memory-server --profile=sse --host=opencode --scope=user
-soxe service enable memory-server --scope=user   # launchd daemon
+soxe install memory-server --npm=1.1.0 --profile=sse --host=opencode --scope=user
 ```
 
-The install generates a remote MCP config in user-scope `opencode.json` (`type: "remote"`, pointing to `http://localhost:3000/sse`). The server runs persistently as a launchd daemon. MCP tools survive session restarts.
+The install resolves from the published npm package (`npm-package:memory-server@1.1.0`), downloads the tarball and native deps into the content store, and generates a remote MCP config (`type: "remote"`, pointing to `http://localhost:3000/sse`). Then enable the service:
+
+```bash
+soxe service enable memory-server --scope=user
+```
+
+The server runs persistently as a launchd daemon from the npm-installed artifact. MCP tools survive session restarts.
 
 ### Switching profiles
 
