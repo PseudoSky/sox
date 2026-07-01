@@ -26,6 +26,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as http from 'node:http';
 import { dialBackend, type BackendConnection } from './dial.js';
 import {
   type JsonRpcRequest,
@@ -63,6 +64,13 @@ export interface FrontShimOptions {
    * and only dials.
    */
   ensure?: () => Promise<void>;
+  /**
+   * When set, start an HTTP listener on the given port in ADDITION to the stdio
+   * input stream. The HTTP server accepts JSON-RPC via POST /mcp and proxies
+   * through the same backend connection. Supports both stdio and HTTP clients
+   * simultaneously.
+   */
+  httpPort?: number;
 }
 
 /** A running front-shim handle (for tests; in production the process lives until
@@ -293,9 +301,115 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
     resolveDone();
   });
 
+  // ── Optional HTTP listener (dual transport: stdio + HTTP) ──────────────────
+  let httpServer: http.Server | undefined;
+  if (opts.httpPort !== undefined) {
+    httpServer = http.createServer((req, res) => {
+      // Only accept POST /mcp (MCP StreamableHTTP endpoint).
+      if (req.method !== 'POST' || req.url !== '/mcp') {
+        res.writeHead(405);
+        res.end();
+        return;
+      }
+
+      // Set CORS headers for browser-based MCP clients.
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Content-Type', 'application/json');
+
+      let body = '';
+      req.on('data', (chunk: string) => (body += chunk));
+      req.on('end', () => {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          res.writeHead(400);
+          res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' } }));
+          return;
+        }
+        if (!isJsonRpcRequest(parsed)) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' } }));
+          return;
+        }
+
+        const reqRpc = parsed as JsonRpcRequest;
+
+        // initialize: return stable serverInfo immediately without backend wait.
+        if (reqRpc.method === 'initialize') {
+          const params = (reqRpc.params ?? {}) as { capabilities?: Record<string, unknown> };
+          const caps = params.capabilities ?? {};
+          const toolsCap = (caps as { tools?: { listChanged?: boolean } }).tools;
+          if (toolsCap?.listChanged === true) clientSupportsListChanged = true;
+          initialized = true;
+
+          backend
+            .send(reqRpc)
+            .then((resp) => {
+              res.end(JSON.stringify({ ...resp, id: reqRpc.id ?? null }));
+            })
+            .catch((e: unknown) => {
+              res.end(
+                JSON.stringify(
+                  errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`),
+                ),
+              );
+            });
+          return;
+        }
+
+        // tools/list: serve from cache when available.
+        if (reqRpc.method === 'tools/list') {
+          if (cachedToolsList !== null) {
+            res.end(JSON.stringify({ jsonrpc: '2.0', id: reqRpc.id ?? null, result: cachedToolsList }));
+            return;
+          }
+          backend
+            .send(reqRpc)
+            .then((resp) => {
+              if (!resp.error && resp.result !== undefined) {
+                cachedToolsList = resp.result;
+                servedSchemaHash = computeSchemaHash(resp.result);
+              }
+              res.end(JSON.stringify({ ...resp, id: reqRpc.id ?? null }));
+            })
+            .catch((e: unknown) => {
+              res.end(
+                JSON.stringify(
+                  errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`),
+                ),
+              );
+            });
+          return;
+        }
+
+        // everything else: proxy to backend.
+        backend
+          .send(reqRpc)
+          .then((resp) => {
+            res.end(JSON.stringify({ ...resp, id: reqRpc.id ?? null }));
+          })
+          .catch((e: unknown) => {
+            res.end(
+              JSON.stringify(
+                errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`),
+              ),
+            );
+          });
+      });
+    });
+
+    httpServer.listen(opts.httpPort, '127.0.0.1', () => {
+      diag(`[service-proxy shim:${opts.id}] HTTP listener on 127.0.0.1:${opts.httpPort}/mcp`);
+    });
+  }
+
   return {
     done,
     close: () => {
+      if (httpServer) httpServer.close();
       backend.close();
       resolveDone();
     },

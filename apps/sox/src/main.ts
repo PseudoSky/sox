@@ -5638,10 +5638,13 @@ Flags:
                     run the original direct-stdio exec path (this process IS the
                     server). Equivalent to manifest lifecycle.serve_mode:"direct"
                     or lifecycle.proxy:false.
-  --log             Tee child stderr to <logDir>/<extId>-serve-<YYYY-MM-DD>.log (opt-in)
-                    Also enabled by setting SOX_SERVE_LOG=1 in the environment.
-                    NEVER tees stdout — stdout is the JSON-RPC channel.
-  --help            Show this message
+   --log             Tee child stderr to <logDir>/<extId>-serve-<YYYY-MM-DD>.log (opt-in)
+                     Also enabled by setting SOX_SERVE_LOG=1 in the environment.
+                     NEVER tees stdout — stdout is the JSON-RPC channel.
+   --port=<port>     Start an HTTP listener on the given port in addition to stdio.
+                     Supports dual transport — stdio and HTTP clients simultaneously.
+                     Compatible with proxy mode: the shim proxies both to the backend.
+   --help            Show this message
 `);
     process.exit(0);
   }
@@ -5830,6 +5833,10 @@ Flags:
     const key = singletonKey(extId, storeResource) ?? `${extId} none:`;
     const backendSock = backendSocketPath(socketDir(), key);
 
+    // --port: start an HTTP listener alongside stdio for dual transport support.
+    const httpPort: number | undefined =
+      flags['port'] !== undefined ? parseInt(String(flags['port']), 10) : undefined;
+
     // A backend MAY publish a schema.json (manifest lifecycle.schema_path, relative
     // to the install dir) so the shim can serve tools/list instantly even while the
     // backend is mid-restart. Optional — absent ⇒ schema is read from the backend.
@@ -5865,6 +5872,7 @@ Flags:
       id: extId,
       socketPath: backendSock,
       ...(schemaCachePath !== undefined ? { schemaCachePath } : {}),
+      ...(httpPort !== undefined && !Number.isNaN(httpPort) ? { httpPort } : {}),
       // §9.5 step 3: auto-managed, singleton-guarded backend lifecycle.
       ensure: async () => {
         // [inv:no-fd-inherit] The backend is detached; its stderr must NEVER inherit
@@ -5886,8 +5894,16 @@ Flags:
         process.stderr.write(`[soxe serve] ensure-backend: ${r.disposition} — ${r.detail}\n`);
       },
     });
-    // The shim lives until the client closes the stdio pipe.
-    await handle.done;
+    // The shim lives until the client closes the stdio pipe, or until SIGTERM
+    // when an HTTP listener is active (dual transport).
+    if (httpPort !== undefined && !Number.isNaN(httpPort)) {
+      await new Promise<void>((resolve) => {
+        process.on('SIGTERM', () => resolve());
+        process.on('SIGINT', () => resolve());
+      });
+    } else {
+      await handle.done;
+    }
     process.exit(0);
   }
 
