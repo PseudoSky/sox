@@ -27,6 +27,7 @@
 
 import * as fs from 'node:fs';
 import * as http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { dialBackend, type BackendConnection } from './dial.js';
 import {
   type JsonRpcRequest,
@@ -301,104 +302,120 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
     resolveDone();
   });
 
-  // ── Optional HTTP listener (dual transport: stdio + HTTP) ──────────────────
+  // ── Optional HTTP listener (dual transport: stdio + HTTP/SSE) ─────────────
   let httpServer: http.Server | undefined;
   if (opts.httpPort !== undefined) {
+    // SSE sessions: active SSE response per session ID.
+    const sseSessions = new Map<string, http.ServerResponse>();
+
     httpServer = http.createServer((req, res) => {
-      // Only accept POST /mcp (MCP StreamableHTTP endpoint).
-      if (req.method !== 'POST' || req.url !== '/mcp') {
-        res.writeHead(405);
-        res.end();
+      // ── SSE endpoint ──────────────────────────────────────────────────
+      if (req.method === 'GET' && req.url === '/sse') {
+        const sessionId = randomUUID();
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+          'Access-Control-Allow-Origin': '*',
+        });
+        res.write(`event: endpoint\ndata: /messages?sessionId=${sessionId}\n\n`);
+        sseSessions.set(sessionId, res);
+        diag(`[service-proxy shim:${opts.id}] SSE session ${sessionId.slice(0, 8)} opened`);
+        req.on('close', () => {
+          diag(`[service-proxy shim:${opts.id}] SSE session ${sessionId.slice(0, 8)} closed`);
+          sseSessions.delete(sessionId);
+        });
         return;
       }
 
-      // Set CORS headers for browser-based MCP clients.
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'POST');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-      res.setHeader('Content-Type', 'application/json');
-
-      let body = '';
-      req.on('data', (chunk: string) => (body += chunk));
-      req.on('end', () => {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(body);
-        } catch {
-          res.writeHead(400);
-          res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' } }));
+      // ── SSE messages endpoint ─────────────────────────────────────────
+      const msgMatch = req.method === 'POST' && req.url?.match(/^\/messages\?sessionId=([a-f0-9-]+)$/);
+      if (msgMatch) {
+        const sessionId = msgMatch[1]!;
+        const sseRes = sseSessions.get(sessionId);
+        if (!sseRes) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Session not found' } }));
           return;
         }
-        if (!isJsonRpcRequest(parsed)) {
-          res.writeHead(400);
-          res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' } }));
-          return;
-        }
-
-        const reqRpc = parsed as JsonRpcRequest;
-
-        // initialize: return stable serverInfo immediately without backend wait.
-        if (reqRpc.method === 'initialize') {
-          const params = (reqRpc.params ?? {}) as { capabilities?: Record<string, unknown> };
-          const caps = params.capabilities ?? {};
-          const toolsCap = (caps as { tools?: { listChanged?: boolean } }).tools;
-          if (toolsCap?.listChanged === true) clientSupportsListChanged = true;
-          initialized = true;
-
-          backend
-            .send(reqRpc)
-            .then((resp) => {
-              res.end(JSON.stringify({ ...resp, id: reqRpc.id ?? null }));
-            })
-            .catch((e: unknown) => {
-              res.end(
-                JSON.stringify(
-                  errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`),
-                ),
-              );
-            });
-          return;
-        }
-
-        // tools/list: serve from cache when available.
-        if (reqRpc.method === 'tools/list') {
-          if (cachedToolsList !== null) {
-            res.end(JSON.stringify({ jsonrpc: '2.0', id: reqRpc.id ?? null, result: cachedToolsList }));
-            return;
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        });
+        let body = '';
+        req.on('data', (chunk: string) => (body += chunk));
+        req.on('end', () => {
+          let parsed: unknown;
+          try { parsed = JSON.parse(body); } catch { res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' } })); return; }
+          if (!isJsonRpcRequest(parsed)) { res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' } })); return; }
+          const reqRpc = parsed as JsonRpcRequest;
+          // Proxy to backend, send response through SSE stream.
+          const respond = (resp: JsonRpcResponse) => {
+            sseRes!.write(`data: ${JSON.stringify(resp)}\n\n`);
+            res.end(JSON.stringify({ accepted: true }));
+          };
+          if (reqRpc.method === 'initialize') {
+            const caps = ((reqRpc.params ?? {}) as { capabilities?: Record<string, unknown> }).capabilities ?? {};
+            const toolsCap = (caps as { tools?: { listChanged?: boolean } }).tools;
+            if (toolsCap?.listChanged === true) clientSupportsListChanged = true;
+            initialized = true;
+            backend.send(reqRpc).then(respond).catch((e) => respond(errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`)));
+          } else if (reqRpc.method === 'tools/list') {
+            if (cachedToolsList !== null) { respond({ jsonrpc: '2.0', id: reqRpc.id ?? null, result: cachedToolsList }); return; }
+            backend.send(reqRpc).then((resp) => {
+              if (!resp.error && resp.result !== undefined) { cachedToolsList = resp.result; servedSchemaHash = computeSchemaHash(resp.result); }
+              respond(resp);
+            }).catch((e) => respond(errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`)));
+          } else {
+            backend.send(reqRpc).then(respond).catch((e) => respond(errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`)));
           }
-          backend
-            .send(reqRpc)
-            .then((resp) => {
-              if (!resp.error && resp.result !== undefined) {
-                cachedToolsList = resp.result;
-                servedSchemaHash = computeSchemaHash(resp.result);
-              }
-              res.end(JSON.stringify({ ...resp, id: reqRpc.id ?? null }));
-            })
-            .catch((e: unknown) => {
-              res.end(
-                JSON.stringify(
-                  errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`),
-                ),
-              );
-            });
-          return;
-        }
+        });
+        return;
+      }
 
-        // everything else: proxy to backend.
-        backend
-          .send(reqRpc)
-          .then((resp) => {
-            res.end(JSON.stringify({ ...resp, id: reqRpc.id ?? null }));
-          })
-          .catch((e: unknown) => {
-            res.end(
-              JSON.stringify(
-                errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`),
-              ),
-            );
-          });
-      });
+      // ── StreamableHTTP endpoint (POST /mcp) ───────────────────────────
+      if (req.method === 'POST' && req.url === '/mcp') {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'POST');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        res.setHeader('Content-Type', 'application/json');
+
+        let body = '';
+        req.on('data', (chunk: string) => (body += chunk));
+        req.on('end', () => {
+          let parsed: unknown;
+          try { parsed = JSON.parse(body); } catch { res.writeHead(400); res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' } })); return; }
+          if (!isJsonRpcRequest(parsed)) { res.writeHead(400); res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' } })); return; }
+
+          const reqRpc = parsed as JsonRpcRequest;
+
+          const handleAndRespond = (handler: () => Promise<JsonRpcResponse>) => {
+            handler().then((resp) => res.end(JSON.stringify(resp))).catch((e) => res.end(JSON.stringify(errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`))));
+          };
+
+          if (reqRpc.method === 'initialize') {
+            const caps = ((reqRpc.params ?? {}) as { capabilities?: Record<string, unknown> }).capabilities ?? {};
+            const toolsCap = (caps as { tools?: { listChanged?: boolean } }).tools;
+            if (toolsCap?.listChanged === true) clientSupportsListChanged = true;
+            initialized = true;
+            handleAndRespond(() => backend.send(reqRpc));
+          } else if (reqRpc.method === 'tools/list') {
+            if (cachedToolsList !== null) { res.end(JSON.stringify({ jsonrpc: '2.0', id: reqRpc.id ?? null, result: cachedToolsList })); return; }
+            handleAndRespond(async () => {
+              const resp = await backend.send(reqRpc);
+              if (!resp.error && resp.result !== undefined) { cachedToolsList = resp.result; servedSchemaHash = computeSchemaHash(resp.result); }
+              return resp;
+            });
+          } else {
+            handleAndRespond(() => backend.send(reqRpc));
+          }
+        });
+        return;
+      }
+
+      // Anything else.
+      res.writeHead(405);
+      res.end();
     });
 
     httpServer.listen(opts.httpPort, '127.0.0.1', () => {
