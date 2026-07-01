@@ -11,6 +11,29 @@ For codebase navigation, see [`docs/routing/ROUTER.md`](./docs/routing/ROUTER.md
 
 ---
 
+## ⛔ AGENT CONSTRAINT — RUN SMOKE TEST BEFORE MERGING
+
+**Every agent MUST run `node scripts/smoke-test.mjs` and confirm 0 failures before merging
+any branch that touches extension manifests, the install engine, service lifecycle code,
+host-runtime, CLI `cmdServe`/`cmdService`, or any `libs/data/` package consumed by bundles.**
+
+The smoke test discovers all service + mcp-server extensions, installs them into a disposable
+project scope under `dist/smoke/`, exercises every manifest-driven variation (install, upgrade,
+service enable/status/disable, serve proxy + stdio, uninstall), and records structured pass/fail
+json. Read the output or ensure `summary.failed === 0` at the end.
+
+Run:
+```
+rm -rf dist/smoke && node scripts/smoke-test.mjs
+```
+
+Single extension fast pass:
+```
+node scripts/smoke-test.mjs --extension memory-daemon
+```
+
+---
+
 ## ⛔ AGENT CONSTRAINT — `bin/soxe` IS THE CLI SHIM, DO NOT EDIT IT FOR CLI LOGIC
 
 The CLI entrypoint is **`bin/soxe`** — a ~10-line ESM shim that loads the compiled

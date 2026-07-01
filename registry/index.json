@@ -73,7 +73,7 @@
     "title": "Memory Daemon",
     "description": "Use this when you need the soxe graph-memory enrichment pipeline running: a singleton Unix-socket service that drains the batch-enrich queue and runs deterministic clustering, importance scoring, and auto-links via memory-core — zero LLM calls, no provider required.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-daemon",
-    "checksum": "sha256:082486daa3a1fa8c156ee9e34790347a3efdf69b012e7731786acf3335396f2d",
+    "checksum": "sha256:3be8fcd42fe3e8094c38fd10c639f985a2d4c1b236ff6cf49e86ce5203f7fa49",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -101,7 +101,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:bac434fb2ead",
+    "checksum": "sha256:fda7d1b7b329d898b49e12d229c31eb0d3c3db455403d1cc8f8d4a3e07322812",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -110,8 +110,7 @@
       "min_context_tokens": 8192
     },
     "visibility": "internal",
-    "bundleId": "sox-memory-bundle",
-    "updated_at": "2026-06-30T05:12:46.749Z"
+    "bundleId": "sox-memory-bundle"
   },
   {
     "id": "memory-usage",
@@ -120,7 +119,7 @@
     "title": "Using the soxe memory system",
     "description": "Use when an agent should recall prior knowledge or store durable findings in the soxe graph-memory system via the memory_* MCP tools (memory_recall / memory_write / memory_search_entities / memory_invalidate).",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-usage",
-    "checksum": "sha256:471d3078b2b08cc6e69b5967d26b4507f12fb03b95a061f331d84d4f191b774c",
+    "checksum": "sha256:9ab7cbae83c90eb99d1171759f716f8c0944e08f04d981d201200257b821d07b",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -146,7 +145,7 @@
     "title": "TokenGuard Pseudonymizing Proxy",
     "description": "Generalized pseudonymizing HTTP proxy. Tokenizes PII in outbound API requests and detokenizes inbound responses — provider-agnostic via pluggable adapters. Seeded identifiers are mapped bijectively and never reach the wire.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/services/tokenguard",
-    "checksum": "sha256:17c60435e942576d3e1d52b845bc03d2e3c5b79ea6554c5ae281f862d8a6d110",
+    "checksum": "sha256:083fe30810da10568f69dcc23d45ae5a7cf040156962e7ad45a668d521386cf8",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     }
@@ -206,7 +205,7 @@
     "title": "sox-ingest — Ingest external sources into sox-ecosystem",
     "description": "Use this when you need to port an external repo, file, or directory into sox-ecosystem as born-conformant extensions. Encodes the full ingestion flow: initialize -> generalize+author -> validate -> publish -> install -> enable -> remove-old, delegating per-type and per-operation specifics to references/. An agent told 'ingest <source> into sox' loads this skill and runs the complete flow with no bespoke prompts.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/sox-ingest",
-    "checksum": "sha256:6d80a9dbdb4ce1770d0307803624eb443b57612b555a821cbe98de186240d5f7",
+    "checksum": "sha256:deda1d03c6875a25f58b05c585564c4afa09368af100477472ad5e89620d50f9",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     }
@@ -218,7 +217,7 @@
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/apps/sox",
-    "checksum": "sha256:1d140fa85210b1c515404c9111f96ac6cde2f801583fe9850ae0fb9efb6a2660",
+    "checksum": "sha256:4973a984dbdb9437d2eb3b8cdc2d03488dd0eb9887f2ed06c5b896c63db66268",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     }

@@ -125,6 +125,7 @@ type EmbedRole = 'document' | 'query'
 interface EmbeddingProviderMetadata {
   modelId: string         // stable identifier — used as the VectorSpace.modelId key
   dimensions: number      // output vector length; drives VectorBackend.ensureSpace()
+  maxTokens: number       // advisory token limit; exceeding it triggers chunk-then-mean-pool (D7)
   isRemote: boolean       // true → network I/O; callers may adjust concurrency / retry policy
   isDeterministic: boolean // false → warmUp cache is unreliable; do not cache non-det providers
   providerUri?: string    // observability: 'local:onnx', 'https://api.example.com/v1', etc.
