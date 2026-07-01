@@ -6,6 +6,18 @@ Use this when an agent needs durable, searchable memory across sessions — expo
 
 > **`db_path` is OPTIONAL — omit it (BL-55).** Every tool defaults `db_path` to the bundle-configured store the host injects as `SOX_CONFIG_DB_PATH` (normally `~/.memory/memory.db`), falling back to `~/.memory/memory.db`. Do **not** guess a path like `~/.sox/memory` — just leave `db_path` out and the server uses the right store. Pass `db_path` only to target a non-default store inside the `~/.memory/**` allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.
 
+## Transport profiles
+
+The memory-server supports three transport profiles selectable at install time:
+
+| Profile | `soxe install` flag | Config type | Use case |
+|---------|---------------------|-------------|----------|
+| **stdio** (default) | *(none)* | `type: "local"`, `soxe serve` | Development, per-session spawn |
+| **sse** | `--profile=sse` | `type: "remote"`, SSE endpoint | Persistent background service |
+| **http** | `--profile=http` | `type: "remote"`, HTTP endpoint | Persistent background service |
+
+To switch profiles: `soxe install memory-server --profile=sse --host=opencode --scope=user` generates a remote MCP config pointing to `http://localhost:3000/mcp`. The server must be running as a background service (`soxe service enable memory-server`) for remote connections.
+
 ## When to call tools from this server
 
 Call tools from `memory-server` when:

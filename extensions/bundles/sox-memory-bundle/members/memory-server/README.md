@@ -4,7 +4,7 @@
 
 ## Overview
 
-`memory-server` is the keystone of the sox-memory subsystem. It runs as a long-lived background singleton (via `memoryd`) and exposes 19 MCP tools over a stdio JSON-RPC transport. All persistent state lives in a single SQLite file per scope, extended with the `sqlite-vec` vector extension (for approximate nearest-neighbour search) and FTS5 (for BM25 full-text search).
+`memory-server` is the keystone of the sox-memory subsystem. It runs as a long-lived background singleton (via `memoryd`) and exposes 19 MCP tools over stdio JSON-RPC (default), SSE, or HTTP transport. All persistent state lives in a single SQLite file per scope, extended with the `sqlite-vec` vector extension (for approximate nearest-neighbour search) and FTS5 (for BM25 full-text search).
 
 The read path (`memory_recall`) is strictly deterministic: local hash embedding, parallel vec+BM25+temporal search, RRF fusion, recency × importance reranking — all in-process, no provider calls, target <50 ms. The write path (`memory_write`) inserts an episode, runs synchronous enrichment (provenance, tags, topic, near-dup), and enqueues an async batch-enrich task; it never blocks on any external call. The batch enrichment pipeline (clustering, auto-links, importance) runs deterministically in `memory-daemon` via `@adhd/sox-memory-core` — zero LLM calls, no provider required.
 
@@ -48,9 +48,15 @@ Do NOT use `memory-server` for transient scratchpad data that does not need to s
 
 ## Transport
 
-stdio — one JSON-RPC 2.0 request per line, one JSON response per line.
+Three transport profiles, selectable at install time via `soxe install memory-server --profile=<profile>`:
 
-Implements: `initialize`, `tools/list`, `tools/call`.
+| Profile | Config type | Endpoint |
+|---------|-------------|----------|
+| **stdio** (default) | `type: "local"`, `soxe serve memory-server` | stdin/stdout JSON-RPC |
+| **sse** | `type: "remote"`, `http://localhost:3000/sse` | Server-Sent Events |
+| **http** | `type: "remote"`, `http://localhost:3000/mcp` | HTTP Streaming |
+
+All profiles implement: `initialize`, `tools/list`, `tools/call`.
 
 ## Lifecycle
 
