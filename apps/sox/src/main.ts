@@ -927,7 +927,7 @@ Options:
   --host=<h1,h2,...>     Target host(s) (claude, codex, opencode)
   --root <dir>           Workspace root override
    --profile=<p>          MCP transport profile (stdio, sse, http; default: stdio)
-   --npm=<version>        Install from npm package instead of local source
+   --version=<semver>     Install from npm package at the given version range (e.g. 1.1.0, ^1.0.0)
    --no-restart           Skip daemon restart after install
    --help                 Show this message
 `);
@@ -965,7 +965,7 @@ Options:
     const scope = (flags['scope'] ?? 'project') as 'org' | 'user' | 'project' | 'local';
     const workspaceRoot = require('node:path').resolve(flags['root'] ?? process.cwd()) as string;
     const profile = flags['profile'];
-    const npmVersion = flags['npm'];
+    const versionRange = flags['version'];
 
     // Resolve the extension: load registry from the REAL repo root (process.cwd()),
     // not from workspaceRoot (which may be a temp dir when --root is given for sandboxing).
@@ -1014,17 +1014,19 @@ Options:
       process.exit(1);
     }
 
-    // --npm: override srcPath with an npm-package source.
-    // Fetches the published npm package and installs into the content store.
-    if (npmVersion !== undefined) {
-      const npmSpec = `npm-package:${id}@${npmVersion}`;
+    // --version: install from a published npm package instead of the local source.
+    // Accepts any npm semver range: exact ("1.1.0"), caret ("^1.0.0"), etc.
+    // Resolves as npm-package:<id>@<range> which the install engine's fetchNpmPackage
+    // handles by running `npm install <id>@<range>` into a per-scope content store.
+    if (versionRange !== undefined) {
+      const npmSpec = `npm-package:${id}@${versionRange}`;
       const pathModNpm = require('node:path') as typeof import('node:path');
       const npmStoreDir = pathModNpm.join(dataRoot(scope as DataScope, workspaceRoot), 'npm-store');
       const { fetchArtifact: fetchNpm } = require('@adhd/sox-install-engine') as typeof import('@adhd/sox-install-engine');
       const result = await fetchNpm(npmSpec, undefined, { storeDir: npmStoreDir });
       const entryPath = result.source.startsWith('file://') ? result.source.slice('file://'.length) : result.source;
       srcPath = pathModNpm.dirname(pathModNpm.dirname(entryPath));
-      process.stderr.write(`${CLI} install: resolved from npm-package ${npmSpec} → ${srcPath}\n`);
+      process.stderr.write(`${CLI} install: resolved from ${npmSpec} → ${srcPath}\n`);
     }
 
     if (extType === undefined) {

@@ -28,16 +28,18 @@ This is the default. The host spawns the server at session start via `soxe serve
 ### Published path (user scope, remote from npm)
 
 ```bash
-soxe install memory-server --npm=1.1.0 --profile=sse --host=opencode --scope=user
+soxe install memory-server --version=1.1.0 --profile=sse --host=opencode --scope=user
 ```
 
-The install resolves from the published npm package (`npm-package:memory-server@1.1.0`), downloads the tarball and native deps into the content store, and generates a remote MCP config (`type: "remote"`, pointing to `http://localhost:3000/sse`). Then enable the service:
+The install resolves from the published npm package (`npm-package:memory-server@1.1.0`), downloads the tarball and native deps into the scope's content store, and generates a remote MCP config (`type: "remote"`, pointing to `http://localhost:3000/sse`). The `--version` flag accepts any semver range (e.g. `^1.0.0`, `>=1.0.0 <2.0.0`). Then enable the service:
 
 ```bash
 soxe service enable memory-server --scope=user
 ```
 
 The server runs persistently as a launchd daemon from the npm-installed artifact. MCP tools survive session restarts.
+
+The local `registry/index.json` is only used for `file://` source resolution — `--version` bypasses it entirely and resolves directly from the npm registry.
 
 ### Switching profiles
 
