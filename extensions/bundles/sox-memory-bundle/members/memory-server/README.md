@@ -50,11 +50,37 @@ Do NOT use `memory-server` for transient scratchpad data that does not need to s
 
 Three transport profiles, selectable at install time via `soxe install memory-server --profile=<profile>`:
 
-| Profile | Config type | Endpoint |
-|---------|-------------|----------|
-| **stdio** (default) | `type: "local"`, `soxe serve memory-server` | stdin/stdout JSON-RPC |
-| **sse** | `type: "remote"`, `http://localhost:3000/sse` | Server-Sent Events |
-| **http** | `type: "remote"`, `http://localhost:3000/mcp` | HTTP Streaming |
+| Profile | Install command | Config | Server lifecycle |
+|---------|----------------|--------|------------------|
+| **stdio** (default) | `soxe install memory-server --host=opencode` | `type: "local"`, `soxe serve` | Per-session — dies with session |
+| **sse** | `soxe install memory-server --profile=sse --host=opencode --scope=user` | `type: "remote"`, `http://localhost:3000/sse` | Persistent — requires `soxe service enable` |
+| **http** | `soxe install memory-server --profile=http --host=opencode --scope=user` | `type: "remote"`, `http://localhost:3000/mcp` | Persistent — requires `soxe service enable` |
+
+### Development (stdio)
+
+```bash
+soxe install memory-server --host=opencode --scope=project
+soxe serve memory-server
+```
+
+The host spawns the server at session start. No persistent daemon.
+
+### Published (sse / http)
+
+```bash
+soxe install memory-server --profile=sse --host=opencode --scope=user
+soxe service enable memory-server --scope=user
+```
+
+The install creates a remote MCP config (`type: "remote"`). The server runs as a launchd daemon. Tools survive session restarts.
+
+### Switching
+
+```bash
+soxe uninstall memory-server --host=opencode --scope=user
+soxe install memory-server --profile=sse --host=opencode --scope=user
+soxe service enable memory-server --scope=user
+```
 
 All profiles implement: `initialize`, `tools/list`, `tools/call`.
 

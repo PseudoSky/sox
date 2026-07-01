@@ -8,15 +8,42 @@ Use this when an agent needs durable, searchable memory across sessions — expo
 
 ## Transport profiles
 
-The memory-server supports three transport profiles selectable at install time:
+The memory-server supports three transport profiles. The profile determines how the host connects and whether the server runs per-session (stdio) or persistently (sse/http).
 
-| Profile | `soxe install` flag | Config type | Use case |
-|---------|---------------------|-------------|----------|
-| **stdio** (default) | *(none)* | `type: "local"`, `soxe serve` | Development, per-session spawn |
-| **sse** | `--profile=sse` | `type: "remote"`, SSE endpoint | Persistent background service |
-| **http** | `--profile=http` | `type: "remote"`, HTTP endpoint | Persistent background service |
+| Profile | Install command | Config | Server lifecycle |
+|---------|----------------|--------|------------------|
+| **stdio** (default) | `soxe install memory-server --host=opencode` | `type: "local"`, `soxe serve memory-server` | Per-session — host spawns via `soxe serve`; dies with session |
+| **sse** | `soxe install memory-server --profile=sse --host=opencode --scope=user` | `type: "remote"`, `http://localhost:3000/sse` | Persistent — use with `soxe service enable memory-server` |
+| **http** | `soxe install memory-server --profile=http --host=opencode --scope=user` | `type: "remote"`, `http://localhost:3000/mcp` | Persistent — use with `soxe service enable memory-server` |
 
-To switch profiles: `soxe install memory-server --profile=sse --host=opencode --scope=user` generates a remote MCP config pointing to `http://localhost:3000/mcp`. The server must be running as a background service (`soxe service enable memory-server`) for remote connections.
+### Development path (project scope)
+
+```bash
+soxe install memory-server --host=opencode --scope=project
+soxe serve memory-server                     # per-session, dies with session
+```
+
+This is the default. The host spawns the server at session start via `soxe serve`. No background daemon needed. Config lands in project-scope `opencode.json` as `type: "local"`.
+
+### Published path (user scope, remote)
+
+```bash
+soxe install memory-server --profile=sse --host=opencode --scope=user
+soxe service enable memory-server --scope=user   # launchd daemon
+```
+
+The install generates a remote MCP config in user-scope `opencode.json` (`type: "remote"`, pointing to `http://localhost:3000/sse`). The server runs persistently as a launchd daemon. MCP tools survive session restarts.
+
+### Switching profiles
+
+To switch from stdio to sse/http: uninstall, reinstall with the new profile, enable the service:
+```bash
+soxe uninstall memory-server --host=opencode --scope=user
+soxe install memory-server --profile=sse --host=opencode --scope=user
+soxe service enable memory-server --scope=user
+```
+
+The host config (`opencode.json`) is updated and the launchd daemon registered. No session restart needed — the host reconnects on next session start.
 
 ## When to call tools from this server
 
