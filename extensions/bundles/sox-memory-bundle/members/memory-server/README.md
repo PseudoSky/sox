@@ -82,7 +82,23 @@ soxe install memory-server --profile=sse --host=opencode --scope=user
 soxe service enable memory-server --scope=user
 ```
 
+All three transports are served simultaneously when using `soxe serve --port`:
+
+| Transport | Endpoint | Use case |
+|-----------|----------|----------|
+| stdio | stdin/stdout JSON-RPC | `type: "local"` host config |
+| HTTP | `POST /mcp` | StreamableHTTP — direct JSON-RPC |
+| SSE | `GET /sse` + `POST /messages?sessionId=<id>` | Server-Sent Events transport |
+
 All profiles implement: `initialize`, `tools/list`, `tools/call`.
+
+### Dual transport
+
+```bash
+soxe serve memory-server --port=3099
+```
+
+Starts the shim listening on both stdio and TCP port 3099 simultaneously, proxying both to the same backend. The `--port` flag is compatible with proxy mode.
 
 ## Lifecycle
 

@@ -13,8 +13,21 @@ The memory-server supports three transport profiles. The profile determines how 
 | Profile | Install command | Config | Server lifecycle |
 |---------|----------------|--------|------------------|
 | **stdio** (default) | `soxe install memory-server --host=opencode` | `type: "local"`, `soxe serve memory-server` | Per-session — host spawns via `soxe serve`; dies with session |
-| **sse** | `soxe install memory-server --profile=sse --host=opencode --scope=user` | `type: "remote"`, `http://localhost:3000/sse` | Persistent — use with `soxe service enable memory-server` |
-| **http** | `soxe install memory-server --profile=http --host=opencode --scope=user` | `type: "remote"`, `http://localhost:3000/mcp` | Persistent — use with `soxe service enable memory-server` |
+| **sse** | `soxe install memory-server --profile=sse --host=opencode --scope=user` | `type: "remote"`, `http://localhost:3099/sse` | Persistent — use with `soxe service enable memory-server` |
+| **http** | `soxe install memory-server --profile=http --host=opencode --scope=user` | `type: "remote"`, `http://localhost:3099/mcp` | Persistent — use with `soxe service enable memory-server` |
+
+All three transports are served simultaneously when using `soxe serve --port`:
+
+```bash
+soxe serve memory-server --port=3099
+```
+
+This starts the proxy with:
+- **stdio** — stdin/stdout JSON-RPC (for `type: "local"` host configs)
+- **HTTP StreamableHTTP** — `POST /mcp` (direct JSON-RPC over HTTP)
+- **SSE** — `GET /sse`, `POST /messages?sessionId=<id>` (Server-Sent Events transport)
+
+All three share the same backend connection, cached schema, and auto-ensure lifecycle.
 
 ### Development path (project scope)
 
@@ -31,7 +44,7 @@ This is the default. The host spawns the server at session start via `soxe serve
 soxe install memory-server --version=1.1.0 --profile=sse --host=opencode --scope=user
 ```
 
-The install resolves from the published npm package (`npm-package:memory-server@1.1.0`), downloads the tarball and native deps into the scope's content store, and generates a remote MCP config (`type: "remote"`, pointing to `http://localhost:3000/sse`). The `--version` flag accepts any semver range (e.g. `^1.0.0`, `>=1.0.0 <2.0.0`). Then enable the service:
+The install resolves from the published npm package (`npm-package:memory-server@1.1.0`), downloads the tarball and native deps into the scope's content store, and generates a remote MCP config (`type: "remote"`, pointing to `http://localhost:3099/sse`). The `--version` flag accepts any semver range (e.g. `^1.0.0`, `>=1.0.0 <2.0.0`). Then enable the service:
 
 ```bash
 soxe service enable memory-server --scope=user
@@ -40,6 +53,24 @@ soxe service enable memory-server --scope=user
 The server runs persistently as a launchd daemon from the npm-installed artifact. MCP tools survive session restarts.
 
 The local `registry/index.json` is only used for `file://` source resolution — `--version` bypasses it entirely and resolves directly from the npm registry.
+
+### Dual transport: local stdio + remote HTTP simultaneously
+
+```bash
+soxe serve memory-server --port=3099
+```
+
+The shim listens on both stdin/stdout (for `type: "local"` host configs) and TCP port 3099 (for `type: "remote"` configs or direct HTTP clients). Both transport paths proxy through the same backend:
+
+```
+┌──────────────┐    stdio     ┌────────────────────────┐    UDS     ┌───────────┐
+│  opencode     │◄───────────►│                        │◄──────────►│           │
+│  (local mcp)  │             │      proxy shim        │            │  backend  │
+├──────────────┤             │   (cached schema)      │            │ (memory-  │
+│  HTTP client  │◄───HTTP────►│                        │            │  server)  │
+│  (remote mcp) │   :3099    └────────────────────────┘            └───────────┘
+└──────────────┘
+```
 
 ### Switching profiles
 
