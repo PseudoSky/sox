@@ -18,7 +18,7 @@
  * Everything is cleaned up in afterEach so no test process survives the run.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -27,10 +27,40 @@ import {
   killAndVerify,
   pidAlive,
   findOrphansByIdentity,
+  findOrphansByServiceId,
   argvContainsToken,
   reapByIdentity,
   identityToken,
 } from './reaper.js';
+// ─── Flag for the one mocked test (PI-1 adversarial stray) ───────────────────
+let mockPsEnabled = false;
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    execFileSync: vi.fn((cmd: string, args: string[], opts: any) => {
+      // When the flag is OFF, delegate to the real execFileSync.
+      // This is the default for all other tests.
+      if (!mockPsEnabled || cmd !== 'ps') {
+        return actual.execFileSync(cmd, args, opts);
+      }
+      // When the flag is ON, return controlled data so the test never
+      // invokes the real `ps` binary (macOS does not support `-o env`).
+      if (args.includes('env=')) {
+        // readProcessEnv — return env for the fake pid.
+        const pidIdx = args.indexOf('-p');
+        const targetPid = pidIdx !== -1 ? Number(args[pidIdx + 1]) : 0;
+        if (targetPid === 99999) {
+          return 'SOX_SERVICE_ID=test-svc\0\0';
+        }
+        throw new Error('ps: env: keyword not found');
+      }
+      // snapshotProcesses — return a single fake process.
+      return '99999   1 /usr/bin/node /unrelated/path.js\n';
+    }),
+  };
+});
 
 const spawned: ChildProcess[] = [];
 const tmpDirs: string[] = [];
@@ -45,6 +75,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 afterEach(async () => {
+  mockPsEnabled = false; // safety — restore any mocked state
   // Hard-kill anything still alive so no real process leaks past the suite.
   for (const cp of spawned) {
     if (cp.pid && cp.exitCode === null) {
@@ -220,5 +251,85 @@ describe('orphan reaper — match by store path, spare unrelated processes (BL-3
     const result = await reapByIdentity(marker, { excludePids: [pid], graceMs: 400 });
     expect(result.killed.map((k) => k.pid)).not.toContain(pid);
     expect(pidAlive(pid)).toBe(true); // spared
+  }, 10000);
+});
+
+// ─── PI-1: env-based identity matching (SOX_SERVICE_ID) — cross-build safe ────
+
+describe('findOrphansByServiceId — env-based stray detection (PI-1, BL-136)', () => {
+  /**
+   * Adversarial stray:
+   *   - Spawn daemon with SOX_SERVICE_ID=test-id but DIFFERENT entrypoint argv.
+   *   - findOrphansByIdentity (OLD/path-based) CANNOT match → daemon survives.
+   *   - findOrphansByServiceId (NEW/env-based) DOES match → daemon identified.
+   *   - Negative control: wrong service ID → no match.
+   */
+  it('finds a stray by SOX_SERVICE_ID even when argv token does not match', () => {
+    const serviceId = 'test-svc';
+    const searchToken = '/some/store/path/index.js';
+
+    // Activate mock: snapshotProcesses returns a process whose argv does NOT
+    // contain searchToken (old path-based matcher cannot find it).
+    // readProcessEnv returns our SOX_SERVICE_ID for pid 99999.
+    mockPsEnabled = true;
+
+    // OLD path-based matcher → no match (argv doesn't contain searchToken).
+    const byIdentity = findOrphansByIdentity(searchToken);
+    expect(byIdentity.map((f) => f.pid)).not.toContain(99999);
+
+    // NEW env-based matcher → match via SOX_SERVICE_ID.
+    const byService = findOrphansByServiceId(serviceId, searchToken);
+    expect(byService.map((f) => f.pid)).toContain(99999);
+
+    // Negative control: different service ID → no match.
+    const wrong = findOrphansByServiceId('wrong-' + serviceId, searchToken);
+    expect(wrong.map((f) => f.pid)).not.toContain(99999);
+
+    mockPsEnabled = false;
+  });
+
+  it('falls back to argv token matching when no SOX_SERVICE_ID env is set', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pi1-fallback-'));
+    tmpDirs.push(tmp);
+    const marker = path.join(tmp, 'fallback', 'index.js');
+    const cp = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)', marker], {
+      stdio: 'ignore',
+      detached: true,
+      // No SOX_SERVICE_ID set — pure argv daemon.
+    });
+    track(cp);
+    await sleep(200);
+    const pid = cp.pid!;
+    expect(pidAlive(pid)).toBe(true);
+
+    // findOrphansByServiceId with empty serviceId and valid token → fallback match.
+    const found = findOrphansByServiceId('', marker);
+    expect(found.map((f) => f.pid)).toContain(pid);
+
+    await killAndVerify(pid, { graceMs: 400, group: false });
+    await sleep(100);
+    expect(pidAlive(pid)).toBe(false);
+  }, 10000);
+
+  it('finds process with both env match and argv match (no false negative)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pi1-both-'));
+    tmpDirs.push(tmp);
+    const serviceId = 'pi1-both-' + process.pid;
+    const marker = path.join(tmp, 'both', 'index.js');
+    const cp = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)', marker], {
+      stdio: 'ignore',
+      detached: true,
+      env: { ...process.env, SOX_SERVICE_ID: serviceId },
+    });
+    track(cp);
+    await sleep(200);
+    const pid = cp.pid!;
+    expect(pidAlive(pid)).toBe(true);
+
+    // Both env and argv match should find it.
+    const byService = findOrphansByServiceId(serviceId, marker);
+    expect(byService.map((f) => f.pid)).toContain(pid);
+
+    await killAndVerify(pid, { graceMs: 400, group: false });
   }, 10000);
 });

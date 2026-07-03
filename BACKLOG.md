@@ -2518,3 +2518,32 @@ recall pipeline (mean-pool at query time).
 table at ingest time. Phase 2: in `memoryRecall()`, when `lateChunking.enabled`, fetch
 the full-document embedding and mean-pool per the stored boundaries before returning
 results.
+
+---
+
+## Fixed — Context 05 platform integrity (2026-07-03)
+
+### BL-136 — Identity-based reaping cannot detect cross-build strays (soxe doctor + status reconciliation) — **FIXED (2026-07-03)**
+
+**Summary:** `findOrphansByServiceId()` (env-based matching via `SOX_SERVICE_ID`) and
+`findOrphansByIdentity()` (argv-based matching) now both work. `cmdDoctor()` scans registry
+extensions and detects strays by service identity. `cmdStatus()` includes identity-based
+reconciliation. Adversarial stray test proves a daemon with different argv (unreachable by
+old path-based reaper) is found by env-based reaper. Negative control confirms wrong service
+ID yields no match. Fallback to argv token matching when `SOX_SERVICE_ID` absent. All 171
+host-runtime + 42 sox tests pass.
+
+**Files changed:** `libs/host-runtime/src/reaper.spec.ts` (adversarial stray, fallback, dual-match tests),
+`libs/host-runtime/src/reaper.ts` (findOrphansByServiceId), `libs/host-runtime/src/index.ts` (re-export),
+`apps/sox/src/main.ts` (cmdDoctor, cmdStatus, buildExtConfigEnv removal).
+
+### BL-138 — Unload-then-reap ordering not applied to every kill surface (cmdStart, restartProxyBackend) — **FIXED (2026-07-03)**
+
+**Summary:** `unloadOwnedOsUnitsBeforeReap()` wired into `cmdStart` (§8.4 F3 resurrection guard)
+and `restartProxyBackend` (§8.5 backend restart). Both sites call unload-then-reap BEFORE
+verified-stop so the OS supervisor does NOT immediately respawn the pid being killed.
+`os-unit.ts` header comment fixed ("Config-file-driven service provisioning" →
+"Runtime-unit for sox supervised services"). All 171 host-runtime + 42 sox tests pass.
+
+**Files changed:** `apps/sox/src/main.ts` (cmdStart + restartProxyBackend wiring),
+`libs/host-runtime/src/os-unit.ts` (stale comment fix in prior commit 90f5c77).

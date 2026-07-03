@@ -1973,6 +1973,16 @@ async function restartProxyBackend(
     require('@adhd/sox-service-proxy') as typeof import('@adhd/sox-service-proxy');
   const backendSock = backendSocketPath(socketDir(), key);
 
+  // [inv:unload-then-reap] (§8.5): unload any OS unit BEFORE verified-stop so
+  // the OS supervisor does not immediately respawn the backend (F3 resurrection).
+  // Best-effort; unloadOnlyTargetId wraps unloadOwnedOsUnitsBeforeReap for a
+  // single extension.
+  unloadOwnedOsUnitsBeforeReap({
+    root,
+    onlyId: extId,
+    log: (m) => log(`[unload-then-reap] ${m}`),
+  });
+
   // Find + VERIFIED-STOP (await — the kill MUST complete before we re-ensure, or
   // ensureBackend would see the old backend still live and no-op) the live
   // backend(s) by the entrypoint identity token. The backend was spawned as
@@ -3580,6 +3590,14 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
     const rec0 = getRuntimeRecord(runtimeFilePath);
     const supLive = typeof rec0?.supervisorPid === 'number' && pidAliveRT(rec0.supervisorPid);
     if (!supLive) {
+      // [inv:unload-then-reap] (§8.4): unload any OS unit BEFORE reaping orphans,
+      // so the OS supervisor does NOT immediately respawn the pid we are about
+      // to kill (the F3 resurrection loop). Best-effort across all scopes.
+      unloadOwnedOsUnitsBeforeReap({
+        root,
+        ...(startId !== undefined ? { onlyId: startId } : {}),
+        log: (m) => process.stdout.write(`sox: ${m}\n`),
+      });
       for (const rid of reapIds) {
         const reap = await reapOrphansForExtension(rid, {
           runtimeFilePath,
@@ -4590,10 +4608,6 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
     }
     if (!manifest.entrypoint) continue;
     const entrypointPath = pathMod.resolve(extDir, manifest.entrypoint);
-
-    // Build the service env (same as supervisor.ts injects).
-    const configEnv = buildExtConfigEnv(rec.extId, rec.root);
-    const svcEnv: Record<string, string> = { ...configEnv, SOX_SERVICE_ID: rec.extId };
 
     // Match by service identity env var (SOX_SERVICE_ID).
     let matches: Array<{ pid: number; ppid: number; orphaned: boolean }>;

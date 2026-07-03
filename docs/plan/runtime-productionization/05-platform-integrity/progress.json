@@ -7,13 +7,18 @@
         "BL-136"
       ],
       "title": "Identity-based reaping + soxe doctor + status reconciliation",
-      "status": "in_progress",
-      "evidence": null,
+      "status": "complete",
+      "evidence": "soxe doctor (cmdDoctor) scans registry extensions, builds service env with SOX_SERVICE_ID, calls findOrphansByServiceId, and reports cross-build strays per inv:list-never-lies. findOrphansByServiceId returns env-match OR argv-fallback, covering the adversarial stray case. Adversarial stray test (reaper.spec.ts) spawns with different argv, proves OLD path-based reaper misses it, NEW env-based reaper finds it. Negative control: wrong service ID yields no match. findOrphansByServiceId falls back to argv token matching when SOX_SERVICE_ID absent. Dual match (both env+argv) finds the process with no false negative. cmdDoctor removes stale configEnv/svcEnv that were unused after the match refactor. 171 host-runtime tests + 42 sox tests pass.",
       "notes": [
         "SOX_SERVICE_ID env var injected into supervisor spawn (supervisor.ts)",
         "reaper.ts: findOrphansByServiceId() matches by SOX_SERVICE_ID env var",
         "readProcessEnv() reads process env via ps -o env",
-        "PI-1 remaining: soxe doctor CLI command, adversarial stray test, status reconciliation"
+        "cmdDoctor() scans registry, detects cross-build strays via service id",
+        "cmdStatus() includes identity-based stray reconciliation",
+        "Adversarial stray test: mock ps-based env read for 99999 pid",
+        "Fallback: argv token matching when no SOX_SERVICE_ID env is set",
+        "Dual match (env+argv) with no false negative",
+        "All tests pass: 171 host-runtime, 42 sox"
       ]
     },
     {
@@ -22,9 +27,14 @@
         "BL-138"
       ],
       "title": "Unload-then-reap on every kill surface; fix stale os-unit comment",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": "unloadOwnedOsUnitsBeforeReap() wired into cmdStart (code path: daemon restart, F3 resurrection guard) and restartProxyBackend (service proxy restart). Both sites call unload-then-reap BEFORE verified-stop so the OS supervisor does NOT immediately respawn the pid we kill (the F3 resurrection loop). os-unit.ts header comment fixed — 'Config-file-driven service provisioning' → 'Runtime-unit for sox supervised services' accurate description. [inv:unload-then-reap] invariants documented at both call sites with §8.4/§8.5 cross-references. 171 host-runtime tests + 42 sox tests pass.",
+      "notes": [
+        "unload-then-reap wired in cmdStart (line 3593) and restartProxyBackend (line 1976)",
+        "Both sites call unload-then-reap BEFORE verified-stop (F3 guard)",
+        "os-unit.ts stale comment fixed in prior commit (90f5c77)",
+        "[inv:unload-then-reap] annotated at both kill surfaces"
+      ]
     },
     {
       "id": "PI-3",
@@ -79,9 +89,9 @@
   ],
   "gate": {
     "status": "pending",
-    "evidence": null
+    "evidence": "PI-1 (BL-136) and PI-2 (BL-138) complete. PI-3..PI-7 remain. All host-runtime (171) + sox (42) tests green."
   },
   "blockers": [],
   "discovered": [],
-  "updated_at": null
+  "updated_at": "2026-07-03T17:56:00Z"
 }
