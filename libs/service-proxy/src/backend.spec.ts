@@ -1,7 +1,7 @@
 /**
- * backend.spec.ts — SA-3: Inherited-fd serveBackend tests.
+ * backend.spec.ts — SA-3/SA-4: Inherited-fd serveBackend tests.
  *
- * Proves:
+ * SA-3 proves:
  *   1. Negative control (no inheritFd) — normal UDS path: creates socket file,
  *      handles requests, cleans up on close.
  *   2. Happy path — `serveBackend({inheritFd: fd})` serves on a pre-bound,
@@ -10,6 +10,10 @@
  *      fd, with multiple sequential requests.
  *   4. Behavioral verification — serveBackend close with inheritFd does NOT
  *      unlink the pre-existing socket file.
+ *
+ * SA-4 proves:
+ *   5. serveBackend refuses to bind on a socket already held by a LIVE backend
+ *      (structured E_LIVE_SOCKET error, not silent unlink).
  *
  * Socket creation technique:
  *   We create a net.Server on a UDS path, dup its fd via /dev/fd/N (macOS) /
@@ -225,5 +229,38 @@ describe('serveBackend — SA-3 inherited-fd', () => {
     await h.close();
     // File survives close
     expect(fs.existsSync(sock)).toBe(true);
+  });
+
+  // ── SA-4 Test 5: Live-socket steal refused ──────────────────────────────────
+  it('[SA-4] refuses to bind on a socket already held by a live backend (E_LIVE_SOCKET)', async () => {
+    const dir = tmpDir();
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const sock = path.join(dir, 'live.sock');
+
+    // First backend — owns the socket.
+    const h1: BackendHandle = await serveBackend({
+      socketPath: sock,
+      handler: (req) => ({ jsonrpc: '2.0', id: req.id ?? null, result: { owner: 'first' } }),
+      onDiagnostic: () => {},
+    });
+    cleanups.push(() => h1.close());
+    expect(fs.existsSync(sock)).toBe(true);
+
+    // Second serveBackend on the SAME socket should refuse with E_LIVE_SOCKET.
+    await expect(
+      serveBackend({
+        socketPath: sock,
+        handler: (req) => ({ jsonrpc: '2.0', id: req.id ?? null, result: {} }),
+        onDiagnostic: () => {},
+      }),
+    ).rejects.toThrow(/E_LIVE_SOCKET/);
+
+    // First backend is still serving.
+    const conn = dialBackend({ socketPath: sock, onDiagnostic: () => {} });
+    cleanups.push(() => conn.close());
+    const resp = await conn.send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+    expect(resp.result).toEqual({ owner: 'first' });
+
+    await h1.close();
   });
 });

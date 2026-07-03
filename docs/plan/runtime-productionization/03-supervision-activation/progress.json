@@ -67,9 +67,23 @@
         "BL-137"
       ],
       "title": "Fallback spawn hardening: probe-before-bind, handshake, lock liveness",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {"cmd": "npx nx build service-proxy", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test service-proxy", "exit": 0, "summary": "48/48 pass (7 files)"},
+          {"cmd": "npx nx build host-runtime", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test host-runtime", "exit": 0, "summary": "177/177 pass — no breakage"}
+        ],
+        "commits": [],
+        "notes": "serveBackend now probes socket before bind (E_LIVE_SOCKET on live steal). ensureBackend uses handshakeBackend (RPC ping) for readiness, monitors child exit for fast failure. 5 new tests: handshakeBackend(3), exit handling, negative control."
+      },
+      "notes": [
+        "backend.ts: serveBackend probes socket before bind — if live, rejects with E_LIVE_SOCKET; stale socket cleaned",
+        "ensure-backend.ts: handshakeBackend() sends JSON-RPC ping to verify handler readiness; spawnUnderLock tracks child 'exit' for fast-fail; double-checked locking re-probes under lock",
+        "backend.spec.ts: test 5 — serveBackend refuses to bind on live socket",
+        "ensure-backend.spec.ts: 4 SA-4 tests + 1 negative control — exit handling, handshake(3), unlink-first live breakage"
+      ]
     },
     {
       "id": "SA-5",
@@ -120,5 +134,5 @@
   },
   "blockers": [],
   "discovered": [],
-  "updated_at": "2026-07-03T18:10:00Z"
+  "updated_at": "2026-07-03T18:29:00Z"
 }

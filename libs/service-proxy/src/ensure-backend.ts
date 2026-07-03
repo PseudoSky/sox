@@ -7,6 +7,19 @@
  * that across many concurrent sessions' shims there is exactly ONE backend per
  * store (single-writer). On a dropped backend connection the shim re-ensures.
  *
+ * SA-4 hardening adds:
+ *   3. **Readiness handshake** (`handshakeBackend`) — after the socket accepts a
+ *      TCP connection, the caller sends a JSON-RPC `ping` and verifies a response
+ *      (any response) returns within the timeout. A socket that accepts connections
+ *      but whose handler has not finished initializing (e.g. mid-`serveBackend`
+ *      resolve) is NOT considered ready. This replaces the fixed 10s timeout.
+ *   4. **Backend exit monitoring** — `spawnUnderLock` tracks the child's 'exit'
+ *      event so a backend that crashes before binding its socket produces a fast
+ *      `'failed'` with the exit code/reason, rather than waiting the full timeout.
+ *   5. **Live-socket steal prevention** — before unlinking the stale socket in
+ *      `spawnUnderLock`, we re-probe (double-checked locking guard). The backend's
+ *      own `serveBackend` also refuses (probe-before-bind, structured error).
+ *
  * Singleton enforcement here is a leaf-local guard built from two primitives that
  * need no host-runtime import (this lib stays a dependency-free leaf — §9.5.4):
  *
@@ -32,6 +45,7 @@ import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
+import { encodeFrame, FrameDecoder } from './framing.js';
 
 /** Options for {@link ensureBackend}. */
 export interface EnsureBackendOptions {
@@ -114,6 +128,59 @@ export function probeSocketLive(socketPath: string, timeoutMs = 250): Promise<bo
       clearTimeout(timer);
       done(true);
     });
+    sock.on('error', () => {
+      clearTimeout(timer);
+      done(false);
+    });
+  });
+}
+
+/**
+ * SA-4: Readiness handshake — connect to the socket, send a JSON-RPC ping,
+ * and verify any response returns within the timeout.
+ *
+ * Unlike `probeSocketLive` (which only checks that the socket accepts a TCP
+ * connection), this proves the backend's request handler is initialized and
+ * serving. Even an error response (e.g. "Method not found" for an unknown
+ * method) proves the backend is live.
+ */
+export function handshakeBackend(socketPath: string, timeoutMs = 1000): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    if (!fs.existsSync(socketPath)) {
+      resolve(false);
+      return;
+    }
+    const sock = net.createConnection(socketPath);
+    let settled = false;
+    const done = (success: boolean) => {
+      if (settled) return;
+      settled = true;
+      sock.destroy();
+      resolve(success);
+    };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    timer.unref?.();
+
+    const decoder = new FrameDecoder(
+      (_msg) => {
+        // Any response — even an error — proves the backend handler is live.
+        clearTimeout(timer);
+        done(true);
+      },
+      () => {
+        clearTimeout(timer);
+        done(false);
+      },
+    );
+
+    sock.on('connect', () => {
+      // Send a well-formed JSON-RPC request. Even if the backend doesn't
+      // handle 'ping', it returns a "Method not found" error (-32601) which
+      // satisfies the "any response" criterion.
+      const ping = encodeFrame({ jsonrpc: '2.0', id: '__sa4_probe', method: 'ping' });
+      sock.write(ping);
+    });
+    sock.on('data', (chunk: Buffer) => decoder.push(chunk));
     sock.on('error', () => {
       clearTimeout(timer);
       done(false);
@@ -263,7 +330,7 @@ export async function ensureBackend(opts: EnsureBackendOptions): Promise<EnsureB
   return spawnUnderLock(opts, lockPath, diag, readyTimeoutMs, probeTimeoutMs);
 }
 
-/** Spawn the backend while holding the lock; wait for the socket; release. */
+/** Spawn the backend while holding the lock; wait for readiness; release. */
 async function spawnUnderLock(
   opts: EnsureBackendOptions,
   lockPath: string,
@@ -272,18 +339,22 @@ async function spawnUnderLock(
   probeTimeoutMs: number,
 ): Promise<EnsureBackendResult> {
   try {
-    // Re-probe under the lock: a backend may have come up between our first probe
-    // and acquiring the lock (double-checked locking).
-    if (await probeSocketLive(opts.socketPath, probeTimeoutMs)) {
+    // SA-4: Re-probe under the lock with handshake (not just connect-probe).
+    // A backend may have come up between our first probe and acquiring the lock
+    // (double-checked locking). Use the full handshake to confirm readiness.
+    if (await handshakeBackend(opts.socketPath, probeTimeoutMs)) {
       return { disposition: 'already-live', detail: 'backend came live before our spawn (double-checked)' };
     }
 
-    // Remove a stale socket file so the backend's listen() binds cleanly
-    // (serveBackend also unlinks, but doing it here avoids a transient EADDRINUSE).
-    try {
-      if (fs.existsSync(opts.socketPath)) fs.unlinkSync(opts.socketPath);
-    } catch {
-      /* best-effort */
+    // SA-4: Live-socket steal — before unlinking the socket file, verify
+    // it's truly dead (re-probe since the check above may be a race window old).
+    if (fs.existsSync(opts.socketPath)) {
+      const stillDead = !(await probeSocketLive(opts.socketPath, probeTimeoutMs));
+      if (!stillDead) {
+        return { disposition: 'already-live', detail: 'socket came live between probe and unlink (live-socket steal prevented)' };
+      }
+      // Stale socket from a dead backend — remove it.
+      try { fs.unlinkSync(opts.socketPath); } catch { /* best-effort */ }
     }
 
     diag(`[service-proxy ensure] spawning backend: ${opts.command} ${opts.args.join(' ')}`);
@@ -331,10 +402,33 @@ async function spawnUnderLock(
     // Unref so this shim process can exit independently of the backend.
     child.unref();
 
-    // Wait for the socket to come live.
+    // SA-4: Backend exit monitoring — track child exit for fast failure.
+    let childExited = false;
+    let childExitCode: number | null = null;
+    let childExitSignal: string | null = null;
+    child.on('exit', (code, signal) => {
+      childExited = true;
+      childExitCode = code;
+      childExitSignal = signal;
+    });
+
+    // SA-4: Wait for readiness using the RPC handshake (not just socket probe).
     const deadline = Date.now() + readyTimeoutMs;
     while (Date.now() < deadline) {
-      if (await probeSocketLive(opts.socketPath, probeTimeoutMs)) {
+      // Fast-fail if the child exited before becoming ready.
+      if (childExited) {
+        return {
+          disposition: 'failed',
+          detail:
+            `backend process (${childExitSignal ? `signal ${childExitSignal}` : `exit code ${String(childExitCode)}`}) ` +
+            `died before socket became ready on ${opts.socketPath}`,
+        };
+      }
+
+      // SA-4: Use the full readiness handshake (connect + RPC ping/response),
+      // not just a TCP connect probe. This verifies the backend's handler is
+      // actually serving requests.
+      if (await handshakeBackend(opts.socketPath, probeTimeoutMs)) {
         diag(`[service-proxy ensure] backend live (pid ${String(pid)}) on ${opts.socketPath}`);
         return {
           disposition: 'spawned',
@@ -343,6 +437,16 @@ async function spawnUnderLock(
         };
       }
       await sleep(100);
+    }
+
+    // SA-4: Distinguish between "child died" and "child lived but didn't bind".
+    if (childExited) {
+      return {
+        disposition: 'failed',
+        detail:
+          `backend process (${childExitSignal ? `signal ${childExitSignal}` : `exit code ${String(childExitCode)}`}) ` +
+          `died within ${readyTimeoutMs}ms timeout on ${opts.socketPath}`,
+      };
     }
     return { disposition: 'failed', detail: `backend spawned (pid ${String(pid)}) but socket never came live` };
   } finally {

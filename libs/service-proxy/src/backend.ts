@@ -7,6 +7,11 @@
  * response is framed back. The backend NEVER touches stdout — it is a detached
  * daemon, not the client's pipe; all diagnostics go to stderr/the serve-record.
  *
+ * SA-4 hardening: `serveBackend` NEVER unlinks a live socket. Before any bind
+ * (inherited fd or own-bind), if the socket file exists we probe-connect first.
+ * A live socket is refused with a structured `E_LIVE_SOCKET` error — the caller
+ * must use ensureBackend() which coordinates via O_EXCL lock.
+ *
  * Leaf module — node builtins only (net, fs, path).
  */
 
@@ -14,6 +19,7 @@ import * as net from 'node:net';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { encodeFrame, FrameDecoder } from './framing.js';
+import { probeSocketLive } from './ensure-backend.js';
 import {
   type JsonRpcRequest,
   type JsonRpcResponse,
@@ -59,80 +65,96 @@ export interface BackendHandle {
 /**
  * Start a UDS listener that relays framed JSON-RPC to `handler`.
  *
- * Idempotency / restart safety: a stale socket file from a crashed predecessor is
- * unlinked before binding (the singleton guard upstream guarantees only one live
- * backend per [def:singleton-key], so a leftover file is always stale). The socket
- * is created 0600.
+ * SA-4 hardening: this function NEVER unlinks a live socket. If the socket file
+ * exists we probe-connect first; a live socket is refused with a structured
+ * `E_LIVE_SOCKET` error. Only a stale socket (no process listening) is cleaned.
+ * The caller should use ensureBackend() for coordinated singleton spawn.
+ *
+ * The socket is created 0600.
  */
 export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> {
   const diag = opts.onDiagnostic ?? ((line: string) => process.stderr.write(line + '\n'));
   const useInheritedFd = typeof opts.inheritFd === 'number';
 
+  const sockets = new Set<net.Socket>();
+
+  async function onFrame(msg: unknown, socket: net.Socket): Promise<void> {
+    if (!isJsonRpcRequest(msg)) {
+      diag(`[service-proxy backend] dropping non-request frame`);
+      return;
+    }
+    const req = msg as JsonRpcRequest;
+    let resp: JsonRpcResponse | undefined;
+    try {
+      resp = (await opts.handler(req)) ?? undefined;
+    } catch (e) {
+      diag(`[service-proxy backend] handler threw: ${(e as Error).message}`);
+      if (!isNotification(req)) {
+        resp = errorResponse(req.id ?? null, -32603, `internal error: ${(e as Error).message}`);
+      }
+    }
+    if (resp === undefined && !isNotification(req)) {
+      resp = errorResponse(req.id ?? null, -32603, 'backend produced no response');
+    }
+    if (resp !== undefined && socket.writable) {
+      socket.write(encodeFrame(resp));
+    }
+  }
+
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    const decoder = new FrameDecoder(
+      (msg) => { void onFrame(msg, socket); },
+      (err) => {
+        diag(`[service-proxy backend] frame error: ${err.message}`);
+        socket.destroy();
+      },
+    );
+
+    socket.on('data', (chunk: Buffer) => decoder.push(chunk));
+    socket.on('error', (err) => {
+      diag(`[service-proxy backend] socket error: ${err.message}`);
+    });
+    socket.on('close', () => {
+      decoder.reset();
+      sockets.delete(socket);
+    });
+  });
+
   return new Promise<BackendHandle>((resolve, reject) => {
+    server.on('error', (err) => reject(err));
+
     if (!useInheritedFd) {
-      // Remove a stale socket file from a prior (now-dead) backend before binding.
       try {
         fs.mkdirSync(path.dirname(opts.socketPath), { recursive: true, mode: 0o700 });
       } catch {
         /* dir may already exist */
       }
-      try {
-        if (fs.existsSync(opts.socketPath)) fs.unlinkSync(opts.socketPath);
-      } catch {
-        /* best-effort; listen() will surface a real EADDRINUSE */
+
+      // SA-4: Probe-connect before bind — NEVER steal a live socket.
+      const doBind = () => doListen(server, opts, resolve, diag, sockets);
+
+      if (fs.existsSync(opts.socketPath)) {
+        probeSocketLive(opts.socketPath, 250).then((live) => {
+          if (live) {
+            reject(Object.assign(new Error(
+              `E_LIVE_SOCKET: socket ${opts.socketPath} is already in use by a live backend`,
+            ), { code: 'E_LIVE_SOCKET' }));
+            return;
+          }
+          // Stale socket from a dead backend — clean it so bind succeeds.
+          try { fs.unlinkSync(opts.socketPath); } catch { /* best-effort */ }
+          doBind();
+        }).catch(() => {
+          // Probe itself failed — still try to unlink the stale socket.
+          try { fs.unlinkSync(opts.socketPath); } catch { /* best-effort */ }
+          doBind();
+        });
+        return; // Async probe in flight above
       }
     }
 
-    const sockets = new Set<net.Socket>();
-
-    const server = net.createServer((socket) => {
-      sockets.add(socket);
-      const decoder = new FrameDecoder(
-        (msg) => { void onFrame(msg, socket); },
-        (err) => {
-          diag(`[service-proxy backend] frame error: ${err.message}`);
-          socket.destroy();
-        },
-      );
-
-      socket.on('data', (chunk: Buffer) => decoder.push(chunk));
-      socket.on('error', (err) => {
-        diag(`[service-proxy backend] socket error: ${err.message}`);
-      });
-      socket.on('close', () => {
-        decoder.reset();
-        sockets.delete(socket);
-      });
-    });
-
-    async function onFrame(msg: unknown, socket: net.Socket): Promise<void> {
-      if (!isJsonRpcRequest(msg)) {
-        diag(`[service-proxy backend] dropping non-request frame`);
-        return;
-      }
-      const req = msg as JsonRpcRequest;
-      let resp: JsonRpcResponse | undefined;
-      try {
-        resp = (await opts.handler(req)) ?? undefined;
-      } catch (e) {
-        diag(`[service-proxy backend] handler threw: ${(e as Error).message}`);
-        if (!isNotification(req)) {
-          resp = errorResponse(req.id ?? null, -32603, `internal error: ${(e as Error).message}`);
-        }
-      }
-      // Notifications get no response; a handler may also legitimately return
-      // undefined for a request it handled out-of-band — but a request that yields
-      // no response would hang the shim, so we never silently drop a request id.
-      if (resp === undefined && !isNotification(req)) {
-        resp = errorResponse(req.id ?? null, -32603, 'backend produced no response');
-      }
-      if (resp !== undefined && socket.writable) {
-        socket.write(encodeFrame(resp));
-      }
-    }
-
-    server.on('error', (err) => reject(err));
-
+    // No socket file exists, or we are using an inherited fd — bind directly.
     if (useInheritedFd) {
       server.listen({ fd: opts.inheritFd } as net.ListenOptions, () => {
         resolve({
@@ -146,29 +168,42 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
         });
       });
     } else {
-      server.listen(opts.socketPath, () => {
-        try {
-          fs.chmodSync(opts.socketPath, 0o600);
-        } catch {
-          /* best-effort perms hardening */
-        }
-        resolve({
-          socketPath: opts.socketPath,
-          close: () =>
-            new Promise<void>((res) => {
-              for (const s of sockets) s.destroy();
-              sockets.clear();
-              server.close(() => {
-                try {
-                  if (fs.existsSync(opts.socketPath)) fs.unlinkSync(opts.socketPath);
-                } catch {
-                  /* best-effort */
-                }
-                res();
-              });
-            }),
-        });
-      });
+      doListen(server, opts, resolve, diag, sockets);
     }
+  });
+}
+
+/**
+ * SA-4 refactored listen helper: bind the server to its socket path (non-inherited).
+ */
+function doListen(
+  server: net.Server,
+  opts: ServeBackendOptions,
+  resolve: (h: BackendHandle) => void,
+  _diag: (line: string) => void,
+  sockets: Set<net.Socket>,
+): void {
+  server.listen(opts.socketPath, () => {
+    try {
+      fs.chmodSync(opts.socketPath, 0o600);
+    } catch {
+      /* best-effort perms hardening */
+    }
+    resolve({
+      socketPath: opts.socketPath,
+      close: () =>
+        new Promise<void>((res) => {
+          for (const s of sockets) s.destroy();
+          sockets.clear();
+          server.close(() => {
+            try {
+              if (fs.existsSync(opts.socketPath)) fs.unlinkSync(opts.socketPath);
+            } catch {
+              /* best-effort */
+            }
+            res();
+          });
+        }),
+    });
   });
 }

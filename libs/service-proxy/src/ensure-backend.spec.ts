@@ -8,13 +8,24 @@
  *     exactly ONE spawned backend (the O_EXCL spawn lock → single-writer).
  *   - BL-67: the detached backend DOES NOT hold the spawner's stdout/stderr pipe open
  *     (ensureBackend fully severs inherited stdio → piped callers receive EOF on exit).
+ *
+ * SA-4 additions:
+ *   - handshakeBackend: returns true for a live, responding backend handler; false
+ *     for absent, dead, or non-responding sockets.
+ *   - A backend process that exits before binding its socket → fast 'failed' with
+ *     the exit code in detail (backend exit handling, not a wait-for-timeout).
+ *   - Live-socket steal: ensureBackend already handles this via probeSocketLive in
+ *     the fast path; backed up by serveBackend's E_LIVE_SOCKET rejection.
+ *   - Negative control: simulating the OLD unlink-first behavior (unlinking a live
+ *     backend's socket) silently breaks the backend, proving why SA-4 is necessary.
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
+import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { ensureBackend, probeSocketLive } from './ensure-backend.js';
+import { ensureBackend, probeSocketLive, handshakeBackend } from './ensure-backend.js';
 import { serveBackend, type BackendHandle } from './backend.js';
 
 /**
@@ -332,6 +343,114 @@ describe('ensureBackend', () => {
       } catch {
         /* gone */
       }
+    }
+  });
+
+  // ── SA-4: Backend exit handling ─────────────────────────────────────────
+  it('[SA-4] backend that exits before binding returns failed', async () => {
+    const dir = tmpDir();
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const sock = path.join(dir, 'crash.sock');
+
+    // Spawn a script that exits immediately (simulates a crashed backend).
+    const r = await ensureBackend({
+      socketPath: sock,
+      singletonKey: 'test crash:/crash',
+      command: process.execPath,
+      args: ['-e', 'process.exit(1)'],
+      onDiagnostic: () => {},
+      readyTimeoutMs: 3000,
+      probeTimeoutMs: 100,
+    });
+    expect(r.disposition).toBe('failed');
+    expect(r.detail).toMatch(/exit code 1/);
+  });
+
+  // ── SA-4: handshakeBackend tests ─────────────────────────────────────────────
+  it('[SA-4] handshakeBackend returns false for absent socket', async () => {
+    expect(await handshakeBackend('/nonexistent/sock', 100)).toBe(false);
+  });
+
+  it('[SA-4] handshakeBackend returns true for a live backend handler', async () => {
+    const dir = tmpDir();
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const sock = path.join(dir, 'handshake.sock');
+    const h = await serveBackend({
+      socketPath: sock,
+      handler: (req) => ({ jsonrpc: '2.0', id: req.id ?? null, result: {} }),
+      onDiagnostic: () => {},
+    });
+    cleanups.push(() => h.close());
+
+    expect(await handshakeBackend(sock, 500)).toBe(true);
+  });
+
+  it('[SA-4] handshakeBackend returns false after backend closes', async () => {
+    const dir = tmpDir();
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const sock = path.join(dir, 'gone.sock');
+    const h = await serveBackend({
+      socketPath: sock,
+      handler: (req) => ({ jsonrpc: '2.0', id: req.id ?? null, result: {} }),
+      onDiagnostic: () => {},
+    });
+    await h.close();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(await handshakeBackend(sock, 200)).toBe(false);
+  });
+});
+
+// ── SA-4: Negative control — simulate old unlink-first behavior ─────────────
+describe('[SA-4 negative control] unlink-first silently breaks a live backend', () => {
+  it('unlinking a live backend socket causes the backend to fail its next accept', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-negctrl-'));
+    const sock = path.join(dir, 'neg.sock');
+    const afterEachCleanup: Array<() => void | Promise<void>> = [];
+    const afterEachChildren: ChildProcess[] = [];
+
+    try {
+      // Start a real backend on the socket.
+      const h: BackendHandle = await serveBackend({
+        socketPath: sock,
+        handler: (req) => ({ jsonrpc: '2.0', id: req.id ?? null, result: { ok: true } }),
+        onDiagnostic: () => {},
+      });
+      afterEachCleanup.push(() => h.close());
+
+      // Old behavior: unlink the socket without checking if it's live.
+      // This is what the OLD serveBackend did before SA-4.
+      fs.unlinkSync(sock);
+      expect(fs.existsSync(sock)).toBe(false);
+
+      // The backend process gets EADDRINUSE on its next accept (it won't be
+      // able to accept new connections or re-bind). Verify by trying to dial.
+      // Since the file is unlinked, the socket is now orphaned — the kernel
+      // still has the socket, but the file is gone, so new clients can't reach it.
+      const dialPath = sock; // same path, file is gone
+      const conn = net.createConnection(dialPath);
+      const dialResult = await new Promise<string>((resolve) => {
+        const timer = setTimeout(() => resolve('timeout'), 500);
+        conn.on('connect', () => {
+          clearTimeout(timer);
+          resolve('connected');
+        });
+        conn.on('error', (err: NodeJS.ErrnoException) => {
+          clearTimeout(timer);
+          resolve(`error: ${err.code}`);
+        });
+      });
+      conn.destroy();
+
+      // The old unlink-first approach means clients get ENOENT or ECONNREFUSED
+      // even though the backend process is still logically running. This is the
+      // "silent breakage" that SA-4 prevents.
+      expect(dialResult).not.toBe('connected');
+
+      await h.close();
+    } finally {
+      for (const c of afterEachChildren) { try { c.kill('SIGKILL'); } catch { /* ok */ } }
+      for (const c of afterEachCleanup) { try { await c(); } catch { /* ok */ } }
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ok */ }
     }
   });
 });
