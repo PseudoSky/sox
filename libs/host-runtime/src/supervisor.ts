@@ -113,7 +113,9 @@ export class ProcessSupervisor {
     this._key = opts.key;
     this._entrypointPath = opts.entrypointPath;
     this._args = opts.args ?? [];
-    this._env = opts.env ?? {};
+    // PI-1: inject SOX_SERVICE_ID so the reaper can match by logical identity
+    // across build versions (cross-build stray detection).
+    this._env = { ...(opts.env ?? {}), SOX_SERVICE_ID: opts.key };
     this._lifecycle = opts.lifecycle;
     this._onRestart = opts.onRestart;
     this._storePath = opts.storePath;

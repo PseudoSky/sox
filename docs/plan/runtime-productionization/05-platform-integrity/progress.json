@@ -1,0 +1,87 @@
+{
+  "context": "05-platform-integrity",
+  "items": [
+    {
+      "id": "PI-1",
+      "bl": [
+        "BL-136"
+      ],
+      "title": "Identity-based reaping + soxe doctor + status reconciliation",
+      "status": "in_progress",
+      "evidence": null,
+      "notes": [
+        "SOX_SERVICE_ID env var injected into supervisor spawn (supervisor.ts)",
+        "reaper.ts: findOrphansByServiceId() matches by SOX_SERVICE_ID env var",
+        "readProcessEnv() reads process env via ps -o env",
+        "PI-1 remaining: soxe doctor CLI command, adversarial stray test, status reconciliation"
+      ]
+    },
+    {
+      "id": "PI-2",
+      "bl": [
+        "BL-138"
+      ],
+      "title": "Unload-then-reap on every kill surface; fix stale os-unit comment",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "PI-3",
+      "bl": [
+        "BL-139"
+      ],
+      "title": "Unified log keying; soxe logs finds backend streams",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "PI-4",
+      "bl": [
+        "BL-140"
+      ],
+      "title": "soxe ps + soxe follow (docker-compose pane)",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "PI-5",
+      "bl": [
+        "BL-141"
+      ],
+      "title": "Atomic lockfile + zero-members failure + cold-spawn upgrade gate + divergence flag",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "PI-6",
+      "bl": [
+        "BL-142"
+      ],
+      "title": "Ownership ledger dedupe + compaction",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "PI-7",
+      "bl": [
+        "BL-143"
+      ],
+      "title": "serve lockfile-miss remediation error",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    }
+  ],
+  "gate": {
+    "status": "pending",
+    "evidence": null
+  },
+  "blockers": [],
+  "discovered": [],
+  "updated_at": null
+}

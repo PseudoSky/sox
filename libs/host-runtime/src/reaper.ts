@@ -249,6 +249,65 @@ export function argvContainsToken(argv: string, token: string): boolean {
   }
 }
 
+// ─── PI-1: identity-based matching by SOX_SERVICE_ID env ──────────────────────
+
+/**
+ * Read the environment block for a given PID via `ps -o env`.
+ * Returns null on failure or if the platform doesn't support ps -o env.
+ */
+export function readProcessEnv(pid: number): Record<string, string> | null {
+  try {
+    const out = execFileSync('ps', ['-o', 'env=', '-p', String(pid)], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024,
+      timeout: 2000,
+    });
+    const env: Record<string, string> = {};
+    for (const line of out.split('\0')) {
+      const eq = line.indexOf('=');
+      if (eq > 0) {
+        const k = line.slice(0, eq);
+        const v = line.slice(eq + 1);
+        if (k) env[k] = v;
+      }
+    }
+    return env;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Find every live process whose env contains `SOX_SERVICE_ID=<serviceId>`.
+ * Falls back to argv-based token matching when the env probe is unavailable
+ * (e.g. permissions, platform without ps -o env).
+ */
+export function findOrphansByServiceId(
+  serviceId: string,
+  token: string,
+  opts: { excludePids?: number[] | undefined } = {},
+): OrphanMatch[] {
+  if (!serviceId && !token) return [];
+  const exclude = new Set<number>([process.pid, ...(opts.excludePids ?? [])]);
+
+  // Prefer env-based matching (cross-build safe).
+  const envMatches: OrphanMatch[] = [];
+  for (const p of snapshotProcesses()) {
+    if (exclude.has(p.pid)) continue;
+    const env = readProcessEnv(p.pid);
+    if (env && env['SOX_SERVICE_ID'] === serviceId) {
+      envMatches.push({ ...p, orphaned: p.ppid === 1 });
+    }
+  }
+  if (envMatches.length > 0) return envMatches;
+
+  // Fall back to argv-based token matching (pre-PI-1 compatibility).
+  if (token) {
+    return findOrphansByIdentity(token, opts);
+  }
+  return [];
+}
+
 export interface ReapResult {
   token: string;
   /** Per-process outcomes for everything that matched the identity token. */
