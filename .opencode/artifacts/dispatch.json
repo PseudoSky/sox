@@ -30,7 +30,7 @@
         "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/save-session-state.ts"
       ],
       "depends_on": [],
-      "status": "pending",
+      "status": "complete",
       "report": null
     },
     {
@@ -50,7 +50,7 @@
         "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/stats.ts"
       ],
       "depends_on": ["S1"],
-      "status": "pending",
+      "status": "complete",
       "report": null
     },
     {
@@ -67,7 +67,7 @@
         "libs/memory-core/src/index.ts"
       ],
       "depends_on": ["S2"],
-      "status": "pending",
+      "status": "complete",
       "report": null
     },
     {
@@ -81,7 +81,7 @@
         "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/invalidate.ts"
       ],
       "depends_on": [],
-      "status": "pending",
+      "status": "complete",
       "report": null
     },
     {
@@ -94,9 +94,9 @@
         "libs/memory-core/src/recall.ts"
       ],
       "depends_on": ["S1", "S2"],
-      "status": "pending",
+      "status": "complete",
       "report": null
     }
   ],
-  "status": "draft"
+  "status": "complete"
 }

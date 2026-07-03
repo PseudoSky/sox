@@ -1,6 +1,9 @@
 # Client Refactor — Architecture Addendum
 
-> **Status:** Proposed · **Authored:** 2026-07-02
+> **Status:** Complete · **Authored:** 2026-07-02 · **Resolved:** 2026-07-02
+>
+> All 5 segments S1–S5 implemented, reviewed, and merged.
+> See commit `0ff4d81` for the full change set.
 >
 > Extends BL-112 (memory-core stale duplicates) with the full refactoring of the
 > newly extracted `client/` layer and the raw-SQL gap between memory-server and

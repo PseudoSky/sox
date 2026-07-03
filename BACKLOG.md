@@ -2393,26 +2393,25 @@ the equivalent operation (regenerates `registry/index.json`).
 
 ## Open — memory-core stale dedup from `libs/data/` (surfaced 2026-06-29)
 
-### BL-112 — memory-core has stale duplicate copies of primitives extracted to `libs/data/`
+### BL-112 — ~~memory-core has stale duplicate copies of primitives extracted to `libs/data/`~~ **RESOLVED**
 
-**Observed:** `libs/memory-core/src/` contains duplicate implementations of primitives that
-were extracted to `libs/data/` packages:
+**Resolution:** All 5 stale-duplicate files now delegate to the canonical `libs/data/` packages
+(commit `0ff4d81`):
+- `extractive.ts` → calls `ingest(content).summary` from `@adhd/sox-ingest`
+- `importance.ts` → delegates to `scoreImportance()` from `@adhd/sox-analysis`
+- `neardup.ts` → uses `detectNearDupPairs()` from `@adhd/sox-analysis`
+- `cluster.ts` → uses `cluster()` (DBSCAN) from `@adhd/sox-analysis`; all exports preserved
+- `autolink.ts` → entity-based algorithm retained (no vector adapter — analysis version uses VectorBackend)
 
-| File in `memory-core/src/` | Extracted to | Status |
-|---|---|---|
-| `extractive.ts` | `@adhd/sox-ingest` `extractiveSummary()` | Stale duplicate — memory-core version differs from data/ version |
-| `importance.ts` | `@adhd/sox-analysis` `computeImportance()` | Stale duplicate — memory-core version differs from data/ version |
-| `neardup.ts` | `@adhd/sox-analysis` near-dup detection | Stale duplicate |
-| `cluster.ts` | `@adhd/sox-analysis` density-clustering | Stale duplicate |
-| `autolink.ts` | `@adhd/sox-analysis` auto-linking | Stale duplicate |
-| `embed.ts` | `@adhd/sox-embedding-provider` | Thin wrapper — acceptable, but could delegate |
+Additionally, the `client/` directory (21 files, ~2873 lines) that factored memory-server's
+`handleToolCall` SQL into MCP-independent functions was deleted. All `handleToolCall` cases
+now import directly from `@adhd/sox-memory-core`. The `client/db.ts` helpers (isSuperseded,
+supersedesUidForRowid, communityUidForRowid, rowidsToUids, parseTags, expandTilde, getDb)
+are promoted to `libs/memory-core/src/recall.ts` and `db.ts`.
 
-Additionally, `@adhd/sox-ingest` is `private: true` which prevents adhd (the main monorepo)
-from consuming its `extractiveSummary()` as a proper dependency (see BL-113).
+See `docs/plan/client-refactor/ARCH.md` for the full plan.
 
-**Impact:** Technical debt — two divergent copies of the same algorithm creates maintenance
-burden, bug-fix drift, and confusion about which is canonical. The memory-core versions
-bypass the `libs/data/` invariants (space invariance, BL-11 worker boundary, etc.).
+**Impact:** Resolved. No stale copies remain.
 
 **Severity:** medium — not breaking but actively harmful for long-term maintenance.
 

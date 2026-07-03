@@ -357,6 +357,31 @@ Implements: `initialize`, `tools/list`, `tools/call`.
 
 `memory-server` v1.1.0. Check `memory_stats` → `tool_version` to confirm the surface version: `"1.1.0"` signals v1.1 (including `memory_update`) is active.
 
+## Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│              memory-server (MCP)                 │
+│  handleToolCall → imports @adhd/sox-memory-core  │
+│  wraps results as MCP ToolResult                  │
+├─────────────────────────────────────────────────┤
+│         @adhd/sox-memory-core (domain layer)      │
+│  write, recall, update, link, related,            │
+│  entity-episodes, list-entities, near-duplicates, │
+│  supersession-chain, session, topics, projects,   │
+│  curate, stats, search-entities, get-community    │
+│  delegates edge ops to @adhd/sox-graph-store      │
+│  delegates analysis to @adhd/sox-analysis/ingest  │
+├──────────────────┬──────────────────┬────────────┤
+│ @adhd/sox-       │ @adhd/sox-       │ @adhd/sox- │
+│ graph-store      │ vector-store     │ analysis /  │
+│ (edge CRUD)      │ (vector search)  │ ingest      │
+└──────────────────┴──────────────────┴────────────┘
+```
+
+The `client/` directory was extracted during refactoring and then deleted — all 19 tools
+now import logic directly from `@adhd/sox-memory-core`. No intermediate layer.
+
 ## Permissions and db_path constraint
 
 This extension declares an `fs` allowlist covering `~/.memory/**` (both read and write). The host runtime injects this allowlist as an environment policy at spawn time.
