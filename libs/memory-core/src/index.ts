@@ -64,8 +64,8 @@ export {
 } from './embed.js';
 export type { EmbedBackend, EmbedConfig, EmbedState, EmbedHealth } from './embed.js';
 
-// ── Write + invalidate ────────────────────────────────────────────────────────
-export { memoryWrite, memoryInvalidate } from './write.js';
+// ── Write + invalidate + batch + idempotency ───────────────────────────────────
+export { memoryWrite, memoryInvalidate, memoryWriteBatch, requestLedgerPrune } from './write.js';
 export type {
   WriteParams,
   WriteResult,
@@ -73,6 +73,11 @@ export type {
   InvalidateParams,
   InvalidateResult,
   InvalidateError,
+  BatchItem,
+  BatchItemOk,
+  BatchItemError,
+  BatchItemResult,
+  BatchResult,
 } from './write.js';
 
 // ── Update (in-place editor) ──────────────────────────────────────────────────

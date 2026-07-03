@@ -98,6 +98,14 @@ CREATE TABLE IF NOT EXISTS organizer_queue (
 );
 CREATE INDEX IF NOT EXISTS ix_q_open ON organizer_queue(done_at, priority, seq) WHERE done_at IS NULL;
 
+-- WP-4: request idempotency ledger (pruned >7 days on checkpoint tick)
+CREATE TABLE IF NOT EXISTS request_ledger (
+  request_id TEXT PRIMARY KEY,
+  episode_uid TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_request_ledger_created_at ON request_ledger(created_at);
+
 -- scope-promotion candidates (internal detail; surfaced via host ScopePromotionProposed event)
 CREATE TABLE IF NOT EXISTS promotion_queue (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,

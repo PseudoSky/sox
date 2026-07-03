@@ -86,6 +86,23 @@ export function openDb(dbPath: string): Database.Database {
   db.exec(`CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS ix_node_enrich_ver ON node(enrich_ver)   WHERE enrich_ver IS NOT NULL`);
 
+  // WP-4: request_ledger table migration — ensures the table exists on upgraded stores
+  // that were created before the request_ledger DDL was added to schema.ts.
+  // Idempotent: CREATE TABLE IF NOT EXISTS, so re-opening does not error.
+  const rlExists = db
+    .prepare<[], { name: string }>(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='request_ledger'`,
+    )
+    .get();
+  if (!rlExists) {
+    db.exec(`CREATE TABLE IF NOT EXISTS request_ledger (
+      request_id TEXT PRIMARY KEY,
+      episode_uid TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )`);
+    db.exec(`CREATE INDEX IF NOT EXISTS ix_request_ledger_created_at ON request_ledger(created_at)`);
+  }
+
   // Idempotent migration: add 'enrich' to the organizer_queue CHECK constraint if
   // the existing table was created before the 'enrich' op was added (BL-27 LOW-4).
   // SQLite does not support ALTER TABLE ... MODIFY CONSTRAINT, so we must:

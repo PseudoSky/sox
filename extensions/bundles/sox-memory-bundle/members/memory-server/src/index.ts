@@ -61,6 +61,7 @@ import {
   memorySearchEntities,
   memoryUpdate,
   memoryWrite,
+  memoryWriteBatch,
   rowidsToUids,
   runBatchEnrich,
   SOCKET_PATH,
@@ -310,8 +311,49 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
           description: 'Approximate tokens per chunk (default: 500). Content exceeding this threshold is split at sentence boundaries; each chunk is stored as a separate episode with a DERIVED_FROM edge to the parent.',
           default: 500,
         },
+        client_request_id: {
+          type: 'string',
+          maxLength: 128,
+          description: '(WP-4) Client-supplied request idempotency key. Replay of a known id returns the original result with "replayed": true. No new episode is created.',
+        },
       },
       required: ['content'],
+    },
+  },
+  {
+    name: 'memory_write_batch',
+    description:
+      'Write multiple memory episodes as a single batch. Each item follows the same shape as memory_write. Per-item E_DEDUP is returned as ok:false (not a batch failure). The entire batch routes through one queue entry.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              content: { type: 'string', description: 'The content to memorize. Required.' },
+              summary: { type: 'string', description: '(E2) Human-readable summary.' },
+              name: { type: 'string', description: '(E2) Title/name for this episode.' },
+              topic: { type: 'string', description: '(E5) Explicit topic override.' },
+              tags: { type: 'array', items: { type: 'string' }, description: '(E4) Concept/entity tags.' },
+              metadata: { type: 'object', additionalProperties: true, description: '(E3) Arbitrary caller metadata.' },
+              project_path: { type: 'string', description: '(E1) Caller project root path.' },
+              derived_from_uid: { type: 'string', description: '(E9) UID of a parent episode.' },
+              session_id: { type: 'string' },
+              t_occurred: { type: 'string', description: 'ISO timestamp when this occurred.' },
+              agent_id: { type: 'string' },
+              source: { type: 'string', enum: ['message', 'tool_output', 'observation', 'document', 'reflection', 'import'] },
+              importance: { type: 'number', minimum: 1, maximum: 10, description: 'User-asserted importance (1–10).' },
+              client_request_id: { type: 'string', maxLength: 128, description: '(WP-4) Client-supplied request idempotency key. Replay returns the original result.' },
+            },
+            required: ['content'],
+          },
+          description: 'Array of memory_write payloads.',
+        },
+      },
+      required: ['items'],
     },
   },
   {
@@ -899,6 +941,36 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         });
         return {
           content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      });
+    }
+
+    case 'memory_write_batch': {
+      const wq = WriteQueue.forPath(dbPath);
+      return wq.enqueue('memory_write_batch', async (writeDb) => {
+        const items = args['items'] as Array<Record<string, unknown>> | undefined;
+        if (!Array.isArray(items) || items.length === 0) {
+          return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_INVALID_INPUT', message: 'items must be a non-empty array' }) }] };
+        }
+        const batchItems = items.map((item) => ({
+          content: item['content'] as string,
+          summary: item['summary'] as string | undefined,
+          name: item['name'] as string | undefined,
+          topic: item['topic'] as string | undefined,
+          project_path: item['project_path'] as string | undefined,
+          derived_from_uid: item['derived_from_uid'] as string | undefined,
+          metadata: item['metadata'] as Record<string, unknown> | undefined,
+          session_id: item['session_id'] as string | undefined,
+          t_occurred: item['t_occurred'] as string | undefined,
+          agent_id: item['agent_id'] as string | undefined,
+          source: item['source'] as 'message' | undefined,
+          importance: item['importance'] as number | undefined,
+          tags: item['tags'] as string[] | undefined,
+          client_request_id: item['client_request_id'] as string | undefined,
+        }));
+        const batchResult = await memoryWriteBatch(writeDb, batchItems);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(batchResult) }],
         };
       });
     }

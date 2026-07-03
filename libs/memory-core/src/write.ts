@@ -43,10 +43,15 @@ export interface WriteParams {
   importance?: number | undefined;
   scope?: string | undefined;
   tags?: string[] | undefined;
+  /** (WP-4) Client-supplied request idempotency key (string ≤128 chars). Replay of a
+   *  known id returns the original result with `replayed: true`. */
+  client_request_id?: string | undefined;
 }
 
 export interface WriteResult {
   episode_uid: string;
+  /** (WP-4) True when this is a replayed idempotent request (client_request_id matched an existing ledger entry). */
+  replayed?: boolean;
   /** Enrichment fields resolved at write time via enrichOnWrite (E1–E5, E8, E10, E12). */
   enrichment?: {
     topic: string | null;
@@ -108,6 +113,28 @@ export async function memoryWrite(
 
   if (!content || !content.trim()) {
     return { code: 'E_SCOPE_RO', message: 'content must not be empty' };
+  }
+
+  // (WP-4) client_request_id idempotency: replay returns the original result.
+  const clientRequestId = params.client_request_id;
+  if (clientRequestId !== undefined) {
+    if (typeof clientRequestId !== 'string' || clientRequestId.length > 128) {
+      return {
+        code: 'E_SCOPE_RO',
+        message: 'client_request_id must be a string of at most 128 characters',
+      };
+    }
+    const existingLedger = db
+      .prepare<[string], { episode_uid: string }>(
+        'SELECT episode_uid FROM request_ledger WHERE request_id = ?',
+      )
+      .get(clientRequestId);
+    if (existingLedger) {
+      return {
+        episode_uid: existingLedger.episode_uid,
+        replayed: true,
+      };
+    }
   }
 
   // SHA-256 dedup on normalized content
@@ -195,6 +222,13 @@ export async function memoryWrite(
       }
     }
 
+    // (WP-4) Record in request_ledger for idempotent replay.
+    if (clientRequestId) {
+      db.prepare(
+        `INSERT OR IGNORE INTO request_ledger(request_id, episode_uid, created_at) VALUES (?, ?, ?)`,
+      ).run(clientRequestId, uid, now);
+    }
+
     // (E9) Explicit DERIVED_FROM edge when caller supplies a parent UID.
     if (derived_from_uid) {
       const parent = db
@@ -265,6 +299,108 @@ export interface InvalidateResult {
 export type InvalidateError =
   | { code: 'E_NOT_FOUND'; message: string }
   | { code: 'E_SCOPE_RO'; message: string };
+
+// ── Batch write (WP-3, BL-125) ──────────────────────────────────────────────
+
+export interface BatchItem {
+  content: string;
+  summary?: string | undefined;
+  name?: string | undefined;
+  topic?: string | undefined;
+  project_path?: string | undefined;
+  derived_from_uid?: string | undefined;
+  session_id?: string | undefined;
+  t_occurred?: string | undefined;
+  agent_id?: string | undefined;
+  source?: 'message' | 'tool_output' | 'observation' | 'document' | 'reflection' | 'import' | undefined;
+  metadata?: Record<string, unknown> | undefined;
+  importance?: number | undefined;
+  scope?: string | undefined;
+  tags?: string[] | undefined;
+  client_request_id?: string | undefined;
+}
+
+export interface BatchItemOk {
+  ok: true;
+  episode_uid: string;
+}
+
+export interface BatchItemError {
+  ok: false;
+  code: string;
+  message: string;
+  details?: Record<string, unknown> | { existing_uid: string };
+}
+
+export type BatchItemResult = BatchItemOk | BatchItemError;
+
+export interface BatchResult {
+  results: BatchItemResult[];
+}
+
+/**
+ * Write multiple memory episodes as a single batch.
+ *
+ * CONTRACTS §C:
+ *   - One logical queue entry (the caller should route the entire batch through
+ *     WriteQueue as a single enqueue).
+ *   - Per-item E_DEDUP is `ok:false, code:"E_DEDUP"` with `details.existing_uid`
+ *     and is NOT a batch failure — other items still succeed.
+ *   - Chunked transactions allowed (one transaction per item for isolation).
+ *
+ * This function does NOT queue itself — the caller (memory-server handler) is
+ * responsible for enqueuing the entire batch as a single queue entry so that
+ * batch writes aren't interleaved with individual writes.
+ */
+export async function memoryWriteBatch(
+  db: Database.Database,
+  items: BatchItem[],
+): Promise<BatchResult> {
+  const results: BatchItemResult[] = [];
+
+  for (const item of items) {
+    try {
+      const r = await memoryWrite(db, item);
+      if ('episode_uid' in r) {
+        results.push({ ok: true, episode_uid: r.episode_uid });
+      } else {
+        // WriteError: E_DEDUP, E_SCOPE_RO, etc.
+        results.push({
+          ok: false,
+          code: r.code,
+          message: r.message,
+          details: 'existing_uid' in r ? { existing_uid: r.existing_uid } as Record<string, unknown> : undefined,
+        });
+      }
+    } catch (err) {
+      // Unexpected errors (not from memoryWrite but from the async wrapper) are
+      // surfaced as per-item errors so a single item cannot bring down the batch.
+      const msg = err instanceof Error ? err.message : String(err ?? 'unknown error');
+      results.push({ ok: false, code: 'E_IO', message: msg });
+    }
+  }
+
+  return { results };
+}
+
+// ── Request ledger pruning (WP-4, BL-129) ──────────────────────────────────
+
+/**
+ * Prune request_ledger entries older than the given retention period.
+ * Called on the checkpoint tick (WP-5); default retention = 7 days.
+ *
+ * Returns the number of rows deleted.
+ */
+export function requestLedgerPrune(
+  db: Database.Database,
+  retentionDays: number = 7,
+): number {
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const result = db
+    .prepare<[string]>('DELETE FROM request_ledger WHERE created_at < ?')
+    .run(cutoff);
+  return result.changes;
+}
 
 export function memoryInvalidate(
   db: Database.Database,
