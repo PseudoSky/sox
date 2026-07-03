@@ -25,9 +25,13 @@
  * Leaf-ish: node builtins + reaper.ts only (for the verified-stop reap). It never
  * re-implements process scan/kill. All filesystem + launchctl/systemctl effects
  * are funneled through injectable seams (`unitDir`, `exec`) so tests run entirely
- * against a SANDBOXED unit dir with a FAKE exec — never `~/Library/LaunchAgents`,
- * never a real `launchctl load` (spec Appendix B item 3: real activation needs a
- * human node-path ack at the CLI layer; this module only builds the capability).
+ * against a SANDBOXED unit dir with a FAKE exec — never touching the real OS
+ * supervisor in tests. In production, `realOsExec` is used for all platform
+ * commands (launchctl/systemctl); the CLI gates destructive load/unload ops
+ * behind user intent (spec Appendix B item 3: real activation needs a human
+ * node-path ack at the CLI layer), but the module itself has full production
+ * capability including `launchctl bootstrap`/`bootout` when `load:true` is passed
+ * with `exec:realOsExec`.
  */
 
 import { execFileSync } from 'node:child_process';

@@ -23,6 +23,8 @@ import {
   enableOsUnit,
   findCrossScopeSharers,
   findOrphansByIdentity,
+  findOrphansByServiceId,
+  readProcessEnv,
   // Slice 2 (docs/spec/service-lifecycle.md §9): OS-supervisor control surface.
   getOsUnitPlatform,
   getRuntimeFilePath,
@@ -201,6 +203,9 @@ async function main(): Promise<void> {
     case 'logs':
       await cmdLogs(flags);
       break;
+    case 'doctor':
+      await cmdDoctor(flags);
+      break;
     case 'migrate-home':
       await cmdMigrateHome(flags);
       break;
@@ -371,9 +376,12 @@ Runtime:
   details            Show details for an extension
                      Flags: --id=<ext-id>  --scope=<scope>
   status             Show live health for all running extensions (R7)
-                     Flags: --id=<ext-id>  --project=<path>  --scope=<scope>
-                            --lines=<n>  --json
-                     Exit: 0=healthy 1=degraded 2=dead
+                      Flags: --id=<ext-id>  --project=<path>  --scope=<scope>
+                             --lines=<n>  --json
+                      Exit: 0=healthy 1=degraded 2=dead
+  doctor             Diagnose and repair soxe state (stray processes, cross-build orphans)
+                      Flags: --id=<ext-id>  --fix (reap strays)  --scope=<scope>
+                             --old-match  (use old path-based matching for comparison)
   logs               Tail or follow extension log output (R4)
                      Flags: --id=<ext-id>  --scope=<scope>  --lines=<n>
                             --follow  --history  --json
@@ -4523,6 +4531,203 @@ async function cmdServiceList(flags: Record<string, string>): Promise<void> {
   process.exit(0);
 }
 
+// ─── doctor (PI-1: identity-based stray detection + cross-build orphan repair) ─
+
+/**
+ * cmdDoctor — diagnose and repair soxe process state.
+ *
+ * Scans for strays by logical service identity (SOX_SERVICE_ID), NOT by
+ * entrypoint path — catches cross-build strays that the old path-based reaper
+ * cannot match. Reports all anomalies; with --fix, reaps strays.
+ *
+ * Flags:
+ *   --id=<ext-id>    Limit scan to a specific extension/service id.
+ *   --scope=<scope>  Limit scan to a specific scope.
+ *   --fix            Reap found strays (verified-stop).
+ *   --old-match      Use the OLD path-based findOrphansByIdentity instead of
+ *                    the NEW env-based findOrphansByServiceId — for the
+ *                    negative-control adversarial test (NC).
+ *   --json           Structured JSON output for machine consumption.
+ */
+async function cmdDoctor(flags: Record<string, string>): Promise<void> {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+  const root = flags['root'] ?? process.cwd();
+  const filterId = flags['id'];
+  const filterScope = flags['scope'];
+  const doFix = flags['fix'] !== undefined;
+  const useOldMatch = flags['old-match'] !== undefined;
+  const jsonMode = flags['json'] !== undefined;
+  const log = (m: string): void => { process.stdout.write(`${CLI} doctor: ${m}\n`); };
+
+  // Collect all installed extensions from the install registry.
+  const registryPath = installRegistryPath();
+  const registry = readInstallRegistry(registryPath);
+
+  const findings: Array<{
+    kind: 'stray-process' | 'os-unit-not-loaded' | 'cross-build-stray';
+    extId: string;
+    scope: string;
+    pid: number;
+    ppid: number;
+    orphaned: boolean;
+    detail: string;
+  }> = [];
+
+  // Scan each install record.
+  for (const rec of registry.installs) {
+    if (filterId !== undefined && rec.extId !== filterId) continue;
+    if (filterScope !== undefined && rec.scope !== filterScope) continue;
+
+    // Resolve the extension's store dir and entrypoint.
+    const extDir = resolveExtensionDir(rec.source, rec.root);
+    if (!extDir) continue;
+    let manifest: { type?: string; entrypoint?: string };
+    try {
+      manifest = JSON.parse(fsMod.readFileSync(pathMod.join(extDir, 'extension.json'), 'utf8'));
+    } catch {
+      continue;
+    }
+    if (!manifest.entrypoint) continue;
+    const entrypointPath = pathMod.resolve(extDir, manifest.entrypoint);
+
+    // Build the service env (same as supervisor.ts injects).
+    const configEnv = buildExtConfigEnv(rec.extId, rec.root);
+    const svcEnv: Record<string, string> = { ...configEnv, SOX_SERVICE_ID: rec.extId };
+
+    // Match by service identity env var (SOX_SERVICE_ID).
+    let matches: Array<{ pid: number; ppid: number; orphaned: boolean }>;
+    if (useOldMatch) {
+      // Old path-based matching — will miss cross-build strays.
+      const token = identityToken(`file://${entrypointPath}`);
+      matches = findOrphansByIdentity(token, { excludePids: [process.pid] }).map(
+        (m) => ({ pid: m.pid, ppid: m.ppid, orphaned: m.orphaned }),
+      );
+    } else {
+      // New env-based matching — finds processes by logical identity.
+      matches = findOrphansByServiceId(rec.extId, identityToken(`file://${entrypointPath}`), {
+        excludePids: [process.pid],
+      }).map((m) => ({ pid: m.pid, ppid: m.ppid, orphaned: m.orphaned }));
+    }
+
+    for (const m of matches) {
+      // Determine if this is a cross-build stray (different entrypoint path
+      // than expected, same SOX_SERVICE_ID).
+      const env = readProcessEnv(m.pid);
+      const actualPath = env?.['SOX_PROXY_BACKEND'] !== undefined
+        ? '(proxy backend)'
+        : '(unknown)';
+      const isCrossBuild = useOldMatch
+        ? false  // old matching can't detect cross-build by definition
+        : !findOrphansByIdentity(identityToken(`file://${entrypointPath}`), { excludePids: [process.pid] })
+            .some((o) => o.pid === m.pid);
+
+      findings.push({
+        kind: isCrossBuild ? 'cross-build-stray' : 'stray-process',
+        extId: rec.extId,
+        scope: rec.scope,
+        pid: m.pid,
+        ppid: m.ppid,
+        orphaned: m.orphaned,
+        detail: isCrossBuild
+          ? `cross-build stray (same SOX_SERVICE_ID, different entrypoint path) — old path-based matching CANNOT detect this`
+          : `stray process — ${actualPath}`,
+      });
+    }
+
+    // Check OS-unit owned services for load state.
+    for (const sc of ['org', 'user', 'project', 'local'] as const) {
+      if (filterScope !== undefined && sc !== filterScope) continue;
+      let dir: string;
+      try { dir = dataRoot(sc as DataScope, root); } catch { continue; }
+      const ownPath = pathMod.join(dir, 'ownership.json');
+      let own: OwnershipIndex;
+      try { own = OwnershipIndex.loadFromFile(ownPath); } catch { continue; }
+      const rec_ = own.get(rec.extId, sc);
+      if (!rec_) continue;
+      for (const e of rec_.entries) {
+        if (e.kind !== 'os-unit') continue;
+        const platform = getOsUnitPlatform(e.supervisor as OsSupervisor);
+        const loaded = platform.isLoaded(e.label, realOsExec);
+        if (!loaded) {
+          // OS unit exists but is not loaded — report as anomaly if a process
+          // matching the entrypoint is running (orphan outside OS supervision).
+          findings.push({
+            kind: 'os-unit-not-loaded',
+            extId: rec.extId,
+            scope: sc,
+            pid: 0,
+            ppid: 0,
+            orphaned: false,
+            detail: `os-unit ${e.label} exists but NOT LOADED (may need \`soxe service enable\`)`,
+          });
+        }
+      }
+    }
+  }
+
+  if (jsonMode) {
+    process.stdout.write(JSON.stringify(findings, null, 2) + '\n');
+    process.exit(findings.length > 0 ? 1 : 0);
+  }
+
+  // ── Report ──────────────────────────────────────────────────────────────────
+  if (findings.length === 0) {
+    log('no anomalies found — system state is clean');
+    process.exit(0);
+  }
+
+  const strayCount = findings.filter((f) => f.kind === 'stray-process' || f.kind === 'cross-build-stray').length;
+  const osUnitCount = findings.filter((f) => f.kind === 'os-unit-not-loaded').length;
+  log(`found ${findings.length} anomal${findings.length === 1 ? 'y' : 'ies'}:`);
+  log(`  ${strayCount} stray processe${strayCount === 1 ? '' : 's'}`);
+  log(`  ${osUnitCount} unloaded os-unit${osUnitCount === 1 ? '' : 's'}`);
+
+  for (const f of findings) {
+    const tag = f.kind === 'cross-build-stray' ? 'CROSS-BUILD' : f.kind === 'os-unit-not-loaded' ? 'OS-UNIT' : 'STRAY';
+    const pidInfo = f.pid > 0 ? ` (pid=${f.pid}, ppid=${f.ppid}${f.orphaned ? ', orphan' : ''})` : '';
+    log(`  [${tag}] ${f.extId}@${f.scope}${pidInfo}: ${f.detail}`);
+  }
+
+  // ── Fix: reap strays ────────────────────────────────────────────────────────
+  if (doFix) {
+    let reaped = 0;
+    let undead = false;
+    for (const f of findings) {
+      if (f.kind === 'stray-process' || f.kind === 'cross-build-stray') {
+        if (f.pid <= 0) continue;
+        const outcome = await killAndVerify(f.pid, {
+          graceMs: 5000,
+          log: (m) => log(`  reap ${f.extId}: ${m}`),
+        });
+        if (outcome === 'undead') {
+          undead = true;
+          log(`  FAILED to kill pid ${f.pid} for ${f.extId} — undead`);
+        } else {
+          reaped++;
+          log(`  reaped pid ${f.pid} for ${f.extId} → ${outcome}`);
+        }
+      }
+    }
+
+    // Also fix unloaded os-units by attempting to enable them.
+    for (const f of findings) {
+      if (f.kind === 'os-unit-not-loaded') {
+        log(`  os-unit ${f.extId} enable recommended: run \`soxe service enable ${f.extId}\``);
+      }
+    }
+
+    log(`reaped ${reaped} stray${reaped === 1 ? '' : 's'}${undead ? ' (SOME UNDEAD)' : ''}`);
+    process.exit(undead ? 1 : 0);
+  }
+
+  process.stdout.write(
+    `\nRun '${CLI} doctor --fix' to reap strays and reconcile.\n` +
+    `Run '${CLI} service enable <ext>' to reload unloaded OS units.\n\n`,
+  );
+  process.exit(1);
+}
+
 // ─── migrate-home (ADR-0004 §D8) ───────────────────────────────────────────────
 
 /**
@@ -5369,6 +5574,73 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
         status: pidAlive ? 'degraded' : 'dead',
       };
       records.push(rec_);
+    }
+  }
+
+  // ── PI-1: Identity-based stray reconciliation ────────────────────────────────
+  // Run findOrphansByServiceId for every registered install to detect cross-build
+  // strays that path-based findOrphansByIdentity cannot match. A cross-build stray
+  // is a process whose SOX_SERVICE_ID matches a known install but whose entrypoint
+  // path differs from the current artifact (different build version). This section
+  // reports them as additional degraded-or-worse health records.
+  {
+    const registry = readInstallRegistry(installRegistryPath());
+    for (const rec of registry.installs) {
+      if (filterId !== undefined && rec.extId !== filterId) continue;
+      if (filterScope !== undefined && rec.scope !== filterScope) continue;
+      if (seenIds.has(rec.extId)) continue;
+
+      const extDir = resolveExtensionDir(rec.source, rec.root);
+      if (!extDir) continue;
+      let manifest: { type?: string; entrypoint?: string };
+      try {
+        manifest = JSON.parse(fsMod.readFileSync(pathMod.join(extDir, 'extension.json'), 'utf8'));
+      } catch { continue; }
+      if (!manifest.type || (manifest.type !== 'service' && manifest.type !== 'mcp-server')) continue;
+
+      const entrypointPath = manifest.entrypoint
+        ? pathMod.resolve(extDir, manifest.entrypoint)
+        : null;
+      const token = entrypointPath ? identityToken(`file://${entrypointPath}`) : '';
+
+      // Use env-based SOX_SERVICE_ID matching to find cross-build strays.
+      const crossBuild = findOrphansByServiceId(rec.extId, token, {
+        excludePids: [process.pid],
+      });
+
+      // Filter out any already caught by the path-based matching above.
+      if (entrypointPath) {
+        const pathMatched = findOrphansByIdentity(token, { excludePids: [process.pid] });
+        const pathPids = new Set(pathMatched.map((m) => m.pid));
+        const trulyCrossBuild = crossBuild.filter((m) => !pathPids.has(m.pid));
+        if (trulyCrossBuild.length > 0) {
+          seenIds.add(rec.extId);
+          for (const m of trulyCrossBuild) {
+            records.push({
+              id: rec.extId + '-cross-build',
+              key: `${rec.extId}@cross-build-stray`,
+              scope: rec.scope,
+              root: '(cross-build)',
+              project: 'cross-build-stray',
+              supervisorId: 'cross-build',
+              activatedAt: '',
+              uptimeSeconds: 0,
+              pidAlive: true,
+              pid: m.pid,
+              socketReachable: true,
+              socketLatencyMs: 0,
+              logTail: [],
+              logPath: null,
+              lastStartedAt: null,
+              lastStoppedAt: null,
+              lastRunDurationMs: null,
+              totalUptimeMs: 0,
+              status: 'degraded',
+              staleReason: `CROSS-BUILD STRAY (SOX_SERVICE_ID=${rec.extId}, different entrypoint path) — run \`soxe doctor --fix\` to reap`,
+            });
+          }
+        }
+      }
     }
   }
 

@@ -107,6 +107,8 @@ export {
   pidAlive,
   killAndVerify,
   findOrphansByIdentity,
+  findOrphansByServiceId,
+  readProcessEnv,
   argvContainsToken,
   snapshotProcesses,
   identityToken,
