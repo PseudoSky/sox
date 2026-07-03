@@ -36,18 +36,44 @@
 
 import type { ToolDefinition, ToolResult } from '@adhd/sox-mcp-runtime';
 import { defineTool, serve } from '@adhd/sox-mcp-runtime';
-import { buildFiltersClause, clusterStats, clusterSubset, dropSubsetLens, ENRICH_VERSION, enqueueEnrich, getActiveEmbedModel, getEmbedState, getLastEmbedError, listSubsetLenses, memoryRecall, memoryUpdate, memoryWrite, openDb, runBatchEnrich, SOCKET_PATH, warmupEmbed } from '@adhd/sox-memory-core';
-import type { MemoryFilter } from '@adhd/sox-memory-core';
+import {
+  buildFiltersClause,
+  communityUidForRowid,
+  expandTilde,
+  getActiveEmbedModel,
+  getDb,
+  getEmbedState,
+  getLastEmbedError,
+  memoryCurate,
+  memoryGetEntityEpisodes,
+  memoryGetNearDuplicates,
+  memoryGetRelated,
+  memoryGetSessionState,
+  memoryGetStats,
+  memoryGetSupersessionChain,
+  memoryInvalidate,
+  memoryLinkNode,
+  memoryListEntities,
+  memoryListProjects,
+  memoryListTopics,
+  memoryRecall,
+  memorySaveSessionState,
+  memorySearchEntities,
+  memoryUpdate,
+  memoryWrite,
+  rowidsToUids,
+  runBatchEnrich,
+  SOCKET_PATH,
+  supersedesUidForRowid,
+  warmupEmbed,
+  isSuperseded,
+} from '@adhd/sox-memory-core';
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { monotonicFactory } from 'ulid';
-
-const ulid = monotonicFactory();
-
 // ─── ADR-0003: content-addressed self-identity ───────────────────────────────
 //
 // The server's identity is `id` + the sha256 content address of its RUNNING
@@ -125,14 +151,6 @@ function readHostCompat(entry: string): string {
 // This is a minimal, dependency-free re-implementation of the policy-core
 // contract ([shape:policy]) sufficient for the spawned child. It is parity-tested
 // against the host-runtime version in permission-guard.spec.ts [mcp-path-guard.5].
-
-/** Expand a leading ~/ to the user's home directory. */
-function expandTilde(p: string): string {
-  if (p === '~' || p.startsWith('~/')) {
-    return os.homedir() + p.slice(1);
-  }
-  return p;
-}
 
 /**
  * Build a regex from a glob pattern.
@@ -248,18 +266,9 @@ function getPolicy(): Policy {
   return compilePolicyFromEnv();
 }
 
-// ─── Active DB connections ────────────────────────────────────────────────────
+// ─── Active DB paths (tracked for fallback enrichment pass) ────────────────────
 
-// Active DB connections keyed by dbPath
-const dbCache = new Map<string, Database.Database>();
-
-function getDb(dbPath: string): Database.Database {
-  const cached = dbCache.get(dbPath);
-  if (cached) return cached;
-  const db = openDb(dbPath);
-  dbCache.set(dbPath, db);
-  return db;
-}
+const openedPaths = new Set<string>();
 
 export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
@@ -692,68 +701,8 @@ function parseTags(raw: string | null | undefined): string[] {
   return [];
 }
 
-// buildFiltersClause is now owned by @adhd/sox-memory-core (imported above).
-// The local server still uses MemoryFilter for the recluster case type-cast.
-
-/** Resolve episode rowids → uids, preserving the input order. */
-function rowidsToUids(db: Database.Database, rowids: number[]): string[] {
-  if (rowids.length === 0) return [];
-  const ph = rowids.map(() => '?').join(',');
-  const rows = db
-    .prepare<unknown[], { rowid: number; uid: string }>(
-      `SELECT rowid, uid FROM node WHERE rowid IN (${ph})`,
-    )
-    .all(...rowids);
-  const byRowid = new Map(rows.map((r) => [r.rowid, r.uid]));
-  return rowids.map((r) => byRowid.get(r)).filter((u): u is string => typeof u === 'string');
-}
-
-/**
- * Resolve the GLOBAL MEMBER_OF community uid for an episode rowid.
- *
- * Defaults to `cluster_scope.kind='global'` (treating legacy NULL scope as global)
- * so that persisted subset lenses never leak into recall's `community_uid` field.
- * An episode may be MEMBER_OF both a global and one or more subset communities —
- * this function always returns the global one.
- */
-function communityUidForRowid(db: Database.Database, rowid: number): string | null {
-  const row = db
-    .prepare<[number], { uid: string }>(
-      `SELECT n2.uid FROM edge e
-       JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.t_invalid IS NULL
-         AND (json_extract(n2.meta, '$.cluster_scope.kind') IS NULL
-              OR json_extract(n2.meta, '$.cluster_scope.kind') = 'global')
-       WHERE e.src = ? AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
-       ORDER BY e.rowid ASC
-       LIMIT 1`,
-    )
-    .get(rowid);
-  return row?.uid ?? null;
-}
-
-/** Resolve the SUPERSEDES uid for an episode rowid (i.e., what episode this supersedes). */
-function supersedesUidForRowid(db: Database.Database, rowid: number): string | null {
-  // "This episode supersedes dst": edge where src=rowid, rel=SUPERSEDES
-  const row = db
-    .prepare<[number], { uid: string }>(
-      `SELECT n.uid FROM edge e
-       JOIN node n ON n.rowid = e.dst AND n.t_invalid IS NULL
-       WHERE e.src = ? AND e.rel = 'SUPERSEDES' AND e.t_expired IS NULL
-       LIMIT 1`,
-    )
-    .get(rowid);
-  return row?.uid ?? null;
-}
-
-/** Check if an episode is superseded (some other episode's SUPERSEDES edge points to it). */
-function isSuperseded(db: Database.Database, rowid: number): boolean {
-  const row = db
-    .prepare<[number], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM edge WHERE dst = ? AND rel = 'SUPERSEDES' AND t_expired IS NULL`,
-    )
-    .get(rowid);
-  return (row?.cnt ?? 0) > 0;
-}
+// rowidsToUids, communityUidForRowid, supersedesUidForRowid, isSuperseded,
+// buildFiltersClause are imported from @adhd/sox-memory-core above.
 
 /**
  * BL-55: the canonical single memory store. Used when neither a per-call `db_path`
@@ -839,6 +788,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
   if (denied) return denied;
 
   const db = getDb(dbPath);
+  openedPaths.add(dbPath);
 
   switch (name) {
     case 'memory_write': {
@@ -1081,51 +1031,27 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_search_entities': {
-      const query = args['query'] as string;
-      const limit = (args['limit'] as number) ?? 10;
-      const rows = db
-        .prepare(
-          `SELECT uid, name, kind, summary, importance FROM node
-           WHERE kind = 'entity' AND (name LIKE ? OR summary LIKE ?)
-             AND t_invalid IS NULL
-           ORDER BY importance DESC LIMIT ?`,
-        )
-        .all(`%${query}%`, `%${query}%`, limit);
+      const result = memorySearchEntities(db, {
+        query: args['query'] as string,
+        entity_type: args['entity_type'] as string | undefined,
+        limit: (args['limit'] as number) ?? 10,
+      });
       return {
-        content: [{ type: 'text', text: JSON.stringify({ entities: rows }) }],
+        content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
     case 'memory_get_session_state': {
-      const sessionId = args['session_id'] as string;
-      const row = db
-        .prepare(
-          `SELECT resume_state FROM node WHERE kind = 'session' AND session_id = ? AND t_invalid IS NULL`,
-        )
-        .get(sessionId) as { resume_state: string | null } | undefined;
-      const state = row?.resume_state ? (JSON.parse(row.resume_state) as unknown) : null;
+      const result = await memoryGetSessionState(db, args);
       return {
-        content: [{ type: 'text', text: JSON.stringify({ state }) }],
+        content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
     case 'memory_save_session_state': {
-      const sessionId = args['session_id'] as string;
-      const state = JSON.stringify(args['state']);
-      const now = new Date().toISOString();
-      const uid = `session-${sessionId}-${now}`;
-      // Upsert: close old session node, insert new one
-      db.transaction(() => {
-        db.prepare(
-          `UPDATE node SET t_invalid = ? WHERE kind = 'session' AND session_id = ? AND t_invalid IS NULL`,
-        ).run(now, sessionId);
-        db.prepare(
-          `INSERT INTO node (uid, kind, session_id, resume_state, t_created, t_valid)
-           VALUES (?, 'session', ?, ?, ?, ?)`,
-        ).run(uid, sessionId, state, now, now);
-      })();
+      const result = await memorySaveSessionState(db, args);
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: true }) }],
+        content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
@@ -1134,7 +1060,12 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       const communityUidArg = args['community_uid'] as string | undefined;
       const level = (args['level'] as number) ?? 0;
 
-      // OQ-1: community_uid takes precedence; both supplied is an error per contract.
+      if (!entityUid && !communityUidArg) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING_INPUT', message: 'Supply entity_uid or community_uid' }) }],
+        };
+      }
       if (entityUid && communityUidArg) {
         return {
           isError: true,
@@ -1142,27 +1073,14 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         };
       }
 
-      interface CommunityRow {
-        rowid: number; uid: string; name: string | null; meta: string | null; t_created: string;
-      }
-
-      let communityRow: CommunityRow | undefined;
-
+      // Resolve community rowid
+      let commUid: string;
       if (communityUidArg) {
-        // Fetch community directly by UID
-        communityRow = db
-          .prepare<[string], CommunityRow>(
-            `SELECT rowid, uid, name, meta, t_created FROM node
-             WHERE uid = ? AND kind = 'community' AND t_invalid IS NULL`,
-          )
-          .get(communityUidArg);
-      } else if (entityUid) {
-        // Find community via MEMBER_OF edge — scoped to GLOBAL communities by default.
-        // A subset lens on the same episode must not shadow the global community lookup.
-        communityRow = db
-          .prepare<[number, string], CommunityRow>(
-            `SELECT n2.rowid, n2.uid, n2.name, n2.meta, n2.t_created
-             FROM node n1
+        commUid = communityUidArg;
+      } else {
+        const viaMemberOf = db
+          .prepare<[number, string], { uid: string }>(
+            `SELECT n2.uid FROM node n1
              JOIN edge e ON e.src = n1.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
              JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.level = ? AND n2.t_invalid IS NULL
                AND (json_extract(n2.meta, '$.cluster_scope.kind') IS NULL
@@ -1170,124 +1088,86 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
              WHERE n1.uid = ? AND n1.t_invalid IS NULL
              LIMIT 1`,
           )
-          .get(level, entityUid);
-      } else {
+          .get(level, entityUid!);
+        if (!viaMemberOf) {
+          return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', entity_uid: entityUid }) }] };
+        }
+        commUid = viaMemberOf.uid;
+      }
+
+      const commRow = db
+        .prepare<[string], { rowid: number; uid: string; name: string | null; meta: string | null; t_created: string }>(
+          `SELECT rowid, uid, name, meta, t_created FROM node
+           WHERE uid = ? AND kind = 'community' AND t_invalid IS NULL`,
+        )
+        .get(commUid);
+      if (!commRow) {
         return {
           isError: true,
-          content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING_INPUT', message: 'Supply entity_uid or community_uid' }) }],
+          content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', ...(communityUidArg ? { community_uid: communityUidArg } : { entity_uid: entityUid }) }) }],
         };
       }
 
-      if (!communityRow) {
-        return {
-          isError: true,
-          content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', entity_uid: entityUid, community_uid: communityUidArg }) }],
-        };
-      }
-
-      // Parse community meta for quality metrics
       let memberCount = 0;
       let meanIntraSim = 0;
-      let centroidEpisodeUid = '';
-      if (communityRow.meta) {
+      if (commRow.meta) {
         try {
-          const m = JSON.parse(communityRow.meta) as {
-            mean_intra_sim?: number;
-            centroid_rowid?: number;
-            member_count?: number;
-          };
+          const m = JSON.parse(commRow.meta) as { mean_intra_sim?: number; member_count?: number };
           if (typeof m.mean_intra_sim === 'number') meanIntraSim = m.mean_intra_sim;
           if (typeof m.member_count === 'number') memberCount = m.member_count;
-          if (typeof m.centroid_rowid === 'number') {
-            const centRow = db
-              .prepare<[number], { uid: string }>(`SELECT uid FROM node WHERE rowid = ?`)
-              .get(m.centroid_rowid);
-            if (centRow) centroidEpisodeUid = centRow.uid;
-          }
-        } catch { /* malformed meta */ }
+        } catch { /* malformed */ }
       }
 
-      // Fetch member episodes via MEMBER_OF edges
-      const memberRows = db
-        .prepare<[number], {
-          uid: string; summary: string | null; topic: string | null;
-          importance: number; t_created: string; project_path: string | null;
-          tags: string | null;
-        }>(
-          `SELECT n.uid, n.summary, n.topic, n.importance, n.t_created, n.project_path, n.tags
+      const members = db
+        .prepare<[number], { uid: string; name: string | null; summary: string | null; topic: string | null; importance: number; t_created: string; project_path: string | null; tags: string | null }>(
+          `SELECT n.uid, n.name, n.summary, n.topic, n.importance, n.t_created, n.project_path, n.tags
            FROM edge e
-           JOIN node n ON n.rowid = e.src AND n.t_invalid IS NULL
-           WHERE e.dst = ? AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+           JOIN node n ON n.rowid = e.src
+           WHERE e.dst = ? AND e.rel = 'MEMBER_OF'
+             AND e.t_invalid IS NULL AND n.t_invalid IS NULL
            ORDER BY n.importance DESC`,
         )
-        .all(communityRow.rowid);
-
-      if (memberCount === 0) memberCount = memberRows.length;
-
-      const communityOut = {
-        uid: communityRow.uid,
-        label: communityRow.name ?? communityRow.uid,
-        member_count: memberCount,
-        mean_intra_sim: meanIntraSim,
-        centroid_episode_uid: centroidEpisodeUid,
-        t_created: communityRow.t_created,
-      };
-
-      const members = memberRows.map((m) => ({
-        uid: m.uid,
-        summary: m.summary ?? null,
-        topic: m.topic ?? null,
-        importance: m.importance,
-        t_created: m.t_created,
-        project_path: m.project_path ?? null,
-        tags: parseTags(m.tags),
-      }));
-
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ community: communityOut, members }) }],
-      };
-    }
-
-    case 'memory_invalidate': {
-      const claimUid = args['claim_uid'] as string;
-      const reason = args['reason'] as string;
-      const tTransition = (args['t_transition'] as string) ?? new Date().toISOString();
-      const replacementUid = args['replacement_uid'] as string | undefined;
-
-      const claim = db
-        .prepare(`SELECT rowid FROM node WHERE uid = ? AND t_invalid IS NULL`)
-        .get(claimUid) as { rowid: number } | undefined;
-      if (!claim) {
-        return {
-          isError: true,
-          content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', claim_uid: claimUid }) }],
-        };
-      }
-
-      let supersedgesEdgeUid: string | undefined;
-      db.transaction(() => {
-        // Close t_invalid
-        db.prepare(`UPDATE node SET t_invalid = ? WHERE uid = ?`).run(tTransition, claimUid);
-
-        if (replacementUid) {
-          const replacement = db
-            .prepare(`SELECT rowid FROM node WHERE uid = ? AND t_invalid IS NULL`)
-            .get(replacementUid) as { rowid: number } | undefined;
-          if (replacement) {
-            supersedgesEdgeUid = `sup-${Date.now()}`;
-            db.prepare(
-              `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
-               VALUES (?, ?, 'SUPERSEDES', 'user_asserted', ?, ?)`,
-            ).run(replacement.rowid, claim.rowid, tTransition, JSON.stringify({ reason }));
-          }
-        }
-      })();
+        .all(commRow.rowid);
+      if (memberCount === 0) memberCount = members.length;
 
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({ ok: true, supersedes_edge_uid: supersedgesEdgeUid }),
+          text: JSON.stringify({
+            community: {
+              uid: commRow.uid,
+              label: commRow.name ?? commRow.uid,
+              member_count: memberCount,
+              mean_intra_sim: meanIntraSim,
+              centroid_episode_uid: '',
+              t_created: commRow.t_created,
+            },
+            members: members.map((m) => ({
+              uid: m.uid,
+              summary: m.summary ?? null,
+              topic: m.topic ?? null,
+              importance: m.importance,
+              t_created: m.t_created,
+              project_path: m.project_path ?? null,
+              tags: (() => { try { return m.tags ? JSON.parse(m.tags) as string[] : []; } catch { return []; } })(),
+            })),
+          }),
         }],
+      };
+    }
+
+    case 'memory_invalidate': {
+      const result = memoryInvalidate(db, {
+        claim_uid: args['claim_uid'] as string,
+        reason: args['reason'] as string,
+        t_transition: args['t_transition'] as string | undefined,
+        replacement_uid: args['replacement_uid'] as string | undefined,
+      });
+      if ('code' in result) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
@@ -1321,1021 +1201,89 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_link': {
-      const VALID_RELS = ['MENTIONS', 'SUPPORTS', 'RELATES_TO', 'DERIVED_FROM', 'SUPERSEDES', 'SAME_AS', 'ASSIGNED_TO'];
-      const rel = args['rel'] as string;
-      if (!VALID_RELS.includes(rel)) {
-        return { isError: true, content: [{ type: 'text', text: `Unknown rel: ${rel}` }] };
+      const result = await memoryLinkNode(db, args);
+      if (result.isError) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
-      const srcUid = args['src_uid'] as string;
-      const dstUid = args['dst_uid'] as string;
-      const srcRow = db.prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?').get(srcUid);
-      const dstRow = db.prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?').get(dstUid);
-      if (!srcRow) {
-        return { isError: true, content: [{ type: 'text', text: `src_uid not found: ${srcUid}` }] };
-      }
-      if (!dstRow) {
-        return { isError: true, content: [{ type: 'text', text: `dst_uid not found: ${dstUid}` }] };
-      }
-      const now = new Date().toISOString();
-      const edgeUid = `edge-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      db.prepare(
-        `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
-         SELECT ?, ?, ?, 'user_asserted', ?, ?
-         WHERE NOT EXISTS (SELECT 1 FROM edge WHERE src=? AND dst=? AND rel=? AND t_expired IS NULL)`,
-      ).run(
-        srcRow.rowid, dstRow.rowid, rel, now,
-        JSON.stringify(args['meta'] ?? {}),
-        srcRow.rowid, dstRow.rowid, rel,
-      );
       return {
-        content: [{ type: 'text', text: JSON.stringify({ edge_uid: edgeUid }) }],
+        content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
     // ── P4 NEW TOOL HANDLERS ──────────────────────────────────────────────────
 
     case 'memory_topics': {
-      const projectPath = args['project_path'] as string | undefined;
-      const search = args['search'] as string | undefined;
-      const sortBy = (args['sort_by'] as string | undefined) ?? 'episode_count';
-      const limit = Math.min((args['limit'] as number | undefined) ?? 20, 200);
-      const offset = (args['offset'] as number | undefined) ?? 0;
-
-      const orderMap: Record<string, string> = {
-        episode_count: 'episode_count DESC',
-        avg_importance: 'avg_importance DESC',
-        last_written: 'last_written DESC',
-      };
-      const orderClause = orderMap[sortBy] ?? 'episode_count DESC';
-
-      const extraFilters: string[] = [];
-      const extraParams: unknown[] = [];
-
-      if (projectPath) {
-        extraFilters.push('AND n.project_path = ?');
-        extraParams.push(projectPath);
-      }
-      if (search) {
-        extraFilters.push('AND n.topic LIKE ?');
-        extraParams.push(`%${search}%`);
-      }
-
-      const extraSql = extraFilters.join(' ');
-
-      // Total count
-      const countRow = db
-        .prepare<unknown[], { cnt: number }>(
-          `SELECT COUNT(DISTINCT n.topic) AS cnt
-           FROM node n
-           WHERE n.kind = 'episode' AND n.t_invalid IS NULL AND n.topic IS NOT NULL
-           ${extraSql}`,
-        )
-        .get(...extraParams);
-      const total = countRow?.cnt ?? 0;
-
-      // Per-topic aggregate
-      const rows = db
-        .prepare<unknown[], {
-          topic: string;
-          episode_count: number;
-          avg_importance: number;
-          last_written: string;
-        }>(
-          `SELECT n.topic AS topic,
-                  COUNT(*) AS episode_count,
-                  AVG(n.importance) AS avg_importance,
-                  MAX(n.t_created) AS last_written
-           FROM node n
-           WHERE n.kind = 'episode' AND n.t_invalid IS NULL AND n.topic IS NOT NULL
-           ${extraSql}
-           GROUP BY n.topic
-           ORDER BY ${orderClause}
-           LIMIT ? OFFSET ?`,
-        )
-        .all(...extraParams, limit, offset);
-
-      // Enrich each topic with community_uid
-      const topics = rows.map((r) => {
-        // Find a community uid that has at least one MEMBER_OF member with this topic
-        const commRow = db
-          .prepare<[string], { uid: string }>(
-            `SELECT n2.uid FROM node n1
-             JOIN edge e ON e.src = n1.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
-             JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.t_invalid IS NULL
-             WHERE n1.kind = 'episode' AND n1.t_invalid IS NULL AND n1.topic = ?
-             LIMIT 1`,
-          )
-          .get(r.topic);
-
-        return {
-          topic: r.topic,
-          episode_count: r.episode_count,
-          avg_importance: r.avg_importance,
-          last_written: r.last_written,
-          community_uid: commRow?.uid ?? null,
-          has_community: commRow !== undefined,
-        };
-      });
-
+      const result = memoryListTopics(db, args);
       return {
-        content: [{ type: 'text', text: JSON.stringify({ topics, total }) }],
+        content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
     case 'memory_list_projects': {
-      const limit = Math.min((args['limit'] as number | undefined) ?? 20, 200);
-      const offset = (args['offset'] as number | undefined) ?? 0;
-
-      const countRow = db
-        .prepare<[], { cnt: number }>(
-          `SELECT COUNT(DISTINCT project_path) AS cnt
-           FROM node
-           WHERE kind = 'episode' AND t_invalid IS NULL AND project_path IS NOT NULL`,
-        )
-        .get();
-      const total = countRow?.cnt ?? 0;
-
-      const rows = db
-        .prepare<[number, number], {
-          project_path: string;
-          episode_count: number;
-          last_written: string;
-        }>(
-          `SELECT project_path, COUNT(*) AS episode_count, MAX(t_created) AS last_written
-           FROM node
-           WHERE kind = 'episode' AND t_invalid IS NULL AND project_path IS NOT NULL
-           GROUP BY project_path
-           ORDER BY last_written DESC
-           LIMIT ? OFFSET ?`,
-        )
-        .all(limit, offset);
-
+      const result = memoryListProjects(db, args);
       return {
-        content: [{ type: 'text', text: JSON.stringify({ projects: rows, total }) }],
+        content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
     case 'memory_list_entities': {
-      const projectPath = args['project_path'] as string | undefined;
-      const topicFilter = args['topic'] as string | undefined;
-      const search = args['search'] as string | undefined;
-      const limit = Math.min((args['limit'] as number | undefined) ?? 20, 200);
-      const offset = (args['offset'] as number | undefined) ?? 0;
-
-      // Build episode filter for project_path and topic
-      const epFilters: string[] = [];
-      const epParams: unknown[] = [];
-      if (projectPath) {
-        epFilters.push('ep.project_path = ?');
-        epParams.push(projectPath);
-      }
-      if (topicFilter) {
-        epFilters.push('ep.topic = ?');
-        epParams.push(topicFilter);
-      }
-      const epFilterSql = epFilters.length > 0 ? 'AND ' + epFilters.join(' AND ') : '';
-
-      const nameFilter = search ? 'AND e_node.name LIKE ?' : '';
-      if (search) epParams.push(`%${search}%`);
-
-      // Count distinct entities
-      const countSql = `
-        SELECT COUNT(DISTINCT e_node.rowid) AS cnt
-        FROM node e_node
-        WHERE e_node.kind = 'entity' AND e_node.t_invalid IS NULL
-        ${nameFilter}
-        AND EXISTS (
-          SELECT 1 FROM edge ment
-          JOIN node ep ON ep.rowid = ment.src AND ep.kind = 'episode' AND ep.t_invalid IS NULL
-          WHERE ment.dst = e_node.rowid AND ment.rel = 'MENTIONS' AND ment.t_expired IS NULL
-          ${epFilterSql}
-        )`;
-
-      const countRow = db
-        .prepare<unknown[], { cnt: number }>(countSql)
-        .get(...epParams);
-      const total = countRow?.cnt ?? 0;
-
-      // Fetch entities with mention count and time range
-      const rowSql = `
-        SELECT e_node.uid,
-               e_node.name,
-               COUNT(ment.rowid) AS mention_count,
-               MIN(ep.t_created)  AS first_seen,
-               MAX(ep.t_created)  AS last_seen
-        FROM node e_node
-        JOIN edge ment ON ment.dst = e_node.rowid AND ment.rel = 'MENTIONS' AND ment.t_expired IS NULL
-        JOIN node ep   ON ep.rowid = ment.src AND ep.kind = 'episode' AND ep.t_invalid IS NULL
-        WHERE e_node.kind = 'entity' AND e_node.t_invalid IS NULL
-        ${nameFilter}
-        ${epFilterSql}
-        GROUP BY e_node.rowid
-        ORDER BY mention_count DESC
-        LIMIT ? OFFSET ?`;
-
-      const rows = db
-        .prepare<unknown[], {
-          uid: string; name: string | null; mention_count: number;
-          first_seen: string; last_seen: string;
-        }>(rowSql)
-        .all(...epParams, limit, offset);
-
-      const entities = rows.map((r) => ({
-        uid: r.uid,
-        name: r.name ?? '',
-        mention_count: r.mention_count,
-        first_seen: r.first_seen,
-        last_seen: r.last_seen,
-      }));
-
+      const result = await memoryListEntities(db, args);
       return {
-        content: [{ type: 'text', text: JSON.stringify({ entities, total }) }],
+        content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
     case 'memory_entity_episodes': {
-      const entityUid = args['entity_uid'] as string | undefined;
-      const entityName = args['entity_name'] as string | undefined;
-      const limit = Math.min((args['limit'] as number | undefined) ?? 20, 200);
-      const offset = (args['offset'] as number | undefined) ?? 0;
-
-      // Resolve entity uid
-      let resolvedEntityUid = entityUid;
-      let resolvedEntityName = '';
-
-      if (!resolvedEntityUid && entityName) {
-        // Case-insensitive exact match (OQ-2: return error on ambiguity)
-        const matchRows = db
-          .prepare<[string], { uid: string; name: string }>(
-            `SELECT uid, name FROM node WHERE kind = 'entity' AND LOWER(name) = LOWER(?) AND t_invalid IS NULL`,
-          )
-          .all(entityName);
-        if (matchRows.length === 0) {
-          return {
-            isError: true,
-            content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', entity_name: entityName }) }],
-          };
-        }
-        if (matchRows.length > 1) {
-          return {
-            isError: true,
-            content: [{ type: 'text', text: JSON.stringify({ code: 'E_AMBIGUOUS', entity_name: entityName, candidates: matchRows.map((r) => r.uid) }) }],
-          };
-        }
-        resolvedEntityUid = matchRows[0]!.uid;
-        resolvedEntityName = matchRows[0]!.name ?? entityName;
+      const result = await memoryGetEntityEpisodes(db, args);
+      if (result.code) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
-
-      if (!resolvedEntityUid) {
-        return {
-          isError: true,
-          content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING_INPUT', message: 'Supply entity_uid or entity_name' }) }],
-        };
-      }
-
-      // Fetch entity name if not already resolved
-      if (!resolvedEntityName) {
-        const nameRow = db
-          .prepare<[string], { name: string | null }>(`SELECT name FROM node WHERE uid = ? LIMIT 1`)
-          .get(resolvedEntityUid);
-        resolvedEntityName = nameRow?.name ?? resolvedEntityUid;
-      }
-
-      const entityRow = db
-        .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ? LIMIT 1`)
-        .get(resolvedEntityUid);
-
-      if (!entityRow) {
-        return {
-          isError: true,
-          content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', entity_uid: resolvedEntityUid }) }],
-        };
-      }
-
-      const countRow = db
-        .prepare<[number], { cnt: number }>(
-          `SELECT COUNT(*) AS cnt
-           FROM edge e
-           JOIN node ep ON ep.rowid = e.src AND ep.kind = 'episode' AND ep.t_invalid IS NULL
-           WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_expired IS NULL`,
-        )
-        .get(entityRow.rowid);
-      const total = countRow?.cnt ?? 0;
-
-      const rows = db
-        .prepare<[number, number, number], {
-          rowid: number; uid: string; content: string | null; summary: string | null;
-          topic: string | null; tags: string | null; project_path: string | null;
-          importance: number; t_created: string; agent_id: string | null;
-          t_invalid: string | null;
-        }>(
-          `SELECT ep.rowid, ep.uid, ep.content, ep.summary, ep.topic, ep.tags, ep.project_path,
-                  ep.importance, ep.t_created, ep.agent_id, ep.t_invalid
-           FROM edge e
-           JOIN node ep ON ep.rowid = e.src AND ep.kind = 'episode' AND ep.t_invalid IS NULL
-           WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_expired IS NULL
-           ORDER BY ep.importance DESC
-           LIMIT ? OFFSET ?`,
-        )
-        .all(entityRow.rowid, limit, offset);
-
-      const episodes = rows.map((r) => ({
-        uid: r.uid,
-        content: r.content,
-        summary: r.summary ?? null,
-        topic: r.topic ?? null,
-        tags: parseTags(r.tags),
-        project_path: r.project_path ?? null,
-        importance: r.importance,
-        t_created: r.t_created,
-        agent_id: r.agent_id ?? null,
-        is_superseded: isSuperseded(db, r.rowid),
-        supersedes_uid: supersedesUidForRowid(db, r.rowid),
-        community_uid: communityUidForRowid(db, r.rowid),
-      }));
-
       return {
-        content: [{
-          type: 'text', text: JSON.stringify({
-            entity: { uid: resolvedEntityUid, name: resolvedEntityName },
-            episodes,
-            total,
-          })
-        }],
+        content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
     case 'memory_related': {
-      const uid = args['uid'] as string;
-      const relFilter = args['rel'] as string[] | undefined;
-      const limit = Math.min((args['limit'] as number | undefined) ?? 20, 100);
-
-      const sourceRow = db
-        .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ? LIMIT 1`)
-        .get(uid);
-
-      if (!sourceRow) {
-        return {
-          isError: true,
-          content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', uid }) }],
-        };
+      const result = await memoryGetRelated(db, args);
+      if (result.code) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
-
-      // Build rel IN clause
-      const relClause = relFilter && relFilter.length > 0
-        ? `AND e.rel IN (${relFilter.map(() => '?').join(',')})`
-        : '';
-      const relParams = relFilter && relFilter.length > 0 ? relFilter : [];
-
-      // Outbound edges (src = source)
-      const outRows = db
-        .prepare<unknown[], {
-          rowid: number; uid: string; content: string | null; summary: string | null;
-          topic: string | null; tags: string | null; project_path: string | null;
-          importance: number; t_created: string; agent_id: string | null;
-          t_invalid: string | null; rel: string; weight: number | null;
-        }>(
-          `SELECT n.rowid, n.uid, n.content, n.summary, n.topic, n.tags, n.project_path,
-                  n.importance, n.t_created, n.agent_id, n.t_invalid,
-                  e.rel, e.weight
-           FROM edge e
-           JOIN node n ON n.rowid = e.dst AND n.t_invalid IS NULL
-           WHERE e.src = ? AND e.t_expired IS NULL ${relClause}
-           LIMIT ?`,
-        )
-        .all(sourceRow.rowid, ...relParams, limit);
-
-      // Inbound edges (dst = source)
-      const inRows = db
-        .prepare<unknown[], {
-          rowid: number; uid: string; content: string | null; summary: string | null;
-          topic: string | null; tags: string | null; project_path: string | null;
-          importance: number; t_created: string; agent_id: string | null;
-          t_invalid: string | null; rel: string; weight: number | null;
-        }>(
-          `SELECT n.rowid, n.uid, n.content, n.summary, n.topic, n.tags, n.project_path,
-                  n.importance, n.t_created, n.agent_id, n.t_invalid,
-                  e.rel, e.weight
-           FROM edge e
-           JOIN node n ON n.rowid = e.src AND n.t_invalid IS NULL
-           WHERE e.dst = ? AND e.t_expired IS NULL ${relClause}
-           LIMIT ?`,
-        )
-        .all(sourceRow.rowid, ...relParams, limit);
-
-      const toEdge = (r: typeof outRows[0], direction: 'outbound' | 'inbound') => ({
-        episode: {
-          uid: r.uid,
-          content: r.content,
-          summary: r.summary ?? null,
-          topic: r.topic ?? null,
-          tags: parseTags(r.tags),
-          project_path: r.project_path ?? null,
-          importance: r.importance,
-          t_created: r.t_created,
-          agent_id: r.agent_id ?? null,
-          is_superseded: isSuperseded(db, r.rowid),
-          supersedes_uid: supersedesUidForRowid(db, r.rowid),
-          community_uid: communityUidForRowid(db, r.rowid),
-        },
-        rel: r.rel,
-        weight: r.weight ?? 1.0,
-        direction,
-      });
-
-      const edges = [
-        ...outRows.map((r) => toEdge(r, 'outbound')),
-        ...inRows.map((r) => toEdge(r, 'inbound')),
-      ].slice(0, limit);
-
       return {
-        content: [{ type: 'text', text: JSON.stringify({ source_uid: uid, edges }) }],
+        content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
     case 'memory_supersession_chain': {
-      const uid = args['uid'] as string;
-
-      // Walk the SUPERSEDES edges to build the full chain.
-      // Edge convention (from memory_invalidate): new.rowid → old.rowid with rel=SUPERSEDES.
-      // So "uid_a supersedes uid_b" = edge: src=uid_a, dst=uid_b.
-
-      const allRows = new Map<string, { uid: string; t_created: string; t_invalid: string | null }>();
-
-      // Collect all nodes in the chain via BFS from the given uid
-      const queue: string[] = [uid];
-      const visited = new Set<string>();
-
-      while (queue.length > 0) {
-        const current = queue.shift()!;
-        if (visited.has(current)) continue;
-        visited.add(current);
-
-        const row = db
-          .prepare<[string], { uid: string; t_created: string; t_invalid: string | null; rowid: number }>(
-            `SELECT uid, t_created, t_invalid, rowid FROM node WHERE uid = ? LIMIT 1`,
-          )
-          .get(current);
-        if (!row) continue;
-
-        allRows.set(current, { uid: row.uid, t_created: row.t_created, t_invalid: row.t_invalid });
-
-        // What does this episode supersede? (outbound SUPERSEDES edge)
-        const supersededRows = db
-          .prepare<[number], { uid: string }>(
-            `SELECT n.uid FROM edge e JOIN node n ON n.rowid = e.dst WHERE e.src = ? AND e.rel = 'SUPERSEDES'`,
-          )
-          .all(row.rowid);
-        for (const s of supersededRows) queue.push(s.uid);
-
-        // What supersedes this episode? (inbound SUPERSEDES edge — src supersedes this)
-        const supersederRows = db
-          .prepare<[number], { uid: string }>(
-            `SELECT n.uid FROM edge e JOIN node n ON n.rowid = e.src WHERE e.dst = ? AND e.rel = 'SUPERSEDES'`,
-          )
-          .all(row.rowid);
-        for (const s of supersederRows) queue.push(s.uid);
+      const result = await memoryGetSupersessionChain(db, args);
+      if (result.code) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
-
-      // Build ordered chain oldest-first (by t_created)
-      const chain = [...allRows.values()].sort(
-        (a, b) => new Date(a.t_created).getTime() - new Date(b.t_created).getTime(),
-      );
-
-      // Canonical = most recent non-invalidated node, or latest by t_created
-      const canonical = chain.find((n) => n.t_invalid === null) ?? chain[chain.length - 1]!;
-
-      // Fetch reason strings from SUPERSEDES edge metas
-      const chainWithReasons = chain.map((n) => {
-        // Reason is on the inbound SUPERSEDES edge meta (the edge that made this node superseded)
-        const edgeRow = db
-          .prepare<[string], { meta: string | null }>(
-            `SELECT e.meta FROM edge e
-             JOIN node src ON src.rowid = e.src
-             JOIN node dst ON dst.rowid = e.dst
-             WHERE dst.uid = ? AND e.rel = 'SUPERSEDES'
-             LIMIT 1`,
-          )
-          .get(n.uid);
-        let reason: string | null = null;
-        if (edgeRow?.meta) {
-          try {
-            const m = JSON.parse(edgeRow.meta) as { reason?: string };
-            reason = m.reason ?? null;
-          } catch { /* malformed */ }
-        }
-        return {
-          uid: n.uid,
-          t_created: n.t_created,
-          t_invalid: n.t_invalid,
-          reason,
-        };
-      });
-
       return {
-        content: [{
-          type: 'text', text: JSON.stringify({
-            canonical_uid: canonical.uid,
-            chain: chainWithReasons,
-            is_current: canonical.uid === uid,
-          })
-        }],
+        content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
     case 'memory_near_duplicates': {
-      const projectPath = args['project_path'] as string | undefined;
-      const topicFilter = args['topic'] as string | undefined;
-      const cosineThreshold = args['threshold'] as number | undefined;
-      const limit = Math.min((args['limit'] as number | undefined) ?? 20, 200);
-      const offset = (args['offset'] as number | undefined) ?? 0;
-
-      // Find SAME_AS edges
-      const extraFilters: string[] = [];
-      const extraParams: unknown[] = [];
-
-      if (projectPath) {
-        extraFilters.push('(na.project_path = ? OR nb.project_path = ?)');
-        extraParams.push(projectPath, projectPath);
-      }
-      if (topicFilter) {
-        extraFilters.push('(na.topic = ? OR nb.topic = ?)');
-        extraParams.push(topicFilter, topicFilter);
-      }
-      if (typeof cosineThreshold === 'number') {
-        extraFilters.push('CAST(json_extract(e.meta, \'$.cosine_sim\') AS REAL) >= ?');
-        extraParams.push(cosineThreshold);
-      }
-
-      const extraSql = extraFilters.length > 0 ? 'AND ' + extraFilters.join(' AND ') : '';
-
-      const countRow = db
-        .prepare<unknown[], { cnt: number }>(
-          `SELECT COUNT(*) AS cnt
-           FROM edge e
-           JOIN node na ON na.rowid = e.src
-           JOIN node nb ON nb.rowid = e.dst
-           WHERE e.rel = 'SAME_AS' AND e.t_expired IS NULL
-             AND na.kind = 'episode' AND nb.kind = 'episode'
-           ${extraSql}`,
-        )
-        .get(...extraParams);
-      const total = countRow?.cnt ?? 0;
-
-      const rows = db
-        .prepare<unknown[], {
-          uid_a: string; uid_b: string;
-          content_a: string | null; content_b: string | null;
-          invalid_b: string | null; meta: string | null;
-        }>(
-          `SELECT na.uid AS uid_a, nb.uid AS uid_b,
-                  na.content AS content_a, nb.content AS content_b,
-                  nb.t_invalid AS invalid_b,
-                  e.meta
-           FROM edge e
-           JOIN node na ON na.rowid = e.src
-           JOIN node nb ON nb.rowid = e.dst
-           WHERE e.rel = 'SAME_AS' AND e.t_expired IS NULL
-             AND na.kind = 'episode' AND nb.kind = 'episode'
-           ${extraSql}
-           LIMIT ? OFFSET ?`,
-        )
-        .all(...extraParams, limit, offset);
-
-      const pairs = rows.map((r) => {
-        let cosineSim = 0;
-        if (r.meta) {
-          try {
-            const m = JSON.parse(r.meta) as { cosine_sim?: number };
-            cosineSim = m.cosine_sim ?? 0;
-          } catch { /* malformed */ }
-        }
-        return {
-          uid_a: r.uid_a,
-          uid_b: r.uid_b,
-          cosine_sim: cosineSim,
-          content_preview_a: (r.content_a ?? '').slice(0, 120),
-          content_preview_b: (r.content_b ?? '').slice(0, 120),
-          already_merged: r.invalid_b !== null,
-        };
-      });
-
+      const result = await memoryGetNearDuplicates(db, args);
       return {
-        content: [{ type: 'text', text: JSON.stringify({ pairs, total }) }],
+        content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
     case 'memory_curate': {
-      const op = args['op'] as string;
-      const dryRun = args['dry_run'] === true;
-      const now = new Date().toISOString();
-
-      switch (op) {
-        case 'retag': {
-          const uid = args['uid'] as string | undefined;
-          const newTags = args['tags'] as string[] | undefined;
-          if (!uid) {
-            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING', message: 'uid required for retag' }) }] };
-          }
-
-          const row = db
-            .prepare<[string], { rowid: number; tags: string | null }>(
-              `SELECT rowid, tags FROM node WHERE uid = ? AND t_invalid IS NULL LIMIT 1`,
-            )
-            .get(uid);
-          if (!row) {
-            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', uid }) }] };
-          }
-
-          const existingTags = parseTags(row.tags);
-          const tagsToAdd = (newTags ?? []).filter((t) => !existingTags.includes(t));
-          const mergedTags = [...existingTags, ...tagsToAdd];
-
-          const newEntityUids: string[] = [];
-          if (!dryRun) {
-            db.transaction(() => {
-              db.prepare(`UPDATE node SET tags = ? WHERE uid = ?`).run(
-                JSON.stringify(mergedTags), uid,
-              );
-              // Add new entity nodes + MENTIONS edges for new tags
-              for (const tag of tagsToAdd) {
-                const tagName = tag.trim();
-                if (!tagName) continue;
-                const existing = db
-                  .prepare<[string], { rowid: number; uid: string }>(
-                    `SELECT rowid, uid FROM node WHERE kind = 'entity' AND name = ? AND t_invalid IS NULL`,
-                  )
-                  .get(tagName);
-                let entityRowid: number;
-                let entityUid: string;
-                if (existing) {
-                  entityRowid = existing.rowid;
-                  entityUid = existing.uid;
-                } else {
-                  entityUid = ulid();
-                  const ins = db
-                    .prepare<unknown[], { rowid: number }>(
-                      `INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'entity', ?, ?, ?) RETURNING rowid`,
-                    )
-                    .get(entityUid, tagName, now, now);
-                  if (!ins) continue;
-                  entityRowid = ins.rowid;
-                  newEntityUids.push(entityUid);
-                }
-                db.prepare(
-                  `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
-                   SELECT ?, ?, 'MENTIONS', 'user_asserted', ?, '{}'
-                   WHERE NOT EXISTS (SELECT 1 FROM edge WHERE src=? AND dst=? AND rel='MENTIONS' AND t_expired IS NULL)`,
-                ).run(row.rowid, entityRowid, now, row.rowid, entityRowid);
-              }
-            })();
-          }
-
-          return {
-            content: [{ type: 'text', text: JSON.stringify({ op: 'retag', uid, tags_added: tagsToAdd, new_entity_uids: newEntityUids }) }],
-          };
-        }
-
-        case 'set_topic': {
-          const uid = args['uid'] as string | undefined;
-          const newTopic = args['topic'] as string | undefined;
-          if (!uid || !newTopic) {
-            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING', message: 'uid and topic required for set_topic' }) }] };
-          }
-          const row = db
-            .prepare<[string], { topic: string | null }>(
-              `SELECT topic FROM node WHERE uid = ? AND t_invalid IS NULL LIMIT 1`,
-            )
-            .get(uid);
-          if (row === undefined) {
-            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', uid }) }] };
-          }
-          const oldTopic = row.topic ?? null;
-          if (!dryRun) {
-            db.prepare(`UPDATE node SET topic = ? WHERE uid = ?`).run(newTopic, uid);
-          }
-          return {
-            content: [{ type: 'text', text: JSON.stringify({ op: 'set_topic', uid, old_topic: oldTopic, new_topic: newTopic }) }],
-          };
-        }
-
-        case 'set_importance': {
-          const uid = args['uid'] as string | undefined;
-          const newImportance = args['importance'] as number | undefined;
-          if (!uid || newImportance === undefined) {
-            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING', message: 'uid and importance required for set_importance' }) }] };
-          }
-          const row = db
-            .prepare<[string], { importance: number }>(
-              `SELECT importance FROM node WHERE uid = ? AND t_invalid IS NULL LIMIT 1`,
-            )
-            .get(uid);
-          if (row === undefined) {
-            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', uid }) }] };
-          }
-          const oldImportance = row.importance;
-          if (!dryRun) {
-            // Mark enrich_ver.note=user_override so batch enricher skips re-scoring
-            const enrichVer = JSON.stringify({ pass: ENRICH_VERSION, ts: now, note: 'user_override' });
-            db.prepare(`UPDATE node SET importance = ?, enrich_ver = ? WHERE uid = ?`).run(newImportance, enrichVer, uid);
-          }
-          return {
-            content: [{ type: 'text', text: JSON.stringify({ op: 'set_importance', uid, old_importance: oldImportance, new_importance: newImportance }) }],
-          };
-        }
-
-        case 'merge_duplicates': {
-          const uidKeep = args['uid_keep'] as string | undefined;
-          const uidDrop = args['uid_drop'] as string | undefined;
-          if (!uidKeep || !uidDrop) {
-            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING', message: 'uid_keep and uid_drop required for merge_duplicates' }) }] };
-          }
-
-          const keepRow = db.prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ? LIMIT 1`).get(uidKeep);
-          const dropRow = db.prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ? LIMIT 1`).get(uidDrop);
-
-          if (!keepRow) return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', uid: uidKeep }) }] };
-          if (!dropRow) return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', uid: uidDrop }) }] };
-
-          const sameAsEdgeUid = `same-${Date.now()}`;
-          if (!dryRun) {
-            db.transaction(() => {
-              // Invalidate the dropped episode
-              db.prepare(`UPDATE node SET t_invalid = ? WHERE uid = ?`).run(now, uidDrop);
-              // Insert SAME_AS edge from keep → drop
-              db.prepare(
-                `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
-                 SELECT ?, ?, 'SAME_AS', 'user_asserted', ?, '{"merge":"manual"}'
-                 WHERE NOT EXISTS (SELECT 1 FROM edge WHERE src=? AND dst=? AND rel='SAME_AS' AND t_expired IS NULL)`,
-              ).run(keepRow.rowid, dropRow.rowid, now, keepRow.rowid, dropRow.rowid);
-            })();
-          }
-
-          return {
-            content: [{ type: 'text', text: JSON.stringify({ op: 'merge_duplicates', uid_kept: uidKeep, uid_dropped: uidDrop, same_as_edge_uid: sameAsEdgeUid, dry_run: dryRun }) }],
-          };
-        }
-
-        case 'recluster': {
-          const filters = args['filters'] as MemoryFilter | Record<string, unknown> | undefined;
-
-          // Filtered recluster: cluster ONLY the subset matching `filters`,
-          // synchronously, and return the resulting communities. This is the
-          // on-demand "cluster a subset to find synthesis candidates" path.
-          // dry_run=true → read-only (no writes); dry_run=false → persist a
-          // provenance-scoped community slice that never touches the global
-          // partition. The server treats `filters` as opaque graph predicates;
-          // it carries no knowledge of what the tags/topics mean.
-          //
-          // The structured filter is now passed directly to clusterSubset — the
-          // engine owns buildFiltersClause and builds the SQL clause internally.
-          // This makes the enrichment engine callable without server-private code.
-          if (filters && Object.keys(filters).length > 0) {
-            const threshold = args['threshold'];
-            const res = clusterSubset(db, {
-              filter: filters as MemoryFilter,
-              persist: !dryRun,
-              ...(typeof threshold === 'number' ? { threshold } : {}),
-            });
-            const clusters = res.clusters.map((c) => ({
-              community_uid: c.community_uid,
-              label: c.label,
-              size: c.member_rowids.length,
-              mean_intra_sim: c.mean_intra_sim,
-              members: rowidsToUids(db, c.member_rowids),
-            }));
-            return {
-              content: [{
-                type: 'text', text: JSON.stringify({
-                  op: 'recluster',
-                  scope: 'subset',
-                  dry_run: dryRun,
-                  persisted: res.persisted,
-                  provenance_hash: res.provenance_hash,
-                  candidate_count: res.candidate_count,
-                  cluster_count: clusters.length,
-                  unclustered_count: res.unclustered_count,
-                  full_pass: res.full_pass,
-                  clusters,
-                })
-              }],
-            };
-          }
-
-          // Global recluster (unchanged): OQ-3 dry_run means don't enqueue, just report.
-          if (dryRun) {
-            return {
-              content: [{ type: 'text', text: JSON.stringify({ op: 'recluster', enqueued: false, dry_run: true }) }],
-            };
-          }
-          // Enqueue an explicit 'enrich' op so the daemon runs a full batch-enrich pass
-          // (re-clusters + re-links the whole store). This wires the previously-dead
-          // schema CHECK constraint so 'enrich' rows have a real producer.
-          try {
-            enqueueEnrich(db);
-          } catch {
-            // If daemon not available, the cluster can be triggered manually
-          }
-          return {
-            content: [{ type: 'text', text: JSON.stringify({ op: 'recluster', enqueued: true }) }],
-          };
-        }
-
-        case 'drop_lens': {
-          // Drop a persisted subset lens by provenance hash.
-          // Invalidates only that lens's community nodes + their MEMBER_OF edges.
-          // Never touches the global partition or any other lens.
-          const provenanceHash = args['provenance_hash'] as string | undefined;
-          if (!provenanceHash) {
-            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING', message: 'provenance_hash required for drop_lens' }) }] };
-          }
-          if (dryRun) {
-            // dry_run: report what would be dropped without committing.
-            const lenses = listSubsetLenses(db);
-            const lens = lenses.find((l) => l.provenance_hash === provenanceHash);
-            return {
-              content: [{
-                type: 'text', text: JSON.stringify({
-                  op: 'drop_lens',
-                  provenance_hash: provenanceHash,
-                  dry_run: true,
-                  communities_to_drop: lens?.community_count ?? 0,
-                  found: lens !== undefined,
-                })
-              }],
-            };
-          }
-          const result = dropSubsetLens(db, provenanceHash);
-          return {
-            content: [{
-              type: 'text', text: JSON.stringify({
-                op: 'drop_lens',
-                provenance_hash: result.provenance_hash,
-                communities_dropped: result.communities_dropped,
-                edges_dropped: result.edges_dropped,
-                dry_run: false,
-              })
-            }],
-          };
-        }
-
-        case 'list_lenses': {
-          // List all live persisted subset lenses with their provenance hashes.
-          const lenses = listSubsetLenses(db);
-          return {
-            content: [{ type: 'text', text: JSON.stringify({ op: 'list_lenses', lenses }) }],
-          };
-        }
-
-        default:
-          return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_UNKNOWN_OP', op }) }] };
+      const result = await memoryCurate(db, args);
+      if ('code' in result) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+      };
     }
 
     case 'memory_stats': {
-      const projectPath = args['project_path'] as string | undefined;
-
-      const ppFilter = projectPath ? 'AND project_path = ?' : '';
-      const ppParams = projectPath ? [projectPath] : [];
-
-      const totalRow = db
-        .prepare<unknown[], { cnt: number }>(
-          `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL ${ppFilter}`,
-        )
-        .get(...ppParams);
-      const totalEpisodes = totalRow?.cnt ?? 0;
-
-      const withTopicRow = db
-        .prepare<unknown[], { cnt: number }>(
-          `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND topic IS NOT NULL ${ppFilter}`,
-        )
-        .get(...ppParams);
-
-      const withSummaryRow = db
-        .prepare<unknown[], { cnt: number }>(
-          `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND summary IS NOT NULL ${ppFilter}`,
-        )
-        .get(...ppParams);
-
-      const withTagsRow = db
-        .prepare<unknown[], { cnt: number }>(
-          `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND tags IS NOT NULL ${ppFilter}`,
-        )
-        .get(...ppParams);
-
-      const withProjectPathRow = db
-        .prepare<unknown[], { cnt: number }>(
-          `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND project_path IS NOT NULL ${ppFilter}`,
-        )
-        .get(...ppParams);
-
-      // with_community: episodes that have a MEMBER_OF edge to a live GLOBAL community.
-      // Scoped to kind='global' (or legacy NULL scope) so persisted subset lenses
-      // do not inflate this count — it is used as a CI-gate metric (CONTRACTS C2.12).
-      const withCommunityRow = db
-        .prepare<unknown[], { cnt: number }>(
-          `SELECT COUNT(DISTINCT n.rowid) AS cnt
-           FROM node n
-           JOIN edge e ON e.src = n.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
-           JOIN node c ON c.rowid = e.dst AND c.kind = 'community' AND c.t_invalid IS NULL
-             AND (json_extract(c.meta, '$.cluster_scope.kind') IS NULL
-                  OR json_extract(c.meta, '$.cluster_scope.kind') = 'global')
-           WHERE n.kind = 'episode' AND n.t_invalid IS NULL ${ppFilter.replace('AND project_path', 'AND n.project_path')}`,
-        )
-        .get(...ppParams);
-
-      // Legacy: enrich_ver IS NULL or note = "legacy"
-      const legacyRow = db
-        .prepare<unknown[], { cnt: number }>(
-          `SELECT COUNT(*) AS cnt FROM node
-           WHERE kind = 'episode' AND t_invalid IS NULL
-             AND (enrich_ver IS NULL
-               OR json_extract(enrich_ver, '$.note') = 'legacy')
-           ${ppFilter}`,
-        )
-        .get(...ppParams);
-
-      // Stale: enrich_ver.pass != current ENRICH_VERSION
-      const staleRow = db
-        .prepare<unknown[], { cnt: number }>(
-          `SELECT COUNT(*) AS cnt FROM node
-           WHERE kind = 'episode' AND t_invalid IS NULL AND enrich_ver IS NOT NULL
-             AND json_extract(enrich_ver, '$.pass') != ?
-           ${ppFilter}`,
-        )
-        .get(ENRICH_VERSION, ...ppParams);
-
-      const qStats = clusterStats(db);
-
-      // BL-48/BL-54: report the RESOLVED backend (what is actually running), not the env
-      // var. getActiveEmbedModel() returns 'bge-base-en-v1.5' when real ONNX is in use,
-      // 'nomic-embed-text-v1.5-hash' otherwise. BL-54: the worker warms LAZILY, so before
-      // the first embed the model id is the default hash — getEmbedState() distinguishes
-      // 'uninitialized' (no embed yet) from a real 'hash' fallback so stats does not
-      // falsely report a fallback on a fresh server.
-      const resolvedEmbedModel = getActiveEmbedModel();
-      const configuredBackend = process.env['SOX_EMBED_BACKEND'] ?? 'auto';
-      const resolvedEmbedState = getEmbedState();
-      // on_hash_fallback=true when config is 'auto'/'real' but actually resolved to hash —
-      // signals silent fallback (model unavailable). false if intentionally hash, real, or
-      // not-yet-initialized.
-      const onHashFallback =
-        configuredBackend !== 'hash' && resolvedEmbedState === 'hash';
-
-      // BL-88: count nodes whose written embed model differs from the active
-      // provider's model. These are candidates for reembed — essential for
-      // operators to know after a model switch or recovery from hash fallback.
-      // Uses memory_scope.embed_model as proxy until per-record modelId is
-      // available in vec_node (planned in w2c-vector-store).
-      let degradedRecordCount = 0;
-      try {
-        // Compare scope's embed_model with the active model. If they differ,
-        // all nodes in this scope are candidates for reembed.
-        const scopeModel = db
-          .prepare<[], { embed_model: string }>(
-            `SELECT embed_model FROM memory_scope LIMIT 1`,
-          )
-          .get();
-        if (scopeModel && scopeModel.embed_model !== resolvedEmbedModel) {
-          degradedRecordCount = db
-            .prepare<[], { cnt: number }>(
-              `SELECT COUNT(*) as cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL`,
-            )
-            .get()?.cnt ?? 0;
-        }
-      } catch {
-        degradedRecordCount = 0;
-      }
-
+      const result = await memoryGetStats(db, args, TOOL_NAMES);
       return {
-        content: [{
-          type: 'text', text: JSON.stringify({
-            // ADR-0003 Decision 5: capability presence by tool NAME — a client tests
-            // for the capability it needs (e.g. 'memory_update') rather than inferring
-            // it from a semver. `tool_version` (the old '1.1.0' surface marker) is gone.
-            tools: TOOL_NAMES,
-            enrich_version: ENRICH_VERSION,
-            embed_model: resolvedEmbedModel,
-            embed_backend_configured: configuredBackend,
-            embed_state: resolvedEmbedState,
-            embed_on_hash_fallback: onHashFallback,
-            last_embed_error: getLastEmbedError(),
-            degraded_record_count: degradedRecordCount,
-            total_episodes: totalEpisodes,
-            with_topic: withTopicRow?.cnt ?? 0,
-            with_summary: withSummaryRow?.cnt ?? 0,
-            with_tags: withTagsRow?.cnt ?? 0,
-            with_project_path: withProjectPathRow?.cnt ?? 0,
-            with_community: withCommunityRow?.cnt ?? 0,
-            legacy_episodes: legacyRow?.cnt ?? 0,
-            stale_episodes: staleRow?.cnt ?? 0,
-            cluster_count: qStats.cluster_count,
-            largest_cluster_size: qStats.largest_cluster_size,
-            mean_intra_cluster_sim: qStats.mean_intra_sim,
-            coverage: qStats.coverage,
-            cluster_quality: qStats,
-          })
-        }],
+        content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
@@ -2405,7 +1353,7 @@ function isDaemonReachable(): Promise<boolean> {
 
 /** Run one in-process incremental enrichment pass over all open DBs. */
 async function runFallbackEnrichPass(): Promise<void> {
-  if (dbCache.size === 0) return;
+  if (openedPaths.size === 0) return;
 
   const daemonUp = await isDaemonReachable();
   if (daemonUp) {
@@ -2413,8 +1361,9 @@ async function runFallbackEnrichPass(): Promise<void> {
     return;
   }
 
-  for (const [dbPath, db] of dbCache) {
+  for (const dbPath of openedPaths) {
     try {
+      const db = getDb(dbPath);
       const result = runBatchEnrich(db, { incrementalCluster: true });
       console.error(
         `[memory-server] fallback enrich (daemon absent, ${dbPath}):` +

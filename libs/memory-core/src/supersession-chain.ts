@@ -1,0 +1,117 @@
+/**
+ * memoryGetSupersessionChain — BFS bidirectional walk over SUPERSEDES edges.
+ *
+ * Uses getEdges({src, rel:'SUPERSEDES'}) for outbound ("this supersedes X")
+ * and getEdges({dst, rel:'SUPERSEDES'}) for inbound ("Y supersedes this").
+ *
+ * Node details and edge reason metadata fetched via raw SQL.
+ *
+ * [inv:no-mcp] — returns a plain result object, never an MCP ToolResult.
+ */
+
+import type Database from 'better-sqlite3';
+import { createGraphBackend } from '@adhd/sox-graph-store';
+
+// ── Types ──────────────────────────────────────────────────────────────────────
+
+export interface ChainLink {
+  uid: string;
+  t_created: string;
+  t_invalid: string | null;
+  reason: string | null;
+}
+
+export interface SupersessionChainResult {
+  canonical_uid: string;
+  chain: ChainLink[];
+  is_current: boolean;
+  code?: string;
+}
+
+// ── Main ───────────────────────────────────────────────────────────────────────
+
+export async function memoryGetSupersessionChain(
+  db: Database.Database,
+  args: Record<string, unknown>,
+): Promise<SupersessionChainResult> {
+  const uid = args['uid'] as string;
+
+  const allRows = new Map<
+    string,
+    { uid: string; t_created: string; t_invalid: string | null; rowid: number }
+  >();
+
+  // BFS from the given uid, collecting edge reason metadata inline
+  const queue: string[] = [uid];
+  const visited = new Set<string>();
+  const edgeReasons = new Map<string, string | null>();
+
+  const backend = createGraphBackend(db);
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+
+    const row = db
+      .prepare<
+        [string],
+        { uid: string; t_created: string; t_invalid: string | null; rowid: number }
+      >(`SELECT uid, t_created, t_invalid, rowid FROM node WHERE uid = ? LIMIT 1`)
+      .get(current);
+    if (!row) continue;
+
+    allRows.set(current, {
+      uid: row.uid,
+      t_created: row.t_created,
+      t_invalid: row.t_invalid,
+      rowid: row.rowid,
+    });
+
+    // Outbound: what does this episode supersede?
+    const supersededEdges = backend.getEdges({ src: row.rowid, rel: 'SUPERSEDES' });
+    for (const e of supersededEdges) {
+      const dstNode = db
+        .prepare<[number], { uid: string }>(`SELECT uid FROM node WHERE rowid = ? LIMIT 1`)
+        .get(e.dst);
+      if (dstNode) {
+        queue.push(dstNode.uid);
+        edgeReasons.set(dstNode.uid, (e.metadata as { reason?: string } | undefined)?.reason ?? null);
+      }
+    }
+
+    // Inbound: what supersedes this episode?
+    const supersederEdges = backend.getEdges({ dst: row.rowid, rel: 'SUPERSEDES' });
+    for (const e of supersederEdges) {
+      const srcNode = db
+        .prepare<[number], { uid: string }>(`SELECT uid FROM node WHERE rowid = ? LIMIT 1`)
+        .get(e.src);
+      if (srcNode) {
+        queue.push(srcNode.uid);
+        edgeReasons.set(current, (e.metadata as { reason?: string } | undefined)?.reason ?? null);
+      }
+    }
+  }
+
+  // Build ordered chain oldest-first (by t_created)
+  const chain = [...allRows.values()].sort(
+    (a, b) => new Date(a.t_created).getTime() - new Date(b.t_created).getTime(),
+  );
+
+  // Canonical = most recent non-invalidated node, or latest by t_created
+  const canonical = chain.find((n) => n.t_invalid === null) ?? chain[chain.length - 1]!;
+
+  // Reason strings collected during BFS from edge metadata
+  const chainWithReasons: ChainLink[] = chain.map((n) => ({
+    uid: n.uid,
+    t_created: n.t_created,
+    t_invalid: n.t_invalid,
+    reason: edgeReasons.get(n.uid) ?? null,
+  }));
+
+  return {
+    canonical_uid: canonical.uid,
+    chain: chainWithReasons,
+    is_current: canonical.uid === uid,
+  };
+}

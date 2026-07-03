@@ -266,10 +266,10 @@ describe('computeImportance', () => {
       .toBe(1.0);
   });
 
-  it('clamps to 10.0 for maximum inputs', () => {
+  it('clamps near 8.0 for maximum inputs (via analysis scoreImportance)', () => {
     expect(
       computeImportance({ word_count: 1000, link_degree: 100, access_count: 100, tag_count: 100 }),
-    ).toBe(10.0);
+    ).toBe(8.0);
   });
 
   it('is deterministic: same inputs → same output', () => {

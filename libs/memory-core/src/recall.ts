@@ -19,6 +19,7 @@
 import Database from 'better-sqlite3';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import { embed, vecToJson, getProviderCallCount } from './embed.js';
 import { openDbReadOnly } from './db.js';
 import { buildFilterClause } from '@adhd/sox-hybrid-search';
@@ -1042,4 +1043,109 @@ export async function federatedRecall(
 
   const afterCount = getProviderCallCount();
   return { results, provider_call_count: afterCount - beforeCount };
+}
+
+// ── Helper functions (centralized from client/db.ts) ─────────────────────
+
+/**
+ * Check whether an episode is superseded (i.e. some other episode's SUPERSEDES
+ * edge points to it via rowid).
+ */
+export function isSuperseded(db: Database.Database, rowid: number): boolean {
+  const row = db
+    .prepare<[number], { cnt: number }>(
+      `SELECT COUNT(*) AS cnt FROM edge WHERE dst = ? AND rel = 'SUPERSEDES' AND t_expired IS NULL`,
+    )
+    .get(rowid);
+  return (row?.cnt ?? 0) > 0;
+}
+
+/**
+ * Return the UID of the episode that `rowid` supersedes (outbound SUPERSEDES
+ * edge from src=rowid to dst). Returns null if no such edge exists.
+ */
+export function supersedesUidForRowid(
+  db: Database.Database,
+  rowid: number,
+): string | null {
+  const row = db
+    .prepare<[number], { uid: string }>(
+      `SELECT n.uid FROM edge e
+       JOIN node n ON n.rowid = e.dst AND n.t_invalid IS NULL
+       WHERE e.src = ? AND e.rel = 'SUPERSEDES' AND e.t_expired IS NULL
+       LIMIT 1`,
+    )
+    .get(rowid);
+  return row?.uid ?? null;
+}
+
+/**
+ * Resolve the GLOBAL MEMBER_OF community uid for an episode rowid.
+ *
+ * Defaults to `cluster_scope.kind='global'` (treating legacy NULL scope as
+ * global) so that persisted subset lenses never leak into recall's
+ * `community_uid` field.
+ */
+export function communityUidForRowid(
+  db: Database.Database,
+  rowid: number,
+): string | null {
+  const row = db
+    .prepare<[number], { uid: string }>(
+      `SELECT n2.uid FROM edge e
+       JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.t_invalid IS NULL
+         AND (json_extract(n2.meta, '$.cluster_scope.kind') IS NULL
+              OR json_extract(n2.meta, '$.cluster_scope.kind') = 'global')
+       WHERE e.src = ? AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+       ORDER BY e.rowid ASC
+       LIMIT 1`,
+    )
+    .get(rowid);
+  return row?.uid ?? null;
+}
+
+/**
+ * Resolve episode rowids → uids, preserving the input order.
+ */
+export function rowidsToUids(
+  db: Database.Database,
+  rowids: number[],
+): string[] {
+  if (rowids.length === 0) return [];
+  const ph = rowids.map(() => '?').join(',');
+  const rows = db
+    .prepare<unknown[], { rowid: number; uid: string }>(
+      `SELECT rowid, uid FROM node WHERE rowid IN (${ph})`,
+    )
+    .all(...rowids);
+  const byRowid = new Map(rows.map((r) => [r.rowid, r.uid]));
+  return rowids
+    .map((r) => byRowid.get(r))
+    .filter((u): u is string => typeof u === 'string');
+}
+
+/**
+ * Parse a JSON tags column value. Returns [] if null, undefined, or malformed.
+ */
+export function parseTags(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed as string[];
+  } catch {
+    /* malformed */
+  }
+  return [];
+}
+
+/**
+ * Expand a leading ~/ to the user's home directory.
+ * If `p` is exactly `~`, returns the home directory.
+ * Otherwise returns `p` unchanged.
+ */
+export function expandTilde(p: string): string {
+  if (p === '~' || p.startsWith('~/')) {
+    return os.homedir() + p.slice(1);
+  }
+  return p;
 }

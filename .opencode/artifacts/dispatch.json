@@ -1,81 +1,102 @@
 {
   "$schema": "dispatch-protocol-v1",
   "plan": {
-    "title": "Blob Store + Claim Verification + Retrieval Infrastructure",
-    "source": "docs/plan/{blob-store,claim-verification,retrieval-infrastructure}/SPEC.md",
-    "created_at": "2026-06-29T12:00:00.000Z"
+    "title": "Client Refactor — memory-core consolidation",
+    "source": "docs/plan/client-refactor/ARCH.md",
+    "created_at": "2026-07-02T19:00:00.000Z"
   },
   "segments": [
     {
       "id": "S1",
-      "label": "blob-store — new leaf data package",
-      "agent": "flash",
-      "spec_section": "docs/plan/blob-store/SPEC.md (full document)",
-      "files": ["libs/data/store/blob-store/"],
+      "label": "B2: memory-core edge-based functions using graph-store + client wrappers",
+      "agent": "implement",
+      "spec_section": "ARCH.md §3 B2",
+      "files": [
+        "libs/memory-core/src/link.ts",
+        "libs/memory-core/src/related.ts",
+        "libs/memory-core/src/entity-episodes.ts",
+        "libs/memory-core/src/list-entities.ts",
+        "libs/memory-core/src/near-duplicates.ts",
+        "libs/memory-core/src/supersession-chain.ts",
+        "libs/memory-core/src/session.ts",
+        "libs/memory-core/src/index.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/link.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/related.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/entity-episodes.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/list-entities.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/near-duplicates.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/supersession-chain.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/get-session-state.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/save-session-state.ts"
+      ],
       "depends_on": [],
-      "status": "complete",
-      "report": ".opencode/artifacts/reports/S1_flash_2026-06-29T20-50-00Z.json"
+      "status": "pending",
+      "report": null
     },
     {
       "id": "S2",
-      "label": "claim-verification — new leaf data package",
-      "agent": "flash",
-      "spec_section": "docs/plan/claim-verification/SPEC.md (full document)",
-      "files": ["libs/data/verify/claim-verification/"],
-      "depends_on": [],
-      "status": "complete",
-      "report": ".opencode/artifacts/reports/S2_flash_2026-06-29T20-59-00Z.json"
+      "label": "B3: memory-core domain query functions + client wrappers",
+      "agent": "implement",
+      "spec_section": "ARCH.md §3 B3",
+      "files": [
+        "libs/memory-core/src/topics.ts",
+        "libs/memory-core/src/projects.ts",
+        "libs/memory-core/src/curate.ts",
+        "libs/memory-core/src/stats.ts",
+        "libs/memory-core/src/index.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/topics.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/list-projects.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/curate.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/stats.ts"
+      ],
+      "depends_on": ["S1"],
+      "status": "pending",
+      "report": null
     },
     {
       "id": "S3",
-      "label": "embedding-provider — BGE-M3 & CodeXEmbed models",
-      "agent": "flash",
-      "spec_section": "docs/plan/retrieval-infrastructure/SPEC.md §1",
-      "files": ["libs/data/embed/embedding-provider/"],
-      "depends_on": [],
-      "status": "complete",
-      "report": ".opencode/artifacts/reports/S3_flash_2026-06-29T20-55-00.json"
+      "label": "A: Replace stale memory-core duplicates with data/ imports",
+      "agent": "implement",
+      "spec_section": "ARCH.md §3 A",
+      "files": [
+        "libs/memory-core/src/extractive.ts",
+        "libs/memory-core/src/importance.ts",
+        "libs/memory-core/src/neardup.ts",
+        "libs/memory-core/src/cluster.ts",
+        "libs/memory-core/src/autolink.ts",
+        "libs/memory-core/src/index.ts"
+      ],
+      "depends_on": ["S2"],
+      "status": "pending",
+      "report": null
     },
     {
       "id": "S4",
-      "label": "vector-store — LanceDB backend adapter",
+      "label": "B1: Simplify 3 client files to call existing memory-core functions",
       "agent": "flash",
-      "spec_section": "docs/plan/retrieval-infrastructure/SPEC.md §2",
-      "files": ["libs/data/vectors/vector-store/"],
+      "spec_section": "ARCH.md §3 B1",
+      "files": [
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/search-entities.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/get-community.ts",
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/invalidate.ts"
+      ],
       "depends_on": [],
-      "status": "complete",
-      "report": ".opencode/artifacts/reports/S4_flash_20260629-2050.json"
+      "status": "pending",
+      "report": null
     },
     {
       "id": "S5",
-      "label": "ingest — AST-aware & heading-aware chunkers",
+      "label": "B4: Promote client db.ts helpers to memory-core/recall.ts",
       "agent": "flash",
-      "spec_section": "docs/plan/retrieval-infrastructure/SPEC.md §3",
-      "files": ["libs/data/ingest/ingest/"],
-      "depends_on": [],
-      "status": "complete",
-      "report": ".opencode/artifacts/reports/S5_flash_2026-06-29T20-55-00Z.json"
-    },
-    {
-      "id": "S6",
-      "label": "hybrid-search — cross-encoder reranker",
-      "agent": "flash",
-      "spec_section": "docs/plan/retrieval-infrastructure/SPEC.md §4",
-      "files": ["libs/data/search/hybrid-search/"],
-      "depends_on": [],
-      "status": "complete",
-      "report": ".opencode/artifacts/reports/S6_flash_20260629T205759.json"
-    },
-    {
-      "id": "S7",
-      "label": "memory-core — parent-context expansion & late chunking",
-      "agent": "implement",
-      "spec_section": "docs/plan/retrieval-infrastructure/SPEC.md §5",
-      "files": ["libs/memory-core/"],
-      "depends_on": [],
-      "status": "complete",
-      "report": ".opencode/artifacts/reports/S7_implement_2026-06-29T20-57-00Z.json"
+      "spec_section": "ARCH.md §3 B4",
+      "files": [
+        "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/db.ts",
+        "libs/memory-core/src/recall.ts"
+      ],
+      "depends_on": ["S1", "S2"],
+      "status": "pending",
+      "report": null
     }
   ],
-  "status": "complete"
+  "status": "draft"
 }

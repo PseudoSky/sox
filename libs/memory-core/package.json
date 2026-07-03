@@ -22,9 +22,11 @@
     }
   },
   "dependencies": {
+    "@adhd/sox-analysis": "workspace:*",
     "@adhd/sox-embedding-provider": "workspace:*",
     "@adhd/sox-graph-store": "workspace:*",
     "@adhd/sox-hybrid-search": "workspace:*",
+    "@adhd/sox-ingest": "workspace:*",
     "@adhd/sox-vector-store": "workspace:*",
     "better-sqlite3": "^12.10.0",
     "fastembed": "^2.1.0",

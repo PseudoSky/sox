@@ -15,6 +15,7 @@
 
 import * as crypto from 'node:crypto';
 import type { Database } from 'better-sqlite3';
+import { cluster as analysisCluster } from '@adhd/sox-analysis';
 import { buildFiltersClause } from './memory-filters.js';
 export type { MemoryFilter } from './memory-filters.js';
 
@@ -75,58 +76,6 @@ interface EpRow {
 interface VecRow {
   node_id: number;
   embedding: Buffer;
-}
-
-// ── Union-Find ────────────────────────────────────────────────────────────────
-
-class UnionFind {
-  private parent: Map<number, number> = new Map();
-  private rank: Map<number, number> = new Map();
-
-  find(x: number): number {
-    if (this.parent.get(x) === undefined) {
-      this.parent.set(x, x);
-      this.rank.set(x, 0);
-    }
-    let root = x;
-    while (this.parent.get(root) !== root) {
-      root = this.parent.get(root)!;
-    }
-    // Path compression
-    let curr = x;
-    while (this.parent.get(curr) !== root) {
-      const next = this.parent.get(curr)!;
-      this.parent.set(curr, root);
-      curr = next;
-    }
-    return root;
-  }
-
-  union(x: number, y: number): void {
-    const rx = this.find(x);
-    const ry = this.find(y);
-    if (rx === ry) return;
-    const rankX = this.rank.get(rx) ?? 0;
-    const rankY = this.rank.get(ry) ?? 0;
-    if (rankX < rankY) {
-      this.parent.set(rx, ry);
-    } else if (rankX > rankY) {
-      this.parent.set(ry, rx);
-    } else {
-      this.parent.set(ry, rx);
-      this.rank.set(rx, rankX + 1);
-    }
-  }
-
-  groups(): Map<number, number[]> {
-    const result = new Map<number, number[]>();
-    for (const x of this.parent.keys()) {
-      const root = this.find(x);
-      if (!result.has(root)) result.set(root, []);
-      result.get(root)!.push(x);
-    }
-    return result;
-  }
 }
 
 // ── Maths helpers ─────────────────────────────────────────────────────────────
@@ -219,29 +168,17 @@ function meanIntraSim(vecs: Float32Array[]): number {
 
 // ── Core clustering implementation ─────────────────────────────────────────────
 
-function runConnectedComponents(
-  rowids: number[],
-  vecs: Float32Array[],
+function runClusters(
+  vecs: Array<{ id: number; vec: Float32Array }>,
   threshold: number,
 ): Map<number, number[]> {
-  const uf = new UnionFind();
-
-  // Sort rowids ascending for stable traversal (D1.2)
-  // rowids + vecs are already sorted ascending by the caller
-  for (let i = 0; i < rowids.length; i++) {
-    const ri = rowids[i]!;
-    uf.find(ri); // ensure all nodes are registered
-    for (let j = i + 1; j < rowids.length; j++) {
-      const rj = rowids[j]!;
-      const sim = cosineSim(vecs[i]!, vecs[j]!);
-      if (sim >= threshold) {
-        uf.union(ri, rj);
-      }
-    }
+  const result = analysisCluster(vecs, { threshold, minClusterSize: 2 });
+  const groups = new Map<number, number[]>();
+  for (const community of result.communities) {
+    const root = community.memberIds[0]!;
+    groups.set(root, community.memberIds);
   }
-
-  // Collect groups (Map<root, members[]>)
-  return uf.groups();
+  return groups;
 }
 
 function buildClusterResults(
@@ -493,8 +430,9 @@ function computeClusters(
   let clusters: ClusterResult[] = [];
 
   while (attempts < 4) {
-    const groups = runConnectedComponents(candidateRowids, candidateVecs, currentThreshold);
-    const maxClusterSize = Math.max(...Array.from(groups.values()).map((g) => g.length));
+    const clusterInput = candidateRowids.map((id, i) => ({ id, vec: candidateVecs[i]! }));
+    const groups = runClusters(clusterInput, currentThreshold);
+    const maxClusterSize = Math.max(...Array.from(groups.values()).map((g) => g.length), 0);
     const ratio = maxClusterSize / candidateRowids.length;
 
     if (ratio <= 0.5 || attempts === 3) {

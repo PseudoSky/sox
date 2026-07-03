@@ -29,7 +29,7 @@
  */
 
 // ── Database ──────────────────────────────────────────────────────────────────
-export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath } from './db.js';
+export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb } from './db.js';
 export type { ScopeKind, MemoryScope } from './db.js';
 
 // ── Schema ────────────────────────────────────────────────────────────────────
@@ -82,6 +82,12 @@ export {
   writeRegistry,
   discoverStores,
   ExpansionOverflowError,
+  isSuperseded,
+  supersedesUidForRowid,
+  communityUidForRowid,
+  rowidsToUids,
+  parseTags,
+  expandTilde,
 } from './recall.js';
 export type {
   RecallParams,
@@ -167,6 +173,43 @@ export type {
 // ── Markdown export mirror ────────────────────────────────────────────────────
 export { exportMarkdown } from './export.js';
 export type { ExportOpts, ExportResult } from './export.js';
+
+// ── Edge-based functions (graph-store backend) ────────────────────────────────
+export { memoryLinkNode } from './link.js';
+export type { LinkResult } from './link.js';
+export { memoryGetRelated } from './related.js';
+export type { RelatedResult, EdgeEntry, EpisodeBase } from './related.js';
+export { memoryGetEntityEpisodes } from './entity-episodes.js';
+export type { EntityEpisodesResult, EntityInfo, EpisodeSummary } from './entity-episodes.js';
+export { memoryListEntities } from './list-entities.js';
+export type { ListEntitiesResult, EntityListingEntry } from './list-entities.js';
+export { memoryGetNearDuplicates } from './near-duplicates.js';
+export type { NearDuplicatesResult, NearDuplicatePair } from './near-duplicates.js';
+export { memoryGetSupersessionChain } from './supersession-chain.js';
+export type { SupersessionChainResult, ChainLink } from './supersession-chain.js';
+export { memoryGetSessionState, memorySaveSessionState } from './session.js';
+export type { GetSessionStateResult, SaveSessionStateResult } from './session.js';
+
+// ── Domain query functions (aggregate queries, curation, stats) ────────────────
+
+export { memoryListTopics } from './topics.js';
+export type { TopicsResult, TopicEntry } from './topics.js';
+export { memoryListProjects } from './projects.js';
+export type { ListProjectsResult, ProjectEntry } from './projects.js';
+export { memoryCurate } from './curate.js';
+export type {
+  CurateResult,
+  CurateRetagResult,
+  CurateSetTopicResult,
+  CurateSetImportanceResult,
+  CurateMergeResult,
+  CurateReclusterSubsetResult,
+  CurateReclusterGlobalResult,
+  CurateDropLensResult,
+  CurateListLensesResult,
+} from './curate.js';
+export { memoryGetStats } from './stats.js';
+export type { StatsResult } from './stats.js';
 
 // ── Convenience wrappers (guard C5: write(dbPath, params) + recall(dbPath, params)) ──
 

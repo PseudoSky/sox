@@ -1,19 +1,10 @@
-/**
- * neardup.ts — near-duplicate detection via cosine similarity (E8).
- * CONTRACTS.md C1.6, DESIGN.md D2 E8.
- *
- * Determinism: for a fixed DB state and embedding, always returns the same result.
- * No LLM, no network.
- */
-
 import type { Database } from 'better-sqlite3';
+import { detectNearDupPairs } from '@adhd/sox-analysis';
+import type { NearDupOpts } from '@adhd/sox-analysis';
 
 export interface NearDupResult {
-  /** UID of the existing near-duplicate episode. */
   existing_uid: string;
-  /** Cosine similarity between the new episode and the existing one. */
   cosine_sim: number;
-  /** Whether the new episode should be invalidated (true if sim >= nearDupThreshold). */
   should_invalidate: boolean;
 }
 
@@ -27,47 +18,16 @@ interface NodeRow {
   content: string | null;
 }
 
-/**
- * Compute cosine similarity between two L2-normalised Float32Array vectors.
- * Since both are L2-normalised, cosine sim = dot product.
- */
-function cosineSim(a: Float32Array, b: Float32Array): number {
-  let dot = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += (a[i] as number) * (b[i] as number);
-  }
-  return dot;
-}
-
-/** Deserialise a binary blob from vec_node into a Float32Array. */
 function blobToFloat32(buf: Buffer): Float32Array {
   return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
 }
 
-/**
- * Check if a newly-written episode has a semantic near-duplicate in the store (E8).
- *
- * Uses KNN-20 from vec_node to find the closest existing episode.
- * Compares cosine similarity against `threshold`.
- *
- * Hash-backend guard: when backend=hash (detected via getActiveEmbedModel()),
- * also requires content.length >= 50 AND at least one shared MENTIONS entity
- * before treating as near-dup (D5.1).
- *
- * @param db        Open better-sqlite3 Database (read-only safe).
- * @param rowid     Rowid of the just-inserted episode.
- * @param embedding 768-dim L2-normalised embedding of the new episode.
- * @param threshold Cosine threshold (caller supplies the backend-appropriate value).
- * @returns         NearDupResult if a dup is found above threshold, else null.
- */
 export function detectNearDup(
   db: Database,
   rowid: number,
   embedding: Float32Array,
   threshold: number,
 ): NearDupResult | null {
-  // Fetch KNN-21 neighbours from vec_node (21 to account for self), then exclude self.
-  // sqlite-vec requires `k = ?` for KNN queries.
   const embJson = '[' + Array.from(embedding).map((v) => v.toFixed(8)).join(',') + ']';
   const knnRows = db
     .prepare<[string, number], VecRow>(
@@ -81,36 +41,38 @@ export function detectNearDup(
 
   if (knnRows.length === 0) return null;
 
-  // Find the highest cosine similarity among KNN neighbours
-  let bestSim = -1;
-  let bestNodeId = -1;
+  const vecs: Array<{ id: number; vec: Float32Array }> = [
+    { id: rowid, vec: embedding },
+    ...knnRows.map((r) => ({ id: r.node_id, vec: blobToFloat32(r.embedding) })),
+  ];
 
-  for (const kRow of knnRows) {
-    const neighborVec = blobToFloat32(kRow.embedding);
-    const sim = cosineSim(embedding, neighborVec);
-    if (sim > bestSim) {
-      bestSim = sim;
-      bestNodeId = kRow.node_id;
+  const nearDupOpts: NearDupOpts = {
+    nearDupThreshold: threshold,
+    distinctThreshold: 0.70,
+  };
+  const pairs = detectNearDupPairs(vecs, nearDupOpts);
+
+  let bestPair: { a: number; b: number; cosine: number } | null = null;
+  for (const p of pairs) {
+    if ((p.a === rowid || p.b === rowid) && p.status === 'near_dup') {
+      if (!bestPair || p.cosine > bestPair.cosine) {
+        bestPair = { a: p.a, b: p.b, cosine: p.cosine };
+      }
     }
   }
 
-  if (bestSim < threshold) return null;
+  if (!bestPair) return null;
 
-  // Fetch the neighbour's uid and content for the guard check
+  const neighborId = bestPair.a === rowid ? bestPair.b : bestPair.a;
+
   const neighborNode = db
     .prepare<[number], NodeRow>(
       `SELECT uid, content FROM node WHERE rowid = ? AND t_invalid IS NULL`,
     )
-    .get(bestNodeId);
+    .get(neighborId);
 
   if (!neighborNode) return null;
 
-  // Hash-backend guard (D5.1): require content.length >= 50 AND shared MENTIONS entity.
-  // Detect hash backend by querying memory_scope embed_model (if available) or
-  // by checking whether the embedding sum is suspiciously round (hash backend produces
-  // FNV projections). We use a practical heuristic: if the vector max-abs is exactly
-  // representable as a simple fraction, it's likely hash. Instead, we detect via
-  // checking the current embed model from process.env (the simplest available signal).
   const isHashBackend =
     (process.env['SOX_EMBED_BACKEND'] === 'hash') ||
     (process.env['SOX_EMBED_BACKEND'] === undefined && !process.env['SOX_EMBED_REAL']);
@@ -122,7 +84,6 @@ export function detectNearDup(
     const newContentLen = (newContent?.content ?? '').length;
     if (newContentLen < 50) return null;
 
-    // Check for shared MENTIONS entity
     const sharedEntity = db
       .prepare<[number, number], { cnt: number }>(
         `SELECT COUNT(*) AS cnt
@@ -131,13 +92,13 @@ export function detectNearDup(
          WHERE e1.src = ? AND e1.rel = 'MENTIONS' AND e2.rel = 'MENTIONS'
            AND e1.t_expired IS NULL AND e2.t_expired IS NULL`,
       )
-      .get(rowid, bestNodeId);
+      .get(rowid, neighborId);
     if (!sharedEntity || sharedEntity.cnt === 0) return null;
   }
 
   return {
     existing_uid: neighborNode.uid,
-    cosine_sim: bestSim,
-    should_invalidate: bestSim >= threshold,
+    cosine_sim: bestPair.cosine,
+    should_invalidate: bestPair.cosine >= threshold,
   };
 }

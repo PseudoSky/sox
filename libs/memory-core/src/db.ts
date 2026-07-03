@@ -195,6 +195,25 @@ export function initScope(
   };
 }
 
+// ── DB connection cache (singleton map keyed by resolved path) ────────────────
+
+const dbCache = new Map<string, Database.Database>();
+
+/**
+ * Return a cached Database handle for the given `dbPath`, or open a new
+ * connection and cache it.
+ *
+ * The caller is responsible for resolving tilde/relative paths before
+ * calling (e.g. via `expandTilde` + `path.resolve`).
+ */
+export function getDb(dbPath: string): Database.Database {
+  const cached = dbCache.get(dbPath);
+  if (cached) return cached;
+  const db = openDb(dbPath);
+  dbCache.set(dbPath, db);
+  return db;
+}
+
 /**
  * Open a read-only WAL connection (for federated recall from non-primary stores).
  */
