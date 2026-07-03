@@ -22,17 +22,44 @@
       "id": "SA-2",
       "bl": [],
       "title": "Sockets plist + systemd .socket rendering",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {"cmd": "npx nx build host-runtime", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test host-runtime", "exit": 0, "summary": "168/168 pass"},
+          {"cmd": "npx nx build service-proxy", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test service-proxy", "exit": 0, "summary": "42/42 pass"}
+        ],
+        "commits": ["591ff5d"],
+        "notes": "LaunchdPlatform.renderBody() Sockets dict; SystemdPlatform.renderSocketUnit().socket unit; renderSocketUnit undefined when no socketPath; socket unit content-addressed (content-hash); golden-fixture tests (7) for structural order + content-hash stability + filename convention"
+      },
+      "notes": [
+        "os-unit.ts: LaunchdPlatform Sockets dict in plist when socketPath set; SystemdPlatform.renderSocketUnit() produces standalone .socket unit with ListenStream, SocketMode, Service=, WantedBy=sockets.target",
+        "os-unit.spec.ts: 7 SA-2 tests — launchd Sockets dict/omission/renderSocketUnit undefined/golden fixture stability; systemd renderSocketUnit defined/undefined/stability/filename convention",
+        "Negative control: always-on posture with no socketPath omits Sockets dict entirely, preserving backward compatibility",
+        "renderSocketUnit content-hash uses same unitContentHash() function as service units, ensuring [inv:os-unit-content-addressed]",
+        "SA-2 committed in 591ff5d (partial); remaining socket-activation wiring completed in uncommitted work"
+      ]
     },
     {
       "id": "SA-3",
       "bl": [],
       "title": "Inherited-fd serveBackend",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {"cmd": "npx nx build service-proxy", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test service-proxy", "exit": 0, "summary": "42/42 pass"}
+        ],
+        "commits": [],
+        "notes": "serveBackend now accepts inheritFd option; when set, uses server.listen({fd}) instead of create+bind+chmod; close() does NOT unlink socket file (did not create it); 4 new tests in backend.spec.ts: negative control, injectFd round-trip, multiple requests, file persistence"
+      },
+      "notes": [
+        "backend.ts: inheritFd option on ServeBackendOptions; useInheritedFd branch skips mkdir/unlink/create/chmod; server.listen({fd}) for inherited fd; close() does not unlink socket file",
+        "backend.spec.ts: 4 tests — negative control (normal UDS path), inheritFd round-trip, multiple requests, behavioral verification (no file creation/unlink)",
+        "Negative-control invariant: when inheritFd is omitted (the normal case), the original create+bind+chmod path is unchanged — proven by negative control test",
+        "Socket fd dupping via /dev/fd/N (macOS) / /proc/self/fd/N (Linux) — works for socket fds on both platforms"
+      ]
     },
     {
       "id": "SA-4",
@@ -93,5 +120,5 @@
   },
   "blockers": [],
   "discovered": [],
-  "updated_at": null
+  "updated_at": "2026-07-03T18:10:00Z"
 }

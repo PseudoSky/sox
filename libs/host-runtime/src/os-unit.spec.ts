@@ -349,6 +349,109 @@ describe('resolveUnitNodePath — volatile node detection', () => {
 
 // ─── systemd seam (pluggability) ─────────────────────────────────────────────────
 
+// ─── SA-2: Socket-activation rendering (golden fixtures) ─────────────────────────
+
+describe('SA-2 socket-activation rendering — launchd', () => {
+  const platform = new LaunchdPlatform();
+
+  it('on-demand posture includes Sockets dict in plist', () => {
+    const spec = makeSpec({ activation_posture: 'on-demand', socketPath: '/tmp/test-on-demand.sock' });
+    const plist = platform.render(spec);
+    expect(plist).toContain('<key>Sockets</key>');
+    expect(plist).toContain('<key>SockPathName</key>');
+    expect(plist).toContain('<string>/tmp/test-on-demand.sock</string>');
+    expect(plist).toContain('<integer>0600</integer>');
+    expect(plist).toContain('SOCK_STREAM');
+  });
+
+  it('always-on posture (no socketPath) omits Sockets dict', () => {
+    const spec = makeSpec({ socketPath: undefined, runAtLoad: true, keepAlive: true });
+    const plist = platform.render(spec);
+    expect(plist).not.toContain('Sockets');
+    expect(plist).not.toContain('SockPathName');
+  });
+
+  it('renderSocketUnit returns undefined (sockets are embedded)', () => {
+    const spec = makeSpec({ socketPath: '/tmp/x.sock' });
+    expect(platform.renderSocketUnit(spec)).toBeUndefined();
+  });
+
+  it('golden fixture: on-demand plist structure matches expected shape', () => {
+    const spec = makeSpec({
+      activation_posture: 'on-demand',
+      socketPath: '/tmp/memory-daemon.sock',
+      id: 'memory-daemon',
+    });
+    const plist = platform.render(spec);
+    // Verify the structural ordering: Sockets dict appears before StandardOutPath.
+    expect(plist.indexOf('Sockets')).toBeGreaterThan(0);
+    expect(plist.indexOf('StandardOutPath')).toBeGreaterThan(plist.indexOf('Sockets'));
+    // Verify the content hash is stable for identical specs.
+    const hash1 = readUnitMeta(plist).contentHash;
+    const hash2 = readUnitMeta(platform.render(spec)).contentHash;
+    expect(hash1).toBe(hash2);
+  });
+});
+
+describe('SA-2 socket-activation rendering — systemd', () => {
+  const platform = new SystemdPlatform();
+
+  it('renderSocketUnit with socketPath returns .socket unit with ListenStream, SocketMode, Service=', () => {
+    const spec = makeSpec({ activation_posture: 'on-demand', socketPath: '/tmp/memory-daemon.sock' });
+    const socketUnit = platform.renderSocketUnit(spec);
+    expect(socketUnit).toBeDefined();
+    expect(socketUnit!).toContain('[Socket]');
+    expect(socketUnit!).toContain('ListenStream=/tmp/memory-daemon.sock');
+    expect(socketUnit!).toContain('SocketMode=0600');
+    expect(socketUnit!).toContain('Service=sox-user-memory-daemon.service');
+    expect(socketUnit!).toContain('[Install]');
+    expect(socketUnit!).toContain('WantedBy=sockets.target');
+    // Must embed a content hash.
+    expect(readUnitMeta(socketUnit!).contentHash).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('renderSocketUnit without socketPath returns undefined', () => {
+    const spec = makeSpec({ socketPath: undefined });
+    expect(platform.renderSocketUnit(spec)).toBeUndefined();
+  });
+
+  it('renderSocketUnit content-hash is stable for same spec, changes with different socketPath', () => {
+    const spec1 = makeSpec({ activation_posture: 'on-demand', socketPath: '/tmp/a.sock' });
+    const spec2 = makeSpec({ activation_posture: 'on-demand', socketPath: '/tmp/b.sock' });
+    const u1 = platform.renderSocketUnit(spec1)!;
+    const u2 = platform.renderSocketUnit(spec2)!;
+    expect(readUnitMeta(u1).contentHash).not.toBe(readUnitMeta(u2).contentHash);
+    // Same spec twice is stable.
+    const u1b = platform.renderSocketUnit(spec1)!;
+    expect(readUnitMeta(u1).contentHash).toBe(readUnitMeta(u1b).contentHash);
+  });
+
+  it('service unit (render) for on-demand posture does NOT contain socket config', () => {
+    const spec = makeSpec({ activation_posture: 'on-demand', socketPath: '/tmp/x.sock' });
+    const serviceUnit = platform.render(spec);
+    // The service unit should NOT contain socket directives.
+    expect(serviceUnit).not.toContain('ListenStream');
+    expect(serviceUnit).not.toContain('SocketMode');
+    // The socket config lives in the separate .socket unit.
+    const socketUnit = platform.renderSocketUnit(spec);
+    expect(socketUnit).toBeDefined();
+    expect(socketUnit!).toContain('ListenStream');
+  });
+
+  it('golden fixture: socket unit filename convention', () => {
+    const spec = makeSpec({ activation_posture: 'on-demand', socketPath: '/tmp/x.sock' });
+    // The socket unit file should replace .service with .socket.
+    const serviceName = platform.unitFileName(spec.label);
+    expect(serviceName).toBe('sox-user-memory-daemon.service');
+    // The socket unit name can be derived by replacing the suffix.
+    const socketName = serviceName.replace(/\.service$/, '.socket');
+    expect(socketName).toBe('sox-user-memory-daemon.socket');
+    // The socket unit references the service by its unit name.
+    const socketUnit = platform.renderSocketUnit(spec)!;
+    expect(socketUnit).toContain(`Service=${serviceName}`);
+  });
+});
+
 describe('systemd platform — the seam is pluggable', () => {
   it('renders a [Service] unit with ExecStart + content hash and a sox-<scope>-<id>.service name', () => {
     const platform = new SystemdPlatform();

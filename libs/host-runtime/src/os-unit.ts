@@ -510,6 +510,37 @@ export class SystemdPlatform implements OsUnitPlatform {
     const r = exec('systemctl', ['--user', 'is-active', unit]);
     return r.code === 0 && r.stdout.trim() === 'active';
   }
+
+  /**
+   * SA-2: Render a .socket unit for on-demand socket activation.
+   * Returns undefined when no socketPath is set. The .socket unit instructs
+   * systemd to create a listening socket at socketPath and pass the fd to
+   * the service on first connection.
+   */
+  renderSocketUnit(spec: OsUnitSpec): string | undefined {
+    if (!spec.socketPath) return undefined;
+
+    const unitName = this.unitFileName(spec.label); // e.g. sox-user-memory-daemon.service
+    // Compute content hash from body only (no meta marker).
+    const body = [
+      '[Unit]',
+      `Description=Socket for soxe service ${spec.id} (${spec.scope})`,
+      '',
+      '[Socket]',
+      `ListenStream=${spec.socketPath}`,
+      'SocketMode=0600',
+      `Service=${unitName}`,
+      '',
+      '[Install]',
+      'WantedBy=sockets.target',
+      '',
+    ].join('\n');
+    const hash = unitContentHash(body);
+    return [
+      `# ${UNIT_META_MARKER} content-hash:${hash} artifact-hash:none generated-by:soxe-service-enable`,
+      body,
+    ].join('\n');
+  }
 }
 
 /** Get the platform implementation for an OS supervisor kind. */

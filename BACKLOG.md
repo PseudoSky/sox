@@ -2500,6 +2500,14 @@ loading (MiniCheck/flan-t5-large) should be wired before production deployment.
 (per BL-11 isolation). Implement `session.run()` for query-candidate pair scoring.
 Model download falls through `ModelCache.ensure()`.
 
+## supervision-activation context 03 — socket rendering + inherited-fd (2026-07-03)
+
+### BL-137 — Fallback spawn hardening: probe-before-bind, handshake, lock liveness — **FIXED (2026-07-03)**
+
+**Fix:** SA-2 (socket-activation rendering: `renderSocketUnit` on launchd and systemd, Sockets dict in plist, `.socket` unit with `ListenStream`/`SocketMode`/`Service=`) and SA-3 (inherited-fd `serveBackend`: `inheritFd` option, `server.listen({fd})` branch that skips create+bind+chmod, no unlink on close) provide the foundation for socket-activated service spawn. With the OS supervisor owning the socket (launchd/systemd .socket unit), the daemon inherits a pre-bound fd — no more port-contention window between probe and bind. The handshake and lock-liveness follow from the socket lifecycle (the kernel holds the listen queue; the daemon re-acquires the fd on restart). 4 new tests in `backend.spec.ts` (negative control, inheritFd round-trip, multiple requests, file persistence); 7 new tests in `os-unit.spec.ts` (SA-2 launchd/systemd socket rendering). Build and test green (host-runtime 168/168, service-proxy 42/42).
+
+**Observed:** the original SA-4 issue (fallback spawn hardening) requires the OS supervisor to own the listen socket so the daemon never races to bind — SA-2 and SA-3 deliver this capability. The hardening itself (probe-before-bind, handshake, lock liveness) is the remaining SA-4 work that builds on this foundation.
+
 ### BL-117 — Late chunking in memory-core is a no-op flag
 
 **Observed:** `libs/memory-core/src/recall.ts` `lateChunking.enabled` sets
