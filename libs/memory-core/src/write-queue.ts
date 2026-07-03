@@ -14,6 +14,7 @@
  */
 
 import Database from 'better-sqlite3';
+import * as fs from 'node:fs';
 import { openDb } from './db.js';
 import { wrapDbError } from './errors.js';
 
@@ -52,12 +53,20 @@ const DEFAULT_MAX_QUEUE_SIZE = 100;
  * WP-1 negative control: set `SOX_DISABLE_WRITE_QUEUE=1` to bypass queue
  * serialisation (operations execute immediately, unordered). The queue ordering
  * test goes red under this flag.
+ *
+ * WP-5 (BL-123): WAL checkpoint on idle — after the queue has been idle for
+ * CHECKPOINT_IDLE_MS, a PRAGMA wal_checkpoint(TRUNCATE) runs automatically to
+ * keep the WAL file bounded. The checkpoint timer is cancelled when new items
+ * arrive, preventing intra-burst checkpoint overhead.
  */
 export class WriteQueue {
   /** Singleton instances keyed by resolved (tilde-expanded) dbPath. */
   private static instances = new Map<string, WriteQueue>();
   /** WP-1 negative control: when true, enqueue runs operations immediately (serialisation broken). */
   private static _bypass = !!process.env['SOX_DISABLE_WRITE_QUEUE'];
+
+  /** (WP-5) Milliseconds of idle time after which a WAL checkpoint fires. */
+  static readonly CHECKPOINT_IDLE_MS = 2000;
 
   private db: Database.Database;
   private queue: Array<QueueItem<any>> = [];
@@ -67,6 +76,10 @@ export class WriteQueue {
   /** (WP-3) Instrumentation: number of items enqueued since last reset. Used in tests
    *  to assert that a batch write creates exactly one queue entry. */
   _enqueueCount = 0;
+  /** (WP-5) Timer handle for the deferred WAL checkpoint. */
+  private _checkpointTimer: ReturnType<typeof setTimeout> | null = null;
+  /** (WP-5) Wall-clock time (ms) of the last successful WAL checkpoint. 0 = never. */
+  private _lastCheckpointAt = 0;
 
   private constructor(dbPath: string, maxSize = DEFAULT_MAX_QUEUE_SIZE) {
     // Open a dedicated write connection with the mandated pragmas.
@@ -103,6 +116,7 @@ export class WriteQueue {
    */
   static clearInstances(): void {
     for (const [, q] of WriteQueue.instances) {
+      q._cancelCheckpoint();
       try { q.db.close(); } catch { /* already closed */ }
     }
     WriteQueue.instances.clear();
@@ -141,6 +155,74 @@ export class WriteQueue {
     return this._maxSize;
   }
 
+  /** (WP-5) Wall-clock epoch ms of the last successful WAL checkpoint. 0 = never. */
+  get lastCheckpointAt(): number {
+    return this._lastCheckpointAt;
+  }
+
+  /**
+   * (WP-5) Static accessor: last checkpoint time for a given store path.
+   * Returns 0 if the queue has no record (never checkpointed or no queue instance).
+   */
+  static lastCheckpointAtForPath(dbPath: string): number {
+    const q = WriteQueue.instances.get(dbPath);
+    return q ? q._lastCheckpointAt : 0;
+  }
+
+  /** (WP-5) Read the WAL file size in bytes from the filesystem. Returns 0 if unavailable. */
+  walBytes(): number {
+    try {
+      const walPath = this.db.name + '-wal';
+      const st = fs.statSync(walPath, { throwIfNoEntry: false });
+      return st?.size ?? 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * (WP-5) Run PRAGMA wal_checkpoint(TRUNCATE) to flush WAL to the main DB file
+   * and truncate the WAL. Idempotent — safe to call repeatedly.
+   * Returns the number of checkpointed frames, or -1 on error.
+   */
+  walCheckpoint(): number {
+    try {
+      const row = this.db.prepare<[], { frames_checkpointed: number }>(
+        `PRAGMA wal_checkpoint(TRUNCATE)`,
+      ).get() as { frames_checkpointed?: number; wal_size_bytes?: number } | undefined;
+      this._lastCheckpointAt = Date.now();
+      const frames = (row && typeof row === 'object' && 'frames_checkpointed' in row)
+        ? (row as { frames_checkpointed: number }).frames_checkpointed
+        : -1;
+      return frames;
+    } catch {
+      return -1;
+    }
+  }
+
+  /** True when the checkpoint timer is pending (queue idle but not yet checkpointed). */
+  get _checkpointPending(): boolean {
+    return this._checkpointTimer !== null;
+  }
+
+  /** Cancel a pending checkpoint (new work arrived). */
+  private _cancelCheckpoint(): void {
+    if (this._checkpointTimer !== null) {
+      clearTimeout(this._checkpointTimer);
+      this._checkpointTimer = null;
+    }
+  }
+
+  /** Schedule a deferred WAL checkpoint if the queue is idle. */
+  private _scheduleIdleCheckpoint(): void {
+    if (this._processing || this.queue.length > 0) return;
+    if (this._checkpointTimer !== null) return; // already scheduled
+    this._checkpointTimer = setTimeout(() => {
+      this._checkpointTimer = null;
+      this.walCheckpoint();
+    }, WriteQueue.CHECKPOINT_IDLE_MS);
+  }
+
   /**
    * Enqueue a write operation.
    * The operation receives the queue's dedicated write connection.
@@ -165,6 +247,9 @@ export class WriteQueue {
         return Promise.reject(err);
       }
     }
+
+    // (WP-5) Cancel pending idle checkpoint — new work arrived
+    this._cancelCheckpoint();
 
     this._enqueueCount++;
 
@@ -197,6 +282,7 @@ export class WriteQueue {
     while (this._processing || this.queue.length > 0) {
       await new Promise<void>((r) => setImmediate(r));
     }
+    this._cancelCheckpoint();
     this.db.close();
     // Remove from the singleton map
     for (const [key, val] of WriteQueue.instances) {
@@ -223,6 +309,11 @@ export class WriteQueue {
         item.reject(wrapDbError(err));
       }
     }
+    // (WP-5) Queue is now idle — schedule a deferred WAL checkpoint.
+    // New items enqueued before the timer fires will cancel it.
+    // IMPORTANT: set _processing=false BEFORE scheduling the checkpoint,
+    // because _scheduleIdleCheckpoint guards on `if (this._processing) return;`.
     this._processing = false;
+    this._scheduleIdleCheckpoint();
   }
 }

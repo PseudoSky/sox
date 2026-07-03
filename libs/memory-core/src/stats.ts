@@ -7,10 +7,12 @@
  */
 
 import type Database from 'better-sqlite3';
+import * as fs from 'node:fs';
 import { ENRICH_VERSION } from './enrich-version.js';
 import { clusterStats } from './cluster.js';
 import type { ClusterStats } from './cluster.js';
 import { getActiveEmbedModel, getEmbedState, getLastEmbedError } from './embed.js';
+import { WriteQueue } from './write-queue.js';
 
 export interface StatsResult {
   tools: string[];
@@ -34,6 +36,10 @@ export interface StatsResult {
   mean_intra_cluster_sim: number;
   coverage: number;
   cluster_quality: ClusterStats;
+  /** (WP-5) Size of the WAL file in bytes. 0 if the file does not exist or is unavailable. */
+  wal_bytes: number;
+  /** (WP-5) ISO timestamp of the last successful WAL checkpoint, or null if never checkpointed. */
+  last_checkpoint_at: string | null;
 }
 
 export async function memoryGetStats(
@@ -137,6 +143,18 @@ export async function memoryGetStats(
     degradedRecordCount = 0;
   }
 
+  // (WP-5) WAL file bytes + last checkpoint time
+  let walBytes = 0;
+  try {
+    const walPath = db.name + '-wal';
+    const st = fs.statSync(walPath, { throwIfNoEntry: false });
+    walBytes = st?.size ?? 0;
+  } catch {
+    walBytes = 0;
+  }
+  const lastCkptEpoch = WriteQueue.lastCheckpointAtForPath(db.name);
+  const lastCheckpointAt = lastCkptEpoch > 0 ? new Date(lastCkptEpoch).toISOString() : null;
+
   return {
     tools: toolNames,
     enrich_version: ENRICH_VERSION,
@@ -159,5 +177,7 @@ export async function memoryGetStats(
     mean_intra_cluster_sim: qStats.mean_intra_sim,
     coverage: qStats.coverage,
     cluster_quality: qStats,
+    wal_bytes: walBytes,
+    last_checkpoint_at: lastCheckpointAt,
   };
 }

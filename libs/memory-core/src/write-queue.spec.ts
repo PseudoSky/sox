@@ -167,3 +167,153 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
     WriteQueue.setBypass(false);
   });
 });
+
+// ── WP-5: WAL checkpoint on idle ────────────────────────────────────────────
+
+describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
+  let cleanup: () => void;
+  let dbPath: string;
+
+  beforeEach(() => {
+    const t = tmpDir();
+    cleanup = t.cleanup;
+    dbPath = path.join(t.dir, 'test.db');
+    WriteQueue.clearInstances();
+    WriteQueue.setBypass(false);
+  });
+
+  afterEach(() => {
+    WriteQueue.clearInstances();
+    cleanup();
+  });
+
+  /**
+   * Acceptance: write enough data to grow the WAL, then wait for the idle
+   * checkpoint timer to fire. After the timer fires, walBytes() must report
+   * near-zero and lastCheckpointAt must be set.
+   *
+   * The idle timer fires 2 seconds after the queue becomes empty. We wait
+   * the full idle period + 1s buffer for timer + checkpoint execution.
+   *
+   * NOTE: The DB schema creation (run by openDb via WriteQueue.forPath)
+   * writes to the WAL immediately, so walBytes is > 0 from the start.
+   * We verify it grows with our writes, then shrinks after checkpoint.
+   */
+  it('idle checkpoint shrinks WAL file after queue drains', async () => {
+    const queue = WriteQueue.forPath(dbPath);
+
+    // Capture baseline WAL size (from schema creation)
+    const walBaseline = queue.walBytes();
+    expect(walBaseline).toBeGreaterThan(0);
+
+    // Write enough data to grow the WAL (50 rows of ~1KB each)
+    await queue.enqueue('seed-table', (db) => {
+      db.exec(`CREATE TABLE IF NOT EXISTS wp5_test (
+        id INTEGER PRIMARY KEY,
+        val TEXT NOT NULL
+      )`);
+      const stmt = db.prepare('INSERT INTO wp5_test (id, val) VALUES (?, ?)');
+      for (let i = 0; i < 50; i++) {
+        stmt.run(i, 'x'.repeat(1000));
+      }
+    });
+
+    // Wait for queue to drain and checkpoint timer to fire
+    await new Promise<void>((r) => setTimeout(r, WriteQueue.CHECKPOINT_IDLE_MS + 1000));
+
+    // WAL should be at or near 0 after TRUNCATE checkpoint
+    const walAfter = queue.walBytes();
+    expect(walAfter).toBeLessThan(512);
+
+    // lastCheckpointAt should be set
+    expect(queue.lastCheckpointAt).toBeGreaterThan(0);
+  });
+
+  /**
+   * Checkpoint timer lifecycle:
+   *   1. After queue drains → timer is pending (_processing=false, _scheduleIdleCheckpoint runs)
+   *   2. New work arrives → old timer is cancelled
+   *   3. After new work drains → new timer is scheduled
+   */
+  it('checkpoint timer lifecycle: pending after drain, cancelled and re-scheduled by new work', async () => {
+    const queue = WriteQueue.forPath(dbPath);
+
+    // Do a quick write and let the queue drain
+    await queue.enqueue('create-table', (db) => {
+      db.exec('CREATE TABLE IF NOT EXISTS ck_lifecycle (id INTEGER PRIMARY KEY, val TEXT)');
+    });
+
+    // Wait just enough for _processNext to finish and checkpoint to be scheduled
+    await new Promise<void>((r) => setTimeout(r, 30));
+
+    // Queue should be idle now → checkpoint timer is pending
+    expect(queue._checkpointPending).toBe(true);
+
+    // Enqueue new work — this should cancel the pending timer
+    queue.enqueue('new-work', (db) => {
+      db.exec("INSERT INTO ck_lifecycle (id, val) VALUES (1, 'test')");
+    });
+
+    // Wait just enough for enqueue to cancel and new item to be processed
+    await new Promise<void>((r) => setTimeout(r, 30));
+
+    // After the new item is processed and the queue goes idle again,
+    // a new checkpoint timer should be scheduled
+    expect(queue._checkpointPending).toBe(true);
+  });
+
+  /**
+   * walBytes: the method reads the -wal file from disk. Returns 0 when no
+   * DB file exists (WAL file absent), and non-zero when the DB is active
+   * with WAL data.
+   *
+   * NOTE: openDb always writes to the WAL (schema pragmas), so a fresh queue
+   * already has a non-zero WAL. This test verifies walBytes can detect it.
+   */
+  it('walBytes returns non-zero for an active WAL database', async () => {
+    const queue = WriteQueue.forPath(dbPath);
+    // The DB writes schema PRAGMAs to the WAL on open, so walBytes > 0
+    expect(queue.walBytes()).toBeGreaterThan(0);
+  });
+
+  /**
+   * walCheckpoint is idempotent. First call checkpoints frames; second call
+   * returns -1 (nothing left to checkpoint). lastCheckpointAt advances.
+   */
+  it('walCheckpoint is idempotent returns frame count then -1', async () => {
+    const queue = WriteQueue.forPath(dbPath);
+
+    // Write some data
+    await queue.enqueue('write-data', (db) => {
+      db.exec('CREATE TABLE IF NOT EXISTS ck_idem (id INTEGER PRIMARY KEY, val TEXT)');
+      const stmt = db.prepare('INSERT INTO ck_idem (id, val) VALUES (?, ?)');
+      for (let i = 0; i < 30; i++) {
+        stmt.run(i, 'x'.repeat(300));
+      }
+    });
+    await new Promise<void>((r) => setTimeout(r, 100));
+
+    // First checkpoint: should return frame count >= 0
+    const frames1 = queue.walCheckpoint();
+    expect(typeof frames1).toBe('number');
+
+    // Second checkpoint: nothing to checkpoint → -1
+    const frames2 = queue.walCheckpoint();
+    expect(frames2).toBe(-1);
+
+    // lastCheckpointAt should be set
+    expect(queue.lastCheckpointAt).toBeGreaterThan(0);
+  });
+
+  /**
+   * lastCheckpointAtForPath returns 0 for unknown/unused paths,
+   * and >0 after a checkpoint has been performed.
+   */
+  it('lastCheckpointAtForPath: unknown path returns 0, known path >0 after checkpoint', () => {
+    expect(WriteQueue.lastCheckpointAtForPath('/nonexistent/path.db')).toBe(0);
+
+    const queue = WriteQueue.forPath(dbPath);
+    queue.walCheckpoint();
+    expect(WriteQueue.lastCheckpointAtForPath(dbPath)).toBeGreaterThan(0);
+  });
+});

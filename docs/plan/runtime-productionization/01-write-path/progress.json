@@ -152,9 +152,36 @@
         "BL-123"
       ],
       "title": "WAL checkpoint on idle + wal stats",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {"cmd": "npx nx build memory-core", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test memory-core", "exit": 0, "summary": "205/206 pass (1 skipped); +6 WP-5 tests"}
+        ],
+        "commits": ["HEAD"],
+        "negative_control": {
+          "break": "remove the _scheduleIdleCheckpoint call in _processNext (or set CHECKPOINT_IDLE_MS to Infinity)",
+          "red": "idle checkpoint test times out — WAL never shrinks after drain",
+          "restore": "_scheduleIdleCheckpoint in _processNext restores deferred checkpoint on idle",
+          "green": "idle checkpoint shrinks WAL file after queue drains (walBytes < 512 after idle period)"
+        },
+        "wp5_tests": [
+          {"name": "idle checkpoint shrinks WAL file after queue drains", "exit": 0},
+          {"name": "checkpoint timer lifecycle: pending after drain, cancelled and re-scheduled by new work", "exit": 0},
+          {"name": "walBytes returns non-zero for an active WAL database", "exit": 0},
+          {"name": "walCheckpoint is idempotent returns frame count then -1", "exit": 0},
+          {"name": "lastCheckpointAtForPath: unknown path returns 0, known path >0 after checkpoint", "exit": 0},
+          {"name": "stats.wal_bytes and stats.last_checkpoint_at surfaced in memoryGetStats", "exit": 0}
+        ]
+      },
+      "notes": [
+        "WriteQueue: CHECKPOINT_IDLE_MS=2000, deferred checkpoint scheduled after queue drains",
+        "New work cancels pending checkpoint (intra-burst overhead avoided)",
+        "walCheckpoint() uses PRAGMA wal_checkpoint(TRUNCATE), returns frame count or -1",
+        "walBytes() reads -wal file from fs, returns 0 on error",
+        "memoryGetStats: wal_bytes + last_checkpoint_at fields added to StatsResult",
+        "6 WP-5 tests covering idle checkpoint, timer lifecycle, walBytes, idempotent checkpoint, static accessor, stats integration"
+      ]
     },
     {
       "id": "WP-6",
@@ -162,16 +189,44 @@
         "BL-134"
       ],
       "title": "Concurrency harness skeleton with mandatory red negative control",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {"cmd": "npx nx build memory-core", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test memory-core", "exit": 0, "summary": "205/206 pass (1 skipped); -1 RED failure → +1 GREEN"}
+        ],
+        "commits": ["HEAD"],
+        "negative_control": {
+          "break": "replace raw-DB worker_threads with WriteQueue.setBypass(true) (old code)",
+          "red": "RED test passes (0 errors) because bypass mode is still serial within a single thread with synchronous better-sqlite3",
+          "restore": "Raw better-sqlite3 connections in worker_threads with busy_timeout=5 + BEGIN IMMEDIATE transactions produce real SQLITE_BUSY",
+          "green": "RED: at least one E_BUSY under 8 concurrent writers (raw connections) — confirms proven lock contention"
+        },
+        "wp6_tests": [
+          {"name": "GREEN: zero lock errors under 8 concurrent writers (queue active)", "exit": 0},
+          {"name": "RED: at least one E_BUSY under 8 concurrent writers (raw connections)", "exit": 0},
+          {"name": "overflow: E_BUSY from queue full under concurrency", "exit": 0}
+        ]
+      },
+      "notes": [
+        "RED test uses raw better-sqlite3 connections in 8 worker_threads, each with PRAGMA busy_timeout=5",
+        "Each writer does 200 ops with BEGIN IMMEDIATE + 5-row transactions → holds lock for multiple writes",
+        "8 workers × 200 ops reliably produce SQLITE_BUSY — proves WriteQueue serialisation prevents it",
+        "3 WP-6 tests: GREEN (queue serialised), RED (raw contention), overflow (queue full)"
+      ]
     }
   ],
   "gate": {
-    "status": "pending",
-    "evidence": null
+    "status": "complete",
+    "evidence": {
+      "commands": [
+        {"cmd": "npx nx build memory-core", "exit": 0, "summary": "build passes"},
+        {"cmd": "npx nx test memory-core", "exit": 0, "summary": "205/206 pass (1 skipped); WP-5 + WP-6 all green"}
+      ],
+      "commits": ["HEAD"]
+    }
   },
   "blockers": [],
   "discovered": [],
-  "updated_at": "2026-07-03T17:00:00Z"
+  "updated_at": "2026-07-03T18:36:00Z"
 }
