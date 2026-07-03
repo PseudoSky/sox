@@ -83,6 +83,14 @@ export interface OsUnitSpec {
   stderrPath: string;
   /** Content address of the served artifact (ADR-0003), when known. */
   artifactHash?: string | undefined;
+  /**
+   * SA-2 / CONTRACTS §I: Socket path for on-demand (socket-activation) posture.
+   * When set, the generated OS unit includes a Sockets key (launchd) or a paired
+   * .socket unit (systemd) so the OS supervisor creates the listening socket and
+   * passes the fd to the service on-demand.
+   * Absent for always-on posture (no socket activation).
+   */
+  socketPath?: string | undefined;
 }
 
 
@@ -118,6 +126,13 @@ export function deriveOsUnitSpec(opts: {
    * When omitted: falls back to the manifest lifecycle block (existing behaviour).
    */
   activation_posture?: 'always-on' | 'on-demand' | undefined;
+  /**
+   * SA-2: Socket path for on-demand socket activation.
+   * Only used when activation_posture === 'on-demand'.
+   * The OS supervisor creates a listening socket at this path and passes the
+   * file descriptor to the service on first connection.
+   */
+  socketPath?: string | undefined;
 }): OsUnitSpec {
   const label = osUnitLabel(opts.scope, opts.id);
   const logDate = opts.logDate ?? new Date().toISOString().slice(0, 10);
@@ -159,6 +174,9 @@ export function deriveOsUnitSpec(opts: {
     stdoutPath: path.join(opts.logDir, `${opts.id}-os-${logDate}.out.log`),
     stderrPath: path.join(opts.logDir, `${opts.id}-os-${logDate}.err.log`),
     artifactHash: opts.artifactHash,
+    ...(opts.activation_posture === 'on-demand' && opts.socketPath !== undefined
+      ? { socketPath: opts.socketPath }
+      : {}),
   };
 }
 
@@ -290,6 +308,13 @@ export interface OsUnitPlatform {
   unitFileName(label: string): string;
   /** Render the unit text (content-addressed: embeds the content + artifact hash). */
   render(spec: OsUnitSpec): string;
+  /**
+   * SA-2: Render a socket unit for on-demand socket activation.
+   * Returns undefined when the platform embeds socket config in the service unit
+   * (launchd) or when no socketPath is set. For systemd, returns the .socket unit
+   * content.
+   */
+  renderSocketUnit?(spec: OsUnitSpec): string | undefined;
   /** Load (activate) a unit. */
   load(unitPath: string, label: string, exec: OsExec): OsExecResult;
   /** Unload (deactivate) a unit. */
@@ -326,6 +351,23 @@ export class LaunchdPlatform implements OsUnitPlatform {
       .map((k) => `    <key>${xmlEscape(k)}</key>\n    <string>${xmlEscape(spec.env[k] ?? '')}</string>`)
       .join('\n');
 
+    const socketLines = spec.socketPath
+      ? [
+          '  <key>Sockets</key>',
+          '  <dict>',
+          '    <key>Listener</key>',
+          '    <dict>',
+          '      <key>SockPathName</key>',
+          `      <string>${xmlEscape(spec.socketPath)}</string>`,
+          '      <key>SockPathMode</key>',
+          '      <integer>0600</integer>',
+          '      <key>SockProtocol</key>',
+          '      <string>SOCK_STREAM</string>',
+          '    </dict>',
+          '  </dict>',
+        ].join('\n')
+      : '';
+
     return [
       '<plist version="1.0">',
       '<dict>',
@@ -347,6 +389,7 @@ export class LaunchdPlatform implements OsUnitPlatform {
       `  <${spec.keepAlive ? 'true' : 'false'}/>`,
       '  <key>ThrottleInterval</key>',
       `  <integer>${spec.throttleIntervalSec}</integer>`,
+      ...(socketLines ? ['', socketLines] : []),
       '  <key>StandardOutPath</key>',
       `  <string>${xmlEscape(spec.stdoutPath)}</string>`,
       '  <key>StandardErrorPath</key>',
@@ -369,6 +412,11 @@ export class LaunchdPlatform implements OsUnitPlatform {
       '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
       body,
     ].join('\n');
+  }
+
+  /** SA-2: launchd embeds sockets in the plist; no separate socket unit. */
+  renderSocketUnit(_spec: OsUnitSpec): string | undefined {
+    return undefined;
   }
 
   /** The bootstrap domain target for the current user (gui/<uid>). */
