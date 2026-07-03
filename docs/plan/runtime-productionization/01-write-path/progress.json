@@ -44,9 +44,36 @@
         "BL-124"
       ],
       "title": "Storage error taxonomy at the tool boundary",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {"cmd": "npx nx build memory-core", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test memory-core", "exit": 0, "summary": "187/188 pass (1 skipped, same as baseline)"}
+        ],
+        "commits": ["3b8a3d4", "89d0afb"],
+        "negative_control": {
+          "break": "remove the catch clause in WriteQueue._processNext (or revert wrapDbError)",
+          "red": "forced-lock test would pass raw SqliteError instead of E_BUSY",
+          "restore": "wrapDbError restores structured E_BUSY with retryable=true, retry_after_ms=250",
+          "green": "forced-lock → E_BUSY (wrapped); unlock → success; no SqliteError string in tool surface"
+        },
+        "wp2_tests": [
+          {"name": "forced-lock → E_BUSY (wrapped); unlock → success", "exit": 0, "note": "EXCLUSIVE lock from second connection causes wrapped E_BUSY; after release, write succeeds"},
+          {"name": "negative control: no lock → write succeeds", "exit": 0},
+          {"name": "wrapDbError maps SQLITE_BUSY → E_BUSY", "exit": 0},
+          {"name": "wrapDbError maps SQLITE_IOERR → E_IO", "exit": 0},
+          {"name": "wrapDbError maps SQLITE_CONSTRAINT → E_DEDUP", "exit": 0},
+          {"name": "wrapDbError passes through existing StorageError", "exit": 0},
+          {"name": "wrapDbError wraps unknown errors as E_IO", "exit": 0}
+        ]
+      },
+      "notes": [
+        "errors.ts: wrapDbError() converts SqliteError to CONTRACTS §B shape",
+        "WriteQueue._processNext wraps errors via wrapDbError before surfacing",
+        "Forced-lock test proves raw SqliteError never reaches the tool surface",
+        "Negative control verifies success path after lock release",
+        "Exported from memory-core index for use in memory-server handler"
+      ]
     },
     {
       "id": "WP-3",

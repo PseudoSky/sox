@@ -36,6 +36,10 @@ export type { ScopeKind, MemoryScope } from './db.js';
 export { WriteQueue } from './write-queue.js';
 export type { QueueBusyError, QueueError } from './write-queue.js';
 
+// ── Error taxonomy (WP-2, BL-124) ─────────────────────────────────────────────
+export { wrapDbError } from './errors.js';
+export type { StorageError, StorageErrorCode } from './errors.js';
+
 // ── Schema ────────────────────────────────────────────────────────────────────
 export { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
 

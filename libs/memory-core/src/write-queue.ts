@@ -15,6 +15,7 @@
 
 import Database from 'better-sqlite3';
 import { openDb } from './db.js';
+import { wrapDbError } from './errors.js';
 
 // ── Error types (partial; full taxonomy is WP-2 / CONTRACTS §B) ───────────────
 
@@ -206,7 +207,8 @@ export class WriteQueue {
         const resolved = await result;
         item.resolve(resolved);
       } catch (err) {
-        item.reject(err);
+        // WP-2: wrap raw SqliteError into CONTRACTS §B shape before surfacing.
+        item.reject(wrapDbError(err));
       }
     }
     this._processing = false;
