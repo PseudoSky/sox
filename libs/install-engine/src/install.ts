@@ -1430,6 +1430,26 @@ export async function declarativeInstall(
     recordOwnership(scopeRoot, descriptor, scope, [
       { kind: 'materialize', path: storePath },
     ]);
+
+    // Lockfile sync: materialized store path → lockfile entry.
+    try {
+      const indexJs = path.join(storePath, 'index.js');
+      if (fs.existsSync(indexJs)) {
+        const lockDirPaths = scopeConfigPaths(scope, workspaceRoot);
+        const lPath = lockDirPaths.lockfile;
+        const lKey = descriptor.ext;
+        const artBytes = fs.readFileSync(indexJs);
+        const csum = crypto.createHash('sha256').update(artBytes).digest('hex');
+        const existing: Lockfile = loadLockfile(lPath) ?? { lockfileVersion: LOCKFILE_VERSION, resolved: {} };
+        existing.resolved[lKey] = { source: `file://${indexJs}`, checksum: csum, resolved_at: new Date().toISOString() };
+        const lDir = path.dirname(lPath);
+        if (!fs.existsSync(lDir)) fs.mkdirSync(lDir, { recursive: true });
+        fs.writeFileSync(lPath, JSON.stringify(existing, null, 2) + '\n', 'utf8');
+      }
+    } catch (e) {
+      console.warn(`install: warning: could not write lockfile entry for ${descriptor.ext}: ${String(e)}`);
+    }
+
     return results;
   }
 
@@ -1637,6 +1657,50 @@ export async function declarativeInstall(
   // [inv:no-untracked-injection]: persist the complete owned set for this install.
   if (ownedEntries.length > 0) {
     recordOwnership(scopeRoot, descriptor, scope, ownedEntries);
+  }
+
+  // ── Lockfile sync ───────────────────────────────────────────────────────────
+  // Host-placement install (mcp-server via config-merge, service via run-service)
+  // writes to the host's config file but NOT to the install-engine's lockfile.
+  // Without a lockfile entry, `verifyIntegrity` cannot find the extension, so
+  // `soxe upgrade --all` silently skips it ("not in lockfile"). Sync here so
+  // that upgrade can detect stale artifacts and restart running services.
+  if (descriptor.srcPath && (descriptor.type === 'mcp-server' || descriptor.type === 'service')) {
+    try {
+      // Determine the artifact to hash (mirrors fetchArtifact's file:// logic).
+      const extJson = path.join(descriptor.srcPath, 'extension.json');
+      let artifactPath: string | undefined;
+      if (fs.existsSync(extJson)) {
+        try {
+          const manifest = JSON.parse(fs.readFileSync(extJson, 'utf8')) as { entrypoint?: string };
+          if (typeof manifest.entrypoint === 'string' && manifest.entrypoint.trim() !== '') {
+            const declared = path.join(descriptor.srcPath, manifest.entrypoint);
+            if (fs.existsSync(declared)) artifactPath = declared;
+          }
+        } catch { /* fall through */ }
+      }
+      if (!artifactPath) {
+        const distJs = path.join(descriptor.srcPath, 'dist', 'index.js');
+        if (fs.existsSync(distJs)) artifactPath = distJs;
+      }
+      if (artifactPath) {
+        const lockDir = scopeConfigPaths(scope, workspaceRoot);
+        const lockPath = lockDir.lockfile;
+        const lockKey = descriptor.ext;
+        const artifactBytes = fs.readFileSync(artifactPath);
+        const checksum = crypto.createHash('sha256').update(artifactBytes).digest('hex');
+        const source = `file://${artifactPath}`;
+
+        // Merge into existing lockfile or create new.
+        const existing: Lockfile = loadLockfile(lockPath) ?? { lockfileVersion: LOCKFILE_VERSION, resolved: {} };
+        existing.resolved[lockKey] = { source, checksum, resolved_at: new Date().toISOString() };
+        const lockDirPath = path.dirname(lockPath);
+        if (!fs.existsSync(lockDirPath)) fs.mkdirSync(lockDirPath, { recursive: true });
+        fs.writeFileSync(lockPath, JSON.stringify(existing, null, 2) + '\n', 'utf8');
+      }
+    } catch (e) {
+      console.warn(`install: warning: could not write lockfile entry for ${descriptor.ext}: ${String(e)}`);
+    }
   }
 
   return results;
