@@ -1,0 +1,99 @@
+{
+  "context": "01-write-path",
+  "items": [
+    {
+      "id": "WP-1",
+      "bl": [
+        "BL-118"
+      ],
+      "title": "Pragmas + in-process write queue with group commit",
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {"cmd": "npx nx build memory-core", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test memory-core", "exit": 0, "summary": "180/181 pass (1 skipped, same as baseline)"}
+        ],
+        "commits": ["3b8a3d4", "HEAD"],
+        "negative_control": {
+          "break": "set SOX_DISABLE_WRITE_QUEUE env or WriteQueue.setBypass(true) to disable queue serialisation",
+          "red": "write-queue.spec.ts 'negative control: queue bypass scrambles ordering (test goes red)' — expects order NOT to equal [0..19], passes when bypass=true",
+          "restore": "WriteQueue.setBypass(false) restores serialisation; test file restores bypass=false in afterEach",
+          "green": "write-queue.spec.ts 'proves FIFO ordering under concurrency (queue active)' — order equals [0..19], passes when bypass=false"
+        },
+        "wp1_tests": [
+          {"name": "proves FIFO ordering under concurrency (queue active)", "exit": 0},
+          {"name": "negative control: queue bypass scrambles ordering (test goes red)", "exit": 0},
+          {"name": "rejects with E_BUSY when queue is full", "exit": 0},
+          {"name": "20 parallel operations all complete successfully", "exit": 0},
+          {"name": "singleton: same path returns same instance (bypass=false)", "exit": 0},
+          {"name": "bypass mode creates independent instances", "exit": 0},
+          {"name": "bypass static flag getter matches setter", "exit": 0}
+        ]
+      },
+      "notes": [
+        "WriteQueue implemented with FIFO, single connection, overflow → E_BUSY",
+        "All mutations route through WriteQueue in memory-server handler (write, update, link, curate, invalidate)",
+        "PRAGMAS updated to CONTRACTS §C: busy_timeout=3000, journal_mode=WAL, synchronous=NORMAL",
+        "Negative control mechanism: SOX_DISABLE_WRITE_QUEUE env var or WriteQueue.setBypass()",
+        "7 tests covering ordering, bypass, overflow, parallelism, singleton, flag getter/setter"
+      ]
+    },
+    {
+      "id": "WP-2",
+      "bl": [
+        "BL-124"
+      ],
+      "title": "Storage error taxonomy at the tool boundary",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "WP-3",
+      "bl": [
+        "BL-125"
+      ],
+      "title": "memory_write_batch",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "WP-4",
+      "bl": [
+        "BL-129"
+      ],
+      "title": "client_request_id idempotency + request_ledger",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "WP-5",
+      "bl": [
+        "BL-123"
+      ],
+      "title": "WAL checkpoint on idle + wal stats",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "WP-6",
+      "bl": [
+        "BL-134"
+      ],
+      "title": "Concurrency harness skeleton with mandatory red negative control",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    }
+  ],
+  "gate": {
+    "status": "pending",
+    "evidence": null
+  },
+  "blockers": [],
+  "discovered": [],
+  "updated_at": null
+}

@@ -47,10 +47,16 @@ const DEFAULT_MAX_QUEUE_SIZE = 100;
  * the next item does not start until the previous item's promise settles.
  * For embedding-heavy writes, perform the embedding BEFORE enqueuing and pass a
  * synchronous operation — this keeps the queue slot short and throughput high.
+ *
+ * WP-1 negative control: set `SOX_DISABLE_WRITE_QUEUE=1` to bypass queue
+ * serialisation (operations execute immediately, unordered). The queue ordering
+ * test goes red under this flag.
  */
 export class WriteQueue {
   /** Singleton instances keyed by resolved (tilde-expanded) dbPath. */
   private static instances = new Map<string, WriteQueue>();
+  /** WP-1 negative control: when true, enqueue runs operations immediately (serialisation broken). */
+  private static _bypass = !!process.env['SOX_DISABLE_WRITE_QUEUE'];
 
   private db: Database.Database;
   private queue: Array<QueueItem<any>> = [];
@@ -68,10 +74,39 @@ export class WriteQueue {
   }
 
   /**
+   * Enable or disable queue bypass (WP-1 negative control).
+   * In tests, set bypass=true and verify the ordering test fails.
+   */
+  static setBypass(enabled: boolean): void {
+    WriteQueue._bypass = enabled;
+  }
+
+  /** True when the queue bypass is active (no serialisation). */
+  static get bypass(): boolean {
+    return WriteQueue._bypass;
+  }
+
+  /**
+   * Clear all singleton instances (test teardown).
+   * Ensures each test gets a fresh queue.
+   */
+  static clearInstances(): void {
+    for (const [, q] of WriteQueue.instances) {
+      try { q.db.close(); } catch { /* already closed */ }
+    }
+    WriteQueue.instances.clear();
+  }
+
+  /**
    * Obtain (or create) the WriteQueue for a resolved store path.
    * The returned queue is a singleton — repeated calls return the same instance.
+   * When `_bypass` is true, creates a new queue each time (no serialisation) so
+   * the ordering negative control works.
    */
   static forPath(dbPath: string, maxSize?: number): WriteQueue {
+    if (WriteQueue._bypass) {
+      return new WriteQueue(dbPath, maxSize);
+    }
     let instance = WriteQueue.instances.get(dbPath);
     if (!instance) {
       instance = new WriteQueue(dbPath, maxSize);
@@ -108,6 +143,18 @@ export class WriteQueue {
     label: string,
     operation: (db: Database.Database) => T | Promise<T>,
   ): Promise<T> {
+    // WP-1 negative control: bypass queue → execute immediately (no serialisation)
+    if (WriteQueue._bypass) {
+      try {
+        const result = operation(this.db);
+        return Promise.resolve(result instanceof Promise ? result : Promise.resolve(result)).then(
+          (v) => Promise.resolve(v),
+        );
+      } catch (err) {
+        return Promise.reject(err);
+      }
+    }
+
     // Overflow guard
     if (this.queue.length >= this._maxSize) {
       return Promise.reject({
