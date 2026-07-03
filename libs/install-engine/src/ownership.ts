@@ -165,12 +165,65 @@ export class OwnershipIndex {
     }
   }
 
+  /**
+   * PI-6 / BL-142: generate a stable uniqueness key for an OwnedEntry.
+   * Must stay in sync with supersededEntries() below.
+   */
+  private static entryKey(e: OwnedEntry): string {
+    switch (e.kind) {
+      case 'file-drop':
+      case 'materialize':
+        return `${e.kind}:${e.path}`;
+      case 'config-key':
+      case 'array-values':
+        return `${e.kind}:${e.file}:${e.keyPath}`;
+      case 'lockfile-key':
+        return `${e.kind}:${e.file}:${e.keyPath}`;
+      case 'registry-record':
+        return `${e.kind}:${e.extId}:${e.scope}:${e.root}`;
+      case 'os-unit':
+        return `${e.kind}:${e.label}`;
+    }
+  }
+
+  /**
+   * Deduplicate an array of OwnedEntry by (kind, target). The LAST occurrence
+   * of each key wins (callers which overwrite a previous entry with a newer
+   * value expect the later one to survive).
+   */
+  static dedupeEntries(entries: OwnedEntry[]): OwnedEntry[] {
+    const seen = new Set<string>();
+    const result: OwnedEntry[] = [];
+    // Iterate in reverse so the LAST occurrence of each key wins.
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i]!;
+      const key = OwnershipIndex.entryKey(e);
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.unshift(e);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * PI-6 / BL-142: one-time compaction — deduplicate entries across ALL records
+   * in this index, preserving the most recent occurrence of each (kind, target).
+   */
+  compact(): void {
+    for (const rec of this.data.owned) {
+      rec.entries = OwnershipIndex.dedupeEntries(rec.entries);
+    }
+  }
+
   /** Append entries to the existing record for (extId, scope) (creating it if absent). */
   addEntries(extId: string, scope: string, entries: OwnedEntry[], meta?: {
     host?: string; bundleId?: string; artifactChecksum?: string;
   }): void {
     const existing = this.get(extId, scope);
-    const merged = existing ? [...existing.entries, ...entries] : entries;
+    // PI-6 / BL-142: deduplicate by (kind, target) before merging
+    const uniqueNew = OwnershipIndex.dedupeEntries(entries);
+    const merged = existing ? OwnershipIndex.dedupeEntries([...existing.entries, ...uniqueNew]) : uniqueNew;
     const host = meta?.host ?? existing?.host;
     const bundleId = meta?.bundleId ?? existing?.bundleId;
     const artifactChecksum = meta?.artifactChecksum ?? existing?.artifactChecksum;

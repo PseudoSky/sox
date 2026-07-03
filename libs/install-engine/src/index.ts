@@ -44,6 +44,7 @@ export {
   resolveFromRegistry,
   normalizeLockfile,
   LOCKFILE_VERSION,
+  writeLockfileAtomic,
   fetchArtifact,
   install,
   declarativeInstall,

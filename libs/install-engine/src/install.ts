@@ -451,6 +451,30 @@ async function fetchOrgBaseline(
   return { config, sha256 };
 }
 
+// ─── Atomic lockfile write ──────────────────────────────────────────────────────
+
+/**
+ * PI-5 / BL-141: atomic lockfile write using temp-file + rename.
+ * Prevents partial writes from producing a corrupt lockfile.
+ * Also rejects lockfiles with zero resolved entries (hard failure).
+ */
+export function writeLockfileAtomic(lockPath: string, lockfile: Lockfile): void {
+  // PI-5: hard failure when resolution yields zero members
+  if (Object.keys(lockfile.resolved).length === 0) {
+    throw new Error(
+      `install: REFUSING to write empty lockfile at ${lockPath} — ` +
+      `resolution yielded zero members. Check config or registry.`,
+    );
+  }
+  const lockDir = path.dirname(lockPath);
+  if (!fs.existsSync(lockDir)) {
+    fs.mkdirSync(lockDir, { recursive: true });
+  }
+  const tmp = lockPath + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(lockfile, null, 2) + '\n', 'utf8');
+  fs.renameSync(tmp, lockPath);
+}
+
 // ─── Core install function ────────────────────────────────────────────────────
 
 export interface InstallOptions {
@@ -767,11 +791,7 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
     lockfile.extends = extendsPin;
   }
 
-  const lockDir = path.dirname(lockPath);
-  if (!fs.existsSync(lockDir)) {
-    fs.mkdirSync(lockDir, { recursive: true });
-  }
-  fs.writeFileSync(lockPath, JSON.stringify(lockfile, null, 2) + '\n', 'utf8');
+  writeLockfileAtomic(lockPath, lockfile);
   console.log(`install: wrote lockfile to ${lockPath}`);
 
   return buildResolvedSetFromInstallList(newResolved, cascadedConfig);
@@ -1442,9 +1462,7 @@ export async function declarativeInstall(
         const csum = crypto.createHash('sha256').update(artBytes).digest('hex');
         const existing: Lockfile = loadLockfile(lPath) ?? { lockfileVersion: LOCKFILE_VERSION, resolved: {} };
         existing.resolved[lKey] = { source: `file://${indexJs}`, checksum: csum, resolved_at: new Date().toISOString() };
-        const lDir = path.dirname(lPath);
-        if (!fs.existsSync(lDir)) fs.mkdirSync(lDir, { recursive: true });
-        fs.writeFileSync(lPath, JSON.stringify(existing, null, 2) + '\n', 'utf8');
+        writeLockfileAtomic(lPath, existing);
       }
     } catch (e) {
       console.warn(`install: warning: could not write lockfile entry for ${descriptor.ext}: ${String(e)}`);
@@ -1694,9 +1712,7 @@ export async function declarativeInstall(
         // Merge into existing lockfile or create new.
         const existing: Lockfile = loadLockfile(lockPath) ?? { lockfileVersion: LOCKFILE_VERSION, resolved: {} };
         existing.resolved[lockKey] = { source, checksum, resolved_at: new Date().toISOString() };
-        const lockDirPath = path.dirname(lockPath);
-        if (!fs.existsSync(lockDirPath)) fs.mkdirSync(lockDirPath, { recursive: true });
-        fs.writeFileSync(lockPath, JSON.stringify(existing, null, 2) + '\n', 'utf8');
+        writeLockfileAtomic(lockPath, existing);
       }
     } catch (e) {
       console.warn(`install: warning: could not write lockfile entry for ${descriptor.ext}: ${String(e)}`);
