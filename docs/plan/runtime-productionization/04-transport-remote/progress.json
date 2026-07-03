@@ -7,7 +7,7 @@
         "BL-146"
       ],
       "title": "Simultaneous multi-bind: stdio + UDS + streamable HTTP",
-      "status": "pending",
+      "status": "in_progress",
       "evidence": null,
       "notes": []
     },
@@ -17,7 +17,7 @@
         "BL-146"
       ],
       "title": "Bind/auth policy: loopback default, bearer for non-loopback, refuse tokenless",
-      "status": "pending",
+      "status": "in_progress",
       "evidence": null,
       "notes": []
     },
