@@ -81,9 +81,35 @@
         "BL-125"
       ],
       "title": "memory_write_batch",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {"cmd": "npx nx build memory-core", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx build memory-server", "exit": 0, "summary": "build passes (20 tools registered)"},
+          {"cmd": "npx nx test memory-core", "exit": 0, "summary": "197/198 pass (1 skipped, same as baseline); +10 new tests"}
+        ],
+        "commits": ["112cc2f", "HEAD"],
+        "negative_control": {
+          "break": "revert the per-item error capture in memoryWriteBatch (remove try/catch around memoryWrite call)",
+          "red": "empty content in a batch item would throw unhandled instead of per-item E_SCOPE_RO",
+          "restore": "try/catch in memoryWriteBatch loop catches memoryWrite errors per-item",
+          "green": "write.spec.ts 'negative control: empty content in a batch item returns E_SCOPE_RO per-item' — passes with try/catch"
+        },
+        "wp3_tests": [
+          {"name": "batch of 10 items with 1 byte-duplicate returns 9 ok + 1 E_DEDUP with existing_uid", "exit": 0, "note": "acceptance: dedup by content_hash returns code=E_DEDUP, details.existing_uid matching the original; only 9 episodes in DB"},
+          {"name": "batch routes as a single queue entry (not N items)", "exit": 0, "note": "WriteQueue._enqueueCount=1 after queue.enqueue('memory_write_batch') wrapping memoryWriteBatch"},
+          {"name": "negative control: empty items array returns zero results", "exit": 0},
+          {"name": "negative control: empty content in a batch item returns E_SCOPE_RO per-item", "exit": 0, "note": "other items succeed despite one failing"},
+          {"name": "negative control: all identical items → one success, rest E_DEDUP", "exit": 0, "note": "all share the same existing_uid from the first success"}
+        ]
+      },
+      "notes": [
+        "memoryWriteBatch in write.ts: iterates items serially, calls memoryWrite per-item wrapped in try/catch",
+        "WriteQueue._enqueueCount instrumentation added for test assertion (reset via WriteQueue.resetAllEnqueueCounts)",
+        "Memory-server handler wraps batch in wq.enqueue('memory_write_batch', ...) — one queue entry",
+        "TypeScript fix: changed details from 'details: ... undefined' to conditional spread to satisfy TS 6.0.3",
+        "5 tests covering acceptance, queue entry count, and 3 negative controls"
+      ]
     },
     {
       "id": "WP-4",
@@ -91,9 +117,34 @@
         "BL-129"
       ],
       "title": "client_request_id idempotency + request_ledger",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {"cmd": "npx nx build memory-core", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test memory-core", "exit": 0, "summary": "197/198 pass (1 skipped, same as baseline); +10 new tests"}
+        ],
+        "commits": ["112cc2f", "HEAD"],
+        "negative_control": {
+          "break": "remove the client_request_id check in memoryWrite (skip the idempotency lookup)",
+          "red": "replay with same id would create a second episode (no replayed flag, 2 nodes in DB)",
+          "restore": "client_request_id lookup before content_hash dedup returns replayed=true with existing uid",
+          "green": "write.spec.ts 'replay of same client_request_id returns replayed:true with existing uid, no new node' — passes with lookup active; 'different content with same id' — identical result"
+        },
+        "wp4_tests": [
+          {"name": "replay of same client_request_id returns replayed:true with existing uid, no new node", "exit": 0, "note": "acceptance: second call returns replayed=true + same episode_uid; DB has 1 node; ledger has 1 entry"},
+          {"name": "requestLedgerPrune deletes entries older than retention days", "exit": 0, "note": "old entry (2020) pruned with 1-day retention; recent entry survives"},
+          {"name": "negative control: client_request_id longer than 128 chars returns E_SCOPE_RO", "exit": 0},
+          {"name": "negative control: non-string client_request_id returns E_SCOPE_RO", "exit": 0},
+          {"name": "negative control: different content with same client_request_id returns original result (replayed)", "exit": 0, "note": "content is ignored on replay — id determines the response"}
+        ]
+      },
+      "notes": [
+        "request_ledger table: request_id TEXT PRIMARY KEY, episode_uid TEXT NOT NULL, created_at TEXT NOT NULL",
+        "requestLedgerPrune(db, retentionDays) deletes entries older than cutoff, returns deleted count",
+        "client_request_id validation: must be string ≤128 chars, else E_SCOPE_RO",
+        "Ledger inserted in the same transaction as node+vec (atomic with episode)",
+        "5 tests covering acceptance, pruning, and 3 negative controls"
+      ]
     },
     {
       "id": "WP-5",
@@ -122,5 +173,5 @@
   },
   "blockers": [],
   "discovered": [],
-  "updated_at": null
+  "updated_at": "2026-07-03T17:00:00Z"
 }

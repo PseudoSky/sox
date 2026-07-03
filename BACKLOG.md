@@ -2518,3 +2518,22 @@ recall pipeline (mean-pool at query time).
 table at ingest time. Phase 2: in `memoryRecall()`, when `lateChunking.enabled`, fetch
 the full-document embedding and mean-pool per the stored boundaries before returning
 results.
+
+### BL-125 — memory_write_batch: missing downstream method for atomic multi-item writes — **FIXED (2026-07-03)** — memoryWriteBatch implemented with per-item error capture; iterates serially with try/catch per-item, routes as single queue entry; 5 tests: acceptance (dedup E_DEDUP with existing_uid), queue entry count (1 not N), plus 3 negative controls (empty items, empty content, all identical); 197/198 pass.
+
+**Observed:** memory-server exposes only `memory_write` (single-item), no batch variant.
+Parallel writes from agents must issue N individual tool calls, creating N separate queue
+entries with no atomicity guarantee. A batch method that routes as a single queue entry
+and produces an array of per-item results is required.
+
+**Spec:** `memory_write_batch(items: {content, ...}[]) → {results: {code, episode_uid?, existing_uid?, error?}[]}`
+— iterates serially, each item wrapped in try/catch so one failure doesn't abort the batch.
+
+### BL-129 — client_request_id idempotency: duplicate writes on replay waste resources and produce duplicate nodes — **FIXED (2026-07-03)** — request_ledger table (request_id TEXT PK, episode_uid, created_at) inserted in same tx as node+vec; client_request_id validation (string ≤128 chars, else E_SCOPE_RO); requestLedgerPrune cleanup; 5 tests: acceptance (replay returns replayed:true), pruning, plus 3 negative controls (long id, non-string id, different content same id); 197/198 pass.
+
+**Observed:** `memory_write` has no client-provided idempotency key. If an agent retries
+the same write (e.g. after a timeout or transient error), the content may be written twice
+— two distinct nodes with the same content. A `client_request_id` field that the server
+deduplicates (returning `replayed:true` with the original uid) prevents double-writes.
+Content-hash dedup (existing `E_DEDUP` path) only catches byte-identical content; it does
+not cover the case where the agent explicitly tags retries with an id.

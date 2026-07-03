@@ -369,7 +369,7 @@ export async function memoryWriteBatch(
           ok: false,
           code: r.code,
           message: r.message,
-          details: 'existing_uid' in r ? { existing_uid: r.existing_uid } as Record<string, unknown> : undefined,
+          ...('existing_uid' in r ? { details: { existing_uid: r.existing_uid } as Record<string, unknown> } : {}),
         });
       }
     } catch (err) {

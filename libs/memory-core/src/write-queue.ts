@@ -64,6 +64,9 @@ export class WriteQueue {
   private _processing = false;
   private _maxSize: number;
   private _runningPromise: Promise<void> = Promise.resolve();
+  /** (WP-3) Instrumentation: number of items enqueued since last reset. Used in tests
+   *  to assert that a batch write creates exactly one queue entry. */
+  _enqueueCount = 0;
 
   private constructor(dbPath: string, maxSize = DEFAULT_MAX_QUEUE_SIZE) {
     // Open a dedicated write connection with the mandated pragmas.
@@ -85,6 +88,13 @@ export class WriteQueue {
   /** True when the queue bypass is active (no serialisation). */
   static get bypass(): boolean {
     return WriteQueue._bypass;
+  }
+
+  /** (WP-3) Reset enqueueCount for all known queue instances. Used in test setup. */
+  static resetAllEnqueueCounts(): void {
+    for (const [, q] of WriteQueue.instances) {
+      q._enqueueCount = 0;
+    }
   }
 
   /**
@@ -155,6 +165,8 @@ export class WriteQueue {
         return Promise.reject(err);
       }
     }
+
+    this._enqueueCount++;
 
     // Overflow guard
     if (this.queue.length >= this._maxSize) {
