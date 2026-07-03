@@ -32,6 +32,10 @@
 export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb } from './db.js';
 export type { ScopeKind, MemoryScope } from './db.js';
 
+// ── Write queue (WP-1, BL-118) ────────────────────────────────────────────────
+export { WriteQueue } from './write-queue.js';
+export type { QueueBusyError, QueueError } from './write-queue.js';
+
 // ── Schema ────────────────────────────────────────────────────────────────────
 export { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
 

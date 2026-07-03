@@ -222,8 +222,9 @@ export function openDbReadOnly(dbPath: string): Database.Database {
   dbPath = expandDbPath(dbPath);
   const db = new Database(dbPath, { readonly: true });
   sqliteVec.load(db);
-  // Only WAL pragma needed for read-only connections
+  // WAL pragma needed for read-only connections; query_only prevents accidental writes
   db.exec('PRAGMA journal_mode = WAL;');
-  db.exec('PRAGMA busy_timeout = 5000;');
+  db.exec('PRAGMA busy_timeout = 3000;');
+  db.exec('PRAGMA query_only = ON;');
   return db;
 }

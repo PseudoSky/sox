@@ -3,9 +3,19 @@
  * Single file per scope. Exact schema from design.md §2.2 (minus promotion_queue, deferred to P4).
  */
 
+/**
+ * CONTRACTS §C mandated pragmas for EVERY connection:
+ *   - journal_mode = WAL
+ *   - busy_timeout = 3000  (per contract; changed from 5000)
+ *   - synchronous  = NORMAL
+ *   - foreign_keys = ON
+ *   - cache_size   = -64000
+ *
+ * Read-only connections additionally apply `query_only = ON` in openDbReadOnly().
+ */
 export const PRAGMAS = `
 PRAGMA journal_mode = WAL;
-PRAGMA busy_timeout = 5000;
+PRAGMA busy_timeout = 3000;
 PRAGMA synchronous  = NORMAL;
 PRAGMA foreign_keys = ON;
 PRAGMA cache_size   = -64000;
