@@ -2518,3 +2518,335 @@ recall pipeline (mean-pool at query time).
 table at ingest time. Phase 2: in `memoryRecall()`, when `lateChunking.enabled`, fetch
 the full-document embedding and mean-pool per the stored boundaries before returning
 results.
+
+## Open — memory-server production hardening: locking & topology (surfaced 2026-07-03)
+
+Source: live lock-contention incident (six raw SqliteError 'database is locked' during a reflection run) + process/socket forensics on 2026-07-03. Bugs first, then features.
+
+### BL-118 — memory_write surfaces raw SqliteError 'database is locked' — no busy_timeout, queue, or retry
+
+**Kind:** bug
+
+**Severity:** high
+
+**Observed:** six raw lock errors in one reflection session (2026-07-03): 3 of 5 parallel memory_write calls failed outright; serial single writes then failed twice-in-a-row twice more during async-enrichment windows; bare client retries eventually succeeded every time. The server passes no busy_timeout and does no internal retry, so transient writer contention surfaces as a hard tool error; natural client batching is punished.
+
+**Fix sketch:** PRAGMA busy_timeout (2-5s) on every connection; single in-process write queue with group commit in whichever process writes; map persistent contention to structured E_BUSY {retryable:true, retry_after_ms} — never a raw driver exception.
+
+### BL-119 — Two memory-daemon processes run concurrently — duplicate enrichment writers on one DB
+
+**Kind:** bug
+
+**Severity:** high
+
+**Observed:** 2026-07-03, lsof/ps: PID 46590 (node .sox/ext/memory-daemon/index.js, up 12h37m) AND PID 53052 (node extensions/bundles/sox-memory-bundle/members/memory-daemon/dist/index.js, up 9h17m) both alive, both holding open fds on ~/.memory/memory.db, both attached to ~/.memory/memoryd.sock. Two batch enrichers writing long transactions against one SQLite file is the primary explanation for the extended lock windows in BL-118. Likely cause: stale-socket takeover on daemon start (second daemon unlinks/rebinds memoryd.sock, first keeps running orphaned) plus two install paths.
+
+**Fix sketch:** daemon singleton enforcement — lockfile (flock) + bind-before-work + verify-then-exit if another live daemon owns the store; on takeover, actively terminate or refuse; add daemon identity (pid/start/build) to memory_ping or stats so duplicates are visible.
+
+### BL-120 — Supervised memory-server instance pool runs 4 processes with no single-writer routing
+
+**Kind:** bug
+
+**Severity:** high
+
+**Observed:** 2026-07-03: four dist/index.js instances (PIDs 53233/53259/53323/53367, ~9h); 53233 and 53323 both serve live UDS proxy connections (run/supervisors/proxy-8d80bb9bd257.sock) from the per-session soxe shims; 53233 currently holds memory.db; db_path is selected per call, so any pool member becomes an additional writer on its first write call. Pool >1 over one SQLite file is multi-writer by design.
+
+**Fix sketch:** supervisor routes all traffic for a given store to exactly one designated writer instance (pool=1 for the DB-serving role, N allowed only for stateless work), or all writes forward to the daemon; enforce with a per-store writer lease.
+
+### BL-121 — Two different builds serve the same memory store — version/schema skew unguarded
+
+**Kind:** bug
+
+**Severity:** medium
+
+**Observed:** 2026-07-03: installed build (~/.adhd/sox-cli/bin/soxe, also .sox/ext daemon copy) and dev-tree build (sox-ecosystem/bin/soxe, bundle dist daemon) are simultaneously live against ~/.memory/memory.db. Nothing stamps or checks schema/artifact version on DB open, so a migration in one build can corrupt assumptions of the other silently.
+
+**Fix sketch:** schema_version + writer artifact hash stored in the DB (user_version or meta table); refuse-or-warn on open when the running artifact's expected schema mismatches; consolidate to one canonical serve path.
+
+### BL-122 — Remote/proxy cutover unverifiable from the client — ping lacks instance identity
+
+**Kind:** bug
+
+**Severity:** medium
+
+**Observed:** 2026-07-03: host configs still spawn per-session shims (claude ~/.claude.json type stdio; opencode global type local); the shims DO proxy over UDS to supervised instances, but no tool response reveals which process/instance/build served a call, so a mis-cutover or stray full-server spawn is undetectable from the client side; no TCP listener exists despite a 'remote MCP' upgrade being underway.
+
+**Fix sketch:** memory_ping (and optionally every write result) returns instance identity — pid, start_time, transport, artifact short-hash, served-store fingerprint; document the intended client config per host and have soxe install verify it end-to-end.
+
+### BL-123 — WAL checkpoint lag under many long-lived readers (13.7MB WAL on a 49MB DB)
+
+**Kind:** bug
+
+**Severity:** low
+
+**Observed:** 2026-07-03: memory.db-wal at 13,715,512 bytes alongside a 51,773,440-byte DB with 3+ processes holding the file; long-lived reader snapshots block WAL checkpoints, growing the WAL and lengthening writer stalls.
+
+**Fix sketch:** periodic wal_checkpoint(TRUNCATE) on idle from the single writer; close/reopen idle read connections; alert on WAL size in stats.
+
+### BL-124 — Storage error taxonomy: E_BUSY/E_IO/E_ALLOWLIST with retryable flags
+
+**Kind:** feature
+
+**Severity:** high
+
+**Motivation:** E_DEDUP/E_NOT_FOUND prove the coded-error pattern exists, but storage-layer failures leak as raw SqliteError (see BL-118) — callers string-match instead of implementing policy.
+
+**Fix sketch:** wrap all storage exceptions into stable codes with {retryable, retry_after_ms}; document per-tool.
+
+### BL-125 — memory_write_batch — transactional array writes
+
+**Kind:** feature
+
+**Severity:** high
+
+**Motivation:** clients naturally batch independent writes in parallel, which today maximizes lock collisions (3/5 failures observed); a server-side batch is one queue entry and one transaction.
+
+**Fix sketch:** accepts an array of write payloads, executes through the write queue in one (or chunked) transaction, returns per-item results including per-item E_DEDUP.
+
+### BL-126 — Transactional-outbox enrichment pipeline
+
+**Kind:** feature
+
+**Severity:** high
+
+**Motivation:** batch enrichment currently holds the writer for whole batches — the long lock windows behind BL-118.
+
+**Fix sketch:** memory_write becomes append-episode + enqueue (one tiny txn, uid returned immediately); idempotent workers consume the outbox in micro-transactions (~50 rows), backoff + dead-letter state; embeddings computed OUTSIDE transactions, short index-write txns only.
+
+### BL-127 — Enrichment watermark + memory_flush (read-your-derived-writes)
+
+**Kind:** feature
+
+**Severity:** medium
+
+**Motivation:** SAME_AS/community/importance land asynchronously and invisibly; a synthesis query right after writes can read the graph before its edges exist.
+
+**Fix sketch:** expose last_enriched_seq + queue depth in ping/stats; memory_flush({await_seq}) blocks (bounded) until enrichment catches up.
+
+### BL-128 — Writer-role enforcement in the supervisor topology
+
+**Kind:** feature
+
+**Severity:** high
+
+**Motivation:** the shim→proxy→supervised-instance architecture already exists (observed live); what is missing is the guarantee that exactly one process writes a given store (see BL-119 and BL-120).
+
+**Fix sketch:** per-store writer lease owned by the supervisor; pool=1 for the writer role; graceful drain on shutdown (finish queue → wal_checkpoint(TRUNCATE) → release lease); supervised restart.
+
+### BL-129 — Idempotency keys for exactly-once writes
+
+**Kind:** feature
+
+**Severity:** medium
+
+**Motivation:** blind retries after ambiguous failures are currently safe only when content is byte-identical (E_DEDUP catches it by accident).
+
+**Fix sketch:** optional client_request_id on writes; server records it and returns the original uid as SUCCESS on replay; formalize retry-of-identical-content = success-with-existing-uid.
+
+### BL-130 — Named-store registry replacing raw per-call db_path
+
+**Kind:** feature
+
+**Severity:** medium
+
+**Motivation:** per-call db_path is a silent-misroute foot-gun (sibling .db files; the reflection skill has to warn about it).
+
+**Fix sketch:** registry of logical store names → paths (registry.json exists already); calls pass store:"reflection"; every result echoes resolved absolute path + store fingerprint; optional strict mode rejects unregistered paths.
+
+### BL-131 — memory_ping process identity + per-store health
+
+**Kind:** feature
+
+**Severity:** medium
+
+**Motivation:** ping already returns artifact hash/compat/embed health (best-in-class) but cannot answer 'which process served me' or 'is the store healthy' — needed to verify single-writer topology from any client (BL-122).
+
+**Fix sketch:** add pid, start_time, transport, instance_id, daemon liveness, per-store {path fingerprint, WAL size, last checkpoint, enrichment watermark, queue depth}.
+
+### BL-132 — Recall score legibility
+
+**Kind:** feature
+
+**Severity:** low
+
+**Motivation:** observed hybrid scores span 0.002-0.007 — impossible to threshold or compare across queries; provenance channels are listed but not weighted.
+
+**Fix sketch:** per-query score normalization or per-channel contribution breakdown in results.
+
+### BL-133 — Store lifecycle ops: checkpoints, compaction, quotas, backup
+
+**Kind:** feature
+
+**Severity:** medium
+
+**Motivation:** the store grows unbounded in ~/.memory with ad-hoc .bak copies sitting beside it (observed); no scheduled maintenance.
+
+**Fix sketch:** wal_checkpoint(TRUNCATE) on idle; scheduled VACUUM/ANALYZE; per-store size quotas with structured warnings; memory_backup tool producing consistent snapshots (VACUUM INTO); retention/archival policy hooks.
+
+### BL-134 — Concurrency regression harness + chaos/soak + SLO metrics as release gates
+
+**Kind:** feature
+
+**Severity:** high
+
+**Motivation:** a lock fix without a regression gate is temporary; the failure class must be structurally unrepresentable or loudly caught.
+
+**Fix sketch:** default-running harness spawning N real MCP clients over the real transport writing concurrently while the enricher churns a backlog — asserts zero caller-visible lock errors and p99 write latency budget; negative control: same harness against the pre-fix build must go red; chaos: kill -9 the writer mid-txn → WAL recovery + PRAGMA integrity_check clean; disk-full and queue-overflow surface as structured errors; metrics (lock-wait, txn-duration histograms, queue depth, checkpoint age) exported and thresholded.
+
+### BL-135 — Storage exit ramp: libSQL/Postgres behind the write seam (decision note)
+
+**Kind:** feature
+
+**Severity:** low
+
+**Motivation:** if requirements grow to true multi-host/multi-writer or stores well past low-GB, stop engineering around single-writer SQLite.
+
+**Fix sketch:** keep the write-queue/outbox seam storage-agnostic; candidates: libSQL server mode (minimal migration, keeps schema) or Postgres + pgvector + FTS (full MVCC, one engine for graph/vec/BM25); record as an ADR when triggered, not before.
+
+### BL-136 — Reaper never runs autonomously and matches by literal entrypoint path — cross-build strays are unreapable
+
+**Kind:** bug
+
+**Severity:** high
+
+**Observed:** libs/host-runtime/src/reaper.ts is invoked only as a side effect of `soxe stop` (runtime.ts:419-450), `soxe start` singleton-heal (main.ts:3690-3703, service-registry types only), and `soxe upgrade` rolling-restart (main.ts:2366-2394); no daemon loop, no cron, and no `soxe doctor`/`soxe reap` verb exists (dispatch table main.ts:141-227). Matching is an exact whitespace-bounded entrypoint-path token over ps output (reaper.ts:216-250), so a process running a DIFFERENT materialization of the same logical service (.sox/ext/memory-daemon/index.js vs bundle dist) can never match and survives forever — observed live as a 10-day-stale .sox/ext daemon contending on the store.
+
+**Fix sketch:** reap by logical service identity (socket/db ownership or a service-id embedded in argv/env), add an explicit `soxe doctor`/`reap` verb, and run reconciliation on every `soxe status`.
+
+### BL-137 — ensureBackend race: 10s readyTimeout + 30s lock TTL + unconditional socket steal spawns duplicate backends
+
+**Kind:** bug
+
+**Severity:** high
+
+**Observed:** ensure-backend.ts hardcodes readyTimeoutMs=10000 (:223, never overridden) and lock staleness TTL 30000ms (:225); slow backend startup (embedding warm-up + SQLite open) exceeding 10s makes the spawner abandon its lock while the backend is still starting, letting the next shim spawn a second one; serveBackend (backend.ts:56-70) then unconditionally unlinks-and-rebinds the socket so the newer backend silently steals traffic while the older lives on unreachable — observed live as 4 concurrent memory-server backends (2 orphaned PPID 1), a stale lockfile naming dead PID 53282, and EADDRINUSE crash-races in the backend log. spawnUnderLock (:267-351) registers no exit handler, so dead backends are never noticed except reactively by a live shim's dial.ts close handler (:143-164).
+
+**Fix sketch:** probe-connect before spawn AND before bind (refuse to steal a live socket); readiness handshake instead of fixed timeout; lock holder liveness check (kill(pid,0)); backend exit handling.
+
+### BL-138 — launchd KeepAlive units resurrect killed processes; unload-then-reap exists but only `soxe service disable` uses it
+
+**Kind:** bug
+
+**Severity:** high
+
+**Observed:** real LaunchAgents com.sox.user.memory-{daemon,server} exist with KeepAlive=true + ThrottleInterval=10 (generated by soxe-service-enable) and resurrect kills within ~10s (launchctl status column showed -9 = prior SIGKILL + respawn) — while os-unit.ts's header comment (:27-30) claims real launchctl activation 'never' happens (stale/false). The codebase documents the hazard ([inv:unload-then-reap], os-unit.ts:17-19) and implements it in `soxe service disable` (unloadThenReap, os-unit.ts:845-885), but soxe stop, soxe upgrade's reap, and singleton-heal never check for or unload a covering launchd unit before killing.
+
+**Fix sketch:** every kill surface consults os-unit state first (unload before reap when a unit covers the entrypoint); fix the stale module comment; surface launchd-managed status in soxe status.
+
+### BL-139 — soxe logs cannot find proxy-backend logs — divergent log-dir naming schemes
+
+**Kind:** bug
+
+**Severity:** medium
+
+**Observed:** cmdLogs resolves logDirFor(computeSupervisorId(scope,root)), but proxy-backend stderr is filed under logDirFor('proxy-backend-'+extId) (main.ts:2011) — a different naming scheme — so `soxe logs --id=memory-server` can never surface the backend's own log; meanwhile cmdStatus reads only registerSupervisor() registrants (registry.ts:108-117), leaving every ensureBackend()-spawned process structurally invisible (observed: soxe status showed 2 HEALTHY entries while 9 memory processes ran).
+
+**Fix sketch:** unify log-dir keying on logical service id; register proxy backends in the same registry (or a sibling) so status/logs cover them.
+
+### BL-140 — Single-pane live view: `soxe ps` / `soxe follow` (docker-compose-style)
+
+**Kind:** feature
+
+**Severity:** high
+
+**Motivation:** operator need voiced 2026-07-03 — 'somewhere I can actually track what's happening like docker compose up'. Today there are three disjoint narrow views (soxe status = registered supervisors only; soxe service status = os-units only; soxe logs = supervisor-keyed dirs missing backend logs), and none covers proxy backends, legacy materializations, or launchd state together.
+
+**Fix sketch:** `soxe ps` — one table merging registry entries, os-unit state (launchctl), proxy-backend locks/sockets, plus an OS-truth pass (ps/lsof by socket+db ownership) flagging UNMANAGED/STALE rows with build hash + version per process (ties into BL-122 ping identity); `soxe follow [--id]` — merged, prefixed, color-tagged live tail of all log streams for a service (docker-compose semantics), reading the unified log layout from BL-139.
+
+### BL-141 — Upgrade emptied extensions.lock while live sockets masked total restart failure
+
+**Kind:** bug
+
+**Severity:** high
+
+**Observed:** extensions.lock at ~/.adhd/sox-ecosystem was `{"lockfileVersion":2,"resolved":{}}` with mtime 2026-07-03 02:38 — emptied during that morning's upgrade/rebuild (dist rebuilt 02:39) — while install-registry.json (mtime 02:39, updatedAt 07:38) still held the real installs (memory-server 1.2.1, memory-daemon 0.2.1, scope user). `soxe serve` resolves from the lockfile only, so every fresh spawn was broken all day: 'extension memory-server not found in lockfile (searched scopes: project, user, org, local)'. Nothing noticed because ensureBackend dials existing live sockets before spawning — the system served traffic for ~15h in an unrestartable state, discovered only when all processes were deliberately killed. Recovery: `soxe install sox-memory-bundle --scope=user` re-resolved all members and rewrote the lockfile.
+
+**Fix sketch:** upgrade must write the new lockfile atomically (temp+rename) and fail loudly if resolution yields zero members; add a post-upgrade gate that spawn-tests `soxe serve <ext>` (cold, no live socket) before declaring success; `soxe status` should flag lockfile-empty-but-registry-populated divergence.
+
+### BL-142 — Ownership ledger accumulates duplicate entries — installs not idempotent on bookkeeping
+
+**Kind:** bug
+
+**Severity:** medium
+
+**Observed:** ownership.json holds FIVE identical config-key entries ({file: opencode.json, keyPath: mcp.memory-server}) for memory-server and a long run of duplicate file-drop entries for memory-usage (~/.claude/skills + ~/.config/opencode/skills repeated ~8x). Each install/update appends rather than deduplicating, so ledger reversal work (uninstall/disable) operates over inflated entry lists.
+
+**Fix sketch:** dedupe entries by (kind,file/path,keyPath) on write; one-time ledger compaction migration.
+
+### BL-143 — serve's lockfile-miss error gives no remediation and hides the bundle relationship
+
+**Kind:** bug
+
+**Severity:** low
+
+**Observed:** `soxe serve memory-server` fails with 'not found in lockfile (searched scopes...) or local extensions' — no hint that the extension exists in install-registry.json, that it is a member of sox-memory-bundle, or that `soxe install sox-memory-bundle` repairs it (soxe install memory-server itself refuses with 'install the bundle instead', which is the better error).
+
+**Fix sketch:** on lockfile miss, cross-check install-registry and bundle manifests and print the exact repair command.
+
+### BL-144 — embed_model identity changed across the 02:39 rebuild — possible embedding-space mismatch with stored vectors — **RESOLVED BENIGN (2026-07-03)**
+
+**Kind:** bug
+
+**Severity:** high
+
+**Observed:** memory_ping from the pre-experiment backend (2026-07-03 morning) reported embed_model 'bge-base-en-v1.5', embed_state 'real'; the freshly spawned post-experiment backend (same artifact sha 4db6752fb050) reports embed_model 'nomic-embed-text-v1.5-hash', embed_state 'uninitialized'. If the store's existing vectors were embedded with bge-base and new queries/writes use a different model (or a hash fallback identity), vector recall silently degrades into cross-space comparisons. May be lazy-init naming that resolves to bge on first real embed — verify by triggering one embed and re-pinging.
+
+**Fix sketch:** pin the embedding model identity IN THE STORE (meta table) and refuse/warn on mismatch at open; surface the active model per store in ping (ties into BL-131).
+
+**Resolution (2026-07-03):** verified benign after host reconnect — the 'nomic-embed-text-v1.5-hash (uninitialized)' identity is the pre-warm placeholder before the embedding backend initializes; once warm, ping reports embed_model bge-base-en-v1.5 / embed_state real on the same artifact (4db6752fb050), and a vec-channel recall against day-old stored vectors ranked the exact expected node first (provenance [vec,fts]) — embedding spaces align. Residual improvement folded into BL-131: ping should distinguish 'configured model' from 'active model + init state' so a placeholder identity can't read as a model change.
+
+### BL-145 — Interim state 2026-07-03: launchd units disabled and plists removed — re-enable gates + target supervision model
+
+**Kind:** decision
+
+**Severity:** high
+
+**Decision (2026-07-03):** com.sox.user.memory-daemon and com.sox.user.memory-server were unloaded AND their plists deleted (`soxe service disable ... --scope=user`) as step 1 of the clean-slate recovery — this was SEQUENCING for the multi-writer incident, not a verdict against OS supervision, which remains part of the target architecture. Sanctioned interim state: a single shim-dialed proxy backend is the store's only writer; batch enrichment rides the backend's in-process fallback interval; no launchd units loaded. Reversal is one command per unit: `soxe service enable memory-daemon|memory-server --scope=user` (regenerates the plist).
+
+**Re-enable gates:** (1) daemon unit → only after BL-118 (busy_timeout + write queue + E_BUSY) lands, so daemon-vs-backend collisions are absorbed instead of thrown; (2) server unit → only after BL-137 (probe-before-bind, never steal a live socket) and BL-128 (per-store writer lease), at which point the launchd unit becomes THE singleton backend that shims dial-only — ensureBackend's spawn path degrades to a fallback that never fires while the unit is loaded.
+
+**Unverified:** in-process enrichment fallback parity with the dedicated daemon (do communities/member_of/importance counters advance without a daemon?) — verify with one write + a stats/watermark check before trusting long daemon-less operation.
+
+**Target architecture:** recorded as ADR 0007 (docs/decisions/0007-memory-single-writer-architecture.md, 2026-07-03) — the invariant, D1-D9 decisions, and the 4-phase roadmap mapping BL-118..145; four forks are provisional (⚖) pending owner confirmation.
+
+### BL-146 — Configurable activation posture + multi-transport default (owner decisions 2026-07-03)
+
+**Kind:** feature
+
+**Severity:** high
+
+**Motivation:** owner overturned two ADR 0007 provisional defaults — (a) always-active vs on-demand must be a per-install option read from the soxe configuration manager, not a fixed posture (os-unit generation honors it: KeepAlive/RunAtLoad vs socket/on-demand activation); (b) the service mounts on all available interfaces/transports by default (stdio shim, UDS proxy, remote HTTP) — remote-first rationale: stdio MCPs require full session reloads during development so agents learn to ignore the system, and npx/hardcoded-path host configs are an antipattern vs a URL; per-install transport configurability already believed present (verify).
+
+**Fix sketch:** activation-posture config key + os-unit generation branch; transport matrix defaulted on with per-install override; network binds get an explicit bind-address + auth (bearer) policy so all-transports-on never silently exposes an unauthenticated store beyond loopback; host-config templates emit URLs for remote installs. Supersedes the UDS-only ⚖ default in ADR 0007 (revision pending).
+
+### BL-147 — Extract enrichment + embedding as reusable subsystems (memory hosts, does not own)
+
+**Kind:** feature
+
+**Severity:** high
+
+**Motivation:** owner decision 2026-07-03 — the enrichment system (embedding, near-dup, clustering, importance) will be reused by other non-memory projects; memory may absorb/host it operationally, but the implementation must be a reusable component with clean seams, and embedding-system enhancements must benefit all consumers.
+
+**Fix sketch:** extract an embed lib (backend selection incl. auto/bge/hash-fallback, warm-up + identity reporting, worker-thread batch compute, model identity pinning per corpus) and an enrichment lib (deterministic on-write enrichers + outbox-driven batch enrichers + watermark) operating through a corpus/store adapter interface rather than direct memory-schema SQL; memory-server becomes the first host (in-process, preserving the single-writer invariant); daemon logic absorbed via the same lib. Boundary mapping in progress (explore-boundaries); ADR 0007 revision will carry the authoritative design.
+
+**Reframed (2026-07-03):** this is a MIGRATION, not new construction — @adhd/sox-embedding-provider (public, EmbeddingProvider interface, 3 backends, error taxonomy, already consumed by hybrid-search) and GraphBackend/VectorBackend (already used by 6 memory-core read-path modules) exist today; the work is moving memory-core's private embed.ts and the raw-SQL enrich hot path (enrich.ts, enrich-batch.ts, cluster.ts, autolink.ts, neardup.ts, memoryd.ts) onto them, with generic batch orchestration landing in @adhd/sox-analysis (whose package description already claims that ownership). See ADR 0007 v2 D1 and BL-149.
+
+### BL-148 — Generated host configs hardcode port 3000 while the HTTP transport binds a random port
+
+**Kind:** bug
+
+**Severity:** medium
+
+**Observed:** for sse/http profiles, both the install-engine default derivation (libs/install-engine/src/install.ts:1593 — `url: 'http://localhost:3000/' + profile`) and OpenCode's mcpConfig (libs/host-registry/src/opencode.ts:83-87 — literal `const port = 3000;`) write :3000 URLs, but the actual listener binds `opts.port ?? parseInt(SOX_MCP_PORT ?? '0')` (random port) with loopback host (libs/mcp-runtime/src/transport.ts:98-132) — nothing reflects the resolved port back into the written host config, and no convention pins SOX_MCP_PORT=3000. Remote installs only work by accident or manual pinning.
+
+**Fix sketch:** allocate/pin a per-install port via the config cascade (config_schema key, like tokenguard's config_schema.port precedent) and generate host-config URLs from that same source of truth; or reflect the bound port post-start into host configs. Found 2026-07-03 by the explore-boundaries pass.
+
+### BL-149 — Duplicate implementations: two memoryds, two importance scorers, three worker-thread ONNX wrappers
+
+**Kind:** bug
+
+**Severity:** medium
+
+**Observed:** explore-boundaries, 2026-07-03: (a) two distinct MemoryDaemon implementations — libs/memory-core/src/memoryd.ts (the 501-line class) AND a second server-local extensions/bundles/sox-memory-bundle/members/memory-server/src/memoryd.ts — unclear which is live in the shipped backend (1.2.0 changelog describes in-process fallback); (b) two importance scorers — memory-core's local computeImportance (importance.ts) vs @adhd/sox-analysis's scoreImportance; (c) three independent worker-thread ONNX wrappers — libs/memory-core/src/embedWorker.ts, libs/data/search/hybrid-search/src/cross-encoder.ts, libs/data/verify/claim-verification/src/worker.ts.
+
+**Fix sketch:** consolidation targets for the BL-147 migration — one orchestrator (analysis-owned), one scorer, one shared ONNX worker host; delete the losers. ADR 0007 v2 carries the design.
