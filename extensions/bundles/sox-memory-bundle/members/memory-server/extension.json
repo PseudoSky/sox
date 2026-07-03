@@ -155,6 +155,7 @@
       "vec_dimensions": { "type": "integer", "minimum": 64, "maximum": 4096, "description": "Embedding vector dimensions (default: 1536 for text-embedding-3-small)." },
       "token_budget": { "type": "integer", "minimum": 256, "description": "Default token budget for memory_recall responses (default: 32000)." },
       "transports": { "type": "array", "items": { "type": "string", "enum": ["stdio", "uds", "http", "sse"] }, "description": "List of transports to bind simultaneously (TR-1 multi-bind). Defaults to [\"stdio\"]." },
+      "http_port": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "HTTP port for streamable HTTP transport. Read from config cascade by both listener and host-config generation (TR-3, BL-148).", "x-sox-default": 3000, "x-sox-prompt": "Enter HTTP port for MCP server (default: 3000):" },
       "bind_address": { "type": "string", "description": "HTTP bind address. Defaults to \"127.0.0.1\" (loopback). Non-loopback requires auth_token (TR-2)." },
       "auth_token": { "type": "string", "description": "Bearer token for HTTP transport auth. Required when bind_address is non-loopback (TR-2)." }
     }

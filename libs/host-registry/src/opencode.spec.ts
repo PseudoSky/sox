@@ -173,16 +173,41 @@ describe('opencode.surfaces', () => {
     expect(val).toEqual({ type: 'local', command: ['soxe', 'serve', 'memory-server'] });
   });
 
-  it('mcpConfig.value sse returns remote type with URL', () => {
+  it('mcpConfig.value sse returns remote type with default port 3000', () => {
     const s = opencodeHost.surfaces['mcp-server'];
     const val = s.mcpConfig!.value('sse', 'soxe', 'memory-server');
     expect(val).toEqual({ type: 'remote', url: 'http://localhost:3000/mcp' });
   });
 
-  it('mcpConfig.value http returns remote type with URL', () => {
+  it('mcpConfig.value http returns remote type with default port 3000', () => {
     const s = opencodeHost.surfaces['mcp-server'];
     const val = s.mcpConfig!.value('http', 'soxe', 'memory-server');
     expect(val).toEqual({ type: 'remote', url: 'http://localhost:3000/mcp' });
+  });
+
+  it('mcpConfig.value http uses port parameter (TR-3)', () => {
+    const s = opencodeHost.surfaces['mcp-server'];
+    const val = s.mcpConfig!.value('http', 'soxe', 'memory-server', 4111);
+    expect(val).toEqual({ type: 'remote', url: 'http://localhost:4111/mcp' });
+  });
+
+  it('mcpConfig.value http uses bindAddress parameter (TR-4)', () => {
+    const s = opencodeHost.surfaces['mcp-server'];
+    const val = s.mcpConfig!.value('http', 'soxe', 'memory-server', 3099, '0.0.0.0');
+    expect(val).toEqual({ type: 'remote', url: 'http://0.0.0.0:3099/mcp' });
+  });
+
+  it('mcpConfig.value http displays localhost for 127.0.0.1 bind (TR-4)', () => {
+    const s = opencodeHost.surfaces['mcp-server'];
+    // 127.0.0.1 should be displayed as localhost for portability
+    const val = s.mcpConfig!.value('http', 'soxe', 'memory-server', 3099, '127.0.0.1');
+    expect(val).toEqual({ type: 'remote', url: 'http://localhost:3099/mcp' });
+  });
+
+  it('mcpConfig.value http displays localhost for ::1 bind (TR-4)', () => {
+    const s = opencodeHost.surfaces['mcp-server'];
+    const val = s.mcpConfig!.value('http', 'soxe', 'memory-server', 3099, '::1');
+    expect(val).toEqual({ type: 'remote', url: 'http://localhost:3099/mcp' });
   });
 
   it('has service surface with run-service capability', () => {

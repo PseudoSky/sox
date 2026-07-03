@@ -27,8 +27,8 @@
         "BL-148"
       ],
       "title": "http_port from config truth in listener AND host-config generation",
-      "status": "pending",
-      "evidence": null,
+      "status": "complete",
+      "evidence": "declarativeInstall() now reads http_port + bind_address from descriptor.resolvedConfig (the cascade-resolved config), not the literal 3000. Claude-format fallback builds URL from resolved port/host with localhost normalization for loopback addresses. OpenCode mcpConfig.value() accepts optional port+bindAddress params, passed through by the caller. http_port added to memory-server config_schema with x-sox-default:3000, consumed by both the transport listener and host-config gen. 5 new tests in opencode.spec.ts cover port parameter (TR-3), bindAddress (TR-4), and localhost normalization for 127.0.0.1/::1. host-registry 112/112, install-engine 156/156, mcp-runtime 32/32 all green.",
       "notes": []
     },
     {
@@ -37,8 +37,8 @@
         "BL-146"
       ],
       "title": "URL-only host configs for claude + opencode",
-      "status": "pending",
-      "evidence": null,
+      "status": "complete",
+      "evidence": "McpConfig.value() on both opencode.ts (mcpConfig) and install.ts (Claude fallback) generates remote URLs from port + bind_address parameters. No hardcoded 3000 left in OpenCode host config generation — the value flows from config cascade via resolvedConfig.http_port. install.ts Claude fallback removes 'http://localhost:3000/' + profile pattern entirely; now builds 'http://<displayHost>:<port>/mcp' from resolvedConfig. localhost normalization for 127.0.0.1/::1 improves host config portability. Config schema (extension.json) defines http_port with x-sox-default:3000 as the single source of truth.",
       "notes": []
     },
     {
@@ -54,9 +54,9 @@
   ],
   "gate": {
     "status": "pending",
-    "evidence": "TR-3/TR-4/TR-5 not yet started; gate requires TR-5 green ×3 with stdio negative control"
+    "evidence": "TR-3 + TR-4 complete; gate requires TR-5 green ×3 with stdio negative control"
   },
   "blockers": [],
   "discovered": [],
-  "updated_at": "2026-07-03T17:59:00Z"
+  "updated_at": "2026-07-03T18:31:00Z"
 }

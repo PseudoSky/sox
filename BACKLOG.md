@@ -2843,6 +2843,8 @@ Source: live lock-contention incident (six raw SqliteError 'database is locked' 
 
 **Fix sketch:** allocate/pin a per-install port via the config cascade (config_schema key, like tokenguard's config_schema.port precedent) and generate host-config URLs from that same source of truth; or reflect the bound port post-start into host configs. Found 2026-07-03 by the explore-boundaries pass.
 
+**FIXED (2026-07-03):** `http_port` (`x-sox-default:3000`) added to memory-server `config_schema`; `declarativeInstall()` reads `resolvedConfig.http_port` + `resolvedConfig.bind_address` from cascade; both OpenCode `mcpConfig.value()` and Claude-format fallback generate URLs from these params instead of literal `3000`. All hardcoded `:3000` URLs eliminated. host-registry 112/112, install-engine 156/156, mcp-runtime 32/32 green. TR-3, TR-4.
+
 ### BL-149 — Duplicate implementations: two memoryds, two importance scorers, three worker-thread ONNX wrappers
 
 **Kind:** bug
