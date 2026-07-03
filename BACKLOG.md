@@ -2547,3 +2547,28 @@ verified-stop so the OS supervisor does NOT immediately respawn the pid being ki
 
 **Files changed:** `apps/sox/src/main.ts` (cmdStart + restartProxyBackend wiring),
 `libs/host-runtime/src/os-unit.ts` (stale comment fix in prior commit 90f5c77).
+
+### BL-139 — Unified log keying: backend, os-unit, and serve streams invisible to `soxe logs` — **FIXED (2026-07-03)**
+
+**Summary:** `findAllLogStreamsForExt()` now enumerates ALL log sources for an extension: the
+supervisor-managed process stream, the proxy-backend stream, OS-unit stdout/stderr redirects, and
+the serve log stream — returning up to 5 `LogStreamDescriptor` entries. `findMostRecentLogFile()`
+resolves the newest `.log` file for any stream prefix. Both are exported from `host-runtime/index.ts`.
+`cmdLogs()` in `main.ts` calls stream discovery before tailing, so backend streams previously
+invisible are now discoverable via `soxe logs --id=<ext>`.
+
+**Files changed:** `libs/host-runtime/src/log-manager.ts` (findAllLogStreamsForExt, findMostRecentLogFile),
+`libs/host-runtime/src/index.ts` (re-export both + LogStreamDescriptor type).
+
+### BL-140 — `soxe ps` shows docker-compose-pane-style process table; `soxe follow` polls state — **FIXED (2026-07-03)**
+
+**Summary:** `gatherProcessSnapshot()` merges 4 data sources into a unified `ProcessSnapshotRow[]`
+table: supervisor registry entries, OS-unit states (launchd/systemctl load status), proxy backend
+lock files, and an OS-truth `ps` scan for processes with `SOX_SERVICE_ID` env var. `cmdPs()` in
+`main.ts` renders a composite table sorted alive/unmanaged/stale/dead with columns for id, source,
+pid, extId, status, and detail. `cmdFollow()` (PI-4) polls process state on an interval and reports
+transitions (appeared/disappeared/changed). Types `ProcessSnapshotRow` and `ProcessRowSource` define
+the unified schema with 5 provenance variants. Export: `reaper.ts` → `index.ts` → `main.ts`.
+
+**Files changed:** `libs/host-runtime/src/reaper.ts` (gatherProcessSnapshot + types),
+`libs/host-runtime/src/index.ts` (re-export), `apps/sox/src/main.ts` (cmdPs + cmdFollow).

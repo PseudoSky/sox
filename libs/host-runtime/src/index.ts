@@ -115,8 +115,17 @@ export {
   storeDirFromSource,
   reapByIdentity,
   reapBySource,
+  gatherProcessSnapshot,
 } from './reaper.js';
-export type { KillOutcome, KillOptions, PsProcess, OrphanMatch, ReapResult } from './reaper.js';
+export type {
+  KillOutcome,
+  KillOptions,
+  PsProcess,
+  OrphanMatch,
+  ReapResult,
+  ProcessSnapshotRow,
+  ProcessRowSource,
+} from './reaper.js';
 
 // ─── Lock (R3) ────────────────────────────────────────────────────────────────
 export { acquireStartLock, computeSupervisorId } from './lock.js';
@@ -189,8 +198,8 @@ export {
 export type { SupervisorRegistryEntry, SupervisorsFile } from './registry.js';
 
 // ─── Log Manager (R4) ─────────────────────────────────────────────────────────
-export { LogManager } from './log-manager.js';
-export type { LogManagerOptions, RunRecord, RunHistoryFile } from './log-manager.js';
+export { LogManager, findAllLogStreamsForExt, findMostRecentLogFile } from './log-manager.js';
+export type { LogManagerOptions, RunRecord, RunHistoryFile, LogStreamDescriptor } from './log-manager.js';
 
 // ─── Stale state GC (R2) ──────────────────────────────────────────────────────
 export { probeSocket, probeEntryLiveness, readGlobalRegistry } from './gc.js';

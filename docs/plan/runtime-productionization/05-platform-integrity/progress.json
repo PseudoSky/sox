@@ -42,9 +42,15 @@
         "BL-139"
       ],
       "title": "Unified log keying; soxe logs finds backend streams",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": "findAllLogStreamsForExt() enumerates ALL log sources for an ext: supervisor process stream, proxy-backend stream, OS-unit stdout/stderr, and serve stream (4+ descriptors). findMostRecentLogFile() resolves the latest log file for any stream prefix. Both exported from host-runtime/index.ts as part of LogManager module. cmdLogs() in main.ts calls findAllLogStreamsForExt to discover streams and tail the most recent log file per stream. BL-139: unified log keying means backend streams previously invisible to soxe logs are now discoverable. 171 host-runtime + 42 sox tests pass.",
+      "notes": [
+        "LogStreamDescriptor defines label/logDir/filePrefix per stream",
+        "findAllLogStreamsForExt() returns up to 4 descriptors (process, backend, os-out, os-err, serve)",
+        "findMostRecentLogFile() reads dir, filters by prefix, returns newest .log",
+        "cmdLogs() in main.ts invokes findMostRecentLogFile via stream discovery",
+        "Exported from host-runtime/src/index.ts on the LogManager export line"
+      ]
     },
     {
       "id": "PI-4",
@@ -52,9 +58,15 @@
         "BL-140"
       ],
       "title": "soxe ps + soxe follow (docker-compose pane)",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": "gatherProcessSnapshot() merges 4 sources: supervisor registry entries, OS-unit states (launchd/systemctl), proxy backend lock files, and ps-scan of SOX_SERVICE_ID env. cmdPs() in main.ts calls gatherProcessSnapshot() and renders a table with id/source/pid/extId/status/detail columns sorted alive-first. cmdFollow() provides a follow-mode that polls process state and diffs (PI-4 sketch). ProcessSnapshotRow includes id/pid/source/extId/scope/status/buildHash/version/socketPath/detail. All ProcessRowSource types defined: supervisor-registry, os-unit, proxy-backend, ps-scan, stale-socket. Export chain: reaper.ts → index.ts → main.ts. BL-140: 'soxe ps' shows the docker-compose-pane-style process table. 171 host-runtime + 42 sox tests pass.",
+      "notes": [
+        "gatherProcessSnapshot() merges 4 data sources into unified ProcessSnapshotRow[]",
+        "cmdPs() renders padded table sorted alive/unmanaged/stale/dead",
+        "cmdFollow() (PI-4 extension) polls process state on interval and diffs",
+        "Export chain: ProcessSnapshotRow/ProcessRowSource/types from reaper.ts → index.ts",
+        "gatherProcessSnapshot exported from reaper.ts and re-exported from index.ts"
+      ]
     },
     {
       "id": "PI-5",
@@ -89,9 +101,9 @@
   ],
   "gate": {
     "status": "pending",
-    "evidence": "PI-1 (BL-136) and PI-2 (BL-138) complete. PI-3..PI-7 remain. All host-runtime (171) + sox (42) tests green."
+    "evidence": "PI-1 (BL-136), PI-2 (BL-138), PI-3 (BL-139), PI-4 (BL-140) complete. PI-5..PI-7 remain. All host-runtime (171) + sox (42) tests green."
   },
   "blockers": [],
   "discovered": [],
-  "updated_at": "2026-07-03T17:56:00Z"
+  "updated_at": "2026-07-03T18:45:00Z"
 }
