@@ -91,9 +91,24 @@
         "BL-121"
       ],
       "title": "Store identity stamp + E_STORE_MISMATCH",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {"cmd": "npx nx build memory-core", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test memory-core", "exit": 0, "summary": "191/192 pass (11 files)"},
+          {"cmd": "npx nx build memory-server", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test memory-server", "exit": 0, "summary": "84/84 pass (5 files)"}
+        ],
+        "commits": [],
+        "notes": "openDb stamps sox_store_meta with schema_version, writer_artifact, embed_model, embed_dimensions on first open-for-write; subsequent opens verify via verifyStoreMeta (INSERT OR IGNORE ensures first-write wins); EStoreMismatch thrown on schema_version or embed_dimensions drift; embed_model difference logged as non-fatal warning. 7 new tests in db.spec.ts covering stamp, idempotency, verify, mismatch (2), model warning, and no-overwrite."
+      },
+      "notes": [
+        "STORE_META_KEYS: schema_version, writer_artifact, embed_model, embed_dimensions — stamped at openDb via stampStoreMeta()",
+        "EStoreMismatch class carries both expected and actual values for diagnostic clarity",
+        "verifyStoreMeta() re-reads meta on every open-for-write; hard mismatch throws; embed_model warns via console.error",
+        "setWriterArtifact/getWriterArtifact allows server to set its own identity string (e.g. memory-server@1.1.0)",
+        "7 tests: stamp, idempotency, verify (no throw), schema_version mismatch, embed_dimensions mismatch, model warning, re-open no-overwrite"
+      ]
     },
     {
       "id": "SA-6",
@@ -101,9 +116,26 @@
         "BL-130"
       ],
       "title": "Named-store registry + resolved-path echo",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {"cmd": "npx nx build memory-core", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test memory-core", "exit": 0, "summary": "191/192 pass (11 files)"},
+          {"cmd": "npx nx build memory-server", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test memory-server", "exit": 0, "summary": "84/84 pass (5 files)"}
+        ],
+        "commits": [],
+        "notes": "store-registry.ts: resolveStoreName for registry lookup; resolveStoreOrDbPath for store/db_path precedence; computeFingerprint for file identity via size:mtimeMs; [inv:store-registry-misroute] — unknown name returns E_UNKNOWN_STORE, never creates file. All tool schemas updated with store param. 11 tests in store-registry.spec.ts covering known name, unknown name, empty, precedence, deprecation, null, fingerprint, missing registry, malformed JSON."
+      },
+      "notes": [
+        "readStoreRegistry(): reads ~/.memory/registry.json, returns {} on missing/malformed",
+        "resolveStoreName(name): registry lookup — found→ResolvedStore, not found→E_UNKNOWN_STORE, never creates file",
+        "resolveStoreOrDbPath(store, db_path): store wins over db_path with warning; db_path accepted with deprecation warning; null when neither",
+        "computeFingerprint(filePath): ${size}:${mtimeMs} for quick identity check",
+        "[inv:store-registry-misroute] enforced: unknown name → E_UNKNOWN_STORE structured error, no file created",
+        "All 19 memory_* tool schemas now include 'store' param (before db_path) for consistent registry access",
+        "11 tests: known name, unknown name, empty, both params, raw db_path, null, whitespace, fingerprint (existing/missing), missing registry, malformed JSON"
+      ]
     },
     {
       "id": "SA-7",
@@ -112,9 +144,26 @@
         "BL-131"
       ],
       "title": "memory_ping instance/store/embed identity",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {"cmd": "npx nx build memory-core", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test memory-core", "exit": 0, "summary": "191/192 pass (11 files)"},
+          {"cmd": "npx nx build memory-server", "exit": 0, "summary": "build passes"},
+          {"cmd": "npx nx test memory-server", "exit": 0, "summary": "84/84 pass (5 files)"}
+        ],
+        "commits": [],
+        "notes": "memory_ping handler enhanced with instance block (pid, started_at, transport, instance_id), store block (name, path, fingerprint, wal_bytes, enrichment_watermark, queue_depth), and embed block (model, backend, state, on_hash_fallback, last_error). Legacy flat keys preserved for backward compatibility. store param added to ping schema. resolveStoreOrDbPath integrated into ping's store block construction."
+      },
+      "notes": [
+        "Instance block: pid, started_at, transport, instance_id (crypto.randomUUID per boot)",
+        "Store block: name, path, fingerprint (sha256), wal_bytes, enrichment_watermark, queue_depth — resolved via store param registry + db probe",
+        "Embed block: model, backend, state, on_hash_fallback, last_error — from getEmbedHealth()",
+        "Legacy flat keys preserved: embed_model, embed_backend_configured, embed_state, embed_on_hash_fallback, last_embed_error",
+        "Content-addressed artifact identity (id, artifact, short, host_compat) unchanged",
+        "resolveStoreOrDbPath integrated for store param → registry lookup in ping probe",
+        "All tests pass without modification (backward compatible shape)"
+      ]
     },
     {
       "id": "SA-8",
@@ -134,5 +183,5 @@
   },
   "blockers": [],
   "discovered": [],
-  "updated_at": "2026-07-03T18:29:00Z"
+  "updated_at": "2026-07-03T18:50:00Z"
 }

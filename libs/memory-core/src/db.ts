@@ -12,6 +12,133 @@ import * as fs from 'node:fs';
 import { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
 import { EMBED_DIM, getActiveEmbedModel } from './embed.js';
 
+// ── Store identity stamp keys (SA-5 / BL-121) ────────────────────────────────
+export const STORE_META_KEYS = {
+  SCHEMA_VERSION: 'schema_version',
+  WRITER_ARTIFACT: 'writer_artifact',
+  EMBED_MODEL: 'embed_model',
+  EMBED_DIMENSIONS: 'embed_dimensions',
+} as const;
+
+/**
+ * Error raised when a store's identity meta does not match the current runtime.
+ * Carries both sides so a human (or orchestrator) can diagnose drift.
+ *
+ * [inv:store-mismatch-diagnostic] — every mismatch message names both sides
+ * (expected vs actual) and suggests remediation.
+ */
+export class EStoreMismatch extends Error {
+  public readonly code = 'E_STORE_MISMATCH';
+  constructor(
+    message: string,
+    public readonly key: string,
+    public readonly expected: string,
+    public readonly actual: string,
+  ) {
+    super(`${message} (key=${key}, expected=${expected}, actual=${actual})`);
+    this.name = 'EStoreMismatch';
+  }
+}
+
+/**
+ * Current store schema version.
+ * Increment when a non-backward-compatible DDL change is made.
+ */
+export const STORE_SCHEMA_VERSION = 1;
+
+let _writerArtifact: string | undefined;
+
+/**
+ * Override the writer-artifact string. Called at server startup with the running
+ * package name + version (e.g. "memory-server@1.1.0").
+ */
+export function setWriterArtifact(artifact: string): void {
+  _writerArtifact = artifact;
+}
+
+/** Return the current writer-artifact (or a fallback). */
+export function getWriterArtifact(): string {
+  return _writerArtifact ?? '@adhd/sox-memory-core';
+}
+
+/**
+ * Stamp the store identity meta into the database.
+ *
+ * Only writes rows that are ABSENT — never overwrites an existing value.
+ * This means the FIRST open-for-write of a fresh store sets the stamp;
+ * a reopened store simply reads back its own stamp.
+ *
+ * After stamping, calls verifyStoreMeta() to detect mismatches.
+ *
+ * NOTE on embed_model: we write getActiveEmbedModel() at open-for-write time,
+ * not at first embed. A fresh server that has not yet warmed up the real
+ * backend will stamp `nomic-embed-text-v1.5-hash` (the default). On reconnect
+ * after a warmup, the real model is active but the stamp still says hash.
+ * This is by design — the stamp captures what wrote the vectors.
+ * The embed-model comparison is therefore between the STAMP and the RESOLVED
+ * runtime model; a warning (not fatal) is issued when they differ.
+ */
+export function stampStoreMeta(db: Database.Database): void {
+  const upsert = db.prepare(
+    `INSERT OR IGNORE INTO sox_store_meta(key, value) VALUES (?, ?)`,
+  );
+
+  upsert.run(STORE_META_KEYS.SCHEMA_VERSION, String(STORE_SCHEMA_VERSION));
+  upsert.run(STORE_META_KEYS.WRITER_ARTIFACT, getWriterArtifact());
+  upsert.run(STORE_META_KEYS.EMBED_MODEL, getActiveEmbedModel());
+  upsert.run(STORE_META_KEYS.EMBED_DIMENSIONS, String(EMBED_DIM));
+
+  verifyStoreMeta(db);
+}
+
+/**
+ * Read each identity key from the store and compare against current runtime.
+ * Throws EStoreMismatch when any key has a different value.
+ *
+ * Warns (console.error, non-fatal) when embed_model differs — vectors may be
+ * in a different space but reads still work.
+ */
+export function verifyStoreMeta(db: Database.Database): void {
+  const rows = db
+    .prepare<[], { key: string; value: string }>('SELECT key, value FROM sox_store_meta')
+    .all();
+
+  const meta = new Map(rows.map((r) => [r.key, r.value] as const));
+
+  // schema_version — hard mismatch
+  const storedSchemaVer = meta.get(STORE_META_KEYS.SCHEMA_VERSION);
+  if (storedSchemaVer !== undefined && storedSchemaVer !== String(STORE_SCHEMA_VERSION)) {
+    throw new EStoreMismatch(
+      'Store schema version mismatch — the store was created by a different version of the schema',
+      STORE_META_KEYS.SCHEMA_VERSION,
+      String(STORE_SCHEMA_VERSION),
+      storedSchemaVer,
+    );
+  }
+
+  // embed_dimensions — hard mismatch (sqlite-vec dimension is part of table DDL)
+  const storedEmbedDim = meta.get(STORE_META_KEYS.EMBED_DIMENSIONS);
+  if (storedEmbedDim !== undefined && Number(storedEmbedDim) !== EMBED_DIM) {
+    throw new EStoreMismatch(
+      'Store embed dimension mismatch — the store uses a different vector dimension than the current runtime',
+      STORE_META_KEYS.EMBED_DIMENSIONS,
+      String(EMBED_DIM),
+      storedEmbedDim,
+    );
+  }
+
+  // embed_model — soft mismatch (warn, don't abort)
+  const storedModel = meta.get(STORE_META_KEYS.EMBED_MODEL);
+  if (storedModel !== undefined && storedModel !== getActiveEmbedModel()) {
+    console.error(
+      `[sox-memory] WARNING: store was stamped with embed_model "${storedModel}" ` +
+        `but the current runtime has "${getActiveEmbedModel()}". ` +
+        `Vectors may be in a different embedding space. ` +
+        `Run "scripts/reembed-memory.mjs --force" to re-embed in the current model.`,
+    );
+  }
+}
+
 export type ScopeKind = 'project' | 'user' | 'org' | 'local';
 
 /**
@@ -70,6 +197,11 @@ export function openDb(dbPath: string): Database.Database {
   // Apply DDL (idempotent — uses CREATE IF NOT EXISTS)
   db.exec(DDL);
   db.exec(FTS_TRIGGERS);
+
+  // SA-5 / BL-121: stamp store identity meta on every open-for-write.
+  // INSERT OR IGNORE ensures first-write wins; subsequent opens verify.
+  // A mismatch (schema_version, embed_dimensions) throws EStoreMismatch.
+  stampStoreMeta(db);
 
   // Idempotent column migrations for pre-existing stores (CREATE IF NOT EXISTS won't
   // add columns to a table that already exists). Add new columns when missing.

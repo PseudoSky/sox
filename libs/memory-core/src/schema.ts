@@ -22,6 +22,13 @@ CREATE TABLE IF NOT EXISTS memory_scope (
   created_at   TEXT NOT NULL
 );
 
+-- store identity stamp (SA-5 / BL-121): written once at open-for-write, verified
+-- on every subsequent open to detect version / embed-model / writer drift.
+CREATE TABLE IF NOT EXISTS sox_store_meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 -- nodes (Episode/Entity/Claim/Community/Session unified)
 CREATE TABLE IF NOT EXISTS node (
   rowid        INTEGER PRIMARY KEY,

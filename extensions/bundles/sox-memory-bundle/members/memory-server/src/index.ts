@@ -42,6 +42,7 @@ import {
   expandTilde,
   getActiveEmbedModel,
   getDb,
+  getEmbedHealth,
   getEmbedState,
   getLastEmbedError,
   memoryCurate,
@@ -61,6 +62,7 @@ import {
   memorySearchEntities,
   memoryUpdate,
   memoryWrite,
+  resolveStoreOrDbPath,
   rowidsToUids,
   runBatchEnrich,
   SOCKET_PATH,
@@ -87,6 +89,10 @@ import * as path from 'node:path';
 
 const EXTENSION_ID = 'memory-server';
 const HOST_COMPAT_FALLBACK = '>=1.0.0 <2.0.0';
+
+// ── Instance identity (SA-7 / CONTRACTS §H) ──────────────────────────────────
+const INSTANCE_STARTED_AT = new Date().toISOString();
+const INSTANCE_ID = crypto.randomUUID();
 
 interface ContentAddress {
   id: string;
@@ -274,10 +280,13 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_ping',
     description:
-      'Use this to verify the server is reachable — returns {ok:true} without touching any database.',
+      'Use this to verify the server is reachable — returns {ok:true} with instance, store, and embed health info.',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to report health for (e.g., "default", "user"). Defaults to the bundle-configured store.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Overrides store if both provided.' },
+      },
     },
   },
   {
@@ -288,6 +297,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
       type: 'object',
       properties: {
         content: { type: 'string', description: 'The content to memorize. Required.' },
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         summary: { type: 'string', description: '(E2) Human-readable summary. Persisted to node.summary; no extractive fallback runs if supplied.' },
         name: { type: 'string', description: '(E2) Title/name for this episode (node.name).' },
@@ -321,6 +331,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Semantic query text. If absent or empty, returns importance-ranked results (no vec/FTS, sorted by importance DESC).' },
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         scope: { type: 'string', description: 'Store scope name: project/user/org/local.' },
         agent_id: { type: 'string' },
@@ -357,6 +368,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
       type: 'object',
       properties: {
         query: { type: 'string' },
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         entity_type: { type: 'string' },
         limit: { type: 'number', default: 10 },
@@ -371,6 +383,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
       type: 'object',
       properties: {
         session_id: { type: 'string' },
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
       },
       required: ['session_id'],
@@ -384,6 +397,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
       properties: {
         session_id: { type: 'string' },
         state: { type: 'object' },
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
       },
       required: ['session_id', 'state'],
@@ -395,6 +409,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     inputSchema: {
       type: 'object',
       properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         entity_uid: { type: 'string', description: 'Resolve community for this episode/entity UID (via MEMBER_OF edge).' },
         community_uid: { type: 'string', description: 'Fetch a community directly by its UID.' },
@@ -411,6 +426,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
       properties: {
         claim_uid: { type: 'string' },
         reason: { type: 'string' },
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         t_transition: { type: 'string' },
         replacement_uid: { type: 'string' },
@@ -426,6 +442,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
       type: 'object',
       properties: {
         uid: { type: 'string', description: 'UID of the live node to update. Required. Error E_NOT_FOUND if absent or invalidated.' },
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         content: { type: 'string', description: 'Replace node.content. Triggers re-embed and FTS update.' },
         summary: { type: 'string', description: 'Replace node.summary. Triggers re-embed and FTS update.' },
@@ -460,6 +477,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
           enum: ['MENTIONS', 'SUPPORTS', 'RELATES_TO', 'DERIVED_FROM', 'SUPERSEDES', 'SAME_AS', 'ASSIGNED_TO'],
           description: 'Relationship type',
         },
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         weight: { type: 'number', description: 'Optional edge weight (0–1)' },
         meta: { type: 'object', description: 'Optional JSON metadata' },
@@ -472,9 +490,10 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     name: 'memory_topics',
     description:
       'List topics in the memory store with episode counts and cluster backing status. Use before memory_recall to discover valid topic filters.',
-    inputSchema: {
+      inputSchema: {
       type: 'object',
       properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         project_path: { type: 'string', description: 'Filter to topics that have at least one episode from this project_path.' },
         search: { type: 'string', description: 'Partial topic name substring filter.' },
@@ -491,6 +510,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     inputSchema: {
       type: 'object',
       properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         limit: { type: 'number', default: 20, maximum: 200 },
         offset: { type: 'number', default: 0 },
@@ -502,9 +522,10 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     name: 'memory_list_entities',
     description:
       'List entity nodes ranked by mention count. Use for entity vocabulary discovery. For lookup by name/type, use memory_search_entities.',
-    inputSchema: {
+      inputSchema: {
       type: 'object',
       properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         project_path: { type: 'string', description: 'Only count episodes from this project_path.' },
         topic: { type: 'string', description: 'Only count episodes in this topic.' },
@@ -519,9 +540,10 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     name: 'memory_entity_episodes',
     description:
       'Return episodes that mention a given entity (via MENTIONS edge), ranked by importance.',
-    inputSchema: {
+      inputSchema: {
       type: 'object',
       properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         entity_uid: { type: 'string', description: 'UID of the entity node.' },
         entity_name: { type: 'string', description: 'Name of the entity (resolved to UID if entity_uid not supplied).' },
@@ -535,9 +557,10 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     name: 'memory_related',
     description:
       'Return neighbor episodes of a given episode at depth=1 via graph edges (RELATES_TO, DERIVED_FROM, SUPPORTS, SAME_AS).',
-    inputSchema: {
+      inputSchema: {
       type: 'object',
       properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         uid: { type: 'string', description: 'UID of the source episode.' },
         rel: { type: 'array', items: { type: 'string' }, description: 'Filter by relation type(s). Default: all live relation types.' },
@@ -550,9 +573,10 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     name: 'memory_supersession_chain',
     description:
       'Return the supersession chain for an episode: what it supersedes and what supersedes it.',
-    inputSchema: {
+      inputSchema: {
       type: 'object',
       properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         uid: { type: 'string', description: 'Any episode UID in the chain.' },
       },
@@ -563,9 +587,10 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     name: 'memory_near_duplicates',
     description:
       'List near-duplicate episode pairs connected by SAME_AS edges. Use for manual deduplication review.',
-    inputSchema: {
+      inputSchema: {
       type: 'object',
       properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         project_path: { type: 'string' },
         topic: { type: 'string' },
@@ -580,9 +605,10 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     name: 'memory_curate',
     description:
       'Curation operations: retag, set topic, override importance, merge near-duplicates, or trigger a (optionally filtered) re-cluster pass.',
-    inputSchema: {
+      inputSchema: {
       type: 'object',
       properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         op: {
           type: 'string',
@@ -610,6 +636,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     inputSchema: {
       type: 'object',
       properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         project_path: { type: 'string', description: 'Scope stats to episodes from this project.' },
       },
@@ -731,22 +758,93 @@ export function resolveDbPath(argDbPath: unknown): string {
 }
 
 export async function handleToolCall(name: string, args: Record<string, unknown>): Promise<ToolResult> {
-  // memory_ping: no db_path needed — handled before the db_path guard.
+  // memory_ping: no mandatory db_path — handled before the db_path guard.
   // ADR-0003 Decision 5: report the running server's CONTENT ADDRESS — the
   // drift-proof answer to "what code is this?" — instead of a hand-typed version.
+  // SA-7 / CONTRACTS §H: enhanced with instance, store, and embed blocks.
   if (name === 'memory_ping') {
     const addr = getContentAddress();
-    // BL-48/BL-54: report the resolved embed backend so callers can detect hash-fallback
-    // without reading stderr. BL-54: the embed worker warms LAZILY — getActiveEmbedModel()
-    // returns the default hash id until the first embed completes, so a fresh server (zero
-    // embeds) would FALSELY report embed_on_hash_fallback:true. getEmbedState() fixes this
-    // by distinguishing 'uninitialized' (no embed yet) from a real 'hash' fallback. A
-    // health check must therefore read embed_state, not embed_model, before the first embed.
-    const pingEmbedModel = getActiveEmbedModel();
-    const pingConfiguredBackend = process.env['SOX_EMBED_BACKEND'] ?? 'auto';
-    const pingEmbedState = getEmbedState();
-    const pingOnHashFallback =
-      pingConfiguredBackend !== 'hash' && pingEmbedState === 'hash';
+    const embedHealth = getEmbedHealth();
+
+    // ── Instance block (SA-7) ────────────────────────────────────────────────
+    const instanceBlock = {
+      pid: process.pid,
+      started_at: INSTANCE_STARTED_AT,
+      transport: process.env.SOX_PROXY_BACKEND === '1' ? 'backend' : 'stdio',
+      instance_id: INSTANCE_ID,
+    };
+
+    // ── Embed block (SA-7) ───────────────────────────────────────────────────
+    const embedBlock = {
+      model: embedHealth.model,
+      backend: embedHealth.backend,
+      state: embedHealth.state,
+      on_hash_fallback: embedHealth.on_hash_fallback,
+      last_error: embedHealth.last_error,
+    };
+
+    // ── Store block (SA-7) ───────────────────────────────────────────────────
+    // Attempt to resolve and probe the target store. Errors are non-fatal —
+    // the store block is simply omitted from the response.
+    let storeBlock: Record<string, unknown> | null = null;
+    try {
+      const storeArg = args['store'];
+      const dbPathArg = args['db_path'];
+      const storeResult = resolveStoreOrDbPath(storeArg, dbPathArg);
+
+      let resolvedPath = '';
+      let storeName = '';
+
+      if (storeResult === null) {
+        resolvedPath = expandTilde(resolveDbPath(undefined));
+        storeName = 'default';
+      } else if (!('code' in storeResult)) {
+        resolvedPath = storeResult.path;
+        storeName = storeResult.name;
+      }
+
+      if (resolvedPath && fs.existsSync(resolvedPath)) {
+        // sha256 file fingerprint
+        let sha256Fingerprint = '';
+        try {
+          const fileBytes = fs.readFileSync(resolvedPath);
+          sha256Fingerprint = crypto.createHash('sha256').update(fileBytes).digest('hex');
+        } catch { /* fingerprint omitted */ }
+
+        // WAL file size
+        const walPath = resolvedPath + '-wal';
+        let walBytes = 0;
+        try { walBytes = fs.statSync(walPath).size; } catch { /* no WAL yet */ }
+
+        // Open DB for live metadata queries
+        const db = getDb(resolvedPath);
+
+        // Queue depth (pending enrichments)
+        const qRow = db
+          .prepare<[], { q: number }>('SELECT COUNT(*) AS q FROM organizer_queue WHERE done_at IS NULL')
+          .get();
+        const queueDepth = qRow?.q ?? 0;
+
+        // Enrichment watermark (latest enrich_ver)
+        const eRow = db
+          .prepare<[], { ev: string | null }>('SELECT MAX(enrich_ver) AS ev FROM node WHERE enrich_ver IS NOT NULL')
+          .get();
+        const enrichmentWatermark = eRow?.ev ?? null;
+
+        storeBlock = {
+          name: storeName,
+          path: resolvedPath,
+          fingerprint: `sha256:${sha256Fingerprint}`,
+          wal_bytes: walBytes,
+          last_checkpoint_at: null,
+          enrichment_watermark: enrichmentWatermark,
+          queue_depth: queueDepth,
+        };
+      }
+    } catch {
+      // Store block omitted on any error (file not found, permission, etc.)
+    }
+
     return {
       content: [{
         type: 'text',
@@ -756,29 +854,48 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           artifact: addr.artifact,
           short: addr.short,
           host_compat: addr.host_compat,
-          embed_model: pingEmbedModel,
-          embed_backend_configured: pingConfiguredBackend,
-          embed_state: pingEmbedState,
-          embed_on_hash_fallback: pingOnHashFallback,
-          // BL-89: the real-backend failure cause (worker spawn/init/timeout), so a
-          // hash downgrade is diagnosable from the health check, not just stderr.
-          last_embed_error: getLastEmbedError(),
+          // SA-7 blocks
+          instance: instanceBlock,
+          store: storeBlock,
+          embed: embedBlock,
+          // ── Legacy flat keys (preserved for one minor version) ─────────────
+          embed_model: embedHealth.model,
+          embed_backend_configured: embedHealth.backend,
+          embed_state: embedHealth.state,
+          embed_on_hash_fallback: embedHealth.on_hash_fallback,
+          last_embed_error: embedHealth.last_error,
         }),
       }],
     };
   }
 
-  // BL-55: db_path is OPTIONAL — resolved via resolveDbPath (arg → bundle config →
-  // canonical default). Still validated against the fs allowlist by the guard below.
-  const rawDbPath = resolveDbPath(args['db_path']);
+  // SA-6 / BL-130: resolve via store-registry when `store` param provided.
+  // resolveStoreOrDbPath handles: store → registry, db_path → raw-path fallback,
+  // null → use defaults. The result supersedes the simple resolveDbPath chain.
+  const storeArg = args['store'];
+  const dbPathArg = args['db_path'];
+  const storeResult = resolveStoreOrDbPath(storeArg, dbPathArg);
 
-  // BL-41: expand a leading `~`/`~/` to $HOME ONCE, here, so the permission guard,
-  // the connection cache (getDb), and the resource sink (openDb) all operate on the
-  // SAME resolved path. The skill docs show `db_path: "~/.memory/memory.db"` verbatim;
-  // without this single expansion the cache keyed on the raw `~` string and openDb
-  // would mkdirSync a literal `~` directory relative to cwd. expandTilde mirrors
-  // memory-core's expandDbPath byte-for-byte (parity: permission-guard.spec.ts).
-  const dbPath = expandTilde(rawDbPath);
+  let dbPath: string;
+  if (storeResult === null) {
+    // Neither store nor db_path — use the default chain
+    const rawDbPath = resolveDbPath(undefined);
+    dbPath = expandTilde(rawDbPath);
+  } else if ('code' in storeResult) {
+    // Unknown store — return structured error
+    return {
+      isError: true,
+      content: [{ type: 'text', text: JSON.stringify(storeResult) }],
+    };
+  } else {
+    dbPath = storeResult.path;
+  }
+
+  // BL-55: when no store resolved and no explicit db_path, use the fallback chain
+  if (!dbPath) {
+    const rawDbPath = resolveDbPath(dbPathArg);
+    dbPath = expandTilde(rawDbPath);
+  }
 
   // [ref:guard-before-sink]: policy guard runs BEFORE getDb/openDb.
   // openDb does mkdirSync then opens — so the guard must precede the sink so

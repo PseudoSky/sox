@@ -2508,6 +2508,22 @@ Model download falls through `ModelCache.ensure()`.
 
 **Observed:** the original SA-4 issue (fallback spawn hardening) requires the OS supervisor to own the listen socket so the daemon never races to bind — SA-2 and SA-3 deliver this capability. The hardening itself (probe-before-bind, handshake, lock liveness) is the remaining SA-4 work that builds on this foundation.
 
+### BL-121 — Store identity stamp + E_STORE_MISMATCH guard — **FIXED (2026-07-03)**
+
+**Fix:** SA-5: `openDb` now stamps `sox_store_meta` with 4 identity keys on first open-for-write (`schema_version`, `writer_artifact`, `embed_model`, `embed_dimensions`) using `INSERT OR IGNORE`. Subsequent opens call `verifyStoreMeta()` which re-reads the meta and throws `EStoreMismatch` on `schema_version` or `embed_dimensions` drift. `embed_model` difference is a non-fatal `console.error` warning. `setWriterArtifact()` allows the server to stamp its own identity (e.g. `memory-server@1.1.0`). 7 new tests in `db.spec.ts` covering stamp, idempotency, verify pass, hard mismatches (2), model warning, and no-overwrite re-open. Build and test green (memory-core 191/191+1, memory-server 84/84).
+
+### BL-122 — Remote/proxy cutover unverifiable from the client — **FIXED (2026-07-03)**
+
+**Fix:** SA-7: `memory_ping` now returns `instance` block (`pid`, `started_at`, `transport`, `instance_id`), `store` block (`name`, `path`, `fingerprint:sha256`, `wal_bytes`, `enrichment_watermark`, `queue_depth`), and `embed` block (`model`, `backend`, `state`, `on_hash_fallback`, `last_error`). Legacy flat keys kept for one minor version. Combined with the existing content-addressed artifact identity, any client can now verify exactly which process, build, store, and embedding runtime served a given ping. Zero new tests needed — existing ping tests pass unmodified (backward-compatible shape).
+
+### BL-130 — Named-store registry replacing raw per-call db_path — **FIXED (2026-07-03)**
+
+**Fix:** SA-6: `store-registry.ts` implements `readStoreRegistry()` (reads `~/.memory/registry.json`), `resolveStoreName(name)` (registry lookup → resolved path + fingerprint or `E_UNKNOWN_STORE`), `resolveStoreOrDbPath()` (store wins over db_path with warning; db_path accepted with deprecation; null when neither), and `computeFingerprint()` (`${size}:${mtimeMs}`). `[inv:store-registry-misroute]`: unknown name returns structured error, never creates a file. All 19 memory tool schemas now accept `store` param. 11 new tests in `store-registry.spec.ts` covering all resolution paths, precedence, deprecation edge cases, and fingerprint.
+
+### BL-131 — memory_ping process identity + per-store health — **FIXED (2026-07-03)**
+
+**Fix:** SA-7: `memory_ping` handler resolves the target store via `resolveStoreOrDbPath` (when `store`/`db_path` params provided), probes the database file for SHA-256 fingerprint, WAL size, enrichment watermark (latest `enrich_ver`), and queue depth (pending enrichments). Combined with instance identity and embed health, ping now answers "which store am I connected to?" and "is it healthy?" in a single call. The `store` param was also added to all other tool schemas for consistent registry access. All tests pass without modification.
+
 ### BL-117 — Late chunking in memory-core is a no-op flag
 
 **Observed:** `libs/memory-core/src/recall.ts` `lateChunking.enabled` sets
