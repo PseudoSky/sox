@@ -33,10 +33,10 @@ function tmpDir(): string {
 }
 
 describe('memory-server backend handler', () => {
-  it('tools/list returns the canonical 19-tool surface', async () => {
+  it('tools/list returns the canonical 20-tool surface', async () => {
     const resp = await handleBackendRequest({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
     const result = resp?.result as { tools: Array<{ name: string }> };
-    expect(result.tools.length).toBe(19);
+    expect(result.tools.length).toBe(20);
     expect(result.tools.map((t) => t.name)).toContain('memory_ping');
     expect(result.tools.map((t) => t.name)).toContain('memory_update');
   });
@@ -95,7 +95,7 @@ describe('memory-server backend handler', () => {
 
     const listResp = await conn.send({ jsonrpc: '2.0', id: 10, method: 'tools/list' });
     const tools = (listResp.result as { tools: unknown[] }).tools;
-    expect(tools.length).toBe(19);
+    expect(tools.length).toBe(20);
 
     const pingResp = await conn.send({
       jsonrpc: '2.0',

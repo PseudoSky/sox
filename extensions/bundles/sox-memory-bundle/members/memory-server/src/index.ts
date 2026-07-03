@@ -1358,8 +1358,8 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
 
     case 'memory_curate': {
       const wq = WriteQueue.forPath(dbPath);
-      return wq.enqueue('memory_curate', (writeDb) => {
-        const result = memoryCurate(writeDb, args);
+      return wq.enqueue('memory_curate', async (writeDb) => {
+        const result = await memoryCurate(writeDb, args);
         if ('code' in result) {
           return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
         }
