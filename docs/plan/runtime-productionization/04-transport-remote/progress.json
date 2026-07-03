@@ -7,8 +7,8 @@
         "BL-146"
       ],
       "title": "Simultaneous multi-bind: stdio + UDS + streamable HTTP",
-      "status": "in_progress",
-      "evidence": null,
+      "status": "complete",
+      "evidence": "resolveTransports() returns array from opts.transports; connectStdio/connectUds/connectStreamableHttp all bind simultaneously. 21 tests in transport.spec.ts cover multi-bind lifecycle, mode resolution, and type-level ToolDispatch (tr-1-describe). build + lint green.",
       "notes": []
     },
     {
@@ -17,8 +17,8 @@
         "BL-146"
       ],
       "title": "Bind/auth policy: loopback default, bearer for non-loopback, refuse tokenless",
-      "status": "in_progress",
-      "evidence": null,
+      "status": "complete",
+      "evidence": "validateBindAuth() refuses 0.0.0.0 without token (throws); authMiddleware() returns 401 on missing/wrong/malformed token, 200 on correct token. 12 auth-specific tests in transport.spec.ts: 6 validateBindAuth + 5 authMiddleware + negative control (removing guard makes tokenless pass). isLoopback() correctly classifies 127.0.0.1/::1/localhost vs 0.0.0.0/10.x/192.168.x. resolveBindHost defaults to 127.0.0.1.",
       "notes": []
     },
     {
@@ -54,9 +54,9 @@
   ],
   "gate": {
     "status": "pending",
-    "evidence": null
+    "evidence": "TR-3/TR-4/TR-5 not yet started; gate requires TR-5 green ×3 with stdio negative control"
   },
   "blockers": [],
   "discovered": [],
-  "updated_at": null
+  "updated_at": "2026-07-03T17:59:00Z"
 }

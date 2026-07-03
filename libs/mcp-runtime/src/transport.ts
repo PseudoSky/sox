@@ -20,17 +20,15 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import * as fs from 'node:fs';
-import * as net from 'node:net';
-import * as path from 'node:path';
-import type { Transport, JSONRPCMessage, MessageExtraInfo } from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { serveBackend, type BackendHandler, encodeFrame, FrameDecoder } from '@adhd/sox-service-proxy';
+import { serveBackend, type BackendHandler } from '@adhd/sox-service-proxy';
+import type { JsonRpcRequest } from '@adhd/sox-service-proxy';
 
-/** Transport mode. "stdio" = spawned by Claude; "uds" = UDS proxy socket; "http" = StreamableHTTP. */
-export type TransportMode = 'stdio' | 'uds' | 'http';
+/** Transport mode. "stdio" = spawned by Claude; "uds" = UDS proxy socket; "http" = StreamableHTTP; "sse" = SSE transport. */
+export type TransportMode = 'stdio' | 'uds' | 'http' | 'sse';
 
 /** Options controlling transport selection and listening parameters. */
 export interface TransportOptions {
@@ -65,6 +63,25 @@ export interface TransportHandle {
   close(): Promise<void>;
 }
 
+/**
+ * ToolDispatch — shared dispatch interface for tool listing and invocation.
+ * Used by connectUds and buildUdsHandler; referenced by serve() for SDK Server handler setup.
+ */
+export interface ToolDispatch {
+  /** Server identity info for initialize response. */
+  serverInfo: { name: string; version: string };
+  /** Return the list of tool definitions. */
+  listTools(): Array<{ name: string; description: string; inputSchema: object }>;
+  /**
+   * Invoke a tool by name with given arguments.
+   * Returns tool result content or an error result.
+   */
+  callTool(name: string, args: Record<string, unknown>): Promise<{
+    content: Array<{ type: 'text'; text: string }>;
+    isError?: boolean;
+  }>;
+}
+
 /** The actual host to bind: resolves bindAddress → host. */
 export function resolveBindHost(opts: TransportOptions): string {
   return opts.bindAddress ?? opts.host ?? '127.0.0.1';
@@ -72,7 +89,7 @@ export function resolveBindHost(opts: TransportOptions): string {
 
 /** Check whether a bind address is loopback (127.0.0.1, ::1, localhost). */
 export function isLoopback(host: string): boolean {
-  return host === '127.0.0.1' || host === '::1' || host === 'localhost' || host === '0.0.0.0';
+  return host === '127.0.0.1' || host === '::1' || host === 'localhost';
 }
 
 /**
@@ -163,7 +180,7 @@ export async function connectStdioTransport(): Promise<StdioServerTransport> {
  * TR-2 auth middleware: checks bearer token on every HTTP request.
  * Returns 401 if token is missing or wrong.
  */
-function authMiddleware(
+export function authMiddleware(
   req: IncomingMessage,
   res: ServerResponse,
   expectedToken: string,
@@ -236,27 +253,22 @@ export async function connectStreamableHttp(
 }
 
 /**
- * Connect `server` using a UDS (Unix Domain Socket) transport.
+ * Connect using a UDS (Unix Domain Socket) transport, backed by a ToolDispatch.
  * Uses length-prefixed JSON-RPC framing (same protocol as service-proxy's serveBackend).
  * Each UDS connection operates as an independent session.
  *
  * [inv:c6-holds]: enforcement is done by the tool handler context before resource sink.
  */
 export async function connectUds(
-  server: Server,
+  dispatch: ToolDispatch,
   socketPath: string,
 ): Promise<TransportHandle> {
-  // Build a BackendHandler from the SDK Server's tool list
-  // We use serveBackend from service-proxy, wrapping a handler that translates
-  // between the JSON-RPC BackendHandler format and the MCP SDK Server messages.
-  //
-  // The handler replicates the MCP JSON-RPC protocol (initialize, tools/list, tools/call).
-  const handler: BackendHandler = buildUdsHandler(server);
+  const handler: BackendHandler = buildUdsHandler(dispatch);
 
   const handle = await serveBackend({
     socketPath,
     handler,
-    onDiagnostic: (line) => process.stderr.write('[mcp-runtime uds] ' + line + '\n'),
+    onDiagnostic: (line: string) => process.stderr.write('[mcp-runtime uds] ' + line + '\n'),
   });
 
   return {
@@ -267,44 +279,42 @@ export async function connectUds(
 }
 
 /**
- * Build a BackendHandler that wraps an MCP SDK Server for UDS transport.
- * This enables the UDS transport to use the same Server instance as stdio/http
- * without needing a separate SDK Server instance.
+ * Build a BackendHandler that delegates to a ToolDispatch for UDS transport.
+ * This enables the UDS transport to use the same tool dispatch as stdio/http
+ * without requiring an SDK Server instance.
  */
-function buildUdsHandler(server: Server): BackendHandler {
-  return async (req) => {
+function buildUdsHandler(dispatch: ToolDispatch): BackendHandler {
+  return async (req: JsonRpcRequest) => {
     const id = req.id ?? null;
 
     if (req.method === 'initialize') {
-      // Provide the server's identity
       return {
         jsonrpc: '2.0' as const,
         id,
         result: {
           protocolVersion: '2024-11-05',
-          serverInfo: { name: 'mcp-runtime-uds', version: '0.1.0' },
+          serverInfo: dispatch.serverInfo,
           capabilities: { tools: {} },
         },
       };
     }
 
     if (req.method === 'tools/list') {
-      // Respond with the tools registered on the server by proxying through
-      // an internal tools/list call
+      const tools = dispatch.listTools();
       return {
         jsonrpc: '2.0' as const,
         id,
-        result: { tools: [] }, // placeholder — populated by server.toolsList if available
+        result: { tools },
       };
     }
 
     if (req.method === 'tools/call') {
-      // Proxy to the server's handler
-      const params = (req.params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
+      const p = (req.params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
+      const result = await dispatch.callTool(p.name ?? '', p.arguments ?? {});
       return {
         jsonrpc: '2.0' as const,
         id,
-        result: { content: [], isError: true },
+        result,
       };
     }
 

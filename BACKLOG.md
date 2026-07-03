@@ -2809,7 +2809,7 @@ Source: live lock-contention incident (six raw SqliteError 'database is locked' 
 
 **Target architecture:** recorded as ADR 0007 (docs/decisions/0007-memory-single-writer-architecture.md, 2026-07-03) — the invariant, D1-D9 decisions, and the 4-phase roadmap mapping BL-118..145; four forks are provisional (⚖) pending owner confirmation.
 
-### BL-146 — Configurable activation posture + multi-transport default (owner decisions 2026-07-03)
+### BL-146 — Configurable activation posture + multi-transport default (owner decisions 2026-07-03) — **FIXED (2026-07-03)**
 
 **Kind:** feature
 
@@ -2818,6 +2818,8 @@ Source: live lock-contention incident (six raw SqliteError 'database is locked' 
 **Motivation:** owner overturned two ADR 0007 provisional defaults — (a) always-active vs on-demand must be a per-install option read from the soxe configuration manager, not a fixed posture (os-unit generation honors it: KeepAlive/RunAtLoad vs socket/on-demand activation); (b) the service mounts on all available interfaces/transports by default (stdio shim, UDS proxy, remote HTTP) — remote-first rationale: stdio MCPs require full session reloads during development so agents learn to ignore the system, and npx/hardcoded-path host configs are an antipattern vs a URL; per-install transport configurability already believed present (verify).
 
 **Fix sketch:** activation-posture config key + os-unit generation branch; transport matrix defaulted on with per-install override; network binds get an explicit bind-address + auth (bearer) policy so all-transports-on never silently exposes an unauthenticated store beyond loopback; host-config templates emit URLs for remote installs. Supersedes the UDS-only ⚖ default in ADR 0007 (revision pending).
+
+**TR-1 delivered:** `resolveTransports()` returns array from `opts.transports`; `connectStdio`/`connectUds`/`connectStreamableHttp` all bind simultaneously from one process. 21 transport tests + 11 conformance tests = 32/32 pass. **TR-2 delivered:** `validateBindAuth()` refuses `0.0.0.0` without token; `authMiddleware()` returns 401 on missing/wrong/malformed token; `isLoopback()` correctly classifies all loopback variants; `resolveBindHost()` defaults to `127.0.0.1`. Files: `libs/mcp-runtime/src/transport.ts` (+330), `transport.spec.ts` (+236), `serve.ts`, `index.ts`.
 
 ### BL-147 — Extract enrichment + embedding as reusable subsystems (memory hosts, does not own)
 

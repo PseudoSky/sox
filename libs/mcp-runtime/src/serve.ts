@@ -20,7 +20,15 @@ import {
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getPolicy } from './enforce.js';
-import { resolveTransportMode, connectStdio, connectStreamableHttp, type TransportOptions } from './transport.js';
+import {
+  type TransportHandle,
+  type ToolDispatch,
+  resolveTransports,
+  connectStdio,
+  connectUds,
+  connectStreamableHttp,
+  type TransportOptions,
+} from './transport.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -100,7 +108,64 @@ export function defineTool<TArgs extends Record<string, unknown> = Record<string
   return { definition: def as unknown as ToolDefinition };
 }
 
-// ─── serve ────────────────────────────────────────────────────────────────────
+// ─── buildToolDispatch ─────────────────────────────────────────────────────────
+
+/**
+ * Build a ToolDispatch from registered tools.
+ * The dispatch provides tool listing and invocation backed by C6 enforcement,
+ * shared across all transport bindings (stdio, uds, http).
+ */
+export function buildToolDispatch(
+  tools: RegisteredTool[],
+  serverInfo: { name: string; version: string },
+): ToolDispatch {
+  return {
+    serverInfo,
+    listTools: () =>
+      tools.map((t) => ({
+        name: t.definition.name,
+        description: t.definition.description,
+        inputSchema: t.definition.inputSchema,
+      })),
+    callTool: async (name: string, args: Record<string, unknown>) => {
+      const tool = tools.find((t) => t.definition.name === name);
+      if (!tool) {
+        return {
+          isError: true,
+          content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }],
+        };
+      }
+
+      // [inv:c6-holds]: build context from the current policy BEFORE calling handler.
+      const policy = getPolicy();
+      const ctx: ToolContext = {
+        enforced: policy.enforced,
+        allowsFsRead: (p) => policy.allowsFsRead(p),
+        allowsFsWrite: (p) => policy.allowsFsWrite(p),
+        allowsNetwork: (h) => policy.allowsNetwork(h),
+        allowsSocket: (p) => policy.allowsSocket(p),
+      };
+
+      try {
+        const handlerResult = await tool.definition.handler(
+          args as Record<string, unknown>,
+          ctx,
+        );
+        return {
+          content: handlerResult.content as Array<{ type: 'text'; text: string }>,
+          ...(handlerResult.isError !== undefined ? { isError: handlerResult.isError } : {}),
+        };
+      } catch (err) {
+        return {
+          isError: true,
+          content: [{ type: 'text' as const, text: `Tool error: ${String(err)}` }],
+        };
+      }
+    },
+  };
+}
+
+// ─── serve ─────────────────────────────────────────────────────────────────────
 
 /** Options for serve(). */
 export interface ServeOptions {
@@ -111,6 +176,7 @@ export interface ServeOptions {
   /**
    * Transport options (mode, port, host).
    * mode defaults to SOX_MCP_TRANSPORT env var → --transport flag → "stdio".
+   * Use `transports` array for multi-bind (TR-1).
    */
   transport?: TransportOptions;
 }
@@ -120,9 +186,10 @@ export interface ServeOptions {
  *
  * Wraps @modelcontextprotocol/sdk — the SDK handles initialize, protocol
  * framing, session management. This function layers:
- *   - transport selection (stdio | sse/http) per the install profile
+ *   - transport selection (stdio | uds | http) per the install profile
+ *   - multi-bind: all transports in `transports` array bound simultaneously
  *   - C6 policy-env enforcement at the resource sink (via ToolContext)
- *   - graceful shutdown on SIGTERM / SIGINT
+ *   - graceful shutdown on SIGTERM / SIGINT with queue drain
  *
  * [mcp-runtime.1]: wraps the official SDK (Server, ListToolsRequestSchema,
  *   CallToolRequestSchema) — not a reimplementation.
@@ -137,77 +204,69 @@ export async function serve(tools: RegisteredTool[], opts: ServeOptions): Promis
   process.stderr.write('[serve] real-path: ' + __dirname + '\n');
 
   const { name, version = '0.1.0', transport: transportOpts = {} } = opts;
+  const serverInfo = { name, version };
 
-  // Build MCP SDK Server (low-level, protocol-aware)
+  // Build MCP SDK Server (low-level, protocol-aware) — needed for stdio and http transports.
   const server = new Server(
-    { name, version },
+    serverInfo,
     { capabilities: { tools: {} } },
   );
 
+  // Build shared tool dispatch
+  const dispatch = buildToolDispatch(tools, serverInfo);
+
   // tools/list — return the declared tools
   server.setRequestHandler(ListToolsRequestSchema, () => {
-    const sdkTools: Tool[] = tools.map((t) => ({
-      name: t.definition.name,
-      description: t.definition.description,
-      inputSchema: t.definition.inputSchema,
+    const sdkTools: Tool[] = dispatch.listTools().map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema as Tool['inputSchema'],
     }));
     return { tools: sdkTools };
   });
 
-  // tools/call — resolve the tool, build ToolContext, run handler
+  // tools/call — delegate to dispatch
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name: toolName, arguments: rawArgs = {} } = req.params;
-
-    const tool = tools.find((t) => t.definition.name === toolName);
-    if (!tool) {
-      const result: CallToolResult = {
-        isError: true,
-        content: [{ type: 'text', text: `Unknown tool: ${toolName}` }],
-      };
-      return result;
-    }
-
-    // [inv:c6-holds]: build context from the current policy BEFORE calling handler.
-    // Policy is read fresh each call so test env mutations are respected.
-    const policy = getPolicy();
-    const ctx: ToolContext = {
-      enforced: policy.enforced,
-      allowsFsRead: (p) => policy.allowsFsRead(p),
-      allowsFsWrite: (p) => policy.allowsFsWrite(p),
-      allowsNetwork: (h) => policy.allowsNetwork(h),
-      allowsSocket: (p) => policy.allowsSocket(p),
+    const result = await dispatch.callTool(toolName, rawArgs as Record<string, unknown>);
+    const callResult: CallToolResult = {
+      isError: result.isError,
+      content: result.content,
     };
-
-    try {
-      const handlerResult = await tool.definition.handler(
-        rawArgs as Record<string, unknown>,
-        ctx,
-      );
-      const result: CallToolResult = {
-        isError: handlerResult.isError,
-        content: handlerResult.content,
-      };
-      return result;
-    } catch (err) {
-      const result: CallToolResult = {
-        isError: true,
-        content: [{ type: 'text', text: `Tool error: ${String(err)}` }],
-      };
-      return result;
-    }
+    return callResult;
   });
 
-  // Select and connect transport
-  const mode = resolveTransportMode(transportOpts);
-  const handle =
-    mode === 'sse' || mode === 'http'
-      ? await connectStreamableHttp(server, transportOpts)
-      : await connectStdio(server);
+  // Resolve multi-transport list and bind each simultaneously
+  const modes = resolveTransports(transportOpts);
+  const handles: TransportHandle[] = [];
 
-  // Graceful shutdown
-  const shutdown = () => {
-    void handle.close();
+  for (const mode of modes) {
+    if (mode === 'stdio') {
+      handles.push(await connectStdio(server));
+    } else if (mode === 'uds') {
+      const socketPath = transportOpts.socketPath ?? resolveDefaultUdsPath(name);
+      handles.push(await connectUds(dispatch, socketPath));
+    } else if (mode === 'sse' || mode === 'http') {
+      handles.push(await connectStreamableHttp(server, transportOpts));
+    }
+  }
+
+  // Graceful shutdown: drain all transports before closing
+  const shutdown = async () => {
+    for (const h of handles) {
+      await h.close();
+    }
   };
+
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+}
+
+/**
+ * Derive a default UDS socket path from the server name.
+ * Data-root convention: ~/.sox/sockets/<name>.sock
+ */
+function resolveDefaultUdsPath(name: string): string {
+  const home = process.env['HOME'] ?? '/tmp';
+  return `${home}/.sox/sockets/${name.replace(/[^a-zA-Z0-9_-]/g, '_')}.sock`;
 }
