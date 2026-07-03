@@ -1,0 +1,62 @@
+{
+  "context": "04-transport-remote",
+  "items": [
+    {
+      "id": "TR-1",
+      "bl": [
+        "BL-146"
+      ],
+      "title": "Simultaneous multi-bind: stdio + UDS + streamable HTTP",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "TR-2",
+      "bl": [
+        "BL-146"
+      ],
+      "title": "Bind/auth policy: loopback default, bearer for non-loopback, refuse tokenless",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "TR-3",
+      "bl": [
+        "BL-148"
+      ],
+      "title": "http_port from config truth in listener AND host-config generation",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "TR-4",
+      "bl": [
+        "BL-146"
+      ],
+      "title": "URL-only host configs for claude + opencode",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "TR-5",
+      "bl": [
+        "BL-146"
+      ],
+      "title": "Restart-survival scenario green; stdio control red; remote default recommended",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    }
+  ],
+  "gate": {
+    "status": "pending",
+    "evidence": null
+  },
+  "blockers": [],
+  "discovered": [],
+  "updated_at": null
+}
