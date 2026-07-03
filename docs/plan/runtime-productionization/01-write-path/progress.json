@@ -50,7 +50,7 @@
           {"cmd": "npx nx build memory-core", "exit": 0, "summary": "build passes"},
           {"cmd": "npx nx test memory-core", "exit": 0, "summary": "187/188 pass (1 skipped, same as baseline)"}
         ],
-        "commits": ["3b8a3d4", "89d0afb"],
+        "commits": ["3b8a3d4", "89d0afb", "9b13879"],
         "negative_control": {
           "break": "remove the catch clause in WriteQueue._processNext (or revert wrapDbError)",
           "red": "forced-lock test would pass raw SqliteError instead of E_BUSY",
