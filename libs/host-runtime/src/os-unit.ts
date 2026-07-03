@@ -85,13 +85,6 @@ export interface OsUnitSpec {
   artifactHash?: string | undefined;
 }
 
-interface ManifestLifecycleShape {
-  lifecycle?: {
-    background?: boolean;
-    singleton?: boolean;
-    stop_timeout_ms?: number;
-  };
-}
 
 /** The reverse-DNS-style label for a (scope, id) unit. */
 export function osUnitLabel(scope: string, id: string): string {
@@ -118,16 +111,38 @@ export function deriveOsUnitSpec(opts: {
   artifactHash?: string | undefined;
   /** Override the YYYY-MM-DD log date (tests). Default: today. */
   logDate?: string;
+  /**
+   * SA-1 / CONTRACTS §I: activation posture for the OS unit.
+   * 'always-on' → RunAtLoad + KeepAlive (launchd manages respawns).
+   * 'on-demand' → socket-activation (launchd starts on first connection).
+   * When omitted: falls back to the manifest lifecycle block (existing behaviour).
+   */
+  activation_posture?: 'always-on' | 'on-demand' | undefined;
 }): OsUnitSpec {
-  let manifest: ManifestLifecycleShape = {};
-  try {
-    manifest = JSON.parse(fs.readFileSync(opts.manifestPath, 'utf8')) as ManifestLifecycleShape;
-  } catch {
-    manifest = {};
-  }
-  const lc = manifest.lifecycle ?? {};
   const label = osUnitLabel(opts.scope, opts.id);
   const logDate = opts.logDate ?? new Date().toISOString().slice(0, 10);
+
+  // SA-1: activation_posture takes precedence.
+  // When absent, fall back to manifest lifecycle (backward compat).
+  let runAtLoad: boolean;
+  let keepAlive: boolean;
+  if (opts.activation_posture === 'always-on') {
+    runAtLoad = true;
+    keepAlive = true;
+  } else if (opts.activation_posture === 'on-demand') {
+    runAtLoad = false;
+    keepAlive = false;
+  } else {
+    // Legacy: read from manifest lifecycle block.
+    let manifest: { lifecycle?: { background?: boolean; singleton?: boolean } } = {};
+    try {
+      manifest = JSON.parse(fs.readFileSync(opts.manifestPath, 'utf8'));
+    } catch { manifest = {}; }
+    const lc = manifest.lifecycle ?? {};
+    runAtLoad = lc.background !== false;
+    keepAlive = lc.singleton === true;
+  }
+
   return {
     id: opts.id,
     scope: opts.scope,
@@ -137,11 +152,8 @@ export function deriveOsUnitSpec(opts: {
     entrypoint: opts.entrypoint,
     env: opts.env,
     workingDirectory: opts.workingDirectory,
-    // `background` defaults to true for a service that opts into an OS unit — the
-    // whole point of `service enable` is reboot persistence (run at load).
-    runAtLoad: lc.background !== false,
-    // KeepAlive iff the service declares itself a singleton (the daemons do).
-    keepAlive: lc.singleton === true,
+    runAtLoad,
+    keepAlive,
     // launchd throttles respawns to ~10s; §11.3 maps the crash-loop guard to it.
     throttleIntervalSec: 10,
     stdoutPath: path.join(opts.logDir, `${opts.id}-os-${logDate}.out.log`),

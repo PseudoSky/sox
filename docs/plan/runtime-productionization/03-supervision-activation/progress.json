@@ -1,0 +1,88 @@
+{
+  "context": "03-supervision-activation",
+  "items": [
+    {
+      "id": "SA-1",
+      "bl": [],
+      "title": "activation_posture config key + deriveOsUnitSpec branch",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "SA-2",
+      "bl": [],
+      "title": "Sockets plist + systemd .socket rendering",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "SA-3",
+      "bl": [],
+      "title": "Inherited-fd serveBackend",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "SA-4",
+      "bl": [
+        "BL-137"
+      ],
+      "title": "Fallback spawn hardening: probe-before-bind, handshake, lock liveness",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "SA-5",
+      "bl": [
+        "BL-121"
+      ],
+      "title": "Store identity stamp + E_STORE_MISMATCH",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "SA-6",
+      "bl": [
+        "BL-130"
+      ],
+      "title": "Named-store registry + resolved-path echo",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "SA-7",
+      "bl": [
+        "BL-122",
+        "BL-131"
+      ],
+      "title": "memory_ping instance/store/embed identity",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "SA-8",
+      "bl": [
+        "BL-128",
+        "BL-145"
+      ],
+      "title": "Writer lease; GATED launchd re-enable after 02",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    }
+  ],
+  "gate": {
+    "status": "pending",
+    "evidence": null
+  },
+  "blockers": [],
+  "discovered": [],
+  "updated_at": null
+}
