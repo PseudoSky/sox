@@ -5276,6 +5276,25 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
   const liveSupervisors = await readGlobalRegistry();
   const hasRuntimeSupervisors = liveSupervisors.length > 0;
 
+  // PI-5 / BL-141: detect lockfile-empty-but-registry-populated divergence.
+  // When the install-registry has records but scope lockfiles are empty/missing,
+  // the user likely has a stale system that needs `soxe install` to re-sync.
+  try {
+    const regPath = installRegistryPath();
+    const reg = readInstallRegistry(regPath);
+    if (reg.installs.length > 0) {
+      // Check user scope lockfile (most common)
+      const userLockPath = getScopePaths('user', process.cwd()).lockfile;
+      const userLock = loadLockfile(userLockPath);
+      if (userLock === null || Object.keys(userLock.resolved).length === 0) {
+        process.stdout.write(
+          `${CLI} status: WARNING — install-registry has ${reg.installs.length} record(s) but user-scope lockfile at ${userLockPath} ` +
+          `is empty/missing. Run '${CLI} install' to re-sync.\n\n`,
+        );
+      }
+    }
+  } catch { /* best-effort */ }
+
   // ── Collect HealthRecords from all live supervisors ─────────────────────────
   const records: HealthRecord[] = [];
 
@@ -6523,6 +6542,35 @@ function printToolList(listResult: ExecListResult, scope: string): void {
  * MCP servers — the process stays alive reading stdin/stdout, and config is always
  * fresh (re-resolved on each session start).
  */
+
+/**
+ * Build a diagnostic message when soxe serve cannot find the extension in a
+ * lockfile. Cross-references the install registry and registry index to suggest
+ * a repair command.
+ */
+async function buildServeLockfileMissDiagnostic(
+  extId: string,
+  root: string,
+  _searched: string[],
+  cli: string,
+): Promise<{ message: string; repair: string | null }> {
+  const regPath = installRegistryPath();
+  const reg = readInstallRegistry(regPath);
+  const extRecord = reg.installs.find((r: { extId: string }) => r.extId === extId);
+  if (!extRecord) return { message: `Extension "${extId}" not found in install registry.`, repair: null };
+  const index = loadRegistryIndex(root);
+  const idxEntry = index.find(
+    (e) => e.members?.some((m) => m.id === extId) || e.bundleId === extId,
+  );
+  if (!idxEntry) return { message: `Extension "${extId}" found in registry but no owning bundle found.`, repair: null };
+  const bundleId = idxEntry.bundleId || idxEntry.id;
+  const repair = `${cli} install ${bundleId} --scope=${extRecord.scope}`;
+  return {
+    message: `Extension "${extId}" is member of bundle "${bundleId}" but missing from lockfile.`,
+    repair,
+  };
+}
+
 async function cmdServe(flags: Record<string, string>): Promise<void> {
   if (flags['help'] !== undefined || flags['h'] !== undefined) {
     process.stdout.write(`${CLI} serve — launch an extension process with live cascade config
@@ -6609,8 +6657,9 @@ Flags:
   }
 
   if (!extDir2) {
-    const searched = scopesToSearch2.join(', ');
-    process.stderr.write(`${CLI} serve: extension '${extId}' not found in lockfile (searched scopes: ${searched}) or local extensions\n`);
+    const diag = await buildServeLockfileMissDiagnostic(extId, root2, [...scopesToSearch2], CLI);
+    process.stderr.write(`\n${diag.message}\n`);
+    if (diag.repair) process.stderr.write(`Repair: ${diag.repair}\n`);
     process.exit(1);
   }
 

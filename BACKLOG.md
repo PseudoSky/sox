@@ -2572,3 +2572,17 @@ the unified schema with 5 provenance variants. Export: `reaper.ts` → `index.ts
 
 **Files changed:** `libs/host-runtime/src/reaper.ts` (gatherProcessSnapshot + types),
 `libs/host-runtime/src/index.ts` (re-export), `apps/sox/src/main.ts` (cmdPs + cmdFollow).
+
+### BL-143 — `soxe serve` lockfile-miss error is a dead end with no remediation guidance for the user — **FIXED (2026-07-03)**
+
+**Summary:** When `soxe serve <extId>` cannot find the extension in any scope's
+lockfile, it now produces a cross-referenced diagnostic message instead of a bare
+"not found in lockfile" error. `buildServeLockfileMissDiagnostic()` queries the
+install registry and registry index to identify the owning bundle and suggests a
+repair command (`soxe install <bundle> --scope=<scope>`). `cmdServe()` displays
+the message and repair instruction. `cmdStatus()` also includes a divergence
+warning when install-registry has records but scope lockfiles are empty/missing
+(PI-5 overlap). 42 sox tests + 171 host-runtime tests pass.
+
+**Files changed:** `apps/sox/src/main.ts` (buildServeLockfileMissDiagnostic,
+cmdServe lockfile-miss exit path, cmdStatus divergence warning).

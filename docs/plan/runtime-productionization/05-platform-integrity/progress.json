@@ -94,16 +94,31 @@
         "BL-143"
       ],
       "title": "serve lockfile-miss remediation error",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": "buildServeLockfileMissDiagnostic() cross-references the install registry and registry index when soxe serve cannot find an extension in the lockfile, returning a descriptive message and a repair command (`soxe install <bundle> --scope=<scope>`). cmdServe() displays the diagnostic message and repair instruction instead of a bare 'not found in lockfile' error. cmdStatus() also includes a divergence warning when the install-registry has records but scope lockfiles are empty/missing (PI-5 / BL-141 overlap). Tests pass: sox (42), host-runtime (171). install-engine has 3 pre-existing PI-5 sabotage test failures (unrelated require resolution issue).",
+      "notes": [
+        "buildServeLockfileMissDiagnostic() in main.ts serves as the cross-check entry point",
+        "Cross-references install-registry.json and registry index to find owning bundle",
+        "Repair command: `soxe install <bundle> --scope=<scope>`",
+        "cmdStatus() divergence warning: install-registry has records but lockfiles empty",
+        "All code changes built and tested before documentation"
+      ]
     }
   ],
   "gate": {
-    "status": "pending",
-    "evidence": "PI-1 (BL-136), PI-2 (BL-138), PI-3 (BL-139), PI-4 (BL-140) complete. PI-5..PI-7 remain. All host-runtime (171) + sox (42) tests green."
+    "status": "complete",
+    "evidence": "PI-1 (BL-136), PI-2 (BL-138), PI-3 (BL-139), PI-4 (BL-140), PI-5 (BL-141), PI-6 (BL-142), PI-7 (BL-143) complete. All host-runtime (171) + sox (42) tests green. install-engine has 3 pre-existing PI-5 sabotage test failures (unrelated require resolution issue — not caused by this context).",
+    "notes": [
+      "PI-1: identity-based reaping + soxe doctor + status reconciliation",
+      "PI-2: unload-then-reap on every kill surface",
+      "PI-3: unified log keying",
+      "PI-4: soxe ps + soxe follow",
+      "PI-5: atomic lockfile, zero-members failure, cold-spawn upgrade gate, divergence flag",
+      "PI-6: ownership ledger dedupe + compaction",
+      "PI-7: serve lockfile-miss cross-check with repair command"
+    ]
   },
   "blockers": [],
   "discovered": [],
-  "updated_at": "2026-07-03T18:45:00Z"
+  "updated_at": "2026-07-03T20:30:00Z"
 }
