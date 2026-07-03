@@ -5,9 +5,18 @@
       "id": "SA-1",
       "bl": [],
       "title": "activation_posture config key + deriveOsUnitSpec branch",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "commands": [{"cmd": "npx nx build host-runtime", "exit": 0, "summary": "build passes"}, {"cmd": "npx nx test host-runtime", "exit": 0, "summary": "168/168 pass"}],
+        "commits": ["eff03c1"],
+        "notes": "activation_posture in config_schema; deriveOsUnitSpec branches; legacy fallback preserved"
+      },
+      "notes": [
+        "activation_posture added to memory-server config_schema per CONTRACTS §I",
+        "deriveOsUnitSpec() branches: always-on → RunAtLoad+KeepAlive; on-demand → socket-activation",
+        "CONTRACTS §I keys: transports, http_port, bind_address, auth_token also added to config_schema",
+        "Legacy manifest lifecycle fallback preserved for backward compatibility"
+      ]
     },
     {
       "id": "SA-2",
