@@ -80,6 +80,7 @@ import {
   resolveFromRegistry,
   reverseUserMcpFromProjects,
   syncUserMcpToProjects,
+  IntegrityResult,
   verifyIntegrity,
 } from '@adhd/sox-install-engine';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
@@ -111,6 +112,28 @@ async function main(): Promise<void> {
     process.stderr.write(
       `[sox] SOX_ECOSYSTEM_HOME is set — data root: ${process.env['SOX_ECOSYSTEM_HOME']} (placement unaffected)\n`,
     );
+  }
+
+  // ── Command audit log (append-only JSONL) ──────────────────────────────────
+  try {
+    const { appendFileSync, mkdirSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const auditScope = (flags['scope'] ?? 'user') as DataScope;
+    const rootDir = dataRoot(auditScope);
+    const runDir = join(rootDir, 'run');
+    mkdirSync(runDir, { recursive: true });
+    const entry = {
+      t: new Date().toISOString(),
+      pid: process.pid,
+      ppid: process.ppid,
+      verb,
+      argv: process.argv.slice(2),
+      cwd: process.cwd(),
+      scope: auditScope,
+    };
+    appendFileSync(join(runDir, 'sox-audit.jsonl'), JSON.stringify(entry) + '\n', 'utf8');
+  } catch {
+    // audit logging must never crash the CLI
   }
 
   switch (verb) {
@@ -2125,6 +2148,47 @@ async function rollingRestartConsumer(
 }
 
 /**
+ * Verify that the running process for (extId, scope) loaded the artifact whose
+ * sha256 matches the lockfile's expected checksum. Reads the runtime record to
+ * find the entrypoint file path, then sha256s the file on disk and compares.
+ *
+ * Returns { ok: true } on match, { ok: false, detail } on mismatch or error.
+ */
+async function verifyRunningArtifact(
+  extId: string, lockfilePath: string,
+): Promise<{ ok: true } | { ok: false; detail: string }> {
+  // 1. Get expected checksum from lockfile.
+  const lock = loadLockfile(lockfilePath);
+  if (!lock) return { ok: false, detail: 'no lockfile' };
+  const lockKey = Object.keys(lock.resolved).find((k) => k === extId || k.startsWith(`${extId}@`));
+  if (!lockKey) return { ok: false, detail: 'not in lockfile' };
+  const expected = lock.resolved[lockKey]!.checksum;
+  if (!expected) return { ok: false, detail: 'no checksum in lockfile' };
+
+  // 2. Find the running process's entrypoint from the runtime record.
+  const runtimeFilePath = getRuntimeFilePath(lockfilePath);
+  const record = getRuntimeRecord(runtimeFilePath);
+  const entry = record?.entries?.find((e) => e.id === extId || e.key === extId);
+  if (!entry) return { ok: false, detail: 'no runtime entry' };
+  const artifactPath = entry.source;
+  if (!artifactPath) return { ok: false, detail: 'no source in runtime entry' };
+
+  // 3. Sha256 the artifact file the process loaded.
+  const fs = require('node:fs') as typeof import('node:fs');
+  const crypto = require('node:crypto') as typeof import('node:crypto');
+  let actual: string;
+  try {
+    const data = fs.readFileSync(artifactPath);
+    actual = crypto.createHash('sha256').update(data).digest('hex');
+  } catch (e) {
+    return { ok: false, detail: `cannot read artifact ${artifactPath}: ${String(e)}` };
+  }
+
+  if (actual === expected) return { ok: true };
+  return { ok: false, detail: `entrypoint sha256 ${actual.slice(0, 19)}… ≠ expected ${expected.slice(0, 19)}…` };
+}
+
+/**
  * §9.3: re-`enable` an extension's OS unit on upgrade so it tracks the new artifact.
  * No-op when no OS unit is owned for (extId, scope). Content-addressed: enableOsUnit
  * rewrites + reloads only when the generated unit differs. Honors SOX_OS_UNIT_DIR.
@@ -2161,7 +2225,7 @@ interface ConsumerOutcome {
   extId: string;
   scope: string;
   root: string;
-  state: 'current' | 'upgraded' | 'restarted' | 'backend-restarted' | 'reconnect-needed' | 'not-installed' | 'unresolvable' | 'failed';
+  state: 'current' | 'upgraded' | 'restarted' | 'restart-mismatch' | 'backend-restarted' | 'backend-restart-mismatch' | 'reconnect-needed' | 'not-installed' | 'unresolvable' | 'failed';
   detail: string;
 }
 
@@ -2227,26 +2291,39 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
   let changed = 0;
   let failed = 0;
 
+  // ── Pre-compute integrity snapshot ──────────────────────────────────────────
+  // Snapshot all verdicts BEFORE any re-install so a bundle install that updates
+  // the lockfile mid-pass can't taint subsequent consumers' is-this-current check.
+  // Each consumer's verdict is computed from the lockfile as it was at pass start.
+  interface Snapshot { record: typeof consumers[0]; verdict: IntegrityResult | null; tag: string }
+  const snapshot: Snapshot[] = [];
   for (let i = 0; i < consumers.length; i++) {
     const record = consumers[i]!;
     const tag = `[${i + 1}/${consumers.length}] ${record.extId} (scope: ${record.scope}, root: ${record.root})`;
     const lockfilePath = lockfilePathForRecord(record.scope, record.root);
 
-    // Guard: stale install-registry entry where uninstall ran but removeInstallRecord
-    // failed (best-effort write). If the id is no longer in the lockfile, skip it.
     const currentLockfile = loadLockfile(lockfilePath);
     const inLockfile = currentLockfile !== null &&
       Object.keys(currentLockfile.resolved).some(
         (k) => k === record.extId || k.startsWith(`${record.extId}@`),
       );
     if (!inLockfile) {
+      // not-in-lockfile is a terminal state — no re-install needed, no verdict.
       process.stdout.write(`  ${tag}\n    → not in lockfile (skipped — run ${CLI} install to re-add)\n`);
       outcomes.push({ extId: record.extId, scope: record.scope, root: record.root, state: 'not-installed', detail: 'not in lockfile' });
+      snapshot.push({ record, verdict: null, tag });
       continue;
     }
 
-    // 1. The ONE is-this-current check.
     const verdict = await verifyIntegrity(record.scope as Scope, record.extId, { lockfilePath });
+    snapshot.push({ record, verdict, tag });
+  }
+
+  // ── Re-install pass ─────────────────────────────────────────────────────────
+  // Uses the snapshot verdicts — NEVER re-reads the lockfile — so a bundle
+  // install that updates the lockfile does not taint subsequent consumers.
+  for (const { record, verdict, tag } of snapshot) {
+    if (verdict === null) continue; // already emitted not-installed above
 
     if (verdict.status === 'current') {
       process.stdout.write(`  ${tag}\n    → current (${(verdict.actual ?? '').slice(0, 19)}…) — no change\n`);
@@ -2261,23 +2338,19 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
       continue;
     }
 
-    // 2. STALE — re-install (refresh artifact + re-pin lockfile).
+    // STALE — re-install (refresh artifact + re-pin lockfile).
+    const lockfilePath = lockfilePathForRecord(record.scope, record.root);
     process.stdout.write(
       `  ${tag}\n    → STALE (expected ${(verdict.expected ?? '').slice(0, 19)}…, got ${(verdict.actual ?? '').slice(0, 19)}…) — re-installing\n`,
     );
     try {
-      // Target the consumer's ACTUAL config + lockfile at record.root — not the
-      // scope default — so a project/local consumer outside the repo re-pins its
-      // own lockfile (never an unrelated one).
       await install({
         scope: record.scope as Scope,
         mode: 'update',
         root: record.root,
         configPath: configPathForRecord(record.scope, record.root),
-        lockfilePath: lockfilePath,
+        lockfilePath,
       });
-      // BL-39 / ADR-0004 §D6: an upgrade that changes the artifact MUST re-materialize
-      // the service store — the lockfile re-pin alone leaves a daemon on stale code.
       rematerializeServiceStores(record.scope, record.root, lockfilePath);
     } catch (e) {
       process.stdout.write(`    → RE-INSTALL FAILED: ${String(e)}\n`);
@@ -2287,7 +2360,6 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
     }
     changed++;
     outcomes.push({ extId: record.extId, scope: record.scope, root: record.root, state: 'upgraded', detail: 're-pinned to new artifact' });
-    // Defer the restart decision to the sequential pass below.
     toRestart.push({ extId: record.extId, scope: record.scope, root: record.root });
   }
 
@@ -2305,13 +2377,31 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
       if (oc) {
         if (res.disposition === 'restarted' && !res.detail.includes('FAILED')) {
           oc.state = 'restarted';
+          // Verify the running process actually loaded the new artifact.
+          const verified = await verifyRunningArtifact(r.extId, lockfilePathForRecord(r.scope, r.root));
+          if (!verified.ok) {
+            oc.state = 'restart-mismatch';
+            oc.detail = verified.detail;
+            process.stdout.write(`    ⚠ verify: ${verified.detail}\n`);
+          } else {
+            oc.detail = res.detail;
+          }
         } else if (res.disposition === 'backend-restarted') {
-          // Proxy-mode mcp-server: backend rolled, shims re-dial, NO client reconnect.
           oc.state = 'backend-restarted';
+          // Verify proxy backend process artifact.
+          const verified = await verifyRunningArtifact(r.extId, lockfilePathForRecord(r.scope, r.root));
+          if (!verified.ok) {
+            oc.state = 'backend-restart-mismatch';
+            oc.detail = verified.detail;
+            process.stdout.write(`    ⚠ verify: ${verified.detail}\n`);
+          } else {
+            oc.detail = res.detail;
+          }
         } else if (res.disposition === 'reconnect-needed') {
           oc.state = 'reconnect-needed';
+        } else {
+          oc.detail = res.detail;
         }
-        oc.detail = res.detail;
       }
       if (res.detail.includes('FAILED')) failed++;
     }
@@ -4632,6 +4722,12 @@ interface HealthRecord {
   totalUptimeMs: number;
   /** Derived: 'healthy' | 'degraded' | 'dead' */
   status: 'healthy' | 'degraded' | 'dead';
+  /** OS supervisor kind (e.g. 'launchd', 'systemd') when managed by OS unit */
+  osKind?: string;
+  /** OS supervisor exit code when process exited (null if alive or unknown) */
+  osExitCode?: number | null;
+  /** When the extension manifest is newer than the generated OS unit, describes what changed */
+  staleReason?: string;
 }
 
 /**
@@ -4924,16 +5020,7 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
 
   // R2: lazy GC — returns only live supervisors; dead entries are cleaned up.
   const liveSupervisors = await readGlobalRegistry();
-
-  if (liveSupervisors.length === 0) {
-    if (jsonMode) {
-      process.stdout.write('[]\n');
-    } else {
-      process.stdout.write(`${CLI} status: no running supervisors found\n`);
-      process.stdout.write(`  Start the runtime with: ${CLI} start\n`);
-    }
-    process.exit(0);
-  }
+  const hasRuntimeSupervisors = liveSupervisors.length > 0;
 
   // ── Collect HealthRecords from all live supervisors ─────────────────────────
   const records: HealthRecord[] = [];
@@ -5051,6 +5138,240 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
     }
   }
 
+  const seenIds = new Set(records.map((r) => r.id));
+
+  // ── Also scan OS units from the ownership index ─────────────────────────────
+  // Extensions installed as OS-supervised services (launchd/systemd) that aren't
+  // tracked by a runtime supervisor are probed here.
+
+  // Build a lookup of installed extensions' manifest paths (for staleness checks).
+  const manifestPathFor: Map<string, string> = new Map();
+  try {
+    const reg = readInstallRegistry(installRegistryPath());
+    for (const inst of reg.installs) {
+      const key = `${inst.scope}:${inst.extId}`;
+      if (manifestPathFor.has(key)) continue;
+      const extDir = resolveExtensionDir(inst.source, inst.root);
+      if (!extDir) continue;
+      const candidate = pathMod.join(extDir, 'extension.json');
+      if (fsMod.existsSync(candidate)) manifestPathFor.set(key, candidate);
+    }
+  } catch { /* best-effort */ }
+
+  {
+    for (const sc of ['org', 'user', 'project', 'local'] as const) {
+      if (filterScope !== undefined && sc !== filterScope) continue;
+      let dir: string;
+      try { dir = dataRoot(sc as DataScope); } catch { continue; }
+      const ownPath = pathMod.join(dir, 'ownership.json');
+      let own: OwnershipIndex;
+      try { own = OwnershipIndex.loadFromFile(ownPath); } catch { continue; }
+      for (const rec of own.all()) {
+        if (filterId !== undefined && rec.extId !== filterId) continue;
+        if (rec.scope !== sc) continue;
+        for (const e of rec.entries) {
+          if (e.kind !== 'os-unit') continue;
+          if (seenIds.has(rec.extId)) continue;
+          seenIds.add(rec.extId);
+
+          const osKind: string = e.supervisor;
+          const platform = getOsUnitPlatform(osKind as OsSupervisor);
+          const loaded = platform.isLoaded(e.label, realOsExec);
+
+          // Probe process-level health from the OS supervisor.
+          let pid: number | null = null;
+          let pidAlive = false;
+          let osExitCode: number | null = null;
+          let osOrphanPids: number[] = [];
+          if (loaded && osKind === 'launchd') {
+            const probe = realOsExec('launchctl', ['list', e.label]);
+            if (probe.code === 0) {
+              const pidMatch = probe.stdout.match(/"PID"\s*=\s*(\d+)/);
+              if (pidMatch) {
+                pid = parseInt(pidMatch[1]!, 10);
+                pidAlive = true;
+              }
+              const exitMatch = probe.stdout.match(/"LastExitStatus"\s*=\s*(-?\d+)/);
+              if (exitMatch) osExitCode = parseInt(exitMatch[1]!, 10);
+            }
+          } else if (loaded && osKind === 'systemd') {
+            const probe = realOsExec('systemctl', ['--user', 'is-active', platform.unitFileName(e.label)]);
+            pidAlive = probe.code === 0 && probe.stdout.trim() === 'active';
+          }
+
+          // If the OS supervisor says dead, check for orphan processes still running
+          // (launchd unit was unloaded/replaced but the process survived).
+          if (!pidAlive && osKind === 'launchd' && fsMod.existsSync(e.unitPath)) {
+            try {
+              const plist = fsMod.readFileSync(e.unitPath, 'utf8');
+              const argsSection = plist.split('<key>ProgramArguments</key>')[1]?.split('</array>')[0];
+              if (argsSection) {
+                const argRe = /<string>(.*?)<\/string>/g;
+                let argMatch: RegExpExecArray | null;
+                let lastArg: string | null = null;
+                while ((argMatch = argRe.exec(argsSection)) !== null) {
+                  lastArg = argMatch[1]!;
+                }
+                if (lastArg) {
+                  osOrphanPids = findOrphansByIdentity(
+                    identityToken(`file://${lastArg}`),
+                    { excludePids: [process.pid] },
+                  ).map((m) => m.pid);
+                }
+              }
+            } catch { /* best-effort */ }
+          }
+
+          // Determine health: OS-supervised process > orphan survivor > dead.
+          let isOrphan = false;
+          if (!pidAlive && osOrphanPids.length > 0) {
+            pid = osOrphanPids[0]!;
+            pidAlive = true;
+            isOrphan = true;
+          }
+
+          // Find the OS log file (stderr preferred, fall back to stdout).
+          const osLogDir = logDirFor(`os-${sc}-${rec.extId}`);
+          let osLogFile = findMostRecentLogFile(osLogDir, rec.extId);
+          if (osLogFile) {
+            const osErrFile = findMostRecentLogFile(osLogDir, `${rec.extId}-os`);
+            if (osErrFile) osLogFile = osErrFile;
+          }
+
+          // Determine last-stopped timestamp for dead processes.
+          let activatedAt = '';
+          let lastStoppedAt: string | null = null;
+          if (pidAlive) {
+            // Read actual process start time from OS so uptime is accurate.
+            try {
+              const ps = realOsExec('ps', ['-o', 'lstart=', '-p', String(pid)]);
+              if (ps.code === 0 && ps.stdout.trim()) {
+                const d = new Date(ps.stdout.trim());
+                if (!isNaN(d.getTime())) activatedAt = d.toISOString();
+              }
+            } catch { /* fall through */ }
+            if (!activatedAt) activatedAt = new Date().toISOString();
+          } else {
+            if (osLogFile) {
+              try {
+                const mtime = fsMod.statSync(osLogFile).mtime;
+                lastStoppedAt = mtime.toISOString();
+              } catch { /* fall through */ }
+            }
+            activatedAt = '';
+          }
+
+          const status: HealthRecord['status'] = pidAlive
+            ? (isOrphan ? 'degraded' : 'healthy')
+            : 'dead';
+
+          // Check if the extension manifest is newer than the generated OS unit.
+          let staleReason: string | undefined;
+          const manifestCandidate = manifestPathFor.get(`${sc}:${rec.extId}`);
+          if (manifestCandidate && fsMod.existsSync(e.unitPath)) {
+            try {
+              const manifestMtime = fsMod.statSync(manifestCandidate).mtimeMs;
+              const unitMtime = fsMod.statSync(e.unitPath).mtimeMs;
+              if (manifestMtime > unitMtime + 1000) {
+                staleReason = 'manifest updated, re-run `soxe service disable/enable` to reload OS unit';
+              }
+            } catch { /* best-effort */ }
+          }
+
+          records.push({
+            id: rec.extId,
+            key: `${rec.extId}@os-unit`,
+            scope: sc,
+            root: '(os-unit)',
+            project: isOrphan ? `os-${osKind}-orphan` : `os-${osKind}`,
+            supervisorId: `os-${osKind}`,
+            activatedAt,
+            uptimeSeconds: pidAlive ? Math.floor((Date.now() - new Date(activatedAt).getTime()) / 1000) : 0,
+            pidAlive,
+            pid,
+            socketReachable: pidAlive,
+            socketLatencyMs: pidAlive ? 0 : null,
+            logTail: [],
+            logPath: osLogFile,
+            lastStartedAt: pidAlive ? activatedAt : null,
+            lastStoppedAt,
+            lastRunDurationMs: null,
+            totalUptimeMs: 0,
+            status,
+            osKind,
+            osExitCode,
+            ...(staleReason ? { staleReason } : {}),
+          });
+        }
+      }
+    }
+  }
+
+  // ── Also scan installed services not tracked by any manager ─────────────────
+  // Service and singleton extensions that are installed but have no runtime
+  // supervisor and no OS unit are reported as not-started.
+  {
+    let registry: { version: number; installs: Array<{ extId: string; scope: string; root: string; source: string }> };
+    try {
+      registry = readInstallRegistry(installRegistryPath());
+    } catch {
+      registry = { version: 1, installs: [] };
+    }
+    for (const rec of registry.installs) {
+      if (filterId !== undefined && rec.extId !== filterId) continue;
+      if (filterScope !== undefined && rec.scope !== filterScope) continue;
+      if (seenIds.has(rec.extId)) continue;
+
+      // Resolve extension dir and read manifest.
+      const extDir = resolveExtensionDir(rec.source, rec.root);
+      if (!extDir) continue;
+      let manifest: { type?: string; entrypoint?: string; lifecycle?: { singleton?: boolean; background?: boolean } };
+      try {
+        manifest = JSON.parse(fsMod.readFileSync(pathMod.join(extDir, 'extension.json'), 'utf8'));
+      } catch { continue; }
+      if (manifest.type !== 'service' && manifest.type !== 'mcp-server') continue;
+
+      // Check for orphan processes still running.
+      const entrypointPath = manifest.entrypoint
+        ? pathMod.resolve(extDir, manifest.entrypoint)
+        : null;
+      let orphanPids: number[] = [];
+      if (entrypointPath) {
+        try {
+          orphanPids = findOrphansByIdentity(
+            identityToken(`file://${entrypointPath}`),
+            { excludePids: [process.pid] },
+          ).map((m) => m.pid);
+        } catch { /* best-effort */ }
+      }
+
+      seenIds.add(rec.extId);
+      const pidAlive = orphanPids.length > 0;
+      const rec_: HealthRecord = {
+        id: rec.extId,
+        key: `${rec.extId}@not-started`,
+        scope: rec.scope,
+        root: '(not-started)',
+        project: 'not-started',
+        supervisorId: 'not-started',
+        activatedAt: '',
+        uptimeSeconds: 0,
+        pidAlive,
+        pid: orphanPids[0] ?? null,
+        socketReachable: pidAlive,
+        socketLatencyMs: pidAlive ? 0 : null,
+        logTail: [],
+        logPath: null,
+        lastStartedAt: null,
+        lastStoppedAt: null,
+        lastRunDurationMs: null,
+        totalUptimeMs: 0,
+        status: pidAlive ? 'degraded' : 'dead',
+      };
+      records.push(rec_);
+    }
+  }
+
   // ── Determine overall exit code ─────────────────────────────────────────────
   let exitCode = 0;
   for (const r of records) {
@@ -5070,14 +5391,19 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
     process.exit(exitCode);
   }
 
-  // ── No matching extensions ──────────────────────────────────────────────────
+  // ── No matching extensions found at all ─────────────────────────────────────
   if (records.length === 0) {
     const parts: string[] = [];
     if (filterId) parts.push(`id=${filterId}`);
     if (filterProject) parts.push(`project=${filterProject}`);
     if (filterScope) parts.push(`scope=${filterScope}`);
     const filterDesc = parts.length > 0 ? ` (filters: ${parts.join(', ')})` : '';
-    process.stdout.write(`${CLI} status: no running extensions found${filterDesc}\n`);
+    if (!hasRuntimeSupervisors) {
+      process.stdout.write(`${CLI} status: no running services found${filterDesc}\n`);
+      process.stdout.write(`  Start the runtime with: ${CLI} start\n`);
+    } else {
+      process.stdout.write(`${CLI} status: no running extensions found${filterDesc}\n`);
+    }
     process.exit(exitCode);
   }
 
@@ -5096,6 +5422,12 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
     const lastStopLine = r.lastStoppedAt ?? 'never';
     const logLine = r.logPath ?? 'none';
 
+    const deadSinceStr = r.status === 'dead' && r.lastStoppedAt
+      ? `Dead since:   ${r.lastStoppedAt} (${formatDuration(Date.now() - new Date(r.lastStoppedAt).getTime())} ago)`
+      : '';
+    const osUnitStr = r.osKind ? `OS unit:      ${r.osKind}` : '';
+    const osExitStr = r.osKind && r.osExitCode != null ? `OS exit:      ${r.osExitCode}` : '';
+
     process.stdout.write(`\nExtension:    ${r.id}\n`);
     process.stdout.write(`Key:          ${r.key}\n`);
     process.stdout.write(`Scope:        ${r.scope}\n`);
@@ -5103,9 +5435,13 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
     process.stdout.write(`Supervisor:   ${r.supervisorId}\n`);
     process.stdout.write(`Status:       ${statusTag}\n`);
     process.stdout.write(`PID:          ${pidLine}\n`);
+    if (osUnitStr) process.stdout.write(`${osUnitStr}\n`);
+    if (osExitStr) process.stdout.write(`${osExitStr}\n`);
+    if (r.staleReason) process.stdout.write(`Stale:        ${r.staleReason}\n`);
     process.stdout.write(`Socket:       ${socketLine}\n`);
     process.stdout.write(`Uptime:       ${uptimeStr}  (started ${r.activatedAt})\n`);
     process.stdout.write(`Last stop:    ${lastStopLine}\n`);
+    if (deadSinceStr) process.stdout.write(`${deadSinceStr}\n`);
     process.stdout.write(`Total uptime: ${totalUptimeStr} (this session)\n`);
     process.stdout.write(`Log:          ${logLine}\n`);
 
