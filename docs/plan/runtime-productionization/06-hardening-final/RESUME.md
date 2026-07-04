@@ -46,6 +46,13 @@ tsc-only error because its gate was lint+test only). Clean up worktrees after me
 remove` + `git branch -D`) — leftover worktree installs unlinked `node_modules/nx` this session,
 requiring a clean-room `rm -rf node_modules && pnpm install` (sanctioned fix; no lockfile drift).
 
+## Known hygiene gaps for HF-6 closeout (non-blocking, no lost work)
+- **BL-number collisions in root BACKLOG:** BL-58, BL-119, BL-120, BL-126, BL-127 each label TWO
+  different items (reused across plans/sessions) — **all instances are FIXED/RESOLVED**, so no open
+  work is lost; it's numbering debt. HF-6 sweep should renumber or annotate.
+- **Context 06 has no `REPORT.md` yet** — contexts 01–05 do. HF-6 must write `06-hardening-final/
+  REPORT.md` (this `RESUME.md` is the interim current-state source of truth).
+
 ## Open BL items still needing decisions/work (not in the S8–S11 queue)
 
 - **BL-157** (HIGH) → S8. **BL-162** → S9. **BL-164** → S10. **BL-165** → S11.
