@@ -4,6 +4,35 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
+## Open — surfaced during S7/BL-161 memory-core test speed-up (2026-07-04)
+
+### BL-162 — recall.ts ScoreBreakdown invariant violated for zero-normTotal ranked nodes
+
+**Severity: low (incorrect score_breakdown.vec/bm25/temporal values; total === score is correct).**
+
+In `libs/memory-core/src/recall.ts` lines 526–532, the code decomposes `finalScore`
+into per-channel contributions using normalised weights. When a node appears in only
+one channel AND has the lowest value in that channel, `minMaxNorm` returns 0 for that
+node (min-max maps the minimum to 0). Then `normTotal = vecNorm + ftsNorm + tempNorm = 0`,
+the `if (normTotal > 0)` branch does not run, all contributions are 0, but
+`total = finalScore > 0`. The invariant `vec + bm25 + temporal === total` is violated.
+
+**Comment at line 61** (`vec + bm25 + temporal === total === score`) is incorrect for
+this edge case. The stable invariant is only `total === score`.
+
+**Impact:** `score_breakdown.vec/bm25/temporal` show 0/0/0 for the lowest-ranked
+candidate in a single-channel recall scenario. The `total` field is always correct.
+Downstream displays using per-channel breakdown will show wrong attribution.
+
+**Fix sketch:** Change the `if (normTotal > 0)` fallback to assign `total` proportionally
+among whichever raw channels were non-zero (e.g. split by raw rrf values instead of
+normalised), or document that channels are undefined when normTotal=0 and `total === score`
+is the only invariant.
+
+**Found:** during S7/BL-161 test threshold re-tuning. Tests adjusted to document the edge case.
+
+---
+
 ## Open — surfaced during BL-145 live launchd re-enable (2026-07-04)
 
 ### BL-155 — CRITICAL: esbuild CJS extension bundle breaks `import.meta.url` → embedding provider dead → daemon crash-loop — **RESOLVED (2026-07-04)**
