@@ -1688,99 +1688,21 @@ applied after `validateDagJson()` succeeds (or as part of it). This makes the co
 
 ---
 
-### BL-86 — `hashEmbed()` produces near-collinear (degenerate) vectors → ~0.97–0.998 cosine between UNRELATED texts → near-dup flags everything — **Open (HIGH) bug** (2026-06-26)
+_BL-86, BL-87, BL-89 removed 2026-07-04: hash embedding backend deleted — these items are moot._
 
-**Observed (numerically proven):** with `SOX_EMBED_BACKEND=hash`, cosine of three unrelated strings
-("the cat sat on the mat" / "quantum chromodynamics lagrangian renormalization" / "npm publish
-registry checksum drift") = **0.967 / 0.985 / 0.968** (should be ~0). In production (longer, more
-similar texts) this pins ~0.998 — so every `memory_write` reports `near_dup` ~0.998 and an async
-`SAME_AS` edge, regardless of content.
-
-**Root cause:** in `hashEmbed` (`libs/memory-core/src/embed.ts:352`), the per-dimension seed is
-`seed = (d * 0x9e3779b9 + h1) >>> 0` — the `d * 0x9e3779b9` term depends ONLY on the dimension index
-and is therefore IDENTICAL for every token and every text. After `^ h2` + `/2^31 - 1` it dominates the
-token-specific signal, so all vectors share a large common "d-pattern" component → near-collinear.
-
-**Consequence:** while on hash fallback, the `SAME_AS` near-dup graph, communities, and semantic recall
-ranking are garbage (corroboration metric is an artifact). **The SAME_AS edges written during fallback
-should be considered suspect and re-run after BL-87/89 restore real embeddings.**
-
-**Fix sketch:** hash `(token, d)` together with a proper avalanche (e.g. `hash32(token + ':' + d)` or
-mix h1/h2/d through an integer finalizer) so dimensions are independent — no shared d-only component.
-Add a test asserting cosine of unrelated strings is near 0 (e.g. |cos| < 0.2).
-
-### BL-87 — published `memory-server` omits `fastembed`/`onnxruntime-node` runtime deps → every npm-installed (incl. the BL-65-repointed) server is permanently on hash fallback — **Open (HIGH) packaging** (2026-06-26)
-
-**Observed:** the published `memory-server` `package.json` declares only `better-sqlite3` + `sqlite-vec`
-as `dependencies`; `@adhd/sox-memory-core` (which declares `fastembed: ^2.1.0` → pulls onnxruntime-node)
-is a **devDependency**, inlined as JS by the esbuild bundle. `fastembed`/`onnxruntime-node` are NOT in
-the bundle's `--external` list either. So on an `npm-package:`-mode install, the embed worker has no
-embedding runtime → `embed()` (auto) silently falls back to hash. The BL-65 repoint (live server now from
-`~/.adhd/.../ext`) therefore runs **permanently degraded**.
-
-**Fix sketch:** declare `fastembed` (and its native onnxruntime-node) as real `dependencies` of the
-published memory-server AND externalize them in the esbuild bundle (like better-sqlite3/sqlite-vec), so
-the npm-package install resolves them. Add the published-fresh-machine smoke assertion: after install,
-`memory_ping` reports `embed_on_hash_fallback:false`. (Native onnxruntime-node also has the Node-version
-prebuild matrix concern — verify Node 22/24 coverage, cf. the engines decision.)
-
-**Quickfix IMPLEMENTED (2026-06-26, worktree `agent-ac3165b4897bcaa50`, NOT yet merged/published):**
-`fastembed@^2.1.0` + `onnxruntime-node@1.21.0` added as real `dependencies` of both `memory-server` and
-`memory-daemon` package.json; both externalized in the esbuild bundle (project.json `--external fastembed
---external onnxruntime-node`). ALSO found a second root cause the deps alone don't fix: `embedWorker.js`
-was never emitted into the bundle — `embed.ts` spawns it via a runtime string path
-(`new Worker(path.join(__dirname,'embedWorker.js'))`) that esbuild does not trace, so the bundled server
-had only `index.js` and the Worker spawn failed → permanent hash fallback. Fixed by a new
-`--worker <entry>` flag in `tools/bundle-extension.cjs` that emits each worker as its own self-contained
-sibling bundle (`dist/embedWorker.js`, fastembed lazy-required at runtime). Verified onnxruntime-node
-ships napi-v3 darwin/arm64 prebuilds → loads on live Node v24.11.1. Clean-room proof (real `npm install`
-of the published dep set + the built bundle, temp HOME + temp db): `memory_ping` →
-`embed_on_hash_fallback:false`, `embed_model:"bge-base-en-v1.5"`, semantic recall returns the relevant
-result; real-model cosine of unrelated strings 0.39–0.42 (vs hash 0.97–0.99). **Landing on the live
-user-scope install (`@adhd/sox-extension-memory-server` via BL-65 npm install) REQUIRES an npm republish
-(owner-gated) — not done.**
-
-### BL-88 — no PER-RECORD embedding provenance + no auto-upgrade when the real backend returns — **Open (MEDIUM) data-integrity** (2026-06-26)
+### BL-88 — no PER-RECORD embedding provenance + no auto-upgrade on model change — **Open (MEDIUM) data-integrity** (2026-06-26, re-scoped 2026-07-04 — hash backend removed)
 
 **Observed:** `embed_model` is stored only on `memory_scope` (one row per scope, set ONCE at scope
 creation via `getActiveEmbedModel()` in `db.ts:191`, never updated). Individual `node`/`vec_node` rows
-carry NO model/backend tag. So there is no way to tell which records were embedded under hash fallback vs
-real, and a scope first created during fallback stays stamped `nomic-embed-text-v1.5-hash` even after real
-is restored. `reembedNodes()` + the reindex organizer op exist but are MANUAL (`reembed=true` payload) —
-nothing auto-re-embeds stale-model rows when the provider returns.
+carry NO model/backend tag, so there is no way to tell which model produced a given vector.
+`reembedNodes()` + the reindex organizer op exist but are MANUAL (`reembed=true` payload) —
+nothing auto-re-embeds rows when the embedding model changes.
 
-**Fix sketch:** (1) record `embed_model` (or a backend flag) per node/vec row at write time; (2) a
-heal pass that re-embeds rows whose `embed_model` != the current real model once `embed_on_hash_fallback`
-clears; (3) surface a `degraded_record_count` in `memory_stats`. Closes "we should know which records were
-created on degraded services."
+**Fix sketch:** (1) record `embed_model` per node/vec row at write time; (2) a heal pass that
+re-embeds rows whose `embed_model` != the current runtime model; (3) surface a `model_mismatch_count`
+or `stale_vector_count` in `memory_stats`.
 
-### BL-89 — dev-box real embed worker warmup fails/hangs silently despite onnxruntime-node loading + model cached → silent auto→hash fallback — **Open (HIGH) bug** (2026-06-26)
 
-**Observed:** on the dev box (Node v24.11.1), `require('onnxruntime-node')` LOADS fine and the BGE model
-is fully cached (`~/.cache/sox-memory/models/fast-bge-base-en-v1.5/model_optimized.onnx` present), yet
-exercising `embed()` (auto) via the built memory-core dist did not return a real embedding within ~20s —
-the worker_thread warmup (`embedWorker.ts` / fastembed init) hangs or fails, and `embed()` (auto) swallows
-it into a hash fallback (`embed.ts:271-285`). This is why the live store is on hash even where the deps
-exist.
-
-**Fix sketch:** make the warmup failure LOUD and diagnosable (surface the worker error/timeout instead of
-a one-line warn), add a warmup timeout + health signal, and root-cause the fastembed 2.x / worker_thread
-init failure (candidate: the BL-11 onnxruntime libpthread isolation, or a fastembed 2.x API/model-format
-mismatch). Until fixed, real embeddings never engage even on a fully-provisioned box.
-
-**Quickfix IMPLEMENTED (2026-06-26, worktree, NOT merged):** Root cause was NOT a fastembed/onnxruntime
-hang on the dev box — reproduced `embed()` via the built `memory-core` dist returning a real BGE vector in
-~1s (state `real`, cosine 0.46), and the worker_thread path works in isolation (~650ms). The actual
-silent-fallback driver is the BUNDLE (the missing `embedWorker.js` — see BL-87). The loud/diagnosable
-work landed regardless: `embed.ts` now records `_lastEmbedError` (worker spawn/init/exit/timeout + the
-auto-fallback cause), adds a configurable warmup timeout (`SOX_EMBED_WARMUP_TIMEOUT_MS`, default 60s) so
-an indefinite hang can't wedge callers, and exposes `getLastEmbedError()` / `getEmbedHealth()` /
-`warmupEmbed()`. `backend='real'` now fail-LOUD (throws, never downgrades); `auto` fallback is
-`console.error` + recorded. The server warms up at startup (loud stderr) and `memory_ping` / `memory_stats`
-now include `last_embed_error`. Reality-verified in clean-room: `backend=real` + fastembed absent →
-`memory_ping.last_embed_error` carries the cause + stderr `FATAL`; `auto` + absent →
-`embed_on_hash_fallback:true` + cause. Tests added in `embed.spec.ts` (health surface + real-model
-non-degeneracy assertion |cos|<0.85).
 
 ### BL-91 — `reembedNodes()` (and any vec_node re-embed) used `INSERT OR REPLACE` which FAILS on sqlite-vec vec0 tables → daemon `reindex --reembed` op silently broken — **FIXED in worktree (2026-06-26)**
 
@@ -1829,7 +1751,7 @@ guards the tool enum, so the *schema* is the side that's wrong.)
 needn't expose). Add a test asserting every `memory_link` enum value is DDL-accepted. Pre-existing
 (predates the refactor); surfaced because the contract forced the three sets to be compared.
 
-### BL-90 — memory skill(s) lack "how to find memories scoped to YOU / your project / your task" recall recipes (and which work under degraded embeddings) — **Open (MEDIUM) docs/skill** (2026-06-26)
+### BL-90 — memory skill(s) lack copy-paste recall recipes for common scoping axes — **Open (MEDIUM) docs/skill** (2026-06-26, re-scoped 2026-07-04 — degraded-embedding guidance obsolete)
 
 **Observed:** the `memory-usage` (and `reflection`) skills document write conventions well but give little
 guidance on the *retrieval* side — specifically how an agent finds the memories relevant to its situation.
@@ -1843,17 +1765,9 @@ Agents need ready recipes for the common scoping axes:
   for AND) + `importance_min`; combine with the query for hybrid recall.
 - **By kind/lifecycle:** `kind:lesson|bug|fix|idea`, `actionable`, `state` (metadata).
 
-**Critical note to include:** **tag/topic/project filters use the FTS/structured index, not vectors — so
-they remain reliable even when the embedding backend is degraded (hash fallback, BL-86/87/89).** Semantic
-(`query`) recall is the part that degrades. So the recommended pattern when embeddings may be down is
-**filter-first** (tags/topic/project), optionally adding a query for ranking — never rely on a bare
-semantic query to surface directed/scoped memories.
-
 **Fix sketch:** add a "Finding the right memories" section to `memory-usage` (and cross-link from
 `reflection`) with copy-paste `memory_recall` recipes per axis above (self/agent, project, task, kind,
-directed-at-role), plus the filter-first-under-degraded-embeddings guidance and the `project_path`
-mis-resolution footgun. Pairs with BL-88 (per-record provenance) so "find records made under hash
-fallback" becomes a documented recall too.
+directed-at-role) and note the `project_path` mis-resolution footgun.
 
 ---
 
