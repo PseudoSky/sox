@@ -5,9 +5,26 @@
       "id": "RS-0",
       "bl": [],
       "title": "Capture enrichment-parity + write-perf baselines (BEFORE any change)",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {"cmd": "node scripts/capture-enrichment-baseline.mjs", "exit": 0, "summary": "enrichment-parity.json with 240 communities, 1597 member_of, 5730 live nodes, 3598 episodes, 178991 edges on snapshot sha256:10ded6fe"},
+          {"cmd": "node scripts/capture-write-perf-baseline.mjs", "exit": 0, "summary": "write-perf.json p50=381ms p99=739ms over 100 sequential writes"}
+        ],
+        "commits": ["HEAD"],
+        "files": [
+          "docs/plan/runtime-productionization/_shared/baselines/enrichment-parity.json",
+          "docs/plan/runtime-productionization/_shared/baselines/write-perf.json",
+          "scripts/capture-enrichment-baseline.mjs",
+          "scripts/capture-write-perf-baseline.mjs"
+        ]
+      },
+      "notes": [
+        "enrichment-parity.json: 240 communities upserted, 1597 member_of edges, 5730 live nodes, 3598 episodes, 178991 live edges",
+        "write-perf.json: p50=381.42ms, p99=738.61ms, mean=413.38ms, min=338.47ms, max=788.03ms (100 sequential writes)",
+        "Snapshot DB files removed from repo (51MB) — only sha256 and counters committed in JSON",
+        "Baselines captured on pre-change memory-core build — used by RS-3 for parity comparison"
+      ]
     },
     {
       "id": "RS-1",

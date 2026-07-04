@@ -1,0 +1,25 @@
+{
+  "_meta": {
+    "description": "Pre-migration enrichment baseline captured by RS-0.",
+    "captured_at": "2026-07-04T00:30:58.287Z",
+    "snapshot_sha256": "10ded6feed7a373daba5fce789af7c8cecc303c96da39a92b4a9189e33b39680",
+    "snapshot_path": "enrichment-baseline-snapshot.db",
+    "source": "/Users/nix/.memory/memory.db",
+    "build": "pre-change (memory-core current, before any context 02 migration)"
+  },
+  "batch_enrich_result": {
+    "communities_upserted": 240,
+    "member_of_edges": 1597,
+    "importance_updated": 0,
+    "relates_to_edges": 0,
+    "topics_backfilled": 0,
+    "legacy_nodes_stamped": 0,
+    "cluster_pass_skipped": false,
+    "cluster_skip_reason": null
+  },
+  "store_snapshot": {
+    "total_live_nodes": 5730,
+    "total_live_episodes": 3598,
+    "total_live_edges": 178991
+  }
+}
