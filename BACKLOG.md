@@ -4,6 +4,38 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
+## Open — surfaced by the embed-pipeline observability worktree (2026-07-04)
+
+### BL-190 — memory-core/memory-server `package.json` versions lag their hand-written CHANGELOG heads — **Open (LOW) (2026-07-04)**
+
+**What's wrong:** `libs/memory-core/package.json` is `0.2.1` while its CHANGELOG.md top section
+is `## 0.3.0`; `memory-server/package.json` is `1.2.1` vs CHANGELOG `## 1.3.0`. The two-phase-write
+merge (`a0a61fe`) hand-added the changelog sections without bumping `package.json` (the repo
+otherwise uses changesets, which do both atomically). Any publish/changeset run will now either
+double-document 0.3.0/1.3.0 or emit a version that skips the documented one.
+
+**Where:** `libs/memory-core/{package.json,CHANGELOG.md}`,
+`extensions/bundles/sox-memory-bundle/members/memory-server/{package.json,CHANGELOG.md}`.
+
+**Fix sketch:** bump both `package.json` versions to match the changelog heads (or convert the
+hand-written sections into a pending `.changeset/*.md` and let changesets version). Decide one
+convention and note it in CONTRIBUTING §1.
+
+### BL-191 — `memory_update`'s re-embed path records NO embed-pipeline metrics (and still embeds on-slot, see BL-189) — **Open (LOW) (2026-07-04)**
+
+**What's wrong:** the new Phase-B pipeline metrics (`time_to_vector_ms`, `embed_duration_ms`,
+counters) only instrument `schedulePendingEmbeds`/`healMissingVectors`. `memory_update` re-embeds
+inside its own queue task (BL-189) and the `SOX_SYNC_EMBED=1` composition embeds inline via
+`memoryWrite` — neither records `embed_duration_ms`, so under the kill-switch (or heavy update
+traffic) the embed-cost distribution reads empty while real ONNX work is happening. Intentional
+for the sync path (its cost IS `write_latency_ms`), but once BL-189 moves `memory_update` onto the
+async pipeline it should flow through the same instrumented entry points.
+
+**Where:** `libs/memory-core/src/embed-pipeline.ts`, `update.ts`; fold into the BL-189 fix.
+
+**Fix sketch:** when BL-189 lands, route update re-embeds through `schedulePendingEmbeds` (they
+then inherit all counters + durations for free). No separate instrumentation before that.
+
 ## Open — surfaced by the write-path observability worktree (2026-07-04)
 
 ### BL-174 — `memory_ping` store block hardcodes `last_checkpoint_at: null` despite `WriteQueue.lastCheckpointAtForPath()` existing — **RESOLVED (2026-07-04, c7ae883)**

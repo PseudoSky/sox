@@ -53,7 +53,7 @@ export type { LeaseInfo } from './lease.js';
 
 // ── Write queue (WP-1, BL-118; observability + time-based backpressure) ───────
 export { WriteQueue } from './write-queue.js';
-export type { QueueBusyError, QueueError, WriteQueueMetrics } from './write-queue.js';
+export type { QueueBusyError, QueueError, WriteQueueMetrics, TaskKind } from './write-queue.js';
 
 // ── Shared latency/percentile helpers (promoted from soak/, HF-2) ─────────────
 export { percentile, mean, summarizeLatencies, LatencyRing } from './latency-stats.js';
@@ -119,6 +119,8 @@ export {
   healMissingVectors,
   embedBacklogStats,
   syncEmbedEnabled,
+  getEmbedPipelineMetrics,
+  _resetEmbedPipelineMetricsForTest,
 } from './embed-pipeline.js';
 export type {
   PendingEmbed,
@@ -126,6 +128,7 @@ export type {
   SchedulePendingResult,
   HealResult,
   EmbedBacklogStats,
+  EmbedPipelineMetrics,
 } from './embed-pipeline.js';
 
 // ── Deterministic test embedding provider (BL-161 seam; TEST-ONLY) ────────────

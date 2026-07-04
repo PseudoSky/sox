@@ -390,6 +390,8 @@ describe('WriteQueue — time-based backpressure + observability', () => {
     expect(m1.saturated).toBe(false);
     expect(m1.counters).toEqual({
       tasks_completed: 0,
+      write_tasks_completed: 0,
+      apply_tasks_completed: 0,
       rejections_busy_size: 0,
       rejections_busy_deadline: 0,
       slow_tasks: 0,
@@ -413,6 +415,82 @@ describe('WriteQueue — time-based backpressure + observability', () => {
     expect(viaPath!.counters.tasks_completed).toBe(1);
 
     expect(WriteQueue.metricsForPath('/nonexistent/store.db')).toBeNull();
+  });
+
+  // ── 7b. Task-kind separation (two-phase write follow-on) ────────────────────
+  //
+  // Phase-B applyEmbedding tasks ride the same queue as writes but must not
+  // dilute write_latency_ms. REPORTING is per-kind; the ADMISSION ESTIMATOR
+  // stays on the blended all-kind ring + raw depth (an apply occupies the slot
+  // exactly like a write — removing it would under-estimate wait and re-open
+  // the 2026-07-04 hang class).
+
+  it('write_latency_ms reports ONLY write-kind samples; apply_latency_ms reports apply-kind; the estimator blends both', () => {
+    const queue = WriteQueue.forPath(dbPath);
+
+    // Seam-seeded distributions (BL-161 — no sleeps): 4×100ms writes, 4×5ms applies.
+    for (let i = 0; i < 4; i++) queue._recordLatencySample(100, 'write');
+    for (let i = 0; i < 4; i++) queue._recordLatencySample(5, 'apply');
+
+    const m = queue.getMetrics();
+    expect(m.write_latency_ms).toEqual({ p50: 100, p99: 100, mean: 100, max: 100 });
+    expect(m.apply_latency_ms).toEqual({ p50: 5, p99: 5, mean: 5, max: 5 });
+    // Estimator input is the BLENDED mean over all 8 samples: (400+20)/8 = 52.5.
+    expect(m.recent_avg_task_latency_ms).toBe(52.5);
+  });
+
+  it('completed tasks split the counters by kind; tasks_completed keeps the all-kind semantic', async () => {
+    const queue = WriteQueue.forPath(dbPath);
+    queue._setLogSinkForTest(() => { /* silence */ });
+
+    await queue.enqueue('w1', () => 1);
+    await queue.enqueue('w2', () => 2); // default kind = 'write' (back-compat)
+    await queue.enqueue('a1', () => 3, 'apply');
+
+    const c = queue.getMetrics().counters;
+    expect(c.tasks_completed).toBe(3);
+    expect(c.write_tasks_completed).toBe(2);
+    expect(c.apply_tasks_completed).toBe(1);
+  });
+
+  it('a queue full of apply-kind tasks still deadline-rejects a new WRITE — occupancy accounting is kind-blind', async () => {
+    const queue = WriteQueue.forPath(dbPath);
+    queue._setDeadlineBudgetForTest(20_000);
+    queue._setLogSinkForTest(() => { /* silence */ });
+
+    // Every latency sample is APPLY-kind — the write ring is EMPTY. If the
+    // estimator consumed the write ring, it would be cold and admit everything.
+    for (let i = 0; i < 5; i++) queue._recordLatencySample(5000, 'apply');
+    expect(queue.getMetrics().write_latency_ms.p50).toBe(0); // write ring empty
+
+    const { gate, release } = makeGate();
+    // Same depth profile as test 1, but the occupants are all apply tasks:
+    //   anchor(apply): slots 1 → est  5000 ≤ 20000 → admit
+    //   A(apply):      slots 3 → est 15000 ≤ 20000 → admit
+    //   B(apply):      slots 4 → est 20000 ≤ 20000 → admit (boundary)
+    //   C(WRITE):      slots 5 → est 25000 > 20000 → REJECT
+    const anchor = queue.enqueue('apply-anchor', async () => { await gate; }, 'apply');
+    const a = queue.enqueue('apply-A', () => 'A', 'apply');
+    const b = queue.enqueue('apply-B', () => 'B', 'apply');
+    const c = await queue.enqueue('write-C', () => 'C').then(
+      () => null,
+      (err) => err as QueueBusyError,
+    );
+
+    expect(c).not.toBeNull();
+    expect(isEBusy(c)).toBe(true);
+    expect(c!.details).toMatchObject({
+      reason: 'deadline',
+      queue_depth: 3, // the three pending APPLY tasks count as occupancy
+      estimated_wait_ms: 25_000,
+      deadline_budget_ms: 20_000,
+    });
+    expect(queue.getMetrics().counters.rejections_busy_deadline).toBe(1);
+
+    release();
+    await anchor;
+    await expect(a).resolves.toBe('A');
+    await expect(b).resolves.toBe('B');
   });
 
   // ── 8. Env-var surface ───────────────────────────────────────────────────────

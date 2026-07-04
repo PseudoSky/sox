@@ -44,6 +44,7 @@ import {
   getActiveEmbedModel,
   getDb,
   getEmbedHealth,
+  getEmbedPipelineMetrics,
   getEmbedState,
   getLastEmbedError,
   hasPendingFullEnrich,
@@ -935,6 +936,17 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           // budget, and rejection counters from the in-process WriteQueue.
           // null until the first write creates the queue for this store.
           write_queue: WriteQueue.metricsForPath(resolvedPath),
+          // Phase-B pipeline observability (two-phase write follow-on):
+          // time_to_vector (Phase-A commit → vec applied, the eventual-
+          // consistency window), worker-side embed duration, apply/heal
+          // counters, plus the backlog mirrored from the fields above (kept
+          // top-level too — HF-3 additive rule). `metrics` is null until the
+          // first Phase-B activity for this store in this process.
+          embed_pipeline: {
+            backlog: embedBacklog.count,
+            backlog_oldest_at: embedBacklog.oldest_created_at,
+            metrics: getEmbedPipelineMetrics(resolvedPath),
+          },
         };
       }
     } catch {

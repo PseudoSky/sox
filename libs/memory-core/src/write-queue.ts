@@ -47,6 +47,32 @@
  *      queue depth + high watermark, monotonic per-process counters. Pure and
  *      read-only — callable from a ping handler with zero side effects.
  *
+ * ── Task-kind separation (two-phase write follow-on, 2026-07-04) ──────────────
+ *
+ * Phase-B `applyEmbedding` tasks ride the SAME serial queue as writes but have a
+ * very different latency shape (short vec insert vs full Phase-A write body).
+ * `enqueue` therefore accepts an optional `kind` ('write' default | 'apply'):
+ *
+ *   - REPORTING is segregated: `write_latency_ms` summarizes ONLY write-kind
+ *     tasks (more honest than the pre-split blend — see CHANGELOG), and a new
+ *     additive `apply_latency_ms` block summarizes apply-kind tasks.
+ *   - THE ADMISSION-CONTROL ESTIMATOR IS DELIBERATELY UNCHANGED: it keeps
+ *     consuming the blended ALL-KIND ring (`_latencies`) and the raw pending
+ *     depth (`queue.length` counts apply tasks too). Rationale: the estimator
+ *     approximates the total service time of everything occupying the slot
+ *     ahead of the caller — an apply task occupies the slot exactly like a
+ *     write does, so removing apply samples (or apply occupancy) from its
+ *     input would make it systematically UNDER-estimate wait under Phase-B
+ *     load and re-open the 2026-07-04 hang class. A per-kind estimator
+ *     (Σ pending_kind × avg_kind) would be marginally more precise but changes
+ *     pinned E_BUSY math for zero incident-relevant gain; the blended mean is
+ *     honest as long as the recent completion mix resembles the queued mix,
+ *     which the FIFO discipline guarantees over the 32-sample window.
+ *     `recent_avg_task_latency_ms` remains the all-kind estimator input.
+ *   - The slow-task baseline also stays on the all-kind ring (same argument).
+ *   - E_BUSY contract unchanged: both kinds face the same size cap and
+ *     deadline guard (a rejected apply is repaired by the periodic heal).
+ *
  * BL-154 SAFETY: every addition here is synchronous bookkeeping on the enqueue
  * and completion paths. No code path enqueues onto the queue from inside a
  * running task, and no async hops were added inside task execution.
@@ -73,6 +99,18 @@ export interface QueueBusyError {
 
 export type QueueError = QueueBusyError;
 
+// ── Task kinds ─────────────────────────────────────────────────────────────────
+
+/**
+ * Latency-shape label for a queue task (two-phase write follow-on):
+ *   'write' — default; Phase-A write bodies and every other mutation
+ *             (invalidate, curate, update, …).
+ *   'apply' — short Phase-B `applyEmbedding` tasks (vec insert + near-dup).
+ * Affects METRIC SEGREGATION ONLY — admission control, ordering, and the
+ * E_BUSY contract are identical for both kinds (see module header).
+ */
+export type TaskKind = 'write' | 'apply';
+
 // ── Metrics snapshot shape ─────────────────────────────────────────────────────
 
 /**
@@ -91,16 +129,28 @@ export interface WriteQueueMetrics {
   queue_high_watermark: number;
   /** True while the saturation warning is latched (hysteresis). */
   saturated: boolean;
-  /** Rolling task-latency distribution over the last ≤LATENCY_WINDOW samples. */
+  /** Rolling latency distribution of WRITE-KIND tasks only (last ≤LATENCY_WINDOW
+   *  write samples). Pre-kind-split this blended Phase-B apply tasks in; it is
+   *  now write-only (more honest — noted in the CHANGELOG). */
   write_latency_ms: { p50: number; p99: number; mean: number; max: number };
-  /** Mean execution latency of the last ≤RECENT_AVG_WINDOW tasks (admission estimator input). */
+  /** Additive: rolling latency distribution of APPLY-KIND (Phase-B
+   *  applyEmbedding) tasks over the last ≤LATENCY_WINDOW apply samples. */
+  apply_latency_ms: { p50: number; p99: number; mean: number; max: number };
+  /** Mean execution latency of the last ≤RECENT_AVG_WINDOW tasks of ALL kinds —
+   *  the admission-estimator input (apply tasks occupy the slot too; see module
+   *  header for why this stays blended). */
   recent_avg_task_latency_ms: number;
   /** Current deadline budget (SOX_WRITEQ_DEADLINE_MS or default). */
   deadline_budget_ms: number;
   /** False when SOX_WRITEQ_NO_DEADLINE=1 (kill-switch active). */
   deadline_guard_enabled: boolean;
   counters: {
+    /** All completed tasks regardless of kind (pre-split semantics preserved). */
     tasks_completed: number;
+    /** Additive: completed write-kind tasks. */
+    write_tasks_completed: number;
+    /** Additive: completed apply-kind (Phase-B applyEmbedding) tasks. */
+    apply_tasks_completed: number;
     rejections_busy_size: number;
     rejections_busy_deadline: number;
     slow_tasks: number;
@@ -111,6 +161,8 @@ export interface WriteQueueMetrics {
 
 interface QueueItem<T = unknown> {
   label: string;
+  /** Latency-shape label (metrics segregation only — see module header). */
+  kind: TaskKind;
   /** The operation to execute. Can be sync or async; runs under the queue's write connection. */
   operation: (db: Database.Database) => T | Promise<T>;
   resolve: (value: T | PromiseLike<T>) => void;
@@ -198,8 +250,15 @@ export class WriteQueue {
   private _lastCheckpointAt = 0;
 
   // ── Observability + backpressure state ──────────────────────────────────────
-  /** Rolling execution-latency samples (ms) of completed tasks. */
+  /** Rolling execution-latency samples (ms) of completed tasks of ALL kinds —
+   *  the admission-estimator + slow-task-baseline input (see module header). */
   private _latencies = new LatencyRing(WriteQueue.LATENCY_WINDOW);
+  /** Per-kind rolling latency rings — REPORTING ONLY (write_latency_ms /
+   *  apply_latency_ms). Never consumed by the estimator. */
+  private _kindLatencies: Record<TaskKind, LatencyRing> = {
+    write: new LatencyRing(WriteQueue.LATENCY_WINDOW),
+    apply: new LatencyRing(WriteQueue.LATENCY_WINDOW),
+  };
   /** Highest pending-queue depth observed since process start. */
   private _highWatermark = 0;
   /** Saturation warning latch (hysteresis — one log line per transition). */
@@ -209,6 +268,8 @@ export class WriteQueue {
   /** Monotonic per-process counters (never reset). */
   private _counters = {
     tasks_completed: 0,
+    write_tasks_completed: 0,
+    apply_tasks_completed: 0,
     rejections_busy_size: 0,
     rejections_busy_deadline: 0,
     slow_tasks: 0,
@@ -217,6 +278,9 @@ export class WriteQueue {
   private _logSink: (line: string) => void = (line) => console.error(line);
   /** Slow-task floor (ms) — test-overridable to avoid real 1s sleeps in specs. */
   private _slowTaskMinMs = WriteQueue.SLOW_TASK_MIN_MS;
+  /** The exact store key this queue was created with (the `forPath` argument —
+   *  same key as the `instances` map / `metricsForPath`). */
+  private readonly _storePath: string;
 
   private constructor(dbPath: string, maxSize = DEFAULT_MAX_QUEUE_SIZE) {
     // Open a dedicated write connection with the mandated pragmas.
@@ -225,6 +289,7 @@ export class WriteQueue {
     // schema.ts PRAGMAS have been updated to 3000 — this is a belt-and-suspenders).
     this.db.exec('PRAGMA busy_timeout = 3000;');
     this._maxSize = maxSize;
+    this._storePath = dbPath;
   }
 
   /**
@@ -290,6 +355,15 @@ export class WriteQueue {
   /** Configured max queue depth. */
   get maxSize(): number {
     return this._maxSize;
+  }
+
+  /**
+   * The store key this queue was created for — the exact string passed to
+   * `forPath()` (the `instances` / `metricsForPath` key). Lets off-queue
+   * subsystems (embed-pipeline metrics) key their per-store state identically.
+   */
+  get storePath(): string {
+    return this._storePath;
   }
 
   /** (WP-5) Wall-clock epoch ms of the last successful WAL checkpoint. 0 = never. */
@@ -368,10 +442,16 @@ export class WriteQueue {
    * until their promise settles.
    *
    * When the queue is full, returns a rejected promise with E_BUSY.
+   *
+   * `kind` (default 'write') labels the task's latency shape for METRIC
+   * segregation only — ordering, admission control, and the E_BUSY contract
+   * are identical for both kinds (see module header). Phase-B applyEmbedding
+   * tasks pass 'apply'.
    */
   enqueue<T>(
     label: string,
     operation: (db: Database.Database) => T | Promise<T>,
+    kind: TaskKind = 'write',
   ): Promise<T> {
     // WP-1 negative control: bypass queue → execute immediately (no serialisation)
     if (WriteQueue._bypass) {
@@ -448,7 +528,7 @@ export class WriteQueue {
     }
 
     return new Promise<T>((resolve, reject) => {
-      this.queue.push({ label, operation, resolve, reject });
+      this.queue.push({ label, kind, operation, resolve, reject });
       if (this.queue.length > this._highWatermark) {
         this._highWatermark = this.queue.length;
       }
@@ -487,9 +567,13 @@ export class WriteQueue {
    * Record a completed-task execution latency (ms). Called by _processNext;
    * also the DETERMINISTIC TEST SEAM for the admission-control estimator
    * (BL-161 pattern: seed samples directly instead of real sleeps/ONNX).
+   *
+   * Every sample lands in the ALL-KIND ring (the estimator input — apply tasks
+   * occupy the slot too) AND in the per-kind reporting ring.
    */
-  _recordLatencySample(latencyMs: number): void {
+  _recordLatencySample(latencyMs: number, kind: TaskKind = 'write'): void {
     this._latencies.push(latencyMs);
+    this._kindLatencies[kind].push(latencyMs);
   }
 
   /** Mean execution latency (ms) of the most recent completed tasks — the
@@ -523,19 +607,29 @@ export class WriteQueue {
    * ping/stats handler. Latency percentiles reuse the shared HF-2 helpers.
    */
   getMetrics(): WriteQueueMetrics {
-    const summary = summarizeLatencies(this._latencies.values());
+    const writeSummary = summarizeLatencies(this._kindLatencies.write.values());
+    const applySummary = summarizeLatencies(this._kindLatencies.apply.values());
     return {
       queue_depth: this.queue.length,
       in_flight: this._processing ? 1 : 0,
       queue_max_size: this._maxSize,
       queue_high_watermark: this._highWatermark,
       saturated: this._saturated,
+      // write_latency_ms is WRITE-KIND ONLY since the task-kind split (more
+      // honest — Phase-B apply tasks no longer dilute the write distribution).
       write_latency_ms: {
-        p50: summary.p50,
-        p99: summary.p99,
-        mean: summary.mean,
-        max: summary.max,
+        p50: writeSummary.p50,
+        p99: writeSummary.p99,
+        mean: writeSummary.mean,
+        max: writeSummary.max,
       },
+      apply_latency_ms: {
+        p50: applySummary.p50,
+        p99: applySummary.p99,
+        mean: applySummary.mean,
+        max: applySummary.max,
+      },
+      // Estimator input stays ALL-KIND (blended) — see module header.
       recent_avg_task_latency_ms: this._latencies.recentMean(WriteQueue.RECENT_AVG_WINDOW),
       deadline_budget_ms: this._deadlineBudgetMs,
       deadline_guard_enabled: !deadlineGuardDisabled(),
@@ -600,8 +694,10 @@ export class WriteQueue {
       // Failed tasks count too: they occupied the slot, so their duration is
       // service time for the wait estimator either way.
       const latencyMs = performance.now() - startedAt;
-      this._recordLatencySample(latencyMs);
+      this._recordLatencySample(latencyMs, item.kind);
       this._counters.tasks_completed++;
+      if (item.kind === 'apply') this._counters.apply_tasks_completed++;
+      else this._counters.write_tasks_completed++;
       if (
         latencyMs > this._slowTaskMinMs &&
         (avgAtStartMs === 0 || latencyMs > WriteQueue.SLOW_TASK_FACTOR * avgAtStartMs)

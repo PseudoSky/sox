@@ -30,6 +30,7 @@ import { applyEmbedding } from './embed-pipeline.js';
 import type { PendingEmbed } from './embed-pipeline.js';
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { monotonicFactory } from 'ulid';
 import { embed, vecToJson } from './embed.js';
 
@@ -319,7 +320,15 @@ export function memoryWritePhaseA(
     },
     pending:
       embedding === undefined
-        ? { uid: episodeUid, rowid: insertedRowid, text: content }
+        ? {
+            uid: episodeUid,
+            rowid: insertedRowid,
+            text: content,
+            // time_to_vector start stamp: monotonic, captured at Phase-A
+            // completion (node committed + sync enrichment done — the point
+            // the episode became BM25-recallable but not yet vec-recallable).
+            startedAtMs: performance.now(),
+          }
         : null,
   };
 }

@@ -45,10 +45,12 @@
  */
 
 import type Database from 'better-sqlite3';
+import { performance } from 'node:perf_hooks';
 import { embed, vecToJson } from './embed.js';
 import { detectNearDup } from './neardup.js';
 import type { NearDupResult } from './neardup.js';
 import { applyNearDupResult, NEARDUP_THRESHOLD } from './enrich.js';
+import { LatencyRing, summarizeLatencies } from './latency-stats.js';
 import type { WriteQueue } from './write-queue.js';
 
 /** Stderr log prefix — matches the writeq convention ([inv:no-stdout-diagnostics]). */
@@ -75,6 +77,15 @@ export interface PendingEmbed {
   rowid: number;
   /** Text to embed (the episode content). */
   text: string;
+  /**
+   * `performance.now()` captured at Phase-A completion (memoryWritePhaseA) —
+   * the time-to-vector start stamp. Monotonic and same-process, so no clock
+   * skew (deliberately NOT derived from node.t_created wall time). ABSENT on
+   * heal-path pendings: a crash/restart lost the in-process stamp, so heal
+   * applies never pollute the time_to_vector distribution (they are counted
+   * separately and aged via wall-clock heal_lag_ms instead).
+   */
+  startedAtMs?: number;
 }
 
 export interface EmbedApplyResult {
@@ -111,6 +122,139 @@ export interface EmbedBacklogStats {
   count: number;
   /** t_created of the oldest such episode — the stall-age signal. */
   oldest_created_at: string | null;
+}
+
+// ── Phase-B pipeline metrics (per-store, in-process) ──────────────────────────
+//
+// KEYING DECISION — PER-STORE, keyed by `WriteQueue.storePath` (the exact
+// string passed to `WriteQueue.forPath`, i.e. the same key as
+// `WriteQueue.metricsForPath`). The pipeline serves multiple stores from one
+// process; a process-global aggregate would make memory_ping's per-store block
+// unattributable (store X's ping showing store Y's backlog drain). Both
+// scheduling entry points receive the store's WriteQueue, so the key is always
+// available and matches the ping handler's `resolvedPath` by construction
+// (same argument as WRITEQ_METRICS_INTEGRATION.md's key-matching note).
+//
+// CLOCK DECISION — time_to_vector uses `performance.now()` stamps captured at
+// Phase-A completion (PendingEmbed.startedAtMs): monotonic, same-process, no
+// clock skew. HEAL-PATH applies have no in-process Phase-A stamp (the crash
+// lost it — and the live June backlog predates the pipeline entirely), so they
+// are EXCLUDED from time_to_vector and tracked in a separate `heal_lag_ms`
+// distribution derived from node.t_created — explicitly WALL-CLOCK and only an
+// age indicator (subject to clock adjustments; a week-old crash orphan
+// legitimately records a week). Mixing the two would destroy the headline
+// metric: heal lags are 4–6 orders of magnitude larger than pipeline lags.
+
+/** Rolling-window capacity — mirrors WriteQueue.LATENCY_WINDOW. */
+const PIPELINE_LATENCY_WINDOW = 256;
+
+interface EmbedPipelineCounters {
+  /** Successful embedding computations in this module (pipeline + heal paths). */
+  embeds_completed: number;
+  /** schedulePendingEmbeds per-item failures — the stderr "Phase-B FAILURE"
+   *  path (embed error OR E_BUSY rejection of the apply task). */
+  embeds_failed: number;
+  /** applyEmbedding outcomes across BOTH paths (pipeline + heal). */
+  applies_applied: number;
+  applies_exists: number;
+  applies_gone: number;
+  /** Heal-path subset: healMissingVectors applies that landed a vector
+   *  (each also increments applies_applied). */
+  heals_applied: number;
+  /** healMissingVectors per-item failures — the stderr "heal FAILURE" path. */
+  heals_failed: number;
+}
+
+interface EmbedPipelineState {
+  /** Phase-A completion → vec_node applied (monotonic stamps; pipeline path only). */
+  timeToVector: LatencyRing;
+  /** Duration of the `embed()` call itself (worker-side computation; both paths).
+   *  Distinct from any queue wait — measured around the embed call only. */
+  embedDuration: LatencyRing;
+  /** WALL-CLOCK age (now − node.t_created) of heal-path applied vectors. */
+  healLag: LatencyRing;
+  counters: EmbedPipelineCounters;
+}
+
+/** Pure snapshot shape — safe to expose from a ping handler. */
+export interface EmbedPipelineMetrics {
+  /** Phase-A commit → vec_node application, ms (monotonic, pipeline path only).
+   *  The user-facing eventual-consistency window: how long a fresh write is
+   *  BM25-only before it becomes vec-recallable. */
+  time_to_vector_ms: { p50: number; p99: number; mean: number; max: number };
+  time_to_vector_samples: number;
+  /** Worker-side embed computation duration, ms (excludes queue wait). */
+  embed_duration_ms: { p50: number; p99: number; mean: number; max: number };
+  embed_duration_samples: number;
+  /** WALL-CLOCK (t_created-based) age of heal-path applied vectors, ms. */
+  heal_lag_ms: { p50: number; p99: number; mean: number; max: number };
+  heal_lag_samples: number;
+  counters: EmbedPipelineCounters;
+}
+
+/** Per-store metrics registry — same keying as WriteQueue.instances. */
+const pipelineStates = new Map<string, EmbedPipelineState>();
+
+function stateFor(storeKey: string): EmbedPipelineState {
+  let s = pipelineStates.get(storeKey);
+  if (!s) {
+    s = {
+      timeToVector: new LatencyRing(PIPELINE_LATENCY_WINDOW),
+      embedDuration: new LatencyRing(PIPELINE_LATENCY_WINDOW),
+      healLag: new LatencyRing(PIPELINE_LATENCY_WINDOW),
+      counters: {
+        embeds_completed: 0,
+        embeds_failed: 0,
+        applies_applied: 0,
+        applies_exists: 0,
+        applies_gone: 0,
+        heals_applied: 0,
+        heals_failed: 0,
+      },
+    };
+    pipelineStates.set(storeKey, s);
+  }
+  return s;
+}
+
+/** Shared apply-outcome bookkeeping (both paths). */
+function recordApplyOutcome(state: EmbedPipelineState, status: EmbedApplyResult['status']): void {
+  if (status === 'applied') state.counters.applies_applied++;
+  else if (status === 'exists') state.counters.applies_exists++;
+  else state.counters.applies_gone++;
+}
+
+function summaryOf(ring: LatencyRing): { p50: number; p99: number; mean: number; max: number } {
+  const s = summarizeLatencies(ring.values());
+  return { p50: s.p50, p99: s.p99, mean: s.mean, max: s.max };
+}
+
+/**
+ * Pure, read-only snapshot of the Phase-B pipeline metrics for a store — zero
+ * side effects, callable from memory_ping. Returns null when no Phase-B
+ * activity has touched this store in this process (mirrors
+ * WriteQueue.metricsForPath's null-until-first-activity honesty).
+ *
+ * `storeKey` must be the SAME string used for `WriteQueue.forPath` (the ping
+ * handler's `resolvedPath`).
+ */
+export function getEmbedPipelineMetrics(storeKey: string): EmbedPipelineMetrics | null {
+  const s = pipelineStates.get(storeKey);
+  if (!s) return null;
+  return {
+    time_to_vector_ms: summaryOf(s.timeToVector),
+    time_to_vector_samples: s.timeToVector.count,
+    embed_duration_ms: summaryOf(s.embedDuration),
+    embed_duration_samples: s.embedDuration.count,
+    heal_lag_ms: summaryOf(s.healLag),
+    heal_lag_samples: s.healLag.count,
+    counters: { ...s.counters },
+  };
+}
+
+/** Test seam: drop all per-store pipeline metrics state (fresh-process shape). */
+export function _resetEmbedPipelineMetricsForTest(): void {
+  pipelineStates.clear();
 }
 
 // ── Phase-B apply (SHORT queue task body — synchronous) ───────────────────────
@@ -217,17 +361,31 @@ export async function schedulePendingEmbeds(
   const log = opts?.logSink ?? ((line: string) => console.error(line));
   const out: SchedulePendingResult = { applied: 0, exists: 0, gone: 0, failed: 0 };
   if (pendings.length === 0) return out;
+  const metrics = stateFor(wq.storePath);
 
   const run = (async () => {
     for (const p of pendings) {
       try {
+        const embedStartMs = performance.now();
         const vec = await embed(p.text); // off-slot: worker-thread ONNX
-        const r = await wq.enqueue(`embed_apply:${p.uid}`, (qdb) =>
-          applyEmbedding(qdb, p, vec),
+        metrics.embedDuration.push(performance.now() - embedStartMs);
+        metrics.counters.embeds_completed++;
+        const r = await wq.enqueue(
+          `embed_apply:${p.uid}`,
+          (qdb) => applyEmbedding(qdb, p, vec),
+          'apply',
         );
         out[r.status === 'applied' ? 'applied' : r.status === 'exists' ? 'exists' : 'gone']++;
+        recordApplyOutcome(metrics, r.status);
+        // time_to_vector: Phase-A completion stamp → apply-task settled (the
+        // vec row is durably visible). Only genuine pipeline applies with an
+        // in-process monotonic stamp are recorded — see the clock decision.
+        if (r.status === 'applied' && p.startedAtMs !== undefined) {
+          metrics.timeToVector.push(performance.now() - p.startedAtMs);
+        }
       } catch (err) {
         out.failed++;
+        metrics.counters.embeds_failed++;
         const msg = err instanceof Error ? err.message : JSON.stringify(err);
         log(
           `${LOG_PREFIX} Phase-B FAILURE uid=${p.uid} rowid=${p.rowid}: ${msg} — ` +
@@ -297,10 +455,11 @@ export async function healMissingVectors(
   }
   const limit = opts?.limit ?? 500;
   const log = opts?.logSink ?? ((line: string) => console.error(line));
+  const metrics = stateFor(wq.storePath);
 
   const rows = db
-    .prepare<[number], { rowid: number; uid: string; content: string }>(
-      `SELECT n.rowid, n.uid, n.content
+    .prepare<[number], { rowid: number; uid: string; content: string; t_created: string | null }>(
+      `SELECT n.rowid, n.uid, n.content, n.t_created
        FROM node n
        WHERE n.kind = 'episode'
          AND n.t_invalid IS NULL
@@ -313,17 +472,34 @@ export async function healMissingVectors(
 
   out.scanned = rows.length;
   for (const r of rows) {
+    // NO startedAtMs: the in-process Phase-A stamp is gone (crash/restart) —
+    // heal applies must not pollute the time_to_vector distribution.
     const pending: PendingEmbed = { uid: r.uid, rowid: r.rowid, text: r.content };
     try {
+      const embedStartMs = performance.now();
       const vec = await embed(pending.text);
-      const applied = await wq.enqueue(`embed_heal:${pending.uid}`, (qdb) =>
-        applyEmbedding(qdb, pending, vec),
+      metrics.embedDuration.push(performance.now() - embedStartMs);
+      metrics.counters.embeds_completed++;
+      const applied = await wq.enqueue(
+        `embed_heal:${pending.uid}`,
+        (qdb) => applyEmbedding(qdb, pending, vec),
+        'apply',
       );
-      if (applied.status === 'applied') out.healed++;
-      else if (applied.status === 'exists') out.exists++;
+      recordApplyOutcome(metrics, applied.status);
+      if (applied.status === 'applied') {
+        out.healed++;
+        metrics.counters.heals_applied++;
+        // heal_lag: WALL-CLOCK age of the healed node (t_created-based —
+        // labeled as such; the only signal that survives a process restart).
+        const createdMs = r.t_created === null ? NaN : Date.parse(r.t_created);
+        if (Number.isFinite(createdMs)) {
+          metrics.healLag.push(Math.max(0, Date.now() - createdMs));
+        }
+      } else if (applied.status === 'exists') out.exists++;
       else out.gone++;
     } catch (err) {
       out.failed++;
+      metrics.counters.heals_failed++;
       const msg = err instanceof Error ? err.message : JSON.stringify(err);
       log(`${LOG_PREFIX} heal FAILURE uid=${pending.uid} rowid=${pending.rowid}: ${msg}`);
     }

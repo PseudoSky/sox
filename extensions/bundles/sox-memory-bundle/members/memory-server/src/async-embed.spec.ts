@@ -241,6 +241,109 @@ describe('memory_ping — embed_backlog is machine-visible, dead Phase B reads s
   });
 });
 
+// ── Observability: the embed_pipeline ping block (write→embed metrics) ────────
+
+describe('memory_ping — embed_pipeline block (time_to_vector + counters + mirrored backlog)', () => {
+  interface EmbedPipelineBlock {
+    backlog: number;
+    backlog_oldest_at: string | null;
+    metrics: {
+      time_to_vector_ms: { p50: number; p99: number; mean: number; max: number };
+      time_to_vector_samples: number;
+      embed_duration_ms: { p50: number; p99: number; mean: number; max: number };
+      embed_duration_samples: number;
+      heal_lag_ms: { p50: number; p99: number; mean: number; max: number };
+      heal_lag_samples: number;
+      counters: Record<string, number>;
+    } | null;
+  }
+  interface PingStore {
+    embed_backlog: number;
+    embed_backlog_oldest_at: string | null;
+    embed_pipeline: EmbedPipelineBlock;
+    write_queue: {
+      write_latency_ms: Record<string, number>;
+      apply_latency_ms: Record<string, number>;
+      counters: Record<string, number>;
+    } | null;
+  }
+
+  async function pingStore(dbPath: string): Promise<PingStore> {
+    const resp = await handleToolCall('memory_ping', { db_path: dbPath });
+    const body = JSON.parse(resp.content[0]?.text ?? '{}') as { store: PingStore | null };
+    expect(body.store).not.toBeNull();
+    return body.store as PingStore;
+  }
+
+  it('fresh store: block present, backlog mirrored, metrics null (no Phase-B activity yet — honest)', async () => {
+    const dbPath = tmpStorePath();
+    getDb(dbPath); // materialise the store, zero pipeline traffic
+    const store = await pingStore(dbPath);
+
+    expect(store.embed_pipeline).toBeDefined();
+    expect(store.embed_pipeline.backlog).toBe(0);
+    expect(store.embed_pipeline.backlog_oldest_at).toBeNull();
+    expect(store.embed_pipeline.metrics).toBeNull();
+    // Top-level fields kept as-is (HF-3 additive rule) and mirrored.
+    expect(store.embed_backlog).toBe(store.embed_pipeline.backlog);
+    expect(store.embed_backlog_oldest_at).toBe(store.embed_pipeline.backlog_oldest_at);
+  });
+
+  it('after an async write drains: time_to_vector recorded, counters populated, apply rode the queue as apply-kind', async () => {
+    const dbPath = tmpStorePath();
+    await handleToolCall('memory_write', {
+      db_path: dbPath,
+      content: 'Ping observability episode about basalt column formation.',
+    });
+    await flushPendingEmbeds();
+
+    const store = await pingStore(dbPath);
+    const block = store.embed_pipeline;
+    expect(block.backlog).toBe(0); // Phase B landed
+    const m = block.metrics!;
+    expect(m).not.toBeNull();
+
+    // The headline metric: exactly one pipeline apply, one monotonic sample.
+    expect(m.time_to_vector_samples).toBe(1);
+    expect(m.time_to_vector_ms.p50).toBeGreaterThanOrEqual(0);
+    expect(m.time_to_vector_ms.max).toBeGreaterThanOrEqual(m.time_to_vector_ms.p50);
+    expect(m.embed_duration_samples).toBe(1);
+    expect(m.counters).toMatchObject({
+      embeds_completed: 1,
+      embeds_failed: 0,
+      applies_applied: 1,
+      heals_applied: 0,
+      heals_failed: 0,
+    });
+    // No heals ran — the wall-clock lag distribution is empty.
+    expect(m.heal_lag_samples).toBe(0);
+
+    // Task-kind separation is visible in the write_queue block alongside:
+    // the Phase-A write and the Phase-B apply are counted apart.
+    const wqm = store.write_queue!;
+    expect(wqm).not.toBeNull();
+    expect(wqm.counters['write_tasks_completed']).toBeGreaterThanOrEqual(1);
+    expect(wqm.counters['apply_tasks_completed']).toBeGreaterThanOrEqual(1);
+    expect(wqm.apply_latency_ms).toBeDefined();
+  });
+
+  it('heal-path applies surface as heals_applied + heal_lag, never as time_to_vector', async () => {
+    const dbPath = tmpStorePath();
+    const db = getDb(dbPath);
+    const old = new Date(Date.now() - 60_000).toISOString();
+    insertOrphanEpisode(dbPath, 'ping heal-path orphan with unique fjord tokens', old);
+
+    const pass = await runEnrichPassOnDb(db, dbPath);
+    expect(pass.healed).toBe(1);
+
+    const m = (await pingStore(dbPath)).embed_pipeline.metrics!;
+    expect(m.counters.heals_applied).toBe(1);
+    expect(m.heal_lag_samples).toBe(1);
+    expect(m.heal_lag_ms.p50).toBeGreaterThanOrEqual(60_000); // wall-clock age
+    expect(m.time_to_vector_samples).toBe(0); // heals never pollute the headline
+  });
+});
+
 // ── The heal: periodic tick repairs a crashed Phase B ─────────────────────────
 
 describe('runEnrichPassOnDb — the tick heals missing vectors (crash between phases)', () => {
