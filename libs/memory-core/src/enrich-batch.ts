@@ -38,7 +38,8 @@ export interface BatchEnrichOptions {
   /**
    * BL-45: When true, run incremental clustering only (local neighborhood check for
    * newly-added nodes). Skip the full O(n²) re-cluster pass. Reserve the full pass
-   * for periodic/explicit triggers (memory_curate recluster / enqueueEnrich).
+   * for periodic/explicit triggers (memory_curate recluster / the in-process periodic
+   * enrichment loop in memory-server).
    * Default false (full pass).
    */
   incrementalCluster?: boolean;
@@ -141,7 +142,8 @@ export function runBatchEnrich(
   // ── Step 3: Clustering (E6) ────────────────────────────────────────────────
   // BL-45: write-triggered passes use incrementalCluster:true (local neighborhood
   // check only, no O(n²) full pass). Full re-cluster is reserved for periodic or
-  // explicit triggers (memory_curate recluster / enqueueEnrich without the flag).
+  // explicit triggers (memory_curate recluster / the in-process periodic enrichment
+  // loop in memory-server, without the incremental flag).
   if (!hasNullEnrichVer) {
     const defaultThreshold = resolveClusterThreshold(clusterThreshold);
     const clusterResult = clusterStore(db, {

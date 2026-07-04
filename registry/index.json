@@ -5,7 +5,7 @@
     "version": "0.1.0",
     "title": "memory-org",
     "description": "Use this when you need an agent that organises or retrieves memories scoped to a project or organisation.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/org-agent",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/agents/org-agent",
     "checksum": "sha256:9c64ba282f170b11f3e86c6cfece09aaae11c328d933e16bb240b4759e9a5057",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
@@ -17,7 +17,7 @@
     "version": "0.1.0",
     "title": "test-runner",
     "description": "Use this when you need an agent that runs test suites and reports results.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/test-agent",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/agents/test-agent",
     "checksum": "sha256:a6c5a2a88d17ed3fec829b244db666de085833d29b73a2583c5d062cabee3741",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
@@ -28,16 +28,13 @@
     "type": "bundle",
     "version": "0.2.0",
     "title": "sox-memory (graph memory subsystem)",
-    "description": "Use this when you want the full sox-memory graph-memory subsystem installed in one command — expands to memory-daemon (supervised Unix-socket writer daemon with deterministic batch enrichment), memory-server (MCP tools, stdio), memory-flush (SessionEnd hook), memory-cli (store lifecycle commands), and memory-usage (how-to skill). Fully deterministic; zero LLM calls; no provider required.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle",
-    "checksum": "sha256:9e0e687a62eda6365c72e4d487db6a6c5e27b82d7ebce660389c059fa34792d5",
+    "description": "Use this when you want the full sox-memory graph-memory subsystem installed in one command — expands to memory-server (MCP tools, stdio, with in-process deterministic batch enrichment), memory-flush (SessionEnd hook), memory-cli (store lifecycle commands), and memory-usage (how-to skill). Fully deterministic; zero LLM calls; no provider required.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/bundles/sox-memory-bundle",
+    "checksum": "sha256:363df3357c953713ac0873ed438b4828c387f864582b8e7d9d5a441c9826b5bd",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "members": [
-      {
-        "id": "memory-daemon"
-      },
       {
         "id": "memory-server"
       },
@@ -58,22 +55,8 @@
     "version": "0.2.0",
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "checksum": "sha256:1d212cfd4bc3579ba42126ff99c475f73e6656a364febdd23073ec1685abfa8a",
-    "compatibility": {
-      "host": ">=1.0.0 <2.0.0"
-    },
-    "visibility": "internal",
-    "bundleId": "sox-memory-bundle"
-  },
-  {
-    "id": "memory-daemon",
-    "type": "service",
-    "version": "0.2.1",
-    "title": "Memory Daemon",
-    "description": "Use this when you need the soxe graph-memory enrichment pipeline running: a singleton Unix-socket service that drains the batch-enrich queue and runs deterministic clustering, importance scoring, and auto-links via memory-core — zero LLM calls, no provider required.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-daemon",
-    "checksum": "sha256:2740b1806aabd3a1a8f6b3036b10d61f2468edbd1a8ee7f7651c0eea04bd59df",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/bundles/sox-memory-bundle/members/memory-cli",
+    "checksum": "sha256:a8877c30568c7f66365cfefb8e86835c71f4ef8ae0c646d74d9f3e8f5b17138f",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -86,8 +69,8 @@
     "version": "0.2.0",
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-flush",
-    "checksum": "sha256:bb0b48408640f6840c2ca653106d8572ef3ce48da7531026701bb5889d06db7b",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/bundles/sox-memory-bundle/members/memory-flush",
+    "checksum": "sha256:d42abb16324b6d8503ec3fa0aa7065bdba048c220bbc4b4c9fd3974ba819718b",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -100,8 +83,8 @@
     "version": "1.2.1",
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:730599ec0c61c267b19a028e7e1b57735795d8d8bb3240d07952b3a20dd67a47",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/bundles/sox-memory-bundle/members/memory-server",
+    "checksum": "sha256:de6c475e79dbf0394f590de65c37b9b44f1efa5041a44096b61dda3e66999357",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -118,8 +101,8 @@
     "version": "0.2.0",
     "title": "Using the soxe memory system",
     "description": "Use when an agent should recall prior knowledge or store durable findings in the soxe graph-memory system via the memory_* MCP tools (memory_recall / memory_write / memory_search_entities / memory_invalidate).",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-usage",
-    "checksum": "sha256:9ab7cbae83c90eb99d1171759f716f8c0944e08f04d981d201200257b821d07b",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/bundles/sox-memory-bundle/members/memory-usage",
+    "checksum": "sha256:4ffeed267eb9423c5a1c2e9e03a41df7d4d8c409ac476d12fd1e325a258a36db",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -132,7 +115,7 @@
     "version": "0.1.0",
     "title": "dep-inject",
     "description": "Use this when you need a slash command that demonstrates dependency injection patterns.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/commands/di-command",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/commands/di-command",
     "checksum": "sha256:ec81e4822bb2e5b361781bb697eb4a8ecba8d1dd47789e79a4cdcd387ed7967f",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
@@ -144,7 +127,7 @@
     "version": "0.1.1",
     "title": "TokenGuard Pseudonymizing Proxy",
     "description": "Generalized pseudonymizing HTTP proxy. Tokenizes PII in outbound API requests and detokenizes inbound responses — provider-agnostic via pluggable adapters. Seeded identifiers are mapped bijectively and never reach the wire.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/services/tokenguard",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/services/tokenguard",
     "checksum": "sha256:083fe30810da10568f69dcc23d45ae5a7cf040156962e7ad45a668d521386cf8",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
@@ -156,7 +139,7 @@
     "version": "0.1.0",
     "title": "demo-creator — generate a project's DEMO.md acceptance script",
     "description": "Use this skill to produce a project's demo script / DEMO.md / acceptance walkthrough / QA verification doc that both tells the product story like a live demo AND functions as a rigorous acceptance test. Turns a project spec (or PRD/README/landing copy/code) into a persona-narrated, presentation-grade DEMO.md with exact commands, exact data, binary pass/fail assertions, full happy/edge/recovery coverage, requirement->capability traceability, and a tracked UNRESOLVED.md ledger for any guessed interface.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/demo-creator",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/skills/demo-creator",
     "checksum": "sha256:2f21145ecce1aa3f1cba9119e9472567cbbd16132e7346c38fe5a4c61f8bf359",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
@@ -168,7 +151,7 @@
     "version": "0.1.0",
     "title": "di-codex",
     "description": "Use this when you need a skill that demonstrates dependency injection for Codex-based workflows.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/di-codex-skill",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/skills/di-codex-skill",
     "checksum": "sha256:e6942760c07daab1dba21959af95467dd200ee4a1700bbb05ca3ad6ed56d3a99",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
@@ -180,7 +163,7 @@
     "version": "0.1.0",
     "title": "dep-injector",
     "description": "Use this when you need a skill that demonstrates dependency injection for Claude-based workflows.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/di-skill",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/skills/di-skill",
     "checksum": "sha256:a2ad71fa3e7f522f105e8c0790698aeaedb0b0d0413dcc85518d94b5d3c995b3",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
@@ -192,7 +175,7 @@
     "version": "0.1.0",
     "title": "forbidden-access",
     "description": "Use this when testing permission enforcement — this skill targets a forbidden host path and must be rejected.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/forbidden-skill",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/skills/forbidden-skill",
     "checksum": "sha256:b6e9239b127ebaf493239063eaaab0f322f115c064e33c04130a24e705fc3ad2",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
@@ -204,7 +187,7 @@
     "version": "0.1.0",
     "title": "sox-ingest — Ingest external sources into sox-ecosystem",
     "description": "Use this when you need to port an external repo, file, or directory into sox-ecosystem as born-conformant extensions. Encodes the full ingestion flow: initialize -> generalize+author -> validate -> publish -> install -> enable -> remove-old, delegating per-type and per-operation specifics to references/. An agent told 'ingest <source> into sox' loads this skill and runs the complete flow with no bespoke prompts.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/sox-ingest",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/skills/sox-ingest",
     "checksum": "sha256:deda1d03c6875a25f58b05c585564c4afa09368af100477472ad5e89620d50f9",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
@@ -216,7 +199,7 @@
     "version": "1.1.1",
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/apps/sox",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-a6bd315cddfc76ae5/apps/sox",
     "checksum": "sha256:012a235e71f93a79c0dab14b931751164012711c53ca70d4228ca26e7891806f",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"

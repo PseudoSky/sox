@@ -66,7 +66,6 @@ import {
   resolveStoreOrDbPath,
   rowidsToUids,
   runBatchEnrich,
-  SOCKET_PATH,
   setLeaseInstanceId,
   supersedesUidForRowid,
   warmupEmbed,
@@ -77,7 +76,6 @@ import type { WriteError, WriteResult } from '@adhd/sox-memory-core';
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
-import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 // ─── ADR-0003: content-addressed self-identity ───────────────────────────────
@@ -297,7 +295,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_write',
     description:
-      'Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, near-dup, extractive summary). Returns {episode_uid}. Batch enrichments (clustering, auto-links, importance link-score) run asynchronously in the daemon when it is running, or via an in-process fallback interval when the daemon is absent.',
+      'Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, near-dup, extractive summary). Returns {episode_uid}. Batch enrichments (clustering, auto-links, importance link-score) run in-process on a periodic interval within this server (no separate daemon process).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -667,7 +665,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         importance: { type: 'number', minimum: 1, maximum: 10, description: '(set_importance) User-asserted importance.' },
         uid_keep: { type: 'string', description: '(merge_duplicates) UID of the episode to keep.' },
         uid_drop: { type: 'string', description: '(merge_duplicates) UID of the episode to invalidate.' },
-        filters: { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: global async re-cluster via the daemon (unchanged).' },
+        filters: { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: a global full re-cluster runs SYNCHRONOUSLY in-process (no daemon).' },
         threshold: { type: 'number', description: '(recluster, filtered) Optional cosine similarity threshold override for the subset pass.' },
         provenance_hash: { type: 'string', description: '(drop_lens) The 16-hex provenance hash of the subset lens to drop (obtain from a prior recluster response).' },
         dry_run: { type: 'boolean', default: false, description: 'If true, return proposed changes without committing them.' },
@@ -1516,86 +1514,54 @@ const registeredTools = TOOLS.map((tool) =>
   }),
 );
 
-// ── BL-47: in-process fallback enrichment loop ────────────────────────────────
+// ── BL-162: in-process periodic batch-enrichment loop ─────────────────────────
 //
-// When the memory-daemon service (memory-daemon) is absent (its Unix socket at
-// SOCKET_PATH is not connectable), batch enrichment never runs — clustering,
-// auto-links, importance, and topic backfill are silently skipped. This fallback
-// runs the enrichment loop IN the MCP server process on a periodic interval so
-// enrichment is not permanently dead when the daemon is down.
+// ADR-0007 single-writer architecture: memory-server IS the writer process, and
+// batch enrichment (clustering, auto-links, importance, topic backfill) runs
+// entirely in-process — there is no separate daemon process and nothing to probe
+// or nudge. This periodic loop is the sole batch-enrichment driver (write-time
+// enrichment, e.g. tags/topic/near-dup, already runs synchronously in memoryWrite
+// via enrichOnWrite; this loop handles the O(n) incremental clustering pass that
+// would otherwise only run on the next write).
 //
-// Guard: before each pass we probe SOCKET_PATH. If the daemon IS reachable, we
-// skip the fallback pass — the daemon owns the batch loop in that case. This
-// prevents double-runs when both are active.
-//
-// The fallback uses incremental clustering (no full O(n²) pass) to keep each
-// pass fast. A full re-cluster is available via memory_curate recluster.
+// The loop uses incremental clustering (no full O(n²) pass) to keep each pass
+// fast. A full re-cluster is available on demand via memory_curate recluster.
 //
 // The loop is debounced: if a pass is already running (blocking the event loop
 // via synchronous better-sqlite3), the timer fires after it completes naturally.
 //
-// This fallback iterates over ALL open DB connections in dbCache so enrichment
-// runs for every db_path that has been actively used this session.
+// This loop iterates over ALL open DB connections in dbCache so enrichment runs
+// for every db_path that has been actively used this session.
 
-const FALLBACK_ENRICH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes between passes
-
-/** Returns true when the memory-daemon socket is reachable (daemon is up). */
-function isDaemonReachable(): Promise<boolean> {
-  return new Promise((resolve) => {
-    if (!fs.existsSync(SOCKET_PATH)) {
-      resolve(false);
-      return;
-    }
-    const conn = net.createConnection(SOCKET_PATH);
-    const timer = setTimeout(() => {
-      conn.destroy();
-      resolve(false);
-    }, 200);
-    conn.on('connect', () => {
-      clearTimeout(timer);
-      conn.destroy();
-      resolve(true);
-    });
-    conn.on('error', () => {
-      clearTimeout(timer);
-      resolve(false);
-    });
-  });
-}
+const PERIODIC_ENRICH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes between passes
 
 /** Run one in-process incremental enrichment pass over all open DBs. */
-async function runFallbackEnrichPass(): Promise<void> {
+async function runPeriodicEnrichPass(): Promise<void> {
   if (openedPaths.size === 0) return;
-
-  const daemonUp = await isDaemonReachable();
-  if (daemonUp) {
-    // Daemon is alive — it owns the batch loop. Do not double-run.
-    return;
-  }
 
   for (const dbPath of openedPaths) {
     try {
       const db = getDb(dbPath);
       const result = runBatchEnrich(db, { incrementalCluster: true });
       console.error(
-        `[memory-server] fallback enrich (daemon absent, ${dbPath}):` +
+        `[memory-server] periodic enrich (${dbPath}):` +
         ` communities=${result.communities_upserted}` +
         ` importance_updated=${result.importance_updated}` +
         ` relates_to=${result.relates_to_edges}`,
       );
     } catch (err) {
       // Log to stderr only — never stdout (JSON-RPC channel).
-      console.error(`[memory-server] fallback enrich error (${dbPath}):`, err);
+      console.error(`[memory-server] periodic enrich error (${dbPath}):`, err);
     }
   }
 }
 
-// Schedule the fallback loop. unref() keeps the timer from holding the process
+// Schedule the periodic loop. unref() keeps the timer from holding the process
 // open past MCP client disconnect — the server exits cleanly on stdin close.
-const _fallbackTimer = setInterval(() => {
-  void runFallbackEnrichPass();
-}, FALLBACK_ENRICH_INTERVAL_MS);
-_fallbackTimer.unref();
+const _periodicEnrichTimer = setInterval(() => {
+  void runPeriodicEnrichPass();
+}, PERIODIC_ENRICH_INTERVAL_MS);
+_periodicEnrichTimer.unref();
 
 // ── Entrypoint dispatch: backend mode vs direct-stdio (spec §9.5) ─────────────
 //

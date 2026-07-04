@@ -165,7 +165,7 @@ for all verification.
 | You changed... | Go to |
 |----------------|-------|
 | An MCP server extension (memory-server, etc.) | §2.2 |
-| A service extension (memory-daemon, tokenguard) | §2.3 |
+| A service extension (tokenguard, memory-server in sse/http profile) | §2.3 |
 | An agent extension | §2.4 |
 | A skill extension | §2.5 |
 | A command extension | §2.6 |
@@ -270,7 +270,7 @@ Write a confirmation list like this to the plan log:
 
 ### §2.3 Service extension changes
 
-**Context:** Changes to services with `lifecycle.background` (memory-daemon, tokenguard).
+**Context:** Changes to services with `lifecycle.background` (tokenguard, memory-server in sse/http profile).
 These run as OS units (launchd/systemd) or in-process supervised daemons.
 
 #### §2.3.1 Before
@@ -478,7 +478,6 @@ Apply the per-type playbook for EACH member extension type (mcp-server, service,
 For example, `sox-memory-bundle` includes:
 
 - `memory-server` → follow §2.2 (MCP server)
-- `memory-daemon` → follow §2.3 (service)
 - `memory-usage` → follow §2.5 (skill)
 - `memory-cli` → follow §2.6 (command)
 - `memory-flush` → follow §2.7 (hook)

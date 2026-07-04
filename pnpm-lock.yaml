@@ -122,21 +122,6 @@ importers:
         specifier: workspace:*
         version: link:../../../../../libs/memory-core
 
-  extensions/bundles/sox-memory-bundle/members/memory-daemon:
-    dependencies:
-      better-sqlite3:
-        specifier: ^12.10.0
-        version: 12.10.0
-      fastembed:
-        specifier: ^2.1.0
-        version: 2.1.0
-      onnxruntime-node:
-        specifier: 1.21.0
-        version: 1.21.0
-      sqlite-vec:
-        specifier: ^0.1.9
-        version: 0.1.9
-
   extensions/bundles/sox-memory-bundle/members/memory-flush:
     dependencies:
       better-sqlite3:

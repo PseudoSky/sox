@@ -100,7 +100,7 @@ Do NOT use `memory_update` to change a node's identity (`uid` is always immutabl
 
 ### `memory_write` (v1 — MODIFIED)
 
-Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, near-dup, extractive summary). Batch enrichments (clustering, auto-links, importance) run asynchronously in the daemon when running, or via an in-process fallback interval when the daemon is absent. Never blocks on LLM.
+Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, near-dup, extractive summary). Batch enrichments (clustering, auto-links, importance) run in-process on a periodic interval within this server (ADR-0007 — no separate daemon process). Never blocks on LLM.
 
 **New in v1:** `name`, `topic`, `project_path`, `derived_from_uid` inputs; `enrichment` in output.
 

@@ -4,9 +4,9 @@
 
 ## Overview
 
-`memory-server` is the keystone of the sox-memory subsystem. It runs as a long-lived background singleton (via `memoryd`) and exposes 19 MCP tools over stdio JSON-RPC (default), SSE, or HTTP transport. All persistent state lives in a single SQLite file per scope, extended with the `sqlite-vec` vector extension (for approximate nearest-neighbour search) and FTS5 (for BM25 full-text search).
+`memory-server` is the keystone of the sox-memory subsystem — and, since ADR-0007's single-writer architecture, the sole writer process for the subsystem (there is no separate daemon). It exposes 19 MCP tools over stdio JSON-RPC (default), SSE, or HTTP transport. Depending on transport profile it runs per-session (stdio, spawned by the host) or as a persistent background singleton via `soxe service enable` (sse/http, supervised by the host's OS-unit layer — launchd on macOS). All persistent state lives in a single SQLite file per scope, extended with the `sqlite-vec` vector extension (for approximate nearest-neighbour search) and FTS5 (for BM25 full-text search).
 
-The read path (`memory_recall`) is strictly deterministic: local hash embedding, parallel vec+BM25+temporal search, RRF fusion, recency × importance reranking — all in-process, no provider calls, target <50 ms. The write path (`memory_write`) inserts an episode, runs synchronous enrichment (provenance, tags, topic, near-dup), and enqueues an async batch-enrich task; it never blocks on any external call. The batch enrichment pipeline (clustering, auto-links, importance) runs deterministically in `memory-daemon` via `@adhd/sox-memory-core` — zero LLM calls, no provider required.
+The read path (`memory_recall`) is strictly deterministic: local hash embedding, parallel vec+BM25+temporal search, RRF fusion, recency × importance reranking — all in-process, no provider calls, target <50 ms. The write path (`memory_write`) inserts an episode and runs synchronous write-time enrichment (provenance, tags, topic, near-dup); it never blocks on any external call. Batch enrichment (clustering, auto-links, importance) runs in-process inside this server on a periodic loop (and synchronously on demand via `memory_curate recluster`) via `@adhd/sox-memory-core` — zero LLM calls, no provider required, no separate daemon process (BL-162).
 
 ## When to use
 
@@ -20,7 +20,7 @@ Do NOT use `memory-server` for transient scratchpad data that does not need to s
 
 | Tool name                     | Description                                                                 |
 | ----------------------------- | --------------------------------------------------------------------------- |
-| `memory_write`                | Write a memory episode; runs sync enrichment; enqueues batch pass           |
+| `memory_write`                | Write a memory episode; runs sync write-time enrichment (batch pass runs in-process on a periodic loop) |
 | `memory_recall`               | Hybrid vec+BM25+temporal recall, <50 ms, zero LLM; returns ranked results  |
 | `memory_topics`               | List topics in the store with episode counts                                |
 | `memory_list_projects`        | List distinct project_path values with episode counts                       |
@@ -102,7 +102,9 @@ Starts the shim listening on both stdio and TCP port 3099 simultaneously, proxyi
 
 ## Lifecycle
 
-Runs as a host-supervised background singleton (`lifecycle.background: true`, `lifecycle.singleton: true`). Health-checked via Unix socket at `~/.memory/memoryd.sock`. The daemon is compiled and shipped inside the `memory-server` extension (`memoryd.js` in the package `dist/`).
+Per-session (stdio, default): the host spawns `memory-server` at session start via `soxe serve`; the process dies with the session — no background daemon.
+
+Persistent (sse/http, via `soxe service enable memory-server`): runs as a host-supervised background singleton (`lifecycle.background: true`, `lifecycle.singleton: true`), health-checked over its HTTP/SSE listener by the host's OS-unit layer (launchd on macOS). This is the generic service-lifecycle mechanism shared with every other `type: service` extension — memory-server has no daemon-specific IPC (BL-162 removed the separate `memory-daemon` Unix-socket writer; batch enrichment now runs in-process inside this same server, see "Overview" above).
 
 ## Configuration
 

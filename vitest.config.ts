@@ -15,5 +15,13 @@ export default defineConfig({
   test: {
     include: ['extensions/**/*.test.ts', 'scripts/**/*.test.ts'],
     globals: false,
+    // First embed() call loads the fastembed ONNX model (bge-base-en-v1.5) into a
+    // worker thread; warmup can take several seconds. This root aggregate config
+    // double-covers extensions/**/*.test.ts files (e.g. memory-server's
+    // recall-sqlite.test.ts) that already set testTimeout/hookTimeout: 30_000 in
+    // their own project-local vitest.config.ts for exactly this reason — match it
+    // here so the same files don't trip the default 5s timeout under this runner.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
   },
 });
