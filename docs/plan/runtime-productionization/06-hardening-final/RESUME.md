@@ -46,6 +46,31 @@ tsc-only error because its gate was lint+test only). Clean up worktrees after me
 remove` + `git branch -D`) — leftover worktree installs unlinked `node_modules/nx` this session,
 requiring a clean-room `rm -rf node_modules && pnpm install` (sanctioned fix; no lockfile drift).
 
+## Dispatch tiers — which model runs what
+
+Two roles (the pattern that worked this cycle: S1–S4/S7/BL-160 were cheaper worktree agents; a
+capable model orchestrated + verified). The **gates** (`nx build+lint+test` + `smoke 16/0` + negative
+controls) are the safety net that catches a cheaper model's mistakes at merge time.
+
+- **INTEGRATOR (capable model — e.g. Opus):** orchestrates, merges, runs the whole-repo gate + smoke,
+  makes owner-facing decisions, and does anything that touches the LIVE system or spec-governed
+  lifecycle code. Never delegate live/destructive steps.
+- **WORKTREE AGENT (cheaper model — e.g. Sonnet):** executes a single fenced shard in an isolated
+  worktree, runs its per-project gate (build+lint+test), commits to its branch, reports. Does NOT
+  merge, does NOT touch the live system, does NOT run smoke/registry (integrator does those).
+
+| Item | Tier | Notes |
+|---|---|---|
+| **S8** BL-157 | **INTEGRATOR (capable) + human oversight** | Hard `service-proxy` debugging + DESTRUCTIVE live backend reconciliation (kills backends on the live box) on spec-governed lifecycle code. Do NOT give a cheaper model live process-kill authority. |
+| **S9** remove memory-daemon | Cheaper worktree agent → integrator merges | Mechanical but wide (host-runtime/memory-core/memory-server/registry/e2e). Enforce full gate + smoke on merge. |
+| **S10** baseline scripts | Cheaper worktree agent | Well-scoped nx-graph fix; clear gate. Lowest risk. |
+| **S11** ingest consolidation | Cheaper worktree agent (parity check enforced) | Must prove chunk-boundary + hash parity so recall/dedup don't shift; integrator verifies parity + smoke. |
+| **HF-5** forensics | INTEGRATOR (read-only, live box) | Interpretation matters (session-serve vs os-unit; single-writer proof). |
+| **HF-6** closeout | INTEGRATOR | ADR flip + BACKLOG sweep (judgment on statuses/collisions) + REPORT. Mechanical parts delegatable. |
+
+**Hard rule for cheaper models:** STOP and hand back to the integrator before ANY live process touch
+(enabling/disabling services, killing/restarting backends, `soxe service …`) — those are integrator-only.
+
 ## Known hygiene gaps for HF-6 closeout (non-blocking, no lost work)
 - **BL-number collisions in root BACKLOG:** BL-58, BL-119, BL-120, BL-126, BL-127 each label TWO
   different items (reused across plans/sessions) — **all instances are FIXED/RESOLVED**, so no open

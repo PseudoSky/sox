@@ -28,4 +28,6 @@ You are resuming the **sox-ecosystem runtime-productionization plan** (context 0
 
 **Also open (owner decisions):** BL-166 (orphaned blob-store / claim-verification / cross-encoder — wire-in-or-remove), BL-168 (systemic module-resolution/tooling-debt audit), BL-163 (SMAppService feature, blocked on signing).
 
+**Dispatch tiers (see RESUME.md → "Dispatch tiers"):** run as INTEGRATOR (capable model) — you orchestrate, merge, run smoke, and do all live/spec-governed work. Delegate the fenced implementation shards to cheaper worktree agents (Sonnet): **S10** (safe), **S9** and **S11** (with full gate + parity verified on merge). **Keep S8 (live backend reconciliation), HF-5 (forensics), and HF-6 (closeout judgment) on the capable model.** Cheaper models must STOP before ANY live process touch (`soxe service …`, killing/restarting backends).
+
 **Rules:** nx targets only; run `node scripts/smoke-test.mjs` (0 fail) before any merge touching memory-server/host-runtime/install-engine/`libs/data/*`; include `nx build` in any dispatched agent's gate; explicit-path `git add` only; **fix or remove — don't defer or label cleanup "deprecated"** (sole consumer). Start at **S8** (or reorder S8–S11 as you prefer) after confirming the plan.
