@@ -242,6 +242,10 @@ export type {
 export { memoryGetStats } from './stats.js';
 export type { StatsResult } from './stats.js';
 
+// ── Re-embed store (BL-160: promoted from scripts/reembed-memory.mjs) ─────────
+export { reembedStore, defaultMemoryDbPath } from './reembed.js';
+export type { ReembedStoreOptions, ReembedStoreResult } from './reembed.js';
+
 // ── Convenience wrappers (guard C5: write(dbPath, params) + recall(dbPath, params)) ──
 
 import { openDb } from './db.js';
