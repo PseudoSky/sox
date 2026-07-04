@@ -86,6 +86,23 @@ direct live-store write (auto-mode classifier gated it) → needs owner OK or a 
 path. Cosmetic; does not affect recall. (Minor: `reembed-memory.mjs --dry-run` created an
 empty `vec_bge_base_en_v1_5` space — harmless leftover; the dry-run should not write.)
 
+### BL-160 — promote `reembed-memory.mjs` orchestration into a library + `memory-cli` verb (root cause of BL-159) — **Open (MEDIUM) (2026-07-04)**
+
+`scripts/reembed-memory.mjs` is a loose `.mjs` OUTSIDE the nx graph (no typecheck/lint/test),
+which is why it silently rotted when the embed migration removed the hash backend and changed
+model ids (BL-159 — invalid `fast-bge-base-en-v1.5` + dead `hash-768`). The re-embed *logic*
+already lives in libraries (`vector-store.reembed()`, `memory-core.reembedNodes()`); only the
+orchestration wrapper (args, backup, idempotency, provider wiring) is loose. Promote it:
+1. Add a composed `reembedStore(dbPath, opts)` to `memory-core` (owns `openDb`, composes
+   `vector-store`), typed + unit-tested.
+2. Expose as a `memory-cli reembed` verb (the member already has a `switch(command)` dispatcher).
+3. Delete the loose script (or leave a one-line shim).
+This joins it to the build/lint/typecheck graph so a future embed-model change breaks CI, not
+the next live migration. Same category as context-06 HF-4 store-lifecycle ops — fold into the
+S4/HF-4 shard so maintenance ops (compaction/quota/backup/reembed) land together. (Applies also
+to the other loose `.mjs` maintenance scripts, e.g. `capture-*-baseline.mjs`, on the same
+rationale, though those are lower-risk one-offs.)
+
 ### BL-159 — `reembed-memory.mjs` was broken by the embed migration (wrong model id + dead hash fallback) — **RESOLVED (2026-07-04)**
 
 The reembed tool passed `model: 'fast-bge-base-en-v1.5'` (the fastembed cache-DIR name, not a
