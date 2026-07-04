@@ -20,7 +20,7 @@ export interface EmbeddingProviderMetadata {
 export interface EmbeddingHealth {
   configured: string;      // e.g. 'fastembed:bge-base-en-v1.5'
   active: string | null;   // null until warm — NEVER a placeholder model name
-  state: 'uninitialized' | 'warming' | 'real' | 'hash-fallback' | 'error';
+  state: 'uninitialized' | 'warming' | 'real' | 'error';
   dimensions: number | null;
   last_error: string | null;
 }
@@ -135,13 +135,11 @@ export async function createEmbeddingProvider(
   switch (config.type) {
     case 'fastembed':
       return createFastembedProvider(config);
-    case 'hash':
-      return createDeterministicProvider(config);
     case 'remote':
       return createRemoteProvider(config);
     default:
       throw new ResolutionError(
-        `Unknown embedding provider type: "${config.type}" (expected 'fastembed', 'hash', or 'remote')`,
+        `Unknown embedding provider type: "${config.type}" (expected 'fastembed' or 'remote')`,
       );
   }
 }
@@ -181,15 +179,6 @@ async function createFastembedProvider(
       `Fastembed provider "${modelId}" failed to initialise: ${message}`,
     );
   }
-}
-
-async function createDeterministicProvider(
-  config: EmbeddingProviderConfig,
-): Promise<EmbeddingProvider> {
-  const { DeterministicProvider } = await import('./deterministic.js');
-  const modelId = config.model || 'hash-768';
-  const dimensions = (config.options?.['dimensions'] as number) ?? 768;
-  return new DeterministicProvider(modelId, dimensions, Infinity);
 }
 
 async function createRemoteProvider(

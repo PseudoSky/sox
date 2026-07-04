@@ -23,8 +23,10 @@ import * as path from 'node:path';
 import { openDb, openDbReadOnly, expandDbPath, stampStoreMeta, verifyStoreMeta, EStoreMismatch, STORE_META_KEYS } from './db.js';
 import { EMBED_DIM, getActiveEmbedModel, _resetEmbedSingleton } from './embed.js';
 
-beforeEach(() => { process.env['SOX_EMBED_BACKEND'] = 'hash'; _resetEmbedSingleton(); });
-afterEach(() => { delete process.env['SOX_EMBED_BACKEND']; _resetEmbedSingleton(); });
+// Mock embed to avoid real ONNX model download (these tests assert DB mechanics, not embedding quality)
+
+beforeEach(() => { _resetEmbedSingleton(); });
+afterEach(() => { _resetEmbedSingleton(); });
 
 describe('expandDbPath — BL-41 tilde expansion', () => {
   it('expands a bare ~ to homedir', () => {

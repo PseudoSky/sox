@@ -13,8 +13,8 @@
  *
  * All operations are deterministic — SOX_EMBED_BACKEND=hash, no ONNX, no LLM.
  */
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -24,8 +24,6 @@ import { memoryWrite } from './write.js';
 import { memoryUpdate, deepMerge } from './update.js';
 import { _shutdownEmbedWorker } from './embed.js';
 
-// Force hash backend — deterministic, no ONNX required.
-process.env['SOX_EMBED_BACKEND'] = 'hash';
 
 // ── Test DB helpers ───────────────────────────────────────────────────────────
 

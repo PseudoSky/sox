@@ -18,5 +18,10 @@ export default defineConfig({
     ],
     environment: 'node',
     root: repoRoot,
+    // First embed() call loads the fastembed ONNX model (bge-base-en-v1.5) into
+    // the worker; warmup can take several seconds. Match memory-core's 30s budget
+    // so model-load-on-first-embed does not trip the default 5s test timeout.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
   },
 });

@@ -30,8 +30,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 // deterministic hash backend so a `memory_write`'s cold real-ONNX model load never tips the
 // default 5s test timeout (the embed worker would also fight the restricted fs policy). Also
 // avoids spawning the ONNX worker thread under a permission-scrubbed env.
-beforeAll(() => { process.env['SOX_EMBED_BACKEND'] = 'hash'; });
-afterAll(() => { delete process.env['SOX_EMBED_BACKEND']; });
 
 // ── Import the testable internals ─────────────────────────────────────────────
 // We test via the exported handleToolCall and compilePolicyFromEnv. The guard
@@ -342,7 +340,7 @@ describe('memory_write auto_chunk — BL-13', () => {
     } finally {
       db.close();
     }
-  });
+  }, 30_000);
 
   it('custom chunk_size controls the split threshold', async () => {
     // chunk_size=1000 means ~4000 chars before splitting — this short content won't split

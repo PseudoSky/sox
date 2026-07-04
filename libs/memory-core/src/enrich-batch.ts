@@ -252,12 +252,8 @@ export function runBatchEnrich(
   return result;
 }
 
-/** Resolve cluster threshold from option or environment/default. */
+/** Resolve cluster threshold from option or default. */
 function resolveClusterThreshold(override: number | undefined): number {
   if (override !== undefined) return override;
-  const backend = process.env['SOX_EMBED_BACKEND'];
-  if (backend === 'hash') return 0.70;
-  if (backend === 'real') return 0.82;
-  // auto / undefined: use hash threshold (conservative)
-  return 0.70;
+  return 0.82;
 }

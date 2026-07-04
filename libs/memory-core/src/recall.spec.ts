@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -8,8 +8,6 @@ import { memoryWrite } from './write.js';
 import { memoryRecall, ExpansionOverflowError } from './recall.js';
 import { _shutdownEmbedWorker } from './embed.js';
 
-// Force hash backend — deterministic, no ONNX required.
-process.env['SOX_EMBED_BACKEND'] = 'hash';
 
 afterAll(async () => {
   await _shutdownEmbedWorker();

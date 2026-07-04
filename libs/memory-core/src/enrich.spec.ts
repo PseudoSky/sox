@@ -13,13 +13,13 @@
  *   - runBatchEnrich: determinism, structure
  *   - ENRICH_VERSION: is a semver string
  */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as sqliteVec from 'sqlite-vec';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   buildAutoLinks,
@@ -33,6 +33,7 @@ import {
   resolveProjectPath,
   runBatchEnrich,
 } from './index.js';
+
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -360,7 +361,7 @@ describe('enrichOnWrite', () => {
     const t = makeTmpDb();
     db = t.db;
     cleanup = t.cleanup;
-    process.env['SOX_EMBED_BACKEND'] = 'hash';
+    process.env['SOX_EMBED_BACKEND'] = 'auto';
   });
 
   afterEach(() => {
@@ -373,7 +374,7 @@ describe('enrichOnWrite', () => {
     const t1 = makeTmpDb();
     const t2 = makeTmpDb();
     try {
-      process.env['SOX_EMBED_BACKEND'] = 'hash';
+      process.env['SOX_EMBED_BACKEND'] = 'auto';
       const content = '[testing] Enrichment should be deterministic for the same inputs.';
       const emb = seedEmbedding(7);
 
@@ -844,7 +845,7 @@ describe('runBatchEnrich', () => {
     const t1 = makeTmpDb();
     const t2 = makeTmpDb();
     try {
-      process.env['SOX_EMBED_BACKEND'] = 'hash';
+      process.env['SOX_EMBED_BACKEND'] = 'auto';
       const now = new Date().toISOString();
       for (const t of [t1, t2]) {
         t.db.prepare(
@@ -870,7 +871,7 @@ describe('runBatchEnrich', () => {
   it('incrementalCluster:true skips the full cluster pass (no communities written)', () => {
     const { db, cleanup } = makeTmpDb();
     try {
-      process.env['SOX_EMBED_BACKEND'] = 'hash';
+      process.env['SOX_EMBED_BACKEND'] = 'auto';
       const now = new Date().toISOString();
       // Insert two similar episodes with vectors so clustering would fire
       const ep1 = seedEmbedding(1);
@@ -901,7 +902,7 @@ describe('runBatchEnrich', () => {
     const t1 = makeTmpDb();
     const t2 = makeTmpDb();
     try {
-      process.env['SOX_EMBED_BACKEND'] = 'hash';
+      process.env['SOX_EMBED_BACKEND'] = 'auto';
       const now = new Date().toISOString();
       // Insert 3 episodes in each DB
       for (let i = 1; i <= 3; i++) {

@@ -41,25 +41,60 @@ edge must regenerate `pnpm-lock.yaml` *in that worktree* before merge, or the ve
 `pnpm install` on `main` must be a non-frozen install before anything else runs — otherwise
 `--frozen-lockfile` (used in CI) will hard-fail.
 
-### BL-151 — `permission-guard.spec.ts` "long content auto-chunks into parent + chunks with DERIVED_FROM edges" times out (5000ms) — **Open (MEDIUM) (2026-07-04)**
+### BL-151 — `permission-guard.spec.ts` "long content auto-chunks into parent + chunks with DERIVED_FROM edges" times out — **RESOLVED (2026-07-04)**
 
-Discovered running `npx nx test memory-server` during the BL-150 investigation. Test at
-`extensions/bundles/sox-memory-bundle/members/memory-server/src/permission-guard.spec.ts:306`
-exceeds the default 5s vitest timeout. Unrelated to workspace linking — needs its own triage
-(chunking auto-split perf, or a timeout bump if the operation is legitimately slow).
+Two root causes, both fixed during the runtime-productionization context-06 kickoff:
+1. **Syntax corruption (prior-session edit):** a stray `}, 15_000);` had been inserted right
+   after the test's opening comment, closing the `it()` callback early and orphaning the entire
+   test body as top-level code — a `PARSE_ERROR` ("`await` is only allowed within async
+   functions"). Moved the timeout to the real end of the test.
+2. **Missing test timeout:** `memory-server/vitest.config.ts` had no `testTimeout`, so the
+   default 5s tripped during the first-`embed()` fastembed ONNX model load. Set `testTimeout`
+   and `hookTimeout` to `30_000` (matching `memory-core`); bumped the auto-chunk test's explicit
+   override to `30_000`.
 
-### BL-152 — `recall-sqlite.test.ts` BL-48 real-embedding proof: `provider_call_count` expected `0`, got `1` — **Open (MEDIUM) (2026-07-04)**
+This test surfaced **BL-154** (the chunk-write deadlock) once its body actually executed.
 
-`extensions/bundles/sox-memory-bundle/members/memory-server/recall-sqlite.test.ts:218`. The
-R1 cache-hit invariant (no re-embed call on repeat query) is violated — one extra provider call
-is happening. Discovered alongside BL-150; not investigated further (out of scope for the pnpm
-linking task).
+### BL-152 — `recall-sqlite.test.ts` BL-48 real-embedding proof / hash-backend tests — **RESOLVED (2026-07-04)**
 
-### BL-153 — `memory-tools.spec.ts` recluster (BL-27 LOW-3) subset persistence: `persisted` expected `true`, got `false` — **Open (MEDIUM) (2026-07-04)**
+The `provider_call_count` counter and the entire `SOX_EMBED_BACKEND=hash` backend were removed
+this cycle (hash embedding backend deleted from `embedding-provider` and `memory-core/src/embed.ts`).
+The two obsolete "BL-48: embed backend resolution and fallback detection" tests (asserting the
+hash model id `nomic-embed-text-v1.5-hash` and the on-hash-fallback indicator) were deleted — the
+hash backend they exercised no longer exists. Real-embedding semantics are covered by the retained
+`SOX_EMBED_BACKEND=real` gate.
 
-`extensions/bundles/sox-memory-bundle/members/memory-server/src/memory-tools.spec.ts:681`.
-`dry_run:false` on a filtered-subset recluster is not persisting. Discovered alongside BL-150;
-not investigated further (out of scope for the pnpm linking task).
+### BL-153 — `memory-tools.spec.ts` recluster (BL-27 LOW-3) subset persistence: `persisted` expected `true`, got `false` — **RESOLVED (2026-07-04)**
+
+Root cause: `clusterSubset()` (`libs/memory-core/src/cluster.ts`) only persisted when
+`result.clusters.length > 0`. A filter selecting only dissimilar (non-clustering) episodes
+yields zero communities (singletons are suppressed, D1.6), so `persisted` stayed `false` and the
+lens was invisible to `list_lenses` / un-droppable. Fix: a persisted subset recluster now always
+records a **lens marker** — a member-count-0 sentinel community node tagged
+`meta.cluster_scope.marker = true` (new `materializeLensMarker()`), written when zero real
+communities form. `listSubsetLenses()` registers the lens but excludes markers from
+`community_count`; `dropSubsetLens()` removes markers with the rest of the slice. The persist
+block also always invalidates the prior slice first, so re-runs stay idempotent.
+
+### BL-154 — CRITICAL: `memory_write` deadlocks the WriteQueue on any content larger than `chunk_size*4` chars — **RESOLVED (2026-07-04)**
+
+**Severity: critical (latent production hang).** In `memory-server/src/index.ts`, the
+`memory_write` handler runs its whole body inside `wq.enqueue('memory_write', …)`, and for
+auto-chunked content (chunks.length > 1) it called `wq.enqueue('memory_write_chunk', …)` on the
+**same** serial `WriteQueue` from within the already-running task, then `await`ed it. The
+`WriteQueue` processes items one at a time (`_processNext` awaits the current op before shifting
+the next); the nested chunk items can only run *after* the outer op returns, but the outer op is
+awaiting them → permanent deadlock. Any `memory_write` with content over `chunk_size*4` chars
+(**2000 chars at the default `chunk_size=500`**) would hang the queue forever, blocking all
+subsequent writes on that store.
+
+Masked until now because the auto-chunk test's body was dead code (see BL-151). Fix: write chunks
+directly via `memoryWrite(writeDb, …)` inside the outer task — `writeDb` is already held
+exclusively, so ordering and single-writer safety are preserved without re-enqueuing. Verified:
+`permission-guard.spec.ts` auto-chunk test now completes (was hanging the full 30s).
+
+**Follow-up (deferred):** add a regression guard that asserts `memory_write` of >2000-char content
+completes within a bounded time under a live serve session, not just the in-process handler test.
 
 ---
 

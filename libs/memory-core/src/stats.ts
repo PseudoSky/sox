@@ -123,7 +123,7 @@ export async function memoryGetStats(
   const resolvedEmbedModel = getActiveEmbedModel();
   const configuredBackend = process.env['SOX_EMBED_BACKEND'] ?? 'auto';
   const resolvedEmbedState = getEmbedState();
-  const onHashFallback = configuredBackend !== 'hash' && resolvedEmbedState === 'hash';
+  const onHashFallback = false;
 
   // Degraded record count
   let degradedRecordCount = 0;

@@ -60,7 +60,6 @@ export { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
 
 // ── Embedding ─────────────────────────────────────────────────────────────────
 export {
-  EMBED_MODEL,
   EMBED_DIM,
   embed,
   embedText,

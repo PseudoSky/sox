@@ -59,7 +59,7 @@
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "checksum": "sha256:234a0fc3ef2ba4a654e8ed45ac826c2ef2a8956fc9d618708f4b718a05312de2",
+    "checksum": "sha256:d004de86ee978677554c0706061c0c87f752783c876132b40de72076e40b249c",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -73,7 +73,7 @@
     "title": "Memory Daemon",
     "description": "Use this when you need the soxe graph-memory enrichment pipeline running: a singleton Unix-socket service that drains the batch-enrich queue and runs deterministic clustering, importance scoring, and auto-links via memory-core — zero LLM calls, no provider required.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-daemon",
-    "checksum": "sha256:cf9e188cbf48ebe5b5fa47fce94a01524b1a51135e85dc5fe0fa15d2b3d59ee8",
+    "checksum": "sha256:846aea073ced30ac38a32053fc4bb223525e37c8921361165217693ac2e5d25c",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -87,7 +87,7 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-flush",
-    "checksum": "sha256:51e9c464953fef3d93a0c449a96d2849db0371f450a7fa7ab94a29df8e3811b1",
+    "checksum": "sha256:06121c49f8c78b9426eb98fdb84884223c497bbf88ef4198815fc288907f3330",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -101,7 +101,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:4db6752fb0501a6d181bf81c9d6e5e6ca27de927734ae7c199bdf2efbd8c200e",
+    "checksum": "sha256:f034569422841e7d8dccd89abb4f1a82d1e38f2a1dd7c48ba0eb203eaaf61ca6",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -217,7 +217,7 @@
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/apps/sox",
-    "checksum": "sha256:a8fd24216f2ec8d2edb18508d671517af66f251976ff02858e01277941a1df5d",
+    "checksum": "sha256:9c3d19b969eeda7bb7650fcb58c0bdf9bbb944d088756cbba23f61c3a108e4ad",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     }

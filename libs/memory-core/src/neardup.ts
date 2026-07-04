@@ -85,28 +85,6 @@ export function detectNearDup(
     .get(neighborId);
   if (!neighborUidRow) return null;
 
-  const isHashBackend =
-    (process.env['SOX_EMBED_BACKEND'] === 'hash') ||
-    (process.env['SOX_EMBED_BACKEND'] === undefined && !process.env['SOX_EMBED_REAL']);
-
-  if (isHashBackend) {
-    const newContentNode = graph.getNode(rowid);
-    const newContentLen = (newContentNode?.content ?? '').length;
-    if (newContentLen < 50) return null;
-
-    // Shared-entity check (complex join — keep raw SQL)
-    const sharedEntity = db
-      .prepare<[number, number], { cnt: number }>(
-        `SELECT COUNT(*) AS cnt
-         FROM edge e1
-         JOIN edge e2 ON e1.dst = e2.dst AND e2.src = ?
-         WHERE e1.src = ? AND e1.rel = 'MENTIONS' AND e2.rel = 'MENTIONS'
-           AND e1.t_expired IS NULL AND e2.t_expired IS NULL`,
-      )
-      .get(rowid, neighborId);
-    if (!sharedEntity || sharedEntity.cnt === 0) return null;
-  }
-
   return {
     existing_uid: neighborUidRow.uid,
     cosine_sim: bestPair.cosine,

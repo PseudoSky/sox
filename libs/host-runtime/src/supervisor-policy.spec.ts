@@ -514,16 +514,6 @@ describe('[BL-52] SOX_EMBED_* forwarded through enforced env scrub', () => {
     expect(env[CACHE_SENTINEL]).toBeUndefined();
   });
 
-  it('SOX_EMBED_BACKEND=hash is forwarded (explicit hash is a valid, non-degraded choice)', async () => {
-    process.env[EMBED_SENTINEL] = 'hash';
-
-    const sup = makeEnforcedSupervisor();
-    await sup.start();
-
-    const env = spawnCalls[0]!.opts.env as Record<string, string>;
-    expect(env['SOX_EMBED_BACKEND']).toBe('hash');
-  });
-
   it('unrelated secrets are still scrubbed even when SOX_EMBED_* is set', async () => {
     const secret = 'MY_SECRET_TOKEN_' + Date.now().toString(36);
     process.env[secret] = 'should-not-appear';

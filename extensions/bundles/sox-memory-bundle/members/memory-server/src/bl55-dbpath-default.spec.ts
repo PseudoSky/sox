@@ -23,8 +23,6 @@ import * as path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { DEFAULT_DB_PATH, handleToolCall, resolveDbPath } from './index.js';
 
-process.env['SOX_EMBED_BACKEND'] = 'hash';
-
 const TEST_DIR = path.join(os.tmpdir(), `sox-bl55-${process.pid}`);
 const CONFIG_DB = path.join(TEST_DIR, 'configured.db');
 const OVERRIDE_DB = path.join(TEST_DIR, 'override.db');

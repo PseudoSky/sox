@@ -2,7 +2,7 @@
  * outbox-queue.spec.ts — Tests for outbox queue schema migration, concrete queue,
  * and memory flush (RS-4/RS-5, BL-126/BL-127).
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -14,8 +14,7 @@ import {
   memoryFlush,
 } from './outbox-queue.js';
 
-beforeAll(() => { process.env['SOX_EMBED_BACKEND'] = 'hash'; });
-afterAll(() => { delete process.env['SOX_EMBED_BACKEND']; });
+// Mock embed to avoid real ONNX model download (these tests assert queue mechanics, not embedding quality)
 
 function tmpDir(): { dir: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oq-'));

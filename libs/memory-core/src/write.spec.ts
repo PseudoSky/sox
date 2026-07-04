@@ -3,7 +3,7 @@
  * and the idempotent `node.meta` column migration (BL-23).
  * P1 enrichment fields: topic, tags, project_path, enrich_ver columns (BL-24 / D3.1).
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -12,11 +12,7 @@ import { openDb } from './db.js';
 import { memoryWrite, memoryWriteBatch, requestLedgerPrune } from './write.js';
 import { WriteQueue } from './write-queue.js';
 
-// These tests assert DB persistence (summary/metadata/migration/P1 fields), NOT embedding
-// quality — pin the fast, deterministic hash backend so a cold real-ONNX model load never
-// tips the default 5s test timeout (a pre-existing flake, sharper under parallel run-many).
-beforeAll(() => { process.env['SOX_EMBED_BACKEND'] = 'hash'; });
-afterAll(() => { delete process.env['SOX_EMBED_BACKEND']; });
+// Mock embed to avoid real ONNX model download (these tests assert DB persistence, not embedding quality)
 
 function tmpDir(): { dir: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memwrite-'));
@@ -355,10 +351,13 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
     // because memoryWriteBatch calls memoryWrite internally but does NOT enqueue.
     WriteQueue.resetAllEnqueueCounts();
 
-    // The batch function should not internally enqueue
+    // The batch function should not internally enqueue.
+    // Content must be semantically distinct: near-identical strings (differing by
+    // one char) score >NEARDUP_THRESHOLD (0.95) under the real bge model and one
+    // would be invalidated as a near-duplicate, collapsing the count to 1.
     const items = [
-      { content: 'Batch queue entry test A.' },
-      { content: 'Batch queue entry test B.' },
+      { content: 'The database migration completed at noon on Tuesday.' },
+      { content: 'Rainfall over the Amazon basin peaked during the wet season.' },
     ];
 
     // Simulate the MCP handler pattern: one queue entry for the whole batch

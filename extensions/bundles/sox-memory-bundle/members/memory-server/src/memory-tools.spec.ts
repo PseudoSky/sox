@@ -25,9 +25,6 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { handleToolCall } from './index.js';
 
-// Force hash backend for deterministic, dependency-free tests
-process.env['SOX_EMBED_BACKEND'] = 'hash';
-
 // ── Test DB setup ──────────────────────────────────────────────────────────────
 
 const TEST_DIR = path.join(os.tmpdir(), `sox-p4-spec-${process.pid}`);

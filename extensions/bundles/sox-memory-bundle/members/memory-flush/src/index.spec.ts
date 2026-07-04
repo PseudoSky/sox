@@ -28,16 +28,13 @@ import {
 // Import @adhd/sox-memory-core to set up test DBs
 import { memoryWrite, openDb } from '@adhd/sox-memory-core';
 
-// Force hash backend for deterministic, fast tests (no ONNX download)
 beforeEach(() => {
-  process.env['SOX_EMBED_BACKEND'] = 'hash';
   // Reset module-level state between tests
   setExportConfig(null);
   _resetExportThrottle();
 });
 
 afterEach(() => {
-  delete process.env['SOX_EMBED_BACKEND'];
   setExportConfig(null);
   _resetExportThrottle();
 });

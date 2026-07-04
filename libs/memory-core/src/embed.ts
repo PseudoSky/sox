@@ -5,10 +5,9 @@
  * The old `embed.ts` + `embedWorker.ts` have been replaced by the canonical
  * worker-thread ONNX host in embedding-provider (CONTRACTS §E).
  *
- * Backend resolution via SOX_EMBED_BACKEND (CONTRACTS §E compat mapping):
- *   'auto' → {type:'fastembed', model:'bge-base-en-v1.5'} with hash fallback on failure
+ * Backend resolution via SOX_EMBED_BACKEND:
+ *   'auto' → {type:'fastembed', model:'bge-base-en-v1.5'}
  *   'real' → {type:'fastembed', model:'bge-base-en-v1.5'} fail-loud
- *   'hash' → {type:'hash'}
  *
  * Invariants (inherited from the old embed.ts):
  *   R1: zero per-query network calls (local ONNX inference).
@@ -24,12 +23,10 @@ import { join } from 'node:path';
 
 export const EMBED_DIM = 768;
 
-// EMBED_MODEL is updated at runtime to reflect the active backend.
-let _activeModel = 'nomic-embed-text-v1.5-hash';
+let _activeModel = 'bge-base-en-v1.5';
 export function getActiveEmbedModel(): string {
   return _activeModel;
 }
-export const EMBED_MODEL = 'nomic-embed-text-v1.5-hash';
 
 // ── Provider-call counter (R1 guard) ─────────────────────────────────────────
 
@@ -43,7 +40,7 @@ export function resetProviderCallCount(): void {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-export type EmbedBackend = 'auto' | 'real' | 'hash';
+export type EmbedBackend = 'auto' | 'real';
 
 export interface EmbedConfig {
   backend: EmbedBackend;
@@ -67,16 +64,15 @@ function resolveConfig(): EmbedConfig {
 
 let _provider: EmbeddingProvider | null = null;
 let _providerPromise: Promise<EmbeddingProvider> | null = null;
-let _resolvedBackend: 'real' | 'hash' | null = null;
+let _resolvedBackend: 'real' | null = null;
 let _lastEmbedError: string | null = null;
 
 /**
  * BL-54: the truthful embed-subsystem state.
  */
-export type EmbedState = 'real' | 'hash' | 'uninitialized';
+export type EmbedState = 'real' | 'uninitialized';
 export function getEmbedState(): EmbedState {
-  if (_activeModel === 'bge-base-en-v1.5') return 'real';
-  if (_resolvedBackend === 'hash') return 'hash';
+  if (_activeModel === 'bge-base-en-v1.5' && _resolvedBackend === 'real') return 'real';
   return 'uninitialized';
 }
 
@@ -88,7 +84,6 @@ export interface EmbedHealth {
   state: EmbedState;
   model: string;
   backend: EmbedBackend;
-  on_hash_fallback: boolean;
   last_error: string | null;
 }
 
@@ -100,26 +95,17 @@ export function getEmbedHealth(): EmbedHealth {
     state,
     model: _activeModel,
     backend,
-    on_hash_fallback: backend !== 'hash' && state === 'hash',
     last_error: _lastEmbedError,
   };
 }
 
 /**
- * Map SOX_EMBED_BACKEND to provider config per CONTRACTS §E.
+ * Resolve and create the embedding provider — always uses the real fastembed backend.
+ * Throws on failure for both 'auto' and 'real' modes (no degraded fallback).
  */
 async function resolveProvider(): Promise<EmbeddingProvider> {
   const config = resolveConfig();
 
-  if (config.backend === 'hash') {
-    const p = await createEmbeddingProvider({ type: 'hash', model: 'hash-768' });
-    _resolvedBackend = 'hash';
-    _activeModel = 'nomic-embed-text-v1.5-hash';
-    _lastEmbedError = null;
-    return p;
-  }
-
-  // auto or real: try fastembed
   try {
     const p = await createEmbeddingProvider({
       type: 'fastembed',
@@ -133,23 +119,9 @@ async function resolveProvider(): Promise<EmbeddingProvider> {
   } catch (err) {
     const cause = String(err instanceof Error ? err.message : err);
     _lastEmbedError = cause;
-
-    if (config.backend === 'real') {
-      throw new Error(
-        `[sox-memory] embedding.backend='real' but provider init failed: ${cause}`,
-      );
-    }
-
-    // auto: fall back to hash with loud diagnostic
-    console.error(
-      '[sox-memory] Real embedding model unavailable; FALLING BACK TO HASH embedding ' +
-        '(degraded semantic recall). ' +
-        `Cause: ${cause}. Set SOX_EMBED_BACKEND=hash to opt in intentionally.`,
+    throw new Error(
+      `[sox-memory] Embedding provider init failed: ${cause}`,
     );
-    const p = await createEmbeddingProvider({ type: 'hash', model: 'hash-768' });
-    _resolvedBackend = 'hash';
-    _activeModel = 'nomic-embed-text-v1.5-hash';
-    return p;
   }
 }
 
@@ -177,7 +149,6 @@ let _configCache: EmbedConfig | null = null;
 export async function embed(text: string): Promise<Float32Array> {
   _configCache ??= resolveConfig();
   const provider = await getOrCreateProvider();
-  if (_resolvedBackend !== 'hash') providerCallCount++;
   return provider.embedSingle(text);
 }
 
@@ -185,11 +156,7 @@ export async function embed(text: string): Promise<Float32Array> {
  * Proactively warm up the real embedding backend and return its truthful health.
  */
 export async function warmupEmbed(_timeoutMs?: number): Promise<EmbedHealth> {
-  const config = (_configCache ??= resolveConfig());
-  if (config.backend === 'hash') {
-    _resolvedBackend = 'hash';
-    return getEmbedHealth();
-  }
+  _configCache ??= resolveConfig();
   try {
     const p = await getOrCreateProvider();
     const health = p.health();
@@ -201,12 +168,7 @@ export async function warmupEmbed(_timeoutMs?: number): Promise<EmbedHealth> {
   } catch (err) {
     const cause = String(err instanceof Error ? err.message : err);
     _lastEmbedError = cause;
-    if (config.backend === 'real') {
-      throw new Error(`[sox-memory] FATAL: embedding.backend='real' but warmup failed: ${cause}`);
-    }
-    _resolvedBackend = 'hash';
-    _activeModel = 'nomic-embed-text-v1.5-hash';
-    return getEmbedHealth();
+    throw new Error(`[sox-memory] FATAL: Embedding warmup failed: ${cause}`);
   }
 }
 
@@ -214,9 +176,10 @@ export async function warmupEmbed(_timeoutMs?: number): Promise<EmbedHealth> {
  * Legacy synchronous shim — kept for internal callers.
  * @deprecated Use `await embed(text)` instead.
  */
-export function embedText(text: string): Float32Array {
-  // Local hash implementation for sync backward compat
-  return hashEmbedLocal(text);
+export function embedText(_text: string): Float32Array {
+  throw new Error(
+    '[sox-memory] embedText() is no longer available without the hash backend. Use await embed(text) instead.',
+  );
 }
 
 // ── Serialisation helpers ─────────────────────────────────────────────────────
@@ -267,7 +230,7 @@ export function _resetEmbedSingleton(): void {
   _provider = null;
   _providerPromise = null;
   _resolvedBackend = null;
-  _activeModel = 'nomic-embed-text-v1.5-hash';
+  _activeModel = 'bge-base-en-v1.5';
   _configCache = null;
   _lastEmbedError = null;
 }
@@ -281,40 +244,4 @@ export async function _shutdownEmbedWorker(): Promise<void> {
   _resetEmbedSingleton();
 }
 
-// ── Local hash implementation (sync fallback for embedText) ───────────────────
 
-function hashEmbedLocal(text: string): Float32Array {
-  const normalized = text.toLowerCase().replace(/[^\w\s]/g, ' ').trim();
-  const tokens = normalized.split(/\s+/).filter(Boolean);
-  const vec = new Float32Array(EMBED_DIM);
-
-  for (const token of tokens) {
-    const h1 = hash32(token, 0x811c9dc5);
-    const h2 = hash32(token, 0x01000193);
-    for (let d = 0; d < EMBED_DIM; d++) {
-      const seed = ((d * 0x9e3779b9 + h1) >>> 0) as number;
-      const val = ((seed ^ h2) / 0x80000000) - 1.0;
-      vec[d] = (vec[d] as number) + val / Math.max(tokens.length, 1);
-    }
-  }
-
-  let norm = 0;
-  for (let d = 0; d < EMBED_DIM; d++) {
-    norm += (vec[d] as number) * (vec[d] as number);
-  }
-  norm = Math.sqrt(norm) || 1;
-  for (let d = 0; d < EMBED_DIM; d++) {
-    vec[d] = (vec[d] as number) / norm;
-  }
-
-  return vec;
-}
-
-function hash32(str: string, basis: number): number {
-  let h = basis >>> 0;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return h;
-}

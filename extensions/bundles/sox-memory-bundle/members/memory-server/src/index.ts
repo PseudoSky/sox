@@ -73,6 +73,7 @@ import {
   isSuperseded,
   WriteQueue,
 } from '@adhd/sox-memory-core';
+import type { WriteError, WriteResult } from '@adhd/sox-memory-core';
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -989,17 +990,20 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             return { isError: true, content: [{ type: 'text', text: JSON.stringify(parentResult) }] };
           }
 
-          // Chunks: written serially through the same queue to maintain ordering
-          const chunkResults: Array<import('@adhd/sox-memory-core').WriteResult | import('@adhd/sox-memory-core').WriteError> = [];
+          // Chunks: written directly on `writeDb`, which we already hold exclusively
+          // inside this queue task. Re-enqueuing on the SAME serial queue from within
+          // a running task would deadlock — the nested items cannot be processed
+          // until the outer task returns, but the outer task is awaiting them. Direct
+          // writes preserve ordering (this loop is serial) and single-writer safety
+          // (the outer enqueue already guarantees exclusive access to writeDb).
+          const chunkResults: Array<WriteResult | WriteError> = [];
           for (const chunk of chunks) {
-            const r = await wq.enqueue('memory_write_chunk', (qdb) =>
-              memoryWrite(qdb, {
-                content: chunk,
-                agent_id: args['agent_id'] as string | undefined,
-                source: (args['source'] as 'message' | undefined) ?? 'document',
-                metadata: args['metadata'] as Record<string, unknown> | undefined,
-              }),
-            );
+            const r = await memoryWrite(writeDb, {
+              content: chunk,
+              agent_id: args['agent_id'] as string | undefined,
+              source: (args['source'] as 'message' | undefined) ?? 'document',
+              metadata: args['metadata'] as Record<string, unknown> | undefined,
+            });
             chunkResults.push(r);
           }
 

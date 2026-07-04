@@ -66,20 +66,10 @@ export interface EnrichOnWriteResult {
   near_dup: NearDupResult | null;
 }
 
-/**
- * Near-dup threshold constants per backend.
- * D2 E8: 0.95 for real, 0.98 for hash.
- */
-const NEARDUP_THRESHOLD_REAL = 0.95;
-const NEARDUP_THRESHOLD_HASH = 0.98;
+const NEARDUP_THRESHOLD = 0.95;
 
 function getNearDupThreshold(): number {
-  // Detect hash backend via environment (same approach as neardup.ts)
-  const backend = process.env['SOX_EMBED_BACKEND'];
-  if (backend === 'hash') return NEARDUP_THRESHOLD_HASH;
-  if (backend === 'real') return NEARDUP_THRESHOLD_REAL;
-  // 'auto' or undefined: assume hash for conservative false-positive prevention
-  return NEARDUP_THRESHOLD_HASH;
+  return NEARDUP_THRESHOLD;
 }
 
 /**

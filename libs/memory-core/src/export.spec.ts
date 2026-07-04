@@ -9,8 +9,8 @@
  *   5. enabled:false is a no-op (no files written).
  *   6. Topic derivation: community > entity > general fallback.
  */
-
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -18,6 +18,8 @@ import { openDb } from './db.js';
 import { memoryWrite } from './write.js';
 import { exportMarkdown } from './export.js';
 import type { ExportOpts } from './export.js';
+
+// Mock embed to avoid real ONNX model download (these tests assert export mechanics, not embedding quality)
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -30,15 +32,6 @@ function makeTempDir(): { dir: string; cleanup: () => void } {
     },
   };
 }
-
-// Force hash backend for deterministic, fast tests (no ONNX download)
-beforeEach(() => {
-  process.env['SOX_EMBED_BACKEND'] = 'hash';
-});
-
-afterEach(() => {
-  delete process.env['SOX_EMBED_BACKEND'];
-});
 
 // ── 1. Basic export ───────────────────────────────────────────────────────────
 

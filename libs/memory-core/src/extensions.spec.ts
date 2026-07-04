@@ -4,7 +4,7 @@
  * One happy-path test per new function using a seeded in-memory database.
  * Tests that each function returns the expected shape without throwing.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -22,8 +22,7 @@ import { memoryListProjects } from './projects.js';
 import { memoryCurate } from './curate.js';
 import { memoryGetStats } from './stats.js';
 
-beforeAll(() => { process.env['SOX_EMBED_BACKEND'] = 'hash'; });
-afterAll(() => { delete process.env['SOX_EMBED_BACKEND']; });
+// Mock embed to avoid real ONNX model download (these tests assert extension function shapes, not embedding quality)
 
 function tmpDir(): { dir: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ext-spec-'));

@@ -36,7 +36,7 @@ export interface ClusterResult {
 }
 
 export interface ClusterStoreOptions {
-  /** Cosine threshold τ (default 0.82 for real embeddings, 0.70 for hash). */
+  /** Cosine threshold τ (default 0.82). */
   threshold?: number;
   /** Soft cap on nodes per full pass (default 10000; D1.7). */
   nodeCap?: number;
@@ -343,6 +343,42 @@ export function materializeClusters(
   }
 }
 
+/**
+ * Persist a zero-member "lens marker" for a subset recluster that produced no
+ * communities (BL-153). The marker is a `kind='community'` node tagged with
+ * `cluster_scope.marker = true`, carrying the provenance hash and filter but no
+ * MEMBER_OF edges. It makes an otherwise-empty lens visible to `listSubsetLenses`
+ * and removable via `dropSubsetLens`, while `community_count` reporting excludes
+ * it. The uid is derived from the hash so re-runs upsert the same marker node.
+ */
+export function materializeLensMarker(
+  db: Database,
+  provenanceHash: string,
+  filter: unknown = null,
+): void {
+  const now = new Date().toISOString();
+  const uid = communityUid([], `${provenanceHash}:__lens_marker__`);
+  const metaJson = JSON.stringify({
+    member_count: 0,
+    cluster_scope: { kind: 'subset', hash: provenanceHash, filter, marker: true },
+  });
+
+  const existingRow = db
+    .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ?`)
+    .get(uid);
+
+  if (existingRow) {
+    db.prepare(
+      `UPDATE node SET t_invalid = NULL, name = ?, meta = ?, t_created = ? WHERE uid = ?`,
+    ).run('(empty lens)', metaJson, now, uid);
+  } else {
+    db.prepare(
+      `INSERT INTO node (uid, kind, name, level, t_created, t_valid, meta)
+       VALUES (?, 'community', ?, 0, ?, ?, ?)`,
+    ).run(uid, '(empty lens)', now, now, metaJson);
+  }
+}
+
 // ── Main exported functions ───────────────────────────────────────────────────
 
 /**
@@ -569,15 +605,28 @@ export function clusterSubset(
   });
 
   let persisted = false;
-  if (opts.persist && result.clusters.length > 0) {
-    const tx = db.transaction(() =>
+  if (opts.persist) {
+    const filterRepr = opts.filter ?? opts.restrict?.sql ?? null;
+    const tx = db.transaction(() => {
+      // materializeClusters invalidates all prior nodes owned by this hash
+      // (real communities AND any prior marker) before writing the new slice,
+      // so a re-run is idempotent regardless of whether the outcome changed.
       materializeClusters(db, result.clusters, {
         scope: 'subset',
         provenanceHash,
         // Store whichever filter representation is available for traceability.
-        filter: opts.filter ?? opts.restrict?.sql ?? null,
-      }),
-    );
+        filter: filterRepr,
+      });
+      // BL-153: a subset recluster that yields zero communities (e.g. the filter
+      // selects only dissimilar, non-clustering episodes) still records a lens
+      // marker. Without it the lens would be invisible to list_lenses and
+      // un-droppable — indistinguishable from "never ran". The marker carries the
+      // provenance hash and filter but no members, so it does not inflate
+      // community counts.
+      if (result.clusters.length === 0) {
+        materializeLensMarker(db, provenanceHash, filterRepr);
+      }
+    });
     tx();
     persisted = true;
   }
@@ -780,7 +829,10 @@ export function listSubsetLenses(db: Database): SubsetLensDescriptor[] {
 
   for (const row of rows) {
     if (!row.meta) continue;
-    let m: { cluster_scope?: { hash?: string; filter?: unknown }; [k: string]: unknown };
+    let m: {
+      cluster_scope?: { hash?: string; filter?: unknown; marker?: boolean };
+      [k: string]: unknown;
+    };
     try {
       m = JSON.parse(row.meta) as typeof m;
     } catch {
@@ -789,15 +841,19 @@ export function listSubsetLenses(db: Database): SubsetLensDescriptor[] {
     const hash = m.cluster_scope?.hash;
     if (typeof hash !== 'string') continue;
 
+    // A lens marker (BL-153) registers the lens's existence but contributes no
+    // community to the count — it stands in for a zero-community recluster.
+    const isMarker = m.cluster_scope?.marker === true;
+
     const existing = byHash.get(hash);
     if (!existing) {
       byHash.set(hash, {
-        community_count: 1,
+        community_count: isMarker ? 0 : 1,
         last_updated: row.t_created,
         filter: m.cluster_scope?.filter ?? null,
       });
     } else {
-      existing.community_count++;
+      if (!isMarker) existing.community_count++;
       // keep the latest t_created as last_updated
       if (row.t_created > existing.last_updated) {
         existing.last_updated = row.t_created;
@@ -887,8 +943,5 @@ export function dropSubsetLens(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function resolveDefaultThreshold(): number {
-  const backend = process.env['SOX_EMBED_BACKEND'];
-  if (backend === 'hash') return 0.70;
-  if (backend === 'real') return 0.82;
-  return 0.70; // conservative default
+  return 0.82;
 }
