@@ -5,10 +5,15 @@
  * Covers E1–E5, E8 (near-dup local KNN), E10 (extractive summary fallback), E12.
  * No LLM, no network. Synchronous (runs inside/after write transaction).
  *
+ * Uses GraphBackend for node/edge CRUD — raw SQL only for memory-core-specific
+ * columns (enrich_ver) and schema-incompatible edge inserts (no UNIQUE index
+ * for writeEdge ON CONFLICT support).
+ *
  * Determinism: given the same params and DB state, produces identical output.
  */
 
 import type { Database } from 'better-sqlite3';
+import { createGraphBackend } from '@adhd/sox-graph-store';
 import { resolveProjectPath } from './provenance.js';
 import { detectNearDup } from './neardup.js';
 import { extractiveSummary } from './extractive.js';
@@ -91,6 +96,9 @@ export function enrichOnWrite(
   db: Database,
   p: EnrichOnWriteParams,
 ): EnrichOnWriteResult {
+  // Create GraphBackend for node/edge CRUD (pattern: sibling read-path modules)
+  const graph = createGraphBackend(db);
+
   // E1: resolve project_path (caller override → git root → cwd)
   const resolvedProjectPath = resolveProjectPath(p.project_path);
 
@@ -144,25 +152,21 @@ export function enrichOnWrite(
     ...(userOverride ? { note: 'user_override' } : {}),
   };
 
-  // Update node row with all enriched fields
+  // Update standard enrichment fields via GraphBackend.touch()
+  // (topic, summary, tags, importance — supported by NodeMeta)
+  // Conditionally include optional fields to satisfy exactOptionalPropertyTypes
+  graph.touch(p.rowid, {
+    ...(resolvedTopic !== null ? { topic: resolvedTopic } : {}),
+    ...(resolvedSummary !== null ? { summary: resolvedSummary } : {}),
+    tags: resolvedTags,
+    importance: initialImportance,
+  });
+
+  // Update memory-core-specific columns (project_path, enrich_ver) via raw SQL
+  // project_path IS in NodeMeta but graph.touch() does not handle it yet.
   db.prepare(
-    `UPDATE node SET
-       topic = ?,
-       project_path = ?,
-       summary = ?,
-       tags = ?,
-       importance = ?,
-       enrich_ver = ?
-     WHERE rowid = ?`,
-  ).run(
-    resolvedTopic,
-    resolvedProjectPath,
-    resolvedSummary,
-    resolvedTags.length > 0 ? JSON.stringify(resolvedTags) : null,
-    initialImportance,
-    JSON.stringify(enrichVer),
-    p.rowid,
-  );
+    `UPDATE node SET project_path = ?, enrich_ver = ? WHERE rowid = ?`,
+  ).run(resolvedProjectPath, JSON.stringify(enrichVer), p.rowid);
 
   // E8: insert SAME_AS edge if near-dup found and should_invalidate
   if (nearDup !== null) {
@@ -174,7 +178,8 @@ export function enrichOnWrite(
 
     if (neighborRow) {
       const now = new Date().toISOString();
-      // Insert SAME_AS edge (idempotent)
+      // Insert SAME_AS edge via raw SQL (memory-core schema lacks the UNIQUE index
+      // on (src, dst, rel) that GraphBackend.writeEdge's ON CONFLICT requires)
       db.prepare(
         `INSERT INTO edge (src, dst, rel, origin, weight, t_created, meta)
          SELECT ?, ?, 'SAME_AS', 'inferred', ?, ?, NULL

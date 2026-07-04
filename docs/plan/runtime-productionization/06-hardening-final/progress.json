@@ -1,0 +1,68 @@
+{
+  "context": "06-hardening-final",
+  "items": [
+    {
+      "id": "HF-1",
+      "bl": [
+        "BL-134"
+      ],
+      "title": "Chaos suite in CI: kill -9 recovery, disk-full, queue overflow",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "HF-2",
+      "bl": [
+        "BL-134"
+      ],
+      "title": "Soak + SLO threshold gates with degraded-run control",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "HF-3",
+      "bl": [
+        "BL-132"
+      ],
+      "title": "Recall score legibility",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "HF-4",
+      "bl": [
+        "BL-133"
+      ],
+      "title": "Compaction schedule, quotas, memory_backup",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "HF-5",
+      "bl": [],
+      "title": "Final invariant forensics on owner machine (read-only)",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "HF-6",
+      "bl": [],
+      "title": "ADR status flip + BACKLOG sweep + closeout",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    }
+  ],
+  "gate": {
+    "status": "pending",
+    "evidence": null
+  },
+  "blockers": [],
+  "discovered": [],
+  "updated_at": null
+}

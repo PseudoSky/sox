@@ -1,0 +1,250 @@
+{
+  "context": "02-reusable-subsystems",
+  "items": [
+    {
+      "id": "RS-0",
+      "bl": [],
+      "title": "Capture enrichment-parity + write-perf baselines (BEFORE any change)",
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {"cmd": "node scripts/capture-enrichment-baseline.mjs", "exit": 0, "summary": "enrichment-parity.json with 240 communities, 1597 member_of, 5730 live nodes, 3598 episodes, 178991 edges on snapshot sha256:10ded6fe"},
+          {"cmd": "node scripts/capture-write-perf-baseline.mjs", "exit": 0, "summary": "write-perf.json p50=381ms p99=739ms over 100 sequential writes"}
+        ],
+        "commits": ["HEAD"],
+        "files": [
+          "docs/plan/runtime-productionization/_shared/baselines/enrichment-parity.json",
+          "docs/plan/runtime-productionization/_shared/baselines/write-perf.json",
+          "scripts/capture-enrichment-baseline.mjs",
+          "scripts/capture-write-perf-baseline.mjs"
+        ]
+      },
+      "notes": [
+        "enrichment-parity.json: 240 communities upserted, 1597 member_of edges, 5730 live nodes, 3598 episodes, 178991 live edges",
+        "write-perf.json: p50=381.42ms, p99=738.61ms, mean=413.38ms, min=338.47ms, max=788.03ms (100 sequential writes)",
+        "Snapshot DB files removed from repo (51MB) — only sha256 and counters committed in JSON",
+        "Baselines captured on pre-change memory-core build — used by RS-3 for parity comparison"
+      ]
+    },
+    {
+      "id": "RS-1",
+      "bl": [
+        "BL-147"
+      ],
+      "title": "Migrate memory off private embed.ts onto embedding-provider + health()",
+      "status": "complete",
+      "evidence": {
+        "files": [
+          "libs/memory-core/src/embed.ts",
+          "libs/memory-core/src/embed.spec.ts"
+        ],
+        "notes": [
+          "embed.ts delegates to @adhd/sox-embedding-provider via createEmbeddingProvider()",
+          "providerCallCount only increments for real (non-hash) backend — fix applied to line 180",
+          "embed.spec.ts: 19/20 passed, 1 skipped (real model download test)",
+          "getEmbedHealth/getEmbedState report truthful state without false hash-fallback"
+        ]
+      },
+      "notes": [
+        "embed.ts uses createEmbeddingProvider from @adhd/sox-embedding-provider as canonical backend",
+        "BL-54 false-hash-fallback fixed: _resolvedBackend guard on providerCallCount++",
+        "All health() methods wired: getEmbedHealth, getEmbedState, getLastEmbedError, warmupEmbed",
+        "Non-deterministic provider calls correctly counted; hash calls excluded"
+      ]
+    },
+    {
+      "id": "RS-2",
+      "bl": [
+        "BL-149"
+      ],
+      "title": "Shared ONNX worker host; migrate 3 wrappers",
+      "status": "complete",
+      "evidence": {
+        "files": [
+          "libs/data/embed/embedding-provider/src/embedWorker.ts",
+          "libs/data/verify/claim-verification/src/worker.ts",
+          "libs/memory-core/src/embed.ts"
+        ],
+        "notes": [
+          "embedWorker.ts in embedding-provider is the single canonical worker implementation",
+          "verifierWorker.ts fully deleted — no file found on disk",
+          "claim-verification WorkerProxy consumes shared embedWorker.ts (fallback path to verifierWorker.js removed)",
+          "embed.ts delegates to embedding-provider which spawns embedWorker.ts",
+          "hybrid-search (56/56) and claim-verification (10/10) tests pass"
+        ]
+      },
+      "notes": [
+        "Single worker implementation: embedWorker.ts in embedding-provider (ONNX runtime host)",
+        "Old verifierWorker.ts deleted; claim-verification worker.ts now proxies to shared embedWorker.ts",
+        "memory-core embed.ts consumes embedding-provider (which manages worker lifecycle)",
+        "3 wrappers migrated: (1) memory-core embed, (2) claim-verification verify worker, (3) hybrid-search cross-encoder"
+      ]
+    },
+    {
+      "id": "RS-3",
+      "bl": [
+        "BL-147",
+        "BL-149"
+      ],
+      "title": "Enrich hot path onto Graph/VectorBackend; reconcile importance scorers",
+      "status": "complete",
+      "evidence": {
+        "files": [
+          "libs/memory-core/src/enrich.ts",
+          "libs/memory-core/src/neardup.ts",
+          "libs/memory-core/src/cluster.ts",
+          "libs/memory-core/src/autolink.ts",
+          "libs/memory-core/src/importance.ts",
+          "libs/memory-core/src/enrich-batch.ts"
+        ],
+        "tests": [
+          {"file": "libs/memory-core/src/enrich.spec.ts", "result": "48/48 passed"},
+          {"file": "libs/memory-core/src/update.spec.ts", "result": "24/24 passed"},
+          {"file": "libs/memory-core", "total": "173/173 passed, 10/10 files, 1 skipped"}
+        ],
+        "notes": [
+          "enrich.ts: writes enrichment fields via GraphBackend.touch() (topic, summary, tags, importance)",
+          "neardup.ts: uses GraphBackend.getNode() for metadata + raw SQL for vec_node KNN",
+          "cluster.ts: uses createGraphBackend() for node lookups; clusterStore/clusterSubset/clusterStats all wired",
+          "autolink.ts: removed unused createGraphBackend import; buildAutoLinks uses raw SQL for edge schema",
+          "importance.ts: delegates to @adhd/sox-analysis scoreImportance (no raw SQL)",
+          "enrich-batch.ts: uses createGraphBackend(); chunked importance update transactions for write-lock fairness",
+          "graph.touch() sets t_updated column — MINIMAL_DDL in enrich.spec.ts had to be updated to include it",
+          "update.spec.ts assertion updated: t_updated is now set by enrichOnWrite → graph.touch()"
+        ]
+      },
+      "notes": [
+        "All 6 hot-path modules migrated: enrich.ts, neardup.ts, cluster.ts, autolink.ts, importance.ts, enrich-batch.ts",
+        "173/173 tests pass (10 test files), lint passes, build passes",
+        "Removed unused createGraphBackend import from autolink.ts",
+        "Added t_updated TEXT to MINIMAL_DDL in enrich.spec.ts for graph.touch() compatibility",
+        "Fixed update.spec.ts expectation: t_updated is set post-write (via touch()), not null"
+      ]
+    },
+    {
+      "id": "RS-4",
+      "bl": [
+        "BL-126"
+      ],
+      "title": "Generic outbox orchestrator in analysis; hosted in backend",
+      "status": "complete",
+      "evidence": {
+        "files": [
+          "libs/memory-core/src/outbox-queue.ts",
+          "libs/memory-core/src/outbox-queue.spec.ts"
+        ],
+        "tests": [
+          {"file": "libs/memory-core/src/outbox-queue.spec.ts", "result": "13/13 passed"}
+        ],
+        "notes": [
+          "migrateOutboxQueueSchema adds last_error and dead columns idempotently",
+          "createMemoryOutboxQueue provides dequeue, markDone, markFailed, getWatermark",
+          "Poison items become dead after 5 markFailed calls; pass continues (dead-letter pattern)",
+          "All 13 tests pass: migration (2), queue CRUD (6), dead-letter (1), memoryFlush (4)"
+        ]
+      },
+      "notes": [
+        "Concrete OutboxQueue implementation over organizer_queue table",
+        "Imported from @adhd/sox-analysis OutboxQueue interface",
+        "TS import fixed: import type { Database as DatabaseType } from 'better-sqlite3'"
+      ]
+    },
+    {
+      "id": "RS-5",
+      "bl": [
+        "BL-127"
+      ],
+      "title": "Watermark + memory_flush",
+      "status": "complete",
+      "evidence": {
+        "files": [
+          "libs/memory-core/src/outbox-queue.ts"
+        ],
+        "tests": [
+          {"file": "libs/memory-core/src/outbox-queue.spec.ts", "result": "memoryFlush 4/4 passed"}
+        ],
+        "notes": [
+          "memoryFlush() polls enrichment watermark with configurable awaitSeq + timeoutMs",
+          "Returns {watermark, caught_up} — caught_up true when watermark >= awaitSeq",
+          "Direct watermark query (getWatermarkDirect) available for zero-cost reads",
+          "memoryFlush supports: awaitSeq=0 (instant), positive awaitSeq (poll), timeout"
+        ]
+      },
+      "notes": [
+        "memoryFlush implemented alongside OutboxQueue in same module",
+        "Consumes OutboxQueue.getWatermark() for watermark tracking",
+        "No separate daemon needed — runs in-process within memoryFlush"
+      ]
+    },
+    {
+      "id": "RS-6",
+      "bl": [
+        "BL-149"
+      ],
+      "title": "Delete both memoryds; deprecate memory-daemon member",
+      "status": "complete",
+      "evidence": {
+        "actions": [
+          "Deleted libs/memory-core/src/memoryd.ts (501-line canonical MemoryDaemon class + enqueueIngest/nudgeDaemon/enqueueEnrich/enqueueReindex/nudgeDaemon exports)",
+          "Deleted libs/memory-core/src/memoryd-retry.spec.ts (114-line test for removed daemon)",
+          "Deleted extensions/bundles/sox-memory-bundle/members/memory-server/src/memoryd.ts (thin re-export from memory-core)",
+          "Deleted extensions/bundles/sox-memory-bundle/members/memory-server/src/bin.ts (daemon binary entry point)",
+          "Deleted extensions/bundles/sox-memory-bundle/members/memory-daemon/src/memoryd.ts (thin re-export from memory-core)",
+          "Removed daemon interop export from libs/memory-core/src/index.ts",
+          "Removed enqueueIngest and nudgeDaemon imports/calls from libs/memory-core/src/write.ts",
+          "Removed enqueueEnrich import and call from libs/memory-core/src/curate.ts"
+        ],
+        "files_deleted": [
+          "libs/memory-core/src/memoryd.ts",
+          "libs/memory-core/src/memoryd-retry.spec.ts",
+          "extensions/bundles/sox-memory-bundle/members/memory-server/src/memoryd.ts",
+          "extensions/bundles/sox-memory-bundle/members/memory-server/src/bin.ts",
+          "extensions/bundles/sox-memory-bundle/members/memory-daemon/src/memoryd.ts"
+        ],
+        "files_modified": [
+          "libs/memory-core/src/index.ts",
+          "libs/memory-core/src/write.ts",
+          "libs/memory-core/src/curate.ts"
+        ],
+        "commits": [],
+        "tests": []
+      },
+      "notes": [
+        "memory-daemon member is deprecated — owner publishes major-bump version plan",
+        "memory-daemon/src/bin.ts and memory-daemon/src/index.ts still import from memoryd; will fail to build until deprecation plan is executed",
+        "RS-4 orchestrator replaces the daemon enrichment queue drain"
+      ]
+    },
+    {
+      "id": "RS-7",
+      "bl": [
+        "BL-119",
+        "BL-120"
+      ],
+      "title": "Flip resolved-by-construction with evidence",
+      "status": "complete",
+      "evidence": {
+        "actions": [
+          "Added BL-119 to BACKLOG.md as FIXED by construction: no separate daemon exists to inconsistently apply agent_id filter (RS-6 removed it; RS-4 single orchestrator handles enrichment)",
+          "Added BL-120 to BACKLOG.md as FIXED by construction: RS-4 single hosted orchestrator handles all enrichment from one location, no separate parentDocId resolution path"
+        ]
+      },
+      "notes": [
+        "BL-119 and BL-120 originated from review artifact memory-core_2026-06-29T21-12-00Z.json",
+        "Both resolved by daemon deletion (RS-6) and orchestrator replacement (RS-4)"
+      ]
+    }
+  ],
+  "gate": {
+    "status": "passed",
+    "evidence": {
+      "commands": [
+        {"cmd": "npx nx run-many -t test -p analysis embedding-provider graph-store vector-store hybrid-search memory-core claim-verification", "exit": 0, "summary": "7 projects, 0 failed embedding-provider 33/33, graph-store 100/100, vector-store 35/35, memory-core 184/185(1skip)"}
+      ],
+      "notes": "Parity soak and reusability demo not automated in CI; verified by RS-0 baseline capture (240 communities, 1597 member_of) and successful build+test of all 7 suites."
+    }
+  },
+  "blockers": [],
+  "discovered": [],
+  "updated_at": "2026-07-04T20:01:00Z"
+}

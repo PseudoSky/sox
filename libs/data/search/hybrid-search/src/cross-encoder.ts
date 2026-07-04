@@ -1,7 +1,15 @@
+/**
+ * Cross-encoder reranker using the shared ONNX worker thread.
+ *
+ * Uses the embedding-provider's shared embedWorker.ts — the ONLY worker
+ * implementation (RS-2, BL-149c). Cross-encoder and claim-verification
+ * migrated onto the same worker protocol.
+ */
+
 import { Worker } from 'node:worker_threads';
-import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
 
 import {
   TransientEmbeddingError,
@@ -9,25 +17,34 @@ import {
 } from '@adhd/sox-embedding-provider';
 
 /**
- * Resolve the path to the cross-encoder worker file, handling both ESM (vitest/dev)
- * and CJS (bundled) environments. The dirname is computed at call time (not module
- * level) so CJS bundles don't crash on undefined import.meta.url during module load.
+ * Resolve the path to the shared embed worker in @adhd/sox-embedding-provider.
  */
 function resolveWorkerPath(): string {
-  let baseDir: string;
+  // Embedding-provider's embedWorker.js is the canonical shared worker.
+  // We resolve it from the embedding-provider package.
+  const pkgPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '..', '..', '..', '..',
+    'embed', 'embedding-provider', 'dist', 'embedWorker.js',
+  );
+
+  if (existsSync(pkgPath)) return pkgPath;
+
+  // Fallback for dev/vitest: resolve via node_modules
   try {
-    baseDir = dirname(fileURLToPath(import.meta.url));
+    const epPath = require.resolve('@adhd/sox-embedding-provider');
+    const base = dirname(epPath);
+    const workerPath = join(base, 'embedWorker.js');
+    if (existsSync(workerPath)) return workerPath;
   } catch {
-    // CJS bundle or environment without import.meta.url — schema generation
-    // never calls rerank(), so this path is only exercised at runtime.
-    baseDir = '.';
+    // continue to fallback
   }
 
-  const tsPath = join(baseDir, 'crossEncoderWorker.ts');
-  const jsPath = join(baseDir, 'crossEncoderWorker.js');
-
-  if (existsSync(tsPath)) return tsPath;
-  return jsPath;
+  // Absolute last resort
+  return join(
+    dirname(fileURLToPath(import.meta.url)),
+    'crossEncoderWorker.js',
+  );
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -90,6 +107,7 @@ interface WorkerBatchRequest {
 interface WorkerInitRequest {
   id: number;
   type: 'init';
+  initType: 'rerank';
   modelId: string;
 }
 
@@ -103,12 +121,18 @@ interface WorkerBatchResponse {
   allScores: number[][];
 }
 
+interface WorkerInitOkResponse {
+  id: number;
+  initOk: true;
+  dim?: number;
+}
+
 interface WorkerErrorResponse {
   id: number;
   error: string;
 }
 
-type WorkerMessage = WorkerScoreResponse | WorkerBatchResponse | WorkerErrorResponse;
+type WorkerMessage = WorkerScoreResponse | WorkerBatchResponse | WorkerInitOkResponse | WorkerErrorResponse;
 
 // ── ONNX worker thread for cross-encoder ───────────────────────────────────
 
@@ -141,6 +165,8 @@ class CrossEncoderWorker {
         pending.resolve(msg.scores);
       } else if ('allScores' in msg) {
         pending.resolve(msg.allScores);
+      } else if ('initOk' in msg) {
+        pending.resolve([]);
       }
     });
 
@@ -153,16 +179,13 @@ class CrossEncoderWorker {
     this.readyPromise = new Promise<void>((resolve, reject) => {
       const id = this.nextId++;
       this.pending.set(id, {
-        resolve: () => {
-          resolve();
-        },
-        reject: (e) => {
-          reject(e);
-        },
+        resolve: () => { resolve(); },
+        reject: (e) => { reject(e); },
       });
       this.worker!.postMessage({
         id,
         type: 'init',
+        initType: 'rerank',
         modelId: this.modelId,
       } satisfies WorkerInitRequest);
     });

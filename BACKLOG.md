@@ -383,6 +383,32 @@ The binding directory `node-v137-darwin-arm64/` does not exist — the module wa
 
 ---
 
+### BL-119 — agent_id filter inconsistently applied across vec/FTS/temporal signals in daemon → **FIXED by construction (RS-6)**
+
+**Evidence:** The memoryd daemon that could duplicate the outbox queue has been removed (RS-6). With RS-4's orchestrator replacing the daemon, there is no longer a separate process that could apply agent_id filtering inconsistently. The orchestrator handles all enrichment in a single path.
+
+### BL-120 — parentDocId fallback for parent expansion missing in daemon → **FIXED by construction (RS-6)**
+
+**Evidence:** RS-4's single hosted orchestrator handles all enrichment deterministically from a single location, eliminating the daemon's separate parentDocId resolution path. The orchestrator runs entirely within the memory-server process, so parent expansion is consistent.
+
+### BL-126 — organizer_queue missing additive migration columns (last_error, dead) → **FIXED by RS-4**
+
+**Observed:** The `organizer_queue` table created by `openDb()` had no `last_error TEXT` or `dead INTEGER DEFAULT 0` columns. Without these, a poison-item dead-letter pattern cannot be implemented — a repeatedly-failing queue item blocks subsequent items indefinitely, with no way to skip or retire it.
+
+**Fix (RS-4):** `migrateOutboxQueueSchema()` added to `outbox-queue.ts`. Idempotently adds `last_error TEXT` and `dead INTEGER DEFAULT 0` columns via `ALTER TABLE ... ADD COLUMN`. Creates `ix_q_open_v2` covering `(done_at, dead, priority, seq)` for efficient open-item dequeue. Called by the `createMemoryOutboxQueue()` consumer before the queue is used.
+
+**Verification:** `migrateOutboxQueueSchema` tests (2/2 pass) confirm both columns are added and that the migration is a no-op when the table does not exist or when called multiple times.
+
+### BL-127 — no watermark / memory_flush for read-your-derived-writes → **FIXED by RS-5**
+
+**Observed:** After `memory_write`, the caller had no mechanism to wait for enrichment to complete before reading. The daemon processed enrichment asynchronously, so a subsequent `memory_recall` could return stale or incomplete results (no topic, summary, tags, or near-dup info). Callers that needed read-your-derived-writes consistency had to guess sleep durations or poll manually.
+
+**Fix (RS-5):** `memoryFlush()` implemented in `outbox-queue.ts`. Accepts `{awaitSeq, timeoutMs}` — polls the enrichment watermark (`MAX(seq) WHERE done_at IS NOT NULL AND dead = 0`) and returns `{watermark, caught_up}`. Supports: instant return (awaitSeq ≤ 0), catch-up drain (processes pending items), and timeout. Direct `getWatermarkDirect()` available for zero-overhead reads without creating a queue instance.
+
+**Verification:** `memoryFlush` tests (4/4 pass) confirm: instant return on 0/negative awaitSeq, catch-up from seeded backlog <500ms, and timeout when awaitSeq > known seq.
+
+---
+
 ### BL-95 — `memory-cli` `status` and `list` subcommands never find `memory.db` — scope-name mismatch — **Open (MEDIUM) (2026-06-27)**
 
 **Observed:** `memory-cli status` prints "No memory stores found." even with `~/.memory/memory.db` present and `memory_ping` returning `ok:true`. `registry` shows `~/.memory/registry.json` exists but its contents are `{}` (no scopes registered).
@@ -2543,6 +2569,7 @@ table at ingest time. Phase 2: in `memoryRecall()`, when `lateChunking.enabled`,
 the full-document embedding and mean-pool per the stored boundaries before returning
 results.
 
+<<<<<<< HEAD
 ### BL-123 — WAL checkpoint on idle: unbounded WAL growth under steady write load — **FIXED (2026-07-03)**
 
 ### BL-125 — memory_write_batch: missing downstream method for atomic multi-item writes — **FIXED (2026-07-03)**
@@ -2590,8 +2617,40 @@ OS-unit stdout/stderr, serve stream). `cmdLogs()` discovers streams before taili
 ### BL-142 — Ownership ledger dedupe + compaction — **FIXED (2026-07-03)**
 
 **Summary:** Dedupe by (kind,file/path,keyPath) on write; one-time ledger compaction migration.
-
 ### BL-143 — `soxe serve` lockfile-miss error is a dead end — **FIXED (2026-07-03)**
 
 **Summary:** `buildServeLockfileMissDiagnostic()` cross-references install registry + registry index,
 suggests repair command.
+
+---
+
+## Fixed — Context 02 reusable subsystems (2026-07-03)
+
+### BL-147 — memory-core embed.ts delegates to `@adhd/sox-embedding-provider`; remove private embed impl — **FIXED (2026-07-03)**
+
+**Fix:** `libs/memory-core/src/embed.ts` now delegates to `@adhd/sox-embedding-provider`
+via `createEmbeddingProvider()`.
+
+### BL-149 — Migrate 3 ONNX worker consumers to shared embedWorker.ts — **FIXED (2026-07-03)**
+
+**Fix:** Single canonical worker implementation in `embedding-provider/src/embedWorker.ts`.
+Old `verifierWorker.ts` deleted.
+
+### BL-126 — Transactional-outbox enrichment pipeline — **FIXED (2026-07-03)**
+
+**Fix:** `createMemoryOutboxQueue()` provides dequeue, markDone, markFailed, getWatermark
+with dead-letter pattern (5 markFailed → dead). 13/13 tests pass.
+
+### BL-127 — Enrichment watermark + memory_flush (read-your-derived-writes) — **FIXED (2026-07-03)**
+
+**Fix:** `memoryFlush()` polls enrichment watermark with configurable awaitSeq + timeoutMs.
+Returns {watermark, caught_up}.
+
+### BL-119 — Two memory-daemon processes run concurrently — **FIXED BY CONSTRUCTION (2026-07-03)**
+
+**Fix:** RS-6 deleted both memoryd implementations (memory-core and memory-server).
+RS-4 single orchestrator handles enrichment.
+
+### BL-120 — Supervised memory-server instance pool runs 4 processes — **FIXED BY CONSTRUCTION (2026-07-03)**
+
+**Fix:** RS-4 single hosted orchestrator handles enrichment from one location.

@@ -55,6 +55,43 @@ describe('createEmbeddingProvider', () => {
     expect(provider.metadata.dimensions).toBe(768);
   });
 
+  describe('health() — CONTRACTS §E', () => {
+    it('hash provider health returns hash-fallback state', async () => {
+      const provider = await createEmbeddingProvider({ type: 'hash', model: 'hash-768' });
+      const h = provider.health();
+      expect(h.state).toBe('hash-fallback');
+      expect(h.configured).toContain('hash');
+      expect(h.active).toBe('hash-768');
+      expect(h.dimensions).toBe(768);
+      expect(h.last_error).toBeNull();
+    });
+
+    it('remote provider health returns real state', async () => {
+      const provider = await createEmbeddingProvider({
+        type: 'remote',
+        model: 'remote-768',
+        options: { endpoint: 'https://api.example.com/v1', apiKey: 'sk-test12345678' },
+      });
+      const h = provider.health();
+      expect(h.state).toBe('real');
+      expect(h.configured).toContain('remote');
+      expect(h.active).toBe('remote-768');
+      expect(h.dimensions).toBe(768);
+      expect(h.last_error).toBeNull();
+    });
+
+    it('hash provider health reports correct dimensions for custom dims', async () => {
+      const provider = await createEmbeddingProvider({
+        type: 'hash',
+        model: 'hash-384',
+        options: { dimensions: 384 },
+      });
+      const h = provider.health();
+      expect(h.state).toBe('hash-fallback');
+      expect(h.dimensions).toBe(384);
+    });
+  });
+
   it('returns deterministic provider with custom dimensions', async () => {
     const provider = await createEmbeddingProvider({
       type: 'hash',

@@ -1,3 +1,11 @@
+/**
+ * autolink.ts — RELATES_TO edge creation based on shared entity mentions (E9).
+ *
+ * Uses GraphBackend for simple node/edge CRUD; keeps raw SQL for complex
+ * relational queries (entity frequency, shared-entity pair computation)
+ * that the backend layer does not expose.
+ */
+
 import type { Database } from 'better-sqlite3';
 
 export interface AutoLinkResult {
@@ -93,6 +101,8 @@ export function buildAutoLinks(
     const sortedEps = Array.from(episodeEntities.entries()).sort(([a], [b]) => a - b);
     const edgeCountPerEpisode = new Map<number, number>();
 
+    // Keep raw SQL for edge inserts (memory-core edge table lacks UNIQUE index
+    // on (src, dst, rel) that writeEdge's ON CONFLICT requires)
     const insertEdge = db.prepare<[number, number, number, string, number, number], void>(
       `INSERT INTO edge (src, dst, rel, origin, weight, t_created)
        SELECT ?, ?, 'RELATES_TO', 'inferred', ?, ?

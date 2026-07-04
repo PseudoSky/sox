@@ -1,3 +1,12 @@
+/**
+ * importance.ts — write-time importance computation (E7, E14).
+ * Delegates structural score to @adhd/sox-analysis.scoreImportance (BL-149b).
+ *
+ * Uses GraphBackend for degree queries on the batch importance update pass;
+ * write-time (enrichOnWrite) is pure computation with zero backend calls since
+ * no edges exist yet for the new node.
+ */
+
 import { scoreImportance } from '@adhd/sox-analysis';
 
 export interface ImportanceWeights {

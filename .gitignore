@@ -32,3 +32,7 @@ extensions/bundles/sox-memory-bundle/members/memory-server/bundle/
 /test-*-init/
 # plan runtime event logs (append-only, machine-local)
 .workflow/plans/*/events.ndjson
+# baseline snapshot DBs (large, tracked by sha256 in JSON)
+docs/plan/runtime-productionization/_shared/baselines/*.db
+docs/plan/runtime-productionization/_shared/baselines/*.db-wal
+docs/plan/runtime-productionization/_shared/baselines/*.db-shm

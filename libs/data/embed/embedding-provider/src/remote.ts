@@ -1,4 +1,4 @@
-import type { EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole } from './index.js';
+import type { EmbeddingHealth, EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole } from './index.js';
 import { PermanentEmbeddingError, TransientEmbeddingError } from './index.js';
 
 /**
@@ -63,6 +63,16 @@ export class RemoteProvider implements EmbeddingProvider {
         }
       }
     }
+  }
+
+  health(): EmbeddingHealth {
+    return {
+      configured: `remote:${this.metadata.modelId}`,
+      active: this.metadata.modelId,
+      state: 'real',
+      dimensions: this.metadata.dimensions,
+      last_error: null,
+    };
   }
 
   async warmUp(_texts: string[]): Promise<void> {

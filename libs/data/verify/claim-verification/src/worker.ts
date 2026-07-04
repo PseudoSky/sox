@@ -1,17 +1,50 @@
+/**
+ * Worker proxy for NLI verification — uses the shared ONNX worker thread.
+ *
+ * Uses the embedding-provider's shared embedWorker.ts — the ONLY worker
+ * implementation (RS-2, BL-149c). The old verifierWorker.ts has been
+ * migrated onto the shared worker protocol.
+ */
+
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
 import type { EntailmentLabel } from './types.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+// ── Resolve shared worker path ────────────────────────────────────────────────
+
+function resolveWorkerPath(): string {
+  const pkgPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '..', '..', '..', '..',
+    'embed', 'embedding-provider', 'dist', 'embedWorker.js',
+  );
+
+  if (existsSync(pkgPath)) return pkgPath;
+
+  try {
+    const epPath = require.resolve('@adhd/sox-embedding-provider');
+    const base = dirname(epPath);
+    const workerPath = join(base, 'embedWorker.js');
+    if (existsSync(workerPath)) return workerPath;
+  } catch {
+    // continue to fallback
+  }
+
+  return join(
+    dirname(fileURLToPath(import.meta.url)),
+    'verifierWorker.js',
+  );
+}
 
 // ── Main → Worker messages ─────────────────────────────────────────────────
+
 export interface WorkerInitMessage {
   type: 'init';
+  initType: 'verify';
   modelId: string;
   modelVersion: string;
-  preFilterThreshold?: number;
-  minConfidenceThreshold?: number;
 }
 
 export interface WorkerWarmupMessage {
@@ -133,43 +166,54 @@ export class WorkerProxy {
   }
 
   async start(config: { modelId: string; modelVersion: string }): Promise<void> {
-    const workerPath = join(__dirname, 'verifierWorker.js');
+    const workerPath = resolveWorkerPath();
     this.worker = new Worker(workerPath);
     this.worker.unref();
 
-    // ── Warmup handshake: wait for `warmupComplete` after sending init ──
+    // ── Warmup handshake: send init and wait ──
     const warmupPromise = new Promise<void>((resolve, reject) => {
-      const onWarmupMsg = (msg: WorkerToMainMessage): void => {
-        if (msg.type === 'ready') {
+      const onMsg = (msg: WorkerToMainMessage | { initOk?: boolean }): void => {
+        if ('initOk' in msg && msg.initOk === true) {
           this._isReady = true;
-          return;
-        }
-        if (msg.type === 'warmupComplete') {
-          this.worker?.removeListener('message', onWarmupMsg);
+          this.worker?.removeListener('message', onMsg);
           resolve();
         }
       };
-      this.worker!.on('message', onWarmupMsg);
+      this.worker!.on('message', onMsg);
       this.worker!.on('error', reject);
     });
 
     // ── General message handler for verify/result lifecycle ──
-    // NOTE: Dual-handler pattern — warmupPromise above catches 'ready'/'warmupComplete'
-    // during startup; this handler catches every message post-init (including 'result',
-    // 'error', 'progress'). Warmup messages also pass through here but are ignored because
-    // their type is not 'result' | 'error' | 'progress'. This is deliberate — no refactoring
-    // needed as long as tests pass.
-    // [inv:no-untracked-injection] tracked via pending map
-    this.worker.on('message', (msg: WorkerToMainMessage) => {
+    this.worker.on('message', (msg: WorkerToMainMessage | { initOk?: boolean; result?: { entailment: string; confidence: number; timingMs: number } }) => {
       this._lastActivityMs = Date.now();
 
-      if (msg.type === 'result' || msg.type === 'error' || msg.type === 'progress') {
-        const pending = this.pending.get(msg.jobId);
+      if ('result' in msg && msg.result) {
+        // Map shared worker verify response to WorkerResultMessage
+        const verifyResult: WorkerResultMessage = {
+          type: 'result',
+          jobId: String((msg as { id: number; result: { entailment: string; confidence: number; timingMs: number } }).id),
+          entailment: msg.result.entailment as EntailmentLabel,
+          confidence: msg.result.confidence,
+          preFilterSkipped: false,
+          timingMs: msg.result.timingMs,
+        };
+        const pending = this.pending.get(verifyResult.jobId);
         if (!pending) return;
-        this.pending.delete(msg.jobId);
+        this.pending.delete(verifyResult.jobId);
         this._isBusy = false;
         this._queuedJobs = Math.max(0, this._queuedJobs - 1);
-        pending.resolve(msg);
+        pending.resolve(verifyResult);
+      } else if ('type' in msg && (msg.type === 'result' || msg.type === 'error' || msg.type === 'progress')) {
+        const typedMsg = msg as WorkerToMainMessage;
+        const pendingId = typedMsg.type === 'result' || typedMsg.type === 'error'
+          ? (typedMsg as WorkerResultMessage | WorkerErrorMessage).jobId
+          : String(this.nextId);
+        const pending = this.pending.get(pendingId);
+        if (!pending) return;
+        this.pending.delete(pendingId);
+        this._isBusy = false;
+        this._queuedJobs = Math.max(0, this._queuedJobs - 1);
+        pending.resolve(typedMsg);
       }
     });
 
@@ -186,9 +230,10 @@ export class WorkerProxy {
       }
     });
 
-    // Send init directly (NOT via send() — the handshake uses warmupPromise)
+    // Send init with the shared worker protocol (initType: 'verify')
     this.worker.postMessage({
       type: 'init',
+      initType: 'verify',
       modelId: config.modelId,
       modelVersion: config.modelVersion,
     });
@@ -207,7 +252,7 @@ export class WorkerProxy {
       this.pending.set(id, { resolve, reject });
       this.worker!.postMessage(msg);
 
-      // Timeout guard — spec §D8: 30s per claim-source pair
+      // Timeout guard
       const to = setTimeout(() => {
         this.pending.delete(id);
         this._isBusy = false;
@@ -227,14 +272,14 @@ export class WorkerProxy {
   async shutdown(): Promise<void> {
     this._shutdown = true;
     if (this.worker) {
-      this.worker.postMessage({ type: 'shutdown' });
+      this.worker.postMessage({ __shutdown: true } as unknown as MainToWorkerMessage);
       await Promise.race([
         new Promise<void>((resolve) => {
           this.worker!.once('message', (msg) => {
-            if (msg.type === 'shutdownComplete') resolve();
+            if (msg && msg.type === 'shutdownComplete') resolve();
           });
         }),
-        new Promise<void>((_) => setTimeout(_, 2000)), // timeout fallback
+        new Promise<void>((_) => setTimeout(_, 2000)),
       ]);
       this.worker = null;
     }
