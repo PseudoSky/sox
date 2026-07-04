@@ -6047,12 +6047,18 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
       // memory_ping RPC to check store.enrichment.state. If any store reports
       // 'stalled', demote status to 'degraded' with a descriptive reason.
       // Additive: missing fields (older servers, non-memory extensions) → no change.
-      // Timeout is short (2 s) so status output stays fast.
+      // Timeout is short (2 s default) so status output stays fast; overridable
+      // via SOX_STATUS_PING_TIMEOUT_MS (integration tests raise it — under CPU
+      // contention a fixed 2 s probe times out and silently skips the demotion).
       let enrichmentReason: string | undefined;
       if (status === 'healthy' && socketReachable && sup.execSocketPath) {
         try {
+          const pingTimeoutMs =
+            Number(process.env['SOX_STATUS_PING_TIMEOUT_MS']) > 0
+              ? Number(process.env['SOX_STATUS_PING_TIMEOUT_MS'])
+              : 2000;
           const pingResult = await callViaExecSocket(
-            sup.execSocketPath, extId, 'memory_ping', {}, 2000,
+            sup.execSocketPath, extId, 'memory_ping', {}, pingTimeoutMs,
           ) as null | { content?: Array<{ text?: string }> };
           // MCP tool result wraps JSON in content[0].text
           const rawText = pingResult?.content?.[0]?.text;

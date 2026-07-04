@@ -43,6 +43,10 @@ function runCli(args: string[], extraEnv: Record<string, string> = {}): { code: 
       ...process.env,
       SOX_ECOSYSTEM_HOME: home,
       SOX_OS_UNIT_DIR: unitDir,
+      // Under CPU contention the production 2s enrichment-ping probe can time
+      // out and silently skip the DEGRADED demotion (observed flake at merge) —
+      // pin a generous timeout so these tests assert behaviour, not scheduling.
+      SOX_STATUS_PING_TIMEOUT_MS: '10000',
       ...extraEnv,
     },
     cwd: home,

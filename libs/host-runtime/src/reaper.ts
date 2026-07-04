@@ -256,13 +256,29 @@ export function argvContainsToken(argv: string, token: string): boolean {
  * Read the environment block for a given PID via `ps -o env`.
  * Returns null on failure or if the platform doesn't support ps -o env.
  */
+/**
+ * Memoized `ps -o env` capability. `env` is a procps (Linux) keyword; BSD/macOS
+ * ps rejects it on EVERY invocation — and findOrphansByServiceId probes every
+ * process in the snapshot, so without this memo each reconcile pass runs
+ * hundreds of doomed execs whose inherited stderr floods the caller's log
+ * (observed: 2.5 MB/day of `ps: env: keyword not found` in the doctor-tick
+ * os-unit log, 2026-07-04). First failure latches `false`; later calls skip
+ * straight to the argv fallback. null = not yet probed.
+ */
+let psEnvSupported: boolean | null = null;
+
 export function readProcessEnv(pid: number): Record<string, string> | null {
+  if (psEnvSupported === false) return null;
   try {
     const out = execFileSync('ps', ['-o', 'env=', '-p', String(pid)], {
       encoding: 'utf8',
       maxBuffer: 64 * 1024,
       timeout: 2000,
+      // Capture the child's stderr instead of inheriting it — a failing probe
+      // must never spam the supervisor/tick log.
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
+    psEnvSupported = true;
     const env: Record<string, string> = {};
     for (const line of out.split('\0')) {
       const eq = line.indexOf('=');
@@ -273,9 +289,19 @@ export function readProcessEnv(pid: number): Record<string, string> | null {
       }
     }
     return env;
-  } catch {
+  } catch (e) {
+    // Latch "unsupported" ONLY on the keyword error — a dead/foreign pid also
+    // throws (ps exits 1) on platforms where the keyword IS valid, and that
+    // must not disable env matching for the rest of the process lifetime.
+    const msg = `${String((e as { stderr?: unknown }).stderr ?? '')} ${String((e as Error).message ?? '')}`;
+    if (msg.includes('keyword')) psEnvSupported = false;
     return null;
   }
+}
+
+/** TEST-ONLY: reset the memoized `ps -o env` capability probe. */
+export function _resetPsEnvProbeForTest(): void {
+  psEnvSupported = null;
 }
 
 /**

@@ -31,6 +31,7 @@ import {
   argvContainsToken,
   reapByIdentity,
   identityToken,
+  _resetPsEnvProbeForTest,
 } from './reaper.js';
 // ─── Flag for the one mocked test (PI-1 adversarial stray) ───────────────────
 let mockPsEnabled = false;
@@ -272,6 +273,10 @@ describe('findOrphansByServiceId — env-based stray detection (PI-1, BL-136)', 
     // contain searchToken (old path-based matcher cannot find it).
     // readProcessEnv returns our SOX_SERVICE_ID for pid 99999.
     mockPsEnabled = true;
+    // Earlier tests may have run real `ps -o env` probes on a platform without
+    // the keyword (macOS), latching the capability memo to "unsupported" —
+    // reset it so the mocked env path is actually exercised.
+    _resetPsEnvProbeForTest();
 
     // OLD path-based matcher → no match (argv doesn't contain searchToken).
     const byIdentity = findOrphansByIdentity(searchToken);
