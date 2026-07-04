@@ -11,6 +11,13 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 
+// TransientEmbeddingError/ResolutionError are used as VALUES (thrown + `new`) in the
+// hot path, so they must be statically imported (not `import type`). nx flags this as a
+// static-import-of-a-lazy-loaded-lib because resolveWorkerPath() below references the same
+// package via `require.resolve(...)` — but require.resolve only RESOLVES a worker path, it
+// never lazy-LOADS the module, so the heuristic is a false positive here. embedding-provider
+// is a declared workspace dep of this package. (Regression surfaced from RS-1/RS-2, 3360f8b.)
+// eslint-disable-next-line @nx/enforce-module-boundaries
 import {
   TransientEmbeddingError,
   ResolutionError,

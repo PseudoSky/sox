@@ -128,3 +128,158 @@ describe('Parent-context expansion — session_id fallback', () => {
     }
   });
 });
+
+// ── HF-3 score_breakdown tests ────────────────────────────────────────────────
+
+const SCORE_TOLERANCE = 1e-9;
+
+describe('score_breakdown — channel sum invariant (HF-3)', () => {
+  /**
+   * Acceptance criterion (a): channel breakdown sums to the reported fused
+   * value within tolerance for every result returned by memoryRecall.
+   */
+  it('breakdown.vec + breakdown.bm25 + breakdown.temporal === score for all results', async () => {
+    const { db, dir } = tmpDb();
+    try {
+      // Seed multiple episodes so there are real ranked candidates.
+      await memoryWrite(db, { content: 'neural networks and deep learning architecture', name: 'nn-deep' });
+      await memoryWrite(db, { content: 'machine learning gradient descent optimization', name: 'ml-grad' });
+      await memoryWrite(db, { content: 'transformer self-attention mechanisms', name: 'transformer' });
+      await memoryWrite(db, { content: 'convolutional neural network image recognition', name: 'cnn-img' });
+
+      const response = await memoryRecall(db, 'project', {
+        query: 'neural network architectures',
+        limit: 10,
+      });
+
+      expect(response.results.length).toBeGreaterThan(0);
+
+      for (const result of response.results) {
+        expect(result.score_breakdown).toBeDefined();
+        const { vec, bm25, temporal, total } = result.score_breakdown;
+
+        // All channels must be non-negative
+        expect(vec).toBeGreaterThanOrEqual(0);
+        expect(bm25).toBeGreaterThanOrEqual(0);
+        expect(temporal).toBeGreaterThanOrEqual(0);
+
+        // Channels must sum to total
+        const channelSum = vec + bm25 + temporal;
+        expect(Math.abs(channelSum - total)).toBeLessThan(SCORE_TOLERANCE);
+
+        // total must equal score
+        expect(Math.abs(total - result.score)).toBeLessThan(SCORE_TOLERANCE);
+      }
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+
+  it('score_breakdown total equals score for graph-expanded results', async () => {
+    const { db, dir } = tmpDb();
+    try {
+      await memoryWrite(db, { content: 'primary document about quantum computing', name: 'quantum-primary' });
+      await memoryWrite(db, { content: 'related quantum entanglement details', name: 'quantum-related' });
+
+      const response = await memoryRecall(db, 'project', {
+        query: 'quantum',
+        limit: 10,
+        depth: 1,
+      });
+
+      for (const result of response.results) {
+        expect(result.score_breakdown).toBeDefined();
+        const { vec, bm25, temporal, total } = result.score_breakdown;
+        const channelSum = vec + bm25 + temporal;
+        expect(Math.abs(channelSum - total)).toBeLessThan(SCORE_TOLERANCE);
+        expect(Math.abs(total - result.score)).toBeLessThan(SCORE_TOLERANCE);
+      }
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+});
+
+describe('score_breakdown — cross-query comparability (HF-3)', () => {
+  /**
+   * Acceptance criterion (b): normalised scores for two very different queries
+   * are on a comparable scale.
+   *
+   * Strategy: run two queries — one with many relevant results, one with a
+   * single highly relevant result — and verify that:
+   *   1. Top-result scores from both queries are in [0, 1] (per-query min-max).
+   *   2. The top result from each query is not orders-of-magnitude different.
+   */
+  it('top scores from dissimilar queries are on comparable scale', async () => {
+    const { db, dir } = tmpDb();
+    try {
+      // Write episodes relevant to Query A (generic topic)
+      await memoryWrite(db, { content: 'python programming language features and syntax', name: 'py-1' });
+      await memoryWrite(db, { content: 'python data science libraries pandas numpy', name: 'py-2' });
+      await memoryWrite(db, { content: 'python web frameworks django flask', name: 'py-3' });
+      await memoryWrite(db, { content: 'python async concurrency asyncio event loop', name: 'py-4' });
+
+      // Write one episode relevant to Query B (very specific, niche)
+      await memoryWrite(db, { content: 'zygomorphic floral symmetry in orchidaceae taxonomy', name: 'orchid' });
+
+      // Query A: common term, many relevant results
+      const responseA = await memoryRecall(db, 'project', {
+        query: 'python programming',
+        limit: 10,
+      });
+
+      // Query B: niche term, few or one relevant result
+      const responseB = await memoryRecall(db, 'project', {
+        query: 'orchid floral symmetry',
+        limit: 10,
+      });
+
+      expect(responseA.results.length).toBeGreaterThan(0);
+      expect(responseB.results.length).toBeGreaterThan(0);
+
+      const topA = responseA.results[0]!;
+      const topB = responseB.results[0]!;
+
+      // Both top scores must be in [0, 1] — per-query min-max ensures this
+      expect(topA.score).toBeGreaterThanOrEqual(0);
+      expect(topA.score).toBeLessThanOrEqual(1.0 + SCORE_TOLERANCE);
+      expect(topB.score).toBeGreaterThanOrEqual(0);
+      expect(topB.score).toBeLessThanOrEqual(1.0 + SCORE_TOLERANCE);
+
+      // The ratio of scores should not be extreme (within 10×)
+      // Both represent "best result for this query" so both should be meaningful
+      if (topA.score > 0 && topB.score > 0) {
+        const ratio = Math.max(topA.score, topB.score) / Math.min(topA.score, topB.score);
+        expect(ratio).toBeLessThan(10);
+      }
+
+      // score_breakdown must still sum correctly for cross-query results
+      for (const result of [...responseA.results, ...responseB.results]) {
+        const { vec, bm25, temporal, total } = result.score_breakdown;
+        expect(Math.abs(vec + bm25 + temporal - total)).toBeLessThan(SCORE_TOLERANCE);
+        expect(Math.abs(total - result.score)).toBeLessThan(SCORE_TOLERANCE);
+      }
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+
+  it('score_breakdown fields have correct TypeScript shape', async () => {
+    const { db, dir } = tmpDb();
+    try {
+      await memoryWrite(db, { content: 'test episode for shape verification' });
+      const response = await memoryRecall(db, 'project', { query: 'test episode' });
+
+      if (response.results.length > 0) {
+        const result = response.results[0]!;
+        expect(result.score_breakdown).toBeDefined();
+        expect(typeof result.score_breakdown.vec).toBe('number');
+        expect(typeof result.score_breakdown.bm25).toBe('number');
+        expect(typeof result.score_breakdown.temporal).toBe('number');
+        expect(typeof result.score_breakdown.total).toBe('number');
+      }
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+});

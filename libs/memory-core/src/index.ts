@@ -120,6 +120,7 @@ export type {
   RecallParams,
   RecallResult,
   RecallResponse,
+  ScoreBreakdown,
   StoreDescriptor,
   FederatedRecallResponse,
   ParentContextConfig,

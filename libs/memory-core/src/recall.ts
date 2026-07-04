@@ -44,10 +44,44 @@ export interface RecallParams {
   lateChunking?: LateChunkingConfig;
 }
 
+/**
+ * Per-channel score breakdown for a single recall result.
+ *
+ * All channel values are non-negative and sum to `total`, which equals the
+ * `score` field on the parent RecallResult (within fp tolerance < 1e-10).
+ *
+ * Channels correspond to the three RRF signals used in the recall pipeline:
+ *   vec      — vector (cosine KNN) channel contribution
+ *   bm25     — FTS5 BM25 text channel contribution
+ *   temporal — recency-importance rerank channel contribution
+ *
+ * Normalization: each RRF channel is independently normalised via min-max
+ * across the candidate set (per-query), weighted, then scaled by the
+ * per-result rerank factor (recency × importance).  The breakdown preserves
+ * that proportionality: vec + bm25 + temporal === total === score.
+ *
+ * Cross-query comparability: because each channel is min-max normalised
+ * within its own result set, the raw RRF magnitudes (which vary with result
+ * count and rank distribution) cancel out.  Scores from two different queries
+ * live on the same [0, 1] scale and can be compared meaningfully.
+ */
+export interface ScoreBreakdown {
+  /** Contribution from the vector (cosine KNN) channel. */
+  vec: number;
+  /** Contribution from the FTS5 BM25 text channel. */
+  bm25: number;
+  /** Contribution from the temporal-recency-importance rerank. */
+  temporal: number;
+  /** Sum of all channels — equals score (within fp tolerance). */
+  total: number;
+}
+
 export interface RecallResult {
   uid: string;
   content: string | null;
   score: number;
+  /** Additive per-channel breakdown of score. Present on all results. */
+  score_breakdown: ScoreBreakdown;
   t_valid: string | null;
   scope: string;
   provenance: string[];
@@ -398,17 +432,53 @@ export async function memoryRecall(
     return response;
   }
 
-  // 3. RRF fusion scores
+  // 3. RRF fusion scores — compute per-channel raw contributions first so we
+  //    can min-max normalise them across the candidate set for the breakdown.
+  interface RrfChannels {
+    vecRaw: number;   // vec_weight * rrfScore(vecRank), 0 if absent
+    ftsRaw: number;   // fts_weight * rrfScore(ftsRank), 0 if absent
+    tempRaw: number;  // temporal_weight * rrfScore(tempRank), 0 if absent
+    total: number;    // sum
+  }
+  const rrfChannels = new Map<number, RrfChannels>();
   const rrfScores = new Map<number, number>();
   for (const rowid of allRowids) {
-    let score = 0;
     const vr = vecRanks.get(rowid);
     const fr = ftsRowids.get(rowid);
     const tr = temporalRanks.get(rowid);
-    if (vr !== undefined) score += vec_weight * rrfScore(vr);
-    if (fr !== undefined) score += fts_weight * rrfScore(fr);
-    if (tr !== undefined) score += temporal_weight * rrfScore(tr);
-    rrfScores.set(rowid, score);
+    const vecRaw  = vr !== undefined ? vec_weight      * rrfScore(vr) : 0;
+    const ftsRaw  = fr !== undefined ? fts_weight      * rrfScore(fr) : 0;
+    const tempRaw = tr !== undefined ? temporal_weight * rrfScore(tr) : 0;
+    const total   = vecRaw + ftsRaw + tempRaw;
+    rrfChannels.set(rowid, { vecRaw, ftsRaw, tempRaw, total });
+    rrfScores.set(rowid, total);
+  }
+
+  // Per-query min-max normalisation of each channel across all candidates.
+  // This makes scores from two different queries land on the same [0, 1] scale.
+  function minMaxNorm(vals: number[]): number[] {
+    if (vals.length === 0) return [];
+    let mn = Infinity, mx = -Infinity;
+    for (const v of vals) { if (v < mn) mn = v; if (v > mx) mx = v; }
+    const range = mx - mn;
+    if (range === 0) return vals.map(() => 1.0);
+    return vals.map((v) => (v - mn) / range);
+  }
+
+  const rowidOrder = [...allRowids]; // stable ordering for normalisation
+  const vecNormArr   = minMaxNorm(rowidOrder.map((id) => rrfChannels.get(id)!.vecRaw));
+  const ftsNormArr   = minMaxNorm(rowidOrder.map((id) => rrfChannels.get(id)!.ftsRaw));
+  const tempNormArr  = minMaxNorm(rowidOrder.map((id) => rrfChannels.get(id)!.tempRaw));
+
+  // Store per-candidate normalised channel values (used later in addResult).
+  interface NormChannels { vecNorm: number; ftsNorm: number; tempNorm: number }
+  const normChannels = new Map<number, NormChannels>();
+  for (let i = 0; i < rowidOrder.length; i++) {
+    normChannels.set(rowidOrder[i]!, {
+      vecNorm:  vecNormArr[i]!,
+      ftsNorm:  ftsNormArr[i]!,
+      tempNorm: tempNormArr[i]!,
+    });
   }
 
   // 4. Fetch node details for all candidates
@@ -431,12 +501,43 @@ export async function memoryRecall(
   });
 
   // 5. Rerank: rrf_score × recency × importance
+  //
+  // score_breakdown design:
+  //   The final score is: baseRrf × rerank, where rerank = recency × (0.5 + 0.5×imp).
+  //   We decompose the score into three additive channels whose sum equals the final
+  //   score exactly:
+  //     vec_contrib     = vecNorm  × rerank × (1/normTotal)  [proportional share]
+  //     bm25_contrib    = ftsNorm  × rerank × (1/normTotal)
+  //     temporal_contrib = tempNorm × rerank × (1/normTotal)
+  //   where normTotal = vecNorm + ftsNorm + tempNorm (sum of normalised values).
+  //   If normTotal == 0, all three channels get 0 and total gets the raw score.
+  //
+  //   This guarantees: vec_contrib + bm25_contrib + temporal_contrib = score,
+  //   and each channel value is in [0, score].  The normalised channel values are
+  //   per-query min-max scaled so scores from different queries are comparable.
   const ranked = validNodes.map((n) => {
     const baseRrf = rrfScores.get(n.rowid) ?? 0;
     const recency = recencyMultiplier(n.t_created);
     const imp = (n.importance ?? 1.0) / 10.0; // normalize 1..10 → 0.1..1.0
-    const finalScore = baseRrf * recency * (0.5 + 0.5 * imp);
-    return { node: n, score: finalScore };
+    const rerank = recency * (0.5 + 0.5 * imp);
+    const finalScore = baseRrf * rerank;
+
+    const nc = normChannels.get(n.rowid) ?? { vecNorm: 0, ftsNorm: 0, tempNorm: 0 };
+    const normTotal = nc.vecNorm + nc.ftsNorm + nc.tempNorm;
+    let vecContrib = 0, bm25Contrib = 0, tempContrib = 0;
+    if (normTotal > 0) {
+      vecContrib  = finalScore * (nc.vecNorm  / normTotal);
+      bm25Contrib = finalScore * (nc.ftsNorm  / normTotal);
+      tempContrib = finalScore * (nc.tempNorm / normTotal);
+    }
+
+    const breakdown: ScoreBreakdown = {
+      vec:      vecContrib,
+      bm25:     bm25Contrib,
+      temporal: tempContrib,
+      total:    finalScore,
+    };
+    return { node: n, score: finalScore, breakdown };
   });
 
   ranked.sort((a, b) => b.score - a.score);
@@ -482,7 +583,7 @@ export async function memoryRecall(
   const sourceCounts = new Map<string, number>();
   const MAX_PER_SOURCE = Math.max(2, Math.ceil(limit / 5));
 
-  const addResult = (node: NodeRow, score: number, provenance: string[]) => {
+  const addResult = (node: NodeRow, score: number, provenance: string[], breakdown: ScoreBreakdown) => {
     const text = [node.content, node.name, node.summary]
       .filter(Boolean)
       .join(' ');
@@ -498,6 +599,7 @@ export async function memoryRecall(
       uid: node.uid,
       content: node.content,
       score,
+      score_breakdown: breakdown,
       t_valid: node.t_valid,
       scope,
       provenance,
@@ -511,12 +613,12 @@ export async function memoryRecall(
   };
 
   // Add primary results
-  for (const { node, score } of ranked) {
+  for (const { node, score, breakdown } of ranked) {
     const provenance: string[] = [];
     if (vecRanks.has(node.rowid)) provenance.push('vec');
     if (ftsRowids.has(node.rowid)) provenance.push('fts');
     if (temporalRanks.has(node.rowid)) provenance.push('temporal');
-    if (!addResult(node, score, provenance)) break;
+    if (!addResult(node, score, provenance, breakdown)) break;
     if (results.length >= limit) break;
   }
 
@@ -527,7 +629,10 @@ export async function memoryRecall(
     const recency = recencyMultiplier(node.t_created);
     const imp = (node.importance ?? 1.0) / 10.0;
     const score = baseRrf * 0.5 * recency * (0.5 + 0.5 * imp);
-    addResult(node, score, ['graph']);
+    // Graph-expanded neighbors get a zero-breakdown (they originate from graph
+    // traversal, not from a ranked channel signal).
+    const graphBreakdown: ScoreBreakdown = { vec: 0, bm25: 0, temporal: 0, total: score };
+    addResult(node, score, ['graph'], graphBreakdown);
   }
 
   // ── Parent-context expansion ───────────────────────────────────────────────

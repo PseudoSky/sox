@@ -7,9 +7,69 @@
         "BL-134"
       ],
       "title": "Chaos suite in CI: kill -9 recovery, disk-full, queue overflow",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {
+            "cmd": "npx nx test memory-core --skip-nx-cache",
+            "exit": 0,
+            "summary": "Run 1: 18 test files passed (1 skipped), 240 tests passed (4 skipped). Duration 41.33s."
+          },
+          {
+            "cmd": "npx nx test memory-core --skip-nx-cache",
+            "exit": 0,
+            "summary": "Run 2: 18 test files passed (1 skipped), 240 tests passed (4 skipped). Duration 41.18s."
+          },
+          {
+            "cmd": "npx nx test memory-core --skip-nx-cache",
+            "exit": 0,
+            "summary": "Run 3: 18 test files passed (1 skipped), 240 tests passed (4 skipped). Duration 40.33s."
+          },
+          {
+            "cmd": "npx nx lint memory-core",
+            "exit": 0,
+            "summary": "All files pass linting."
+          }
+        ],
+        "files_created": [
+          "libs/memory-core/src/chaos/kill9-recovery.chaos.spec.ts",
+          "libs/memory-core/src/chaos/disk-full.chaos.spec.ts",
+          "libs/memory-core/src/chaos/queue-overflow.chaos.spec.ts"
+        ],
+        "negative_controls": {
+          "scenario_1_kill9": {
+            "break": "Disable WAL (journal_mode=DELETE) — child writes without WAL, SIGKILL mid-burst",
+            "red": "integrity_check may return rows other than 'ok' (partial page written to main file without WAL replay)",
+            "encoding": "it.skip '[NC] negative control: without WAL, integrity_check may fail after SIGKILL' — change it.skip to it to activate",
+            "restore": "Re-enable WAL in child script (useWal=true) to restore green"
+          },
+          "scenario_2_diskfull": {
+            "break": "Remove max_page_count constraint — large write succeeds instead of failing",
+            "red": "expect(caught).not.toBeNull() fails (caught===null because write succeeded)",
+            "encoding": "it.skip '[NC] negative control: without max_page_count, write succeeds (E_IO guard removed)' — asserts caught===null",
+            "restore": "Re-add db.exec('PRAGMA max_page_count = ...')"
+          },
+          "scenario_3_overflow": {
+            "break": "Set maxSize=Number.MAX_SAFE_INTEGER — no overflow guard fires",
+            "red": "expect(ebusyErrors.length).toBeGreaterThan(0) fails (all writes succeed, no E_BUSY)",
+            "encoding": "it.skip '[NC] negative control: without overflow guard (maxSize=MAX), all writes succeed' — asserts rejections.length===0",
+            "restore": "Use original maxSize=5"
+          }
+        },
+        "pre_existing_flake": {
+          "file": "libs/memory-core/src/write.spec.ts",
+          "test": "batch of 10 items with 1 byte-duplicate returns 9 ok + 1 E_DEDUP with existing_uid",
+          "cause": "fastembed warmup timeout (30000ms limit) under concurrent test load. Not caused by HF-1 changes. Appeared on 1 of 5 gate runs.",
+          "evidence": "Test is in write.spec.ts (unmodified by S1). The chaos specs (3 new files) never failed across all runs."
+        }
+      },
+      "notes": [
+        "Scenario 1: child worker spawned as .cjs (avoids ESM module resolution in tmpdir), uses project-resolved require() paths for better-sqlite3 + sqlite-vec",
+        "Scenario 2: max_page_count set to currentPageCount+2 (≈8KB headroom); 100 rows×4KB each forces SQLITE_FULL → wrapDbError maps to E_IO",
+        "Scenario 3: maxSize=5, slow anchor holds queue; flood of 15 items causes >5 queue rejections with E_BUSY shape (retryable:true, retry_after_ms:250)",
+        "All chaos stores use OS tmpdir (mkdtemp), NOT ~/.memory",
+        "Cleanup: afterEach removes tmpdir + calls _resetAllLeasesForTest() + WriteQueue.clearInstances()"
+      ]
     },
     {
       "id": "HF-2",
@@ -27,9 +87,40 @@
         "BL-132"
       ],
       "title": "Recall score legibility",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "commands": [
+          {
+            "cmd": "npx nx test hybrid-search --skip-nx-cache",
+            "exit": 0,
+            "summary": "3 test files, 70 tests passed (includes 20 new score-breakdown.spec.ts tests)"
+          },
+          {
+            "cmd": "npx vitest run --config libs/memory-core/vitest.config.ts libs/memory-core/src/recall.spec.ts",
+            "exit": 0,
+            "summary": "1 test file, 8 tests passed (3 original + 5 new HF-3 breakdown tests)"
+          },
+          {
+            "cmd": "npx nx test memory-core --skip-nx-cache",
+            "exit": 0,
+            "summary": "17 passed (1 skipped), 239 tests passed (4 skipped). 1 pre-existing flaky timeout in write.spec.ts noted by nx as flaky; not caused by HF-3 changes (write.spec.ts was already modified in git status before S3 work began)"
+          },
+          {
+            "cmd": "npx nx build hybrid-search memory-core",
+            "exit": 0,
+            "summary": "Both projects build cleanly with TypeScript"
+          }
+        ],
+        "commits": [],
+        "pre_existing_lint_issue": "hybrid-search:lint fails on cross-encoder.ts '@nx/enforce-module-boundaries' — pre-existing before S3 (confirmed by restoring original index.ts and re-running lint: same failure). S3 only modified index.ts, not cross-encoder.ts.",
+        "design_note": "docs/plan/runtime-productionization/06-hardening-final/HF3-recall-scores.md"
+      },
+      "notes": [
+        "score field unchanged — byte-compatible with existing consumers",
+        "score_breakdown is additive: vec + bm25 + temporal === total === score within 1e-9",
+        "per-query min-max normalisation ensures cross-query comparability in [0, 1]",
+        "graph-expanded neighbors get {vec:0, bm25:0, temporal:0, total:score} breakdown (graph provenance has no channel signal)"
+      ]
     },
     {
       "id": "HF-4",
@@ -92,5 +183,5 @@
     "smoke": "16/0",
     "verified_at": "2026-07-04"
   },
-  "updated_at": "2026-07-04"
+  "updated_at": "2026-07-04T11:00:00Z"
 }

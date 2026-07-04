@@ -57,6 +57,40 @@ export interface FusionOpts {
   weights?: { text?: number; vec?: number };
 }
 
+/**
+ * Per-channel contribution breakdown for a single fused result.
+ *
+ * All channel values are non-negative and sum to `total`, which equals the
+ * fused score returned in the parent result.  Missing channels (signal not
+ * present for this candidate) are 0.
+ *
+ * Normalization context: every channel is first independently normalised
+ * across all candidates (same method as the parent `fuse()` call), then
+ * weighted and divided by the total active weight so the final score lives
+ * in [0, 1] for min_max/L2 normalisers.  The per-channel values are that
+ * weighted-normalised contribution — they are proportional to their share of
+ * the fused score, and their sum equals `total` exactly (within fp tolerance).
+ */
+export interface FusionBreakdown {
+  /** Weighted normalised contribution from the BM25 / text channel. */
+  bm25: number;
+  /** Weighted normalised contribution from the vector / cosine channel. */
+  vec: number;
+  /** Sum of all channel contributions — equals the fused score for this result. */
+  total: number;
+}
+
+/**
+ * Extended result returned by `fuseWithBreakdown()`.
+ * `score` is byte-identical to what `fuse()` would return; `breakdown` is
+ * additive (breakdown.bm25 + breakdown.vec === breakdown.total === score).
+ */
+export interface FusionResultWithBreakdown {
+  id: number;
+  score: number;
+  breakdown: FusionBreakdown;
+}
+
 // ── Pure functions (zero storage deps) ────────────────────────────────────────
 
 function mean(values: number[]): number {
@@ -180,6 +214,96 @@ export function fuse(
     results.push({
       id: candidate.id,
       score: totalWeight > 0 ? score / totalWeight : 0,
+    });
+  }
+
+  results.sort((a, b) => b.score - a.score);
+  return results;
+}
+
+/**
+ * Same fusion algorithm as `fuse()` but also returns a per-channel breakdown
+ * for every result.  The `score` field is byte-identical to `fuse()`'s output;
+ * `breakdown.bm25 + breakdown.vec === breakdown.total === score` within
+ * floating-point tolerance (< 1e-10).
+ *
+ * Algorithm (matches `fuse()` exactly — never diverge):
+ *   1. Collect raw text / vec scores from candidates.
+ *   2. Normalise each channel independently with the chosen normaliser.
+ *   3. For each candidate compute:
+ *        textContrib = textWeight × normText   (0 if channel absent)
+ *        vecContrib  = vecWeight  × normVec    (0 if channel absent)
+ *        totalWeight = sum of weights for present channels
+ *        score = (textContrib + vecContrib) / totalWeight
+ *   4. Breakdown stores the per-weight, per-totalWeight contributions so they
+ *      sum to score: bm25 = textContrib / totalWeight, vec = vecContrib / totalWeight.
+ */
+export function fuseWithBreakdown(
+  candidates: Array<{ id: number; textScore?: number; vecScore?: number }>,
+  opts?: FusionOpts,
+): FusionResultWithBreakdown[] {
+  if (candidates.length === 0) return [];
+
+  const normalizer = opts?.normalizer ?? 'min_max';
+  const textWeight = opts?.weights?.text ?? 1.0;
+  const vecWeight = opts?.weights?.vec ?? 1.0;
+
+  const textIndices: number[] = [];
+  const textVals: number[] = [];
+  const vecIndices: number[] = [];
+  const vecVals: number[] = [];
+
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i]!;
+    if (c.textScore !== undefined) {
+      textIndices.push(i);
+      textVals.push(c.textScore);
+    }
+    if (c.vecScore !== undefined) {
+      vecIndices.push(i);
+      vecVals.push(c.vecScore);
+    }
+  }
+
+  const textNormVals = normalize(textVals, normalizer);
+  const vecNormVals = normalize(vecVals, normalizer);
+
+  const textNormMap = new Map<number, number>();
+  for (let j = 0; j < textIndices.length; j++) {
+    textNormMap.set(textIndices[j]!, textNormVals[j]!);
+  }
+  const vecNormMap = new Map<number, number>();
+  for (let j = 0; j < vecIndices.length; j++) {
+    vecNormMap.set(vecIndices[j]!, vecNormVals[j]!);
+  }
+
+  const results: FusionResultWithBreakdown[] = [];
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i]!;
+    let textContrib = 0;
+    let vecContrib = 0;
+    let totalWeight = 0;
+
+    const tn = textNormMap.get(i);
+    if (tn !== undefined) {
+      textContrib = textWeight * tn;
+      totalWeight += textWeight;
+    }
+    const vn = vecNormMap.get(i);
+    if (vn !== undefined) {
+      vecContrib = vecWeight * vn;
+      totalWeight += vecWeight;
+    }
+
+    const score = totalWeight > 0 ? (textContrib + vecContrib) / totalWeight : 0;
+    // Scale each channel contribution by the same divisor so they sum to score.
+    const bm25 = totalWeight > 0 ? textContrib / totalWeight : 0;
+    const vec = totalWeight > 0 ? vecContrib / totalWeight : 0;
+
+    results.push({
+      id: candidate.id,
+      score,
+      breakdown: { bm25, vec, total: score },
     });
   }
 
