@@ -1,0 +1,92 @@
+{
+  "context": "02-reusable-subsystems",
+  "items": [
+    {
+      "id": "RS-0",
+      "bl": [],
+      "title": "Capture enrichment-parity + write-perf baselines (BEFORE any change)",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "RS-1",
+      "bl": [
+        "BL-147"
+      ],
+      "title": "Migrate memory off private embed.ts onto embedding-provider + health()",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "RS-2",
+      "bl": [
+        "BL-149"
+      ],
+      "title": "Shared ONNX worker host; migrate 3 wrappers",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "RS-3",
+      "bl": [
+        "BL-147",
+        "BL-149"
+      ],
+      "title": "Enrich hot path onto Graph/VectorBackend; reconcile importance scorers",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "RS-4",
+      "bl": [
+        "BL-126"
+      ],
+      "title": "Generic outbox orchestrator in analysis; hosted in backend",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "RS-5",
+      "bl": [
+        "BL-127"
+      ],
+      "title": "Watermark + memory_flush",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "RS-6",
+      "bl": [
+        "BL-149"
+      ],
+      "title": "Delete both memoryds; deprecate memory-daemon member",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "RS-7",
+      "bl": [
+        "BL-119",
+        "BL-120"
+      ],
+      "title": "Flip resolved-by-construction with evidence",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    }
+  ],
+  "gate": {
+    "status": "pending",
+    "evidence": null
+  },
+  "blockers": [],
+  "discovered": [],
+  "updated_at": null
+}
