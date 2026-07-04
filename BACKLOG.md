@@ -284,7 +284,7 @@ was run in the same dist-less worktree, so it reproduced the environment gap, no
 Operational note absorbed into practice: a smoke run from a fresh worktree requires the workspace
 build first (CONTRIBUTING §1 already requires building before verification).
 
-### BL-185 — `soxe status` renders a loaded, on-schedule PERIODIC os-unit as `DEAD` (violates [inv:list-never-lies]) — **Open (MEDIUM) (2026-07-04)**
+### BL-185 — `soxe status` renders a loaded, on-schedule PERIODIC os-unit as `DEAD` (violates [inv:list-never-lies]) — **FIXED (2026-07-04, status-rendering worktree)**
 
 Observed immediately after `doctor --install-tick` (Slice 4): `launchctl list` shows
 `com.sox.user.doctor-tick` loaded with last-exit 0, and its reconcile log proves interval runs
@@ -292,10 +292,29 @@ firing on schedule (`run/logs/doctor-reconcile/doctor-reconcile-2026-07-04.log`)
 `soxe status` lists `doctor-tick@os-unit … DEAD, 0s uptime`. A `StartInterval` unit has NO
 resident process between runs by design; status's health derivation conflates "no live pid right
 now" with DEAD, making the healthy tick look faulty (the same lying-surface class as BL-162's
-dead-daemon rendering and today's enrichment blind spot). Fix sketch: os-unit entries whose unit
-carries an interval schedule (StartInterval/StartCalendarInterval/systemd timer) should render a
-schedule-aware status (e.g. `SCHEDULED (last run <t>, exit 0)`) derived from `launchctl list`
-exit status + the unit's own log/marker, not pid-liveness.
+dead-daemon rendering and today's enrichment blind spot).
+
+**Fix:** Added `isScheduledOsUnitContent()` (pure, no I/O) and `isScheduledOsUnit()` (file-based)
+to `libs/host-runtime/src/os-unit.ts` (exported via `index.ts`). In `apps/sox/src/main.ts`
+`cmdStatus`'s os-unit scan: when `!pidAlive && loaded`, read the unit file and check for
+`<key>StartInterval</key>`, `<key>StartCalendarInterval</key>` (launchd) or `OnUnitActiveSec=`,
+`OnCalendar=` (systemd `.timer` paired file). If any schedule key is detected, render
+`status='scheduled'` instead of `'dead'`. Status exits 0 (healthy-by-design). Detail view shows
+`SCHEDULED (last exit N)`; table NOTE column shows `sched last:N`. Non-interval units with no pid
+remain `DEAD`.
+
+**Also fixed (BL-162 enrichment remainder):** `soxe status` did not consume `memory_ping`'s
+`store.enrichment.state` field — when enrichment was stalled, the service still rendered
+RUNNING/healthy. After status is determined `healthy` and the exec socket is reachable, a
+`memory_ping` RPC is attempted (2 s timeout). If any store reports `state='stalled'`, status is
+demoted to `'degraded'` with `enrichmentReason = 'enrichment stalled: oldest pending <age> ago'`.
+`idle`/`ok`/missing fields → no change (fully additive). Exit code becomes 1 (degraded).
+
+**Evidence:** `libs/host-runtime/src/os-unit.spec.ts` +12 tests (pure isScheduledOsUnitContent ×7,
+file-based isScheduledOsUnit ×5), all pass. `apps/sox/src/status-rendering.spec.ts` (new file) +8
+integration tests (BL-185 SCHEDULED ×4, BL-162 enrichment DEGRADED ×4), all pass. `npx nx
+lint/build/test host-runtime sox` all clean (host-runtime 1 pre-existing reaper.spec.ts timeout
+flake, not in diff).
 
 ### BL-186 — `memory_curate recluster` runs the FULL cluster pass synchronously on the serial WriteQueue and returns a false `enqueued: true` — **RESOLVED (2026-07-04, two-phase-write worktree)**
 

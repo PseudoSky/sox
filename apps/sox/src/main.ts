@@ -64,6 +64,8 @@ import {
   startRuntime,
   stopRuntime,
   unloadThenReap,
+  // BL-185: interval-schedule detection for SCHEDULED status rendering.
+  isScheduledOsUnitContent,
   type DataScope,
   type OsSupervisor,
   type OsUnitPlatform,
@@ -5608,14 +5610,33 @@ interface HealthRecord {
   lastRunDurationMs: number | null;
   /** Cumulative uptime in ms across all runs recorded in the current supervisor session */
   totalUptimeMs: number;
-  /** Derived: 'healthy' | 'degraded' | 'dead' */
-  status: 'healthy' | 'degraded' | 'dead';
+  /**
+   * Derived:
+   *   healthy   — pid alive + socket reachable (or in-process adapter, socket reachable)
+   *   degraded  — pid alive but socket unreachable, or orphan process, or crash-loop
+   *   dead      — no pid (and no schedule explaining the absence)
+   *   scheduled — OS interval unit (StartInterval/StartCalendarInterval) loaded by
+   *               launchd/systemd but not currently running (between firings); this is
+   *               healthy by design (BL-185, [inv:list-never-lies])
+   */
+  status: 'healthy' | 'degraded' | 'dead' | 'scheduled';
   /** OS supervisor kind (e.g. 'launchd', 'systemd') when managed by OS unit */
   osKind?: string;
   /** OS supervisor exit code when process exited (null if alive or unknown) */
   osExitCode?: number | null;
   /** When the extension manifest is newer than the generated OS unit, describes what changed */
   staleReason?: string;
+  /**
+   * BL-162 remainder — enrichment pipeline health (additive, never breaks on absence).
+   * Set when a memory_ping RPC via the exec socket reveals store.enrichment.state ===
+   * 'stalled'. The service status is promoted to 'degraded' with this reason.
+   */
+  enrichmentReason?: string;
+  /**
+   * BL-185 — for SCHEDULED os-units: the launchd LastExitStatus of the most recent run.
+   * Null when the unit has never fired or the value is unavailable.
+   */
+  scheduleLastExitCode?: number | null;
 }
 
 /**
@@ -6021,6 +6042,38 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
         status = 'healthy';
       }
 
+      // BL-162 remainder — enrichment pipeline health (Part 1).
+      // When the extension is healthy and the exec socket is reachable, attempt a
+      // memory_ping RPC to check store.enrichment.state. If any store reports
+      // 'stalled', demote status to 'degraded' with a descriptive reason.
+      // Additive: missing fields (older servers, non-memory extensions) → no change.
+      // Timeout is short (2 s) so status output stays fast.
+      let enrichmentReason: string | undefined;
+      if (status === 'healthy' && socketReachable && sup.execSocketPath) {
+        try {
+          const pingResult = await callViaExecSocket(
+            sup.execSocketPath, extId, 'memory_ping', {}, 2000,
+          ) as null | { content?: Array<{ text?: string }> };
+          // MCP tool result wraps JSON in content[0].text
+          const rawText = pingResult?.content?.[0]?.text;
+          if (rawText) {
+            const ping = JSON.parse(rawText) as {
+              store?: {
+                enrichment?: { state?: string; oldest_pending_at?: string | null };
+              };
+            };
+            const enrich = ping.store?.enrichment;
+            if (enrich?.state === 'stalled') {
+              status = 'degraded';
+              const age = enrich.oldest_pending_at != null
+                ? `oldest pending ${formatDuration(Date.now() - new Date(enrich.oldest_pending_at).getTime())} ago`
+                : 'age unknown';
+              enrichmentReason = `enrichment stalled: ${age}`;
+            }
+          }
+        } catch { /* best-effort: non-memory extensions, socket errors, timeouts → no change */ }
+      }
+
       records.push({
         id: extId,
         key: `${extId}@${version}`,
@@ -6041,6 +6094,7 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
         lastRunDurationMs: stats.lastRunDurationMs,
         totalUptimeMs: stats.totalUptimeMs,
         status,
+        ...(enrichmentReason !== undefined ? { enrichmentReason } : {}),
       });
     }
   }
@@ -6106,11 +6160,36 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
             pidAlive = probe.code === 0 && probe.stdout.trim() === 'active';
           }
 
+          // BL-185: detect interval schedule from the unit file (additive, never breaks
+          // on missing/unreadable unit). Uses isScheduledOsUnitContent from os-unit.ts
+          // which checks launchd StartInterval/StartCalendarInterval and systemd
+          // OnUnitActiveSec/OnCalendar (paired .timer file). See that function for full
+          // rules.
+          let isScheduled = false;
+          let plistContent = '';
+          if (!pidAlive && loaded && fsMod.existsSync(e.unitPath)) {
+            try {
+              plistContent = fsMod.readFileSync(e.unitPath, 'utf8');
+              isScheduled = isScheduledOsUnitContent(plistContent);
+            } catch { /* best-effort */ }
+          }
+          // systemd timer seam: check for the paired .timer file.
+          if (!pidAlive && loaded && osKind === 'systemd' && !isScheduled) {
+            const timerPath = e.unitPath.replace(/\.service$/, '.timer');
+            if (fsMod.existsSync(timerPath)) {
+              try {
+                const timerContent = fsMod.readFileSync(timerPath, 'utf8');
+                isScheduled = isScheduledOsUnitContent(timerContent);
+              } catch { /* best-effort */ }
+            }
+          }
+
           // If the OS supervisor says dead, check for orphan processes still running
           // (launchd unit was unloaded/replaced but the process survived).
-          if (!pidAlive && osKind === 'launchd' && fsMod.existsSync(e.unitPath)) {
+          if (!pidAlive && !isScheduled && osKind === 'launchd' && fsMod.existsSync(e.unitPath)) {
             try {
-              const plist = fsMod.readFileSync(e.unitPath, 'utf8');
+              // Reuse the already-read plistContent if available.
+              const plist = plistContent || fsMod.readFileSync(e.unitPath, 'utf8');
               const argsSection = plist.split('<key>ProgramArguments</key>')[1]?.split('</array>')[0];
               if (argsSection) {
                 const argRe = /<string>(.*?)<\/string>/g;
@@ -6168,9 +6247,13 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
             activatedAt = '';
           }
 
+          // BL-185: SCHEDULED supersedes DEAD when the unit is a loaded interval
+          // job between firings. DEAD remains correct for: (a) non-interval units
+          // with no pid; (b) interval units that launchd no longer has loaded.
+          // ([inv:list-never-lies]: "no current pid" ≠ "dead" for a tick job.)
           const status: HealthRecord['status'] = pidAlive
             ? (isOrphan ? 'degraded' : 'healthy')
-            : 'dead';
+            : (isScheduled ? 'scheduled' : 'dead');
 
           // Check if the extension manifest is newer than the generated OS unit.
           let staleReason: string | undefined;
@@ -6190,7 +6273,7 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
             key: `${rec.extId}@os-unit`,
             scope: sc,
             root: '(os-unit)',
-            project: isOrphan ? `os-${osKind}-orphan` : `os-${osKind}`,
+            project: isOrphan ? `os-${osKind}-orphan` : (isScheduled ? `os-${osKind}-scheduled` : `os-${osKind}`),
             supervisorId: `os-${osKind}`,
             activatedAt,
             uptimeSeconds: pidAlive ? Math.floor((Date.now() - new Date(activatedAt).getTime()) / 1000) : 0,
@@ -6207,6 +6290,9 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
             status,
             osKind,
             osExitCode,
+            // BL-185: for SCHEDULED units, expose the last exit code as
+            // scheduleLastExitCode so the detail view can show "last exit 0".
+            ...(isScheduled ? { scheduleLastExitCode: osExitCode ?? null } : {}),
             ...(staleReason ? { staleReason } : {}),
           });
         }
@@ -6428,7 +6514,18 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
     const r = records[0]!;
     const uptimeStr = formatDuration(r.uptimeSeconds * 1000);
     const totalUptimeStr = formatDuration(r.totalUptimeMs);
-    const statusTag = r.status.toUpperCase();
+    // BL-185: SCHEDULED renders as "SCHEDULED (last exit N)" derived from the
+    // launchd LastExitStatus — not pid presence.
+    // BL-162 remainder: enrichmentReason appended when enrichment is stalled.
+    let statusTag = r.status.toUpperCase();
+    if (r.status === 'scheduled') {
+      const exitLabel = r.scheduleLastExitCode != null
+        ? `last exit ${r.scheduleLastExitCode}`
+        : 'last exit unknown';
+      statusTag = `SCHEDULED (${exitLabel})`;
+    } else if (r.status === 'degraded' && r.enrichmentReason) {
+      statusTag = `DEGRADED (${r.enrichmentReason})`;
+    }
     const pidLine = r.pid !== null
       ? `${r.pid}  (${r.pidAlive ? 'alive' : 'dead'})`
       : 'none';
@@ -6454,6 +6551,7 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
     if (osUnitStr) process.stdout.write(`${osUnitStr}\n`);
     if (osExitStr) process.stdout.write(`${osExitStr}\n`);
     if (r.staleReason) process.stdout.write(`Stale:        ${r.staleReason}\n`);
+    if (r.enrichmentReason) process.stdout.write(`Enrichment:   STALLED — ${r.enrichmentReason}\n`);
     process.stdout.write(`Socket:       ${socketLine}\n`);
     process.stdout.write(`Uptime:       ${uptimeStr}  (started ${r.activatedAt})\n`);
     process.stdout.write(`Last stop:    ${lastStopLine}\n`);
@@ -6476,22 +6574,34 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
   const col2 = Math.max(...records.map((r) => r.key.length), 7);
   const col3 = Math.max(...records.map((r) => r.scope.length), 5);
   const col4 = Math.max(...records.map((r) => r.project.length), 7);
-  const col5 = 8; // HEALTHY / DEGRADED / DEAD
+  // BL-185: SCHEDULED is 9 chars; BL-162: DEGRADED is 7 chars — col5 fits both.
+  const col5 = 9; // HEALTHY / DEGRADED / DEAD / SCHEDULED
 
   process.stdout.write(
-    `${'ID'.padEnd(col1)}  ${'KEY'.padEnd(col2)}  ${'SCOPE'.padEnd(col3)}  ${'PROJECT'.padEnd(col4)}  ${'STATUS'.padEnd(col5)}  PID     UPTIME      SOCKET\n`,
+    `${'ID'.padEnd(col1)}  ${'KEY'.padEnd(col2)}  ${'SCOPE'.padEnd(col3)}  ${'PROJECT'.padEnd(col4)}  ${'STATUS'.padEnd(col5)}  PID     UPTIME      NOTE\n`,
   );
   process.stdout.write(
-    `${'-'.repeat(col1)}  ${'-'.repeat(col2)}  ${'-'.repeat(col3)}  ${'-'.repeat(col4)}  ${'-'.repeat(col5)}  ------  ----------  ------\n`,
+    `${'-'.repeat(col1)}  ${'-'.repeat(col2)}  ${'-'.repeat(col3)}  ${'-'.repeat(col4)}  ${'-'.repeat(col5)}  ------  ----------  ----\n`,
   );
   for (const r of records) {
     const pidStr = r.pid !== null ? String(r.pid) : '';
     const uptimeStr = formatDuration(r.uptimeSeconds * 1000);
-    const socketStr = r.socketReachable
-      ? `${r.socketLatencyMs ?? '?'}ms`
-      : (r.pidAlive ? 'unreachable' : '—');
+    // NOTE column: enrichment stall, scheduled exit, socket latency, or dead indicator.
+    let noteStr: string;
+    if (r.enrichmentReason) {
+      noteStr = `DEGRADED: ${r.enrichmentReason}`;
+    } else if (r.status === 'scheduled') {
+      const exitLabel = r.scheduleLastExitCode != null
+        ? `last exit ${r.scheduleLastExitCode}`
+        : 'between runs';
+      noteStr = exitLabel;
+    } else if (r.socketReachable) {
+      noteStr = `${r.socketLatencyMs ?? '?'}ms`;
+    } else {
+      noteStr = r.pidAlive ? 'unreachable' : '—';
+    }
     process.stdout.write(
-      `${r.id.padEnd(col1)}  ${r.key.padEnd(col2)}  ${r.scope.padEnd(col3)}  ${r.project.padEnd(col4)}  ${r.status.toUpperCase().padEnd(col5)}  ${pidStr.padEnd(6)}  ${uptimeStr.padEnd(10)}  ${socketStr}\n`,
+      `${r.id.padEnd(col1)}  ${r.key.padEnd(col2)}  ${r.scope.padEnd(col3)}  ${r.project.padEnd(col4)}  ${r.status.toUpperCase().padEnd(col5)}  ${pidStr.padEnd(6)}  ${uptimeStr.padEnd(10)}  ${noteStr}\n`,
     );
   }
   process.exit(exitCode);

@@ -28,6 +28,8 @@ import {
   enableOsUnit,
   findNonVolatileNode,
   getOsUnitPlatform,
+  isScheduledOsUnit,
+  isScheduledOsUnitContent,
   osUnitLabel,
   readUnitMeta,
   resolveUnitNodePath,
@@ -587,5 +589,105 @@ describe('safety — never touches the real machine', () => {
     const r = enableOsUnit(makeSpec(), platform, { unitDir, exec: makeFakeExec().exec, load: false });
     expect(r.unitPath.startsWith(tmpDir)).toBe(true);
     expect(r.unitPath.includes(path.join(os.homedir(), 'Library'))).toBe(false);
+  });
+});
+
+// ─── BL-185: isScheduledOsUnitContent / isScheduledOsUnit ──────────────────────
+
+describe('BL-185 — isScheduledOsUnitContent (pure, schedule-key detection)', () => {
+  it('detects launchd StartInterval key', () => {
+    const plist = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<plist version="1.0"><dict>',
+      '  <key>Label</key><string>com.sox.user.doctor-tick</string>',
+      '  <key>StartInterval</key><integer>300</integer>',
+      '</dict></plist>',
+    ].join('\n');
+    expect(isScheduledOsUnitContent(plist)).toBe(true);
+  });
+
+  it('detects launchd StartCalendarInterval key', () => {
+    const plist = [
+      '<plist version="1.0"><dict>',
+      '  <key>Label</key><string>com.sox.user.foo</string>',
+      '  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer></dict>',
+      '</dict></plist>',
+    ].join('\n');
+    expect(isScheduledOsUnitContent(plist)).toBe(true);
+  });
+
+  it('returns false for a long-lived service plist without schedule keys', () => {
+    const plist = [
+      '<plist version="1.0"><dict>',
+      '  <key>Label</key><string>com.sox.user.memory-server</string>',
+      '  <key>KeepAlive</key><true/>',
+      '  <key>RunAtLoad</key><true/>',
+      '</dict></plist>',
+    ].join('\n');
+    expect(isScheduledOsUnitContent(plist)).toBe(false);
+  });
+
+  it('detects systemd timer OnUnitActiveSec directive', () => {
+    const timerUnit = [
+      '[Unit]',
+      'Description=SOX doctor tick timer',
+      '[Timer]',
+      'OnBootSec=300',
+      'OnUnitActiveSec=300',
+      '[Install]',
+      'WantedBy=timers.target',
+    ].join('\n');
+    expect(isScheduledOsUnitContent(timerUnit)).toBe(true);
+  });
+
+  it('detects systemd timer OnCalendar directive', () => {
+    const timerUnit = '[Timer]\nOnCalendar=*:0/5\n';
+    expect(isScheduledOsUnitContent(timerUnit)).toBe(true);
+  });
+
+  it('returns false for empty string', () => {
+    expect(isScheduledOsUnitContent('')).toBe(false);
+  });
+
+  it('returns false for a plain systemd .service unit with no timer directives', () => {
+    const serviceUnit = '[Service]\nExecStart=/usr/local/bin/node /foo/bar.js\n';
+    expect(isScheduledOsUnitContent(serviceUnit)).toBe(false);
+  });
+});
+
+describe('BL-185 — isScheduledOsUnit (file-based, additive)', () => {
+  it('returns true when the unit file contains StartInterval', () => {
+    const plist = '<plist><dict><key>StartInterval</key><integer>300</integer></dict></plist>';
+    const unitFile = path.join(tmpDir, 'com.sox.user.tick.plist');
+    fs.writeFileSync(unitFile, plist);
+    expect(isScheduledOsUnit(unitFile)).toBe(true);
+  });
+
+  it('returns false when the unit file is a long-lived service (no schedule key)', () => {
+    const plist = '<plist><dict><key>KeepAlive</key><true/></dict></plist>';
+    const unitFile = path.join(tmpDir, 'com.sox.user.server.plist');
+    fs.writeFileSync(unitFile, plist);
+    expect(isScheduledOsUnit(unitFile)).toBe(false);
+  });
+
+  it('returns false for a non-existent unit file (additive — never throws)', () => {
+    expect(isScheduledOsUnit(path.join(tmpDir, 'does-not-exist.plist'))).toBe(false);
+  });
+
+  it('returns true for a systemd .service when the paired .timer carries OnUnitActiveSec', () => {
+    const serviceUnit = '[Service]\nExecStart=/usr/local/bin/node /foo/bar.js\n';
+    const timerUnit = '[Timer]\nOnBootSec=300\nOnUnitActiveSec=300\n';
+    const servicePath = path.join(tmpDir, 'sox-user-tick.service');
+    const timerPath = path.join(tmpDir, 'sox-user-tick.timer');
+    fs.writeFileSync(servicePath, serviceUnit);
+    fs.writeFileSync(timerPath, timerUnit);
+    expect(isScheduledOsUnit(servicePath)).toBe(true);
+  });
+
+  it('returns false for a systemd .service when the paired .timer is absent', () => {
+    const serviceUnit = '[Service]\nExecStart=/usr/local/bin/node /foo/bar.js\n';
+    const servicePath = path.join(tmpDir, 'sox-user-server.service');
+    fs.writeFileSync(servicePath, serviceUnit);
+    expect(isScheduledOsUnit(servicePath)).toBe(false);
   });
 });

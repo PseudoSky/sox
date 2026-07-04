@@ -199,6 +199,9 @@ export {
   disableOsUnit,
   restartOsUnit,
   unloadThenReap,
+  // BL-185: interval-schedule detection for SCHEDULED status rendering.
+  isScheduledOsUnitContent,
+  isScheduledOsUnit,
 } from './os-unit.js';
 export type {
   OsSupervisor,
