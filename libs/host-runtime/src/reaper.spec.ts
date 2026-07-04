@@ -49,13 +49,18 @@ vi.mock('node:child_process', async (importOriginal) => {
       // When the flag is ON, return controlled data so the test never
       // invokes the real `ps` binary (macOS does not support `-o env`).
       if (args.includes('env=')) {
-        // readProcessEnv — return env for the fake pid.
+        // readProcessEnv (procps path) — return env for the fake pid.
         const pidIdx = args.indexOf('-p');
         const targetPid = pidIdx !== -1 ? Number(args[pidIdx + 1]) : 0;
         if (targetPid === 99999) {
           return 'SOX_SERVICE_ID=test-svc\0\0';
         }
         throw new Error('ps: env: keyword not found');
+      }
+      if (args.includes('-E')) {
+        // BL-177 darwin one-shot scan — BSD `ps -E` appends the environment
+        // to each command line.
+        return '99999   1 /usr/bin/node /unrelated/path.js SOX_SERVICE_ID=test-svc\n';
       }
       // snapshotProcesses — return a single fake process.
       return '99999   1 /usr/bin/node /unrelated/path.js\n';

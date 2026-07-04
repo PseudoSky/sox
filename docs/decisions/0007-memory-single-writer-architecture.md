@@ -1,8 +1,14 @@
 # ADR 0007 — Memory platform architecture: single writer, reusable subsystems, remote-first (enterprise target)
 
-- **Status:** PROPOSED v2 — v1 (2026-07-03 morning) carried four provisional ⚖ defaults;
-  the owner answered all four the same day and this revision incorporates those answers.
-  v1 never shipped, so this revises in place rather than superseding.
+- **Status:** ACCEPTED (2026-07-04, context-06 closeout) — the architecture is fully
+  implemented and live-verified: single-writer backend behind front-shim proxies (HF-5
+  forensics PASS), two-phase write/update with off-slot embedding, transactional-outbox
+  enrichment heartbeat, time-based write-queue admission control, continuous supervision
+  (crash-loop caps + scheduled doctor reconcile), and hermetic test isolation. Evidence:
+  `docs/plan/runtime-productionization/06-hardening-final/REPORT.md`.
+  (History: PROPOSED v2 — v1 (2026-07-03 morning) carried four provisional ⚖ defaults;
+  the owner answered all four the same day and v2 incorporated those answers. v1 never
+  shipped, so v2 revised in place rather than superseding.)
 - **Drives:** BACKLOG.md BL-118 … BL-149 ("memory-server production hardening: locking &
   topology"). Every entry maps into a phase in §Roadmap.
 - **Grounding:** the 2026-07-02/03 lock-contention incident (forensics in BL-118..145)

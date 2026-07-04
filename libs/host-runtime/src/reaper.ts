@@ -319,11 +319,44 @@ export function findOrphansByServiceId(
 
   // Prefer env-based matching (cross-build safe).
   const envMatches: OrphanMatch[] = [];
-  for (const p of snapshotProcesses()) {
-    if (exclude.has(p.pid)) continue;
-    const env = readProcessEnv(p.pid);
-    if (env && env['SOX_SERVICE_ID'] === serviceId) {
-      envMatches.push({ ...p, orphaned: p.ppid === 1 });
+  if (serviceId && process.platform === 'darwin') {
+    // BL-177: BSD/macOS ps has no `env` output keyword — env matching was
+    // silently INERT here (every per-pid `ps -o env` probe failed). BSD ps
+    // DOES support `-E` (append the environment to each command line), so a
+    // single whole-table scan restores SOX_SERVICE_ID matching AND replaces
+    // the O(N)-subprocess per-pid probing. Values with spaces are ambiguous
+    // in the -E format, but SOX_SERVICE_ID values are space-free identifiers
+    // — an exact whitespace-delimited token match is precise.
+    try {
+      const out = execFileSync('ps', ['-E', '-A', '-ww', '-o', 'pid=,ppid=,args='], {
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024, // env blocks inflate lines well past argv size
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const needle = `SOX_SERVICE_ID=${serviceId}`;
+      for (const line of out.split('\n')) {
+        const m = /^(\d+)\s+(\d+)\s+(.*)$/.exec(line.trimStart());
+        if (!m) continue;
+        const pid = Number(m[1]);
+        const ppid = Number(m[2]);
+        const argsAndEnv = m[3] ?? '';
+        if (exclude.has(pid)) continue;
+        if (argsAndEnv.split(/\s+/).includes(needle)) {
+          envMatches.push({ pid, ppid, args: argsAndEnv, orphaned: ppid === 1 });
+        }
+      }
+    } catch {
+      /* -E unavailable or ps failed — fall through to the argv fallback */
+    }
+  } else if (serviceId) {
+    // procps (Linux): per-pid `ps -o env=` probes, memoized off after the
+    // first keyword failure (readProcessEnv).
+    for (const p of snapshotProcesses()) {
+      if (exclude.has(p.pid)) continue;
+      const env = readProcessEnv(p.pid);
+      if (env && env['SOX_SERVICE_ID'] === serviceId) {
+        envMatches.push({ ...p, orphaned: p.ppid === 1 });
+      }
     }
   }
   if (envMatches.length > 0) return envMatches;

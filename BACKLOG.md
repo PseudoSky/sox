@@ -4,26 +4,31 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
-## Current status — 2026-07-04
+## Current status — 2026-07-04 (post-context-06 closeout sweep)
 
-**Total open: 41 items.** Hash backend removed → BL-86/87/89 closed, BL-88/90 re-scoped.
+**Total open: 39 items.** Hash backend removed → BL-86/87/89 closed, BL-88/90 re-scoped.
+BL-165 (ingest consolidation) resolved by S11. Context-06 closeout additionally resolved:
+BL-173/BL-179 (test hermeticity), BL-177 (macOS ps env matching), BL-185 (SCHEDULED
+rendering), BL-183 (outbox scaffolding deleted), BL-189/BL-191 (two-phase memory_update +
+metrics), BL-190 (version alignment), BL-192 (resolved-invalid). Newly filed: BL-201,
+BL-202, BL-203.
 
-**Defined solutions (29)** — clear fix path, no pending decisions:
+**Defined solutions (27)** — clear fix path, no pending decisions:
 
 | Priority | Items |
 |---|---|
-| **HIGH** | BL-168 (module-resolution standard), BL-173 (worktree smoke hermetic), BL-179 (test root isolation), BL-94 (better-sqlite3 rebuild guard), BL-100 (filters in memory-core), BL-96 (cd to repo-root in audit), BL-181 (e2e memory-daemon removal) |
-| **MEDIUM** | BL-161 (test singleton + worker pinning), BL-171 (onnx V8 crash), BL-99 (merge-candidate savings), BL-102 (execution_mode field), BL-105 (7 stubs), BL-88 (per-record embed_model), BL-90 (recall recipes), BL-57 (cleanup SOX_HOME residue), BL-177 (macOS ps fix), BL-185 (periodic os-unit DEAD fix), BL-180 (dataRoot scope-path fix), BL-189 (memory_update async embed) |
-| **LOW** | BL-201 (lock debris sweep), BL-202 (flaky export test — investigation), BL-190 (version/changelog lag), BL-191 (re-embed metrics), BL-176 (quickReconcile helper), BL-178 (stderr sink default), BL-182 (memory-flush dead code), BL-184 (RS-6 doc fix), BL-98 (SKILL.md contract), BL-106 (b_per_tier defaults), BL-107 (move patches to readDag), BL-104 (nested type inlining), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder), BL-117 (late chunking boundaries), BL-167 (scoreBreakdown edge case), BL-188 (embed updates schema field naming), BL-108 (multi-host `--host` comma-separated) |
+| **HIGH** | BL-168 (module-resolution standard), BL-94 (better-sqlite3 rebuild guard), BL-100 (filters in memory-core), BL-96 (cd to repo-root in audit), BL-181 (e2e memory-daemon removal) |
+| **MEDIUM** | BL-161 (test singleton + worker pinning), BL-171 (onnx V8 crash), BL-99 (merge-candidate savings), BL-102 (execution_mode field), BL-105 (7 stubs), BL-88 (per-record embed_model), BL-90 (recall recipes), BL-57 (cleanup SOX_HOME residue), BL-180 (dataRoot scope-path fix) |
+| **LOW** | BL-201 (lock debris sweep), BL-176 (quickReconcile helper), BL-178 (stderr sink default), BL-182 (memory-flush dead code), BL-184 (RS-6 doc fix), BL-98 (SKILL.md contract), BL-106 (b_per_tier defaults), BL-107 (move patches to readDag), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder), BL-117 (late chunking boundaries), BL-188 (embed updates schema field naming), BL-108 (multi-host `--host` comma-separated) |
 | **LOW/MEDIUM** | BL-36 (record real manifest type) |
 
 **[TRIAGE] items (12)** — needs decision, investigation, or prerequisite before work starts:
 
 | Priority | Items |
 |---|---|
-| **HIGH** | BL-97 (3 approaches for audit artifact gate — pick one) |
-| **MEDIUM** | BL-95 (how memory-cli discovers live store — 3 approaches), BL-104 (nested type inlining — 2 approaches), BL-62 (multi-project projection unverified — needs investigation), BL-113 (publish ingest or inline elsewhere — pick), BL-114 (LanceDB real or rename — pick), BL-166 (per-package wire/remove decisions), BL-165 (ingest consolidation sequencing — decision made, sequenced after S7) |
-| **LOW** | BL-103 (priorVersion param vs disk-read for snapshot — pick), BL-167 (fix math or document edge case — pick), BL-202 (partial flake — root cause unknown) |
+| **HIGH** | BL-97 (artifact gate: working-tree vs ref vs auto-commit) |
+| **MEDIUM** | BL-95 (store discovery: scan vs register vs hybrid), BL-104 (nested type inlining: auto vs manual annotation), BL-62 (multi-project projection — needs investigation), BL-113 (ingest publishability — deferred to v1.0), BL-114 (LanceDB: wire real dep vs rename to InMemory), BL-166 (3 orphaned packages: wire or remove per-package), BL-203 (tick unload after artifact-changing upgrade — needs controlled repro) |
+| **LOW** | BL-103 (snapshot version: param vs disk-read), BL-167 (scoreBreakdown: fix math vs document edge case), BL-202 (flake — root cause unknown) |
 | **FEATURE** | BL-163 (blocked on code-signing identity) |
 
 ---
@@ -69,7 +74,7 @@ incident forensics (a dead pid in a "live" lock file).
 pid is dead AND older than the lock TTL (same safe-by-construction attribution style as its
 socket reaping). No change to the acquire/release protocol.
 
-### BL-202 — `export.spec.ts` "per-topic INDEX.md sorted by importance" is flaky under full-suite load — **[TRIAGE] Open (LOW, flake) (2026-07-04)**
+### BL-202 — memory-core suite flakes under full-suite CPU load: `export.spec.ts` per-topic INDEX ordering + `concurrency-harness.spec.ts` — **[TRIAGE] Open (LOW, flake) (2026-07-04)**
 
 **What's wrong:** during the BL-183 closeout gate, `npx nx test memory-core --skip-nx-cache`
 failed once on `exportMarkdown — INDEX.md › writes per-topic INDEX.md listing nodes sorted by
@@ -80,11 +85,22 @@ under concurrent-suite CPU load.
 **Where:** `libs/memory-core/src/export.spec.ts:149` (two `memoryWrite`s + `exportMarkdown`,
 asserts one topic dir and high-importance-first ordering).
 
+**Second instance (same class, BL-189 gate):** `concurrency-harness.spec.ts` failed once during
+an uncached full-suite run (1/3 tests), then passed on the immediate uncached re-run. Both files
+share the shape: multi-process/timing-sensitive assertions that trip only when the host is under
+concurrent build/test load.
+
 **Fix sketch:** reproduce with `--retry=0` in a loop while the rest of the suite runs, capture
 which assertion trips (topic-dir count vs ordering). Suspect surface: the two-phase write's async
 Phase B interacting with export reading vec/enrichment state, or same-timestamp tie-breaks in the
 INDEX sort. Make the test await a deterministic barrier (or pin distinct timestamps) once the
 tripping assertion is known.
+
+**Triage context:** The tripping assertion is unknown — reproduce-first, fix-second. Options:
+(a) Invest reproduction effort now (loop under load, capture assertion), (b) wait until the flake
+blocks a gate (it passed 2/3 full-suite runs), or (c) proactively harden the test with pinned
+timestamps and a deterministic enrichment barrier (~30 min, best-effort without knowing the root
+cause). The effort-to-impact ratio depends on how often the flake actually gates work.
 
 ## Open — surfaced by the embed-pipeline observability worktree (2026-07-04)
 
@@ -235,7 +251,15 @@ in needs a fast-path variant (skip the lsof attribution + per-install scans unle
 off) so `list` stays snappy. Fix sketch: extract `doctorReconcile`'s phases 0/3 (GC + split-brain
 record heal) into a `quickReconcile()` helper both commands call; leave stray-reaping to the tick.
 
-### BL-177 — `findOrphansByServiceId` env-based matching is INERT on macOS (`ps -o env` unsupported) and spawns one `ps` per process-table entry — **Open (MEDIUM) (2026-07-04)**
+### BL-177 — `findOrphansByServiceId` env-based matching is INERT on macOS (`ps -o env` unsupported) and spawns one `ps` per process-table entry — **RESOLVED (2026-07-04, HF-6)**
+
+**Resolution:** implemented the fix sketch — on darwin, one whole-table `ps -E -A -ww -o
+pid=,ppid=,args=` scan (BSD `-E` appends the environment; exact whitespace-token match on
+`SOX_SERVICE_ID=<id>`, which is space-free) replaces the per-pid probing entirely; on Linux the
+`ps -o env=` path remains, now memoized off after the first keyword failure and with piped child
+stderr (the failing probes were ALSO flooding the doctor-tick log at 2.5 MB/day — same commit).
+Live-verified: `ps -E` reads env on real processes on this box (2 live `SOX_SERVICE_ID` carriers
+visible). host-runtime 225/225.
 
 Discovered while wiring `doctor --reconcile` (Slice 4) onto the BL-136 matchers: macOS `ps` has no
 `env` keyword (`ps: env: keyword not found` — verified live on this box), so `readProcessEnv`
@@ -673,6 +697,14 @@ is the only invariant.
 
 **Found:** during S7/BL-161 test threshold re-tuning. Tests adjusted to document the edge case.
 
+**Triage context:** Two approaches, both cheap (~1-5 lines). Option A (fix the math) restores
+the documented invariant for all callers but needs care to avoid division-by-zero on the
+all-channels-zero path. Option B (document the edge case) is a one-line comment fix but leaves
+the per-channel breakdown silently wrong for the lowest-ranked result in single-channel recalls.
+The decision depends on whether any downstream consumer (CLI display, agent tool rendering)
+reads per-channel scores and would be misled by 0/0/0 for a valid result. Current known
+consumers: `memory_stats` surfaces the breakdown; no known consumer acts on per-channel values.
+
 ---
 
 ## Open — build-tooling / module-resolution debt (2026-07-04)
@@ -896,6 +928,13 @@ memory-server-specific: a manifest `display_name` + `login_item: true` drives re
 identity is configured. Example motivating case: memory-server → "Sox Memory". Prereq: a Developer
 ID / signing identity + a bundled signed helper target.
 
+**Triage context:** Not actionable until a code-signing identity is obtained (Developer ID or
+Apple Developer Program). No design decisions are blocked — the feature path is clear (SMAppService
+registration in os-unit.ts, manifest `display_name` field, signed helper binary). Two decision
+points when the prereq is met: (a) which extensions get `login_item: true` by default vs opt-in,
+(b) whether the signed helper is a dedicated binary or a signed wrapper around `node` + the extension.
+These are naturally deferred until signing exists.
+
 ### BL-164 — loose `scripts/capture-*-baseline.mjs` create an nx lint circular-dep; promote/exclude them (same class as BL-160) — **RESOLVED (2026-07-04, S10)**
 
 Surfaced by S2: `npx nx lint memory-core --skip-nx-cache` reportedly showed 22 `@nx/enforce-module-boundaries`
@@ -1059,6 +1098,19 @@ checking; cross-encoder = higher-precision recall reranking behind a flag) **or 
 per item — don't leave built-but-unconsumed code accruing (owner directive: fix/remove, don't defer).
 Note `@adhd/sox-analysis` + `@adhd/sox-vector-store` currently also count `memory-daemon` as an
 importer, but that's dead code being removed in S9 — they remain live via memory-core.
+
+**Triage context — three independent decisions, per package:**
+
+| Package | Wire-in effort | Wire-in value | Remove cost |
+|---------|--------------|-------------|-------------|
+| **blob-store** (~1.8k LOC) | Medium: add write-path offload for content >chunk_size, reference by hash in node rows | High: keeps large docs/media out of SQLite rows, essential for RAG with big documents | Low: no consumers, re-creatable from spec if needed later |
+| **claim-verification** (~1.1k LOC) | Medium: add enrichment step after write, verify new claims against existing, flag/supersede contradictions | Medium: raises memory quality, most compelling orphan to keep | Low: no consumers, but the contradiction-detection logic is non-trivial to reconstruct |
+| **cross-encoder** (~300 LOC + worker) | High: needs real ONNX model (BL-116), worker bundling fix, integration into recall behind a flag, latency budget | High for precision recall, but the vec+BM25 fusion already works well | Low-medium: part of public `hybrid-search` package — deprecate + no-op rather than remove to avoid breaking API |
+
+The owner directive is "fix/remove, don't defer" — each needs a binary decision. The most
+bang-for-effort is wiring blob-store (clear integration path, solves a real scaling problem).
+The most interesting long-term is claim-verification (contradiction detection). The cross-encoder
+is the most expensive to wire in relative to its current value.
 
 ### BL-160 — promote `reembed-memory.mjs` orchestration into a library + `memory-cli` verb (root cause of BL-159) — **RESOLVED (2026-07-04)**
 
@@ -1597,6 +1649,13 @@ The binding directory `node-v137-darwin-arm64/` does not exist — the module wa
 
 **Workaround:** use `memory-cli export --db ~/.memory/memory.db` (accepts explicit `--db`). For reads/writes use `soxe exec memory-server <tool> --args='{"db_path":"~/.memory/memory.db",...}'`.
 
+**Triage context:** Three approaches, different effort/impact profiles:
+- **(1) `memory init --scope user`** — creates a new scoped DB alongside the existing one, leaving the canonical `memory.db` undetected. Confusing but works if user migrates. ~0 code change.
+- **(2) Scan for bare `memory.db`** — fixes the immediate UX (no more "No stores found" when a store exists) at low effort. But doesn't resolve the fundamental naming inconsistency — every CLI call that doesn't scan will still miss it. ~1-2 hours.
+- **(3) Detect + register** — the cleanest long-term solution: `memory init` discovers existing DBs and aliases them into the registry. But changes `memory init` semantics and needs migration-logic testing. ~3-5 hours.
+
+The core question: should `memory-cli` auto-discover stores (option 2, most user-friendly) or require explicit registration (option 1/3, more predictable)?
+
 ---
 
 ### BL-96 — plan-state-machine: dod-confirmation audit runs from `cwd:planDir`, guard runs from repo-root → repo-relative checks fail; `parseDodIds` reads inline `[dod.N]` prose as phantom clause — **Open (HIGH) (2026-06-25)**
@@ -1626,6 +1685,13 @@ The binding directory `node-v137-darwin-arm64/` does not exist — the module wa
 - Document the commit requirement explicitly in the work-order template and `--complete` help text: "all artifacts the guard checks must be staged and committed before `--complete`."
 - Or: run the audit against the working tree (not `end_ref`) for artifact-existence checks, reserving the ref check for diff/hash verification.
 - Or: `state-transition.js --complete` auto-stages and commits declared `artifacts[]` when they are unstaged, with a warning.
+
+**Triage context:** Three approaches with different trade-offs:
+- **(A) Document only** — cheapest (~0 code, doc change), but punts the problem to every future orchestrator author. The footgun will keep firing.
+- **(B) Working-tree audit** — checks what's actually on disk. More correct behavior, but `end_ref` loses its meaning as a stable checkpoint. Risk: an audit that passes against the working tree may reference artifacts that vanish on `git checkout`.
+- **(C) Auto-stage+commit** — most magical; risks committing unintended changes if `artifacts[]` glob is too broad. The `--complete` command becomes a git-mutating operation, which may surprise users.
+
+The root question: should `--complete` validate "what was finished" (the working tree) or "what was recorded" (the ref)? Approach (B) is most natural for in-progress work; (A) is safest for audit trails.
 
 ---
 
@@ -1710,6 +1776,14 @@ is no mechanism to increment it.
 - Read the prior snapshot from disk inside `snapshotWithDag()` and forward the version.
 Option A is cleaner (keeps `snapshot()` pure). Add `snapshot(dag, { version?: number })` opts bag.
 
+**Triage context:** Option A (parameter) keeps `snapshot()` pure and testable — no I/O, no
+filesystem coupling. Option B (disk-read) is more convenient for callers but adds a hidden
+side effect. The decision depends on whether `snapshot()` is ever called in contexts where
+the caller doesn't have the prior version handy (e.g. CLI one-shot tools). If every caller
+naturally has access to the prior version (they just read it from disk), option B adds zero
+value. If some callers want a stateless "take a snapshot" without managing version state,
+option B saves them a read. Both are small changes (~5-10 lines).
+
 ---
 
 ### BL-104 — `compilePrompt()` doesn't drill into complex nested type shapes → agents invent minimal/incorrect interpretations for fields whose type is itself a multi-field interface — **[TRIAGE] Open (MEDIUM) (2026-06-28)**
@@ -1733,6 +1807,18 @@ included anywhere in the compiled prompt — the agent has no schema to work fro
 name (detected by capital-first or explicit annotation in the op), look up and inline that
 interface's own field specs as a nested block in the prompt. Alternatively, allow op authors
 to add a `type_spec: { field: type }[]` array on `add-field` ops for inline sub-typing.
+
+**Triage context:** Two approaches:
+- **(A) Automatic inlining** — `compilePrompt()` introspects known interface shapes (by name) and
+  inlines their fields. Always correct, no author overhead. Requires a type-shape registry or AST
+  introspection (ts-morph). More work to implement but sets the convention once.
+- **(B) Manual `type_spec` annotation** — simpler to implement but every op author must remember
+  to annotate complex types. The observed failure (Haiku agent producing wrong output) would not
+  be prevented for unannotated ops.
+
+The trade-off is correctness vs implementation cost. Approach (A) is the right long-term answer
+but needs the type-introspection infrastructure. Approach (B) is a quicker fix that shifts the
+burden to op authors.
 
 ---
 
@@ -2078,6 +2164,14 @@ arg) through `tools/call` so attribution is per-request, not per-backend-process
 backend's `project_path` is `(unverified)` for multi-project setups. Surfaced + flagged during Slice
 1.6; NOT silently regressed (BL-56's per-shim injection still happens, it just can't reach a shared
 running backend).
+
+**Triage context:** Marked `(unverified)` — the actual multi-project contention has never been
+reproduced in a test or observed in production. Before a fix can be designed, two questions need
+answering: (1) Is multi-project memory-server usage a supported scenario? (currently single-project
+is the documented pattern), (2) if yes, does the actual behavior match the hypothesized race (second
+shim's `SOX_CONFIG_PROJECT_PATH` ignored)? The fix path (per-call workspace via MCP `roots`) is
+clear but adds complexity to the tool-call dispatch path. If multi-project is not a supported
+scenario, document as unsupported and close. If it is, invest in reproducing first, then fix.
 
 ### BL-63 — `host-runtime:test-e2e` BL-31 orphan scan uses a global `pgrep -f memory-server/dist/index.js`, so a CONCURRENT live proxy session on the dev box is mis-counted as a leaked orphan — **RESOLVED (2026-06-25, `feat/proxy-default-memory-backend`)**
 
@@ -3539,7 +3633,11 @@ See `docs/plan/client-refactor/ARCH.md` for the full plan.
 Priority order: `extractive.ts` (simplest — pure function, no DB) → `importance.ts` →
 `neardup.ts` → `cluster.ts` → `autolink.ts`.
 
-### BL-113 — `@adhd/sox-ingest` is `private: true`, un-publishable from adhd — **[TRIAGE]**
+### BL-113 — `@adhd/sox-ingest` is `private: true`, un-publishable from adhd — **[TRIAGE (superseded by BL-165)]**
+
+_Note: superseded by BL-165 (S11 consolidation). The consolidation is complete — `hexSha256` and
+`splitIntoChunksSentence` are now exported from `@adhd/sox-ingest` and re-exported through
+`memory-core`. Publishability decision deferred to memory-core v1.0 milestone per BL-165 closeout._
 
 **Observed:** `libs/data/ingest/ingest/package.json` has `"private": true`, making it
 impossible to publish to npm. The adhd monorepo's `agent-mcp-authoring` plan needs
@@ -3555,6 +3653,13 @@ prevents standard npm resolution. Makes the adhd→soxe dependency fragile.
 `extractiveSummary()` function into `@adhd/sox-analysis` or a new public helper package
 and deprecate `@adhd/sox-ingest` as internal-only. Option (b) is cleaner since
 `@adhd/sox-ingest` was designed as a private memory-domain ingest helper.
+
+**Triage context:** Superseded by BL-165's outcome — the S11 consolidation made `ingest` the
+canonical ingestion layer (chunking + hashing + summary routed through it). The remaining
+question is publishability, which was explicitly deferred: "keep `private: true` until
+memory-core v1.0 publish milestone; decision deferred to HF-6 closeout" (per BL-165 closeout).
+The `agent-mcp-authoring` dependency can use a local path workaround until then. No new
+decision needed — the existing deferral stands.
 
 ---
 
@@ -3577,6 +3682,20 @@ a LanceDB backend. Only suitable as a test stub or prototype.
 calls in `LanceDbVectorBackend`, or (b) rename to `InMemoryVectorBackend` and document
 it as a test-only adapter. Decision depends on whether LanceDB is the intended
 production backend or an evaluation candidate.
+
+**Triage context:** The `sqlite-vec`-backed `SqliteVectorBackend` IS the production vector
+store — it's consumed live by `memory-core` and is the default backend. LanceDB was built as
+an evaluation candidate, not a production backend. Two options:
+- **(A) Wire real LanceDB** — expensive: heavy dependency (`@lancedb/lancedb` pulls native
+  Arrow/Polars binaries), complex API integration (HNSW/IVF-PQ index building), no consumer
+  needs it. There is no roadmap item that requires LanceDB support.
+- **(B) Rename to `InMemoryVectorBackend`** — cheap (~5 min rename + doc). Honest about what
+  it is: a test/prototype adapter for running without a real vector store. No lost capability
+  since nothing uses it.
+
+The decision depends on whether LanceDB is on the roadmap as a production backend. If not,
+option (B) is the obvious choice — the misleading name could cause someone to select it for
+production mistakenly.
 
 ### BL-115 — AST chunker uses regex-based heuristics, not tree-sitter AST parsing
 

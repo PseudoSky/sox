@@ -80,11 +80,11 @@
   {
     "id": "memory-server",
     "type": "mcp-server",
-    "version": "1.2.1",
+    "version": "1.3.0",
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:260e40edb15117dc1c9e059946a563d983d91cf214f67472c837289425d30bd9",
+    "checksum": "sha256:6c85f25665f46f2bdcdfe9b76b6bbf5ce6e35c7368122deb09d47a661895f325",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -200,7 +200,7 @@
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/apps/sox",
-    "checksum": "sha256:fd0357d937ddb3fe373bbec8c5617262cc3bbfd22fe54f74b1d4afe6ed09b045",
+    "checksum": "sha256:445ee236c8417074bdd1b1123b32db45462df924bb7f61a6ae7f35202ab210eb",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     }
