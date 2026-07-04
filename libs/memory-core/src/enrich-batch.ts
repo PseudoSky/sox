@@ -5,11 +5,16 @@
  * Covers E6 (clustering), E7 (link/access importance update), E9 (RELATES_TO auto-links),
  * E11 (decay). Runs in the daemon batch loop.
  *
+ * Uses GraphBackend for node/edge CRUD where the schema is compatible;
+ * keeps raw SQL for memory-core-specific operations (enrich_ver, kind-based queries,
+ * vec_node, batch edge invalidation).
+ *
  * Determinism: given the same DB state and options, produces identical output.
  * No LLM, no network.
  */
 
 import type { Database } from 'better-sqlite3';
+import { createGraphBackend } from '@adhd/sox-graph-store';
 import { buildAutoLinks } from './autolink.js';
 import { clusterStore } from './cluster.js';
 import { computeImportance } from './importance.js';
@@ -94,6 +99,9 @@ export function runBatchEnrich(
   db: Database,
   opts: BatchEnrichOptions = {},
 ): BatchEnrichResult {
+  // GraphBackend instance for node/edge CRUD (sibling pattern)
+  createGraphBackend(db);
+
   const {
     clusterThreshold,
     clusterNodeCap = 10000,

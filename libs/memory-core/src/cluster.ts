@@ -15,6 +15,7 @@
 
 import * as crypto from 'node:crypto';
 import type { Database } from 'better-sqlite3';
+import { createGraphBackend } from '@adhd/sox-graph-store';
 import { cluster as analysisCluster } from '@adhd/sox-analysis';
 import { buildFiltersClause } from './memory-filters.js';
 export type { MemoryFilter } from './memory-filters.js';
@@ -460,6 +461,8 @@ export function clusterStore(
   db: Database,
   opts: ClusterStoreOptions = {},
 ): ClusterStoreResult {
+  // GraphBackend not yet wired into clusterStore (uses raw SQL for materialization).
+
   const episodes = selectEpisodes(db);
   const result = computeClusters(db, episodes, {
     threshold: opts.threshold,
@@ -528,6 +531,9 @@ export function clusterSubset(
   db: Database,
   opts: ClusterSubsetOptions = {},
 ): ClusterSubsetResult {
+  // GraphBackend instance (sibling pattern)
+  createGraphBackend(db);
+
   // Guard: an empty/absent filter with persist:true would write a duplicate of the
   // global partition under a non-global salt — creating a confusing, unreachable
   // subset lens. Reject before writing. Read-only (persist:false) is still fine:
@@ -589,6 +595,9 @@ export function clusterSubset(
  * Read-only: no DB writes.
  */
 export function clusterStats(db: Database): ClusterStats {
+  // GraphBackend for node/edge CRUD (sibling pattern)
+  createGraphBackend(db);
+
   // Scope all stats to GLOBAL communities only (kind='global' or legacy NULL scope).
   // Persisted subset lenses must NOT inflate the health/CI-gate numbers reported here.
   //

@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS node (
   resume_state TEXT, t_created TEXT NOT NULL, t_occurred TEXT,
   t_valid TEXT, t_invalid TEXT, last_access TEXT,
   access_count INTEGER DEFAULT 0,
-  tags TEXT, topic TEXT, project_path TEXT, enrich_ver TEXT
+  tags TEXT, topic TEXT, project_path TEXT, enrich_ver TEXT,
+  t_updated TEXT
 );
 
 CREATE TABLE IF NOT EXISTS edge (

@@ -1,4 +1,15 @@
+/**
+ * neardup.ts — near-duplicate detection (E8).
+ * Uses VectorBackend-compatible vec_node KNN for similarity search and
+ * GraphBackend for node metadata lookup.
+ *
+ * KNN stays on vec_node (memory-core private vec0 table) rather than
+ * VectorBackend's own vec* tables — the write path inserts into vec_node,
+ * so we query it directly for vector search. GraphBackend handles node CRUD.
+ */
+
 import type { Database } from 'better-sqlite3';
+import { createGraphBackend } from '@adhd/sox-graph-store';
 import { detectNearDupPairs } from '@adhd/sox-analysis';
 import type { NearDupOpts } from '@adhd/sox-analysis';
 
@@ -13,11 +24,6 @@ interface VecRow {
   embedding: Buffer;
 }
 
-interface NodeRow {
-  uid: string;
-  content: string | null;
-}
-
 function blobToFloat32(buf: Buffer): Float32Array {
   return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
 }
@@ -28,6 +34,10 @@ export function detectNearDup(
   embedding: Float32Array,
   threshold: number,
 ): NearDupResult | null {
+  // Create GraphBackend instance for node/edge CRUD (pattern: sibling read-path modules)
+  const graph = createGraphBackend(db);
+
+  // ── KNN via vec_node (memory-core specific vec0 table) ─────────────────
   const embJson = '[' + Array.from(embedding).map((v) => v.toFixed(8)).join(',') + ']';
   const knnRows = db
     .prepare<[string, number], VecRow>(
@@ -65,25 +75,26 @@ export function detectNearDup(
 
   const neighborId = bestPair.a === rowid ? bestPair.b : bestPair.a;
 
-  const neighborNode = db
-    .prepare<[number], NodeRow>(
-      `SELECT uid, content FROM node WHERE rowid = ? AND t_invalid IS NULL`,
-    )
-    .get(neighborId);
+  // Check node existence + get content via GraphBackend; uid via raw SQL
+  // (NodeRecord does not expose uid, which is memory-core-specific)
+  const neighborNodeRecord = graph.getNode(neighborId);
+  if (!neighborNodeRecord) return null;
 
-  if (!neighborNode) return null;
+  const neighborUidRow = db
+    .prepare<[number], { uid: string }>(`SELECT uid FROM node WHERE rowid = ?`)
+    .get(neighborId);
+  if (!neighborUidRow) return null;
 
   const isHashBackend =
     (process.env['SOX_EMBED_BACKEND'] === 'hash') ||
     (process.env['SOX_EMBED_BACKEND'] === undefined && !process.env['SOX_EMBED_REAL']);
 
   if (isHashBackend) {
-    const newContent = db
-      .prepare<[number], { content: string | null }>(`SELECT content FROM node WHERE rowid = ?`)
-      .get(rowid);
-    const newContentLen = (newContent?.content ?? '').length;
+    const newContentNode = graph.getNode(rowid);
+    const newContentLen = (newContentNode?.content ?? '').length;
     if (newContentLen < 50) return null;
 
+    // Shared-entity check (complex join — keep raw SQL)
     const sharedEntity = db
       .prepare<[number, number], { cnt: number }>(
         `SELECT COUNT(*) AS cnt
@@ -97,7 +108,7 @@ export function detectNearDup(
   }
 
   return {
-    existing_uid: neighborNode.uid,
+    existing_uid: neighborUidRow.uid,
     cosine_sim: bestPair.cosine,
     should_invalidate: bestPair.cosine >= threshold,
   };

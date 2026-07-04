@@ -349,7 +349,8 @@ describe('memoryUpdate — t_created immutable, t_updated set', () => {
       const wr = await memoryWrite(db, { content: 'time anchor test' });
       const uid = (wr as { episode_uid: string }).episode_uid;
       const nodeBefore = getNode(db, uid)!;
-      expect(nodeBefore.t_updated).toBeNull();
+      // t_updated is now set by enrichOnWrite → graph.touch() so it's no longer null
+      expect(nodeBefore.t_updated).toEqual(expect.any(String));
 
       const before = Date.now();
       const result = await memoryUpdate(db, { uid, importance: 7 });
