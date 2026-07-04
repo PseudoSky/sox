@@ -4,6 +4,30 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
+## Current status — 2026-07-04
+
+**Total open: 41 items.** Hash backend removed → BL-86/87/89 closed, BL-88/90 re-scoped.
+
+**Defined solutions (29)** — clear fix path, no pending decisions:
+
+| Priority | Items |
+|---|---|
+| **HIGH** | BL-168 (module-resolution standard), BL-173 (worktree smoke hermetic), BL-179 (test root isolation), BL-94 (better-sqlite3 rebuild guard), BL-100 (filters in memory-core), BL-96 (cd to repo-root in audit), BL-181 (e2e memory-daemon removal) |
+| **MEDIUM** | BL-161 (test singleton + worker pinning), BL-171 (onnx V8 crash), BL-99 (merge-candidate savings), BL-102 (execution_mode field), BL-105 (7 stubs), BL-88 (per-record embed_model), BL-90 (recall recipes), BL-57 (cleanup SOX_HOME residue), BL-177 (macOS ps fix), BL-185 (periodic os-unit DEAD fix), BL-180 (dataRoot scope-path fix), BL-189 (memory_update async embed) |
+| **LOW** | BL-201 (lock debris sweep), BL-202 (flaky export test — investigation), BL-190 (version/changelog lag), BL-191 (re-embed metrics), BL-176 (quickReconcile helper), BL-178 (stderr sink default), BL-182 (memory-flush dead code), BL-184 (RS-6 doc fix), BL-98 (SKILL.md contract), BL-106 (b_per_tier defaults), BL-107 (move patches to readDag), BL-104 (nested type inlining), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder), BL-117 (late chunking boundaries), BL-167 (scoreBreakdown edge case), BL-188 (embed updates schema field naming), BL-108 (multi-host `--host` comma-separated) |
+| **LOW/MEDIUM** | BL-36 (record real manifest type) |
+
+**[TRIAGE] items (12)** — needs decision, investigation, or prerequisite before work starts:
+
+| Priority | Items |
+|---|---|
+| **HIGH** | BL-97 (3 approaches for audit artifact gate — pick one) |
+| **MEDIUM** | BL-95 (how memory-cli discovers live store — 3 approaches), BL-104 (nested type inlining — 2 approaches), BL-62 (multi-project projection unverified — needs investigation), BL-113 (publish ingest or inline elsewhere — pick), BL-114 (LanceDB real or rename — pick), BL-166 (per-package wire/remove decisions), BL-165 (ingest consolidation sequencing — decision made, sequenced after S7) |
+| **LOW** | BL-103 (priorVersion param vs disk-read for snapshot — pick), BL-167 (fix math or document edge case — pick), BL-202 (partial flake — root cause unknown) |
+| **FEATURE** | BL-163 (blocked on code-signing identity) |
+
+---
+
 ## Open — surfaced during HF-5/HF-6 closeout (2026-07-04)
 
 ### BL-201 — dead-holder spawn-lock debris persists in `run/supervisors/` until next contention — **Open (LOW) (2026-07-04)**
@@ -22,7 +46,7 @@ incident forensics (a dead pid in a "live" lock file).
 pid is dead AND older than the lock TTL (same safe-by-construction attribution style as its
 socket reaping). No change to the acquire/release protocol.
 
-### BL-202 — `export.spec.ts` "per-topic INDEX.md sorted by importance" is flaky under full-suite load — **Open (LOW, flake) (2026-07-04)**
+### BL-202 — `export.spec.ts` "per-topic INDEX.md sorted by importance" is flaky under full-suite load — **[TRIAGE] Open (LOW, flake) (2026-07-04)**
 
 **What's wrong:** during the BL-183 closeout gate, `npx nx test memory-core --skip-nx-cache`
 failed once on `exportMarkdown — INDEX.md › writes per-topic INDEX.md listing nodes sorted by
@@ -158,7 +182,7 @@ if it would land in the user data root). Related: BL-63 (e2e orphan scan global 
 same non-hermetic smell. NOT fixed this session — the worktree is owned by another agent and the
 harness change deserves its own gate.
 
-**RESOLVED**: `scripts/smoke-test.mjs` now injects `SOX_ECOSYSTEM_HOME` (→ `dist/smoke/<run>/sox-data-root`) and `SOX_CONFIG_DB_PATH` (→ scratch `.db`) into every `execSync` child via `smokeEnv()`. Live fingerprint before/after verified byte-identical across full smoke run (11 passed, 2 pre-existing service-enable failures — see BL-192). Evidence: commit on branch `worktree-agent-a726260b55d5d2f0b`, `scripts/smoke-test.mjs`.
+**RESOLVED**: `scripts/smoke-test.mjs` now injects `SOX_ECOSYSTEM_HOME` (→ `dist/smoke/<run>/sox-data-root`) and `SOX_CONFIG_DB_PATH` (→ scratch `.db`) into every `execSync` child via `smokeEnv()`. Live fingerprint before/after verified byte-identical across full smoke run — **13/0 on main post-merge** (`run-2026-07-04T23-06-42`; the worktree's 2 service-enable failures were a dist-less-worktree artifact, see BL-192 RESOLVED-INVALID). Evidence: commit on branch `worktree-agent-a726260b55d5d2f0b`, `scripts/smoke-test.mjs`.
 
 ---
 
@@ -248,9 +272,17 @@ incident-proven urgent, alongside the smoke-hermeticity fix (BL-173).
 
 **RESOLVED**: `scripts/test-env-setup.ts` (vitest `globalSetup`) creates a per-run `mkdtemp` dir and sets `SOX_ECOSYSTEM_HOME` before any worker is forked, redirecting all `userDataRoot()` calls away from the live `~/.adhd/sox-ecosystem/`. `vitest.config.ts` updated to load the setup file. `cli-adapter.test.ts` spawned children inherit the env via `spawnSync` with no `env:` override (inherits from worker process). Verified: 84 tests pass, live fingerprint byte-identical before/after. Evidence: commit on branch `worktree-agent-a726260b55d5d2f0b`, `scripts/test-env-setup.ts` + `vitest.config.ts`.
 
-### BL-192 — smoke test's `service enable` leg fails for both standalone services and bundle-member mcp-servers ("not installed at scope 'project'") — **Open (MEDIUM) (2026-07-04)**
+### BL-192 — smoke test's `service enable` leg fails for both standalone services and bundle-member mcp-servers ("not installed at scope 'project'") — **RESOLVED-INVALID (2026-07-04): worktree-build-environment artifact, not a product bug**
 
-Discovered during BL-173 verification: full smoke run (2 testable extensions — `tokenguard` service and `memory-server` bundle member) produces 2 failures on the `service enable` step even though the preceding `install`/`upgrade` steps pass. The error is `"not installed at scope 'project', or no entrypoint"`. Root cause: `soxe service enable` checks the lockfile at `--root`-relative paths for its entrypoint resolution, but the install step writes to a disposable `TEST_ROOT` lockfile while enable re-derives the path from `getScopePaths('project', TEST_ROOT)`. A likely race in entrypoint path resolution when the extension `source` is a `file://` local path and `TEST_ROOT` is a fresh directory that is NOT the real extension checkout. The `memory-server` case is a bundle member which adds a secondary constraint (bundle members may not have individual lockfile entries). Reproduced on the unmodified `scripts/smoke-test.mjs` (confirmed pre-existing before BL-173 fix). Fix sketch: investigate `cmdServiceEnable`'s entrypoint resolution when `root` is an empty scratch dir; either (a) pass the real workspace root as a separate flag, or (b) ensure the install step copies/links the compiled entrypoint into `TEST_ROOT`.
+**Resolution (integrator, at merge):** does NOT reproduce on main — the identical hermetic smoke
+run on main immediately after merging the BL-173 fix passed **13/0** (`run-2026-07-04T23-06-42`,
+isolation verified byte-identical). The filing worktree had no built `dist/` (same environment gap
+that failed its `cli-adapter.test.ts` runs), so `service enable` correctly reported
+"no entrypoint" — the entrypoints genuinely didn't exist there. The original hypothesis
+(lockfile/root resolution race, reproduced-on-unmodified-script) is retracted: the reproduction
+was run in the same dist-less worktree, so it reproduced the environment gap, not a product bug.
+Operational note absorbed into practice: a smoke run from a fresh worktree requires the workspace
+build first (CONTRIBUTING §1 already requires building before verification).
 
 ### BL-185 — `soxe status` renders a loaded, on-schedule PERIODIC os-unit as `DEAD` (violates [inv:list-never-lies]) — **Open (MEDIUM) (2026-07-04)**
 
@@ -554,7 +586,7 @@ fixtures, `memory-flush`'s dead nudge call, `outbox-queue.ts`'s unwired scaffold
 
 ## Open — surfaced during S7/BL-161 memory-core test speed-up (2026-07-04)
 
-### BL-167 — recall.ts ScoreBreakdown invariant violated for zero-normTotal ranked nodes (HF-3 follow-up) — **Open (LOW) (2026-07-04)**
+### BL-167 — recall.ts ScoreBreakdown invariant violated for zero-normTotal ranked nodes (HF-3 follow-up) — **[TRIAGE] Open (LOW) (2026-07-04)**
 
 _(Renumbered from a duplicate BL-162 introduced by the S7 agent; the memory-daemon item keeps BL-162.)_
 Follow-up to HF-3 (BL-132) recall score legibility.
@@ -790,19 +822,9 @@ hooks that don't need it → warm once per process; (b) pin embed-heavy specs to
 test-embed seam (small/stub content-dependent vectors) for tests that only need "a vector,"
 reserving real bge for the 1–2 semantic-quality assertions.
 
-### BL-162 — remove the obsolete `memory-daemon` extension (superseded by ADR-0007 in-process enrichment) — **Open (MEDIUM) (2026-07-04)**
+_BL-162 duplicate entry removed 2026-07-04: fixed per S9 (see entry near line 496). The memory-daemon was deleted in S9; the old "Open (MEDIUM)" entry was stale._
 
-**Owner directive: fix/remove, do not leave "deprecated."** ADR-0007's single-writer architecture
-moved batch enrichment IN-PROCESS into the memory-server writer backend, making the `memory-daemon`
-extension dead code. Today `soxe status` shows it as `DEAD`/`not-started` alongside healthy
-services (implying a fault). With a single consumer there is no reason to carry a deprecated shell —
-remove it cleanly: delete the bundle member + its manifest wiring, drop it from `registry/index.json`
-+ the smoke-test surface (`scripts/smoke-test.mjs` currently lists it as testable), and remove any
-references. Verify enrichment still runs in-process (memory_stats cluster coverage) after removal.
-Publishing the resulting bundle-major bump to npm is the owner's step (ADR-0007); the source removal
-+ local registry is the agent's. Sequenced after S4 (which touches the same bundle's `memory-cli`).
-
-### BL-163 — FEATURE: generalized always-on-service login-items registration with a controllable name (SMAppService) — **Open (FEATURE, blocked on signing) (2026-07-04)**
+### BL-163 — FEATURE: generalized always-on-service login-items registration with a controllable name (SMAppService) — **[TRIAGE] Open (FEATURE, blocked on signing) (2026-07-04)**
 
 A genuine future feature (legitimately backlogged — needs a prerequisite we don't have yet: a
 code-signing identity). Today a user LaunchAgent with `RunAtLoad` already starts at login, but its
@@ -911,7 +933,7 @@ HandleScope crash — may need `pool: 'forks'` + `maxWorkers: 1` (already applie
 vitest.config.ts per BL-161) applied consistently to memory-server's and the root's vitest configs
 too, or an onnxruntime-node version bump/pin.
 
-### BL-165 — RAG-stack external reusability gap: `ingest` is private + `memory-core` (public) transitively 404s on it — **Open (MEDIUM) (2026-07-04)**
+### BL-165 — RAG-stack external reusability gap: `ingest` is private + `memory-core` (public) transitively 404s on it — **[TRIAGE] Open (MEDIUM) (2026-07-04)**
 
 ADR-0007 states the enrichment/data stack is meant to be "reused by non-memory projects." The five
 data packages (`@adhd/sox-embedding-provider`, `-vector-store`, `-graph-store`, `-hybrid-search`,
@@ -950,7 +972,7 @@ Either way this closes the original publishability inconsistency (memory-core pu
 a real external-consume story needs an actual publish. (Discovered answering "can I build a RAG system
 from only these packages?" — yes for the 5 public retrieval packages; ingest is the weak link.)
 
-### BL-166 — orphaned built packages + a dead reranker: wire-in-or-remove audit — **Open (MEDIUM) (2026-07-04)**
+### BL-166 — orphaned built packages + a dead reranker: wire-in-or-remove audit — **[TRIAGE] Open (MEDIUM) (2026-07-04)**
 
 Cheap consumer scan ("what was built but never refactored into memory") found fully-implemented
 code with ZERO live consumers (not stubs — real impl; distinct from the internal-completeness items
@@ -1492,7 +1514,7 @@ The binding directory `node-v137-darwin-arm64/` does not exist — the module wa
 
 ---
 
-### BL-95 — `memory-cli` `status` and `list` subcommands never find `memory.db` — scope-name mismatch — **Open (MEDIUM) (2026-06-27)**
+### BL-95 — `memory-cli` `status` and `list` subcommands never find `memory.db` — scope-name mismatch — **[TRIAGE] Open (MEDIUM) (2026-06-27)**
 
 **Observed:** `memory-cli status` prints "No memory stores found." even with `~/.memory/memory.db` present and `memory_ping` returning `ok:true`. `registry` shows `~/.memory/registry.json` exists but its contents are `{}` (no scopes registered).
 
@@ -1524,7 +1546,7 @@ The binding directory `node-v137-darwin-arm64/` does not exist — the module wa
 
 ---
 
-### BL-97 — plan-state-machine: audits run against committed `end_ref` → working-tree-only approval artifacts silently fail the gate despite the working tree passing — **Open (HIGH) (2026-06-25)**
+### BL-97 — plan-state-machine: audits run against committed `end_ref` → working-tree-only approval artifacts silently fail the gate despite the working tree passing — **[TRIAGE] Open (HIGH) (2026-06-25)**
 
 **Observed (plan-orchestrator, 2026-06-25; memory UID `01KVZHM10QWB0XPE2112RE549B`):** under workflow 0.8.18, any artifact a guard checks (e.g. a human-checkpoint approval file, a generated snapshot) MUST be committed before `--complete` or the audit fails (exit 4) even though `git status` and the working tree show it present and correct.
 
@@ -1606,7 +1628,7 @@ machine-readable signal to distinguish "run guard locally as a shell command" fr
 
 ---
 
-### BL-103 — `snapshot_version` always initialises to `1` — callers that persist snapshots have no way to get an incrementing version without reading the prior snapshot first — **Open (LOW) (2026-06-28)**
+### BL-103 — `snapshot_version` always initialises to `1` — callers that persist snapshots have no way to get an incrementing version without reading the prior snapshot first — **[TRIAGE] Open (LOW) (2026-06-28)**
 
 **Observed (noted by the typescript-pro implementation agent):** `snapshot()` takes only a
 `DagJson` input and has no access to the prior snapshot. The schema spec says
@@ -1621,7 +1643,7 @@ Option A is cleaner (keeps `snapshot()` pure). Add `snapshot(dag, { version?: nu
 
 ---
 
-### BL-104 — `compilePrompt()` doesn't drill into complex nested type shapes → agents invent minimal/incorrect interpretations for fields whose type is itself a multi-field interface — **Open (MEDIUM) (2026-06-28)**
+### BL-104 — `compilePrompt()` doesn't drill into complex nested type shapes → agents invent minimal/incorrect interpretations for fields whose type is itself a multi-field interface — **[TRIAGE] Open (MEDIUM) (2026-06-28)**
 
 **Observed:** dispatching the `dag-schema` milestone to a Haiku agent, two ops produced wrong
 output types:
@@ -1974,7 +1996,7 @@ change still emits `notifications/tools/list_changed` and falls back to reconnec
 ignore it. **Action for the human:** after this merge + `soxe upgrade --all`, reconnect/reload the
 memory-server MCP server once.
 
-### BL-62 — shared-backend `project_path` attribution is single-valued for the lifetime of the backend — **Open (MEDIUM) `(unverified)` multi-project correctness**
+### BL-62 — shared-backend `project_path` attribution is single-valued for the lifetime of the backend — **[TRIAGE] Open (MEDIUM) `(unverified)` multi-project correctness**
 
 The proxy backend is a SINGLETON per store (single-writer, by design). The BL-56 fix injects the
 client's workspace as `SOX_CONFIG_PROJECT_PATH` at **shim spawn**, but the shared backend captured the
@@ -3448,7 +3470,7 @@ See `docs/plan/client-refactor/ARCH.md` for the full plan.
 Priority order: `extractive.ts` (simplest — pure function, no DB) → `importance.ts` →
 `neardup.ts` → `cluster.ts` → `autolink.ts`.
 
-### BL-113 — `@adhd/sox-ingest` is `private: true`, un-publishable from adhd
+### BL-113 — `@adhd/sox-ingest` is `private: true`, un-publishable from adhd — **[TRIAGE]**
 
 **Observed:** `libs/data/ingest/ingest/package.json` has `"private": true`, making it
 impossible to publish to npm. The adhd monorepo's `agent-mcp-authoring` plan needs
@@ -3469,7 +3491,7 @@ and deprecate `@adhd/sox-ingest` as internal-only. Option (b) is cleaner since
 
 ## Open — stub/placeholder items from blob-store + claim-verification + retrieval-infra dispatch (2026-06-29)
 
-### BL-114 — LanceDbVectorBackend is in-memory only, not backed by real LanceDB
+### BL-114 — LanceDbVectorBackend is in-memory only, not backed by real LanceDB — **[TRIAGE]**
 
 **Observed:** `libs/data/vectors/vector-store/src/lancedb.ts` implements `VectorBackend` but
 backed by an `InMemoryLanceTable` (in-memory `Map<number, Float32Array>`). The real
