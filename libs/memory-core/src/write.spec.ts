@@ -284,14 +284,13 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
     // Reset queue instrumentation
     WriteQueue.clearInstances();
     WriteQueue.setBypass(false);
-    process.env['SOX_EMBED_BACKEND'] = 'hash';
+    // Embedding provided by DeterministicTestProvider installed in vitest.setup.ts
   });
 
   afterEach(() => {
     if (db && db.open) db.close();
     cleanupDb();
     WriteQueue.clearInstances();
-    delete process.env['SOX_EMBED_BACKEND'];
   });
 
   /**
@@ -299,18 +298,22 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
    * ok:false, code:E_DEDUP, details.existing_uid
    */
   it('batch of 10 items with 1 byte-duplicate returns 9 ok + 1 E_DEDUP with existing_uid', async () => {
+    // Items must be semantically distinct (no shared token clusters) so the
+    // deterministic feature-hash provider does not false-positive near-dup them.
+    // The tenth item is a byte-duplicate of the first (same content after
+    // trim+lowercase normalization).
     const items = [
-      { content: 'First unique episode content.' },
-      { content: 'Second unique episode content.' },
-      { content: 'Third unique episode content.' },
-      { content: 'Fourth unique episode content.' },
-      { content: 'Fifth unique episode content.' },
-      { content: 'Sixth unique episode content.' },
-      { content: 'Seventh unique episode content.' },
-      { content: 'Eighth unique episode content.' },
-      { content: 'Ninth unique episode content.' },
+      { content: 'The volcano erupted at dawn revealing ancient lava flows.' },
+      { content: 'Stock markets closed higher amid positive earnings reports.' },
+      { content: 'Scientists discovered a new antibiotic compound in soil bacteria.' },
+      { content: 'Astronomers photographed a black hole swallowing a star.' },
+      { content: 'The architect designed a bridge spanning the river gorge.' },
+      { content: 'Fishermen reported unusually large hauls of bluefin tuna.' },
+      { content: 'Cryptography underpins secure communication across digital networks.' },
+      { content: 'Medieval manuscripts revealed recipes for herbal remedies.' },
+      { content: 'Marathon runners competed under intense summer heat conditions.' },
       // Byte-duplicate of first item (same content after trim+lowercase)
-      { content: '  First Unique Episode Content.  ' },
+      { content: '  The Volcano Erupted At Dawn Revealing Ancient Lava Flows.  ' },
     ];
 
     const result = await memoryWriteBatch(db, items);
@@ -447,14 +450,13 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
     db = openDb(dbPath);
     WriteQueue.clearInstances();
     WriteQueue.setBypass(false);
-    process.env['SOX_EMBED_BACKEND'] = 'hash';
+    // Embedding provided by DeterministicTestProvider installed in vitest.setup.ts
   });
 
   afterEach(() => {
     if (db && db.open) db.close();
     cleanupDb();
     WriteQueue.clearInstances();
-    delete process.env['SOX_EMBED_BACKEND'];
   });
 
   /**

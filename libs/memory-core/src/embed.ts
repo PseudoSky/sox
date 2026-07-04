@@ -68,10 +68,36 @@ let _resolvedBackend: 'real' | null = null;
 let _lastEmbedError: string | null = null;
 
 /**
+ * TEST-ONLY dependency-injection hook. When set, getOrCreateProvider() returns
+ * this provider instead of initialising fastembed. This is a no-op in production
+ * because only tests call it. Pass null to clear the override and let the next
+ * call re-resolve the real backend.
+ *
+ * IMPORTANT: _resetEmbedSingleton() does NOT clear the injected test provider.
+ * A test that switches to the real backend must call _setEmbedProviderForTest(null)
+ * plus set SOX_EMBED_BACKEND=real before calling warmupEmbed().
+ */
+let _testProvider: EmbeddingProvider | null = null;
+
+export function _setEmbedProviderForTest(p: EmbeddingProvider | null): void {
+  _testProvider = p;
+  if (p !== null) {
+    // When injecting a test provider, also update state so health/model reflect the test provider.
+    _provider = null;
+    _providerPromise = null;
+    _resolvedBackend = 'real';
+    _activeModel = p.metadata.modelId;
+    _configCache = null;
+    _lastEmbedError = null;
+  }
+}
+
+/**
  * BL-54: the truthful embed-subsystem state.
  */
 export type EmbedState = 'real' | 'uninitialized';
 export function getEmbedState(): EmbedState {
+  if (_testProvider !== null) return 'real';
   if (_activeModel === 'bge-base-en-v1.5' && _resolvedBackend === 'real') return 'real';
   return 'uninitialized';
 }
@@ -126,6 +152,9 @@ async function resolveProvider(): Promise<EmbeddingProvider> {
 }
 
 async function getOrCreateProvider(): Promise<EmbeddingProvider> {
+  // TEST-ONLY: return the injected test provider if set (bypasses fastembed entirely).
+  if (_testProvider !== null) return _testProvider;
+
   if (_provider) return _provider;
   if (_providerPromise) return _providerPromise;
 
@@ -225,12 +254,17 @@ export async function reembedNodes(
 /**
  * Reset the provider singleton. Used in test teardown so the provider can be
  * re-initialised with a different backend config.
+ *
+ * NOTE: deliberately does NOT clear the injected test provider (_testProvider).
+ * Tests that want the real bge backend must call _setEmbedProviderForTest(null)
+ * explicitly. This ensures the test setup file's DeterministicTestProvider
+ * survives per-test resets in files that reset purely for isolation (e.g. db.spec.ts).
  */
 export function _resetEmbedSingleton(): void {
   _provider = null;
   _providerPromise = null;
   _resolvedBackend = null;
-  _activeModel = 'bge-base-en-v1.5';
+  _activeModel = _testProvider ? _testProvider.metadata.modelId : 'bge-base-en-v1.5';
   _configCache = null;
   _lastEmbedError = null;
 }

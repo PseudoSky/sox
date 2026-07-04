@@ -25,7 +25,9 @@ import {
   warmupEmbed,
   EMBED_DIM,
   _resetEmbedSingleton,
+  _setEmbedProviderForTest,
 } from './embed.js';
+import { DeterministicTestProvider } from './embed-test-provider.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -41,13 +43,19 @@ function cosine(a: Float32Array, b: Float32Array): number {
   return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
 }
 
-// Save and restore SOX_EMBED_BACKEND between tests
+// Save and restore SOX_EMBED_BACKEND between tests.
+// The vitest.setup.ts installs a DeterministicTestProvider; the real-bge test
+// clears it with _setEmbedProviderForTest(null) before opting in to fastembed.
 let savedBackend: string | undefined;
 beforeEach(() => {
   savedBackend = process.env['SOX_EMBED_BACKEND'];
   _resetEmbedSingleton();
 });
 afterEach(() => {
+  // Restore the test provider so subsequent tests don't accidentally hit fastembed.
+  if (RUN_REAL_EMBED) {
+    _setEmbedProviderForTest(new DeterministicTestProvider());
+  }
   if (savedBackend === undefined) {
     delete process.env['SOX_EMBED_BACKEND'];
   } else {
@@ -64,6 +72,8 @@ describe('real backend — semantic similarity', () => {
   it.skipIf(!RUN_REAL_EMBED)(
     'cosine(similar pair) > cosine(unrelated pair) [requires model download]',
     async () => {
+      // Clear the deterministic test provider so the real fastembed backend is used.
+      _setEmbedProviderForTest(null);
       process.env['SOX_EMBED_BACKEND'] = 'real';
 
       // BL-89: warmupEmbed engages the real backend up front and must report healthy.

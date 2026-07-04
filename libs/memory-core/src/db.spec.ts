@@ -21,12 +21,10 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { openDb, openDbReadOnly, expandDbPath, stampStoreMeta, verifyStoreMeta, EStoreMismatch, STORE_META_KEYS } from './db.js';
-import { EMBED_DIM, getActiveEmbedModel, _resetEmbedSingleton } from './embed.js';
+import { EMBED_DIM, getActiveEmbedModel } from './embed.js';
 
-// Mock embed to avoid real ONNX model download (these tests assert DB mechanics, not embedding quality)
-
-beforeEach(() => { _resetEmbedSingleton(); });
-afterEach(() => { _resetEmbedSingleton(); });
+// Embedding is provided by the deterministic test provider installed in vitest.setup.ts —
+// no reset needed here (these tests assert DB mechanics, not embedding quality).
 
 describe('expandDbPath — BL-41 tilde expansion', () => {
   it('expands a bare ~ to homedir', () => {
