@@ -4,6 +4,65 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
+## Resolved-as-non-issue — pnpm workspace-linking post-merge investigation (surfaced 2026-07-04)
+
+### BL-150 — `@adhd/*` workspace packages "missing" from `node_modules/@adhd/` after 4-worktree merge — **RESOLVED/NON-ISSUE (2026-07-04)**
+
+**Reported symptom:** after merging 4 worktrees to `main`, `node_modules/@adhd/` didn't exist at the
+repo root; memory-server tests (which load `@adhd/sox-mcp-runtime` → `@adhd/sox-service-proxy`)
+were reported failing. A manual `mkdir -p node_modules/@adhd && ln -sf ../../libs/service-proxy
+node_modules/@adhd/sox-service-proxy` was applied as a stopgap.
+
+**Root cause (verified by clean-room reproduction):** worktree `04`'s merge added
+`@adhd/sox-service-proxy: workspace:*` to `libs/mcp-runtime/package.json` without a corresponding
+`pnpm-lock.yaml` update, so `pnpm install --frozen-lockfile` correctly refused post-merge (lockfile
+≠ manifest). Someone ran `pnpm install --no-frozen-lockfile`, which regenerated the lockfile
+correctly — that fix is the still-uncommitted `pnpm-lock.yaml` diff (+9/-3) sitting in the working
+tree. The manual root-level symlink was a **red herring**: pnpm's isolated linker never hoists
+workspace packages into the *root* `node_modules` unless the root `package.json` itself declares
+them (it doesn't — root only depends on `better-sqlite3`/`sqlite-vec`/`ulid`). Every real consumer
+(`libs/mcp-runtime`, `libs/memory-core`, the memory-server bundle, etc.) gets its `@adhd/*` symlinks
+in its *own* local `node_modules/@adhd/`, which pnpm manages correctly on a plain install once the
+lockfile is consistent.
+
+**Verification:** `rm -rf node_modules && pnpm install` (zero flags, zero manual steps) from the
+corrected lockfile → scanned all 11 projects / 29 `@adhd/*` dependency edges in the repo →
+0 missing links. `npx nx test memory-server` passes identically with or without the root-level
+symlink (81/84, same 3 pre-existing failures — see BL-151..BL-153 — none are module-resolution
+errors). Root-level TS scripts (e.g. `scripts/validate-manifests.ts`, run via `tsx`) never needed
+node_modules linking at all — they resolve `@adhd/*` via `tsconfig.base.json` `paths` mappings to
+`libs/*/src/index.ts`, confirmed by direct execution (`OK (14 extension(s) validated)`).
+
+**Fix:** commit the corrected `pnpm-lock.yaml`; delete the stray manual root symlink (not tracked
+by git, but remove it from any local checkout — it's dead weight, not a fix). No `.npmrc` change,
+no `link-workspace-packages`/`node-linker` override needed — default pnpm behavior is correct.
+**Process note for future worktree merges:** any worktree that adds a new `workspace:*` dependency
+edge must regenerate `pnpm-lock.yaml` *in that worktree* before merge, or the very first post-merge
+`pnpm install` on `main` must be a non-frozen install before anything else runs — otherwise
+`--frozen-lockfile` (used in CI) will hard-fail.
+
+### BL-151 — `permission-guard.spec.ts` "long content auto-chunks into parent + chunks with DERIVED_FROM edges" times out (5000ms) — **Open (MEDIUM) (2026-07-04)**
+
+Discovered running `npx nx test memory-server` during the BL-150 investigation. Test at
+`extensions/bundles/sox-memory-bundle/members/memory-server/src/permission-guard.spec.ts:306`
+exceeds the default 5s vitest timeout. Unrelated to workspace linking — needs its own triage
+(chunking auto-split perf, or a timeout bump if the operation is legitimately slow).
+
+### BL-152 — `recall-sqlite.test.ts` BL-48 real-embedding proof: `provider_call_count` expected `0`, got `1` — **Open (MEDIUM) (2026-07-04)**
+
+`extensions/bundles/sox-memory-bundle/members/memory-server/recall-sqlite.test.ts:218`. The
+R1 cache-hit invariant (no re-embed call on repeat query) is violated — one extra provider call
+is happening. Discovered alongside BL-150; not investigated further (out of scope for the pnpm
+linking task).
+
+### BL-153 — `memory-tools.spec.ts` recluster (BL-27 LOW-3) subset persistence: `persisted` expected `true`, got `false` — **Open (MEDIUM) (2026-07-04)**
+
+`extensions/bundles/sox-memory-bundle/members/memory-server/src/memory-tools.spec.ts:681`.
+`dry_run:false` on a filtered-subset recluster is not persisting. Discovered alongside BL-150;
+not investigated further (out of scope for the pnpm linking task).
+
+---
+
 ## Open — opencode-host implementation (surfaced 2026-06-29)
 
 ### BL-108 — Multi-host `--host=claude --host=opencode` only uses last value — **FIXED (2026-06-29)**

@@ -62,6 +62,25 @@ Always build, test, lint, and typecheck through nx targets — never `tsc`, `vit
 
 ---
 
+## ⛔ AGENT CONSTRAINT — PNPM WORKSPACE "MISSING PACKAGE" DIAGNOSIS ORDER
+
+Before concluding a `workspace:*` package failed to link, check in this order — **do not skip to a fix before completing these checks**:
+
+1. Does the *consuming* project's own `node_modules/@scope/<pkg>` have the symlink? (Not the repo root — pnpm's isolated linker never hoists workspace packages to root `node_modules` unless the root `package.json` itself depends on them. An empty root `node_modules/@scope/` is normal, not a bug.)
+2. Does a **clean-room reinstall** (`rm -rf node_modules && pnpm install`, zero flags) fix it, verified by a programmatic scan of every consumer's declared `workspace:*` deps against its own local symlink? A single `ls` is not evidence; a passing test/script is not evidence either — `tsx`/`vitest` resolve workspace packages via `tsconfig.base.json` `paths` straight to source, bypassing `node_modules` entirely. Verify against the actual runtime entry point (built `dist/`, compiled server, published CLI).
+
+Only if step 2 fails to relink is there a real bug — and it lives in `pnpm-lock.yaml`/`package.json`, never in `node_modules`.
+
+## ⛔ AGENT CONSTRAINT — NEVER HAND-FIX `node_modules`
+
+`mkdir -p node_modules/... && ln -sf ...` is banned as a remediation for any linking symptom. The fix is always upstream: correct the lockfile/manifest and let `pnpm install` relink. A `--frozen-lockfile` failure post-merge means the lockfile is genuinely stale (usually a merged branch added a `workspace:*` edge without relocking) — fix with a plain `pnpm install` and **commit the resulting `pnpm-lock.yaml` diff in the same change**. Never leave a corrected lockfile uncommitted next to a hand-symlink that gets credited for the fix instead — the symlink is dead weight that masks the next real regression.
+
+## ⛔ AGENT CONSTRAINT — RELOCK BEFORE MERGE ON NEW WORKSPACE EDGES
+
+Any branch/worktree that adds or changes a `workspace:*` entry in a `package.json` must run `pnpm install` and commit the `pnpm-lock.yaml` diff before merging. This is a pre-merge checklist item alongside the smoke test. (Incident: BL-150.)
+
+---
+
 ## ⛔ AGENT CONSTRAINT — SERVICE/SUPERVISOR EDITS MUST CONFORM TO THE LIFECYCLE SPEC
 
 Read [`docs/spec/service-lifecycle.md`](./docs/spec/service-lifecycle.md) before touching:

@@ -272,12 +272,18 @@ importers:
       '@adhd/sox-host-runtime':
         specifier: workspace:*
         version: link:../host-runtime
+      '@adhd/sox-service-proxy':
+        specifier: workspace:*
+        version: link:../service-proxy
       '@modelcontextprotocol/sdk':
         specifier: ^1.0.0
         version: 1.29.0(zod@4.4.3)
 
   libs/memory-core:
     dependencies:
+      '@adhd/sox-analysis':
+        specifier: workspace:*
+        version: link:../data/analysis/analysis
       '@adhd/sox-embedding-provider':
         specifier: workspace:*
         version: link:../data/embed/embedding-provider
@@ -287,15 +293,15 @@ importers:
       '@adhd/sox-hybrid-search':
         specifier: workspace:*
         version: link:../data/search/hybrid-search
+      '@adhd/sox-ingest':
+        specifier: workspace:*
+        version: link:../data/ingest/ingest
       '@adhd/sox-vector-store':
         specifier: workspace:*
         version: link:../data/vectors/vector-store
       better-sqlite3:
         specifier: ^12.10.0
         version: 12.10.0
-      fastembed:
-        specifier: ^2.1.0
-        version: 2.1.0
       sqlite-vec:
         specifier: ^0.1.9
         version: 0.1.9
