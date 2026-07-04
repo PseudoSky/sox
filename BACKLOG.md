@@ -64,9 +64,12 @@ Investigate `libs/service-proxy/` `runFrontShim`: when `httpPort` is set, the ba
 path must not tear down on stdio-client EOF; and reconcile the multi-backend state. Read
 `docs/spec/service-lifecycle.md` §9.5 first.
 
-### BL-158 — live store's `sox_store_meta.embed_model` stamp is stale (`…-hash`) though vectors are real bge — **Open (LOW / cosmetic) (2026-07-04)**
+### BL-158 — live store's `sox_store_meta.embed_model` stamp was stale (`…-hash`) though vectors are real bge — **RESOLVED (2026-07-04)**
 
-**Downgraded from HIGH after verification — NOT a data problem, and NO reembed is needed.**
+**Downgraded from HIGH after verification, then fixed.** With owner approval, corrected the one
+stale row: `UPDATE sox_store_meta SET value='bge-base-en-v1.5' WHERE key='embed_model'` (1 row).
+`sox_store_meta`, `memory_scope`, and the `vec_node` vectors now all agree on bge — the
+misleading startup warning will not recur. NOT a data problem, and NO reembed was needed.
 The backend startup warning (`store was stamped … "nomic-embed-text-v1.5-hash" but runtime
 has "bge-base-en-v1.5"`) is misleading. Ground-truth checks on `~/.memory/memory.db`:
 - Recall **works**: a query for a known-present topic ("LanceDB concurrent write errors…")
