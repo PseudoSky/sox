@@ -899,18 +899,26 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           Date.now(),
         );
 
+        // BL-174: report the real WP-5 checkpoint time (0 = never/no queue → null).
+        const lastCheckpointMs = WriteQueue.lastCheckpointAtForPath(resolvedPath);
+
         storeBlock = {
           name: storeName,
           path: resolvedPath,
           fingerprint: `sha256:${sha256Fingerprint}`,
           wal_bytes: walBytes,
-          last_checkpoint_at: null,
+          last_checkpoint_at: lastCheckpointMs > 0 ? new Date(lastCheckpointMs).toISOString() : null,
           enrichment_watermark: enrichmentWatermark,
           queue_depth: queueDepth,
           // Additive (HF-3 rule): never rename/remove the fields above.
           queue_oldest_pending_at: queueOldestPendingAt,
           queue_last_done_at: queueLastDoneAt,
           enrichment: enrichmentHealth,
+          // Write-path observability (2026-07-04 saturation incident):
+          // rolling write-latency percentiles, depth/watermark, deadline
+          // budget, and rejection counters from the in-process WriteQueue.
+          // null until the first write creates the queue for this store.
+          write_queue: WriteQueue.metricsForPath(resolvedPath),
         };
       }
     } catch {
