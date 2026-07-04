@@ -27,6 +27,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { WriteQueue } from '../write-queue.js';
+import { percentile, mean } from '../latency-stats.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -138,22 +139,8 @@ export interface SoakMetrics {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/** Compute a percentile (0–1) from a SORTED array. */
-function percentile(sorted: number[], p: number): number {
-  if (sorted.length === 0) return 0;
-  const idx = Math.min(
-    Math.ceil(sorted.length * p) - 1,
-    sorted.length - 1,
-  );
-  return sorted[idx]!;
-}
-
-/** Compute mean of an array. */
-function mean(arr: number[]): number {
-  if (arr.length === 0) return 0;
-  return arr.reduce((a, b) => a + b, 0) / arr.length;
-}
+// percentile/mean live in ../latency-stats.ts (promoted for reuse by the
+// WriteQueue instrumentation — see the import at the top of this file).
 
 /** Resolve the per-txn injected delay from env (0 = no injection). */
 export function resolveInjectedDelay(): number {

@@ -47,9 +47,13 @@ export {
 } from './lease.js';
 export type { LeaseInfo } from './lease.js';
 
-// ── Write queue (WP-1, BL-118) ────────────────────────────────────────────────
+// ── Write queue (WP-1, BL-118; observability + time-based backpressure) ───────
 export { WriteQueue } from './write-queue.js';
-export type { QueueBusyError, QueueError } from './write-queue.js';
+export type { QueueBusyError, QueueError, WriteQueueMetrics } from './write-queue.js';
+
+// ── Shared latency/percentile helpers (promoted from soak/, HF-2) ─────────────
+export { percentile, mean, summarizeLatencies, LatencyRing } from './latency-stats.js';
+export type { LatencySummary } from './latency-stats.js';
 
 // ── Error taxonomy (WP-2, BL-124) ─────────────────────────────────────────────
 export { wrapDbError } from './errors.js';
