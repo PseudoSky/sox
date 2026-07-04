@@ -74,27 +74,20 @@ async function main() {
   log(`[reembed] target db     : ${dbPath}`);
   log(`[reembed] backend forced: ${opts.backend}`);
 
+  // The hash backend was removed (2026-07); fastembed bge-base-en-v1.5 is the only
+  // real model. The old model id 'fast-bge-base-en-v1.5' (the fastembed cache-dir
+  // name) is NOT a valid createEmbeddingProvider model id — use 'bge-base-en-v1.5'.
   let provider;
   try {
     provider = await createEmbeddingProvider({
       type: 'fastembed',
-      model: 'fast-bge-base-en-v1.5',
+      model: 'bge-base-en-v1.5',
     });
   } catch (err) {
     if (err instanceof ResolutionError || err?.name === 'ResolutionError') {
-      if (opts.backend !== 'real') {
-        log(`[reembed] fastembed unavailable (${err.message}), trying hash...`);
-        provider = await createEmbeddingProvider({
-          type: 'hash',
-          model: 'hash-768',
-          options: { dimensions: 768 },
-        });
-      } else {
-        die(`fastembed provider not available and backend='real' forced: ${err.message}`);
-      }
-    } else {
-      die(`embedding provider creation failed: ${err.message}`);
+      die(`fastembed provider not available: ${err.message}`);
     }
+    die(`embedding provider creation failed: ${err.message}`);
   }
 
   log(`[reembed] active model  : ${provider.metadata.modelId}`);

@@ -64,17 +64,36 @@ Investigate `libs/service-proxy/` `runFrontShim`: when `httpPort` is set, the ba
 path must not tear down on stdio-client EOF; and reconcile the multi-backend state. Read
 `docs/spec/service-lifecycle.md` §9.5 first.
 
-### BL-158 — live `~/.memory/memory.db` is embed-space-mismatched (hash-stamped vectors vs bge runtime) — **Open (HIGH) (2026-07-04)**
+### BL-158 — live store's `sox_store_meta.embed_model` stamp is stale (`…-hash`) though vectors are real bge — **Open (LOW / cosmetic) (2026-07-04)**
 
-Backend startup against the live store logs: `WARNING: store was stamped with embed_model
-"nomic-embed-text-v1.5-hash" but the current runtime has "bge-base-en-v1.5". Vectors may be
-in a different embedding space.` The live store's existing vectors were written by the old
-HASH backend (now removed); recall over them against real bge query vectors compares across
-incompatible spaces → degraded/garbage similarity. Migration exists:
-`scripts/reembed-memory.mjs --force` re-embeds all nodes in the current model. Must run once
-against `~/.memory/memory.db` (with the writer quiesced) before the persistent service is
-trusted for recall. Owner-gated (mutates the live store) — coordinate with BL-157 backend
-reconciliation.
+**Downgraded from HIGH after verification — NOT a data problem, and NO reembed is needed.**
+The backend startup warning (`store was stamped … "nomic-embed-text-v1.5-hash" but runtime
+has "bge-base-en-v1.5"`) is misleading. Ground-truth checks on `~/.memory/memory.db`:
+- Recall **works**: a query for a known-present topic ("LanceDB concurrent write errors…")
+  returns the exact LanceDB memory as the #1 hit via `provenance:["vec","fts"]` — the vec
+  channel matches, so the vectors ARE in the current bge space. (An earlier "writer lease"
+  query scored ~0.004 only because that topic isn't in this graph store — it lives in file
+  memory — not because embeddings are broken.)
+- `vec_node` holds 2597 real bge vectors; `memory_scope.embed_model = bge-base-en-v1.5` ✓.
+- Only `sox_store_meta.embed_model` is stale = `nomic-embed-text-v1.5-hash` (never updated
+  when the store was migrated to bge). `reembed-memory.mjs --force` correctly reports
+  **0 nodes to migrate** — the data is already bge.
+
+Residual fix is a **one-row metadata reconciliation**:
+`UPDATE sox_store_meta SET value='bge-base-en-v1.5' WHERE key='embed_model'` — to silence the
+false warning and make `memory_ping`/`memory_stats` honest ([inv:list-never-lies]). It is a
+direct live-store write (auto-mode classifier gated it) → needs owner OK or a sanctioned CLI
+path. Cosmetic; does not affect recall. (Minor: `reembed-memory.mjs --dry-run` created an
+empty `vec_bge_base_en_v1_5` space — harmless leftover; the dry-run should not write.)
+
+### BL-159 — `reembed-memory.mjs` was broken by the embed migration (wrong model id + dead hash fallback) — **RESOLVED (2026-07-04)**
+
+The reembed tool passed `model: 'fast-bge-base-en-v1.5'` (the fastembed cache-DIR name, not a
+valid `createEmbeddingProvider` model id) → `Unknown fastembed model` on every run, and fell
+back to the removed `type:'hash'` / `model:'hash-768'` backend. Fixed: model id →
+`'bge-base-en-v1.5'`; removed the dead hash fallback (`createEmbeddingProvider` only supports
+`fastembed`/`remote` now). Verified: dry-run resolves `active model: bge-base-en-v1.5` and
+reads the store correctly. (Surfaced while investigating BL-158.)
 
 ---
 
