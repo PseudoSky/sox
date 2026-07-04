@@ -4,6 +4,41 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
+## Open — surfaced during HF-5/HF-6 closeout (2026-07-04)
+
+### BL-201 — dead-holder spawn-lock debris persists in `run/supervisors/` until next contention — **Open (LOW) (2026-07-04)**
+
+**What's wrong:** HF-5 forensics found `proxy-backend-23dbf1ed.lock` (holder pid 28869, dead)
+persisting for over an hour after the 17:16Z backend restart: a racer shim that dies between
+`tryAcquireLock` and its `finally { releaseLock() }` leaves the file behind. Correctness is
+unaffected — `tryAcquireLock` reclaims any lock whose holder fails `pidAlive` or exceeds the 30s
+TTL, and backend liveness never derives from the lock pid — but the debris is misleading during
+incident forensics (a dead pid in a "live" lock file).
+
+**Where:** `libs/service-proxy/src/ensure-backend.ts` (release path),
+`libs/host-runtime/src/reconcile.ts` (candidate sweeper).
+
+**Fix sketch:** teach `doctor --reconcile` to sweep `proxy-backend-*.lock` files whose payload
+pid is dead AND older than the lock TTL (same safe-by-construction attribution style as its
+socket reaping). No change to the acquire/release protocol.
+
+### BL-202 — `export.spec.ts` "per-topic INDEX.md sorted by importance" is flaky under full-suite load — **Open (LOW, flake) (2026-07-04)**
+
+**What's wrong:** during the BL-183 closeout gate, `npx nx test memory-core --skip-nx-cache`
+failed once on `exportMarkdown — INDEX.md › writes per-topic INDEX.md listing nodes sorted by
+importance`, then passed on two consecutive full-suite re-runs and 3/3 isolated runs of the file.
+Failure output was not captured on the failing run; observed rate ~1-in-5 file executions, only
+under concurrent-suite CPU load.
+
+**Where:** `libs/memory-core/src/export.spec.ts:149` (two `memoryWrite`s + `exportMarkdown`,
+asserts one topic dir and high-importance-first ordering).
+
+**Fix sketch:** reproduce with `--retry=0` in a loop while the rest of the suite runs, capture
+which assertion trips (topic-dir count vs ordering). Suspect surface: the two-phase write's async
+Phase B interacting with export reading vec/enrichment state, or same-timestamp tie-breaks in the
+INDEX sort. Make the test await a deterministic barrier (or pin distinct timestamps) once the
+tripping assertion is known.
+
 ## Open — surfaced by the embed-pipeline observability worktree (2026-07-04)
 
 ### BL-190 — memory-core/memory-server `package.json` versions lag their hand-written CHANGELOG heads — **Open (LOW) (2026-07-04)**
@@ -370,7 +405,16 @@ files. Fix: delete `SOCKET_PATH`, `nudgeDaemon()`, and its call site; update the
 comment (currently: "nudges memoryd" in the SessionEnd bullet list) and `handleSessionEnd`'s
 JSDoc (step 3 "Nudge memoryd to wake and process the queue").
 
-### BL-183 — `libs/memory-core/src/outbox-queue.ts` (`createMemoryOutboxQueue`/`memoryFlush`) is fully unwired scaffolding — **Open (MEDIUM) (2026-07-04)**
+### BL-183 — `libs/memory-core/src/outbox-queue.ts` (`createMemoryOutboxQueue`/`memoryFlush`) is fully unwired scaffolding — **RESOLVED (2026-07-04): deleted, not deprecated**
+
+**Resolution (HF-6 closeout):** the unwired surface was DELETED — `createMemoryOutboxQueue`,
+`memoryFlush` (which marked rows done without processing them — a latent footgun),
+`migrateOutboxQueueSchema` (the BL-126 dead-letter migration that never ran against any live
+store), and their types + spec sections. The wired producers (`enqueueIngest`,
+`enqueueEnrichFull`, `hasPendingFullEnrich`) stay and gained direct spec coverage
+(`outbox-queue.spec.ts` rewritten against the real base DDL). If a dead-letter lane is ever
+needed it must be designed WITH the live periodic-tick consumer. Gate: memory-core lint/build
+green, tests 309 passed (one unrelated flake filed as BL-202).
 
 Discovered while verifying BL-162's in-process-enrichment claim: `outbox-queue.ts` (220 LOC,
 RS-4/RS-5 per `docs/plan/runtime-productionization/02-reusable-subsystems/progress.json`) and its

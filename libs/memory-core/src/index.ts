@@ -136,15 +136,14 @@ export { DeterministicTestProvider, featureHashEmbed } from './embed-test-provid
 export { _setEmbedProviderForTest } from './embed.js';
 
 // ── Outbox queue (transactional enrichment triggers — BL-172 / BL-186) ────────
+// Producers only: the consumer is memory-server's in-process periodic pass.
+// (The unwired createMemoryOutboxQueue/memoryFlush/migrate surface was deleted
+// in the BL-183 closeout.)
 export {
   enqueueIngest,
   enqueueEnrichFull,
   hasPendingFullEnrich,
-  migrateOutboxQueueSchema,
-  createMemoryOutboxQueue,
-  memoryFlush,
 } from './outbox-queue.js';
-export type { OutboxQueue, OutboxQueueItem, MemoryFlushOpts, MemoryFlushResult } from './outbox-queue.js';
 
 // ── Update (in-place editor) ──────────────────────────────────────────────────
 export { memoryUpdate, deepMerge } from './update.js';
