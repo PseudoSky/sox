@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Open — surfaced during S9/BL-162 memory-daemon removal (2026-07-04)
 
-### BL-170 — `tools/test-e2e-lifecycle.js` Slice 1 + Section E hardcode `memory-daemon` as their real-service fixture; now broken by BL-162's removal — **Open (HIGH) (2026-07-04)**
+### BL-181 — `tools/test-e2e-lifecycle.js` Slice 1 + Section E hardcode `memory-daemon` as their real-service fixture; now broken by BL-162's removal — **Open (HIGH) (2026-07-04)**
 
 `host-runtime:test-e2e` (`libs/host-runtime/project.json` `test-e2e` target, runs
 `tools/test-e2e-lifecycle.js`) is NOT part of the standard `nx test`/`nx affected -t test` gate —
@@ -32,7 +32,7 @@ or any live running process — S8 handles live backend reconciliation"), and a 
 picking/building a replacement fixture, not a mechanical rename. Run
 `node tools/test-e2e-lifecycle.js` after re-pointing to confirm both sections pass.
 
-### BL-171 — `memory-flush`'s `nudgeDaemon()`/`SOCKET_PATH` are now permanently-dead code (BL-162 follow-up) — **Open (LOW) (2026-07-04)**
+### BL-182 — `memory-flush`'s `nudgeDaemon()`/`SOCKET_PATH` are now permanently-dead code (BL-162 follow-up) — **Open (LOW) (2026-07-04)**
 
 `extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.ts` defines its own local
 `SOCKET_PATH` (`~/.memory/memoryd.sock`) and calls `nudgeDaemon()` at the end of every
@@ -50,7 +50,7 @@ files. Fix: delete `SOCKET_PATH`, `nudgeDaemon()`, and its call site; update the
 comment (currently: "nudges memoryd" in the SessionEnd bullet list) and `handleSessionEnd`'s
 JSDoc (step 3 "Nudge memoryd to wake and process the queue").
 
-### BL-172 — `libs/memory-core/src/outbox-queue.ts` (`createMemoryOutboxQueue`/`memoryFlush`) is fully unwired scaffolding — **Open (MEDIUM) (2026-07-04)**
+### BL-183 — `libs/memory-core/src/outbox-queue.ts` (`createMemoryOutboxQueue`/`memoryFlush`) is fully unwired scaffolding — **Open (MEDIUM) (2026-07-04)**
 
 Discovered while verifying BL-162's in-process-enrichment claim: `outbox-queue.ts` (220 LOC,
 RS-4/RS-5 per `docs/plan/runtime-productionization/02-reusable-subsystems/progress.json`) and its
@@ -69,7 +69,7 @@ loop that's actually running in production today. Not decided or fixed here — 
 scope (BL-162 is specifically about removing the daemon, not about which enrichment-drain design
 wins); flagging so it doesn't silently rot further.
 
-### BL-173 — `docs/plan/runtime-productionization/02-reusable-subsystems/progress.json` RS-6 claims file deletions that were not actually present — **Open (LOW) (2026-07-04)**
+### BL-184 — `docs/plan/runtime-productionization/02-reusable-subsystems/progress.json` RS-6 claims file deletions that were not actually present — **Open (LOW) (2026-07-04)**
 
 `progress.json`'s RS-6 entry (`"status": "complete"`) lists `files_deleted` including
 `extensions/bundles/sox-memory-bundle/members/memory-server/src/memoryd.ts`,
@@ -103,7 +103,7 @@ Publishing the resulting bundle-major bump to npm is the owner's step (ADR-0007)
 - Deleted `extensions/bundles/sox-memory-bundle/members/memory-daemon/` (whole directory: manifest,
   project.json, package.json, src/{bin,index,memoryd,schema}.ts, tsconfig.json).
 - Deleted the orphaned dead-code twins that were never actually removed by the earlier (falsely
-  "complete") RS-6 pass (see BL-173): `extensions/bundles/sox-memory-bundle/members/memory-server/
+  "complete") RS-6 pass (see BL-184): `extensions/bundles/sox-memory-bundle/members/memory-server/
   src/{bin.ts,memoryd.ts}` (unreferenced by memory-server's real build — confirmed via
   `package.json` main/exports + `project.json` build target, both point only at `src/index.ts`) and
   `libs/memory-core/src/memoryd.ts` + `libs/memory-core/src/memoryd-retry.spec.ts` (the canonical
@@ -166,7 +166,7 @@ Publishing the resulting bundle-major bump to npm is the owner's step (ADR-0007)
   periodic loop and `memory_curate recluster`'s global path both call `runBatchEnrich` directly;
   `recall-sqlite.test.ts`'s in-process `runBatchEnrich` regression test passes.
 
-**Not fixed (see BL-170/171/172/173 above):** `tools/test-e2e-lifecycle.js`'s Slice 1 + Section E
+**Not fixed (see BL-181/171/172/173 above):** `tools/test-e2e-lifecycle.js`'s Slice 1 + Section E
 fixtures, `memory-flush`'s dead nudge call, `outbox-queue.ts`'s unwired scaffolding, and
 `progress.json`'s stale RS-6 claim.
 
