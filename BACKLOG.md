@@ -140,7 +140,7 @@ RPC liveness alone — the supervisor health probe should consume `store.enrichm
 memory_ping and render DEGRADED on `stalled` (touch-point: the health-check path in
 `libs/host-runtime` + `cmdStatus` in `apps/sox/src/main.ts`).
 
-### BL-173 — worktree smoke/e2e runs contend for the LIVE user singleton backend (`~/.memory` + user data-root UDS) — **Open (HIGH) (2026-07-04)**
+### BL-173 — worktree smoke/e2e runs contend for the LIVE user singleton backend (`~/.memory` + user data-root UDS) — **RESOLVED (2026-07-04)**
 
 Zombie `59405` in the BL-170 incident was
 `.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/.../memory-server/dist/index.js` spawned
@@ -157,6 +157,8 @@ hermetic; assert in the harness that the derived socket path is under the smoke 
 if it would land in the user data root). Related: BL-63 (e2e orphan scan global pgrep) has the
 same non-hermetic smell. NOT fixed this session — the worktree is owned by another agent and the
 harness change deserves its own gate.
+
+**RESOLVED**: `scripts/smoke-test.mjs` now injects `SOX_ECOSYSTEM_HOME` (→ `dist/smoke/<run>/sox-data-root`) and `SOX_CONFIG_DB_PATH` (→ scratch `.db`) into every `execSync` child via `smokeEnv()`. Live fingerprint before/after verified byte-identical across full smoke run (11 passed, 2 pre-existing service-enable failures — see BL-192). Evidence: commit on branch `worktree-agent-a726260b55d5d2f0b`, `scripts/smoke-test.mjs`.
 
 ---
 
@@ -197,7 +199,7 @@ parallel load — they pass standalone (213/213 twice on this box) but timed out
 `nx affected -t lint,build,test` run with ONNX warmups saturating the machine; nx marks
 `host-runtime:test` flaky. Fixing the O(N)-spawn scan fixes the flake.
 
-### BL-179 — root `sox-ecosystem:test` suite MUTATES the live user data root (`~/.adhd/sox-ecosystem/`) — every worktree agent's `nx affected` run re-points the live user-scope installs at its worktree — **Open (HIGH) (2026-07-04)**
+### BL-179 — root `sox-ecosystem:test` suite MUTATES the live user data root (`~/.adhd/sox-ecosystem/`) — every worktree agent's `nx affected` run re-points the live user-scope installs at its worktree — **RESOLVED (2026-07-04)**
 
 **Discovered during the Slices 3–4 gate** (`nx affected -t lint,build,test` from a worktree):
 after the run, `~/.adhd/sox-ecosystem/{extensions.lock,install-registry.json,ledger.json,ownership.json}`
@@ -243,6 +245,12 @@ AND the published-CLI root `~/.adhd/sox-cli/lib/node_modules`) pointed at the de
 the main checkout → `38 current, 0 failed`; memory-server os-unit stayed HEALTHY throughout. The
 (a) FIX (sandbox `SOX_ECOSYSTEM_HOME` in root-test harnesses) remains OPEN and is now
 incident-proven urgent, alongside the smoke-hermeticity fix (BL-173).
+
+**RESOLVED**: `scripts/test-env-setup.ts` (vitest `globalSetup`) creates a per-run `mkdtemp` dir and sets `SOX_ECOSYSTEM_HOME` before any worker is forked, redirecting all `userDataRoot()` calls away from the live `~/.adhd/sox-ecosystem/`. `vitest.config.ts` updated to load the setup file. `cli-adapter.test.ts` spawned children inherit the env via `spawnSync` with no `env:` override (inherits from worker process). Verified: 84 tests pass, live fingerprint byte-identical before/after. Evidence: commit on branch `worktree-agent-a726260b55d5d2f0b`, `scripts/test-env-setup.ts` + `vitest.config.ts`.
+
+### BL-192 — smoke test's `service enable` leg fails for both standalone services and bundle-member mcp-servers ("not installed at scope 'project'") — **Open (MEDIUM) (2026-07-04)**
+
+Discovered during BL-173 verification: full smoke run (2 testable extensions — `tokenguard` service and `memory-server` bundle member) produces 2 failures on the `service enable` step even though the preceding `install`/`upgrade` steps pass. The error is `"not installed at scope 'project', or no entrypoint"`. Root cause: `soxe service enable` checks the lockfile at `--root`-relative paths for its entrypoint resolution, but the install step writes to a disposable `TEST_ROOT` lockfile while enable re-derives the path from `getScopePaths('project', TEST_ROOT)`. A likely race in entrypoint path resolution when the extension `source` is a `file://` local path and `TEST_ROOT` is a fresh directory that is NOT the real extension checkout. The `memory-server` case is a bundle member which adds a secondary constraint (bundle members may not have individual lockfile entries). Reproduced on the unmodified `scripts/smoke-test.mjs` (confirmed pre-existing before BL-173 fix). Fix sketch: investigate `cmdServiceEnable`'s entrypoint resolution when `root` is an empty scratch dir; either (a) pass the real workspace root as a separate flag, or (b) ensure the install step copies/links the compiled entrypoint into `TEST_ROOT`.
 
 ### BL-185 — `soxe status` renders a loaded, on-schedule PERIODIC os-unit as `DEAD` (violates [inv:list-never-lies]) — **Open (MEDIUM) (2026-07-04)**
 
