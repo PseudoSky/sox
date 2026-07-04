@@ -80,6 +80,64 @@ describe('memory-server backend handler', () => {
     expect(computeSchemaHash(fromFile)).toBe(computeSchemaHash(live));
   });
 
+  // ── BL-170: the losing singleton racer must EXIT, never idle as a zombie ──────
+  //
+  // serveBackend's SA-4 probe correctly refuses a live socket with E_LIVE_SOCKET
+  // ([SA-4] in libs/service-proxy/src/backend.spec.ts proves the refusal). What was
+  // NOT tested — and what left orphaned backends on the live box twice — is the
+  // CALLER's behaviour: runBackend swallowed the rejection (void, no .catch) so the
+  // losing process idled forever with no signal handlers wired. This pins the fix:
+  // runBackend catches the rejection, writes a stderr diagnostic, and exits 1
+  // (via the injectable `exit` seam so the test runner survives).
+  it('[BL-170] runBackend exits(1) with a stderr diagnostic when the socket is held by a live backend', async () => {
+    const dir = tmpDir();
+    const sock = path.join(dir, 'backend.sock');
+
+    // Occupy the socket with a real live backend (the singleton winner).
+    const winner = await runBackend({ socketPath: sock });
+    cleanups.push(() => winner.close());
+
+    // Capture stderr diagnostics without silencing them.
+    const stderrLines: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      stderrLines.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    cleanups.push(() => {
+      process.stderr.write = origWrite;
+    });
+
+    // The loser: same socket, injected exit seam that throws a sentinel instead
+    // of killing the test runner.
+    class ExitSentinel extends Error {
+      constructor(public readonly code: number) {
+        super(`exit(${String(code)})`);
+      }
+    }
+    let exitCode: number | undefined;
+    const loser = runBackend({
+      socketPath: sock,
+      exit: (code: number): never => {
+        exitCode = code;
+        throw new ExitSentinel(code);
+      },
+    });
+
+    await expect(loser).rejects.toBeInstanceOf(ExitSentinel);
+    expect(exitCode).toBe(1);
+
+    const all = stderrLines.join('');
+    expect(all).toContain('E_LIVE_SOCKET');
+    expect(all).toContain('BL-170');
+
+    // The winner is untouched — still serving.
+    const conn: BackendConnection = dialBackend({ socketPath: sock, onDiagnostic: () => {} });
+    cleanups.push(() => conn.close());
+    const resp = await conn.send({ jsonrpc: '2.0', id: 99, method: 'tools/list' });
+    expect((resp.result as { tools: unknown[] }).tools.length).toBe(20);
+  });
+
   it('runBackend binds a UDS that a dialBackend client round-trips against', async () => {
     const dir = tmpDir();
     const sock = path.join(dir, 'backend.sock');

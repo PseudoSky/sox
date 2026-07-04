@@ -4,6 +4,69 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
+## Open — surfaced during the 2026-07-04 memory-server hot-triage (BL-170 incident)
+
+### BL-172 — organizer_queue had NO live consumer since the RS-6/ADR-0007 refactor: rows orphaned forever, `queue_depth` lied — **RESOLVED (2026-07-04)**
+
+**Severity: high (enrichment-outbox consumption silently dead for ~27h; memory_ping reported
+`ok:true` throughout).** Root cause chain, established via read-only SQL on the live store:
+- `memory-core/src/write.ts` P2 still enqueues an `ingest` trigger row into `organizer_queue`
+  on EVERY write (`enqueueIngest`, write.ts:193).
+- The only implementations that ever claim/complete those rows: (a) `MemoryDaemon`
+  (`memory-core/src/memoryd.ts`) — runs only in the memory-daemon service, which is
+  **intentionally dead** per ADR-0007/BL-162; (b) the RS-4 outbox orchestrator
+  (`memory-core/src/outbox-queue.ts` `createMemoryOutboxQueue`/`migrateOutboxQueueSchema`) —
+  **defined + spec-tested but wired into NOTHING** (zero non-spec callers repo-wide). The BL-126
+  columns (`last_error`, `dead`) were absent from the live store — corroborating that the
+  migration-owning consumer never started after `11c2fdc` (RS-4/RS-6, 2026-07-03) deleted the
+  memoryds.
+- The BL-47 in-process fallback loop (`memory-server/src/index.ts` `runFallbackEnrichPass`)
+  DID keep enrichment itself alive (`runBatchEnrich` every 5 min — the actual clustering/
+  importance/relates_to work happened) but bypassed the queue: rows never claimed → live store
+  showed 29 open `ingest` rows (`claimed_at` NULL, `attempts` 0), `MAX(done_at)` frozen at
+  2026-07-03T16:04:53Z, `queue_depth` growing unbounded.
+- The user-visible `memory_write` timeouts (~19:13Z) were client-side: the writes actually
+  landed (nodes exist for every "failed" uid) during a CPU-contention window (3 backends + the
+  synchronous per-item bge embedding at ~0.75s/item); the backend log shows the matching
+  `write EPIPE` client disconnects. The WriteQueue was NOT deadlocked — a probe write during
+  triage returned an episode_uid promptly, main thread idle in kevent, no BL-154 recurrence.
+
+**Fix:** `runFallbackEnrichPass` now mirrors memoryd's drain semantics — snapshot
+`maxOpenEnrichTriggerSeq`, run the pass, then `completeEnrichTriggerRows` (claim + done +
+attempts+1) for trigger ops (`ingest`/`enrich`/legacy) only, on success only, synchronously
+(no interleave window); `decay`/`reindex` (real work the fallback does not perform) stay open.
+Plus the queue-drain health SLO: memory_ping's store block gains additive fields
+`queue_oldest_pending_at`, `queue_last_done_at`, and `enrichment: {state: idle|ok|stalled,
+oldest_pending_at, last_done_at, stall_threshold_ms}` — stalled when the oldest pending trigger
+row exceeds 3× the consumer tick (15 min default, `SOX_ENRICH_STALL_THRESHOLD_MS` override) —
+so a dead consumer is machine-visible without SQL forensics. Tests:
+`memory-server/src/enrichment-health.spec.ts` (drain semantics, verdict matrix incl. the live
+incident shape, ping surface stalled→idle flip). **Remaining seam (not done here to keep file
+sets disjoint from the in-flight host-runtime slices):** `soxe status` still shows HEALTHY on
+RPC liveness alone — the supervisor health probe should consume `store.enrichment.state` from
+memory_ping and render DEGRADED on `stalled` (touch-point: the health-check path in
+`libs/host-runtime` + `cmdStatus` in `apps/sox/src/main.ts`).
+
+### BL-173 — worktree smoke/e2e runs contend for the LIVE user singleton backend (`~/.memory` + user data-root UDS) — **Open (HIGH) (2026-07-04)**
+
+Zombie `59405` in the BL-170 incident was
+`.claude/worktrees/agent-a6bd315cddfc76ae5/extensions/.../memory-server/dist/index.js` spawned
+at 18:56:14Z — exactly matching that worktree's `dist/smoke/run-2026-07-04T18-56-14`. The smoke
+test installs into a disposable project scope, but the proxy backend's singleton key derives the
+socket from the USER data root (`~/.adhd/sox-ecosystem/run/supervisors/`,
+`libs/service-proxy/src/socket-path.ts` — `proxy-8d80bb9bd257.sock` is the fully-hashed
+`backendSocketPath` fallback) and the store default is the LIVE `~/.memory/memory.db`. So a
+smoke/e2e run from ANY worktree races the production writer for the live socket — under BL-170
+(pre-fix) each lost race minted a SIGTERM-immune zombie against the live store. Fix sketch: the
+smoke harness (and any e2e that exercises serve/ensure-backend) must inject a scratch data root
+(`SOX_DATA_ROOT`/equivalent) AND a scratch `SOX_CONFIG_DB_PATH` so socket + store are both
+hermetic; assert in the harness that the derived socket path is under the smoke dir (fail loud
+if it would land in the user data root). Related: BL-63 (e2e orphan scan global pgrep) has the
+same non-hermetic smell. NOT fixed this session — the worktree is owned by another agent and the
+harness change deserves its own gate.
+
+---
+
 ## Open — surfaced during S7/BL-161 memory-core test speed-up (2026-07-04)
 
 ### BL-167 — recall.ts ScoreBreakdown invariant violated for zero-normTotal ranked nodes (HF-3 follow-up) — **Open (LOW) (2026-07-04)**
@@ -155,7 +218,30 @@ was restarted via `launchctl kickstart -k gui/<uid>/com.sox.user.memory-server` 
 `93280` running the fixed shim; `soxe status` shows `memory-server@os-unit HEALTHY`; exactly ONE
 backend remains. Session shims never disrupted (they re-dial the singleton backend by design).
 
-### BL-170 — `ensureBackend` O_EXCL-lock LOSER leaves an orphaned backend zombie (recurring split-brain) — **Open (HIGH) (2026-07-04)**
+### BL-170 — `ensureBackend` O_EXCL-lock LOSER leaves an orphaned backend zombie (recurring split-brain) — **RESOLVED (2026-07-04)**
+
+**Fix (landed with the 2026-07-04 hot-triage):** `runBackend`
+(`extensions/bundles/sox-memory-bundle/members/memory-server/src/backend.ts`) now
+(1) catches ANY `serveBackend` rejection (`E_LIVE_SOCKET` from the SA-4 probe AND the raw
+`EADDRINUSE` race variant — both observed in the live backend log), writes a stderr FATAL
+diagnostic (`[inv:no-stdout-diagnostics]`), and exits 1 via an injectable `exit` seam — a losing
+singleton racer dies loudly instead of idling; and (2) wires SIGTERM/SIGINT handlers BEFORE the
+async bind, so even a backend stuck pre-bind honours `[contract:signal]` (the observed zombies
+ignored SIGTERM because handlers were only wired post-bind). The `index.ts` call site's
+`void runBackend(...)` gained a defensive `.catch()` → stderr + `process.exit(1)` (Node's default
+unhandled-rejection crash is not reliable here: the embed worker thread outlives it when stdio is
+a dead pipe). Regression test `[BL-170]` in `memory-server/src/backend.spec.ts` proves the loser
+exits 1 with the diagnostic while the winner keeps serving.
+
+**Incident timeline (2026-07-04):** another agent's `memory_write_batch` timed out ~19:13Z;
+triage found THREE backends for the one `~/.memory` singleton: writer `12625` (db+socket, 11
+session-shim clients) plus zombies `14235` (main-repo dist, spawned 18:51Z) and `59405`
+(spawned 18:56Z from the `agent-a6bd315cddfc76ae5` worktree's dist — see BL-173). Both zombies:
+zero db/socket fds, stdio = dead socketpairs (`->(none)`), SIGTERM ignored → SIGKILL reap
+(owner-authorized) at ~19:33Z. Writer + shims untouched; single writer verified via lsof after.
+The backend log carried both loser shapes: an `E_LIVE_SOCKET` unhandled-rejection crash AND an
+`EADDRINUSE` crash — plus the two silent idlers. The write "stall" itself was a separate
+mechanism — see BL-172.
 
 **Discovered while fixing BL-157** — it is the ROOT of the "two backends for one store" split-brain
 BL-157 noted. When the singleton writer backend for a store dies, multiple session shims' `ensure`

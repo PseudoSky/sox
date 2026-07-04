@@ -877,6 +877,28 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           .get();
         const enrichmentWatermark = eRow?.ev ?? null;
 
+        // Queue-drain SLO (BL-172 follow-on): expose stall-detection timestamps +
+        // a structured verdict so a dead outbox consumer is machine-visible.
+        // NOTE: enrichment_watermark above is MAX(enrich_ver) over nodes — the
+        // SYNCHRONOUS write-path enrichment stamps it; it does NOT prove the
+        // async consumer is alive. These fields do.
+        const oldRow = db
+          .prepare<[], { o: string | null }>(
+            'SELECT MIN(enqueued) AS o FROM organizer_queue WHERE done_at IS NULL',
+          )
+          .get();
+        const doneRow = db
+          .prepare<[], { d: string | null }>('SELECT MAX(done_at) AS d FROM organizer_queue')
+          .get();
+        const queueOldestPendingAt = oldRow?.o ?? null;
+        const queueLastDoneAt = doneRow?.d ?? null;
+        const enrichmentHealth = computeEnrichmentHealth(
+          queueDepth,
+          queueOldestPendingAt,
+          queueLastDoneAt,
+          Date.now(),
+        );
+
         storeBlock = {
           name: storeName,
           path: resolvedPath,
@@ -885,6 +907,10 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           last_checkpoint_at: null,
           enrichment_watermark: enrichmentWatermark,
           queue_depth: queueDepth,
+          // Additive (HF-3 rule): never rename/remove the fields above.
+          queue_oldest_pending_at: queueOldestPendingAt,
+          queue_last_done_at: queueLastDoneAt,
+          enrichment: enrichmentHealth,
         };
       }
     } catch {
@@ -1563,6 +1589,103 @@ function isDaemonReachable(): Promise<boolean> {
   });
 }
 
+// ── Queue-drain health SLO (BL-172 follow-on) ─────────────────────────────────
+//
+// "HEALTHY" must require workload progress, not just RPC liveness: memory_ping
+// answered ok:true for 27h while the enrichment outbox was dead. The ping store
+// block now carries a structured enrichment verdict so a stalled outbox is
+// machine-visible without SQL forensics. Additive fields only (HF-3 rule).
+//
+// Stall threshold: 3× the in-process consumer tick (FALLBACK_ENRICH_INTERVAL_MS,
+// 5 min) = 15 min by default — a pending trigger row older than that means the
+// consumer has missed ≥3 ticks. Env-overridable via SOX_ENRICH_STALL_THRESHOLD_MS.
+
+export interface EnrichmentHealth {
+  state: 'idle' | 'ok' | 'stalled';
+  oldest_pending_at: string | null;
+  last_done_at: string | null;
+  stall_threshold_ms: number;
+}
+
+/** Resolve the stall threshold (env override → default 3× consumer tick). */
+export function enrichStallThresholdMs(): number {
+  const raw = process.env.SOX_ENRICH_STALL_THRESHOLD_MS;
+  const n = raw === undefined ? NaN : Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 3 * FALLBACK_ENRICH_INTERVAL_MS;
+}
+
+/**
+ * Compute the enrichment-consumption health verdict. Pure — exported for tests.
+ *   idle    — queue empty (nothing pending).
+ *   ok      — pending work, oldest item younger than the stall threshold.
+ *   stalled — pending work older than the threshold: the consumer is not draining.
+ */
+export function computeEnrichmentHealth(
+  queueDepth: number,
+  oldestPendingAt: string | null,
+  lastDoneAt: string | null,
+  nowMs: number,
+): EnrichmentHealth {
+  const stallThresholdMs = enrichStallThresholdMs();
+  let state: EnrichmentHealth['state'] = 'idle';
+  if (queueDepth > 0) {
+    const oldestMs = oldestPendingAt === null ? NaN : Date.parse(oldestPendingAt);
+    // An unparseable/absent timestamp with pending rows is itself suspicious —
+    // treat as stalled rather than silently ok ([inv:list-never-lies]).
+    state =
+      !Number.isFinite(oldestMs) || nowMs - oldestMs > stallThresholdMs ? 'stalled' : 'ok';
+  }
+  return {
+    state,
+    oldest_pending_at: oldestPendingAt,
+    last_done_at: lastDoneAt,
+    stall_threshold_ms: stallThresholdMs,
+  };
+}
+
+// BL-172: organizer_queue ops that are TRIGGERS for a batch-enrich pass. memoryd
+// marks these done after a successful runBatchEnrich; the in-process fallback must
+// do the same or (with the daemon intentionally absent per ADR-0007) the queue
+// grows unbounded and memory_ping's queue_depth lies forever. 'decay'/'reindex'
+// are real work items the fallback does NOT perform — they are left open.
+const ENRICH_TRIGGER_OPS = ['ingest', 'enrich', 'extract', 'link', 'consolidate'] as const;
+
+/**
+ * BL-172: complete the open batch-enrich TRIGGER rows in organizer_queue after a
+ * successful runBatchEnrich pass, mirroring memoryd's drain semantics
+ * (claim → pass → done-on-success-only). Only rows with seq <= `maxSeq` (captured
+ * BEFORE the pass) are completed, so a row enqueued after the pass snapshot is
+ * never marked done by work that predates it. Returns the number of completed rows.
+ * Exported for the BL-172 regression test.
+ */
+export function completeEnrichTriggerRows(db: Database.Database, maxSeq: number): number {
+  if (maxSeq <= 0) return 0;
+  const placeholders = ENRICH_TRIGGER_OPS.map(() => '?').join(',');
+  const now = new Date().toISOString();
+  const res = db
+    .prepare(
+      `UPDATE organizer_queue
+         SET claimed_at = COALESCE(claimed_at, ?),
+             done_at = ?,
+             attempts = attempts + 1
+       WHERE done_at IS NULL AND seq <= ? AND op IN (${placeholders})`,
+    )
+    .run(now, now, maxSeq, ...ENRICH_TRIGGER_OPS);
+  return res.changes;
+}
+
+/** BL-172: max open trigger-row seq — the pre-pass snapshot boundary. */
+export function maxOpenEnrichTriggerSeq(db: Database.Database): number {
+  const placeholders = ENRICH_TRIGGER_OPS.map(() => '?').join(',');
+  const row = db
+    .prepare(
+      `SELECT COALESCE(MAX(seq), 0) AS m FROM organizer_queue
+       WHERE done_at IS NULL AND op IN (${placeholders})`,
+    )
+    .get(...ENRICH_TRIGGER_OPS) as { m: number };
+  return row.m;
+}
+
 /** Run one in-process incremental enrichment pass over all open DBs. */
 async function runFallbackEnrichPass(): Promise<void> {
   if (openedPaths.size === 0) return;
@@ -1576,12 +1699,18 @@ async function runFallbackEnrichPass(): Promise<void> {
   for (const dbPath of openedPaths) {
     try {
       const db = getDb(dbPath);
+      // BL-172: snapshot the open trigger rows this pass will satisfy, run the
+      // pass, then complete them — synchronously, no await in between (the
+      // better-sqlite3 pass blocks the event loop, so no write can interleave).
+      const maxSeq = maxOpenEnrichTriggerSeq(db);
       const result = runBatchEnrich(db, { incrementalCluster: true });
+      const queueCompleted = completeEnrichTriggerRows(db, maxSeq);
       console.error(
         `[memory-server] fallback enrich (daemon absent, ${dbPath}):` +
         ` communities=${result.communities_upserted}` +
         ` importance_updated=${result.importance_updated}` +
-        ` relates_to=${result.relates_to_edges}`,
+        ` relates_to=${result.relates_to_edges}` +
+        ` queue_completed=${queueCompleted}`,
       );
     } catch (err) {
       // Log to stderr only — never stdout (JSON-RPC channel).
@@ -1679,11 +1808,20 @@ if (require.main === module) {
     }
     // Lazy-require so the direct-stdio path never loads service-proxy.
     const { runBackend } = require('./backend.js') as typeof import('./backend.js');
-    void runBackend({
+    // BL-170: defensive .catch — a rejected startup (any cause runBackend itself
+    // did not already exit on) must terminate the process, never idle as a
+    // zombie relying on Node's default unhandled-rejection crash (which the
+    // embed worker thread can outlive when stdio is a dead pipe).
+    runBackend({
       socketPath,
       ...(process.env.SOX_PROXY_BACKEND_SCHEMA
         ? { schemaPath: process.env.SOX_PROXY_BACKEND_SCHEMA }
         : {}),
+    }).catch((err: unknown) => {
+      process.stderr.write(
+        `[memory-server] FATAL: backend failed to start: ${String(err)} — exiting (BL-170)\n`,
+      );
+      process.exit(1);
     });
   } else {
     // ADR-0003 Decision 5: serverInfo.version is DERIVED from the running artifact's

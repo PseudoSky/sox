@@ -131,33 +131,67 @@ export async function handleBackendRequest(
  * Run memory-server as a persistent UDS backend (§9.5.4). Binds `socketPath`,
  * publishes the schema (if `schemaPath` given), and serves until SIGTERM/SIGINT.
  * Resolves when the listener is bound (for tests); in production it runs forever.
+ *
+ * BL-170: a singleton racer that LOSES the bind (E_LIVE_SOCKET from serveBackend's
+ * SA-4 probe, or a raw EADDRINUSE race) MUST exit — never idle as an orphaned
+ * zombie holding a warmed model and ignoring SIGTERM. Two hardenings here:
+ *   1. SIGTERM/SIGINT handlers are wired BEFORE the async bind, so even a backend
+ *      stuck pre-bind drains on signal ([contract:signal]).
+ *   2. A serveBackend rejection is caught, logged to stderr
+ *      ([inv:no-stdout-diagnostics]), and the process exits 1 so the winning
+ *      singleton self-heals without a manual reap.
+ * `exit` is an injectable seam so the regression test can assert the exit path
+ * without killing the test runner; production callers omit it (process.exit).
  */
 export async function runBackend(opts: {
   socketPath: string;
   schemaPath?: string;
+  /** Test seam: invoked instead of process.exit on a fatal bind failure. */
+  exit?: (code: number) => never;
 }): Promise<{ close: () => Promise<void> }> {
+  const exit: (code: number) => never =
+    opts.exit ?? ((code: number): never => process.exit(code));
+
   if (opts.schemaPath) publishSchema(opts.schemaPath);
 
-  const handle = await serveBackend({
-    socketPath: opts.socketPath,
-    handler: handleBackendRequest,
-    onDiagnostic: (l) => process.stderr.write(l + '\n'),
-  });
+  // BL-170 (2): wire signal handlers BEFORE the bind — a backend stuck pre-bind
+  // must still honour SIGTERM instead of requiring a SIGKILL escalation.
+  let handle: { socketPath: string; close: () => Promise<void> } | null = null;
+  const shutdown = (sig: string): void => {
+    process.stderr.write(`[memory-server backend] ${sig} — shutting down\n`);
+    // SA-8 / BL-128: close all DB connections with lease release so the lock
+    // file is cleaned up before process exit.
+    closeAllDbs();
+    if (handle) {
+      void handle.close().finally(() => process.exit(0));
+    } else {
+      process.exit(0);
+    }
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+
+  try {
+    handle = await serveBackend({
+      socketPath: opts.socketPath,
+      handler: handleBackendRequest,
+      onDiagnostic: (l) => process.stderr.write(l + '\n'),
+    });
+  } catch (err) {
+    // BL-170 (1): the losing singleton racer dies loudly instead of idling.
+    const code = (err as { code?: string }).code ?? 'E_BIND_FAILED';
+    process.stderr.write(
+      `[memory-server backend] FATAL (${code}): ${(err as Error).message} — ` +
+        `losing singleton racer exiting (BL-170)\n`,
+    );
+    return exit(1);
+  }
 
   process.stderr.write(
     `[memory-server backend] listening on ${handle.socketPath} ` +
       `(version ${serverInfo().version})\n`,
   );
 
-  const shutdown = (sig: string): void => {
-    process.stderr.write(`[memory-server backend] ${sig} — shutting down\n`);
-    // SA-8 / BL-128: close all DB connections with lease release so the lock
-    // file is cleaned up before process exit.
-    closeAllDbs();
-    void handle.close().finally(() => process.exit(0));
-  };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
-
-  return { close: () => handle.close() };
+  const bound = handle;
+  return { close: () => bound.close() };
 }
