@@ -256,11 +256,11 @@ of reaching into its `dist/` output via a relative path:
 **Gate:** `npx nx lint memory-core --skip-nx-cache` clean (0 errors) · `npx nx build baseline-capture`
 pass · `npx nx lint baseline-capture --skip-nx-cache` clean · `npx nx test baseline-capture
 --skip-nx-cache` 14/14 pass. `npx nx affected -t lint,build,test` surfaced 2 failing tasks —
-`sox-ecosystem:test` and `memory-flush:test` — both re-verified in isolation (see BL-170) as a
+`sox-ecosystem:test` and `memory-flush:test` — both re-verified in isolation (see BL-171) as a
 pre-existing real-ONNX/vitest-forked-pool flake with **zero** overlap with this ticket's diff
 (`git status` during triage showed only `BACKLOG.md`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, the
 2 deleted scripts, and the new `tools/baseline-capture/` dir — no memory-server/memory-flush files
-touched). Not fixed here (out of file-scope; logged as BL-170).
+touched). Not fixed here (out of file-scope; logged as BL-171).
 
 **Follow-on backlog candidate (not fixed here, out of scope):** several other `tools/*.{js,mjs}`
 files (`bench-recall.js`, `bench-scale.js`, `test-*.js`, `probe-*.mjs`) reach into sibling
@@ -268,7 +268,7 @@ extensions'/libs' `dist/` output the same way the two capture scripts used to �
 systemic across `tools/`, deliberately not swept into this ticket's file scope to avoid touching
 files outside the two named in BL-164 (worktree hygiene / disjoint-file-set discipline).
 
-### BL-170 — `onnxruntime-node` native V8 HandleScope crash + real-ONNX test timeouts under vitest forked pool (`sox-ecosystem:test`, `memory-flush:test`) — **Open (MEDIUM), discovered during S10/BL-164** (2026-07-04)
+### BL-171 — `onnxruntime-node` native V8 HandleScope crash + real-ONNX test timeouts under vitest forked pool (`sox-ecosystem:test`, `memory-flush:test`) — **Open (MEDIUM), discovered during S10/BL-164** (2026-07-04)
 
 Surfaced while gating BL-164 via `npx nx affected -t lint,build,test`: two unrelated projects failed,
 **neither touched by BL-164's diff** (verified via `git status` — zero overlap):
