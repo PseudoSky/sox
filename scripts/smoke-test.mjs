@@ -287,6 +287,27 @@ async function main() {
 
   const extensions = await discoverExtensions();
 
+  // ── BL-192 preflight: refuse to run against an unbuilt workspace ────────────
+  // A dist-less checkout (fresh worktree) makes install/enable legs fail with
+  // "no entrypoint" — a TRUE statement about the environment that reads like a
+  // product bug (exactly how BL-192 got mis-filed). Fail fast and say why.
+  const missingArtifacts = [];
+  const cliMain = path.join(WORKSPACE, 'dist', 'apps', 'sox', 'main.js');
+  if (!fs.existsSync(cliMain)) missingArtifacts.push(cliMain);
+  for (const e of extensions) {
+    if (typeof e.manifest.entrypoint === 'string') {
+      const ep = path.join(e.dir, e.manifest.entrypoint);
+      if (!fs.existsSync(ep)) missingArtifacts.push(ep);
+    }
+  }
+  if (missingArtifacts.length > 0) {
+    console.error('[smoke] FATAL: workspace is not built — missing compiled artifacts:');
+    for (const p of missingArtifacts) console.error(`[smoke]   - ${p}`);
+    console.error('[smoke] Build first (e.g. `npx nx run-many -t build`), then re-run.');
+    console.error('[smoke] Running unbuilt produces "no entrypoint" enable/serve failures that masquerade as product bugs (BL-192).');
+    process.exit(2);
+  }
+
   // Install bundles that contain service/mcp-server members
   const bundleIds = new Set();
   if (extensions.some(e => e.dir.includes('/members/'))) {
