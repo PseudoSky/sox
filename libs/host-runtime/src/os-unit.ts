@@ -1050,3 +1050,56 @@ export async function unloadThenReap(opts: {
   const undead = reap.killed.some((k: { outcome: KillOutcome }) => k.outcome === 'undead');
   return { label: opts.label, unloaded, reap, undead };
 }
+
+// ─── BL-185: Interval-schedule detection ─────────────────────────────────────
+
+/**
+ * Detect whether a rendered OS unit file (plist or systemd service/timer)
+ * carries an interval schedule. Used by `soxe status` to render a loaded but
+ * not-currently-running periodic unit as SCHEDULED rather than DEAD.
+ *
+ * Rules:
+ *   launchd plist — contains `<key>StartInterval</key>` or
+ *                   `<key>StartCalendarInterval</key>`.
+ *   systemd timer  — the paired `.timer` file contains `OnUnitActiveSec=` or
+ *                   `OnCalendar=`; the presence of the timer file alone is
+ *                   sufficient signal (the .service file is unremarkable).
+ *
+ * Pure function (no file I/O): the caller reads the file and passes the
+ * content string. Returns false on empty / null input (additive, never throws).
+ */
+export function isScheduledOsUnitContent(unitFileContent: string): boolean {
+  if (!unitFileContent) return false;
+  // launchd plist keys (StartInterval is the Slice 4 / SOX-generated key;
+  // StartCalendarInterval is launchd's cron-style alternative — keep the
+  // seam ready even though SOX does not currently emit it).
+  if (unitFileContent.includes('<key>StartInterval</key>')) return true;
+  if (unitFileContent.includes('<key>StartCalendarInterval</key>')) return true;
+  // systemd timer directives (the .timer file, not the .service file).
+  if (unitFileContent.includes('OnUnitActiveSec=')) return true;
+  if (unitFileContent.includes('OnCalendar=')) return true;
+  return false;
+}
+
+/**
+ * Probe whether an installed unit file at `unitPath` carries an interval
+ * schedule. For systemd, also checks for the paired `.timer` file (replacing
+ * `.service` with `.timer` in the path).
+ *
+ * Returns false if the file is absent, unreadable, or carries no schedule.
+ * Never throws — all errors are silenced (best-effort, additive).
+ */
+export function isScheduledOsUnit(unitPath: string): boolean {
+  try {
+    if (!fs.existsSync(unitPath)) return false;
+    const content = fs.readFileSync(unitPath, 'utf8');
+    if (isScheduledOsUnitContent(content)) return true;
+    // Systemd seam: check the paired .timer file.
+    const timerPath = unitPath.replace(/\.service$/, '.timer');
+    if (timerPath !== unitPath && fs.existsSync(timerPath)) {
+      const timerContent = fs.readFileSync(timerPath, 'utf8');
+      if (isScheduledOsUnitContent(timerContent)) return true;
+    }
+  } catch { /* best-effort */ }
+  return false;
+}
