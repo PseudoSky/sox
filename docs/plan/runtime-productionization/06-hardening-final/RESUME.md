@@ -1,3 +1,7 @@
+> **⛔ OBSOLETE (2026-07-04): context-06 is COMPLETE.** All shards (S8–S11), HF-5 forensics,
+> and HF-6 closeout landed on main; ADR-0007 is ACCEPTED. Do not resume from this document —
+> see [REPORT.md](./REPORT.md) for the final state and the root BACKLOG.md for remaining open items.
+
 # RESUME — runtime-productionization context 06 (hardening + closeout)
 
 **Read this first to resume.** Then read, in order: [`SHARDS.md`](./SHARDS.md) (the work queue),

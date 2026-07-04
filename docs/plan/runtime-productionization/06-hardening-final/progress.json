@@ -1,278 +1,279 @@
 {
-  "context": "06-hardening-final",
-  "items": [
-    {
-      "id": "HF-1",
-      "bl": [
-        "BL-134"
-      ],
-      "title": "Chaos suite in CI: kill -9 recovery, disk-full, queue overflow",
-      "status": "complete",
-      "evidence": {
-        "commands": [
-          {
-            "cmd": "npx nx test memory-core --skip-nx-cache",
-            "exit": 0,
-            "summary": "Run 1: 18 test files passed (1 skipped), 240 tests passed (4 skipped). Duration 41.33s."
-          },
-          {
-            "cmd": "npx nx test memory-core --skip-nx-cache",
-            "exit": 0,
-            "summary": "Run 2: 18 test files passed (1 skipped), 240 tests passed (4 skipped). Duration 41.18s."
-          },
-          {
-            "cmd": "npx nx test memory-core --skip-nx-cache",
-            "exit": 0,
-            "summary": "Run 3: 18 test files passed (1 skipped), 240 tests passed (4 skipped). Duration 40.33s."
-          },
-          {
-            "cmd": "npx nx lint memory-core",
-            "exit": 0,
-            "summary": "All files pass linting."
-          }
-        ],
-        "files_created": [
-          "libs/memory-core/src/chaos/kill9-recovery.chaos.spec.ts",
-          "libs/memory-core/src/chaos/disk-full.chaos.spec.ts",
-          "libs/memory-core/src/chaos/queue-overflow.chaos.spec.ts"
-        ],
-        "negative_controls": {
-          "scenario_1_kill9": {
-            "break": "Disable WAL (journal_mode=DELETE) — child writes without WAL, SIGKILL mid-burst",
-            "red": "integrity_check may return rows other than 'ok' (partial page written to main file without WAL replay)",
-            "encoding": "it.skip '[NC] negative control: without WAL, integrity_check may fail after SIGKILL' — change it.skip to it to activate",
-            "restore": "Re-enable WAL in child script (useWal=true) to restore green"
-          },
-          "scenario_2_diskfull": {
-            "break": "Remove max_page_count constraint — large write succeeds instead of failing",
-            "red": "expect(caught).not.toBeNull() fails (caught===null because write succeeded)",
-            "encoding": "it.skip '[NC] negative control: without max_page_count, write succeeds (E_IO guard removed)' — asserts caught===null",
-            "restore": "Re-add db.exec('PRAGMA max_page_count = ...')"
-          },
-          "scenario_3_overflow": {
-            "break": "Set maxSize=Number.MAX_SAFE_INTEGER — no overflow guard fires",
-            "red": "expect(ebusyErrors.length).toBeGreaterThan(0) fails (all writes succeed, no E_BUSY)",
-            "encoding": "it.skip '[NC] negative control: without overflow guard (maxSize=MAX), all writes succeed' — asserts rejections.length===0",
-            "restore": "Use original maxSize=5"
-          }
-        },
-        "pre_existing_flake": {
-          "file": "libs/memory-core/src/write.spec.ts",
-          "test": "batch of 10 items with 1 byte-duplicate returns 9 ok + 1 E_DEDUP with existing_uid",
-          "cause": "fastembed warmup timeout (30000ms limit) under concurrent test load. Not caused by HF-1 changes. Appeared on 1 of 5 gate runs.",
-          "evidence": "Test is in write.spec.ts (unmodified by S1). The chaos specs (3 new files) never failed across all runs."
-        }
-      },
-      "notes": [
-        "Scenario 1: child worker spawned as .cjs (avoids ESM module resolution in tmpdir), uses project-resolved require() paths for better-sqlite3 + sqlite-vec",
-        "Scenario 2: max_page_count set to currentPageCount+2 (≈8KB headroom); 100 rows×4KB each forces SQLITE_FULL → wrapDbError maps to E_IO",
-        "Scenario 3: maxSize=5, slow anchor holds queue; flood of 15 items causes >5 queue rejections with E_BUSY shape (retryable:true, retry_after_ms:250)",
-        "All chaos stores use OS tmpdir (mkdtemp), NOT ~/.memory",
-        "Cleanup: afterEach removes tmpdir + calls _resetAllLeasesForTest() + WriteQueue.clearInstances()"
-      ]
+ "context": "06-hardening-final",
+ "items": [
+  {
+   "id": "HF-1",
+   "bl": [
+    "BL-134"
+   ],
+   "title": "Chaos suite in CI: kill -9 recovery, disk-full, queue overflow",
+   "status": "complete",
+   "evidence": {
+    "commands": [
+     {
+      "cmd": "npx nx test memory-core --skip-nx-cache",
+      "exit": 0,
+      "summary": "Run 1: 18 test files passed (1 skipped), 240 tests passed (4 skipped). Duration 41.33s."
+     },
+     {
+      "cmd": "npx nx test memory-core --skip-nx-cache",
+      "exit": 0,
+      "summary": "Run 2: 18 test files passed (1 skipped), 240 tests passed (4 skipped). Duration 41.18s."
+     },
+     {
+      "cmd": "npx nx test memory-core --skip-nx-cache",
+      "exit": 0,
+      "summary": "Run 3: 18 test files passed (1 skipped), 240 tests passed (4 skipped). Duration 40.33s."
+     },
+     {
+      "cmd": "npx nx lint memory-core",
+      "exit": 0,
+      "summary": "All files pass linting."
+     }
+    ],
+    "files_created": [
+     "libs/memory-core/src/chaos/kill9-recovery.chaos.spec.ts",
+     "libs/memory-core/src/chaos/disk-full.chaos.spec.ts",
+     "libs/memory-core/src/chaos/queue-overflow.chaos.spec.ts"
+    ],
+    "negative_controls": {
+     "scenario_1_kill9": {
+      "break": "Disable WAL (journal_mode=DELETE) \u2014 child writes without WAL, SIGKILL mid-burst",
+      "red": "integrity_check may return rows other than 'ok' (partial page written to main file without WAL replay)",
+      "encoding": "it.skip '[NC] negative control: without WAL, integrity_check may fail after SIGKILL' \u2014 change it.skip to it to activate",
+      "restore": "Re-enable WAL in child script (useWal=true) to restore green"
+     },
+     "scenario_2_diskfull": {
+      "break": "Remove max_page_count constraint \u2014 large write succeeds instead of failing",
+      "red": "expect(caught).not.toBeNull() fails (caught===null because write succeeded)",
+      "encoding": "it.skip '[NC] negative control: without max_page_count, write succeeds (E_IO guard removed)' \u2014 asserts caught===null",
+      "restore": "Re-add db.exec('PRAGMA max_page_count = ...')"
+     },
+     "scenario_3_overflow": {
+      "break": "Set maxSize=Number.MAX_SAFE_INTEGER \u2014 no overflow guard fires",
+      "red": "expect(ebusyErrors.length).toBeGreaterThan(0) fails (all writes succeed, no E_BUSY)",
+      "encoding": "it.skip '[NC] negative control: without overflow guard (maxSize=MAX), all writes succeed' \u2014 asserts rejections.length===0",
+      "restore": "Use original maxSize=5"
+     }
     },
-    {
-      "id": "HF-2",
-      "bl": [
-        "BL-134"
-      ],
-      "title": "Soak + SLO threshold gates with degraded-run control",
-      "status": "complete",
-      "evidence": {
-        "commands": [
-          {
-            "cmd": "npx nx lint memory-core",
-            "exit": 0,
-            "summary": "All soak/ files pass linting (zero errors from soak-runner.ts, metrics-exporter.ts, soak.spec.ts). 22 pre-existing @nx/enforce-module-boundaries circular-dep errors in cluster.ts, embed.ts, recall.ts, etc. (not caused by S2 — none are in soak/). Pre-existing: confirmed by git diff --name-only HEAD showing only soak/ files."
-          },
-          {
-            "cmd": "npx nx test memory-core --skip-nx-cache",
-            "exit": 0,
-            "summary": "Run 1: 20 test files passed (1 skipped), 253 tests passed (5 skipped). Duration 41.13s. +13 new soak tests vs HF-1 baseline of 240."
-          },
-          {
-            "cmd": "npx nx test memory-core --skip-nx-cache",
-            "exit": 0,
-            "summary": "Run 2: 20 test files passed (1 skipped), 253 tests passed (5 skipped). Duration 40.64s."
-          },
-          {
-            "cmd": "npx nx test memory-core --skip-nx-cache",
-            "exit": 0,
-            "summary": "Run 3: 20 test files passed (1 skipped), 253 tests passed (5 skipped). Duration 68.91s."
-          }
-        ],
-        "commits": [
-          "dc55b0f"
-        ],
-        "files_created": [
-          "libs/memory-core/src/soak/soak-runner.ts",
-          "libs/memory-core/src/soak/metrics-exporter.ts",
-          "libs/memory-core/src/soak/soak.spec.ts"
-        ],
-        "negative_control": {
-          "break": "Remove injected delay (injectedDelayMs=0) — no latency inflation → tight budget (max_write_p50_ms=10ms) passes",
-          "red": "B2 assertion expect(result.passed).toBe(false) would fail if injection removed — tight budget would pass",
-          "encoding": "it.skip '[NC] negative control: without injection, tight budget passes (injection is load-bearing)' — change it.skip to it to activate",
-          "restore": "Re-add injectedDelayMs=50 to the degraded run call"
-        },
-        "gate_has_teeth_control": {
-          "mechanism": "runSoak() called with injectedDelayMs=50 → every queue slot sleeps 50ms → write_p50_ms >= 50ms",
-          "tight_budget": "BudgetParams { max_write_p50_ms: 10, max_write_p99_ms: 50, ... }",
-          "verdict": "compareToBudget() returns passed=false with write_p50_ms violation (actual >= 50ms >> budget 10ms)",
-          "test": "Suite B / B2: 'degraded run FAILS a tight sample budget (gate has teeth)'"
-        }
-      },
-      "notes": [
-        "Scope fence: libs/memory-core/src/soak/ only — no edits to chaos/, recall.ts, or lifecycle modules",
-        "Thresholds NOT hardcoded — BudgetParams is passed in by caller; integrator selects production values from _shared/baselines/write-perf.json",
-        "SOX_SOAK_INJECT_TXN_DELAY_MS env flag activates degraded run (resolveInjectedDelay() reads it; tests override via injectedDelayMs option)",
-        "CI profile: 8 writers × 30 ops = 240 total ops (fast); SOX_SOAK_LONG=1 runs full 16×100 profile",
-        "Metrics JSON shape: _schema:1, _shard:'HF-2', latency_ms{p50,p99,mean,min,max}, lock_wait_ms, txn_duration_ms, queue_depth, wal{checkpoint_age_ms,bytes_final}",
-        "compareToBudget() reads _shared/baselines/write-perf.json and reports baseline_p50_ms/baseline_p99_ms in the result",
-        "Pre-existing lint issue (22 circular dep errors in memory-core pre-S2 files): recorded in discovered[]"
-      ]
-    },
-    {
-      "id": "HF-3",
-      "bl": [
-        "BL-132"
-      ],
-      "title": "Recall score legibility",
-      "status": "complete",
-      "evidence": {
-        "commands": [
-          {
-            "cmd": "npx nx test hybrid-search --skip-nx-cache",
-            "exit": 0,
-            "summary": "3 test files, 70 tests passed (includes 20 new score-breakdown.spec.ts tests)"
-          },
-          {
-            "cmd": "npx vitest run --config libs/memory-core/vitest.config.ts libs/memory-core/src/recall.spec.ts",
-            "exit": 0,
-            "summary": "1 test file, 8 tests passed (3 original + 5 new HF-3 breakdown tests)"
-          },
-          {
-            "cmd": "npx nx test memory-core --skip-nx-cache",
-            "exit": 0,
-            "summary": "17 passed (1 skipped), 239 tests passed (4 skipped). 1 pre-existing flaky timeout in write.spec.ts noted by nx as flaky; not caused by HF-3 changes (write.spec.ts was already modified in git status before S3 work began)"
-          },
-          {
-            "cmd": "npx nx build hybrid-search memory-core",
-            "exit": 0,
-            "summary": "Both projects build cleanly with TypeScript"
-          }
-        ],
-        "commits": [],
-        "pre_existing_lint_issue": "hybrid-search:lint fails on cross-encoder.ts '@nx/enforce-module-boundaries' — pre-existing before S3 (confirmed by restoring original index.ts and re-running lint: same failure). S3 only modified index.ts, not cross-encoder.ts.",
-        "design_note": "docs/plan/runtime-productionization/06-hardening-final/HF3-recall-scores.md"
-      },
-      "notes": [
-        "score field unchanged — byte-compatible with existing consumers",
-        "score_breakdown is additive: vec + bm25 + temporal === total === score within 1e-9",
-        "per-query min-max normalisation ensures cross-query comparability in [0, 1]",
-        "graph-expanded neighbors get {vec:0, bm25:0, temporal:0, total:score} breakdown (graph provenance has no channel signal)"
-      ]
-    },
-    {
-      "id": "HF-4",
-      "bl": [
-        "BL-133"
-      ],
-      "title": "Compaction schedule, quotas, memory_backup",
-      "status": "complete",
-      "evidence": {
-        "commands": [
-          {
-            "cmd": "npx nx run-many -t build,lint,test --projects=memory-core,memory-cli --skip-nx-cache",
-            "exit": 0,
-            "summary": "memory-core 280 pass/6 skip; memory-cli lint+build clean"
-          },
-          {
-            "cmd": "npx nx run registry:sync-index && node scripts/smoke-test.mjs",
-            "exit": 0,
-            "summary": "smoke 16 passed / 0 failed"
-          }
-        ],
-        "commits": [
-          "c40ef6d",
-          "e206390 (merge)",
-          "3838eb1 (soak+lifecycle build fix)",
-          "516ae37 (registry)"
-        ],
-        "files": [
-          "libs/memory-core/src/compaction.ts",
-          "libs/memory-core/src/quota.ts",
-          "libs/memory-core/src/backup.ts",
-          "extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts (backup/compact verbs)"
-        ]
-      },
-      "notes": [
-        "compaction tick (PRAGMA optimize/ANALYZE + wal_checkpoint TRUNCATE), coordinated with WriteQueue idle checkpoint",
-        "quota: soft warn / hard E_IO structured refusal (CONTRACTS §B), NC via SOX_DISABLE_QUOTA_HARD",
-        "backupStore VACUUM INTO with ~/.memory/** allowlist; integrity-clean under concurrent write load",
-        "memory_backup MCP tool wiring deferred to a follow-up (would touch memory-server/src/index.ts, out of S4 fence)"
-      ]
-    },
-    {
-      "id": "HF-5",
-      "bl": [],
-      "title": "Final invariant forensics on owner machine (read-only)",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
-    },
-    {
-      "id": "HF-6",
-      "bl": [],
-      "title": "ADR status flip + BACKLOG sweep + closeout",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+    "pre_existing_flake": {
+     "file": "libs/memory-core/src/write.spec.ts",
+     "test": "batch of 10 items with 1 byte-duplicate returns 9 ok + 1 E_DEDUP with existing_uid",
+     "cause": "fastembed warmup timeout (30000ms limit) under concurrent test load. Not caused by HF-1 changes. Appeared on 1 of 5 gate runs.",
+     "evidence": "Test is in write.spec.ts (unmodified by S1). The chaos specs (3 new files) never failed across all runs."
     }
-  ],
-  "gate": {
-    "status": "pending",
-    "evidence": null
+   },
+   "notes": [
+    "Scenario 1: child worker spawned as .cjs (avoids ESM module resolution in tmpdir), uses project-resolved require() paths for better-sqlite3 + sqlite-vec",
+    "Scenario 2: max_page_count set to currentPageCount+2 (\u22488KB headroom); 100 rows\u00d74KB each forces SQLITE_FULL \u2192 wrapDbError maps to E_IO",
+    "Scenario 3: maxSize=5, slow anchor holds queue; flood of 15 items causes >5 queue rejections with E_BUSY shape (retryable:true, retry_after_ms:250)",
+    "All chaos stores use OS tmpdir (mkdtemp), NOT ~/.memory",
+    "Cleanup: afterEach removes tmpdir + calls _resetAllLeasesForTest() + WriteQueue.clearInstances()"
+   ]
   },
-  "blockers": [
-    {
-      "id": "BL-156",
-      "affects": [
-        "HF-5"
-      ],
-      "note": "os-unit generator runs the serve_mode:proxy memory-server as direct-stdio (no port listener) → launchd daemon unreachable. HF-5 writer-count forensics must distinguish the per-session soxe-serve process from the launchd daemon by owner (session vs os-unit) and confirm only one holds the writer lease. Fix is spec-governed (docs/spec/service-lifecycle.md §9)."
+  {
+   "id": "HF-2",
+   "bl": [
+    "BL-134"
+   ],
+   "title": "Soak + SLO threshold gates with degraded-run control",
+   "status": "complete",
+   "evidence": {
+    "commands": [
+     {
+      "cmd": "npx nx lint memory-core",
+      "exit": 0,
+      "summary": "All soak/ files pass linting (zero errors from soak-runner.ts, metrics-exporter.ts, soak.spec.ts). 22 pre-existing @nx/enforce-module-boundaries circular-dep errors in cluster.ts, embed.ts, recall.ts, etc. (not caused by S2 \u2014 none are in soak/). Pre-existing: confirmed by git diff --name-only HEAD showing only soak/ files."
+     },
+     {
+      "cmd": "npx nx test memory-core --skip-nx-cache",
+      "exit": 0,
+      "summary": "Run 1: 20 test files passed (1 skipped), 253 tests passed (5 skipped). Duration 41.13s. +13 new soak tests vs HF-1 baseline of 240."
+     },
+     {
+      "cmd": "npx nx test memory-core --skip-nx-cache",
+      "exit": 0,
+      "summary": "Run 2: 20 test files passed (1 skipped), 253 tests passed (5 skipped). Duration 40.64s."
+     },
+     {
+      "cmd": "npx nx test memory-core --skip-nx-cache",
+      "exit": 0,
+      "summary": "Run 3: 20 test files passed (1 skipped), 253 tests passed (5 skipped). Duration 68.91s."
+     }
+    ],
+    "commits": [
+     "dc55b0f"
+    ],
+    "files_created": [
+     "libs/memory-core/src/soak/soak-runner.ts",
+     "libs/memory-core/src/soak/metrics-exporter.ts",
+     "libs/memory-core/src/soak/soak.spec.ts"
+    ],
+    "negative_control": {
+     "break": "Remove injected delay (injectedDelayMs=0) \u2014 no latency inflation \u2192 tight budget (max_write_p50_ms=10ms) passes",
+     "red": "B2 assertion expect(result.passed).toBe(false) would fail if injection removed \u2014 tight budget would pass",
+     "encoding": "it.skip '[NC] negative control: without injection, tight budget passes (injection is load-bearing)' \u2014 change it.skip to it to activate",
+     "restore": "Re-add injectedDelayMs=50 to the degraded run call"
+    },
+    "gate_has_teeth_control": {
+     "mechanism": "runSoak() called with injectedDelayMs=50 \u2192 every queue slot sleeps 50ms \u2192 write_p50_ms >= 50ms",
+     "tight_budget": "BudgetParams { max_write_p50_ms: 10, max_write_p99_ms: 50, ... }",
+     "verdict": "compareToBudget() returns passed=false with write_p50_ms violation (actual >= 50ms >> budget 10ms)",
+     "test": "Suite B / B2: 'degraded run FAILS a tight sample budget (gate has teeth)'"
     }
-  ],
-  "discovered": [
-    {
-      "id": "lint-circular-deps",
-      "status": "pre-existing",
-      "severity": "medium",
-      "summary": "npx nx lint memory-core --skip-nx-cache reports 22 @nx/enforce-module-boundaries circular-dep errors in cluster.ts, embed.ts, enrich-batch.ts, enrich.ts, entity-episodes.ts, extractive.ts, importance.ts, link.ts, list-entities.ts, near-duplicates.ts, neardup.ts, recall.ts, reembed.ts, related.ts, supersession-chain.ts. All are memory-core -> sox-ecosystem -> memory-core via scripts/capture-enrichment-baseline.mjs and scripts/capture-write-perf-baseline.mjs. None are in the soak/ files created by S2. Cached lint (npx nx lint memory-core) returns exit 0 (cache hit from prior passing run). Integrator should address the circular dep in the baseline capture scripts (they import memory-core from the repo root project). Out of S2 scope fence.",
-      "where": "libs/memory-core/src/{cluster,embed,enrich-batch,enrich,entity-episodes,extractive,importance,link,list-entities,near-duplicates,neardup,recall,reembed,related,supersession-chain}.ts"
-    },
-    {
-      "id": "BL-155",
-      "status": "resolved",
-      "note": "CRITICAL: esbuild CJS bundle broke import.meta.url → embedding-provider __dirname resolution threw at init → memory-server launchd daemon crash-looped. Fixed in tools/bundle-extension.cjs (import.meta.url shim). Commit e87369e."
-    },
-    {
-      "id": "BL-154",
-      "status": "resolved",
-      "note": "CRITICAL: memory_write auto-chunk deadlocked the serial WriteQueue via nested enqueue (any content >chunk_size*4 chars hung forever). Fixed to write chunks directly on writeDb. Commit a4023c3."
-    },
-    {
-      "id": "BL-151..153",
-      "status": "resolved",
-      "note": "memory test-suite stabilization (corrupted auto-chunk test + missing testTimeout; obsolete hash-backend tests; recluster 0-cluster lens marker). Commit a4023c3."
-    }
-  ],
-  "preconditions": {
-    "upstream_gates": "01-05 passed + merged",
-    "tests": "memory-core 232/1skip, memory-server 82, embedding-provider/memory-flush/host-runtime green",
-    "smoke": "16/0",
-    "verified_at": "2026-07-04"
+   },
+   "notes": [
+    "Scope fence: libs/memory-core/src/soak/ only \u2014 no edits to chaos/, recall.ts, or lifecycle modules",
+    "Thresholds NOT hardcoded \u2014 BudgetParams is passed in by caller; integrator selects production values from _shared/baselines/write-perf.json",
+    "SOX_SOAK_INJECT_TXN_DELAY_MS env flag activates degraded run (resolveInjectedDelay() reads it; tests override via injectedDelayMs option)",
+    "CI profile: 8 writers \u00d7 30 ops = 240 total ops (fast); SOX_SOAK_LONG=1 runs full 16\u00d7100 profile",
+    "Metrics JSON shape: _schema:1, _shard:'HF-2', latency_ms{p50,p99,mean,min,max}, lock_wait_ms, txn_duration_ms, queue_depth, wal{checkpoint_age_ms,bytes_final}",
+    "compareToBudget() reads _shared/baselines/write-perf.json and reports baseline_p50_ms/baseline_p99_ms in the result",
+    "Pre-existing lint issue (22 circular dep errors in memory-core pre-S2 files): recorded in discovered[]"
+   ]
   },
-  "updated_at": "2026-07-04T20:30:00Z",
-  "resume_doc": "docs/plan/runtime-productionization/06-hardening-final/RESUME.md"
+  {
+   "id": "HF-3",
+   "bl": [
+    "BL-132"
+   ],
+   "title": "Recall score legibility",
+   "status": "complete",
+   "evidence": {
+    "commands": [
+     {
+      "cmd": "npx nx test hybrid-search --skip-nx-cache",
+      "exit": 0,
+      "summary": "3 test files, 70 tests passed (includes 20 new score-breakdown.spec.ts tests)"
+     },
+     {
+      "cmd": "npx vitest run --config libs/memory-core/vitest.config.ts libs/memory-core/src/recall.spec.ts",
+      "exit": 0,
+      "summary": "1 test file, 8 tests passed (3 original + 5 new HF-3 breakdown tests)"
+     },
+     {
+      "cmd": "npx nx test memory-core --skip-nx-cache",
+      "exit": 0,
+      "summary": "17 passed (1 skipped), 239 tests passed (4 skipped). 1 pre-existing flaky timeout in write.spec.ts noted by nx as flaky; not caused by HF-3 changes (write.spec.ts was already modified in git status before S3 work began)"
+     },
+     {
+      "cmd": "npx nx build hybrid-search memory-core",
+      "exit": 0,
+      "summary": "Both projects build cleanly with TypeScript"
+     }
+    ],
+    "commits": [],
+    "pre_existing_lint_issue": "hybrid-search:lint fails on cross-encoder.ts '@nx/enforce-module-boundaries' \u2014 pre-existing before S3 (confirmed by restoring original index.ts and re-running lint: same failure). S3 only modified index.ts, not cross-encoder.ts.",
+    "design_note": "docs/plan/runtime-productionization/06-hardening-final/HF3-recall-scores.md"
+   },
+   "notes": [
+    "score field unchanged \u2014 byte-compatible with existing consumers",
+    "score_breakdown is additive: vec + bm25 + temporal === total === score within 1e-9",
+    "per-query min-max normalisation ensures cross-query comparability in [0, 1]",
+    "graph-expanded neighbors get {vec:0, bm25:0, temporal:0, total:score} breakdown (graph provenance has no channel signal)"
+   ]
+  },
+  {
+   "id": "HF-4",
+   "bl": [
+    "BL-133"
+   ],
+   "title": "Compaction schedule, quotas, memory_backup",
+   "status": "complete",
+   "evidence": {
+    "commands": [
+     {
+      "cmd": "npx nx run-many -t build,lint,test --projects=memory-core,memory-cli --skip-nx-cache",
+      "exit": 0,
+      "summary": "memory-core 280 pass/6 skip; memory-cli lint+build clean"
+     },
+     {
+      "cmd": "npx nx run registry:sync-index && node scripts/smoke-test.mjs",
+      "exit": 0,
+      "summary": "smoke 16 passed / 0 failed"
+     }
+    ],
+    "commits": [
+     "c40ef6d",
+     "e206390 (merge)",
+     "3838eb1 (soak+lifecycle build fix)",
+     "516ae37 (registry)"
+    ],
+    "files": [
+     "libs/memory-core/src/compaction.ts",
+     "libs/memory-core/src/quota.ts",
+     "libs/memory-core/src/backup.ts",
+     "extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts (backup/compact verbs)"
+    ]
+   },
+   "notes": [
+    "compaction tick (PRAGMA optimize/ANALYZE + wal_checkpoint TRUNCATE), coordinated with WriteQueue idle checkpoint",
+    "quota: soft warn / hard E_IO structured refusal (CONTRACTS \u00a7B), NC via SOX_DISABLE_QUOTA_HARD",
+    "backupStore VACUUM INTO with ~/.memory/** allowlist; integrity-clean under concurrent write load",
+    "memory_backup MCP tool wiring deferred to a follow-up (would touch memory-server/src/index.ts, out of S4 fence)"
+   ]
+  },
+  {
+   "id": "HF-5",
+   "bl": [],
+   "title": "Final invariant forensics on owner machine (read-only)",
+   "status": "complete",
+   "evidence": {
+    "summary": "PASS \u2014 single writer per store proven via lsof (one holder of memory.db+WAL+SHM), sole UDS binder, shim fd-peer cross-check, launchd accounting (BL-156 moot post-S9), memory_ping pid cross-check, spawn-lock debris accounted (BL-201). Full transcript: REPORT.md \u00a7HF-5."
+   },
+   "notes": []
+  },
+  {
+   "id": "HF-6",
+   "bl": [],
+   "title": "ADR status flip + BACKLOG sweep + closeout",
+   "status": "complete",
+   "evidence": {
+    "summary": "ADR-0007 ACCEPTED; S8-S11 merged + live-verified; BL sweep (BL-157/162/164/165/170/172-175/177/179/183/185/186/188-192 resolved; BL-201/202/203 filed); versions aligned (memory-core 0.3.0, memory-server 1.3.0); two-phase memory_update live-verified; final smoke 13/0 hermetic; REPORT.md complete."
+   },
+   "notes": []
+  }
+ ],
+ "gate": "closed",
+ "blockers": [
+  {
+   "id": "BL-156",
+   "affects": [
+    "HF-5"
+   ],
+   "note": "os-unit generator runs the serve_mode:proxy memory-server as direct-stdio (no port listener) \u2192 launchd daemon unreachable. HF-5 writer-count forensics must distinguish the per-session soxe-serve process from the launchd daemon by owner (session vs os-unit) and confirm only one holds the writer lease. Fix is spec-governed (docs/spec/service-lifecycle.md \u00a79)."
+  }
+ ],
+ "discovered": [
+  {
+   "id": "lint-circular-deps",
+   "status": "pre-existing",
+   "severity": "medium",
+   "summary": "npx nx lint memory-core --skip-nx-cache reports 22 @nx/enforce-module-boundaries circular-dep errors in cluster.ts, embed.ts, enrich-batch.ts, enrich.ts, entity-episodes.ts, extractive.ts, importance.ts, link.ts, list-entities.ts, near-duplicates.ts, neardup.ts, recall.ts, reembed.ts, related.ts, supersession-chain.ts. All are memory-core -> sox-ecosystem -> memory-core via scripts/capture-enrichment-baseline.mjs and scripts/capture-write-perf-baseline.mjs. None are in the soak/ files created by S2. Cached lint (npx nx lint memory-core) returns exit 0 (cache hit from prior passing run). Integrator should address the circular dep in the baseline capture scripts (they import memory-core from the repo root project). Out of S2 scope fence.",
+   "where": "libs/memory-core/src/{cluster,embed,enrich-batch,enrich,entity-episodes,extractive,importance,link,list-entities,near-duplicates,neardup,recall,reembed,related,supersession-chain}.ts"
+  },
+  {
+   "id": "BL-155",
+   "status": "resolved",
+   "note": "CRITICAL: esbuild CJS bundle broke import.meta.url \u2192 embedding-provider __dirname resolution threw at init \u2192 memory-server launchd daemon crash-looped. Fixed in tools/bundle-extension.cjs (import.meta.url shim). Commit e87369e."
+  },
+  {
+   "id": "BL-154",
+   "status": "resolved",
+   "note": "CRITICAL: memory_write auto-chunk deadlocked the serial WriteQueue via nested enqueue (any content >chunk_size*4 chars hung forever). Fixed to write chunks directly on writeDb. Commit a4023c3."
+  },
+  {
+   "id": "BL-151..153",
+   "status": "resolved",
+   "note": "memory test-suite stabilization (corrupted auto-chunk test + missing testTimeout; obsolete hash-backend tests; recluster 0-cluster lens marker). Commit a4023c3."
+  }
+ ],
+ "preconditions": {
+  "upstream_gates": "01-05 passed + merged",
+  "tests": "memory-core 232/1skip, memory-server 82, embedding-provider/memory-flush/host-runtime green",
+  "smoke": "16/0",
+  "verified_at": "2026-07-04"
+ },
+ "updated_at": "2026-07-04T23:55:00Z",
+ "resume_doc": "docs/plan/runtime-productionization/06-hardening-final/RESUME.md"
 }
