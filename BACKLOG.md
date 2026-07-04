@@ -192,6 +192,181 @@ Fix sketch: default the tee ON with `--no-log`/`SOX_SERVE_LOG=0` opt-out once th
 lands.
 
 ---
+## Open — surfaced during S9/BL-162 memory-daemon removal (2026-07-04)
+
+### BL-181 — `tools/test-e2e-lifecycle.js` Slice 1 + Section E hardcode `memory-daemon` as their real-service fixture; now broken by BL-162's removal — **Open (HIGH) (2026-07-04)**
+
+`host-runtime:test-e2e` (`libs/host-runtime/project.json` `test-e2e` target, runs
+`tools/test-e2e-lifecycle.js`) is NOT part of the standard `nx test`/`nx affected -t test` gate —
+it's a separate opt-in target — so it was not caught by this shard's required gate. But it WILL
+fail the next time anyone runs it, because two large regression sections use the now-deleted
+`extensions/bundles/sox-memory-bundle/members/memory-daemon` as their concrete fixture:
+- **"Step 7c: Slice 1 — cross-scope singleton"** (~line 1084-1192): spawns a live daemon process
+  from `memory-daemon/dist/index.js` and asserts the §5.2 singleton guard refuses a second spawn
+  when two scopes share `db_path`. Line 1104 already asserts
+  `fs.existsSync(DAEMON_ENTRY)` and will now fail loudly with a clear message rather than silently
+  skip — but the underlying coverage (cross-scope singleton guard) is lost.
+- **"Section E: SERVICE-STORE COPY + SPAWN — BL-37 regression gate"** (~line 1649-1780): verifies a
+  `type:service` extension's self-contained esbuild bundle survives the declarative-install copy +
+  real spawn with native addons (better-sqlite3, sqlite-vec) resolvable via NODE_PATH — the exact
+  regression BL-37 fixed. `memory-daemon` was the real extension used to prove this end-to-end.
+**Fix:** repoint both sections at a different real `type:service` extension with the same shape
+(background:true, singleton:true, native-addon deps) — `tokenguard` is the only other real service
+extension in the registry and is a good candidate — or author a small dedicated fixture service
+extension whose sole purpose is exercising these two regression gates. Deliberately NOT fixed by S9
+itself: this touches live daemon-process spawning/singleton-guard mechanics, which S9's dispatch
+explicitly fenced off ("do NOT touch libs/service-proxy/, apps/sox/src/main.ts serve/upgrade paths,
+or any live running process — S8 handles live backend reconciliation"), and a proper fix means
+picking/building a replacement fixture, not a mechanical rename. Run
+`node tools/test-e2e-lifecycle.js` after re-pointing to confirm both sections pass.
+
+### BL-182 — `memory-flush`'s `nudgeDaemon()`/`SOCKET_PATH` are now permanently-dead code (BL-162 follow-up) — **Open (LOW) (2026-07-04)**
+
+`extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.ts` defines its own local
+`SOCKET_PATH` (`~/.memory/memoryd.sock`) and calls `nudgeDaemon()` at the end of every
+`handleSessionEnd` (step 3, "Nudge memoryd"). Since BL-162 deleted the entire `memory-daemon`
+package (including `libs/memory-core/src/memoryd.ts`'s `MemoryDaemon` class — nothing will ever
+bind that socket again), this call is now unconditionally a no-op: it opens a Unix socket
+connection that always hits `ECONNREFUSED`/ENOENT, swallowed by the existing `client.on('error', ...)`
+handler. Harmless today (batch enrichment already runs via memory-server's in-process periodic
+loop, independent of this nudge), but it's a dangling reference to a daemon that no longer exists
+and should be deleted rather than left as inert dead code. **Not fixed in S9** because
+`memory-flush` was not in S9's confirmed exact-scope file list and this is a separate member with
+its own test suite (`memory-flush:test`) that a change here would need to keep green — low risk,
+quick fix, but deliberately left for a follow-up pass to keep S9's diff scoped to its assigned
+files. Fix: delete `SOCKET_PATH`, `nudgeDaemon()`, and its call site; update the file's header
+comment (currently: "nudges memoryd" in the SessionEnd bullet list) and `handleSessionEnd`'s
+JSDoc (step 3 "Nudge memoryd to wake and process the queue").
+
+### BL-183 — `libs/memory-core/src/outbox-queue.ts` (`createMemoryOutboxQueue`/`memoryFlush`) is fully unwired scaffolding — **Open (MEDIUM) (2026-07-04)**
+
+Discovered while verifying BL-162's in-process-enrichment claim: `outbox-queue.ts` (220 LOC,
+RS-4/RS-5 per `docs/plan/runtime-productionization/02-reusable-subsystems/progress.json`) and its
+399-line spec are real, tested, dead-letter-aware implementations of a transactional-outbox drain
+over the SAME `organizer_queue` table `memory-daemon`'s deleted `MemoryDaemon` class used — but
+`createMemoryOutboxQueue`/`memoryFlush` have ZERO consumers anywhere outside their own spec file
+(confirmed by repo-wide grep). Batch enrichment in production actually runs via a completely
+different, simpler path: memory-server's in-process periodic `runBatchEnrich` loop
+(`extensions/.../memory-server/src/index.ts`), which never touches `organizer_queue` at all. So
+`progress.json`'s RS-4/RS-5 "complete" status describes a built-but-never-integrated subsystem.
+Decide: (A) wire `createMemoryOutboxQueue`/`memoryFlush` into memory-server's write/enrich path as
+the intended real drain mechanism (more durable — dead-letter tracking, watermark-based
+read-your-writes for `memory_flush`-style callers) and retire the simpler periodic loop, or (B)
+delete `outbox-queue.ts` + its spec as unintegrated scaffolding superseded by the simpler periodic
+loop that's actually running in production today. Not decided or fixed here — out of BL-162's
+scope (BL-162 is specifically about removing the daemon, not about which enrichment-drain design
+wins); flagging so it doesn't silently rot further.
+
+**Integrator update at S9 merge (2026-07-04): PARTIALLY STALE.** Written before the BL-172
+incident fix landed on main: the periodic loop DOES now touch `organizer_queue` (it snapshots
+`maxOpenEnrichTriggerSeq` → runs the pass → `completeEnrichTriggerRows`), the queue's
+presence/age drives memory_ping's `enrichment` stall verdict, and at this merge the producer
+was restored as `outbox-queue.ts#enqueueIngest` (called from `write.ts`, transactional with the
+node insert) — so outbox-queue.ts now carries live production code. Still open from the
+original finding: `createMemoryOutboxQueue`/`memoryFlush` themselves (the dead-letter dequeue
+consumer + watermark flush) remain consumer-less — the (A)/(B) decision above still stands for
+THAT surface, folded into HF-6 closeout review with BL-127's read-your-derived-writes contract.
+
+### BL-184 — `docs/plan/runtime-productionization/02-reusable-subsystems/progress.json` RS-6 claims file deletions that were not actually present — **Open (LOW) (2026-07-04)**
+
+`progress.json`'s RS-6 entry (`"status": "complete"`) lists `files_deleted` including
+`extensions/bundles/sox-memory-bundle/members/memory-server/src/memoryd.ts`,
+`.../memory-server/src/bin.ts`, and `libs/memory-core/src/memoryd.ts` — but as of S9's start
+(2026-07-04) all three files were still present and live (bin.ts/memoryd.ts in memory-server were
+confirmed dead/unreferenced by the actual build — `package.json`'s `main`/`exports` and
+`project.json`'s build target only ever pointed at `src/index.ts` — but they had not been deleted
+as RS-6 claims). `libs/memory-core/src/memoryd.ts` was very much alive: imported by
+`write.ts` (`enqueueIngest`/`nudgeDaemon`, called on every `memory_write`) and `curate.ts`
+(`enqueueEnrich`, called on every global `memory_curate recluster`). S9 has now actually deleted
+all three plus `memory-daemon/src/memoryd.ts` and `libs/memory-core/src/memoryd-retry.spec.ts`,
+and removed the `write.ts`/`curate.ts` call sites (`curate.ts`'s global recluster now calls
+`runBatchEnrich` in-process instead of the now-deleted `enqueueEnrich`). This is a process-integrity
+gap (a "complete" status was recorded without the described side effects actually landing) worth
+a sweep during HF-6 closeout's BACKLOG/progress reconciliation pass — not fixed here since
+reconciling historical progress-tracking JSON is that closeout's job, not this shard's.
+
+### BL-162 — remove the obsolete `memory-daemon` extension (superseded by ADR-0007 in-process enrichment) — **FIXED (2026-07-04, S9)**
+
+**Owner directive: fix/remove, do not leave "deprecated."** ADR-0007's single-writer architecture
+moved batch enrichment IN-PROCESS into the memory-server writer backend, making the `memory-daemon`
+extension dead code. Today `soxe status` shows it as `DEAD`/`not-started` alongside healthy
+services (implying a fault). With a single consumer there is no reason to carry a deprecated shell —
+remove it cleanly: delete the bundle member + its manifest wiring, drop it from `registry/index.json`
++ the smoke-test surface (`scripts/smoke-test.mjs` currently lists it as testable), and remove any
+references. Verify enrichment still runs in-process (memory_stats cluster coverage) after removal.
+Publishing the resulting bundle-major bump to npm is the owner's step (ADR-0007); the source removal
++ local registry is the agent's. Sequenced after S4 (which touches the same bundle's `memory-cli`).
+
+**Fix (evidence):**
+- Deleted `extensions/bundles/sox-memory-bundle/members/memory-daemon/` (whole directory: manifest,
+  project.json, package.json, src/{bin,index,memoryd,schema}.ts, tsconfig.json).
+- Deleted the orphaned dead-code twins that were never actually removed by the earlier (falsely
+  "complete") RS-6 pass (see BL-184): `extensions/bundles/sox-memory-bundle/members/memory-server/
+  src/{bin.ts,memoryd.ts}` (unreferenced by memory-server's real build — confirmed via
+  `package.json` main/exports + `project.json` build target, both point only at `src/index.ts`) and
+  `libs/memory-core/src/memoryd.ts` + `libs/memory-core/src/memoryd-retry.spec.ts` (the canonical
+  `MemoryDaemon` class — genuinely dead now that nothing spawns it).
+- `extensions/bundles/sox-memory-bundle/extension.json`: removed `{ "id": "memory-daemon" }` from
+  `members`; updated description.
+- `registry/index.json`: regenerated via `npx nx run registry:sync-index` (15 entries; no
+  `memory-daemon` entry; bundle's `members` array now `[memory-server, memory-flush, memory-cli,
+  memory-usage]`).
+- `libs/memory-core/src/write.ts`: removed `enqueueIngest`/`nudgeDaemon` import + call sites, and
+  the now-fully-dead `scope` field from `WriteParams`/`BatchItem` (it existed solely to compute the
+  deleted daemon-queue's priority — confirmed zero other consumers and not part of the actual
+  exposed `memory_write` MCP tool input schema).
+- `libs/memory-core/src/curate.ts`: global `memory_curate recluster` (non-dry-run) now calls
+  `runBatchEnrich(db, { incrementalCluster: false })` in-process instead of the deleted
+  `enqueueEnrich` — this was actually a **latent bug fix**: the old `enqueueEnrich` enqueued into
+  `organizer_queue`, which nothing has drained since `memory-daemon` went `DEAD`/inactive in
+  production, so global recluster was silently a no-op before this fix.
+- `libs/memory-core/src/index.ts`, `extensions.ts`, `enrich-batch.ts`: removed the `memoryd.js`
+  re-export and updated stale comments describing the daemon-queue architecture.
+- `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts`: removed `SOCKET_PATH`
+  import + `isDaemonReachable()` daemon-socket probe; the periodic in-process enrichment loop
+  (`runFallbackEnrichPass` → renamed `runPeriodicEnrichPass`) is now unconditional (previously it
+  skipped its pass if a daemon socket answered — there is no daemon to answer anymore). Updated the
+  `memory_write`/`memory_curate` tool descriptions sent to MCP clients.
+- `libs/host-runtime/src/runtime.ts`, `os-unit.ts`: updated illustrative `memory-daemon` example
+  comments to `tokenguard`/generic examples (no functional change — these were never coupled to the
+  deleted package). Left `os-unit.spec.ts`/`singleton.spec.ts`'s use of `'memory-daemon'` as a
+  fixture *string* untouched per the dispatch's explicit guidance — purely generic example
+  extension ids with no coupling to the deleted package's code, not "memory-daemon-specific".
+- `scripts/v2-e2e.test.ts`: bundle-members assertion `toHaveLength(5)` → `toHaveLength(4)`.
+- `extensions/bundles/sox-memory-bundle/members/memory-server/recall-sqlite.test.ts`: removed the
+  BL-47 daemon-socket-probe test (no daemon concept left to probe) and its now-unused
+  `SOCKET_PATH`/`net` imports; kept + retitled the in-process `runBatchEnrich` regression test.
+- Docs updated to stop describing the removed daemon as current architecture: root `AGENTS.md`
+  (smoke-test single-extension example), `CONTRIBUTING.md` (service-extension examples, ×3),
+  `extensions/bundles/sox-memory-bundle/{README.md,members/memory-server/{README.md,CLAUDE.md},
+  members/memory-usage/SKILL.md}`, and the installed dev-scope mirror at
+  `.claude/skills/memory-usage/SKILL.md`. Deliberately did NOT touch `docs/decisions/0007-*.md`
+  (ADR flip to ACCEPTED is HF-6 closeout's job), `docs/spec/service-lifecycle.md` /
+  `docs/guidelines/*.md` (illustrative examples across many files — a dedicated docs sweep, not a
+  5-minute fix), `.opencode/agents/{implement,flash}.md` (shared cross-host agent-infra prompts,
+  uncertain ownership), or any `docs/plan/**` historical planning artifact / CHANGELOG.md (frozen
+  point-in-time records — editing them would be revisionist).
+- Also fixed root `vitest.config.ts`: added the same `testTimeout`/`hookTimeout: 30_000` that
+  `memory-server`'s own vitest config already carries for fastembed ONNX warmup — the root
+  aggregate runner double-covers `extensions/**/*.test.ts` (incl. `recall-sqlite.test.ts`) but
+  lacked the override, so it deterministically timed out at the default 5s on first `embed()` call.
+  Unrelated to memory-daemon but discovered and fixed while gating this change (see verification).
+
+**Verification:**
+- `npx nx build/lint/test` clean for `host-runtime`, `memory-core`, `memory-server` (see PR/report
+  for exact counts). `memory-server:test`'s one observed failure was the pre-existing, already-
+  tracked BL-161 fastembed-parallel-worker flake (confirmed via git diff tracing + a clean re-run
+  passing 81/81 + Nx's own flaky-task detector concurring) — not a regression from this change.
+- `rm -rf dist/smoke && node scripts/smoke-test.mjs` → `2 testable: tokenguard, memory-server` (no
+  `memory-daemon`) → `13 passed, 0 failed, 0 skipped`.
+- `npx nx affected -t lint,build,test` clean after the vitest.config.ts timeout fix above.
+- In-process enrichment confirmed still running with zero daemon dependency: `memory-server`'s
+  periodic loop and `memory_curate recluster`'s global path both call `runBatchEnrich` directly;
+  `recall-sqlite.test.ts`'s in-process `runBatchEnrich` regression test passes.
+
+**Not fixed (see BL-181/182/183/184 above):** `tools/test-e2e-lifecycle.js`'s Slice 1 + Section E
+fixtures, `memory-flush`'s dead nudge call, `outbox-queue.ts`'s unwired scaffolding, and
+`progress.json`'s stale RS-6 claim.
 
 ## Open — surfaced during S7/BL-161 memory-core test speed-up (2026-07-04)
 

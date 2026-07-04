@@ -14,9 +14,8 @@
  */
 
 import type { RecallResponse } from '@adhd/sox-memory-core';
-import { _resetEmbedSingleton, _shutdownEmbedWorker, getActiveEmbedModel, memoryRecall, memoryWrite, openDb, runBatchEnrich, SOCKET_PATH } from '@adhd/sox-memory-core';
+import { _resetEmbedSingleton, _shutdownEmbedWorker, getActiveEmbedModel, memoryRecall, memoryWrite, openDb, runBatchEnrich } from '@adhd/sox-memory-core';
 import * as fs from 'node:fs';
-import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -227,41 +226,20 @@ describe('MCP bundle path — real embedding semantic proof', () => {
   );
 });
 
-// ── BL-47: in-process fallback enrichment (daemon socket probe) ───────────────
+// ── BL-162: in-process periodic batch enrichment (no daemon) ──────────────────
 //
-// Verifies that when the daemon socket is absent, isDaemonReachable() correctly
-// returns false, enabling the in-process fallback to trigger.
-// Also verifies runBatchEnrich can be called directly in-process without error.
+// ADR-0007 removed the memory-daemon service entirely — batch enrichment runs
+// solely in-process inside memory-server (see the periodic loop in
+// extensions/.../memory-server/src/index.ts). This verifies runBatchEnrich can
+// be called directly in-process, exactly as that loop does, without error.
 
-describe('BL-47: in-process fallback enrichment when daemon is absent', () => {
+describe('BL-162: in-process periodic batch enrichment', () => {
   beforeEach(() => {
     _resetEmbedSingleton();
   });
 
   afterEach(async () => {
     await _shutdownEmbedWorker();
-  });
-
-  it('daemon socket probe returns false when SOCKET_PATH does not exist', async () => {
-    // Remove the socket if it exists (test isolation).
-    if (fs.existsSync(SOCKET_PATH)) {
-      // Socket exists — we can't remove it without risk; skip the probe test.
-      return;
-    }
-
-    // Mimic the isDaemonReachable() probe from memory-server/src/index.ts.
-    const reachable = await new Promise<boolean>((resolve) => {
-      if (!fs.existsSync(SOCKET_PATH)) {
-        resolve(false);
-        return;
-      }
-      const conn = net.createConnection(SOCKET_PATH);
-      const timer = setTimeout(() => { conn.destroy(); resolve(false); }, 200);
-      conn.on('connect', () => { clearTimeout(timer); conn.destroy(); resolve(true); });
-      conn.on('error', () => { clearTimeout(timer); resolve(false); });
-    });
-
-    expect(reachable).toBe(false);
   });
 
   it('runBatchEnrich with incrementalCluster:true succeeds in-process on a live DB', async () => {
@@ -272,7 +250,7 @@ describe('BL-47: in-process fallback enrichment when daemon is absent', () => {
       await memoryWrite(db, { content: 'Fallback enrichment test: first episode content here.' });
       await memoryWrite(db, { content: 'Fallback enrichment test: second episode content here.' });
 
-      // This is exactly what the in-process fallback loop calls.
+      // This is exactly what the in-process periodic enrichment loop calls.
       const result = runBatchEnrich(db, { incrementalCluster: true });
 
       // Must not throw; must return a valid result shape.

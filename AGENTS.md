@@ -29,7 +29,7 @@ rm -rf dist/smoke && node scripts/smoke-test.mjs
 
 Single extension fast pass:
 ```
-node scripts/smoke-test.mjs --extension memory-daemon
+node scripts/smoke-test.mjs --extension memory-server
 ```
 
 ---

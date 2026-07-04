@@ -600,9 +600,10 @@ describe('P11 v2-e2e — BACK-COMPAT: all v1 extensions validate + the bundle va
     };
     expect(manifest.type).toBe('bundle');
     expect(Array.isArray(manifest.members)).toBe(true);
-    // sox-memory-bundle members: memory-daemon, memory-server,
-    // memory-flush, memory-cli, memory-usage (P6: memory-organizer removed;
-    // deterministic enrichment pipeline via memory-core replaces LLM organizer).
-    expect(manifest.members).toHaveLength(5);
+    // sox-memory-bundle members: memory-server, memory-flush, memory-cli,
+    // memory-usage (P6: memory-organizer removed; deterministic enrichment
+    // pipeline via memory-core replaces LLM organizer. BL-162: memory-daemon
+    // removed — ADR-0007 moved batch enrichment in-process into memory-server).
+    expect(manifest.members).toHaveLength(4);
   });
 });

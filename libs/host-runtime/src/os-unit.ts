@@ -566,7 +566,7 @@ export class SystemdPlatform implements OsUnitPlatform {
   renderSocketUnit(spec: OsUnitSpec): string | undefined {
     if (!spec.socketPath) return undefined;
 
-    const unitName = this.unitFileName(spec.label); // e.g. sox-user-memory-daemon.service
+    const unitName = this.unitFileName(spec.label); // e.g. sox-user-tokenguard.service
     // Compute content hash from body only (no meta marker).
     const body = [
       '[Unit]',

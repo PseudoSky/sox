@@ -20,10 +20,14 @@
  *
  * Internal: not published. Consumed by the memory extensions (R9: co-located in bundle):
  *   - extensions/bundles/sox-memory-bundle/members/memory-server
- *   - extensions/bundles/sox-memory-bundle/members/memory-daemon
  *   - extensions/bundles/sox-memory-bundle/members/memory-flush
  *   - extensions/bundles/sox-memory-bundle/members/memory-cli
  *   - extensions/bundles/sox-memory-bundle (bundle manifest)
+ *
+ * BL-162: the memory-daemon member (a supervised Unix-socket writer daemon) was removed —
+ * ADR-0007's single-writer architecture moved batch enrichment in-process into the
+ * memory-server writer backend (see enrich-batch.ts runBatchEnrich, invoked directly by
+ * memory-server on write and via a periodic in-process loop; no daemon process exists).
  *
  * Eliminates the cross-extension ../../../dist/ reach-in (C7, ref:no-cross-extension-reachin).
  */
@@ -130,9 +134,6 @@ export type {
   ParentContextConfig,
   LateChunkingConfig,
 } from './recall.js';
-
-// ── Daemon interop ────────────────────────────────────────────────────────────
-export { enqueueIngest, enqueueReindex, enqueueEnrich, nudgeDaemon, MemoryDaemon, SOCKET_PATH } from './memoryd.js';
 
 // ── Enrichment (write-time + batch) ───────────────────────────────────────────
 export { enrichOnWrite } from './enrich.js';

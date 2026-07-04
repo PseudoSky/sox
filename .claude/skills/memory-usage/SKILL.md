@@ -16,8 +16,9 @@ store lives at **`~/.memory/memory.db`** (user scope).
 Every write is **enriched deterministically on the spot** — topic, tags, an
 extractive summary, near-duplicate detection — with **zero LLM calls and no
 provider** (the legacy LLM organizer was removed; clustering/auto-links run as a
-deterministic batch pass in `memory-daemon`). `memory-server` exposes **19
-`memory_*` tools** (v1.1.0). See the server's `CLAUDE.md` for full per-tool
+deterministic batch pass in-process inside `memory-server` itself — ADR-0007's
+single-writer architecture, no separate daemon process). `memory-server` exposes
+**19 `memory_*` tools** (v1.1.0). See the server's `CLAUDE.md` for full per-tool
 schemas; this skill covers the everyday recall / write / update path.
 
 Interact with it only through the `memory_*` MCP tools. Never open the DB file

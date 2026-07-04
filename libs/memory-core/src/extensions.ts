@@ -729,7 +729,8 @@ export interface BuildCommunitiesResult {
 /**
  * Deterministic label-propagation community detection (design.md §2.3, P4).
  * Community labels are derived deterministically from centroid member names.
- * Batch clustering runs in memory-daemon via memory-core runBatchEnrich.
+ * Batch clustering runs in-process inside memory-server via memory-core runBatchEnrich
+ * (ADR-0007 single-writer architecture — no separate daemon process).
  */
 export function buildCommunities(
   db: Database.Database,

@@ -68,6 +68,31 @@ export function migrateOutboxQueueSchema(db: DatabaseType): void {
   );
 }
 
+// ── Producer ──────────────────────────────────────────────────────────────────
+
+/**
+ * Enqueue an `ingest` row for a freshly-written episode (transactional outbox —
+ * called inside the write path so the row commits with the node). The in-process
+ * periodic enrichment pass consumes and completes these rows; their presence/age
+ * is the observable heartbeat behind memory_ping's `enrichment` verdict
+ * ([inv:list-never-lies] for workload progress — BL-172 incident, 2026-07-04).
+ * The payload is provenance detail; the consumer completes rows by seq.
+ */
+export function enqueueIngest(
+  db: DatabaseType,
+  uid: string,
+  agentId: string | null,
+): void {
+  const now = new Date().toISOString();
+  const payload = JSON.stringify({ uid, agent_id: agentId });
+  const priority = agentId ? 1 : 2;
+
+  db.prepare(
+    `INSERT INTO organizer_queue (op, payload, priority, enqueued)
+     VALUES ('ingest', ?, ?, ?)`,
+  ).run(payload, priority, now);
+}
+
 // ── Concrete OutboxQueue ──────────────────────────────────────────────────────
 
 export interface MemoryOutboxQueueDeps {

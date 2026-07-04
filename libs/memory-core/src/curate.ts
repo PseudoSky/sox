@@ -13,7 +13,7 @@ import type Database from 'better-sqlite3';
 import { monotonicFactory } from 'ulid';
 import { ENRICH_VERSION } from './enrich-version.js';
 import { clusterSubset, dropSubsetLens, listSubsetLenses } from './cluster.js';
-import { enqueueEnrich } from './memoryd.js';
+import { runBatchEnrich } from './enrich-batch.js';
 import type { MemoryFilter } from './memory-filters.js';
 
 const ulid = monotonicFactory();
@@ -354,15 +354,16 @@ function curateRecluster(
     };
   }
 
-  // Global recluster
+  // Global recluster (BL-162: runs in-process — no daemon to enqueue/nudge).
   if (dryRun) {
     return { op: 'recluster', enqueued: false, dry_run: true };
   }
 
   try {
-    enqueueEnrich(db);
+    runBatchEnrich(db, { incrementalCluster: false });
   } catch {
-    // daemon not available
+    // Best-effort: a failed pass is retried by the in-process periodic enrichment
+    // loop in memory-server (or a subsequent explicit recluster call).
   }
 
   return { op: 'recluster', enqueued: true };

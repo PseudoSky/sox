@@ -570,7 +570,7 @@ export interface ReapExtensionResult {
  *
  * @param lockfilePath  path to extensions.lock (for source resolution); optional.
  * @param runtimeFilePath path to runtime.json (for source + excluding the supervisor pid).
- * @param id            bare extension id (e.g. "memory-daemon").
+ * @param id            bare extension id (e.g. "tokenguard").
  */
 export async function reapOrphansForExtension(
   id: string,

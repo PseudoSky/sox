@@ -1,25 +1,29 @@
 /**
- * memory_write handler — enqueue + nudge (P2).
+ * memory_write handler (P2, updated BL-162).
  *
- * P2 design (design.md §2.4): writes move behind memoryd.
- *   - Synchronous: insert node + embedding into DB + enqueue to organizer_queue.
- *   - Non-blocking: NO LLM calls here (importance defaults 1.0; organizer scores it).
- *   - Nudge: send doorbell to memoryd socket (sub-ms; non-blocking if daemon down).
+ * ADR-0007 single-writer architecture: batch enrichment runs in-process inside the
+ * memory-server writer backend — there is no separate daemon process to enqueue/nudge.
+ *   - Synchronous: insert node + embedding into DB.
+ *   - Synchronous write-time enrichment (E1-E5, E8, E10, E12) via enrichOnWrite — NO LLM
+ *     calls (importance defaults 1.0 unless caller-supplied).
+ *   - Batch enrichment (clustering, auto-links, importance recompute) runs via the
+ *     in-process periodic loop in memory-server (see extensions/.../memory-server/src/index.ts)
+ *     or synchronously via memory_curate recluster — never via a socket-nudged daemon.
  *   - Returns {episode_uid} immediately.
  *
  * Invariants:
- *   R1: zero provider/LLM calls on write path (organizer runs async in memoryd).
+ *   R1: zero provider/LLM calls on write path (batch enrichment is deterministic, no LLM).
  *   R2: one .db per scope; idempotent init.
  *   R5: dedup via content_hash; never deletes existing episodes.
  *   R6: no OS advisory lock (host holds singleton via lifecycle block).
  */
 
 import { enrichOnWrite } from './enrich.js';
+import { enqueueIngest } from './outbox-queue.js';
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
 import { monotonicFactory } from 'ulid';
 import { embed, vecToJson } from './embed.js';
-import { enqueueIngest, nudgeDaemon } from './memoryd.js';
 
 const ulid = monotonicFactory();
 
@@ -41,7 +45,6 @@ export interface WriteParams {
   source?: 'message' | 'tool_output' | 'observation' | 'document' | 'reflection' | 'import' | undefined;
   metadata?: Record<string, unknown> | undefined;
   importance?: number | undefined;
-  scope?: string | undefined;
   tags?: string[] | undefined;
   /** (WP-4) Client-supplied request idempotency key (string ≤128 chars). Replay of a
    *  known id returns the original result with `replayed: true`. */
@@ -69,8 +72,8 @@ export type WriteError =
 
 /**
  * Write a memory episode to the database.
- * P2: enqueue into organizer_queue + nudge memoryd.
- * The organizer will asynchronously score importance and extract entities/relations.
+ * Write-time enrichment (topic/tags/near-dup/summary) runs synchronously via enrichOnWrite.
+ * Batch enrichment (clustering, importance, auto-links) runs in-process (BL-162 — no daemon).
  */
 export async function memoryWrite(
   db: Database.Database,
@@ -88,7 +91,6 @@ export async function memoryWrite(
     agent_id,
     source = 'message',
     importance = 1.0, // default; batch enricher will update on next pass
-    scope = 'project',
     tags,
     metadata,
   } = params;
@@ -166,7 +168,7 @@ export async function memoryWrite(
   // Track rowid for post-transaction enrichOnWrite call
   let insertedRowid = 0;
 
-  // Atomic transaction: insert node + vec + FTS (via trigger) + enqueue
+  // Atomic transaction: insert node + vec + FTS (via trigger)
   const tx = db.transaction(() => {
     const result = db.prepare<unknown[], { rowid: number }>(
       `INSERT INTO node (uid, kind, content, name, summary, meta, agent_id, session_id, source,
@@ -189,10 +191,12 @@ export async function memoryWrite(
       embeddingJson,
     );
 
-    // Enqueue for async organize (LLM step in memoryd→organizer)
-    enqueueIngest(db, uid, scope, agent_id ?? null);
+    // Transactional outbox: the row commits with the node; the in-process periodic
+    // enrichment pass consumes it, and its presence/age drives memory_ping's
+    // enrichment heartbeat (BL-172). No daemon, no nudge — just the row.
+    enqueueIngest(db, uid, agent_id ?? null);
 
-    // Attach user-asserted tags as entity nodes + MENTIONS edges (no organizer delay)
+    // Attach user-asserted tags as entity nodes + MENTIONS edges (write-time, synchronous)
     if (tags && tags.length > 0) {
       for (const tag of tags) {
         const tagName = tag.trim();
@@ -263,9 +267,6 @@ export async function memoryWrite(
     importance, // pass caller-supplied importance so enrichOnWrite respects it
   });
 
-  // Non-blocking nudge to memoryd via socket doorbell
-  nudgeDaemon();
-
   return {
     episode_uid: episodeUid,
     enrichment: {
@@ -315,7 +316,6 @@ export interface BatchItem {
   source?: 'message' | 'tool_output' | 'observation' | 'document' | 'reflection' | 'import' | undefined;
   metadata?: Record<string, unknown> | undefined;
   importance?: number | undefined;
-  scope?: string | undefined;
   tags?: string[] | undefined;
   client_request_id?: string | undefined;
 }
