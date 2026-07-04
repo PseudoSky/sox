@@ -247,6 +247,28 @@ export type { StatsResult } from './stats.js';
 export { reembedStore, defaultMemoryDbPath } from './reembed.js';
 export type { ReembedStoreOptions, ReembedStoreResult } from './reembed.js';
 
+// ── Compaction tick (HF-4, BL-133) ───────────────────────────────────────────
+export { runCompactionPass, startCompactionTick, DEFAULT_COMPACTION_INTERVAL_MS } from './compaction.js';
+export type { CompactionOptions, CompactionResult } from './compaction.js';
+
+// ── Per-store size quotas (HF-4, BL-133) ─────────────────────────────────────
+export {
+  checkStoreQuota,
+  isQuotaRefusal,
+  DEFAULT_SOFT_BYTES,
+  DEFAULT_HARD_BYTES,
+} from './quota.js';
+export type { QuotaConfig, QuotaWarningDetails, QuotaOk, QuotaRefusal, QuotaCheckResult } from './quota.js';
+
+// ── Store backup via VACUUM INTO (HF-4, BL-133) ───────────────────────────────
+export {
+  backupStore,
+  isBackupStoreError,
+  isPathInMemoryAllowlist,
+  memoryAllowlistRoot,
+} from './backup.js';
+export type { BackupStoreOptions, BackupStoreResult, BackupStoreError } from './backup.js';
+
 // ── Convenience wrappers (guard C5: write(dbPath, params) + recall(dbPath, params)) ──
 
 import { openDb } from './db.js';
