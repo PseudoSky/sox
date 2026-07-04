@@ -28,8 +28,12 @@ import { enrichOnWrite } from './enrich.js';
 import { enqueueIngest } from './outbox-queue.js';
 import { applyEmbedding } from './embed-pipeline.js';
 import type { PendingEmbed } from './embed-pipeline.js';
+// S11 / BL-165: content-hash routed through ingest's hexSha256 (canonical ingestion layer).
+// Normalization (trim + toLowerCase) is applied here before the hash call to preserve
+// byte-identical dedup fingerprints with all pre-existing store rows. See parity spec:
+// libs/memory-core/src/ingest-parity.spec.ts
+import { hexSha256 } from '@adhd/sox-ingest';
 import Database from 'better-sqlite3';
-import * as crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { monotonicFactory } from 'ulid';
 import { embed, vecToJson } from './embed.js';
@@ -173,9 +177,12 @@ export function memoryWritePhaseA(
     }
   }
 
-  // SHA-256 dedup on normalized content
+  // SHA-256 dedup on normalized content.
+  // S11 / BL-165: delegates to ingest's hexSha256 (canonical ingestion layer).
+  // Normalization: trim + toLowerCase — matches the live store's existing dedup
+  // fingerprints exactly (see parity spec: ingest-parity.spec.ts).
   const normalized = content.trim().toLowerCase();
-  const contentHash = crypto.createHash('sha256').update(normalized).digest('hex');
+  const contentHash = hexSha256(normalized);
 
   // Check for duplicate (R5: never delete, dedup by hash)
   const existing = db

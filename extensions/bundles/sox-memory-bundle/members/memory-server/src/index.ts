@@ -79,6 +79,9 @@ import {
   warmupEmbed,
   isSuperseded,
   WriteQueue,
+  // S11 / BL-165: canonical chunking re-exported from @adhd/sox-ingest via memory-core.
+  // Replaces the local splitIntoChunks function (deleted below).
+  splitIntoChunksSentence,
 } from '@adhd/sox-memory-core';
 import type { PendingEmbed, PhaseAOutcome, WriteError, WriteResult } from '@adhd/sox-memory-core';
 import Database from 'better-sqlite3';
@@ -743,32 +746,10 @@ function checkDbPathPolicy(dbPath: string): (ToolResult & { isError: true }) | n
   return null;
 }
 
-/**
- * Split `text` into chunks of at most `chunkTokens * 4` characters, preferring
- * sentence boundaries (`.`, `!`, `?` followed by whitespace).
- * Returns a single-element array if text is short enough to not need splitting.
- */
-function splitIntoChunks(text: string, chunkTokens: number): string[] {
-  const chunkChars = chunkTokens * 4;
-  if (text.length <= chunkChars) return [text];
-
-  const chunks: string[] = [];
-  const sentences = text.split(/(?<=[.!?])\s+/);
-  let current = '';
-
-  for (const sentence of sentences) {
-    if (current.length > 0 && current.length + 1 + sentence.length > chunkChars) {
-      chunks.push(current.trim());
-      current = sentence;
-    } else {
-      current = current ? current + ' ' + sentence : sentence;
-    }
-  }
-  if (current.trim()) chunks.push(current.trim());
-  return chunks.length > 0 ? chunks : [text];
-}
-
 // ── Helpers for enrichment field reads ───────────────────────────────────────
+// S11 / BL-165: splitIntoChunks deleted — consolidated into ingest's
+// splitIntoChunksSentence (re-exported from @adhd/sox-memory-core above).
+// Parity verified by libs/memory-core/src/ingest-parity.spec.ts.
 
 /** Parse a JSON tags column value — returns [] if null or invalid. */
 function parseTags(raw: string | null | undefined): string[] {
@@ -1020,7 +1001,8 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       const wq = WriteQueue.forPath(dbPath);
       const content = args['content'] as string;
       const chunkSize = (args['chunk_size'] as number | undefined) ?? 500;
-      const chunks = splitIntoChunks(content, chunkSize);
+      // S11 / BL-165: routed through ingest's canonical sentence-boundary chunker.
+      const chunks = splitIntoChunksSentence(content, chunkSize);
       // Full write params (shared by both embed modes). client_request_id was
       // previously dropped by this handler (WP-4 idempotency dead through MCP)
       // — now forwarded.

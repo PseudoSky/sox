@@ -42,7 +42,19 @@ function normalizeContent(content: string): string {
   return content.trim().replace(/\s+/g, ' ');
 }
 
-function hexSha256(data: string): string {
+/**
+ * Compute a SHA-256 hex digest of `data`.
+ *
+ * NOTE on normalization (S11 / BL-165):
+ *   This function is a raw hasher — it does NOT normalize its input.
+ *   Callers that need the live-store dedup normalization (trim + toLowerCase,
+ *   matching write.ts's incumbent behaviour) must pre-normalize:
+ *     hexSha256(content.trim().toLowerCase())
+ *   The ingest() function applies its own normalization (trim + collapse-whitespace)
+ *   which differs from write.ts's normalization (no collapse-whitespace, adds toLowerCase).
+ *   Both are documented in the S11 parity spec (ingest-parity.spec.ts).
+ */
+export function hexSha256(data: string): string {
   return createHash('sha256').update(data).digest('hex');
 }
 
@@ -90,6 +102,44 @@ function extractTags(content: string, maxCount: number): string[] {
     .sort((a, b) => b[1] - a[1])
     .slice(0, maxCount)
     .map(([w]) => w);
+}
+
+/**
+ * Split `text` into chunks of at most `chunkTokens * 4` characters, preferring
+ * sentence boundaries (`.`, `!`, `?` followed by whitespace).
+ *
+ * This is the CANONICAL implementation of the incumbent memory-server
+ * `splitIntoChunks` function (S11 / BL-165 consolidation). Behavior is
+ * byte-identical to the original at `memory-server/src/index.ts:751–769`
+ * (pre-S11), verified by the parity spec (ingest-parity.spec.ts):
+ *   - Threshold: `chunkTokens * 4` characters (caller default: 500 tokens → 2000 chars)
+ *   - No overlap between chunks (sentence-boundary-only split)
+ *   - Trailing whitespace is trimmed from each chunk
+ *   - Falls back to `[text]` for empty or non-sentence content
+ *
+ * Delta vs ingest's `chunkContent` (sliding-window):
+ *   - `chunkContent` uses overlap (default 200 chars); this function does not.
+ *   - `chunkContent` is position-based; this function prefers sentence boundaries.
+ *   - See ingest-parity.spec.ts "delta documentation" section for rationale.
+ */
+export function splitIntoChunksSentence(text: string, chunkTokens: number): string[] {
+  const chunkChars = chunkTokens * 4;
+  if (text.length <= chunkChars) return [text];
+
+  const chunks: string[] = [];
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  let current = '';
+
+  for (const sentence of sentences) {
+    if (current.length > 0 && current.length + 1 + sentence.length > chunkChars) {
+      chunks.push(current.trim());
+      current = sentence;
+    } else {
+      current = current ? current + ' ' + sentence : sentence;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks.length > 0 ? chunks : [text];
 }
 
 function chunkContent(
