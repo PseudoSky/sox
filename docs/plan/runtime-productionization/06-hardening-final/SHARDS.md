@@ -144,6 +144,55 @@ os-unit) and confirm only one holds the writer lease. Never kill. Transcript →
 
 ## S6 — HF-6 closeout (integrator)
 
-Flip ADR 0007 Status → ACCEPTED (one line). Sweep BACKLOG BL-118…156 statuses to match
-reality with evidence pointers (note BL-151…155 resolved this cycle; BL-156 open). Confirm
-every context's `REPORT.md` exists. Delete merged `runtime-prod/*` branches.
+Flip ADR 0007 Status → ACCEPTED (one line). Sweep BACKLOG BL-118…164 statuses to match
+reality with evidence pointers. Confirm every context's `REPORT.md` exists. Delete merged
+`runtime-prod/*` branches. Closeout runs only after S7–S10 below are done (owner directive:
+fix, don't defer — carried-in items are IN this plan, not deferred).
+
+---
+
+## Carried-in hardening work (owner directive 2026-07-04: fix, don't defer)
+
+Everything discovered this cycle is tracked here with a sequence — nothing is left as
+"just backlog." Sequenced AFTER S4 merges (all touch memory-core or the same bundle).
+
+### S7 — BL-161 fastembed test determinism + performance (was "flaky/slow tests")
+
+Make the memory-core embed tests deterministic + fast + fault-tolerant (they must not
+flake under concurrent load). Do NOT just bump timeouts. Implement: stop resetting the
+embed singleton in hooks that don't need isolation (warm once per process); pin embed-heavy
+specs to a single worker (`poolOptions.forks.singleFork` or a dedicated vitest project); add
+a lightweight test-embed seam (small/stub content-dependent vectors) for tests that only need
+"a vector," reserving real bge for the 1–2 semantic-quality assertions. Fence: memory-core
+vitest config + test setup + an embed test-seam; do NOT change production embed behavior.
+Gate: `npx nx test memory-core` green ×3 with NO flake, and materially faster wall-clock.
+
+### S8 — BL-157 headless serve `--port` + single-writer backend reconciliation
+
+Root-cause + fix the `proxy closed` on the launchd HTTP transport. First ISOLATE (a clean
+single fresh-code backend on a scratch store) to separate a real code bug from the stale
+multi-backend live state. Fix whatever it is: if `runFrontShim` couples HTTP availability to
+stdio-client EOF, decouple it (httpPort set → survive stdin EOF); reconcile the multi-backend
+state so exactly one current-code backend holds the writer lease; ensure `upgrade` restarts a
+stale backend. Fence: `libs/service-proxy/` + `apps/sox` serve/upgrade paths (read
+service-lifecycle.md §9.5 first). Gate: HTTP `initialize`+`tools/call` on :3099 succeed
+against the launchd unit; e2e/smoke green.
+
+### S9 — BL-162 remove the obsolete `memory-daemon` extension (fix, not "deprecated")
+
+Delete the dead bundle member + manifest wiring; drop from `registry/index.json` + the
+smoke surface; remove references. Verify in-process enrichment still runs (cluster coverage).
+Owner publishes the bundle-major bump. Gate: `nx run registry:sync-index` + smoke 0-fail with
+memory-daemon gone; `soxe status` no longer lists a DEAD daemon.
+
+### S10 — BL-164 loose `scripts/*-baseline.mjs` lint circular-dep + cache-masking
+
+Promote the baseline-capture orchestration into a typed project (or exclude `scripts/*.mjs`
+from the memory-core graph) so `nx lint memory-core --skip-nx-cache` is 0-error and no real
+lint regression can hide behind a stale cache hit. Same class as BL-160. Gate:
+`npx nx lint memory-core --skip-nx-cache` clean.
+
+### Backlogged as a FEATURE (legitimately deferred — missing prerequisite)
+
+- **BL-163** SMAppService generalized always-on login-items with a controllable name — needs a
+  code-signing identity we don't have. Tracked as a feature; not a bug/perf/flake item.

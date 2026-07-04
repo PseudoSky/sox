@@ -106,12 +106,42 @@ hooks that don't need it → warm once per process; (b) pin embed-heavy specs to
 test-embed seam (small/stub content-dependent vectors) for tests that only need "a vector,"
 reserving real bge for the 1–2 semantic-quality assertions.
 
-### BL-162 — `soxe status` shows deprecated `memory-daemon` as "DEAD" (misleading) — **Open (LOW) (2026-07-04)**
+### BL-162 — remove the obsolete `memory-daemon` extension (superseded by ADR-0007 in-process enrichment) — **Open (MEDIUM) (2026-07-04)**
 
-ADR-0007 deprecates the `memory-daemon` extension: batch enrichment moved IN-PROCESS into the
-memory-server single-writer backend. It is intentionally not-started, but `soxe status` lists it as
-`DEAD`/`not-started` alongside healthy services, implying a fault. Status should render deprecated
-extensions as `deprecated` (or omit them), not `DEAD`.
+**Owner directive: fix/remove, do not leave "deprecated."** ADR-0007's single-writer architecture
+moved batch enrichment IN-PROCESS into the memory-server writer backend, making the `memory-daemon`
+extension dead code. Today `soxe status` shows it as `DEAD`/`not-started` alongside healthy
+services (implying a fault). With a single consumer there is no reason to carry a deprecated shell —
+remove it cleanly: delete the bundle member + its manifest wiring, drop it from `registry/index.json`
++ the smoke-test surface (`scripts/smoke-test.mjs` currently lists it as testable), and remove any
+references. Verify enrichment still runs in-process (memory_stats cluster coverage) after removal.
+Publishing the resulting bundle-major bump to npm is the owner's step (ADR-0007); the source removal
++ local registry is the agent's. Sequenced after S4 (which touches the same bundle's `memory-cli`).
+
+### BL-163 — FEATURE: generalized always-on-service login-items registration with a controllable name (SMAppService) — **Open (FEATURE, blocked on signing) (2026-07-04)**
+
+A genuine future feature (legitimately backlogged — needs a prerequisite we don't have yet: a
+code-signing identity). Today a user LaunchAgent with `RunAtLoad` already starts at login, but its
+name in macOS System Settings → Login Items is derived from the code SIGNATURE, not the plist — so
+an unsigned `node` LaunchAgent cannot present a friendly name (e.g. "Sox Memory"). Generalize the
+os-unit layer so ANY always-on service can opt into a proper Login-Items entry with a controllable
+display name via `SMAppService` (macOS 13+) registering a **signed** helper. Design so it is not
+memory-server-specific: a manifest `display_name` + `login_item: true` drives registration for any
+`activation_posture: always-on` service; falls back to the plain LaunchAgent when no signing
+identity is configured. Example motivating case: memory-server → "Sox Memory". Prereq: a Developer
+ID / signing identity + a bundled signed helper target.
+
+### BL-164 — loose `scripts/capture-*-baseline.mjs` create an nx lint circular-dep; promote/exclude them (same class as BL-160) — **Open (MEDIUM) (2026-07-04)**
+
+Surfaced by S2: `npx nx lint memory-core --skip-nx-cache` reports 22 `@nx/enforce-module-boundaries`
+errors in `cluster.ts`/`embed.ts`/`recall.ts` etc., caused by `scripts/capture-enrichment-baseline.mjs`
++ `scripts/capture-write-perf-baseline.mjs` importing `memory-core` from the repo-root `scripts`
+project — creating a circular project edge (scripts→memory-core while the root project globs these
+files). Masked by the nx cache (a prior clean run's exit-0 is served without `--skip-nx-cache`),
+which is itself a hazard (a real lint regression could hide behind a stale cache hit). Same root
+cause as BL-160 (loose `.mjs` outside the graph). Fix: promote the baseline-capture orchestration
+into a typed source under a proper project (or a `tools/`/lib the graph knows), or explicitly exclude
+`scripts/*.mjs` from the memory-core project graph so they don't form the cycle. Sequenced after S4.
 
 ### BL-160 — promote `reembed-memory.mjs` orchestration into a library + `memory-cli` verb (root cause of BL-159) — **RESOLVED (2026-07-04)**
 
