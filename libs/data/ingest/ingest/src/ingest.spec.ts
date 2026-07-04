@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ingest } from './index.js';
+import { ingest, hexSha256, splitIntoChunksSentence } from './index.js';
 
 describe('ingest()', () => {
   describe('contentHash', () => {
@@ -312,5 +312,74 @@ describe('ingest()', () => {
         expect(ch).not.toBe(fullHash);
       }
     });
+  });
+});
+
+// ── S11 / BL-165: new canonical exports ──────────────────────────────────────
+
+describe('hexSha256() — canonical content hash (S11 / BL-165)', () => {
+  it('returns a 64-char lowercase hex string', () => {
+    expect(hexSha256('hello world')).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('is deterministic', () => {
+    const h1 = hexSha256('deterministic input');
+    const h2 = hexSha256('deterministic input');
+    expect(h1).toBe(h2);
+  });
+
+  it('differs for different inputs', () => {
+    expect(hexSha256('a')).not.toBe(hexSha256('b'));
+  });
+
+  it('does NOT normalize — caller owns normalization', () => {
+    // Uppercase and lowercase produce DIFFERENT digests (no auto-lowercase).
+    // write.ts applies trim().toLowerCase() before calling hexSha256.
+    expect(hexSha256('HELLO')).not.toBe(hexSha256('hello'));
+  });
+
+  it('handles empty string without throwing', () => {
+    expect(hexSha256('')).toMatch(/^[a-f0-9]{64}$/);
+  });
+});
+
+describe('splitIntoChunksSentence() — canonical sentence-boundary chunker (S11 / BL-165)', () => {
+  it('returns [text] when content is below threshold', () => {
+    expect(splitIntoChunksSentence('Short text.', 500)).toEqual(['Short text.']);
+  });
+
+  it('splits long content at sentence boundaries', () => {
+    const sentences = Array.from({ length: 30 }, (_, i) => `Sentence ${i} ends here.`);
+    const text = sentences.join(' ');
+    const chunks = splitIntoChunksSentence(text, 10); // 10*4=40 chars threshold
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('is deterministic', () => {
+    const text = 'Alpha sentence here. Beta sentence there. Gamma sentence everywhere.'.repeat(20);
+    const c1 = splitIntoChunksSentence(text, 50);
+    const c2 = splitIntoChunksSentence(text, 50);
+    expect(c1).toEqual(c2);
+  });
+
+  it('chunkTokens * 4 is the character threshold', () => {
+    // A string of exactly 2000 chars should return a single chunk at chunkTokens=500
+    const text = 'A'.repeat(2000);
+    expect(splitIntoChunksSentence(text, 500)).toEqual([text]);
+  });
+
+  it('returns [""] for empty string', () => {
+    expect(splitIntoChunksSentence('', 500)).toEqual(['']);
+  });
+
+  it('trims trailing whitespace from each chunk', () => {
+    const text = 'First sentence ends here.   Second sentence ends there.   '.repeat(30);
+    const chunks = splitIntoChunksSentence(text, 10);
+    for (const chunk of chunks) {
+      expect(chunk).toBe(chunk.trim() === '' ? chunk : chunk.trimEnd());
+    }
   });
 });

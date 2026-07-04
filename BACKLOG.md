@@ -933,7 +933,17 @@ HandleScope crash — may need `pool: 'forks'` + `maxWorkers: 1` (already applie
 vitest.config.ts per BL-161) applied consistently to memory-server's and the root's vitest configs
 too, or an onnxruntime-node version bump/pin.
 
-### BL-165 — RAG-stack external reusability gap: `ingest` is private + `memory-core` (public) transitively 404s on it — **[TRIAGE] Open (MEDIUM) (2026-07-04)**
+### BL-165 — RAG-stack external reusability gap: `ingest` is private + `memory-core` (public) transitively 404s on it — **RESOLVED (2026-07-04) — S11 consolidation**
+
+**Resolution:** `ingest` is now the canonical ingestion layer (S11 / BL-165). Consolidated:
+- `hexSha256` exported from `@adhd/sox-ingest` and used in `memory-core/src/write.ts` (replaces `crypto.createHash` inline). Parity verified: `ingest-parity.spec.ts`.
+- `splitIntoChunksSentence` added to `@adhd/sox-ingest` (byte-identical to the deleted `splitIntoChunks` in `memory-server/src/index.ts`). Parity verified: `ingest-parity.spec.ts`, 9 corpus entries × 3 chunk sizes = 27 parity assertions + 3 summary assertions.
+- Both re-exported through `memory-core/src/index.ts` for consumer convenience.
+- Publishability: see recommendation in commit message and SHARDS.md final message (keep `private: true` until memory-core v1.0 publish milestone; decision deferred to HF-6 closeout).
+- Tag derivation: NOT consolidated — no duplicate exists (tags are caller-supplied in `enrich.ts: p.tags ?? []`; ingest's `extractTags` was already unused and remains unused).
+- Evidence: `npx nx test memory-core --skip-nx-cache` → 357 pass / 8 skip; `npx nx test memory-server --skip-nx-cache` → 111 pass; `npx nx test ingest --skip-nx-cache` → 48 pass; dedup re-check: 3/3 pass.
+
+**Original description (retained for history):**
 
 ADR-0007 states the enrichment/data stack is meant to be "reused by non-memory projects." The five
 data packages (`@adhd/sox-embedding-provider`, `-vector-store`, `-graph-store`, `-hybrid-search`,
