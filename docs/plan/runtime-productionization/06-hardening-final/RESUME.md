@@ -39,7 +39,7 @@ are running now. Recommended order:
 | **S10** | BL-164 (MED) | loose `scripts/*-baseline.mjs` create an nx lint circular-dep + hide behind cache — promote into the graph or exclude. | scripts + nx config | `nx lint memory-core --skip-nx-cache` clean |
 | **S11** | BL-165 (MED) | make `ingest` canonical (owner chose CONSOLIDATE): route memory-server chunking (`splitIntoChunks`) + write.ts SHA-256 through `ingest`; delete duplicates; verify chunk/dedup parity; then decide ingest public vs memory-core private. | `ingest`, `memory-core/write.ts`, `memory-server/index.ts` | memory-core + memory-server green, smoke 16/0, chunk/dedup parity |
 | **HF-5** | — | forensics (owner machine, READ-ONLY): prove exactly one writer per store under final posture. Do AFTER S8 (final backend state). Account for session-serve vs os-unit both matching the entrypoint token. | REPORT.md only | forensic transcript |
-| **HF-6** | — | closeout: flip ADR-0007 Status → ACCEPTED; sweep BACKLOG BL-118…169 to match reality; confirm each context REPORT.md; delete merged `runtime-prod/*` branches. | ADR, BACKLOG, branches | reviewed sweep |
+| **HF-6** | — | closeout: flip ADR-0007 Status → ACCEPTED; sweep BACKLOG BL-118…169 to match reality (+ fix the BL-number collisions below); write `06-hardening-final/REPORT.md`. **Branch cleanup already DONE** (2026-07-04: all 21 merged plan branches deleted; only `main` remains). | ADR, BACKLOG, REPORT | reviewed sweep |
 
 **Dispatch note:** if using worktree agents, ALWAYS include `nx build` in their gate (S2 slipped a
 tsc-only error because its gate was lint+test only). Clean up worktrees after merge (`git worktree
