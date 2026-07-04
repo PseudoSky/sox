@@ -22,9 +22,28 @@ import { execSync } from 'node:child_process';
 // ──────────────────────────────────────────────────────────────────────────────
 
 const ARGV = process.argv.slice(2);
-const WORKSPACE = ARGV.includes('--root') ? path.resolve(ARGV[ARGV.indexOf('--root') + 1]) : path.resolve('.');
+
+/**
+ * Read a `--flag value` pair. Guards against the value being missing or being
+ * another flag — otherwise `--root --extension foo` would silently treat
+ * `--extension` as the root path and write output to `./--extension/…`
+ * (that exact bug created a stray `--extension/` dir in the repo).
+ */
+function flagValue(name) {
+  const i = ARGV.indexOf(name);
+  if (i === -1) return null;
+  const v = ARGV[i + 1];
+  if (v === undefined || v.startsWith('-')) {
+    console.error(`[smoke] flag ${name} requires a value (got ${v === undefined ? 'end-of-args' : v})`);
+    process.exit(2);
+  }
+  return v;
+}
+
+const rootArg = flagValue('--root');
+const WORKSPACE = rootArg ? path.resolve(rootArg) : path.resolve('.');
 const SOXE = path.join(WORKSPACE, 'bin', 'soxe');
-const EXTENSION_FILTER = ARGV.includes('--extension') ? ARGV[ARGV.indexOf('--extension') + 1] : null;
+const EXTENSION_FILTER = flagValue('--extension');
 
 const TEST_ROOT = path.resolve(WORKSPACE, 'dist', 'smoke',
   `run-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`);

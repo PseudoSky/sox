@@ -36,6 +36,48 @@ is the only invariant.
 
 ---
 
+## Open — build-tooling / module-resolution debt (2026-07-04)
+
+### BL-168 — DEBT: audit the recurring module-resolution / bundling / workspace-tooling class of bugs — **Open (HIGH) (2026-07-04)**
+
+The same class of problem keeps recurring, each fixed point-wise. We keep paying for it. Audit them
+together and establish ONE consistent, documented standard for module resolution + bundling +
+workspace tooling so these stop happening. The recurring instances so far:
+- **`import.meta.url` in CJS bundles** (BL-155) — esbuild sets `import.meta={}` for cjs output →
+  `fileURLToPath(import.meta.url)` throws; crash-looped the daemon. Fixed with a bundler shim.
+- **Sibling-worker path resolution** — `join(__dirname/import.meta.url, 'embedWorker.js')` resolves
+  differently across src vs dist vs bundle. Broke the memory-core real-bge test (aliased to src →
+  `src/embedWorker.js` missing; BL-161 follow-up) AND is latent-broken in the hybrid-search
+  cross-encoder (BL-166: `../../../../embed/.../dist/embedWorker.js` won't resolve in a bundle).
+- **Vite/vitest can't resolve the ESM-only `exports` map** of the data packages → needed a manual
+  `resolve.alias` to a concrete file in every consumer's vitest config (memory-core, memory-server).
+- **`@nx/enforce-module-boundaries` false positives** — `require.resolve('<pkg>')` for a path is
+  flagged as a "lazy load", forbidding legitimate static value imports (cross-encoder.ts, and the
+  memory-server index.ts type-import). Fixed with line-scoped disables — a smell.
+- **Loose `.mjs` scripts outside the nx graph** silently rot + create lint circular-deps + hide behind
+  the nx cache (BL-159/BL-160 reembed, BL-164 baseline scripts).
+- **pnpm `onlyBuiltDependencies` gap** — `onnxruntime-node`'s build script isn't approved, so a
+  clean-room reinstall leaves it unbuilt (relied on prebuilt binaries; fragile).
+- **Workspace linking / worktree churn** — worktree agents' installs unlinked `node_modules/nx`,
+  needing a clean-room reinstall mid-session (also see BL-150).
+
+**Deliverable:** a short "module resolution & bundling standard" doc + fixes: pick one bundler-safe
+`__dirname`/asset-path pattern for code consumed in CJS bundles; make the data packages' `exports`
+maps vite-resolvable (dual `import`/`require` conditions) so consumers don't each need an alias hack;
+resolve the module-boundary false positives properly (not per-line disables); bring all loose `.mjs`
+into the graph (BL-160/BL-164); add `onnxruntime-node` (and any other native dep) to the pnpm
+build-approval allowlist. Root-cause once, not seven times.
+
+### BL-169 — stray `--extension/` dir from unguarded smoke-test arg parsing — **RESOLVED (2026-07-04)**
+
+A `--extension/dist/smoke/run-2026-06-30…/` dir sat at the repo root. Origin: `scripts/smoke-test.mjs`
+read `--root`'s value as `ARGV[indexOf('--root')+1]` with no guard, so a `--root --extension memory-daemon`
+invocation (or `--root` with no value) treated the flag `--extension` as the root path and wrote smoke
+output to `./--extension/…`. Fixed: added a `flagValue()` guard that rejects a missing value or a value
+starting with `-` (exit 2). Removed the stray dir.
+
+---
+
 ## Open — surfaced during BL-145 live launchd re-enable (2026-07-04)
 
 ### BL-155 — CRITICAL: esbuild CJS extension bundle breaks `import.meta.url` → embedding provider dead → daemon crash-loop — **RESOLVED (2026-07-04)**
