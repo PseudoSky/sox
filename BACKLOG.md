@@ -4,6 +4,106 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
+## Open — surfaced during Slices 3–4 (continuous supervision, 2026-07-04)
+
+_(BL numbers claimed in a worktree — integrator: renumber on merge if they collide with
+concurrently-claimed IDs; BL-171 was referenced by the dispatcher but is absent from this
+worktree's BACKLOG.)_
+
+### BL-172 — reconcile pass is not yet the automatic pre-step of `soxe list`/`status` (§10.2 remainder) — **Open (LOW) (2026-07-04)**
+
+Spec §10.2 says the reconcile runs "on every `soxe list`, `soxe status`, `soxe doctor`, and as a
+step inside `soxe start`/`stop`". Slice 4 (v1.4.0) delivered the complete, idempotent, schedulable
+pass as `soxe doctor --reconcile` (+ the `--install-tick` OS schedule — the continuous half), but
+`cmdList`/`cmdStatus` do not yet invoke it as a cheap pre-step (they do their own partial
+reconciliation: GC read, pid-liveness, os-unit probes, crash-loop markers). Folding the full pass
+in needs a fast-path variant (skip the lsof attribution + per-install scans unless something looks
+off) so `list` stays snappy. Fix sketch: extract `doctorReconcile`'s phases 0/3 (GC + split-brain
+record heal) into a `quickReconcile()` helper both commands call; leave stray-reaping to the tick.
+
+### BL-173 — `findOrphansByServiceId` env-based matching is INERT on macOS (`ps -o env` unsupported) and spawns one `ps` per process-table entry — **Open (MEDIUM) (2026-07-04)**
+
+Discovered while wiring `doctor --reconcile` (Slice 4) onto the BL-136 matchers: macOS `ps` has no
+`env` keyword (`ps: env: keyword not found` — verified live on this box), so `readProcessEnv`
+(`libs/host-runtime/src/reaper.ts`) always returns null in production and
+`findOrphansByServiceId` silently degrades to argv-token matching — i.e. **cross-BUILD stray
+detection by `SOX_SERVICE_ID` does not work on macOS at all** (the BL-136 unit tests pass because
+they mock `ps`). Additionally the scan calls `readProcessEnv(p.pid)` for EVERY process in the
+table (hundreds of failing `ps` spawns per installed extension per scan) — pure overhead on macOS
+and O(N) subprocess cost on Linux. Fix sketch: on darwin use `ps -E -ww -o pid=,command=` (BSD ps
+prints the environment appended to the command with `-E`) or `launchctl procinfo`; cache one
+whole-table snapshot per scan instead of per-pid spawns; keep the argv fallback. The reconcile
+tick (BL-172/Slice 4) still catches the BL-170 zombie class via argv tokens + socket attribution,
+so this is a detection-coverage gap for cross-build strays only, not a regression.
+**Flake symptom:** the same per-pid `ps` spawn cost makes the two `findOrphansByServiceId`
+tests in `libs/host-runtime/src/reaper.spec.ts` (lines ~291/~314, 10s timeout) flaky under
+parallel load — they pass standalone (213/213 twice on this box) but timed out during an
+`nx affected -t lint,build,test` run with ONNX warmups saturating the machine; nx marks
+`host-runtime:test` flaky. Fixing the O(N)-spawn scan fixes the flake.
+
+### BL-175 — root `sox-ecosystem:test` suite MUTATES the live user data root (`~/.adhd/sox-ecosystem/`) — every worktree agent's `nx affected` run re-points the live user-scope installs at its worktree — **Open (HIGH) (2026-07-04)**
+
+**Discovered during the Slices 3–4 gate** (`nx affected -t lint,build,test` from a worktree):
+after the run, `~/.adhd/sox-ecosystem/{extensions.lock,install-registry.json,ledger.json,ownership.json}`
+had mtime = the test run, and every user-scope `source` (memory-daemon/-server/-flush/-cli/-usage,
+demo-creator) pointed at the WORKTREE path. The install-registry history proves this happened
+**three times today from three different agents' runs** (18:52Z `agent-ad1f4cf3072c64ba3`, 18:58Z
+`agent-a6bd315cddfc76ae5`, 20:20Z `agent-a605b86bb76941c53`) — the same test-isolation gap class
+as the smoke-test one found today, in the unit-test tier.
+
+**Mechanism:** the `scripts/*.test.ts` harnesses (install.test.ts, v2-e2e.test.ts, etc.) sandbox the
+*explicit* paths they pass (`configPath`/`lockfilePath` into `mkdtemp` dirs) but do NOT set
+`SOX_ECOSYSTEM_HOME`, so the install engine's GLOBAL writes (`installRegistryPath()`,
+ledger/ownership at `dataRoot('user')`, and user-scope lockfile writes from flows that re-derive
+`getScopePaths('user')` internally) land in the REAL data root. `scripts/cli-adapter.test.ts`
+spawns the real CLI with plain `process.env` (no sandbox at all).
+
+**Consequences:** (1) the live user scope's sources dangle as soon as a worktree is deleted
+post-merge — the next `soxe upgrade`/`serve` resolution can break; (2) cross-test interference:
+`cli-adapter.test.ts > details verb > renders requires block` flakes (exit 1) when a parallel test
+has the registry/lockfile mid-write — observed in this gate run, passes standalone; (3) any agent
+gate run silently rewrites live state, violating worktree isolation fences.
+
+**Further symptoms observed in the same run:** (4) a root test regenerates the TRACKED
+`registry/index.json` in-place with checkout-absolute `source` paths — in a worktree that bakes
+`…/.claude/worktrees/<agent>/…` into a committable file (reverted via `git checkout` before
+committing; the index's absolute-source design makes any non-main checkout's regeneration
+poisonous); (5) junk `./badscope/run/` + `./global/run/` dirs appear in the repo root — see BL-176.
+
+**Remediation:** (a) FIX: export a per-run `SOX_ECOSYSTEM_HOME` temp dir in every root-scripts test
+harness (or a shared vitest setup file for `sox-ecosystem:test`) so the global data root is
+sandboxed like the smoke test's project scope; (b) REPAIR the live box (owner/integrator, after
+merges): re-run `soxe install`/`node bin/soxe upgrade --all` from the MAIN checkout to re-point
+user-scope sources at durable paths — do NOT hand-edit the lockfile. NOT repaired from this
+worktree (live-box mutations are fenced; and the pre-damage state was already another agent's
+worktree path, not main).
+
+### BL-176 — `dataRoot()` returns the raw scope string as a PATH for an unknown scope (audit log writes `./badscope/run/sox-audit.jsonl`) — **Open (MEDIUM) (2026-07-04)**
+
+`libs/host-runtime/src/data-paths.ts` `dataRoot()` ends in `default: const _exhaustive: never =
+scope; return _exhaustive;` — type-safe at compile time, but at RUNTIME an unvalidated string
+(e.g. `soxe install -s badscope`, or `-s global` which is not a scope) falls through and the scope
+string itself is returned as the data root. The CLI's audit-log block (`apps/sox/src/main.ts`
+`main()`, `dataRoot(flags['scope'] ?? 'user')`) then `mkdir -p`s a RELATIVE `./badscope/run/` in
+the caller's cwd and writes `sox-audit.jsonl` there — observed as junk `badscope/` + `global/`
+dirs in the repo root after `cli-adapter.test.ts` ran its invalid-scope error-path tests. Any
+`soxe` invocation with a bad `--scope` litters the cwd before the verb even validates the scope.
+Fix sketch: make `dataRoot` THROW on an unknown scope at runtime (the audit block already
+try/catches), or validate the scope before the audit write.
+
+### BL-174 — direct-M3 `soxe serve` durable stderr sink still opt-in (Slice 3 F13 remainder) — **Open (LOW) (2026-07-04)**
+
+Slice 3's F13 item ("live `serve` version's stderr durably captured") remains opt-in for
+DIRECT-stdio serves (`--log` / `SOX_SERVE_LOG=1`, BL-46). M4 units default durable
+`StandardOutPath`/`StandardErrorPath` (Slice 2 §9.2) and proxy backends log via `stderrLogPath`
+(BL-139), so the gap is only the direct/opt-out serve path. Flipping the default is a
+client-visible behaviour change on every MCP spawn and `cmdServe` is under concurrent BL-170/
+BL-157 hardening — deferred deliberately (documented in the spec v1.4.0 changelog + §14 Slice 3).
+Fix sketch: default the tee ON with `--no-log`/`SOX_SERVE_LOG=0` opt-out once the serve-path work
+lands.
+
+---
+
 ## Open — surfaced during S7/BL-161 memory-core test speed-up (2026-07-04)
 
 ### BL-167 — recall.ts ScoreBreakdown invariant violated for zero-normTotal ranked nodes (HF-3 follow-up) — **Open (LOW) (2026-07-04)**

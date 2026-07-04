@@ -14,8 +14,13 @@
 
 import type { PermissionsBlock, RuntimeEntry, RuntimeRecord } from '@adhd/sox-host-runtime';
 import {
+  // Slice 4 (docs/spec/service-lifecycle.md §10.2/§14): doctor reconcile.
+  chooseSurvivor,
+  classifyReconcileTargets,
   compilePolicy,
   computeSupervisorId,
+  // Slice 3 (docs/spec/service-lifecycle.md §11.3): crash-loop give-up markers.
+  crashLoopMarkerDir,
   dataRoot,
   deriveOsUnitSpec,
   detectOsSupervisor,
@@ -36,11 +41,13 @@ import {
   identityToken,
   installRegistryPath,
   killAndVerify,
+  listCrashLoopMarkers,
   logDirFor,
   McpClient,
   osUnitLabel,
   pidAlive as pidAliveRT,
   readGlobalRegistry,
+  readUnitMeta,
   realOsExec,
   reapByIdentity,
   reapOrphansForExtension,
@@ -52,12 +59,14 @@ import {
   restartOsUnit,
   singletonKey,
   socketDir,
+  socketOwnerPids,
   startRuntime,
   stopRuntime,
   unloadThenReap,
   type DataScope,
   type OsSupervisor,
   type OsUnitPlatform,
+  type ReconcileMatch,
   type ScopeResource,
   type StoreResource,
 } from '@adhd/sox-host-runtime';
@@ -390,6 +399,15 @@ Runtime:
   doctor             Diagnose and repair soxe state (stray processes, cross-build orphans)
                       Flags: --id=<ext-id>  --fix (reap strays)  --scope=<scope>
                              --old-match  (use old path-based matching for comparison)
+                      Continuous supervision (spec §14 Slice 4):
+                             --reconcile [--dry-run]  safe idempotent heal pass
+                               (GC, zombie strays, split-brain runtime.json,
+                                stale/orphaned os-units, crash-loop give-ups)
+                             --install-tick [--interval <sec>]  schedule the
+                               reconcile under launchd/systemd (default 300s)
+                             --remove-tick  reverse --install-tick
+                             (tick honors --dry-run --unit-dir --supervisor
+                              --node-path --allow-volatile-node)
   logs               Tail or follow extension log output (R4 / PI-3)
                      Flags: --id=<ext-id>  --scope=<scope>  --lines=<n>
                             --follow  --history  --json
@@ -4606,6 +4624,553 @@ async function cmdServiceList(flags: Record<string, string>): Promise<void> {
 
 // ─── doctor (PI-1: identity-based stray detection + cross-build orphan repair) ─
 
+// ─── Slice 4 (spec §10.2/§14): the universal reconcile + its OS-scheduled tick ──
+
+/** The pseudo-extension id the scheduled reconcile unit is owned under. */
+const DOCTOR_TICK_ID = 'doctor-tick';
+/** Default tick interval (seconds). Overridable via --interval / SOX_DOCTOR_TICK_INTERVAL. */
+const DOCTOR_TICK_DEFAULT_INTERVAL_SEC = 300;
+
+/**
+ * `soxe doctor --install-tick [--interval <sec>]` — schedule `soxe doctor
+ * --reconcile` under the OS supervisor. The unit is GENERATED through the
+ * standard os-unit layer ([inv:os-unit-generated], content-addressed,
+ * ownership-tracked as an `os-unit` OwnedEntry under the pseudo-id
+ * `doctor-tick`, [inv:reversible-injection]) and is removable via
+ * `soxe doctor --remove-tick` OR the standard `soxe service disable doctor-tick`
+ * path (the label matches). launchd renders `StartInterval`; systemd renders a
+ * paired `.timer` unit (the renderTimerUnit seam).
+ *
+ * This is what makes supervision CONTINUOUS: the reaper/identity-scan machinery
+ * was previously verb-triggered only — nothing watched between invocations.
+ */
+async function doctorInstallTick(flags: Record<string, string>): Promise<void> {
+  const fsM = require('node:fs') as typeof import('node:fs');
+  const pathM = require('node:path') as typeof import('node:path');
+  const scope = flags['scope'] ?? 'user';
+  const root = flags['root'] ?? process.cwd();
+  const dryRun = flags['dry-run'] !== undefined;
+
+  // Interval: flag > env > default. Clamped to ≥10s (the §11.3 ThrottleInterval floor).
+  const rawInterval = flags['interval'] ?? process.env['SOX_DOCTOR_TICK_INTERVAL'];
+  let intervalSec = rawInterval !== undefined ? Number(rawInterval) : DOCTOR_TICK_DEFAULT_INTERVAL_SEC;
+  if (!Number.isFinite(intervalSec) || intervalSec <= 0) intervalSec = DOCTOR_TICK_DEFAULT_INTERVAL_SEC;
+  if (intervalSec < 10) {
+    process.stderr.write(`${CLI} doctor: --interval ${intervalSec}s is below the 10s floor — clamped to 10s\n`);
+    intervalSec = 10;
+  }
+
+  const platform = getOsUnitPlatform(
+    (flags['supervisor'] as OsSupervisor | undefined) ?? detectOsSupervisor(),
+  );
+  const unitDir = resolveOsUnitDir(flags, platform);
+
+  // Pinned node path + volatility guard — the SAME policy as `service enable`
+  // (§9.2 / Appendix B item 3).
+  const nodeRes = flags['node-path']
+    ? { nodePath: flags['node-path'], volatile: false as const }
+    : resolveUnitNodePath();
+  if (nodeRes.volatile) {
+    process.stderr.write(`${CLI} doctor --install-tick: WARNING — ${nodeRes.volatileReason ?? 'volatile node path'}\n`);
+    if (nodeRes.preferredNonVolatile) {
+      process.stderr.write(
+        `  A non-volatile node is available at ${nodeRes.preferredNonVolatile}; ` +
+        `re-run with --node-path=${nodeRes.preferredNonVolatile} to pin it.\n`,
+      );
+    }
+    if (flags['allow-volatile-node'] === undefined) {
+      process.stderr.write(
+        `  Refusing to pin a volatile node. Re-run with --allow-volatile-node to proceed anyway, ` +
+        `or --node-path=<stable node>.\n`,
+      );
+      process.exit(1);
+    }
+  }
+
+  // The tick runs THIS soxe: `node <cli> doctor --reconcile` (the BL-156
+  // execArgs pattern — the unit launches the CLI, not a bare extension entrypoint).
+  let cliPath = process.argv[1] ?? '';
+  try { cliPath = fsM.realpathSync(cliPath); } catch { /* keep as-is */ }
+  if (!cliPath) {
+    process.stderr.write(`${CLI} doctor --install-tick: cannot resolve the CLI path (process.argv[1] empty)\n`);
+    process.exit(1);
+  }
+
+  const workingDirectory = dataRoot(scope as DataScope, root);
+  try { fsM.mkdirSync(workingDirectory, { recursive: true }); } catch { /* best-effort */ }
+
+  // §9.2 env mirror. SOX_ECOSYSTEM_HOME is forwarded EXPLICITLY (documented in
+  // the spec 1.4.0 changelog): a custom data root must be visible to the
+  // scheduled reconcile or it would inspect the wrong store. This does NOT widen
+  // the supervisor scrub allowlist — it is tick-unit-only.
+  const env = buildOsUnitEnv(DOCTOR_TICK_ID, root);
+  const ecoHome = process.env['SOX_ECOSYSTEM_HOME'];
+  if (ecoHome !== undefined && ecoHome !== '') env['SOX_ECOSYSTEM_HOME'] = ecoHome;
+
+  const spec = deriveOsUnitSpec({
+    id: DOCTOR_TICK_ID,
+    scope,
+    // No manifest exists for the pseudo-extension: an absent manifest derives
+    // runAtLoad=true (run once at load) + keepAlive=false (a tick job exits;
+    // the OS supervisor relaunches it on the interval).
+    manifestPath: pathM.join(workingDirectory, '.doctor-tick-has-no-manifest'),
+    nodePath: nodeRes.nodePath,
+    entrypoint: cliPath,
+    execArgs: ['--enable-source-maps', cliPath, 'doctor', '--reconcile'],
+    env,
+    workingDirectory,
+    logDir: logDirFor(`os-${scope}-${DOCTOR_TICK_ID}`),
+    startIntervalSec: intervalSec,
+  });
+
+  const result = enableOsUnit(spec, platform, {
+    unitDir,
+    load: !dryRun,
+    log: (m) => process.stdout.write(`sox: ${m}\n`),
+  });
+
+  // systemd: the schedule is a paired, content-addressed `.timer` unit.
+  let timerPath: string | undefined;
+  const timerContent = platform.renderTimerUnit?.(spec);
+  if (timerContent !== undefined) {
+    const timerName = platform.unitFileName(spec.label).replace(/\.service$/, '.timer');
+    timerPath = pathM.join(unitDir, timerName);
+    fsM.mkdirSync(pathM.dirname(timerPath), { recursive: true });
+    fsM.writeFileSync(`${timerPath}.tmp`, timerContent, 'utf8');
+    fsM.renameSync(`${timerPath}.tmp`, timerPath);
+    process.stdout.write(`sox: os-unit ${spec.label}: timer written ${timerPath}\n`);
+    if (!dryRun) {
+      realOsExec('systemctl', ['--user', 'daemon-reload']);
+      realOsExec('systemctl', ['--user', 'enable', '--now', timerName]);
+    }
+  }
+
+  // Ownership ([inv:reversible-injection], §9.4): recorded like any os-unit so
+  // `service list`/`doctor` enumerate it and disable/remove-tick reverse it.
+  try {
+    const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
+    own.addEntries(DOCTOR_TICK_ID, scope, [{
+      kind: 'os-unit',
+      label: spec.label,
+      unitPath: result.unitPath,
+      supervisor: platform.kind,
+      appliedHash: result.contentHash,
+    }]);
+    own.save();
+  } catch (e) {
+    process.stderr.write(`sox: warning: could not record doctor-tick ownership: ${String(e)}\n`);
+  }
+
+  process.stdout.write(
+    `${CLI} doctor --install-tick: ${result.action} ${platform.kind} unit '${spec.label}'\n` +
+    `  unit:      ${result.unitPath}\n` +
+    (timerPath !== undefined ? `  timer:     ${timerPath}\n` : '') +
+    `  runs:      ${CLI} doctor --reconcile  (every ${intervalSec}s)\n` +
+    `  node:      ${spec.nodePath}\n` +
+    `  content:   ${result.contentHash}\n` +
+    (dryRun
+      ? `  (--dry-run: unit written but NOT loaded — no ${platform.kind === 'launchd' ? 'launchctl' : 'systemctl'} call)\n`
+      : `  loaded:    ${result.loaded ? 'yes' : 'NO (load failed — see warnings)'}\n`) +
+    `  remove:    ${CLI} doctor --remove-tick   (or: ${CLI} service disable ${DOCTOR_TICK_ID})\n`,
+  );
+  process.exit(!dryRun && !result.loaded ? 1 : 0);
+}
+
+/**
+ * `soxe doctor --remove-tick` — reverse --install-tick: unload + remove the unit
+ * (and the systemd `.timer` twin) and clear the ownership entry. Idempotent.
+ */
+async function doctorRemoveTick(flags: Record<string, string>): Promise<void> {
+  const fsM = require('node:fs') as typeof import('node:fs');
+  const pathM = require('node:path') as typeof import('node:path');
+  const scope = flags['scope'] ?? 'user';
+  const root = flags['root'] ?? process.cwd();
+  const platform = getOsUnitPlatform(
+    (flags['supervisor'] as OsSupervisor | undefined) ?? detectOsSupervisor(),
+  );
+  const unitDir = resolveOsUnitDir(flags, platform);
+  const label = osUnitLabel(scope, DOCTOR_TICK_ID);
+
+  // systemd: tear the .timer twin down first (the schedule outranks the job).
+  const svcName = platform.unitFileName(label);
+  if (platform.kind === 'systemd' && svcName.endsWith('.service')) {
+    const timerName = svcName.replace(/\.service$/, '.timer');
+    const timerPath = pathM.join(unitDir, timerName);
+    if (fsM.existsSync(timerPath)) {
+      realOsExec('systemctl', ['--user', 'disable', '--now', timerName]);
+      try { fsM.unlinkSync(timerPath); process.stdout.write(`sox: os-unit ${label}: removed ${timerPath}\n`); } catch { /* best-effort */ }
+    }
+  }
+
+  disableOsUnit(label, platform, { unitDir, log: (m) => process.stdout.write(`sox: ${m}\n`) });
+
+  // Clear the ownership os-unit entry ([inv:reversible-injection]).
+  try {
+    const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
+    const rec = own.get(DOCTOR_TICK_ID, scope);
+    if (rec) {
+      const kept = rec.entries.filter((e) => e.kind !== 'os-unit');
+      own.record({ extId: DOCTOR_TICK_ID, scope, entries: kept, ...(rec.host !== undefined ? { host: rec.host } : {}) });
+      own.save();
+    }
+  } catch { /* best-effort */ }
+
+  process.stdout.write(`${CLI} doctor --remove-tick: '${label}' unloaded + removed\n`);
+  process.exit(0);
+}
+
+/** One reconcile finding/action (the --reconcile report + durable-log record). */
+interface ReconcileFinding {
+  kind:
+    | 'zombie-stray'            // token-matched, zero fds on the live writer socket (BL-170)
+    | 'stray-skipped'           // report+skip (accounted / socket holder / unattributable / lone)
+    | 'singleton-duplicate'     // ≥2 live, no socket — §5.3 heal (oldest survives)
+    | 'split-brain-runtime'     // runtime.json running:true with no process reality (F4/F6)
+    | 'os-unit-file-missing'    // ownership records a unit whose file is gone
+    | 'os-unit-stale'           // on-disk unit hash ≠ ownership appliedHash / artifact drift (F12)
+    | 'os-unit-orphaned'        // sox-labelled unit file with no ownership entry (F15)
+    | 'crash-loop-give-up';     // Slice 3 marker (§11.3) — explicit start clears
+  extId: string;
+  scope: string;
+  pid: number;
+  detail: string;
+  action: 'healed' | 'would-heal' | 'report-only' | 'skipped' | 'failed';
+}
+
+/**
+ * `soxe doctor --reconcile [--dry-run]` — the Slice 4 universal reconcile pass
+ * (§10.2, F4/F6/F12/F15 + the BL-170 zombie class). Non-interactive, idempotent,
+ * SAFE BY CONSTRUCTION:
+ *
+ *   - GC-prunes dead supervisors (readGlobalRegistry — the existing gc.ts pass).
+ *   - Scans every installed service/mcp-server for identity strays (the BL-136
+ *     env+argv matchers) and heals ONLY what it can positively attribute:
+ *     the live writer-socket holder is NEVER touched; an unattributable live
+ *     socket reaps NOTHING; a lone unaccounted process is report-only; a ≥2
+ *     no-socket duplicate set is healed per §5.3 (oldest survives). All kills go
+ *     through killAndVerify ([contract:signal] verified-stop).
+ *   - Heals split-brain runtime.json records ([inv:list-never-lies]).
+ *   - Reconciles os-units against ownership (stale/missing/orphaned — F12/F15,
+ *     report-only: loading/unloading a unit needs the human node-path context).
+ *   - Surfaces crash-loop give-up markers (Slice 3, §11.3 — explicit start clears).
+ *
+ * Every action is written to the durable log
+ * `run/logs/doctor-reconcile/doctor-reconcile-<date>.log`
+ * (`soxe logs --id doctor-reconcile`). `--dry-run` reports what WOULD be done.
+ * Exit: 0 = reconciled (report-only findings do not fail a scheduled tick);
+ *       1 = a reap failed verification ('undead') or the pass errored.
+ */
+async function doctorReconcile(flags: Record<string, string>): Promise<void> {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+  const root = flags['root'] ?? process.cwd();
+  const filterId = flags['id'];
+  const filterScope = flags['scope'];
+  const dryRun = flags['dry-run'] !== undefined;
+  const jsonMode = flags['json'] !== undefined;
+  const graceMs = (() => {
+    const raw = flags['grace-ms'] ?? process.env['SOX_STOP_GRACE_MS'];
+    const n = raw !== undefined ? Number(raw) : NaN;
+    return Number.isFinite(n) && n >= 0 ? n : 5000;
+  })();
+
+  // Durable action log — every line is `soxe logs --id doctor-reconcile`-visible.
+  // SYNCHRONOUS appends (not LogManager's WriteStream): the pass ends in
+  // process.exit(), which would drop async-buffered lines. The dated filename
+  // follows the LogManager `<extId>-<YYYY-MM-DD>.log` convention (daily files).
+  const reconLogDir = logDirFor('doctor-reconcile');
+  const reconLogPath = pathMod.join(reconLogDir, `doctor-reconcile-${new Date().toISOString().slice(0, 10)}.log`);
+  try { fsMod.mkdirSync(reconLogDir, { recursive: true }); } catch { /* best-effort */ }
+  const findings: ReconcileFinding[] = [];
+  let undead = false;
+  const log = (m: string): void => {
+    try { fsMod.appendFileSync(reconLogPath, `${new Date().toISOString()} ${m}\n`, 'utf8'); } catch { /* never fail the pass on logging */ }
+    if (!jsonMode) process.stdout.write(`${CLI} doctor: ${m}\n`);
+  };
+  log(`[reconcile] pass starting (root=${root}${dryRun ? ', DRY-RUN' : ''})`);
+
+  // ── 0. GC — prunes dead supervisors + heals their runtime.json (gc.ts). ──────
+  const liveSupervisors = await readGlobalRegistry();
+
+  // ── 1. Accounted pids ([auth:supervisor-then-os-then-os-reality]): a pid a
+  //       live GC-verified supervisor, a runtime record, or a loaded OS unit
+  //       claims is NEVER a reap candidate.
+  const accounted = new Set<number>([process.pid, process.ppid]);
+  for (const sup of liveSupervisors) {
+    accounted.add(sup.pid);
+    try {
+      const rec = JSON.parse(fsMod.readFileSync(sup.runtimeFilePath, 'utf8')) as {
+        entries?: Array<{ pid?: number | null }>;
+      };
+      for (const e of rec.entries ?? []) {
+        if (typeof e.pid === 'number' && e.pid > 0) accounted.add(e.pid);
+      }
+    } catch { /* stale runtime file — gc already handled */ }
+  }
+  const scopes = ['org', 'user', 'project', 'local'] as const;
+  for (const sc of scopes) {
+    let dir: string;
+    try { dir = dataRoot(sc, root); } catch { continue; }
+    let own: OwnershipIndex;
+    try { own = OwnershipIndex.loadFromFile(pathMod.join(dir, 'ownership.json')); } catch { continue; }
+    for (const rec of own.all()) {
+      for (const e of rec.entries) {
+        if (e.kind !== 'os-unit' || e.supervisor !== 'launchd') continue;
+        const platform = getOsUnitPlatform(e.supervisor);
+        if (!platform.isLoaded(e.label, realOsExec)) continue;
+        const probe = realOsExec('launchctl', ['list', e.label]);
+        const pidMatch = probe.code === 0 ? probe.stdout.match(/"PID"\s*=\s*(\d+)/) : null;
+        if (pidMatch) accounted.add(parseInt(pidMatch[1]!, 10));
+      }
+    }
+  }
+
+  // ── 2. Identity-token stray scan + SAFE heal per installed service/mcp-server. ──
+  const registry = readInstallRegistry(installRegistryPath());
+  const seenInstalls = new Set<string>();
+  for (const inst of registry.installs) {
+    if (filterId !== undefined && inst.extId !== filterId) continue;
+    if (filterScope !== undefined && inst.scope !== filterScope) continue;
+    const dedupeKey = `${inst.scope}:${inst.extId}`;
+    if (seenInstalls.has(dedupeKey)) continue;
+    seenInstalls.add(dedupeKey);
+
+    const extDir = resolveExtensionDir(inst.source, inst.root);
+    if (!extDir) continue;
+    let manifest: { type?: string; entrypoint?: string };
+    try {
+      manifest = JSON.parse(fsMod.readFileSync(pathMod.join(extDir, 'extension.json'), 'utf8'));
+    } catch { continue; }
+    if (manifest.type !== 'service' && manifest.type !== 'mcp-server') continue;
+    if (!manifest.entrypoint) continue;
+    const entrypointPath = pathMod.resolve(extDir, manifest.entrypoint);
+    const token = identityToken(`file://${entrypointPath}`);
+
+    const matches: ReconcileMatch[] = findOrphansByServiceId(inst.extId, token, {
+      excludePids: [process.pid],
+    }).map((m) => ({ pid: m.pid, ppid: m.ppid, orphaned: m.orphaned }));
+    if (matches.length === 0) continue;
+
+    // The store's writer socket: the proxy-backend UDS for a proxy-mode
+    // mcp-server; the declared socket health endpoint for a socket service.
+    let sockPath: string | null = null;
+    if (manifest.type === 'mcp-server' && mcpServerIsProxyMode(inst.extId, inst.scope, inst.root)) {
+      const configEnv = buildExtConfigEnv(inst.extId, inst.root);
+      const storeResource = resolveStoreResource(pathMod.join(extDir, 'extension.json'), configEnv);
+      const key = singletonKey(inst.extId, storeResource) ?? `${inst.extId} none:`;
+      const { backendSocketPath } =
+        require('@adhd/sox-service-proxy') as typeof import('@adhd/sox-service-proxy');
+      sockPath = backendSocketPath(socketDir(), key);
+    } else {
+      sockPath = resolveServiceHealthSocketPath(extDir, buildExtConfigEnv(inst.extId, inst.root));
+    }
+    const socketLive = sockPath !== null && (await probeUnixSocketLive(sockPath, 750));
+    const socketPids = socketLive && sockPath !== null ? socketOwnerPids(sockPath) : null;
+
+    const plan = classifyReconcileTargets({
+      matches,
+      accountedPids: accounted,
+      socketLive,
+      socketPids,
+    });
+
+    for (const s of plan.skip) {
+      if (s.reason === 'accounted') continue; // healthy tracked process — not a finding
+      findings.push({
+        kind: 'stray-skipped', extId: inst.extId, scope: inst.scope, pid: s.match.pid,
+        detail: `pid ${s.match.pid} skipped (${s.reason})`,
+        action: s.reason === 'writer-socket-holder' ? 'skipped' : 'report-only',
+      });
+      if (s.reason !== 'writer-socket-holder') {
+        log(`[reconcile] ${inst.extId}@${inst.scope}: pid ${s.match.pid} REPORT+SKIP — ${s.reason}`);
+      }
+    }
+
+    for (const z of plan.reap) {
+      const desc = `${inst.extId}@${inst.scope} pid ${z.pid}${z.orphaned ? ' (orphan, PPID 1)' : ''} — token-matched with ZERO fds on the live writer socket (BL-170 zombie class)`;
+      if (dryRun) {
+        findings.push({ kind: 'zombie-stray', extId: inst.extId, scope: inst.scope, pid: z.pid, detail: desc, action: 'would-heal' });
+        log(`[reconcile] WOULD reap ${desc}`);
+        continue;
+      }
+      const outcome = await killAndVerify(z.pid, { graceMs, log: (m) => log(`[reconcile] reap ${inst.extId} pid ${z.pid}: ${m}`) });
+      if (outcome === 'undead') {
+        undead = true;
+        findings.push({ kind: 'zombie-stray', extId: inst.extId, scope: inst.scope, pid: z.pid, detail: `${desc} — UNDEAD`, action: 'failed' });
+        log(`[reconcile] FAILED to reap ${desc} (undead)`);
+      } else {
+        findings.push({ kind: 'zombie-stray', extId: inst.extId, scope: inst.scope, pid: z.pid, detail: `${desc} → ${outcome}`, action: 'healed' });
+        log(`[reconcile] reaped ${desc} → ${outcome}`);
+      }
+    }
+
+    if (plan.duplicateSetNoSocket.length >= 2) {
+      // §5.3 singleton violation with no socket to attribute: the EXISTING
+      // deterministic survivor rule (oldest by lstart) picks the keeper.
+      const pids = plan.duplicateSetNoSocket.map((p) => p.pid);
+      const { survivor, losers } = chooseSurvivor(pids);
+      log(`[reconcile] [singleton-violation] ${inst.extId}@${inst.scope}: ${pids.length} live, no socket — survivor=${survivor} losers=${losers.join(',')}`);
+      for (const loser of losers) {
+        if (dryRun) {
+          findings.push({ kind: 'singleton-duplicate', extId: inst.extId, scope: inst.scope, pid: loser, detail: `duplicate of survivor ${survivor}`, action: 'would-heal' });
+          log(`[reconcile] WOULD reap duplicate ${inst.extId} pid ${loser} (survivor ${survivor})`);
+          continue;
+        }
+        const outcome = await killAndVerify(loser, { graceMs, log: (m) => log(`[reconcile] heal ${inst.extId} pid ${loser}: ${m}`) });
+        if (outcome === 'undead') { undead = true; }
+        findings.push({
+          kind: 'singleton-duplicate', extId: inst.extId, scope: inst.scope, pid: loser,
+          detail: `duplicate of survivor ${survivor} → ${outcome}`,
+          action: outcome === 'undead' ? 'failed' : 'healed',
+        });
+        log(`[reconcile] [singleton-violation healed] ${inst.extId} pid ${loser} → ${outcome}`);
+      }
+    }
+  }
+
+  // ── 3. Split-brain runtime.json heal (F4/F6, [inv:list-never-lies]). ─────────
+  for (const sc of scopes) {
+    let scopePaths: { config: string; lockfile: string };
+    try { scopePaths = getScopePaths(sc, root); } catch { continue; }
+    const runtimeFilePath = getRuntimeFilePath(scopePaths.lockfile);
+    if (!fsMod.existsSync(runtimeFilePath)) continue;
+    let recRt: RuntimeRecord;
+    try { recRt = JSON.parse(fsMod.readFileSync(runtimeFilePath, 'utf8')) as RuntimeRecord; } catch { continue; }
+    // Authority rule 1: a LIVE supervisor owns its record — never rewritten here.
+    if (typeof recRt.supervisorPid === 'number' && pidAliveRT(recRt.supervisorPid)) continue;
+    let changed = false;
+    for (const e of recRt.entries ?? []) {
+      if (e.running !== true) continue;
+      if (filterId !== undefined && e.id !== filterId) continue;
+      const pidLive = typeof e.pid === 'number' && e.pid > 0 && pidAliveRT(e.pid);
+      const tokenLive = e.source
+        ? findOrphansByIdentity(identityToken(e.source), { excludePids: [process.pid] }).length > 0
+        : false;
+      if (pidLive || tokenLive) continue;
+      const desc = `runtime.json ${sc}: '${e.id}' running:true with NO process reality (pid=${String(e.pid)})`;
+      if (dryRun) {
+        findings.push({ kind: 'split-brain-runtime', extId: e.id, scope: sc, pid: e.pid ?? 0, detail: desc, action: 'would-heal' });
+        log(`[reconcile] WOULD heal ${desc} → running:false`);
+        continue;
+      }
+      e.running = false;
+      e.pid = null;
+      changed = true;
+      findings.push({ kind: 'split-brain-runtime', extId: e.id, scope: sc, pid: 0, detail: `${desc} → running:false`, action: 'healed' });
+      log(`[reconcile] healed ${desc} → running:false`);
+    }
+    if (changed) {
+      const tmp = `${runtimeFilePath}.tmp`;
+      fsMod.writeFileSync(tmp, JSON.stringify(recRt, null, 2) + '\n', 'utf8');
+      fsMod.renameSync(tmp, runtimeFilePath);
+    }
+  }
+
+  // ── 4. OS-unit ⇄ ownership reconcile (F12/F15) — report-only remedies:
+  //       loading/unloading a unit requires the human node-path context (§9.2),
+  //       so the reconcile proposes the exact command instead of guessing.
+  {
+    const platform = getOsUnitPlatform(
+      (flags['supervisor'] as OsSupervisor | undefined) ?? detectOsSupervisor(),
+    );
+    const unitDir = resolveOsUnitDir(flags, platform);
+    const ownedUnitFiles = new Set<string>();
+    for (const sc of scopes) {
+      let dir: string;
+      try { dir = dataRoot(sc, root); } catch { continue; }
+      let own: OwnershipIndex;
+      try { own = OwnershipIndex.loadFromFile(pathMod.join(dir, 'ownership.json')); } catch { continue; }
+      for (const rec of own.all()) {
+        if (filterId !== undefined && rec.extId !== filterId) continue;
+        for (const e of rec.entries) {
+          if (e.kind !== 'os-unit') continue;
+          const entryPlatform = getOsUnitPlatform(e.supervisor);
+          const unitPath = (flags['unit-dir'] !== undefined || process.env['SOX_OS_UNIT_DIR'])
+            ? pathMod.join(unitDir, entryPlatform.unitFileName(e.label))
+            : e.unitPath;
+          const base = pathMod.basename(unitPath);
+          ownedUnitFiles.add(base);
+          if (base.endsWith('.service')) ownedUnitFiles.add(base.replace(/\.service$/, '.timer'));
+          if (!fsMod.existsSync(unitPath)) {
+            findings.push({
+              kind: 'os-unit-file-missing', extId: rec.extId, scope: sc, pid: 0,
+              detail: `ownership records os-unit ${e.label} but ${unitPath} is missing — re-run \`${CLI} service enable ${rec.extId} -s ${sc}\``,
+              action: 'report-only',
+            });
+            log(`[reconcile] os-unit ${e.label}: unit FILE MISSING (${unitPath})`);
+            continue;
+          }
+          try {
+            const meta = readUnitMeta(fsMod.readFileSync(unitPath, 'utf8'));
+            if (meta.contentHash !== undefined && meta.contentHash !== e.appliedHash) {
+              findings.push({
+                kind: 'os-unit-stale', extId: rec.extId, scope: sc, pid: 0,
+                detail: `os-unit ${e.label}: on-disk content-hash ${meta.contentHash} ≠ ownership appliedHash ${e.appliedHash} — re-run \`${CLI} service enable ${rec.extId} -s ${sc}\``,
+                action: 'report-only',
+              });
+              log(`[reconcile] os-unit ${e.label}: STALE content (disk ${meta.contentHash} ≠ owned ${e.appliedHash})`);
+            }
+            const installedHash = own.get(rec.extId, sc)?.artifactChecksum;
+            if (meta.artifactHash !== undefined && installedHash !== undefined && meta.artifactHash !== installedHash) {
+              findings.push({
+                kind: 'os-unit-stale', extId: rec.extId, scope: sc, pid: 0,
+                detail: `os-unit ${e.label}: unit artifact ${meta.artifactHash} ≠ installed ${installedHash} (F12 stale-artifact) — re-run \`${CLI} service enable ${rec.extId} -s ${sc}\``,
+                action: 'report-only',
+              });
+              log(`[reconcile] os-unit ${e.label}: STALE ARTIFACT (unit ${meta.artifactHash} ≠ installed ${installedHash})`);
+            }
+          } catch { /* unreadable unit — the file-missing branch covers the actionable case */ }
+        }
+      }
+    }
+    // F15: sox-labelled unit files with NO ownership entry anywhere.
+    try {
+      if (fsMod.existsSync(unitDir)) {
+        for (const f of fsMod.readdirSync(unitDir)) {
+          const isSox = /^com\.sox\..+\.plist$/.test(f) || /^sox-.+\.(service|timer)$/.test(f);
+          if (!isSox || ownedUnitFiles.has(f)) continue;
+          findings.push({
+            kind: 'os-unit-orphaned', extId: f, scope: '?', pid: 0,
+            detail: `unit file ${pathMod.join(unitDir, f)} has NO ownership entry (F15 orphaned unit) — remove via \`${CLI} service disable <ext>\``,
+            action: 'report-only',
+          });
+          log(`[reconcile] os-unit ORPHANED: ${f} (no ownership entry)`);
+        }
+      }
+    } catch { /* unit dir unreadable — nothing to report */ }
+  }
+
+  // ── 5. Crash-loop give-up markers (Slice 3, §11.3). Report-only by design:
+  //       only an explicit start/enable may clear a give-up.
+  for (const mk of listCrashLoopMarkers(crashLoopMarkerDir())) {
+    const baseId = mk.key.includes('@') ? mk.key.slice(0, mk.key.lastIndexOf('@')) : mk.key;
+    if (filterId !== undefined && baseId !== filterId) continue;
+    findings.push({
+      kind: 'crash-loop-give-up', extId: baseId, scope: '?', pid: 0,
+      detail: `${mk.reason} (capped at ${mk.cappedAt})`,
+      action: 'report-only',
+    });
+    log(`[reconcile] ${mk.reason} (capped at ${mk.cappedAt}) — clear with \`${CLI} start --id=${baseId}\``);
+  }
+
+  // ── Summary + honest exit. ────────────────────────────────────────────────────
+  const healed = findings.filter((f) => f.action === 'healed').length;
+  const would = findings.filter((f) => f.action === 'would-heal').length;
+  const reported = findings.filter((f) => f.action === 'report-only').length;
+  const failed = findings.filter((f) => f.action === 'failed').length;
+  log(
+    `[reconcile] pass complete: ${healed} healed, ${would} would-heal (dry-run), ` +
+    `${reported} report-only, ${failed} failed${dryRun ? ' [DRY-RUN — nothing was changed]' : ''}`,
+  );
+
+  if (jsonMode) {
+    process.stdout.write(JSON.stringify({ dryRun, undead, findings }, null, 2) + '\n');
+  }
+  // A scheduled tick must not flap on report-only findings; only a verification
+  // failure (undead) is a reconcile FAILURE.
+  process.exit(undead ? 1 : 0);
+}
+
 /**
  * cmdDoctor — diagnose and repair soxe process state.
  *
@@ -4621,8 +5186,33 @@ async function cmdServiceList(flags: Record<string, string>): Promise<void> {
  *                    the NEW env-based findOrphansByServiceId — for the
  *                    negative-control adversarial test (NC).
  *   --json           Structured JSON output for machine consumption.
+ *
+ * Slice 4 (spec §10.2/§14 — continuous supervision):
+ *   --reconcile      Non-interactive, idempotent, SAFE reconcile pass: GC +
+ *                    stray heal + split-brain runtime.json heal + os-unit
+ *                    reconcile + crash-loop surfacing. Honors --dry-run.
+ *   --install-tick   Schedule `doctor --reconcile` under the OS supervisor
+ *                    (launchd StartInterval / systemd .timer). --interval <sec>
+ *                    (default 300; env SOX_DOCTOR_TICK_INTERVAL). Honors
+ *                    --dry-run/--unit-dir/--supervisor/--node-path/
+ *                    --allow-volatile-node exactly like `service enable`.
+ *   --remove-tick    Reverse --install-tick (unload + remove + clear ownership).
  */
 async function cmdDoctor(flags: Record<string, string>): Promise<void> {
+  // ── Slice 4: the universal reconcile + its OS-scheduled tick. ───────────────
+  if (flags['install-tick'] !== undefined) {
+    await doctorInstallTick(flags);
+    return;
+  }
+  if (flags['remove-tick'] !== undefined) {
+    await doctorRemoveTick(flags);
+    return;
+  }
+  if (flags['reconcile'] !== undefined) {
+    await doctorReconcile(flags);
+    return;
+  }
+
   const fsMod = require('node:fs') as typeof import('node:fs');
   const pathMod = require('node:path') as typeof import('node:path');
   const root = flags['root'] ?? process.cwd();
@@ -4638,7 +5228,7 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
   const registry = readInstallRegistry(registryPath);
 
   const findings: Array<{
-    kind: 'stray-process' | 'os-unit-not-loaded' | 'cross-build-stray';
+    kind: 'stray-process' | 'os-unit-not-loaded' | 'cross-build-stray' | 'crash-loop-give-up';
     extId: string;
     scope: string;
     pid: number;
@@ -4646,6 +5236,24 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
     orphaned: boolean;
     detail: string;
   }> = [];
+
+  // ── Slice 3 (§11.3): surface crash-loop give-up markers. Report-only — only an
+  //    explicit `soxe start`/`enable` may clear a give-up state.
+  try {
+    for (const mk of listCrashLoopMarkers(crashLoopMarkerDir())) {
+      const baseId = mk.key.includes('@') ? mk.key.slice(0, mk.key.lastIndexOf('@')) : mk.key;
+      if (filterId !== undefined && baseId !== filterId) continue;
+      findings.push({
+        kind: 'crash-loop-give-up',
+        extId: baseId,
+        scope: '?',
+        pid: 0,
+        ppid: 0,
+        orphaned: false,
+        detail: `${mk.reason} (capped at ${mk.cappedAt}) — clear with \`${CLI} start --id=${baseId}\``,
+      });
+    }
+  } catch { /* best-effort */ }
 
   // Scan each install record.
   for (const rec of registry.installs) {
@@ -4748,12 +5356,17 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
 
   const strayCount = findings.filter((f) => f.kind === 'stray-process' || f.kind === 'cross-build-stray').length;
   const osUnitCount = findings.filter((f) => f.kind === 'os-unit-not-loaded').length;
+  const crashLoopCount = findings.filter((f) => f.kind === 'crash-loop-give-up').length;
   log(`found ${findings.length} anomal${findings.length === 1 ? 'y' : 'ies'}:`);
   log(`  ${strayCount} stray processe${strayCount === 1 ? '' : 's'}`);
   log(`  ${osUnitCount} unloaded os-unit${osUnitCount === 1 ? '' : 's'}`);
+  if (crashLoopCount > 0) log(`  ${crashLoopCount} crash-loop give-up${crashLoopCount === 1 ? '' : 's'} (§11.3)`);
 
   for (const f of findings) {
-    const tag = f.kind === 'cross-build-stray' ? 'CROSS-BUILD' : f.kind === 'os-unit-not-loaded' ? 'OS-UNIT' : 'STRAY';
+    const tag = f.kind === 'cross-build-stray' ? 'CROSS-BUILD'
+      : f.kind === 'os-unit-not-loaded' ? 'OS-UNIT'
+      : f.kind === 'crash-loop-give-up' ? 'CRASH-LOOP'
+      : 'STRAY';
     const pidInfo = f.pid > 0 ? ` (pid=${f.pid}, ppid=${f.ppid}${f.orphaned ? ', orphan' : ''})` : '';
     log(`  [${tag}] ${f.extId}@${f.scope}${pidInfo}: ${f.detail}`);
   }
@@ -5731,6 +6344,48 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
       }
     }
   }
+
+  // ── Slice 3 (§11.3, [inv:crash-loop-cap]): surface crash-loop give-up markers ─
+  // A capped service is DEGRADED (give-up) — never a silent stop
+  // ([inv:list-never-lies]). The marker is written by the supervisor's guard and
+  // cleared only by an explicit start/enable.
+  try {
+    for (const mk of listCrashLoopMarkers(crashLoopMarkerDir())) {
+      const baseId = mk.key.includes('@') ? mk.key.slice(0, mk.key.lastIndexOf('@')) : mk.key;
+      if (filterId !== undefined && baseId !== filterId) continue;
+      const reason =
+        `[crash-loop] gave up after ${mk.failures.length} unexpected exits within ${mk.windowMs}ms ` +
+        `(capped at ${mk.cappedAt}) — run '${CLI} start --id=${baseId}' to clear`;
+      const existing = records.find((r) => r.id === baseId);
+      if (existing) {
+        if (existing.status === 'healthy') existing.status = 'degraded';
+        existing.staleReason = reason;
+      } else {
+        records.push({
+          id: baseId,
+          key: mk.key.includes('@') ? mk.key : `${baseId}@crash-loop`,
+          scope: filterScope ?? '?',
+          root: '(crash-loop)',
+          project: 'crash-loop-give-up',
+          supervisorId: 'crash-loop',
+          activatedAt: '',
+          uptimeSeconds: 0,
+          pidAlive: false,
+          pid: null,
+          socketReachable: false,
+          socketLatencyMs: null,
+          logTail: [],
+          logPath: null,
+          lastStartedAt: null,
+          lastStoppedAt: mk.cappedAt,
+          lastRunDurationMs: null,
+          totalUptimeMs: 0,
+          status: 'degraded',
+          staleReason: reason,
+        });
+      }
+    }
+  } catch { /* best-effort */ }
 
   // ── Determine overall exit code ─────────────────────────────────────────────
   let exitCode = 0;

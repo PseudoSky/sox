@@ -475,6 +475,74 @@ describe('SA-2 socket-activation rendering — systemd', () => {
   });
 });
 
+// ─── Slice 4: periodic tick rendering (StartInterval / .timer) ───────────────────
+
+describe('Slice 4 periodic tick rendering — launchd StartInterval', () => {
+  const platform = new LaunchdPlatform();
+
+  it('startIntervalSec renders a StartInterval key and changes the content hash', () => {
+    const tick = makeSpec({ startIntervalSec: 300 });
+    const plist = platform.render(tick);
+    expect(plist).toContain('<key>StartInterval</key>');
+    expect(plist).toContain('<integer>300</integer>');
+    const plain = platform.render(makeSpec());
+    expect(plain).not.toContain('StartInterval');
+    expect(readUnitMeta(plist).contentHash).not.toBe(readUnitMeta(plain).contentHash);
+  });
+
+  it('deriveOsUnitSpec floors + drops non-positive intervals', () => {
+    const derived = deriveOsUnitSpec({
+      id: 'x', scope: 'user', manifestPath: '', nodePath: '/n', entrypoint: '/e.js',
+      env: {}, workingDirectory: '/w', logDir, startIntervalSec: 60.9,
+    });
+    expect(derived.startIntervalSec).toBe(60);
+    const none = deriveOsUnitSpec({
+      id: 'x', scope: 'user', manifestPath: '', nodePath: '/n', entrypoint: '/e.js',
+      env: {}, workingDirectory: '/w', logDir, startIntervalSec: 0,
+    });
+    expect(none.startIntervalSec).toBeUndefined();
+  });
+
+  it('an absent manifest (pseudo-unit like doctor-tick) derives runAtLoad=true, keepAlive=false', () => {
+    const derived = deriveOsUnitSpec({
+      id: 'doctor-tick', scope: 'user', manifestPath: path.join(tmpDir, 'no-such-manifest.json'),
+      nodePath: '/n', entrypoint: '/cli/main.js', env: {}, workingDirectory: '/w', logDir,
+      startIntervalSec: 300,
+    });
+    expect(derived.runAtLoad).toBe(true);
+    expect(derived.keepAlive).toBe(false); // a tick job exits; launchd relaunches on interval
+  });
+
+  it('launchd renderTimerUnit is undefined (interval embedded in the plist)', () => {
+    expect(platform.renderTimerUnit(makeSpec({ startIntervalSec: 300 }))).toBeUndefined();
+  });
+});
+
+describe('Slice 4 periodic tick rendering — systemd .timer seam', () => {
+  const platform = new SystemdPlatform();
+
+  it('renderTimerUnit renders a content-addressed .timer paired to the service unit', () => {
+    const spec = makeSpec({ startIntervalSec: 300 });
+    const timer = platform.renderTimerUnit(spec);
+    expect(timer).toBeDefined();
+    expect(timer!).toContain('[Timer]');
+    expect(timer!).toContain('OnBootSec=300');
+    expect(timer!).toContain('OnUnitActiveSec=300');
+    expect(timer!).toContain('Unit=sox-user-memory-daemon.service');
+    expect(timer!).toContain('WantedBy=timers.target');
+    expect(readUnitMeta(timer!).contentHash).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('renderTimerUnit is undefined without startIntervalSec; hash tracks the interval', () => {
+    expect(platform.renderTimerUnit(makeSpec())).toBeUndefined();
+    const a = platform.renderTimerUnit(makeSpec({ startIntervalSec: 300 }))!;
+    const b = platform.renderTimerUnit(makeSpec({ startIntervalSec: 60 }))!;
+    expect(readUnitMeta(a).contentHash).not.toBe(readUnitMeta(b).contentHash);
+    const a2 = platform.renderTimerUnit(makeSpec({ startIntervalSec: 300 }))!;
+    expect(readUnitMeta(a).contentHash).toBe(readUnitMeta(a2).contentHash);
+  });
+});
+
 describe('systemd platform — the seam is pluggable', () => {
   it('renders a [Service] unit with ExecStart + content hash and a sox-<scope>-<id>.service name', () => {
     const platform = new SystemdPlatform();
