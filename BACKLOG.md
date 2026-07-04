@@ -155,12 +155,29 @@ build of the FULL stack:
 2. `@adhd/sox-memory-core` (public, v0.2.1) declares a RUNTIME `workspace:*` dep on the private
    `ingest` → per the repo's own `scripts/check-publishable.ts` rule 1, it would 404 on a fresh
    `npm install`. So memory-core is marked publishable but isn't.
-Resolve the inconsistency: EITHER make `ingest` public (it's a small, generic chunker — reasonable to
-publish and the cleanest fix for reusability), OR make `memory-core` `private: true` (declare it the
-memory app's internal composer, not an external artifact) and document that external RAG consumers
-compose the 5 public data packages directly + bring their own chunker. Also: none of these are pushed
-to a registry yet (v0.x) — a real "consume externally" story needs an actual publish. (Discovered
-answering: "can I build a RAG system from only these packages?" — yes for the retrieval substrate.)
+**Update — ingest is barely used + its capabilities are DUPLICATED (reframes the fix):** tracing
+actual usage, the system uses `ingest()` for ONLY its extractive summary (`memory-core/src/
+extractive.ts` → `ingest(content).summary`, a 5-line wrapper). Its other capabilities are dead or
+reimplemented elsewhere: `chunkContent` is UNUSED (memory-server has its own `splitIntoChunks` at
+`index.ts:745` — the code that carried the BL-154 deadlock); `hexSha256` is UNUSED (`write.ts` has
+its own `crypto` SHA-256); `extractTags` is UNUSED (tags are caller-supplied, `enrich.ts: p.tags ??
+[]`). So `ingest` doesn't earn its ~1.4k LOC as wired.
+
+Decide (do not just publish a mostly-dead package):
+- **(A) Consolidate — make ingest the canonical ingestion layer.** Route memory-server's chunking +
+  write.ts's content-hashing + tag derivation THROUGH `ingest`, deleting the duplicate
+  `splitIntoChunks`/SHA-256. This is DRY, removes the duplicate-chunker hazard class (BL-154), gives
+  ingest real value, and makes publishing it (for RAG reuse) worthwhile. Bigger refactor (touches
+  memory-server + write.ts — sequence after S7). PREFERRED if RAG reusability is a goal.
+- **(B) Delete ingest — absorb the one live use.** Inline the trivial extractive summary into
+  memory-core, remove the `ingest` package + memory-core's private dep. Simplest; also resolves the
+  publishability gap (memory-core no longer depends on a private pkg). Choose if a reusable ingestion
+  primitive is not wanted.
+
+Either way this closes the original publishability inconsistency (memory-core public but transitively
+404-ing on private ingest). Also note: none of the data packages are pushed to a registry yet (v0.x) —
+a real external-consume story needs an actual publish. (Discovered answering "can I build a RAG system
+from only these packages?" — yes for the 5 public retrieval packages; ingest is the weak link.)
 
 ### BL-160 — promote `reembed-memory.mjs` orchestration into a library + `memory-cli` verb (root cause of BL-159) — **RESOLVED (2026-07-04)**
 
