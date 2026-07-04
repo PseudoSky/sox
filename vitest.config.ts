@@ -15,6 +15,10 @@ export default defineConfig({
   test: {
     include: ['extensions/**/*.test.ts', 'scripts/**/*.test.ts'],
     globals: false,
+    // BL-179: redirect SOX_ECOSYSTEM_HOME to a per-run mkdtemp scratch dir before
+    // any test runs, so in-process install() calls and spawned soxe processes never
+    // write to the real ~/.adhd/sox-ecosystem/ user data root.
+    globalSetup: ['scripts/test-env-setup.ts'],
     // First embed() call loads the fastembed ONNX model (bge-base-en-v1.5) into a
     // worker thread; warmup can take several seconds. This root aggregate config
     // double-covers extensions/**/*.test.ts files (e.g. memory-server's
