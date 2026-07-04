@@ -163,8 +163,11 @@ reimplemented elsewhere: `chunkContent` is UNUSED (memory-server has its own `sp
 its own `crypto` SHA-256); `extractTags` is UNUSED (tags are caller-supplied, `enrich.ts: p.tags ??
 []`). So `ingest` doesn't earn its ~1.4k LOC as wired.
 
+**OWNER DECISION (2026-07-04): (A) Consolidate.** Tracked as SHARDS.md S11, sequenced after
+S7/S9/S10 (memory-core serialization).
+
 Decide (do not just publish a mostly-dead package):
-- **(A) Consolidate — make ingest the canonical ingestion layer.** Route memory-server's chunking +
+- **(A) Consolidate — make ingest the canonical ingestion layer.** ← CHOSEN Route memory-server's chunking +
   write.ts's content-hashing + tag derivation THROUGH `ingest`, deleting the duplicate
   `splitIntoChunks`/SHA-256. This is DRY, removes the duplicate-chunker hazard class (BL-154), gives
   ingest real value, and makes publishing it (for RAG reuse) worthwhile. Bigger refactor (touches

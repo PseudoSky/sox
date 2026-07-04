@@ -192,6 +192,19 @@ from the memory-core graph) so `nx lint memory-core --skip-nx-cache` is 0-error 
 lint regression can hide behind a stale cache hit. Same class as BL-160. Gate:
 `npx nx lint memory-core --skip-nx-cache` clean.
 
+### S11 — BL-165 make `ingest` the canonical ingestion layer (owner decision: consolidate)
+
+`ingest` is currently used only for its extractive summary while its chunking + content-hashing
+are DUPLICATED by ad-hoc code. Make it canonical + DRY: route memory-server's document chunking
+(replace `splitIntoChunks` at `members/memory-server/src/index.ts:745`) and memory-core
+`write.ts`'s content-hash through `ingest` (`chunkContent`, `hexSha256`); consider tag derivation
+too. Delete the duplicate implementations. Preserve behavior (chunk boundaries, hash normalization
+— verify parity so recall/dedup don't shift). Then resolve publishability: make `ingest` public
+(now that it earns its keep) so `memory-core` is cleanly installable, or keep memory-core private —
+decide during closeout. Fence: `ingest` + `memory-core/src/write.ts` + `memory-server/src/index.ts`.
+Sequenced AFTER S7/S9/S10 (all touch memory-core — serialize). Gate: memory-core + memory-server
+tests green, smoke 16/0, and a re-verification that chunked writes + dedup behave identically.
+
 ### Backlogged as a FEATURE (legitimately deferred — missing prerequisite)
 
 - **BL-163** SMAppService generalized always-on login-items with a controllable name — needs a
