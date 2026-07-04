@@ -28,11 +28,18 @@ Snapshot shape:
   "queue_high_watermark": 7,        // peak pending depth this process
   "saturated": false,               // hysteresis latch (warn 75% / clear 40%)
   "write_latency_ms": { "p50": 42, "p99": 480, "mean": 61.2, "max": 512 },
-  "recent_avg_task_latency_ms": 55, // admission-control estimator input
+                                    // write-kind tasks only (since the embed-pipeline
+                                    // metrics merge; Phase-B applies report separately)
+  "apply_latency_ms": { "p50": 3, "p99": 12, "mean": 4.1, "max": 22 },
+  "recent_avg_task_latency_ms": 55, // admission-control estimator input — ALL kinds
+                                    // blended by design (an apply occupies the slot
+                                    // like a write; filtering would under-estimate wait)
   "deadline_budget_ms": 20000,      // SOX_WRITEQ_DEADLINE_MS (default 20000)
   "deadline_guard_enabled": true,   // false when SOX_WRITEQ_NO_DEADLINE=1
   "counters": {                     // monotonic per-process
-    "tasks_completed": 0,
+    "tasks_completed": 0,           // all kinds
+    "write_tasks_completed": 0,
+    "apply_tasks_completed": 0,
     "rejections_busy_size": 0,
     "rejections_busy_deadline": 0,
     "slow_tasks": 0
