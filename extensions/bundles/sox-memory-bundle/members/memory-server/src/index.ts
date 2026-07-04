@@ -39,12 +39,15 @@ import { defineTool, serve } from '@adhd/sox-mcp-runtime';
 import {
   buildFiltersClause,
   communityUidForRowid,
+  embedBacklogStats,
   expandTilde,
   getActiveEmbedModel,
   getDb,
   getEmbedHealth,
   getEmbedState,
   getLastEmbedError,
+  hasPendingFullEnrich,
+  healMissingVectors,
   memoryCurate,
   memoryGetEntityEpisodes,
   memoryGetNearDuplicates,
@@ -63,16 +66,20 @@ import {
   memoryUpdate,
   memoryWrite,
   memoryWriteBatch,
+  memoryWriteBatchPhaseA,
+  memoryWritePhaseA,
   resolveStoreOrDbPath,
   rowidsToUids,
   runBatchEnrich,
+  schedulePendingEmbeds,
   setLeaseInstanceId,
   supersedesUidForRowid,
+  syncEmbedEnabled,
   warmupEmbed,
   isSuperseded,
   WriteQueue,
 } from '@adhd/sox-memory-core';
-import type { WriteError, WriteResult } from '@adhd/sox-memory-core';
+import type { PendingEmbed, PhaseAOutcome, WriteError, WriteResult } from '@adhd/sox-memory-core';
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -295,7 +302,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_write',
     description:
-      'Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, near-dup, extractive summary). Returns {episode_uid}. Batch enrichments (clustering, auto-links, importance link-score) run in-process on a periodic interval within this server (no separate daemon process).',
+      'Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, extractive summary). Returns {episode_uid}. The embedding + near-dup detection run asynchronously moments after the write (enrichment.near_dup is null in the response; the episode is keyword/temporal-recallable immediately and vector-recallable once the async embed lands — set SOX_SYNC_EMBED=1 server-side to restore fully synchronous behaviour). Batch enrichments (clustering, auto-links, importance link-score) run in-process on a periodic interval within this server (no separate daemon process).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -890,11 +897,18 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           .get();
         const queueOldestPendingAt = oldRow?.o ?? null;
         const queueLastDoneAt = doneRow?.d ?? null;
+
+        // Phase-B embed backlog (two-phase write, 2026-07-04): live episodes
+        // whose vec_node row has not landed yet. Cheap SQL; folded into the
+        // enrichment verdict so a dead Phase-B pipeline reads `stalled`.
+        const embedBacklog = embedBacklogStats(db);
+
         const enrichmentHealth = computeEnrichmentHealth(
           queueDepth,
           queueOldestPendingAt,
           queueLastDoneAt,
           Date.now(),
+          embedBacklog,
         );
 
         // BL-174: report the real WP-5 checkpoint time (0 = never/no queue → null).
@@ -912,6 +926,10 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           queue_oldest_pending_at: queueOldestPendingAt,
           queue_last_done_at: queueLastDoneAt,
           enrichment: enrichmentHealth,
+          // Phase-B embed backlog (additive, 2026-07-04 two-phase write):
+          // live episodes without a vec_node row + the oldest one's t_created.
+          embed_backlog: embedBacklog.count,
+          embed_backlog_oldest_at: embedBacklog.oldest_created_at,
           // Write-path observability (2026-07-04 saturation incident):
           // rolling write-latency percentiles, depth/watermark, deadline
           // budget, and rejection counters from the in-process WriteQueue.
@@ -988,146 +1006,219 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
   switch (name) {
     case 'memory_write': {
       const wq = WriteQueue.forPath(dbPath);
-      return wq.enqueue('memory_write', async (writeDb) => {
-        const content = args['content'] as string;
-        const chunkSize = (args['chunk_size'] as number | undefined) ?? 500;
-        const chunks = splitIntoChunks(content, chunkSize);
+      const content = args['content'] as string;
+      const chunkSize = (args['chunk_size'] as number | undefined) ?? 500;
+      const chunks = splitIntoChunks(content, chunkSize);
+      // Full write params (shared by both embed modes). client_request_id was
+      // previously dropped by this handler (WP-4 idempotency dead through MCP)
+      // — now forwarded.
+      const parentParams = {
+        content,
+        summary: args['summary'] as string | undefined,
+        name: args['name'] as string | undefined,
+        topic: args['topic'] as string | undefined,
+        project_path: args['project_path'] as string | undefined,
+        derived_from_uid: args['derived_from_uid'] as string | undefined,
+        metadata: args['metadata'] as Record<string, unknown> | undefined,
+        session_id: args['session_id'] as string | undefined,
+        t_occurred: args['t_occurred'] as string | undefined,
+        agent_id: args['agent_id'] as string | undefined,
+        source: args['source'] as 'message' | undefined,
+        importance: args['importance'] as number | undefined,
+        tags: args['tags'] as string[] | undefined,
+        client_request_id: args['client_request_id'] as string | undefined,
+      };
+      const chunkParams = (chunk: string) => ({
+        content: chunk,
+        agent_id: args['agent_id'] as string | undefined,
+        source: (args['source'] as 'message' | undefined) ?? ('document' as const),
+        metadata: args['metadata'] as Record<string, unknown> | undefined,
+      });
+      /** DERIVED_FROM auto-chunk edges — identical in both embed modes. */
+      const linkChunksToParent = (
+        writeDb: Database.Database,
+        parentUid: string,
+        chunkUids: string[],
+      ): void => {
+        const now = new Date().toISOString();
+        const parentRow = writeDb
+          .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?')
+          .get(parentUid);
+        for (const chunkUid of chunkUids) {
+          const chunkRow = writeDb
+            .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?')
+            .get(chunkUid);
+          if (chunkRow && parentRow) {
+            writeDb.prepare(
+              `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
+               SELECT ?, ?, 'DERIVED_FROM', 'user_asserted', ?, '{"auto_chunk":true}'
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM edge WHERE src=? AND dst=? AND rel='DERIVED_FROM' AND t_expired IS NULL
+               )`,
+            ).run(chunkRow.rowid, parentRow.rowid, now, chunkRow.rowid, parentRow.rowid);
+          }
+        }
+      };
+
+      // ── SOX_SYNC_EMBED=1 kill-switch: pre-split behaviour — embedding runs
+      // INSIDE the queue slot and near_dup resolves in the response. Rollback
+      // path for the async default; no revert needed.
+      if (syncEmbedEnabled()) {
+        return wq.enqueue('memory_write', async (writeDb) => {
+          if (chunks.length > 1) {
+            // Long content: write parent episode, then all chunks
+            const parentResult = await memoryWrite(writeDb, parentParams);
+            const parentUid =
+              'episode_uid' in parentResult
+                ? parentResult.episode_uid
+                : parentResult.code === 'E_DEDUP'
+                  ? parentResult.existing_uid
+                  : null;
+            if (!parentUid) {
+              return { isError: true, content: [{ type: 'text', text: JSON.stringify(parentResult) }] };
+            }
+
+            // Chunks: written directly on `writeDb`, which we already hold exclusively
+            // inside this queue task. Re-enqueuing on the SAME serial queue from within
+            // a running task would deadlock (BL-154). Direct writes preserve ordering
+            // (this loop is serial) and single-writer safety.
+            const chunkUids: string[] = [];
+            for (const chunk of chunks) {
+              const r: WriteResult | WriteError = await memoryWrite(writeDb, chunkParams(chunk));
+              const chunkUid =
+                'episode_uid' in r ? r.episode_uid : r.code === 'E_DEDUP' ? r.existing_uid : null;
+              if (chunkUid) chunkUids.push(chunkUid);
+            }
+            linkChunksToParent(writeDb, parentUid, chunkUids);
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({ episode_uid: parentUid, chunk_uids: chunkUids, chunk_count: chunks.length }),
+              }],
+            };
+          }
+
+          // Content below threshold: single write through queue
+          const result = await memoryWrite(writeDb, parentParams);
+          return {
+            content: [{ type: 'text', text: JSON.stringify(result) }],
+          };
+        });
+      }
+
+      // ── Two-phase path (DEFAULT, 2026-07-04): the queue-slot task is FULLY
+      // SYNCHRONOUS (no embed, no ONNX, no awaits). Phase B (embedding + vec
+      // insert + deferred near-dup) is scheduled AFTER the Phase-A task has
+      // returned its slot — never from inside it (BL-154). The response's
+      // enrichment.near_dup is null (deferred); the episode is BM25/temporal-
+      // recallable immediately and vec-recallable once Phase B lands.
+      const outcome = await wq.enqueue('memory_write', (writeDb) => {
+        const pendings: PendingEmbed[] = [];
 
         if (chunks.length > 1) {
-          // Long content: write parent episode, then all chunks
-          const parentResult = await memoryWrite(writeDb, {
-            content,
-            summary: args['summary'] as string | undefined,
-            name: args['name'] as string | undefined,
-            topic: args['topic'] as string | undefined,
-            project_path: args['project_path'] as string | undefined,
-            derived_from_uid: args['derived_from_uid'] as string | undefined,
-            metadata: args['metadata'] as Record<string, unknown> | undefined,
-            session_id: args['session_id'] as string | undefined,
-            t_occurred: args['t_occurred'] as string | undefined,
-            agent_id: args['agent_id'] as string | undefined,
-            source: args['source'] as 'message' | undefined,
-            importance: args['importance'] as number | undefined,
-            tags: args['tags'] as string[] | undefined,
-          });
-
+          const parentA = memoryWritePhaseA(writeDb, parentParams);
           const parentUid =
-            'episode_uid' in parentResult
-              ? parentResult.episode_uid
-              : parentResult.code === 'E_DEDUP'
-                ? parentResult.existing_uid
-                : null;
-
+            'code' in parentA
+              ? parentA.code === 'E_DEDUP'
+                ? parentA.existing_uid
+                : null
+              : parentA.result.episode_uid;
           if (!parentUid) {
-            return { isError: true, content: [{ type: 'text', text: JSON.stringify(parentResult) }] };
+            return {
+              response: { isError: true, content: [{ type: 'text', text: JSON.stringify(parentA) }] },
+              pendings,
+            };
           }
+          if (!('code' in parentA) && parentA.pending) pendings.push(parentA.pending);
 
-          // Chunks: written directly on `writeDb`, which we already hold exclusively
-          // inside this queue task. Re-enqueuing on the SAME serial queue from within
-          // a running task would deadlock — the nested items cannot be processed
-          // until the outer task returns, but the outer task is awaiting them. Direct
-          // writes preserve ordering (this loop is serial) and single-writer safety
-          // (the outer enqueue already guarantees exclusive access to writeDb).
-          const chunkResults: Array<WriteResult | WriteError> = [];
-          for (const chunk of chunks) {
-            const r = await memoryWrite(writeDb, {
-              content: chunk,
-              agent_id: args['agent_id'] as string | undefined,
-              source: (args['source'] as 'message' | undefined) ?? 'document',
-              metadata: args['metadata'] as Record<string, unknown> | undefined,
-            });
-            chunkResults.push(r);
-          }
-
-          const now = new Date().toISOString();
-          const parentRow = writeDb
-            .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?')
-            .get(parentUid);
           const chunkUids: string[] = [];
-
-          for (const chunkResult of chunkResults) {
+          for (const chunk of chunks) {
+            const a: PhaseAOutcome | WriteError = memoryWritePhaseA(writeDb, chunkParams(chunk));
             const chunkUid =
-              'episode_uid' in chunkResult
-                ? chunkResult.episode_uid
-                : chunkResult.code === 'E_DEDUP'
-                  ? chunkResult.existing_uid
-                  : null;
-
-            if (chunkUid) {
-              chunkUids.push(chunkUid);
-              const chunkRow = writeDb
-                .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?')
-                .get(chunkUid);
-              if (chunkRow && parentRow) {
-                writeDb.prepare(
-                  `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
-                   SELECT ?, ?, 'DERIVED_FROM', 'user_asserted', ?, '{"auto_chunk":true}'
-                   WHERE NOT EXISTS (
-                     SELECT 1 FROM edge WHERE src=? AND dst=? AND rel='DERIVED_FROM' AND t_expired IS NULL
-                   )`,
-                ).run(chunkRow.rowid, parentRow.rowid, now, chunkRow.rowid, parentRow.rowid);
-              }
-            }
+              'code' in a
+                ? a.code === 'E_DEDUP'
+                  ? a.existing_uid
+                  : null
+                : a.result.episode_uid;
+            if (chunkUid) chunkUids.push(chunkUid);
+            if (!('code' in a) && a.pending) pendings.push(a.pending);
           }
-
+          linkChunksToParent(writeDb, parentUid, chunkUids);
           return {
-            content: [{
-              type: 'text',
-              text: JSON.stringify({ episode_uid: parentUid, chunk_uids: chunkUids, chunk_count: chunks.length }),
-            }],
+            response: {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({ episode_uid: parentUid, chunk_uids: chunkUids, chunk_count: chunks.length }),
+              }],
+            },
+            pendings,
           };
         }
 
-        // Content below threshold: single write through queue
-        const result = await memoryWrite(writeDb, {
-          content,
-          summary: args['summary'] as string | undefined,
-          name: args['name'] as string | undefined,
-          topic: args['topic'] as string | undefined,
-          project_path: args['project_path'] as string | undefined,
-          derived_from_uid: args['derived_from_uid'] as string | undefined,
-          metadata: args['metadata'] as Record<string, unknown> | undefined,
-          session_id: args['session_id'] as string | undefined,
-          t_occurred: args['t_occurred'] as string | undefined,
-          agent_id: args['agent_id'] as string | undefined,
-          source: args['source'] as 'message' | undefined,
-          importance: args['importance'] as number | undefined,
-          tags: args['tags'] as string[] | undefined,
-        });
+        const a = memoryWritePhaseA(writeDb, parentParams);
+        if ('code' in a) {
+          return {
+            response: { content: [{ type: 'text', text: JSON.stringify(a) }] },
+            pendings,
+          };
+        }
+        if (a.pending) pendings.push(a.pending);
         return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
+          response: { content: [{ type: 'text', text: JSON.stringify(a.result) }] },
+          pendings,
         };
       });
+      // Phase B: scheduled from OUTSIDE the queue task (BL-154 audit point).
+      // Fire-and-forget: failures log to stderr and the periodic heal repairs.
+      if (outcome.pendings.length > 0) void schedulePendingEmbeds(wq, outcome.pendings);
+      return outcome.response;
     }
 
     case 'memory_write_batch': {
       const wq = WriteQueue.forPath(dbPath);
-      return wq.enqueue('memory_write_batch', async (writeDb) => {
-        const items = args['items'] as Array<Record<string, unknown>> | undefined;
-        if (!Array.isArray(items) || items.length === 0) {
-          return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_INVALID_INPUT', message: 'items must be a non-empty array' }) }] };
-        }
-        const batchItems = items.map((item) => ({
-          content: item['content'] as string,
-          summary: item['summary'] as string | undefined,
-          name: item['name'] as string | undefined,
-          topic: item['topic'] as string | undefined,
-          project_path: item['project_path'] as string | undefined,
-          derived_from_uid: item['derived_from_uid'] as string | undefined,
-          metadata: item['metadata'] as Record<string, unknown> | undefined,
-          session_id: item['session_id'] as string | undefined,
-          t_occurred: item['t_occurred'] as string | undefined,
-          agent_id: item['agent_id'] as string | undefined,
-          source: item['source'] as 'message' | undefined,
-          importance: item['importance'] as number | undefined,
-          tags: item['tags'] as string[] | undefined,
-          client_request_id: item['client_request_id'] as string | undefined,
-        }));
-        const batchResult = await memoryWriteBatch(writeDb, batchItems);
-        return {
-          content: [{ type: 'text', text: JSON.stringify(batchResult) }],
-        };
-      });
+      const items = args['items'] as Array<Record<string, unknown>> | undefined;
+      if (!Array.isArray(items) || items.length === 0) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_INVALID_INPUT', message: 'items must be a non-empty array' }) }] };
+      }
+      const batchItems = items.map((item) => ({
+        content: item['content'] as string,
+        summary: item['summary'] as string | undefined,
+        name: item['name'] as string | undefined,
+        topic: item['topic'] as string | undefined,
+        project_path: item['project_path'] as string | undefined,
+        derived_from_uid: item['derived_from_uid'] as string | undefined,
+        metadata: item['metadata'] as Record<string, unknown> | undefined,
+        session_id: item['session_id'] as string | undefined,
+        t_occurred: item['t_occurred'] as string | undefined,
+        agent_id: item['agent_id'] as string | undefined,
+        source: item['source'] as 'message' | undefined,
+        importance: item['importance'] as number | undefined,
+        tags: item['tags'] as string[] | undefined,
+        client_request_id: item['client_request_id'] as string | undefined,
+      }));
+
+      // SOX_SYNC_EMBED=1 kill-switch: pre-split behaviour (per-item embed
+      // inside the single batch queue slot).
+      if (syncEmbedEnabled()) {
+        return wq.enqueue('memory_write_batch', async (writeDb) => {
+          const batchResult = await memoryWriteBatch(writeDb, batchItems);
+          return {
+            content: [{ type: 'text', text: JSON.stringify(batchResult) }],
+          };
+        });
+      }
+
+      // Two-phase path (DEFAULT): all Phase As run serially inside ONE
+      // synchronous queue task (single-queue-entry contract, CONTRACTS §C);
+      // Phase-B embeds for the whole batch are pipelined off-slot afterwards
+      // (BL-154: scheduled only after the Phase-A task returned its slot).
+      const outcome = await wq.enqueue('memory_write_batch', (writeDb) =>
+        memoryWriteBatchPhaseA(writeDb, batchItems),
+      );
+      if (outcome.pendings.length > 0) void schedulePendingEmbeds(wq, outcome.pendings);
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ results: outcome.results }) }],
+      };
     }
 
     case 'memory_recall': {
@@ -1585,6 +1676,10 @@ export interface EnrichmentHealth {
   oldest_pending_at: string | null;
   last_done_at: string | null;
   stall_threshold_ms: number;
+  /** Additive (two-phase write, 2026-07-04): Phase-B embed backlog folded into
+   *  the verdict. Absent when the caller did not supply backlog stats. */
+  embed_backlog?: number;
+  embed_backlog_oldest_at?: string | null;
 }
 
 /** Resolve the stall threshold (env override → default 3× consumer tick). */
@@ -1596,30 +1691,54 @@ export function enrichStallThresholdMs(): number {
 
 /**
  * Compute the enrichment-consumption health verdict. Pure — exported for tests.
- *   idle    — queue empty (nothing pending).
- *   ok      — pending work, oldest item younger than the stall threshold.
- *   stalled — pending work older than the threshold: the consumer is not draining.
+ *   idle    — queue empty AND no embed backlog (nothing pending).
+ *   ok      — pending work, all of it younger than the stall threshold.
+ *   stalled — pending work older than the threshold: a consumer is not draining.
+ *
+ * The optional `embedBacklog` (two-phase write, 2026-07-04) folds Phase-B
+ * health into the same verdict: live episodes missing their vec_node row are
+ * pending work for the Phase-B pipeline/heal, aged by the oldest episode's
+ * t_created against the same stall threshold. A dead Phase-B pipeline
+ * therefore reads `stalled`, never silent ([inv:list-never-lies]).
  */
 export function computeEnrichmentHealth(
   queueDepth: number,
   oldestPendingAt: string | null,
   lastDoneAt: string | null,
   nowMs: number,
+  embedBacklog?: { count: number; oldest_created_at: string | null },
 ): EnrichmentHealth {
   const stallThresholdMs = enrichStallThresholdMs();
-  let state: EnrichmentHealth['state'] = 'idle';
-  if (queueDepth > 0) {
-    const oldestMs = oldestPendingAt === null ? NaN : Date.parse(oldestPendingAt);
+
+  /** Verdict for one pending-work channel: ok when fresh, stalled when the
+   *  oldest item exceeds the threshold or carries an unparseable timestamp. */
+  const channelState = (oldestAt: string | null): 'ok' | 'stalled' => {
+    const oldestMs = oldestAt === null ? NaN : Date.parse(oldestAt);
     // An unparseable/absent timestamp with pending rows is itself suspicious —
     // treat as stalled rather than silently ok ([inv:list-never-lies]).
-    state =
-      !Number.isFinite(oldestMs) || nowMs - oldestMs > stallThresholdMs ? 'stalled' : 'ok';
+    return !Number.isFinite(oldestMs) || nowMs - oldestMs > stallThresholdMs ? 'stalled' : 'ok';
+  };
+
+  let state: EnrichmentHealth['state'] = 'idle';
+  if (queueDepth > 0) state = channelState(oldestPendingAt);
+  if (embedBacklog !== undefined && embedBacklog.count > 0) {
+    const embedState = channelState(embedBacklog.oldest_created_at);
+    // Worst-of: stalled dominates; otherwise pending work means at least ok.
+    if (embedState === 'stalled' || state === 'stalled') state = 'stalled';
+    else state = 'ok';
   }
+
   return {
     state,
     oldest_pending_at: oldestPendingAt,
     last_done_at: lastDoneAt,
     stall_threshold_ms: stallThresholdMs,
+    ...(embedBacklog !== undefined
+      ? {
+          embed_backlog: embedBacklog.count,
+          embed_backlog_oldest_at: embedBacklog.oldest_created_at,
+        }
+      : {}),
   };
 }
 
@@ -1666,26 +1785,61 @@ export function maxOpenEnrichTriggerSeq(db: Database.Database): number {
   return row.m;
 }
 
-/** Run one in-process incremental enrichment pass over all open DBs. */
+/**
+ * Run one enrichment tick against a single DB. Exported for tests.
+ *
+ * Order of operations:
+ *   1. Phase-B heal (healMissingVectors) — re-embed live episodes whose vec row
+ *      never landed (crash/kill between write Phase A and Phase B). Runs FIRST
+ *      so freshly-healed vectors participate in this pass's clustering. The
+ *      heal embeds off-slot and applies through the WriteQueue as short tasks;
+ *      this function is only ever called from an interval callback / test —
+ *      never from inside a queue task (BL-154).
+ *   2. BL-172 drain: snapshot the open trigger rows this pass will satisfy, run
+ *      the pass, then complete them — synchronously, no await in between (the
+ *      better-sqlite3 pass blocks the event loop, so no write can interleave).
+ *   3. BL-186: if a full-pass `enrich` row (memory_curate recluster) is pending
+ *      INSIDE the snapshot window, the pass runs with incrementalCluster:false
+ *      — the honest fulfilment of `{enqueued: true}`. A full-pass row enqueued
+ *      after the snapshot stays open and drives the next tick.
+ */
+export async function runEnrichPassOnDb(
+  db: Database.Database,
+  dbPath: string,
+): Promise<{ queue_completed: number; full_pass: boolean; healed: number; heal_failed: number }> {
+  const heal = await healMissingVectors(db, WriteQueue.forPath(dbPath));
+
+  const maxSeq = maxOpenEnrichTriggerSeq(db);
+  const fullPass = hasPendingFullEnrich(db, maxSeq);
+  const result = runBatchEnrich(db, { incrementalCluster: !fullPass });
+  const queueCompleted = completeEnrichTriggerRows(db, maxSeq);
+  console.error(
+    `[memory-server] periodic enrich (${dbPath}):` +
+    ` communities=${result.communities_upserted}` +
+    ` importance_updated=${result.importance_updated}` +
+    ` relates_to=${result.relates_to_edges}` +
+    ` queue_completed=${queueCompleted}` +
+    ` full_pass=${fullPass}` +
+    ` embed_healed=${heal.healed}` +
+    ` embed_heal_failed=${heal.failed}` +
+    (heal.disabled ? ' embed_heal=DISABLED' : ''),
+  );
+  return {
+    queue_completed: queueCompleted,
+    full_pass: fullPass,
+    healed: heal.healed,
+    heal_failed: heal.failed,
+  };
+}
+
+/** Run one in-process enrichment pass over all open DBs. */
 async function runPeriodicEnrichPass(): Promise<void> {
   if (openedPaths.size === 0) return;
 
   for (const dbPath of openedPaths) {
     try {
       const db = getDb(dbPath);
-      // BL-172: snapshot the open trigger rows this pass will satisfy, run the
-      // pass, then complete them — synchronously, no await in between (the
-      // better-sqlite3 pass blocks the event loop, so no write can interleave).
-      const maxSeq = maxOpenEnrichTriggerSeq(db);
-      const result = runBatchEnrich(db, { incrementalCluster: true });
-      const queueCompleted = completeEnrichTriggerRows(db, maxSeq);
-      console.error(
-        `[memory-server] periodic enrich (${dbPath}):` +
-        ` communities=${result.communities_upserted}` +
-        ` importance_updated=${result.importance_updated}` +
-        ` relates_to=${result.relates_to_edges}` +
-        ` queue_completed=${queueCompleted}`,
-      );
+      await runEnrichPassOnDb(db, dbPath);
     } catch (err) {
       // Log to stderr only — never stdout (JSON-RPC channel).
       console.error(`[memory-server] periodic enrich error (${dbPath}):`, err);

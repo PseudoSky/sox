@@ -93,6 +93,58 @@ export function enqueueIngest(
   ).run(payload, priority, now);
 }
 
+/**
+ * Enqueue an `enrich` trigger row requesting a FULL (non-incremental) cluster
+ * pass — the honest backing for `memory_curate recluster` with no filters
+ * (BL-186). The in-process periodic tick consumes it: when a pending full-pass
+ * row exists inside its snapshot window, the tick runs
+ * `runBatchEnrich({incrementalCluster: false})` instead of the incremental
+ * pass, then completes the row via completeEnrichTriggerRows ('enrich' is
+ * already a trigger op).
+ *
+ * Returns the inserted row's seq (also surfaced in the curate response so
+ * callers can correlate with memory_ping's queue fields).
+ */
+export function enqueueEnrichFull(db: DatabaseType, reason: string): number {
+  const now = new Date().toISOString();
+  const payload = JSON.stringify({ full: true, reason });
+  const info = db
+    .prepare(
+      `INSERT INTO organizer_queue (op, payload, priority, enqueued)
+       VALUES ('enrich', ?, 1, ?)`,
+    )
+    .run(payload, now);
+  return Number(info.lastInsertRowid);
+}
+
+/**
+ * True when an open (done_at IS NULL) full-pass `enrich` row exists with
+ * seq <= maxSeq. The tick pairs this with its maxOpenEnrichTriggerSeq snapshot:
+ * only rows the pass will COMPLETE may influence the pass shape — a full-pass
+ * row enqueued after the snapshot stays open and drives the NEXT tick
+ * ([inv:list-never-lies] for recluster requests).
+ *
+ * Deliberately does NOT filter on the BL-126 `dead` column: (a) the column only
+ * exists after migrateOutboxQueueSchema, which the base DDL/openDb never runs
+ * (BL-172 established it was never live), and (b) the paired consumer
+ * completeEnrichTriggerRows ignores `dead` too — the check must mirror what the
+ * drain will actually complete.
+ */
+export function hasPendingFullEnrich(db: DatabaseType, maxSeq: number): boolean {
+  if (maxSeq <= 0) return false;
+  const row = db
+    .prepare<[number], { seq: number }>(
+      `SELECT seq FROM organizer_queue
+       WHERE done_at IS NULL
+         AND op = 'enrich'
+         AND json_extract(payload, '$.full') = 1
+         AND seq <= ?
+       LIMIT 1`,
+    )
+    .get(maxSeq);
+  return row !== undefined;
+}
+
 // ── Concrete OutboxQueue ──────────────────────────────────────────────────────
 
 export interface MemoryOutboxQueueDeps {

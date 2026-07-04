@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.3.0
+
+### Minor Changes
+
+- Two-phase write (2026-07-04 incident fix): `memory_write`/`memory_write_batch` hold the serial
+  WriteQueue slot only for a synchronous, embedding-free Phase A; the ONNX embedding + vec insert
+  + near-dup run asynchronously off-slot moments later. Caller-visible: `enrichment.near_dup` is
+  `null` in write responses (SAME_AS edges land async); fresh episodes are keyword/temporal-
+  recallable immediately and vector-recallable once Phase B lands; `memory_ping.store` gains
+  additive `embed_backlog`/`embed_backlog_oldest_at` folded into the `enrichment` verdict
+  (dead Phase-B pipeline reads `stalled`). The periodic enrich tick heals missing vectors
+  (crash-between-phases recovery). Kill-switch: `SOX_SYNC_EMBED=1` restores the fully
+  synchronous pre-split behaviour. BL-186: `memory_curate recluster` (global) now enqueues a
+  full-pass trigger row consumed by the tick — `{enqueued: true, seq}` is honest and the tool
+  call no longer blocks writes for the whole cluster pass. BL-188: `memory_write` now forwards
+  `client_request_id` (WP-4 replay worked only through `memory_write_batch` before).
+
 ## 1.2.1
 
 ### Patch Changes
