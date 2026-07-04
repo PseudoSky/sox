@@ -8,6 +8,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@adhd/sox-host-runtime': resolve(root, 'libs/host-runtime/dist/index.js'),
+      '@adhd/sox-service-proxy': resolve(root, 'libs/service-proxy/dist/index.js'),
       '@modelcontextprotocol/sdk/server/index.js': resolve(sdkCjs, 'server/index.js'),
       '@modelcontextprotocol/sdk/server/stdio.js': resolve(sdkCjs, 'server/stdio.js'),
       '@modelcontextprotocol/sdk/server/sse.js': resolve(sdkCjs, 'server/sse.js'),

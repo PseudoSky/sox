@@ -24,7 +24,7 @@ export type ServesValue = (typeof serves)[number];
 
 // ─── Author API ───────────────────────────────────────────────────────────────
 
-export { defineTool, serve } from './serve.js';
+export { defineTool, serve, buildToolDispatch } from './serve.js';
 export type {
   RegisteredTool,
   ServeOptions, ToolContext, ToolDefinition, ToolResult,
@@ -33,8 +33,8 @@ export type {
 
 // ─── Transport (for advanced callers and tests) ───────────────────────────────
 
-export { connectSse, connectStdio, connectStreamableHttp, resolveTransportMode } from './transport.js';
-export type { TransportHandle, TransportMode, TransportOptions } from './transport.js';
+export { connectSse, connectStdio, connectStreamableHttp, connectUds, resolveTransportMode, resolveTransports, validateBindAuth, authMiddleware, isLoopback, resolveBindHost } from './transport.js';
+export type { TransportHandle, TransportMode, TransportOptions, ToolDispatch } from './transport.js';
 
 // ─── Enforcement (for advanced callers and tests) ─────────────────────────────
 

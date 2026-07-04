@@ -74,16 +74,20 @@ function scopePaths(scope: HostScope): ScopePathMap {
  * OpenCode MCP format:
  *   - Key path: mcp.{id} (NOT mcpServers.{id})
  *   - stdio profile: { type: "local", command: [cliBin, "serve", extId] }
- *   - sse/http profile: { type: "remote", url: "http://localhost:<port>/mcp" }
+ *   - sse/http profile: { type: "remote", url: "http://<host>:<port>/mcp" }
+ *   Port and host come from config cascade (http_port, bind_address).
  */
 const mcpConfig: McpConfig = {
   keyPath(extId: string): string {
     return `mcp.${extId}`;
   },
-  value(profile: string, cliBin: string, extId: string): unknown {
+  value(profile: string, cliBin: string, extId: string, port?: number, bindAddress?: string): unknown {
     if (profile === 'sse' || profile === 'http') {
-      const port = 3000;
-      return { type: 'remote', url: `http://localhost:${port}/mcp` };
+      const p = port ?? 3000;
+      const host = bindAddress ?? '127.0.0.1';
+      // Use localhost for loopback addresses (more portable in host configs)
+      const displayHost = host === '127.0.0.1' || host === '::1' ? 'localhost' : host;
+      return { type: 'remote', url: `http://${displayHost}:${p}/mcp` };
     }
     return { type: 'local', command: [cliBin, 'serve', extId] };
   },

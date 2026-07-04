@@ -1184,7 +1184,7 @@ import { OwnershipIndex, type OwnedEntry } from './ownership.js';
 interface HostSurface {
   capability: string;
   format?: string;
-  mcpConfig?: { keyPath(extId: string): string; value(profile: string, cliBin: string, extId: string): unknown };
+  mcpConfig?: { keyPath(extId: string): string; value(profile: string, cliBin: string, extId: string, port?: number, bindAddress?: string): unknown };
   postInstallHint?: string;
   paths: Partial<Record<string, string>>;
 }
@@ -1577,6 +1577,11 @@ export async function declarativeInstall(
       let resolvedKeyPath = descriptor.configKeyPath;
       let resolvedValue = descriptor.configValue;
       if (descriptor.type === 'mcp-server' && (resolvedKeyPath === undefined || resolvedValue === undefined)) {
+        // Extract http_port and bind_address from cascade-resolved config (TR-3, BL-148).
+        // These come from the config_schema defaults (x-sox-default) or user override.
+        const httpPort = descriptor.resolvedConfig?.['http_port'] as number | undefined;
+        const bindAddress = descriptor.resolvedConfig?.['bind_address'] as string | undefined;
+
         // If the host provides an mcpConfig builder, use it.
         if (surface.mcpConfig) {
           const cliBin =
@@ -1585,13 +1590,18 @@ export async function declarativeInstall(
             'soxe';
           const profile = descriptor.profile ?? 'stdio';
           resolvedKeyPath = surface.mcpConfig.keyPath(descriptor.ext);
-          resolvedValue = surface.mcpConfig.value(profile, cliBin, descriptor.ext);
+          resolvedValue = surface.mcpConfig.value(profile, cliBin, descriptor.ext, httpPort, bindAddress);
         } else {
           // Default: Claude-format auto-derivation (preserved for backward compat).
           const profile = descriptor.profile ?? 'stdio';
           resolvedKeyPath = `mcpServers.${descriptor.ext}`;
           if (profile === 'sse' || profile === 'http') {
-            resolvedValue = { type: profile, url: 'http://localhost:3000/' + profile };
+            // Build URL from resolved port and bind address (TR-3, BL-148).
+            // No literal 3000 — the port comes from config cascade.
+            const port = httpPort ?? 3000;
+            const host = bindAddress ?? '127.0.0.1';
+            const displayHost = host === '127.0.0.1' || host === '::1' ? 'localhost' : host;
+            resolvedValue = { type: 'remote', url: `http://${displayHost}:${port}/mcp` };
           } else {
             // stdio — soxe serve <ext> keeps soxe in the spawn chain so cascade config
             // (SOX_CONFIG_*) is injected fresh at each Claude Code session start.

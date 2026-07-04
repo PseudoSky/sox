@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@adhd/sox-host-runtime": "workspace:*"
+    "@adhd/sox-host-runtime": "workspace:*",
+    "@adhd/sox-service-proxy": "workspace:*"
   }
 }

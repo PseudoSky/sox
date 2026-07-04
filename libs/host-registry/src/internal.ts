@@ -72,9 +72,14 @@ export interface McpConfig {
   keyPath(extId: string): string;
 
   /** Returns the config value for the given profile + CLI bin.
-   *  - 'sse'/'http' profiles receive a remote URL.
-   *  - 'stdio' profile receives a command array or command+args object. */
-  value(profile: string, cliBin: string, extId: string): unknown;
+   *  - 'sse'/'http' profiles receive a remote URL built from port + bindAddress.
+   *  - 'stdio' profile receives a command array or command+args object.
+   *  @param profile    Transport profile ('stdio' | 'sse' | 'http')
+   *  @param cliBin     The spawn command for 'stdio' profiles
+   *  @param extId      Extension identifier for URL path derivation
+   *  @param port       HTTP port for remote URL (from config cascade http_port)
+   *  @param bindAddress Bind address for remote URL (from config cascade bind_address) */
+  value(profile: string, cliBin: string, extId: string, port?: number, bindAddress?: string): unknown;
 }
 
 export interface Surface {
