@@ -121,11 +121,9 @@ normalized scores for two very different queries are on a comparable scale. **Ga
   `E_IO`-class structured refusal on write (never a raw throw, never corruption).
 - **`memory_backup`** — `VACUUM INTO` a target path (inside the `~/.memory/**` allowlist);
   the copy must open and pass `integrity_check` even when taken under write load.
-- **Promote reembed (BL-160)** — move the `scripts/reembed-memory.mjs` orchestration into a
-  typed, tested `memory-core` function (`reembedStore(dbPath, opts)`, composing `openDb` +
-  `vector-store.reembed`) and expose it as a `memory-cli reembed` verb; delete/shim the loose
-  script. This puts the migration tool in the build/lint/typecheck graph (it silently rotted as
-  a loose `.mjs` — BL-159). Also fix: reembed `--dry-run` must NOT create an empty vector space.
+- **Promote reembed (BL-160)** — ✅ DONE (merged `7e968a5`): `memory-core.reembedStore()` +
+  `memory-cli reembed` verb; loose script deleted; dry-run-creates-empty-space bug fixed. S4
+  does NOT need to touch reembed.
 
 **Acceptance:** backup-under-load produces an openable, integrity-clean copy; soft/hard quota
 tests pass; NC required (remove the hard-quota guard → over-quota write test goes red).
