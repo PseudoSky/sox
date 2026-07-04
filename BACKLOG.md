@@ -123,20 +123,37 @@ Verified: re-enabled unit's plist runs `soxe serve memory-server --port 3099`, *
 listens**, a fresh backend spawns reporting `real model active (bge-base-en-v1.5)`; os-unit
 spec test + smoke 16/0. **End-to-end HTTP still blocked by BL-157/BL-158 below.**
 
-### BL-157 — `soxe serve --port` headless HTTP transport returns `proxy closed`; shim→backend UDS unstable under launchd — **Open (HIGH) (2026-07-04)**
+### BL-157 — `soxe serve --port` headless HTTP transport returns `proxy closed`; shim→backend UDS unstable under launchd — **RESOLVED (2026-07-04)**
 
-With the BL-156 fix the launchd shim listens on :3099, but an MCP `initialize`/`tools/call`
-over HTTP returns `{"error":{"code":-32001,"message":"proxy closed"}}`. Shim log shows
-`client pipe closed (initialized=false)` (launchd `stdin=/dev/null` EOFs immediately) then
-`backend tools/list error: proxy closed`; backend log shows repeated
-`[service-proxy backend] socket error: write EPIPE`. Reproduces with a manual backgrounded
-`soxe serve memory-server --port=3110` too — so the HTTP transport availability appears
-coupled to the stdio-client lifecycle, which is absent in a headless daemon. Confounded by a
-crowded live state: **two backend processes** for one store (`72276` host-parented, `72286`
-orphaned to init) plus many host `soxe serve` sessions — a single-writer concern for HF-5.
-Investigate `libs/service-proxy/` `runFrontShim`: when `httpPort` is set, the backend/HTTP
-path must not tear down on stdio-client EOF; and reconcile the multi-backend state. Read
-`docs/spec/service-lifecycle.md` §9.5 first.
+**Root cause (exact mechanism):** in `libs/service-proxy/src/shim.ts` `runFrontShim`, the
+`input.on('end')` / `input.on('error')` handlers unconditionally called `backend.close()` +
+resolved `done` when the stdio-client pipe closed. Under launchd `stdin=/dev/null` EOFs
+**immediately at startup**, so the backend connection was torn down the instant the shim
+booted — before any HTTP request. `dialBackend.close()` sets `closed=true` and thereafter
+every `send()` resolves synchronously with `errorResponse(..., -32001, 'proxy closed')`
+(`dial.ts:249-252`). The HTTP listener stayed bound but its shared backend connection was
+dead, so every HTTP `initialize`/`tools/call` returned `{"code":-32001,"message":"proxy
+closed"}`. The `write EPIPE` in the backend log was the backend seeing the shim's socket
+close. HTTP transport availability was wrongly coupled to stdio-client presence (§9.5.2 says
+they MUST be independent).
+
+**Fix:** decouple. When `httpPort` is set (`httpActive`), the stdio pipe ending no longer
+closes the backend or resolves `done` — the HTTP server + its backend connection own their own
+lifecycle; the process exits via `cmdServe`'s SIGTERM handler. Pure stdio-client mode (no
+`httpPort`) is UNCHANGED — pipe-end still tears down the backend, preserving the S1.5/S1.6
+zero-downtime stdio guarantees (re-dial+backoff+buffer, schema-hash handshake). +2 regression
+tests in `shim.spec.ts` pin both behaviours. Proven on a scratch store AND against the live
+launchd unit `:3099`: `initialize` + `tools/call memory_ping` now succeed, routing through the
+fixed os-unit shim to the singleton backend, no `proxy closed`.
+
+**Live reconcile:** the split-brain (two backends `43731`+`43740` for `~/.memory`) was healed —
+`43740` was an orphan (init-parented, NO socket bound, zero clients; it lost the O_EXCL bind
+race but did not exit) and was reaped (SIGTERM ignored → SIGKILL escalation per
+`[contract:signal]`). The live writer backend `43731` (owns the socket, serves the session
+shims) was left untouched. The os-unit launchd shim (`10066`, old code, 0 backend connections)
+was restarted via `launchctl kickstart -k gui/<uid>/com.sox.user.memory-server` → new pid
+`93280` running the fixed shim; `soxe status` shows `memory-server@os-unit HEALTHY`; exactly ONE
+backend remains. Session shims never disrupted (they re-dial the singleton backend by design).
 
 ### BL-158 — live store's `sox_store_meta.embed_model` stamp was stale (`…-hash`) though vectors are real bge — **RESOLVED (2026-07-04)**
 

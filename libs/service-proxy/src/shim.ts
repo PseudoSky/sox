@@ -290,16 +290,38 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
     resolveDone = res;
   });
 
+  // §9.5.2/§9.5.5: HTTP transport lifecycle MUST be independent of the stdio-client's
+  // presence. When an HTTP listener is active (headless/launchd mode) there may be NO
+  // interactive stdio client at all — launchd wires `stdin=/dev/null`, which EOFs
+  // immediately. In that mode the stdio pipe ending must NOT tear down the backend
+  // connection (that is what caused BL-157: the backend was closed the instant the
+  // shim started, so every subsequent HTTP request fast-failed with `-32001 proxy
+  // closed`). The HTTP server + its backend connection own their own lifecycle; the
+  // process is kept alive by the SIGTERM wait in `cmdServe`. Only in the pure
+  // stdio-client case (no httpPort) does the pipe closing tear down the backend — that
+  // preserves today's zero-downtime stdio behaviour and the S1.5/S1.6 guarantees.
+  const httpActive = opts.httpPort !== undefined;
+
   input.on('data', onInputData);
   input.on('end', () => {
-    diag(`[service-proxy shim:${opts.id}] client pipe closed (initialized=${initialized})`);
-    backend.close();
-    resolveDone();
+    diag(
+      `[service-proxy shim:${opts.id}] client pipe closed (initialized=${initialized}` +
+        `${httpActive ? ', http-active — backend kept alive' : ''})`,
+    );
+    if (!httpActive) {
+      backend.close();
+      resolveDone();
+    }
+    // When httpActive: keep the backend connection and the process running for the
+    // HTTP transport. `done` remains pending; the process exits via cmdServe's SIGTERM
+    // handler (or an explicit close()).
   });
   input.on('error', (err: Error) => {
     diag(`[service-proxy shim:${opts.id}] client input error: ${err.message}`);
-    backend.close();
-    resolveDone();
+    if (!httpActive) {
+      backend.close();
+      resolveDone();
+    }
   });
 
   // ── Optional HTTP listener (dual transport: stdio + HTTP/SSE) ─────────────

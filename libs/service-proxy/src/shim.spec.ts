@@ -11,6 +11,8 @@ import { PassThrough } from 'node:stream';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import * as http from 'node:http';
+import * as net from 'node:net';
 import { runFrontShim, type FrontShimHandle } from './shim.js';
 import { serveBackend, type BackendHandle, type BackendHandler } from './backend.js';
 
@@ -265,5 +267,134 @@ describe('runFrontShim', () => {
     expect(r2['error']).toBeUndefined();
     expect((r2['result'] as { version: string }).version).toBe('v2');
     expect(ensured).toBeGreaterThanOrEqual(2);
+  });
+
+  // ── BL-157: HTTP transport must be independent of the stdio-client lifecycle ──
+  //
+  // Under launchd the shim is spawned with `stdin=/dev/null`, which EOFs immediately.
+  // Previously the shim's `input.on('end')` handler unconditionally closed the backend
+  // connection, so every HTTP request afterward fast-failed with
+  // `{"error":{"code":-32001,"message":"proxy closed"}}`. The fix decouples the HTTP
+  // listener from stdio-client presence: when httpPort is set, an EOF on stdin must NOT
+  // tear down the backend. These tests pin that behaviour.
+
+  /** Pick a free TCP port (ask the OS for one, then release it). */
+  function freePort(): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const srv = net.createServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const addr = srv.address();
+        const port = typeof addr === 'object' && addr ? addr.port : 0;
+        srv.close(() => resolve(port));
+      });
+      srv.on('error', reject);
+    });
+  }
+
+  /** POST a JSON-RPC request to the shim's /mcp endpoint; resolve the parsed body. */
+  function postMcp(port: number, body: unknown): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => {
+      const payload = JSON.stringify(body);
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          path: '/mcp',
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (c: Buffer) => (data += c.toString()));
+          res.on('end', () => {
+            try {
+              resolve(JSON.parse(data) as Record<string, unknown>);
+            } catch (e) {
+              reject(new Error(`bad JSON from shim: ${data} (${(e as Error).message})`));
+            }
+          });
+        },
+      );
+      req.on('error', reject);
+      req.write(payload);
+      req.end();
+    });
+  }
+
+  it('BL-157: HTTP initialize + tools/call succeed AFTER stdin EOFs (headless/launchd mode)', async () => {
+    const sock = tmpSock('headless-http');
+    await startBackend(sock, 'v1');
+    const port = await freePort();
+
+    // A stdin stream that EOFs immediately — exactly what launchd's /dev/null does.
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    stdout.on('data', () => {}); // drain
+
+    const handle = runFrontShim({
+      id: 'headless',
+      socketPath: sock,
+      httpPort: port,
+      input: stdin,
+      output: stdout,
+      backoff: { initialMs: 20, maxMs: 60 },
+      onDiagnostic: () => {},
+    });
+    cleanups.push(() => handle.close());
+
+    // Simulate launchd's stdin=/dev/null: end the input immediately.
+    stdin.end();
+
+    // The stdio pipe closing MUST NOT resolve `done` (process stays alive for HTTP).
+    let doneResolved = false;
+    handle.done.then(() => { doneResolved = true; });
+
+    // Wait for the HTTP listener to bind + the backend to connect.
+    await new Promise((r) => setTimeout(r, 150));
+
+    // Over HTTP: initialize then tools/call must succeed end-to-end — NO "proxy closed".
+    const initResp = await postMcp(port, {
+      jsonrpc: '2.0', id: 1, method: 'initialize', params: { capabilities: {} },
+    });
+    expect(initResp['error']).toBeUndefined();
+    expect((initResp['result'] as { serverInfo: { version: string } }).serverInfo.version).toBe('v1');
+
+    const callResp = await postMcp(port, {
+      jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'echo', arguments: { v: 'hi' } },
+    });
+    expect(callResp['error']).toBeUndefined();
+    expect((callResp['result'] as { version: string }).version).toBe('v1');
+
+    // The backend connection stayed alive; `done` never resolved on the stdin EOF.
+    expect(doneResolved).toBe(false);
+    expect(handle.backend.isConnected()).toBe(true);
+  });
+
+  it('BL-157: pure stdio mode STILL closes the backend on pipe end (no regression)', async () => {
+    const sock = tmpSock('stdio-close');
+    await startBackend(sock, 'v1');
+
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    stdout.on('data', () => {});
+
+    const handle = runFrontShim({
+      id: 'stdio-only',
+      socketPath: sock,
+      input: stdin,
+      output: stdout,
+      backoff: { initialMs: 20, maxMs: 60 },
+      onDiagnostic: () => {},
+    });
+    cleanups.push(() => handle.close());
+
+    // Let the backend connect.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(handle.backend.isConnected()).toBe(true);
+
+    // In pure-stdio mode, ending the pipe MUST tear down the backend + resolve done.
+    stdin.end();
+    await handle.done; // resolves only if the pipe-end handler ran
+    expect(handle.backend.isConnected()).toBe(false);
   });
 });
