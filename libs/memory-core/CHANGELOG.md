@@ -4,6 +4,22 @@
 
 ### Minor Changes
 
+- Two-phase update (BL-189): `memoryUpdatePhaseA` splits `memory_update` like the write path —
+  Phase A is fully synchronous (columns + FTS + stale `vec_node` delete in one transaction) and
+  returns a `PendingEmbed`; `memoryUpdate` remains the synchronous-embed composition (Phase A +
+  inline `embed` + `applyEmbedding`). A crashed Phase B leaves the node vectorless and
+  heal-eligible. Side-effect delta: the re-embed now flows through `applyEmbedding`, so an
+  updated node participates in deferred near-dup detection (it previously did not).
+
+- Ingestion consolidation (S11/BL-165): the SHA-256 dedup fingerprint is routed through
+  `@adhd/sox-ingest`'s `hexSha256` (normalization unchanged — byte-identical fingerprints), and
+  `splitIntoChunksSentence` (byte-identical to memory-server's deleted local chunker) lives in
+  ingest; both re-exported here. Permanent parity regression spec: `ingest-parity.spec.ts`.
+
+- BL-183 closeout: deleted the never-wired outbox consumer surface (`createMemoryOutboxQueue`,
+  `memoryFlush`, `migrateOutboxQueueSchema` + types). The wired producers (`enqueueIngest`,
+  `enqueueEnrichFull`, `hasPendingFullEnrich`) are unchanged and now directly spec'd.
+
 - Two-phase write observability (follow-on to the split below): `embed-pipeline.ts` now keeps
   per-store metrics (`getEmbedPipelineMetrics(storeKey)`, keyed identically to
   `WriteQueue.metricsForPath`) — `time_to_vector_ms` (Phase-A commit → vec_node applied, from a

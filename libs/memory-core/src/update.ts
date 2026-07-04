@@ -20,7 +20,9 @@
  */
 
 import Database from 'better-sqlite3';
-import { embed, vecToJson } from './embed.js';
+import { performance } from 'node:perf_hooks';
+import { embed } from './embed.js';
+import { applyEmbedding, type PendingEmbed } from './embed-pipeline.js';
 
 // ── Deep-merge helper ─────────────────────────────────────────────────────────
 
@@ -105,16 +107,31 @@ export type UpdateError =
   | { code: 'E_NOT_FOUND'; message: string }
   | { code: 'E_NO_FIELDS'; message: string };
 
+/** Phase-A outcome for the two-phase update (BL-189, mirrors write.ts). */
+export interface UpdatePhaseAOutcome {
+  result: UpdateResult;
+  /**
+   * Non-null when content/summary changed: Phase A committed the column
+   * update and DELETED the stale vec_node row (so recall never serves a
+   * stale vector, and a crashed Phase B leaves the node heal-eligible via
+   * healMissingVectors). The caller schedules the re-embed off-slot via
+   * schedulePendingEmbeds — never from inside the queue task (BL-154).
+   */
+  pending: PendingEmbed | null;
+}
+
 // ── Implementation ────────────────────────────────────────────────────────────
 
 /**
- * In-place editor of an existing node.
- * async because re-embed may be needed when content/summary changes.
+ * Phase A of the two-phase update (BL-189): FULLY SYNCHRONOUS — safe to run
+ * while holding the WriteQueue slot. All column updates + FTS (trigger) commit
+ * here; when content/summary changed the stale vector is deleted in the same
+ * transaction and the re-embed is returned as a PendingEmbed for Phase B.
  */
-export async function memoryUpdate(
+export function memoryUpdatePhaseA(
   db: Database.Database,
   params: UpdateParams,
-): Promise<UpdateResult | UpdateError> {
+): UpdatePhaseAOutcome | UpdateError {
   const {
     uid,
     content,
@@ -265,40 +282,60 @@ export async function memoryUpdate(
   setValues.push(now);
   // t_updated is an internal audit column — not surfaced in updated_fields.
 
-  // ── 4. Re-embed if content or summary changed ────────────────────────────────
+  // ── 4. Determine whether the vector must be refreshed ────────────────────────
   const needsReembed =
     updatedFields.includes('content') || updatedFields.includes('summary');
+  // The vector is derived from CONTENT (new when changed, else existing) —
+  // pre-BL-189 behaviour preserved: a summary-only change recomputes the
+  // content vector (idempotent by value).
+  const embedText =
+    updatedFields.includes('content') && content !== undefined
+      ? content
+      : (existing.content ?? '');
 
-  let embeddingJson: string | null = null;
-  if (needsReembed) {
-    // Use the new content if provided, otherwise fall back to the existing content.
-    const embedText =
-      updatedFields.includes('content') && content !== undefined
-        ? content
-        : (existing.content ?? '');
-    const vec = await embed(embedText);
-    embeddingJson = vecToJson(vec);
-  }
-
-  // ── 5. Atomic transaction: UPDATE node + refresh vec_node if needed ──────────
+  // ── 5. Atomic transaction: UPDATE node + drop stale vec_node if re-embedding ─
   db.transaction(() => {
     const sql = `UPDATE node SET ${setClauses.join(', ')} WHERE uid = ?`;
     setValues.push(uid);
     db.prepare(sql).run(...setValues);
 
-    if (needsReembed && embeddingJson !== null) {
-      // vec_node has no UPDATE trigger — must delete + re-insert.
+    if (needsReembed) {
+      // vec_node has no UPDATE trigger — delete the stale row NOW so recall
+      // never serves the old vector for new text; Phase B (or the sync
+      // composition / heal) re-inserts. A missing row is heal-eligible.
       db.prepare(`DELETE FROM vec_node WHERE node_id = CAST(? AS INTEGER)`).run(existing.rowid);
-      db.prepare(
-        `INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)`,
-      ).run(existing.rowid, embeddingJson);
     }
   })();
   // Note: FTS is auto-synced by the fts_node_au trigger on the node UPDATE — no manual touch needed.
 
   return {
-    uid,
-    updated_fields: updatedFields,
-    reembedded: needsReembed,
+    result: {
+      uid,
+      updated_fields: updatedFields,
+      reembedded: needsReembed,
+    },
+    pending: needsReembed
+      ? { uid, rowid: existing.rowid, text: embedText, startedAtMs: performance.now() }
+      : null,
   };
+}
+
+/**
+ * In-place editor of an existing node — SYNCHRONOUS-EMBED composition
+ * (Phase A + inline embed + apply). Used by the SOX_SYNC_EMBED=1 kill-switch
+ * path and direct library callers; the memory-server default routes Phase B
+ * through schedulePendingEmbeds instead (BL-189/BL-191 — instrumented,
+ * off the WriteQueue slot).
+ */
+export async function memoryUpdate(
+  db: Database.Database,
+  params: UpdateParams,
+): Promise<UpdateResult | UpdateError> {
+  const phaseA = memoryUpdatePhaseA(db, params);
+  if ('code' in phaseA) return phaseA;
+  if (phaseA.pending === null) return phaseA.result;
+
+  const vec = await embed(phaseA.pending.text);
+  applyEmbedding(db, phaseA.pending, vec);
+  return phaseA.result;
 }

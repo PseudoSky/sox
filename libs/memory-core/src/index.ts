@@ -11,7 +11,7 @@
  *      process only calls the MCP tool over stdio/socket).
  *   2. Use the embed worker thread — `embed()` in this library already routes through
  *      embedWorker.ts (worker_threads), keeping ONNX isolated from the main thread.
- *   3. Set SOX_EMBED_BACKEND=hash to avoid loading onnxruntime-node entirely.
+ *   3. Set SOX_EMBED_BACKEND=real to force onnxruntime-node; omit for auto (the default).
  *
  * The worker isolation (option 2) is already active in embed.ts, so direct callers of
  * `openDb()` + `await embed()` in the same process are safe as long as they go through
@@ -145,9 +145,9 @@ export {
   hasPendingFullEnrich,
 } from './outbox-queue.js';
 
-// ── Update (in-place editor) ──────────────────────────────────────────────────
-export { memoryUpdate, deepMerge } from './update.js';
-export type { UpdateParams, UpdateResult, UpdateError } from './update.js';
+// ── Update (in-place editor; two-phase since BL-189) ──────────────────────────
+export { memoryUpdate, memoryUpdatePhaseA, deepMerge } from './update.js';
+export type { UpdateParams, UpdateResult, UpdateError, UpdatePhaseAOutcome } from './update.js';
 
 // ── Recall + federation ───────────────────────────────────────────────────────
 export {

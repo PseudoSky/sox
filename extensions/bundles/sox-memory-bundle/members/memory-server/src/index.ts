@@ -65,6 +65,7 @@ import {
   memorySaveSessionState,
   memorySearchEntities,
   memoryUpdate,
+  memoryUpdatePhaseA,
   memoryWrite,
   memoryWriteBatch,
   memoryWriteBatchPhaseA,
@@ -1497,30 +1498,58 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING', message: 'uid is required' }) }] };
       }
       const wq = WriteQueue.forPath(dbPath);
-      return wq.enqueue('memory_update', async (writeDb) => {
-        const updateResult = await memoryUpdate(writeDb, {
-          uid,
-          content: args['content'] as string | undefined,
-          summary: args['summary'] as string | undefined,
-          name: args['name'] as string | undefined,
-          topic: args['topic'] as string | undefined,
-          tags: args['tags'] as string[] | undefined,
-          importance: args['importance'] as number | undefined,
-          metadata: args['metadata'] as Record<string, unknown> | undefined,
-          metadata_merge: args['metadata_merge'] as 'deep' | 'replace' | undefined,
-          t_occurred: args['t_occurred'] as string | undefined,
-          t_valid: args['t_valid'] as string | undefined,
-        });
-        if ('code' in updateResult) {
+      const updateParams = {
+        uid,
+        content: args['content'] as string | undefined,
+        summary: args['summary'] as string | undefined,
+        name: args['name'] as string | undefined,
+        topic: args['topic'] as string | undefined,
+        tags: args['tags'] as string[] | undefined,
+        importance: args['importance'] as number | undefined,
+        metadata: args['metadata'] as Record<string, unknown> | undefined,
+        metadata_merge: args['metadata_merge'] as 'deep' | 'replace' | undefined,
+        t_occurred: args['t_occurred'] as string | undefined,
+        t_valid: args['t_valid'] as string | undefined,
+      };
+
+      // SOX_SYNC_EMBED=1 kill-switch: pre-BL-189 behaviour — re-embed runs
+      // inside the queue slot via the sync composition.
+      if (syncEmbedEnabled()) {
+        return wq.enqueue('memory_update', async (writeDb) => {
+          const updateResult = await memoryUpdate(writeDb, updateParams);
+          if ('code' in updateResult) {
+            return {
+              isError: true,
+              content: [{ type: 'text', text: JSON.stringify(updateResult) }],
+            };
+          }
           return {
-            isError: true,
             content: [{ type: 'text', text: JSON.stringify(updateResult) }],
+          };
+        });
+      }
+
+      // ── Two-phase path (DEFAULT — BL-189, mirrors memory_write): the slot
+      // task is fully synchronous (columns + FTS + stale-vec delete); the
+      // re-embed is scheduled off-slot AFTER the task returns (BL-154) via
+      // schedulePendingEmbeds — which also records the embed-pipeline metrics
+      // memory_update previously skipped (BL-191). A crashed Phase B leaves
+      // the node vectorless → healMissingVectors repairs on the next tick.
+      const updOutcome = await wq.enqueue('memory_update', (writeDb) => {
+        const a = memoryUpdatePhaseA(writeDb, updateParams);
+        if ('code' in a) {
+          return {
+            response: { isError: true, content: [{ type: 'text', text: JSON.stringify(a) }] },
+            pending: null as PendingEmbed | null,
           };
         }
         return {
-          content: [{ type: 'text', text: JSON.stringify(updateResult) }],
+          response: { content: [{ type: 'text', text: JSON.stringify(a.result) }] },
+          pending: a.pending,
         };
       });
+      if (updOutcome.pending) void schedulePendingEmbeds(wq, [updOutcome.pending]);
+      return updOutcome.response;
     }
 
     case 'memory_link': {

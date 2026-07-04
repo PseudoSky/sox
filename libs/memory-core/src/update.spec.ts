@@ -21,7 +21,7 @@ import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import { openDb } from './db.js';
 import { memoryWrite } from './write.js';
-import { memoryUpdate, deepMerge } from './update.js';
+import { memoryUpdate, memoryUpdatePhaseA, deepMerge } from './update.js';
 import { _shutdownEmbedWorker } from './embed.js';
 
 
@@ -571,6 +571,79 @@ describe('memoryUpdate — FTS reflects content change (fts_node_au trigger)', (
         )
         .all('zorbflux');
       expect(ftsRemovedRows.map((r) => r.rowid)).not.toContain(nodeRow.rowid);
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+});
+
+// ── BL-189: two-phase update — Phase A holds the slot, embed is deferred ──────
+
+describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
+  it('content change: commits columns, DELETES the stale vector, returns a PendingEmbed', async () => {
+    const { db, dir } = tmpDb();
+    try {
+      const w = await memoryWrite(db, { content: 'original text for phase-a' });
+      const uid = (w as { episode_uid: string }).episode_uid;
+      const rowid = (db.prepare('SELECT rowid FROM node WHERE uid = ?').get(uid) as { rowid: number }).rowid;
+      expect(getVecHex(db, rowid)).not.toBeNull(); // sync composition embedded it
+
+      const a = memoryUpdatePhaseA(db, { uid, content: 'replaced text for phase-a' });
+      expect('code' in a).toBe(false);
+      if ('code' in a) return;
+
+      // Columns committed, FTS-visible, stale vector GONE (heal-eligible).
+      const row = db.prepare('SELECT content FROM node WHERE uid = ?').get(uid) as { content: string };
+      expect(row.content).toBe('replaced text for phase-a');
+      expect(getVecHex(db, rowid)).toBeNull();
+
+      // Pending carries the exact identity + text Phase B must apply.
+      expect(a.pending).not.toBeNull();
+      expect(a.pending!.uid).toBe(uid);
+      expect(a.pending!.rowid).toBe(rowid);
+      expect(a.pending!.text).toBe('replaced text for phase-a');
+      expect(typeof a.pending!.startedAtMs).toBe('number');
+      expect(a.result.reembedded).toBe(true);
+
+      // Phase B (applyEmbedding via the sync composition path) restores the vector.
+      const done = await memoryUpdate(db, { uid, content: 'replaced text for phase-a v2' });
+      expect('code' in done).toBe(false);
+      expect(getVecHex(db, rowid)).not.toBeNull();
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+
+  it('metadata-only change: no pending, vector untouched', async () => {
+    const { db, dir } = tmpDb();
+    try {
+      const w = await memoryWrite(db, { content: 'stable text' });
+      const uid = (w as { episode_uid: string }).episode_uid;
+      const rowid = (db.prepare('SELECT rowid FROM node WHERE uid = ?').get(uid) as { rowid: number }).rowid;
+      const before = getVecHex(db, rowid);
+
+      const a = memoryUpdatePhaseA(db, { uid, metadata: { reviewed: true } });
+      expect('code' in a).toBe(false);
+      if ('code' in a) return;
+      expect(a.pending).toBeNull();
+      expect(a.result.reembedded).toBe(false);
+      expect(getVecHex(db, rowid)).toBe(before);
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+
+  it('summary-only change: pending text is the EXISTING content (pre-BL-189 semantics preserved)', async () => {
+    const { db, dir } = tmpDb();
+    try {
+      const w = await memoryWrite(db, { content: 'content stays', summary: 'old summary' });
+      const uid = (w as { episode_uid: string }).episode_uid;
+
+      const a = memoryUpdatePhaseA(db, { uid, summary: 'new summary' });
+      expect('code' in a).toBe(false);
+      if ('code' in a) return;
+      expect(a.pending).not.toBeNull();
+      expect(a.pending!.text).toBe('content stays');
     } finally {
       cleanup(db, dir);
     }

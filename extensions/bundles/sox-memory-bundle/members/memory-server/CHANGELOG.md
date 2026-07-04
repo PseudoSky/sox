@@ -4,6 +4,18 @@
 
 ### Minor Changes
 
+- `memory_update` two-phase by default (BL-189/BL-191): content/summary updates commit columns +
+  FTS and delete the stale vector inside the queue slot, then re-embed OFF-slot via the
+  instrumented Phase-B pipeline (`time_to_vector_ms`/`embed_duration_ms` now cover updates too).
+  Response shape unchanged (`reembedded: true` = vector refresh triggered; it lands async —
+  same eventual-consistency window as `memory_write`). `SOX_SYNC_EMBED=1` restores the fully
+  synchronous behaviour. Behavioural delta: updated nodes now participate in deferred near-dup
+  detection.
+
+- `memory_write` chunking routed through the canonical `@adhd/sox-ingest` sentence chunker
+  (S11/BL-165) — chunk boundaries byte-identical to the deleted local implementation
+  (parity-spec'd in memory-core).
+
 - Two-phase write observability (follow-on): `memory_ping.store` gains an additive
   `embed_pipeline` block — `{ backlog, backlog_oldest_at, metrics }` where `metrics` carries
   `time_to_vector_ms` (Phase-A commit → vec applied; how long a fresh write is BM25-only),

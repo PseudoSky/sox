@@ -30,6 +30,29 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Open — surfaced during HF-5/HF-6 closeout (2026-07-04)
 
+### BL-203 — doctor-tick (and memory-server) launchd units found UNLOADED after the S11-merge `upgrade --all`; cause unproven — **Open (MEDIUM) (2026-07-04)**
+
+**What's wrong:** `com.sox.user.doctor-tick` was verified loaded (last exit 0) during HF-5
+forensics (~22:55Z), and found NOT loaded (`launchctl list`: "Could not find service") at ~23:19Z.
+Both plists and their ownership.json entries survived intact on disk — only the launchd
+registration vanished. The only lifecycle-touching operation in the window was the post-S11
+`soxe upgrade --all` (which re-installed the memory-server bundle: verified-stop of backend pids
+76784/77290). A control run of `upgrade --all` with NO artifact changes (a no-op pass) did NOT
+unload the tick — so the suspect is the artifact-changed upgrade path (teardown/reinstall of the
+user-scope bundle), not upgrade per se. `com.sox.user.memory-server` (the stale 03:03Z direct-stdio
+unit, BL-156) was also unloaded in the same window.
+
+**Recovered:** tick re-installed via `doctor --install-tick --node-path=<homebrew node>` (now
+pinned to a non-volatile node per the installer's own warning) and verified loaded + firing
+(`SCHEDULED (last exit 0)` in the new BL-185 rendering).
+
+**Fix sketch:** controlled repro — bump a bundle artifact in a sandbox data root
+(SOX_ECOSYSTEM_HOME scratch), install with an os-unit + a doctor tick, run `upgrade --all`, and
+diff `launchctl list` before/after. Suspect surface: the upgrade teardown's
+`[inv:unload-then-reap]` sweep matching more units than the extension being upgraded, or a
+user-scope ownership rewrite bootout. The tick's unit should never be collateral of a bundle
+upgrade.
+
 ### BL-201 — dead-holder spawn-lock debris persists in `run/supervisors/` until next contention — **Open (LOW) (2026-07-04)**
 
 **What's wrong:** HF-5 forensics found `proxy-backend-23dbf1ed.lock` (holder pid 28869, dead)
@@ -65,7 +88,12 @@ tripping assertion is known.
 
 ## Open — surfaced by the embed-pipeline observability worktree (2026-07-04)
 
-### BL-190 — memory-core/memory-server `package.json` versions lag their hand-written CHANGELOG heads — **Open (LOW) (2026-07-04)**
+### BL-190 — memory-core/memory-server `package.json` versions lag their hand-written CHANGELOG heads — **RESOLVED (2026-07-04, HF-6)**
+
+**Resolution:** bumped `memory-core` 0.2.1→0.3.0 and `memory-server` 1.2.1→1.3.0 to match the
+changelog heads; the 0.3.0/1.3.0 sections were extended with the S11/BL-183/BL-189 entries in
+the same commit. Convention going forward: hand-edited changelog heads must bump `package.json`
+in the same change (or use changesets).
 
 **What's wrong:** `libs/memory-core/package.json` is `0.2.1` while its CHANGELOG.md top section
 is `## 0.3.0`; `memory-server/package.json` is `1.2.1` vs CHANGELOG `## 1.3.0`. The two-phase-write
@@ -80,7 +108,11 @@ double-document 0.3.0/1.3.0 or emit a version that skips the documented one.
 hand-written sections into a pending `.changeset/*.md` and let changesets version). Decide one
 convention and note it in CONTRIBUTING §1.
 
-### BL-191 — `memory_update`'s re-embed path records NO embed-pipeline metrics (and still embeds on-slot, see BL-189) — **Open (LOW) (2026-07-04)**
+### BL-191 — `memory_update`'s re-embed path records NO embed-pipeline metrics (and still embeds on-slot, see BL-189) — **RESOLVED (2026-07-04, HF-6): rides the BL-189 two-phase update**
+
+**Resolution:** the async default now routes update re-embeds through `schedulePendingEmbeds`,
+so `time_to_vector_ms`/`embed_duration_ms`/Phase-B counters cover updates. The `SOX_SYNC_EMBED=1`
+path remains uninstrumented BY DESIGN (its cost IS `write_latency_ms`, as this entry noted).
 
 **What's wrong:** the new Phase-B pipeline metrics (`time_to_vector_ms`, `embed_duration_ms`,
 counters) only instrument `schedulePendingEmbeds`/`healMissingVectors`. `memory_update` re-embeds
@@ -381,7 +413,15 @@ protection (a retry after a timeout minted a duplicate-or-E_DEDUP instead of `re
 Fixed by including `client_request_id` in the shared `parentParams` used by both embed modes;
 pinned by the `async-embed.spec.ts` replay-through-handler test.
 
-### BL-189 — `memory_update` still embeds INSIDE the WriteQueue slot (same class as the fixed write path) — **Open (LOW-MEDIUM) (2026-07-04)**
+### BL-189 — `memory_update` still embeds INSIDE the WriteQueue slot (same class as the fixed write path) — **RESOLVED (2026-07-04, HF-6): two-phase update landed**
+
+**Resolution:** `memoryUpdatePhaseA` (memory-core `update.ts`) implements the sketch below
+exactly — Phase A commits columns + FTS + deletes the stale vec row in one transaction and
+returns a `PendingEmbed`; the memory-server handler schedules Phase B off-slot via
+`schedulePendingEmbeds` (BL-154-safe, from outside the task). `SOX_SYNC_EMBED=1` keeps the
+sync composition. Heal covers a crashed Phase B (stale vector is deleted in Phase A). Specs:
+`memoryUpdatePhaseA` block in `update.spec.ts` (3 tests). Gates: memory-core 356 pass,
+memory-server 111 pass.
 
 The two-phase split covers `memory_write`/`memory_write_batch` (the hot path). `memory_update`
 with `content`/`summary` changes still runs its re-embed synchronously inside
