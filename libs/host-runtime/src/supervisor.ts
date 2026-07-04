@@ -25,6 +25,7 @@ import * as https from 'node:https';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { CrashLoopGuard } from './crash-loop.js';
 import type { LogManager } from './log-manager.js';
 import { compilePolicy, type Policy } from './policy.js';
 
@@ -69,6 +70,22 @@ export interface SupervisorOptions {
    * logManager.write(). The manager owns the write stream and handles rotation.
    */
   logManager?: LogManager | undefined;
+  /**
+   * crashLoop — [inv:crash-loop-cap] (spec §11.3, Slice 3).
+   * Bounds the unexpected-exit restart loop: after `maxFailures` unexpected exits
+   * within `windowMs` (defaults 5-in-60s, the Appendix-B item 4a decision) the
+   * supervisor STOPS restarting, marks the service DEGRADED (give-up), writes a
+   * durable `[crash-loop]` line + marker (surfaced by `soxe status`/`doctor`),
+   * and requires an explicit start()/restart() to clear.
+   * `markerDir` overrides the marker location (tests pass a sandbox);
+   * `persist:false` disables the durable marker (in-memory cap only).
+   */
+  crashLoop?: {
+    maxFailures?: number | undefined;
+    windowMs?: number | undefined;
+    markerDir?: string | undefined;
+    persist?: boolean | undefined;
+  } | undefined;
 }
 
 export interface SupervisedProcess {
@@ -108,6 +125,9 @@ export class ProcessSupervisor {
   private _stopping = false;
   private _healthTimer: ReturnType<typeof setInterval> | null = null;
   private _restartCount = 0;
+  // [inv:crash-loop-cap] (§11.3): rolling-window restart cap + sticky give-up flag.
+  private readonly _crashLoop: CrashLoopGuard;
+  private _crashLooped = false;
 
   constructor(opts: SupervisorOptions) {
     this._key = opts.key;
@@ -124,6 +144,8 @@ export class ProcessSupervisor {
     // compilePolicy(undefined) → enforced=false (legacy compat, [inv:no-regress]).
     // compilePolicy(perms)     → enforced=true  ([def:enforcement-opt-in]).
     this._policy = compilePolicy(opts.permissions);
+    // [inv:crash-loop-cap] (§11.3): the restart-storm bound. Defaults 5-in-60s.
+    this._crashLoop = new CrashLoopGuard({ key: opts.key, ...(opts.crashLoop ?? {}) });
   }
 
   /**
@@ -145,6 +167,9 @@ export class ProcessSupervisor {
     }
     ProcessSupervisor._registry.set(this._key, this);
     this._stopping = false;
+    // §11.3: an EXPLICIT start clears the crash-loop give-up state + marker.
+    this._crashLoop.clear();
+    this._crashLooped = false;
     await this._spawn();
 
     const healthCfg = this._lifecycle.health;
@@ -228,7 +253,9 @@ export class ProcessSupervisor {
   async restart(): Promise<void> {
     await this.kill();
     this._stopping = false;
-    await sleep(50);
+    // §11.3: an EXPLICIT restart clears the crash-loop give-up state + marker.
+    this._crashLoop.clear();
+    this._crashLooped = false;
     await this._spawn();
     const healthCfg = this._lifecycle.health;
     if (healthCfg) {
@@ -239,6 +266,16 @@ export class ProcessSupervisor {
 
   isHealthy(): boolean {
     return this._healthy;
+  }
+
+  /**
+   * [inv:crash-loop-cap] (§11.3): true once the supervisor has GIVEN UP restarting
+   * this service (N unexpected exits in the rolling window). Sticky until an
+   * explicit start()/restart(). Surfaced by `soxe status`/`doctor` via the
+   * durable crash-loop marker.
+   */
+  isCrashLooped(): boolean {
+    return this._crashLooped;
   }
 
   pid(): number | null {
@@ -351,6 +388,21 @@ export class ProcessSupervisor {
         this._logManager.patchRunStop(extId, code, stopReason);
       }
       if (!this._stopping) {
+        // [inv:crash-loop-cap] (§11.3, Slice 3): bound the spawn-fail-spawn storm.
+        // Failures are counted on unexpected EXIT only — a slow-but-successful
+        // start never exits, so it can never trip the cap. Hitting the cap is an
+        // EXPLICIT unhealthy state ([inv:list-never-lies]): DEGRADED (give-up),
+        // durable [crash-loop] line + marker, no further respawns; only an
+        // explicit start()/restart() clears it.
+        const cl = this._crashLoop.recordFailure();
+        if (cl.capped) {
+          this._crashLooped = true;
+          this._healthy = false;
+          const line = this._crashLoop.giveUpLine();
+          console.error(`[supervisor] ${line}`);
+          if (this._logManager) this._logManager.write(Buffer.from(`${line}\n`));
+          return; // give up — NO respawn scheduled
+        }
         // [def:session-fixes] enable-reactivation: restart on unexpected exit
         const backoffMs = Math.min(5000, 200 * Math.pow(2, this._restartCount));
         this._restartCount++;

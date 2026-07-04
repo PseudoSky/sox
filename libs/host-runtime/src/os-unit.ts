@@ -91,6 +91,13 @@ export interface OsUnitSpec {
   keepAlive: boolean;
   /** Crash-loop guard (§11.3): launchd ThrottleInterval / systemd RestartSec. ≥10s. */
   throttleIntervalSec: number;
+  /**
+   * Slice 4 (scheduled reconcile tick): run the unit PERIODICALLY every N seconds.
+   * launchd: `StartInterval` on the same unit. systemd: rendered as a paired
+   * `.timer` unit via `renderTimerUnit` (the seam mirror of `renderSocketUnit`).
+   * Absent for ordinary long-lived services (no periodic relaunch).
+   */
+  startIntervalSec?: number | undefined;
   /** Durable stdout log path (ADR-0004 run/logs/). */
   stdoutPath: string;
   /** Durable stderr log path (ADR-0004 run/logs/). */
@@ -149,6 +156,8 @@ export function deriveOsUnitSpec(opts: {
    * file descriptor to the service on first connection.
    */
   socketPath?: string | undefined;
+  /** Slice 4: periodic-relaunch interval in seconds (see OsUnitSpec.startIntervalSec). */
+  startIntervalSec?: number | undefined;
 }): OsUnitSpec {
   const label = osUnitLabel(opts.scope, opts.id);
   const logDate = opts.logDate ?? new Date().toISOString().slice(0, 10);
@@ -193,6 +202,9 @@ export function deriveOsUnitSpec(opts: {
     artifactHash: opts.artifactHash,
     ...(opts.activation_posture === 'on-demand' && opts.socketPath !== undefined
       ? { socketPath: opts.socketPath }
+      : {}),
+    ...(opts.startIntervalSec !== undefined && opts.startIntervalSec > 0
+      ? { startIntervalSec: Math.floor(opts.startIntervalSec) }
       : {}),
   };
 }
@@ -332,6 +344,13 @@ export interface OsUnitPlatform {
    * content.
    */
   renderSocketUnit?(spec: OsUnitSpec): string | undefined;
+  /**
+   * Slice 4: Render a timer unit for a periodic (startIntervalSec) unit.
+   * Returns undefined when the platform embeds the interval in the service unit
+   * (launchd `StartInterval`) or when no startIntervalSec is set. For systemd,
+   * returns the paired `.timer` unit content (the seam mirror of renderSocketUnit).
+   */
+  renderTimerUnit?(spec: OsUnitSpec): string | undefined;
   /** Load (activate) a unit. */
   load(unitPath: string, label: string, exec: OsExec): OsExecResult;
   /** Unload (deactivate) a unit. */
@@ -406,6 +425,11 @@ export class LaunchdPlatform implements OsUnitPlatform {
       `  <${spec.keepAlive ? 'true' : 'false'}/>`,
       '  <key>ThrottleInterval</key>',
       `  <integer>${spec.throttleIntervalSec}</integer>`,
+      // Slice 4: periodic relaunch (the doctor reconcile tick). launchd runs the
+      // job every StartInterval seconds; KeepAlive stays false for a tick job.
+      ...(spec.startIntervalSec !== undefined && spec.startIntervalSec > 0
+        ? ['  <key>StartInterval</key>', `  <integer>${spec.startIntervalSec}</integer>`]
+        : []),
       ...(socketLines ? ['', socketLines] : []),
       '  <key>StandardOutPath</key>',
       `  <string>${xmlEscape(spec.stdoutPath)}</string>`,
@@ -433,6 +457,11 @@ export class LaunchdPlatform implements OsUnitPlatform {
 
   /** SA-2: launchd embeds sockets in the plist; no separate socket unit. */
   renderSocketUnit(_spec: OsUnitSpec): string | undefined {
+    return undefined;
+  }
+
+  /** Slice 4: launchd embeds the interval (StartInterval) in the plist; no timer unit. */
+  renderTimerUnit(_spec: OsUnitSpec): string | undefined {
     return undefined;
   }
 
@@ -550,6 +579,36 @@ export class SystemdPlatform implements OsUnitPlatform {
       '',
       '[Install]',
       'WantedBy=sockets.target',
+      '',
+    ].join('\n');
+    const hash = unitContentHash(body);
+    return [
+      `# ${UNIT_META_MARKER} content-hash:${hash} artifact-hash:none generated-by:soxe-service-enable`,
+      body,
+    ].join('\n');
+  }
+
+  /**
+   * Slice 4: Render a `.timer` unit for a periodic (startIntervalSec) job.
+   * Returns undefined when no startIntervalSec is set. systemd separates the
+   * schedule (`.timer`, WantedBy=timers.target) from the job (`.service`) —
+   * the exact seam-mirror of renderSocketUnit. Content-addressed like every
+   * generated unit ([inv:os-unit-content-addressed]).
+   */
+  renderTimerUnit(spec: OsUnitSpec): string | undefined {
+    if (spec.startIntervalSec === undefined || spec.startIntervalSec <= 0) return undefined;
+    const unitName = this.unitFileName(spec.label); // sox-<scope>-<id>.service
+    const body = [
+      '[Unit]',
+      `Description=Timer for soxe service ${spec.id} (${spec.scope})`,
+      '',
+      '[Timer]',
+      `OnBootSec=${spec.startIntervalSec}`,
+      `OnUnitActiveSec=${spec.startIntervalSec}`,
+      `Unit=${unitName}`,
+      '',
+      '[Install]',
+      'WantedBy=timers.target',
       '',
     ].join('\n');
     const hash = unitContentHash(body);

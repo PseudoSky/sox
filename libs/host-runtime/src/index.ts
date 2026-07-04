@@ -151,6 +151,37 @@ export type {
   ScopeResource,
 } from './singleton.js';
 
+// ─── Crash-loop cap (service-lifecycle spec Slice 3, [inv:crash-loop-cap]) ────
+export {
+  CRASH_LOOP_MAX_FAILURES,
+  CRASH_LOOP_WINDOW_MS,
+  CrashLoopGuard,
+  crashLoopMarkerDir,
+  crashLoopMarkerPath,
+  readCrashLoopMarker,
+  listCrashLoopMarkers,
+  clearCrashLoopMarker,
+} from './crash-loop.js';
+export type {
+  CrashLoopGuardOptions,
+  CrashLoopState,
+  CrashLoopMarker,
+} from './crash-loop.js';
+
+// ─── Doctor reconcile classification (service-lifecycle spec Slice 4) ─────────
+export {
+  realLsofExec,
+  socketOwnerPids,
+  classifyReconcileTargets,
+} from './reconcile.js';
+export type {
+  LsofExec,
+  LsofResult,
+  ReconcileMatch,
+  ReconcileSkipReason,
+  ReconcilePlan,
+} from './reconcile.js';
+
 // ─── OS-supervisor control surface (service-lifecycle spec Slice 2) ──────────
 export {
   detectOsSupervisor,

@@ -1,13 +1,67 @@
 # Service & Daemon Lifecycle — Canonical Specification
 
-**Spec version:** 1.3.0
-**Status:** Binding. Slice 1 (§14) is IMPLEMENTED on branch `feat/service-lifecycle-slice1`; Slice 1.5 (the front-shim service-proxy, §9.5) is IMPLEMENTED (lib + OPT-IN serve mode); **Slice 1.6 (the M3→M4 DEFAULT FLIP, §9.5) is IMPLEMENTED** on branch `feat/proxy-default-memory-backend`; **Slice 2 (the OS-supervisor control surface, §9.1–§9.4 + `[inv:unload-then-reap]`) is IMPLEMENTED** (`libs/host-runtime/src/os-unit.ts` + `soxe service enable|disable|status|list` in `apps/sox/src/main.ts`) — launchd LaunchAgent generator (systemd seam pluggable), content-addressed idempotent enable, ownership-tracked `os-unit` entry, unload-then-reap teardown in `cmdStop`/`service disable`/`cmdUninstall`, and re-enable-on-upgrade. Slices 3–4 (crash-loop cap, universal doctor reconcile) remain designed-not-built.
-**Date:** 2026-06-26
+**Spec version:** 1.4.0
+**Status:** Binding. Slice 1 (§14) is IMPLEMENTED on branch `feat/service-lifecycle-slice1`; Slice 1.5 (the front-shim service-proxy, §9.5) is IMPLEMENTED (lib + OPT-IN serve mode); **Slice 1.6 (the M3→M4 DEFAULT FLIP, §9.5) is IMPLEMENTED** on branch `feat/proxy-default-memory-backend`; **Slice 2 (the OS-supervisor control surface, §9.1–§9.4 + `[inv:unload-then-reap]`) is IMPLEMENTED** (`libs/host-runtime/src/os-unit.ts` + `soxe service enable|disable|status|list` in `apps/sox/src/main.ts`) — launchd LaunchAgent generator (systemd seam pluggable), content-addressed idempotent enable, ownership-tracked `os-unit` entry, unload-then-reap teardown in `cmdStop`/`service disable`/`cmdUninstall`, and re-enable-on-upgrade. **Slice 3 (the `[inv:crash-loop-cap]` restart bound, §11.3) and Slice 4 (the universal doctor reconcile + its OS-scheduled tick, §10.2/§14) are IMPLEMENTED** — `libs/host-runtime/src/{crash-loop,reconcile}.ts` + `soxe doctor --reconcile|--install-tick|--remove-tick` and the `soxe status`/`doctor` give-up surfacing (v1.4.0 changelog below).
+**Date:** 2026-07-04
 **Owner:** platform-engineering
 **Applies to:** every code path that spawns, supervises, stops, reaps, health-checks, or persists a `service`- or `mcp-server`-type extension, across all scopes (`org` / `user` / `project` / `local`, plus the notion of *global*).
 
 ### Changelog
 
+- **1.4.0 (2026-07-04)** — **Implemented Slices 3 + 4** (the continuous-supervision layer;
+  motivated by the 2026-07-04 zombie-backend incident, BL-170 — the machinery was verb-triggered
+  only, nothing watched between invocations).
+  **Slice 3 — `[inv:crash-loop-cap]` (§11.3):** (1) New leaf module
+  `libs/host-runtime/src/crash-loop.ts` — `CrashLoopGuard`, the §11.3 "restart counter with a
+  rolling-window timestamp ring" (defaults **5-in-60s**, the Appendix-B item 4a decision).
+  Failures are counted on unexpected process EXIT only (a slow-but-successful start can never trip
+  the cap); the cap is **sticky** — window expiry never silently un-caps
+  ([inv:list-never-lies]); only an explicit start/enable (`clear()`/`recordSuccess()`) clears. On
+  the cap transition a **durable JSON marker** is written under `run/crash-loop/<key>.json` so a
+  separate CLI process can render the give-up. (2) Wired into the `supervisor.ts` unexpected-exit
+  seam (the spec-designated location): a capped service stops respawning, logs the durable
+  `[crash-loop]` give-up line (console + LogManager), exposes `isCrashLooped()`, and
+  `start()`/`restart()` clear the state + marker. (3) **Surfacing:** `soxe status` renders a
+  marker as **DEGRADED** with the crash-loop reason (exit ≥1, never a silent stop); `soxe doctor`
+  reports it as a `CRASH-LOOP` anomaly; both report-only — the clear stays explicit. The
+  `ensureBackend` respawn seam gets the same primitive via a documented one-line integration
+  (applied by the integrator to avoid colliding with the live BL-170 hardening of
+  `ensure-backend.ts`). *Slice 3's remaining F13 item (durable M3 serve stderr) is unchanged:
+  the opt-in `--log`/`SOX_SERVE_LOG=1` sink exists (BL-46) and M4 units already default to
+  durable `StandardOutPath`/`StandardErrorPath` (Slice 2, §9.2); flipping the M3 default is
+  deferred with the serve-path work.*
+  **Slice 4 — universal doctor reconcile, scheduled (§10.2, F4/F6/F12/F15 + the BL-170 zombie
+  class):** (1) New leaf module `libs/host-runtime/src/reconcile.ts` — `socketOwnerPids`
+  (lsof-based UDS holder attribution, injectable exec) + `classifyReconcileTargets`, the
+  SAFE-BY-CONSTRUCTION stray classification: never touch an accounted pid
+  ([auth:supervisor-then-os-then-os-reality]); never touch the live writer-socket holder; a live
+  socket whose holder cannot be positively attributed reaps NOTHING (report + skip); a
+  token-matched process with zero fds on the live socket (the exact BL-170 spawn-race-loser
+  zombie) is reaped via `killAndVerify` ([contract:signal]); with no socket, a lone unaccounted
+  process is report-only and a ≥2 set is healed by the EXISTING §5.3 `chooseSurvivor` rule
+  (oldest survives) — no reimplemented scan/kill. (2) **`soxe doctor --reconcile [--dry-run]`**
+  (`doctorReconcile`, `apps/sox/src/main.ts`): non-interactive, idempotent — GC pass
+  (`readGlobalRegistry`), per-install identity-stray heal (BL-136 env+argv matchers), split-brain
+  runtime.json heal (running:true with no process reality → running:false; a LIVE supervisor's
+  record is never touched), os-unit ⇄ ownership reconcile (missing file / stale content-hash /
+  stale artifact-hash F12 / orphaned unit F15 — report-only with the exact remedy command, since
+  loading a unit needs the human node-path ack), and crash-loop marker surfacing. Every action
+  lands in the durable `run/logs/doctor-reconcile/doctor-reconcile-<date>.log`; `--dry-run`
+  reports what WOULD be done; exit 1 only on an `undead` verification failure (report-only
+  findings never flap a scheduled tick). (3) **Scheduling — `soxe doctor --install-tick
+  [--interval <sec>]` / `--remove-tick`:** renders a content-addressed unit through the standard
+  os-unit layer ([inv:os-unit-generated]) that runs `soxe doctor --reconcile` every N seconds
+  (default 300; env `SOX_DOCTOR_TICK_INTERVAL`; clamped ≥10s) — launchd `StartInterval` (new
+  `OsUnitSpec.startIntervalSec`), systemd paired `.timer` unit (new `renderTimerUnit` seam,
+  mirror of `renderSocketUnit`); ownership-tracked as an `os-unit` OwnedEntry under the pseudo-id
+  `doctor-tick` ([inv:reversible-injection]) and also removable via the standard
+  `soxe service disable doctor-tick` path; same `--dry-run`/`--unit-dir`/`SOX_OS_UNIT_DIR`/
+  `--supervisor`/`--node-path`/`--allow-volatile-node` surface as `service enable`.
+  **Env note (§13.2.5):** the tick unit forwards `SOX_ECOSYSTEM_HOME` when set (tick-unit-only —
+  the scheduled reconcile must see the same data root; the supervisor scrub allowlist is NOT
+  widened). (4) **Safety:** all tests sandboxed (temp marker dirs, `SOX_OS_UNIT_DIR`,
+  `--dry-run`, fake lsof exec) — no real `~/Library/LaunchAgents` write, no real
+  `launchctl load`, no live-process reaping in tests. Gates in §14 (Slices 3–4).
 - **1.3.0 (2026-06-26)** — **Implemented Slice 2** (§9.1–§9.4, §8.4/§8.5, the OS-supervisor control
   surface — subsumes BL-51 + the reboot half of BL-50). (1) New leaf module
   `libs/host-runtime/src/os-unit.ts`: a platform-pluggable OS-unit generator
@@ -869,9 +923,11 @@ Defaults: `interval_ms` 5000 (loop), `timeout_ms` 5000 (first probe) / 2000 (per
   systemd's defaults are `StartLimitBurst=5` / `StartLimitIntervalSec=10s`, and launchd throttles
   respawns to ~10s via `ThrottleInterval`; 5-in-60s is slightly more forgiving than systemd's 10s window
   (tolerates a slow-restart service) while still catching a true crash loop fast. The M4 mapping is
-  launchd `ThrottleInterval`(≥10s) / systemd `StartLimitBurst=5` + `StartLimitIntervalSec=60`. **Status:**
-  the in-supervisor path currently has unbounded backoff-capped restarts (no give-up); this cap lands in
-  Slice 3 (`supervisor.ts` restart counter with a rolling-window timestamp ring).
+  launchd `ThrottleInterval`(≥10s) / systemd `StartLimitBurst=5` + `StartLimitIntervalSec=60`. **Status:
+  ✅ IMPLEMENTED (Slice 3, v1.4.0)** — `libs/host-runtime/src/crash-loop.ts` (`CrashLoopGuard`, the
+  rolling-window timestamp ring; sticky cap; durable `run/crash-loop/<key>.json` marker) wired into the
+  `supervisor.ts` unexpected-exit handler; failures count EXITS only (a slow start never trips it);
+  give-up renders DEGRADED in `soxe status` + a `CRASH-LOOP` doctor anomaly; `start()`/`restart()` clear.
 
 ### 11.4 Restart-on-unhealthy
 
@@ -1151,7 +1207,7 @@ acceptance.
   generation are folded into a later authoring pass; the universal `soxe list` os-unit reconcile merge
   lands with Slice 4 (today the reconcile is surfaced via `service status`/`service list`).
 
-### Slice 3 — Crash-loop cap + degraded policy + durable M3 logs (F13/F14, BL-46 closure in-framework)
+### Slice 3 — Crash-loop cap + degraded policy + durable M3 logs (F13/F14, BL-46 closure in-framework) — ✅ IMPLEMENTED (crash-loop cap, v1.4.0)
 
 - **Goal:** `[inv:crash-loop-cap]`, standardized DEGRADED reporting, durable stderr sink for
   `cmdServe`.
@@ -1159,14 +1215,57 @@ acceptance.
   `cmdStatus`/`doctor` surfacing.
 - **Acceptance:** a crash-looping service gives up + reports after N-in-window; live `serve` version's
   stderr is durably captured; `memory_ping` hash-fallback is impossible to miss.
+- **Delivered (v1.4.0):**
+  - `libs/host-runtime/src/crash-loop.ts` — `CrashLoopGuard` (5-in-60s rolling-window ring, item 4a;
+    sticky give-up; durable `run/crash-loop/<key>.json` marker; `recordFailure`/`recordSuccess`/
+    `clear`; marker read/list/clear helpers for status/doctor).
+  - `supervisor.ts` — the unexpected-exit handler consults the guard BEFORE scheduling a respawn;
+    capped ⇒ DEGRADED (give-up), durable `[crash-loop]` line via console + LogManager, NO respawn;
+    `isCrashLooped()` accessor; explicit `start()`/`restart()` clears state + marker. Failures count
+    process EXITS only — a health-timeout on a live child records nothing (proven by test (c)).
+  - `apps/sox/src/main.ts` — `cmdStatus` renders a marker as DEGRADED + staleReason (exit ≥1);
+    `cmdDoctor` reports a `CRASH-LOOP` anomaly. Both report-only ([inv:list-never-lies]).
+  - Tests: `crash-loop.spec.ts` (guard: cap / window expiry / success reset / sticky cap / marker
+    round-trip), `supervisor-crash-loop.spec.ts` (REAL crashing children: (a) N-in-window ⇒ give-up +
+    frozen respawn count + marker, (b) explicit start clears + respawns, (c) slow-but-successful
+    start records zero failures), `doctor-reconcile.spec.ts` (CLI surfacing in status/doctor).
+- **Remainder (explicit, not silently dropped):** the F13 durable-M3-stderr default flip for direct
+  `cmdServe` stays opt-in (`--log`/`SOX_SERVE_LOG=1`, BL-46) — M4 units already default durable logs
+  (§9.2, Slice 2) and proxy backends log via `stderrLogPath` (BL-139); the direct-M3 default is
+  deferred alongside the serve-path hardening. F14's framework half (SOX_EMBED_* allowlist + §9.2
+  unit env) shipped in Slices 1–2; §11.4 REPORT-ONLY degraded policy was already conformant.
 
-### Slice 4 — `soxe doctor` + full reconcile authority across all scopes (F6/F12/F15)
+### Slice 4 — `soxe doctor` + full reconcile authority across all scopes (F6/F12/F15) — ✅ IMPLEMENTED (v1.4.0)
 
 - **Goal:** one command that computes every descriptor across all scopes, surfaces split-brain, stale
   units, duplicates; the reconcile pass becomes the universal pre-step.
 - **Touched:** `apps/sox/src/main.ts` (`cmdDoctor`), reconcile helper, `os-unit.ts` query.
 - **Acceptance:** doctor detects an artifact-stale unit, an orphaned unit, a duplicate, a split-brain
   runtime.json, and proposes/executes the remedy.
+- **Delivered (v1.4.0):**
+  - `libs/host-runtime/src/reconcile.ts` — the safe-by-construction classification
+    (`socketOwnerPids` lsof attribution + `classifyReconcileTargets`; see the v1.4.0 changelog for
+    the five safety rules). Reuses `killAndVerify`/`chooseSurvivor`/`findOrphansByServiceId` — no
+    reimplemented scan/kill.
+  - `soxe doctor --reconcile [--dry-run] [--json]` — GC + identity-stray heal (reaps the BL-170
+    zero-fd zombie class beside a positively-attributed live writer; heals ≥2 no-socket duplicates
+    per §5.3) + split-brain runtime.json heal (F4/F6) + os-unit reconcile (F12 stale
+    content/artifact, missing file, F15 orphaned unit — report-only with the exact remedy command) +
+    crash-loop surfacing. Durable action log at `run/logs/doctor-reconcile/`; idempotent; exit 1
+    only on `undead`.
+  - `soxe doctor --install-tick [--interval <sec>]` / `--remove-tick` — the scheduled tick:
+    launchd `StartInterval` / systemd `.timer` (new `OsUnitSpec.startIntervalSec` +
+    `renderTimerUnit` seam in `os-unit.ts`), ownership-tracked under `doctor-tick`
+    ([inv:reversible-injection]; also reversible via `service disable doctor-tick`), default 300s,
+    node-path volatility guard identical to `service enable`.
+  - Tests: `reconcile.spec.ts` (classification + fake-lsof attribution incl. the BL-170 shape),
+    `os-unit.spec.ts` (StartInterval + `.timer` rendering, content-addressed),
+    `doctor-reconcile.spec.ts` (CLI: sandboxed tick render/remove, dry-run vs heal vs idempotent
+    re-run on a split-brain runtime.json, durable log, marker surfacing) — all sandboxed, zero real
+    launchctl/LaunchAgents effects.
+- **Remainder (explicit):** the reconcile is not yet the automatic pre-step of `soxe list`/`status`
+  (§10.2 "run on every list/status") — it is a complete, schedulable command; folding it into
+  list/status as a cheap pre-step is follow-on work (BACKLOG'd).
 
 > **Sequencing rationale:** Slice 1 (DONE) closes the *correctness* hole (two writers) using only
 > existing primitives — highest leverage, lowest risk, no new OS surface. Slice 1.5 (the front-shim)
