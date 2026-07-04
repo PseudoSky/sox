@@ -3,7 +3,7 @@ description: Fast code review agent — reads code, runs verification, identifie
 mode: all
 model: deepseek/deepseek-v4-flash
 temperature: 0.1
-steps: 25
+steps: 45
 permission:
   read: allow
   edit: deny

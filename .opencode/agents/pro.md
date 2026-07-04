@@ -3,7 +3,7 @@ description: System design + tool research + orchestration. Plans large features
 mode: all
 model: deepseek/deepseek-v4-pro
 temperature: 0
-steps: 20
+steps: 180
 permission:
   read: allow
   edit: deny

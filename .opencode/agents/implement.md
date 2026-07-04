@@ -3,7 +3,7 @@ description: Complex implementation agent (pro model) — multi-file changes, in
 mode: all
 model: deepseek/deepseek-v4-pro
 temperature: 0.1
-steps: 40
+steps: 100
 permission:
   read: allow
   edit: allow

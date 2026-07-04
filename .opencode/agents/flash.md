@@ -3,7 +3,7 @@ description: Fast implementation agent specialized in the sox-ecosystem stack â€
 mode: all
 model: deepseek/deepseek-v4-flash
 temperature: 0.1
-steps: 30
+steps: 80
 permission:
   read: allow
   edit: allow
