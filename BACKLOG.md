@@ -4,6 +4,53 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
+## Open — surfaced during BL-145 live launchd re-enable (2026-07-04)
+
+### BL-155 — CRITICAL: esbuild CJS extension bundle breaks `import.meta.url` → embedding provider dead → daemon crash-loop — **RESOLVED (2026-07-04)**
+
+**Severity: critical (any bundled extension using `import.meta.url` crashes at init).**
+`libs/data/embed/embedding-provider/src/fastembed.ts:7` computes
+`const __dirname = dirname(fileURLToPath(import.meta.url))` to locate its sibling
+`embedWorker.js`. The memory-server bundle is **CJS** (`tools/bundle-extension.cjs`,
+`format: 'cjs'`), and esbuild replaces `import.meta` with `{}` in CJS output — so
+`import.meta.url` is `undefined` and `fileURLToPath(undefined)` throws
+`The "path" argument must be of type string or an instance of URL. Received undefined`
+at module init. This killed `warmupEmbed()` at daemon startup, so the launchd unit
+**crash-looped** (`[memory-server] FATAL: … embedding warmup failed`).
+
+Masked in CI because vitest loads the provider's own **tsc dist** (real ESM, where
+`import.meta.url` is defined), never the esbuild CJS bundle. Only the live daemon (and
+any bundled deployment) hit it.
+
+Fix: `tools/bundle-extension.cjs` now injects an `import.meta.url` shim for CJS output —
+`banner: const __soxImportMetaUrl = require('url').pathToFileURL(__filename).href` +
+`define: { 'import.meta.url': '__soxImportMetaUrl' }`. This points `import.meta.url` at
+the bundle's own file, so `__dirname`-style sibling resolution finds
+`dist/embedWorker.js`. Verified: rebuilt bundle, daemon boots with
+`[memory-server] embeddings: real model active (bge-base-en-v1.5)` and stays up.
+
+### BL-156 — os-unit generator ignores `serve_mode: proxy`; persistent memory-server daemon is unreachable (runs direct-stdio, no port listener) — **Open (HIGH) (2026-07-04)**
+
+`soxe service enable memory-server --scope=user` generates a launchd unit whose
+`ProgramArguments` is `[node, --enable-source-maps, dist/index.js]`
+(`libs/host-runtime/src/os-unit.ts:351`) — the raw entrypoint. But memory-server's
+`extension.json` declares `serve_mode: "proxy"`, `serves: ["stdio","sse","http"]`, and the
+unit env carries `SOX_CONFIG_PORT=3099`. Running `node index.js` directly lands in
+DIRECT-STDIO mode (`index.js:1688`), which does NOT listen on a port — so the daemon
+warms the embed model and idles with **no reachable transport** (confirmed: nothing
+listening on :3099, no UDS socket). The persistent service is effectively a no-op that
+holds the ONNX model in RAM.
+
+The os-unit generator must, for a `serve_mode: proxy` service, emit ProgramArguments that
+run the front-shim proxy (`soxe serve <ext> --port=<SOX_CONFIG_PORT>`, which spawns the
+backend with `SOX_PROXY_BACKEND=1` + UDS and listens on the port) instead of the bare
+entrypoint. This is spec-governed lifecycle code — read `docs/spec/service-lifecycle.md`
+(§9 control surface, §9.5 backend/proxy dispatch) before touching `os-unit.ts`. Until
+fixed, the launchd unit is enabled-but-useless; the working per-session path is the
+host-spawned `soxe serve` stdio session (dev/project profile), which is unaffected.
+
+---
+
 ## Resolved-as-non-issue — pnpm workspace-linking post-merge investigation (surfaced 2026-07-04)
 
 ### BL-150 — `@adhd/*` workspace packages "missing" from `node_modules/@adhd/` after 4-worktree merge — **RESOLVED/NON-ISSUE (2026-07-04)**

@@ -200,6 +200,19 @@ async function main() {
       bundle: true,
       platform: 'node',
       format: 'cjs',
+      // BL-155: shim import.meta.url for CJS output. esbuild replaces `import.meta`
+      // with `{}` in cjs format, so `import.meta.url` becomes undefined and any
+      // `fileURLToPath(import.meta.url)` at module scope (e.g. embedding-provider's
+      // `const __dirname = dirname(fileURLToPath(import.meta.url))`, used to locate
+      // the sibling embedWorker.js) throws "The path argument must be of type string
+      // ... Received undefined" at init — crashing the whole extension. Point it at
+      // this bundle's own file so __dirname-style sibling resolution works.
+      banner: {
+        js: `const __soxImportMetaUrl = require('url').pathToFileURL(__filename).href;`,
+      },
+      define: {
+        'import.meta.url': '__soxImportMetaUrl',
+      },
       // Target a broad Node.js version range
       target: 'node18',
       // Do NOT mark @adhd/sox-* external — they must be inlined.
