@@ -62,7 +62,35 @@
     "status": "pending",
     "evidence": null
   },
-  "blockers": [],
-  "discovered": [],
-  "updated_at": null
+  "blockers": [
+    {
+      "id": "BL-156",
+      "affects": ["HF-5"],
+      "note": "os-unit generator runs the serve_mode:proxy memory-server as direct-stdio (no port listener) → launchd daemon unreachable. HF-5 writer-count forensics must distinguish the per-session soxe-serve process from the launchd daemon by owner (session vs os-unit) and confirm only one holds the writer lease. Fix is spec-governed (docs/spec/service-lifecycle.md §9)."
+    }
+  ],
+  "discovered": [
+    {
+      "id": "BL-155",
+      "status": "resolved",
+      "note": "CRITICAL: esbuild CJS bundle broke import.meta.url → embedding-provider __dirname resolution threw at init → memory-server launchd daemon crash-looped. Fixed in tools/bundle-extension.cjs (import.meta.url shim). Commit e87369e."
+    },
+    {
+      "id": "BL-154",
+      "status": "resolved",
+      "note": "CRITICAL: memory_write auto-chunk deadlocked the serial WriteQueue via nested enqueue (any content >chunk_size*4 chars hung forever). Fixed to write chunks directly on writeDb. Commit a4023c3."
+    },
+    {
+      "id": "BL-151..153",
+      "status": "resolved",
+      "note": "memory test-suite stabilization (corrupted auto-chunk test + missing testTimeout; obsolete hash-backend tests; recluster 0-cluster lens marker). Commit a4023c3."
+    }
+  ],
+  "preconditions": {
+    "upstream_gates": "01-05 passed + merged",
+    "tests": "memory-core 232/1skip, memory-server 82, embedding-provider/memory-flush/host-runtime green",
+    "smoke": "16/0",
+    "verified_at": "2026-07-04"
+  },
+  "updated_at": "2026-07-04"
 }
