@@ -51,6 +51,13 @@ unit, BL-156) was also unloaded in the same window.
 pinned to a non-volatile node per the installer's own warning) and verified loaded + firing
 (`SCHEDULED (last exit 0)` in the new BL-185 rendering).
 
+**Repro attempt (negative, 2026-07-04 ~23:42Z):** the memory-server 1.3.0 upgrade — a REAL
+artifact-changing `upgrade --all` (verified-stop of backend 8558 + respawn on the new artifact)
+— did NOT unload the tick (`launchctl list` before/after both show it loaded). So neither a
+no-op pass nor this artifact-changing pass reproduces; the original unload correlates
+specifically with the S11-merge pass (which also rolled the registry checksum + bundle
+re-install). Still open pending a repro that isolates that pass's shape.
+
 **Fix sketch:** controlled repro — bump a bundle artifact in a sandbox data root
 (SOX_ECOSYSTEM_HOME scratch), install with an os-unit + a doctor tick, run `upgrade --all`, and
 diff `launchctl list` before/after. Suspect surface: the upgrade teardown's
