@@ -155,6 +155,28 @@ was restarted via `launchctl kickstart -k gui/<uid>/com.sox.user.memory-server` 
 `93280` running the fixed shim; `soxe status` shows `memory-server@os-unit HEALTHY`; exactly ONE
 backend remains. Session shims never disrupted (they re-dial the singleton backend by design).
 
+### BL-170 — `ensureBackend` O_EXCL-lock LOSER leaves an orphaned backend zombie (recurring split-brain) — **Open (HIGH) (2026-07-04)**
+
+**Discovered while fixing BL-157** — it is the ROOT of the "two backends for one store" split-brain
+BL-157 noted. When the singleton writer backend for a store dies, multiple session shims' `ensure`
+hooks race to respawn it. The lock winner takes the O_EXCL lock + binds the UDS. A racer that
+spawned a backend which then loses the bind hits `E_LIVE_SOCKET` in `serveBackend`
+(`backend.ts` probe-before-bind correctly REFUSES a live socket) — **but that backend process does
+NOT exit.** It idles orphaned: `ppid=1`, 0 socket fds, ONNX model loaded, 0 clients. Observed
+TWICE on the live box during S8: original orphan `43740` beside writer `43731`; then it RE-FORMED
+(`6604` beside `6595`) minutes after the first reap, when the original writer exited and two shims
+raced. These orphans also **ignore SIGTERM** (had to SIGKILL) because they never finished init to
+wire their `[contract:signal]` handler.
+
+Two sub-fixes: (1) `runBackend` (`extensions/bundles/sox-memory-bundle/members/memory-server/src/
+backend.ts`) must `process.exit(non-zero)` when `serveBackend` rejects with `E_LIVE_SOCKET` — a
+losing racer MUST die, not idle, so the singleton invariant self-heals; and/or harden
+`ensureBackend` (`libs/service-proxy/src/ensure-backend.ts`) so the spawn path that detects a
+live socket post-spawn kills its own just-spawned child. (2) Ensure a SIGTERM-drain path exists
+even for a backend stuck pre-bind. Until fixed, split-brain re-forms on every writer-death race
+and needs a manual orphan reap. NOT fixed in the BL-157 change (that was the shim stdio/HTTP
+coupling; this is the backend spawn-race). Also mirrors the never-reaped-orphan class of BL-31/BL-64.
+
 ### BL-158 — live store's `sox_store_meta.embed_model` stamp was stale (`…-hash`) though vectors are real bge — **RESOLVED (2026-07-04)**
 
 **Downgraded from HIGH after verification, then fixed.** With owner approval, corrected the one
