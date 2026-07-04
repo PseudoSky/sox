@@ -143,6 +143,25 @@ cause as BL-160 (loose `.mjs` outside the graph). Fix: promote the baseline-capt
 into a typed source under a proper project (or a `tools/`/lib the graph knows), or explicitly exclude
 `scripts/*.mjs` from the memory-core project graph so they don't form the cycle. Sequenced after S4.
 
+### BL-165 — RAG-stack external reusability gap: `ingest` is private + `memory-core` (public) transitively 404s on it — **Open (MEDIUM) (2026-07-04)**
+
+ADR-0007 states the enrichment/data stack is meant to be "reused by non-memory projects." The five
+data packages (`@adhd/sox-embedding-provider`, `-vector-store`, `-graph-store`, `-hybrid-search`,
+`-analysis`) ARE cleanly reusable — public, ~9k LOC of real impl, platform-decoupled (import only each
+other, never host-runtime/CLI), clean public `@adhd` dep graphs. But two gaps block a clean external
+build of the FULL stack:
+1. `@adhd/sox-ingest` (chunking + extractive summary + deterministic tags — the RAG document-prep
+   step) is `private: true`, so it's not externally installable.
+2. `@adhd/sox-memory-core` (public, v0.2.1) declares a RUNTIME `workspace:*` dep on the private
+   `ingest` → per the repo's own `scripts/check-publishable.ts` rule 1, it would 404 on a fresh
+   `npm install`. So memory-core is marked publishable but isn't.
+Resolve the inconsistency: EITHER make `ingest` public (it's a small, generic chunker — reasonable to
+publish and the cleanest fix for reusability), OR make `memory-core` `private: true` (declare it the
+memory app's internal composer, not an external artifact) and document that external RAG consumers
+compose the 5 public data packages directly + bring their own chunker. Also: none of these are pushed
+to a registry yet (v0.x) — a real "consume externally" story needs an actual publish. (Discovered
+answering: "can I build a RAG system from only these packages?" — yes for the retrieval substrate.)
+
 ### BL-160 — promote `reembed-memory.mjs` orchestration into a library + `memory-cli` verb (root cause of BL-159) — **RESOLVED (2026-07-04)**
 
 `scripts/reembed-memory.mjs` was a loose `.mjs` OUTSIDE the nx graph (no typecheck/lint/test),
