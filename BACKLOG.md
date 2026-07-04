@@ -6,7 +6,10 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Open — surfaced during S7/BL-161 memory-core test speed-up (2026-07-04)
 
-### BL-162 — recall.ts ScoreBreakdown invariant violated for zero-normTotal ranked nodes
+### BL-167 — recall.ts ScoreBreakdown invariant violated for zero-normTotal ranked nodes (HF-3 follow-up) — **Open (LOW) (2026-07-04)**
+
+_(Renumbered from a duplicate BL-162 introduced by the S7 agent; the memory-daemon item keeps BL-162.)_
+Follow-up to HF-3 (BL-132) recall score legibility.
 
 **Severity: low (incorrect score_breakdown.vec/bm25/temporal values; total === score is correct).**
 
