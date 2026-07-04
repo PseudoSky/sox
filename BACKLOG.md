@@ -182,6 +182,25 @@ Either way this closes the original publishability inconsistency (memory-core pu
 a real external-consume story needs an actual publish. (Discovered answering "can I build a RAG system
 from only these packages?" — yes for the 5 public retrieval packages; ingest is the weak link.)
 
+### BL-166 — orphaned built packages + a dead reranker: wire-in-or-remove audit — **Open (MEDIUM) (2026-07-04)**
+
+Cheap consumer scan ("what was built but never refactored into memory") found fully-implemented
+code with ZERO live consumers (not stubs — real impl; distinct from the internal-completeness items
+BL-114/115 below):
+- **`@adhd/sox-blob-store`** (~1,828 LOC) — 0 live importers anywhere in libs/extensions/apps.
+- **`@adhd/sox-claim-verification`** (~1,083 LOC) — 0 live importers.
+- **`hybrid-search` cross-encoder reranker** (`createCrossEncoder`/`CrossEncoderImpl`) — exported +
+  tested but only its own spec calls it; `memory-core/recall.ts` never invokes it (recall reranks by
+  temporal recency×importance only). The dead path also carries the worker-path resolution bug noted
+  under BL-157 (`../../../../embed/embedding-provider/dist/embedWorker.js` won't resolve in a bundle).
+
+Same fork as ingest (BL-165): for each, **wire it into the live memory path** (blob-store = large-
+content/attachment offload out of SQLite rows; claim-verification = memory provenance/contradiction
+checking; cross-encoder = higher-precision recall reranking behind a flag) **or remove it**. Decide
+per item — don't leave built-but-unconsumed code accruing (owner directive: fix/remove, don't defer).
+Note `@adhd/sox-analysis` + `@adhd/sox-vector-store` currently also count `memory-daemon` as an
+importer, but that's dead code being removed in S9 — they remain live via memory-core.
+
 ### BL-160 — promote `reembed-memory.mjs` orchestration into a library + `memory-cli` verb (root cause of BL-159) — **RESOLVED (2026-07-04)**
 
 `scripts/reembed-memory.mjs` was a loose `.mjs` OUTSIDE the nx graph (no typecheck/lint/test),
