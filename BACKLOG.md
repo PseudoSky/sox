@@ -167,6 +167,29 @@ user-scope sources at durable paths — do NOT hand-edit the lockfile. NOT repai
 worktree (live-box mutations are fenced; and the pre-damage state was already another agent's
 worktree path, not main).
 
+**Integrator update (2026-07-04, post-S9 merge): the predicted breakage HAPPENED, then repaired.**
+After the mutating worktree (`agent-a605b86bb76941c53`) was deleted post-merge, `soxe upgrade --all`
+reported **28 UNRESOLVABLE consumers** — every user-scope source (both the main-root user installs
+AND the published-CLI root `~/.adhd/sox-cli/lib/node_modules`) pointed at the deleted worktree
+(`install: source file not found: …/worktrees/agent-a605b86bb76941c53/…`). Repaired per (b):
+`soxe install sox-memory-bundle --scope=project`, `--scope=user`, `demo-creator --scope=user` from
+the main checkout → `38 current, 0 failed`; memory-server os-unit stayed HEALTHY throughout. The
+(a) FIX (sandbox `SOX_ECOSYSTEM_HOME` in root-test harnesses) remains OPEN and is now
+incident-proven urgent, alongside the smoke-hermeticity fix (BL-173).
+
+### BL-185 — `soxe status` renders a loaded, on-schedule PERIODIC os-unit as `DEAD` (violates [inv:list-never-lies]) — **Open (MEDIUM) (2026-07-04)**
+
+Observed immediately after `doctor --install-tick` (Slice 4): `launchctl list` shows
+`com.sox.user.doctor-tick` loaded with last-exit 0, and its reconcile log proves interval runs
+firing on schedule (`run/logs/doctor-reconcile/doctor-reconcile-2026-07-04.log`) — yet
+`soxe status` lists `doctor-tick@os-unit … DEAD, 0s uptime`. A `StartInterval` unit has NO
+resident process between runs by design; status's health derivation conflates "no live pid right
+now" with DEAD, making the healthy tick look faulty (the same lying-surface class as BL-162's
+dead-daemon rendering and today's enrichment blind spot). Fix sketch: os-unit entries whose unit
+carries an interval schedule (StartInterval/StartCalendarInterval/systemd timer) should render a
+schedule-aware status (e.g. `SCHEDULED (last run <t>, exit 0)`) derived from `launchctl list`
+exit status + the unit's own log/marker, not pid-liveness.
+
 ### BL-180 — `dataRoot()` returns the raw scope string as a PATH for an unknown scope (audit log writes `./badscope/run/sox-audit.jsonl`) — **Open (MEDIUM) (2026-07-04)**
 
 `libs/host-runtime/src/data-paths.ts` `dataRoot()` ends in `default: const _exhaustive: never =
