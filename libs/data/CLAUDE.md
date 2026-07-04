@@ -48,13 +48,13 @@ spanning dims (384, 768, 1024), making that a **hard failure**. Every provider a
 `.dim` via its metadata — callers must read it, never assume it. `vector-store.ensureSpace(space)`
 declares the dim at setup time; `upsert()` enforces it with `SpaceInvariantError`.
 
-### 2. Silent embedding fallback
+### 2. No silent embedding fallback
 
 `createEmbeddingProvider()` **THROWS** `ResolutionError` if the configured model/runtime cannot load.
-It never silently downgrades to hash. Hash is selected only via explicit config
-(`SOX_EMBED_BACKEND=hash`), never as an implicit fallback. If you see a provider running with
-`isDeterministic: true` and `SOX_EMBED_BACKEND` is not `hash`, that's a bug — the real provider
-failed to load and something swallowed the error.
+It never silently downgrades — there is no fallback path. The only backends are `auto` (fastembed real
+model) and `real` (same, but fail-loud). `SOX_EMBED_BACKEND=hash` was removed with the hash backend.
+If you see a provider running with `isDeterministic: true`, that's a test provider injected via
+`_setEmbedProviderForTest()` — never a hash fallback.
 
 ### 3. Space invariant enforcement
 

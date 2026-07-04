@@ -6,20 +6,18 @@ This is the document-prep layer of the RAG substrate (chunk + extractive summary
 
 ---
 
-### BL-165 — MEDIUM (owner decision: CONSOLIDATE) — ingest is barely used while its capabilities are duplicated
+### BL-165 — MEDIUM — consolidation completed (S11) — **RESOLVED (2026-07-04)**
 
-The system uses `ingest()` for ONLY its extractive summary (`memory-core/src/extractive.ts` →
-`ingest(content).summary`). Its other capabilities are dead or reimplemented elsewhere: `chunkContent`
-is UNUSED (memory-server has its own `splitIntoChunks` — the code that carried the BL-154 deadlock);
-`hexSha256` is UNUSED (`memory-core/write.ts` has its own `crypto` SHA-256); `extractTags` is UNUSED
-(tags are caller-supplied). So this package does not earn its ~1.4k LOC as wired.
+The S11 consolidation landed. `hexSha256` and `splitIntoChunksSentence` are now exported from
+`@adhd/sox-ingest` and re-exported through `memory-core/src/index.ts`. `memory-core/write.ts`
+uses `hexSha256` from ingest (replaced inline `crypto.createHash`). `memory-server/src/index.ts`
+uses `splitIntoChunksSentence` from ingest (replaced its own `splitIntoChunks`). Parity verified
+in `ingest-parity.spec.ts` (27 chunking + 3 summary assertions).
 
-**Owner decision (2026-07-04): consolidate** — make `ingest` the canonical ingestion layer: route
-memory-server's chunking + write.ts's content-hashing (and tag derivation) THROUGH `ingest`, deleting
-the duplicates. Preserve behavior (chunk boundaries + hash normalization — verify parity so recall/dedup
-don't shift). Then resolve publishability (make `ingest` public so `memory-core` is cleanly installable,
-or keep memory-core private). Tracked as SHARDS.md **S11**. Root: BL-165 (supersedes BL-113 private/
-publishability). This directly serves the RAG-reuse question (external consumers need document prep).
+**Remaining (deferred):** publishability — `private: true` kept until memory-core v1.0 publish
+milestone (per BL-165 closeout in root BACKLOG.md). The `agent-mcp-authoring` dependency uses
+local path `"file:../sox-ecosystem/..."` as workaround until then. Root: BL-165 (supersedes
+BL-113).
 
 ### BL-115 — MEDIUM: AST chunker uses regex/brace-depth heuristics, not tree-sitter AST parsing
 
