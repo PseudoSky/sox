@@ -52,6 +52,7 @@ import {
   reapByIdentity,
   reapOrphansForExtension,
   reconcileRuntime,
+  CrashLoopGuard,
   resolveExtensionDir,
   // Slice 1 (docs/spec/service-lifecycle.md): cross-scope singleton.
   resolveStoreResource,
@@ -7502,6 +7503,12 @@ Flags:
       `(singleton-key: ${key})\n`,
     );
 
+    // Slice 3 (§11.3): cap the backend re-ensure loop. 5 failed ensures in 60s ⇒
+    // stop respawning (no spawn-fail-spawn storm across reconnect loops); the
+    // durable marker surfaces the give-up in `soxe status`/`doctor`. Any
+    // successful ensure resets the window.
+    const backendCrashLoop = new CrashLoopGuard({ key: `${extId}@proxy-backend` });
+
     const handle = runFrontShim({
       id: extId,
       socketPath: backendSock,
@@ -7515,6 +7522,10 @@ Flags:
         const backendLogDir2 = logDirFor(`proxy-backend-${extId}`);
         const backendLogDate2 = new Date().toISOString().slice(0, 10);
         const backendLogPath2 = pathMod2.join(backendLogDir2, `${extId}-backend-${backendLogDate2}.log`);
+        if (backendCrashLoop.isCapped()) {
+          process.stderr.write(backendCrashLoop.giveUpLine() + '\n');
+          return;
+        }
         const r = await ensureBackend({
           socketPath: backendSock,
           singletonKey: key,
@@ -7526,6 +7537,8 @@ Flags:
           onDiagnostic: (l) => process.stderr.write(l + '\n'),
         });
         process.stderr.write(`[soxe serve] ensure-backend: ${r.disposition} — ${r.detail}\n`);
+        if (r.disposition === 'failed') backendCrashLoop.recordFailure();
+        else backendCrashLoop.recordSuccess();
       },
     });
     // The shim lives until the client closes the stdio pipe, or until SIGTERM
