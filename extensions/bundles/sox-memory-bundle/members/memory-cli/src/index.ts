@@ -23,7 +23,16 @@
  *   export_enabled: --enabled/--no-enabled flag  >  SOX_CONFIG_EXPORT_ENABLED env var  >  true
  */
 
-import { exportMarkdown, initScope, openDb, reembedStore, writeRegistry } from '@adhd/sox-memory-core';
+import {
+  exportMarkdown,
+  initScope,
+  openDb,
+  reembedStore,
+  writeRegistry,
+  backupStore,
+  isBackupStoreError,
+  runCompactionPass,
+} from '@adhd/sox-memory-core';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -59,7 +68,7 @@ interface ParsedArgs {
   basePath: string;
   /** --dir override for export subcommand */
   exportDir: string;
-  /** --db override for export + reembed subcommands */
+  /** --db override for export + reembed + compact subcommands */
   dbPathOverride: string;
   /** reembed: --dry-run */
   dryRun: boolean;
@@ -69,6 +78,10 @@ interface ParsedArgs {
   noBackup: boolean;
   /** reembed: --limit N */
   limit: number;
+  /** backup: --dest <path> */
+  destPath: string;
+  /** compact: --no-optimize (skip PRAGMA optimize) */
+  noOptimize: boolean;
   rest: string[];
 }
 
@@ -83,6 +96,8 @@ function parseArgs(argv: string[]): ParsedArgs {
   let force = false;
   let noBackup = false;
   let limit = 0;
+  let destPath = '';
+  let noOptimize = false;
   const rest: string[] = [];
 
   for (let i = 1; i < argv.length; i++) {
@@ -108,12 +123,16 @@ function parseArgs(argv: string[]): ParsedArgs {
       noBackup = true;
     } else if (arg === '--limit' && argv[i + 1]) {
       limit = parseInt(argv[++i] ?? '0', 10) || 0;
+    } else if (arg === '--dest') {
+      destPath = argv[++i] ?? '';
+    } else if (arg === '--no-optimize') {
+      noOptimize = true;
     } else {
       rest.push(arg ?? '');
     }
   }
 
-  return { command, scope, basePath, exportDir, dbPathOverride, dryRun, force, noBackup, limit, rest };
+  return { command, scope, basePath, exportDir, dbPathOverride, dryRun, force, noBackup, limit, destPath, noOptimize, rest };
 }
 
 /**
@@ -399,8 +418,104 @@ async function cmdReembed(
   }
 }
 
+/**
+ * Backup a sox-memory store to a destination path via VACUUM INTO.
+ *
+ * DB resolution (highest precedence first):
+ *   --db flag  >  positional arg (rest[0])  >  ~/.memory/memory.db
+ *
+ * Destination resolution:
+ *   --dest flag  >  positional arg (rest[1] or rest[0] when --db is supplied)
+ *
+ * Both source and destination must be inside ~/.memory/** (allowlist enforced).
+ *
+ * NOTE: A memory_backup MCP tool is a planned follow-up (outside this shard's scope).
+ */
+async function cmdBackup(dbFlag: string, destFlag: string, rest: string[]): Promise<void> {
+  const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? os.homedir();
+
+  const rawDb = dbFlag || rest[0] || path.join(home, '.memory', 'memory.db');
+  const resolvedDb = path.resolve(rawDb.replace(/^~(?=\/|$)/, home));
+
+  // Dest: --dest flag > rest[1] (if --db supplied) or rest[1] (if positional db used)
+  const rawDest = destFlag || (dbFlag ? rest[0] : rest[1]) || '';
+  if (!rawDest) {
+    console.error('[backup] ERROR: destination path required. Use --dest <path> or pass it as the second positional argument.');
+    process.exit(1);
+  }
+  const resolvedDest = path.resolve(rawDest.replace(/^~(?=\/|$)/, home));
+
+  try {
+    const result = await backupStore(resolvedDb, resolvedDest, {
+      log: (...args) => console.log(...args),
+    });
+
+    if (isBackupStoreError(result)) {
+      console.error(`[backup] ERROR (${result.code}): ${result.message}`);
+      process.exit(1);
+    } else {
+      console.log(`[backup] complete`);
+      console.log(`  source:         ${result.sourcePath}`);
+      console.log(`  dest:           ${result.destPath}`);
+      console.log(`  integrity:      ${result.integrityCheck}`);
+      console.log(`  started_at:     ${result.startedAt}`);
+      console.log(`  completed_at:   ${result.completedAt}`);
+    }
+  } catch (err) {
+    console.error(`[backup] ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * Run a single compaction pass (PRAGMA optimize + ANALYZE + WAL checkpoint) on a store.
+ *
+ * DB resolution (highest precedence first):
+ *   --db flag  >  positional arg (rest[0])  >  ~/.memory/memory.db
+ *
+ * This is a one-shot pass; for a recurring tick, use startCompactionTick() from
+ * @adhd/sox-memory-core in a long-running process.
+ */
+function cmdCompact(dbFlag: string, rest: string[], noOptimize: boolean): void {
+  const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? os.homedir();
+  const rawDb = dbFlag || rest[0] || path.join(home, '.memory', 'memory.db');
+  const resolvedDb = path.resolve(rawDb.replace(/^~(?=\/|$)/, home));
+
+  if (!fs.existsSync(resolvedDb)) {
+    console.error(`[compact] db not found: ${resolvedDb}`);
+    process.exit(1);
+  }
+
+  try {
+    const db = openDb(resolvedDb);
+    try {
+      const result = runCompactionPass(db, {
+        runOptimize: !noOptimize,
+        log: (...args) => console.log(...args),
+      });
+
+      if (result.error) {
+        console.error(`[compact] ERROR: ${result.error}`);
+        process.exit(1);
+      } else {
+        console.log(`[compact] complete`);
+        console.log(`  run_at:             ${result.runAt}`);
+        console.log(`  optimized:          ${result.optimized}`);
+        console.log(`  analyzed:           ${result.analyzed}`);
+        console.log(`  checkpointed:       ${result.checkpointed}`);
+        console.log(`  frames_checkpointed: ${result.framesCheckpointed}`);
+      }
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    console.error(`[compact] ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
+
 export function runCli(argv: string[]): void {
-  const { command, scope, basePath, exportDir, dbPathOverride, dryRun, force, noBackup, limit, rest } = parseArgs(argv);
+  const { command, scope, basePath, exportDir, dbPathOverride, dryRun, force, noBackup, limit, destPath, noOptimize, rest } = parseArgs(argv);
 
   switch (command) {
     case 'init':
@@ -421,6 +536,12 @@ export function runCli(argv: string[]): void {
     case 'reembed':
       void cmdReembed(dbPathOverride, rest, dryRun, force, noBackup, limit);
       break;
+    case 'backup':
+      void cmdBackup(dbPathOverride, destPath, rest);
+      break;
+    case 'compact':
+      cmdCompact(dbPathOverride, rest, noOptimize);
+      break;
     case 'help':
     default:
       console.log(`sox-memory CLI (P3: multi-scope)
@@ -433,6 +554,10 @@ Commands:
          [--dir <path>] [--db <path>]
   reembed [--db <path>] [--dry-run] [--force]          Re-embed store with current BGE model
           [--no-backup] [--limit N]                     (promotes scripts/reembed-memory.mjs)
+  backup  [--db <src>] --dest <dst>                    VACUUM INTO backup (must be inside ~/.memory/**)
+          [<src> <dst> positional args also work]
+  compact [--db <path>] [--no-optimize]                Run PRAGMA optimize+ANALYZE+WAL checkpoint
+          [<path> positional arg also works]
 `);
   }
 }
