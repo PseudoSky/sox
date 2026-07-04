@@ -4,6 +4,18 @@
 
 ### Minor Changes
 
+- Two-phase write observability (follow-on): `memory_ping.store` gains an additive
+  `embed_pipeline` block — `{ backlog, backlog_oldest_at, metrics }` where `metrics` carries
+  `time_to_vector_ms` (Phase-A commit → vec applied; how long a fresh write is BM25-only),
+  `embed_duration_ms`, wall-clock `heal_lag_ms`, and monotonic Phase-B counters
+  (`embeds_completed/failed`, `applies_applied/exists/gone`, `heals_applied/failed`);
+  `metrics` is `null` until the first Phase-B activity for the store in this process. The
+  existing top-level `embed_backlog`/`embed_backlog_oldest_at` fields are kept as-is and
+  mirrored into the block (HF-3 additive rule). `store.write_queue` gains an additive
+  `apply_latency_ms` block plus `write_tasks_completed`/`apply_tasks_completed` counters;
+  `write_latency_ms` is now write-kind only (Phase-B apply tasks no longer dilute it — more
+  honest, refinement noted per the WRITEQ metrics conventions).
+
 - Two-phase write (2026-07-04 incident fix): `memory_write`/`memory_write_batch` hold the serial
   WriteQueue slot only for a synchronous, embedding-free Phase A; the ONNX embedding + vec insert
   + near-dup run asynchronously off-slot moments later. Caller-visible: `enrichment.near_dup` is

@@ -4,6 +4,22 @@
 
 ### Minor Changes
 
+- Two-phase write observability (follow-on to the split below): `embed-pipeline.ts` now keeps
+  per-store metrics (`getEmbedPipelineMetrics(storeKey)`, keyed identically to
+  `WriteQueue.metricsForPath`) — `time_to_vector_ms` (Phase-A commit → vec_node applied, from a
+  monotonic `PendingEmbed.startedAtMs` stamp minted by `memoryWritePhaseA`; the user-facing
+  eventual-consistency window), `embed_duration_ms` (the embed call itself), wall-clock
+  `heal_lag_ms` for heal-path applies (which are deliberately EXCLUDED from time_to_vector —
+  no in-process stamp survives a crash), and monotonic counters
+  (`embeds_completed/failed`, `applies_applied/exists/gone`, `heals_applied/failed`).
+  `WriteQueue.enqueue` gains an optional task `kind` (`'write'` default | `'apply'`); Phase-B
+  apply tasks are labeled `'apply'`. **Refinement:** `write_latency_ms` in `WriteQueueMetrics`
+  now summarizes WRITE-kind tasks only (previously it blended Phase-B applies in); a new
+  additive `apply_latency_ms` block covers apply-kind, and counters gain
+  `write_tasks_completed`/`apply_tasks_completed` (`tasks_completed` keeps the all-kind
+  semantic). The deadline-admission estimator input is UNCHANGED (blended all-kind ring + raw
+  depth — apply tasks occupy the slot too); the E_BUSY contract is untouched.
+
 - Two-phase write split (2026-07-04 incident: "expensive compute must not block writes").
   `memoryWritePhaseA`/`memoryWriteBatchPhaseA` run the entire write EXCEPT the embedding as a
   synchronous, ONNX-free body for the serial WriteQueue slot; the new `embed-pipeline.ts`
