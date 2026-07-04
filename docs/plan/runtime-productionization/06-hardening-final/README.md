@@ -1,5 +1,8 @@
 # Context 06 — hardening, release gates, closeout
 
+> **▶ RESUMING? Read [`RESUME.md`](./RESUME.md) FIRST** — current state, the S8–S11 + HF-5/HF-6 queue,
+> and all open/resolved BL items. HF-1..4 + S7 are done; S8–S11 + HF-5/HF-6 remain.
+
 **Execute:** read `../_shared/RULES.md` → `../_shared/CONTRACTS.md` →
 `../_shared/PROTOCOL.md`, then this file, then ADR 0007 (whole) and BACKLOG BL-132/133/
 134. Worktree branch: `runtime-prod/06-hardening-final`. Log to `./progress.json`;

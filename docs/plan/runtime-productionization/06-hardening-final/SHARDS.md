@@ -156,8 +156,14 @@ fix, don't defer — carried-in items are IN this plan, not deferred).
 Everything discovered this cycle is tracked here with a sequence — nothing is left as
 "just backlog." Sequenced AFTER S4 merges (all touch memory-core or the same bundle).
 
-### S7 — BL-161 fastembed test determinism + performance (was "flaky/slow tests")
+### S7 — BL-161 fastembed test determinism + performance — ✅ DONE (merged `84598f2`, 2026-07-04)
 
+Deterministic test-embed DI seam (`_setEmbedProviderForTest` + `DeterministicTestProvider`
+feature-hashing) installed via `vitest.setup.ts`; `maxWorkers:1`. memory-core tests **140s → 19.7s
+(7×), 280 pass / 6 skip ×3, no flake**; real-bge opt-in test still passes (vitest alias fixed to
+point at dist, `2c5a237`). Discovered BL-167 (recall ScoreBreakdown zero-normTotal edge case, LOW).
+
+_Original brief (for reference):_
 Make the memory-core embed tests deterministic + fast + fault-tolerant (they must not
 flake under concurrent load). Do NOT just bump timeouts. Implement: stop resetting the
 embed singleton in hooks that don't need isolation (warm once per process); pin embed-heavy

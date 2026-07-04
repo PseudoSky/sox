@@ -101,7 +101,9 @@
             "summary": "Run 3: 20 test files passed (1 skipped), 253 tests passed (5 skipped). Duration 68.91s."
           }
         ],
-        "commits": ["dc55b0f"],
+        "commits": [
+          "dc55b0f"
+        ],
         "files_created": [
           "libs/memory-core/src/soak/soak-runner.ts",
           "libs/memory-core/src/soak/metrics-exporter.ts",
@@ -180,12 +182,27 @@
       "status": "complete",
       "evidence": {
         "commands": [
-          { "cmd": "npx nx run-many -t build,lint,test --projects=memory-core,memory-cli --skip-nx-cache", "exit": 0, "summary": "memory-core 280 pass/6 skip; memory-cli lint+build clean" },
-          { "cmd": "npx nx run registry:sync-index && node scripts/smoke-test.mjs", "exit": 0, "summary": "smoke 16 passed / 0 failed" }
+          {
+            "cmd": "npx nx run-many -t build,lint,test --projects=memory-core,memory-cli --skip-nx-cache",
+            "exit": 0,
+            "summary": "memory-core 280 pass/6 skip; memory-cli lint+build clean"
+          },
+          {
+            "cmd": "npx nx run registry:sync-index && node scripts/smoke-test.mjs",
+            "exit": 0,
+            "summary": "smoke 16 passed / 0 failed"
+          }
         ],
-        "commits": ["c40ef6d", "e206390 (merge)", "3838eb1 (soak+lifecycle build fix)", "516ae37 (registry)"],
+        "commits": [
+          "c40ef6d",
+          "e206390 (merge)",
+          "3838eb1 (soak+lifecycle build fix)",
+          "516ae37 (registry)"
+        ],
         "files": [
-          "libs/memory-core/src/compaction.ts", "libs/memory-core/src/quota.ts", "libs/memory-core/src/backup.ts",
+          "libs/memory-core/src/compaction.ts",
+          "libs/memory-core/src/quota.ts",
+          "libs/memory-core/src/backup.ts",
           "extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts (backup/compact verbs)"
         ]
       },
@@ -220,7 +237,9 @@
   "blockers": [
     {
       "id": "BL-156",
-      "affects": ["HF-5"],
+      "affects": [
+        "HF-5"
+      ],
       "note": "os-unit generator runs the serve_mode:proxy memory-server as direct-stdio (no port listener) → launchd daemon unreachable. HF-5 writer-count forensics must distinguish the per-session soxe-serve process from the launchd daemon by owner (session vs os-unit) and confirm only one holds the writer lease. Fix is spec-governed (docs/spec/service-lifecycle.md §9)."
     }
   ],
@@ -254,5 +273,6 @@
     "smoke": "16/0",
     "verified_at": "2026-07-04"
   },
-  "updated_at": "2026-07-04T12:00:00Z"
+  "updated_at": "2026-07-04T20:30:00Z",
+  "resume_doc": "docs/plan/runtime-productionization/06-hardening-final/RESUME.md"
 }
