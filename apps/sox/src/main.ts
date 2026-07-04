@@ -4308,12 +4308,32 @@ function resolveOsUnitContext(
   const manifestPath = pathM.join(resolved.extDir, 'extension.json');
   const env = buildOsUnitEnv(extId, root);
   const logDir = logDirFor(`os-${scope}-${extId}`);
+
+  // BL-156: a proxy-mode mcp-server with a configured port must not run the bare
+  // entrypoint (that is DIRECT-STDIO mode, which listens on nothing — the launchd
+  // daemon would idle unreachable). Instead the unit runs the port-listening
+  // front-shim `soxe serve <id> --port <port>`, which serves stdio+http+sse and
+  // auto-ensures the singleton UDS backend. The BACKEND still runs `entrypoint`
+  // (SOX_PROXY_BACKEND=1), so the reaper's identity token stays `entrypoint`.
+  let execArgs: string[] | undefined;
+  const port = env['SOX_CONFIG_PORT'];
+  if (port && mcpServerIsProxyMode(extId, scope, root)) {
+    // The CLI that is enabling this unit — run the SAME soxe for the shim so the
+    // served code matches the resolved entrypoint (dev checkout vs installed CLI).
+    let cliPath = process.argv[1] ?? '';
+    try { cliPath = fsM.realpathSync(cliPath); } catch { /* keep as-is */ }
+    if (cliPath) {
+      execArgs = ['--enable-source-maps', cliPath, 'serve', extId, '--port', String(port)];
+    }
+  }
+
   const spec = deriveOsUnitSpec({
     id: extId,
     scope,
     manifestPath,
     nodePath: nodeRes.nodePath,
     entrypoint,
+    ...(execArgs !== undefined ? { execArgs } : {}),
     env,
     workingDirectory: resolved.extDir,
     logDir,

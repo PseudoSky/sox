@@ -154,6 +154,29 @@ describe('launchd render — content-addressed plist', () => {
     expect(meta.artifactHash).toBe('sha256:aaaa');
   });
 
+  it('BL-156: execArgs overrides ProgramArguments while entrypoint stays the identity token', () => {
+    // A serve_mode:proxy mcp-server runs the port-listening front-shim, not the
+    // bare entrypoint. The BACKEND still runs `entrypoint`, so the reaper token
+    // (spec.entrypoint) is preserved even though it is absent from the unit args.
+    const cli = path.join(tmpDir, 'bin', 'soxe');
+    const spec = makeSpec({
+      execArgs: ['--enable-source-maps', cli, 'serve', 'memory-server', '--port', '3099'],
+    });
+    const plist = platform.render(spec);
+    // The unit launches the front-shim on the port…
+    expect(plist).toContain(`<string>${cli}</string>`);
+    expect(plist).toContain('<string>serve</string>');
+    expect(plist).toContain('<string>--port</string>');
+    expect(plist).toContain('<string>3099</string>');
+    // …and NOT the bare entrypoint as a ProgramArguments element.
+    expect(plist).not.toContain(`<string>${spec.entrypoint}</string>`);
+    // But the identity token is still carried on the spec for the reaper.
+    expect(spec.entrypoint).toContain('dist/index.js');
+    // execArgs changes the content hash (drift-proof re-enable).
+    const bare = platform.render(makeSpec());
+    expect(readUnitMeta(plist).contentHash).not.toBe(readUnitMeta(bare).contentHash);
+  });
+
   it('content hash is stable across renders and changes when the spec changes', () => {
     const a = platform.render(makeSpec());
     const b = platform.render(makeSpec());

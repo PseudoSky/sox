@@ -29,25 +29,52 @@ the bundle's own file, so `__dirname`-style sibling resolution finds
 `dist/embedWorker.js`. Verified: rebuilt bundle, daemon boots with
 `[memory-server] embeddings: real model active (bge-base-en-v1.5)` and stays up.
 
-### BL-156 — os-unit generator ignores `serve_mode: proxy`; persistent memory-server daemon is unreachable (runs direct-stdio, no port listener) — **Open (HIGH) (2026-07-04)**
+### BL-156 — os-unit generator ignored `serve_mode: proxy` (persistent daemon ran direct-stdio, unreachable) — **RESOLVED (generator) (2026-07-04)**
 
-`soxe service enable memory-server --scope=user` generates a launchd unit whose
-`ProgramArguments` is `[node, --enable-source-maps, dist/index.js]`
-(`libs/host-runtime/src/os-unit.ts:351`) — the raw entrypoint. But memory-server's
-`extension.json` declares `serve_mode: "proxy"`, `serves: ["stdio","sse","http"]`, and the
+`soxe service enable memory-server --scope=user` generated a launchd unit whose
+`ProgramArguments` was `[node, --enable-source-maps, dist/index.js]` — the raw entrypoint.
+But memory-server declares `serve_mode: "proxy"`, `serves: ["stdio","sse","http"]`, and the
 unit env carries `SOX_CONFIG_PORT=3099`. Running `node index.js` directly lands in
-DIRECT-STDIO mode (`index.js:1688`), which does NOT listen on a port — so the daemon
-warms the embed model and idles with **no reachable transport** (confirmed: nothing
-listening on :3099, no UDS socket). The persistent service is effectively a no-op that
-holds the ONNX model in RAM.
+DIRECT-STDIO mode (`index.js:1688`), which listens on nothing — so the daemon warmed the
+ONNX model and idled with no reachable transport.
 
-The os-unit generator must, for a `serve_mode: proxy` service, emit ProgramArguments that
-run the front-shim proxy (`soxe serve <ext> --port=<SOX_CONFIG_PORT>`, which spawns the
-backend with `SOX_PROXY_BACKEND=1` + UDS and listens on the port) instead of the bare
-entrypoint. This is spec-governed lifecycle code — read `docs/spec/service-lifecycle.md`
-(§9 control surface, §9.5 backend/proxy dispatch) before touching `os-unit.ts`. Until
-fixed, the launchd unit is enabled-but-useless; the working per-session path is the
-host-spawned `soxe serve` stdio session (dev/project profile), which is unaffected.
+Fix: `os-unit.ts` gained an optional `execArgs` (the args after `nodePath`); the launchd/
+systemd renderers use it when present, else the direct-service default `[...nodeArgs,
+entrypoint]`. `resolveOsUnitContext` (`apps/sox/src/main.ts`) now, for a proxy-mode
+mcp-server with a configured `SOX_CONFIG_PORT`, sets
+`execArgs = [--enable-source-maps, <cli>, serve, <id>, --port, <port>]` so the unit runs the
+port-listening front-shim (which auto-ensures the singleton UDS backend). `entrypoint`
+stays the reaper's BL-31 identity token (the BACKEND runs it under `SOX_PROXY_BACKEND=1`).
+Verified: re-enabled unit's plist runs `soxe serve memory-server --port 3099`, **:3099
+listens**, a fresh backend spawns reporting `real model active (bge-base-en-v1.5)`; os-unit
+spec test + smoke 16/0. **End-to-end HTTP still blocked by BL-157/BL-158 below.**
+
+### BL-157 — `soxe serve --port` headless HTTP transport returns `proxy closed`; shim→backend UDS unstable under launchd — **Open (HIGH) (2026-07-04)**
+
+With the BL-156 fix the launchd shim listens on :3099, but an MCP `initialize`/`tools/call`
+over HTTP returns `{"error":{"code":-32001,"message":"proxy closed"}}`. Shim log shows
+`client pipe closed (initialized=false)` (launchd `stdin=/dev/null` EOFs immediately) then
+`backend tools/list error: proxy closed`; backend log shows repeated
+`[service-proxy backend] socket error: write EPIPE`. Reproduces with a manual backgrounded
+`soxe serve memory-server --port=3110` too — so the HTTP transport availability appears
+coupled to the stdio-client lifecycle, which is absent in a headless daemon. Confounded by a
+crowded live state: **two backend processes** for one store (`72276` host-parented, `72286`
+orphaned to init) plus many host `soxe serve` sessions — a single-writer concern for HF-5.
+Investigate `libs/service-proxy/` `runFrontShim`: when `httpPort` is set, the backend/HTTP
+path must not tear down on stdio-client EOF; and reconcile the multi-backend state. Read
+`docs/spec/service-lifecycle.md` §9.5 first.
+
+### BL-158 — live `~/.memory/memory.db` is embed-space-mismatched (hash-stamped vectors vs bge runtime) — **Open (HIGH) (2026-07-04)**
+
+Backend startup against the live store logs: `WARNING: store was stamped with embed_model
+"nomic-embed-text-v1.5-hash" but the current runtime has "bge-base-en-v1.5". Vectors may be
+in a different embedding space.` The live store's existing vectors were written by the old
+HASH backend (now removed); recall over them against real bge query vectors compares across
+incompatible spaces → degraded/garbage similarity. Migration exists:
+`scripts/reembed-memory.mjs --force` re-embeds all nodes in the current model. Must run once
+against `~/.memory/memory.db` (with the writer quiesced) before the persistent service is
+trusted for recall. Owner-gated (mutates the live store) — coordinate with BL-157 backend
+reconciliation.
 
 ---
 

@@ -71,6 +71,16 @@ export interface OsUnitSpec {
   nodeArgs: string[];
   /** Absolute entrypoint path (the BL-31 identity token the reaper matches). */
   entrypoint: string;
+  /**
+   * BL-156: full argument vector AFTER `nodePath`, when the unit must launch
+   * something other than the bare entrypoint. Used for a `serve_mode: proxy`
+   * mcp-server, where the OS unit runs the port-listening front-shim
+   * (`<cli> serve <id> --port <port>`) which auto-ensures the singleton UDS
+   * backend — the backend, not the shim, runs `entrypoint`, so the reaper's
+   * identity token stays `entrypoint`. When absent, the unit runs
+   * `[...nodeArgs, entrypoint]` (the direct-service default).
+   */
+  execArgs?: string[] | undefined;
   /** Resolved EnvironmentVariables — SOX_CONFIG_* + the scrub allowlist (§9.2). */
   env: Record<string, string>;
   /** Store dir (ADR-0004 `ext/<id>`) — the unit's WorkingDirectory. */
@@ -117,6 +127,8 @@ export function deriveOsUnitSpec(opts: {
   nodePath: string;
   nodeArgs?: string[];
   entrypoint: string;
+  /** BL-156: override the args after nodePath (see OsUnitSpec.execArgs). */
+  execArgs?: string[] | undefined;
   env: Record<string, string>;
   workingDirectory: string;
   logDir: string;
@@ -169,6 +181,7 @@ export function deriveOsUnitSpec(opts: {
     nodePath: opts.nodePath,
     nodeArgs: opts.nodeArgs ?? ['--enable-source-maps'],
     entrypoint: opts.entrypoint,
+    ...(opts.execArgs !== undefined ? { execArgs: opts.execArgs } : {}),
     env: opts.env,
     workingDirectory: opts.workingDirectory,
     runAtLoad,
@@ -348,7 +361,7 @@ export class LaunchdPlatform implements OsUnitPlatform {
 
   /** Render the plist BODY (no metadata comment) — the content-address input. */
   private renderBody(spec: OsUnitSpec): string {
-    const progArgs = [spec.nodePath, ...spec.nodeArgs, spec.entrypoint];
+    const progArgs = [spec.nodePath, ...(spec.execArgs ?? [...spec.nodeArgs, spec.entrypoint])];
     const argLines = progArgs.map((a) => `    <string>${xmlEscape(a)}</string>`).join('\n');
     const envKeys = Object.keys(spec.env).sort(); // deterministic ⇒ stable content hash
     const envLines = envKeys
@@ -464,7 +477,7 @@ export class SystemdPlatform implements OsUnitPlatform {
   }
 
   private renderBody(spec: OsUnitSpec): string {
-    const execLine = [spec.nodePath, ...spec.nodeArgs, spec.entrypoint]
+    const execLine = [spec.nodePath, ...(spec.execArgs ?? [...spec.nodeArgs, spec.entrypoint])]
       .map((a) => (/\s/.test(a) ? `"${a}"` : a))
       .join(' ');
     const envKeys = Object.keys(spec.env).sort();
