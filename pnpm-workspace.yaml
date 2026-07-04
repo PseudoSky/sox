@@ -4,6 +4,11 @@ packages:
   - 'apps/**'
   - 'libs/**'
   - 'packages/**'
+  # BL-164: promoted baseline-capture tooling is a real workspace member (pulls
+  # @adhd/sox-memory-core via workspace:*, not a raw dist/ reach-in) — needs its
+  # own package to be pnpm-linkable. Other tools/*.{js,mjs,cjs} scripts are NOT
+  # workspace packages and are unaffected by this glob (they have no package.json).
+  - 'tools/*'
   # Exclude build output / deps: the `**` globs otherwise recurse into gitignored
   # `dist/` dirs whose build-emitted `package.json` ({"type":"commonjs"}, no name)
   # makes @manypkg/changesets error out (`changeset status`/`version` fail).

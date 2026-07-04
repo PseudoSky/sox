@@ -1,0 +1,57 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "baseline-capture",
+  "projectType": "library",
+  "root": "tools/baseline-capture",
+  "sourceRoot": "tools/baseline-capture/src",
+  "tags": ["type:lib"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": ["{workspaceRoot}/tools/baseline-capture/dist"],
+      "options": {
+        "command": "tsc --project tools/baseline-capture/tsconfig.json && echo '{\"type\":\"commonjs\"}' > tools/baseline-capture/dist/package.json",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.json"
+      ],
+      "dependsOn": ["^build"]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config tools/baseline-capture/vitest.config.ts",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": ["default", "^production"]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": ["tools/baseline-capture/**/*.ts"]
+      }
+    },
+    "capture-enrichment-baseline": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node tools/baseline-capture/dist/capture-enrichment-baseline.js",
+        "cwd": "."
+      },
+      "dependsOn": ["build"],
+      "cache": false
+    },
+    "capture-write-perf-baseline": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node tools/baseline-capture/dist/capture-write-perf-baseline.js",
+        "cwd": "."
+      },
+      "dependsOn": ["build"],
+      "cache": false
+    }
+  }
+}

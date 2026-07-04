@@ -327,6 +327,19 @@ importers:
         specifier: '>=22.0.0'
         version: 22.7.5(@babel/traverse@7.29.7)(nx@22.7.5)
 
+  tools/baseline-capture:
+    dependencies:
+      better-sqlite3:
+        specifier: ^12.10.0
+        version: 12.10.0
+      sqlite-vec:
+        specifier: ^0.1.9
+        version: 0.1.9
+    devDependencies:
+      '@adhd/sox-memory-core':
+        specifier: workspace:*
+        version: link:../../libs/memory-core
+
 packages:
 
   '@anush008/tokenizers-darwin-universal@0.0.0':
