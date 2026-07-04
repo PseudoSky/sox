@@ -1,0 +1,19 @@
+{
+  "name": "@adhd/sox-baseline-capture",
+  "version": "0.1.0",
+  "description": "Dev tooling (not published): capture enrichment-parity and write-perf baselines for the sox-ecosystem runtime-productionization plan (RS-0). Promoted from loose scripts/capture-*.mjs (BL-164), same pattern as BL-160's reembed-memory.mjs promotion.",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "devDependencies": {
+    "@adhd/sox-memory-core": "workspace:*"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.10.0",
+    "sqlite-vec": "^0.1.9"
+  }
+}

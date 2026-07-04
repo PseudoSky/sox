@@ -330,17 +330,101 @@ memory-server-specific: a manifest `display_name` + `login_item: true` drives re
 identity is configured. Example motivating case: memory-server → "Sox Memory". Prereq: a Developer
 ID / signing identity + a bundled signed helper target.
 
-### BL-164 — loose `scripts/capture-*-baseline.mjs` create an nx lint circular-dep; promote/exclude them (same class as BL-160) — **Open (MEDIUM) (2026-07-04)**
+### BL-164 — loose `scripts/capture-*-baseline.mjs` create an nx lint circular-dep; promote/exclude them (same class as BL-160) — **RESOLVED (2026-07-04, S10)**
 
-Surfaced by S2: `npx nx lint memory-core --skip-nx-cache` reports 22 `@nx/enforce-module-boundaries`
-errors in `cluster.ts`/`embed.ts`/`recall.ts` etc., caused by `scripts/capture-enrichment-baseline.mjs`
+Surfaced by S2: `npx nx lint memory-core --skip-nx-cache` reportedly showed 22 `@nx/enforce-module-boundaries`
+errors in `cluster.ts`/`embed.ts`/`recall.ts` etc., attributed to `scripts/capture-enrichment-baseline.mjs`
 + `scripts/capture-write-perf-baseline.mjs` importing `memory-core` from the repo-root `scripts`
-project — creating a circular project edge (scripts→memory-core while the root project globs these
-files). Masked by the nx cache (a prior clean run's exit-0 is served without `--skip-nx-cache`),
-which is itself a hazard (a real lint regression could hide behind a stale cache hit). Same root
-cause as BL-160 (loose `.mjs` outside the graph). Fix: promote the baseline-capture orchestration
-into a typed source under a proper project (or a `tools/`/lib the graph knows), or explicitly exclude
-`scripts/*.mjs` from the memory-core project graph so they don't form the cycle. Sequenced after S4.
+project — a circular project edge (scripts→memory-core while the root project globs these files).
+
+**S10 re-verification (fresh `nx reset` + clean-room `pnpm install` + `--skip-nx-cache`):** the
+22-error cycle did **not** reproduce — `npx nx lint memory-core --skip-nx-cache` was clean (0 errors)
+both before and after this fix, and a programmatic cycle-detection pass over the full `nx graph`
+JSON found no cycle touching `memory-core` or `sox-ecosystem` in either state. The one real, confirmed
+structural finding: the root `sox-ecosystem` project *did* carry a one-directional `sox-ecosystem →
+memory-core` static edge, caused by these two scripts' raw `require('../libs/memory-core/dist/index.js')`
+(and shared by several unrelated `tools/*.{js,mjs}` probes/benches — out of this ticket's scope, see
+below) — real hygiene debt (no typecheck/lint/test coverage, brittle dist-path reach-in) matching
+BL-160's disease even though it wasn't tripping the cycle detector today.
+
+**Fix (Option A, matching BL-160's precedent):** promoted both scripts into a new nx-recognized
+project `tools/baseline-capture` (`package.json` + `project.json` + `tsconfig.json` +
+`vitest.config.ts`), consuming `@adhd/sox-memory-core` as a normal `workspace:*` dependency instead
+of reaching into its `dist/` output via a relative path:
+- `tools/baseline-capture/src/capture-enrichment-baseline.ts` — typed `captureEnrichmentBaseline()` +
+  pure `runEnrichmentBaselinePass()` / `buildEnrichmentBaseline()` helpers, ported verbatim from the
+  deleted `scripts/capture-enrichment-baseline.mjs` (identical JSON shape/output paths).
+- `tools/baseline-capture/src/capture-write-perf-baseline.ts` — typed `captureWritePerfBaseline()` +
+  pure `percentile()` / `computeWritePerfMeasurements()` / `buildWritePerfBaseline()` helpers, ported
+  verbatim from the deleted `scripts/capture-write-perf-baseline.mjs`. **Preserves the exact
+  `{ measurements: { p50_ms, p99_ms, ... } }` JSON contract** that `libs/memory-core/src/soak/
+  metrics-exporter.ts`'s `compareToBudget()` reads from `_shared/baselines/write-perf.json` — the one
+  live consumer found via a repo-wide grep before making this change.
+- 14 unit/integration tests across both modules (`*.spec.ts`), no ONNX/real embedding required —
+  `capture-write-perf-baseline.spec.ts` mocks `@adhd/sox-memory-core` (same philosophy as
+  `reembed.spec.ts`); `capture-enrichment-baseline.spec.ts` seeds a real schema via raw SQL (no
+  `memoryWrite`/embed calls) and exercises the real `runBatchEnrich` end to end, including a
+  "never mutates the live store's content" assertion.
+- Deleted `scripts/capture-enrichment-baseline.mjs` and `scripts/capture-write-perf-baseline.mjs`
+  (no shim — same as BL-160's `reembed-memory.mjs` deletion). New invocation:
+  `npx nx run baseline-capture:capture-enrichment-baseline` / `:capture-write-perf-baseline`
+  (or `node tools/baseline-capture/dist/capture-*.js` directly, matching the old plain-`node`
+  ergonomics). No CI workflow or npm script referenced the old paths (grepped `.github/`, root
+  `package.json` — clean); only historical plan docs (`docs/plan/runtime-productionization/02-
+  reusable-subsystems/{progress.json,REPORT.md}`) reference the old invocation as an append-only
+  audit trail and were intentionally left untouched.
+- Added `tools/*` to `pnpm-workspace.yaml`'s `packages` glob (new workspace member needs pnpm
+  linking); relocked with a plain `pnpm install` and committed the `pnpm-lock.yaml` diff in the
+  same change per the RELOCK constraint. Other loose `tools/*.{js,mjs,cjs}` files (bench/probe
+  scripts) have no `package.json` and are unaffected by this glob.
+
+**Gate:** `npx nx lint memory-core --skip-nx-cache` clean (0 errors) · `npx nx build baseline-capture`
+pass · `npx nx lint baseline-capture --skip-nx-cache` clean · `npx nx test baseline-capture
+--skip-nx-cache` 14/14 pass. `npx nx affected -t lint,build,test` surfaced 2 failing tasks —
+`sox-ecosystem:test` and `memory-flush:test` — both re-verified in isolation (see BL-171) as a
+pre-existing real-ONNX/vitest-forked-pool flake with **zero** overlap with this ticket's diff
+(`git status` during triage showed only `BACKLOG.md`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, the
+2 deleted scripts, and the new `tools/baseline-capture/` dir — no memory-server/memory-flush files
+touched). Not fixed here (out of file-scope; logged as BL-171).
+
+**Follow-on backlog candidate (not fixed here, out of scope):** several other `tools/*.{js,mjs}`
+files (`bench-recall.js`, `bench-scale.js`, `test-*.js`, `probe-*.mjs`) reach into sibling
+extensions'/libs' `dist/` output the same way the two capture scripts used to — same disease,
+systemic across `tools/`, deliberately not swept into this ticket's file scope to avoid touching
+files outside the two named in BL-164 (worktree hygiene / disjoint-file-set discipline).
+
+### BL-171 — `onnxruntime-node` native V8 HandleScope crash + real-ONNX test timeouts under vitest forked pool (`sox-ecosystem:test`, `memory-flush:test`) — **Open (MEDIUM), discovered during S10/BL-164** (2026-07-04)
+
+Surfaced while gating BL-164 via `npx nx affected -t lint,build,test`: two unrelated projects failed,
+**neither touched by BL-164's diff** (verified via `git status` — zero overlap):
+1. `sox-ecosystem:test` (root `vitest run`, includes `extensions/**/*.test.ts`) crashed with a
+   **native V8 fatal error** inside `onnxruntime-node@1.21.0`'s forked worker: `FATAL ERROR:
+   HandleScope::HandleScope Entering the V8 API without proper locking in place`, stack trace
+   rooted in `InferenceSessionWrap::Run` → `OrtValueToNapiValue`, in
+   `extensions/bundles/sox-memory-bundle/members/memory-server/recall-sqlite.test.ts` ("writes two
+   claims and recalls them without throwing", 5000ms timeout, then the whole forked worker dies:
+   `[vitest-pool]: Worker forks emitted error` / `Worker exited unexpectedly`). Node v24.11.1 +
+   onnxruntime-node@1.21.0 — looks like a genuine native binding / V8-isolate-locking incompatibility
+   when real ONNX inference runs inside a vitest forked child process.
+2. `memory-flush:test` — 3-7 tests (non-deterministic count/subset across repeated runs: 3/14 in one
+   isolated run, 7/14 inside the full affected batch) in
+   `extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.spec.ts` time out at exactly
+   5000ms on auto-export paths that go through the real embed pipeline. Unlike `libs/memory-core`
+   (which BL-161 fixed with a deterministic `DeterministicTestProvider` test-DI seam, cutting its
+   suite from 140s to 19s and eliminating ONNX-driven flake), `memory-flush`'s spec has **not**
+   adopted that seam and is exposed to real ONNX cold-start/warmup timing variance under a tight
+   5000ms vitest default timeout — non-deterministic pass/fail is the signature of exactly this class
+   of bug.
+
+Both are pre-existing test-infrastructure flakiness in the shared "real ONNX inside vitest's forked
+worker pool" execution path — not a BL-164 regression. Fix candidates (not attempted here, out of
+BL-164's disjoint-file-set scope and touches `memory-server`/`memory-flush`, adjacent to concurrent
+S8/S9 memory-daemon-area work): (a) extend BL-161's `DeterministicTestProvider` DI seam to
+`memory-flush`'s and `memory-server`'s real-ONNX specs, or explicitly mark them `real-embed`-only and
+raise their `testTimeout`; (b) investigate the onnxruntime-node v1.21.0 + Node v24 forked-worker V8
+HandleScope crash — may need `pool: 'forks'` + `maxWorkers: 1` (already applied in memory-core's own
+vitest.config.ts per BL-161) applied consistently to memory-server's and the root's vitest configs
+too, or an onnxruntime-node version bump/pin.
 
 ### BL-165 — RAG-stack external reusability gap: `ingest` is private + `memory-core` (public) transitively 404s on it — **Open (MEDIUM) (2026-07-04)**
 
