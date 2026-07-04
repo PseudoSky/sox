@@ -50,7 +50,10 @@ export interface SoakProfile {
 }
 
 /** Default soak profile — sized for a "few seconds" CI run as specified. */
-export const DEFAULT_SOAK_PROFILE: Readonly<SoakProfile> = {
+// Required<> so the concrete defaults are non-optional numbers — destructuring
+// `= DEFAULT_SOAK_PROFILE.maxQueueSize` then yields `number`, not `number | undefined`,
+// which satisfies exactOptionalPropertyTypes when re-assembling the profile object.
+export const DEFAULT_SOAK_PROFILE: Readonly<Required<SoakProfile>> = {
   writers: 16,
   opsPerWriter: 100,
   maxQueueSize: 10_000,
@@ -241,7 +244,6 @@ export async function runSoak(
   // ── Queue-depth sampler ────────────────────────────────────────────────────
   // Samples the queue pending depth every ~50ms while the run is active.
   let samplerActive = true;
-  let samplerStopped = false;
 
   const samplerLoop = (async () => {
     while (samplerActive) {
@@ -250,11 +252,10 @@ export async function runSoak(
       const depth = queue.pending;
       queueDepthSamples.push({ at_ms: Date.now() - runStartMs, depth });
     }
-    samplerStopped = true;
   })();
 
-  // Suppress unhandled rejection on sampler (it never rejects, but just in case)
-  samplerLoop.catch(() => { samplerStopped = true; });
+  // Suppress unhandled rejection on sampler (it never rejects, but just in case).
+  samplerLoop.catch(() => { /* sampler loop never rejects */ });
 
   // ── Soak writers ──────────────────────────────────────────────────────────
   const payload = 'x'.repeat(Math.max(1, payloadBytes!));

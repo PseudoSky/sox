@@ -259,8 +259,8 @@ export function compareToBudget(
 ): ComparisonResult {
   // Resolve baseline path (canonical relative to this file's location)
   const resolvedBaseline = baselinePath ?? path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
-    '..', '..', '..', '..',  // libs/memory-core → repo root
+    __dirname,  // CJS lib build (module: CommonJS) — import.meta is unavailable here
+    '..', '..', '..', '..',  // {src,dist}/soak → memory-core → libs → repo root
     'docs', 'plan', 'runtime-productionization', '_shared', 'baselines', 'write-perf.json',
   );
 
