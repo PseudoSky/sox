@@ -190,7 +190,23 @@ carries an interval schedule (StartInterval/StartCalendarInterval/systemd timer)
 schedule-aware status (e.g. `SCHEDULED (last run <t>, exit 0)`) derived from `launchctl list`
 exit status + the unit's own log/marker, not pid-liveness.
 
-### BL-186 — `memory_curate recluster` runs the FULL cluster pass synchronously on the serial WriteQueue and returns a false `enqueued: true` — **Open (MEDIUM) (2026-07-04)**
+### BL-186 — `memory_curate recluster` runs the FULL cluster pass synchronously on the serial WriteQueue and returns a false `enqueued: true` — **RESOLVED (2026-07-04, two-phase-write worktree)**
+
+**Resolution (option (a), designed):** global recluster now enqueues an `enrich` trigger row with
+payload `{"full":true,"reason":"memory_curate recluster"}` (`enqueueEnrichFull`, outbox-queue.ts)
+and returns `{op:'recluster', enqueued:true, seq}` — honest, because the row is committed before
+the return (an insert failure propagates as a tool error, never a false success). The periodic
+tick (`runEnrichPassOnDb`) checks `hasPendingFullEnrich(db, maxSeq)` INSIDE its BL-172 snapshot
+window and runs `runBatchEnrich({incrementalCluster:false})` when a full-pass row is pending —
+full-pass rows enqueued after the snapshot stay open and drive the next tick, so a completed row
+always corresponds to a pass that actually honoured it. `hasPendingFullEnrich` deliberately does
+NOT filter the BL-126 `dead` column (absent from the base DDL; the paired consumer
+`completeEnrichTriggerRows` ignores it too). Justification for queueing over a bounded sync path:
+the full pass on a ~3.6k-episode store holds the WriteQueue slot long enough to fast-fail every
+write behind it under the deadline backpressure AND risks the recluster call's own MCP timeout;
+worst-case added latency is one tick interval (5 min), which is acceptable for an explicitly
+batch-shaped operation. Tests: `async-embed.spec.ts` (honest enqueue → row shape → full-pass
+tick → one-shot reversion to incremental; dry_run writes no row).
 
 Merge artifact of S9 × BL-172 (integrator review of the merged semantics): S9 switched global
 recluster from `enqueueEnrich()` (queued, drained by the periodic tick) to a direct synchronous
@@ -206,6 +222,50 @@ the tick already completes trigger ops) and return `enqueued: true` honestly, wi
 latency documented; or (b) keep it synchronous and fix the return shape to `{ran: true, …stats}`,
 documenting the write-blocking cost. Decide at HF-6 alongside the BL-183 outbox-consumer decision
 (same design surface).
+
+### BL-187 — SEMANTICS CHANGE: two-phase `memory_write`/`memory_write_batch` — embedding + E8 near-dup now run ASYNC off the WriteQueue slot (kill-switch: `SOX_SYNC_EMBED=1`) — **SHIPPED (2026-07-04, two-phase-write worktree; disclosure entry)**
+
+_(BL numbers 187–189 claimed in a worktree — integrator: renumber on merge if they collide.)_
+
+Owner-directed fix for the 2026-07-04 incident class ("expensive compute must not block writes";
+6-item batch timeout at queue depth 29): the write handlers now run a fully SYNCHRONOUS Phase A
+(dedup, node insert, FTS, tags/entities, outbox row, non-embed enrichment — `memoryWritePhaseA`)
+on the queue slot, and compute the embedding OFF the slot (worker thread) with a short follow-up
+queue task inserting `vec_node` + running the deferred near-dup (`embed-pipeline.ts`). Measured:
+Phase-A slot time is embed-latency-independent (p50 ~28ms = the SQLite commit, vs ~81ms for the
+old path at a simulated 50ms embed). **Caller-visible changes:** (1) `memory_write` responses
+carry `enrichment.near_dup: null` (near-dup lands seconds later as SAME_AS edges — documented as
+async since v1.1.0); (2) fresh episodes are BM25/temporal-recallable immediately but
+vec-recallable only after Phase B (typically <1s); (3) `memory_ping.store` gains additive
+`embed_backlog` / `embed_backlog_oldest_at`, folded into the `enrichment` verdict (a dead Phase-B
+pipeline reads `stalled`, never silent); (4) crash between phases is healed by the periodic tick
+(`healMissingVectors`, bounded 500/pass, mirrors BL-160's reembed recovery). **Rollback:**
+`SOX_SYNC_EMBED=1` restores the pre-split synchronous behaviour per-call, no revert needed. The
+memory-server spec suite pins the sync path via vitest.setup (existing 92 assertions unchanged);
+`async-embed.spec.ts` + `write-pipeline.spec.ts` pin the async default deterministically
+(BL-161 seam, gated-provider proof that responses never await the embed).
+
+### BL-188 — `memory_write` MCP handler silently DROPPED `client_request_id` (WP-4 idempotency dead through the tool surface) — **RESOLVED (2026-07-04, two-phase-write worktree)**
+
+Discovered while rewriting the handler for the two-phase split: the single-write and chunked
+paths in `memory-server/src/index.ts` never forwarded `args['client_request_id']` to
+`memoryWrite`, despite the tool schema documenting WP-4 replay semantics — only
+`memory_write_batch` forwarded it. Any MCP client supplying an idempotency key got NO replay
+protection (a retry after a timeout minted a duplicate-or-E_DEDUP instead of `replayed:true`).
+Fixed by including `client_request_id` in the shared `parentParams` used by both embed modes;
+pinned by the `async-embed.spec.ts` replay-through-handler test.
+
+### BL-189 — `memory_update` still embeds INSIDE the WriteQueue slot (same class as the fixed write path) — **Open (LOW-MEDIUM) (2026-07-04)**
+
+The two-phase split covers `memory_write`/`memory_write_batch` (the hot path). `memory_update`
+with `content`/`summary` changes still runs its re-embed synchronously inside
+`wq.enqueue('memory_update', …)` (`memoryUpdate` → embed on the slot). Low frequency, but under
+CPU contention one update can stretch the slot exactly like the old write path. Fix sketch: same
+split — update Phase A (columns + FTS + delete stale vec row), Phase B via
+`schedulePendingEmbeds` (the machinery now exists and `applyEmbedding` already guards
+rowid/uid + double-apply); the heal already covers a crashed update re-embed IF the stale vector
+is deleted in Phase A (otherwise the node keeps the OLD vector until Phase B — decide staleness
+semantics before implementing).
 
 ### BL-180 — `dataRoot()` returns the raw scope string as a PATH for an unknown scope (audit log writes `./badscope/run/sox-audit.jsonl`) — **Open (MEDIUM) (2026-07-04)**
 

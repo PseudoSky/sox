@@ -1,5 +1,24 @@
 # @adhd/sox-memory-core
 
+## 0.3.0
+
+### Minor Changes
+
+- Two-phase write split (2026-07-04 incident: "expensive compute must not block writes").
+  `memoryWritePhaseA`/`memoryWriteBatchPhaseA` run the entire write EXCEPT the embedding as a
+  synchronous, ONNX-free body for the serial WriteQueue slot; the new `embed-pipeline.ts`
+  (`schedulePendingEmbeds`, `applyEmbedding`) computes embeddings off-slot (worker thread) and
+  applies `vec_node` + the deferred E8 near-dup in short follow-up queue tasks. Crash between
+  phases is detected (`embedBacklogStats`) and healed (`healMissingVectors`, consumed by the
+  memory-server periodic tick). `memoryWrite`/`memoryWriteBatch` remain as the synchronous
+  composition (kill-switch `SOX_SYNC_EMBED=1`, read per call via `syncEmbedEnabled`).
+  `enrichOnWrite.embedding` is now optional — when absent, near-dup is deferred and
+  `near_dup: null` is returned. BL-186: `memoryCurate` global recluster now enqueues a full-pass
+  `enrich` trigger row (`enqueueEnrichFull`/`hasPendingFullEnrich`) instead of running the full
+  cluster pass synchronously on the queue slot; the return `{enqueued: true, seq}` is honest.
+  Outbox producers/consumers (`enqueueIngest` et al.) and the BL-161 deterministic test provider
+  are now exported from the package index.
+
 ## 0.2.1
 
 ### Patch Changes

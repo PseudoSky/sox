@@ -13,7 +13,7 @@ import type Database from 'better-sqlite3';
 import { monotonicFactory } from 'ulid';
 import { ENRICH_VERSION } from './enrich-version.js';
 import { clusterSubset, dropSubsetLens, listSubsetLenses } from './cluster.js';
-import { runBatchEnrich } from './enrich-batch.js';
+import { enqueueEnrichFull } from './outbox-queue.js';
 import type { MemoryFilter } from './memory-filters.js';
 
 const ulid = monotonicFactory();
@@ -81,8 +81,14 @@ export interface CurateReclusterSubsetResult {
 
 export interface CurateReclusterGlobalResult {
   op: 'recluster';
+  /** HONEST (BL-186): true only when a full-pass trigger row was actually
+   *  committed to organizer_queue. The in-process periodic tick consumes it. */
   enqueued: boolean;
   dry_run?: boolean;
+  /** organizer_queue seq of the enqueued full-pass row (absent on dry_run).
+   *  The pass runs on the consumer's next periodic tick; correlate with
+   *  memory_ping's queue_last_done_at / enrichment verdict. */
+  seq?: number;
 }
 
 export interface CurateDropLensResult {
@@ -354,19 +360,22 @@ function curateRecluster(
     };
   }
 
-  // Global recluster (BL-162: runs in-process — no daemon to enqueue/nudge).
+  // Global recluster (BL-186): enqueue a FULL-pass `enrich` trigger row and let
+  // the in-process periodic tick run `runBatchEnrich({incrementalCluster:false})`
+  // — never synchronously inside this tool call. Rationale: the full pass on a
+  // large store blocks the serial WriteQueue slot for its whole duration (every
+  // write behind it can fast-fail E_BUSY under the time-based backpressure), and
+  // the MCP recluster call itself can out-wait its client timeout. Deferring to
+  // the tick costs at most one tick interval of latency and keeps the queue
+  // slot short. The return value is HONEST: `enqueued: true` only after the row
+  // is committed (an insert failure propagates as a tool error, never a false
+  // success — [inv:list-never-lies]).
   if (dryRun) {
     return { op: 'recluster', enqueued: false, dry_run: true };
   }
 
-  try {
-    runBatchEnrich(db, { incrementalCluster: false });
-  } catch {
-    // Best-effort: a failed pass is retried by the in-process periodic enrichment
-    // loop in memory-server (or a subsequent explicit recluster call).
-  }
-
-  return { op: 'recluster', enqueued: true };
+  const seq = enqueueEnrichFull(db, 'memory_curate recluster');
+  return { op: 'recluster', enqueued: true, seq };
 }
 
 function curateDropLens(

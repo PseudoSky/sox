@@ -41,8 +41,13 @@ export interface EnrichOnWriteParams {
   project_path: string | undefined;
   /** Explicit parent UID for DERIVED_FROM edge (E9). */
   derived_from_uid: string | undefined;
-  /** 768-dim L2-normalised embedding vector already computed by the write path. */
-  embedding: Float32Array;
+  /**
+   * 768-dim L2-normalised embedding vector already computed by the write path.
+   * OPTIONAL since the two-phase write split (2026-07-04): when absent (async
+   * Phase-A write) the E8 near-dup pass is DEFERRED to Phase B
+   * (embed-pipeline.ts applyEmbedding) and `near_dup` is null in the result.
+   */
+  embedding: Float32Array | undefined;
   /**
    * Caller-supplied importance (user-asserted). When present, it is respected and
    * the computed importance is NOT written. Batch enricher also will not overwrite it
@@ -62,14 +67,53 @@ export interface EnrichOnWriteResult {
   tags: string[];
   /** Enrichment provenance stamp (E12). */
   enrich_ver: EnrichmentProvenance;
-  /** Near-dup detection result (E8). null = no dup found. */
+  /** Near-dup detection result (E8). null = no dup found OR detection deferred
+   *  to Phase B (async two-phase write — no embedding available at write time). */
   near_dup: NearDupResult | null;
 }
 
-const NEARDUP_THRESHOLD = 0.95;
+/** E8 near-dup cosine threshold. Exported for the Phase-B pipeline (embed-pipeline.ts). */
+export const NEARDUP_THRESHOLD = 0.95;
 
 function getNearDupThreshold(): number {
   return NEARDUP_THRESHOLD;
+}
+
+/**
+ * Apply a detected near-dup outcome: insert the SAME_AS edge (guarded — never
+ * duplicated) and, when `should_invalidate`, bi-temporally invalidate the OLDER
+ * episode. Shared by the synchronous E8 pass (enrichOnWrite, SOX_SYNC_EMBED
+ * composition) and the deferred Phase-B pass (embed-pipeline.ts applyEmbedding).
+ */
+export function applyNearDupResult(
+  db: Database,
+  rowid: number,
+  nearDup: NearDupResult,
+): void {
+  const neighborRow = db
+    .prepare<[string], { rowid: number }>(
+      `SELECT rowid FROM node WHERE uid = ? AND t_invalid IS NULL`,
+    )
+    .get(nearDup.existing_uid);
+  if (!neighborRow) return;
+
+  const now = new Date().toISOString();
+  // Insert SAME_AS edge via raw SQL (memory-core schema lacks the UNIQUE index
+  // on (src, dst, rel) that GraphBackend.writeEdge's ON CONFLICT requires)
+  db.prepare(
+    `INSERT INTO edge (src, dst, rel, origin, weight, t_created, meta)
+     SELECT ?, ?, 'SAME_AS', 'inferred', ?, ?, NULL
+     WHERE NOT EXISTS (
+       SELECT 1 FROM edge WHERE src = ? AND dst = ? AND rel = 'SAME_AS' AND t_expired IS NULL
+     )`,
+  ).run(rowid, neighborRow.rowid, nearDup.cosine_sim, now, rowid, neighborRow.rowid);
+
+  // If should_invalidate: invalidate the older episode (set t_invalid on the neighbour)
+  if (nearDup.should_invalidate) {
+    db.prepare(
+      `UPDATE node SET t_invalid = ? WHERE uid = ? AND t_invalid IS NULL`,
+    ).run(now, nearDup.existing_uid);
+  }
 }
 
 /**
@@ -125,14 +169,17 @@ export function enrichOnWrite(
     });
   }
 
-  // E8: near-dup detection (KNN-20 from vec_node)
+  // E8: near-dup detection (KNN-20 from vec_node). Deferred to Phase B when no
+  // embedding is available (async two-phase write — 2026-07-04).
   const dupThreshold = getNearDupThreshold();
   let nearDup: NearDupResult | null = null;
-  try {
-    nearDup = detectNearDup(db, p.rowid, p.embedding, dupThreshold);
-  } catch {
-    // KNN query may fail on empty stores — treat as no dup
-    nearDup = null;
+  if (p.embedding !== undefined) {
+    try {
+      nearDup = detectNearDup(db, p.rowid, p.embedding, dupThreshold);
+    } catch {
+      // KNN query may fail on empty stores — treat as no dup
+      nearDup = null;
+    }
   }
 
   // E12: enrichment provenance stamp
@@ -158,33 +205,9 @@ export function enrichOnWrite(
     `UPDATE node SET project_path = ?, enrich_ver = ? WHERE rowid = ?`,
   ).run(resolvedProjectPath, JSON.stringify(enrichVer), p.rowid);
 
-  // E8: insert SAME_AS edge if near-dup found and should_invalidate
+  // E8: insert SAME_AS edge (+ optional invalidation) if near-dup found
   if (nearDup !== null) {
-    const neighborRow = db
-      .prepare<[string], { rowid: number }>(
-        `SELECT rowid FROM node WHERE uid = ? AND t_invalid IS NULL`,
-      )
-      .get(nearDup.existing_uid);
-
-    if (neighborRow) {
-      const now = new Date().toISOString();
-      // Insert SAME_AS edge via raw SQL (memory-core schema lacks the UNIQUE index
-      // on (src, dst, rel) that GraphBackend.writeEdge's ON CONFLICT requires)
-      db.prepare(
-        `INSERT INTO edge (src, dst, rel, origin, weight, t_created, meta)
-         SELECT ?, ?, 'SAME_AS', 'inferred', ?, ?, NULL
-         WHERE NOT EXISTS (
-           SELECT 1 FROM edge WHERE src = ? AND dst = ? AND rel = 'SAME_AS' AND t_expired IS NULL
-         )`,
-      ).run(p.rowid, neighborRow.rowid, nearDup.cosine_sim, now, p.rowid, neighborRow.rowid);
-
-      // If should_invalidate: invalidate the older episode (set t_invalid on the neighbour)
-      if (nearDup.should_invalidate) {
-        db.prepare(
-          `UPDATE node SET t_invalid = ? WHERE uid = ? AND t_invalid IS NULL`,
-        ).run(now, nearDup.existing_uid);
-      }
-    }
+    applyNearDupResult(db, p.rowid, nearDup);
   }
 
   return {

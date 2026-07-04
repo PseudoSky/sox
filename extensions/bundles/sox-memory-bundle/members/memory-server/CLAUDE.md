@@ -100,7 +100,7 @@ Do NOT use `memory_update` to change a node's identity (`uid` is always immutabl
 
 ### `memory_write` (v1 — MODIFIED)
 
-Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, near-dup, extractive summary). Batch enrichments (clustering, auto-links, importance) run in-process on a periodic interval within this server (ADR-0007 — no separate daemon process). Never blocks on LLM.
+Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, extractive summary). The embedding + near-dup detection run ASYNCHRONOUSLY moments after the write (two-phase write, 2026-07-04): `enrichment.near_dup` is always `null` in the response, near-dup SAME_AS edges land seconds later, and the episode is keyword/temporal-recallable immediately but vector-recallable only once the async embed lands (typically <1s; `memory_ping.store.embed_backlog` counts episodes still waiting). Set `SOX_SYNC_EMBED=1` server-side to restore fully synchronous behaviour. Batch enrichments (clustering, auto-links, importance) run in-process on a periodic interval within this server (ADR-0007 — no separate daemon process). Never blocks on LLM.
 
 **New in v1:** `name`, `topic`, `project_path`, `derived_from_uid` inputs; `enrichment` in output.
 
@@ -126,6 +126,8 @@ Write a memory episode. Runs deterministic enrichment synchronously (provenance,
 ```
 
 **Output:** `{ "episode_uid": "<string>", "enrichment": { "topic", "project_path", "summary", "tags", "near_dup" } }`
+
+`near_dup` is `null` under the async default (deferred to the off-slot embed phase); it is only populated when the server runs with `SOX_SYNC_EMBED=1`.
 
 ---
 
@@ -265,7 +267,7 @@ Curation operations: retag, set topic, override importance, merge near-duplicate
 - `set_topic`: `{ op, uid, old_topic, new_topic }`
 - `set_importance`: `{ op, uid, old_importance, new_importance }`
 - `merge_duplicates`: `{ op, uid_kept, uid_dropped, same_as_edge_uid, dry_run }`
-- `recluster`: `{ op, enqueued, dry_run? }`
+- `recluster` (global, no filters): `{ op, enqueued, dry_run?, seq? }` — BL-186: enqueues a full-pass trigger row consumed by the in-process periodic tick (within ~5 min); `enqueued: true` is honest (the row is committed before returning) and `seq` is its organizer_queue id. The tool call never runs the full cluster pass inline.
 
 ---
 

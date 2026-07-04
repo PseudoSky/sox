@@ -1,15 +1,21 @@
 /**
- * memory_write handler (P2, updated BL-162).
+ * memory_write handler (P2, updated BL-162; two-phase split 2026-07-04).
  *
  * ADR-0007 single-writer architecture: batch enrichment runs in-process inside the
  * memory-server writer backend — there is no separate daemon process to enqueue/nudge.
- *   - Synchronous: insert node + embedding into DB.
- *   - Synchronous write-time enrichment (E1-E5, E8, E10, E12) via enrichOnWrite — NO LLM
- *     calls (importance defaults 1.0 unless caller-supplied).
- *   - Batch enrichment (clustering, auto-links, importance recompute) runs via the
- *     in-process periodic loop in memory-server (see extensions/.../memory-server/src/index.ts)
- *     or synchronously via memory_curate recluster — never via a socket-nudged daemon.
- *   - Returns {episode_uid} immediately.
+ *
+ * TWO-PHASE WRITE (2026-07-04 incident — expensive compute must not block writes):
+ *   - Phase A — `memoryWritePhaseA()`: FULLY SYNCHRONOUS. Dedup, node insert, FTS
+ *     (trigger-driven), tags/entities, sync non-embed enrichment (E1–E5, E10, E12),
+ *     transactional outbox row, commit. NO embedding, NO ONNX. This is the only part
+ *     that should hold the serial WriteQueue slot.
+ *   - Phase B — embed-pipeline.ts: embedding computed OFF the queue slot (worker
+ *     thread), then vec_node insert + deferred E8 near-dup in a SHORT follow-up
+ *     queue task. Crash between phases is healed by the periodic tick
+ *     (healMissingVectors) and visible via memory_ping's `embed_backlog`.
+ *   - `memoryWrite()` remains the synchronous COMPOSITION (Phase A + embed + apply,
+ *     all before returning) — the SOX_SYNC_EMBED kill-switch path and the API every
+ *     existing non-queue caller (memory-cli, convenience `write()`) keeps using.
  *
  * Invariants:
  *   R1: zero provider/LLM calls on write path (batch enrichment is deterministic, no LLM).
@@ -20,6 +26,8 @@
 
 import { enrichOnWrite } from './enrich.js';
 import { enqueueIngest } from './outbox-queue.js';
+import { applyEmbedding } from './embed-pipeline.js';
+import type { PendingEmbed } from './embed-pipeline.js';
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
 import { monotonicFactory } from 'ulid';
@@ -70,15 +78,37 @@ export type WriteError =
   | { code: 'E_DEDUP'; message: string; existing_uid: string }
   | { code: 'E_QUEUE_FULL'; message: string };
 
+/** Outcome of the synchronous Phase-A write (two-phase split, 2026-07-04). */
+export interface PhaseAOutcome {
+  result: WriteResult;
+  /**
+   * Non-null when the embedding was NOT computed in Phase A: the caller must
+   * hand this to the Phase-B pipeline (embed-pipeline.ts schedulePendingEmbeds)
+   * AFTER the Phase-A queue task has returned (BL-154 — never nest enqueues).
+   * Null on idempotent replays (the original write already owns the vector) and
+   * when a pre-computed embedding was supplied.
+   */
+  pending: PendingEmbed | null;
+}
+
 /**
- * Write a memory episode to the database.
- * Write-time enrichment (topic/tags/near-dup/summary) runs synchronously via enrichOnWrite.
- * Batch enrichment (clustering, importance, auto-links) runs in-process (BL-162 — no daemon).
+ * Phase A of the two-phase write: everything EXCEPT the embedding. Fully
+ * synchronous (no ONNX, no awaits) — safe to run as a short serial-WriteQueue
+ * task. Performs dedup, node insert, FTS (trigger), transactional outbox row,
+ * tags/entities, idempotency ledger, DERIVED_FROM edges, and the non-embed
+ * write-time enrichment (E1–E5, E10, E12).
+ *
+ * When `embedding` is supplied (SOX_SYNC_EMBED composition via `memoryWrite`),
+ * the vec_node row is inserted inside the SAME transaction as the node and the
+ * E8 near-dup pass runs synchronously — byte-compatible with the pre-split
+ * behaviour. When absent, `result.enrichment.near_dup` is null (deferred to
+ * Phase B) and `pending` carries the embed work.
  */
-export async function memoryWrite(
+export function memoryWritePhaseA(
   db: Database.Database,
   params: WriteParams,
-): Promise<WriteResult | WriteError> {
+  embedding?: Float32Array,
+): PhaseAOutcome | WriteError {
   const {
     content,
     summary,
@@ -133,8 +163,11 @@ export async function memoryWrite(
       .get(clientRequestId);
     if (existingLedger) {
       return {
-        episode_uid: existingLedger.episode_uid,
-        replayed: true,
+        result: {
+          episode_uid: existingLedger.episode_uid,
+          replayed: true,
+        },
+        pending: null,
       };
     }
   }
@@ -160,10 +193,10 @@ export async function memoryWrite(
   const tValid = now;
   const tOccurred = t_occurred ?? now;
 
-  // Compute embedding locally (zero provider calls — R1)
-  // Real backend: in-process ONNX inference; no per-query network.
-  const embeddingVec = await embed(content);
-  const embeddingJson = vecToJson(embeddingVec);
+  // Two-phase split (2026-07-04): Phase A performs NO embedding. When the
+  // caller pre-computed one (sync composition), it lands inside the same
+  // transaction as the node — otherwise the vec insert is Phase B's job.
+  const embeddingJson = embedding !== undefined ? vecToJson(embedding) : null;
 
   // Track rowid for post-transaction enrichOnWrite call
   let insertedRowid = 0;
@@ -185,11 +218,14 @@ export async function memoryWrite(
     const rowid = result.rowid;
     insertedRowid = rowid;
 
-    // Insert into vec_node (accepts JSON string or binary blob)
-    db.prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(
-      rowid,
-      embeddingJson,
-    );
+    // Insert into vec_node (accepts JSON string or binary blob) — only when the
+    // embedding was pre-computed; otherwise deferred to Phase B (embed-pipeline).
+    if (embeddingJson !== null) {
+      db.prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(
+        rowid,
+        embeddingJson,
+      );
+    }
 
     // Transactional outbox: the row commits with the node; the in-process periodic
     // enrichment pass consumes it, and its presence/age drives memory_ping's
@@ -251,7 +287,8 @@ export async function memoryWrite(
 
   const episodeUid = tx() as string;
 
-  // P2: run write-path enrichments (E1–E5, E8, E10, E12) synchronously after insert.
+  // P2: run write-path enrichments (E1–E5, E10, E12 — plus E8 near-dup only when
+  // an embedding is available) synchronously after insert.
   // enrichOnWrite updates node.topic/project_path/summary/tags/importance/enrich_ver.
   const enrichResult = enrichOnWrite(db, {
     uid: episodeUid,
@@ -263,22 +300,62 @@ export async function memoryWrite(
     metadata,
     project_path,
     derived_from_uid,
-    embedding: embeddingVec,
+    embedding, // undefined in async Phase A → E8 near-dup deferred to Phase B
     importance, // pass caller-supplied importance so enrichOnWrite respects it
   });
 
   return {
-    episode_uid: episodeUid,
-    enrichment: {
-      topic: enrichResult.topic,
-      project_path: enrichResult.project_path,
-      summary: enrichResult.summary,
-      tags: enrichResult.tags,
-      near_dup: enrichResult.near_dup
-        ? { existing_uid: enrichResult.near_dup.existing_uid, cosine_sim: enrichResult.near_dup.cosine_sim }
-        : null,
+    result: {
+      episode_uid: episodeUid,
+      enrichment: {
+        topic: enrichResult.topic,
+        project_path: enrichResult.project_path,
+        summary: enrichResult.summary,
+        tags: enrichResult.tags,
+        near_dup: enrichResult.near_dup
+          ? { existing_uid: enrichResult.near_dup.existing_uid, cosine_sim: enrichResult.near_dup.cosine_sim }
+          : null,
+      },
     },
+    pending:
+      embedding === undefined
+        ? { uid: episodeUid, rowid: insertedRowid, text: content }
+        : null,
   };
+}
+
+/**
+ * Write a memory episode to the database — the SYNCHRONOUS-EMBED composition.
+ *
+ * Composition of the two-phase split: Phase A (no embed) → embed (worker
+ * thread) → applyEmbedding (vec insert + E8 near-dup), all before returning.
+ * This is the SOX_SYNC_EMBED kill-switch path and the API preserved for every
+ * non-queue caller (memory-cli, the convenience `write()` wrapper, batch).
+ *
+ * Failure-mode note (intentional post-split difference): if the embed call
+ * itself fails, the node is ALREADY durably committed by Phase A — the error
+ * still propagates to the caller (fail loud), but the episode exists without a
+ * vector and the periodic heal (embed-pipeline.ts healMissingVectors) completes
+ * it. A client retry after such an error surfaces E_DEDUP with the
+ * existing_uid, which is the truthful outcome (the write landed).
+ */
+export async function memoryWrite(
+  db: Database.Database,
+  params: WriteParams,
+): Promise<WriteResult | WriteError> {
+  const phaseA = memoryWritePhaseA(db, params);
+  if ('code' in phaseA) return phaseA;
+  if (phaseA.pending === null) return phaseA.result; // replay — nothing to embed
+
+  const vec = await embed(phaseA.pending.text);
+  const applied = applyEmbedding(db, phaseA.pending, vec);
+  if (applied.near_dup !== null && phaseA.result.enrichment) {
+    phaseA.result.enrichment.near_dup = {
+      existing_uid: applied.near_dup.existing_uid,
+      cosine_sim: applied.near_dup.cosine_sim,
+    };
+  }
+  return phaseA.result;
 }
 
 /**
@@ -381,6 +458,55 @@ export async function memoryWriteBatch(
   }
 
   return { results };
+}
+
+/** Outcome of the synchronous Phase-A batch write (two-phase split, 2026-07-04). */
+export interface BatchPhaseAOutcome {
+  results: BatchItemResult[];
+  /** Phase-B work for every successfully-inserted item (dedups/replays excluded).
+   *  Hand to schedulePendingEmbeds AFTER the queue task returns (BL-154). */
+  pendings: PendingEmbed[];
+}
+
+/**
+ * Phase-A batch write: all items' Phase A runs SERIALLY and SYNCHRONOUSLY (fast
+ * — no ONNX in the loop), designed to be the body of ONE WriteQueue task (same
+ * single-queue-entry contract as memoryWriteBatch, CONTRACTS §C). Phase-B
+ * embeds for the whole batch are returned as `pendings` for off-slot,
+ * pipelined processing.
+ *
+ * Per-item semantics are IDENTICAL to memoryWriteBatch: E_DEDUP is
+ * `ok:false, code:'E_DEDUP', details.existing_uid` and never a batch failure;
+ * client_request_id replays return the original uid and schedule no embed.
+ */
+export function memoryWriteBatchPhaseA(
+  db: Database.Database,
+  items: BatchItem[],
+): BatchPhaseAOutcome {
+  const results: BatchItemResult[] = [];
+  const pendings: PendingEmbed[] = [];
+
+  for (const item of items) {
+    try {
+      const r = memoryWritePhaseA(db, item);
+      if ('code' in r) {
+        results.push({
+          ok: false,
+          code: r.code,
+          message: r.message,
+          ...('existing_uid' in r ? { details: { existing_uid: r.existing_uid } as Record<string, unknown> } : {}),
+        });
+      } else {
+        results.push({ ok: true, episode_uid: r.result.episode_uid });
+        if (r.pending !== null) pendings.push(r.pending);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err ?? 'unknown error');
+      results.push({ ok: false, code: 'E_IO', message: msg });
+    }
+  }
+
+  return { results, pendings };
 }
 
 // ── Request ledger pruning (WP-4, BL-129) ──────────────────────────────────

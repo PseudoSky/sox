@@ -171,6 +171,59 @@ describe('queue-drain SLO: computeEnrichmentHealth', () => {
   });
 });
 
+// ── Phase-B embed backlog folded into the verdict (two-phase write, 2026-07-04) ──
+//
+// A dead Phase-B pipeline (episodes committed, vectors never landing) must read
+// `stalled`, never silent: the backlog is a second pending-work channel aged by
+// the oldest no-vec episode's t_created against the SAME stall threshold.
+
+describe('embed-backlog channel: computeEnrichmentHealth', () => {
+  const NOW = Date.parse('2026-07-04T20:00:00.000Z');
+
+  it('empty queue + zero backlog stays idle; backlog fields are carried through', () => {
+    const h = computeEnrichmentHealth(0, null, null, NOW, { count: 0, oldest_created_at: null });
+    expect(h.state).toBe('idle');
+    expect(h.embed_backlog).toBe(0);
+    expect(h.embed_backlog_oldest_at).toBeNull();
+  });
+
+  it('fresh backlog alone (queue empty) → ok, not a false stall alarm', () => {
+    const fresh = new Date(NOW - 5_000).toISOString();
+    const h = computeEnrichmentHealth(0, null, null, NOW, { count: 2, oldest_created_at: fresh });
+    expect(h.state).toBe('ok');
+    expect(h.embed_backlog).toBe(2);
+  });
+
+  it('backlog older than the threshold → stalled (dead Phase-B pipeline detected)', () => {
+    const old = new Date(NOW - 2 * 3600 * 1000).toISOString(); // 2h >> 15min
+    const h = computeEnrichmentHealth(0, null, null, NOW, { count: 1, oldest_created_at: old });
+    expect(h.state).toBe('stalled');
+  });
+
+  it('stalled dominates: healthy queue channel cannot mask a stalled embed backlog', () => {
+    const freshQueue = new Date(NOW - 60_000).toISOString();
+    const oldBacklog = new Date(NOW - 2 * 3600 * 1000).toISOString();
+    const h = computeEnrichmentHealth(3, freshQueue, null, NOW, {
+      count: 1,
+      oldest_created_at: oldBacklog,
+    });
+    expect(h.state).toBe('stalled');
+  });
+
+  it('backlog with an unparseable timestamp is stalled, never silently ok', () => {
+    const h = computeEnrichmentHealth(0, null, null, NOW, {
+      count: 1,
+      oldest_created_at: 'not-a-timestamp',
+    });
+    expect(h.state).toBe('stalled');
+  });
+
+  it('omitting the backlog argument preserves the original 4-arg behaviour exactly', () => {
+    expect(computeEnrichmentHealth(0, null, null, NOW).state).toBe('idle');
+    expect(computeEnrichmentHealth(0, null, null, NOW).embed_backlog).toBeUndefined();
+  });
+});
+
 describe('queue-drain SLO: memory_ping surfaces the verdict', () => {
   interface PingStoreBlock {
     queue_depth: number;

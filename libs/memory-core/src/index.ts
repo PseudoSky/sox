@@ -87,11 +87,20 @@ export {
 export type { EmbedBackend, EmbedConfig, EmbedState, EmbedHealth } from './embed.js';
 
 // ── Write + invalidate + batch + idempotency ───────────────────────────────────
-export { memoryWrite, memoryInvalidate, memoryWriteBatch, requestLedgerPrune } from './write.js';
+export {
+  memoryWrite,
+  memoryWritePhaseA,
+  memoryInvalidate,
+  memoryWriteBatch,
+  memoryWriteBatchPhaseA,
+  requestLedgerPrune,
+} from './write.js';
 export type {
   WriteParams,
   WriteResult,
   WriteError,
+  PhaseAOutcome,
+  BatchPhaseAOutcome,
   InvalidateParams,
   InvalidateResult,
   InvalidateError,
@@ -101,6 +110,38 @@ export type {
   BatchItemResult,
   BatchResult,
 } from './write.js';
+
+// ── Phase-B embed pipeline (two-phase write, 2026-07-04) ──────────────────────
+export {
+  applyEmbedding,
+  schedulePendingEmbeds,
+  flushPendingEmbeds,
+  healMissingVectors,
+  embedBacklogStats,
+  syncEmbedEnabled,
+} from './embed-pipeline.js';
+export type {
+  PendingEmbed,
+  EmbedApplyResult,
+  SchedulePendingResult,
+  HealResult,
+  EmbedBacklogStats,
+} from './embed-pipeline.js';
+
+// ── Deterministic test embedding provider (BL-161 seam; TEST-ONLY) ────────────
+export { DeterministicTestProvider, featureHashEmbed } from './embed-test-provider.js';
+export { _setEmbedProviderForTest } from './embed.js';
+
+// ── Outbox queue (transactional enrichment triggers — BL-172 / BL-186) ────────
+export {
+  enqueueIngest,
+  enqueueEnrichFull,
+  hasPendingFullEnrich,
+  migrateOutboxQueueSchema,
+  createMemoryOutboxQueue,
+  memoryFlush,
+} from './outbox-queue.js';
+export type { OutboxQueue, OutboxQueueItem, MemoryFlushOpts, MemoryFlushResult } from './outbox-queue.js';
 
 // ── Update (in-place editor) ──────────────────────────────────────────────────
 export { memoryUpdate, deepMerge } from './update.js';

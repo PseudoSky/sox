@@ -18,6 +18,15 @@ export default defineConfig({
     ],
     environment: 'node',
     root: repoRoot,
+    // Pins the pre-existing suite to the SOX_SYNC_EMBED=1 kill-switch path so
+    // vector-dependent assertions never race the async Phase-B pipeline; the
+    // async default is covered deterministically by async-embed.spec.ts.
+    setupFiles: [
+      resolve(
+        repoRoot,
+        'extensions/bundles/sox-memory-bundle/members/memory-server/vitest.setup.ts',
+      ),
+    ],
     // First embed() call loads the fastembed ONNX model (bge-base-en-v1.5) into
     // the worker; warmup can take several seconds. Match memory-core's 30s budget
     // so model-load-on-first-embed does not trip the default 5s test timeout.
