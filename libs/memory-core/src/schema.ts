@@ -3,9 +3,19 @@
  * Single file per scope. Exact schema from design.md §2.2 (minus promotion_queue, deferred to P4).
  */
 
+/**
+ * CONTRACTS §C mandated pragmas for EVERY connection:
+ *   - journal_mode = WAL
+ *   - busy_timeout = 3000  (per contract; changed from 5000)
+ *   - synchronous  = NORMAL
+ *   - foreign_keys = ON
+ *   - cache_size   = -64000
+ *
+ * Read-only connections additionally apply `query_only = ON` in openDbReadOnly().
+ */
 export const PRAGMAS = `
 PRAGMA journal_mode = WAL;
-PRAGMA busy_timeout = 5000;
+PRAGMA busy_timeout = 3000;
 PRAGMA synchronous  = NORMAL;
 PRAGMA foreign_keys = ON;
 PRAGMA cache_size   = -64000;
@@ -87,6 +97,14 @@ CREATE TABLE IF NOT EXISTS organizer_queue (
   attempts   INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_q_open ON organizer_queue(done_at, priority, seq) WHERE done_at IS NULL;
+
+-- WP-4: request idempotency ledger (pruned >7 days on checkpoint tick)
+CREATE TABLE IF NOT EXISTS request_ledger (
+  request_id TEXT PRIMARY KEY,
+  episode_uid TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_request_ledger_created_at ON request_ledger(created_at);
 
 -- scope-promotion candidates (internal detail; surfaced via host ScopePromotionProposed event)
 CREATE TABLE IF NOT EXISTS promotion_queue (

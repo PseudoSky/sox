@@ -2518,3 +2518,34 @@ recall pipeline (mean-pool at query time).
 table at ingest time. Phase 2: in `memoryRecall()`, when `lateChunking.enabled`, fetch
 the full-document embedding and mean-pool per the stored boundaries before returning
 results.
+
+### BL-123 — WAL checkpoint on idle: unbounded WAL growth under steady write load — **FIXED (2026-07-03)** — WriteQueue _scheduleIdleCheckpoint fires PRAGMA wal_checkpoint(TRUNCATE) after 2s idle; _cancelCheckpoint resets when new work arrives; 6 tests covering idle shrink, timer lifecycle, walBytes, idempotent checkpoint, static accessor, and stats integration (wal_bytes + last_checkpoint_at in memoryGetStats).
+
+**Observed:** the WriteQueue never checkpoints the WAL. Under steady write traffic the WAL file can grow unbounded. No mechanism existed to bound WAL size between writes.
+
+**Fix:** WriteQueue now schedules a deferred WAL checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)`) when the queue goes idle. The timer fires after CHECKPOINT_IDLE_MS=2000ms of inactivity. New work before the timer fires cancels and reschedules, preventing checkpoint overhead during write bursts. `walBytes()` and `lastCheckpointAt` expose observability; `memoryGetStats` surfaces both.
+
+### BL-125 — memory_write_batch: missing downstream method for atomic multi-item writes — **FIXED (2026-07-03)** — memoryWriteBatch implemented with per-item error capture; iterates serially with try/catch per-item, routes as single queue entry; 5 tests: acceptance (dedup E_DEDUP with existing_uid), queue entry count (1 not N), plus 3 negative controls (empty items, empty content, all identical); 197/198 pass.
+
+**Observed:** memory-server exposes only `memory_write` (single-item), no batch variant.
+Parallel writes from agents must issue N individual tool calls, creating N separate queue
+entries with no atomicity guarantee. A batch method that routes as a single queue entry
+and produces an array of per-item results is required.
+
+**Spec:** `memory_write_batch(items: {content, ...}[]) → {results: {code, episode_uid?, existing_uid?, error?}[]}`
+— iterates serially, each item wrapped in try/catch so one failure doesn't abort the batch.
+
+### BL-129 — client_request_id idempotency: duplicate writes on replay waste resources and produce duplicate nodes — **FIXED (2026-07-03)** — request_ledger table (request_id TEXT PK, episode_uid, created_at) inserted in same tx as node+vec; client_request_id validation (string ≤128 chars, else E_SCOPE_RO); requestLedgerPrune cleanup; 5 tests: acceptance (replay returns replayed:true), pruning, plus 3 negative controls (long id, non-string id, different content same id); 197/198 pass.
+
+**Observed:** `memory_write` has no client-provided idempotency key. If an agent retries
+the same write (e.g. after a timeout or transient error), the content may be written twice
+— two distinct nodes with the same content. A `client_request_id` field that the server
+deduplicates (returning `replayed:true` with the original uid) prevents double-writes.
+Content-hash dedup (existing `E_DEDUP` path) only catches byte-identical content; it does
+not cover the case where the agent explicitly tags retries with an id.
+
+### BL-134 — concurrency harness RED test uses WriteQueue bypass which never produces real SQLITE_BUSY (sync better-sqlite3) — **FIXED (2026-07-03)** — RED test rewritten with raw better-sqlite3 connections in 8 worker_threads using busy_timeout=5 + BEGIN IMMEDIATE transactions; reliably produces and detects SQLITE_BUSY; 3 WP-6 tests (GREEN serialised, RED raw contention, overflow) all pass; 205/206 overall.
+
+**Observed:** the WP-6 RED negative control test (`WriteQueue.setBypass(true)`) could never produce a `SQLITE_BUSY` error because `better-sqlite3` is synchronous — bypass mode runs each operation immediately on the same event loop tick. 8 "concurrent" writers were effectively sequential. The test always reported 0 errors and failed its `expect(totalErrors).toBeGreaterThan(0)` assertion.
+
+**Fix:** replaced the WriteQueue bypass approach with real OS-level concurrency via `worker_threads`. Each writer opens its own `better-sqlite3` Database with `PRAGMA busy_timeout = 5` (5ms timeout). Each of 200 ops per writer uses `BEGIN IMMEDIATE` with 5 INSERTs per transaction, maximizing the lock contention window. 8 worker_threads × 200 ops reliably produces SQLITE_BUSY errors. The GREEN test (queue active, single connection) remains unchanged and continues to prove zero lock errors under serialised access.

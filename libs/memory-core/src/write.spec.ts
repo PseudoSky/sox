@@ -3,13 +3,14 @@
  * and the idempotent `node.meta` column migration (BL-23).
  * P1 enrichment fields: topic, tags, project_path, enrich_ver columns (BL-24 / D3.1).
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import { openDb } from './db.js';
-import { memoryWrite } from './write.js';
+import { memoryWrite, memoryWriteBatch, requestLedgerPrune } from './write.js';
+import { WriteQueue } from './write-queue.js';
 
 // These tests assert DB persistence (summary/metadata/migration/P1 fields), NOT embedding
 // quality — pin the fast, deterministic hash backend so a cold real-ONNX model load never
@@ -269,6 +270,324 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       expect(edge?.rel).toBe('DERIVED_FROM');
       db.close();
     } finally { cleanup(); }
+  });
+});
+
+// ── WP-3: memory_write_batch ───────────────────────────────────────────────────
+
+describe('memoryWriteBatch — WP-3 (BL-125)', () => {
+  let cleanupDb: () => void;
+  let dbPath: string;
+  let db: Database.Database;
+
+  beforeEach(() => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'batch-'));
+    cleanupDb = () => fs.rmSync(dir, { recursive: true, force: true });
+    dbPath = path.join(dir, 'batch.db');
+    db = openDb(dbPath);
+    // Reset queue instrumentation
+    WriteQueue.clearInstances();
+    WriteQueue.setBypass(false);
+    process.env['SOX_EMBED_BACKEND'] = 'hash';
+  });
+
+  afterEach(() => {
+    if (db && db.open) db.close();
+    cleanupDb();
+    WriteQueue.clearInstances();
+    delete process.env['SOX_EMBED_BACKEND'];
+  });
+
+  /**
+   * Acceptance: batch of 10 items (incl. 1 byte-duplicate) → 9 ok + 1
+   * ok:false, code:E_DEDUP, details.existing_uid
+   */
+  it('batch of 10 items with 1 byte-duplicate returns 9 ok + 1 E_DEDUP with existing_uid', async () => {
+    const items = [
+      { content: 'First unique episode content.' },
+      { content: 'Second unique episode content.' },
+      { content: 'Third unique episode content.' },
+      { content: 'Fourth unique episode content.' },
+      { content: 'Fifth unique episode content.' },
+      { content: 'Sixth unique episode content.' },
+      { content: 'Seventh unique episode content.' },
+      { content: 'Eighth unique episode content.' },
+      { content: 'Ninth unique episode content.' },
+      // Byte-duplicate of first item (same content after trim+lowercase)
+      { content: '  First Unique Episode Content.  ' },
+    ];
+
+    const result = await memoryWriteBatch(db, items);
+    expect(result.results).toHaveLength(10);
+
+    // Count successes
+    const ok = result.results.filter((r) => r.ok === true);
+    const errs = result.results.filter((r) => r.ok === false);
+
+    expect(ok).toHaveLength(9);
+    expect(errs).toHaveLength(1);
+
+    // The error item is the duplicate (index 9)
+    const dup = errs[0] as { ok: false; code: string; details?: { existing_uid: string } };
+    expect(dup.code).toBe('E_DEDUP');
+    expect(dup.details).toBeDefined();
+    expect(typeof dup.details!.existing_uid).toBe('string');
+
+    // The existing_uid should match the first item's episode_uid
+    const firstUid = (ok[0] as { ok: true; episode_uid: string }).episode_uid;
+    expect(dup.details!.existing_uid).toBe(firstUid);
+
+    // Verify total count in DB = 9 (not 10)
+    const count = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL").get()!;
+    expect(count.cnt).toBe(9);
+  });
+
+  /**
+   * Single queue entry assertion: route the batch through WriteQueue and
+   * verify only ONE enqueue was made (not N for N items).
+   */
+  it('batch routes as a single queue entry (not N items)', async () => {
+    WriteQueue.clearInstances();
+    const queue = WriteQueue.forPath(dbPath);
+    // The batch function itself doesn't enqueue — the test wraps it in a queue
+    // entry to simulate what the MCP handler does.
+    // We reset the count before the batch, then verify count remains 0
+    // because memoryWriteBatch calls memoryWrite internally but does NOT enqueue.
+    WriteQueue.resetAllEnqueueCounts();
+
+    // The batch function should not internally enqueue
+    const items = [
+      { content: 'Batch queue entry test A.' },
+      { content: 'Batch queue entry test B.' },
+    ];
+
+    // Simulate the MCP handler pattern: one queue entry for the whole batch
+    await queue.enqueue('memory_write_batch', async (qdb) => {
+      await memoryWriteBatch(qdb, items);
+    });
+
+    // Wait for the queue to drain
+    await new Promise<void>((r) => setTimeout(r, 100));
+
+    // Queue should have exactly 1 enqueue (the batch wrapper)
+    expect(queue._enqueueCount).toBe(1);
+
+    // Verify both items were written
+    const count = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL").get()!;
+    expect(count.cnt).toBe(2);
+  });
+
+  /**
+   * Negative control: empty items array returns 0 results, no crash.
+   */
+  it('negative control: empty items array returns zero results', async () => {
+    const result = await memoryWriteBatch(db, []);
+    expect(result.results).toHaveLength(0);
+  });
+
+  /**
+   * Negative control: single invalid item (empty content) returns E_SCOPE_RO.
+   */
+  it('negative control: empty content in a batch item returns E_SCOPE_RO per-item', async () => {
+    const result = await memoryWriteBatch(db, [
+      { content: '' },
+      { content: 'Valid content after empty.' },
+    ]);
+    expect(result.results).toHaveLength(2);
+
+    const first = result.results[0];
+    expect(first.ok).toBe(false);
+    expect((first as { code: string }).code).toBe('E_SCOPE_RO');
+
+    const second = result.results[1];
+    expect(second.ok).toBe(true);
+  });
+
+  /**
+   * Negative control: all items are identical duplicates → all return E_DEDUP
+   * except the first (which succeeds).
+   */
+  it('negative control: all identical items → one success, rest E_DEDUP', async () => {
+    const items = [
+      { content: 'Identical batch item content for dedup test.' },
+      { content: 'Identical batch item content for dedup test.' },
+      { content: 'Identical batch item content for dedup test.' },
+      { content: 'Identical batch item content for dedup test.' },
+      { content: 'Identical batch item content for dedup test.' },
+    ];
+
+    const result = await memoryWriteBatch(db, items);
+    expect(result.results).toHaveLength(5);
+
+    const ok = result.results.filter((r) => r.ok === true);
+    const errs = result.results.filter((r) => r.ok === false);
+
+    expect(ok).toHaveLength(1);
+    expect(errs).toHaveLength(4);
+
+    for (const err of errs) {
+      expect((err as { code: string }).code).toBe('E_DEDUP');
+      expect((err as { details: { existing_uid: string } }).details.existing_uid).toBe(
+        (ok[0] as { episode_uid: string }).episode_uid,
+      );
+    }
+  });
+});
+
+// ── WP-4: client_request_id idempotency ────────────────────────────────────────
+
+describe('client_request_id idempotency — WP-4 (BL-129)', () => {
+  let cleanupDb: () => void;
+  let dbPath: string;
+  let db: Database.Database;
+
+  beforeEach(() => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reqid-'));
+    cleanupDb = () => fs.rmSync(dir, { recursive: true, force: true });
+    dbPath = path.join(dir, 'reqid.db');
+    db = openDb(dbPath);
+    WriteQueue.clearInstances();
+    WriteQueue.setBypass(false);
+    process.env['SOX_EMBED_BACKEND'] = 'hash';
+  });
+
+  afterEach(() => {
+    if (db && db.open) db.close();
+    cleanupDb();
+    WriteQueue.clearInstances();
+    delete process.env['SOX_EMBED_BACKEND'];
+  });
+
+  /**
+   * Same id replayed → identical result + replayed:true, no new node.
+   */
+  it('replay of same client_request_id returns replayed:true with existing uid, no new node', async () => {
+    const params = {
+      content: 'Idempotent write test with client_request_id.',
+      client_request_id: 'test-replay-id-001',
+    };
+
+    // First call: fresh write
+    const first = await memoryWrite(db, params);
+    expect('episode_uid' in first).toBe(true);
+    const firstResult = first as { episode_uid: string; replayed?: boolean };
+    expect(firstResult.replayed).toBeUndefined();
+
+    const firstUid = firstResult.episode_uid;
+
+    // Second call with same id: replay, no new node
+    const second = await memoryWrite(db, params);
+    expect('episode_uid' in second).toBe(true);
+    const secondResult = second as { episode_uid: string; replayed?: boolean };
+    expect(secondResult.replayed).toBe(true);
+    expect(secondResult.episode_uid).toBe(firstUid);
+
+    // Only one episode in DB
+    const count = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL").get()!;
+    expect(count.cnt).toBe(1);
+
+    // Verify the request_ledger table has exactly one entry
+    const ledgerRow = db
+      .prepare<[string], { request_id: string; episode_uid: string }>(
+        'SELECT request_id, episode_uid FROM request_ledger WHERE request_id = ?',
+      )
+      .get('test-replay-id-001');
+    expect(ledgerRow).toBeDefined();
+    expect(ledgerRow!.episode_uid).toBe(firstUid);
+  });
+
+  /**
+   * Ledger pruning: requestLedgerPrune removes entries older than retention.
+   */
+  it('requestLedgerPrune deletes entries older than retention days', async () => {
+    // Manually insert a ledger entry with a very old created_at
+    const oldId = 'old-req-id';
+    const oldEpoch = '2020-01-01T00:00:00.000Z';
+    db.prepare(
+      'INSERT INTO request_ledger(request_id, episode_uid, created_at) VALUES (?, ?, ?)',
+    ).run(oldId, 'stale-episode-uid', oldEpoch);
+
+    // Insert a recent entry
+    const recentId = 'recent-req-id';
+    const recentEpoch = new Date().toISOString();
+    db.prepare(
+      'INSERT INTO request_ledger(request_id, episode_uid, created_at) VALUES (?, ?, ?)',
+    ).run(recentId, 'fresh-episode-uid', recentEpoch);
+
+    // Prune with 1-day retention (old entry is >5 years old → pruned)
+    const deleted = requestLedgerPrune(db, 1);
+    expect(deleted).toBe(1);
+
+    // Old entry is gone
+    const oldRow = db
+      .prepare<[string], { request_id: string }>('SELECT request_id FROM request_ledger WHERE request_id = ?')
+      .get(oldId);
+    expect(oldRow).toBeUndefined();
+
+    // Recent entry survives
+    const recentRow = db
+      .prepare<[string], { request_id: string }>('SELECT request_id FROM request_ledger WHERE request_id = ?')
+      .get(recentId);
+    expect(recentRow).toBeDefined();
+  });
+
+  /**
+   * Negative control: client_request_id that is too long (>128 chars) is rejected.
+   */
+  it('negative control: client_request_id longer than 128 chars returns E_SCOPE_RO', async () => {
+    const longId = 'x'.repeat(129);
+    const result = await memoryWrite(db, {
+      content: 'Test content for long ID validation.',
+      client_request_id: longId,
+    });
+
+    expect('episode_uid' in result).toBe(false);
+    const err = result as { code: string; message: string };
+    expect(err.code).toBe('E_SCOPE_RO');
+  });
+
+  /**
+   * Negative control: client_request_id that is not a string is rejected.
+   */
+  it('negative control: non-string client_request_id returns E_SCOPE_RO', async () => {
+    // TypeScript would catch this at compile time but at the JS boundary
+    // (e.g., MCP tool call), a non-string could arrive.
+    const result = await memoryWrite(db, {
+      content: 'Test content for non-string ID validation.',
+      client_request_id: 12345 as unknown as string,
+    });
+
+    expect('episode_uid' in result).toBe(false);
+    const err = result as { code: string; message: string };
+    expect(err.code).toBe('E_SCOPE_RO');
+  });
+
+  /**
+   * Negative control: different content with the same client_request_id still replays
+   * the first result (the id determines the response, not the content).
+   */
+  it('negative control: different content with same client_request_id returns original result (replayed)', async () => {
+    const id = 'fixed-replay-id';
+
+    const first = await memoryWrite(db, {
+      content: 'Original content for fixed id.',
+      client_request_id: id,
+    });
+    const firstResult = first as { episode_uid: string; replayed?: boolean };
+    const firstUid = firstResult.episode_uid;
+
+    // Second call with DIFFERENT content but SAME id
+    const second = await memoryWrite(db, {
+      content: 'COMPLETELY DIFFERENT content with same id.',
+      client_request_id: id,
+    });
+    const secondResult = second as { episode_uid: string; replayed?: boolean };
+    expect(secondResult.replayed).toBe(true);
+    expect(secondResult.episode_uid).toBe(firstUid);
+
+    // Only one episode was created
+    const count = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL").get()!;
+    expect(count.cnt).toBe(1);
   });
 });
 

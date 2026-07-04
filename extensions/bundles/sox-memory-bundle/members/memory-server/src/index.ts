@@ -61,12 +61,14 @@ import {
   memorySearchEntities,
   memoryUpdate,
   memoryWrite,
+  memoryWriteBatch,
   rowidsToUids,
   runBatchEnrich,
   SOCKET_PATH,
   supersedesUidForRowid,
   warmupEmbed,
   isSuperseded,
+  WriteQueue,
 } from '@adhd/sox-memory-core';
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
@@ -309,8 +311,49 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
           description: 'Approximate tokens per chunk (default: 500). Content exceeding this threshold is split at sentence boundaries; each chunk is stored as a separate episode with a DERIVED_FROM edge to the parent.',
           default: 500,
         },
+        client_request_id: {
+          type: 'string',
+          maxLength: 128,
+          description: '(WP-4) Client-supplied request idempotency key. Replay of a known id returns the original result with "replayed": true. No new episode is created.',
+        },
       },
       required: ['content'],
+    },
+  },
+  {
+    name: 'memory_write_batch',
+    description:
+      'Write multiple memory episodes as a single batch. Each item follows the same shape as memory_write. Per-item E_DEDUP is returned as ok:false (not a batch failure). The entire batch routes through one queue entry.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              content: { type: 'string', description: 'The content to memorize. Required.' },
+              summary: { type: 'string', description: '(E2) Human-readable summary.' },
+              name: { type: 'string', description: '(E2) Title/name for this episode.' },
+              topic: { type: 'string', description: '(E5) Explicit topic override.' },
+              tags: { type: 'array', items: { type: 'string' }, description: '(E4) Concept/entity tags.' },
+              metadata: { type: 'object', additionalProperties: true, description: '(E3) Arbitrary caller metadata.' },
+              project_path: { type: 'string', description: '(E1) Caller project root path.' },
+              derived_from_uid: { type: 'string', description: '(E9) UID of a parent episode.' },
+              session_id: { type: 'string' },
+              t_occurred: { type: 'string', description: 'ISO timestamp when this occurred.' },
+              agent_id: { type: 'string' },
+              source: { type: 'string', enum: ['message', 'tool_output', 'observation', 'document', 'reflection', 'import'] },
+              importance: { type: 'number', minimum: 1, maximum: 10, description: 'User-asserted importance (1–10).' },
+              client_request_id: { type: 'string', maxLength: 128, description: '(WP-4) Client-supplied request idempotency key. Replay returns the original result.' },
+            },
+            required: ['content'],
+          },
+          description: 'Array of memory_write payloads.',
+        },
+      },
+      required: ['items'],
     },
   },
   {
@@ -792,15 +835,96 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
 
   switch (name) {
     case 'memory_write': {
-      const content = args['content'] as string;
-      const chunkSize = (args['chunk_size'] as number | undefined) ?? 500;
-      const chunks = splitIntoChunks(content, chunkSize);
+      const wq = WriteQueue.forPath(dbPath);
+      return wq.enqueue('memory_write', async (writeDb) => {
+        const content = args['content'] as string;
+        const chunkSize = (args['chunk_size'] as number | undefined) ?? 500;
+        const chunks = splitIntoChunks(content, chunkSize);
 
-      if (chunks.length > 1) {
-        // Long content: write parent episode, then all chunks in parallel
-        // (embed() dispatches to the worker thread — parallel dispatches are safe;
-        //  the synchronous SQLite transactions serialise naturally on the JS event loop)
-        const parentResult = await memoryWrite(db, {
+        if (chunks.length > 1) {
+          // Long content: write parent episode, then all chunks
+          const parentResult = await memoryWrite(writeDb, {
+            content,
+            summary: args['summary'] as string | undefined,
+            name: args['name'] as string | undefined,
+            topic: args['topic'] as string | undefined,
+            project_path: args['project_path'] as string | undefined,
+            derived_from_uid: args['derived_from_uid'] as string | undefined,
+            metadata: args['metadata'] as Record<string, unknown> | undefined,
+            session_id: args['session_id'] as string | undefined,
+            t_occurred: args['t_occurred'] as string | undefined,
+            agent_id: args['agent_id'] as string | undefined,
+            source: args['source'] as 'message' | undefined,
+            importance: args['importance'] as number | undefined,
+            tags: args['tags'] as string[] | undefined,
+          });
+
+          const parentUid =
+            'episode_uid' in parentResult
+              ? parentResult.episode_uid
+              : parentResult.code === 'E_DEDUP'
+                ? parentResult.existing_uid
+                : null;
+
+          if (!parentUid) {
+            return { isError: true, content: [{ type: 'text', text: JSON.stringify(parentResult) }] };
+          }
+
+          // Chunks: written serially through the same queue to maintain ordering
+          const chunkResults: Array<import('@adhd/sox-memory-core').WriteResult | import('@adhd/sox-memory-core').WriteError> = [];
+          for (const chunk of chunks) {
+            const r = await wq.enqueue('memory_write_chunk', (qdb) =>
+              memoryWrite(qdb, {
+                content: chunk,
+                agent_id: args['agent_id'] as string | undefined,
+                source: (args['source'] as 'message' | undefined) ?? 'document',
+                metadata: args['metadata'] as Record<string, unknown> | undefined,
+              }),
+            );
+            chunkResults.push(r);
+          }
+
+          const now = new Date().toISOString();
+          const parentRow = writeDb
+            .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?')
+            .get(parentUid);
+          const chunkUids: string[] = [];
+
+          for (const chunkResult of chunkResults) {
+            const chunkUid =
+              'episode_uid' in chunkResult
+                ? chunkResult.episode_uid
+                : chunkResult.code === 'E_DEDUP'
+                  ? chunkResult.existing_uid
+                  : null;
+
+            if (chunkUid) {
+              chunkUids.push(chunkUid);
+              const chunkRow = writeDb
+                .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?')
+                .get(chunkUid);
+              if (chunkRow && parentRow) {
+                writeDb.prepare(
+                  `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
+                   SELECT ?, ?, 'DERIVED_FROM', 'user_asserted', ?, '{"auto_chunk":true}'
+                   WHERE NOT EXISTS (
+                     SELECT 1 FROM edge WHERE src=? AND dst=? AND rel='DERIVED_FROM' AND t_expired IS NULL
+                   )`,
+                ).run(chunkRow.rowid, parentRow.rowid, now, chunkRow.rowid, parentRow.rowid);
+              }
+            }
+          }
+
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ episode_uid: parentUid, chunk_uids: chunkUids, chunk_count: chunks.length }),
+            }],
+          };
+        }
+
+        // Content below threshold: single write through queue
+        const result = await memoryWrite(writeDb, {
           content,
           summary: args['summary'] as string | undefined,
           name: args['name'] as string | undefined,
@@ -815,87 +939,40 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           importance: args['importance'] as number | undefined,
           tags: args['tags'] as string[] | undefined,
         });
-
-        const parentUid =
-          'episode_uid' in parentResult
-            ? parentResult.episode_uid
-            : parentResult.code === 'E_DEDUP'
-              ? parentResult.existing_uid
-              : null;
-
-        if (!parentUid) {
-          return { isError: true, content: [{ type: 'text', text: JSON.stringify(parentResult) }] };
-        }
-
-        const chunkResults = await Promise.all(
-          chunks.map((chunk) =>
-            memoryWrite(db, {
-              content: chunk,
-              agent_id: args['agent_id'] as string | undefined,
-              source: (args['source'] as 'message' | undefined) ?? 'document',
-              metadata: args['metadata'] as Record<string, unknown> | undefined,
-            }),
-          ),
-        );
-
-        const now = new Date().toISOString();
-        const parentRow = db
-          .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?')
-          .get(parentUid);
-        const chunkUids: string[] = [];
-
-        for (const chunkResult of chunkResults) {
-          const chunkUid =
-            'episode_uid' in chunkResult
-              ? chunkResult.episode_uid
-              : chunkResult.code === 'E_DEDUP'
-                ? chunkResult.existing_uid
-                : null;
-
-          if (chunkUid) {
-            chunkUids.push(chunkUid);
-            const chunkRow = db
-              .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?')
-              .get(chunkUid);
-            if (chunkRow && parentRow) {
-              db.prepare(
-                `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
-                 SELECT ?, ?, 'DERIVED_FROM', 'user_asserted', ?, '{"auto_chunk":true}'
-                 WHERE NOT EXISTS (
-                   SELECT 1 FROM edge WHERE src=? AND dst=? AND rel='DERIVED_FROM' AND t_expired IS NULL
-                 )`,
-              ).run(chunkRow.rowid, parentRow.rowid, now, chunkRow.rowid, parentRow.rowid);
-            }
-          }
-        }
-
         return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({ episode_uid: parentUid, chunk_uids: chunkUids, chunk_count: chunks.length }),
-          }],
+          content: [{ type: 'text', text: JSON.stringify(result) }],
         };
-      }
-
-      // Content below threshold: single write
-      const result = await memoryWrite(db, {
-        content,
-        summary: args['summary'] as string | undefined,
-        name: args['name'] as string | undefined,
-        topic: args['topic'] as string | undefined,
-        project_path: args['project_path'] as string | undefined,
-        derived_from_uid: args['derived_from_uid'] as string | undefined,
-        metadata: args['metadata'] as Record<string, unknown> | undefined,
-        session_id: args['session_id'] as string | undefined,
-        t_occurred: args['t_occurred'] as string | undefined,
-        agent_id: args['agent_id'] as string | undefined,
-        source: args['source'] as 'message' | undefined,
-        importance: args['importance'] as number | undefined,
-        tags: args['tags'] as string[] | undefined,
       });
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result) }],
-      };
+    }
+
+    case 'memory_write_batch': {
+      const wq = WriteQueue.forPath(dbPath);
+      return wq.enqueue('memory_write_batch', async (writeDb) => {
+        const items = args['items'] as Array<Record<string, unknown>> | undefined;
+        if (!Array.isArray(items) || items.length === 0) {
+          return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_INVALID_INPUT', message: 'items must be a non-empty array' }) }] };
+        }
+        const batchItems = items.map((item) => ({
+          content: item['content'] as string,
+          summary: item['summary'] as string | undefined,
+          name: item['name'] as string | undefined,
+          topic: item['topic'] as string | undefined,
+          project_path: item['project_path'] as string | undefined,
+          derived_from_uid: item['derived_from_uid'] as string | undefined,
+          metadata: item['metadata'] as Record<string, unknown> | undefined,
+          session_id: item['session_id'] as string | undefined,
+          t_occurred: item['t_occurred'] as string | undefined,
+          agent_id: item['agent_id'] as string | undefined,
+          source: item['source'] as 'message' | undefined,
+          importance: item['importance'] as number | undefined,
+          tags: item['tags'] as string[] | undefined,
+          client_request_id: item['client_request_id'] as string | undefined,
+        }));
+        const batchResult = await memoryWriteBatch(writeDb, batchItems);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(batchResult) }],
+        };
+      });
     }
 
     case 'memory_recall': {
@@ -1157,18 +1234,21 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_invalidate': {
-      const result = memoryInvalidate(db, {
-        claim_uid: args['claim_uid'] as string,
-        reason: args['reason'] as string,
-        t_transition: args['t_transition'] as string | undefined,
-        replacement_uid: args['replacement_uid'] as string | undefined,
+      const wq = WriteQueue.forPath(dbPath);
+      return wq.enqueue('memory_invalidate', (writeDb) => {
+        const result = memoryInvalidate(writeDb, {
+          claim_uid: args['claim_uid'] as string,
+          reason: args['reason'] as string,
+          t_transition: args['t_transition'] as string | undefined,
+          replacement_uid: args['replacement_uid'] as string | undefined,
+        });
+        if ('code' in result) {
+          return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+        }
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
       });
-      if ('code' in result) {
-        return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
-      }
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result) }],
-      };
     }
 
     case 'memory_update': {
@@ -1176,38 +1256,44 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       if (!uid) {
         return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING', message: 'uid is required' }) }] };
       }
-      const updateResult = await memoryUpdate(db, {
-        uid,
-        content: args['content'] as string | undefined,
-        summary: args['summary'] as string | undefined,
-        name: args['name'] as string | undefined,
-        topic: args['topic'] as string | undefined,
-        tags: args['tags'] as string[] | undefined,
-        importance: args['importance'] as number | undefined,
-        metadata: args['metadata'] as Record<string, unknown> | undefined,
-        metadata_merge: args['metadata_merge'] as 'deep' | 'replace' | undefined,
-        t_occurred: args['t_occurred'] as string | undefined,
-        t_valid: args['t_valid'] as string | undefined,
-      });
-      if ('code' in updateResult) {
+      const wq = WriteQueue.forPath(dbPath);
+      return wq.enqueue('memory_update', async (writeDb) => {
+        const updateResult = await memoryUpdate(writeDb, {
+          uid,
+          content: args['content'] as string | undefined,
+          summary: args['summary'] as string | undefined,
+          name: args['name'] as string | undefined,
+          topic: args['topic'] as string | undefined,
+          tags: args['tags'] as string[] | undefined,
+          importance: args['importance'] as number | undefined,
+          metadata: args['metadata'] as Record<string, unknown> | undefined,
+          metadata_merge: args['metadata_merge'] as 'deep' | 'replace' | undefined,
+          t_occurred: args['t_occurred'] as string | undefined,
+          t_valid: args['t_valid'] as string | undefined,
+        });
+        if ('code' in updateResult) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: JSON.stringify(updateResult) }],
+          };
+        }
         return {
-          isError: true,
           content: [{ type: 'text', text: JSON.stringify(updateResult) }],
         };
-      }
-      return {
-        content: [{ type: 'text', text: JSON.stringify(updateResult) }],
-      };
+      });
     }
 
     case 'memory_link': {
-      const result = await memoryLinkNode(db, args);
-      if (result.isError) {
-        return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
-      }
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result) }],
-      };
+      const wq = WriteQueue.forPath(dbPath);
+      return wq.enqueue('memory_link', (writeDb) => {
+        const result = memoryLinkNode(writeDb, args);
+        if (result.isError) {
+          return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+        }
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      });
     }
 
     // ── P4 NEW TOOL HANDLERS ──────────────────────────────────────────────────
@@ -1271,13 +1357,16 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_curate': {
-      const result = await memoryCurate(db, args);
-      if ('code' in result) {
-        return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
-      }
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result) }],
-      };
+      const wq = WriteQueue.forPath(dbPath);
+      return wq.enqueue('memory_curate', async (writeDb) => {
+        const result = await memoryCurate(writeDb, args);
+        if ('code' in result) {
+          return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+        }
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      });
     }
 
     case 'memory_stats': {
