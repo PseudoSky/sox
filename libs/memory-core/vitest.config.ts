@@ -3,14 +3,16 @@ import { resolve } from 'node:path';
 
 export default defineConfig({
   resolve: {
-    // Map the ESM-only embedding-provider package to its TypeScript source so
-    // vitest (which runs via vite) can process it directly — avoiding the
-    // "no import/require condition" resolution failure that occurs when vite
-    // encounters a package with only a "default" condition in its exports map.
+    // Map the ESM-only embedding-provider package directly to its built dist
+    // entry — this bypasses the "no import/require condition" resolution failure
+    // that vite hits on the package's exports map, WHILE keeping the FastembedProvider's
+    // `__dirname`-based sibling-worker resolution valid: `dist/embedWorker.js` exists,
+    // whereas the src/ tree only has `embedWorker.ts` (aliasing to src broke the real-bge
+    // opt-in path — BL-161 follow-up). Matches memory-server's vitest alias.
     alias: {
       '@adhd/sox-embedding-provider': resolve(
         __dirname,
-        '../data/embed/embedding-provider/src/index.ts',
+        '../data/embed/embedding-provider/dist/index.js',
       ),
     },
   },
