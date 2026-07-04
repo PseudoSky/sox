@@ -110,3 +110,77 @@ describe('supersededEntries — ADR-0004 §D6 update diff', () => {
     expect(supersededEntries(e, e)).toEqual([]);
   });
 });
+
+describe('OwnershipIndex — deduplication (PI-6 / BL-142)', () => {
+  it('dedupeEntries: removes duplicates by (kind, target), keeps last occurrence', () => {
+    const entries: OwnedEntry[] = [
+      { kind: 'file-drop', path: '/skills/a' },
+      { kind: 'config-key', file: '/cfg.json', keyPath: 'mcpServers.x' },
+      { kind: 'file-drop', path: '/skills/b' },
+      { kind: 'file-drop', path: '/skills/a' }, // duplicate of first
+      { kind: 'config-key', file: '/cfg.json', keyPath: 'mcpServers.x' }, // duplicate
+      { kind: 'materialize', path: '/store/x' },
+    ];
+    const deduped = OwnershipIndex.dedupeEntries(entries);
+    expect(deduped).toHaveLength(4);
+    // file-drop /skills/a should keep the LAST occurrence
+    const skillAEntries = deduped.filter(
+      (e) => e.kind === 'file-drop' && e.path === '/skills/a',
+    );
+    expect(skillAEntries).toHaveLength(1);
+  });
+
+  it('addEntries: adding the same entry 3 times produces exactly one entry', () => {
+    const idx = OwnershipIndex.loadFromFile(ownPath());
+    const entry: OwnedEntry = { kind: 'file-drop', path: '/skills/skill' };
+    // Add the same entry 3 times
+    idx.addEntries('ext', 'user', [entry]);
+    idx.addEntries('ext', 'user', [entry]);
+    idx.addEntries('ext', 'user', [entry]);
+    idx.save();
+    const rec = OwnershipIndex.loadFromFile(ownPath()).get('ext', 'user')!;
+    expect(rec.entries).toHaveLength(1);
+    expect(rec.entries[0]).toEqual(entry);
+  });
+
+  it('compact: deduplicates across all records in the index', () => {
+    const idx = OwnershipIndex.loadFromFile(ownPath());
+    // Simulate duplicates from a real ledger (e.g. reinstall × 3)
+    idx.record({
+      extId: 'ext', scope: 'user',
+      entries: [
+        { kind: 'file-drop', path: '/skills/a' },
+        { kind: 'file-drop', path: '/skills/a' },
+        { kind: 'config-key', file: '/cfg.json', keyPath: 's.x' },
+        { kind: 'config-key', file: '/cfg.json', keyPath: 's.x' },
+        { kind: 'config-key', file: '/cfg.json', keyPath: 's.x' },
+      ],
+    });
+    idx.compact();
+    idx.save();
+    const rec = OwnershipIndex.loadFromFile(ownPath()).get('ext', 'user')!;
+    expect(rec.entries).toHaveLength(2);
+  });
+
+  it('dedupeEntries: preserves uniqueness across all OwnedEntry kinds', () => {
+    const entries: OwnedEntry[] = [
+      { kind: 'file-drop', path: '/a' },
+      { kind: 'materialize', path: '/b' },
+      { kind: 'config-key', file: '/cfg', keyPath: 'k' },
+      { kind: 'array-values', file: '/cfg', keyPath: 'k', values: ['v1'] },
+      { kind: 'lockfile-key', file: '/l', keyPath: 'id' },
+      { kind: 'registry-record', extId: 'e', scope: 'user', root: '/r' },
+      { kind: 'os-unit' as const, label: 'test', unitPath: '/u', supervisor: 'launchd', appliedHash: 'h' },
+      // Duplicates of each
+      { kind: 'file-drop', path: '/a' },
+      { kind: 'materialize', path: '/b' },
+      { kind: 'config-key', file: '/cfg', keyPath: 'k' },
+      { kind: 'array-values', file: '/cfg', keyPath: 'k', values: ['v2'] },
+      { kind: 'lockfile-key', file: '/l', keyPath: 'id' },
+      { kind: 'registry-record', extId: 'e', scope: 'user', root: '/r' },
+      { kind: 'os-unit' as const, label: 'test', unitPath: '/u2', supervisor: 'systemd', appliedHash: 'h2' },
+    ];
+    const deduped = OwnershipIndex.dedupeEntries(entries);
+    expect(deduped).toHaveLength(7); // one of each kind
+  });
+});

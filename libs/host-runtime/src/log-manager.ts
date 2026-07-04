@@ -270,3 +270,88 @@ function todayDateString(): string {
   const day = String(d.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
+
+// ─── PI-3: Unified log stream discovery ──────────────────────────────────────
+
+/**
+ * A single discoverable log stream for an extension.
+ * Used by `soxe logs --id=<ext>` (PI-3) and `soxe follow` (PI-4) to enumerate
+ * ALL streams associated with a given extension id, including proxy-backend and
+ * OS-unit output streams that were previously invisible to `soxe logs`.
+ */
+export interface LogStreamDescriptor {
+  /** Human-readable stream label (e.g. "backend", "serve", "os-out", "os-err") */
+  label: string;
+  /**
+   * The log directory (e.g. `runDir()/logs/<supervisorId>` or
+   * `runDir()/logs/proxy-backend-<extId>`).
+   */
+  logDir: string;
+  /**
+   * Glob-like file prefix pattern: all files in `logDir` whose name starts with
+   * this prefix and ends with `.log` belong to this stream.
+   */
+  filePrefix: string;
+}
+
+/**
+ * Find ALL log streams for a given extension id across all known sources.
+ *
+ * Returns descriptors for:
+ * 1. The supervisor-managed extension log stream: `<extId>-<date>.log`
+ * 2. The proxy-backend log stream: `<extId>-backend-<date>.log` (when present)
+ * 3. The OS-unit log streams: `<extId>-os-<date>.out.log` / `<extId>-os-<date>.err.log`
+ *    (when the extension has an OS unit)
+ * 4. The serve log stream: `<extId>-serve-<date>.log` (when `soxe serve --log` is used)
+ *
+ * @param extId The extension id (e.g. "memory-server")
+ * @param supervisorId The deterministic supervisor id for the scope+root
+ * @param scope The installation scope (used for OS-unit log dir key)
+ */
+export function findAllLogStreamsForExt(
+  extId: string,
+  supervisorId: string,
+  scope: string,
+): LogStreamDescriptor[] {
+  const { logDirFor: ldf } = require('./data-paths.js') as typeof import('./data-paths.js') ;
+  const streams: LogStreamDescriptor[] = [];
+
+  // 1. Supervisor-managed extension log (current behaviour).
+  const extLogDir = ldf(supervisorId);
+  streams.push({ label: 'process', logDir: extLogDir, filePrefix: `${extId}-` });
+
+  // 2. Proxy-backend log (auto-spawned by soxe serve, §9.5).
+  const backendLogDir = ldf(`proxy-backend-${extId}`);
+  streams.push({ label: 'backend', logDir: backendLogDir, filePrefix: `${extId}-backend-` });
+
+  // 3. OS-unit log (launchd/systemd stdout/stderr redirects).
+  const osLogDir = ldf(`os-${scope}-${extId}`);
+  streams.push({ label: 'os-out', logDir: osLogDir, filePrefix: `${extId}-os-` });
+  streams.push({ label: 'os-err', logDir: osLogDir, filePrefix: `${extId}-os-` });
+
+  // 4. Serve log (soxe serve --log or SOX_SERVE_LOG=1).
+  const serveLogDir = ldf(`serve-${extId}`);
+  streams.push({ label: 'serve', logDir: serveLogDir, filePrefix: `${extId}-serve-` });
+
+  return streams;
+}
+
+/**
+ * Find the most recent log file matching a given prefix in a directory.
+ * Returns the full path, or null if no matching log file exists.
+ */
+export function findMostRecentLogFile(logDir: string, filePrefix: string): string | null {
+  const fs = require('node:fs') as typeof import('node:fs');
+  const path = require('node:path') as typeof import('node:path');
+  if (!fs.existsSync(logDir)) return null;
+  let files: string[];
+  try {
+    files = fs.readdirSync(logDir)
+      .filter((f: string) => f.startsWith(filePrefix) && f.endsWith('.log'))
+      .sort();
+  } catch {
+    return null;
+  }
+  if (files.length === 0) return null;
+  return path.join(logDir, files[files.length - 1] as string);
+}

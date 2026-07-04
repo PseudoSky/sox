@@ -16,6 +16,7 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { verifyIntegrity } from './verify-integrity.js';
 import type { Scope, Lockfile } from './install.js';
+import { writeLockfileAtomic, LOCKFILE_VERSION } from './install.js';
 
 const SCOPES: Scope[] = ['org', 'user', 'project', 'local'];
 
@@ -111,6 +112,70 @@ describe('verifyIntegrity primitive', () => {
       });
     });
   }
+
+  it('PI-5 / BL-141 sabotage test: writeLockfileAtomic refuses empty resolved (hard failure)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi5-empty-'));
+    try {
+      const lp = path.join(dir, 'extensions.lock');
+      const emptyLock: Lockfile = {
+        lockfileVersion: LOCKFILE_VERSION,
+        resolved: {},
+      };
+      expect(() => writeLockfileAtomic(lp, emptyLock)).toThrow(/empty lockfile|zero members/);
+      // Negative control: file MUST NOT exist on disk
+      expect(fs.existsSync(lp)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('PI-5 / BL-141 negative control: writeLockfileAtomic succeeds with non-empty resolved', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi5-nonempty-'));
+    try {
+      const lp = path.join(dir, 'extensions.lock');
+      const lock: Lockfile = {
+        lockfileVersion: LOCKFILE_VERSION,
+        resolved: {
+          'test-ext': {
+            source: 'file:///dev/null',
+            checksum: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+            resolved_at: new Date().toISOString(),
+          },
+        },
+      };
+      expect(() => writeLockfileAtomic(lp, lock)).not.toThrow();
+      expect(fs.existsSync(lp)).toBe(true);
+      const onDisk = JSON.parse(fs.readFileSync(lp, 'utf8')) as Lockfile;
+      expect(onDisk.lockfileVersion).toBe(LOCKFILE_VERSION);
+      expect(onDisk.resolved['test-ext']).toBeDefined();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('PI-5 / BL-141 negative control: atomic write produces no .tmp residue', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi5-atom-'));
+    try {
+      const lp = path.join(dir, 'extensions.lock');
+      const lock: Lockfile = {
+        lockfileVersion: LOCKFILE_VERSION,
+        resolved: {
+          'ext-a': {
+            source: 'file:///a',
+            checksum: 'sha256:abc',
+            resolved_at: new Date().toISOString(),
+          },
+        },
+      };
+      writeLockfileAtomic(lp, lock);
+      // .tmp file must not exist after the rename
+      expect(fs.existsSync(lp + '.tmp')).toBe(false);
+      // Only the actual lockfile exists
+      expect(fs.readdirSync(dir)).toEqual(['extensions.lock']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it('cross-scope parity: same (id, artifact) yields identical verdict regardless of scope', async () => {
     const id = 'vi-parity';

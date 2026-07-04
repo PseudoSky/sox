@@ -34,6 +34,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -249,6 +250,65 @@ export function argvContainsToken(argv: string, token: string): boolean {
   }
 }
 
+// ─── PI-1: identity-based matching by SOX_SERVICE_ID env ──────────────────────
+
+/**
+ * Read the environment block for a given PID via `ps -o env`.
+ * Returns null on failure or if the platform doesn't support ps -o env.
+ */
+export function readProcessEnv(pid: number): Record<string, string> | null {
+  try {
+    const out = execFileSync('ps', ['-o', 'env=', '-p', String(pid)], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024,
+      timeout: 2000,
+    });
+    const env: Record<string, string> = {};
+    for (const line of out.split('\0')) {
+      const eq = line.indexOf('=');
+      if (eq > 0) {
+        const k = line.slice(0, eq);
+        const v = line.slice(eq + 1);
+        if (k) env[k] = v;
+      }
+    }
+    return env;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Find every live process whose env contains `SOX_SERVICE_ID=<serviceId>`.
+ * Falls back to argv-based token matching when the env probe is unavailable
+ * (e.g. permissions, platform without ps -o env).
+ */
+export function findOrphansByServiceId(
+  serviceId: string,
+  token: string,
+  opts: { excludePids?: number[] | undefined } = {},
+): OrphanMatch[] {
+  if (!serviceId && !token) return [];
+  const exclude = new Set<number>([process.pid, ...(opts.excludePids ?? [])]);
+
+  // Prefer env-based matching (cross-build safe).
+  const envMatches: OrphanMatch[] = [];
+  for (const p of snapshotProcesses()) {
+    if (exclude.has(p.pid)) continue;
+    const env = readProcessEnv(p.pid);
+    if (env && env['SOX_SERVICE_ID'] === serviceId) {
+      envMatches.push({ ...p, orphaned: p.ppid === 1 });
+    }
+  }
+  if (envMatches.length > 0) return envMatches;
+
+  // Fall back to argv-based token matching (pre-PI-1 compatibility).
+  if (token) {
+    return findOrphansByIdentity(token, opts);
+  }
+  return [];
+}
+
 export interface ReapResult {
   token: string;
   /** Per-process outcomes for everything that matched the identity token. */
@@ -284,4 +344,194 @@ export async function reapBySource(
 export function storeDirFromSource(source: string): string {
   const tok = identityToken(source);
   return tok ? path.dirname(tok) : '';
+}
+
+// ─── PI-4: Process snapshot (soxe ps) ───────────────────────────────────────
+
+/**
+ * Provenance of a process row in the `soxe ps` merged table.
+ */
+export type ProcessRowSource =
+  | 'supervisor-registry'  // Tracked by the global supervisor registry
+  | 'os-unit'              // Managed by launchd/systemd (OS supervisor)
+  | 'proxy-backend'        // Auto-spawned backend (in-proc singleton)
+  | 'ps-scan'              // Found by OS process table scan (unmanaged/stray)
+  | 'stale-socket';        // Orphaned socket file with no live pid
+
+export interface ProcessSnapshotRow {
+  /** Unique row id (pid or socket-path-hash). */
+  id: string;
+  /** OS pid (0 for socket-only rows). */
+  pid: number;
+  /** Source of this row. */
+  source: ProcessRowSource;
+  /** Extension id, when identifiable. */
+  extId: string;
+  /** Scope (user/project/local). */
+  scope: string;
+  /** Process status: 'alive' | 'dead' | 'unmanaged' | 'stale'. */
+  status: 'alive' | 'dead' | 'unmanaged' | 'stale';
+  /** Build hash or SHA from the artifact, when available. */
+  buildHash?: string;
+  /** Version string from the extension manifest, when available. */
+  version?: string;
+  /** PID of the owner process (proxy registry, etc.), or 0. */
+  ownerPid?: number;
+  /** UDS socket path, when applicable. */
+  socketPath?: string;
+  /** Human-readable detail. */
+  detail?: string;
+}
+
+/**
+ * Gather a complete process snapshot by merging:
+ * 1. Global supervisor registry — tracked supervisor processes.
+ * 2. OS-unit states (launchd/systemctl) — daemon services.
+ * 3. Proxy backend lock files — auto-spawned backends.
+ * 4. OS-truth ps/lsof scan — unmanaged/stray processes.
+ *
+ * @param supervisorRegistryEntries Live supervisor registry entries (from readGlobalRegistry).
+ * @param socketDir The socket directory path.
+ * @param logDir The runtime log directory path.
+ * @param scope Optional scope filter.
+ */
+export function gatherProcessSnapshot(
+  supervisorRegistryEntries: Array<{ supervisorId: string; scope: string; pid: number; logDir: string; execSocketPath: string; root: string; startedAt: string; hostname: string; runtimeFilePath: string }>,
+  socketDirPath: string,
+  _logDirPath: string,
+  scope?: string,
+): ProcessSnapshotRow[] {
+  const rows: ProcessSnapshotRow[] = [];
+
+  // 1. Supervisor registry entries.
+  for (const entry of supervisorRegistryEntries) {
+    if (scope && entry.scope !== scope) continue;
+    rows.push({
+      id: `sup-${entry.supervisorId}`,
+      pid: entry.pid,
+      source: 'supervisor-registry',
+      extId: entry.supervisorId, // supervisor id
+      scope: entry.scope,
+      status: pidAlive(entry.pid) ? 'alive' : 'dead',
+      socketPath: entry.execSocketPath,
+      detail: `runtime=${entry.runtimeFilePath}`,
+    });
+  }
+
+  // 2. OS-unit scan: discover plist/service files under user-scope dirs.
+  // On macOS: scan ~/Library/LaunchAgents for com.sox.*.plist.
+  // On Linux: scan ~/.config/systemd/user for sox-*.service.
+  const osSupervisor = require('./os-unit.js') as typeof import('./os-unit.js');
+  const platform = osSupervisor.getOsUnitPlatform();
+  try {
+    const unitDir = platform.defaultUnitDir();
+    if (fs.existsSync(unitDir)) {
+      const files = fs.readdirSync(unitDir);
+      const soxUnits = files.filter((f) =>
+        f.includes('sox') || f.startsWith('com.sox.'),
+      );
+      for (const unitFile of soxUnits) {
+        // Extract label from filename: com.sox.<scope>.<extId>.plist
+        let label = unitFile.replace(/\.(plist|service)$/, '');
+        if (label.startsWith('sox-')) {
+          // systemd naming: sox-<scope>-<extId>.service
+          label = 'com.sox.' + label.slice(4).replace(/-/g, '.');
+        }
+        const loaded = platform.isLoaded(label, osSupervisor.realOsExec);
+        const match = label.match(/^com\.sox\.([^.]+)\.(.+)$/);
+        const extId = match?.[2] ?? label;
+        const unitScope = match?.[1] ?? '?';
+        if (scope && unitScope !== scope) continue;
+        rows.push({
+          id: `os-${label}`,
+          pid: 0, // OS supervisor manages the pid
+          source: 'os-unit',
+          extId,
+          scope: unitScope,
+          status: loaded ? 'alive' : 'dead',
+          detail: loaded ? `loaded:${unitFile}` : `unloaded:${unitFile}`,
+        });
+      }
+    }
+  } catch {
+    // OS-unit scan best-effort
+  }
+
+  // 3. Proxy backend lock files under socketDir.
+  try {
+    if (fs.existsSync(socketDirPath)) {
+      const files = fs.readdirSync(socketDirPath);
+      const proxyLocks = files.filter((f) => f.startsWith('proxy-backend-') && f.endsWith('.lock'));
+      for (const lockFile of proxyLocks) {
+        const lockPath = path.join(socketDirPath, lockFile);
+        try {
+          const payload = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as {
+            pid: number; t: number; key: string;
+          };
+          const live = pidAlive(payload.pid);
+          // Try to extract extId from the singleton key.
+          const extId = payload.key.includes(':')
+            ? payload.key.split(':')[0] ?? '?'
+            : '?';
+          rows.push({
+            id: `proxy-${lockFile}`,
+            pid: payload.pid,
+            source: 'proxy-backend',
+            extId,
+            scope: scope ?? '?',
+            status: live ? 'alive' : 'stale',
+            ownerPid: payload.pid,
+            detail: `lock:${lockFile} key:${payload.key}`,
+          });
+        } catch {
+          // Corrupt lock file — skip
+        }
+      }
+      // Also scan for .sock files matching proxy pattern.
+      const proxySocks = files.filter((f) => f.startsWith('proxy-') && f.endsWith('.sock'));
+      for (const sockFile of proxySocks) {
+        const sockPath = path.join(socketDirPath, sockFile);
+        const alreadyListed = rows.some((r) => r.socketPath === sockPath);
+        if (!alreadyListed) {
+          rows.push({
+            id: `sock-${sockFile}`,
+            pid: 0,
+            source: 'stale-socket',
+            extId: '?',
+            scope: scope ?? '?',
+            status: 'stale',
+            socketPath: sockPath,
+            detail: `orphan-socket:${sockFile}`,
+          });
+        }
+      }
+    }
+  } catch {
+    // Socket scan best-effort
+  }
+
+  // 4. OS-truth pass: scan ps for processes with SOX_SERVICE_ID env var.
+  // This catches unmanaged/stray processes that are not in any registry.
+  const allProcs = snapshotProcesses();
+  for (const p of allProcs) {
+    if (p.pid === process.pid) continue;
+    const env = readProcessEnv(p.pid);
+    if (env && env['SOX_SERVICE_ID']) {
+      const svcId = env['SOX_SERVICE_ID'];
+      // Skip if already tracked (dedup by pid).
+      const tracked = rows.some((r) => r.pid === p.pid && r.source !== 'ps-scan');
+      if (tracked) continue;
+      rows.push({
+        id: `ps-${p.pid}`,
+        pid: p.pid,
+        source: 'ps-scan',
+        extId: svcId,
+        scope: scope ?? '?',
+        status: 'unmanaged',
+        detail: `SOX_SERVICE_ID=${svcId} ppid=${p.ppid}`,
+      });
+    }
+  }
+
+  return rows;
 }

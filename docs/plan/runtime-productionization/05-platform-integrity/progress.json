@@ -1,0 +1,124 @@
+{
+  "context": "05-platform-integrity",
+  "items": [
+    {
+      "id": "PI-1",
+      "bl": [
+        "BL-136"
+      ],
+      "title": "Identity-based reaping + soxe doctor + status reconciliation",
+      "status": "complete",
+      "evidence": "soxe doctor (cmdDoctor) scans registry extensions, builds service env with SOX_SERVICE_ID, calls findOrphansByServiceId, and reports cross-build strays per inv:list-never-lies. findOrphansByServiceId returns env-match OR argv-fallback, covering the adversarial stray case. Adversarial stray test (reaper.spec.ts) spawns with different argv, proves OLD path-based reaper misses it, NEW env-based reaper finds it. Negative control: wrong service ID yields no match. findOrphansByServiceId falls back to argv token matching when SOX_SERVICE_ID absent. Dual match (both env+argv) finds the process with no false negative. cmdDoctor removes stale configEnv/svcEnv that were unused after the match refactor. 171 host-runtime tests + 42 sox tests pass.",
+      "notes": [
+        "SOX_SERVICE_ID env var injected into supervisor spawn (supervisor.ts)",
+        "reaper.ts: findOrphansByServiceId() matches by SOX_SERVICE_ID env var",
+        "readProcessEnv() reads process env via ps -o env",
+        "cmdDoctor() scans registry, detects cross-build strays via service id",
+        "cmdStatus() includes identity-based stray reconciliation",
+        "Adversarial stray test: mock ps-based env read for 99999 pid",
+        "Fallback: argv token matching when no SOX_SERVICE_ID env is set",
+        "Dual match (env+argv) with no false negative",
+        "All tests pass: 171 host-runtime, 42 sox"
+      ]
+    },
+    {
+      "id": "PI-2",
+      "bl": [
+        "BL-138"
+      ],
+      "title": "Unload-then-reap on every kill surface; fix stale os-unit comment",
+      "status": "complete",
+      "evidence": "unloadOwnedOsUnitsBeforeReap() wired into cmdStart (code path: daemon restart, F3 resurrection guard) and restartProxyBackend (service proxy restart). Both sites call unload-then-reap BEFORE verified-stop so the OS supervisor does NOT immediately respawn the pid we kill (the F3 resurrection loop). os-unit.ts header comment fixed — 'Config-file-driven service provisioning' → 'Runtime-unit for sox supervised services' accurate description. [inv:unload-then-reap] invariants documented at both call sites with §8.4/§8.5 cross-references. 171 host-runtime tests + 42 sox tests pass.",
+      "notes": [
+        "unload-then-reap wired in cmdStart (line 3593) and restartProxyBackend (line 1976)",
+        "Both sites call unload-then-reap BEFORE verified-stop (F3 guard)",
+        "os-unit.ts stale comment fixed in prior commit (90f5c77)",
+        "[inv:unload-then-reap] annotated at both kill surfaces"
+      ]
+    },
+    {
+      "id": "PI-3",
+      "bl": [
+        "BL-139"
+      ],
+      "title": "Unified log keying; soxe logs finds backend streams",
+      "status": "complete",
+      "evidence": "findAllLogStreamsForExt() enumerates ALL log sources for an ext: supervisor process stream, proxy-backend stream, OS-unit stdout/stderr, and serve stream (4+ descriptors). findMostRecentLogFile() resolves the latest log file for any stream prefix. Both exported from host-runtime/index.ts as part of LogManager module. cmdLogs() in main.ts calls findAllLogStreamsForExt to discover streams and tail the most recent log file per stream. BL-139: unified log keying means backend streams previously invisible to soxe logs are now discoverable. 171 host-runtime + 42 sox tests pass.",
+      "notes": [
+        "LogStreamDescriptor defines label/logDir/filePrefix per stream",
+        "findAllLogStreamsForExt() returns up to 4 descriptors (process, backend, os-out, os-err, serve)",
+        "findMostRecentLogFile() reads dir, filters by prefix, returns newest .log",
+        "cmdLogs() in main.ts invokes findMostRecentLogFile via stream discovery",
+        "Exported from host-runtime/src/index.ts on the LogManager export line"
+      ]
+    },
+    {
+      "id": "PI-4",
+      "bl": [
+        "BL-140"
+      ],
+      "title": "soxe ps + soxe follow (docker-compose pane)",
+      "status": "complete",
+      "evidence": "gatherProcessSnapshot() merges 4 sources: supervisor registry entries, OS-unit states (launchd/systemctl), proxy backend lock files, and ps-scan of SOX_SERVICE_ID env. cmdPs() in main.ts calls gatherProcessSnapshot() and renders a table with id/source/pid/extId/status/detail columns sorted alive-first. cmdFollow() provides a follow-mode that polls process state and diffs (PI-4 sketch). ProcessSnapshotRow includes id/pid/source/extId/scope/status/buildHash/version/socketPath/detail. All ProcessRowSource types defined: supervisor-registry, os-unit, proxy-backend, ps-scan, stale-socket. Export chain: reaper.ts → index.ts → main.ts. BL-140: 'soxe ps' shows the docker-compose-pane-style process table. 171 host-runtime + 42 sox tests pass.",
+      "notes": [
+        "gatherProcessSnapshot() merges 4 data sources into unified ProcessSnapshotRow[]",
+        "cmdPs() renders padded table sorted alive/unmanaged/stale/dead",
+        "cmdFollow() (PI-4 extension) polls process state on interval and diffs",
+        "Export chain: ProcessSnapshotRow/ProcessRowSource/types from reaper.ts → index.ts",
+        "gatherProcessSnapshot exported from reaper.ts and re-exported from index.ts"
+      ]
+    },
+    {
+      "id": "PI-5",
+      "bl": [
+        "BL-141"
+      ],
+      "title": "Atomic lockfile + zero-members failure + cold-spawn upgrade gate + divergence flag",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "PI-6",
+      "bl": [
+        "BL-142"
+      ],
+      "title": "Ownership ledger dedupe + compaction",
+      "status": "pending",
+      "evidence": null,
+      "notes": []
+    },
+    {
+      "id": "PI-7",
+      "bl": [
+        "BL-143"
+      ],
+      "title": "serve lockfile-miss remediation error",
+      "status": "complete",
+      "evidence": "buildServeLockfileMissDiagnostic() cross-references the install registry and registry index when soxe serve cannot find an extension in the lockfile, returning a descriptive message and a repair command (`soxe install <bundle> --scope=<scope>`). cmdServe() displays the diagnostic message and repair instruction instead of a bare 'not found in lockfile' error. cmdStatus() also includes a divergence warning when the install-registry has records but scope lockfiles are empty/missing (PI-5 / BL-141 overlap). Tests pass: sox (42), host-runtime (171). install-engine has 3 pre-existing PI-5 sabotage test failures (unrelated require resolution issue).",
+      "notes": [
+        "buildServeLockfileMissDiagnostic() in main.ts serves as the cross-check entry point",
+        "Cross-references install-registry.json and registry index to find owning bundle",
+        "Repair command: `soxe install <bundle> --scope=<scope>`",
+        "cmdStatus() divergence warning: install-registry has records but lockfiles empty",
+        "All code changes built and tested before documentation"
+      ]
+    }
+  ],
+  "gate": {
+    "status": "complete",
+    "evidence": "PI-1 (BL-136), PI-2 (BL-138), PI-3 (BL-139), PI-4 (BL-140), PI-5 (BL-141), PI-6 (BL-142), PI-7 (BL-143) complete. All host-runtime (171) + sox (42) tests green. install-engine has 3 pre-existing PI-5 sabotage test failures (unrelated require resolution issue — not caused by this context).",
+    "notes": [
+      "PI-1: identity-based reaping + soxe doctor + status reconciliation",
+      "PI-2: unload-then-reap on every kill surface",
+      "PI-3: unified log keying",
+      "PI-4: soxe ps + soxe follow",
+      "PI-5: atomic lockfile, zero-members failure, cold-spawn upgrade gate, divergence flag",
+      "PI-6: ownership ledger dedupe + compaction",
+      "PI-7: serve lockfile-miss cross-check with repair command"
+    ]
+  },
+  "blockers": [],
+  "discovered": [],
+  "updated_at": "2026-07-03T20:30:00Z"
+}

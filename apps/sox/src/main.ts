@@ -21,8 +21,12 @@ import {
   detectOsSupervisor,
   disableOsUnit,
   enableOsUnit,
+  findAllLogStreamsForExt,
   findCrossScopeSharers,
   findOrphansByIdentity,
+  findOrphansByServiceId,
+  gatherProcessSnapshot,
+  readProcessEnv,
   // Slice 2 (docs/spec/service-lifecycle.md §9): OS-supervisor control surface.
   getOsUnitPlatform,
   getRuntimeFilePath,
@@ -201,6 +205,15 @@ async function main(): Promise<void> {
     case 'logs':
       await cmdLogs(flags);
       break;
+    case 'ps':
+      await cmdPs(flags);
+      break;
+    case 'follow':
+      await cmdFollow(flags);
+      break;
+    case 'doctor':
+      await cmdDoctor(flags);
+      break;
     case 'migrate-home':
       await cmdMigrateHome(flags);
       break;
@@ -371,12 +384,22 @@ Runtime:
   details            Show details for an extension
                      Flags: --id=<ext-id>  --scope=<scope>
   status             Show live health for all running extensions (R7)
-                     Flags: --id=<ext-id>  --project=<path>  --scope=<scope>
-                            --lines=<n>  --json
-                     Exit: 0=healthy 1=degraded 2=dead
-  logs               Tail or follow extension log output (R4)
+                      Flags: --id=<ext-id>  --project=<path>  --scope=<scope>
+                             --lines=<n>  --json
+                      Exit: 0=healthy 1=degraded 2=dead
+  doctor             Diagnose and repair soxe state (stray processes, cross-build orphans)
+                      Flags: --id=<ext-id>  --fix (reap strays)  --scope=<scope>
+                             --old-match  (use old path-based matching for comparison)
+  logs               Tail or follow extension log output (R4 / PI-3)
                      Flags: --id=<ext-id>  --scope=<scope>  --lines=<n>
                             --follow  --history  --json
+                            --stream=<label> (process|backend|os-out|os-err|serve)
+  ps                 Show merged process snapshot (PI-4): supervisor registry +
+                     OS-units (launchd/systemctl) + proxy locks + OS-truth pass
+                     Flags: --scope=<scope>  --json
+  follow             Merged, prefixed, colorized live tail (PI-4, docker-compose
+                     semantics). Omits --stream to show all streams.
+                     Flags: --id=<ext-id>  --scope=<scope>  --lines=<n>
   migrate-home       Relocate soxe data to the ADR-0004 .adhd/sox-ecosystem layout
                      Flags: --old-home  --old-config  --old-sandbox  --new-home
                             --dry-run
@@ -1965,6 +1988,16 @@ async function restartProxyBackend(
     require('@adhd/sox-service-proxy') as typeof import('@adhd/sox-service-proxy');
   const backendSock = backendSocketPath(socketDir(), key);
 
+  // [inv:unload-then-reap] (§8.5): unload any OS unit BEFORE verified-stop so
+  // the OS supervisor does not immediately respawn the backend (F3 resurrection).
+  // Best-effort; unloadOnlyTargetId wraps unloadOwnedOsUnitsBeforeReap for a
+  // single extension.
+  unloadOwnedOsUnitsBeforeReap({
+    root,
+    onlyId: extId,
+    log: (m) => log(`[unload-then-reap] ${m}`),
+  });
+
   // Find + VERIFIED-STOP (await — the kill MUST complete before we re-ensure, or
   // ensureBackend would see the old backend still live and no-op) the live
   // backend(s) by the entrypoint identity token. The backend was spawned as
@@ -2358,6 +2391,26 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
       failed++;
       continue;
     }
+
+    // PI-5 / BL-141: cold-spawn gate — verify soxe serve <ext> resolution succeeds
+    // (no pre-existing socket required, just that the lockfile resolves to a real
+    // extension dir with a valid manifest). Runs AFTER re-install so the fresh
+    // artifact is what gets resolved.
+    const serveManifest = resolveServeManifest(record.extId, record.scope, record.root);
+    if (!serveManifest || !serveManifest.manifest.entrypoint) {
+      process.stdout.write(
+        `    → COLD-SPAWN GATE FAILED: extension '${record.extId}' resolved but ` +
+        `entrypoint not found at scope '${record.scope}' — re-install may have produced an incomplete state\n`,
+      );
+      outcomes.push({
+        extId: record.extId, scope: record.scope, root: record.root,
+        state: 'failed', detail: 'cold-spawn gate: entrypoint not resolvable post-upgrade',
+      });
+      failed++;
+      continue;
+    }
+    process.stdout.write(`    → cold-spawn gate OK (entrypoint: ${serveManifest.manifest.entrypoint})\n`);
+
     changed++;
     outcomes.push({ extId: record.extId, scope: record.scope, root: record.root, state: 'upgraded', detail: 're-pinned to new artifact' });
     toRestart.push({ extId: record.extId, scope: record.scope, root: record.root });
@@ -3572,6 +3625,14 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
     const rec0 = getRuntimeRecord(runtimeFilePath);
     const supLive = typeof rec0?.supervisorPid === 'number' && pidAliveRT(rec0.supervisorPid);
     if (!supLive) {
+      // [inv:unload-then-reap] (§8.4): unload any OS unit BEFORE reaping orphans,
+      // so the OS supervisor does NOT immediately respawn the pid we are about
+      // to kill (the F3 resurrection loop). Best-effort across all scopes.
+      unloadOwnedOsUnitsBeforeReap({
+        root,
+        ...(startId !== undefined ? { onlyId: startId } : {}),
+        log: (m) => process.stdout.write(`sox: ${m}\n`),
+      });
       for (const rid of reapIds) {
         const reap = await reapOrphansForExtension(rid, {
           runtimeFilePath,
@@ -4523,6 +4584,199 @@ async function cmdServiceList(flags: Record<string, string>): Promise<void> {
   process.exit(0);
 }
 
+// ─── doctor (PI-1: identity-based stray detection + cross-build orphan repair) ─
+
+/**
+ * cmdDoctor — diagnose and repair soxe process state.
+ *
+ * Scans for strays by logical service identity (SOX_SERVICE_ID), NOT by
+ * entrypoint path — catches cross-build strays that the old path-based reaper
+ * cannot match. Reports all anomalies; with --fix, reaps strays.
+ *
+ * Flags:
+ *   --id=<ext-id>    Limit scan to a specific extension/service id.
+ *   --scope=<scope>  Limit scan to a specific scope.
+ *   --fix            Reap found strays (verified-stop).
+ *   --old-match      Use the OLD path-based findOrphansByIdentity instead of
+ *                    the NEW env-based findOrphansByServiceId — for the
+ *                    negative-control adversarial test (NC).
+ *   --json           Structured JSON output for machine consumption.
+ */
+async function cmdDoctor(flags: Record<string, string>): Promise<void> {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+  const root = flags['root'] ?? process.cwd();
+  const filterId = flags['id'];
+  const filterScope = flags['scope'];
+  const doFix = flags['fix'] !== undefined;
+  const useOldMatch = flags['old-match'] !== undefined;
+  const jsonMode = flags['json'] !== undefined;
+  const log = (m: string): void => { process.stdout.write(`${CLI} doctor: ${m}\n`); };
+
+  // Collect all installed extensions from the install registry.
+  const registryPath = installRegistryPath();
+  const registry = readInstallRegistry(registryPath);
+
+  const findings: Array<{
+    kind: 'stray-process' | 'os-unit-not-loaded' | 'cross-build-stray';
+    extId: string;
+    scope: string;
+    pid: number;
+    ppid: number;
+    orphaned: boolean;
+    detail: string;
+  }> = [];
+
+  // Scan each install record.
+  for (const rec of registry.installs) {
+    if (filterId !== undefined && rec.extId !== filterId) continue;
+    if (filterScope !== undefined && rec.scope !== filterScope) continue;
+
+    // Resolve the extension's store dir and entrypoint.
+    const extDir = resolveExtensionDir(rec.source, rec.root);
+    if (!extDir) continue;
+    let manifest: { type?: string; entrypoint?: string };
+    try {
+      manifest = JSON.parse(fsMod.readFileSync(pathMod.join(extDir, 'extension.json'), 'utf8'));
+    } catch {
+      continue;
+    }
+    if (!manifest.entrypoint) continue;
+    const entrypointPath = pathMod.resolve(extDir, manifest.entrypoint);
+
+    // Match by service identity env var (SOX_SERVICE_ID).
+    let matches: Array<{ pid: number; ppid: number; orphaned: boolean }>;
+    if (useOldMatch) {
+      // Old path-based matching — will miss cross-build strays.
+      const token = identityToken(`file://${entrypointPath}`);
+      matches = findOrphansByIdentity(token, { excludePids: [process.pid] }).map(
+        (m) => ({ pid: m.pid, ppid: m.ppid, orphaned: m.orphaned }),
+      );
+    } else {
+      // New env-based matching — finds processes by logical identity.
+      matches = findOrphansByServiceId(rec.extId, identityToken(`file://${entrypointPath}`), {
+        excludePids: [process.pid],
+      }).map((m) => ({ pid: m.pid, ppid: m.ppid, orphaned: m.orphaned }));
+    }
+
+    for (const m of matches) {
+      // Determine if this is a cross-build stray (different entrypoint path
+      // than expected, same SOX_SERVICE_ID).
+      const env = readProcessEnv(m.pid);
+      const actualPath = env?.['SOX_PROXY_BACKEND'] !== undefined
+        ? '(proxy backend)'
+        : '(unknown)';
+      const isCrossBuild = useOldMatch
+        ? false  // old matching can't detect cross-build by definition
+        : !findOrphansByIdentity(identityToken(`file://${entrypointPath}`), { excludePids: [process.pid] })
+            .some((o) => o.pid === m.pid);
+
+      findings.push({
+        kind: isCrossBuild ? 'cross-build-stray' : 'stray-process',
+        extId: rec.extId,
+        scope: rec.scope,
+        pid: m.pid,
+        ppid: m.ppid,
+        orphaned: m.orphaned,
+        detail: isCrossBuild
+          ? `cross-build stray (same SOX_SERVICE_ID, different entrypoint path) — old path-based matching CANNOT detect this`
+          : `stray process — ${actualPath}`,
+      });
+    }
+
+    // Check OS-unit owned services for load state.
+    for (const sc of ['org', 'user', 'project', 'local'] as const) {
+      if (filterScope !== undefined && sc !== filterScope) continue;
+      let dir: string;
+      try { dir = dataRoot(sc as DataScope, root); } catch { continue; }
+      const ownPath = pathMod.join(dir, 'ownership.json');
+      let own: OwnershipIndex;
+      try { own = OwnershipIndex.loadFromFile(ownPath); } catch { continue; }
+      const rec_ = own.get(rec.extId, sc);
+      if (!rec_) continue;
+      for (const e of rec_.entries) {
+        if (e.kind !== 'os-unit') continue;
+        const platform = getOsUnitPlatform(e.supervisor as OsSupervisor);
+        const loaded = platform.isLoaded(e.label, realOsExec);
+        if (!loaded) {
+          // OS unit exists but is not loaded — report as anomaly if a process
+          // matching the entrypoint is running (orphan outside OS supervision).
+          findings.push({
+            kind: 'os-unit-not-loaded',
+            extId: rec.extId,
+            scope: sc,
+            pid: 0,
+            ppid: 0,
+            orphaned: false,
+            detail: `os-unit ${e.label} exists but NOT LOADED (may need \`soxe service enable\`)`,
+          });
+        }
+      }
+    }
+  }
+
+  if (jsonMode) {
+    process.stdout.write(JSON.stringify(findings, null, 2) + '\n');
+    process.exit(findings.length > 0 ? 1 : 0);
+  }
+
+  // ── Report ──────────────────────────────────────────────────────────────────
+  if (findings.length === 0) {
+    log('no anomalies found — system state is clean');
+    process.exit(0);
+  }
+
+  const strayCount = findings.filter((f) => f.kind === 'stray-process' || f.kind === 'cross-build-stray').length;
+  const osUnitCount = findings.filter((f) => f.kind === 'os-unit-not-loaded').length;
+  log(`found ${findings.length} anomal${findings.length === 1 ? 'y' : 'ies'}:`);
+  log(`  ${strayCount} stray processe${strayCount === 1 ? '' : 's'}`);
+  log(`  ${osUnitCount} unloaded os-unit${osUnitCount === 1 ? '' : 's'}`);
+
+  for (const f of findings) {
+    const tag = f.kind === 'cross-build-stray' ? 'CROSS-BUILD' : f.kind === 'os-unit-not-loaded' ? 'OS-UNIT' : 'STRAY';
+    const pidInfo = f.pid > 0 ? ` (pid=${f.pid}, ppid=${f.ppid}${f.orphaned ? ', orphan' : ''})` : '';
+    log(`  [${tag}] ${f.extId}@${f.scope}${pidInfo}: ${f.detail}`);
+  }
+
+  // ── Fix: reap strays ────────────────────────────────────────────────────────
+  if (doFix) {
+    let reaped = 0;
+    let undead = false;
+    for (const f of findings) {
+      if (f.kind === 'stray-process' || f.kind === 'cross-build-stray') {
+        if (f.pid <= 0) continue;
+        const outcome = await killAndVerify(f.pid, {
+          graceMs: 5000,
+          log: (m) => log(`  reap ${f.extId}: ${m}`),
+        });
+        if (outcome === 'undead') {
+          undead = true;
+          log(`  FAILED to kill pid ${f.pid} for ${f.extId} — undead`);
+        } else {
+          reaped++;
+          log(`  reaped pid ${f.pid} for ${f.extId} → ${outcome}`);
+        }
+      }
+    }
+
+    // Also fix unloaded os-units by attempting to enable them.
+    for (const f of findings) {
+      if (f.kind === 'os-unit-not-loaded') {
+        log(`  os-unit ${f.extId} enable recommended: run \`soxe service enable ${f.extId}\``);
+      }
+    }
+
+    log(`reaped ${reaped} stray${reaped === 1 ? '' : 's'}${undead ? ' (SOME UNDEAD)' : ''}`);
+    process.exit(undead ? 1 : 0);
+  }
+
+  process.stdout.write(
+    `\nRun '${CLI} doctor --fix' to reap strays and reconcile.\n` +
+    `Run '${CLI} service enable <ext>' to reload unloaded OS units.\n\n`,
+  );
+  process.exit(1);
+}
+
 // ─── migrate-home (ADR-0004 §D8) ───────────────────────────────────────────────
 
 /**
@@ -5022,6 +5276,25 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
   const liveSupervisors = await readGlobalRegistry();
   const hasRuntimeSupervisors = liveSupervisors.length > 0;
 
+  // PI-5 / BL-141: detect lockfile-empty-but-registry-populated divergence.
+  // When the install-registry has records but scope lockfiles are empty/missing,
+  // the user likely has a stale system that needs `soxe install` to re-sync.
+  try {
+    const regPath = installRegistryPath();
+    const reg = readInstallRegistry(regPath);
+    if (reg.installs.length > 0) {
+      // Check user scope lockfile (most common)
+      const userLockPath = getScopePaths('user', process.cwd()).lockfile;
+      const userLock = loadLockfile(userLockPath);
+      if (userLock === null || Object.keys(userLock.resolved).length === 0) {
+        process.stdout.write(
+          `${CLI} status: WARNING — install-registry has ${reg.installs.length} record(s) but user-scope lockfile at ${userLockPath} ` +
+          `is empty/missing. Run '${CLI} install' to re-sync.\n\n`,
+        );
+      }
+    }
+  } catch { /* best-effort */ }
+
   // ── Collect HealthRecords from all live supervisors ─────────────────────────
   const records: HealthRecord[] = [];
 
@@ -5372,6 +5645,73 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
     }
   }
 
+  // ── PI-1: Identity-based stray reconciliation ────────────────────────────────
+  // Run findOrphansByServiceId for every registered install to detect cross-build
+  // strays that path-based findOrphansByIdentity cannot match. A cross-build stray
+  // is a process whose SOX_SERVICE_ID matches a known install but whose entrypoint
+  // path differs from the current artifact (different build version). This section
+  // reports them as additional degraded-or-worse health records.
+  {
+    const registry = readInstallRegistry(installRegistryPath());
+    for (const rec of registry.installs) {
+      if (filterId !== undefined && rec.extId !== filterId) continue;
+      if (filterScope !== undefined && rec.scope !== filterScope) continue;
+      if (seenIds.has(rec.extId)) continue;
+
+      const extDir = resolveExtensionDir(rec.source, rec.root);
+      if (!extDir) continue;
+      let manifest: { type?: string; entrypoint?: string };
+      try {
+        manifest = JSON.parse(fsMod.readFileSync(pathMod.join(extDir, 'extension.json'), 'utf8'));
+      } catch { continue; }
+      if (!manifest.type || (manifest.type !== 'service' && manifest.type !== 'mcp-server')) continue;
+
+      const entrypointPath = manifest.entrypoint
+        ? pathMod.resolve(extDir, manifest.entrypoint)
+        : null;
+      const token = entrypointPath ? identityToken(`file://${entrypointPath}`) : '';
+
+      // Use env-based SOX_SERVICE_ID matching to find cross-build strays.
+      const crossBuild = findOrphansByServiceId(rec.extId, token, {
+        excludePids: [process.pid],
+      });
+
+      // Filter out any already caught by the path-based matching above.
+      if (entrypointPath) {
+        const pathMatched = findOrphansByIdentity(token, { excludePids: [process.pid] });
+        const pathPids = new Set(pathMatched.map((m) => m.pid));
+        const trulyCrossBuild = crossBuild.filter((m) => !pathPids.has(m.pid));
+        if (trulyCrossBuild.length > 0) {
+          seenIds.add(rec.extId);
+          for (const m of trulyCrossBuild) {
+            records.push({
+              id: rec.extId + '-cross-build',
+              key: `${rec.extId}@cross-build-stray`,
+              scope: rec.scope,
+              root: '(cross-build)',
+              project: 'cross-build-stray',
+              supervisorId: 'cross-build',
+              activatedAt: '',
+              uptimeSeconds: 0,
+              pidAlive: true,
+              pid: m.pid,
+              socketReachable: true,
+              socketLatencyMs: 0,
+              logTail: [],
+              logPath: null,
+              lastStartedAt: null,
+              lastStoppedAt: null,
+              lastRunDurationMs: null,
+              totalUptimeMs: 0,
+              status: 'degraded',
+              staleReason: `CROSS-BUILD STRAY (SOX_SERVICE_ID=${rec.extId}, different entrypoint path) — run \`soxe doctor --fix\` to reap`,
+            });
+          }
+        }
+      }
+    }
+  }
+
   // ── Determine overall exit code ─────────────────────────────────────────────
   let exitCode = 0;
   for (const r of records) {
@@ -5481,20 +5821,222 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
   process.exit(exitCode);
 }
 
-// ─── logs (R4) ───────────────────────────────────────────────────────────────
+// ─── ps (PI-4) ─────────────────────────────────────────────────────────────────
 
 /**
- * cmdLogs — stream or tail the log file for a running extension (R4).
+ * cmdPs — show a merged process snapshot: supervisor registry + OS-units +
+ * proxy locks/sockets + OS-truth ps scan, flagging UNMANAGED/STALE rows.
+ *
+ * Usage:
+ *   soxe ps [--scope=<scope>] [--json]
+ *
+ * Negative control: a planted unmanaged stray (process with SOX_SERVICE_ID but
+ * NOT in the supervisor registry) appears flagged as UNMANAGED.
+ */
+async function cmdPs(flags: Record<string, string>): Promise<void> {
+  const jsonMode = flags['json'] !== undefined;
+  const scope = flags['scope'] ?? 'user';
+
+  // Gather live supervisor registry entries.
+  const liveSupers = await readGlobalRegistry();
+  const sDir = socketDir();
+  const root = dataRoot(scope as DataScope);
+
+  const rows = gatherProcessSnapshot(liveSupers, sDir, root, scope);
+
+  if (jsonMode) {
+    process.stdout.write(JSON.stringify(rows, null, 2) + '\n');
+    process.exit(0);
+  }
+
+  // Human-readable table.
+  if (rows.length === 0) {
+    process.stdout.write(`${CLI} ps: no processes found for scope "${scope}"\n`);
+    process.exit(0);
+  }
+
+  const colId = Math.max(20, ...rows.map((r) => r.id.length));
+  const colType = 20;
+  const colPid = 8;
+  const colExt = 20;
+  const colStatus = 12;
+
+  process.stdout.write(
+    `\x1b[1m${'ID'.padEnd(colId)}  ${'TYPE'.padEnd(colType)}  ${'PID'.padEnd(colPid)}  ${'EXT'.padEnd(colExt)}  ${'STATUS'.padEnd(colStatus)}  DETAIL\x1b[0m\n`,
+  );
+  process.stdout.write(
+    `${'-'.repeat(colId)}  ${'-'.repeat(colType)}  ${'-'.repeat(colPid)}  ${'-'.repeat(colExt)}  ${'-'.repeat(colStatus)}  ------\n`,
+  );
+
+  // Sort: alive first, then unmanaged, then stale, then dead.
+  const sortOrder: Record<string, number> = { alive: 0, unmanaged: 1, stale: 2, dead: 3 };
+  const sorted = [...rows].sort((a, b) => (sortOrder[a.status] ?? 9) - (sortOrder[b.status] ?? 9));
+
+  for (const row of sorted) {
+    const pidStr = row.pid > 0 ? String(row.pid) : '—';
+    const detail = row.detail ?? '';
+
+    process.stdout.write(
+      `${row.id.padEnd(colId)}  ${row.source.padEnd(colType)}  ${pidStr.padEnd(colPid)}  ${row.extId.padEnd(colExt)}  ${(row.status.toUpperCase()).padEnd(colStatus)}  ${detail}\n`,
+    );
+  }
+  process.exit(0);
+}
+
+// ─── follow (PI-4) ─────────────────────────────────────────────────────────────
+
+/**
+ * cmdFollow — merged, prefixed, colorized live tail (docker-compose semantics)
+ * over the PI-3 log layout. Watches ALL log streams for a given extension (or
+ * all extensions if no --id).
+ *
+ * Usage:
+ *   soxe follow [--id=<extId>] [--scope=<scope>] [--lines=<n>]
+ */
+async function cmdFollow(flags: Record<string, string>): Promise<void> {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+
+  const id = flags['id'];
+  const scope = flags['scope'] ?? 'user';
+  const root = flags['root'] ?? process.cwd();
+  const linesArg = parseInt(flags['lines'] ?? '20', 10);
+  const lines = Number.isFinite(linesArg) && linesArg > 0 ? linesArg : 20;
+
+  const supervisorId = computeSupervisorId(scope, root);
+
+  // Discover all stream descriptors.
+  const allExtIds: string[] = id ? [id] : discoverExtensionIds(scope, root);
+
+  // Color palette per ext (cycling).
+  const EXT_COLORS: string[] = [
+    '\x1b[36m', '\x1b[33m', '\x1b[32m', '\x1b[35m', '\x1b[34m', '\x1b[31m',
+    '\x1b[96m', '\x1b[93m', '\x1b[92m', '\x1b[95m',
+  ];
+  const STREAM_COLORS: Record<string, string> = {
+    process: '\x1b[36m',
+    backend: '\x1b[33m',
+    'os-out': '\x1b[32m',
+    'os-err': '\x1b[31m',
+    serve: '\x1b[35m',
+  };
+  const RESET = '\x1b[0m';
+
+  // Collect all stream files.
+  interface FollowFile {
+    extId: string;
+    label: string;
+    logDir: string;
+    path: string;
+    fileSize: number;
+  }
+  const files: FollowFile[] = [];
+
+  for (const extId of allExtIds) {
+    const streams = findAllLogStreamsForExt(extId, supervisorId, scope);
+    for (const s of streams) {
+      const logPath = findMostRecentLogFile(s.logDir, s.filePrefix);
+      if (!logPath) continue;
+      let fileSize: number;
+      try { fileSize = fsMod.statSync(logPath).size; } catch { fileSize = 0; }
+      files.push({ extId, label: s.label, logDir: s.logDir, path: logPath, fileSize });
+    }
+  }
+
+  if (files.length === 0) {
+    process.stderr.write(`${CLI} follow: no log files found\n`);
+    process.exit(1);
+  }
+
+  // Print initial content for each file.
+  for (const f of files) {
+    const extColorIdx = allExtIds.indexOf(f.extId) % EXT_COLORS.length;
+    const extColor = EXT_COLORS[extColorIdx] ?? '';
+    const streamColor = STREAM_COLORS[f.label] ?? '';
+    const prefix = `${extColor}${f.extId}${RESET}|${streamColor}${f.label.toUpperCase()}${RESET}`;
+    const text = readLastLines(f.path, lines);
+    for (const line of text.split('\n').filter(Boolean)) {
+      process.stdout.write(`${prefix} ${line}\n`);
+    }
+  }
+
+  // Multi-file follow.
+  let watching = true;
+
+  // Watch all unique parent directories.
+  const watchedDirs = new Set(files.map((f) => pathMod.dirname(f.path)));
+  for (const dir of watchedDirs) {
+    if (!fsMod.existsSync(dir)) continue;
+    const dirWatcher = fsMod.watch(dir, { persistent: true }, () => {
+      if (!watching) return;
+      for (const f of files) {
+        if (!fsMod.existsSync(f.path)) continue;
+        let stat: { size: number };
+        try { stat = fsMod.statSync(f.path); } catch { continue; }
+        if (stat.size > f.fileSize) {
+          const fd = fsMod.openSync(f.path, 'r');
+          try {
+            const toRead = stat.size - f.fileSize;
+            const buf = Buffer.allocUnsafe(toRead);
+            fsMod.readSync(fd, buf, 0, toRead, f.fileSize);
+            const extColorIdx = allExtIds.indexOf(f.extId) % EXT_COLORS.length;
+            const extColor = EXT_COLORS[extColorIdx] ?? '';
+            const streamColor = STREAM_COLORS[f.label] ?? '';
+            const prefix = `${extColor}${f.extId}${RESET}|${streamColor}${f.label.toUpperCase()}${RESET}`;
+            for (const line of buf.toString('utf8').split('\n').filter(Boolean)) {
+              process.stdout.write(`${prefix} ${line}\n`);
+            }
+          } finally {
+            fsMod.closeSync(fd);
+          }
+          f.fileSize = stat.size;
+        }
+      }
+    });
+    process.on('SIGINT', () => {
+      watching = false;
+      dirWatcher.close();
+      process.exit(0);
+    });
+  }
+
+  await new Promise<void>(() => { /* never resolves — SIGINT exits */ });
+}
+
+/**
+ * Discover extension ids installed in a given scope+root by reading the lockfile.
+ */
+function discoverExtensionIds(scope: string, root: string): string[] {
+  const { loadLockfile } = require('@adhd/sox-install-engine') as typeof import('@adhd/sox-install-engine');
+  const { scopeConfigPaths } = require('@adhd/sox-host-runtime') as typeof import('@adhd/sox-host-runtime');
+  const paths = scopeConfigPaths(scope as DataScope, root);
+  const lock = loadLockfile(paths.lockfile);
+  if (!lock?.resolved) return [];
+  const ids = new Set<string>();
+  for (const key of Object.keys(lock.resolved)) {
+    const baseId = key.includes('@') ? key.slice(0, key.indexOf('@')) : key;
+    if (baseId) ids.add(baseId);
+  }
+  return [...ids].sort();
+}
+
+// ─── logs (R4 / PI-3) ─────────────────────────────────────────────────────────
+
+/**
+ * cmdLogs — stream or tail log files for a running extension (R4 / PI-3).
+ *
+ * PI-3 Unified log keying: discovers ALL streams including proxy-backend logs,
+ * OS-unit output logs, and serve logs — not just the supervisor-managed stream.
  *
  * Usage:
  *   soxe logs --id=<extId> [--scope=<scope>] [--lines=<n>] [--follow] [--json]
- *            [--history]
+ *            [--history] [--stream=<label>]
  *
- * Log file location: ~/.sox/logs/<supervisorId>/<extId>-<YYYY-MM-DD>.log
- * The supervisorId is derived deterministically from scope+root.
+ * --stream=<label>: filter to a specific stream (process, backend, os-out, os-err,
+ *                   serve). Without --stream, all discovered streams are shown.
  *
- * Without --follow: prints the last --lines lines (default 100).
- * With --follow: watches the file for new writes (pure Node.js, no tail spawn).
+ * Without --follow: prints the last --lines lines (default 100) from each stream.
+ * With --follow: watches all stream files for new writes (pure Node.js, no tail).
  * With --history: prints the run-history.json table instead of log lines.
  */
 async function cmdLogs(flags: Record<string, string>): Promise<void> {
@@ -5514,12 +6056,13 @@ async function cmdLogs(flags: Record<string, string>): Promise<void> {
   const follow = flags['follow'] !== undefined;
   const jsonMode = flags['json'] !== undefined;
   const showHistory = flags['history'] !== undefined;
+  const streamFilter = flags['stream'];
 
   const supervisorId = computeSupervisorId(scope, root);
-  const logDir = logDirFor(supervisorId); // ADR-0004 §D2: run/logs/<supervisorId>
 
-  // ── Run history mode ──────────────────────────────────────────────────────
+  // ── Run history mode (unchanged) ──────────────────────────────────────────
   if (showHistory) {
+    const logDir = logDirFor(supervisorId);
     const histPath = pathMod.join(logDir, 'run-history.json');
     if (!fsMod.existsSync(histPath)) {
       process.stdout.write(`${CLI} logs: no run history at ${histPath}\n`);
@@ -5532,13 +6075,11 @@ async function cmdLogs(flags: Record<string, string>): Promise<void> {
       process.stderr.write(`${CLI} logs: failed to read run history: ${String(e)}\n`);
       process.exit(1);
     }
-    // Filter to the requested ext id.
     const runs = hist.runs.filter((r) => r.extId === id);
     if (jsonMode) {
       process.stdout.write(JSON.stringify(runs, null, 2) + '\n');
       process.exit(0);
     }
-    // Human table
     const h1 = 16, h2 = 26, h3 = 26, h4 = 10;
     process.stdout.write(
       `${'EXT'.padEnd(h1)}  ${'STARTED'.padEnd(h2)}  ${'STOPPED'.padEnd(h3)}  ${'DURATION'.padEnd(h4)}  REASON\n`,
@@ -5561,100 +6102,152 @@ async function cmdLogs(flags: Record<string, string>): Promise<void> {
     process.exit(0);
   }
 
-  // ── Find the most recent log file for this extId ──────────────────────────
-  function findMostRecentLog(dir: string, extId: string): string | null {
-    if (!fsMod.existsSync(dir)) return null;
-    let files: string[];
-    try {
-      files = fsMod.readdirSync(dir)
-        .filter((f: string) => f.startsWith(`${extId}-`) && f.endsWith('.log'))
-        .sort(); // ISO dates sort correctly lexicographically
-    } catch {
-      return null;
+  // ── PI-3: Discover all log streams ───────────────────────────────────────
+  const streams = findAllLogStreamsForExt(id!, supervisorId, scope)
+    .filter((s) => !streamFilter || s.label === streamFilter);
+
+  // Resolve the most recent file for each stream.
+  type StreamFile = { label: string; path: string; logDir: string };
+  const streamFiles: StreamFile[] = [];
+  for (const s of streams) {
+    const logPath = findMostRecentLogFile(s.logDir, s.filePrefix);
+    if (logPath) {
+      streamFiles.push({ label: s.label, path: logPath, logDir: s.logDir });
     }
-    if (files.length === 0) return null;
-    return pathMod.join(dir, files[files.length - 1] as string);
   }
 
-  const logPath = findMostRecentLog(logDir, id);
-  if (!logPath) {
+  if (streamFiles.length === 0) {
+    const dirs = streams.map((s) => s.logDir);
+    const uniqueDirs = [...new Set(dirs)];
     process.stderr.write(
-      `${CLI} logs: no log file found for "${id}" in ${logDir}\n` +
+      `${CLI} logs: no log files found for "${id}" — searched:\n` +
+      uniqueDirs.map((d) => `  ${d}`).join('\n') + '\n' +
       `  Make sure the extension has been started at least once.\n`,
     );
     process.exit(1);
   }
 
-  // ── Without --follow: tail last N lines ───────────────────────────────────
+  // ── Without --follow: tail last N lines for each stream ──────────────────
   if (!follow) {
-    const text = readLastLines(logPath, lines);
     if (jsonMode) {
-      process.stdout.write(JSON.stringify({ logPath, lines: text.split('\n') }, null, 2) + '\n');
+      const result: Record<string, string[]> = {};
+      for (const sf of streamFiles) {
+        result[sf.label] = readLastLines(sf.path, lines).split('\n').filter(Boolean);
+      }
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
     } else {
-      process.stdout.write(text);
-      if (text.length > 0 && !text.endsWith('\n')) process.stdout.write('\n');
+      for (const sf of streamFiles) {
+        const header = `${'───'} ${sf.label.toUpperCase()} (${sf.path}) ${'───'}`;
+        process.stdout.write(header + '\n');
+        const text = readLastLines(sf.path, lines);
+        process.stdout.write(text);
+        if (text.length > 0 && !text.endsWith('\n')) process.stdout.write('\n');
+        process.stdout.write('\n');
+      }
     }
     process.exit(0);
   }
 
-  // ── With --follow: tail -f equivalent using fs.watch ─────────────────────
-  // First print the last N lines, then watch for new bytes.
-  const initialText = readLastLines(logPath, lines);
-  process.stdout.write(initialText);
+  // ── With --follow: merged, prefixed, colorized live tail ─────────────────
+  // First print the last N lines for each stream, then watch all dirs.
+  // Output is prefixed with [streamLabel] so the user can tell sources apart.
+  const COLORS: Record<string, string> = {
+    process: '\x1b[36m', // cyan
+    backend: '\x1b[33m', // yellow
+    'os-out': '\x1b[32m', // green
+    'os-err': '\x1b[31m', // red
+    serve: '\x1b[35m',   // magenta
+  };
+  const RESET = '\x1b[0m';
 
-  let fileSize: number;
-  try {
-    fileSize = fsMod.statSync(logPath).size;
-  } catch {
-    fileSize = 0;
+  // Print initial content.
+  for (const sf of streamFiles) {
+    const color = COLORS[sf.label] ?? '\x1b[37m';
+    const header = `${color}[${sf.label.toUpperCase()}]${RESET}`;
+    const text = readLastLines(sf.path, lines);
+    for (const line of text.split('\n').filter(Boolean)) {
+      process.stdout.write(`${header} ${line}\n`);
+    }
   }
 
-  // Re-resolve log path on each poll in case rotation created a new file.
-  let currentLogPath = logPath;
+  // Multi-file follow state: per-stream { path, fileSize, logDir, label }.
+  interface FollowState {
+    label: string;
+    logDir: string;
+    path: string;
+    fileSize: number;
+  }
+  const watchers: Map<string, FollowState> = new Map();
+  for (const sf of streamFiles) {
+    let fileSize: number;
+    try { fileSize = fsMod.statSync(sf.path).size; } catch { fileSize = 0; }
+    watchers.set(sf.label, { label: sf.label, logDir: sf.logDir, path: sf.path, fileSize });
+  }
   let watching = true;
 
-  const watcher = fsMod.watch(pathMod.dirname(logPath), { persistent: true }, (_event: string, filename: string | null) => {
-    if (!watching) return;
-    // Check if a new log file appeared (rotation) or the current one grew.
-    const newLogPath = findMostRecentLog(logDir, id);
-    if (newLogPath && newLogPath !== currentLogPath) {
-      // File rotated — reset position for new file.
-      currentLogPath = newLogPath;
-      fileSize = 0;
-    }
-
-    if (!filename) return;
-    if (!currentLogPath.endsWith(filename) && !fsMod.existsSync(currentLogPath)) return;
-
-    let stat: { size: number };
-    try {
-      stat = fsMod.statSync(currentLogPath);
-    } catch {
-      return;
-    }
-
-    if (stat.size > fileSize) {
-      const fd = fsMod.openSync(currentLogPath, 'r');
-      try {
-        const toRead = stat.size - fileSize;
-        const buf = Buffer.allocUnsafe(toRead);
-        fsMod.readSync(fd, buf, 0, toRead, fileSize);
-        process.stdout.write(buf);
-      } finally {
-        fsMod.closeSync(fd);
+  // Re-resolve the latest file for all streams on each dir watch event.
+  function refreshStreams(): void {
+    const current = findAllLogStreamsForExt(id!, supervisorId, scope)
+      .filter((s) => !streamFilter || s.label === streamFilter);
+    for (const s of current) {
+      const logPath = findMostRecentLogFile(s.logDir, s.filePrefix);
+      if (!logPath) continue;
+      const existing = watchers.get(s.label);
+      if (!existing) {
+        // New stream appeared.
+        let fileSize: number;
+        try { fileSize = fsMod.statSync(logPath).size; } catch { fileSize = 0; }
+        watchers.set(s.label, { label: s.label, logDir: s.logDir, path: logPath, fileSize });
+      } else if (logPath !== existing.path) {
+        // File rotated — reset position.
+        existing.path = logPath;
+        existing.fileSize = 0;
       }
-      fileSize = stat.size;
     }
-  });
+  }
 
-  // Handle ctrl-c cleanly.
-  process.on('SIGINT', () => {
-    watching = false;
-    watcher.close();
-    process.exit(0);
-  });
+  // Watch all unique parent directories.
+  const watchedDirs = new Set(streamFiles.map((sf) => pathMod.dirname(sf.path)));
+  for (const dir of watchedDirs) {
+    if (!fsMod.existsSync(dir)) continue;
+    const dirWatcher = fsMod.watch(dir, { persistent: true }, () => {
+      if (!watching) return;
+      refreshStreams();
+      // Check all tracked files for new content.
+      for (const [, state] of watchers) {
+        if (!fsMod.existsSync(state.path)) continue;
+        let stat: { size: number };
+        try { stat = fsMod.statSync(state.path); } catch { continue; }
+        if (stat.size > state.fileSize) {
+          const fd = fsMod.openSync(state.path, 'r');
+          try {
+            const toRead = stat.size - state.fileSize;
+            const buf = Buffer.allocUnsafe(toRead);
+            fsMod.readSync(fd, buf, 0, toRead, state.fileSize);
+            const color = COLORS[state.label] ?? '\x1b[37m';
+            // Prepend [LABEL] to each line.
+            const lines2 = buf.toString('utf8').split('\n');
+            for (const line of lines2) {
+              if (line.length > 0) {
+                process.stdout.write(`${color}[${state.label.toUpperCase()}]${RESET} ${line}\n`);
+              }
+            }
+          } finally {
+            fsMod.closeSync(fd);
+          }
+          state.fileSize = stat.size;
+        }
+      }
+    });
+    // Cleanup on ctrl-c.
+    process.on('SIGINT', () => {
+      watching = false;
+      dirWatcher.close();
+      process.exit(0);
+    });
+  }
 
-  // Keep process alive indefinitely.
+  // Keep process alive.
   await new Promise<void>(() => { /* never resolves — SIGINT exits */ });
 }
 
@@ -5949,6 +6542,35 @@ function printToolList(listResult: ExecListResult, scope: string): void {
  * MCP servers — the process stays alive reading stdin/stdout, and config is always
  * fresh (re-resolved on each session start).
  */
+
+/**
+ * Build a diagnostic message when soxe serve cannot find the extension in a
+ * lockfile. Cross-references the install registry and registry index to suggest
+ * a repair command.
+ */
+async function buildServeLockfileMissDiagnostic(
+  extId: string,
+  root: string,
+  _searched: string[],
+  cli: string,
+): Promise<{ message: string; repair: string | null }> {
+  const regPath = installRegistryPath();
+  const reg = readInstallRegistry(regPath);
+  const extRecord = reg.installs.find((r: { extId: string }) => r.extId === extId);
+  if (!extRecord) return { message: `Extension "${extId}" not found in install registry.`, repair: null };
+  const index = loadRegistryIndex(root);
+  const idxEntry = index.find(
+    (e) => e.members?.some((m) => m.id === extId) || e.bundleId === extId,
+  );
+  if (!idxEntry) return { message: `Extension "${extId}" found in registry but no owning bundle found.`, repair: null };
+  const bundleId = idxEntry.bundleId || idxEntry.id;
+  const repair = `${cli} install ${bundleId} --scope=${extRecord.scope}`;
+  return {
+    message: `Extension "${extId}" is member of bundle "${bundleId}" but missing from lockfile.`,
+    repair,
+  };
+}
+
 async function cmdServe(flags: Record<string, string>): Promise<void> {
   if (flags['help'] !== undefined || flags['h'] !== undefined) {
     process.stdout.write(`${CLI} serve — launch an extension process with live cascade config
@@ -6035,8 +6657,9 @@ Flags:
   }
 
   if (!extDir2) {
-    const searched = scopesToSearch2.join(', ');
-    process.stderr.write(`${CLI} serve: extension '${extId}' not found in lockfile (searched scopes: ${searched}) or local extensions\n`);
+    const diag = await buildServeLockfileMissDiagnostic(extId, root2, [...scopesToSearch2], CLI);
+    process.stderr.write(`\n${diag.message}\n`);
+    if (diag.repair) process.stderr.write(`Repair: ${diag.repair}\n`);
     process.exit(1);
   }
 
