@@ -135,7 +135,7 @@ export function verifyStoreMeta(db: Database.Database): void {
       `[sox-memory] WARNING: store was stamped with embed_model "${storedModel}" ` +
         `but the current runtime has "${getActiveEmbedModel()}". ` +
         `Vectors may be in a different embedding space. ` +
-        `Run "scripts/reembed-memory.mjs --force" to re-embed in the current model.`,
+        `Run "memory reembed --force" to re-embed in the current model.`,
     );
   }
 }

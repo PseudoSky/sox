@@ -23,7 +23,7 @@
  *   export_enabled: --enabled/--no-enabled flag  >  SOX_CONFIG_EXPORT_ENABLED env var  >  true
  */
 
-import { exportMarkdown, initScope, openDb, writeRegistry } from '@adhd/sox-memory-core';
+import { exportMarkdown, initScope, openDb, reembedStore, writeRegistry } from '@adhd/sox-memory-core';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -59,8 +59,16 @@ interface ParsedArgs {
   basePath: string;
   /** --dir override for export subcommand */
   exportDir: string;
-  /** --db override for export subcommand */
+  /** --db override for export + reembed subcommands */
   dbPathOverride: string;
+  /** reembed: --dry-run */
+  dryRun: boolean;
+  /** reembed: --force */
+  force: boolean;
+  /** reembed: --no-backup */
+  noBackup: boolean;
+  /** reembed: --limit N */
+  limit: number;
   rest: string[];
 }
 
@@ -71,6 +79,10 @@ function parseArgs(argv: string[]): ParsedArgs {
   let basePath = '';
   let exportDir = '';
   let dbPathOverride = '';
+  let dryRun = false;
+  let force = false;
+  let noBackup = false;
+  let limit = 0;
   const rest: string[] = [];
 
   for (let i = 1; i < argv.length; i++) {
@@ -88,12 +100,20 @@ function parseArgs(argv: string[]): ParsedArgs {
       exportDir = argv[++i] ?? '';
     } else if (arg === '--db') {
       dbPathOverride = argv[++i] ?? '';
+    } else if (arg === '--dry-run') {
+      dryRun = true;
+    } else if (arg === '--force') {
+      force = true;
+    } else if (arg === '--no-backup') {
+      noBackup = true;
+    } else if (arg === '--limit' && argv[i + 1]) {
+      limit = parseInt(argv[++i] ?? '0', 10) || 0;
     } else {
       rest.push(arg ?? '');
     }
   }
 
-  return { command, scope, basePath, exportDir, dbPathOverride, rest };
+  return { command, scope, basePath, exportDir, dbPathOverride, dryRun, force, noBackup, limit, rest };
 }
 
 /**
@@ -328,8 +348,59 @@ function cmdExport(scope: ScopeKind, basePath: string, dirFlag: string, dbFlag: 
   }
 }
 
+/**
+ * Re-embed a sox-memory store with the current BGE model.
+ *
+ * DB resolution (highest precedence first):
+ *   --db flag  >  positional arg (rest[0])  >  ~/.memory/memory.db
+ */
+async function cmdReembed(
+  dbFlag: string,
+  rest: string[],
+  dryRun: boolean,
+  force: boolean,
+  noBackup: boolean,
+  limit: number,
+): Promise<void> {
+  const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? os.homedir();
+  const rawDb = dbFlag || rest[0] || path.join(home, '.memory', 'memory.db');
+  const resolvedDb = path.resolve(rawDb.replace(/^~(?=\/|$)/, home));
+
+  if (!fs.existsSync(resolvedDb)) {
+    console.error(`[reembed] db not found: ${resolvedDb}`);
+    process.exit(1);
+  }
+
+  try {
+    const result = await reembedStore(resolvedDb, {
+      dryRun,
+      force,
+      backup: !noBackup,
+      limit,
+      log: (...args) => console.log(...args),
+    });
+
+    if (result.alreadyCurrent) {
+      console.log(`[reembed] store already on '${result.modelId}' — nothing to do (use --force to re-embed anyway).`);
+    } else if (result.dryRun) {
+      console.log(`[reembed] DRY-RUN complete: would migrate ${result.migrated} node(s). No writes performed.`);
+    } else {
+      console.log(`[reembed] complete: migrated ${result.migrated}, skipped ${result.skipped}, errors ${result.errors.length}.`);
+      if (result.errors.length > 0) {
+        for (const e of result.errors.slice(0, 10)) {
+          console.error(`[reembed]   error node ${e.id}: ${e.error}`);
+        }
+        process.exit(1);
+      }
+    }
+  } catch (err) {
+    console.error(`[reembed] ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
+
 export function runCli(argv: string[]): void {
-  const { command, scope, basePath, exportDir, dbPathOverride } = parseArgs(argv);
+  const { command, scope, basePath, exportDir, dbPathOverride, dryRun, force, noBackup, limit, rest } = parseArgs(argv);
 
   switch (command) {
     case 'init':
@@ -347,6 +418,9 @@ export function runCli(argv: string[]): void {
     case 'export':
       cmdExport(scope, basePath, exportDir, dbPathOverride);
       break;
+    case 'reembed':
+      void cmdReembed(dbPathOverride, rest, dryRun, force, noBackup, limit);
+      break;
     case 'help':
     default:
       console.log(`sox-memory CLI (P3: multi-scope)
@@ -357,6 +431,8 @@ Commands:
   registry                                              Show ~/.memory/registry.json
   export [--scope <s>] [--base-path <p>]               Export live episodes to markdown
          [--dir <path>] [--db <path>]
+  reembed [--db <path>] [--dry-run] [--force]          Re-embed store with current BGE model
+          [--no-backup] [--limit N]                     (promotes scripts/reembed-memory.mjs)
 `);
   }
 }

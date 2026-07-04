@@ -79,32 +79,28 @@ has "bge-base-en-v1.5"`) is misleading. Ground-truth checks on `~/.memory/memory
   memory — not because embeddings are broken.)
 - `vec_node` holds 2597 real bge vectors; `memory_scope.embed_model = bge-base-en-v1.5` ✓.
 - Only `sox_store_meta.embed_model` is stale = `nomic-embed-text-v1.5-hash` (never updated
-  when the store was migrated to bge). `reembed-memory.mjs --force` correctly reports
+  when the store was migrated to bge). `memory reembed --force` correctly reports
   **0 nodes to migrate** — the data is already bge.
 
 Residual fix is a **one-row metadata reconciliation**:
 `UPDATE sox_store_meta SET value='bge-base-en-v1.5' WHERE key='embed_model'` — to silence the
 false warning and make `memory_ping`/`memory_stats` honest ([inv:list-never-lies]). It is a
 direct live-store write (auto-mode classifier gated it) → needs owner OK or a sanctioned CLI
-path. Cosmetic; does not affect recall. (Minor: `reembed-memory.mjs --dry-run` created an
-empty `vec_bge_base_en_v1_5` space — harmless leftover; the dry-run should not write.)
+path. Cosmetic; does not affect recall. (Minor: `memory reembed --dry-run` fix: the prior dry-run
+created an empty `vec_bge_base_en_v1_5` space — fixed in BL-160.)
 
-### BL-160 — promote `reembed-memory.mjs` orchestration into a library + `memory-cli` verb (root cause of BL-159) — **Open (MEDIUM) (2026-07-04)**
+### BL-160 — promote `reembed-memory.mjs` orchestration into a library + `memory-cli` verb (root cause of BL-159) — **RESOLVED (2026-07-04)**
 
-`scripts/reembed-memory.mjs` is a loose `.mjs` OUTSIDE the nx graph (no typecheck/lint/test),
+`scripts/reembed-memory.mjs` was a loose `.mjs` OUTSIDE the nx graph (no typecheck/lint/test),
 which is why it silently rotted when the embed migration removed the hash backend and changed
-model ids (BL-159 — invalid `fast-bge-base-en-v1.5` + dead `hash-768`). The re-embed *logic*
-already lives in libraries (`vector-store.reembed()`, `memory-core.reembedNodes()`); only the
-orchestration wrapper (args, backup, idempotency, provider wiring) is loose. Promote it:
-1. Add a composed `reembedStore(dbPath, opts)` to `memory-core` (owns `openDb`, composes
-   `vector-store`), typed + unit-tested.
-2. Expose as a `memory-cli reembed` verb (the member already has a `switch(command)` dispatcher).
-3. Delete the loose script (or leave a one-line shim).
-This joins it to the build/lint/typecheck graph so a future embed-model change breaks CI, not
-the next live migration. Same category as context-06 HF-4 store-lifecycle ops — fold into the
-S4/HF-4 shard so maintenance ops (compaction/quota/backup/reembed) land together. (Applies also
-to the other loose `.mjs` maintenance scripts, e.g. `capture-*-baseline.mjs`, on the same
-rationale, though those are lower-risk one-offs.)
+model ids (BL-159 — invalid `fast-bge-base-en-v1.5` + dead `hash-768`). Promoted:
+1. `libs/memory-core/src/reembed.ts` — `reembedStore(dbPath, opts)` typed + unit-tested;
+   dry-run-no-write bug fixed (no longer calls `ensureSpace` in dry-run mode).
+2. `memory-cli reembed` verb added to the `switch(command)` dispatcher; flags:
+   `--dry-run`, `--force`, `--no-backup`, `--db`, `--limit`.
+3. `scripts/reembed-memory.mjs` deleted. All references updated to point at `memory reembed`.
+Joined to the build/lint/typecheck graph — future embed-model changes break CI, not the next
+live migration.
 
 ### BL-159 — `reembed-memory.mjs` was broken by the embed migration (wrong model id + dead hash fallback) — **RESOLVED (2026-07-04)**
 
