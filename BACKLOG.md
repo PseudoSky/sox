@@ -89,6 +89,30 @@ direct live-store write (auto-mode classifier gated it) → needs owner OK or a 
 path. Cosmetic; does not affect recall. (Minor: `memory reembed --dry-run` fix: the prior dry-run
 created an empty `vec_bge_base_en_v1_5` space — fixed in BL-160.)
 
+### BL-161 — fastembed test warmup: model reloads per test-worker + on singleton reset → flaky 30s timeout — **Open (MEDIUM) (2026-07-04)**
+
+Recurring flaky timeout in `memory-core` (`write.spec.ts` "batch of 10 items…", surfaced again
+during S1). Root causes (NOT that tests can't be event-driven — the warmup IS async/awaited):
+1. **Per-worker reload.** vitest's default `forks` pool runs each spec FILE in its own process,
+   so bge-base-en-v1.5 ONNX re-loads once per file. The provider is a module singleton
+   (`embed.ts _provider`) shared WITHIN a process, but not across worker processes.
+2. **Singleton resets.** `embed.spec.ts`/`recall-sqlite.test.ts` call `_resetEmbedSingleton()` in
+   hooks, tearing down the FastembedProvider worker thread → reload within a file too.
+3. **Contention, not slowness.** Cached bge init + first inference is ~5–12s single-process; 30s is
+   the TIMEOUT, not the warmup. Many forks warming at once contend for CPU/RAM → any one crosses 30s.
+Fix (after S2/S4 land, to avoid vitest-config merge churn): (a) stop resetting the singleton in
+hooks that don't need it → warm once per process; (b) pin embed-heavy specs to a single worker
+(`poolOptions.forks.singleFork` or a dedicated vitest project); (c) biggest win — a lightweight
+test-embed seam (small/stub content-dependent vectors) for tests that only need "a vector,"
+reserving real bge for the 1–2 semantic-quality assertions.
+
+### BL-162 — `soxe status` shows deprecated `memory-daemon` as "DEAD" (misleading) — **Open (LOW) (2026-07-04)**
+
+ADR-0007 deprecates the `memory-daemon` extension: batch enrichment moved IN-PROCESS into the
+memory-server single-writer backend. It is intentionally not-started, but `soxe status` lists it as
+`DEAD`/`not-started` alongside healthy services, implying a fault. Status should render deprecated
+extensions as `deprecated` (or omit them), not `DEAD`.
+
 ### BL-160 — promote `reembed-memory.mjs` orchestration into a library + `memory-cli` verb (root cause of BL-159) — **RESOLVED (2026-07-04)**
 
 `scripts/reembed-memory.mjs` was a loose `.mjs` OUTSIDE the nx graph (no typecheck/lint/test),
