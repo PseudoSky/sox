@@ -190,6 +190,23 @@ carries an interval schedule (StartInterval/StartCalendarInterval/systemd timer)
 schedule-aware status (e.g. `SCHEDULED (last run <t>, exit 0)`) derived from `launchctl list`
 exit status + the unit's own log/marker, not pid-liveness.
 
+### BL-186 — `memory_curate recluster` runs the FULL cluster pass synchronously on the serial WriteQueue and returns a false `enqueued: true` — **Open (MEDIUM) (2026-07-04)**
+
+Merge artifact of S9 × BL-172 (integrator review of the merged semantics): S9 switched global
+recluster from `enqueueEnrich()` (queued, drained by the periodic tick) to a direct synchronous
+`runBatchEnrich(db, {incrementalCluster: false})` inside the tool call (`libs/memory-core/src/
+curate.ts:363`) — a correct fix against its branch state (nothing drained the queue there), but on
+merged main the consumer exists, so the trade-off is live: (1) a global recluster on a large store
+(~3.6k episodes) blocks its MCP call AND every write behind it on the serial WriteQueue for the
+full non-incremental pass; under the new time-based backpressure, writes queued behind it can
+fast-fail `E_BUSY(deadline)`. (2) The return shape still claims `{op:'recluster', enqueued: true}`
+— false; nothing is enqueued ([inv:list-never-lies] family). Fix options: (a) re-route global
+recluster through the queue as an `enrich` trigger row (producer exists again as of the S9 merge;
+the tick already completes trigger ops) and return `enqueued: true` honestly, with the next-tick
+latency documented; or (b) keep it synchronous and fix the return shape to `{ran: true, …stats}`,
+documenting the write-blocking cost. Decide at HF-6 alongside the BL-183 outbox-consumer decision
+(same design surface).
+
 ### BL-180 — `dataRoot()` returns the raw scope string as a PATH for an unknown scope (audit log writes `./badscope/run/sox-audit.jsonl`) — **Open (MEDIUM) (2026-07-04)**
 
 `libs/host-runtime/src/data-paths.ts` `dataRoot()` ends in `default: const _exhaustive: never =
