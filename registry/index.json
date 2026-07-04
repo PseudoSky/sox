@@ -59,7 +59,7 @@
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "checksum": "sha256:396b877153e5008f1e5bb622f29e1547dc4cce637d2939be973db5f8fa0e5592",
+    "checksum": "sha256:d2b2dac71c66ad2681dd89a669351830c170d188fdc031ca3edd98bde805bc74",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -217,7 +217,7 @@
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/apps/sox",
-    "checksum": "sha256:c79c1cfca39153e253bc8c238b58959c37babdec11cfbb0f87a67239d3e7044f",
+    "checksum": "sha256:012a235e71f93a79c0dab14b931751164012711c53ca70d4228ca26e7891806f",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     }
