@@ -83,15 +83,16 @@ export interface OsUnitSpec {
   stderrPath: string;
   /** Content address of the served artifact (ADR-0003), when known. */
   artifactHash?: string | undefined;
+  /**
+   * SA-2 / CONTRACTS §I: Socket path for on-demand (socket-activation) posture.
+   * When set, the generated OS unit includes a Sockets key (launchd) or a paired
+   * .socket unit (systemd) so the OS supervisor creates the listening socket and
+   * passes the fd to the service on-demand.
+   * Absent for always-on posture (no socket activation).
+   */
+  socketPath?: string | undefined;
 }
 
-interface ManifestLifecycleShape {
-  lifecycle?: {
-    background?: boolean;
-    singleton?: boolean;
-    stop_timeout_ms?: number;
-  };
-}
 
 /** The reverse-DNS-style label for a (scope, id) unit. */
 export function osUnitLabel(scope: string, id: string): string {
@@ -118,16 +119,45 @@ export function deriveOsUnitSpec(opts: {
   artifactHash?: string | undefined;
   /** Override the YYYY-MM-DD log date (tests). Default: today. */
   logDate?: string;
+  /**
+   * SA-1 / CONTRACTS §I: activation posture for the OS unit.
+   * 'always-on' → RunAtLoad + KeepAlive (launchd manages respawns).
+   * 'on-demand' → socket-activation (launchd starts on first connection).
+   * When omitted: falls back to the manifest lifecycle block (existing behaviour).
+   */
+  activation_posture?: 'always-on' | 'on-demand' | undefined;
+  /**
+   * SA-2: Socket path for on-demand socket activation.
+   * Only used when activation_posture === 'on-demand'.
+   * The OS supervisor creates a listening socket at this path and passes the
+   * file descriptor to the service on first connection.
+   */
+  socketPath?: string | undefined;
 }): OsUnitSpec {
-  let manifest: ManifestLifecycleShape = {};
-  try {
-    manifest = JSON.parse(fs.readFileSync(opts.manifestPath, 'utf8')) as ManifestLifecycleShape;
-  } catch {
-    manifest = {};
-  }
-  const lc = manifest.lifecycle ?? {};
   const label = osUnitLabel(opts.scope, opts.id);
   const logDate = opts.logDate ?? new Date().toISOString().slice(0, 10);
+
+  // SA-1: activation_posture takes precedence.
+  // When absent, fall back to manifest lifecycle (backward compat).
+  let runAtLoad: boolean;
+  let keepAlive: boolean;
+  if (opts.activation_posture === 'always-on') {
+    runAtLoad = true;
+    keepAlive = true;
+  } else if (opts.activation_posture === 'on-demand') {
+    runAtLoad = false;
+    keepAlive = false;
+  } else {
+    // Legacy: read from manifest lifecycle block.
+    let manifest: { lifecycle?: { background?: boolean; singleton?: boolean } } = {};
+    try {
+      manifest = JSON.parse(fs.readFileSync(opts.manifestPath, 'utf8'));
+    } catch { manifest = {}; }
+    const lc = manifest.lifecycle ?? {};
+    runAtLoad = lc.background !== false;
+    keepAlive = lc.singleton === true;
+  }
+
   return {
     id: opts.id,
     scope: opts.scope,
@@ -137,16 +167,16 @@ export function deriveOsUnitSpec(opts: {
     entrypoint: opts.entrypoint,
     env: opts.env,
     workingDirectory: opts.workingDirectory,
-    // `background` defaults to true for a service that opts into an OS unit — the
-    // whole point of `service enable` is reboot persistence (run at load).
-    runAtLoad: lc.background !== false,
-    // KeepAlive iff the service declares itself a singleton (the daemons do).
-    keepAlive: lc.singleton === true,
+    runAtLoad,
+    keepAlive,
     // launchd throttles respawns to ~10s; §11.3 maps the crash-loop guard to it.
     throttleIntervalSec: 10,
     stdoutPath: path.join(opts.logDir, `${opts.id}-os-${logDate}.out.log`),
     stderrPath: path.join(opts.logDir, `${opts.id}-os-${logDate}.err.log`),
     artifactHash: opts.artifactHash,
+    ...(opts.activation_posture === 'on-demand' && opts.socketPath !== undefined
+      ? { socketPath: opts.socketPath }
+      : {}),
   };
 }
 
@@ -278,6 +308,13 @@ export interface OsUnitPlatform {
   unitFileName(label: string): string;
   /** Render the unit text (content-addressed: embeds the content + artifact hash). */
   render(spec: OsUnitSpec): string;
+  /**
+   * SA-2: Render a socket unit for on-demand socket activation.
+   * Returns undefined when the platform embeds socket config in the service unit
+   * (launchd) or when no socketPath is set. For systemd, returns the .socket unit
+   * content.
+   */
+  renderSocketUnit?(spec: OsUnitSpec): string | undefined;
   /** Load (activate) a unit. */
   load(unitPath: string, label: string, exec: OsExec): OsExecResult;
   /** Unload (deactivate) a unit. */
@@ -314,6 +351,23 @@ export class LaunchdPlatform implements OsUnitPlatform {
       .map((k) => `    <key>${xmlEscape(k)}</key>\n    <string>${xmlEscape(spec.env[k] ?? '')}</string>`)
       .join('\n');
 
+    const socketLines = spec.socketPath
+      ? [
+          '  <key>Sockets</key>',
+          '  <dict>',
+          '    <key>Listener</key>',
+          '    <dict>',
+          '      <key>SockPathName</key>',
+          `      <string>${xmlEscape(spec.socketPath)}</string>`,
+          '      <key>SockPathMode</key>',
+          '      <integer>0600</integer>',
+          '      <key>SockProtocol</key>',
+          '      <string>SOCK_STREAM</string>',
+          '    </dict>',
+          '  </dict>',
+        ].join('\n')
+      : '';
+
     return [
       '<plist version="1.0">',
       '<dict>',
@@ -335,6 +389,7 @@ export class LaunchdPlatform implements OsUnitPlatform {
       `  <${spec.keepAlive ? 'true' : 'false'}/>`,
       '  <key>ThrottleInterval</key>',
       `  <integer>${spec.throttleIntervalSec}</integer>`,
+      ...(socketLines ? ['', socketLines] : []),
       '  <key>StandardOutPath</key>',
       `  <string>${xmlEscape(spec.stdoutPath)}</string>`,
       '  <key>StandardErrorPath</key>',
@@ -357,6 +412,11 @@ export class LaunchdPlatform implements OsUnitPlatform {
       '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
       body,
     ].join('\n');
+  }
+
+  /** SA-2: launchd embeds sockets in the plist; no separate socket unit. */
+  renderSocketUnit(_spec: OsUnitSpec): string | undefined {
+    return undefined;
   }
 
   /** The bootstrap domain target for the current user (gui/<uid>). */
@@ -449,6 +509,37 @@ export class SystemdPlatform implements OsUnitPlatform {
     const unit = this.unitFileName(label);
     const r = exec('systemctl', ['--user', 'is-active', unit]);
     return r.code === 0 && r.stdout.trim() === 'active';
+  }
+
+  /**
+   * SA-2: Render a .socket unit for on-demand socket activation.
+   * Returns undefined when no socketPath is set. The .socket unit instructs
+   * systemd to create a listening socket at socketPath and pass the fd to
+   * the service on first connection.
+   */
+  renderSocketUnit(spec: OsUnitSpec): string | undefined {
+    if (!spec.socketPath) return undefined;
+
+    const unitName = this.unitFileName(spec.label); // e.g. sox-user-memory-daemon.service
+    // Compute content hash from body only (no meta marker).
+    const body = [
+      '[Unit]',
+      `Description=Socket for soxe service ${spec.id} (${spec.scope})`,
+      '',
+      '[Socket]',
+      `ListenStream=${spec.socketPath}`,
+      'SocketMode=0600',
+      `Service=${unitName}`,
+      '',
+      '[Install]',
+      'WantedBy=sockets.target',
+      '',
+    ].join('\n');
+    const hash = unitContentHash(body);
+    return [
+      `# ${UNIT_META_MARKER} content-hash:${hash} artifact-hash:none generated-by:soxe-service-enable`,
+      body,
+    ].join('\n');
   }
 }
 

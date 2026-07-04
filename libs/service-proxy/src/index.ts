@@ -24,7 +24,7 @@ export { dialBackend } from './dial.js';
 export type { DialOptions, BackendConnection, BackoffOptions } from './dial.js';
 
 // ── Auto-managed backend lifecycle (singleton-guarded ensure/spawn, §9.5 step 3)
-export { ensureBackend, probeSocketLive } from './ensure-backend.js';
+export { ensureBackend, probeSocketLive, handshakeBackend } from './ensure-backend.js';
 export type {
   EnsureBackendOptions,
   EnsureBackendResult,

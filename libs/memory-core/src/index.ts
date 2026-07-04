@@ -29,7 +29,7 @@
  */
 
 // ── Database ──────────────────────────────────────────────────────────────────
-export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb } from './db.js';
+export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION } from './db.js';
 export type { ScopeKind, MemoryScope } from './db.js';
 
 // ── Write queue (WP-1, BL-118) ────────────────────────────────────────────────
@@ -186,6 +186,10 @@ export type {
 // ── Markdown export mirror ────────────────────────────────────────────────────
 export { exportMarkdown } from './export.js';
 export type { ExportOpts, ExportResult } from './export.js';
+
+// ── Store registry (SA-6 / BL-130) ───────────────────────────────────────────
+export { readStoreRegistry, resolveStoreName, resolveStoreOrDbPath, computeFingerprint } from './store-registry.js';
+export type { StoreRegistry, ResolvedStore, StoreResolveError } from './store-registry.js';
 
 // ── Edge-based functions (graph-store backend) ────────────────────────────────
 export { memoryLinkNode } from './link.js';
