@@ -2,7 +2,7 @@ import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { ResolutionError } from './index.js';
-import type { EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole, FastEmbedModelConfig } from './index.js';
+import type { EmbeddingHealth, EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole, FastEmbedModelConfig } from './index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -124,6 +124,7 @@ export class FastembedProvider implements EmbeddingProvider {
   private readyPromise: Promise<void> | null = null;
   private embedDim = 0;
   private maxTokensVal = 512;
+  private _lastError: string | null = null;
 
   constructor(model: string, dimensions: number, cacheDir: string) {
     this.model = model;
@@ -138,6 +139,24 @@ export class FastembedProvider implements EmbeddingProvider {
       isRemote: false,
       isDeterministic: false,
       providerUri: `local:onnx:${model}`,
+    };
+  }
+
+  health(): EmbeddingHealth {
+    let state: EmbeddingHealth['state'] = 'uninitialized';
+    if (this._lastError) {
+      state = 'error';
+    } else if (this.ready) {
+      state = 'real';
+    } else if (this.readyPromise) {
+      state = 'warming';
+    }
+    return {
+      configured: `fastembed:${this.model}`,
+      active: this.ready ? this.metadata.modelId : null,
+      state,
+      dimensions: this.embedDim || this.metadata.dimensions,
+      last_error: this._lastError,
     };
   }
 
@@ -301,6 +320,7 @@ export class FastembedProvider implements EmbeddingProvider {
     });
 
     this.worker.on('error', (err) => {
+      this._lastError = err.message;
       for (const { reject } of this.pending.values()) reject(err);
       this.pending.clear();
       this.worker = null;
@@ -311,6 +331,7 @@ export class FastembedProvider implements EmbeddingProvider {
     this.worker.on('exit', (code) => {
       if (code !== 0) {
         const err = new Error(`embedWorker exited with code ${code}`);
+        this._lastError = err.message;
         for (const { reject } of this.pending.values()) reject(err);
         this.pending.clear();
       }
@@ -338,10 +359,12 @@ export class FastembedProvider implements EmbeddingProvider {
             this.embedDim = dimResult.dim;
           }
           this.ready = true;
+          this._lastError = null;
           resolve();
         },
         reject: (e: Error) => {
           clearTimeout(to);
+          this._lastError = e.message;
           reject(e);
         },
       });

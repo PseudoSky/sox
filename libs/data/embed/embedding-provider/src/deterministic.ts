@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole } from './index.js';
+import type { EmbeddingHealth, EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole } from './index.js';
 import { EmbeddingCache } from './cache.js';
 
 function createRng(seed: bigint): () => number {
@@ -65,6 +65,16 @@ export class DeterministicProvider implements EmbeddingProvider {
     for (const text of texts) {
       yield await this.embedSingle(text);
     }
+  }
+
+  health(): EmbeddingHealth {
+    return {
+      configured: `hash:${this.metadata.modelId}`,
+      active: this.metadata.modelId,
+      state: 'hash-fallback',
+      dimensions: this.metadata.dimensions,
+      last_error: null,
+    };
   }
 
   async warmUp(texts: string[]): Promise<void> {

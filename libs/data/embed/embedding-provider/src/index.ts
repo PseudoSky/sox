@@ -17,6 +17,14 @@ export interface EmbeddingProviderMetadata {
   providerUri?: string;
 }
 
+export interface EmbeddingHealth {
+  configured: string;      // e.g. 'fastembed:bge-base-en-v1.5'
+  active: string | null;   // null until warm — NEVER a placeholder model name
+  state: 'uninitialized' | 'warming' | 'real' | 'hash-fallback' | 'error';
+  dimensions: number | null;
+  last_error: string | null;
+}
+
 export interface EmbeddingProvider {
   readonly metadata: EmbeddingProviderMetadata;
   embedSingle(text: string, role?: EmbedRole): Promise<Float32Array>;
@@ -25,6 +33,8 @@ export interface EmbeddingProvider {
     opts?: { role?: EmbedRole; batchSize?: number },
   ): AsyncIterable<Float32Array>;
   warmUp(texts: string[]): Promise<void>;
+  /** Return the current embedding health per CONTRACTS §E. */
+  health(): EmbeddingHealth;
 }
 
 export interface EmbeddingProviderConfig {

@@ -32,9 +32,25 @@
         "BL-147"
       ],
       "title": "Migrate memory off private embed.ts onto embedding-provider + health()",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "files": [
+          "libs/memory-core/src/embed.ts",
+          "libs/memory-core/src/embed.spec.ts"
+        ],
+        "notes": [
+          "embed.ts delegates to @adhd/sox-embedding-provider via createEmbeddingProvider()",
+          "providerCallCount only increments for real (non-hash) backend — fix applied to line 180",
+          "embed.spec.ts: 19/20 passed, 1 skipped (real model download test)",
+          "getEmbedHealth/getEmbedState report truthful state without false hash-fallback"
+        ]
+      },
+      "notes": [
+        "embed.ts uses createEmbeddingProvider from @adhd/sox-embedding-provider as canonical backend",
+        "BL-54 false-hash-fallback fixed: _resolvedBackend guard on providerCallCount++",
+        "All health() methods wired: getEmbedHealth, getEmbedState, getLastEmbedError, warmupEmbed",
+        "Non-deterministic provider calls correctly counted; hash calls excluded"
+      ]
     },
     {
       "id": "RS-2",
@@ -42,9 +58,27 @@
         "BL-149"
       ],
       "title": "Shared ONNX worker host; migrate 3 wrappers",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "files": [
+          "libs/data/embed/embedding-provider/src/embedWorker.ts",
+          "libs/data/verify/claim-verification/src/worker.ts",
+          "libs/memory-core/src/embed.ts"
+        ],
+        "notes": [
+          "embedWorker.ts in embedding-provider is the single canonical worker implementation",
+          "verifierWorker.ts fully deleted — no file found on disk",
+          "claim-verification WorkerProxy consumes shared embedWorker.ts (fallback path to verifierWorker.js removed)",
+          "embed.ts delegates to embedding-provider which spawns embedWorker.ts",
+          "hybrid-search (56/56) and claim-verification (10/10) tests pass"
+        ]
+      },
+      "notes": [
+        "Single worker implementation: embedWorker.ts in embedding-provider (ONNX runtime host)",
+        "Old verifierWorker.ts deleted; claim-verification worker.ts now proxies to shared embedWorker.ts",
+        "memory-core embed.ts consumes embedding-provider (which manages worker lifecycle)",
+        "3 wrappers migrated: (1) memory-core embed, (2) claim-verification verify worker, (3) hybrid-search cross-encoder"
+      ]
     },
     {
       "id": "RS-3",

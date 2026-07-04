@@ -2518,3 +2518,34 @@ recall pipeline (mean-pool at query time).
 table at ingest time. Phase 2: in `memoryRecall()`, when `lateChunking.enabled`, fetch
 the full-document embedding and mean-pool per the stored boundaries before returning
 results.
+
+---
+
+### BL-147 — memory-core embed.ts delegates to `@adhd/sox-embedding-provider`; remove private embed impl — **FIXED (2026-07-03)**
+
+**Fix:** `libs/memory-core/src/embed.ts` now delegates to `@adhd/sox-embedding-provider`
+via `createEmbeddingProvider()` instead of maintaining its own embed implementation. The
+provider singleton is managed by `getOrCreateProvider()`, with backend selection via
+`SOX_EMBED_BACKEND` (auto/real/hash). Health reporting (`getEmbedHealth`,
+`getEmbedState`, `getLastEmbedError`, `warmupEmbed`) is wired. `providerCallCount` only
+increments for non-hash (real) backends, preserving R1 (zero provider calls on read path).
+
+**Files changed:** `libs/memory-core/src/embed.ts` (provider integration, health methods)
+
+**Evidence:** `embed.spec.ts` 19/20 passed, 1 skipped (real model download); recall tests
+assert `provider_call_count: 0` for hash backend.
+
+### BL-149 — Migrate 3 ONNX worker consumers to shared embedWorker.ts — **FIXED (2026-07-03)**
+
+**Fix:** The single canonical worker implementation is `embedding-provider/src/embedWorker.ts`.
+The old `verifierWorker.ts` was deleted. Consumers migrated:
+1. `memory-core/src/embed.ts` — delegates to embedding-provider (which manages worker lifecycle)
+2. `claim-verification/src/worker.ts` — WorkerProxy consumes shared embedWorker.ts
+3. `hybrid-search/src/cross-encoder.ts` — references shared worker protocol
+
+**Files changed:** `libs/data/verify/claim-verification/src/worker.ts` (proxies to
+embedWorker.ts), `libs/data/embed/embedding-provider/` (canonical worker host)
+
+**Evidence:** Only `embedWorker.ts` exists as a worker implementation; `verifierWorker.ts`
+deleted. `rg -l "worker" libs/data/ libs/memory-core/` shows only the shared worker +
+consumers. `hybrid-search` (56/56) and `claim-verification` (10/10) tests pass.

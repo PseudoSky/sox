@@ -29,7 +29,6 @@
     "@adhd/sox-ingest": "workspace:*",
     "@adhd/sox-vector-store": "workspace:*",
     "better-sqlite3": "^12.10.0",
-    "fastembed": "^2.1.0",
     "sqlite-vec": "^0.1.9"
   }
 }
