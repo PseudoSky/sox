@@ -30,6 +30,7 @@ import { serveBackend } from '@adhd/sox-service-proxy';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { closeAllDbs } from '@adhd/sox-memory-core';
 import { getContentAddress, handleToolCall, TOOLS } from './index.js';
 
 /**
@@ -150,6 +151,9 @@ export async function runBackend(opts: {
 
   const shutdown = (sig: string): void => {
     process.stderr.write(`[memory-server backend] ${sig} — shutting down\n`);
+    // SA-8 / BL-128: close all DB connections with lease release so the lock
+    // file is cleaned up before process exit.
+    closeAllDbs();
     void handle.close().finally(() => process.exit(0));
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

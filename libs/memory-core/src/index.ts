@@ -29,8 +29,23 @@
  */
 
 // ── Database ──────────────────────────────────────────────────────────────────
-export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION } from './db.js';
+export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION, closeAllDbs } from './db.js';
 export type { ScopeKind, MemoryScope } from './db.js';
+
+// ── Writer lease (SA-8, BL-128) ───────────────────────────────────────────────
+export {
+  acquireWriteLease,
+  releaseWriteLease,
+  closeDbWithLease,
+  EWriterBusy,
+  setLeaseInstanceId,
+  getLeaseInstanceId,
+  getActiveLease,
+  getAllActiveLeases,
+  isLeaseHeld,
+  _resetAllLeasesForTest,
+} from './lease.js';
+export type { LeaseInfo } from './lease.js';
 
 // ── Write queue (WP-1, BL-118) ────────────────────────────────────────────────
 export { WriteQueue } from './write-queue.js';
@@ -231,6 +246,7 @@ export type { StatsResult } from './stats.js';
 // ── Convenience wrappers (guard C5: write(dbPath, params) + recall(dbPath, params)) ──
 
 import { openDb } from './db.js';
+import { closeDbWithLease } from './lease.js';
 import { memoryWrite as _write } from './write.js';
 import { memoryRecall as _recall } from './recall.js';
 import type { WriteParams, WriteResult, WriteError } from './write.js';
@@ -248,7 +264,7 @@ export async function write(
   try {
     return await _write(db, params);
   } finally {
-    db.close();
+    closeDbWithLease(db, dbPath);
   }
 }
 
@@ -266,6 +282,6 @@ export async function recall(
     const res = await _recall(db, scope, params);
     return res.results;
   } finally {
-    db.close();
+    closeDbWithLease(db, dbPath);
   }
 }

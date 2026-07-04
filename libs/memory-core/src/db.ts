@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
 import { EMBED_DIM, getActiveEmbedModel } from './embed.js';
+import { closeDbWithLease } from './lease.js';
 
 // ── Store identity stamp keys (SA-5 / BL-121) ────────────────────────────────
 export const STORE_META_KEYS = {
@@ -376,4 +377,18 @@ export function openDbReadOnly(dbPath: string): Database.Database {
   db.exec('PRAGMA busy_timeout = 3000;');
   db.exec('PRAGMA query_only = ON;');
   return db;
+}
+
+/**
+ * Close all cached DB connections with lease release.
+ *
+ * Iterates the dbCache, calls closeDbWithLease on each entry, then clears
+ * the cache. Used by the memory-server backend shutdown handler to ensure
+ * all write leases are released before process exit.
+ */
+export function closeAllDbs(): void {
+  for (const [dbPath, db] of dbCache) {
+    closeDbWithLease(db, dbPath);
+  }
+  dbCache.clear();
 }

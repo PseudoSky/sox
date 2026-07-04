@@ -12,7 +12,26 @@
  */
 
 import type { Database as DatabaseType } from 'better-sqlite3';
-import type { OutboxQueue, OutboxQueueItem } from '@adhd/sox-analysis';
+
+// ── Local type definitions (replaces missing @adhd/sox-analysis exports) ───────
+
+export interface OutboxQueueItem {
+  seq: number;
+  op: string;
+  payload: string;
+  priority: number;
+  attempts: number;
+  enqueued: string;
+  claimed_at: string | null;
+  last_error: string | null;
+}
+
+export interface OutboxQueue {
+  dequeue(limit: number): OutboxQueueItem[];
+  markDone(seqs: number[]): void;
+  markFailed(seq: number, error: string): boolean;
+  getWatermark(): number;
+}
 
 // ── Additive migration helpers ────────────────────────────────────────────────
 
@@ -181,7 +200,7 @@ export function memoryFlush(
 
     // Mark pending items as done (they were already processed
     // by the time memoryFlush is called — this is a catch-up pass)
-    const seqs = pending.map((i) => i.seq);
+    const seqs = pending.map((i: OutboxQueueItem) => i.seq);
     queue.markDone(seqs);
   }
 

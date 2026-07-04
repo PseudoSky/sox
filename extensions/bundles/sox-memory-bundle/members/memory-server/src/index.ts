@@ -67,6 +67,7 @@ import {
   rowidsToUids,
   runBatchEnrich,
   SOCKET_PATH,
+  setLeaseInstanceId,
   supersedesUidForRowid,
   warmupEmbed,
   isSuperseded,
@@ -95,6 +96,7 @@ const HOST_COMPAT_FALLBACK = '>=1.0.0 <2.0.0';
 // ── Instance identity (SA-7 / CONTRACTS §H) ──────────────────────────────────
 const INSTANCE_STARTED_AT = new Date().toISOString();
 const INSTANCE_ID = crypto.randomUUID();
+setLeaseInstanceId(INSTANCE_ID);
 
 interface ContentAddress {
   id: string;
