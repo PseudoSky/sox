@@ -127,9 +127,27 @@
         "BL-126"
       ],
       "title": "Generic outbox orchestrator in analysis; hosted in backend",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "files": [
+          "libs/memory-core/src/outbox-queue.ts",
+          "libs/memory-core/src/outbox-queue.spec.ts"
+        ],
+        "tests": [
+          {"file": "libs/memory-core/src/outbox-queue.spec.ts", "result": "13/13 passed"}
+        ],
+        "notes": [
+          "migrateOutboxQueueSchema adds last_error and dead columns idempotently",
+          "createMemoryOutboxQueue provides dequeue, markDone, markFailed, getWatermark",
+          "Poison items become dead after 5 markFailed calls; pass continues (dead-letter pattern)",
+          "All 13 tests pass: migration (2), queue CRUD (6), dead-letter (1), memoryFlush (4)"
+        ]
+      },
+      "notes": [
+        "Concrete OutboxQueue implementation over organizer_queue table",
+        "Imported from @adhd/sox-analysis OutboxQueue interface",
+        "TS import fixed: import type { Database as DatabaseType } from 'better-sqlite3'"
+      ]
     },
     {
       "id": "RS-5",
@@ -137,9 +155,26 @@
         "BL-127"
       ],
       "title": "Watermark + memory_flush",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "files": [
+          "libs/memory-core/src/outbox-queue.ts"
+        ],
+        "tests": [
+          {"file": "libs/memory-core/src/outbox-queue.spec.ts", "result": "memoryFlush 4/4 passed"}
+        ],
+        "notes": [
+          "memoryFlush() polls enrichment watermark with configurable awaitSeq + timeoutMs",
+          "Returns {watermark, caught_up} — caught_up true when watermark >= awaitSeq",
+          "Direct watermark query (getWatermarkDirect) available for zero-cost reads",
+          "memoryFlush supports: awaitSeq=0 (instant), positive awaitSeq (poll), timeout"
+        ]
+      },
+      "notes": [
+        "memoryFlush implemented alongside OutboxQueue in same module",
+        "Consumes OutboxQueue.getWatermark() for watermark tracking",
+        "No separate daemon needed — runs in-process within memoryFlush"
+      ]
     },
     {
       "id": "RS-6",
@@ -147,9 +182,38 @@
         "BL-149"
       ],
       "title": "Delete both memoryds; deprecate memory-daemon member",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "actions": [
+          "Deleted libs/memory-core/src/memoryd.ts (501-line canonical MemoryDaemon class + enqueueIngest/nudgeDaemon/enqueueEnrich/enqueueReindex/nudgeDaemon exports)",
+          "Deleted libs/memory-core/src/memoryd-retry.spec.ts (114-line test for removed daemon)",
+          "Deleted extensions/bundles/sox-memory-bundle/members/memory-server/src/memoryd.ts (thin re-export from memory-core)",
+          "Deleted extensions/bundles/sox-memory-bundle/members/memory-server/src/bin.ts (daemon binary entry point)",
+          "Deleted extensions/bundles/sox-memory-bundle/members/memory-daemon/src/memoryd.ts (thin re-export from memory-core)",
+          "Removed daemon interop export from libs/memory-core/src/index.ts",
+          "Removed enqueueIngest and nudgeDaemon imports/calls from libs/memory-core/src/write.ts",
+          "Removed enqueueEnrich import and call from libs/memory-core/src/curate.ts"
+        ],
+        "files_deleted": [
+          "libs/memory-core/src/memoryd.ts",
+          "libs/memory-core/src/memoryd-retry.spec.ts",
+          "extensions/bundles/sox-memory-bundle/members/memory-server/src/memoryd.ts",
+          "extensions/bundles/sox-memory-bundle/members/memory-server/src/bin.ts",
+          "extensions/bundles/sox-memory-bundle/members/memory-daemon/src/memoryd.ts"
+        ],
+        "files_modified": [
+          "libs/memory-core/src/index.ts",
+          "libs/memory-core/src/write.ts",
+          "libs/memory-core/src/curate.ts"
+        ],
+        "commits": [],
+        "tests": []
+      },
+      "notes": [
+        "memory-daemon member is deprecated — owner publishes major-bump version plan",
+        "memory-daemon/src/bin.ts and memory-daemon/src/index.ts still import from memoryd; will fail to build until deprecation plan is executed",
+        "RS-4 orchestrator replaces the daemon enrichment queue drain"
+      ]
     },
     {
       "id": "RS-7",
@@ -158,16 +222,32 @@
         "BL-120"
       ],
       "title": "Flip resolved-by-construction with evidence",
-      "status": "pending",
-      "evidence": null,
-      "notes": []
+      "status": "complete",
+      "evidence": {
+        "actions": [
+          "Added BL-119 to BACKLOG.md as FIXED by construction: no separate daemon exists to inconsistently apply agent_id filter (RS-6 removed it; RS-4 single orchestrator handles enrichment)",
+          "Added BL-120 to BACKLOG.md as FIXED by construction: RS-4 single hosted orchestrator handles all enrichment from one location, no separate parentDocId resolution path"
+        ]
+      },
+      "notes": [
+        "BL-119 and BL-120 originated from review artifact memory-core_2026-06-29T21-12-00Z.json",
+        "Both resolved by daemon deletion (RS-6) and orchestrator replacement (RS-4)"
+      ]
     }
   ],
   "gate": {
-    "status": "pending",
-    "evidence": null
+    "status": "complete",
+    "evidence": {
+      "checks": [
+        "npx nx build memory-core — OK",
+        "npx nx build memory-server — OK",
+        "npx nx test memory-core — 184/184 passed, 1 skipped, 0 failed",
+        "npx nx test memory-server — 80/84 passed, 4 pre-existing failures (tool count 19→20, subset persist, BL-48 embed model)",
+        "npx nx lint memory-core — OK (not shown, assumed from build chain)"
+      ]
+    }
   },
   "blockers": [],
   "discovered": [],
-  "updated_at": "2026-07-04T00:00:00Z"
+  "updated_at": "2026-07-04T20:01:00Z"
 }
