@@ -4,6 +4,32 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
+## Open — surfaced by the write-path observability worktree (2026-07-04)
+
+### BL-174 — `memory_ping` store block hardcodes `last_checkpoint_at: null` despite `WriteQueue.lastCheckpointAtForPath()` existing
+
+**Severity: low (health surface lies by omission).** In
+`extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts`, the `memory_ping`
+store block sets `last_checkpoint_at: null` as a literal, even though WP-5 shipped
+`WriteQueue.lastCheckpointAtForPath(dbPath)` exactly for this field. The ping always reports
+`null`, so WAL-checkpoint staleness is invisible to health checks. Discovered while authoring
+`docs/plan/runtime-productionization/06-hardening-final/WRITEQ_METRICS_INTEGRATION.md`; not fixed
+because memory-server was outside this worktree's file fence (live-incident agent owns it).
+**Fix sketch:** `last_checkpoint_at: WriteQueue.lastCheckpointAtForPath(resolvedPath) || null` —
+one line, apply together with the BL-175 patch.
+
+### BL-175 — DEFERRAL: apply the WriteQueue metrics → `memory_ping` integration patch at merge
+
+**Severity: task deferral (by fence design, not a bug).** memory-core now exports
+`WriteQueue.metricsForPath()` (rolling write-latency p50/p99/mean/max, queue depth, high
+watermark, deadline budget, rejection/slow-task counters), but memory-server does not yet expose
+it. The exact ready-to-apply patch (one additive `write_queue:` field in the ping store block)
+is in `docs/plan/runtime-productionization/06-hardening-final/WRITEQ_METRICS_INTEGRATION.md`.
+Integrator applies it after the concurrent live-incident agent finishes in
+`memory-server/src/index.ts`, then runs the standard AGENT SEQUENCE + live ping verification.
+
+---
+
 ## Open — surfaced during the 2026-07-04 memory-server hot-triage (BL-170 incident)
 
 ### BL-172 — organizer_queue had NO live consumer since the RS-6/ADR-0007 refactor: rows orphaned forever, `queue_depth` lied — **RESOLVED (2026-07-04)**
