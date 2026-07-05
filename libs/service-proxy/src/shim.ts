@@ -37,6 +37,21 @@ import {
 } from './jsonrpc.js';
 import { computeSchemaHash } from './schema-hash.js';
 
+/**
+ * BL-62: per-request workspace attribution context injected by the shim into every
+ * `tools/call` internal frame. The backend uses this as the project_path default when
+ * the tool's own `arguments.project_path` is absent. The field is INTERNAL to the
+ * shim↔backend UDS protocol — it is never sent to the MCP client.
+ *
+ * Backward compat: the field is optional/additive. An old backend that does not
+ * understand it simply ignores the unknown key; a new backend in the absence of this
+ * field falls back to the current env/cwd-based attribution.
+ */
+export interface ClientContext {
+  /** The workspace root path for the MCP client that this shim is serving. */
+  project_path: string;
+}
+
 /** Options for {@link runFrontShim}. */
 export interface FrontShimOptions {
   /** Extension id (for diagnostics + serve-record). */
@@ -72,6 +87,19 @@ export interface FrontShimOptions {
    * simultaneously.
    */
   httpPort?: number;
+  /**
+   * BL-62: the workspace root for this shim's client. When set (injected by
+   * `cmdServe` from `SOX_CONFIG_PROJECT_PATH` at shim spawn), every `tools/call`
+   * forwarded to the backend carries a `client_context: { project_path }` field in
+   * its internal frame. The backend uses this as the default project attribution when
+   * the tool call's own `arguments.project_path` is absent, so each request is
+   * attributed to the CALLING client's workspace — not to the backend process's env.
+   *
+   * OPTIONAL and ADDITIVE: absent → no client_context injected. Old backends ignore
+   * the unknown field; old shims omitting this field are handled by the backend's
+   * absence check (falls back to current env/cwd behavior).
+   */
+  clientProjectPath?: string;
 }
 
 /** A running front-shim handle (for tests; in production the process lives until
@@ -83,6 +111,25 @@ export interface FrontShimHandle {
   close(): void;
   /** The connection to the backend (exposed for tests). */
   backend: BackendConnection;
+}
+
+/**
+ * BL-62: attach `client_context` to a `tools/call` internal frame. Only applied
+ * when `clientProjectPath` is a non-empty string AND the request method is
+ * `tools/call` — all other methods are returned as-is. This is the INTERNAL
+ * shim↔backend envelope extension; the MCP client never sees this field.
+ */
+function injectClientContext(req: JsonRpcRequest, clientProjectPath: string | undefined): JsonRpcRequest {
+  if (req.method !== 'tools/call') return req;
+  if (typeof clientProjectPath !== 'string' || clientProjectPath.length === 0) return req;
+  const existingParams = (req.params ?? {}) as Record<string, unknown>;
+  return {
+    ...req,
+    params: {
+      ...existingParams,
+      client_context: { project_path: clientProjectPath } satisfies ClientContext,
+    },
+  };
 }
 
 /**
@@ -251,7 +298,10 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
     }
 
     // ── everything else (tools/call, …): proxy to the backend. ──
-    const resp = await backend.send(req);
+    // BL-62: inject client_context into tools/call internal frames so the backend
+    // can attribute the request to this shim's client workspace rather than the
+    // backend process's env.
+    const resp = await backend.send(injectClientContext(req, opts.clientProjectPath));
     writeToClient({ ...resp, id: req.id ?? null });
   }
 
@@ -389,7 +439,8 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
               respond(resp);
             }).catch((e) => respond(errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`)));
           } else {
-            backend.send(reqRpc).then(respond).catch((e) => respond(errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`)));
+            // BL-62: inject client_context for tools/call over SSE transport.
+            backend.send(injectClientContext(reqRpc, opts.clientProjectPath)).then(respond).catch((e) => respond(errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`)));
           }
         });
         return;
@@ -429,7 +480,8 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
               return resp;
             });
           } else {
-            handleAndRespond(() => backend.send(reqRpc));
+            // BL-62: inject client_context for tools/call over HTTP transport.
+            handleAndRespond(() => backend.send(injectClientContext(reqRpc, opts.clientProjectPath)));
           }
         });
         return;

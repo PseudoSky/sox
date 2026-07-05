@@ -397,4 +397,129 @@ describe('runFrontShim', () => {
     await handle.done; // resolves only if the pipe-end handler ran
     expect(handle.backend.isConnected()).toBe(false);
   });
+
+  // ── BL-62: per-request project_path attribution via client_context ────────────
+  //
+  // The shim injects `client_context: { project_path }` into every `tools/call`
+  // internal frame when `clientProjectPath` is configured. This is the INTERNAL
+  // shim↔backend envelope extension — it must NOT appear in responses to the client,
+  // and must NOT be injected for other methods (initialize, tools/list, etc.).
+
+  /**
+   * A backend that captures the raw `params` it receives for each `tools/call`,
+   * so tests can assert the `client_context` field was (or wasn't) injected.
+   */
+  async function startCapturingBackend(
+    socketPath: string,
+  ): Promise<{ handle: BackendHandle; captured: Array<unknown> }> {
+    const captured: Array<unknown> = [];
+    const handler: BackendHandler = (req) => {
+      if (req.method === 'tools/call') captured.push(req.params);
+      if (req.method === 'tools/list') return { jsonrpc: '2.0', id: req.id ?? null, result: TOOLS };
+      if (req.method === 'initialize') return { jsonrpc: '2.0', id: req.id ?? null, result: { serverInfo: { name: 'cap', version: '1' }, capabilities: {} } };
+      return { jsonrpc: '2.0', id: req.id ?? null, result: { ok: true } };
+    };
+    const handle = await serveBackend({ socketPath, handler, onDiagnostic: () => {} });
+    cleanups.push(() => handle.close());
+    return { handle, captured };
+  }
+
+  it('BL-62: shim attaches client_context to tools/call when clientProjectPath is set', async () => {
+    const sock = tmpSock('bl62-inject');
+    const { captured } = await startCapturingBackend(sock);
+    const c = makeClient({
+      id: 'bl62',
+      socketPath: sock,
+      backoff: { initialMs: 20, maxMs: 60 },
+      clientProjectPath: '/workspace/project-a',
+    });
+
+    c.send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'echo', arguments: { v: 'hi' } } });
+    await c.next((r) => r['id'] === 1);
+
+    expect(captured).toHaveLength(1);
+    const params = captured[0] as Record<string, unknown>;
+    expect(params['client_context']).toEqual({ project_path: '/workspace/project-a' });
+    // The original fields are preserved.
+    expect(params['name']).toBe('echo');
+    expect((params['arguments'] as { v: string }).v).toBe('hi');
+  });
+
+  it('BL-62: shim does NOT attach client_context when clientProjectPath is absent', async () => {
+    const sock = tmpSock('bl62-no-inject');
+    const { captured } = await startCapturingBackend(sock);
+    // No clientProjectPath in options.
+    const c = makeClient({ id: 'bl62-nopp', socketPath: sock, backoff: { initialMs: 20, maxMs: 60 } });
+
+    c.send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'echo', arguments: {} } });
+    await c.next((r) => r['id'] === 1);
+
+    expect(captured).toHaveLength(1);
+    const params = captured[0] as Record<string, unknown>;
+    // No client_context field injected.
+    expect(params['client_context']).toBeUndefined();
+  });
+
+  it('BL-62: shim does NOT attach client_context when clientProjectPath is empty string', async () => {
+    const sock = tmpSock('bl62-empty');
+    const { captured } = await startCapturingBackend(sock);
+    const c = makeClient({
+      id: 'bl62-empty',
+      socketPath: sock,
+      backoff: { initialMs: 20, maxMs: 60 },
+      clientProjectPath: '',
+    });
+
+    c.send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'echo', arguments: {} } });
+    await c.next((r) => r['id'] === 1);
+
+    expect(captured).toHaveLength(1);
+    expect((captured[0] as Record<string, unknown>)['client_context']).toBeUndefined();
+  });
+
+  it('BL-62: shim does NOT inject client_context into tools/list or initialize', async () => {
+    const sock = tmpSock('bl62-non-call');
+    // Track all raw requests arriving at the backend.
+    const allParams: Array<{ method: string; params: unknown }> = [];
+    const handler: BackendHandler = (req) => {
+      allParams.push({ method: req.method, params: req.params });
+      if (req.method === 'tools/list') return { jsonrpc: '2.0', id: req.id ?? null, result: TOOLS };
+      if (req.method === 'initialize') return { jsonrpc: '2.0', id: req.id ?? null, result: { serverInfo: { name: 't', version: '1' }, capabilities: {} } };
+      return { jsonrpc: '2.0', id: req.id ?? null, result: {} };
+    };
+    const bHandle = await serveBackend({ socketPath: sock, handler, onDiagnostic: () => {} });
+    cleanups.push(() => bHandle.close());
+
+    const c = makeClient({
+      id: 'bl62-noncall',
+      socketPath: sock,
+      backoff: { initialMs: 20, maxMs: 60 },
+      clientProjectPath: '/workspace/project-b',
+    });
+
+    // initialize
+    c.send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { capabilities: {} } });
+    await c.next((r) => r['id'] === 1);
+
+    // tools/list — served from cache after the first backend connect, but force a
+    // backend read by clearing the cache path: just check the backend receives no ctx.
+    // (The shim might serve from cache; we look at what arrived at the backend instead.)
+    // Issue a tools/call to ensure the backend got at least one call with context.
+    c.send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'echo', arguments: {} } });
+    await c.next((r) => r['id'] === 2);
+
+    // All non-tools/call methods forwarded to the backend must NOT carry client_context.
+    for (const entry of allParams) {
+      if (entry.method !== 'tools/call') {
+        const p = entry.params as Record<string, unknown> | undefined;
+        expect(p?.['client_context']).toBeUndefined();
+      }
+    }
+    // The tools/call one MUST have client_context.
+    const callEntry = allParams.find((e) => e.method === 'tools/call');
+    expect(callEntry).toBeDefined();
+    expect((callEntry!.params as Record<string, unknown>)['client_context']).toEqual({
+      project_path: '/workspace/project-b',
+    });
+  });
 });

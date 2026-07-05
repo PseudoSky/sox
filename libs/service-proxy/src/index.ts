@@ -13,7 +13,7 @@
 
 // ── The stdio↔UDS front-shim (client-facing) ──────────────────────────────────
 export { runFrontShim } from './shim.js';
-export type { FrontShimOptions, FrontShimHandle } from './shim.js';
+export type { FrontShimOptions, FrontShimHandle, ClientContext } from './shim.js';
 
 // ── The backend-side UDS listener (server-facing) ─────────────────────────────
 export { serveBackend } from './backend.js';
