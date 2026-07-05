@@ -11,21 +11,21 @@
   ],
   "targets": {
     "build": {
-      "executor": "nx:run-commands",
+      "executor": "@nx/js:tsc",
       "outputs": [
         "{workspaceRoot}/packages/sox-nx/dist"
       ],
       "options": {
-        "command": "tsc --project packages/sox-nx/tsconfig.lib.json",
-        "cwd": "."
+        "main": "packages/sox-nx/src/index.ts",
+        "outputPath": "packages/sox-nx/dist",
+        "tsConfig": "packages/sox-nx/tsconfig.lib.json",
+        "assets": [],
+        "clean": true
       },
       "cache": true,
       "inputs": [
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/tsconfig.lib.json"
-      ],
-      "dependsOn": [
-        "^build"
       ]
     },
     "test": {

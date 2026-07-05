@@ -11,13 +11,16 @@
   ],
   "targets": {
     "build": {
-      "executor": "nx:run-commands",
+      "executor": "@nx/js:tsc",
       "outputs": [
         "{workspaceRoot}/libs/service-proxy/dist"
       ],
       "options": {
-        "command": "tsc --project libs/service-proxy/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/service-proxy/dist/package.json",
-        "cwd": "."
+        "main": "libs/service-proxy/src/index.ts",
+        "outputPath": "libs/service-proxy/dist",
+        "tsConfig": "libs/service-proxy/tsconfig.lib.json",
+        "assets": [],
+        "clean": true
       },
       "cache": true,
       "inputs": [

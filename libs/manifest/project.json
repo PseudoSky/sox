@@ -11,18 +11,20 @@
   ],
   "targets": {
     "build": {
-      "executor": "nx:run-commands",
+      "executor": "@nx/js:tsc",
       "outputs": [
         "{workspaceRoot}/libs/manifest/dist"
       ],
       "options": {
-        "command": "tsc --project libs/manifest/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/manifest/dist/package.json",
-        "cwd": "."
+        "main": "libs/manifest/src/index.ts",
+        "outputPath": "libs/manifest/dist",
+        "tsConfig": "libs/manifest/tsconfig.lib.json",
+        "assets": [],
+        "clean": true
       },
       "cache": true,
       "inputs": [
         "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/src/schema.json",
         "{projectRoot}/tsconfig.lib.json"
       ]
     },

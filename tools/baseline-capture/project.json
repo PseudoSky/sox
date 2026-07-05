@@ -4,21 +4,27 @@
   "projectType": "library",
   "root": "tools/baseline-capture",
   "sourceRoot": "tools/baseline-capture/src",
-  "tags": ["type:lib"],
+  "tags": [
+    "type:lib"
+  ],
   "targets": {
     "build": {
-      "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/tools/baseline-capture/dist"],
+      "executor": "@nx/js:tsc",
+      "outputs": [
+        "{workspaceRoot}/tools/baseline-capture/dist"
+      ],
       "options": {
-        "command": "tsc --project tools/baseline-capture/tsconfig.json && echo '{\"type\":\"commonjs\"}' > tools/baseline-capture/dist/package.json",
-        "cwd": "."
+        "main": "tools/baseline-capture/src/index.ts",
+        "outputPath": "tools/baseline-capture/dist",
+        "tsConfig": "tools/baseline-capture/tsconfig.json",
+        "assets": [],
+        "clean": true
       },
       "cache": true,
       "inputs": [
         "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/tsconfig.json"
-      ],
-      "dependsOn": ["^build"]
+        "{projectRoot}/tsconfig.lib.json"
+      ]
     },
     "test": {
       "executor": "nx:run-commands",
@@ -27,12 +33,17 @@
         "cwd": "."
       },
       "cache": true,
-      "inputs": ["default", "^production"]
+      "inputs": [
+        "default",
+        "^production"
+      ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["tools/baseline-capture/**/*.ts"]
+        "lintFilePatterns": [
+          "tools/baseline-capture/**/*.ts"
+        ]
       }
     },
     "capture-enrichment-baseline": {
@@ -41,7 +52,9 @@
         "command": "node tools/baseline-capture/dist/capture-enrichment-baseline.js",
         "cwd": "."
       },
-      "dependsOn": ["build"],
+      "dependsOn": [
+        "build"
+      ],
       "cache": false
     },
     "capture-write-perf-baseline": {
@@ -50,7 +63,9 @@
         "command": "node tools/baseline-capture/dist/capture-write-perf-baseline.js",
         "cwd": "."
       },
-      "dependsOn": ["build"],
+      "dependsOn": [
+        "build"
+      ],
       "cache": false
     }
   }

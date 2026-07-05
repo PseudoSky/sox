@@ -11,13 +11,16 @@
   ],
   "targets": {
     "build": {
-      "executor": "nx:run-commands",
+      "executor": "@nx/js:tsc",
       "outputs": [
         "{workspaceRoot}/libs/data/ingest/ingest/dist"
       ],
       "options": {
-        "command": "rm -rf libs/data/ingest/ingest/dist/ && tsc --project libs/data/ingest/ingest/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/ingest/ingest/dist/package.json",
-        "cwd": "."
+        "main": "libs/data/ingest/ingest/src/index.ts",
+        "outputPath": "libs/data/ingest/ingest/dist",
+        "tsConfig": "libs/data/ingest/ingest/tsconfig.lib.json",
+        "assets": [],
+        "clean": true
       },
       "cache": true,
       "inputs": [

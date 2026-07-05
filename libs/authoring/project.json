@@ -11,21 +11,21 @@
   ],
   "targets": {
     "build": {
-      "executor": "nx:run-commands",
+      "executor": "@nx/js:tsc",
       "outputs": [
         "{workspaceRoot}/libs/authoring/dist"
       ],
       "options": {
-        "command": "tsc --project libs/authoring/tsconfig.lib.json",
-        "cwd": "."
+        "main": "libs/authoring/src/index.ts",
+        "outputPath": "libs/authoring/dist",
+        "tsConfig": "libs/authoring/tsconfig.lib.json",
+        "assets": [],
+        "clean": true
       },
       "cache": true,
       "inputs": [
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/tsconfig.lib.json"
-      ],
-      "dependsOn": [
-        "^build"
       ]
     },
     "test": {

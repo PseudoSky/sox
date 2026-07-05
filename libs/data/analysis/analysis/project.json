@@ -11,13 +11,16 @@
   ],
   "targets": {
     "build": {
-      "executor": "nx:run-commands",
+      "executor": "@nx/js:tsc",
       "outputs": [
         "{workspaceRoot}/libs/data/analysis/analysis/dist"
       ],
       "options": {
-        "command": "rm -rf libs/data/analysis/analysis/dist/ && tsc --project libs/data/analysis/analysis/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/analysis/analysis/dist/package.json",
-        "cwd": "."
+        "main": "libs/data/analysis/analysis/src/index.ts",
+        "outputPath": "libs/data/analysis/analysis/dist",
+        "tsConfig": "libs/data/analysis/analysis/tsconfig.lib.json",
+        "assets": [],
+        "clean": true
       },
       "cache": true,
       "inputs": [

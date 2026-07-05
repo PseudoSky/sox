@@ -11,13 +11,16 @@
   ],
   "targets": {
     "build": {
-      "executor": "nx:run-commands",
+      "executor": "@nx/js:tsc",
       "outputs": [
         "{workspaceRoot}/libs/data/vectors/vector-store/dist"
       ],
       "options": {
-        "command": "rm -rf libs/data/vectors/vector-store/dist/ && tsc --project libs/data/vectors/vector-store/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/vectors/vector-store/dist/package.json",
-        "cwd": "."
+        "main": "libs/data/vectors/vector-store/src/index.ts",
+        "outputPath": "libs/data/vectors/vector-store/dist",
+        "tsConfig": "libs/data/vectors/vector-store/tsconfig.lib.json",
+        "assets": [],
+        "clean": true
       },
       "cache": true,
       "inputs": [
