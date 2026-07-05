@@ -7706,6 +7706,12 @@ Flags:
       socketPath: backendSock,
       ...(schemaCachePath !== undefined ? { schemaCachePath } : {}),
       ...(httpPort !== undefined && !Number.isNaN(httpPort) ? { httpPort } : {}),
+      // BL-62: per-request project attribution — the shim forwards ITS client's
+      // workspace (BL-56 injects SOX_CONFIG_PROJECT_PATH at shim spawn; MCP hosts
+      // spawn the shim in the project dir, so cwd is the honest fallback) on every
+      // tools/call so the SHARED backend attributes writes to the caller's
+      // project, not to whichever shim spawned the backend.
+      clientProjectPath: process.env['SOX_CONFIG_PROJECT_PATH'] || process.cwd(),
       // §9.5 step 3: auto-managed, singleton-guarded backend lifecycle.
       ensure: async () => {
         // [inv:no-fd-inherit] The backend is detached; its stderr must NEVER inherit
