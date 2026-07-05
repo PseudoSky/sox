@@ -4,22 +4,26 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
-## Current status — 2026-07-04 (post-context-06 closeout sweep)
+## Current status — 2026-07-04 (post-context-06 closeout + validation sweep)
 
-**Total open: 39 items.** Hash backend removed → BL-86/87/89 closed, BL-88/90 re-scoped.
+**Total open: 33 items** (validation sweep verified every open entry against current code:
+6 found already-fixed and closed — BL-100, BL-106, BL-107, BL-108, BL-184, BL-188; 8 re-scoped
+with corrected citations — BL-57, BL-90, BL-94, BL-98, BL-116, BL-161, BL-171, BL-181; BL-99 is
+external (claude-agents repo); BL-62 upgraded from (unverified) to VERIFIED-REAL with live
+evidence). Hash backend removed → BL-86/87/89 closed, BL-88/90 re-scoped.
 BL-165 (ingest consolidation) resolved by S11. Context-06 closeout additionally resolved:
 BL-173/BL-179 (test hermeticity), BL-177 (macOS ps env matching), BL-185 (SCHEDULED
 rendering), BL-183 (outbox scaffolding deleted), BL-189/BL-191 (two-phase memory_update +
 metrics), BL-190 (version alignment), BL-192 (resolved-invalid). Newly filed: BL-201,
 BL-202, BL-203.
 
-**Defined solutions (27)** — clear fix path, no pending decisions:
+**Defined solutions (21)** — clear fix path, no pending decisions:
 
 | Priority | Items |
 |---|---|
-| **HIGH** | BL-168 (module-resolution standard), BL-94 (better-sqlite3 rebuild guard), BL-100 (filters in memory-core), BL-96 (cd to repo-root in audit), BL-181 (e2e memory-daemon removal) |
-| **MEDIUM** | BL-161 (test singleton + worker pinning), BL-171 (onnx V8 crash), BL-99 (merge-candidate savings), BL-102 (execution_mode field), BL-105 (7 stubs), BL-88 (per-record embed_model), BL-90 (recall recipes), BL-57 (cleanup SOX_HOME residue), BL-180 (dataRoot scope-path fix) |
-| **LOW** | BL-201 (lock debris sweep), BL-176 (quickReconcile helper), BL-178 (stderr sink default), BL-182 (memory-flush dead code), BL-184 (RS-6 doc fix), BL-98 (SKILL.md contract), BL-106 (b_per_tier defaults), BL-107 (move patches to readDag), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder), BL-117 (late chunking boundaries), BL-188 (embed updates schema field naming), BL-108 (multi-host `--host` comma-separated) |
+| **HIGH** | BL-168 (module-resolution standard), BL-96 (cd to repo-root in audit), BL-181 (e2e fixture swap — fails at spawn, not existsSync) |
+| **MEDIUM** | BL-94 (ABI-rebuild CI enforcement — crash-mid-session fixed), BL-161 (memory-flush spec only — memory-core fixed), BL-171 (onnx V8 crash — file moved to member root), BL-102 (execution_mode field), BL-105 (7 stubs), BL-88 (per-record embed_model), BL-90 (per-axis recall recipes), BL-180 (dataRoot scope-path fix) |
+| **LOW** | BL-201 (lock debris sweep), BL-176 (quickReconcile helper), BL-178 (stderr sink default), BL-182 (memory-flush dead code), BL-57 (doctor legacy-residue check — bug fixed), BL-98 (confirm-then-close: entry's own claim was wrong), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder — citations updated), BL-117 (late chunking boundaries) |
 | **LOW/MEDIUM** | BL-36 (record real manifest type) |
 
 **[TRIAGE] items (12)** — needs decision, investigation, or prerequisite before work starts:
@@ -27,7 +31,7 @@ BL-202, BL-203.
 | Priority | Items |
 |---|---|
 | **HIGH** | BL-97 (artifact gate: working-tree vs ref vs auto-commit) |
-| **MEDIUM** | BL-95 (store discovery: scan vs register vs hybrid), BL-104 (nested type inlining: auto vs manual annotation), BL-62 (multi-project projection — needs investigation), BL-113 (ingest publishability — deferred to v1.0), BL-114 (LanceDB: wire real dep vs rename to InMemory), BL-166 (3 orphaned packages: wire or remove per-package), BL-203 (tick unload after artifact-changing upgrade — needs controlled repro) |
+| **MEDIUM** | BL-95 (store discovery: scan vs register vs hybrid), BL-104 (nested type inlining: auto vs manual annotation), BL-62 (multi-project attribution — VERIFIED REAL 2026-07-04, needs per-request workspace threading), BL-113 (ingest publishability — deferred to v1.0), BL-114 (LanceDB: wire real dep vs rename to InMemory), BL-166 (3 orphaned packages: wire or remove per-package), BL-203 (tick unload after artifact-changing upgrade — needs controlled repro), BL-99 (EXTERNAL: move to claude-agents backlog) |
 | **LOW** | BL-103 (snapshot version: param vs disk-read), BL-167 (scoreBreakdown: fix math vs document edge case), BL-202 (flake — root cause unknown) |
 | **FEATURE** | BL-163 (blocked on code-signing identity) |
 
@@ -111,23 +115,24 @@ cause). The effort-to-impact ratio depends on how often the flake actually gates
 
 ## Open — surfaced by the embed-pipeline observability worktree (2026-07-04)
 
-### BL-190 — memory-core/memory-server `package.json` versions lag their hand-written CHANGELOG heads — **RESOLVED (2026-07-04, HF-6)**
+### BL-190 — `libs/memory-core/package.json` and `extensions/bundles/sox-memory-bundle/members/memory-server/package.json` versions lag their hand-written CHANGELOG heads — **RESOLVED (2026-07-04, HF-6)**
 
-**Resolution:** bumped `memory-core` 0.2.1→0.3.0 and `memory-server` 1.2.1→1.3.0 to match the
+**Resolution:** bumped `libs/memory-core/package.json` 0.2.1→0.3.0 and `extensions/bundles/sox-memory-bundle/members/memory-server/package.json` 1.2.1→1.3.0 to match the
 changelog heads; the 0.3.0/1.3.0 sections were extended with the S11/BL-183/BL-189 entries in
-the same commit. Convention going forward: hand-edited changelog heads must bump `package.json`
+the same commit. Convention going forward: hand-edited changelog heads must bump the respective `package.json`
+(`libs/memory-core/package.json` or `extensions/bundles/sox-memory-bundle/members/memory-server/package.json`)
 in the same change (or use changesets).
 
 **What's wrong:** `libs/memory-core/package.json` is `0.2.1` while its CHANGELOG.md top section
-is `## 0.3.0`; `memory-server/package.json` is `1.2.1` vs CHANGELOG `## 1.3.0`. The two-phase-write
-merge (`a0a61fe`) hand-added the changelog sections without bumping `package.json` (the repo
+is `## 0.3.0`; `extensions/bundles/sox-memory-bundle/members/memory-server/package.json` is `1.2.1` vs CHANGELOG `## 1.3.0`. The two-phase-write
+merge (`a0a61fe`) hand-added the changelog sections without bumping the respective `package.json` files (`libs/memory-core/package.json` + `extensions/bundles/sox-memory-bundle/members/memory-server/package.json`) (the repo
 otherwise uses changesets, which do both atomically). Any publish/changeset run will now either
 double-document 0.3.0/1.3.0 or emit a version that skips the documented one.
 
 **Where:** `libs/memory-core/{package.json,CHANGELOG.md}`,
 `extensions/bundles/sox-memory-bundle/members/memory-server/{package.json,CHANGELOG.md}`.
 
-**Fix sketch:** bump both `package.json` versions to match the changelog heads (or convert the
+**Fix sketch:** bump both `package.json` versions (`libs/memory-core/package.json` + `extensions/bundles/sox-memory-bundle/members/memory-server/package.json`) to match the changelog heads (or convert the
 hand-written sections into a pending `.changeset/*.md` and let changesets version). Decide one
 convention and note it in CONTRIBUTING §1.
 
@@ -145,7 +150,7 @@ traffic) the embed-cost distribution reads empty while real ONNX work is happeni
 for the sync path (its cost IS `write_latency_ms`), but once BL-189 moves `memory_update` onto the
 async pipeline it should flow through the same instrumented entry points.
 
-**Where:** `libs/memory-core/src/embed-pipeline.ts`, `update.ts`; fold into the BL-189 fix.
+**Where:** `libs/memory-core/src/embed-pipeline.ts`, `libs/memory-core/src/update.ts`; fold into the BL-189 fix.
 
 **Fix sketch:** when BL-189 lands, route update re-embeds through `schedulePendingEmbeds` (they
 then inherit all counters + durations for free). No separate instrumentation before that.
@@ -172,7 +177,7 @@ watermark, deadline budget, rejection/slow-task counters), but memory-server doe
 it. The exact ready-to-apply patch (one additive `write_queue:` field in the ping store block)
 is in `docs/plan/runtime-productionization/06-hardening-final/WRITEQ_METRICS_INTEGRATION.md`.
 Integrator applies it after the concurrent live-incident agent finishes in
-`memory-server/src/index.ts`, then runs the standard AGENT SEQUENCE + live ping verification.
+`extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts`, then runs the standard AGENT SEQUENCE + live ping verification.
 
 ---
 
@@ -182,17 +187,17 @@ Integrator applies it after the concurrent live-incident agent finishes in
 
 **Severity: high (enrichment-outbox consumption silently dead for ~27h; memory_ping reported
 `ok:true` throughout).** Root cause chain, established via read-only SQL on the live store:
-- `memory-core/src/write.ts` P2 still enqueues an `ingest` trigger row into `organizer_queue`
-  on EVERY write (`enqueueIngest`, write.ts:193).
+- `libs/memory-core/src/write.ts` P2 still enqueues an `ingest` trigger row into `organizer_queue`
+   on EVERY write (`enqueueIngest`, write.ts:193).
 - The only implementations that ever claim/complete those rows: (a) `MemoryDaemon`
-  (`memory-core/src/memoryd.ts`) — runs only in the memory-daemon service, which is
-  **intentionally dead** per ADR-0007/BL-162; (b) the RS-4 outbox orchestrator
-  (`memory-core/src/outbox-queue.ts` `createMemoryOutboxQueue`/`migrateOutboxQueueSchema`) —
+   (`libs/memory-core/src/memoryd.ts`) — runs only in the memory-daemon service, which is
+   **intentionally dead** per ADR-0007/BL-162; (b) the RS-4 outbox orchestrator
+   (`libs/memory-core/src/outbox-queue.ts` `createMemoryOutboxQueue`/`migrateOutboxQueueSchema`) —
   **defined + spec-tested but wired into NOTHING** (zero non-spec callers repo-wide). The BL-126
   columns (`last_error`, `dead`) were absent from the live store — corroborating that the
   migration-owning consumer never started after `11c2fdc` (RS-4/RS-6, 2026-07-03) deleted the
   memoryds.
-- The BL-47 in-process fallback loop (`memory-server/src/index.ts` `runFallbackEnrichPass`)
+- The BL-47 in-process fallback loop (`extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` `runFallbackEnrichPass`)
   DID keep enrichment itself alive (`runBatchEnrich` every 5 min — the actual clustering/
   importance/relates_to work happened) but bypassed the queue: rows never claimed → live store
   showed 29 open `ingest` rows (`claimed_at` NULL, `attempts` 0), `MAX(done_at)` frozen at
@@ -310,7 +315,7 @@ has the registry/lockfile mid-write — observed in this gate run, passes standa
 gate run silently rewrites live state, violating worktree isolation fences.
 
 **Further symptoms observed in the same run:** (4) a root test regenerates the TRACKED
-`registry/index.json` in-place with checkout-absolute `source` paths — in a worktree that bakes
+`registry/index.json` (at repo root) in-place with checkout-absolute `source` paths — in a worktree that bakes
 `…/.claude/worktrees/<agent>/…` into a committable file (reverted via `git checkout` before
 committing; the index's absolute-source design makes any non-main checkout's regeneration
 poisonous); (5) junk `./badscope/run/` + `./global/run/` dirs appear in the repo root — see BL-180.
@@ -358,7 +363,7 @@ now" with DEAD, making the healthy tick look faulty (the same lying-surface clas
 dead-daemon rendering and today's enrichment blind spot).
 
 **Fix:** Added `isScheduledOsUnitContent()` (pure, no I/O) and `isScheduledOsUnit()` (file-based)
-to `libs/host-runtime/src/os-unit.ts` (exported via `index.ts`). In `apps/sox/src/main.ts`
+to `libs/host-runtime/src/os-unit.ts` (exported via `libs/host-runtime/src/index.ts`). In `apps/sox/src/main.ts`
 `cmdStatus`'s os-unit scan: when `!pidAlive && loaded`, read the unit file and check for
 `<key>StartInterval</key>`, `<key>StartCalendarInterval</key>` (launchd) or `OnUnitActiveSec=`,
 `OnCalendar=` (systemd `.timer` paired file). If any schedule key is detected, render
@@ -420,7 +425,7 @@ Owner-directed fix for the 2026-07-04 incident class ("expensive compute must no
 6-item batch timeout at queue depth 29): the write handlers now run a fully SYNCHRONOUS Phase A
 (dedup, node insert, FTS, tags/entities, outbox row, non-embed enrichment — `memoryWritePhaseA`)
 on the queue slot, and compute the embedding OFF the slot (worker thread) with a short follow-up
-queue task inserting `vec_node` + running the deferred near-dup (`embed-pipeline.ts`). Measured:
+queue task inserting `vec_node` + running the deferred near-dup (`libs/memory-core/src/embed-pipeline.ts`). Measured:
 Phase-A slot time is embed-latency-independent (p50 ~28ms = the SQLite commit, vs ~81ms for the
 old path at a simulated 50ms embed). **Caller-visible changes:** (1) `memory_write` responses
 carry `enrichment.near_dup: null` (near-dup lands seconds later as SAME_AS edges — documented as
@@ -437,7 +442,7 @@ memory-server spec suite pins the sync path via vitest.setup (existing 92 assert
 ### BL-188 — `memory_write` MCP handler silently DROPPED `client_request_id` (WP-4 idempotency dead through the tool surface) — **RESOLVED (2026-07-04, two-phase-write worktree)**
 
 Discovered while rewriting the handler for the two-phase split: the single-write and chunked
-paths in `memory-server/src/index.ts` never forwarded `args['client_request_id']` to
+paths in `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` never forwarded `args['client_request_id']` to
 `memoryWrite`, despite the tool schema documenting WP-4 replay semantics — only
 `memory_write_batch` forwarded it. Any MCP client supplying an idempotency key got NO replay
 protection (a retry after a timeout minted a duplicate-or-E_DEDUP instead of `replayed:true`).
@@ -493,6 +498,8 @@ lands.
 
 ### BL-181 — `tools/test-e2e-lifecycle.js` Slice 1 + Section E hardcode `memory-daemon` as their real-service fixture; now broken by BL-162's removal — **Open (HIGH) (2026-07-04)**
 
+**Validation note (2026-07-04 sweep):** the failure mode is subtler than stated — `memory-daemon/dist/index.js` persists as a stale unrebuildable artifact, so the `fs.existsSync` guard PASSES and the break surfaces later at spawn/assert. Also flags BL-168-class debris: the stale dist should be deleted with the fixture swap.
+
 `host-runtime:test-e2e` (`libs/host-runtime/project.json` `test-e2e` target, runs
 `tools/test-e2e-lifecycle.js`) is NOT part of the standard `nx test`/`nx affected -t test` gate —
 it's a separate opt-in target — so it was not caught by this shard's required gate. But it WILL
@@ -522,7 +529,7 @@ picking/building a replacement fixture, not a mechanical rename. Run
 `extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.ts` defines its own local
 `SOCKET_PATH` (`~/.memory/memoryd.sock`) and calls `nudgeDaemon()` at the end of every
 `handleSessionEnd` (step 3, "Nudge memoryd"). Since BL-162 deleted the entire `memory-daemon`
-package (including `libs/memory-core/src/memoryd.ts`'s `MemoryDaemon` class — nothing will ever
+package (including the now-deleted `libs/memory-core/src/memoryd.ts`'s `MemoryDaemon` class — nothing will ever
 bind that socket again), this call is now unconditionally a no-op: it opens a Unix socket
 connection that always hits `ECONNREFUSED`/ENOENT, swallowed by the existing `client.on('error', ...)`
 handler. Harmless today (batch enrichment already runs via memory-server's in-process periodic
@@ -573,7 +580,7 @@ original finding: `createMemoryOutboxQueue`/`memoryFlush` themselves (the dead-l
 consumer + watermark flush) remain consumer-less — the (A)/(B) decision above still stands for
 THAT surface, folded into HF-6 closeout review with BL-127's read-your-derived-writes contract.
 
-### BL-184 — `docs/plan/runtime-productionization/02-reusable-subsystems/progress.json` RS-6 claims file deletions that were not actually present — **Open (LOW) (2026-07-04)**
+### BL-184 — RS-6 `progress.json` claimed file deletions that were not actually present — **RESOLVED (verified 2026-07-04 validation sweep): S9 completed the deletions** — `libs/memory-core/src/memoryd.ts`, `memory-server/src/memoryd.ts`, `memory-server/src/bin.ts` are all confirmed absent; the recorded state now matches disk.
 
 `progress.json`'s RS-6 entry (`"status": "complete"`) lists `files_deleted` including
 `extensions/bundles/sox-memory-bundle/members/memory-server/src/memoryd.ts`,
@@ -905,12 +912,14 @@ created an empty `vec_bge_base_en_v1_5` space — fixed in BL-160.)
 
 ### BL-161 — fastembed test warmup: model reloads per test-worker + on singleton reset → flaky 30s timeout — **Open (MEDIUM) (2026-07-04)**
 
+**Validation note (2026-07-04 sweep):** memory-core itself is FIXED (DeterministicTestProvider via vitest.setup.ts). Remaining open instance: memory-flush spec still runs the real embed path with no provider injection, no pool pinning, no timeout override (`memory-flush/src/index.spec.ts` + its vitest.config.ts). Re-scope to memory-flush only.
+
 Recurring flaky timeout in `memory-core` (`write.spec.ts` "batch of 10 items…", surfaced again
 during S1). Root causes (NOT that tests can't be event-driven — the warmup IS async/awaited):
-1. **Per-worker reload.** vitest's default `forks` pool runs each spec FILE in its own process,
+   1. **Per-worker reload.** vitest's default `forks` pool runs each spec FILE in its own process,
    so bge-base-en-v1.5 ONNX re-loads once per file. The provider is a module singleton
-   (`embed.ts _provider`) shared WITHIN a process, but not across worker processes.
-2. **Singleton resets.** `embed.spec.ts`/`recall-sqlite.test.ts` call `_resetEmbedSingleton()` in
+   (`libs/memory-core/src/embed.ts _provider`) shared WITHIN a process, but not across worker processes.
+2. **Singleton resets.** ``libs/memory-core/src/embed.spec.ts`/`extensions/bundles/sox-memory-bundle/members/memory-server/recall-sqlite.test.ts` call `_resetEmbedSingleton()` in
    hooks, tearing down the FastembedProvider worker thread → reload within a file too.
 3. **Contention, not slowness.** Cached bge init + first inference is ~5–12s single-process; 30s is
    the TIMEOUT, not the warmup. Many forks warming at once contend for CPU/RAM → any one crosses 30s.
@@ -1007,6 +1016,8 @@ files outside the two named in BL-164 (worktree hygiene / disjoint-file-set disc
 
 ### BL-171 — `onnxruntime-node` native V8 HandleScope crash + real-ONNX test timeouts under vitest forked pool (`sox-ecosystem:test`, `memory-flush:test`) — **Open (MEDIUM), discovered during S10/BL-164** (2026-07-04)
 
+**Validation note (2026-07-04 sweep):** the cited `memory-server/src/recall-sqlite.test.ts` moved to the member root (`members/memory-server/recall-sqlite.test.ts`); its second describe block still runs real ONNX (SOX_EMBED_BACKEND=real, 30s timeout) — the crash class remains live at the new path.
+
 Surfaced while gating BL-164 via `npx nx affected -t lint,build,test`: two unrelated projects failed,
 **neither touched by BL-164's diff** (verified via `git status` — zero overlap):
 1. `sox-ecosystem:test` (root `vitest run`, includes `extensions/**/*.test.ts`) crashed with a
@@ -1041,9 +1052,9 @@ too, or an onnxruntime-node version bump/pin.
 ### BL-165 — RAG-stack external reusability gap: `ingest` is private + `memory-core` (public) transitively 404s on it — **RESOLVED (2026-07-04) — S11 consolidation**
 
 **Resolution:** `ingest` is now the canonical ingestion layer (S11 / BL-165). Consolidated:
-- `hexSha256` exported from `@adhd/sox-ingest` and used in `memory-core/src/write.ts` (replaces `crypto.createHash` inline). Parity verified: `ingest-parity.spec.ts`.
-- `splitIntoChunksSentence` added to `@adhd/sox-ingest` (byte-identical to the deleted `splitIntoChunks` in `memory-server/src/index.ts`). Parity verified: `ingest-parity.spec.ts`, 9 corpus entries × 3 chunk sizes = 27 parity assertions + 3 summary assertions.
-- Both re-exported through `memory-core/src/index.ts` for consumer convenience.
+- `hexSha256` exported from `@adhd/sox-ingest` and used in `libs/memory-core/src/write.ts` (replaces `crypto.createHash` inline). Parity verified: `libs/data/ingest/ingest/src/ingest-parity.spec.ts`.
+- `splitIntoChunksSentence` added to `@adhd/sox-ingest` (byte-identical to the deleted `splitIntoChunks` in `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts`). Parity verified: `libs/data/ingest/ingest/src/ingest-parity.spec.ts`, 9 corpus entries × 3 chunk sizes = 27 parity assertions + 3 summary assertions.
+- Both re-exported through `libs/memory-core/src/index.ts` for consumer convenience.
 - Publishability: see recommendation in commit message and SHARDS.md final message (keep `private: true` until memory-core v1.0 publish milestone; decision deferred to HF-6 closeout).
 - Tag derivation: NOT consolidated — no duplicate exists (tags are caller-supplied in `enrich.ts: p.tags ?? []`; ingest's `extractTags` was already unused and remains unused).
 - Evidence: `npx nx test memory-core --skip-nx-cache` → 357 pass / 8 skip; `npx nx test memory-server --skip-nx-cache` → 111 pass; `npx nx test ingest --skip-nx-cache` → 48 pass; dedup re-check: 3/3 pass.
@@ -1095,7 +1106,7 @@ BL-114/115 below):
 - **`@adhd/sox-blob-store`** (~1,828 LOC) — 0 live importers anywhere in libs/extensions/apps.
 - **`@adhd/sox-claim-verification`** (~1,083 LOC) — 0 live importers.
 - **`hybrid-search` cross-encoder reranker** (`createCrossEncoder`/`CrossEncoderImpl`) — exported +
-  tested but only its own spec calls it; `memory-core/recall.ts` never invokes it (recall reranks by
+  tested but only its own spec calls it; `libs/memory-core/src/recall.ts` never invokes it (recall reranks by
   temporal recency×importance only). The dead path also carries the worker-path resolution bug noted
   under BL-157 (`../../../../embed/embedding-provider/dist/embedWorker.js` won't resolve in a bundle).
 
@@ -1197,7 +1208,7 @@ This test surfaced **BL-154** (the chunk-write deadlock) once its body actually 
 ### BL-152 — `recall-sqlite.test.ts` BL-48 real-embedding proof / hash-backend tests — **RESOLVED (2026-07-04)**
 
 The `provider_call_count` counter and the entire `SOX_EMBED_BACKEND=hash` backend were removed
-this cycle (hash embedding backend deleted from `embedding-provider` and `memory-core/src/embed.ts`).
+this cycle (hash embedding backend deleted from `libs/data/embed/embedding-provider` and `libs/memory-core/src/embed.ts`).
 The two obsolete "BL-48: embed backend resolution and fallback detection" tests (asserting the
 hash model id `nomic-embed-text-v1.5-hash` and the on-hash-fallback indicator) were deleted — the
 hash backend they exercised no longer exists. Real-embedding semantics are covered by the retained
@@ -1583,6 +1594,8 @@ so the parent checkout never scans nested worktrees. Low blast radius but it mak
 
 ### BL-94 — `better-sqlite3` native binding missing for current Node.js ABI → memory-server crashes mid-session — **Open (HIGH) (2026-06-27)**
 
+**Validation note (2026-07-04 sweep):** the "long-term" fix sketch item is DONE — a startup binding probe now fails fast before accepting connections (`memory-server/src/index.ts:1936-1950`); crash-mid-session is closed. Remaining open scope: no CI/postinstall enforcement prevents an ABI-mismatched rebuild from shipping. Downgrade to MEDIUM.
+
 **Observed:** `memory_write` and all other `mcp__memory-server__*` tool calls fail mid-session with:
 
 ```
@@ -1606,7 +1619,7 @@ The binding directory `node-v137-darwin-arm64/` does not exist — the module wa
 
 ---
 
-### BL-100 — `memoryRecall` accepts `filters` in its signature but silently ignores them — filtering only works via the MCP server — **Open (HIGH) (2026-06-27)**
+### BL-100 — `memoryRecall` accepts `filters` in its signature but silently ignores them — **RESOLVED (verified 2026-07-04 validation sweep): fix already landed** — `memoryRecall` destructures and applies filters inline as SQL pre-filters (`recall.ts:225-316`: topic, tags, tags_match_all, project_path prefix, t_created windows, importance_min). The entry's claims below are historical.
 
 **Observed:** `RecallParams.filters` is declared at `libs/memory-core/src/recall.ts:29` but never destructured or applied inside `memoryRecall`. The parameter is accepted with no error, no warning, and no effect. Filtering (tags, topic, project_path, importance_min, time range) only works when called through the MCP server (`memory-server/src/index.ts:954–1034`), which applies `buildFiltersClause` from `@adhd/sox-memory-enrich` via SQL pre-filtering before invoking `memoryRecall`. Any direct caller of `memoryRecall` — the REPL, tests, `federatedRecall`, any lib consumer — silently gets unfiltered results regardless of what they pass in `filters`.
 
@@ -1704,6 +1717,8 @@ The root question: should `--complete` validate "what was finished" (the working
 
 ### BL-98 — reflection `SKILL.md` documents `memory_write` returning `E_DEDUP / existing_uid` on collision, but v1.1.0 actually returns `{episode_uid}` and links via async `SAME_AS` edge — **Open (LOW) (2026-06-23)**
 
+**Validation note (2026-07-04 sweep): this entry's own claim is WRONG.** `write.ts:83,193` returns `{code:'E_DEDUP', existing_uid}` for exact content-hash collisions — the SKILL.md is CORRECT. Only near-duplicates (cosine) link via async SAME_AS. Re-scoped ask: none against the skill; close after one confirming read of the reflection skill in claude-agents (external repo).
+
 **Observed (memory UID `01KVSA4MFA99DNETTTZ9KX3MDB`):** the reflection skill's failure-mode catalog (SKILL.md lines 308-312) says `memory_write` returns `{code:"E_DEDUP", existing_uid}` on a content-hash collision. The running v1.1.0 `memory_write` schema and observed behavior return `{episode_uid}` on success and route near-duplicates through async `SAME_AS` enrichment edges, not a hard refusal. An agent written to handle `E_DEDUP` as a normal flow will mis-handle the actual `{episode_uid}` success shape.
 
 **Fix sketch:** update `skills/reflection/SKILL.md` failure-mode section to match the v1.1.0 return contract. Note that exact content-hash collisions may still short-circuit (needs verification against a real duplicate write), but the documented shape is wrong regardless.
@@ -1711,6 +1726,8 @@ The root question: should `--complete` validate "what was finished" (the working
 ---
 
 ### BL-99 — `compile-wave --stats` omits base dispatch overhead (B≈27k tokens) and source file bytes (Si) → merge-candidates optimization is invisible to the pack/no-pack decision — **Open (MEDIUM) (2026-06-27)**
+
+**Validation note (2026-07-04 sweep): EXTERNAL** — `compile-wave.js` lives in the claude-agents repo (plan-state-machine skill), not sox-ecosystem; unverifiable and unfixable here. Move this entry to that repo's backlog and close it here on the next sweep.
 
 **Observed (plan-orchestrator; memory UID `01KW3F0GA02V058ZHDTDPJ4EEB`):** all three parallel waves in `memory-refactor` were correctly evaluated as no-pack (prose overlap ratios -0.081, -0.068, -0.088). However, the real dispatch cost is `Di = B + Si + Ki` where B ≈ 27k tokens (base model load + system prompt + transition scaffolding) and Si = source file bytes the executor reads. `compile-wave --stats` measures only Ki-overlap (shared prose invariants/refs/snapshots) — it never accounts for B or Si. This means `savings(i,j) = B + |Si∩Sj|` from merging two tasks into one dispatch is never computed, leaving ≈54k tokens of potential savings unquantified across 3 potential merges even at zero prose overlap.
 
@@ -1747,7 +1764,7 @@ false — with no `type` field, `op.type === undefined`, so every milestone appe
 to `{ ...op, type: "generative" }` — applied immediately after the array/Record conversion,
 before any other compiler logic sees the ops.
 
-**Follow-up:** `run.ts` still contains a redundant manual patch that injects `type: "generative"`
+**Follow-up:** `docs/plan/dispatch-optimizer/src/run.ts` still contains a redundant manual patch that injects `type: "generative"`
 on each op. This patch is now dead code and should be removed to avoid confusion.
 
 ---
@@ -1829,7 +1846,7 @@ burden to op authors.
 
 ---
 
-### BL-105 — 7 stubs in `src/compiler.ts` with no external integrations wired — snapshot derived fields are incomplete — **Open (MEDIUM) (2026-06-28)**
+### BL-105 — 7 stubs in `docs/plan/dispatch-optimizer/src/compiler.ts` with no external integrations wired — snapshot derived fields are incomplete — **Open (MEDIUM) (2026-06-28)**
 
 **Stubs (all return `null` or `[]` with TODO comments):**
 
@@ -1850,10 +1867,10 @@ only, not dispatch correctness).
 
 ---
 
-### BL-106 — `b_per_tier` cold-start values not seeded in the schema → `b_eff_per_tier` is null → `tokens_estimated` is null for all milestones on a fresh plan — **Open (LOW) (2026-06-28)**
+### BL-106 — `b_per_tier` cold-start values not seeded in the schema → `tokens_estimated` null on fresh plans — **RESOLVED (verified 2026-07-04 validation sweep): fixed by the BL-107 normalization pass** — `dag/io.ts:120-133` (`normalizeDag`) injects default `b_per_tier` {Haiku 8000, Sonnet 15000, Opus 27000} when empty, so `b_eff_per_tier` computes non-null for fresh plans.
 
 **Observed:** the adhd-build dag has no `optimization` block. After injecting the defaults in
-`run.ts`, `b_per_tier` was seeded with `{ Haiku: 8000, Sonnet: 15000, Opus: 27000 }` and
+`docs/plan/dispatch-optimizer/src/run.ts`, `b_per_tier` was seeded with `{ Haiku: 8000, Sonnet: 15000, Opus: 27000 }` and
 `tokens_estimated` computed correctly. Without those seeds, every milestone shows
 `tokens_estimated: null` and the optimizer cannot rank units by size.
 
@@ -1865,9 +1882,9 @@ the calibration utility."
 
 ---
 
-### BL-107 — `run.ts` backward-compat patches for missing `providers`, `optimization`, and `effort_max_tokens` blocks live in the runner, not in `readDag()` — consuming code outside `run.ts` gets no defaults — **Open (LOW) (2026-06-28)**
+### BL-107 — dispatch-optimizer backward-compat patches lived in the runner, not `readDag()` — **RESOLVED (verified 2026-07-04 validation sweep)** — `dag/io.ts:52-133` `normalizeDag` (annotated "BL-107 backward-compat normalization pass") runs inside `readDag()`; all consumers get defaults. Residual nit: `run.ts:13-50` still redundantly re-applies the same defaults post-`readDag` — harmless, delete opportunistically.
 
-**Observed:** `run.ts` manually injects three top-level dag blocks before calling
+**Observed:** `docs/plan/dispatch-optimizer/src/run.ts` manually injects three top-level dag blocks before calling
 `snapshotWithDag()`. These patches are necessary for any dag authored before the schema
 added `providers`, `optimization.sentinel_fanout`, `optimization.b_per_tier`,
 `optimization.context_window_per_tier`, and `effort_max_tokens`. Any other consumer of
@@ -1885,7 +1902,7 @@ _BL-86, BL-87, BL-89 removed 2026-07-04: hash embedding backend deleted — thes
 ### BL-88 — no PER-RECORD embedding provenance + no auto-upgrade on model change — **Open (MEDIUM) data-integrity** (2026-06-26, re-scoped 2026-07-04 — hash backend removed)
 
 **Observed:** `embed_model` is stored only on `memory_scope` (one row per scope, set ONCE at scope
-creation via `getActiveEmbedModel()` in `db.ts:191`, never updated). Individual `node`/`vec_node` rows
+creation via `getActiveEmbedModel()` in `libs/memory-core/src/db.ts:191`, never updated). Individual `node`/`vec_node` rows
 carry NO model/backend tag, so there is no way to tell which model produced a given vector.
 `reembedNodes()` + the reindex organizer op exist but are MANUAL (`reembed=true` payload) —
 nothing auto-re-embeds rows when the embedding model changes.
@@ -1944,6 +1961,8 @@ needn't expose). Add a test asserting every `memory_link` enum value is DDL-acce
 (predates the refactor); surfaced because the contract forced the three sets to be compared.
 
 ### BL-90 — memory skill(s) lack copy-paste recall recipes for common scoping axes — **Open (MEDIUM) docs/skill** (2026-06-26, re-scoped 2026-07-04 — degraded-embedding guidance obsolete)
+
+**Validation note (2026-07-04 sweep):** SKILL.md now documents filters generally (SKILL.md:43-59) but still lacks the per-axis copy-paste recipes (agent_id scoping, `target:`/`audience:` tags, `kind:` lifecycle filters). Still valid at reduced scope.
 
 **Observed:** the `memory-usage` (and `reflection`) skills document write conventions well but give little
 guidance on the *retrieval* side — specifically how an agent finds the memories relevant to its situation.
@@ -2158,7 +2177,14 @@ change still emits `notifications/tools/list_changed` and falls back to reconnec
 ignore it. **Action for the human:** after this merge + `soxe upgrade --all`, reconnect/reload the
 memory-server MCP server once.
 
-### BL-62 — shared-backend `project_path` attribution is single-valued for the lifetime of the backend — **[TRIAGE] Open (MEDIUM) `(unverified)` multi-project correctness**
+### BL-62 — shared-backend `project_path` attribution is single-valued for the lifetime of the backend — **[TRIAGE] Open (MEDIUM) — VERIFIED REAL (2026-07-04) multi-project correctness**
+
+**Live confirmation (2026-07-04, HF-6 validation sweep):** a `memory_write` issued from a session
+whose project is `/Users/nix/dev/ai/sox-ecosystem` (no explicit `project_path` arg) returned
+`enrichment.project_path: "/Users/nix/dot"` — the cwd of whichever shim spawned the current
+backend (pid 16305). Exactly the predicted misattribution; no longer `(unverified)`. The fix
+sketch below stands (per-request workspace threading). Workaround until then: callers pass
+`project_path` explicitly.
 
 The proxy backend is a SINGLETON per store (single-writer, by design). The BL-56 fix injects the
 client's workspace as `SOX_CONFIG_PROJECT_PATH` at **shim spawn**, but the shared backend captured the
@@ -2283,6 +2309,8 @@ is unaffected; a future daemon-side write path must use the same injection.
 launched there — which under the fix is now the *correct* attribution (the workspace), not luck.
 
 ### BL-57 — soxe data files pollute repo roots instead of nesting under `.adhd/sox-ecosystem/` (legacy `SOX_HOME` residue) — **Open (MEDIUM) — cleanup + migration pending**
+
+**Validation note (2026-07-04 sweep):** the RETIRED warning + data-path bug are fixed (`main.ts:120-126`); remaining open scope is only a `soxe doctor` check for legacy repo-root residue (no code exists yet). Downgrade to LOW.
 
 **Observed (2026-06-25):** `/Users/nix/dev/ai/claude-agents/` root holds `install-registry.json` (246 KB),
 `supervisors.json`, `logs/` (48 dirs), and a legacy `.sox/` (messages.db) — none nested under
@@ -2852,7 +2880,7 @@ line in CLAUDE.md → 1.1.0; resynced the registry. Surfaced when refreshing the
 
 ### ~~BL-31~~ — `soxe stop` doesn't verify the kill or escalate to SIGKILL; orphaned daemons survive — **Resolved** (`b1d4005`)
 
-**Severity:** High (zombie process can keep hitting a removed dependency) · **Status:** Resolved — `host-runtime/reaper.ts`: `killAndVerify` (SIGTERM → poll `process.kill(pid,0)` → SIGKILL escalation after grace → re-verify) + store-path orphan reaper (PPID-1, identity-matched, whitespace-bounded so unrelated processes are spared); `cmdStop` exits 1 on undead; `cmdStart` dedup-reap guard. e2e Step 7b reproduces the exact incident (real PPID-1 memory-server orphan DEAD after stop, unrelated SPARED). The original Open writeup follows.
+**Severity:** High (zombie process can keep hitting a removed dependency) · **Status:** Resolved — `libs/host-runtime/src/reaper.ts`: `killAndVerify` (SIGTERM → poll `process.kill(pid,0)` → SIGKILL escalation after grace → re-verify) + store-path orphan reaper (PPID-1, identity-matched, whitespace-bounded so unrelated processes are spared); `cmdStop` exits 1 on undead; `cmdStart` dedup-reap guard. e2e Step 7b reproduces the exact incident (real PPID-1 memory-server orphan DEAD after stop, unrelated SPARED). The original Open writeup follows.
 During the memory upgrade, the running pre-P6 `memory-daemon` (pid 33079, started before the
 store refresh) had been **orphaned (PPID 1 — its supervisor had exited)**. `soxe stop
 --id=memory-daemon` sent it **SIGTERM, reported "stop complete", and returned** — but the process
@@ -2926,9 +2954,9 @@ migrate-home untracked-MCP-injection bug.
 ### BL-36 — runtime record hardcodes `type: 'mcp-server'` for every detached service
 
 **Severity:** Low/Medium (misleading `soxe list`/`status`; type unreliable) · **Status:** Open
-`cmdStart`'s service-registry start path writes `type: 'mcp-server'` into the runtime record for
+`apps/sox/src/main.ts` `cmdStart`'s service-registry start path writes `type: 'mcp-server'` into the runtime record for
 **every** detached service, so the runtime entry's `type` can't distinguish a `service` from an
-`mcp-server`. `rollingRestartConsumer` works around it by classifying from the manifest, but
+`mcp-server`. `libs/host-runtime/src/runtime.ts` `rollingRestartConsumer` works around it by classifying from the manifest, but
 `soxe list`/`status` may still mislabel services. Fix: record the real manifest `type` at start.
 Surfaced building the rolling-restart classifier.
 
@@ -3724,6 +3752,8 @@ tree-sitter before production use on untrusted code.
 `Chunker` interface contract unchanged.
 
 ### BL-116 — Cross-encoder worker uses token-overlap heuristic, not ONNX model
+
+**Validation note (2026-07-04 sweep):** citations moved — the heuristic now lives in `embedding-provider/src/embedWorker.ts:168-185` (`computeRerankScores`; "Reserved for future ONNX cross-encoder model loading"); the client is `hybrid-search/src/cross-encoder.ts` (old `crossEncoderWorker.ts` deleted). Core ask (real ONNX cross-encoder) still valid.
 
 **Observed:** `libs/data/search/hybrid-search/src/crossEncoderWorker.ts` `computeRerankScores()`
 uses token-overlap (intersection of token sets) instead of a real ONNX NLI cross-encoder.
