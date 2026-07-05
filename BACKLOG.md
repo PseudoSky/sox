@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-04 (post-context-06 closeout + validation sweep)
 
-**Total open: 33 items** (validation sweep verified every open entry against current code:
+**Total open: 31 items** (BL-166/BL-114 withdrawn 2026-07-04 — owner: consumed externally. Validation sweep verified every open entry against current code:
 6 found already-fixed and closed — BL-100, BL-106, BL-107, BL-108, BL-184, BL-188; 8 re-scoped
 with corrected citations — BL-57, BL-90, BL-94, BL-98, BL-116, BL-161, BL-171, BL-181; BL-99 is
 external (claude-agents repo); BL-62 upgraded from (unverified) to VERIFIED-REAL with live
@@ -26,12 +26,12 @@ BL-202, BL-203.
 | **LOW** | BL-201 (lock debris sweep), BL-176 (quickReconcile helper), BL-178 (stderr sink default), BL-182 (memory-flush dead code), BL-57 (doctor legacy-residue check — bug fixed), BL-98 (confirm-then-close: entry's own claim was wrong), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder — citations updated), BL-117 (late chunking boundaries) |
 | **LOW/MEDIUM** | BL-36 (record real manifest type) |
 
-**[TRIAGE] items (12)** — needs decision, investigation, or prerequisite before work starts:
+**[TRIAGE] items (10)** — needs decision, investigation, or prerequisite before work starts:
 
 | Priority | Items |
 |---|---|
 | **HIGH** | BL-62 (multi-project attribution — VERIFIED REAL, silently mis-attributing live writes NOW), BL-97 (artifact gate: working-tree vs ref vs auto-commit) |
-| **MEDIUM** | BL-95 (store discovery: scan vs register vs hybrid), BL-104 (nested type inlining: auto vs manual annotation), BL-113 (ingest publishability — deferred to v1.0), BL-114 (LanceDB: wire real dep vs rename to InMemory), BL-166 (3 orphaned packages: wire or remove per-package), BL-203 (tick unload after artifact-changing upgrade — needs controlled repro), BL-99 (EXTERNAL: move to claude-agents backlog) |
+| **MEDIUM** | BL-95 (store discovery: scan vs register vs hybrid), BL-104 (nested type inlining: auto vs manual annotation), BL-113 (ingest publishability — deferred to v1.0), BL-203 (tick unload after artifact-changing upgrade — needs controlled repro), BL-99 (EXTERNAL: move to claude-agents backlog) |
 | **LOW** | BL-103 (snapshot version: param vs disk-read), BL-167 (scoreBreakdown: fix math vs document edge case), BL-202 (flake — root cause unknown) |
 | **FEATURE** | BL-163 (blocked on code-signing identity) |
 
@@ -50,15 +50,13 @@ BL-202, BL-203.
    flake class (BL-202 likely shrinks too).
 4. **BL-96 / BL-97** — plan-audit correctness (wrong cwd + greedy criterion regex + working-tree
    vs ref). These silently corrupt plan-gate verdicts for every future plan run.
-5. **BL-166 + BL-114** — wire-or-remove decisions on dead packages (owner rule: no zombie code).
-   Cheap, high-hygiene.
-6. **BL-88** — per-record embed provenance; prerequisite for safe model upgrades (bge → anything).
-7. **BL-203** — supervision collateral; MEDIUM until the controlled repro lands (two negative
+5. **BL-88** — per-record embed provenance; prerequisite for safe model upgrades (bge → anything).
+6. **BL-203** — supervision collateral; MEDIUM until the controlled repro lands (two negative
    repro attempts recorded).
-8. **BL-168** — module-resolution standard doc + stale-dist sweep (fold item 2's dist deletion in).
-9. **BL-94 (CI enforcement) / BL-180 / BL-36 / BL-102 / BL-105** — defined, non-urgent
+7. **BL-168** — module-resolution standard doc + stale-dist sweep (fold item 2's dist deletion in).
+8. **BL-94 (CI enforcement) / BL-180 / BL-36 / BL-102 / BL-105** — defined, non-urgent
    correctness items; batch into the next hardening pass.
-10. Long tail: BL-201/BL-176/BL-178/BL-182/BL-57/BL-98-confirm-close (LOW hygiene),
+9. Long tail: BL-201/BL-176/BL-178/BL-182/BL-57/BL-98-confirm-close (LOW hygiene),
     BL-115/BL-116/BL-117 (RAG quality features), BL-90 (docs), BL-95/BL-103/BL-104/BL-113
     (decisions), BL-202 (re-measure after item 3), BL-99 (migrate out), BL-163 (blocked).
 
@@ -1126,7 +1124,12 @@ Either way this closes the original publishability inconsistency (memory-core pu
 a real external-consume story needs an actual publish. (Discovered answering "can I build a RAG system
 from only these packages?" — yes for the 5 public retrieval packages; ingest is the weak link.)
 
-### BL-166 — orphaned built packages + a dead reranker: wire-in-or-remove audit — **[TRIAGE] Open (MEDIUM) (2026-07-04)**
+### BL-166 — orphaned built packages + a dead reranker: wire-in-or-remove audit — **WITHDRAWN (2026-07-04, owner directive)**
+
+**Withdrawn:** owner confirms these packages are consumed EXTERNALLY (outside this repo) — the
+zero-internal-importers finding was accurate but the "dead code" conclusion was wrong; repo-wide
+grep cannot see external consumers. No wire-in-or-remove action. (The cross-encoder heuristic
+quality item remains tracked separately as BL-116.)
 
 Cheap consumer scan ("what was built but never refactored into memory") found fully-implemented
 code with ZERO live consumers (not stubs — real impl; distinct from the internal-completeness items
@@ -3728,7 +3731,10 @@ decision needed — the existing deferral stands.
 
 ## Open — stub/placeholder items from blob-store + claim-verification + retrieval-infra dispatch (2026-06-29)
 
-### BL-114 — LanceDbVectorBackend is in-memory only, not backed by real LanceDB — **[TRIAGE]**
+### BL-114 — LanceDbVectorBackend is in-memory only, not backed by real LanceDB — **WITHDRAWN (2026-07-04, owner directive)**
+
+**Withdrawn:** owner confirms the package is consumed externally as-is — the naming/real-dep
+decision is not open work in this repo.
 
 **Observed:** `libs/data/vectors/vector-store/src/lancedb.ts` implements `VectorBackend` but
 backed by an `InMemoryLanceTable` (in-memory `Map<number, Float32Array>`). The real
