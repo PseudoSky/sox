@@ -22,8 +22,8 @@ BL-202, BL-203.
 | Priority | Items |
 |---|---|
 | **HIGH** | BL-96 (cd to repo-root in audit), BL-181 (e2e fixture swap — now fails at existsSync too, stale dist deleted) |
-| **MEDIUM** | BL-161 (memory-flush spec only — memory-core fixed), BL-171 (onnx V8 crash — file moved to member root), BL-88 (per-record embed_model — wave-2 agent in flight), BL-90 (per-axis recall recipes) |
-| **LOW** | BL-176 (quickReconcile helper), BL-105 (6 annotated stubs await data sources), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder — citations updated), BL-117 (late chunking boundaries), BL-208 (verify-abi worktree root), BL-209 (guard attempt_count semantics), BL-213 (legacy memoryd test tooling), BL-214 (bundle-extension tsconfig default) |
+| **MEDIUM** | BL-161 (memory-flush spec only — memory-core fixed), BL-171 (onnx V8 crash — file moved to member root), BL-90 (per-axis recall recipes) |
+| **LOW** | BL-176 (quickReconcile helper), BL-105 (6 annotated stubs await data sources), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder — citations updated), BL-117 (late chunking boundaries), BL-208 (verify-abi worktree root), BL-209 (guard attempt_count semantics), BL-213 (legacy memoryd test tooling), BL-214 (bundle-extension tsconfig default), BL-215 (reheal_stale operator surface) |
 
 
 **[TRIAGE] items (10)** — needs decision, investigation, or prerequisite before work starts:
@@ -64,6 +64,14 @@ BL-202, BL-203.
 ---
 
 ## Open — surfaced during HF-5/HF-6 closeout (2026-07-04)
+
+### BL-215 — operator surface for `healStaleVectors` (model-swap re-embed) — **Open (LOW, feature) (2026-07-05)**
+
+BL-88 shipped `healStaleVectors` (memory-core, bounded, env-gated default-off) but no operator
+entry point. Recommended surface (per the implementing agent, endorsed): a `memory_curate`
+op (`op: "reheal_stale"`) running one bounded pass and reporting `{scanned, healed, remaining}`,
+and/or a CLI loop (`soxe memory reembed`) iterating until `scanned === 0`. Never tick-wired —
+a full-store re-embed on model swap must be explicit.
 
 ### BL-208 — `verify-native-abi.mjs` resolves REPO_ROOT from its own file path → misleading "skip (not installed)" in worktrees — **Open (LOW) (2026-07-04)**
 
@@ -824,6 +832,17 @@ read `--root`'s value as `ARGV[indexOf('--root')+1]` with no guard, so a `--root
 invocation (or `--root` with no value) treated the flag `--extension` as the root path and wrote smoke
 output to `./--extension/…`. Fixed: added a `flagValue()` guard that rejects a missing value or a value
 starting with `-` (exit 2). Removed the stray dir.
+
+### BL-170 — migrate `install-engine` to `@nx/js:tsc` executor — **Open (LOW)**
+
+18 projects migrated from `nx:run-commands` + bare `tsc --project` to `@nx/js:tsc`
+executor with `clean: true`, which natively handles stale-output cleanup and auto-generates
+`dist/package.json` with correct module type. `install-engine` was left as-is because its
+build command has an extra post-build step (`node scripts/rewrite-paths.cjs`) that the
+executor can't run.
+
+**Fix sketch:** split into two targets — `compile` using `@nx/js:tsc` and `build` using
+`nx:run-commands` that runs compile then rewrite-paths. Root: BL-171.
 
 ---
 
@@ -1978,7 +1997,17 @@ applied after `validateDagJson()` succeeds (or as part of it). This makes the co
 
 _BL-86, BL-87, BL-89 removed 2026-07-04: hash embedding backend deleted — these items are moot._
 
-### BL-88 — no PER-RECORD embedding provenance + no auto-upgrade on model change — **Open (MEDIUM) data-integrity** (2026-06-26, re-scoped 2026-07-04 — hash backend removed)
+### BL-88 — no PER-RECORD embedding provenance + no auto-upgrade on model change — **Open (MEDIUM) data-integrity** (2026-06-26, re-scoped 2026-07-04 — hash backend removed) — **RESOLVED (2026-07-05, wave-2)**
+
+**Resolution:** additive `node.embed_model` column (idempotent migrate, no backfill — NULL =
+provenance-unknown); stamped atomically inside `applyEmbedding` (the single choke point: write
+Phase B, update Phase B, both sync compositions, heal); `healStaleVectors` (bounded, DEFAULT-OFF
+via SOX_HEAL_STALE_VECTORS=1, NULL rows never touched) exported but deliberately NOT tick-wired —
+a full-store re-embed is an operator decision (BL-215 tracks the operator surface);
+`memory_stats.embed_provenance {stamped, unstamped, stale_vector_count, active_model}` surfaces
+automatically. 21 new tests. LIVE-VERIFIED: fresh write → stamped:1, correct active_model.
+Integrator note: the agent gated via bare vitest (its worktree hit the pre-existing dist-less
+class); re-proven through nx on main post-merge (377 pass uncached).
 
 **Observed:** `embed_model` is stored only on `memory_scope` (one row per scope, set ONCE at scope
 creation via `getActiveEmbedModel()` in `libs/memory-core/src/db.ts:191`, never updated). Individual `node`/`vec_node` rows
