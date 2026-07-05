@@ -214,6 +214,10 @@ export function openDb(dbPath: string): Database.Database {
   migrateAddColumn(db, 'node', 'enrich_ver', 'TEXT');
   // memory_update timestamp (set on every in-place edit; immutable t_created is the audit anchor).
   migrateAddColumn(db, 'node', 't_updated', 'TEXT');
+  // BL-88: per-record embedding provenance. NULL = embedded before provenance existed
+  // (or not yet embedded). Do NOT backfill existing rows — NULL is honest (provenance unknown).
+  // Stamped by applyEmbedding() at vec insert time (the single choke-point for all write/update/heal paths).
+  migrateAddColumn(db, 'node', 'embed_model', 'TEXT');
   // D3.4 partial indices for enrichment columns
   db.exec(`CREATE INDEX IF NOT EXISTS ix_node_topic      ON node(topic)        WHERE topic IS NOT NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`);
