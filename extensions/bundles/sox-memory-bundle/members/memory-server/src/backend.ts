@@ -72,11 +72,38 @@ export function publishSchema(schemaPath: string): void {
 }
 
 /**
+ * BL-62: extract the per-request workspace context injected by the shim (see
+ * libs/service-proxy/src/shim.ts `injectClientContext`). Returns the project_path
+ * string when present and non-empty, or undefined when absent.
+ *
+ * The `client_context` field is INTERNAL to the shim↔backend UDS protocol — it is
+ * never present in direct-stdio or HTTP requests from real MCP clients; it is only
+ * injected by our own shim. This function defensively validates the shape so a
+ * malformed or missing field never throws.
+ */
+function extractClientProjectPath(
+  params: { client_context?: unknown },
+): string | undefined {
+  const ctx = params.client_context;
+  if (typeof ctx !== 'object' || ctx === null) return undefined;
+  const pp = (ctx as { project_path?: unknown }).project_path;
+  return typeof pp === 'string' && pp.length > 0 ? pp : undefined;
+}
+
+/**
  * The JSON-RPC handler the backend serves. Mirrors mcp-runtime serve():
  *   - initialize → serverInfo + tools capability
  *   - tools/list → the canonical tools list
  *   - tools/call → handleToolCall(name, args) (which runs the C6 guard)
  * Notifications (no id) get no response.
+ *
+ * BL-62: for tools/call, if the shim injected a `client_context.project_path` in the
+ * internal frame AND the tool's own `arguments.project_path` is absent, the context
+ * value is used as the project_path default. Precedence:
+ *   1. Explicit caller arg (`arguments.project_path`, non-empty) — always wins.
+ *   2. `client_context.project_path` from the shim frame — per-request workspace.
+ *   3. Process env / cwd fallback inside resolveProjectPath — existing behavior for
+ *      direct-stdio, HTTP, and old-shim requests (no client_context field).
  */
 export async function handleBackendRequest(
   req: JsonRpcRequest,
@@ -100,9 +127,22 @@ export async function handleBackendRequest(
   }
 
   if (req.method === 'tools/call') {
-    const params = (req.params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
+    const params = (req.params ?? {}) as {
+      name?: string;
+      arguments?: Record<string, unknown>;
+      client_context?: unknown;
+    };
     const toolName = params.name ?? '';
-    const args = params.arguments ?? {};
+    // BL-62: merge per-request client context into args (lower precedence than
+    // an explicit caller-supplied project_path arg).
+    const baseArgs = params.arguments ?? {};
+    const clientProjectPath = extractClientProjectPath(params);
+    const args: Record<string, unknown> =
+      clientProjectPath !== undefined &&
+      (typeof baseArgs['project_path'] !== 'string' ||
+        (baseArgs['project_path'] as string).length === 0)
+        ? { ...baseArgs, project_path: clientProjectPath }
+        : baseArgs;
     let result: ToolResult;
     try {
       result = await handleToolCall(toolName, args);
