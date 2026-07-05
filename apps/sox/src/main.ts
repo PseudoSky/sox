@@ -22,6 +22,7 @@ import {
   // Slice 3 (docs/spec/service-lifecycle.md §11.3): crash-loop give-up markers.
   crashLoopMarkerDir,
   dataRoot,
+  userDataRoot,
   deriveOsUnitSpec,
   detectOsSupervisor,
   disableOsUnit,
@@ -5239,7 +5240,7 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
   const registry = readInstallRegistry(registryPath);
 
   const findings: Array<{
-    kind: 'stray-process' | 'os-unit-not-loaded' | 'cross-build-stray' | 'crash-loop-give-up';
+    kind: 'stray-process' | 'os-unit-not-loaded' | 'cross-build-stray' | 'crash-loop-give-up' | 'legacy-residue';
     extId: string;
     scope: string;
     pid: number;
@@ -5247,6 +5248,46 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
     orphaned: boolean;
     detail: string;
   }> = [];
+
+  // ── BL-57: legacy repo-root residue scan. ──────────────────────────────────
+  // An older soxe binary (pre-ADR-0004) wrote global state files directly into
+  // $SOX_HOME, which users often pointed at a repo root. Now that the variable is
+  // fully inert, those files become orphaned residue. We check the cwd/--root
+  // directory for these well-known filenames and report them with a suggested
+  // migrate-home command. REPORT-ONLY — doctor never deletes anything.
+  {
+    const legacyResidueNames = [
+      'install-registry.json',
+      'supervisors.json',
+      'logs',     // directory
+      '.sox',     // directory
+    ] as const;
+    // Scan the root dir itself for stale files placed there by an old binary.
+    // Skip when root IS the canonical user data root (SOX_ECOSYSTEM_HOME or
+    // ~/.adhd/sox-ecosystem/) — those files belong there.
+    const canonicalUserRoot = userDataRoot();
+    const rootResolved = pathMod.resolve(root);
+    const isCanonical = rootResolved === pathMod.resolve(canonicalUserRoot);
+    if (!isCanonical) {
+      for (const name of legacyResidueNames) {
+        const candidate = pathMod.join(root, name);
+        let exists = false;
+        try { exists = fsMod.existsSync(candidate); } catch { /* permission deny — skip */ }
+        if (!exists) continue;
+        findings.push({
+          kind: 'legacy-residue',
+          extId: name,
+          scope: 'global',
+          pid: 0,
+          ppid: 0,
+          orphaned: false,
+          detail:
+            `legacy soxe data file/dir at ${candidate} — written by a pre-ADR-0004 binary. ` +
+            `Cleanup: \`${CLI} migrate-home --old-home ${root}\`  (or remove manually if already migrated)`,
+        });
+      }
+    }
+  }
 
   // ── Slice 3 (§11.3): surface crash-loop give-up markers. Report-only — only an
   //    explicit `soxe start`/`enable` may clear a give-up state.
@@ -5368,15 +5409,18 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
   const strayCount = findings.filter((f) => f.kind === 'stray-process' || f.kind === 'cross-build-stray').length;
   const osUnitCount = findings.filter((f) => f.kind === 'os-unit-not-loaded').length;
   const crashLoopCount = findings.filter((f) => f.kind === 'crash-loop-give-up').length;
+  const residueCount = findings.filter((f) => f.kind === 'legacy-residue').length;
   log(`found ${findings.length} anomal${findings.length === 1 ? 'y' : 'ies'}:`);
   log(`  ${strayCount} stray processe${strayCount === 1 ? '' : 's'}`);
   log(`  ${osUnitCount} unloaded os-unit${osUnitCount === 1 ? '' : 's'}`);
   if (crashLoopCount > 0) log(`  ${crashLoopCount} crash-loop give-up${crashLoopCount === 1 ? '' : 's'} (§11.3)`);
+  if (residueCount > 0) log(`  ${residueCount} legacy residue file${residueCount === 1 ? '' : 's'} (BL-57)`);
 
   for (const f of findings) {
     const tag = f.kind === 'cross-build-stray' ? 'CROSS-BUILD'
       : f.kind === 'os-unit-not-loaded' ? 'OS-UNIT'
       : f.kind === 'crash-loop-give-up' ? 'CRASH-LOOP'
+      : f.kind === 'legacy-residue' ? 'RESIDUE'
       : 'STRAY';
     const pidInfo = f.pid > 0 ? ` (pid=${f.pid}, ppid=${f.ppid}${f.orphaned ? ', orphan' : ''})` : '';
     log(`  [${tag}] ${f.extId}@${f.scope}${pidInfo}: ${f.detail}`);
