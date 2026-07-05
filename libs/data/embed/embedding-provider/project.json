@@ -11,13 +11,16 @@
   ],
   "targets": {
     "build": {
-      "executor": "nx:run-commands",
+      "executor": "@nx/js:tsc",
       "outputs": [
         "{workspaceRoot}/libs/data/embed/embedding-provider/dist"
       ],
       "options": {
-        "command": "rm -rf libs/data/embed/embedding-provider/dist/ && tsc --project libs/data/embed/embedding-provider/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/embed/embedding-provider/dist/package.json",
-        "cwd": "."
+        "main": "libs/data/embed/embedding-provider/src/index.ts",
+        "outputPath": "libs/data/embed/embedding-provider/dist",
+        "tsConfig": "libs/data/embed/embedding-provider/tsconfig.lib.json",
+        "assets": [],
+        "clean": true
       },
       "cache": true,
       "inputs": [

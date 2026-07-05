@@ -11,13 +11,16 @@
   ],
   "targets": {
     "build": {
-      "executor": "nx:run-commands",
+      "executor": "@nx/js:tsc",
       "outputs": [
         "{workspaceRoot}/libs/data/graph/graph-store/dist"
       ],
       "options": {
-        "command": "rm -rf libs/data/graph/graph-store/dist/ && tsc --project libs/data/graph/graph-store/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/graph/graph-store/dist/package.json",
-        "cwd": "."
+        "main": "libs/data/graph/graph-store/src/index.ts",
+        "outputPath": "libs/data/graph/graph-store/dist",
+        "tsConfig": "libs/data/graph/graph-store/tsconfig.lib.json",
+        "assets": [],
+        "clean": true
       },
       "cache": true,
       "inputs": [

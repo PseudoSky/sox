@@ -4,14 +4,21 @@
   "projectType": "library",
   "root": "libs/memory-core",
   "sourceRoot": "libs/memory-core/src",
-  "tags": ["type:lib"],
+  "tags": [
+    "type:lib"
+  ],
   "targets": {
     "build": {
-      "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/libs/memory-core/dist"],
+      "executor": "@nx/js:tsc",
+      "outputs": [
+        "{workspaceRoot}/libs/memory-core/dist"
+      ],
       "options": {
-        "command": "tsc --project libs/memory-core/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/memory-core/dist/package.json",
-        "cwd": "."
+        "main": "libs/memory-core/src/index.ts",
+        "outputPath": "libs/memory-core/dist",
+        "tsConfig": "libs/memory-core/tsconfig.lib.json",
+        "assets": [],
+        "clean": true
       },
       "cache": true,
       "inputs": [
@@ -26,12 +33,17 @@
         "cwd": "."
       },
       "cache": true,
-      "inputs": ["default", "^production"]
+      "inputs": [
+        "default",
+        "^production"
+      ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
-        "lintFilePatterns": ["libs/memory-core/**/*.ts"]
+        "lintFilePatterns": [
+          "libs/memory-core/**/*.ts"
+        ]
       }
     }
   }

@@ -11,13 +11,16 @@
   ],
   "targets": {
     "build": {
-      "executor": "nx:run-commands",
+      "executor": "@nx/js:tsc",
       "outputs": [
         "{workspaceRoot}/libs/data/search/hybrid-search/dist"
       ],
       "options": {
-        "command": "rm -rf libs/data/search/hybrid-search/dist/ && tsc --project libs/data/search/hybrid-search/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/search/hybrid-search/dist/package.json",
-        "cwd": "."
+        "main": "libs/data/search/hybrid-search/src/index.ts",
+        "outputPath": "libs/data/search/hybrid-search/dist",
+        "tsConfig": "libs/data/search/hybrid-search/tsconfig.lib.json",
+        "assets": [],
+        "clean": true
       },
       "cache": true,
       "inputs": [

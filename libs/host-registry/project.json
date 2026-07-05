@@ -11,13 +11,16 @@
   ],
   "targets": {
     "build": {
-      "executor": "nx:run-commands",
+      "executor": "@nx/js:tsc",
       "outputs": [
         "{workspaceRoot}/libs/host-registry/dist"
       ],
       "options": {
-        "command": "tsc --project libs/host-registry/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/host-registry/dist/package.json",
-        "cwd": "."
+        "main": "libs/host-registry/src/index.ts",
+        "outputPath": "libs/host-registry/dist",
+        "tsConfig": "libs/host-registry/tsconfig.lib.json",
+        "assets": [],
+        "clean": true
       },
       "cache": true,
       "inputs": [
