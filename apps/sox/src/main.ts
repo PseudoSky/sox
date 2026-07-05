@@ -2113,12 +2113,11 @@ async function rollingRestartConsumer(
   const lockfilePath = lockfilePathForRecord(scope, root);
   const runtimeFilePath = getRuntimeFilePath(lockfilePath);
 
-  // What is this extension? The MANIFEST type is authoritative — the
-  // service-registry start path hardcodes runtime entries to type 'mcp-server'
-  // for every detached service, so the runtime entry's `type` cannot be trusted
-  // to distinguish a long-running `service` from an on-demand `mcp-server`.
-  // Resolve from the lockfile `source` (→ store dir → extension.json) first,
-  // then the runtime entry's source, then the entry's own type as a last resort.
+  // What is this extension? The MANIFEST type is authoritative. BL-36 fixed the
+  // service-registry start path so it now records the real manifest type in the
+  // runtime entry (no longer hardcoded to 'mcp-server'). The resolution order
+  // below is kept as defense-in-depth for runtime records written by older
+  // binaries: lockfile source → runtime entry source → runtime entry type.
   const record = getRuntimeRecord(runtimeFilePath);
   const liveEntry = record?.entries?.find((e) => e.id === extId || e.key === extId);
   const lockSource = (() => {
@@ -3753,6 +3752,16 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
       for (const svc of entries) {
         const svcConfigEnv = buildExtConfigEnv(svc.id, root);
 
+        // BL-36: resolve the extension's REAL manifest type from the store's
+        // extension.json so the runtime entry records 'service' vs 'mcp-server'
+        // correctly. The registry.json written by run-service.ts does not carry
+        // the manifest type field; the store dir always has extension.json
+        // post-install (the install engine copies it there). Fall back to 'service'
+        // rather than 'mcp-server' when the manifest is unreadable — a service is
+        // what this code path exclusively registers.
+        const source = `file://${svc.storePath}`;
+        const svcManifestType = manifestTypeForSource(source) ?? 'service';
+
         // ── Singleton guard (spec §5.2: socket probe + entrypoint scan +
         //    cross-scope ownership check), keyed on [def:singleton-key] =
         //    (id, resolved-store-resource), NOT on scope or socket alone.
@@ -3766,9 +3775,8 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
         const entrypointToken = entrypointTokenForService(svc);
         const recordExisting = (note: string): void => {
           process.stdout.write(`sox: ${svc.id} ${note} — skipping spawn (singleton guard §5.2)\n`);
-          const source = `file://${svc.storePath}`;
           runtimeEntries.push({
-            key: svc.id, id: svc.id, type: 'mcp-server', scope, source,
+            key: svc.id, id: svc.id, type: svcManifestType, scope, source,
             pid: null, running: true, activatedAt: now,
           });
         };
@@ -3834,11 +3842,11 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
 
         const pid = child.pid ?? null;
         // source points to the store dir so soxe exec can find extension.json there.
-        const source = `file://${svc.storePath}`;
+        // (source and svcManifestType are resolved from extension.json above — BL-36)
         runtimeEntries.push({
           key: svc.id,
           id: svc.id,
-          type: 'mcp-server',
+          type: svcManifestType,
           scope,
           source,
           pid,
