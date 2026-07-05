@@ -173,6 +173,11 @@ export {
   realLsofExec,
   socketOwnerPids,
   classifyReconcileTargets,
+  // BL-201: proxy-backend spawn-lock debris sweep
+  LOCK_DEBRIS_TTL_MS,
+  realPidAlive,
+  realLockSweepFs,
+  sweepProxyBackendLocks,
 } from './reconcile.js';
 export type {
   LsofExec,
@@ -180,6 +185,11 @@ export type {
   ReconcileMatch,
   ReconcileSkipReason,
   ReconcilePlan,
+  // BL-201
+  LockSweepFs,
+  LockSweepEntry,
+  LockSweepResult,
+  PidAliveCheck,
 } from './reconcile.js';
 
 // ─── OS-supervisor control surface (service-lifecycle spec Slice 2) ──────────

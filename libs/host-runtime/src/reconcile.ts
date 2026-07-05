@@ -28,9 +28,32 @@
  * Socket-holder attribution uses `lsof -nP -U -F pn` (BSD/macOS + Linux
  * portable), funneled through an injectable exec so tests never touch the real
  * process table. Leaf module: node builtins only.
+ *
+ * BL-201: `sweepProxyBackendLocks` — dead-holder spawn-lock debris sweep.
+ *
+ *   The O_EXCL spawn lock used by libs/service-proxy/src/ensure-backend.ts
+ *   (`proxy-backend-*.lock`, payload `{pid, t, key}`) is released in a
+ *   `finally` block, but a shim that is killed between acquire and release
+ *   leaves the file behind. Correctness is unaffected — `tryAcquireLock`
+ *   reclaims on `pidAlive` failure or the 30s TTL — but the file misleads
+ *   forensics. This sweep is the periodic cleanup.
+ *
+ *   Sweep condition (AND of a OR b, AND c):
+ *     a. holder pid is dead (pidAlive false); OR
+ *     b. payload is unparseable (can never be validated as live); AND
+ *     c. file mtime is older than LOCK_DEBRIS_TTL_MS (30 000 ms — the same
+ *        default TTL used by ensure-backend.ts `lockTtlMs ?? 30_000`).
+ *
+ *   A live pid always keeps the lock regardless of age (the holder is still
+ *   running — it may be in a slow spawn path or waiting on its `finally`).
+ *   A dead pid but a fresh file (< TTL) is also kept: another
+ *   `tryAcquireLock` caller may be mid-reclaim (racy unlink + recreate window).
+ *   Dry-run: logs "WOULD sweep" and counts without calling unlink.
  */
 
 import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 // ─── Injectable lsof seam ─────────────────────────────────────────────────────────
 
@@ -190,4 +213,215 @@ export function classifyReconcileTargets(opts: {
   // ≥2 ⇒ §5.3 singleton violation; the caller heals with chooseSurvivor.
   plan.duplicateSetNoSocket = unaccounted;
   return plan;
+}
+
+// ─── BL-201: proxy-backend spawn-lock debris sweep ───────────────────────────────
+
+/**
+ * TTL (ms) for proxy-backend lock debris sweep.
+ *
+ * Matches the `lockTtlMs ?? 30_000` default in
+ * libs/service-proxy/src/ensure-backend.ts `ensureBackend`.
+ */
+export const LOCK_DEBRIS_TTL_MS = 30_000;
+
+/** Parsed payload of a `proxy-backend-*.lock` file. */
+interface LockPayload {
+  pid: number;
+  t: number;
+  key: string;
+}
+
+/** Result returned by `sweepProxyBackendLocks`. */
+export interface LockSweepResult {
+  /** Lock files inspected (pattern `proxy-backend-*.lock`). */
+  scanned: number;
+  /** Files removed (or that WOULD be removed in dry-run). */
+  swept: number;
+  /** Files kept (live holder or within TTL). */
+  kept: number;
+  /** Per-file disposition records. */
+  entries: LockSweepEntry[];
+}
+
+/** Disposition record for a single lock file. */
+export interface LockSweepEntry {
+  file: string;
+  action: 'swept' | 'would-sweep' | 'kept';
+  reason: string;
+}
+
+/**
+ * Injectable seam for fs operations in the lock sweep — lets specs use a
+ * fully in-memory sandbox without touching the real filesystem.
+ */
+export interface LockSweepFs {
+  readdirSync(dir: string): string[];
+  statSync(filePath: string): { mtimeMs: number };
+  readFileSync(filePath: string, encoding: 'utf8'): string;
+  unlinkSync(filePath: string): void;
+  existsSync(dir: string): boolean;
+}
+
+/**
+ * Injectable pid-liveness check for the lock sweep — decoupled from the real
+ * process table so tests can synthesize dead/live pids without spawning real
+ * processes.
+ */
+export type PidAliveCheck = (pid: number) => boolean;
+
+/** The real pid-liveness check (kill(pid, 0) — same technique as reaper.ts). */
+export const realPidAlive: PidAliveCheck = (pid: number): boolean => {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM means the process exists but is owned by another user — treat as alive.
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+};
+
+/** The real filesystem seam — delegates to node:fs. */
+export const realLockSweepFs: LockSweepFs = {
+  readdirSync: (dir) => fs.readdirSync(dir) as string[],
+  statSync: (filePath) => fs.statSync(filePath),
+  readFileSync: (filePath, encoding) => fs.readFileSync(filePath, encoding),
+  unlinkSync: (filePath) => fs.unlinkSync(filePath),
+  existsSync: (dir) => fs.existsSync(dir),
+};
+
+/**
+ * Sweep dead-holder `proxy-backend-*.lock` debris from the supervisors run dir
+ * (BL-201).
+ *
+ * For each `proxy-backend-*.lock` file found in `lockDir`:
+ *   - Parse the JSON payload `{pid, t, key}`.
+ *   - KEEP if the holder pid is alive (regardless of age — the holder is still
+ *     running and will release in its `finally` block).
+ *   - KEEP if the file is newer than `ttlMs` (< TTL) even when pid is dead:
+ *     another `tryAcquireLock` caller may be mid-reclaim (racy unlink+recreate).
+ *   - SWEEP if pid is dead (or payload is unparseable) AND mtime >= ttlMs old.
+ *   - In dry-run mode, logs "WOULD sweep" and skips the actual unlink.
+ *
+ * All actions are reported through the `log` callback (same signature as the
+ * doctorReconcile pass logger so lines land in the durable doctor-reconcile log).
+ *
+ * @param lockDir  Directory to scan — typically `socketDir()` from data-paths.ts
+ *                 (`$userDataRoot/run/supervisors/`), which is where
+ *                 ensure-backend.ts writes lock files when `lockDir` is not
+ *                 overridden by the caller.
+ * @param opts.dryRun    When true, report "WOULD sweep" without unlinking.
+ * @param opts.ttlMs     Staleness threshold in ms (default LOCK_DEBRIS_TTL_MS).
+ * @param opts.log       Line logger (default: no-op).
+ * @param opts.fsSeal    Injectable fs seam for tests (default: realLockSweepFs).
+ * @param opts.pidAlive  Injectable pid-liveness check (default: realPidAlive).
+ */
+export function sweepProxyBackendLocks(
+  lockDir: string,
+  opts: {
+    dryRun?: boolean;
+    ttlMs?: number;
+    log?: (msg: string) => void;
+    fsSeal?: LockSweepFs;
+    pidAlive?: PidAliveCheck;
+  } = {},
+): LockSweepResult {
+  const dryRun = opts.dryRun ?? false;
+  const ttlMs = opts.ttlMs ?? LOCK_DEBRIS_TTL_MS;
+  const log = opts.log ?? (() => undefined);
+  const fsSeal = opts.fsSeal ?? realLockSweepFs;
+  const pidAliveCheck = opts.pidAlive ?? realPidAlive;
+
+  const result: LockSweepResult = { scanned: 0, swept: 0, kept: 0, entries: [] };
+
+  if (!fsSeal.existsSync(lockDir)) {
+    return result;
+  }
+
+  let files: string[];
+  try {
+    files = fsSeal.readdirSync(lockDir);
+  } catch {
+    return result;
+  }
+
+  const lockFiles = files.filter((f) => /^proxy-backend-[0-9a-f]+\.lock$/.test(f));
+
+  const now = Date.now();
+
+  for (const filename of lockFiles) {
+    result.scanned++;
+    const filePath = path.join(lockDir, filename);
+
+    // Determine file age via mtime.
+    let mtimeMs: number;
+    try {
+      mtimeMs = fsSeal.statSync(filePath).mtimeMs;
+    } catch {
+      // File vanished between readdir and stat — a concurrent reclaim won. Skip.
+      result.kept++;
+      result.entries.push({ file: filePath, action: 'kept', reason: 'stat failed (race: file gone)' });
+      continue;
+    }
+    const ageMs = now - mtimeMs;
+
+    // Parse the payload.
+    let payload: LockPayload | null = null;
+    try {
+      payload = JSON.parse(fsSeal.readFileSync(filePath, 'utf8')) as LockPayload;
+    } catch {
+      payload = null;
+    }
+
+    // Safety gate 1: live pid → always keep (holder is still running).
+    if (
+      payload !== null &&
+      typeof payload.pid === 'number' &&
+      payload.pid > 0 &&
+      pidAliveCheck(payload.pid)
+    ) {
+      result.kept++;
+      const reason = `holder pid ${payload.pid} is alive`;
+      result.entries.push({ file: filePath, action: 'kept', reason });
+      log(`[reconcile] lock-debris KEEP ${filename}: ${reason}`);
+      continue;
+    }
+
+    // Safety gate 2: fresh file (< TTL) → keep even if pid is dead.
+    // Another tryAcquireLock caller may be mid-reclaim (racy unlink+recreate).
+    if (ageMs < ttlMs) {
+      result.kept++;
+      const deadPid = payload !== null && typeof payload.pid === 'number' ? payload.pid : 'unknown';
+      const reason = `dead pid ${String(deadPid)}, but file age ${Math.round(ageMs)}ms < TTL ${ttlMs}ms — possible mid-reclaim`;
+      result.entries.push({ file: filePath, action: 'kept', reason });
+      log(`[reconcile] lock-debris KEEP ${filename}: ${reason}`);
+      continue;
+    }
+
+    // Sweep: dead (or unparseable) pid AND older than TTL.
+    const deadPid = payload !== null && typeof payload.pid === 'number' ? String(payload.pid) : 'unparseable';
+    const reason = `dead holder pid ${deadPid}, age ${Math.round(ageMs)}ms >= TTL ${ttlMs}ms`;
+
+    if (dryRun) {
+      result.swept++;
+      result.entries.push({ file: filePath, action: 'would-sweep', reason });
+      log(`[reconcile] lock-debris WOULD sweep ${filename}: ${reason}`);
+      continue;
+    }
+
+    try {
+      fsSeal.unlinkSync(filePath);
+      result.swept++;
+      result.entries.push({ file: filePath, action: 'swept', reason });
+      log(`[reconcile] lock-debris swept ${filename}: ${reason}`);
+    } catch {
+      // Concurrent reclaim (another tryAcquireLock unlinked it first) — not an error.
+      result.kept++;
+      result.entries.push({ file: filePath, action: 'kept', reason: 'unlink raced (already reclaimed)' });
+      log(`[reconcile] lock-debris KEEP ${filename}: unlink raced (already reclaimed by tryAcquireLock)`);
+    }
+  }
+
+  return result;
 }
