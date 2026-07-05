@@ -10,6 +10,8 @@
 
 Run these in order. Stop on first failure. Fix the failure before continuing.
 
+> **Module resolution & bundling:** before touching extension build config, imports, worker paths, or any `dist/` artifact lifecycle, read [`docs/standards/module-resolution.md`](./docs/standards/module-resolution.md).
+
 ### 1.1 Impact awareness (before editing)
 
 | Tool | Purpose |

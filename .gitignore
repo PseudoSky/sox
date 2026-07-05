@@ -26,7 +26,7 @@ dist/
 extensions/services/tokenguard/bundle/
 extensions/services/tokenguard/demo/out/
 # BL-37/BL-38: self-contained esbuild bundles (build artifacts, never committed)
-extensions/bundles/sox-memory-bundle/members/memory-daemon/bundle/
+# (memory-daemon was deleted in S9/BL-162 — its bundle/ entry removed here per BL-168)
 extensions/bundles/sox-memory-bundle/members/memory-server/bundle/
 # soxe init test-scaffold output
 /test-*-init/

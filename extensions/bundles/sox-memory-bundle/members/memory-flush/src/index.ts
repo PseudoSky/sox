@@ -2,8 +2,9 @@
  * memory-flush — SessionEnd + ScopePromotionProposed hook handler.
  *
  * Binds two host events (design.md §1.1c, §2.5):
- *   1. SessionEnd — persists working memory, enqueues episodes, nudges memoryd,
- *      then (if export_enabled+export_dir configured) auto-exports to markdown.
+ *   1. SessionEnd — persists working memory, enqueues episodes for async
+ *      organization, then (if export_enabled+export_dir configured)
+ *      auto-exports to markdown.
  *   2. ScopePromotionProposed — runs the promotion approval/policy step (P4: stub).
  *
  * P5 auto-export (BL-21):
@@ -18,11 +19,8 @@
 import { applyPromotion as memCoreApplyPromotion, exportMarkdown as memCoreExportMarkdown, openDb as memCoreOpenDb } from '@adhd/sox-memory-core';
 import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
-import * as net from 'node:net';
 import * as path from 'node:path';
 import * as sqliteVec from 'sqlite-vec';
-
-const SOCKET_PATH = path.join(process.env['HOME'] ?? '/tmp', '.memory', 'memoryd.sock');
 
 export const events = ['SessionEnd', 'ScopePromotionProposed'];
 
@@ -98,25 +96,6 @@ interface ScopePromotionPayload {
   to_scope: string;
   items: Array<{ uid: string; content?: string }>;
   proposed_at: string;
-}
-
-/**
- * Nudge memoryd via the Unix socket doorbell.
- * Non-blocking: ignores errors if daemon isn't running.
- */
-function nudgeDaemon(): void {
-  try {
-    const client = net.createConnection(SOCKET_PATH);
-    client.on('connect', () => {
-      client.write('nudge');
-      client.end();
-    });
-    client.on('error', () => {
-      // Daemon not running — queue is durable, will be processed on next startup
-    });
-  } catch {
-    // ignore
-  }
 }
 
 /**
@@ -219,8 +198,9 @@ function tryAutoExport(db_path: string, exportDir: string, throttleSecs: number)
  * Handle SessionEnd:
  *   1. Save session working memory state (if provided).
  *   2. Enqueue any pending episodes for async organization.
- *   3. Nudge memoryd to wake and process the queue.
- *   4. (P5 BL-21) Auto-export to markdown if export_enabled + export_dir configured and
+ *      Batch enrichment runs via memory-server's in-process periodic loop —
+ *      no daemon socket nudge required (S9/BL-182: memory-daemon deleted).
+ *   3. (P5 BL-21) Auto-export to markdown if export_enabled + export_dir configured and
  *      not within the throttle window.
  */
 async function handleSessionEnd(payload: SessionEndPayload): Promise<void> {
@@ -252,7 +232,9 @@ async function handleSessionEnd(payload: SessionEndPayload): Promise<void> {
       })();
     }
 
-    // 2. Enqueue pending episodes for async organization
+    // 2. Enqueue pending episodes for async organization.
+    // Batch enrichment runs via memory-server's in-process periodic loop —
+    // no daemon nudge required (S9/BL-182: memory-daemon deleted).
     if (episodes && episodes.length > 0) {
       const now = new Date().toISOString();
       for (const ep of episodes) {
@@ -290,14 +272,11 @@ async function handleSessionEnd(payload: SessionEndPayload): Promise<void> {
         }
       }
     }
-
-    // 3. Nudge memoryd
-    nudgeDaemon();
   } finally {
     db.close();
   }
 
-  // 4. (P5 BL-21) Auto-export — runs AFTER db.close() so the DB is not locked during export.
+  // 3. (P5 BL-21) Auto-export — runs AFTER db.close() so the DB is not locked during export.
   // Gate: export_enabled must be true AND export_dir must be a non-empty string.
   // Failure-isolated: tryAutoExport catches all errors internally.
   const exportCfg = resolveExportConfig(payload);
