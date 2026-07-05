@@ -148,7 +148,19 @@ npx nx run registry:sync-index
 
 Commit the regenerated `registry/index.json` alongside source changes.
 
-### 1.8 Backlog
+### 1.8 Node.js version upgrades (native ABI check)
+
+After upgrading Node.js (via nvm, Homebrew, or system update), run:
+
+```
+pnpm verify:abi
+```
+
+This loads every native addon (`better-sqlite3`, `onnxruntime-node`) and exits non-zero with
+the rebuild command if an ABI mismatch is detected.  The `postinstall` hook rebuilds them on
+`pnpm install`, but a bare Node upgrade does not re-trigger `postinstall`.
+
+### 1.9 Backlog
 
 Write any discovered bugs, deferrals, or limitations to `BACKLOG.md` at discovery time.
 Format: `- [ ] <area>: <description> (discovered <date> during <change>)`
