@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-04 (post-context-06 closeout + validation sweep)
 
-**Total open: 29 items** (BL-166/BL-114 withdrawn 2026-07-04 — owner: consumed externally. Validation sweep verified every open entry against current code:
+**Total open: 29 items (18 defined + 11 triage)** Validation sweep verified every open entry against current code:
 6 found already-fixed and closed — BL-100, BL-106, BL-107, BL-108, BL-184, BL-188; 8 re-scoped
 with corrected citations — BL-57, BL-90, BL-94, BL-98, BL-116, BL-161, BL-171, BL-181; BL-99 is
 external (claude-agents repo); BL-62 upgraded from (unverified) to VERIFIED-REAL with live
@@ -17,16 +17,16 @@ rendering), BL-183 (outbox scaffolding deleted), BL-189/BL-191 (two-phase memory
 metrics), BL-190 (version alignment), BL-192 (resolved-invalid). Newly filed: BL-201,
 BL-202, BL-203.
 
-**Defined solutions (19)** — clear fix path, no pending decisions:
+**Defined solutions (18)** — clear fix path, no pending decisions:
 
 | Priority | Items |
 |---|---|
-| **HIGH** | BL-168 (module-resolution standard), BL-96 (cd to repo-root in audit), BL-181 (e2e fixture swap — fails at spawn, not existsSync) |
-| **MEDIUM** | BL-94 (ABI-rebuild CI enforcement — crash-mid-session fixed), BL-161 (memory-flush spec only — memory-core fixed), BL-171 (onnx V8 crash — file moved to member root), BL-102 (execution_mode field), BL-105 (7 stubs), BL-88 (per-record embed_model), BL-90 (per-axis recall recipes), BL-180 (dataRoot scope-path fix) |
-| **LOW** | BL-176 (quickReconcile helper), BL-178 (stderr sink default), BL-182 (memory-flush dead code), BL-57 (doctor legacy-residue check — bug fixed), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder — citations updated), BL-117 (late chunking boundaries) |
+| **HIGH** | BL-96 (cd to repo-root in audit), BL-181 (e2e fixture swap — now fails at existsSync too, stale dist deleted) |
+| **MEDIUM** | BL-161 (memory-flush spec only — memory-core fixed), BL-171 (onnx V8 crash — file moved to member root), BL-88 (per-record embed_model — wave-2 agent in flight), BL-90 (per-axis recall recipes) |
+| **LOW** | BL-176 (quickReconcile helper), BL-178 (stderr sink default — wave-2 in flight), BL-57 (doctor legacy-residue check — wave-2 in flight), BL-105 (6 annotated stubs await data sources), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder — citations updated), BL-117 (late chunking boundaries), BL-208 (verify-abi worktree root), BL-209 (guard attempt_count semantics), BL-213 (legacy memoryd test tooling), BL-214 (bundle-extension tsconfig default) |
 | **LOW/MEDIUM** | BL-36 (record real manifest type) |
 
-**[TRIAGE] items (10)** — needs decision, investigation, or prerequisite before work starts:
+**[TRIAGE] items (11)** — needs decision, investigation, or prerequisite before work starts:
 
 | Priority | Items |
 |---|---|
@@ -64,6 +64,28 @@ BL-202, BL-203.
 ---
 
 ## Open — surfaced during HF-5/HF-6 closeout (2026-07-04)
+
+### BL-208 — `verify-native-abi.mjs` resolves REPO_ROOT from its own file path → misleading "skip (not installed)" in worktrees — **Open (LOW) (2026-07-04)**
+
+In a git worktree, `__dirname`-derived REPO_ROOT has no `.pnpm` store, so probes skip with a
+confusing message (functionally safe — exit 0). Fix: resolve via `git rev-parse --show-toplevel`.
+
+### BL-209 — synthesized guard-op `attempt_count` reads 0 for pre-convention plans — **Open (LOW, semantics note) (2026-07-04)**
+
+`attempt_count = dispatch_ids.length` is exact for authored ops, but guard ops synthesized at
+snapshot time have no dispatch_log entries in older dag.json files — 0 there means "unknown",
+not "never ran". Becomes fixable when the dispatch-log schema adds a typed `guard` kind.
+
+### BL-213 — `tools/supervisor-shim.js` + daemon-crash test tools still dial the deleted memoryd socket — **Open (LOW) (2026-07-04)**
+
+Legacy test tooling (`supervisor-shim.js` lines 47/131/150, `test-daemon-crash.js` et al.)
+probes `memoryd.sock`; the daemon is gone (S9). Delete alongside the BL-181 fixture swap.
+
+### BL-214 — `tools/bundle-extension.cjs` defaults `--tsconfig` to memory-server's tsconfig — **Open (LOW) (2026-07-04)**
+
+Line ~192 hardcodes `memory-server/tsconfig.json` as the fallback when `--tsconfig` is omitted —
+hidden coupling; a rename/move breaks other extensions' builds silently. Default to the repo root
+tsconfig or make the flag required.
 
 ### BL-203 — doctor-tick (and memory-server) launchd units found UNLOADED after the S11-merge `upgrade --all`; cause unproven — **Open (MEDIUM) (2026-07-04)**
 
@@ -503,7 +525,9 @@ rowid/uid + double-apply); the heal already covers a crashed update re-embed IF 
 is deleted in Phase A (otherwise the node keeps the OLD vector until Phase B — decide staleness
 semantics before implementing).
 
-### BL-180 — `dataRoot()` returns the raw scope string as a PATH for an unknown scope (audit log writes `./badscope/run/sox-audit.jsonl`) — **Open (MEDIUM) (2026-07-04)**
+### BL-180 — `dataRoot()` returns the raw scope string as a PATH for an unknown scope (audit log writes `./badscope/run/sox-audit.jsonl`) — **RESOLVED (2026-07-04, wave-2)**
+
+**Resolution:** runtime validation in BOTH data-paths copies (host-runtime + install-engine parity): unknown scope throws a structured error naming the bad value + valid scopes. New data-paths.spec (9 cases). host-runtime 248/248, install-engine 163/163.
 
 `libs/host-runtime/src/data-paths.ts` `dataRoot()` ends in `default: const _exhaustive: never =
 scope; return _exhaustive;` — type-safe at compile time, but at RUNTIME an unvalidated string
@@ -558,7 +582,9 @@ or any live running process — S8 handles live backend reconciliation"), and a 
 picking/building a replacement fixture, not a mechanical rename. Run
 `node tools/test-e2e-lifecycle.js` after re-pointing to confirm both sections pass.
 
-### BL-182 — `memory-flush`'s `nudgeDaemon()`/`SOCKET_PATH` are now permanently-dead code (BL-162 follow-up) — **Open (LOW) (2026-07-04)**
+### BL-182 — `memory-flush`'s `nudgeDaemon()`/`SOCKET_PATH` are now permanently-dead code (BL-162 follow-up) — **RESOLVED (2026-07-04, wave-2)**
+
+**Resolution:** `SOCKET_PATH`, `nudgeDaemon()` (14 LOC) and its call site deleted from memory-flush; dead `net` import removed; docs updated. Zero remaining live references (grep-proven). memory-flush 14/14.
 
 `extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.ts` defines its own local
 `SOCKET_PATH` (`~/.memory/memoryd.sock`) and calls `nudgeDaemon()` at the end of every
@@ -757,7 +783,9 @@ consumers: `memory_stats` surfaces the breakdown; no known consumer acts on per-
 
 ## Open — build-tooling / module-resolution debt (2026-07-04)
 
-### BL-168 — DEBT: audit the recurring module-resolution / bundling / workspace-tooling class of bugs — **Open (HIGH) (2026-07-04)**
+### BL-168 — DEBT: audit the recurring module-resolution / bundling / workspace-tooling class of bugs — **RESOLVED (2026-07-04, wave-2)**
+
+**Resolution:** `docs/standards/module-resolution.md` authored (build model, C7, import.meta shim, worker resolution, stale-dist rule, vitest aliasing, decision table) + linked from CONTRIBUTING §1. Stale memory-daemon artifact tree deleted (dist/, bundle/, node_modules/ — untracked debris removed on main at merge). Known consequence: `tools/test-e2e-lifecycle.js` existsSync fixture guard now fails LOUDLY — the documented desired behavior of BL-181, which remains the open fixture-swap item.
 
 The same class of problem keeps recurring, each fixed point-wise. We keep paying for it. Audit them
 together and establish ONE consistent, documented standard for module resolution + bundling +
@@ -1631,7 +1659,9 @@ so the parent checkout never scans nested worktrees. Low blast radius but it mak
 > memory-server packaging surfaced four distinct defects. While on fallback, vector similarity
 > (near-dup `SAME_AS`, clustering, semantic recall ranking) is unreliable; BM25/FTS still works.
 
-### BL-94 — `better-sqlite3` native binding missing for current Node.js ABI → memory-server crashes mid-session — **Open (HIGH) (2026-06-27)**
+### BL-94 — `better-sqlite3` native binding missing for current Node.js ABI → memory-server crashes mid-session — **RESOLVED (2026-07-04, wave-2): probe was already live; enforcement script added**
+
+**Resolution:** crash-mid-session was already fail-fast (startup binding probe). Wave-2 adds `tools/verify-native-abi.mjs` (probes better-sqlite3 + onnxruntime-node, exit 1 with rebuild command on mismatch), `pnpm verify:abi` script, CONTRIBUTING §1.8 (run after Node upgrades). Deliberately NOT in postinstall (postinstall already rebuilds; the gap is `nvm use` which triggers nothing). Live: exit 0 on Node v24.11.1/ABI 137. Known nit: BL-208 (worktree REPO_ROOT resolution).
 
 **Validation note (2026-07-04 sweep):** the "long-term" fix sketch item is DONE — a startup binding probe now fails fast before accepting connections (`memory-server/src/index.ts:1936-1950`); crash-mid-session is closed. Remaining open scope: no CI/postinstall enforcement prevents an ABI-mismatched rebuild from shipping. Downgrade to MEDIUM.
 
@@ -1812,7 +1842,9 @@ on each op. This patch is now dead code and should be removed to avoid confusion
 
 ---
 
-### BL-102 — Guard-only milestones (agent: null) produce a DispatchUnit with `provider: undefined`, `agent_name: ""`, `model: null` — the orchestrator has no typed code path to detect and run them locally — **Open (MEDIUM) (2026-06-28)**
+### BL-102 — Guard-only milestones (agent: null) produce a DispatchUnit with `provider: undefined`, `agent_name: ""`, `model: null` — the orchestrator has no typed code path to detect and run them locally — **RESOLVED (2026-07-04, wave-2)**
+
+**Resolution:** `DispatchExecutionMode = "model" | "guard-local" | "tool-call"` added to DispatchUnit; `assembleDispatchUnit` sets `guard-local` when the milestone has no agent, `model` otherwise. Strict tsc typecheck green.
 
 **Observed:** `scope-authored` in the adhd-build dag has `agent: null`. `optimize()` produces a
 DispatchUnit for it with `provider.type === undefined`, `agent_name === ""`,
@@ -1890,6 +1922,8 @@ burden to op authors.
 ---
 
 ### BL-105 — 7 stubs in `docs/plan/dispatch-optimizer/src/compiler.ts` with no external integrations wired — snapshot derived fields are incomplete — **Open (MEDIUM) (2026-06-28)**
+
+**Wave-2 progress (2026-07-04):** 1 of 7 implemented (`attempt_count` = dispatch_ids.length); the other 6 are now explicit `STUB(BL-105):` annotations each naming the missing data source (gitnexus impact per-op, same-wave conflict scan, ki-share proration, AST diff, typed pending-question events, agent catalog). Remaining work = those data sources, not the plumbing. Downgraded to LOW.
 
 **Stubs (all return `null` or `[]` with TODO comments):**
 
@@ -2221,6 +2255,8 @@ ignore it. **Action for the human:** after this merge + `soxe upgrade --all`, re
 memory-server MCP server once.
 
 ### BL-62 — shared-backend `project_path` attribution is single-valued for the lifetime of the backend — **[TRIAGE] Open (MEDIUM) — VERIFIED REAL (2026-07-04) multi-project correctness**
+
+**Wave-2 progress (2026-07-04):** protocol landed — shim attaches optional `client_context.project_path` to tools/call frames; backend precedence explicit-arg > request-context > process-fallback; 10 new tests, both compat directions covered. REMAINING: one-line cmdServe wiring (`clientProjectPath` into FrontShimOptions — deferred to avoid conflicting with the in-flight main.ts agent) + live verification. Stays open until live-verified.
 
 **Live confirmation (2026-07-04, HF-6 validation sweep):** a `memory_write` issued from a session
 whose project is `/Users/nix/dev/ai/sox-ecosystem` (no explicit `project_path` arg) returned
