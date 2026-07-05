@@ -70,7 +70,7 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-flush",
-    "checksum": "sha256:2fe6b4b9ead18a1f5ccab6dc86c96e6bae5a2be0b3147a569340cd1ab07a35ea",
+    "checksum": "sha256:0431413904f9451a879afacb0a247b58f09434801bba955ab4b669e42868ede2",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -84,7 +84,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:a19086820453bd86b938281608f1430a902647b7cd4b380312899db5e96f95e1",
+    "checksum": "sha256:e3c924de1a3fb83918ccc9f2f0f6a35ff5aa74b85bfec20efcfb21c7d105f2b0",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
