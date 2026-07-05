@@ -7,6 +7,7 @@
   "packageManager": "pnpm@10.11.1",
   "scripts": {
     "postinstall": "pnpm rebuild better-sqlite3 sqlite-vec",
+    "verify:abi": "node tools/verify-native-abi.mjs",
     "typecheck": "tsc --noEmit",
     "validate-manifests": "npx tsx scripts/validate-manifests.ts",
     "check-nx-cache": "node tools/check-nx-cache.cjs",
