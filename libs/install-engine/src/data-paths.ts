@@ -57,8 +57,15 @@ export function dataRoot(scope: DataScope, root?: string): string {
       if (root === undefined || root === '') return userDataRoot();
       return path.join(root, DATA_SUBDIR);
     default: {
+      // TypeScript exhaustiveness guard at compile time; at runtime an unvalidated
+      // string can reach this branch (e.g. soxe install -s badscope). Throw a
+      // structured error rather than silently returning the raw string as a path.
       const _exhaustive: never = scope;
-      return _exhaustive;
+      // _exhaustive carries the bad value at runtime despite the `never` type.
+      const bad = _exhaustive as string;
+      throw new Error(
+        `[data-paths] unknown scope "${bad}". Valid scopes: org, user, project, local.`,
+      );
     }
   }
 }
