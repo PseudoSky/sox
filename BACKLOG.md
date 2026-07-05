@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-04 (post-context-06 closeout + validation sweep)
 
-**Total open: 29 items (18 defined + 11 triage)** Validation sweep verified every open entry against current code:
+**Total open: 25 items (15 defined + 10 triage)** Validation sweep verified every open entry against current code:
 6 found already-fixed and closed — BL-100, BL-106, BL-107, BL-108, BL-184, BL-188; 8 re-scoped
 with corrected citations — BL-57, BL-90, BL-94, BL-98, BL-116, BL-161, BL-171, BL-181; BL-99 is
 external (claude-agents repo); BL-62 upgraded from (unverified) to VERIFIED-REAL with live
@@ -17,20 +17,20 @@ rendering), BL-183 (outbox scaffolding deleted), BL-189/BL-191 (two-phase memory
 metrics), BL-190 (version alignment), BL-192 (resolved-invalid). Newly filed: BL-201,
 BL-202, BL-203.
 
-**Defined solutions (18)** — clear fix path, no pending decisions:
+**Defined solutions (15)** — clear fix path, no pending decisions:
 
 | Priority | Items |
 |---|---|
 | **HIGH** | BL-96 (cd to repo-root in audit), BL-181 (e2e fixture swap — now fails at existsSync too, stale dist deleted) |
 | **MEDIUM** | BL-161 (memory-flush spec only — memory-core fixed), BL-171 (onnx V8 crash — file moved to member root), BL-88 (per-record embed_model — wave-2 agent in flight), BL-90 (per-axis recall recipes) |
-| **LOW** | BL-176 (quickReconcile helper), BL-178 (stderr sink default — wave-2 in flight), BL-57 (doctor legacy-residue check — wave-2 in flight), BL-105 (6 annotated stubs await data sources), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder — citations updated), BL-117 (late chunking boundaries), BL-208 (verify-abi worktree root), BL-209 (guard attempt_count semantics), BL-213 (legacy memoryd test tooling), BL-214 (bundle-extension tsconfig default) |
-| **LOW/MEDIUM** | BL-36 (record real manifest type) |
+| **LOW** | BL-176 (quickReconcile helper), BL-105 (6 annotated stubs await data sources), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder — citations updated), BL-117 (late chunking boundaries), BL-208 (verify-abi worktree root), BL-209 (guard attempt_count semantics), BL-213 (legacy memoryd test tooling), BL-214 (bundle-extension tsconfig default) |
 
-**[TRIAGE] items (11)** — needs decision, investigation, or prerequisite before work starts:
+
+**[TRIAGE] items (10)** — needs decision, investigation, or prerequisite before work starts:
 
 | Priority | Items |
 |---|---|
-| **HIGH** | BL-62 (multi-project attribution — VERIFIED REAL, silently mis-attributing live writes NOW), BL-97 (artifact gate: working-tree vs ref vs auto-commit) |
+| **HIGH** | BL-97 (artifact gate: working-tree vs ref vs auto-commit) |
 | **MEDIUM** | BL-95 (store discovery: scan vs register vs hybrid), BL-104 (nested type inlining: auto vs manual annotation), BL-113 (ingest publishability — deferred to v1.0), BL-203 (tick unload after artifact-changing upgrade — needs controlled repro), BL-99 (EXTERNAL: move to claude-agents backlog) |
 | **LOW** | BL-103 (snapshot version: param vs disk-read), BL-167 (scoreBreakdown: fix math vs document edge case), BL-202 (flake — root cause unknown) |
 | **FEATURE** | BL-163 (blocked on code-signing identity) |
@@ -540,7 +540,9 @@ dirs in the repo root after `cli-adapter.test.ts` ran its invalid-scope error-pa
 Fix sketch: make `dataRoot` THROW on an unknown scope at runtime (the audit block already
 try/catches), or validate the scope before the audit write.
 
-### BL-178 — direct-M3 `soxe serve` durable stderr sink still opt-in (Slice 3 F13 remainder) — **Open (LOW) (2026-07-04)**
+### BL-178 — direct-M3 `soxe serve` durable stderr sink still opt-in (Slice 3 F13 remainder) — **RESOLVED (2026-07-05, wave-2)**
+
+**Resolution:** direct-stdio serve stderr tee is DEFAULT ON; opt-out via `--no-log` or `SOX_SERVE_LOG=0` (explicit opt-out beats env opt-in); stdout purity unchanged. Live-verified: a sandboxed `serve --no-proxy` run with no flags created the dated log under `run/logs/serve-memory-server/`. 6 new tests.
 
 Slice 3's F13 item ("live `serve` version's stderr durably captured") remains opt-in for
 DIRECT-stdio serves (`--log` / `SOX_SERVE_LOG=1`, BL-46). M4 units default durable
@@ -2254,7 +2256,9 @@ change still emits `notifications/tools/list_changed` and falls back to reconnec
 ignore it. **Action for the human:** after this merge + `soxe upgrade --all`, reconnect/reload the
 memory-server MCP server once.
 
-### BL-62 — shared-backend `project_path` attribution is single-valued for the lifetime of the backend — **[TRIAGE] Open (MEDIUM) — VERIFIED REAL (2026-07-04) multi-project correctness**
+### BL-62 — shared-backend `project_path` attribution is single-valued for the lifetime of the backend — **RESOLVED (2026-07-05, wave-2): per-request attribution live**
+
+**Resolution:** shim attaches `client_context.project_path` (SOX_CONFIG_PROJECT_PATH or shim cwd) to every tools/call; shared backend precedence explicit-arg > request-context > process-fallback; both compat directions tested (10 tests). LIVE-VERIFIED: fresh shim with cwd=sox-ecosystem writing through the SHARED backend attributes to `/Users/nix/dev/ai/sox-ecosystem` (pre-fix: `/Users/nix/dot`). Long-lived shims pick the fix up on their next session restart.
 
 **Wave-2 progress (2026-07-04):** protocol landed — shim attaches optional `client_context.project_path` to tools/call frames; backend precedence explicit-arg > request-context > process-fallback; 10 new tests, both compat directions covered. REMAINING: one-line cmdServe wiring (`clientProjectPath` into FrontShimOptions — deferred to avoid conflicting with the in-flight main.ts agent) + live verification. Stays open until live-verified.
 
@@ -2387,7 +2391,9 @@ is unaffected; a future daemon-side write path must use the same injection.
 **Note:** the 4 reflections filed earlier this session landed in `sox-ecosystem` because this client
 launched there — which under the fix is now the *correct* attribution (the workspace), not luck.
 
-### BL-57 — soxe data files pollute repo roots instead of nesting under `.adhd/sox-ecosystem/` (legacy `SOX_HOME` residue) — **Open (MEDIUM) — cleanup + migration pending**
+### BL-57 — soxe data files pollute repo roots instead of nesting under `.adhd/sox-ecosystem/` (legacy `SOX_HOME` residue) — **RESOLVED (2026-07-05, wave-2): doctor residue check landed**
+
+**Resolution:** `soxe doctor` scans the root for pre-ADR-0004 residue (install-registry.json, supervisors.json, logs/, .sox/), reports `[RESIDUE]` findings with the `migrate-home` cleanup command, skips when root == canonical data root, deletes nothing. Live-verified (2 findings in a seeded scratch root; clean root clean). 6 new tests.
 
 **Validation note (2026-07-04 sweep):** the RETIRED warning + data-path bug are fixed (`main.ts:120-126`); remaining open scope is only a `soxe doctor` check for legacy repo-root residue (no code exists yet). Downgrade to LOW.
 
@@ -3030,7 +3036,9 @@ in `mcp-project-sync.spec.ts`), so even a stray leak can never fan `upgrade --fo
 `memory-server` ownership → 2). Surfaced building `upgrade --all`; root-caused fixing the
 migrate-home untracked-MCP-injection bug.
 
-### BL-36 — runtime record hardcodes `type: 'mcp-server'` for every detached service
+### BL-36 — runtime record hardcodes `type: 'mcp-server'` for every detached service — **RESOLVED (2026-07-05, wave-2)**
+
+**Resolution:** service-registry start path records the REAL manifest type via `manifestTypeForSource` (extension.json read; falls back to `service`, the only type this path handles). The rollingRestartConsumer multi-level fallback stays as defense-in-depth for records written by older binaries. sox 75/75.
 
 **Severity:** Low/Medium (misleading `soxe list`/`status`; type unreliable) · **Status:** Open
 `apps/sox/src/main.ts` `cmdStart`'s service-registry start path writes `type: 'mcp-server'` into the runtime record for
