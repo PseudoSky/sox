@@ -21,6 +21,7 @@ import type {
   OperationDag,
   OperationSnapshot,
   DispatchUnit,
+  DispatchExecutionMode,
   OpenQuestion,
   PairwiseOverlapMap,
   SnapshotOptimization,
@@ -446,21 +447,33 @@ function buildOperationSnapshot(
     ki_estimate,
     shape: enrichedShape,
     dispatch_ids,
-    // TODO: stubbed as 0 — op-level attempt_count requires per-op dispatch log scan
-    attempt_count: 0,
+    // attempt_count: count of dispatch_log entries that include this op (each retry
+    // adds a new log entry), so dispatch_ids.length is the real attempt count.
+    attempt_count: dispatch_ids.length,
     guard_result,
     guard_output,
     guard_ran_at,
-    // TODO: stubbed — requires gitnexus_impact MCP call (future work)
+    // STUB(BL-105): blast_radius — requires a gitnexus_impact MCP call for each op's
+    // file+symbol target. The gitnexus integration milestone (adhd-build dag) is the
+    // planned data source. Until then the field is an empty array.
     blast_radius: [],
-    // TODO: stubbed — requires same-wave op-key collision scan (future work)
+    // STUB(BL-105): conflict — requires a same-wave op-key collision scan comparing
+    // each op's (file, action, symbol) triple against all other ops assigned to the
+    // same wave in the current optimize() pass. The wave assignment happens AFTER
+    // buildOperationSnapshot() runs (in snapshot()), so this data is not available
+    // here without a two-pass approach. Stub as "no conflict detected".
     conflict: {
       detected: false,
       competing_op: null,
       op_key: null,
       resolution: null,
     },
-    // TODO: stubbed — requires ki_estimate share prorating across dispatch totals
+    // STUB(BL-105): tokens_actual per-op — requires prorating the milestone's
+    // tokens_actual across ops by their ki_estimate share. The milestone-level
+    // tokens_actual is computed later in snapshot() after all ops are built, so it is
+    // not available at this call site without restructuring. Proration formula:
+    //   op.tokens_actual = milestone.tokens_actual × (op.ki_estimate / sum(ki_estimates))
+    // Implement when the snapshot() restructuring milestone lands.
     tokens_actual: null,
   };
 }
@@ -493,7 +506,11 @@ function enrichShape(
       "ops" in shape && Array.isArray(shape.ops) ? shape.ops : []
     ).map((sop: ShapeOpDag) => ({
       ...sop,
-      // TODO: from/breaking/severity require AST read + gitnexus (future work)
+      // STUB(BL-105): from/breaking/severity — requires TypeScript AST read (ts-morph)
+      // to diff the current signature against the previous version, then a gitnexus
+      // MENTIONS/SUPERSEDES scan to classify whether the change is breaking. The data
+      // source is: ts-morph parse of op.file at op.symbol, compare against HEAD~1.
+      // Until the AST-diff milestone lands, these are null.
       from: null,
       breaking: null,
       severity: null,
@@ -560,12 +577,21 @@ function synthesizeGuardOp(
     status: "pending",
     shape: null,
     dispatch_ids,
-    attempt_count: 0,
+    // attempt_count for synthesized guard ops: same as authored ops — count of
+    // dispatch_log entries that include this guard op id.
+    attempt_count: dispatch_ids.length,
     guard_result,
     guard_output,
     guard_ran_at,
+    // STUB(BL-105): blast_radius — guard ops have no file/symbol target; the field
+    // is always [] for synthesized guard ops by definition.
     blast_radius: [],
+    // STUB(BL-105): conflict — guard ops are never in conflict with each other (one
+    // per milestone by construction). Stub as "no conflict detected".
     conflict: { detected: false, competing_op: null, op_key: null, resolution: null },
+    // STUB(BL-105): tokens_actual — guard ops are tool-calls; they do not consume
+    // model tokens. Real value is always 0; null used here for schema consistency
+    // with authored ops until the proration pass is implemented.
     tokens_actual: null,
   };
 }
@@ -957,7 +983,12 @@ function buildOpenQuestions(
       text: dagM.pending,
       blocking: slug,
       surfaced,
-      // TODO: scan dispatch_log notes for the turn/dispatch where question appeared
+      // STUB(BL-105): raised_at_dispatch/raised_at_turn — requires scanning
+      // dispatch_log[*].notes for a note whose text contains the milestone's
+      // pending question text (or a sentinel marker). The DispatchNote schema
+      // (level + text) has no structured "pending-question" field yet, so there
+      // is no reliable way to correlate a note to this question. Implement when
+      // the dispatch_log note schema adds a typed "pending" event.
       raised_at_dispatch: null,
       raised_at_turn: null,
       answered: false,
@@ -1776,6 +1807,16 @@ function assembleDispatchUnit(
   // prompt
   const prompt = compilePrompt(packedSlugs, snap.milestones, opsSnapshot);
 
+  // execution_mode (BL-102): determines how the orchestrator executes this unit.
+  //   - "guard-local" when the primary milestone has agent: null (D-12 guard-only class).
+  //     These milestones have no model call; the orchestrator runs the guard shell command
+  //     locally. They never enter Sentinel-Fanout grouping (zero-cost, instant).
+  //   - "model" for all other cases where a provider + model_id are present.
+  //   - "tool-call" is reserved for future pure-tool-call dispatch; currently all
+  //     non-guard units with ops default to "model".
+  const execution_mode: DispatchExecutionMode =
+    primaryM?.agent === null ? "guard-local" : "model";
+
   return {
     id: `${primarySlug}.dispatch.${unitIndex}`,
     milestones: packedSlugs,
@@ -1783,9 +1824,10 @@ function assembleDispatchUnit(
     model,
     effort,
     two_stage: primaryM?.two_stage ?? false,
+    execution_mode,
     provider,
     agent_name,
-    mcp_servers: null, // TODO: requires agent catalog lookup (future work)
+    mcp_servers: null, // STUB(BL-105): see DispatchUnit.mcp_servers JSDoc in types.ts
     resolved_max_tokens,
     background: true,
     prompt,

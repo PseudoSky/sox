@@ -604,6 +604,17 @@ export interface DagSnapshot {
 // DispatchUnit — optimizer output
 // ---------------------------------------------------------------------------
 
+/**
+ * How the orchestrator should execute this dispatch unit.
+ *   "model"       — send to a language model via the provider config.
+ *   "guard-local" — all ops are tool-call (guard-only milestone); run locally as
+ *                   a shell command / tool invocation, no model call needed.
+ *   "tool-call"   — reserved for pure tool-call units that are not guard checkpoints
+ *                   (currently maps to "guard-local" in practice; kept distinct for
+ *                   forward-compat with the planned tool-dispatch path).
+ */
+export type DispatchExecutionMode = "model" | "guard-local" | "tool-call";
+
 export interface DispatchUnit {
   /** optimizer — "primary-slug.dispatch.N" */
   id: string;
@@ -616,13 +627,25 @@ export interface DispatchUnit {
   effort: EffortTier | null;
   two_stage: boolean;
 
+  /**
+   * optimizer — how the orchestrator should execute this unit (BL-102).
+   *   "model"       — requires provider + model_id; may have a non-null prompt.
+   *   "guard-local" — guard-only milestone (agent: null); run locally, no model call.
+   *   "tool-call"   — pure tool-call unit; no model call.
+   * Orchestrators must branch on this field before attempting provider resolution.
+   * Guard-local units never enter the Sentinel-Fanout grouping (zero-cost, instant).
+   */
+  execution_mode: DispatchExecutionMode;
+
   /** optimizer — dag.providers[milestone.model] copied verbatim. */
   provider: ProviderConfig | null;
   /** optimizer — resolved from milestone.agent (namespace prefix stripped). */
   agent_name: string;
   /**
    * optimizer — from agent catalog entry.
-   * TODO: stubbed as null — requires agent catalog lookup (future work).
+   * STUB(BL-105): stubbed as null — requires an agent catalog lookup that maps
+   * agent_name → its declared mcp_servers list. No catalog exists yet; this will
+   * be populated when the agent-catalog milestone (adhd-build dag) ships.
    */
   mcp_servers: null;
   /** optimizer — dag.effort_max_tokens[milestone.effort]. */
