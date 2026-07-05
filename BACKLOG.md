@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-04 (post-context-06 closeout + validation sweep)
 
-**Total open: 31 items** (BL-166/BL-114 withdrawn 2026-07-04 — owner: consumed externally. Validation sweep verified every open entry against current code:
+**Total open: 30 items** (BL-166/BL-114 withdrawn 2026-07-04 — owner: consumed externally. Validation sweep verified every open entry against current code:
 6 found already-fixed and closed — BL-100, BL-106, BL-107, BL-108, BL-184, BL-188; 8 re-scoped
 with corrected citations — BL-57, BL-90, BL-94, BL-98, BL-116, BL-161, BL-171, BL-181; BL-99 is
 external (claude-agents repo); BL-62 upgraded from (unverified) to VERIFIED-REAL with live
@@ -17,13 +17,13 @@ rendering), BL-183 (outbox scaffolding deleted), BL-189/BL-191 (two-phase memory
 metrics), BL-190 (version alignment), BL-192 (resolved-invalid). Newly filed: BL-201,
 BL-202, BL-203.
 
-**Defined solutions (21)** — clear fix path, no pending decisions:
+**Defined solutions (20)** — clear fix path, no pending decisions:
 
 | Priority | Items |
 |---|---|
 | **HIGH** | BL-168 (module-resolution standard), BL-96 (cd to repo-root in audit), BL-181 (e2e fixture swap — fails at spawn, not existsSync) |
 | **MEDIUM** | BL-94 (ABI-rebuild CI enforcement — crash-mid-session fixed), BL-161 (memory-flush spec only — memory-core fixed), BL-171 (onnx V8 crash — file moved to member root), BL-102 (execution_mode field), BL-105 (7 stubs), BL-88 (per-record embed_model), BL-90 (per-axis recall recipes), BL-180 (dataRoot scope-path fix) |
-| **LOW** | BL-201 (lock debris sweep), BL-176 (quickReconcile helper), BL-178 (stderr sink default), BL-182 (memory-flush dead code), BL-57 (doctor legacy-residue check — bug fixed), BL-98 (confirm-then-close: entry's own claim was wrong), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder — citations updated), BL-117 (late chunking boundaries) |
+| **LOW** | BL-201 (lock debris sweep), BL-176 (quickReconcile helper), BL-178 (stderr sink default), BL-182 (memory-flush dead code), BL-57 (doctor legacy-residue check — bug fixed), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder — citations updated), BL-117 (late chunking boundaries) |
 | **LOW/MEDIUM** | BL-36 (record real manifest type) |
 
 **[TRIAGE] items (10)** — needs decision, investigation, or prerequisite before work starts:
@@ -1746,7 +1746,11 @@ The root question: should `--complete` validate "what was finished" (the working
 
 ---
 
-### BL-98 — reflection `SKILL.md` documents `memory_write` returning `E_DEDUP / existing_uid` on collision, but v1.1.0 actually returns `{episode_uid}` and links via async `SAME_AS` edge — **Open (LOW) (2026-06-23)**
+### BL-98 — reflection `SKILL.md` documents `memory_write` returning `E_DEDUP / existing_uid` on collision — **CLOSED-INVALID (2026-07-04): the skill was right, this entry was wrong**
+
+**Closed:** confirming read of the live reflection skill (sox-tools 1.0.20) completed — it
+documents byte-identical content → `{code:"E_DEDUP", existing_uid}` and near-duplicates →
+new node + async `SAME_AS`, which is exactly what `write.ts:83,193` implements. No fix anywhere.
 
 **Validation note (2026-07-04 sweep): this entry's own claim is WRONG.** `write.ts:83,193` returns `{code:'E_DEDUP', existing_uid}` for exact content-hash collisions — the SKILL.md is CORRECT. Only near-duplicates (cosine) link via async SAME_AS. Re-scoped ask: none against the skill; close after one confirming read of the reflection skill in claude-agents (external repo).
 
