@@ -22,6 +22,7 @@ import {
   // Slice 3 (docs/spec/service-lifecycle.md §11.3): crash-loop give-up markers.
   crashLoopMarkerDir,
   dataRoot,
+  userDataRoot,
   deriveOsUnitSpec,
   detectOsSupervisor,
   disableOsUnit,
@@ -2115,12 +2116,11 @@ async function rollingRestartConsumer(
   const lockfilePath = lockfilePathForRecord(scope, root);
   const runtimeFilePath = getRuntimeFilePath(lockfilePath);
 
-  // What is this extension? The MANIFEST type is authoritative — the
-  // service-registry start path hardcodes runtime entries to type 'mcp-server'
-  // for every detached service, so the runtime entry's `type` cannot be trusted
-  // to distinguish a long-running `service` from an on-demand `mcp-server`.
-  // Resolve from the lockfile `source` (→ store dir → extension.json) first,
-  // then the runtime entry's source, then the entry's own type as a last resort.
+  // What is this extension? The MANIFEST type is authoritative. BL-36 fixed the
+  // service-registry start path so it now records the real manifest type in the
+  // runtime entry (no longer hardcoded to 'mcp-server'). The resolution order
+  // below is kept as defense-in-depth for runtime records written by older
+  // binaries: lockfile source → runtime entry source → runtime entry type.
   const record = getRuntimeRecord(runtimeFilePath);
   const liveEntry = record?.entries?.find((e) => e.id === extId || e.key === extId);
   const lockSource = (() => {
@@ -3755,6 +3755,16 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
       for (const svc of entries) {
         const svcConfigEnv = buildExtConfigEnv(svc.id, root);
 
+        // BL-36: resolve the extension's REAL manifest type from the store's
+        // extension.json so the runtime entry records 'service' vs 'mcp-server'
+        // correctly. The registry.json written by run-service.ts does not carry
+        // the manifest type field; the store dir always has extension.json
+        // post-install (the install engine copies it there). Fall back to 'service'
+        // rather than 'mcp-server' when the manifest is unreadable — a service is
+        // what this code path exclusively registers.
+        const source = `file://${svc.storePath}`;
+        const svcManifestType = manifestTypeForSource(source) ?? 'service';
+
         // ── Singleton guard (spec §5.2: socket probe + entrypoint scan +
         //    cross-scope ownership check), keyed on [def:singleton-key] =
         //    (id, resolved-store-resource), NOT on scope or socket alone.
@@ -3768,9 +3778,8 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
         const entrypointToken = entrypointTokenForService(svc);
         const recordExisting = (note: string): void => {
           process.stdout.write(`sox: ${svc.id} ${note} — skipping spawn (singleton guard §5.2)\n`);
-          const source = `file://${svc.storePath}`;
           runtimeEntries.push({
-            key: svc.id, id: svc.id, type: 'mcp-server', scope, source,
+            key: svc.id, id: svc.id, type: svcManifestType, scope, source,
             pid: null, running: true, activatedAt: now,
           });
         };
@@ -3836,11 +3845,11 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
 
         const pid = child.pid ?? null;
         // source points to the store dir so soxe exec can find extension.json there.
-        const source = `file://${svc.storePath}`;
+        // (source and svcManifestType are resolved from extension.json above — BL-36)
         runtimeEntries.push({
           key: svc.id,
           id: svc.id,
-          type: 'mcp-server',
+          type: svcManifestType,
           scope,
           source,
           pid,
@@ -5253,7 +5262,7 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
   const registry = readInstallRegistry(registryPath);
 
   const findings: Array<{
-    kind: 'stray-process' | 'os-unit-not-loaded' | 'cross-build-stray' | 'crash-loop-give-up';
+    kind: 'stray-process' | 'os-unit-not-loaded' | 'cross-build-stray' | 'crash-loop-give-up' | 'legacy-residue';
     extId: string;
     scope: string;
     pid: number;
@@ -5261,6 +5270,46 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
     orphaned: boolean;
     detail: string;
   }> = [];
+
+  // ── BL-57: legacy repo-root residue scan. ──────────────────────────────────
+  // An older soxe binary (pre-ADR-0004) wrote global state files directly into
+  // $SOX_HOME, which users often pointed at a repo root. Now that the variable is
+  // fully inert, those files become orphaned residue. We check the cwd/--root
+  // directory for these well-known filenames and report them with a suggested
+  // migrate-home command. REPORT-ONLY — doctor never deletes anything.
+  {
+    const legacyResidueNames = [
+      'install-registry.json',
+      'supervisors.json',
+      'logs',     // directory
+      '.sox',     // directory
+    ] as const;
+    // Scan the root dir itself for stale files placed there by an old binary.
+    // Skip when root IS the canonical user data root (SOX_ECOSYSTEM_HOME or
+    // ~/.adhd/sox-ecosystem/) — those files belong there.
+    const canonicalUserRoot = userDataRoot();
+    const rootResolved = pathMod.resolve(root);
+    const isCanonical = rootResolved === pathMod.resolve(canonicalUserRoot);
+    if (!isCanonical) {
+      for (const name of legacyResidueNames) {
+        const candidate = pathMod.join(root, name);
+        let exists = false;
+        try { exists = fsMod.existsSync(candidate); } catch { /* permission deny — skip */ }
+        if (!exists) continue;
+        findings.push({
+          kind: 'legacy-residue',
+          extId: name,
+          scope: 'global',
+          pid: 0,
+          ppid: 0,
+          orphaned: false,
+          detail:
+            `legacy soxe data file/dir at ${candidate} — written by a pre-ADR-0004 binary. ` +
+            `Cleanup: \`${CLI} migrate-home --old-home ${root}\`  (or remove manually if already migrated)`,
+        });
+      }
+    }
+  }
 
   // ── Slice 3 (§11.3): surface crash-loop give-up markers. Report-only — only an
   //    explicit `soxe start`/`enable` may clear a give-up state.
@@ -5382,15 +5431,18 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
   const strayCount = findings.filter((f) => f.kind === 'stray-process' || f.kind === 'cross-build-stray').length;
   const osUnitCount = findings.filter((f) => f.kind === 'os-unit-not-loaded').length;
   const crashLoopCount = findings.filter((f) => f.kind === 'crash-loop-give-up').length;
+  const residueCount = findings.filter((f) => f.kind === 'legacy-residue').length;
   log(`found ${findings.length} anomal${findings.length === 1 ? 'y' : 'ies'}:`);
   log(`  ${strayCount} stray processe${strayCount === 1 ? '' : 's'}`);
   log(`  ${osUnitCount} unloaded os-unit${osUnitCount === 1 ? '' : 's'}`);
   if (crashLoopCount > 0) log(`  ${crashLoopCount} crash-loop give-up${crashLoopCount === 1 ? '' : 's'} (§11.3)`);
+  if (residueCount > 0) log(`  ${residueCount} legacy residue file${residueCount === 1 ? '' : 's'} (BL-57)`);
 
   for (const f of findings) {
     const tag = f.kind === 'cross-build-stray' ? 'CROSS-BUILD'
       : f.kind === 'os-unit-not-loaded' ? 'OS-UNIT'
       : f.kind === 'crash-loop-give-up' ? 'CRASH-LOOP'
+      : f.kind === 'legacy-residue' ? 'RESIDUE'
       : 'STRAY';
     const pidInfo = f.pid > 0 ? ` (pid=${f.pid}, ppid=${f.ppid}${f.orphaned ? ', orphan' : ''})` : '';
     log(`  [${tag}] ${f.extId}@${f.scope}${pidInfo}: ${f.detail}`);
@@ -7390,7 +7442,7 @@ async function cmdServe(flags: Record<string, string>): Promise<void> {
     process.stdout.write(`${CLI} serve — launch an extension process with live cascade config
 
 Usage:
-  ${CLI} serve <ext-id> [--scope=<scope>] [--root=<dir>] [--log]
+  ${CLI} serve <ext-id> [--scope=<scope>] [--root=<dir>] [--no-log]
 
 Resolves the extension entrypoint, injects SOX_CONFIG_* env vars from the
 current cascade config, then exec()s the Node process (replaces this process).
@@ -7410,9 +7462,11 @@ Flags:
                     run the original direct-stdio exec path (this process IS the
                     server). Equivalent to manifest lifecycle.serve_mode:"direct"
                     or lifecycle.proxy:false.
-   --log             Tee child stderr to <logDir>/<extId>-serve-<YYYY-MM-DD>.log (opt-in)
-                     Also enabled by setting SOX_SERVE_LOG=1 in the environment.
-                     NEVER tees stdout — stdout is the JSON-RPC channel.
+   --log             (legacy) Alias for the default ON behaviour — no-op when logging
+                     is already on. Use --no-log to suppress instead.
+   --no-log          Opt OUT of the stderr log-tee: run direct exec() with inherited
+                     stdio (zero intermediary). Also: SOX_SERVE_LOG=0.
+                     NEVER tees stdout regardless — stdout is the JSON-RPC channel.
    --port=<port>     Start an HTTP listener on the given port in addition to stdio.
                      Supports dual transport — stdio and HTTP clients simultaneously.
                      Compatible with proxy mode: the shim proxies both to the backend.
@@ -7692,19 +7746,31 @@ Flags:
     process.exit(0);
   }
 
-  // BL-46: opt-in durable stderr sink for the served child process.
+  // BL-46 / BL-178: durable stderr sink for the served child process.
   //
-  // When --log flag OR SOX_SERVE_LOG=1 env is set, we tee the child's STDERR
-  // to both process.stderr (so the MCP client still sees errors) AND a dated log
-  // file under <logDir>/<extId>-serve-<YYYY-MM-DD>.log via LogManager.
+  // Default (BL-178): tee the child's STDERR to both process.stderr (so the MCP
+  // client still sees errors) AND a dated log file under
+  // <logDir>/<extId>-serve-<YYYY-MM-DD>.log via LogManager.
+  //
+  // Opt-out: --no-log OR SOX_SERVE_LOG=0 disables the tee and runs the original
+  // direct exec() path (stdio:'inherit'), zero intermediary.
+  // Opt-in alias: --log / SOX_SERVE_LOG=1 are accepted for backwards compatibility
+  // but are now no-ops when the default is already ON.
   //
   // NEVER tee stdout — stdout is the JSON-RPC channel; corrupting it breaks MCP.
-  // Default (no flag/env): stdio:'inherit' exactly as before — zero behaviour change.
-  const wantLog =
-    flags['log'] !== undefined || process.env['SOX_SERVE_LOG'] === '1';
+  const wantLog = (() => {
+    // Explicit opt-out wins regardless of any flag.
+    if (flags['no-log'] !== undefined) return false;
+    if (process.env['SOX_SERVE_LOG'] === '0') return false;
+    // Explicit opt-in (legacy flag; preserved for backwards compat).
+    if (flags['log'] !== undefined) return true;
+    if (process.env['SOX_SERVE_LOG'] === '1') return true;
+    // Default: tee ON (BL-178).
+    return true;
+  })();
 
   if (!wantLog) {
-    // Default path: replace this process (stdio inherited) — MCP server takes over
+    // Opt-out path: replace this process (stdio inherited) — MCP server takes over
     // stdin/stdout directly with no intermediary.
     const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
     try {
