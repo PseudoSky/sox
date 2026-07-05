@@ -7376,7 +7376,7 @@ async function cmdServe(flags: Record<string, string>): Promise<void> {
     process.stdout.write(`${CLI} serve — launch an extension process with live cascade config
 
 Usage:
-  ${CLI} serve <ext-id> [--scope=<scope>] [--root=<dir>] [--log]
+  ${CLI} serve <ext-id> [--scope=<scope>] [--root=<dir>] [--no-log]
 
 Resolves the extension entrypoint, injects SOX_CONFIG_* env vars from the
 current cascade config, then exec()s the Node process (replaces this process).
@@ -7396,9 +7396,11 @@ Flags:
                     run the original direct-stdio exec path (this process IS the
                     server). Equivalent to manifest lifecycle.serve_mode:"direct"
                     or lifecycle.proxy:false.
-   --log             Tee child stderr to <logDir>/<extId>-serve-<YYYY-MM-DD>.log (opt-in)
-                     Also enabled by setting SOX_SERVE_LOG=1 in the environment.
-                     NEVER tees stdout — stdout is the JSON-RPC channel.
+   --log             (legacy) Alias for the default ON behaviour — no-op when logging
+                     is already on. Use --no-log to suppress instead.
+   --no-log          Opt OUT of the stderr log-tee: run direct exec() with inherited
+                     stdio (zero intermediary). Also: SOX_SERVE_LOG=0.
+                     NEVER tees stdout regardless — stdout is the JSON-RPC channel.
    --port=<port>     Start an HTTP listener on the given port in addition to stdio.
                      Supports dual transport — stdio and HTTP clients simultaneously.
                      Compatible with proxy mode: the shim proxies both to the backend.
@@ -7678,19 +7680,31 @@ Flags:
     process.exit(0);
   }
 
-  // BL-46: opt-in durable stderr sink for the served child process.
+  // BL-46 / BL-178: durable stderr sink for the served child process.
   //
-  // When --log flag OR SOX_SERVE_LOG=1 env is set, we tee the child's STDERR
-  // to both process.stderr (so the MCP client still sees errors) AND a dated log
-  // file under <logDir>/<extId>-serve-<YYYY-MM-DD>.log via LogManager.
+  // Default (BL-178): tee the child's STDERR to both process.stderr (so the MCP
+  // client still sees errors) AND a dated log file under
+  // <logDir>/<extId>-serve-<YYYY-MM-DD>.log via LogManager.
+  //
+  // Opt-out: --no-log OR SOX_SERVE_LOG=0 disables the tee and runs the original
+  // direct exec() path (stdio:'inherit'), zero intermediary.
+  // Opt-in alias: --log / SOX_SERVE_LOG=1 are accepted for backwards compatibility
+  // but are now no-ops when the default is already ON.
   //
   // NEVER tee stdout — stdout is the JSON-RPC channel; corrupting it breaks MCP.
-  // Default (no flag/env): stdio:'inherit' exactly as before — zero behaviour change.
-  const wantLog =
-    flags['log'] !== undefined || process.env['SOX_SERVE_LOG'] === '1';
+  const wantLog = (() => {
+    // Explicit opt-out wins regardless of any flag.
+    if (flags['no-log'] !== undefined) return false;
+    if (process.env['SOX_SERVE_LOG'] === '0') return false;
+    // Explicit opt-in (legacy flag; preserved for backwards compat).
+    if (flags['log'] !== undefined) return true;
+    if (process.env['SOX_SERVE_LOG'] === '1') return true;
+    // Default: tee ON (BL-178).
+    return true;
+  })();
 
   if (!wantLog) {
-    // Default path: replace this process (stdio inherited) — MCP server takes over
+    // Opt-out path: replace this process (stdio inherited) — MCP server takes over
     // stdin/stdout directly with no intermediary.
     const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
     try {
