@@ -117,6 +117,9 @@ export {
   schedulePendingEmbeds,
   flushPendingEmbeds,
   healMissingVectors,
+  // BL-88: stale-vector heal (DEFAULT-OFF — SOX_HEAL_STALE_VECTORS=1 required).
+  // Integrator decides tick wiring at merge — NOT wired in memory-server yet.
+  healStaleVectors,
   embedBacklogStats,
   syncEmbedEnabled,
   getEmbedPipelineMetrics,
@@ -127,6 +130,8 @@ export type {
   EmbedApplyResult,
   SchedulePendingResult,
   HealResult,
+  // BL-88: stale-vector heal result type.
+  StaleHealResult,
   EmbedBacklogStats,
   EmbedPipelineMetrics,
 } from './embed-pipeline.js';
@@ -289,7 +294,7 @@ export type {
   CurateListLensesResult,
 } from './curate.js';
 export { memoryGetStats } from './stats.js';
-export type { StatsResult } from './stats.js';
+export type { StatsResult, EmbedProvenanceStats } from './stats.js';
 
 // ── Re-embed store (BL-160: promoted from scripts/reembed-memory.mjs) ─────────
 export { reembedStore, defaultMemoryDbPath } from './reembed.js';

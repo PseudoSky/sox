@@ -46,7 +46,7 @@
 
 import type Database from 'better-sqlite3';
 import { performance } from 'node:perf_hooks';
-import { embed, vecToJson } from './embed.js';
+import { embed, vecToJson, getActiveEmbedModel } from './embed.js';
 import { detectNearDup } from './neardup.js';
 import type { NearDupResult } from './neardup.js';
 import { applyNearDupResult, NEARDUP_THRESHOLD } from './enrich.js';
@@ -114,6 +114,23 @@ export interface HealResult {
   gone: number;
   failed: number;
   /** True when SOX_DISABLE_EMBED_HEAL=1 short-circuited the pass (test seam / NC). */
+  disabled: boolean;
+}
+
+/**
+ * BL-88: Result of a stale-vector heal pass (healStaleVectors).
+ * Only produced when SOX_HEAL_STALE_VECTORS=1 enables the pass.
+ */
+export interface StaleHealResult {
+  scanned: number;
+  healed: number;
+  gone: number;
+  failed: number;
+  /**
+   * True when SOX_HEAL_STALE_VECTORS=1 was NOT set (pass default-off).
+   * The integrator decides when to enable this — a model swap re-embedding
+   * an entire store is an explicit operator decision, not a routine tick action.
+   */
   disabled: boolean;
 }
 
@@ -297,6 +314,15 @@ export function applyEmbedding(
     db.prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(
       pending.rowid,
       vecToJson(vec),
+    );
+
+    // BL-88: stamp the embed_model on the node row in the same transaction as
+    // the vec insert. This is the SINGLE choke-point for all write/update/heal
+    // paths — every vector that lands on any node goes through applyEmbedding.
+    // NULL rows are honest: provenance unknown (pre-BL-88 or not yet embedded).
+    db.prepare('UPDATE node SET embed_model = ? WHERE rowid = ?').run(
+      getActiveEmbedModel(),
+      pending.rowid,
     );
 
     // Deferred E8 near-dup: only for still-live nodes (near-dup may invalidate
@@ -502,6 +528,122 @@ export async function healMissingVectors(
       metrics.counters.heals_failed++;
       const msg = err instanceof Error ? err.message : JSON.stringify(err);
       log(`${LOG_PREFIX} heal FAILURE uid=${pending.uid} rowid=${pending.rowid}: ${msg}`);
+    }
+  }
+  return out;
+}
+
+// ── Stale-vector heal (BL-88, DEFAULT-OFF) ────────────────────────────────────
+
+/**
+ * True when SOX_HEAL_STALE_VECTORS=1. Default-off by design: re-embedding an
+ * entire store after a model swap is an explicit operator decision, not a
+ * routine background action. The integrator decides when to wire this into a
+ * tick (or a manual invoke) — it is exported but NOT wired in memory-server.
+ */
+function staleHealEnabled(): boolean {
+  return process.env['SOX_HEAL_STALE_VECTORS'] === '1';
+}
+
+/**
+ * Re-embed live episodes whose `embed_model` is non-null and != the active model.
+ *
+ * DEFAULT-OFF: only runs when SOX_HEAL_STALE_VECTORS=1 is set. Returns
+ * `{ disabled: true }` immediately otherwise. The active model is resolved once
+ * at the start of each pass via `getActiveEmbedModel()`.
+ *
+ * SAFE PATTERN (BL-154): never call this from inside a WriteQueue task. Call it
+ * from an interval callback (like healMissingVectors) — OUTSIDE any queue task.
+ * Each apply is enqueued as a SHORT 'apply'-kind task, same slot-safe pattern as
+ * healMissingVectors.
+ *
+ * Bounded: at most `opts.limit` (default 500) nodes per pass. The next tick
+ * picks up the remainder.
+ *
+ * NOTE: NULL-model rows (pre-BL-88) are deliberately EXCLUDED — NULL is honest
+ * ("provenance unknown") and must not be treated as stale. Only rows with a
+ * non-null embed_model that differs from the current active model are targets.
+ *
+ * The integrator MUST decide tick wiring at merge. Do NOT wire this into
+ * memory-server without an explicit operator opt-in surface.
+ */
+export async function healStaleVectors(
+  db: Database.Database,
+  wq: WriteQueue,
+  opts?: { limit?: number; logSink?: (line: string) => void },
+): Promise<StaleHealResult> {
+  const out: StaleHealResult = { scanned: 0, healed: 0, gone: 0, failed: 0, disabled: false };
+  if (!staleHealEnabled()) {
+    out.disabled = true;
+    return out;
+  }
+
+  const activeModel = getActiveEmbedModel();
+  const limit = opts?.limit ?? 500;
+  const log = opts?.logSink ?? ((line: string) => console.error(line));
+  const metrics = stateFor(wq.storePath);
+
+  // BL-88: only target rows with a non-null embed_model that differs from the
+  // currently active model. Rows with embed_model IS NULL are pre-provenance
+  // and are left for the operator to handle via the full reembed path.
+  const rows = db
+    .prepare<[string, number], { rowid: number; uid: string; content: string; t_created: string | null }>(
+      `SELECT n.rowid, n.uid, n.content, n.t_created
+       FROM node n
+       WHERE n.kind = 'episode'
+         AND n.t_invalid IS NULL
+         AND n.content IS NOT NULL AND n.content != ''
+         AND n.embed_model IS NOT NULL
+         AND n.embed_model != ?
+         AND EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)
+       ORDER BY n.rowid ASC
+       LIMIT ?`,
+    )
+    .all(activeModel, limit);
+
+  out.scanned = rows.length;
+  for (const r of rows) {
+    // NO startedAtMs: heal paths must not pollute the pipeline time_to_vector distribution.
+    const pending: PendingEmbed = { uid: r.uid, rowid: r.rowid, text: r.content };
+    try {
+      // Delete the stale vec_node row first so applyEmbedding sees no existing row
+      // and proceeds with the INSERT (vec0 tables have no UPDATE trigger — BL-91).
+      await wq.enqueue(
+        `embed_stale_del:${pending.uid}`,
+        (qdb) => {
+          qdb.prepare('DELETE FROM vec_node WHERE node_id = CAST(? AS INTEGER)').run(pending.rowid);
+          return { deleted: true };
+        },
+        'apply',
+      );
+
+      const embedStartMs = performance.now();
+      const vec = await embed(pending.text);
+      metrics.embedDuration.push(performance.now() - embedStartMs);
+      metrics.counters.embeds_completed++;
+
+      const applied = await wq.enqueue(
+        `embed_stale_apply:${pending.uid}`,
+        (qdb) => applyEmbedding(qdb, pending, vec),
+        'apply',
+      );
+      recordApplyOutcome(metrics, applied.status);
+      if (applied.status === 'applied') {
+        out.healed++;
+        metrics.counters.heals_applied++;
+        // heal_lag: WALL-CLOCK age of the stale node (same shape as healMissingVectors).
+        const createdMs = r.t_created === null ? NaN : Date.parse(r.t_created);
+        if (Number.isFinite(createdMs)) {
+          metrics.healLag.push(Math.max(0, Date.now() - createdMs));
+        }
+      } else {
+        out.gone++;
+      }
+    } catch (err) {
+      out.failed++;
+      metrics.counters.heals_failed++;
+      const msg = err instanceof Error ? err.message : JSON.stringify(err);
+      log(`${LOG_PREFIX} stale-heal FAILURE uid=${pending.uid} rowid=${pending.rowid}: ${msg}`);
     }
   }
   return out;

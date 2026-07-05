@@ -14,6 +14,25 @@ import type { ClusterStats } from './cluster.js';
 import { getActiveEmbedModel, getEmbedState, getLastEmbedError } from './embed.js';
 import { WriteQueue } from './write-queue.js';
 
+/**
+ * BL-88: per-record embedding provenance counts over live episodes with vectors.
+ * Additive field — existing callers do not need to handle it unless they want it.
+ */
+export interface EmbedProvenanceStats {
+  /** Live episodes with embed_model IS NOT NULL (stamped since BL-88). */
+  stamped: number;
+  /** Live episodes with embed_model IS NULL (pre-BL-88 or not yet embedded). */
+  unstamped: number;
+  /**
+   * Live episodes with a vec_node row and a non-null embed_model that differs
+   * from the currently active model. These are re-embeddable via healStaleVectors
+   * when SOX_HEAL_STALE_VECTORS=1 is set.
+   */
+  stale_vector_count: number;
+  /** The active embedding model at the time of this stats query. */
+  active_model: string;
+}
+
 export interface StatsResult {
   tools: string[];
   enrich_version: string;
@@ -40,6 +59,8 @@ export interface StatsResult {
   wal_bytes: number;
   /** (WP-5) ISO timestamp of the last successful WAL checkpoint, or null if never checkpointed. */
   last_checkpoint_at: string | null;
+  /** (BL-88) Per-record embedding provenance counts. */
+  embed_provenance: EmbedProvenanceStats;
 }
 
 export async function memoryGetStats(
@@ -119,8 +140,41 @@ export async function memoryGetStats(
 
   const qStats = clusterStats(db);
 
-  // Embed health
+  // BL-88: embed provenance counts (additive field).
+  // Counts over ALL live episodes (no project_path filter) — provenance is a
+  // store-wide data-integrity signal, not a per-project coverage metric.
   const resolvedEmbedModel = getActiveEmbedModel();
+
+  const stampedRow = db
+    .prepare<[], { cnt: number }>(
+      `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND embed_model IS NOT NULL`,
+    )
+    .get();
+  const unstampedRow = db
+    .prepare<[], { cnt: number }>(
+      `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND embed_model IS NULL`,
+    )
+    .get();
+  const staleVecRow = db
+    .prepare<[string], { cnt: number }>(
+      `SELECT COUNT(*) AS cnt
+       FROM node n
+       WHERE n.kind = 'episode'
+         AND n.t_invalid IS NULL
+         AND n.embed_model IS NOT NULL
+         AND n.embed_model != ?
+         AND EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)`,
+    )
+    .get(resolvedEmbedModel);
+
+  const embedProvenance: EmbedProvenanceStats = {
+    stamped: stampedRow?.cnt ?? 0,
+    unstamped: unstampedRow?.cnt ?? 0,
+    stale_vector_count: staleVecRow?.cnt ?? 0,
+    active_model: resolvedEmbedModel,
+  };
+
+  // Embed health (resolvedEmbedModel already set above)
   const configuredBackend = process.env['SOX_EMBED_BACKEND'] ?? 'auto';
   const resolvedEmbedState = getEmbedState();
   const onHashFallback = false;
@@ -179,5 +233,6 @@ export async function memoryGetStats(
     cluster_quality: qStats,
     wal_bytes: walBytes,
     last_checkpoint_at: lastCheckpointAt,
+    embed_provenance: embedProvenance,
   };
 }
