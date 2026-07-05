@@ -20,7 +20,8 @@
         "outputPath": "libs/data/search/hybrid-search/dist",
         "tsConfig": "libs/data/search/hybrid-search/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/data/search/hybrid-search/src"
       },
       "cache": true,
       "inputs": [

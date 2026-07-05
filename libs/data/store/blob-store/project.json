@@ -20,7 +20,8 @@
         "outputPath": "libs/data/store/blob-store/dist",
         "tsConfig": "libs/data/store/blob-store/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/data/store/blob-store/src"
       },
       "cache": true,
       "inputs": [

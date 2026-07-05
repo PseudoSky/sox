@@ -18,7 +18,8 @@
         "outputPath": "tools/baseline-capture/dist",
         "tsConfig": "tools/baseline-capture/tsconfig.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "tools/baseline-capture/src"
       },
       "cache": true,
       "inputs": [

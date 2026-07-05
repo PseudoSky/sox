@@ -20,7 +20,8 @@
         "outputPath": "libs/data/ingest/ingest/dist",
         "tsConfig": "libs/data/ingest/ingest/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/data/ingest/ingest/src"
       },
       "cache": true,
       "inputs": [

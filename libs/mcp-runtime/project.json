@@ -20,7 +20,8 @@
         "outputPath": "libs/mcp-runtime/dist",
         "tsConfig": "libs/mcp-runtime/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/mcp-runtime/src"
       },
       "cache": true,
       "inputs": [

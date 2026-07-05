@@ -20,7 +20,8 @@
         "outputPath": "libs/data/embed/embedding-provider/dist",
         "tsConfig": "libs/data/embed/embedding-provider/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/data/embed/embedding-provider/src"
       },
       "cache": true,
       "inputs": [

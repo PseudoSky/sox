@@ -20,7 +20,8 @@
         "outputPath": "libs/manifest/dist",
         "tsConfig": "libs/manifest/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/manifest/src"
       },
       "cache": true,
       "inputs": [

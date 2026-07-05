@@ -20,7 +20,8 @@
         "outputPath": "libs/registry/dist",
         "tsConfig": "libs/registry/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/registry/src"
       },
       "cache": true,
       "inputs": [

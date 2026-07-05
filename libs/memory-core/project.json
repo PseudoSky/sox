@@ -18,7 +18,8 @@
         "outputPath": "libs/memory-core/dist",
         "tsConfig": "libs/memory-core/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/memory-core/src"
       },
       "cache": true,
       "inputs": [

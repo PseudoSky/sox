@@ -20,7 +20,8 @@
         "outputPath": "libs/service-proxy/dist",
         "tsConfig": "libs/service-proxy/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/service-proxy/src"
       },
       "cache": true,
       "inputs": [

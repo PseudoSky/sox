@@ -20,7 +20,8 @@
         "outputPath": "libs/host-runtime/dist",
         "tsConfig": "libs/host-runtime/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/host-runtime/src"
       },
       "cache": true,
       "inputs": [

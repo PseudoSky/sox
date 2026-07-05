@@ -20,7 +20,8 @@
         "outputPath": "libs/data/vectors/vector-store/dist",
         "tsConfig": "libs/data/vectors/vector-store/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/data/vectors/vector-store/src"
       },
       "cache": true,
       "inputs": [

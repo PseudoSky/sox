@@ -20,7 +20,8 @@
         "outputPath": "libs/authoring/dist",
         "tsConfig": "libs/authoring/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/authoring/src"
       },
       "cache": true,
       "inputs": [

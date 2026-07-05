@@ -20,7 +20,8 @@
         "outputPath": "libs/tokenguard-core/dist",
         "tsConfig": "libs/tokenguard-core/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/tokenguard-core/src"
       },
       "cache": true,
       "inputs": [

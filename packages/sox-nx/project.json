@@ -20,7 +20,8 @@
         "outputPath": "packages/sox-nx/dist",
         "tsConfig": "packages/sox-nx/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "packages/sox-nx/src"
       },
       "cache": true,
       "inputs": [

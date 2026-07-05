@@ -20,7 +20,8 @@
         "outputPath": "libs/data/verify/claim-verification/dist",
         "tsConfig": "libs/data/verify/claim-verification/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/data/verify/claim-verification/src"
       },
       "cache": true,
       "inputs": [

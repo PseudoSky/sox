@@ -20,7 +20,8 @@
         "outputPath": "libs/data/graph/graph-store/dist",
         "tsConfig": "libs/data/graph/graph-store/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/data/graph/graph-store/src"
       },
       "cache": true,
       "inputs": [

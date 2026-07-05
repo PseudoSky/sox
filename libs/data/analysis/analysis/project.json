@@ -20,7 +20,8 @@
         "outputPath": "libs/data/analysis/analysis/dist",
         "tsConfig": "libs/data/analysis/analysis/tsconfig.lib.json",
         "assets": [],
-        "clean": true
+        "clean": true,
+        "rootDir": "libs/data/analysis/analysis/src"
       },
       "cache": true,
       "inputs": [
