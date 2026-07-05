@@ -16,7 +16,7 @@
         "{workspaceRoot}/libs/data/embed/embedding-provider/dist"
       ],
       "options": {
-        "command": "tsc --project libs/data/embed/embedding-provider/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/embed/embedding-provider/dist/package.json",
+        "command": "rm -rf libs/data/embed/embedding-provider/dist/ && tsc --project libs/data/embed/embedding-provider/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/embed/embedding-provider/dist/package.json",
         "cwd": "."
       },
       "cache": true,

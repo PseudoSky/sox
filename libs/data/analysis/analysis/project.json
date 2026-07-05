@@ -16,7 +16,7 @@
         "{workspaceRoot}/libs/data/analysis/analysis/dist"
       ],
       "options": {
-        "command": "tsc --project libs/data/analysis/analysis/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/analysis/analysis/dist/package.json",
+        "command": "rm -rf libs/data/analysis/analysis/dist/ && tsc --project libs/data/analysis/analysis/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/analysis/analysis/dist/package.json",
         "cwd": "."
       },
       "cache": true,

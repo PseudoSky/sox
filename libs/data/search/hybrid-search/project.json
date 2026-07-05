@@ -16,7 +16,7 @@
         "{workspaceRoot}/libs/data/search/hybrid-search/dist"
       ],
       "options": {
-        "command": "tsc --project libs/data/search/hybrid-search/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/search/hybrid-search/dist/package.json",
+        "command": "rm -rf libs/data/search/hybrid-search/dist/ && tsc --project libs/data/search/hybrid-search/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/search/hybrid-search/dist/package.json",
         "cwd": "."
       },
       "cache": true,

@@ -16,7 +16,7 @@
         "{workspaceRoot}/libs/data/store/blob-store/dist"
       ],
       "options": {
-        "command": "tsc --project libs/data/store/blob-store/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/store/blob-store/dist/package.json",
+        "command": "rm -rf libs/data/store/blob-store/dist/ && tsc --project libs/data/store/blob-store/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/store/blob-store/dist/package.json",
         "cwd": "."
       },
       "cache": true,
