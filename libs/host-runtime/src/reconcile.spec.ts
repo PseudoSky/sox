@@ -233,7 +233,7 @@ describe('sweepProxyBackendLocks — BL-201 dead-holder debris sweep (injected f
   });
 
   it('dead pid + fresh file (< TTL) → kept (mid-reclaim guard)', () => {
-    const lockFile = `${LOCK_DIR}/proxy-backend-freshtest.lock`;
+    const lockFile = `${LOCK_DIR}/proxy-backend-f4e50123.lock`;
     const files: Record<string, { content: string; mtimeMs?: number }> = {
       [lockFile]: { content: JSON.stringify({ pid: 99999, t: FRESH_MTIME, key: 'k' }), mtimeMs: FRESH_MTIME },
     };
@@ -272,7 +272,7 @@ describe('sweepProxyBackendLocks — BL-201 dead-holder debris sweep (injected f
   });
 
   it('unparseable payload + old file → swept (cannot validate as live)', () => {
-    const lockFile = `${LOCK_DIR}/proxy-backend-garbage00.lock`;
+    const lockFile = `${LOCK_DIR}/proxy-backend-6a4ba6e0.lock`;
     const files: Record<string, { content: string; mtimeMs?: number }> = {
       [lockFile]: { content: 'NOT-JSON}{{{', mtimeMs: OLD_MTIME },
     };
@@ -291,7 +291,7 @@ describe('sweepProxyBackendLocks — BL-201 dead-holder debris sweep (injected f
   });
 
   it('dry-run: reports WOULD sweep without unlinking', () => {
-    const lockFile = `${LOCK_DIR}/proxy-backend-dryruntest.lock`;
+    const lockFile = `${LOCK_DIR}/proxy-backend-d54a0123.lock`;
     const files: Record<string, { content: string; mtimeMs?: number }> = {
       [lockFile]: { content: JSON.stringify({ pid: 99999, t: OLD_MTIME, key: 'k' }), mtimeMs: OLD_MTIME },
     };
@@ -419,7 +419,7 @@ describe('sweepProxyBackendLocks — real-filesystem smoke (mkdtemp sandbox)', (
   });
 
   it('dry-run does not delete real lock files from the sandbox', () => {
-    const lockPath = join(tmpDir, 'proxy-backend-drytest11.lock');
+    const lockPath = join(tmpDir, 'proxy-backend-d4e51111.lock');
     writeFileSync(lockPath, JSON.stringify({ pid: 99999999, t: Date.now() - 60_000, key: 'drytest' }));
     const oldTime = new Date(Date.now() - LOCK_DEBRIS_TTL_MS - 5_000);
     nodefs.utimesSync(lockPath, oldTime, oldTime);

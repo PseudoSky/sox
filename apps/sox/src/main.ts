@@ -63,6 +63,8 @@ import {
   socketOwnerPids,
   startRuntime,
   stopRuntime,
+  // BL-201: dead-holder proxy spawn-lock debris sweep (reconcile step 6).
+  sweepProxyBackendLocks,
   unloadThenReap,
   // BL-185: interval-schedule detection for SCHEDULED status rendering.
   isScheduledOsUnitContent,
@@ -4832,7 +4834,8 @@ interface ReconcileFinding {
     | 'os-unit-file-missing'    // ownership records a unit whose file is gone
     | 'os-unit-stale'           // on-disk unit hash ≠ ownership appliedHash / artifact drift (F12)
     | 'os-unit-orphaned'        // sox-labelled unit file with no ownership entry (F15)
-    | 'crash-loop-give-up';     // Slice 3 marker (§11.3) — explicit start clears
+    | 'crash-loop-give-up'      // Slice 3 marker (§11.3) — explicit start clears
+    | 'lock-debris';            // BL-201: dead-holder proxy spawn-lock file swept
   extId: string;
   scope: string;
   pid: number;
@@ -5154,6 +5157,25 @@ async function doctorReconcile(flags: Record<string, string>): Promise<void> {
       action: 'report-only',
     });
     log(`[reconcile] ${mk.reason} (capped at ${mk.cappedAt}) — clear with \`${CLI} start --id=${baseId}\``);
+  }
+
+  // ── 6. BL-201: dead-holder proxy spawn-lock debris sweep. A holder that dies
+  //       between tryAcquireLock and its finally-release leaves the file behind;
+  //       correctness is unaffected (pidAlive+TTL reclaim), but the debris misleads
+  //       forensics. Sweep per-scope run/supervisors dirs; missing dirs are no-ops.
+  for (const sc of scopes) {
+    let dir: string;
+    try { dir = dataRoot(sc, root); } catch { continue; }
+    const lockDir = pathMod.join(dir, 'run', 'supervisors');
+    const sweep = sweepProxyBackendLocks(lockDir, { dryRun, log: (m) => log(m) });
+    for (const entry of sweep.entries) {
+      if (entry.action === 'kept') continue;
+      findings.push({
+        kind: 'lock-debris', extId: pathMod.basename(entry.file), scope: sc, pid: 0,
+        detail: entry.reason,
+        action: entry.action === 'swept' ? 'healed' : 'would-heal',
+      });
+    }
   }
 
   // ── Summary + honest exit. ────────────────────────────────────────────────────

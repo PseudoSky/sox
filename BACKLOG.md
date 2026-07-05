@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-04 (post-context-06 closeout + validation sweep)
 
-**Total open: 30 items** (BL-166/BL-114 withdrawn 2026-07-04 — owner: consumed externally. Validation sweep verified every open entry against current code:
+**Total open: 29 items** (BL-166/BL-114 withdrawn 2026-07-04 — owner: consumed externally. Validation sweep verified every open entry against current code:
 6 found already-fixed and closed — BL-100, BL-106, BL-107, BL-108, BL-184, BL-188; 8 re-scoped
 with corrected citations — BL-57, BL-90, BL-94, BL-98, BL-116, BL-161, BL-171, BL-181; BL-99 is
 external (claude-agents repo); BL-62 upgraded from (unverified) to VERIFIED-REAL with live
@@ -17,13 +17,13 @@ rendering), BL-183 (outbox scaffolding deleted), BL-189/BL-191 (two-phase memory
 metrics), BL-190 (version alignment), BL-192 (resolved-invalid). Newly filed: BL-201,
 BL-202, BL-203.
 
-**Defined solutions (20)** — clear fix path, no pending decisions:
+**Defined solutions (19)** — clear fix path, no pending decisions:
 
 | Priority | Items |
 |---|---|
 | **HIGH** | BL-168 (module-resolution standard), BL-96 (cd to repo-root in audit), BL-181 (e2e fixture swap — fails at spawn, not existsSync) |
 | **MEDIUM** | BL-94 (ABI-rebuild CI enforcement — crash-mid-session fixed), BL-161 (memory-flush spec only — memory-core fixed), BL-171 (onnx V8 crash — file moved to member root), BL-102 (execution_mode field), BL-105 (7 stubs), BL-88 (per-record embed_model), BL-90 (per-axis recall recipes), BL-180 (dataRoot scope-path fix) |
-| **LOW** | BL-201 (lock debris sweep), BL-176 (quickReconcile helper), BL-178 (stderr sink default), BL-182 (memory-flush dead code), BL-57 (doctor legacy-residue check — bug fixed), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder — citations updated), BL-117 (late chunking boundaries) |
+| **LOW** | BL-176 (quickReconcile helper), BL-178 (stderr sink default), BL-182 (memory-flush dead code), BL-57 (doctor legacy-residue check — bug fixed), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder — citations updated), BL-117 (late chunking boundaries) |
 | **LOW/MEDIUM** | BL-36 (record real manifest type) |
 
 **[TRIAGE] items (10)** — needs decision, investigation, or prerequisite before work starts:
@@ -95,7 +95,15 @@ diff `launchctl list` before/after. Suspect surface: the upgrade teardown's
 user-scope ownership rewrite bootout. The tick's unit should never be collateral of a bundle
 upgrade.
 
-### BL-201 — dead-holder spawn-lock debris persists in `run/supervisors/` until next contention — **Open (LOW) (2026-07-04)**
+### BL-201 — dead-holder spawn-lock debris persists in `run/supervisors/` until next contention — **RESOLVED (2026-07-04, wave-2)**
+
+**Resolution:** `sweepProxyBackendLocks` (host-runtime `reconcile.ts`) sweeps `proxy-backend-*.lock`
+files whose holder pid is dead AND age >= the 30s lock TTL (live pid or fresh file always kept —
+mid-reclaim guard; unparseable + old swept). Wired as reconcile pass step 6 across all scope
+run/supervisors dirs, dry-run aware, findings kind `lock-debris`. 17 new tests; host-runtime
+236/236. Integrator fixes at merge: the sweep was delivered UNWIRED (BL-183 class — wired into
+cmdDoctor by the integrator) and 4 spec fixtures used non-hex lock names the production filter
+rightly rejects (fixed to hex; the agent's all-green worktree claim was inaccurate).
 
 **What's wrong:** HF-5 forensics found `proxy-backend-23dbf1ed.lock` (holder pid 28869, dead)
 persisting for over an hour after the 17:16Z backend restart: a racer shim that dies between
