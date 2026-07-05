@@ -30,10 +30,38 @@ BL-202, BL-203.
 
 | Priority | Items |
 |---|---|
-| **HIGH** | BL-97 (artifact gate: working-tree vs ref vs auto-commit) |
-| **MEDIUM** | BL-95 (store discovery: scan vs register vs hybrid), BL-104 (nested type inlining: auto vs manual annotation), BL-62 (multi-project attribution — VERIFIED REAL 2026-07-04, needs per-request workspace threading), BL-113 (ingest publishability — deferred to v1.0), BL-114 (LanceDB: wire real dep vs rename to InMemory), BL-166 (3 orphaned packages: wire or remove per-package), BL-203 (tick unload after artifact-changing upgrade — needs controlled repro), BL-99 (EXTERNAL: move to claude-agents backlog) |
+| **HIGH** | BL-62 (multi-project attribution — VERIFIED REAL, silently mis-attributing live writes NOW), BL-97 (artifact gate: working-tree vs ref vs auto-commit) |
+| **MEDIUM** | BL-95 (store discovery: scan vs register vs hybrid), BL-104 (nested type inlining: auto vs manual annotation), BL-113 (ingest publishability — deferred to v1.0), BL-114 (LanceDB: wire real dep vs rename to InMemory), BL-166 (3 orphaned packages: wire or remove per-package), BL-203 (tick unload after artifact-changing upgrade — needs controlled repro), BL-99 (EXTERNAL: move to claude-agents backlog) |
 | **LOW** | BL-103 (snapshot version: param vs disk-read), BL-167 (scoreBreakdown: fix math vs document edge case), BL-202 (flake — root cause unknown) |
 | **FEATURE** | BL-163 (blocked on code-signing identity) |
+
+**Recommended attack order (re-ranked 2026-07-04 after the validation sweep)** — ordered by
+(live impact) × (evidence strength) × (unblock value), not by age or original severity:
+
+1. **BL-62** — the only PROVEN live data-integrity bug: every unqualified `memory_write` on this
+   box is currently attributed to the spawning shim's cwd (`/Users/nix/dot`), not the caller's
+   project. Silent, corrupting provenance in real stores today. Fix: per-request workspace
+   threading through `tools/call`.
+2. **BL-181** — the e2e lifecycle gate is functionally dead (unrebuildable memory-daemon fixture
+   masked by a stale dist). Every merge since S9 has run without a working e2e gate; swap the
+   fixture to tokenguard/memory-server and delete the stale dist (BL-168 debris).
+3. **BL-161 (memory-flush remainder) + BL-171** — the two remaining real-ONNX test exposures;
+   both are one-config fixes now that the memory-core pattern exists. Kills the dominant CI
+   flake class (BL-202 likely shrinks too).
+4. **BL-96 / BL-97** — plan-audit correctness (wrong cwd + greedy criterion regex + working-tree
+   vs ref). These silently corrupt plan-gate verdicts for every future plan run.
+5. **BL-166 + BL-114** — wire-or-remove decisions on dead packages (owner rule: no zombie code).
+   Cheap, high-hygiene.
+6. **BL-88** — per-record embed provenance; prerequisite for safe model upgrades (bge → anything).
+7. **BL-203** — supervision collateral; MEDIUM until the controlled repro lands (two negative
+   repro attempts recorded).
+8. **BL-168** — module-resolution standard doc + stale-dist sweep (fold item 2's dist deletion in).
+9. **BL-94 (CI enforcement) / BL-180 / BL-36 / BL-102 / BL-105** — defined, non-urgent
+   correctness items; batch into the next hardening pass.
+10. Long tail: BL-201/BL-176/BL-178/BL-182/BL-57/BL-98-confirm-close (LOW hygiene),
+    BL-115/BL-116/BL-117 (RAG quality features), BL-90 (docs), BL-95/BL-103/BL-104/BL-113
+    (decisions), BL-202 (re-measure after item 3), BL-99 (migrate out), BL-163 (blocked).
+
 
 ---
 
