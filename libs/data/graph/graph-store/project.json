@@ -16,7 +16,7 @@
         "{workspaceRoot}/libs/data/graph/graph-store/dist"
       ],
       "options": {
-        "command": "tsc --project libs/data/graph/graph-store/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/graph/graph-store/dist/package.json",
+        "command": "rm -rf libs/data/graph/graph-store/dist/ && tsc --project libs/data/graph/graph-store/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/graph/graph-store/dist/package.json",
         "cwd": "."
       },
       "cache": true,

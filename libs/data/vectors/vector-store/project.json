@@ -16,7 +16,7 @@
         "{workspaceRoot}/libs/data/vectors/vector-store/dist"
       ],
       "options": {
-        "command": "tsc --project libs/data/vectors/vector-store/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/vectors/vector-store/dist/package.json",
+        "command": "rm -rf libs/data/vectors/vector-store/dist/ && tsc --project libs/data/vectors/vector-store/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/vectors/vector-store/dist/package.json",
         "cwd": "."
       },
       "cache": true,

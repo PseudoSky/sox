@@ -16,7 +16,7 @@
         "{workspaceRoot}/libs/data/verify/claim-verification/dist"
       ],
       "options": {
-        "command": "tsc --project libs/data/verify/claim-verification/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/verify/claim-verification/dist/package.json",
+        "command": "rm -rf libs/data/verify/claim-verification/dist/ && tsc --project libs/data/verify/claim-verification/tsconfig.lib.json && echo '{\"type\":\"module\"}' > libs/data/verify/claim-verification/dist/package.json",
         "cwd": "."
       },
       "cache": true,
