@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-04 (post-context-06 closeout + validation sweep)
 
-**Total open: 25 items (15 defined + 10 triage)** Validation sweep verified every open entry against current code:
+**Total open: 24 items (15 defined + 9 triage)** Validation sweep verified every open entry against current code:
 6 found already-fixed and closed — BL-100, BL-106, BL-107, BL-108, BL-184, BL-188; 8 re-scoped
 with corrected citations — BL-57, BL-90, BL-94, BL-98, BL-116, BL-161, BL-171, BL-181; BL-99 is
 external (claude-agents repo); BL-62 upgraded from (unverified) to VERIFIED-REAL with live
@@ -26,12 +26,12 @@ BL-202, BL-203.
 | **LOW** | BL-176 (quickReconcile helper), BL-105 (6 annotated stubs await data sources), BL-115 (tree-sitter chunker), BL-116 (ONNX cross-encoder — citations updated), BL-117 (late chunking boundaries), BL-208 (verify-abi worktree root), BL-209 (guard attempt_count semantics), BL-213 (legacy memoryd test tooling), BL-214 (bundle-extension tsconfig default), BL-215 (reheal_stale operator surface) |
 
 
-**[TRIAGE] items (10)** — needs decision, investigation, or prerequisite before work starts:
+**[TRIAGE] items (9)** — needs decision, investigation, or prerequisite before work starts:
 
 | Priority | Items |
 |---|---|
 | **HIGH** | BL-97 (artifact gate: working-tree vs ref vs auto-commit) |
-| **MEDIUM** | BL-95 (store discovery: scan vs register vs hybrid), BL-104 (nested type inlining: auto vs manual annotation), BL-113 (ingest publishability — deferred to v1.0), BL-203 (tick unload after artifact-changing upgrade — needs controlled repro), BL-99 (EXTERNAL: move to claude-agents backlog) |
+| **MEDIUM** | BL-95 (store discovery: scan vs register vs hybrid), BL-104 (nested type inlining: auto vs manual annotation), BL-113 (ingest publishability — deferred to v1.0), BL-99 (EXTERNAL: move to claude-agents backlog) |
 | **LOW** | BL-103 (snapshot version: param vs disk-read), BL-167 (scoreBreakdown: fix math vs document edge case), BL-202 (flake — root cause unknown) |
 | **FEATURE** | BL-163 (blocked on code-signing identity) |
 
@@ -95,7 +95,30 @@ Line ~192 hardcodes `memory-server/tsconfig.json` as the fallback when `--tsconf
 hidden coupling; a rename/move breaks other extensions' builds silently. Default to the repo root
 tsconfig or make the flag required.
 
-### BL-203 — doctor-tick (and memory-server) launchd units found UNLOADED after the S11-merge `upgrade --all`; cause unproven — **Open (MEDIUM) (2026-07-04)**
+### BL-203 — doctor-tick (and memory-server) launchd units found UNLOADED after the S11-merge `upgrade --all`; cause unproven — **RESOLVED (2026-07-06): root cause found via deterministic repro — THREE mechanisms fixed**
+
+**Root cause (2026-07-06, after a THIRD unload reproduced deterministically):**
+`npx nx test sox` boots the live tick on every run. Bisection pinned
+`doctor-reconcile.spec.ts` → its `--remove-tick` test runs WITHOUT --dry-run using the REAL label
+`com.sox.user.doctor-tick` against a sandboxed unit file — and BOTH `launchctl bootout` forms
+evict by LABEL in the GLOBAL domain (the "by path" form just reads the label out of the plist),
+so the sandbox was irrelevant. Every sox test run since Slice 4 landed (Jul 4) silently booted
+the live tick — explaining all three incidents (Jul 4 evening, Jul 6 ~02:55 during the other
+session's test runs, Jul 6 ~03:0x during wave-2 gates).
+
+**Fixes (all landed together):**
+1. **Platform ownership guard** (`os-unit.ts` launchd `unload`): before ANY bootout, resolve the
+   loaded registration's `path` via `launchctl print`; refuse when it differs from our unitPath
+   ("not ours to unload"); not-loaded → success no-op. Kills the whole class — no sandboxed or
+   scratch-rooted run can evict a foreign registration again.
+2. **Scoped unload-then-reap** (`main.ts`): `unloadOwnedOsUnitsBeforeReap` now REQUIRES the exact
+   reap-target ids (`onlyIds`); the two unscoped call sites (bare `soxe stop` supervisor path,
+   bare `soxe start` pre-clean) — a latent second mechanism — now pass exactly the reaped ids.
+3. Tick reinstalled, pinned to non-volatile node.
+
+**Proof:** killer repro (install tick → run doctor-reconcile.spec) flipped from tick-gone to
+tick-survives; full sox suite 75/75 + hermetic smoke 13/0 both leave the tick loaded; host-runtime
+248/248.
 
 **What's wrong:** `com.sox.user.doctor-tick` was verified loaded (last exit 0) during HF-5
 forensics (~22:55Z), and found NOT loaded (`launchctl list`: "Could not find service") at ~23:19Z.

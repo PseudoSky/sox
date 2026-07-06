@@ -476,7 +476,31 @@ export class LaunchdPlatform implements OsUnitPlatform {
   }
 
   unload(unitPath: string, label: string, exec: OsExec): OsExecResult {
-    // bootout by path is most precise; fall back to the service-target form.
+    // BL-203 ownership guard — MUST run before ANY bootout form. The launchd
+    // namespace is GLOBAL, but our unit FILES may live in a sandboxed/scratch
+    // dir (tests, alternate roots). BOTH bootout forms evict by label — the
+    // "by path" form merely reads the label out of the plist at that path —
+    // so an unload against a scratch copy of a real label evicts the REAL
+    // registration. This is exactly how every `nx test sox` run silently
+    // booted the live doctor-tick (its `--remove-tick` test uses the real
+    // label with a sandbox unit path).
+    const print = exec('launchctl', ['print', `${this.domain()}/${label}`]);
+    if (print.code !== 0) {
+      // Label not loaded at all — desired state already holds.
+      return { code: 0, stdout: `[os-unit] ${label} not loaded — nothing to unload`, stderr: '' };
+    }
+    const pathLine = print.stdout.match(/^\s*path\s*=\s*(.+)$/m);
+    const loadedPath = pathLine?.[1]?.trim();
+    if (loadedPath !== undefined && loadedPath !== '' && loadedPath !== unitPath) {
+      // Loaded from a foreign unit file — not ours to unload.
+      return {
+        code: 1,
+        stdout: '',
+        stderr: `[os-unit] refusing bootout of ${label}: loaded from ${loadedPath}, not ${unitPath} (BL-203 ownership guard)`,
+      };
+    }
+    // Ours (or path unresolvable from print output — conservative: proceed so
+    // real disables keep working if launchctl's print format ever shifts).
     const byPath = exec('launchctl', ['bootout', this.domain(), unitPath]);
     if (byPath.code === 0) return byPath;
     return exec('launchctl', ['bootout', `${this.domain()}/${label}`]);

@@ -2018,7 +2018,7 @@ async function restartProxyBackend(
   // single extension.
   unloadOwnedOsUnitsBeforeReap({
     root,
-    onlyId: extId,
+    onlyIds: [extId],
     log: (m) => log(`[unload-then-reap] ${m}`),
   });
 
@@ -3648,12 +3648,13 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
     const rec0 = getRuntimeRecord(runtimeFilePath);
     const supLive = typeof rec0?.supervisorPid === 'number' && pidAliveRT(rec0.supervisorPid);
     if (!supLive) {
-      // [inv:unload-then-reap] (§8.4): unload any OS unit BEFORE reaping orphans,
-      // so the OS supervisor does NOT immediately respawn the pid we are about
-      // to kill (the F3 resurrection loop). Best-effort across all scopes.
+      // [inv:unload-then-reap] (§8.4): unload the OS units of the ids we are
+      // ABOUT TO REAP, so the OS supervisor does NOT immediately respawn the
+      // pid we kill (the F3 resurrection loop). Scoped to reapIds — BL-203:
+      // an unscoped unload here booted unrelated units (doctor-tick).
       unloadOwnedOsUnitsBeforeReap({
         root,
-        ...(startId !== undefined ? { onlyId: startId } : {}),
+        onlyIds: reapIds,
         log: (m) => process.stdout.write(`sox: ${m}\n`),
       });
       for (const rid of reapIds) {
@@ -4047,9 +4048,20 @@ async function reapUntrackedProxyBackends(opts: {
  */
 function unloadOwnedOsUnitsBeforeReap(opts: {
   root: string;
-  onlyId?: string | undefined;
+  /**
+   * BL-203: the ids whose processes the caller is ABOUT TO REAP. The
+   * [inv:unload-then-reap] invariant only requires unloading units launchd
+   * could use to resurrect a pid the reap will kill — an unscoped unload
+   * additionally booted UNRELATED units (the doctor-tick, twice: 2026-07-04
+   * post-upgrade and 2026-07-06 ~02:55 post-enable) that nothing reloaded.
+   * Callers MUST pass exactly the reap target ids; there is deliberately no
+   * unload-everything mode.
+   */
+  onlyIds: readonly string[];
   log: (m: string) => void;
 }): void {
+  if (opts.onlyIds.length === 0) return;
+  const targetIds = new Set(opts.onlyIds);
   const pathM = require('node:path') as typeof import('node:path');
   for (const sc of ['org', 'user', 'project', 'local'] as const) {
     let dir: string;
@@ -4065,7 +4077,7 @@ function unloadOwnedOsUnitsBeforeReap(opts: {
       continue;
     }
     for (const rec of own.all()) {
-      if (opts.onlyId !== undefined && rec.extId !== opts.onlyId) continue;
+      if (!targetIds.has(rec.extId)) continue;
       for (const e of rec.entries) {
         if (e.kind !== 'os-unit') continue;
         const platform = getOsUnitPlatform(e.supervisor);
@@ -4146,8 +4158,12 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
     // proxy backend (auto-spawned by a serve shim, §9.5) can still be alive with no
     // record at all; reap it by identity so `soxe stop` is a true teardown.
     process.stdout.write(`sox: no runtime record at ${runtimeFilePath}\n`);
-    // [inv:unload-then-reap]: unload any OS unit before reaping its (untracked) pid.
-    unloadOwnedOsUnitsBeforeReap({ root, ...(id !== undefined ? { onlyId: id } : {}), log: (m) => process.stdout.write(`sox: ${m}\n`) });
+    // [inv:unload-then-reap]: unload the targeted id's OS unit before reaping its
+    // (untracked) pid. With no id, the only reap below is untracked proxy backends —
+    // which have no OS units — so there is nothing to unload (BL-203: the former
+    // unscoped unload here booted unrelated units; os-unit services are controlled
+    // via `service disable`, not a bare `stop`).
+    unloadOwnedOsUnitsBeforeReap({ root, onlyIds: id !== undefined ? [id] : [], log: (m) => process.stdout.write(`sox: ${m}\n`) });
     const proxyReap = await reapUntrackedProxyBackends({
       lockfilePath,
       root,
@@ -4188,9 +4204,15 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
         `sox: supervisor (pid=${record.supervisorPid}) already gone\n`,
       );
     }
-    // [inv:unload-then-reap] (§8.5): unload any OS unit BEFORE reaping, so the OS
-    // supervisor cannot resurrect the pid the reap is about to kill.
-    unloadOwnedOsUnitsBeforeReap({ root, log: (m) => process.stdout.write(`sox: ${m}\n`) });
+    // [inv:unload-then-reap] (§8.5): unload the OS units of the entries we are
+    // about to reap, so the OS supervisor cannot resurrect those pids. Scoped to
+    // the runtime record's entries — BL-203: the former unscoped unload here
+    // booted unrelated units (doctor-tick) that nothing ever reloaded.
+    unloadOwnedOsUnitsBeforeReap({
+      root,
+      onlyIds: (record.entries ?? []).map((e) => e.id),
+      log: (m) => process.stdout.write(`sox: ${m}\n`),
+    });
     // Whether or not the supervisor was alive, reap every extension's orphans by
     // identity. This catches a daemon whose supervisor died and left it detached.
     let undead = false;
@@ -4233,7 +4255,7 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
   let undead = false;
   if (id !== undefined) {
     // [inv:unload-then-reap] (§8.5): unload this id's OS unit before reaping it.
-    unloadOwnedOsUnitsBeforeReap({ root, onlyId: id, log: (m) => process.stdout.write(`sox: ${m}\n`) });
+    unloadOwnedOsUnitsBeforeReap({ root, onlyIds: [id], log: (m) => process.stdout.write(`sox: ${m}\n`) });
     const reap = await reapOrphansForExtension(id, {
       runtimeFilePath,
       lockfilePath,
