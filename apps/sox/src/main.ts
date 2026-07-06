@@ -6599,6 +6599,83 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
     }
   }
 
+  // ── Live untracked proxy backends ([inv:list-never-lies], BL-216 follow-on) ──
+  // The singleton writer of a proxy-mode mcp-server is a detached, socket-holding
+  // process tracked by NO supervisor record and NO os-unit pid. Without a row,
+  // the board can read "DEAD" (an unused os-unit) while the real writer serves
+  // every request — which is exactly what sent the operator down the
+  // doctor→--fix→enable path on 2026-07-06. Attribute by socket, the same
+  // reality source the reconcile pass uses.
+  if (filterProject === undefined) {
+    try {
+      const knownPids = new Set(
+        records.map((r) => r.pid).filter((p): p is number => typeof p === 'number' && p > 0),
+      );
+      const { backendSocketPath: bsp } =
+        require('@adhd/sox-service-proxy') as typeof import('@adhd/sox-service-proxy');
+      const seenBackendPids = new Set<number>();
+      for (const inst of readInstallRegistry(installRegistryPath()).installs) {
+        if (filterId !== undefined && inst.extId !== filterId) continue;
+        if (filterScope !== undefined && inst.scope !== filterScope) continue;
+        try {
+          if (!mcpServerIsProxyMode(inst.extId, inst.scope, inst.root)) continue;
+          const resolved = resolveServeManifest(inst.extId, inst.scope, inst.root);
+          if (!resolved) continue;
+          const configEnv = buildExtConfigEnv(inst.extId, inst.root);
+          const storeResource = resolveStoreResource(
+            pathMod.join(resolved.extDir, 'extension.json'), configEnv,
+          );
+          const key = singletonKey(inst.extId, storeResource) ?? `${inst.extId} none:`;
+          const sock = bsp(socketDir(), key);
+          for (const pid of socketOwnerPids(sock) ?? []) {
+            if (knownPids.has(pid) || seenBackendPids.has(pid)) continue;
+            seenBackendPids.add(pid);
+            // BSD/macOS ps has `etime` ([[dd-]hh:]mm:ss), NOT procps' `etimes`
+            // (numeric seconds) — the same portability trap as BL-177.
+            let uptimeSeconds = 0;
+            const et = realOsExec('ps', ['-o', 'etime=', '-p', String(pid)]);
+            if (et.code === 0) {
+              const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(et.stdout.trim());
+              if (m) {
+                uptimeSeconds =
+                  (m[1] ? parseInt(m[1], 10) * 86400 : 0) +
+                  (m[2] ? parseInt(m[2], 10) * 3600 : 0) +
+                  parseInt(m[3]!, 10) * 60 +
+                  parseInt(m[4]!, 10);
+              }
+            }
+            const backendLogDir = logDirFor(`proxy-backend-${inst.extId}`);
+            const backendLogPath = pathMod.join(
+              backendLogDir,
+              `${inst.extId}-backend-${new Date().toISOString().slice(0, 10)}.log`,
+            );
+            records.push({
+              id: inst.extId,
+              key: `${inst.extId}@proxy-backend`,
+              scope: inst.scope,
+              root: inst.root ?? '',
+              project: 'proxy-backend',
+              supervisorId: 'proxy-backend',
+              activatedAt: '',
+              uptimeSeconds,
+              pidAlive: true,
+              pid,
+              socketReachable: true,
+              socketLatencyMs: null,
+              logTail: [],
+              logPath: fsMod.existsSync(backendLogPath) ? backendLogPath : null,
+              lastStartedAt: null,
+              lastStoppedAt: null,
+              lastRunDurationMs: null,
+              totalUptimeMs: uptimeSeconds * 1000,
+              status: 'healthy',
+            });
+          }
+        } catch { /* per-extension best-effort — a bad manifest never breaks status */ }
+      }
+    } catch { /* the proxy scan itself is additive — never break status */ }
+  }
+
   // ── Slice 3 (§11.3, [inv:crash-loop-cap]): surface crash-loop give-up markers ─
   // A capped service is DEGRADED (give-up) — never a silent stop
   // ([inv:list-never-lies]). The marker is written by the supervisor's guard and
@@ -6763,7 +6840,9 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
         : 'between runs';
       noteStr = exitLabel;
     } else if (r.socketReachable) {
-      noteStr = `${r.socketLatencyMs ?? '?'}ms`;
+      // Proxy-backend rows are attributed by socket ownership (no RPC probe) —
+      // render the attribution honestly instead of a "?ms" latency.
+      noteStr = r.socketLatencyMs != null ? `${r.socketLatencyMs}ms` : 'socket held';
     } else {
       noteStr = r.pidAlive ? 'unreachable' : '—';
     }

@@ -79,6 +79,14 @@ adds ownership-only os-unit coverage so `doctor` reports a booted doctor-tick wi
 `--install-tick` remedy (verified live via controlled bootout) — previously doctor was blind to
 its own tick.
 
+**Follow-on (same day): the FIRST link in the incident chain closed too** — `soxe status` now
+renders live untracked proxy backends as `<ext>@proxy-backend` rows (socket-ownership
+attribution, real uptime via BSD `ps -o etime=` parsing — NOT procps `etimes`, the BL-177 trap
+again — note `socket held`). The 2026-07-06 morning started because the board showed only the
+unused os-unit's `DEAD` row while the real writer served traffic invisibly; the operator chain
+(doctor → --fix → enable) followed from that. Live-verified: the actual writer (pid + uptime)
+now appears alongside the os-unit and tick rows.
+
 ### BL-215 — operator surface for `healStaleVectors` (model-swap re-embed) — **Open (LOW, feature) (2026-07-05)**
 
 BL-88 shipped `healStaleVectors` (memory-core, bounded, env-gated default-off) but no operator
