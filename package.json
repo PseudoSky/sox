@@ -21,7 +21,8 @@
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "changeset publish",
-    "release:prepared": "npm run build-index:publish && nx build sox && changeset publish"
+    "release:prepared": "npm run build-index:publish && nx build sox && changeset publish",
+    "verify:exports": "node tools/verify-package-exports.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "2.31.0",

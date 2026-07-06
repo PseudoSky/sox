@@ -115,6 +115,24 @@ bundled deployments (BL-166 root cause class).
 
 ---
 
+## §4b The Dist-Layout Contract — flat `dist/index.*`, guarded
+
+Every workspace package's `package.json` entry points (`main`/`types`/`exports`) are a CONTRACT
+with all consumers (TS resolution, node runtime, and the esbuild `@adhd` dist aliases in
+`tools/bundle-extension.cjs`). The repo standard is FLAT emit: `./dist/index.js` + `./dist/index.d.ts`,
+pinned by `rootDir` in every `@nx/js:tsc` build target.
+
+Changing the emit layout without moving every contract in the same commit is a time bomb: the
+2026-07-04 executor migration (0ba5d78) nested emit under `dist/src/**` and NOTHING failed —
+the break was cache-masked until an unrelated doc edit busted one project's nx inputs, then the
+first honest rebuild failed TS2307 across the data packages.
+
+**Guard:** `pnpm verify:exports` (`tools/verify-package-exports.mjs`) checks that every entry-point
+path in every workspace package resolves to a real file. It runs automatically inside the
+mandatory smoke-test preflight, so a contract break cannot reach a merge. If you INTEND a layout
+change: move the `rootDir` options, all `package.json` entry points, and the bundler aliases in
+one commit, then prove it cache-busted (`npx nx run-many -t build --skip-nx-cache`).
+
 ## §5 Stale `dist/` Hazard — Delete Source, Delete Its Dist
 
 When an extension's **source is deleted**, its **built artifacts must be deleted

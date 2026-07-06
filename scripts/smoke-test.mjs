@@ -308,6 +308,20 @@ async function main() {
     process.exit(2);
   }
 
+  // ── Exports-contract preflight: every workspace package.json entry point
+  //    must resolve to a real file. Rides the mandatory smoke gate so a build-
+  //    layout change that breaks the contract (the 0ba5d78 @nx/js:tsc nesting
+  //    incident — cache-masked for hours) fails loudly pre-merge instead of
+  //    detonating on the next cache bust.
+  try {
+    execSync(`node ${JSON.stringify(path.join(WORKSPACE, 'tools', 'verify-package-exports.mjs'))} --root ${JSON.stringify(WORKSPACE)}`, {
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
+  } catch {
+    console.error('[smoke] FATAL: package exports contract violated — see verify-package-exports output above.');
+    process.exit(2);
+  }
+
   // Install bundles that contain service/mcp-server members
   const bundleIds = new Set();
   if (extensions.some(e => e.dir.includes('/members/'))) {
