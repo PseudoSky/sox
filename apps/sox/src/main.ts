@@ -5351,6 +5351,27 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
     }
   } catch { /* best-effort */ }
 
+  // [auth:socket-reality] (BL-203 follow-on): a pid holding a live proxy
+  // singleton socket IS the accounted writer — never a stray. The reconcile
+  // pass has always attributed by socket; plain `doctor` did not, so it
+  // reported the LIVE backend as a [STRAY] (observed: 32 duplicate findings
+  // for the socket holder) — and `doctor --fix` would killAndVerify it.
+  const socketOwnerPidSet = new Set<number>();
+  for (const sc of ['org', 'user', 'project', 'local'] as const) {
+    let dir: string;
+    try { dir = dataRoot(sc as DataScope, root); } catch { continue; }
+    const supDir = pathMod.join(dir, 'run', 'supervisors');
+    let names: string[] = [];
+    try { names = fsMod.readdirSync(supDir); } catch { continue; }
+    for (const n of names) {
+      if (!n.endsWith('.sock')) continue;
+      for (const p of socketOwnerPids(pathMod.join(supDir, n)) ?? []) socketOwnerPidSet.add(p);
+    }
+  }
+  // Dedupe stray findings by pid — one process is one finding, regardless of
+  // how many install records (scopes/projects) its identity matches.
+  const seenStrayPids = new Set<number>();
+
   // Scan each install record.
   for (const rec of registry.installs) {
     if (filterId !== undefined && rec.extId !== filterId) continue;
@@ -5384,6 +5405,11 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
     }
 
     for (const m of matches) {
+      // Live singleton socket holder — accounted by reality, never a stray.
+      if (socketOwnerPidSet.has(m.pid)) continue;
+      // One process = one finding across all matching install records.
+      if (seenStrayPids.has(m.pid)) continue;
+      seenStrayPids.add(m.pid);
       // Determine if this is a cross-build stray (different entrypoint path
       // than expected, same SOX_SERVICE_ID).
       const env = readProcessEnv(m.pid);
@@ -5433,6 +5459,45 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
             ppid: 0,
             orphaned: false,
             detail: `os-unit ${e.label} exists but NOT LOADED (may need \`soxe service enable\`)`,
+          });
+        }
+      }
+    }
+  }
+
+  // ── Ownership-only os-units (BL-203 follow-on): the not-loaded scan above
+  //    iterates the INSTALL REGISTRY, but some os-units exist only in
+  //    ownership.json — the doctor-tick foremost. When the tick was booted out
+  //    (the BL-203 incidents), `doctor` reported a clean bill while the
+  //    supervision heartbeat was down. Sweep ownership entries the install
+  //    loop never covered so the diagnostic can't be blind to its own tick.
+  {
+    const coveredIds = new Set(
+      findings.filter((f) => f.kind === 'os-unit-not-loaded').map((f) => f.extId),
+    );
+    for (const sc of ['org', 'user', 'project', 'local'] as const) {
+      let dir: string;
+      try { dir = dataRoot(sc as DataScope, root); } catch { continue; }
+      let own: OwnershipIndex;
+      try { own = OwnershipIndex.loadFromFile(pathMod.join(dir, 'ownership.json')); } catch { continue; }
+      for (const rec of own.all()) {
+        if (coveredIds.has(rec.extId)) continue;
+        if (registry.installs.some((inst) => inst.extId === rec.extId)) continue; // install loop's territory
+        for (const e of rec.entries) {
+          if (e.kind !== 'os-unit') continue;
+          const platform = getOsUnitPlatform(e.supervisor as OsSupervisor);
+          if (platform.isLoaded(e.label, realOsExec)) continue;
+          const remedy = rec.extId === 'doctor-tick'
+            ? `\`${CLI} doctor --install-tick\``
+            : `\`${CLI} service enable ${rec.extId}\``;
+          findings.push({
+            kind: 'os-unit-not-loaded',
+            extId: rec.extId,
+            scope: sc,
+            pid: 0,
+            ppid: 0,
+            orphaned: false,
+            detail: `os-unit ${e.label} exists (ownership-only) but NOT LOADED — reload via ${remedy}`,
           });
         }
       }

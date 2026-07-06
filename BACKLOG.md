@@ -65,6 +65,20 @@ BL-202, BL-203.
 
 ## Open — surfaced during HF-5/HF-6 closeout (2026-07-04)
 
+### BL-216 — plain `doctor` misclassified the LIVE socket-holder backend as [STRAY] (32 duplicate findings) — `--fix` would kill the writer — **RESOLVED on discovery (2026-07-06)**
+
+Found while verifying the BL-203 fixes live: `soxe doctor` reported the current singleton backend
+(the pid holding the proxy UDS) as a stray — once per matching install record, 32 duplicates —
+because its stray scan matched by identity but never attributed by socket (the reconcile pass
+always has). `doctor --fix` would have killAndVerify'd the live writer; the owner ran `--fix`
+earlier the same morning, which likely explains a backend-generation churn (harmless only thanks
+to shim re-dial + respawn). **Fixed:** the scan now builds the socket-owner pid set across all
+scope `run/supervisors/*.sock` and (a) skips socket holders ([auth:socket-reality]), (b) dedupes
+stray findings by pid. Live: 33 anomalies → 1 (the genuine repo-root `.sox` residue). Same commit
+adds ownership-only os-unit coverage so `doctor` reports a booted doctor-tick with the
+`--install-tick` remedy (verified live via controlled bootout) — previously doctor was blind to
+its own tick.
+
 ### BL-215 — operator surface for `healStaleVectors` (model-swap re-embed) — **Open (LOW, feature) (2026-07-05)**
 
 BL-88 shipped `healStaleVectors` (memory-core, bounded, env-gated default-off) but no operator
