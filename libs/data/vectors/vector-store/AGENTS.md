@@ -25,7 +25,9 @@ memory-refactor plan states.
   (enforced by nx module-boundary lint).
 - Published npm name (`@adhd/sox-vector-store`) is decoupled from this folder path —
   never rename the package name on a folder move.
-- Declared deps: `better-sqlite3`, `sqlite-vec`.
+- Declared deps: `better-sqlite3`, `sqlite-vec` (`SqliteVectorBackend`); `@lancedb/lancedb`,
+  `apache-arrow`, `synckit` (`LanceDbVectorBackend` — real on-disk LanceDB via a `worker_threads` +
+  `synckit` sync bridge, see `src/lancedb-worker.ts`).
   Do not add undeclared deps without updating package.json + COMPILED_INTERFACES.md.
 
 ## Build / test
@@ -39,6 +41,7 @@ memory-refactor plan states.
 
 Findings for this package live in **[`BACKLOG.md`](./BACKLOG.md)** — cross-referenced to the root
 [`/BACKLOG.md`](../../../../BACKLOG.md) BL-IDs. **Read it before extending this package.**
-- **BL-114 (HIGH):** `LanceDbVectorBackend` is in-memory only (no real LanceDB, ANN config parsed but
-  never applied) — wire real `@lancedb/lancedb` or rename to `InMemoryVectorBackend` + document as
-  test-only. The `sqlite-vec` backend is the real production one.
+- **BL-114 (RESOLVED 2026-07-08):** `LanceDbVectorBackend` is now backed by a real `@lancedb/lancedb`
+  connection (on-disk tables + real HNSW/IVF-PQ index construction), bridged to the synchronous
+  `VectorBackend` interface via `worker_threads` + `synckit`. `sqlite-vec` remains the default
+  production backend; LanceDB is a real, selectable alternative — not a test stub.

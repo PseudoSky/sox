@@ -1,7 +1,7 @@
 {
   "name": "@adhd/sox-vector-store",
   "version": "0.1.0",
-  "description": "Multi-space vector persistence (sqlite-vec vec0) + kNN/cosine search. Enforces the embedding space invariant: one (modelId, dim) pair per vec0 virtual table, rejects any upsert whose vec.length ≠ space.dim. Owns per-record modelId provenance. reembed() migrates vectors between spaces.",
+  "description": "Multi-space vector persistence with two real, swappable VectorBackend implementations: sqlite-vec (vec0, brute-force kNN, production default) and @lancedb/lancedb (on-disk tables + real HNSW/IVF-PQ ANN indexes, bridged to the synchronous interface via a worker_threads + synckit sync RPC). Enforces the embedding space invariant: one (modelId, dim) pair per table, rejects any upsert whose vec.length ≠ space.dim. Owns per-record modelId provenance. reembed() migrates vectors between spaces (and backends).",
   "license": "MIT",
   "private": false,
   "publishConfig": {
@@ -23,19 +23,25 @@
     "dist"
   ],
   "dependencies": {
+    "@lancedb/lancedb": "0.31.0",
+    "apache-arrow": "18.1.0",
     "better-sqlite3": "^12.10.0",
-    "sqlite-vec": "^0.1.9"
+    "sqlite-vec": "^0.1.9",
+    "synckit": "0.11.13"
   },
   "sox": {
     "area": "data",
     "group": "vectors",
     "concerns": [
-      "multi-space vec0 persistence (one virtual table per VectorSpace)",
-      "kNN/cosine search (VectorBackend.knn)",
+      "multi-space vec0 persistence (SqliteVectorBackend — one virtual table per VectorSpace)",
+      "multi-space on-disk LanceDB persistence (LanceDbVectorBackend — one real @lancedb/lancedb table per VectorSpace, plus a persisted _vector_spaces metadata table)",
+      "real HNSW (hnswSq) / IVF-PQ (ivfPq) ANN index construction from LanceDbVectorBackendConfig.index",
+      "worker_threads + synckit sync RPC bridge (lancedb-worker.ts) — makes the async @lancedb/lancedb client satisfy the synchronous VectorBackend interface",
+      "kNN/cosine search (VectorBackend.knn) — brute-force (sqlite-vec) or ANN-accelerated (LanceDB)",
       "space invariant enforcement (SpaceInvariantError on dim mismatch)",
       "per-record modelId provenance (VectorSpace.modelId)",
       "corpus scan for clustering + reembed (iter)",
-      "reembed() — cross-space migration (walks old space, re-embeds, writes into target space)"
+      "reembed() — cross-space (and cross-backend) migration (walks old space, re-embeds, writes into target space)"
     ],
     "invariants": [
       "ensureSpace(space) MUST be called before the first upsert on any new (modelId, dim) pair — idempotent on existing spaces",

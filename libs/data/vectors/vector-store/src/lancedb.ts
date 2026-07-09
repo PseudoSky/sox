@@ -1,6 +1,10 @@
 import type { VectorBackend, VectorSpace, VecFilter } from './index.js';
 import { SpaceInvariantError } from './index.js';
 import type Database from 'better-sqlite3';
+import * as fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { createSyncFn } from 'synckit';
+import type { WorkerRequest, WorkerResponse } from './lancedb-worker.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -17,103 +21,66 @@ export interface LanceDbVectorBackendConfig {
   };
 }
 
-interface LanceDbTable {
-  dimension: number;
-  upsert(id: number, vec: Float32Array): void;
-  search(query: Float32Array, k: number, filter?: VecFilter): Array<{ id: number; score: number }>;
-  delete(id: number): void;
-  get(id: number): Float32Array | null;
-  iter(): Array<{ id: number; vec: Float32Array }>;
-  count(): number;
+// ── Synchronous bridge to the real @lancedb/lancedb client ──────────────────
+//
+// @lancedb/lancedb is an async (napi/tokio) client; VectorBackend is a
+// synchronous interface ([iface:vector-backend] is pinned — unchanged by this
+// swap). `synckit` runs lancedb-worker.ts in a worker_threads.Worker and
+// blocks the calling thread on Atomics.wait until each request resolves, so
+// every method below is a real synchronous call into a real on-disk LanceDB
+// table — not a simulation and not a cache that silently drops writes.
+
+type SyncLanceFn = (req: WorkerRequest) => WorkerResponse;
+
+let cachedSyncFn: SyncLanceFn | undefined;
+
+function resolveWorkerPath(): string {
+  // Production/build: dist/lancedb-worker.js sits next to dist/lancedb.js.
+  const compiledPath = fileURLToPath(new URL('./lancedb-worker.js', import.meta.url));
+  if (fs.existsSync(compiledPath)) return compiledPath;
+  // Dev/test (vitest runs directly against src/*.ts, no dist/ sibling yet):
+  // fall back to the TypeScript source; Node's native type-stripping (>=22.6,
+  // unflagged since 23.6) runs it directly, matched by `synckit`'s default
+  // 'node' ts runner.
+  return fileURLToPath(new URL('./lancedb-worker.ts', import.meta.url));
 }
 
-// ── In-memory LanceDB simulation ─────────────────────────────────────────────
-// LanceDB client is not yet installed. This provides the VectorBackend adapter
-// interface with an in-memory fallback that mirrors the LanceDB API shape.
-// When @lancedb/lancedb is added as a dependency, swap the implementation.
-
-/**
- * In-memory simulation of a LanceDB table.
- * Placeholder for when `@lancedb/lancedb` is available as a dependency.
- * Once added, replace this class with the real LanceDB Table binding.
- */
-class InMemoryLanceTable implements LanceDbTable {
-  readonly dimension: number;
-  private vectors = new Map<number, Float32Array>();
-
-  constructor(dim: number) {
-    this.dimension = dim;
+function getSyncFn(): SyncLanceFn {
+  if (!cachedSyncFn) {
+    cachedSyncFn = createSyncFn(resolveWorkerPath()) as SyncLanceFn;
   }
-
-  upsert(id: number, vec: Float32Array): void {
-    if (vec.length !== this.dimension) {
-      throw new Error(`dimension mismatch: got ${vec.length}, expected ${this.dimension}`);
-    }
-    this.vectors.set(id, vec);
-  }
-
-  search(query: Float32Array, k: number, filter?: VecFilter): Array<{ id: number; score: number }> {
-    const candidates: Array<{ id: number; score: number }> = [];
-
-    for (const [id, vec] of this.vectors) {
-      if (filter?.ids && !filter.ids.includes(id)) continue;
-      const score = cosineSimilarity(query, vec);
-      candidates.push({ id, score });
-    }
-
-    candidates.sort((a, b) => b.score - a.score);
-    return candidates.slice(0, k);
-  }
-
-  delete(id: number): void {
-    this.vectors.delete(id);
-  }
-
-  get(id: number): Float32Array | null {
-    return this.vectors.get(id) ?? null;
-  }
-
-  iter(): Array<{ id: number; vec: Float32Array }> {
-    return [...this.vectors.entries()].map(([id, vec]) => ({ id, vec }));
-  }
-
-  count(): number {
-    return this.vectors.size;
-  }
-}
-
-function cosineSimilarity(a: Float32Array, b: Float32Array): number {
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i]! * b[i]!;
-    normA += a[i]! * a[i]!;
-    normB += b[i]! * b[i]!;
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
+  return cachedSyncFn;
 }
 
 // ── LanceDbVectorBackend ────────────────────────────────────────────────────
 
 export class LanceDbVectorBackend implements VectorBackend {
-  private tables = new Map<string, InMemoryLanceTable>();
-  private spaces: VectorSpace[] = [];
+  private readonly lancedbPath: string;
+  private readonly indexConfig: LanceDbVectorBackendConfig['index'];
+  private spaces: VectorSpace[];
 
   constructor(config: LanceDbVectorBackendConfig & { db: Database.Database }) {
-    console.info(`[vector-store] LanceDbVectorBackend created: path=${config.lancedbPath}`);
+    this.lancedbPath = config.lancedbPath;
+    this.indexConfig = config.index;
+
+    // Synchronously open (or reopen) the on-disk LanceDB database at
+    // lancedbPath and rehydrate any spaces persisted from a previous process
+    // — real persistence, not a fresh-every-time in-memory cache.
+    const res = getSyncFn()({ op: 'init', lancedbPath: this.lancedbPath });
+    this.spaces = res.spaces ?? [];
+
+    console.info(`[vector-store] LanceDbVectorBackend opened: path=${config.lancedbPath}`);
   }
 
   ensureSpace(space: VectorSpace): void {
-    const key = this.tableKey(space);
-    if (!this.tables.has(key)) {
-      this.tables.set(key, new InMemoryLanceTable(space.dim));
-      this.spaces.push(space);
-      console.info(
-        `[vector-store] LanceDB space created: modelId=${space.modelId} dim=${space.dim}`,
-      );
+    if (this.spaces.some((s) => s.modelId === space.modelId && s.dim === space.dim)) {
+      return;
     }
+    getSyncFn()({ op: 'ensureSpace', lancedbPath: this.lancedbPath, space });
+    this.spaces.push(space);
+    console.info(
+      `[vector-store] LanceDB space created: modelId=${space.modelId} dim=${space.dim}`,
+    );
   }
 
   listSpaces(): VectorSpace[] {
@@ -124,22 +91,24 @@ export class LanceDbVectorBackend implements VectorBackend {
     if (vec.length !== space.dim) {
       throw new SpaceInvariantError(id, space, vec.length);
     }
-    const table = this.getTable(space);
-    table.upsert(id, vec);
+    this.ensureSpace(space);
+    getSyncFn()({
+      op: 'upsert',
+      lancedbPath: this.lancedbPath,
+      space,
+      id,
+      vec,
+      indexConfig: this.indexConfig,
+    });
   }
 
   delete(id: number, modelId: string): void {
-    const space = this.spaces.find((s) => s.modelId === modelId);
-    if (!space) return;
-    const table = this.getTable(space);
-    table.delete(id);
+    getSyncFn()({ op: 'delete', lancedbPath: this.lancedbPath, modelId, id });
   }
 
   get(id: number, modelId: string): Float32Array | null {
-    const space = this.spaces.find((s) => s.modelId === modelId);
-    if (!space) return null;
-    const table = this.getTable(space);
-    return table.get(id);
+    const res = getSyncFn()({ op: 'get', lancedbPath: this.lancedbPath, modelId, id });
+    return res.vec ? new Float32Array(res.vec) : null;
   }
 
   knn(
@@ -148,54 +117,33 @@ export class LanceDbVectorBackend implements VectorBackend {
     k: number,
     filter?: VecFilter,
   ): Array<{ id: number; score: number }> {
-    const table = this.getTable(space);
-    return table.search(query, k, filter);
+    const res = getSyncFn()({
+      op: 'knn',
+      lancedbPath: this.lancedbPath,
+      space,
+      query,
+      k,
+      filter,
+      indexConfig: this.indexConfig,
+    });
+    return res.results ?? [];
   }
 
   iter(
     modelId: string,
     opts?: { filter?: VecFilter },
   ): Iterable<{ id: number; vec: Float32Array }> {
-    const space = this.spaces.find((s) => s.modelId === modelId);
-    if (!space) {
-      return {
-        *[Symbol.iterator]() {
-          // empty
-        },
-      };
-    }
-    const table = this.getTable(space);
-    const all = table.iter();
-    const filterIds = opts?.filter?.ids;
-
-    if (filterIds) {
-      const filtered = all.filter((item) => filterIds.includes(item.id));
-      return {
-        *[Symbol.iterator]() {
-          for (const item of filtered) yield item;
-        },
-      };
-    }
-
+    const res = getSyncFn()({
+      op: 'iter',
+      lancedbPath: this.lancedbPath,
+      modelId,
+      filter: opts?.filter,
+    });
+    const items = (res.items ?? []).map((it) => ({ id: it.id, vec: new Float32Array(it.vec) }));
     return {
       *[Symbol.iterator]() {
-        for (const item of all) yield item;
+        for (const item of items) yield item;
       },
     };
-  }
-
-  // ── Private ─────────────────────────────────────────────────────────────
-
-  private tableKey(space: VectorSpace): string {
-    return `${space.modelId}_${space.dim}`;
-  }
-
-  private getTable(space: VectorSpace): InMemoryLanceTable {
-    const key = this.tableKey(space);
-    const existing = this.tables.get(key);
-    if (!existing) {
-      throw new Error(`Space not found: ${space.modelId} dim=${space.dim} — call ensureSpace() first`);
-    }
-    return existing;
   }
 }
