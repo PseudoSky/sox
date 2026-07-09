@@ -180,6 +180,8 @@ importers:
 
   extensions/skills/sox-ingest: {}
 
+  extensions/skills/tui-design: {}
+
   libs/authoring: {}
 
   libs/data/analysis/analysis:
@@ -210,6 +212,15 @@ importers:
         version: 0.42.0(@types/better-sqlite3@7.6.13)(better-sqlite3@12.10.0)
 
   libs/data/ingest/ingest: {}
+
+  libs/data/queue/task-queue:
+    dependencies:
+      better-sqlite3:
+        specifier: ^12.10.0
+        version: 12.10.0
+      croner:
+        specifier: ^10.0.1
+        version: 10.0.1
 
   libs/data/search/hybrid-search:
     dependencies:
@@ -297,6 +308,18 @@ importers:
   libs/registry: {}
 
   libs/service-proxy: {}
+
+  libs/source-provider:
+    dependencies:
+      fast-glob:
+        specifier: ^3.3.3
+        version: 3.3.3
+      ignore:
+        specifier: ^7.0.5
+        version: 7.0.5
+      undici:
+        specifier: ^6.21.0
+        version: 6.27.0
 
   libs/tokenguard-core: {}
 
@@ -1978,6 +2001,10 @@ packages:
       typescript:
         optional: true
 
+  croner@10.0.1:
+    resolution: {integrity: sha512-ixNtAJndqh173VQ4KodSdJEI6nuioBWI0V1ITNKhZZsO0pEMoDxz539T4FTTbSZ/xIOSuDnzxLVRqBVSvPNE2g==}
+    engines: {node: '>=18.0'}
+
   cross-spawn@7.0.6:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
     engines: {node: '>= 8'}
@@ -3495,6 +3522,10 @@ packages:
 
   undici-types@6.21.0:
     resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
+
+  undici@6.27.0:
+    resolution: {integrity: sha512-YmfV3YnEDzXRC5lZ2jWtWWHKGUm1zIt8AhesR1tens+HTNv+YZlN/dp6G727LOvMJ8xjP9Be7Y2Sdr96LDm+pg==}
+    engines: {node: '>=18.17'}
 
   unicode-canonical-property-names-ecmascript@2.0.1:
     resolution: {integrity: sha512-dA8WbNeb2a6oQzAQ55YlT5vQAWGV9WXOsi3SskE3bcCdM0P4SDd+24zS/OCacdRq5BkdsRj9q3Pg6YyQoxIGqg==}
@@ -5644,6 +5675,8 @@ snapshots:
     optionalDependencies:
       typescript: 6.0.3
 
+  croner@10.0.1: {}
+
   cross-spawn@7.0.6:
     dependencies:
       path-key: 3.1.1
@@ -7134,6 +7167,8 @@ snapshots:
   ulid@3.0.2: {}
 
   undici-types@6.21.0: {}
+
+  undici@6.27.0: {}
 
   unicode-canonical-property-names-ecmascript@2.0.1: {}
 
