@@ -1,36 +1,80 @@
 /**
- * Shared worker thread for ONNX inference — the only worker implementation.
+ * Shared worker thread for @huggingface/transformers-based ONNX inference —
+ * cross-encoder rerank and NLI verify.
  *
  * Runs in isolation from the main thread (BL-11 boundary) — onnxruntime-node's
  * thread pool never shares a thread context with better-sqlite3 + sqlite-vec.
  *
- * Supports three operation types:
- *   1. Embedding (fastembed) — 'init', 'embed', 'embedBatch'
- *   2. Cross-encoder rerank — 'init' (type: 'rerank'), 'rerank', 'rerankBatch'
- *   3. NLI verification   — 'init' (type: 'verify'), 'verify'
+ * Supports two operation types:
+ *   1. Cross-encoder rerank — 'init' (type: 'rerank'), 'rerank', 'rerankBatch'
+ *   2. NLI verification     — 'init' (type: 'verify'), 'verify'
  *
  * Protocol:
- *   request:  { id, type: 'init',          model: string, cacheDir: string }
  *   request:  { id, type: 'init',          type: 'rerank', modelId: string }
  *   request:  { id, type: 'init',          type: 'verify', modelId: string, modelVersion: string }
- *   request:  { id, type: 'embed',         text: string }
- *   request:  { id, type: 'embedBatch',    texts: string[] }
  *   request:  { id, type: 'rerank',        query: string, candidates: Array<{id, text}> }
  *   request:  { id, type: 'rerankBatch',   queries: string[], candidateSets: ... }
  *   request:  { id, type: 'verify',        jobId: string, claimText: string, sourceText: string }
  *   response: { id, initOk: true, dim }
- *   response: { id, embedding: number[] }
- *   response: { id, embeddings: number[][] }
  *   response: { id, scores: number[] }
  *   response: { id, allScores: number[][] }
  *   response: { id, result: { entailment, confidence, ... } }
  *   response: { id, error: string }
  *   internal: { __shutdown: true }
+ *
+ * ── BL-238/BL-171 ── This worker is the ONE place cross-encoder rerank and
+ * NLI verify (both `@huggingface/transformers`, onnxruntime-node@1.24.3) run,
+ * loaded into exactly ONE process-wide `worker_threads.Worker` (constructed
+ * exclusively by `sharedOnnxWorker.ts`'s `getSharedOnnxWorker()` singleton —
+ * never directly by `@adhd/sox-hybrid-search`'s cross-encoder or
+ * `@adhd/sox-claim-verification`'s worker proxy).
+ *
+ * Root cause #1 (cross-isolate, whole-process fatal — the reason there must
+ * be only ONE onnxruntime-bearing `worker_threads.Worker`, proven via a
+ * from-scratch minimal repro, no test harness, no mocks): onnxruntime-node's
+ * native N-API addon fatally crashes the ENTIRE process — not just the
+ * offending worker — with
+ *
+ *   FATAL ERROR: HandleScope::HandleScope Entering the V8 API without
+ *   proper locking in place
+ *     ... Napi::FunctionReference::New(...)
+ *     ... OrtValueToNapiValue(Napi::Env, Ort::Value&&)
+ *     ... InferenceSessionWrap::Run(...)
+ *
+ * whenever 2+ *separate* `worker_threads.Worker` instances (i.e. 2+ separate
+ * V8 isolates) each hold an active onnxruntime-node `InferenceSession` and
+ * run inference concurrently — reproduced even with TWO workers using the
+ * exact SAME onnxruntime-node version, so this is a genuine thread-safety
+ * limitation of the addon itself, not an ABI/version-mismatch issue (see root
+ * `BACKLOG.md` BL-238 for the full repro matrix).
+ *
+ * fastembed (onnxruntime-node@1.21.0) is DELIBERATELY NOT hosted in this
+ * worker, for a SECOND, independent reason (root cause #2): even a single
+ * shared worker hosting BOTH onnxruntime-node@1.21.0 (fastembed) AND
+ * onnxruntime-node@1.24.3 (transformers) — loaded strictly sequentially, with
+ * every JS `await` fully resolved before the next `init` begins (proven via
+ * instrumented tracing showing zero JS-level overlap between the two
+ * `init`s) — still deterministically threw `std::bad_alloc` the moment
+ * fastembed initialised second. That means the two onnxruntime-node major
+ * versions leave lingering native state (e.g. background native thread-pool
+ * teardown) not synchronized by the JS Promise resolving — a hazard below
+ * what JS-level scheduling/serialization can observe or prevent. Only a real
+ * OS process boundary is proven safe for fastembed; see
+ * `fastembedProcessHost.ts` / `sharedFastembedProcess.ts` for where fastembed
+ * actually runs (its own dedicated child PROCESS, never a
+ * `worker_threads.Worker`, never sharing an address space with this worker).
+ *
+ * Fix: every rerank/verify consumer routes through
+ * `getSharedOnnxWorker().request(...)` instead of constructing its own
+ * `Worker`; every fastembed consumer routes through
+ * `getSharedFastembedProcess().request(...)` instead of constructing its own
+ * `Worker`/process. There is never a second onnxruntime-bearing WORKER THREAD
+ * alive in the process, and fastembed never shares a thread (or process) with
+ * this worker at all — both crash classes above are structurally impossible,
+ * not merely statistically less likely.
  */
 
 import { parentPort } from 'node:worker_threads';
-import * as fs from 'node:fs';
-import type { EmbeddingModel } from 'fastembed';
 import type {
   PreTrainedTokenizer,
   PreTrainedModel,
@@ -38,13 +82,6 @@ import type {
 } from '@huggingface/transformers';
 
 // ── Type definitions ──────────────────────────────────────────────────────────
-
-interface InitRequest {
-  id: number;
-  type: 'init';
-  model: string;
-  cacheDir: string;
-}
 
 interface RerankInitRequest {
   id: number;
@@ -59,18 +96,6 @@ interface VerifyInitRequest {
   initType: 'verify';
   modelId: string;
   modelVersion: string;
-}
-
-interface EmbedRequest {
-  id: number;
-  type: 'embed';
-  text: string;
-}
-
-interface EmbedBatchRequest {
-  id: number;
-  type: 'embedBatch';
-  texts: string[];
 }
 
 interface RerankRequest {
@@ -96,15 +121,12 @@ interface VerifyRequest {
 }
 
 type WorkerRequest =
-  | InitRequest | RerankInitRequest | VerifyInitRequest
-  | EmbedRequest | EmbedBatchRequest
+  | RerankInitRequest | VerifyInitRequest
   | RerankRequest | RerankBatchRequest
   | VerifyRequest
   | { __shutdown: true };
 
 interface InitOkResponse { id: number; initOk: true; dim: number }
-interface EmbedResponse { id: number; embedding: number[] }
-interface EmbedBatchResponse { id: number; embeddings: number[][] }
 interface RerankResponse { id: number; scores: number[] }
 interface RerankBatchResponse { id: number; allScores: number[][] }
 interface VerifyResultPayload {
@@ -114,55 +136,6 @@ interface VerifyResultPayload {
 }
 interface VerifyResponse { id: number; result: VerifyResultPayload }
 interface ErrorResponse { id: number; error: string }
-
-// ── Model management ──────────────────────────────────────────────────────────
-
-const MODEL_MAP: Record<string, string> = {
-  'bge-small-en-v1.5': 'fast-bge-small-en-v1.5',
-  'bge-base-en-v1.5': 'fast-bge-base-en-v1.5',
-  'multilingual-e5-large': 'fast-multilingual-e5-large',
-  'bge-m3': 'BAAI/bge-m3',
-  'codexembed-400m': 'CodeXEmbed-400M',
-};
-
-interface EmbedderInstance {
-  queryEmbed(text: string): Promise<number[]>;
-  embed(texts: string[], batchSize?: number): AsyncGenerator<number[][], void, unknown>;
-  listSupportedModels(): Array<{ model: EmbeddingModel; dim: number; description: string }>;
-}
-
-let _embedder: EmbedderInstance | null = null;
-let _currentModel = '';
-let _currentCacheDir = '';
-
-async function loadModel(model: string, cacheDir: string): Promise<{ dim: number }> {
-  if (_embedder && _currentModel === model && _currentCacheDir === cacheDir) {
-    const models = _embedder.listSupportedModels();
-    const info = models.find((m) => m.model === model);
-    return { dim: info?.dim ?? 0 };
-  }
-
-  const { FlagEmbedding, EmbeddingModel: EM } = await import('fastembed');
-  const fastModel = MODEL_MAP[model] ?? model;
-  const modelKeys = Object.keys(EM) as Array<keyof typeof EM>;
-  const foundKey = modelKeys.find((k) => EM[k] === fastModel);
-  const modelEnum: EmbeddingModel = foundKey ? EM[foundKey] : fastModel as EmbeddingModel;
-
-  fs.mkdirSync(cacheDir, { recursive: true });
-
-  _embedder = (await FlagEmbedding.init({
-    model: modelEnum as Exclude<EmbeddingModel, EmbeddingModel.CUSTOM>,
-    cacheDir,
-    showDownloadProgress: false,
-  })) as unknown as EmbedderInstance;
-
-  _currentModel = model;
-  _currentCacheDir = cacheDir;
-
-  const models = _embedder.listSupportedModels();
-  const info = models.find((m) => m.model === model);
-  return { dim: info?.dim ?? 0 };
-}
 
 // ── Rerank (cross-encoder) — real ONNX inference ──────────────────────────────
 //
@@ -338,9 +311,104 @@ function softmax(logits: number[]): number[] {
 }
 
 // ── Main message handler ──────────────────────────────────────────────────────
+//
+// Requests are processed by a single, strictly serialized async queue
+// (`_queue`) rather than fired-and-forgotten independently. Rerank and verify
+// share the same onnxruntime-node@1.24.3 addon (proven safe to run
+// concurrently — see BACKLOG.md BL-238 repro (a)/(d): 2x transformers.js
+// workers, and rerank+verify together, both coexist cleanly), so this is
+// defense-in-depth rather than a required fix for THIS worker specifically;
+// it costs nothing (both workloads are CPU-bound single-model calls) and
+// keeps this worker's request handling consistent with
+// `fastembedProcessHost.ts`'s own serialized queue.
 
 if (!parentPort) {
   throw new Error('embedWorker must be run as a worker_thread, not directly');
+}
+
+let _queue: Promise<void> = Promise.resolve();
+
+/** Enqueue a request handler so it runs strictly after every previously queued one. */
+function enqueue(task: () => Promise<void>): void {
+  _queue = _queue.then(task, task);
+}
+
+async function handleMessage(msg: Exclude<WorkerRequest, { __shutdown: true }>): Promise<void> {
+  // ── Init variants ────────────────────────────────────────────────────────────
+
+  if (msg.type === 'init' && msg.initType === 'rerank') {
+    try {
+      await setRerankModel(msg.modelId);
+      parentPort!.postMessage({ id: msg.id, initOk: true, dim: 0 } satisfies InitOkResponse);
+    } catch (e) {
+      parentPort!.postMessage({
+        id: msg.id,
+        error: String(e instanceof Error ? e.message : e),
+      } satisfies ErrorResponse);
+    }
+    return;
+  }
+  if (msg.type === 'init' && msg.initType === 'verify') {
+    try {
+      await setVerifyModel(msg.modelId, msg.modelVersion);
+      parentPort!.postMessage({ id: msg.id, initOk: true, dim: 0 } satisfies InitOkResponse);
+    } catch (e) {
+      parentPort!.postMessage({
+        id: msg.id,
+        error: String(e instanceof Error ? e.message : e),
+      } satisfies ErrorResponse);
+    }
+    return;
+  }
+
+  // ── Rerank (cross-encoder) ──────────────────────────────────────────────────
+
+  if (msg.type === 'rerank') {
+    try {
+      const scores = await computeRerankScores(msg.query, msg.candidates);
+      parentPort!.postMessage({ id: msg.id, scores } satisfies RerankResponse);
+    } catch (err) {
+      parentPort!.postMessage({
+        id: msg.id,
+        error: String(err instanceof Error ? err.message : err),
+      } satisfies ErrorResponse);
+    }
+    return;
+  }
+
+  if (msg.type === 'rerankBatch') {
+    try {
+      const allScores = await Promise.all(
+        msg.queries.map((q, i) => {
+          const set = msg.candidateSets[i];
+          if (!set) return Promise.resolve([] as number[]);
+          return computeRerankScores(q, set);
+        }),
+      );
+      parentPort!.postMessage({ id: msg.id, allScores } satisfies RerankBatchResponse);
+    } catch (err) {
+      parentPort!.postMessage({
+        id: msg.id,
+        error: String(err instanceof Error ? err.message : err),
+      } satisfies ErrorResponse);
+    }
+    return;
+  }
+
+  // ── Verify (NLI) ─────────────────────────────────────────────────────────────
+
+  if (msg.type === 'verify') {
+    try {
+      const result = await computeVerification(msg.claimText, msg.sourceText);
+      parentPort!.postMessage({ id: msg.id, result } satisfies VerifyResponse);
+    } catch (err) {
+      parentPort!.postMessage({
+        id: msg.id,
+        error: String(err instanceof Error ? err.message : err),
+      } satisfies ErrorResponse);
+    }
+    return;
+  }
 }
 
 parentPort.on('message', (msg: WorkerRequest) => {
@@ -350,148 +418,5 @@ parentPort.on('message', (msg: WorkerRequest) => {
     return;
   }
 
-  // ── Init variants ────────────────────────────────────────────────────────────
-
-  if (msg.type === 'init' && 'initType' in msg) {
-    if (msg.initType === 'rerank') {
-      setRerankModel(msg.modelId)
-        .then(() => {
-          parentPort!.postMessage({ id: msg.id, initOk: true, dim: 0 } satisfies InitOkResponse);
-        })
-        .catch((e) => {
-          parentPort!.postMessage({
-            id: msg.id,
-            error: String(e instanceof Error ? e.message : e),
-          } satisfies ErrorResponse);
-        });
-      return;
-    }
-    if (msg.initType === 'verify') {
-      setVerifyModel(msg.modelId, msg.modelVersion)
-        .then(() => {
-          parentPort!.postMessage({ id: msg.id, initOk: true, dim: 0 } satisfies InitOkResponse);
-        })
-        .catch((e) => {
-          parentPort!.postMessage({
-            id: msg.id,
-            error: String(e instanceof Error ? e.message : e),
-          } satisfies ErrorResponse);
-        });
-      return;
-    }
-  }
-
-  if (msg.type === 'init' && !('initType' in msg)) {
-    // Standard embedding model init
-    loadModel((msg as InitRequest).model, (msg as InitRequest).cacheDir)
-      .then(({ dim }) => {
-        parentPort!.postMessage({ id: msg.id, initOk: true, dim } satisfies InitOkResponse);
-      })
-      .catch((e) => {
-        parentPort!.postMessage({
-          id: msg.id,
-          error: String(e instanceof Error ? e.message : e),
-        } satisfies ErrorResponse);
-      });
-    return;
-  }
-
-  // ── Embed ────────────────────────────────────────────────────────────────────
-
-  if (msg.type === 'embed') {
-    if (!_embedder) {
-      parentPort!.postMessage({ id: msg.id, error: 'Model not initialized' } satisfies ErrorResponse);
-      return;
-    }
-    _embedder.queryEmbed(msg.text)
-      .then((vec) => {
-        parentPort!.postMessage({ id: msg.id, embedding: Array.from(vec) } satisfies EmbedResponse);
-      })
-      .catch((e) => {
-        parentPort!.postMessage({ id: msg.id, error: String(e instanceof Error ? e.message : e) } satisfies ErrorResponse);
-      });
-    return;
-  }
-
-  if (msg.type === 'embedBatch') {
-    if (!_embedder) {
-      parentPort!.postMessage({ id: msg.id, error: 'Model not initialized' } satisfies ErrorResponse);
-      return;
-    }
-    collectEmbeddings(_embedder, msg.texts)
-      .then((embeddings) => {
-        parentPort!.postMessage({ id: msg.id, embeddings } satisfies EmbedBatchResponse);
-      })
-      .catch((e) => {
-        parentPort!.postMessage({ id: msg.id, error: String(e instanceof Error ? e.message : e) } satisfies ErrorResponse);
-      });
-    return;
-  }
-
-  // ── Rerank (cross-encoder) ──────────────────────────────────────────────────
-
-  if (msg.type === 'rerank') {
-    computeRerankScores(msg.query, msg.candidates)
-      .then((scores) => {
-        parentPort!.postMessage({ id: msg.id, scores } satisfies RerankResponse);
-      })
-      .catch((err) => {
-        parentPort!.postMessage({
-          id: msg.id,
-          error: String(err instanceof Error ? err.message : err),
-        } satisfies ErrorResponse);
-      });
-    return;
-  }
-
-  if (msg.type === 'rerankBatch') {
-    Promise.all(
-      msg.queries.map((q, i) => {
-        const set = msg.candidateSets[i];
-        if (!set) return Promise.resolve([] as number[]);
-        return computeRerankScores(q, set);
-      }),
-    )
-      .then((allScores) => {
-        parentPort!.postMessage({ id: msg.id, allScores } satisfies RerankBatchResponse);
-      })
-      .catch((err) => {
-        parentPort!.postMessage({
-          id: msg.id,
-          error: String(err instanceof Error ? err.message : err),
-        } satisfies ErrorResponse);
-      });
-    return;
-  }
-
-  // ── Verify (NLI) ─────────────────────────────────────────────────────────────
-
-  if (msg.type === 'verify') {
-    computeVerification(msg.claimText, msg.sourceText)
-      .then((result) => {
-        parentPort!.postMessage({ id: msg.id, result } satisfies VerifyResponse);
-      })
-      .catch((err) => {
-        parentPort!.postMessage({
-          id: msg.id,
-          error: String(err instanceof Error ? err.message : err),
-        } satisfies ErrorResponse);
-      });
-    return;
-  }
+  enqueue(() => handleMessage(msg));
 });
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-async function collectEmbeddings(
-  embedder: EmbedderInstance,
-  texts: string[],
-): Promise<number[][]> {
-  const results: number[][] = [];
-  for await (const batch of embedder.embed(texts, 256)) {
-    for (const vec of batch) {
-      results.push(vec);
-    }
-  }
-  return results;
-}

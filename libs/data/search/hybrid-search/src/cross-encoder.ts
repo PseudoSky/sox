@@ -1,71 +1,26 @@
 /**
  * Cross-encoder reranker using the shared ONNX worker thread.
  *
- * Uses the embedding-provider's shared embedWorker.ts — the ONLY worker
- * implementation (RS-2, BL-149c). Cross-encoder and claim-verification
- * migrated onto the same worker protocol.
+ * BL-238/BL-171 fix: routes ALL rerank inference through
+ * `@adhd/sox-embedding-provider`'s `getSharedOnnxWorker()` — the ONE
+ * process-wide onnxruntime-bearing worker allowed to exist (see
+ * `sharedOnnxWorker.ts` there for the full root-cause writeup). This
+ * package no longer constructs its own `worker_threads.Worker`: doing so
+ * would risk a second, concurrent onnxruntime-node native instance in the
+ * same process, which crashes the whole process with a V8 HandleScope
+ * fatal error (proven via a from-scratch minimal repro — see BL-238).
  */
 
-import { Worker } from 'node:worker_threads';
-import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import { existsSync } from 'node:fs';
-
-// TransientEmbeddingError/ResolutionError are used as VALUES (thrown + `new`) in the
-// hot path, so they must be statically imported (not `import type`). nx flags this as a
-// static-import-of-a-lazy-loaded-lib because resolveWorkerPath() below references the same
-// package via `require.resolve(...)` — but require.resolve only RESOLVES a worker path, it
-// never lazy-LOADS the module, so the heuristic is a false positive here. embedding-provider
-// is a declared workspace dep of this package. (Regression surfaced from RS-1/RS-2, 3360f8b.)
-// eslint-disable-next-line @nx/enforce-module-boundaries
+// TransientEmbeddingError/ResolutionError/getSharedOnnxWorker are used as VALUES
+// (thrown + `new` / called) in the hot path, so they must be statically imported
+// (not `import type`). embedding-provider is a declared `dependencies` entry of
+// this package (see package.json). (Regression surfaced from RS-1/RS-2, 3360f8b.)
 import {
   TransientEmbeddingError,
   ResolutionError,
+  getSharedOnnxWorker,
+  type SharedOnnxWorkerClient,
 } from '@adhd/sox-embedding-provider';
-
-/**
- * Resolve the path to the shared embed worker in @adhd/sox-embedding-provider.
- *
- * BL-fix (surfaced by tools/e2e/substrate-pipeline.test.mjs — the first real,
- * non-vitest-transformed `node --test` execution of this path): the previous
- * implementation (a) computed the monorepo-relative fallback with one `..`
- * hop too many (`libs/embed/...` instead of `libs/data/embed/...`, since this
- * file lives at `libs/data/search/hybrid-search/dist`, not `libs/hybrid-search/dist`),
- * and (b) referenced a bare `require` global inside this ESM module with no
- * `createRequire` shim — `require` is undefined here outside of vitest's SSR
- * transform (which synthesizes one for compatibility), so real Node execution
- * threw a ReferenceError, was silently swallowed by the catch, and fell all
- * the way through to a `crossEncoderWorker.js` that has never existed. Mirrors
- * the already-correct, already-proven pattern in
- * `claim-verification/src/worker.ts::resolveWorkerPath` (same
- * `libs/data/<group>/<pkg>/{src,dist}` depth).
- */
-function resolveWorkerPath(): string {
-  const here = dirname(fileURLToPath(import.meta.url));
-
-  // Primary: resolve via Node module resolution through the
-  // `@adhd/sox-embedding-provider` workspace dependency — robust regardless
-  // of monorepo directory depth/layout, follows this package's own
-  // `node_modules/@adhd/sox-embedding-provider` pnpm workspace symlink.
-  try {
-    const require = createRequire(import.meta.url);
-    const epEntry = require.resolve('@adhd/sox-embedding-provider');
-    const workerPath = join(dirname(epEntry), 'embedWorker.js');
-    if (existsSync(workerPath)) return workerPath;
-  } catch {
-    // continue to fallback
-  }
-
-  // Fallback: standard monorepo relative layout —
-  // libs/data/search/hybrid-search/{src,dist} -> libs/data/embed/embedding-provider/dist
-  // (src and dist are equidistant: dist mirrors src 1:1 via rootDir/outputPath).
-  const relPath = join(here, '..', '..', '..', 'embed', 'embedding-provider', 'dist', 'embedWorker.js');
-  if (existsSync(relPath)) return relPath;
-
-  // Absolute last resort
-  return join(here, 'crossEncoderWorker.js');
-}
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -108,118 +63,49 @@ export interface CrossEncoderRerankerConfig {
   gateThreshold?: number;
 }
 
-// ── Worker proxy ───────────────────────────────────────────────────────────
+// ── ONNX shared-worker proxy for cross-encoder ─────────────────────────────
+//
+// BL-238/BL-171: every rerank request is proxied through the ONE process-wide
+// `SharedOnnxWorkerClient` instead of a `Worker` owned by this class — see the
+// file header for why.
 
-interface WorkerScoreRequest {
-  id: number;
-  type: 'rerank';
-  query: string;
-  candidates: Array<{ id: string; text: string }>;
-}
-
-interface WorkerBatchRequest {
-  id: number;
-  type: 'rerankBatch';
-  queries: string[];
-  candidateSets: Array<Array<{ id: string; text: string }>>;
-}
-
-interface WorkerInitRequest {
-  id: number;
-  type: 'init';
-  initType: 'rerank';
-  modelId: string;
-}
-
-interface WorkerScoreResponse {
-  id: number;
-  scores: number[];
-}
-
-interface WorkerBatchResponse {
-  id: number;
-  allScores: number[][];
-}
-
-interface WorkerInitOkResponse {
-  id: number;
+interface InitOkResponse {
   initOk: true;
   dim?: number;
 }
 
-interface WorkerErrorResponse {
-  id: number;
-  error: string;
+interface ScoreResponse {
+  scores: number[];
 }
 
-type WorkerMessage = WorkerScoreResponse | WorkerBatchResponse | WorkerInitOkResponse | WorkerErrorResponse;
-
-// ── ONNX worker thread for cross-encoder ───────────────────────────────────
+interface BatchScoreResponse {
+  allScores: number[][];
+}
 
 class CrossEncoderWorker {
-  private worker: Worker | null = null;
-  private nextId = 1;
-  private pending = new Map<
-    number,
-    { resolve: (v: number[] | number[][]) => void; reject: (e: Error) => void }
-  >();
+  private shared: SharedOnnxWorkerClient;
   private readyPromise: Promise<void> | null = null;
   private modelId: string;
+  private started = false;
 
   constructor(modelId: string) {
     this.modelId = modelId;
+    this.shared = getSharedOnnxWorker();
   }
 
   async start(): Promise<void> {
-    const workerPath = resolveWorkerPath();
-    this.worker = new Worker(workerPath);
-    this.worker.unref();
-
-    this.worker.on('message', (msg: WorkerMessage) => {
-      const pending = this.pending.get(msg.id);
-      if (!pending) return;
-      this.pending.delete(msg.id);
-      if ('error' in msg) {
-        pending.reject(new TransientEmbeddingError(msg.error));
-      } else if ('scores' in msg) {
-        pending.resolve(msg.scores);
-      } else if ('allScores' in msg) {
-        pending.resolve(msg.allScores);
-      } else if ('initOk' in msg) {
-        pending.resolve([]);
+    this.readyPromise = (async () => {
+      try {
+        await this.shared.request<InitOkResponse>({
+          type: 'init',
+          initType: 'rerank',
+          modelId: this.modelId,
+        });
+        this.started = true;
+      } catch (e) {
+        throw e instanceof Error ? new TransientEmbeddingError(e.message) : e;
       }
-    });
-
-    this.worker.on('error', (err) => {
-      for (const { reject } of this.pending.values()) reject(err);
-      this.pending.clear();
-      this.worker = null;
-    });
-
-    // BL-fix (surfaced by tools/e2e/substrate-pipeline.test.mjs — the first
-    // real, non-vitest-force-killed process to let this worker run to
-    // completion): attaching a `'message'` listener on a `Worker` re-refs its
-    // underlying MessagePort even if `.unref()` was already called earlier
-    // (the `.unref()` above ran before any listener existed, so it was
-    // silently undone by the `.on('message', ...)` registration above).
-    // Re-assert unref here, now that every listener is attached, so a real
-    // process can actually exit once its own work is done instead of hanging
-    // on this worker forever.
-    this.worker.unref();
-
-    this.readyPromise = new Promise<void>((resolve, reject) => {
-      const id = this.nextId++;
-      this.pending.set(id, {
-        resolve: () => { resolve(); },
-        reject: (e) => { reject(e); },
-      });
-      this.worker!.postMessage({
-        id,
-        type: 'init',
-        initType: 'rerank',
-        modelId: this.modelId,
-      } satisfies WorkerInitRequest);
-    });
+    })();
 
     await this.readyPromise;
   }
@@ -228,62 +114,57 @@ class CrossEncoderWorker {
     query: string,
     candidates: Array<{ id: number | string; text: string }>,
   ): Promise<Float32Array> {
-    const worker = this.getWorker();
+    this.assertStarted();
     if (this.readyPromise) await this.readyPromise;
 
     const mapped = candidates.map((c) => ({ id: String(c.id), text: c.text }));
-    return new Promise<Float32Array>((resolve, reject) => {
-      const id = this.nextId++;
-      this.pending.set(id, {
-        resolve: (v) => resolve(new Float32Array(v as number[])),
-        reject,
-      });
-      worker.postMessage({
-        id,
+    try {
+      const res = await this.shared.request<ScoreResponse>({
         type: 'rerank',
         query,
         candidates: mapped,
-      } satisfies WorkerScoreRequest);
-    });
+      });
+      return new Float32Array(res.scores);
+    } catch (e) {
+      throw e instanceof Error ? new TransientEmbeddingError(e.message) : e;
+    }
   }
 
   async rerankBatch(
     queries: string[],
     candidateSets: Array<Array<{ id: number | string; text: string }>>,
   ): Promise<Float32Array[]> {
-    const worker = this.getWorker();
+    this.assertStarted();
     if (this.readyPromise) await this.readyPromise;
 
     const sets = candidateSets.map((set) =>
       set.map((c) => ({ id: String(c.id), text: c.text })),
     );
 
-    return new Promise<Float32Array[]>((resolve, reject) => {
-      const id = this.nextId++;
-      this.pending.set(id, {
-        resolve: (v) => resolve((v as number[][]).map((s) => new Float32Array(s))),
-        reject,
-      });
-      worker.postMessage({
-        id,
+    try {
+      const res = await this.shared.request<BatchScoreResponse>({
         type: 'rerankBatch',
         queries,
         candidateSets: sets,
-      } satisfies WorkerBatchRequest);
-    });
+      });
+      return res.allScores.map((s) => new Float32Array(s));
+    } catch (e) {
+      throw e instanceof Error ? new TransientEmbeddingError(e.message) : e;
+    }
   }
 
+  /**
+   * Stop using the shared ONNX worker from this instance. Does NOT terminate
+   * the underlying shared worker — fastembed embeddings and/or the NLI
+   * verifier may still depend on it (BL-238).
+   */
   async stop(): Promise<void> {
-    if (this.worker) {
-      await this.worker.terminate();
-      this.worker = null;
-    }
+    this.started = false;
     this.readyPromise = null;
   }
 
-  private getWorker() {
-    if (!this.worker) throw new Error('CrossEncoder worker not started');
-    return this.worker;
+  private assertStarted(): void {
+    if (!this.started) throw new Error('CrossEncoder worker not started');
   }
 }
 

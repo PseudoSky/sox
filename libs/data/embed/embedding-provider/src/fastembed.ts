@@ -1,52 +1,19 @@
-import { Worker } from 'node:worker_threads';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import { ResolutionError } from './index.js';
+import { warmupTimeoutMs } from './index.js';
+import { getSharedFastembedProcess, type SharedFastembedProcessClient } from './sharedFastembedProcess.js';
 import type { EmbeddingHealth, EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole, FastEmbedModelConfig } from './index.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-interface WorkerRequest {
-  id: number;
-  type: 'init';
-  model: string;
-  cacheDir: string;
-}
-
-interface EmbedWorkerRequest {
-  id: number;
-  type: 'embed';
-  text: string;
-}
-
-interface EmbedBatchWorkerRequest {
-  id: number;
-  type: 'embedBatch';
-  texts: string[];
-}
-
 interface InitOkResponse {
-  id: number;
   initOk: true;
   dim: number;
 }
 
 interface EmbedResponse {
-  id: number;
   embedding: number[];
 }
 
 interface EmbedBatchResponse {
-  id: number;
   embeddings: number[][];
 }
-
-interface ErrorResponse {
-  id: number;
-  error: string;
-}
-
-type WorkerMessage = InitOkResponse | EmbedResponse | EmbedBatchResponse | ErrorResponse;
 
 const MODEL_CONFIGS: Record<string, FastEmbedModelConfig> = {
   'bge-small-en-v1.5': {
@@ -99,27 +66,25 @@ const MODEL_MAX_TOKENS: Record<string, number> = Object.fromEntries(
 const DEFAULT_MODEL = 'bge-base-en-v1.5';
 const DEFAULT_BATCH_SIZE = 256;
 
-function warmupTimeoutMs(): number {
-  const raw = Number(process.env['SOX_EMBED_WARMUP_TIMEOUT_MS']);
-  return Number.isFinite(raw) && raw > 0 ? raw : 60_000;
-}
-
 /**
  * Real ONNX embedding provider using fastembed-js.
  *
- * Runs inference in a worker thread (BL-11 boundary) — onnxruntime-node
- * never runs on the main thread alongside better-sqlite3 + sqlite-vec.
+ * Runs inference in a dedicated child PROCESS (BL-238/BL-171), never the
+ * main thread and never a `worker_threads.Worker` shared with
+ * `@huggingface/transformers`-based inference (rerank/verify) — see
+ * `sharedFastembedProcess.ts` / `fastembedProcessHost.ts` for the full
+ * root-cause writeup on why fastembed's onnxruntime-node@1.21.0 cannot
+ * safely share a thread with onnxruntime-node@1.24.3, even sequentially.
  */
 export class FastembedProvider implements EmbeddingProvider {
   readonly metadata: EmbeddingProviderMetadata;
   private model: string;
   private cacheDir: string;
-  private worker: Worker | null = null;
-  private nextId = 1;
-  private pending = new Map<
-    number,
-    { resolve: (v: number[] | number[][] | { dim: number }) => void; reject: (e: Error) => void }
-  >();
+  // BL-238/BL-171 fix: delegate ALL fastembed ONNX inference to the
+  // process-wide shared fastembed CHILD PROCESS singleton instead of
+  // spawning our own `Worker`/process — see `sharedFastembedProcess.ts` for
+  // the full root-cause writeup.
+  private shared: SharedFastembedProcessClient = getSharedFastembedProcess();
   private ready = false;
   private readyPromise: Promise<void> | null = null;
   private embedDim = 0;
@@ -165,38 +130,17 @@ export class FastembedProvider implements EmbeddingProvider {
     if (this.estimateTokens(text) > this.maxTokensVal) {
       const chunks = this.chunkText(text, this.maxTokensVal);
       const embeddings: Float32Array[] = [];
-      const worker = this.getWorker();
       await this.ensureReady();
       for (const chunk of chunks) {
-        const vec = await new Promise<Float32Array>((resolve, reject) => {
-          const id = this.nextId++;
-          this.pending.set(id, {
-            resolve: (v: number[] | number[][] | { dim: number }) => {
-              resolve(this.toFloat32Normalised(v as number[]));
-            },
-            reject,
-          });
-          worker.postMessage({ id, type: 'embed', text: chunk } satisfies EmbedWorkerRequest);
-        });
-        embeddings.push(vec);
+        const res = await this.shared.request<EmbedResponse>({ type: 'embed', text: chunk });
+        embeddings.push(this.toFloat32Normalised(res.embedding));
       }
       return this.meanPool(embeddings);
     }
 
-    const worker = this.getWorker();
     await this.ensureReady();
-
-    return new Promise<Float32Array>((resolve, reject) => {
-      const id = this.nextId++;
-      this.pending.set(id, {
-        resolve: (v: number[] | number[][] | { dim: number }) => {
-          const vec = v as number[];
-          resolve(this.toFloat32Normalised(vec));
-        },
-        reject,
-      });
-      worker.postMessage({ id, type: 'embed', text } satisfies EmbedWorkerRequest);
-    });
+    const res = await this.shared.request<EmbedResponse>({ type: 'embed', text });
+    return this.toFloat32Normalised(res.embedding);
   }
 
   async *embedBatch(
@@ -204,7 +148,6 @@ export class FastembedProvider implements EmbeddingProvider {
     opts?: { role?: EmbedRole; batchSize?: number },
   ): AsyncIterable<Float32Array> {
     void opts?.role;
-    const worker = this.getWorker();
     await this.ensureReady();
 
     const batchSize = opts?.batchSize ?? DEFAULT_BATCH_SIZE;
@@ -218,7 +161,7 @@ export class FastembedProvider implements EmbeddingProvider {
           yield await this.embedSingle(text, opts?.role);
         }
       } else {
-        const embeddings = await this.sendBatch(worker, batch);
+        const embeddings = await this.sendBatch(batch);
         for (const vec of embeddings) {
           yield this.toFloat32Normalised(vec);
         }
@@ -294,125 +237,42 @@ export class FastembedProvider implements EmbeddingProvider {
     return pooled;
   }
 
-  private getWorker(): Worker {
-    if (this.worker) return this.worker;
-
-    const workerPath = join(__dirname, 'embedWorker.js');
-    this.worker = new Worker(workerPath, {
-      workerData: { cacheDir: this.cacheDir },
-    });
-    this.worker.unref();
-
-    this.worker.on('message', (msg: WorkerMessage) => {
-      const pending = this.pending.get(msg.id);
-      if (!pending) return;
-      this.pending.delete(msg.id);
-      if ('error' in msg) {
-        pending.reject(new Error(msg.error));
-      } else if ('initOk' in msg) {
-        this.embedDim = msg.dim;
-        pending.resolve({ dim: msg.dim });
-      } else if ('embedding' in msg) {
-        pending.resolve(msg.embedding);
-      } else if ('embeddings' in msg) {
-        pending.resolve(msg.embeddings);
-      }
-    });
-
-    this.worker.on('error', (err) => {
-      this._lastError = err.message;
-      for (const { reject } of this.pending.values()) reject(err);
-      this.pending.clear();
-      this.worker = null;
-      this.ready = false;
-      this.readyPromise = null;
-    });
-
-    this.worker.on('exit', (code) => {
-      if (code !== 0) {
-        const err = new Error(`embedWorker exited with code ${code}`);
-        this._lastError = err.message;
-        for (const { reject } of this.pending.values()) reject(err);
-        this.pending.clear();
-      }
-      this.worker = null;
-      this.ready = false;
-      this.readyPromise = null;
-    });
-
-    // BL-fix (surfaced by tools/e2e/substrate-pipeline.test.mjs — the first
-    // real, non-vitest-force-killed process to let this worker run to
-    // completion): attaching a `'message'` listener on a `Worker` re-refs its
-    // underlying MessagePort even if `.unref()` was already called earlier
-    // (the very first `.unref()` above ran before any listener existed, so it
-    // was silently undone by the `.on('message', ...)` registration a few
-    // lines later). Re-assert unref here, now that every listener is
-    // attached, so a real (non-test-harness) Node process can actually exit
-    // once its own work is done instead of hanging on this worker forever.
-    this.worker.unref();
-
-    this.readyPromise = new Promise<void>((resolve, reject) => {
-      const id = this.nextId++;
-      const to = setTimeout(() => {
-        this.pending.delete(id);
-        const err = new Error(
-          `Fastembed worker init timed out after ${warmupTimeoutMs()}ms`,
-        );
-        reject(err);
-      }, warmupTimeoutMs());
-      if (typeof to.unref === 'function') to.unref();
-
-      this.pending.set(id, {
-        resolve: (v: number[] | number[][] | { dim: number }) => {
-          clearTimeout(to);
-          const dimResult = v as { dim: number };
-          if (dimResult.dim > 0) {
-            this.embedDim = dimResult.dim;
-          }
-          this.ready = true;
-          this._lastError = null;
-          resolve();
-        },
-        reject: (e: Error) => {
-          clearTimeout(to);
-          this._lastError = e.message;
-          reject(e);
-        },
-      });
-
-      this.worker!.postMessage({
-        id,
-        type: 'init',
-        model: this.model,
-        cacheDir: this.cacheDir,
-      } satisfies WorkerRequest);
-    });
-
-    return this.worker;
-  }
-
-  private async ensureReady(): Promise<void> {
-    if (this.ready) return;
-    if (this.readyPromise) {
-      await this.readyPromise;
-      return;
+  /**
+   * Lazily initialise this provider's model on the shared ONNX worker.
+   * Idempotent: concurrent callers await the same in-flight init.
+   */
+  private ensureReady(): Promise<void> {
+    if (this.ready) return Promise.resolve();
+    if (!this.readyPromise) {
+      this.readyPromise = this.initModel();
     }
-    throw new ResolutionError('Fastembed provider not initialized');
+    return this.readyPromise;
   }
 
-  private sendBatch(worker: Worker, texts: string[]): Promise<number[][]> {
-    return new Promise<number[][]>((resolve, reject) => {
-      const id = this.nextId++;
-      this.pending.set(id, {
-        resolve: (v: number[] | number[][] | { dim: number }) => resolve(v as number[][]),
-        reject,
-      });
-      worker.postMessage({
-        id,
-        type: 'embedBatch',
-        texts,
-      } satisfies EmbedBatchWorkerRequest);
-    });
+  private async initModel(): Promise<void> {
+    try {
+      const res = await this.shared.request<InitOkResponse>(
+        { type: 'init', model: this.model, cacheDir: this.cacheDir },
+        warmupTimeoutMs(),
+      );
+      if (res.dim > 0) {
+        this.embedDim = res.dim;
+      }
+      this.ready = true;
+      this._lastError = null;
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      this._lastError = err.message;
+      // Allow a subsequent call to retry initialisation rather than being
+      // permanently stuck on a failed readyPromise.
+      this.readyPromise = null;
+      throw err;
+    }
+  }
+
+  private async sendBatch(texts: string[]): Promise<number[][]> {
+    const res = await this.shared.request<EmbedBatchResponse>({ type: 'embedBatch', texts });
+    return res.embeddings;
   }
 
   private toFloat32Normalised(raw: number[]): Float32Array {

@@ -1,46 +1,23 @@
 /**
  * Worker proxy for NLI verification — uses the shared ONNX worker thread.
  *
- * Uses the embedding-provider's shared embedWorker.ts — the ONLY worker
- * implementation (RS-2, BL-149c). The old verifierWorker.ts has been
- * migrated onto the shared worker protocol.
+ * BL-238/BL-171 fix: routes ALL NLI inference through
+ * `@adhd/sox-embedding-provider`'s `getSharedOnnxWorker()` — the ONE
+ * process-wide onnxruntime-bearing worker allowed to exist in this process
+ * (see `sharedOnnxWorker.ts` there for the full root-cause writeup). This
+ * package no longer constructs its own `worker_threads.Worker`: doing so
+ * would risk a second, concurrent onnxruntime-node native instance in the
+ * same process, which crashes the whole process with a V8 HandleScope fatal
+ * error (proven via a from-scratch minimal repro — see BL-238). `WorkerProxy`
+ * below is now a thin proxy over the shared client rather than the owner of
+ * a real `Worker` — its `workerId`/`isBusy`/`queuedJobs` bookkeeping is kept
+ * for pool health-reporting (`ClaimVerifierConfig.workerCount`), but every
+ * `WorkerProxy` in a pool now funnels onto the SAME underlying shared worker
+ * (a deliberate, documented trade-off — see `sharedOnnxWorker.ts`).
  */
 
-import { Worker } from 'node:worker_threads';
-import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { getSharedOnnxWorker, type SharedOnnxWorkerClient } from '@adhd/sox-embedding-provider';
 import type { EntailmentLabel } from './types.js';
-
-// ── Resolve shared worker path ────────────────────────────────────────────────
-
-function resolveWorkerPath(): string {
-  const here = dirname(fileURLToPath(import.meta.url));
-
-  // Primary: resolve via Node module resolution through the
-  // `@adhd/sox-embedding-provider` devDependency. Robust regardless of
-  // monorepo directory depth/layout — follows the pnpm workspace symlink
-  // (libs/data/verify/claim-verification/node_modules/@adhd/sox-embedding-provider
-  // -> ../../../../embed/embedding-provider) rather than assuming a fixed
-  // number of `..` hops from this file's own location.
-  try {
-    const require = createRequire(import.meta.url);
-    const epEntry = require.resolve('@adhd/sox-embedding-provider');
-    const workerPath = join(dirname(epEntry), 'embedWorker.js');
-    if (existsSync(workerPath)) return workerPath;
-  } catch {
-    // continue to fallback
-  }
-
-  // Fallback: standard monorepo relative layout —
-  // libs/data/verify/claim-verification/{src,dist} -> libs/data/embed/embedding-provider/dist
-  // (src and dist are equidistant: dist mirrors src 1:1 via rootDir/outputPath).
-  const relPath = join(here, '..', '..', '..', 'embed', 'embedding-provider', 'dist', 'embedWorker.js');
-  if (existsSync(relPath)) return relPath;
-
-  return join(here, 'verifierWorker.js');
-}
 
 // ── Main → Worker messages ─────────────────────────────────────────────────
 
@@ -137,12 +114,32 @@ export type WorkerToMainMessage =
   | WorkerShutdownCompleteMessage;
 
 // ── Worker proxy ────────────────────────────────────────────────────────────
+//
+// BL-238/BL-171: every verify request is proxied through the ONE process-wide
+// `SharedOnnxWorkerClient` instead of a `Worker` owned by this class — see
+// the file header for why. `send()` only ever needs to support
+// `WorkerVerifyMessage` in practice (the only variant `@adhd/sox-claim-
+// verification`'s `index.ts` ever constructs); `warmup`/`verifyBatch`/
+// `shutdown` message *types* are kept in the public union for API
+// compatibility but are not meaningful wire requests to embedWorker.ts.
+
+interface SharedInitOkResponse {
+  initOk: true;
+  dim?: number;
+}
+
+// Note: `SharedOnnxWorkerClient.request()` already rejects the promise when
+// embedWorker.ts responds with `{ error: string }` (see sharedOnnxWorker.ts),
+// so a successfully-resolved response here always carries `result` — never
+// `error`. Errors are handled uniformly by the `catch` block in `send()`
+// below, not by inspecting this shape.
+interface SharedVerifyResponse {
+  result: { entailment: string; confidence: number; timingMs: number };
+}
 
 export class WorkerProxy {
   readonly workerId: number;
-  private worker: Worker | null = null;
-  private nextId = 1;
-  private pending = new Map<string, { resolve: (v: WorkerToMainMessage) => void; reject: (e: Error) => void }>();
+  private shared: SharedOnnxWorkerClient;
   private _isBusy = false;
   private _queuedJobs = 0;
   private _lastActivityMs = Date.now();
@@ -151,6 +148,7 @@ export class WorkerProxy {
 
   constructor(workerId: number) {
     this.workerId = workerId;
+    this.shared = getSharedOnnxWorker();
   }
 
   get isBusy(): boolean {
@@ -170,152 +168,70 @@ export class WorkerProxy {
   }
 
   async start(config: { modelId: string; modelVersion: string }): Promise<void> {
-    const workerPath = resolveWorkerPath();
-    this.worker = new Worker(workerPath);
-    this.worker.unref();
-
-    // ── Warmup handshake: send init and wait ──
-    const warmupPromise = new Promise<void>((resolve, reject) => {
-      const onMsg = (msg: WorkerToMainMessage | { initOk?: boolean }): void => {
-        if ('initOk' in msg && msg.initOk === true) {
-          this._isReady = true;
-          this.worker?.removeListener('message', onMsg);
-          resolve();
-        }
-      };
-      this.worker!.on('message', onMsg);
-      this.worker!.on('error', reject);
-    });
-
-    // ── General message handler for verify/result lifecycle ──
-    this.worker.on('message', (msg:
-      | WorkerToMainMessage
-      | { initOk?: boolean; id?: number; result?: { entailment: string; confidence: number; timingMs: number }; error?: string }
-    ) => {
-      this._lastActivityMs = Date.now();
-
-      if ('result' in msg && msg.result) {
-        // Map shared worker verify response ({id, result}) to WorkerResultMessage.
-        // `id` is the numeric correlation id set by send() below (echoed back
-        // verbatim by embedWorker.ts) — NOT the caller-supplied UUID `jobId`.
-        const verifyResult: WorkerResultMessage = {
-          type: 'result',
-          jobId: String(msg.id),
-          entailment: msg.result.entailment as EntailmentLabel,
-          confidence: msg.result.confidence,
-          preFilterSkipped: false,
-          timingMs: msg.result.timingMs,
-        };
-        this.resolvePendingById(verifyResult.jobId, verifyResult);
-      } else if ('error' in msg && typeof msg.error === 'string' && typeof msg.id === 'number') {
-        // Shared worker error response ({id, error}) — map onto WorkerErrorMessage.
-        const errResult: WorkerErrorMessage = {
-          type: 'error',
-          jobId: String(msg.id),
-          errorCode: 'WORKER_ERROR',
-          errorMessage: msg.error,
-        };
-        this.resolvePendingById(errResult.jobId, errResult);
-      } else if ('type' in msg && (msg.type === 'result' || msg.type === 'error' || msg.type === 'progress')) {
-        const typedMsg = msg as WorkerToMainMessage;
-        const pendingId = typedMsg.type === 'result' || typedMsg.type === 'error'
-          ? (typedMsg as WorkerResultMessage | WorkerErrorMessage).jobId
-          : String(this.nextId);
-        this.resolvePendingById(pendingId, typedMsg);
-      }
-    });
-
-    this.worker.on('error', (err) => {
-      for (const { reject } of this.pending.values()) reject(err);
-      this.pending.clear();
-    });
-
-    this.worker.on('exit', (code) => {
-      if (code !== 0 && !this._shutdown) {
-        const err = new Error(`worker exited with code ${code}`);
-        for (const { reject } of this.pending.values()) reject(err);
-        this.pending.clear();
-      }
-    });
-
-    // BL-fix (surfaced by tools/e2e/substrate-pipeline.test.mjs — the first
-    // real, non-vitest-force-killed process to let this worker run to
-    // completion): attaching a `'message'` listener on a `Worker` re-refs its
-    // underlying MessagePort even if `.unref()` was already called earlier
-    // (the `.unref()` above ran before any listener existed, so it was
-    // silently undone by the `.on('message', ...)` registrations above).
-    // Re-assert unref here, now that every listener is attached, so a real
-    // process can actually exit once its own work is done instead of hanging
-    // on this worker forever.
-    this.worker.unref();
-
-    // Send init with the shared worker protocol (initType: 'verify')
-    this.worker.postMessage({
+    await this.shared.request<SharedInitOkResponse>({
       type: 'init',
       initType: 'verify',
       modelId: config.modelId,
       modelVersion: config.modelVersion,
     });
-
-    await warmupPromise;
-  }
-
-  /** Resolve (and clear) a pending job by its correlation id, if still pending. */
-  private resolvePendingById(pendingId: string, resolved: WorkerToMainMessage): void {
-    const pending = this.pending.get(pendingId);
-    if (!pending) return;
-    this.pending.delete(pendingId);
-    this._isBusy = false;
-    this._queuedJobs = Math.max(0, this._queuedJobs - 1);
-    pending.resolve(resolved);
+    this._isReady = true;
+    this._lastActivityMs = Date.now();
   }
 
   async send(message: MainToWorkerMessage, timeoutMs = 30000): Promise<WorkerToMainMessage> {
-    if (!this.worker) throw new Error('worker not started');
-    // `id` is the numeric wire-protocol correlation id the shared embedWorker.ts
-    // echoes back verbatim in its response ({id, result} / {id, error}) — distinct
-    // from `jobId`, the caller-supplied UUID carried through in the request for
-    // logging/tracing purposes only. Pending jobs are keyed by String(id).
-    const id = this.nextId++;
-    const msg = { ...message, id } as MainToWorkerMessage & { id: number };
-    const pendingId = String(id);
+    if (this._shutdown) throw new Error('worker has been shut down');
+    if (!this._isReady) throw new Error('worker not started');
+    if (message.type !== 'verify') {
+      throw new Error(
+        `WorkerProxy.send: unsupported message type "${message.type}" — only "verify" is wired to the shared ONNX worker`,
+      );
+    }
 
-    return new Promise<WorkerToMainMessage>((resolve, reject) => {
-      this._isBusy = true;
-      this._queuedJobs++;
-      this.pending.set(pendingId, { resolve, reject });
-      this.worker!.postMessage(msg);
+    this._isBusy = true;
+    this._queuedJobs++;
+    try {
+      const res = await this.shared.request<SharedVerifyResponse>(
+        {
+          type: 'verify',
+          jobId: message.jobId,
+          claimText: message.claimText,
+          sourceText: message.sourceText,
+        },
+        timeoutMs,
+      );
+      this._lastActivityMs = Date.now();
 
-      // Timeout guard
-      const to = setTimeout(() => {
-        this.pending.delete(pendingId);
-        this._isBusy = false;
-        this._queuedJobs = Math.max(0, this._queuedJobs - 1);
-        reject(new Error(`Worker ${this.workerId} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-
-      // Wrap resolve/reject to clear the timeout guard
-      const origResolve = this.pending.get(pendingId)!.resolve;
-      this.pending.set(pendingId, {
-        resolve: (v) => { clearTimeout(to); origResolve(v); },
-        reject: (e) => { clearTimeout(to); reject(e); },
-      });
-    });
+      const result = res.result;
+      const verifyResult: WorkerResultMessage = {
+        type: 'result',
+        jobId: message.jobId,
+        entailment: result.entailment as EntailmentLabel,
+        confidence: result.confidence,
+        preFilterSkipped: false,
+        timingMs: result.timingMs,
+      };
+      return verifyResult;
+    } catch (err) {
+      const errResult: WorkerErrorMessage = {
+        type: 'error',
+        jobId: message.jobId,
+        errorCode: 'WORKER_ERROR',
+        errorMessage: err instanceof Error ? err.message : String(err),
+      };
+      return errResult;
+    } finally {
+      this._isBusy = false;
+      this._queuedJobs = Math.max(0, this._queuedJobs - 1);
+    }
   }
 
+  /**
+   * Stop using the shared ONNX worker from this instance. Does NOT terminate
+   * the underlying shared worker — fastembed embeddings and/or the
+   * cross-encoder reranker may still depend on it (BL-238).
+   */
   async shutdown(): Promise<void> {
     this._shutdown = true;
-    if (this.worker) {
-      this.worker.postMessage({ __shutdown: true } as unknown as MainToWorkerMessage);
-      await Promise.race([
-        new Promise<void>((resolve) => {
-          this.worker!.once('message', (msg) => {
-            if (msg && msg.type === 'shutdownComplete') resolve();
-          });
-        }),
-        new Promise<void>((_) => setTimeout(_, 2000)),
-      ]);
-      this.worker = null;
-    }
+    this._isReady = false;
   }
 }

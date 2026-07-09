@@ -269,13 +269,17 @@ importers:
         version: 0.11.13
 
   libs/data/verify/claim-verification:
+    dependencies:
+      '@adhd/sox-embedding-provider':
+        specifier: workspace:*
+        version: link:../../embed/embedding-provider
     devDependencies:
       '@adhd/sox-blob-store':
         specifier: workspace:*
         version: link:../../store/blob-store
-      '@adhd/sox-embedding-provider':
+      '@adhd/sox-hybrid-search':
         specifier: workspace:*
-        version: link:../../embed/embedding-provider
+        version: link:../../search/hybrid-search
 
   libs/host-registry: {}
 

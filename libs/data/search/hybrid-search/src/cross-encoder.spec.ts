@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createCrossEncoder } from './cross-encoder.js';
+import { createEmbeddingProvider } from '@adhd/sox-embedding-provider';
 
 // These tests run REAL ONNX inference (Xenova/ms-marco-MiniLM-L-6-v2, a
 // sequence-classification cross-encoder converted from
@@ -112,6 +113,41 @@ describe('CrossEncoder', () => {
       await expect(encoder.rerank('test', [{ id: '1', text: 'test' }])).rejects.toThrow(
         'disposed',
       );
+    },
+    REAL_INFERENCE_TIMEOUT_MS,
+  );
+});
+
+describe('BL-238/BL-171 — concurrent ONNX consumers share ONE worker (no crash)', () => {
+  it(
+    // Before the fix: fastembed's onnxruntime-node@1.21.0 (embed) and
+    // @huggingface/transformers' onnxruntime-node@1.24.3 (rerank) each ran
+    // in their OWN separate worker_threads.Worker — 1x fastembed + 1x
+    // cross-encoder concurrently in one process crashed the whole process
+    // with a native V8 HandleScope fatal error (BL-238 repro (b)). Both now
+    // route through the ONE shared onnxruntime worker
+    // (`getSharedOnnxWorker()`), so this reproduces cleanly.
+    'real fastembed embedding + real ONNX cross-encoder rerank run concurrently in one process without crashing',
+    async () => {
+      const [embedder, encoder] = await Promise.all([
+        createEmbeddingProvider({ type: 'fastembed', model: 'bge-small-en-v1.5' }),
+        createCrossEncoder({ modelId: 'MiniCheck' }),
+      ]);
+
+      const [vec, scores] = await Promise.all([
+        embedder.embedSingle('Paris is the capital of France.'),
+        encoder.rerank('What is the capital of France?', [
+          { id: 'relevant', text: 'Paris is the capital and most populous city of France.' },
+          { id: 'irrelevant', text: 'Bananas are a good source of potassium and fiber.' },
+        ]),
+      ]);
+
+      expect(vec).toBeInstanceOf(Float32Array);
+      expect(vec.length).toBe(384);
+      expect(scores.length).toBe(2);
+      expect(scores[0]).toBeGreaterThan(scores[1]!);
+
+      await encoder.dispose();
     },
     REAL_INFERENCE_TIMEOUT_MS,
   );

@@ -1,7 +1,7 @@
 {
   "name": "@adhd/sox-embedding-provider",
   "version": "0.1.0",
-  "description": "Pluggable text→vector embedding provider — generic EmbeddingProvider interface, config-driven model resolution, async batch-first API (AsyncIterable), symmetric + asymmetric encoding via role param. Default: fastembed (local ONNX, >=3 model dims proven). Loud-fail: createEmbeddingProvider() throws ResolutionError if config is invalid or model cannot load — no silent hash downgrade.",
+  "description": "Pluggable text→vector embedding provider — generic EmbeddingProvider interface, config-driven model resolution, async batch-first API (AsyncIterable). Default: fastembed (local ONNX, >=3 model dims proven). Loud-fail: createEmbeddingProvider() throws ResolutionError if config is invalid or model cannot load — no silent downgrade.",
   "license": "MIT",
   "private": false,
   "publishConfig": {
@@ -33,17 +33,15 @@
       "text→vector (EmbeddingProvider interface)",
       "config-driven model resolution (createEmbeddingProvider factory)",
       "async batch embed (AsyncIterable<Float32Array>)",
-      "asymmetric encoding via role param (document | query)",
-      "warmUp cache for hot/topic texts",
+      "EmbedRole param (document | query) accepted on embedSingle/embedBatch for interface compatibility — currently ignored (not yet applied) by the fastembed provider",
       "loud-fail ResolutionError at factory time (never mid-call)",
-      "three-tier error taxonomy (Transient / Permanent / Resolution)",
-      "deterministic hash provider as first-class alternative"
+      "three-tier error taxonomy (Transient / Permanent / Resolution)"
     ],
     "invariants": [
-      "createEmbeddingProvider() THROWS ResolutionError synchronously or as a rejection if the config is invalid or the model/runtime cannot load — never silently downgrades to hash",
+      "createEmbeddingProvider() THROWS ResolutionError synchronously or as a rejection if the config is invalid or the model/runtime cannot load — never silently downgrades",
       "every provider advertises { modelId, dimensions, isRemote, isDeterministic, providerUri? } via metadata — callers never hardcode dims",
       "embedBatch() returns AsyncIterable<Float32Array> — callers receive first result before last batch finishes (critical for sequential local inference)",
-      "warmUp() is a no-op when isDeterministic === false",
+      "warmUp() is a no-op when isDeterministic === false — currently ALWAYS true, since every shipped provider (fastembed, remote) hard-codes isDeterministic: false, so warmUp() is a no-op on every path today",
       "TransientEmbeddingError → caller may retry; PermanentEmbeddingError → caller must not retry; ResolutionError → factory-time only, never thrown mid-call"
     ],
     "entrypoints": [

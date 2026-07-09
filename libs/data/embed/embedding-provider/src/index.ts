@@ -84,13 +84,18 @@ export interface FastEmbedModelConfig {
 
 /**
  * Worker thread pool configuration for fastembed ONNX inference.
+ *
+ * SOX-DOC-004: not currently consumed by `createEmbeddingProvider()` /
+ * `createFastembedProvider()` — no code constructs or reads a
+ * `FastEmbedPoolConfig` today. Kept as a forward-declared shape for a future
+ * multi-worker pool; do not assume it has any runtime effect yet.
  */
 export interface FastEmbedPoolConfig {
   /** Maximum number of ONNX inference workers. Default: os.cpus().length / 2, minimum 1. */
   maxWorkers?: number;
   /** Models to preload at pool init. Lazy-load on first use if omitted. */
   preloadModels?: string[];
-  /** Per-model batch size hint. Overrides the default 32. */
+  /** Per-model batch size hint. Overrides the default 256 (`DEFAULT_BATCH_SIZE` in fastembed.ts). */
   batchSizes?: Record<string, number>;
 }
 
@@ -107,6 +112,15 @@ export interface ReembedPolicy {
 /**
  * Local model cache: download, verify SHA-256, and manage model binaries.
  * Binaries are stored at <dataRoot>/models/<modelId>/<version>/ with a sidecar .sha256 file.
+ *
+ * @deprecated SOX-BUG-002: dead API. `createEmbeddingProvider()` /
+ * `FastembedProvider` never accept or use a `ModelCache` — fastembed resolves
+ * a plain `cacheDir` STRING and `FlagEmbedding.init({ model, cacheDir })`
+ * downloads and caches the model for itself. That string is resolved as
+ * `config.options.cacheDir` → `SOX_EMBED_CACHE_DIR` → `$XDG_CACHE_HOME/sox/models`
+ * → `~/.cache/sox/models`. This interface (and `FileSystemModelCache` below)
+ * is kept only for external consumers who may already depend on it; do not
+ * wire it into the factory expecting it to have any effect.
  */
 export interface ModelCache {
   /** Download and verify model binary. Returns once the model is ready. Throws ResolutionError on SHA-256 mismatch. */
@@ -121,7 +135,38 @@ export interface ModelCache {
 
 // ── Re-exports ────────────────────────────────────────────────────────────────
 
+/**
+ * @deprecated SOX-BUG-002: dead API, not used by `createEmbeddingProvider` or
+ * `FastembedProvider`. Fastembed manages its own model cache internally via
+ * the `cacheDir` string (see `ModelCache` JSDoc above for the resolution
+ * order). Kept only for external consumers; do not wire it into the factory.
+ */
 export { FileSystemModelCache } from './cache.js';
+
+/**
+ * BL-238/BL-171 fix: the single shared ONNX worker singleton for rerank +
+ * verify. `@adhd/sox-hybrid-search`'s cross-encoder and
+ * `@adhd/sox-claim-verification`'s NLI verifier MUST route ONNX inference
+ * through this one process-wide `worker_threads.Worker` instead of
+ * constructing their own — see `sharedOnnxWorker.ts` for the full
+ * root-cause writeup and rationale.
+ */
+export { getSharedOnnxWorker, SharedOnnxWorkerClient } from './sharedOnnxWorker.js';
+
+/**
+ * BL-238/BL-171 fix: the single shared fastembed CHILD PROCESS singleton.
+ * This package's own `FastembedProvider` routes ONNX inference through this
+ * one process-wide child process instead of constructing its own
+ * `worker_threads.Worker` or process — fastembed's onnxruntime-node@1.21.0
+ * cannot safely share a thread with `getSharedOnnxWorker()`'s
+ * onnxruntime-node@1.24.3, even sequentially — see
+ * `sharedFastembedProcess.ts` / `fastembedProcessHost.ts` for the full
+ * root-cause writeup and rationale.
+ */
+export {
+  getSharedFastembedProcess,
+  SharedFastembedProcessClient,
+} from './sharedFastembedProcess.js';
 
 // ── Factory ───────────────────────────────────────────────────────────────────
 
@@ -201,7 +246,18 @@ async function createRemoteProvider(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function warmupTimeoutMs(): number {
+/**
+ * Single source of truth for the fastembed warmup/init timeout budget.
+ *
+ * Shared by TWO call sites that were previously two disagreeing copies
+ * (SOX-BUG-001): the outer `createFastembedProvider()` factory wrapper
+ * (below) that bounds the initial `embedSingle('warmup')` call, AND the
+ * inner `FastembedProvider`'s worker-init `readyPromise` timeout
+ * (fastembed.ts) that bounds the actual ONNX model load inside the worker
+ * thread. Both now read this one function/env var so a cold ONNX model
+ * download is bounded consistently end-to-end.
+ */
+export function warmupTimeoutMs(): number {
   const raw = Number(process.env['SOX_EMBED_WARMUP_TIMEOUT_MS']);
   return Number.isFinite(raw) && raw > 0 ? raw : 180_000;
 }
