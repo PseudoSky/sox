@@ -1,0 +1,55 @@
+{
+  "name": "@adhd/sox-task-queue",
+  "version": "0.1.0",
+  "description": "Durable SQLite-backed task queue — atomic priority-aware FIFO claim/lease, retry with exponential backoff, heartbeat lease management, a worker pool with graceful shutdown, and a croner-backed cron scheduler.",
+  "license": "MIT",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "better-sqlite3": "^12.10.0",
+    "croner": "^10.0.1"
+  },
+  "sox": {
+    "area": "data",
+    "group": "queue",
+    "concerns": [
+      "durable SQLite-backed task queue (tasks table + request_ledger + scheduler_entries, WAL mode)",
+      "atomic claim via UPDATE ... RETURNING inside a transaction (priority DESC, created_at ASC FIFO)",
+      "heartbeat-based lease management with a setInterval reaper reclaiming expired leases",
+      "exponential backoff on retry (min(1000*2^retryCount, 86_400_000)), dead-letter on maxRetries exhaustion",
+      "clientRequestId idempotent enqueue via an append-only request_ledger dedup table",
+      "WorkerPool: in-process async pool, concurrency-bounded, heartbeats in-flight tasks, graceful drain on stop()",
+      "Scheduler: croner-backed cron entries persisted in scheduler_entries, tick loop enqueues due entries",
+      "TaskQueueError taxonomy — no external error library"
+    ],
+    "invariants": [
+      "durability: enqueue() is committed to SQLite before the returned Promise resolves",
+      "at-least-once execution: every queued task executes at least once; duplicates are possible on crash recovery",
+      "dequeue() eligibility is uniform for 'queued' and 'scheduled' rows: (scheduled_at IS NULL OR scheduled_at <= now) — this is what makes retry backoff actually delay redelivery (see README 'Spec reconciliations')",
+      "fail() applies exponential backoff using the PRE-increment retryCount (first failure: retryCount=0 -> 2^0=1s)",
+      "lease-expiry re-queue (reaper) consumes one retry slot and applies the same backoff formula as fail(), per spec section 9",
+      "close()/WorkerPool.stop() never force-kill running handlers — the lease-expiry reaper is the crash-recovery safety net",
+      "all task/scheduler-entry mutating operations THROW TaskQueueNotOpenError when called before open() or after close()"
+    ],
+    "entrypoints": [
+      "dist/index.js"
+    ]
+  }
+}

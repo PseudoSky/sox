@@ -1,0 +1,53 @@
+{
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "name": "task-queue",
+  "projectType": "library",
+  "root": "libs/data/queue/task-queue",
+  "sourceRoot": "libs/data/queue/task-queue/src",
+  "tags": [
+    "type:lib",
+    "area:data",
+    "group:queue"
+  ],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": [
+        "{workspaceRoot}/libs/data/queue/task-queue/dist"
+      ],
+      "options": {
+        "main": "libs/data/queue/task-queue/src/index.ts",
+        "outputPath": "libs/data/queue/task-queue/dist",
+        "tsConfig": "libs/data/queue/task-queue/tsconfig.lib.json",
+        "assets": [],
+        "clean": true,
+        "rootDir": "libs/data/queue/task-queue/src"
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.lib.json"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config libs/data/queue/task-queue/vitest.config.ts",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": [
+          "libs/data/queue/task-queue/**/*.ts"
+        ]
+      }
+    }
+  }
+}
