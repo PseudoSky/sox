@@ -1,7 +1,7 @@
 {
   "name": "@adhd/sox-ingest",
   "version": "0.1.0",
-  "description": "Write-path single-item transforms for the memory domain — content-hash (SHA-256), extractive summary (sentence-scoring, zero LLM), deterministic tag extraction, and chunking/normalization. Pure stateless functions; no storage deps.",
+  "description": "Write-path single-item transforms for the memory domain — content-hash (SHA-256), extractive summary (lead-N sentences, zero LLM), deterministic tag extraction, and chunking/normalization. Pure stateless functions; no storage deps.",
   "license": "MIT",
   "private": false,
   "publishConfig": {
@@ -17,6 +17,18 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "default": "./dist/core.js"
+    }
+  },
+  "//typesVersions": "[BL-231] `exports` maps are invisible to TypeScript's legacy node10 moduleResolution, which CJS consumers (memory-core: module=CommonJS) are pinned to. typesVersions is the supported way to expose the ./core subpath's types to them. Runtime resolution still goes through `exports` above, for both Node and esbuild.",
+  "typesVersions": {
+    "*": {
+      "core": [
+        "./dist/core.d.ts"
+      ]
     }
   },
   "files": [
@@ -27,17 +39,19 @@
     "group": "ingest",
     "concerns": [
       "content-hash (SHA-256 of normalized content — used for graph-store dedup)",
-      "extractive summary (sentence-scoring, summaryMaxSentences, zero LLM)",
+      "extractive summary (lead-N sentences — first summaryMaxSentences sentences, no scoring; zero LLM; content under 100 chars is returned unchanged via content.trim())",
       "deterministic tag extraction (noun phrases, high-frequency terms, tagMaxCount)",
       "chunking (maxChars / overlapChars sliding window)",
       "per-chunk contentHash for dedup at the chunk level"
     ],
     "invariants": [
-      "zero-LLM, zero-I/O, synchronous — ingest() is a pure function, always safe to call in the write path without latency budget concerns",
-      "deterministic + byte-reproducible — same input always produces the same hash, summary, and tags (no random or time-based components)"
+      "zero-LLM, zero-I/O, synchronous — ingest() is a pure function, always safe to call in the write path without latency budget concerns (it lives in core.ts and reaches no chunker; the AstChunker WASM grammar load IS disk I/O but is not on ingest()'s path)",
+      "deterministic + byte-reproducible — same input always produces the same hash, summary, and tags (no random or time-based components)",
+      "[BL-231] dist/core.js is the CJS-SAFE entry — its module graph must never contain a top-level await. dist/index.js (the root) is ESM-ONLY and cannot be require()d: it re-exports AstChunker, whose module-scope `await Parser.init()` is required to keep chunk()/estimate() synchronous. CommonJS consumers import @adhd/sox-ingest/core. Guarded by tools/test-bl231-cjs-boundary.mjs"
     ],
     "entrypoints": [
-      "dist/index.js"
+      "dist/index.js",
+      "dist/core.js"
     ]
   },
   "dependencies": {

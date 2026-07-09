@@ -2,7 +2,7 @@
 
 Package-local backlog. Items cross-reference the root [`/BACKLOG.md`](../../../../BACKLOG.md) BL-IDs.
 This is the document-prep layer of the RAG substrate (chunk + extractive summary + deterministic tags
-+ content-hash). Currently `private`.
++ content-hash). Published: `private: false` / `publishConfig.access: "public"`.
 
 ---
 
@@ -14,10 +14,10 @@ uses `hexSha256` from ingest (replaced inline `crypto.createHash`). `extensions/
 uses `splitIntoChunksSentence` from ingest (replaced its own `splitIntoChunks`). Parity verified
 in `libs/data/ingest/ingest/src/ingest-parity.spec.ts` (27 chunking + 3 summary assertions).
 
-**Remaining (deferred):** publishability — `private: true` kept until memory-core v1.0 publish
-milestone (per BL-165 closeout in root BACKLOG.md). The `agent-mcp-authoring` dependency uses
-local path `"file:../sox-ecosystem/..."` as workaround until then. Root: BL-165 (supersedes
-BL-113).
+**Publishability — DONE:** the package is now `private: false` with `publishConfig.access: "public"`
+(commit `f4897aa`), so `@adhd/sox-ingest` is publishable/installable for external RAG reuse. (The
+earlier plan to keep `private: true` until the memory-core v1.0 milestone was dropped — the flip
+landed ahead of it.) Root: BL-165 (supersedes BL-113).
 
 ### BL-115 — MEDIUM: AST chunker uses regex/brace-depth heuristics, not tree-sitter AST parsing — **RESOLVED (2026-07-08)**
 
