@@ -74,8 +74,11 @@ export class HeadingChunker implements Chunker {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]!;
 
-      // RST multi-line heading detection: underline (===== / -----) on its own line
-      if (/^[=\-]{3,}\s*$/.test(line) && i > 0) {
+      // RST multi-line heading detection: underline (===== / -----) on its own line.
+      // Scoped to `syntax === 'rst'` — other formats reuse `===`/`---`-style runs for
+      // unrelated conventions (Markdown horizontal rules/YAML frontmatter delimiters,
+      // AsciiDoc `----` code-block delimiters) that must NOT be misread as headings.
+      if (this.syntax === 'rst' && /^[=\-]{3,}\s*$/.test(line) && i > 0) {
         const prevLine = lines[i - 1]?.trim();
         if (prevLine) {
           const depth = line.startsWith('=') ? 1 : 2;

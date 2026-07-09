@@ -1,0 +1,55 @@
+import { readFile } from 'node:fs/promises';
+import type { Options } from './options.js';
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export type Vector = [number, number];
+
+export enum Direction {
+  North,
+  South,
+  East,
+  West,
+}
+
+export function distance(a: Point, b: Point): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+export abstract class Shape {
+  abstract area(): number;
+
+  describe(): string {
+    return `Shape with area ${this.area()}`;
+  }
+}
+
+export class Circle extends Shape {
+  constructor(private radius: number) {
+    super();
+  }
+
+  area(): number {
+    return Math.PI * this.radius * this.radius;
+  }
+
+  circumference(): number {
+    return 2 * Math.PI * this.radius;
+  }
+}
+
+export const noop = () => {};
+
+const identity = (x: number): number => x;
+
+export async function loadConfig(path: string): Promise<Options> {
+  const raw = await readFile(path, 'utf8');
+  return JSON.parse(raw) as Options;
+}
+
+console.log('module side effect at the tail of the file');

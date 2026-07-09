@@ -1,0 +1,21 @@
+const { EventEmitter } = require('node:events');
+
+function createLogger(prefix) {
+  return function log(message) {
+    console.log(`[${prefix}] ${message}`);
+  };
+}
+
+class Bus extends EventEmitter {
+  publish(topic, payload) {
+    this.emit(topic, payload);
+  }
+
+  subscribe(topic, handler) {
+    this.on(topic, handler);
+  }
+}
+
+const add = (a, b) => a + b;
+
+module.exports = { createLogger, Bus, add };

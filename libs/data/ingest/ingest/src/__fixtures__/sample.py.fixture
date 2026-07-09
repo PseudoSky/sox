@@ -1,0 +1,41 @@
+import functools
+import os
+
+
+def slugify(text):
+    return text.strip().lower().replace(' ', '-')
+
+
+@functools.lru_cache(maxsize=128)
+def fibonacci(n):
+    if n < 2:
+        return n
+    return fibonacci(n - 1) + fibonacci(n - 2)
+
+
+class Repository:
+    def __init__(self, root):
+        self.root = root
+
+    def path_for(self, name):
+        return os.path.join(self.root, name)
+
+    def exists(self, name):
+        return os.path.exists(self.path_for(name))
+
+
+@functools.total_ordering
+class Version:
+    def __init__(self, major, minor):
+        self.major = major
+        self.minor = minor
+
+    def __eq__(self, other):
+        return (self.major, self.minor) == (other.major, other.minor)
+
+    def __lt__(self, other):
+        return (self.major, self.minor) < (other.major, other.minor)
+
+
+if __name__ == '__main__':
+    print(slugify('Hello World'))

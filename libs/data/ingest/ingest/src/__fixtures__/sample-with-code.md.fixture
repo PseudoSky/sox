@@ -1,0 +1,50 @@
+# API Documentation
+
+This guide shows how to use the `Widget` API.
+
+## Installation
+
+Run the installer:
+
+```bash
+npm install @acme/widget
+```
+
+## TypeScript usage
+
+Import the client and call `createWidget`:
+
+```typescript
+export function createWidget(name: string): Widget {
+  return new Widget(name);
+}
+
+export class Widget {
+  constructor(private name: string) {}
+
+  render(): string {
+    return `<widget name="${this.name}" />`;
+  }
+}
+```
+
+## Python usage
+
+The Python bindings mirror the TypeScript API:
+
+```python
+def create_widget(name):
+    return Widget(name)
+
+
+class Widget:
+    def __init__(self, name):
+        self.name = name
+
+    def render(self):
+        return f'<widget name="{self.name}" />'
+```
+
+## Notes
+
+No further code examples below this heading.

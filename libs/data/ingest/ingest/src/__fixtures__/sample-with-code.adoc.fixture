@@ -1,0 +1,16 @@
+= Title
+
+Introduction paragraph.
+
+== Usage
+
+Here is a TypeScript example:
+
+[source,typescript]
+----
+export function greet(name: string): string {
+  return `hello ${name}`;
+}
+----
+
+Trailing text after the code block.

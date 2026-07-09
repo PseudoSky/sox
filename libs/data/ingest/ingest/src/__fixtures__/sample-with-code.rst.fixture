@@ -1,0 +1,21 @@
+Title
+=====
+
+Introduction text for the RST document.
+
+Usage
+-----
+
+Here is a Python example:
+
+.. code-block:: python
+
+    def greet(name):
+        return "hello " + name
+
+
+    class Greeter:
+        def __init__(self, name):
+            self.name = name
+
+Trailing text after the code block.

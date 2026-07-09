@@ -1,0 +1,45 @@
+using System;
+using System.Collections.Generic;
+
+namespace Acme.Billing
+{
+    public class Invoice
+    {
+        private readonly List<double> lineItems = new List<double>();
+
+        public void AddLineItem(double amount)
+        {
+            lineItems.Add(amount);
+        }
+
+        public double Total()
+        {
+            double total = 0;
+            foreach (var item in lineItems)
+            {
+                total += item;
+            }
+            return total;
+        }
+    }
+
+    public interface IInvoiceRepository
+    {
+        Invoice FindById(Guid id);
+    }
+
+    public struct Money
+    {
+        public decimal Amount;
+        public string Currency;
+    }
+
+    public enum InvoiceStatus
+    {
+        Draft,
+        Sent,
+        Paid,
+    }
+
+    public record InvoiceLine(string Description, decimal Amount);
+}
