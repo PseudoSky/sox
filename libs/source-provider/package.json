@@ -1,0 +1,51 @@
+{
+  "name": "@adhd/sox-source-provider",
+  "version": "0.1.0",
+  "description": "Unified SCM/filesystem abstraction — file tree enumeration and raw content retrieval from GitHub, Bitbucket, and the local filesystem through a single SourceProvider interface, without cloning. Provider registry, SourceRef URL normalization, and a first-class fake provider for integration testing.",
+  "license": "MIT",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "fast-glob": "^3.3.3",
+    "ignore": "^7.0.5",
+    "undici": "^6.21.0"
+  },
+  "sox": {
+    "area": "data",
+    "group": "source",
+    "concerns": [
+      "no-clone file tree enumeration + content read (GitHub, Bitbucket, local filesystem)",
+      "SourceRef URL normalization + validation (github.com/owner/repo[@ref], bitbucket.org/ws/repo[@ref], local:/abs/path)",
+      "ProviderRegistry — scheme-routed provider resolution, consumers never instanceof a concrete provider",
+      "createFakeProvider — first-class in-memory test double, same interface as real providers",
+      "typed SourceProviderError taxonomy (auth, rate-limit, truncation, not-found, transient)"
+    ],
+    "invariants": [
+      "no search()/discovery — explicit refs only (D-1)",
+      "SourceRef.parse() THROWS InvalidSourceRefError on unparseable input — never returns a partial ref",
+      "Manifest.truncated === true means the entry list is incomplete — consumers MUST NOT infer absence from a truncated manifest",
+      "every thrown error is a typed subclass of SourceProviderError",
+      "no on-disk or in-memory caching — SourceProvider is the I/O layer only"
+    ],
+    "entrypoints": [
+      "dist/index.js"
+    ]
+  }
+}
