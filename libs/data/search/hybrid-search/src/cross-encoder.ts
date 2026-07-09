@@ -7,6 +7,7 @@
  */
 
 import { Worker } from 'node:worker_threads';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -25,33 +26,45 @@ import {
 
 /**
  * Resolve the path to the shared embed worker in @adhd/sox-embedding-provider.
+ *
+ * BL-fix (surfaced by tools/e2e/substrate-pipeline.test.mjs — the first real,
+ * non-vitest-transformed `node --test` execution of this path): the previous
+ * implementation (a) computed the monorepo-relative fallback with one `..`
+ * hop too many (`libs/embed/...` instead of `libs/data/embed/...`, since this
+ * file lives at `libs/data/search/hybrid-search/dist`, not `libs/hybrid-search/dist`),
+ * and (b) referenced a bare `require` global inside this ESM module with no
+ * `createRequire` shim — `require` is undefined here outside of vitest's SSR
+ * transform (which synthesizes one for compatibility), so real Node execution
+ * threw a ReferenceError, was silently swallowed by the catch, and fell all
+ * the way through to a `crossEncoderWorker.js` that has never existed. Mirrors
+ * the already-correct, already-proven pattern in
+ * `claim-verification/src/worker.ts::resolveWorkerPath` (same
+ * `libs/data/<group>/<pkg>/{src,dist}` depth).
  */
 function resolveWorkerPath(): string {
-  // Embedding-provider's embedWorker.js is the canonical shared worker.
-  // We resolve it from the embedding-provider package.
-  const pkgPath = join(
-    dirname(fileURLToPath(import.meta.url)),
-    '..', '..', '..', '..',
-    'embed', 'embedding-provider', 'dist', 'embedWorker.js',
-  );
+  const here = dirname(fileURLToPath(import.meta.url));
 
-  if (existsSync(pkgPath)) return pkgPath;
-
-  // Fallback for dev/vitest: resolve via node_modules
+  // Primary: resolve via Node module resolution through the
+  // `@adhd/sox-embedding-provider` workspace dependency — robust regardless
+  // of monorepo directory depth/layout, follows this package's own
+  // `node_modules/@adhd/sox-embedding-provider` pnpm workspace symlink.
   try {
-    const epPath = require.resolve('@adhd/sox-embedding-provider');
-    const base = dirname(epPath);
-    const workerPath = join(base, 'embedWorker.js');
+    const require = createRequire(import.meta.url);
+    const epEntry = require.resolve('@adhd/sox-embedding-provider');
+    const workerPath = join(dirname(epEntry), 'embedWorker.js');
     if (existsSync(workerPath)) return workerPath;
   } catch {
     // continue to fallback
   }
 
+  // Fallback: standard monorepo relative layout —
+  // libs/data/search/hybrid-search/{src,dist} -> libs/data/embed/embedding-provider/dist
+  // (src and dist are equidistant: dist mirrors src 1:1 via rootDir/outputPath).
+  const relPath = join(here, '..', '..', '..', 'embed', 'embedding-provider', 'dist', 'embedWorker.js');
+  if (existsSync(relPath)) return relPath;
+
   // Absolute last resort
-  return join(
-    dirname(fileURLToPath(import.meta.url)),
-    'crossEncoderWorker.js',
-  );
+  return join(here, 'crossEncoderWorker.js');
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -182,6 +195,17 @@ class CrossEncoderWorker {
       this.pending.clear();
       this.worker = null;
     });
+
+    // BL-fix (surfaced by tools/e2e/substrate-pipeline.test.mjs — the first
+    // real, non-vitest-force-killed process to let this worker run to
+    // completion): attaching a `'message'` listener on a `Worker` re-refs its
+    // underlying MessagePort even if `.unref()` was already called earlier
+    // (the `.unref()` above ran before any listener existed, so it was
+    // silently undone by the `.on('message', ...)` registration above).
+    // Re-assert unref here, now that every listener is attached, so a real
+    // process can actually exit once its own work is done instead of hanging
+    // on this worker forever.
+    this.worker.unref();
 
     this.readyPromise = new Promise<void>((resolve, reject) => {
       const id = this.nextId++;

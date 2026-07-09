@@ -238,6 +238,17 @@ export class WorkerProxy {
       }
     });
 
+    // BL-fix (surfaced by tools/e2e/substrate-pipeline.test.mjs — the first
+    // real, non-vitest-force-killed process to let this worker run to
+    // completion): attaching a `'message'` listener on a `Worker` re-refs its
+    // underlying MessagePort even if `.unref()` was already called earlier
+    // (the `.unref()` above ran before any listener existed, so it was
+    // silently undone by the `.on('message', ...)` registrations above).
+    // Re-assert unref here, now that every listener is attached, so a real
+    // process can actually exit once its own work is done instead of hanging
+    // on this worker forever.
+    this.worker.unref();
+
     // Send init with the shared worker protocol (initType: 'verify')
     this.worker.postMessage({
       type: 'init',

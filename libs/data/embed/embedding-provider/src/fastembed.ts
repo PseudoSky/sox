@@ -340,6 +340,17 @@ export class FastembedProvider implements EmbeddingProvider {
       this.readyPromise = null;
     });
 
+    // BL-fix (surfaced by tools/e2e/substrate-pipeline.test.mjs — the first
+    // real, non-vitest-force-killed process to let this worker run to
+    // completion): attaching a `'message'` listener on a `Worker` re-refs its
+    // underlying MessagePort even if `.unref()` was already called earlier
+    // (the very first `.unref()` above ran before any listener existed, so it
+    // was silently undone by the `.on('message', ...)` registration a few
+    // lines later). Re-assert unref here, now that every listener is
+    // attached, so a real (non-test-harness) Node process can actually exit
+    // once its own work is done instead of hanging on this worker forever.
+    this.worker.unref();
+
     this.readyPromise = new Promise<void>((resolve, reject) => {
       const id = this.nextId++;
       const to = setTimeout(() => {
