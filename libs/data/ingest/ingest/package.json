@@ -1,9 +1,12 @@
 {
   "name": "@adhd/sox-ingest",
   "version": "0.1.0",
-  "description": "Write-path single-item transforms for the memory domain — content-hash (SHA-256), extractive summary (sentence-scoring, zero LLM), deterministic tag extraction, and chunking/normalization. Pure stateless functions; no storage deps. Private: only the memory domain composer calls these before graph-store writes.",
+  "description": "Write-path single-item transforms for the memory domain — content-hash (SHA-256), extractive summary (sentence-scoring, zero LLM), deterministic tag extraction, and chunking/normalization. Pure stateless functions; no storage deps.",
   "license": "MIT",
-  "private": true,
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=20"
   },
@@ -31,8 +34,7 @@
     ],
     "invariants": [
       "zero-LLM, zero-I/O, synchronous — ingest() is a pure function, always safe to call in the write path without latency budget concerns",
-      "deterministic + byte-reproducible — same input always produces the same hash, summary, and tags (no random or time-based components)",
-      "PRIVATE — never published to npm; only the memory domain composer may call this package"
+      "deterministic + byte-reproducible — same input always produces the same hash, summary, and tags (no random or time-based components)"
     ],
     "entrypoints": [
       "dist/index.js"
