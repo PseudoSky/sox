@@ -31,6 +31,11 @@
 import { parentPort } from 'node:worker_threads';
 import * as fs from 'node:fs';
 import type { EmbeddingModel } from 'fastembed';
+import type {
+  PreTrainedTokenizer,
+  PreTrainedModel,
+  Tensor,
+} from '@huggingface/transformers';
 
 // ── Type definitions ──────────────────────────────────────────────────────────
 
@@ -159,72 +164,177 @@ async function loadModel(model: string, cacheDir: string): Promise<{ dim: number
   return { dim: info?.dim ?? 0 };
 }
 
-// ── Rerank (cross-encoder) stubs ──────────────────────────────────────────────
+// ── Rerank (cross-encoder) — real ONNX inference ──────────────────────────────
+//
+// Cross-encoder scoring uses a sequence-classification ONNX model run through
+// @huggingface/transformers (which drives onnxruntime-node under the hood on
+// Node — the same "load ONNX in a worker thread" pattern as fastembed above,
+// BL-11). `modelId` is a logical name resolved to a concrete HuggingFace ONNX
+// repo; unknown ids pass through unchanged so any Xenova-converted
+// cross-encoder repo can be wired directly.
+//
+// Primary: MS-MARCO MiniLM cross-encoder (relevance regression — single
+// logit per query/candidate pair, squashed to [0,1] via sigmoid so "higher
+// score = more relevant" per the CrossEncoder contract).
 
-function setRerankModel(_modelId: string): void {
-  // Reserved for future ONNX cross-encoder model loading
+const RERANK_MODEL_MAP: Record<string, string> = {
+  MiniCheck: 'Xenova/ms-marco-MiniLM-L-6-v2',
+  'ms-marco-MiniLM-L-6-v2': 'Xenova/ms-marco-MiniLM-L-6-v2',
+  'cross-encoder/ms-marco-MiniLM-L-6-v2': 'Xenova/ms-marco-MiniLM-L-6-v2',
+};
+
+interface SequenceClassifierOutput {
+  logits: Tensor;
 }
 
-function computeRerankScores(
+let _rerankResolvedModelId = '';
+let _rerankTokenizer: PreTrainedTokenizer | null = null;
+let _rerankModel: PreTrainedModel | null = null;
+let _rerankLoadPromise: Promise<void> | null = null;
+
+async function setRerankModel(modelId: string): Promise<void> {
+  const resolved = RERANK_MODEL_MAP[modelId] ?? modelId;
+  if (_rerankModel && _rerankResolvedModelId === resolved) return;
+  if (_rerankLoadPromise && _rerankResolvedModelId === resolved) return _rerankLoadPromise;
+
+  _rerankResolvedModelId = resolved;
+  _rerankLoadPromise = (async () => {
+    const { AutoTokenizer, AutoModelForSequenceClassification } = await import(
+      '@huggingface/transformers'
+    );
+    _rerankTokenizer = await AutoTokenizer.from_pretrained(resolved);
+    _rerankModel = (await AutoModelForSequenceClassification.from_pretrained(resolved, {
+      dtype: 'q8',
+    })) as PreTrainedModel;
+  })();
+
+  try {
+    await _rerankLoadPromise;
+  } finally {
+    _rerankLoadPromise = null;
+  }
+}
+
+async function computeRerankScores(
   query: string,
   candidates: Array<{ id: string; text: string }>,
-): number[] {
-  const queryTokens = tokenize(query);
-  const scores: number[] = [];
-  for (const candidate of candidates) {
-    const candidateTokens = tokenize(candidate.text);
-    const overlap = intersection(new Set(queryTokens), new Set(candidateTokens));
-    scores.push(overlap / Math.max(candidateTokens.length, 1));
+): Promise<number[]> {
+  if (!_rerankTokenizer || !_rerankModel) {
+    throw new Error('Rerank model not initialized — send init{initType:"rerank"} first');
   }
-  return scores;
+  if (candidates.length === 0) return [];
+
+  const queries = new Array(candidates.length).fill(query) as string[];
+  const texts = candidates.map((c) => c.text);
+  const features = _rerankTokenizer(queries, {
+    text_pair: texts,
+    padding: true,
+    truncation: true,
+  });
+
+  const output = (await _rerankModel(features)) as SequenceClassifierOutput;
+  const rows = output.logits.tolist() as number[][];
+  return rows.map((row) => sigmoid(row[0] ?? 0));
 }
 
-function tokenize(text: string): string[] {
-  return text.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter((t) => t.length > 0);
+function sigmoid(x: number): number {
+  return 1 / (1 + Math.exp(-x));
 }
 
-function intersection(a: Set<string>, b: Set<string>): number {
-  let count = 0;
-  for (const item of a) { if (b.has(item)) count++; }
-  return count;
+// ── Verify (NLI) — real ONNX inference ─────────────────────────────────────────
+//
+// NLI verification uses a 3-way entailment/contradiction/neutral cross-encoder
+// (SPEC accuracy-optimized family: cross-encoder/nli-deberta-v3-*). The
+// premise is the source passage, the hypothesis is the claim. Softmax over
+// the model's own `id2label` (never hardcoded ordering) yields entailment +
+// confidence; `entailment`/`contradiction`/`neutral` are mapped onto the
+// frozen wire vocabulary `'entails'|'contradicts'|'neutral'`.
+
+const VERIFY_MODEL_MAP: Record<string, string> = {
+  MiniCheck: 'Xenova/nli-deberta-v3-xsmall',
+  'nli-deberta-v3-xsmall': 'Xenova/nli-deberta-v3-xsmall',
+  'cross-encoder/nli-deberta-v3-xsmall': 'Xenova/nli-deberta-v3-xsmall',
+};
+
+const NLI_LABEL_MAP: Record<string, 'entails' | 'contradicts' | 'neutral'> = {
+  entailment: 'entails',
+  contradiction: 'contradicts',
+  neutral: 'neutral',
+};
+
+let _verifyResolvedModelId = '';
+let _verifyTokenizer: PreTrainedTokenizer | null = null;
+let _verifyModel: PreTrainedModel | null = null;
+let _verifyId2Label: Record<number, string> = {};
+let _verifyLoadPromise: Promise<void> | null = null;
+
+async function setVerifyModel(modelId: string, _modelVersion: string): Promise<void> {
+  const resolved = VERIFY_MODEL_MAP[modelId] ?? modelId;
+  if (_verifyModel && _verifyResolvedModelId === resolved) return;
+  if (_verifyLoadPromise && _verifyResolvedModelId === resolved) return _verifyLoadPromise;
+
+  _verifyResolvedModelId = resolved;
+  _verifyLoadPromise = (async () => {
+    const { AutoTokenizer, AutoModelForSequenceClassification } = await import(
+      '@huggingface/transformers'
+    );
+    _verifyTokenizer = await AutoTokenizer.from_pretrained(resolved);
+    const model = await AutoModelForSequenceClassification.from_pretrained(resolved, {
+      dtype: 'q8',
+    });
+    _verifyModel = model as PreTrainedModel;
+    const config = (model as unknown as { config: { id2label?: Record<string, string> } })
+      .config;
+    _verifyId2Label = { ...(config?.id2label ?? {}) };
+  })();
+
+  try {
+    await _verifyLoadPromise;
+  } finally {
+    _verifyLoadPromise = null;
+  }
 }
 
-// ── Verify (NLI) stubs ────────────────────────────────────────────────────────
-
-function setVerifyModel(_modelId: string, _modelVersion: string): void {
-  // Reserved for future ONNX NLI model loading
-}
-
-function computeVerification(claimText: string, sourceText: string): VerifyResultPayload {
+async function computeVerification(
+  claimText: string,
+  sourceText: string,
+): Promise<VerifyResultPayload> {
   const start = Date.now();
-  const combined = claimText + sourceText;
-  const hash = simpleHash(combined);
-
-  let entailment: 'entails' | 'contradicts' | 'neutral';
-  let confidence: number;
-
-  if (hash % 3 === 0) {
-    entailment = 'entails';
-    confidence = 0.85 + (hash % 100) / 1000;
-  } else if (hash % 3 === 1) {
-    entailment = 'contradicts';
-    confidence = 0.75 + (hash % 100) / 1000;
-  } else {
-    entailment = 'neutral';
-    confidence = 0.6 + (hash % 100) / 1000;
+  if (!_verifyTokenizer || !_verifyModel) {
+    throw new Error('Verify model not initialized — send init{initType:"verify"} first');
   }
 
-  confidence = Math.min(1, Math.max(0, confidence));
+  // Premise = source (what we're checking against), hypothesis = claim.
+  const features = _verifyTokenizer([sourceText], {
+    text_pair: [claimText],
+    padding: true,
+    truncation: true,
+  });
+
+  const output = (await _verifyModel(features)) as SequenceClassifierOutput;
+  const row = (output.logits.tolist() as number[][])[0] ?? [];
+  const probs = softmax(row);
+
+  let bestIdx = 0;
+  for (let i = 1; i < probs.length; i++) {
+    const candidate = probs[i];
+    const current = probs[bestIdx];
+    if (candidate !== undefined && (current === undefined || candidate > current)) bestIdx = i;
+  }
+
+  const rawLabel = _verifyId2Label[bestIdx] ?? 'neutral';
+  const entailment = NLI_LABEL_MAP[rawLabel] ?? 'neutral';
+  const confidence = probs[bestIdx] ?? 0;
 
   return { entailment, confidence, timingMs: Date.now() - start };
 }
 
-function simpleHash(str: string): number {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
-  }
-  return Math.abs(h);
+function softmax(logits: number[]): number[] {
+  if (logits.length === 0) return [];
+  const max = Math.max(...logits);
+  const exps = logits.map((v) => Math.exp(v - max));
+  const sum = exps.reduce((a, b) => a + b, 0);
+  return exps.map((v) => v / sum);
 }
 
 // ── Main message handler ──────────────────────────────────────────────────────
@@ -244,13 +354,29 @@ parentPort.on('message', (msg: WorkerRequest) => {
 
   if (msg.type === 'init' && 'initType' in msg) {
     if (msg.initType === 'rerank') {
-      setRerankModel(msg.modelId);
-      parentPort!.postMessage({ id: msg.id, initOk: true, dim: 0 } satisfies InitOkResponse);
+      setRerankModel(msg.modelId)
+        .then(() => {
+          parentPort!.postMessage({ id: msg.id, initOk: true, dim: 0 } satisfies InitOkResponse);
+        })
+        .catch((e) => {
+          parentPort!.postMessage({
+            id: msg.id,
+            error: String(e instanceof Error ? e.message : e),
+          } satisfies ErrorResponse);
+        });
       return;
     }
     if (msg.initType === 'verify') {
-      setVerifyModel(msg.modelId, msg.modelVersion);
-      parentPort!.postMessage({ id: msg.id, initOk: true, dim: 0 } satisfies InitOkResponse);
+      setVerifyModel(msg.modelId, msg.modelVersion)
+        .then(() => {
+          parentPort!.postMessage({ id: msg.id, initOk: true, dim: 0 } satisfies InitOkResponse);
+        })
+        .catch((e) => {
+          parentPort!.postMessage({
+            id: msg.id,
+            error: String(e instanceof Error ? e.message : e),
+          } satisfies ErrorResponse);
+        });
       return;
     }
   }
@@ -305,38 +431,52 @@ parentPort.on('message', (msg: WorkerRequest) => {
   // ── Rerank (cross-encoder) ──────────────────────────────────────────────────
 
   if (msg.type === 'rerank') {
-    try {
-      const scores = computeRerankScores(msg.query, msg.candidates);
-      parentPort!.postMessage({ id: msg.id, scores } satisfies RerankResponse);
-    } catch (err) {
-      parentPort!.postMessage({ id: msg.id, error: String(err) } satisfies ErrorResponse);
-    }
+    computeRerankScores(msg.query, msg.candidates)
+      .then((scores) => {
+        parentPort!.postMessage({ id: msg.id, scores } satisfies RerankResponse);
+      })
+      .catch((err) => {
+        parentPort!.postMessage({
+          id: msg.id,
+          error: String(err instanceof Error ? err.message : err),
+        } satisfies ErrorResponse);
+      });
     return;
   }
 
   if (msg.type === 'rerankBatch') {
-    try {
-      const allScores = msg.queries.map((q, i) => {
+    Promise.all(
+      msg.queries.map((q, i) => {
         const set = msg.candidateSets[i];
-        if (!set) return [];
+        if (!set) return Promise.resolve([] as number[]);
         return computeRerankScores(q, set);
+      }),
+    )
+      .then((allScores) => {
+        parentPort!.postMessage({ id: msg.id, allScores } satisfies RerankBatchResponse);
+      })
+      .catch((err) => {
+        parentPort!.postMessage({
+          id: msg.id,
+          error: String(err instanceof Error ? err.message : err),
+        } satisfies ErrorResponse);
       });
-      parentPort!.postMessage({ id: msg.id, allScores } satisfies RerankBatchResponse);
-    } catch (err) {
-      parentPort!.postMessage({ id: msg.id, error: String(err) } satisfies ErrorResponse);
-    }
     return;
   }
 
   // ── Verify (NLI) ─────────────────────────────────────────────────────────────
 
   if (msg.type === 'verify') {
-    try {
-      const result = computeVerification(msg.claimText, msg.sourceText);
-      parentPort!.postMessage({ id: msg.id, result } satisfies VerifyResponse);
-    } catch (err) {
-      parentPort!.postMessage({ id: msg.id, error: String(err) } satisfies ErrorResponse);
-    }
+    computeVerification(msg.claimText, msg.sourceText)
+      .then((result) => {
+        parentPort!.postMessage({ id: msg.id, result } satisfies VerifyResponse);
+      })
+      .catch((err) => {
+        parentPort!.postMessage({
+          id: msg.id,
+          error: String(err instanceof Error ? err.message : err),
+        } satisfies ErrorResponse);
+      });
     return;
   }
 });

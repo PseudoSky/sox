@@ -23,6 +23,7 @@
     "dist"
   ],
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "fastembed": "^2.1.0"
   },
   "sox": {
