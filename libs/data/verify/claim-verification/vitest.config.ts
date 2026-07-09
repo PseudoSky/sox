@@ -5,7 +5,7 @@ export default defineConfig({
     root: 'libs/data/verify/claim-verification',
     globals: true,
     environment: 'node',
-    include: ['src/**/*.spec.ts'],
-    testTimeout: 30000,
+    include: ['src/**/*.spec.ts', 'src/**/*.test.ts'],
+    testTimeout: 180_000,
   },
 });

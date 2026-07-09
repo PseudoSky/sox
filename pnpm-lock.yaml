@@ -270,6 +270,9 @@ importers:
 
   libs/data/verify/claim-verification:
     devDependencies:
+      '@adhd/sox-blob-store':
+        specifier: workspace:*
+        version: link:../../store/blob-store
       '@adhd/sox-embedding-provider':
         specifier: workspace:*
         version: link:../../embed/embedding-provider

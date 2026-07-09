@@ -23,6 +23,7 @@
     "dist"
   ],
   "devDependencies": {
+    "@adhd/sox-blob-store": "workspace:*",
     "@adhd/sox-embedding-provider": "workspace:*"
   },
   "sox": {

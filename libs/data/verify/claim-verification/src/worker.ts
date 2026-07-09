@@ -7,6 +7,7 @@
  */
 
 import { Worker } from 'node:worker_threads';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -15,27 +16,30 @@ import type { EntailmentLabel } from './types.js';
 // ── Resolve shared worker path ────────────────────────────────────────────────
 
 function resolveWorkerPath(): string {
-  const pkgPath = join(
-    dirname(fileURLToPath(import.meta.url)),
-    '..', '..', '..', '..',
-    'embed', 'embedding-provider', 'dist', 'embedWorker.js',
-  );
+  const here = dirname(fileURLToPath(import.meta.url));
 
-  if (existsSync(pkgPath)) return pkgPath;
-
+  // Primary: resolve via Node module resolution through the
+  // `@adhd/sox-embedding-provider` devDependency. Robust regardless of
+  // monorepo directory depth/layout — follows the pnpm workspace symlink
+  // (libs/data/verify/claim-verification/node_modules/@adhd/sox-embedding-provider
+  // -> ../../../../embed/embedding-provider) rather than assuming a fixed
+  // number of `..` hops from this file's own location.
   try {
-    const epPath = require.resolve('@adhd/sox-embedding-provider');
-    const base = dirname(epPath);
-    const workerPath = join(base, 'embedWorker.js');
+    const require = createRequire(import.meta.url);
+    const epEntry = require.resolve('@adhd/sox-embedding-provider');
+    const workerPath = join(dirname(epEntry), 'embedWorker.js');
     if (existsSync(workerPath)) return workerPath;
   } catch {
     // continue to fallback
   }
 
-  return join(
-    dirname(fileURLToPath(import.meta.url)),
-    'verifierWorker.js',
-  );
+  // Fallback: standard monorepo relative layout —
+  // libs/data/verify/claim-verification/{src,dist} -> libs/data/embed/embedding-provider/dist
+  // (src and dist are equidistant: dist mirrors src 1:1 via rootDir/outputPath).
+  const relPath = join(here, '..', '..', '..', 'embed', 'embedding-provider', 'dist', 'embedWorker.js');
+  if (existsSync(relPath)) return relPath;
+
+  return join(here, 'verifierWorker.js');
 }
 
 // ── Main → Worker messages ─────────────────────────────────────────────────
@@ -184,36 +188,40 @@ export class WorkerProxy {
     });
 
     // ── General message handler for verify/result lifecycle ──
-    this.worker.on('message', (msg: WorkerToMainMessage | { initOk?: boolean; result?: { entailment: string; confidence: number; timingMs: number } }) => {
+    this.worker.on('message', (msg:
+      | WorkerToMainMessage
+      | { initOk?: boolean; id?: number; result?: { entailment: string; confidence: number; timingMs: number }; error?: string }
+    ) => {
       this._lastActivityMs = Date.now();
 
       if ('result' in msg && msg.result) {
-        // Map shared worker verify response to WorkerResultMessage
+        // Map shared worker verify response ({id, result}) to WorkerResultMessage.
+        // `id` is the numeric correlation id set by send() below (echoed back
+        // verbatim by embedWorker.ts) — NOT the caller-supplied UUID `jobId`.
         const verifyResult: WorkerResultMessage = {
           type: 'result',
-          jobId: String((msg as { id: number; result: { entailment: string; confidence: number; timingMs: number } }).id),
+          jobId: String(msg.id),
           entailment: msg.result.entailment as EntailmentLabel,
           confidence: msg.result.confidence,
           preFilterSkipped: false,
           timingMs: msg.result.timingMs,
         };
-        const pending = this.pending.get(verifyResult.jobId);
-        if (!pending) return;
-        this.pending.delete(verifyResult.jobId);
-        this._isBusy = false;
-        this._queuedJobs = Math.max(0, this._queuedJobs - 1);
-        pending.resolve(verifyResult);
+        this.resolvePendingById(verifyResult.jobId, verifyResult);
+      } else if ('error' in msg && typeof msg.error === 'string' && typeof msg.id === 'number') {
+        // Shared worker error response ({id, error}) — map onto WorkerErrorMessage.
+        const errResult: WorkerErrorMessage = {
+          type: 'error',
+          jobId: String(msg.id),
+          errorCode: 'WORKER_ERROR',
+          errorMessage: msg.error,
+        };
+        this.resolvePendingById(errResult.jobId, errResult);
       } else if ('type' in msg && (msg.type === 'result' || msg.type === 'error' || msg.type === 'progress')) {
         const typedMsg = msg as WorkerToMainMessage;
         const pendingId = typedMsg.type === 'result' || typedMsg.type === 'error'
           ? (typedMsg as WorkerResultMessage | WorkerErrorMessage).jobId
           : String(this.nextId);
-        const pending = this.pending.get(pendingId);
-        if (!pending) return;
-        this.pending.delete(pendingId);
-        this._isBusy = false;
-        this._queuedJobs = Math.max(0, this._queuedJobs - 1);
-        pending.resolve(typedMsg);
+        this.resolvePendingById(pendingId, typedMsg);
       }
     });
 
@@ -241,28 +249,43 @@ export class WorkerProxy {
     await warmupPromise;
   }
 
+  /** Resolve (and clear) a pending job by its correlation id, if still pending. */
+  private resolvePendingById(pendingId: string, resolved: WorkerToMainMessage): void {
+    const pending = this.pending.get(pendingId);
+    if (!pending) return;
+    this.pending.delete(pendingId);
+    this._isBusy = false;
+    this._queuedJobs = Math.max(0, this._queuedJobs - 1);
+    pending.resolve(resolved);
+  }
+
   async send(message: MainToWorkerMessage, timeoutMs = 30000): Promise<WorkerToMainMessage> {
     if (!this.worker) throw new Error('worker not started');
-    const id = String(this.nextId++);
-    const msg = { ...message, jobId: id } as MainToWorkerMessage & { jobId: string };
+    // `id` is the numeric wire-protocol correlation id the shared embedWorker.ts
+    // echoes back verbatim in its response ({id, result} / {id, error}) — distinct
+    // from `jobId`, the caller-supplied UUID carried through in the request for
+    // logging/tracing purposes only. Pending jobs are keyed by String(id).
+    const id = this.nextId++;
+    const msg = { ...message, id } as MainToWorkerMessage & { id: number };
+    const pendingId = String(id);
 
     return new Promise<WorkerToMainMessage>((resolve, reject) => {
       this._isBusy = true;
       this._queuedJobs++;
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(pendingId, { resolve, reject });
       this.worker!.postMessage(msg);
 
       // Timeout guard
       const to = setTimeout(() => {
-        this.pending.delete(id);
+        this.pending.delete(pendingId);
         this._isBusy = false;
         this._queuedJobs = Math.max(0, this._queuedJobs - 1);
         reject(new Error(`Worker ${this.workerId} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
       // Wrap resolve/reject to clear the timeout guard
-      const origResolve = this.pending.get(id)!.resolve;
-      this.pending.set(id, {
+      const origResolve = this.pending.get(pendingId)!.resolve;
+      this.pending.set(pendingId, {
         resolve: (v) => { clearTimeout(to); origResolve(v); },
         reject: (e) => { clearTimeout(to); reject(e); },
       });
