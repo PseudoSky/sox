@@ -166,6 +166,92 @@ module.exports = _cr(${pkg});
 }
 
 // ---------------------------------------------------------------------------
+// Sidecar auto-discovery + output verification (BL-259 class kill).
+//
+// Some bundled packages fork/spawn RUNTIME SIDECARS — sibling .js files located
+// via `path.join(__dirname, '<name>.js')` at runtime (worker_threads workers,
+// child-process hosts). esbuild cannot trace those string paths, so a sidecar
+// that is not emitted explicitly is silently ABSENT from the bundle and the
+// fork dies at runtime (BL-87/BL-89: embedWorker.js; BL-259: the BL-238
+// fastembed child host was added to embedding-provider but never to any
+// bundle's --worker list — the live memory-server lost embeddings for 5h).
+//
+// Hand-listing every sidecar in every consumer's project.json is the disease,
+// not the cure. Instead:
+//   1. The OWNING package declares its sidecars once, in its own package.json:
+//        "sox": { "sidecars": ["src/embedWorker.ts", ...],
+//                 "sidecarExternals": ["fastembed", "onnxruntime-node"] }
+//   2. After the main build, the esbuild metafile tells us exactly which
+//      packages were inlined; every declared sidecar of every inlined package
+//      is bundled automatically (sidecarExternals unioned into --external).
+//   3. verifySidecarReferences() then scans EVERY emitted file for
+//      `__dirname`-sibling .js references and FAILS THE BUILD (pre-commit,
+//      previous artifact untouched) if any referenced sibling was not emitted —
+//      so even an UNDECLARED future sidecar cannot ship silently.
+// ---------------------------------------------------------------------------
+const pkgJsonCache = new Map();
+function nearestPackageJson(dir, stopDir) {
+  let d = dir;
+  for (;;) {
+    if (pkgJsonCache.has(d)) return pkgJsonCache.get(d);
+    // Skip build-output copies: atomic-tsc copies package.json into dist/, but
+    // sox.sidecars paths are relative to the SOURCE package root — resolving
+    // them against dist/ yields dist/src/<sidecar>.ts, which does not exist.
+    const isBuildOutput = path.basename(d) === 'dist' || /\.staging-|\.prev-/.test(path.basename(d));
+    const candidate = path.join(d, 'package.json');
+    let result = null;
+    if (!isBuildOutput && fs.existsSync(candidate)) {
+      try { result = { root: d, json: JSON.parse(fs.readFileSync(candidate, 'utf8')) }; } catch { result = null; }
+    }
+    if (result) { pkgJsonCache.set(dir, result); pkgJsonCache.set(d, result); return result; }
+    if (d === stopDir) return null;
+    const parent = path.dirname(d);
+    if (parent === d) return null;
+    d = parent;
+  }
+}
+
+/** From an esbuild metafile, collect {entry, externals} for every declared sidecar of every inlined package. */
+function discoverSidecars(metafile) {
+  const found = new Map(); // basename.js → { entry, externals }
+  for (const input of Object.keys(metafile.inputs || {})) {
+    if (input.startsWith('lazy-external:') || input.includes('node_modules/')) continue;
+    const abs = path.resolve(REPO_ROOT, input);
+    const pkg = nearestPackageJson(path.dirname(abs), REPO_ROOT);
+    const sidecars = pkg?.json?.sox?.sidecars;
+    if (!Array.isArray(sidecars)) continue;
+    const externals = Array.isArray(pkg.json.sox.sidecarExternals) ? pkg.json.sox.sidecarExternals : [];
+    for (const rel of sidecars) {
+      const entry = path.join(pkg.root, rel);
+      const base = path.basename(entry).replace(/\.(ts|mts|cts|js|mjs|cjs)$/i, '') + '.js';
+      if (!found.has(base)) found.set(base, { entry, externals });
+    }
+  }
+  return found;
+}
+
+/**
+ * Scan every emitted .js in the staged outdir for `__dirname`-sibling .js
+ * references (string literals within the same expression as __dirname) and
+ * return the referenced names that do NOT exist in the staged output.
+ */
+function verifySidecarReferences(stageDir) {
+  const emitted = new Set(fs.readdirSync(stageDir));
+  const missing = new Map(); // name → first referencing file
+  const refRe = /__dirname[^;\n]{0,160}?['"]([A-Za-z0-9][\w.-]*\.js)['"]/g;
+  for (const file of emitted) {
+    if (!file.endsWith('.js')) continue;
+    const text = fs.readFileSync(path.join(stageDir, file), 'utf8');
+    let m;
+    while ((m = refRe.exec(text)) !== null) {
+      const name = m[1];
+      if (!emitted.has(name) && !missing.has(name)) missing.set(name, file);
+    }
+  }
+  return missing;
+}
+
+// ---------------------------------------------------------------------------
 // BL-214: derive the tsconfig from the extension being bundled when
 // --tsconfig is not passed explicitly.
 //
@@ -250,13 +336,17 @@ async function main() {
   console.log(`bundle-extension: tsconfig ${tsconfig}${args.tsconfig ? '' : ' (auto-derived)'}`);
 
   // Build a single entry → <outfile> as a self-contained CJS bundle.
-  async function buildOne(entry, outfile) {
-    await esbuild.build({
+  // opts.externals extends --external for this entry (sidecarExternals);
+  // opts.metafile:true makes the esbuild metafile available on the return value.
+  async function buildOne(entry, outfile, opts = {}) {
+    const externals = [...new Set([...args.externals, ...(opts.externals || [])])];
+    const result = await esbuild.build({
       entryPoints: [entry],
       outfile,
       bundle: true,
       platform: 'node',
       format: 'cjs',
+      metafile: !!opts.metafile,
       // BL-155: shim import.meta.url for CJS output. esbuild replaces `import.meta`
       // with `{}` in cjs format, so `import.meta.url` becomes undefined and any
       // `fileURLToPath(import.meta.url)` at module scope (e.g. embedding-provider's
@@ -279,7 +369,7 @@ async function main() {
       // Plugins: first resolve @adhd/sox-* aliases, then make externals lazy
       plugins: [
         soxAliasPlugin(),
-        lazyExternalPlugin(args.externals),
+        lazyExternalPlugin(externals),
       ],
       tsconfig,
       // Source maps: linked produces a separate .map sidecar.
@@ -302,16 +392,41 @@ async function main() {
       `bundle-extension: OK — ${outfile} (${(size / 1024).toFixed(1)} KB)` +
       (mapSize > 0 ? ` + ${(mapSize / 1024).toFixed(1)} KB sourcemap` : ''),
     );
+    return result;
   }
 
   try {
-    await buildOne(args.entry, path.join(stageDir, 'index.js'));
+    const mainResult = await buildOne(args.entry, path.join(stageDir, 'index.js'), { metafile: true });
 
     // Worker entries: each bundled to <outdir>/<basename>.js so a runtime
     // `new Worker(path.join(__dirname,'<basename>.js'))` resolves (BL-87/BL-89).
+    const emittedWorkers = new Set();
     for (const worker of args.workers) {
       const base = path.basename(worker).replace(/\.(ts|mts|cts|js|mjs|cjs)$/i, '') + '.js';
+      emittedWorkers.add(base);
       await buildOne(worker, path.join(stageDir, base));
+    }
+
+    // Sidecar auto-discovery (BL-259): bundle every sidecar declared by any
+    // package the main bundle inlined, without per-consumer --worker lists.
+    const sidecars = discoverSidecars(mainResult.metafile || { inputs: {} });
+    for (const [base, { entry, externals }] of sidecars) {
+      if (emittedWorkers.has(base)) continue; // explicit --worker wins
+      console.log(`bundle-extension: sidecar  ${base} (auto-discovered from ${path.relative(REPO_ROOT, entry)})`);
+      await buildOne(entry, path.join(stageDir, base), { externals });
+    }
+
+    // Verification (BL-259): no emitted file may reference a __dirname-sibling
+    // .js that was not emitted. Fails BEFORE commit — the previous artifact
+    // stays intact and the missing sidecar is named.
+    const missing = verifySidecarReferences(stageDir);
+    if (missing.size > 0) {
+      const lines = [...missing].map(([name, by]) => `  ${name} (referenced by ${by})`).join('\n');
+      throw new Error(
+        `bundle output references sibling files that were not emitted:\n${lines}\n` +
+        `Declare them in the owning package's package.json under sox.sidecars ` +
+        `(with native deps in sox.sidecarExternals), or pass --worker explicitly.`,
+      );
     }
 
     // Emit a package.json sidecar so Node.js loads this CJS bundle correctly

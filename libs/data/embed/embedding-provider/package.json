@@ -29,6 +29,15 @@
   "sox": {
     "area": "data",
     "group": "embed",
+    "sidecars": [
+      "src/embedWorker.ts",
+      "src/fastembedProcessHost.ts",
+      "src/sharedOnnxWorker.ts"
+    ],
+    "sidecarExternals": [
+      "fastembed",
+      "onnxruntime-node"
+    ],
     "concerns": [
       "text→vector (EmbeddingProvider interface)",
       "config-driven model resolution (createEmbeddingProvider factory)",

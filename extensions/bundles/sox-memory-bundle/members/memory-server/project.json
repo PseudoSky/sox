@@ -15,7 +15,7 @@
       ],
       "options": {
         "commands": [
-          "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-server/dist --tsconfig extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json --worker libs/data/embed/embedding-provider/src/embedWorker.ts --external better-sqlite3 --external sqlite-vec --external fastembed --external onnxruntime-node",
+          "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-server/dist --tsconfig extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json --external better-sqlite3 --external sqlite-vec --external fastembed --external onnxruntime-node",
           "node extensions/bundles/sox-memory-bundle/members/memory-server/scripts/gen-schema.cjs"
         ],
         "parallel": false,
@@ -27,7 +27,10 @@
         "{projectRoot}/tsconfig.json",
         "{projectRoot}/scripts/gen-schema.cjs",
         "{workspaceRoot}/tools/bundle-extension.cjs",
-        "{workspaceRoot}/libs/data/embed/embedding-provider/src/embedWorker.ts"
+        "{workspaceRoot}/libs/data/embed/embedding-provider/src/embedWorker.ts",
+        "{workspaceRoot}/libs/data/embed/embedding-provider/src/fastembedProcessHost.ts",
+        "{workspaceRoot}/libs/data/embed/embedding-provider/src/sharedOnnxWorker.ts",
+        "{workspaceRoot}/libs/data/embed/embedding-provider/package.json"
       ],
       "dependsOn": [
         "^build"
@@ -60,7 +63,10 @@
         "cwd": "."
       },
       "cache": true,
-      "inputs": ["default", "^production"]
+      "inputs": [
+        "default",
+        "^production"
+      ]
     }
   }
 }
