@@ -10,6 +10,12 @@
  *     --outdir <dir> \
  *     --external <pkg> [--external <pkg2> ...]
  *
+ * --tsconfig is optional. If omitted, the nearest tsconfig.json is derived by
+ * walking up from --entry's directory (stopping short of the workspace root —
+ * BL-214). Pass --tsconfig explicitly to override, or if the extension has no
+ * tsconfig.json of its own; omitting it with no discoverable tsconfig.json is
+ * a hard error, not a silent fallback to some other extension's config.
+ *
  * All @adhd/sox-* packages are inlined (not external) — resolved to their pre-built
  * dist directories so the bundle runs without the monorepo on $NODE_PATH.
  *
@@ -160,6 +166,32 @@ module.exports = _cr(${pkg});
 }
 
 // ---------------------------------------------------------------------------
+// BL-214: derive the tsconfig from the extension being bundled when
+// --tsconfig is not passed explicitly.
+//
+// Previously this defaulted unconditionally to memory-server's tsconfig.json,
+// so every extension bundled without --tsconfig silently compiled against
+// memory-server's compiler options. Instead, walk up from the entry point's
+// directory looking for the nearest tsconfig.json, stopping *before* the
+// workspace root (REPO_ROOT/tsconfig.json is a references-only workspace
+// config, not any single extension's own config — falling back to it would
+// be exactly the same class of silent-wrong-config bug this fixes).
+//
+// Returns the resolved tsconfig path, or null if none was found.
+// ---------------------------------------------------------------------------
+function findTsconfig(startDir, stopDir) {
+  let dir = startDir;
+  for (;;) {
+    if (dir === stopDir) return null; // never silently fall back to the workspace root config
+    const candidate = path.join(dir, 'tsconfig.json');
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null; // reached filesystem root
+    dir = parent;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 async function main() {
@@ -179,18 +211,43 @@ async function main() {
     process.exit(1);
   }
 
-  fs.mkdirSync(args.outdir, { recursive: true });
+  // [BL-235] ATOMIC BUILD — never destroy a working artifact.
+  //
+  // The old contract was: `rm -rf <outdir>` in project.json, then bundle into it.
+  // A failed bundle (broken source, a concurrent agent mid-edit, BL-231) therefore
+  // left `<outdir>` EMPTY and unrecoverable — the only way back was a successful
+  // build, which was precisely what was impossible. This destroyed the live
+  // memory-server bundle twice on 2026-07-08, once merely from a diagnostic build.
+  //
+  // Now: bundle into a fresh staging dir, and swap it into place only after every
+  // entry (and the package.json sidecar) has been written successfully. Clean-output
+  // semantics are preserved because staging always starts empty — a file that is no
+  // longer produced disappears on swap. On failure, `<outdir>` is untouched.
+  const stageDir = `${args.outdir}.staging-${process.pid}`;
+  fs.rmSync(stageDir, { recursive: true, force: true });
+  fs.mkdirSync(stageDir, { recursive: true });
 
   console.log(`bundle-extension: bundling ${args.entry}`);
-  console.log(`bundle-extension: outdir   ${args.outdir}`);
+  console.log(`bundle-extension: outdir   ${args.outdir} (atomic; staged via ${path.basename(stageDir)})`);
   console.log(`bundle-extension: external ${args.externals.join(', ') || '(none)'}`);
   if (args.workers.length) {
     console.log(`bundle-extension: workers  ${args.workers.join(', ')}`);
   }
 
   const tsconfig =
-    args.tsconfig ||
-    path.join(REPO_ROOT, 'extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json');
+    args.tsconfig || findTsconfig(path.dirname(args.entry), REPO_ROOT);
+
+  if (!tsconfig) {
+    console.error(`bundle-extension: no tsconfig.json found for entry ${args.entry}`);
+    console.error(
+      `  Searched upward from ${path.dirname(args.entry)} to ${REPO_ROOT} (exclusive of the workspace root).`,
+    );
+    console.error(
+      `  Fix: add a tsconfig.json to the extension directory, or pass --tsconfig <path> explicitly.`,
+    );
+    process.exit(1);
+  }
+  console.log(`bundle-extension: tsconfig ${tsconfig}${args.tsconfig ? '' : ' (auto-derived)'}`);
 
   // Build a single entry → <outfile> as a self-contained CJS bundle.
   async function buildOne(entry, outfile) {
@@ -248,26 +305,60 @@ async function main() {
   }
 
   try {
-    await buildOne(args.entry, path.join(args.outdir, 'index.js'));
+    await buildOne(args.entry, path.join(stageDir, 'index.js'));
 
     // Worker entries: each bundled to <outdir>/<basename>.js so a runtime
     // `new Worker(path.join(__dirname,'<basename>.js'))` resolves (BL-87/BL-89).
     for (const worker of args.workers) {
       const base = path.basename(worker).replace(/\.(ts|mts|cts|js|mjs|cjs)$/i, '') + '.js';
-      await buildOne(worker, path.join(args.outdir, base));
+      await buildOne(worker, path.join(stageDir, base));
     }
 
     // Emit a package.json sidecar so Node.js loads this CJS bundle correctly
     // even when the repo root package.json has "type":"module".
     // Without this, Node.js v12+ rejects module.exports in .js files under an
     // ESM-root package and throws "ReferenceError: module is not defined in ES module scope".
-    const pkgSidecar = path.join(args.outdir, 'package.json');
+    const pkgSidecar = path.join(stageDir, 'package.json');
     fs.writeFileSync(pkgSidecar, JSON.stringify({ type: 'commonjs' }, null, 2) + '\n', 'utf8');
   } catch (err) {
-    console.error('bundle-extension: build failed');
+    // [BL-235] The staged build failed. `<outdir>` was never touched — the previous
+    // working artifact is still there. Drop staging and surface the real error.
+    fs.rmSync(stageDir, { recursive: true, force: true });
+    console.error('bundle-extension: build failed — existing output left intact at');
+    console.error(`  ${args.outdir}`);
     console.error(err.message || err);
     process.exit(1);
   }
+
+  // [BL-235] COMMIT — swap staging into place. Everything below succeeded, so this is
+  // the only window in which `<outdir>` is not a valid artifact, and it is bounded by
+  // two renames within one directory rather than a bundle's worth of compilation.
+  const prevDir = `${args.outdir}.prev-${process.pid}`;
+  const hadPrev = fs.existsSync(args.outdir);
+  try {
+    if (hadPrev) fs.renameSync(args.outdir, prevDir);
+    fs.renameSync(stageDir, args.outdir);
+  } catch (err) {
+    // Roll back to the previous artifact rather than leaving a hole.
+    if (hadPrev && !fs.existsSync(args.outdir) && fs.existsSync(prevDir)) {
+      fs.renameSync(prevDir, args.outdir);
+    }
+    fs.rmSync(stageDir, { recursive: true, force: true });
+    console.error('bundle-extension: could not swap staged output into place');
+    console.error(err.message || err);
+    process.exit(1);
+  }
+  fs.rmSync(prevDir, { recursive: true, force: true });
+  console.log(`bundle-extension: committed → ${args.outdir}`);
 }
 
-main();
+// ---------------------------------------------------------------------------
+// Exports for regression tests (BL-214, BL-225). Only run main() when
+// invoked directly as `node tools/bundle-extension.cjs ...` — requiring this
+// module (e.g. from a test script) must not trigger a build.
+// ---------------------------------------------------------------------------
+module.exports = { findTsconfig, parseArgs, REPO_ROOT };
+
+if (require.main === module) {
+  main();
+}

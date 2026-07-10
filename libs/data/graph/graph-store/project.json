@@ -11,7 +11,7 @@
   ],
   "targets": {
     "build": {
-      "executor": "@nx/js:tsc",
+      "executor": "@adhd/sox-nx:atomic-tsc",
       "outputs": [
         "{workspaceRoot}/libs/data/graph/graph-store/dist"
       ],

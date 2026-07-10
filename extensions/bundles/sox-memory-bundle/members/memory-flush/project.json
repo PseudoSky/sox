@@ -16,7 +16,6 @@
       ],
       "options": {
         "commands": [
-          "rm -rf extensions/bundles/sox-memory-bundle/members/memory-flush/dist",
           "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-flush/dist --tsconfig extensions/bundles/sox-memory-bundle/members/memory-flush/tsconfig.json --external better-sqlite3 --external sqlite-vec"
         ],
         "parallel": false,
@@ -54,6 +53,15 @@
       "dependsOn": [
         "^build"
       ]
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p extensions/bundles/sox-memory-bundle/members/memory-flush/tsconfig.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": ["default", "^production"]
     }
   }
 }

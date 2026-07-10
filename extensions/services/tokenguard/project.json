@@ -8,6 +8,29 @@
     "type:extension"
   ],
   "targets": {
+    "compile": {
+      "executor": "@adhd/sox-nx:atomic-tsc",
+      "outputs": [
+        "{workspaceRoot}/extensions/services/tokenguard/dist"
+      ],
+      "options": {
+        "main": "extensions/services/tokenguard/src/index.ts",
+        "outputPath": "extensions/services/tokenguard/dist",
+        "tsConfig": "extensions/services/tokenguard/tsconfig.json",
+        "assets": [],
+        "clean": true,
+        "rootDir": "extensions/services/tokenguard/src",
+        "generatePackageJson": false
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.json"
+      ],
+      "dependsOn": [
+        "^build"
+      ]
+    },
     "build": {
       "executor": "nx:run-commands",
       "outputs": [
@@ -15,11 +38,7 @@
         "{workspaceRoot}/extensions/services/tokenguard/bundle"
       ],
       "options": {
-        "commands": [
-          "tsc --project extensions/services/tokenguard/tsconfig.json",
-          "node tools/bundle-extension.cjs --entry extensions/services/tokenguard/src/index.ts --outdir extensions/services/tokenguard/bundle --tsconfig extensions/services/tokenguard/tsconfig.json"
-        ],
-        "parallel": false,
+        "command": "node tools/bundle-extension.cjs --entry extensions/services/tokenguard/src/index.ts --outdir extensions/services/tokenguard/bundle --tsconfig extensions/services/tokenguard/tsconfig.json",
         "cwd": "."
       },
       "cache": true,
@@ -28,6 +47,7 @@
         "{projectRoot}/tsconfig.json"
       ],
       "dependsOn": [
+        "compile",
         "^build"
       ]
     },
@@ -63,6 +83,15 @@
       "dependsOn": [
         "build"
       ]
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p extensions/services/tokenguard/tsconfig.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": ["default", "^production"]
     }
   }
 }

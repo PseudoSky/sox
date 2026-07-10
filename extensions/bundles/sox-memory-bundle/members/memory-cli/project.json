@@ -16,7 +16,6 @@
       ],
       "options": {
         "commands": [
-          "rm -rf extensions/bundles/sox-memory-bundle/members/memory-cli/dist",
           "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-cli/dist --tsconfig extensions/bundles/sox-memory-bundle/members/memory-cli/tsconfig.json --external better-sqlite3 --external sqlite-vec"
         ],
         "parallel": false,
@@ -32,6 +31,18 @@
         "^build"
       ]
     },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config extensions/bundles/sox-memory-bundle/members/memory-cli/vitest.config.mts",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
     "lint": {
       "executor": "@nx/eslint:lint",
       "options": {
@@ -39,6 +50,15 @@
           "extensions/bundles/sox-memory-bundle/members/memory-cli/src/**/*.ts"
         ]
       }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p extensions/bundles/sox-memory-bundle/members/memory-cli/tsconfig.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": ["default", "^production"]
     }
   }
 }

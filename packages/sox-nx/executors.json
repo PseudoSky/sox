@@ -1,0 +1,10 @@
+{
+  "$schema": "http://json-schema.org/schema",
+  "executors": {
+    "atomic-tsc": {
+      "implementation": "./dist/executors/atomic-tsc/executor",
+      "schema": "./dist/executors/atomic-tsc/schema.json",
+      "description": "Non-destructive TypeScript build (BL-235): same options and output as @nx/js:tsc, but compiles into a staging directory and atomically swaps it into outputPath only on success. A failing or throwing build leaves the existing outputPath untouched."
+    }
+  }
+}

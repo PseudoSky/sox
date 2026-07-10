@@ -5,12 +5,15 @@
   "private": true,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "executors": "./executors.json",
   "exports": {
     ".": {
       "require": "./dist/index.js",
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
-    }
+    },
+    "./package.json": "./package.json",
+    "./executors.json": "./executors.json"
   },
   "dependencies": {
     "@adhd/sox-authoring": "workspace:*"

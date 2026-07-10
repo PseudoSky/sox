@@ -9,7 +9,7 @@
   ],
   "targets": {
     "build": {
-      "executor": "@nx/js:tsc",
+      "executor": "@adhd/sox-nx:atomic-tsc",
       "outputs": [
         "{workspaceRoot}/libs/memory-core/dist"
       ],

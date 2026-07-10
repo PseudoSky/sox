@@ -15,7 +15,6 @@
       ],
       "options": {
         "commands": [
-          "rm -rf extensions/bundles/sox-memory-bundle/members/memory-server/dist",
           "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-server/dist --tsconfig extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json --worker libs/data/embed/embedding-provider/src/embedWorker.ts --external better-sqlite3 --external sqlite-vec --external fastembed --external onnxruntime-node",
           "node extensions/bundles/sox-memory-bundle/members/memory-server/scripts/gen-schema.cjs"
         ],
@@ -53,6 +52,15 @@
           "extensions/bundles/sox-memory-bundle/members/memory-server/src/**/*.ts"
         ]
       }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": ["default", "^production"]
     }
   }
 }

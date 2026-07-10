@@ -11,7 +11,7 @@
   ],
   "targets": {
     "build": {
-      "executor": "@nx/js:tsc",
+      "executor": "@adhd/sox-nx:atomic-tsc",
       "outputs": [
         "{workspaceRoot}/packages/sox-nx/dist"
       ],
@@ -19,14 +19,22 @@
         "main": "packages/sox-nx/src/index.ts",
         "outputPath": "packages/sox-nx/dist",
         "tsConfig": "packages/sox-nx/tsconfig.lib.json",
-        "assets": [],
+        "assets": [
+          {
+            "glob": "**/*.json",
+            "input": "packages/sox-nx/src/executors",
+            "output": "executors"
+          }
+        ],
         "clean": true,
         "rootDir": "packages/sox-nx/src"
       },
       "cache": true,
       "inputs": [
         "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/tsconfig.lib.json"
+        "{projectRoot}/src/executors/**/*.json",
+        "{projectRoot}/tsconfig.lib.json",
+        "{projectRoot}/executors.json"
       ]
     },
     "test": {

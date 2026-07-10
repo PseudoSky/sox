@@ -9,6 +9,22 @@ For codebase navigation, see [`docs/routing/ROUTER.md`](./docs/routing/ROUTER.md
 [`docs/routing/INDEX.md`](./docs/routing/INDEX.md) (project listing). For `data/*` package guidance, see
 [`libs/data/CLAUDE.md`](./libs/data/CLAUDE.md).
 
+## Harvesting external skills into extensions
+
+When asked to harvest an external repo/URL into a sox extension:
+
+1. **Fetch the upstream content** (SKILL.md and any references/, assets/, scripts/ dirs).
+2. **Scaffold** with `soxe init skill <id>` (adds extension.json, package.json, CHANGELOG.md, README.md, SKILL.md skeleton).
+3. **Move to** `extensions/skills/<id>/`.
+4. **Populate SKILL.md** with upstream content + YAML frontmatter with `source` and `source-version` fields.
+5. **Write reference files** into `references/` (same structure as upstream).
+6. **Update extension.json** `run_interface` with input/output schemas matching the skill's contract.
+7. **Rebuild registry** with `npx nx run registry:sync-index` (auto-discovers new extensions, computes checksums).
+8. **Upgrade consumers** with `node bin/soxe upgrade --all`.
+9. **Commit** source changes AND regenerated `registry/index.json` together.
+
+Existing harvested skills: `extensions/skills/tui-design/` (from gfargo/skills, TUI/CLI design).
+
 ---
 
 ## ⛔ AGENT CONSTRAINT — RUN SMOKE TEST BEFORE MERGING
@@ -57,8 +73,19 @@ Stage by explicit path: `git add <file> <file> …`. Never stage `.nx/`, `.DS_St
 ## ⛔ AGENT CONSTRAINT — BUILD VIA NX TARGETS, NEVER BARE TOOLS
 
 Always build, test, lint, and typecheck through nx targets — never `tsc`, `vitest`, or `eslint` directly.
-- `npx nx build <project>` / `npx nx test <project>` / `npx nx lint <project>`
-- Whole-repo gate: `npx nx run-many -t build,lint,test`
+- `npx nx build <project>` / `npx nx test <project>` / `npx nx lint <project>` / `npx nx typecheck <project>`
+- **Whole-repo gate: `npx nx run-many -t build,lint,test,typecheck`**
+
+**`typecheck` is not optional, and `build` does not imply it.** Every esbuild-bundled project
+(`memory-server`, `memory-cli`, `memory-flush`, `tokenguard`, `sox`) builds through
+`tools/bundle-extension.cjs`, which **strips types without checking them**. Until 2026-07-10 the gate
+was `build,lint,test` and no project had a `typecheck` target at all — so `memory-server` shipped
+**15 real TypeScript errors** with a fully green sweep, two of them live bugs (BL-249: `memory_link`
+missing an `await`, so it always returned `{}` and could never report an error; BL-250: reads of an
+`on_hash_fallback` field that no longer exists). See BL-248.
+
+If you add a project, give it a `typecheck` target. If a `typecheck` fails, fix the code — never
+weaken `strict`, `noUnusedLocals`, or `exactOptionalPropertyTypes` to silence it.
 
 ---
 
@@ -100,6 +127,52 @@ the `os-unit` generator, or any `cmdStart/Stop/Serve/Enable/Disable` in `apps/so
 3. `npx nx run registry:sync-index` — rebuilds + regenerates `registry/index.json` checksums
 4. Commit source changes AND regenerated `registry/index.json` together
 5. `node bin/soxe upgrade --all` — upgrade every consumer spanning all scopes
+
+---
+
+## ⛔ AGENT CONSTRAINT — NEVER MARK A BACKLOG ITEM RESOLVED WITHOUT A RED→GREEN TEST
+
+Governed by **BL-225**. A status marker must record a *verified outcome*, never an intention.
+
+Before writing `**RESOLVED**` on any `### BL-<n>` heading:
+
+1. A regression test **naming the BL-ID** exists.
+2. You have seen it **fail** with the fix disabled, and **pass** with it restored. Not "it would fail" — run it.
+3. A test that *skips* the failing case does not count.
+
+This rule exists because four separate items shipped as RESOLVED while still broken:
+
+- **BL-88** added a schema column. Nothing read it. Its dependent BL-92 stayed live.
+- **BL-95** fixed `cmdStatus`, left `cmdList` broken, and was marked done.
+- **BL-115** shipped a working chunker that silently took two test suites to **zero** and hard-blocked the repo-wide smoke gate for two days (BL-231).
+- **BL-167**'s suite carried `hasChannelSignal` guards that *skipped the assertion for exactly the case where the invariant broke* — a coverage audit would have seen a test named for the invariant and believed it.
+
+Corollary: **the ~125 items already marked CLOSED have never been audited against this rule.** Do not treat a `RESOLVED` marker as evidence. Read the code.
+
+Do not hand-maintain `BACKLOG.md`'s status header — it is derived from heading markers (BL-224). Regenerate it. Every marker must begin with a status word (`Open`, `REOPENED`, `BLOCKED`, `RESOLVED`, `CLOSED`, …); a `[TRIAGE]` prefix breaks the parser and silently drops the item from the count.
+
+---
+
+## ⛔ AGENT CONSTRAINT — A DIAGNOSTIC `nx build` IS A DESTRUCTIVE OPERATION
+
+Governed by **BL-235**. Several `build` targets begin with `rm -rf .../dist`. They delete the existing
+artifact **before** knowing the rebuild will succeed. If the source is currently non-compiling — because
+of a real bug, or because another agent is mid-edit in a shared checkout — the working artifact is gone
+and **cannot be restored except by a successful build**, which is precisely what is impossible.
+
+This has happened twice, both times to agents running a build merely to *see* an error message. One of
+them took the live memory MCP server down mid-session.
+
+- Before `npx nx build <project>` on a project you did not just fix, know you may not get the old `dist/` back.
+- **`--dry-run` does NOT protect you.** nx accepts the flag on a run-target and *silently ignores it* —
+  `npx nx build ingest --dry-run` performs a real, destructive build. Verified 2026-07-09. There is no
+  safe "just show me the error" build flag. To inspect a failure without risking the artifact, read the
+  source, or compile to a scratch `outDir` directly.
+- In a shared checkout with concurrent agents, treat every `dist/` as someone else's live artifact.
+
+**After any rebuild of a `dist` artifact that ships in an extension, run `npx nx run registry:sync-index`** —
+the rebuilt bundle's checksum will no longer match `registry/index.json`, and `smoke-test.mjs` fails with
+`CHECKSUM MISMATCH`. Commit the regenerated `registry/index.json` alongside the source.
 
 ---
 

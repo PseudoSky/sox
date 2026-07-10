@@ -2,6 +2,15 @@ node_modules/
 
 __pycache__
 dist/
+
+# [BL-235] Atomic-build scratch dirs. `dist/` above does NOT match `dist.staging-1234`
+# or `dist.prev-1234`. Both bundle-extension.cjs and @adhd/sox-nx:atomic-tsc stage a
+# build into a sibling dir and swap it in on success; a hard-killed build (OOM, ^C,
+# session limit) can leave one behind. They must never show up as untracked noise, and
+# must never be committed.
+*.staging-*
+*.prev-*
+
 *.js.map
 *.d.ts.map
 .extensions/extensions.local.json

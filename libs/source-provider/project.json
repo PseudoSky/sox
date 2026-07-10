@@ -7,7 +7,7 @@
   "tags": ["type:lib", "area:data", "group:source"],
   "targets": {
     "build": {
-      "executor": "@nx/js:tsc",
+      "executor": "@adhd/sox-nx:atomic-tsc",
       "outputs": ["{workspaceRoot}/libs/source-provider/dist"],
       "options": {
         "main": "libs/source-provider/src/index.ts",

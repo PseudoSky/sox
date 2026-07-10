@@ -17,6 +17,28 @@
     "registry"
   ],
   "targets": {
+    "compile": {
+      "executor": "@adhd/sox-nx:atomic-tsc",
+      "outputs": [
+        "{workspaceRoot}/dist/apps/sox"
+      ],
+      "options": {
+        "main": "apps/sox/src/main.ts",
+        "outputPath": "dist/apps/sox",
+        "tsConfig": "apps/sox/tsconfig.app.json",
+        "assets": [],
+        "clean": true,
+        "rootDir": "apps/sox/src"
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.app.json"
+      ],
+      "dependsOn": [
+        "^build"
+      ]
+    },
     "build": {
       "executor": "nx:run-commands",
       "outputs": [
@@ -25,7 +47,7 @@
       ],
       "options": {
         "commands": [
-          "tsc --project apps/sox/tsconfig.app.json && echo '{\"type\":\"commonjs\"}' > dist/apps/sox/package.json && node apps/sox/scripts/rewrite-paths.cjs && node apps/sox/scripts/stamp-build.cjs",
+          "echo '{\"type\":\"commonjs\"}' > dist/apps/sox/package.json && node apps/sox/scripts/rewrite-paths.cjs && node apps/sox/scripts/stamp-build.cjs",
           "node tools/bundle-extension.cjs --entry apps/sox/src/main.ts --outdir apps/sox/dist --tsconfig apps/sox/tsconfig.app.json",
           "node apps/sox/scripts/embed-registry.cjs"
         ],
@@ -44,6 +66,7 @@
         "{workspaceRoot}/registry/index.json"
       ],
       "dependsOn": [
+        "compile",
         "^build"
       ]
     },
@@ -66,6 +89,15 @@
           "apps/sox/**/*.ts"
         ]
       }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p apps/sox/tsconfig.app.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": ["default", "^production"]
     }
   }
 }

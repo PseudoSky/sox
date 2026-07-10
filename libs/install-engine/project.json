@@ -10,13 +10,35 @@
     "group:distribution"
   ],
   "targets": {
+    "compile": {
+      "executor": "@adhd/sox-nx:atomic-tsc",
+      "outputs": [
+        "{workspaceRoot}/libs/install-engine/dist"
+      ],
+      "options": {
+        "main": "libs/install-engine/src/index.ts",
+        "outputPath": "libs/install-engine/dist",
+        "tsConfig": "libs/install-engine/tsconfig.lib.json",
+        "assets": [],
+        "clean": true,
+        "rootDir": "libs/install-engine/src"
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.lib.json"
+      ],
+      "dependsOn": [
+        "^build"
+      ]
+    },
     "build": {
       "executor": "nx:run-commands",
       "outputs": [
         "{workspaceRoot}/libs/install-engine/dist"
       ],
       "options": {
-        "command": "tsc --project libs/install-engine/tsconfig.lib.json && echo '{\"type\":\"commonjs\"}' > libs/install-engine/dist/package.json && node libs/install-engine/scripts/rewrite-paths.cjs",
+        "command": "echo '{\"type\":\"commonjs\"}' > libs/install-engine/dist/package.json && node libs/install-engine/scripts/rewrite-paths.cjs",
         "cwd": "."
       },
       "cache": true,
@@ -24,6 +46,10 @@
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/tsconfig.lib.json",
         "{projectRoot}/scripts/rewrite-paths.cjs"
+      ],
+      "dependsOn": [
+        "compile",
+        "^build"
       ]
     },
     "test": {
