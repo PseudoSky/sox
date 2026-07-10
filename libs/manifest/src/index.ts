@@ -220,6 +220,7 @@ const ID_PATTERN = /^[a-z][a-z0-9-]*$/;
 const VALID_TYPES = new Set<string>([
   'agent', 'skill', 'mcp-server', 'prompt', 'hook', 'command', 'bundle', 'service',
 ]);
+export { VALID_TYPES };
 
 /**
  * [flex:runtime-expanded] Valid runtime values including the three new ones.
@@ -228,10 +229,15 @@ const VALID_TYPES = new Set<string>([
 const VALID_RUNTIMES = new Set<string>([
   'node', 'shell', 'python', 'declarative', 'stdio-any',
 ]);
+export { VALID_RUNTIMES };
 
 const VALID_HOOK_EVENTS = new Set<string>([
   'PreToolUse', 'PostToolUse', 'SessionEnd', 'ScopePromotionProposed', 'Stop',
 ]);
+export { VALID_HOOK_EVENTS };
+
+/** Known host identifiers for install.hosts validation. */
+export const KNOWN_HOSTS = new Set<string>(['claude', 'codex', 'opencode']);
 
 // ADR-0003: `version` is NO LONGER a required (or even meaningful) identity input.
 // Identity is `id` + content `checksum`. `version`, if present, is a deprecated,
@@ -688,11 +694,10 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
         if (!Array.isArray(hosts)) {
           errors.push(`install.hosts must be an array`);
         } else {
-          const knownHosts = new Set(['claude', 'codex', 'opencode']);
           for (const h of hosts as unknown[]) {
-            if (typeof h !== 'string' || !knownHosts.has(h)) {
+            if (typeof h !== 'string' || !KNOWN_HOSTS.has(h)) {
               errors.push(
-                `install.hosts entry "${String(h)}" must be one of: ${Array.from(knownHosts).join(', ')}`,
+                `install.hosts entry "${String(h)}" must be one of: ${Array.from(KNOWN_HOSTS).join(', ')}`,
               );
             }
           }

@@ -51,6 +51,7 @@ export {
   DeclarativeDeniedError,
   findLocalExtension,
   loadExtensionManifest,
+  SCOPES,
 } from './install.js';
 export type { InstallDescriptor, DeclarativeInstallResult } from './install.js';
 

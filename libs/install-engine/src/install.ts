@@ -24,6 +24,7 @@ import { verifyIntegrity } from './verify-integrity.js';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type Scope = 'org' | 'user' | 'project' | 'local';
+export const SCOPES: Scope[] = ['org', 'user', 'project', 'local'];
 export type InstallMode = 'default' | 'frozen' | 'update';
 
 export interface InstallEntry {
