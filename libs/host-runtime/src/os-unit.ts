@@ -115,9 +115,29 @@ export interface OsUnitSpec {
 }
 
 
-/** The reverse-DNS-style label for a (scope, id) unit. */
+/**
+ * The reverse-DNS-style label for a (scope, id) unit.
+ *
+ * BL-263: when the data root is overridden (`SOX_ECOSYSTEM_HOME` — sandboxes,
+ * probes, e2e), the label is namespaced with a hash of that root. The launchd
+ * domain is GLOBAL — a sandbox redirects unit FILES but not the registration
+ * namespace — so a sandboxed `service enable` using the production label
+ * squats it in the real domain: launchd KeepAlive-respawned one such leaked
+ * probe unit 4141 times and blocked every legitimate enable/unload of
+ * `com.sox.user.memory-server` (the BL-203 ownership guard rightly refused to
+ * touch it). Distinct data roots are distinct service universes; their labels
+ * must never collide with production's.
+ */
 export function osUnitLabel(scope: string, id: string): string {
-  return `com.sox.${scope}.${id}`;
+  return osUnitLabelFor(scope, id, process.env['SOX_ECOSYSTEM_HOME']);
+}
+
+/** Pure form of {@link osUnitLabel}: pass the data-root override explicitly. */
+export function osUnitLabelFor(scope: string, id: string, dataRootOverride: string | undefined): string {
+  const base = `com.sox.${scope}.${id}`;
+  if (dataRootOverride === undefined || dataRootOverride === '') return base;
+  const tag = createHash('sha256').update(dataRootOverride).digest('hex').slice(0, 8);
+  return `${base}.sbx-${tag}`;
 }
 
 /**

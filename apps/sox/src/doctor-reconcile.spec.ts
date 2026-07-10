@@ -27,10 +27,16 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { osUnitLabelFor } from '@adhd/sox-host-runtime';
 
 const CLI_MAIN = path.resolve(__dirname, '../../../dist/apps/sox/main.js');
 
 let home: string;
+
+// BL-263: the CLI runs with SOX_ECOSYSTEM_HOME=home, so its labels carry the
+// sandbox namespace suffix — compute expected names the same way.
+const tickLabel = () => osUnitLabelFor('user', 'doctor-tick', home);
+const sysdName = (ext: string) => `sox-${tickLabel().replace(/^com\.sox\./, '').replace(/\./g, '-')}.${ext}`;
 let unitDir: string;
 let storeDir: string;
 
@@ -97,11 +103,11 @@ describe('soxe doctor --install-tick / --remove-tick (Slice 4 scheduling)', () =
     const r = runCli(['doctor', '--install-tick', ...TICK_ARGS]);
     expect(r.code).toBe(0);
 
-    const unitPath = path.join(unitDir, 'com.sox.user.doctor-tick.plist');
+    const unitPath = path.join(unitDir, `${tickLabel()}.plist`);
     expect(fs.existsSync(unitPath)).toBe(true);
     const plist = fs.readFileSync(unitPath, 'utf8');
     expect(plist).toContain('sox-os-unit content-hash:');
-    expect(plist).toContain('<string>com.sox.user.doctor-tick</string>');
+    expect(plist).toContain(`<string>${tickLabel()}</string>`);
     expect(plist).toContain('<string>doctor</string>');
     expect(plist).toContain('<string>--reconcile</string>');
     expect(plist).toContain('<key>StartInterval</key>');
@@ -116,7 +122,7 @@ describe('soxe doctor --install-tick / --remove-tick (Slice 4 scheduling)', () =
   it('--interval overrides the default and is ownership-tracked under doctor-tick', () => {
     const r = runCli(['doctor', '--install-tick', '--interval', '60', ...TICK_ARGS]);
     expect(r.code).toBe(0);
-    const plist = fs.readFileSync(path.join(unitDir, 'com.sox.user.doctor-tick.plist'), 'utf8');
+    const plist = fs.readFileSync(path.join(unitDir, `${tickLabel()}.plist`), 'utf8');
     expect(plist).toContain('<integer>60</integer>');
 
     const own = JSON.parse(fs.readFileSync(path.join(home, 'ownership.json'), 'utf8')) as {
@@ -126,26 +132,26 @@ describe('soxe doctor --install-tick / --remove-tick (Slice 4 scheduling)', () =
     expect(rec).toBeDefined();
     const osUnit = rec!.entries.find((e) => e.kind === 'os-unit');
     expect(osUnit).toBeDefined();
-    expect(osUnit!.label).toBe('com.sox.user.doctor-tick');
+    expect(osUnit!.label).toBe(tickLabel());
     expect(osUnit!.appliedHash).toMatch(/^[0-9a-f]{16}$/);
   });
 
   it('systemd seam: renders the paired content-addressed .timer unit', () => {
     const r = runCli(['doctor', '--install-tick', '--supervisor', 'systemd', '--allow-volatile-node', '--dry-run']);
     expect(r.code).toBe(0);
-    const svc = path.join(unitDir, 'sox-user-doctor-tick.service');
-    const timer = path.join(unitDir, 'sox-user-doctor-tick.timer');
+    const svc = path.join(unitDir, sysdName('service'));
+    const timer = path.join(unitDir, sysdName('timer'));
     expect(fs.existsSync(svc)).toBe(true);
     expect(fs.existsSync(timer)).toBe(true);
     const timerText = fs.readFileSync(timer, 'utf8');
     expect(timerText).toContain('OnUnitActiveSec=300');
-    expect(timerText).toContain('Unit=sox-user-doctor-tick.service');
+    expect(timerText).toContain(`Unit=${sysdName('service')}`);
     expect(timerText).toContain('sox-os-unit content-hash:');
   });
 
   it('--remove-tick removes the unit file and clears the ownership entry', () => {
     runCli(['doctor', '--install-tick', ...TICK_ARGS]);
-    const unitPath = path.join(unitDir, 'com.sox.user.doctor-tick.plist');
+    const unitPath = path.join(unitDir, `${tickLabel()}.plist`);
     expect(fs.existsSync(unitPath)).toBe(true);
 
     const r = runCli(['doctor', '--remove-tick', '--supervisor', 'launchd']);

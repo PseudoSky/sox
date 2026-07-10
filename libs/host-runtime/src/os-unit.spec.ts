@@ -31,6 +31,7 @@ import {
   isScheduledOsUnit,
   isScheduledOsUnitContent,
   osUnitLabel,
+  osUnitLabelFor,
   readUnitMeta,
   resolveUnitNodePath,
   unitContentHash,
@@ -122,6 +123,27 @@ describe('deriveOsUnitSpec + label', () => {
     expect(spec.keepAlive).toBe(true); // singleton:true
     expect(spec.throttleIntervalSec).toBeGreaterThanOrEqual(10);
     expect(osUnitLabel('project', 'tokenguard')).toBe('com.sox.project.tokenguard');
+  });
+
+  it('BL-263: a sandboxed data root namespaces the label — a probe can never squat the production label', () => {
+    const production = osUnitLabelFor('user', 'memory-server', undefined);
+    expect(production).toBe('com.sox.user.memory-server');
+    // Any SOX_ECOSYSTEM_HOME override → suffixed label, deterministic per root.
+    const sandboxed = osUnitLabelFor('user', 'memory-server', '/tmp/soxe-probe3.XKSOoK/dataroot');
+    expect(sandboxed).not.toBe(production);
+    expect(sandboxed).toMatch(/^com\.sox\.user\.memory-server\.sbx-[0-9a-f]{8}$/);
+    expect(osUnitLabelFor('user', 'memory-server', '/tmp/soxe-probe3.XKSOoK/dataroot')).toBe(sandboxed);
+    // Distinct roots → distinct universes.
+    expect(osUnitLabelFor('user', 'memory-server', '/tmp/other-root')).not.toBe(sandboxed);
+    // osUnitLabel reads the override from the environment.
+    const prev = process.env['SOX_ECOSYSTEM_HOME'];
+    try {
+      process.env['SOX_ECOSYSTEM_HOME'] = '/tmp/soxe-probe3.XKSOoK/dataroot';
+      expect(osUnitLabel('user', 'memory-server')).toBe(sandboxed);
+    } finally {
+      if (prev === undefined) delete process.env['SOX_ECOSYSTEM_HOME'];
+      else process.env['SOX_ECOSYSTEM_HOME'] = prev;
+    }
   });
 
   it('keepAlive is false when the manifest is not a singleton', () => {

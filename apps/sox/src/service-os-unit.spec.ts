@@ -25,6 +25,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { osUnitLabelFor } from '@adhd/sox-host-runtime';
 
 // dist/apps/sox/main.js is what bin/soxe loads (rewrite-paths makes it runnable).
 const CLI_MAIN = path.resolve(__dirname, '../../../dist/apps/sox/main.js');
@@ -32,6 +33,10 @@ const CLI_MAIN = path.resolve(__dirname, '../../../dist/apps/sox/main.js');
 let home: string;
 let unitDir: string;
 let storeDir: string;
+
+// BL-263: the CLI runs with SOX_ECOSYSTEM_HOME=home, so its labels carry the
+// sandbox namespace suffix — compute the expected label the same way.
+const label = () => osUnitLabelFor('user', 'test-daemon', home);
 
 function runCli(args: string[]): { code: number; stdout: string; stderr: string } {
   const r = spawnSync(process.execPath, [CLI_MAIN, ...args], {
@@ -97,12 +102,12 @@ describe('soxe service — OS-unit control surface (Slice 2)', () => {
     const r = runCli(['service', 'enable', 'test-daemon', '-s', 'user', '--supervisor', 'launchd', '--allow-volatile-node', '--dry-run']);
     expect(r.code).toBe(0);
 
-    const unitPath = path.join(unitDir, 'com.sox.user.test-daemon.plist');
+    const unitPath = path.join(unitDir, `${label()}.plist`);
     expect(fs.existsSync(unitPath)).toBe(true);
     const plist = fs.readFileSync(unitPath, 'utf8');
     expect(plist).toContain('<?xml version="1.0"');
     expect(plist).toContain('sox-os-unit content-hash:');
-    expect(plist).toContain('<string>com.sox.user.test-daemon</string>');
+    expect(plist).toContain(`<string>${label()}</string>`);
     expect(plist).toContain(path.join(storeDir, 'dist', 'index.js'));
     // dry-run wrote the unit but did NOT load it
     expect(r.stdout).toContain('--dry-run');
@@ -122,7 +127,7 @@ describe('soxe service — OS-unit control surface (Slice 2)', () => {
     expect(rec).toBeDefined();
     const osUnit = rec!.entries.find((e) => e.kind === 'os-unit');
     expect(osUnit).toBeDefined();
-    expect(osUnit!.label).toBe('com.sox.user.test-daemon');
+    expect(osUnit!.label).toBe(label());
     expect(osUnit!.supervisor).toBe('launchd');
     expect(osUnit!.appliedHash).toMatch(/^[0-9a-f]{16}$/);
   });
@@ -134,14 +139,14 @@ describe('soxe service — OS-unit control surface (Slice 2)', () => {
     const rows = JSON.parse(r.stdout) as Array<{ id: string; label: string; supervisor: string }>;
     const row = rows.find((x) => x.id === 'test-daemon');
     expect(row).toBeDefined();
-    expect(row!.label).toBe('com.sox.user.test-daemon');
+    expect(row!.label).toBe(label());
   });
 
   it('status reconciles owner/loaded for the unit', () => {
     runCli(['service', 'enable', 'test-daemon', '-s', 'user', '--supervisor', 'launchd', '--allow-volatile-node', '--dry-run']);
     const r = runCli(['service', 'status', 'test-daemon', '-s', 'user', '--supervisor', 'launchd']);
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain('com.sox.user.test-daemon');
+    expect(r.stdout).toContain(label());
     expect(r.stdout).toContain('unit file:');
     expect(r.stdout).toContain('loaded:');
     expect(r.stdout).toContain('owner:');
@@ -156,7 +161,7 @@ describe('soxe service — OS-unit control surface (Slice 2)', () => {
 
   it('disable removes the unit file and clears the ownership entry', () => {
     runCli(['service', 'enable', 'test-daemon', '-s', 'user', '--supervisor', 'launchd', '--allow-volatile-node', '--dry-run']);
-    const unitPath = path.join(unitDir, 'com.sox.user.test-daemon.plist');
+    const unitPath = path.join(unitDir, `${label()}.plist`);
     expect(fs.existsSync(unitPath)).toBe(true);
 
     const r = runCli(['service', 'disable', 'test-daemon', '-s', 'user', '--supervisor', 'launchd']);

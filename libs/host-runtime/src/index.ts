@@ -201,6 +201,7 @@ export type {
 export {
   detectOsSupervisor,
   osUnitLabel,
+  osUnitLabelFor,
   deriveOsUnitSpec,
   findNonVolatileNode,
   resolveUnitNodePath,
