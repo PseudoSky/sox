@@ -4,9 +4,9 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
-## Current status — 2026-07-09 (regenerated mechanically; see BL-224)
+## Current status — 2026-07-10 (regenerated mechanically; see BL-224)
 
-**Total open: 18.** This block is DERIVED from the `**...**` status marker on each
+**Total open: 20.** This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
 five already-RESOLVED items as top priorities, including `BL-62` as the "#1 only PROVEN live bug"
@@ -20,8 +20,8 @@ node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.
 | Priority | Open items |
 |---|---|
 | **HIGH** | `BL-62`, `BL-96`, `BL-97`, `BL-225`, `BL-254` |
-| **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-257`, `BL-259` |
-| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258` |
+| **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-257`, `BL-259`, `BL-260` |
+| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261` |
 | **FEATURE** | `BL-163`, `BL-215` |
 
 ### Where to start
@@ -4848,7 +4848,7 @@ By file: `scripts/build-routing-index.ts` (21), `scripts/validate-manifests.ts` 
 
 **Fix:** repair all 24. **Do not** weaken `strict`, `noUncheckedIndexedAccess`, or `exactOptionalPropertyTypes` to silence them; that is explicitly forbidden by ⛔ AGENT CONSTRAINT. Then the whole-repo gate `npx nx run-many -t build,lint,test,typecheck` goes green for the first time.
 
-### BL-258 — `memory-refactor` plan is content-complete but its state machine reads 0/15 pending — **Open (LOW, plan-hygiene)** (2026-07-10)
+### BL-258 — `memory-refactor` plan is content-complete but its state machine reads 0/15 pending — **Open (LOW, plan-hygiene)** — CONFIRMED by the 2026-07-10 project-status full scan: verdict COMPLETE-BUT-STATE-STALE. All 10 work-state deliverables reality-present (p0-baseline, p1-layout, w2a/b/c, w2d-{ingest,analysis,hybrid-search}, w2e-domain-rewire, p4-routing — evidence: 6 data libs build + memory-core imports all six + memory-enrich dissolved as planned). Reconciliation is NOT a blind fast-forward: the 5 audit states are blocked on BL-260 (criteria↔check wiring) and a live-server reality proof for audit-final. Route: plan-builder fixes BL-260, then plan-orchestrator drives `state-transition.js --complete` per state with guards actually running
 
 `docs/plan/memory-refactor/state.json`: `current_state: p0-baseline`, `transition_log: []`, 1 in_progress + 14 pending. But every deliverable shipped: the six extracted data libs all build, and `memory-core` imports all six (the `w2e-domain-rewire` goal). The plan's work landed via the P1 substrate commits without the state machine ever being driven.
 
@@ -4865,6 +4865,41 @@ Reproduced 2026-07-10: a full smoke run reported `11 passed, 2 failed` (`memory-
 This is NOT a code defect in the enable path (the plist is created correctly, node + entrypoint resolve; only the `launchctl bootstrap` load collides). It's a test-harness isolation gap, same family as the e2e orphan-scan false-positive from live dev-box state. It makes the mandatory pre-merge smoke gate **non-idempotent** — green on a clean domain, red on a second run — which will intermittently block merges for reasons unrelated to the change under test.
 
 **Fix:** smoke-test teardown must `launchctl bootout gui/$UID/com.sox.project.<ext>` for every unit it enabled (in a `finally`), and/or use a unique per-run label prefix so runs cannot collide. Must never touch `com.sox.user.*` (real services). Note also that the disposable-scope enable writes a plist to the operator's real `~/Library/LaunchAgents/` — verify that is intended and cleaned up.
+
+### BL-260 — `memory-refactor` audit states cannot be completed: acceptance criteria are not wired to checks — **Open (MEDIUM, plan defect)** (2026-07-10)
+
+Found by the `workflow:project-status` full-corpus scan (BL-258) and independently confirmed. `memory-refactor`'s five `audit-*` states declare acceptance criteria `[audit-<phase>.N]` in `docs/plan/memory-refactor/contexts/audit-*.md`, but those IDs have **no matching check** in `docs/plan/memory-refactor/scripts/audit_memrefactor.py`. `gap-check.js` reports **39** such criteria↔check mismatches. Spot-verified: `[audit-final.2]` and `[audit-final.3]` → 0 matches in the audit script (`[audit-final.1]` → 1).
+
+Consequence for BL-258 reconciliation: the plan's ten **work** states are reality-present and can be driven to done, but the **audit** gates will FAIL if run as-is (their criteria resolve to no check), so `memory-refactor` cannot be legitimately walked to `done` without first fixing this wiring. `audit-final` additionally requires a **live memory-server reality proof** (real write→recall, cosine sanity, degrade-to-bm25) — currently un-runnable because the live memory-server is down (BL-235 dist-wipe collateral).
+
+**Fix:** plan-builder (update mode) wires each `[audit-*.N]` criterion to a concrete check ID in `audit_memrefactor.py`. Do NOT "reconcile" by stamping the audit states done — that reintroduces the vacuous-gate pattern (BL-250/252/254) at the plan level. The gates exist to be run.
+
+### BL-261 — `tokenguard-service` dag.json: two nodes fail `compile-task.js` (unterminated string) — **Open (LOW, plan defect)** (2026-07-10)
+
+`docs/plan/tokenguard-service/dag.json` parses as valid JSON as a whole, but `compile-task.js` fails on node `http-transport` (`Unterminated string in JSON at position 62575`) and node `audit-framework` (position 62099) — an embedded work-order/criteria string that is malformed when the compiler re-parses it. Both nodes exist (3142 / 576 bytes).
+
+`tokenguard-service` is `state: done` (13/13, founder-confirmed DoD), so nothing consumes these nodes today. But they would **break `plan-orchestrator` at dispatch time** if the plan were ever re-run. Real content defect, low urgency. **Fix:** plan-builder repairs the two nodes' embedded strings.
+
+### BL-262 — memory-server shipped WITHOUT the BL-238 fastembed child host: live embeddings dead for 5h; every bundle hand-lists its sidecars — **RESOLVED (2026-07-10)** (2026-07-10)
+
+The BL-238 fix moved fastembed into a forked child process (`fastembedProcessHost.ts`) and rerank/verify into a shared worker (`sharedOnnxWorker.ts`), but the memory bundles' `--worker` lists in `project.json` were never updated — `memory-server/dist/` shipped only `embedWorker.js`, and memory-cli/memory-flush shipped **no** sidecars at all while referencing all three. At runtime the fork hit a nonexistent path → `shared fastembed process exited with code 1` → `embed.state: uninitialized`, a 64-episode embed backlog from 15:43, `heals_failed: 64`, and **query-path `memory_recall` erroring** on the live server. Tests never caught it: vitest runs from source, where the `../dist` fallback finds `embedding-provider/dist/` — the shipped bundle is the only place the file is missing (same tests-bypass-artifact disease as BL-248).
+
+Root disease (owner-flagged): every consumer hand-inlines the sidecar list; forgetting one ships a silently broken artifact. Fixed structurally in `tools/bundle-extension.cjs`:
+1. **Declare once** — the owning package declares `sox.sidecars` + `sox.sidecarExternals` in its own `package.json` (done for `embedding-provider`: all three sidecars, `fastembed`/`onnxruntime-node` external).
+2. **Auto-discover** — after the main build, the esbuild metafile identifies every inlined package; all their declared sidecars are bundled automatically. All `--worker` flags removed from memory-server/cli/flush `project.json` (flag retained for exotic cases; explicit `--worker` wins over discovery).
+3. **Verify before commit** — `verifySidecarReferences()` scans every emitted file for `__dirname`-sibling `.js` references and FAILS the build (previous artifact intact, BL-235 staging) naming any missing sibling — so even an UNDECLARED future sidecar cannot ship silently.
+
+Red→green: with `sox.sidecars` stripped, `nx build memory-cli` fails naming `fastembedProcessHost.js` + `embedWorker.js` (seen red 2026-07-10); restored, all five esbuild projects build with the three sidecars auto-emitted. Discovery skips `dist/`-copied package.json files (atomic-tsc copies them; sidecar paths are source-relative). Live-verified: backend restarted on the fixed artifact → `embed.state: real`, backlog 78→0 (`heals_applied: 78, heals_failed: 0`, `embeds_completed: 100/0 failed`), query recall returns vec-ranked results. Gates: smoke 13/0 + exports guard, memory-server 132/132, memory-core 408/408, sox 82/82, host-runtime 249/249, all cache-busted.
+
+### BL-263 — a sandboxed probe SQUATTED the production launchd label `com.sox.user.memory-server`: 4141 KeepAlive respawns, blocked every real enable/unload — **RESOLVED (2026-07-10)** (2026-07-10)
+
+Found while live-verifying BL-262: `launchctl print gui/501/com.sox.user.memory-server` showed the label loaded from `/private/tmp/soxe-probe3.XKSOoK/home/Library/LaunchAgents/...` — a 2026-07-09 ad-hoc probe sandbox (no repo script creates `soxe-probe*`; five such dirs exist in /tmp). `SOX_ECOSYSTEM_HOME`/`SOX_OS_UNIT_DIR` redirect FILES, but the launchd registration namespace is GLOBAL — so the sandboxed `service enable` registered the PRODUCTION label. launchd KeepAlive had respawned it **4141 times** (a stdio server with no stdin exits instantly → respawn loop), it ran the real repo dist with probe env, and it blocked every legitimate operation on that label — `soxe upgrade`'s unload got `code 1` from the BL-203 ownership guard (correctly refusing to bootout a unit loaded from a foreign path). This is plausibly why the user's morning `service enable` misbehaved.
+
+Fixed twice over:
+1. **Incident**: `launchctl bootout gui/$UID/com.sox.user.memory-server` removed the squatter after path-evidence confirmation; real proxy backend untouched; domain verified clean (only `com.sox.user.doctor-tick` remains, owned path).
+2. **Class kill**: `osUnitLabel()` (`libs/host-runtime/src/os-unit.ts`) now namespaces the label when `SOX_ECOSYSTEM_HOME` is set — `com.sox.<scope>.<id>.sbx-<8-hex sha256(data-root)>`. Distinct data roots are distinct service universes; a sandboxed run can never register, collide with, or bootout a production label. New pure `osUnitLabelFor()` exported; specs (`service-os-unit`, `doctor-reconcile`) compute expected labels the same way.
+
+Red→green: `os-unit.spec.ts` `BL-263` test fails with the suffix disabled (seen red 2026-07-10), passes restored. Side effect on BL-259: smoke/e2e sandboxes now use per-run unique labels, so the cross-run `Bootstrap failed: 5` collision cannot recur — but leaked sandbox registrations (now identifiable by `.sbx-` suffix) still want a teardown `bootout`; BL-259's teardown fix stands.
 
 ### BL-232 — `concurrency-harness.spec.ts:121` asserts a hardcoded wall-clock p99 latency budget — **RESOLVED (2026-07-10)** — the wall-clock p99 latency check is now informational-only (logs a `[wp6/BL-232]` warning), never gating; the gating invariant is the lock-error count the test is actually named for. Red→green documented at `concurrency-harness.spec.ts:259`. `nx test memory-core` 408 pass
 
@@ -5005,3 +5040,167 @@ Key conclusions applicable to sox-ecosystem:
   Dynamic paths do not. Hardcoded relative paths like `../../../../dist/...` are fragile and
   banned by the module-resolution standard.
 - Test asset resolution from the BUILT bundle, not from source — vitest resolves paths differently.
+
+### Performance research (2026-07-10)
+
+Generalized research on lazy vs eager factory initialization, per-work vs all-at-once resource
+loading, cold-start budget conventions, and shared worker lifecycle patterns. Findings in memory
+under topic `tool-catalog` with tags `pattern:recommended` — episodes `01KX6X33Q4WD8SY02QW2TV5KJ8`
+through `01KX6X45J1HXPKRY53ZY8P40RG`.
+
+Key conclusions applicable to sox-ecosystem:
+
+**PERF-1 (Lazy vs eager factory initialization)**
+- Default rule: **"no await in factory before return"** — factories return a lazy handle, eager
+  warmup is opt-in via `{ warmUp: true }` or a separate `.warmUp()` method.
+- The canonical JS pattern stores the promise, not the value:
+  `const lazyInit = (fn) => { let p; return () => p ||= fn() }`
+- **Action:** remove eager await from `createFastembedProvider` (awaits warmup embed before
+  returning) and `createClaimVerifier` (awaits warmUp before returning). Both should return
+  immediately and let the first operation trigger initialization. The `getSharedOnnxWorker()`
+  pattern is already the correct implementation.
+
+**PERF-2 (Per-work vs all-at-once resource loading)**
+- `Promise.all` over heterogeneous resource sets at construction is a code smell. Load per unit
+  of work: load the TypeScript grammar when chunking TypeScript, not all 4 grammars on startup.
+- **Action:** convert sox-ingest's `Promise.all` grammar loading to a `GrammarRegistry` pattern
+  with demand-driven loading + caching after first use. The sox-ingest eagerly loads C# grammar
+  (3.8 MB) to summarize markdown — this is the canonical example of wrong granularity.
+
+**PERF-3 (Cold-start budgets)**
+- Per-package-class classification: interactive (<100ms), sub-second (<1s), background (<10s),
+  deferred (>10s). The CI gate is A/B comparison against main branch baseline, not absolute
+  thresholds (which vary by CI runner).
+- **Action:** Classify each package. Add benchmark files per class
+  (`tools/bench/cold-start/<pkg>.bench.ts`). CI gate: fail if >20% degradation or >2x class budget.
+
+**PERF-4 (Shared worker lifecycle)**
+- Three-phase model: lazy spawn (on first use via async singleton) → warm (model loaded, worker
+  signals ready) → persist (kept alive for subsequent calls).
+- The `getSharedOnnxWorker()` singleton is the correct single spawn point. Eager spawn in
+  factories (createClaimVerifier's warmUp, createFastembedProvider's warmup) violates the
+  convention — two factories racing to spawn the singleton, cost paid at construction even if
+  never used.
+- **Action:** Remove eager await from createClaimVerifier's constructor. Let the first `verify()`
+  call trigger the lazy spawn. The singleton already ensures concurrent factories share one spawn.
+
+### Resource/architecture research (2026-07-10)
+
+Generalized research on native runtime topology, resource lifecycle hygiene, unified asset cache,
+sync/async surface signposting, module-level side-effect conventions, and cross-package invariant
+enforcement. Findings in memory under topic `tool-catalog` with tags `pattern:recommended` —
+episodes `01KX6XT3QNH7M33XQD248P97C1` through `01KX6XVKJ8N76HYEWRGNW7MCN9`.
+
+Key conclusions applicable to sox-ecosystem:
+
+**RES-1 (Native runtime singleton topology)**
+- Process topology follows the native addon's constraint: singleton-constrained (onnxruntime-node)
+  → separate OS child processes; context-aware (N-API addons) → worker_threads.
+- ONE singleton-ownership registry per runtime (`getSharedOnnxWorker()`) — no factory may spawn
+  its own worker. Enforce with "no new Worker outside the owner" lint rule.
+- Two onnxruntime majors (1.21.0 via fastembed, 1.24.3 via transformers) force separate OS
+  processes — this is correct and unavoidable.
+- **Actions:** Codify the singleton ownership registry in a shared lib. Add a lint rule
+  preventing `new Worker`/`fork()` outside the designated owner modules.
+
+**RES-2 (Resource lifecycle hygiene — .unref())**
+- `.unref()` is mandatory on every Worker, `setInterval`, and `child_process` that is not expected
+  to keep the process alive. Called once, immediately after construction. Double-calling is
+  harmless (idempotent per Node docs).
+- **Actions:** Fix synckit worker (no `.unref()` — keeps process alive). Add lint rule: every
+  handle-creating call must be followed by `.unref()` within the same scope unless the handle is
+  explicitly managed by a teardown registry.
+
+**RES-3 (Unified asset cache)**
+- Single `$SOX_CACHE_DIR` env var overrides all ML/asset cache directories. Each runtime gets
+  a subdirectory (`$SOX_CACHE_DIR/{fastembed, huggingface, tree-sitter}`). Defaults to
+  `~/.cache/sox` via XDG convention (outside git tree).
+- Sets `$HF_HOME` and other runtime-specific vars relative to this root. Single CI override
+  point, single cleanup, "no artifacts in the tree" honored.
+- **Actions:** Standardize `SOX_EMBED_CACHE_DIR` → `$SOX_CACHE_DIR/fastembed`. Wire
+  `$HF_HOME = join($SOX_CACHE_DIR, 'huggingface')`. Update the cache-doc in the environment
+  configuration spec.
+
+**DX-1/CODE-2/CODE-3 (Sync/async surface signposting, error taxonomy, I/O-free constructors)**
+- `/core` = sync-safe entrypoint. Document in every package README "Entrypoints" section.
+- One shared `RequestResponseChannel<T>` primitive for all worker IPC — no more hand-rolled
+  per-runtime clients.
+- Every native operation must throw a typed error (`TaskQueueSystemError` pattern). 4 of 5
+  storage packages currently throw raw native errors — fix them.
+- No constructor/factory may perform I/O. The graph-store pattern (takes an open handle) and
+  blob-store pattern (`await import()` inside `open()`, not in constructor) are the standards.
+
+**CODE-1/CODE-5 (TLA ban, dynamic import, dead code)**
+- Module-scope TLA is banned in publishable packages (ESLint `no-top-level-await` rule). Push
+  module-scope `await` behind explicit `init()` or a dynamic import at the call site.
+- Static top-level import of native/heavy packages is banned — use `await import()` at the
+  call site (blob-store pattern).
+- Dead source files excluded from build must be deleted or explicitly marked; their doc comments
+  must not describe active mechanisms (embedWorker.ts violation).
+- **Actions:** Enable the TLA lint rule. Codemod sox-ingest's module-scope `await Parser.init()`
+  to a lazy-init pattern. Audit and delete/prune dead excluded files.
+
+**SPEC-2/SPEC-4/SPEC-5 (Conformance tests, generator templates, platform tags)**
+- Every cross-package runtime constraint gets a named conformance test in a shared suite
+  (`tools/conformance/`). Affected packages declare which invariants they support.
+- Generator templates scaffold new packages with the correct lint rules, singleton registry path,
+  error taxonomy, and exports map template baked in.
+- `platform:node` tag is required for any package with native dependencies — enforced by lint
+  rule tied to dependency graph analysis.
+- **Actions:** Create `tools/conformance/` with tests for onnx-singleton, cjs-boundary, no-tla,
+  and native-unref invariants. Update `@adhd/workspace-codegen-nx` generator templates.
+
+### Unifying questions research (2026-07-10)
+
+Generalized research on the 6 cross-cutting questions that emerged from ALL prior research.
+Findings in memory under topic `tool-catalog` with tags `pattern:recommended` — episodes
+`01KX6YATFR9K88ZJK08PE3ZXVX` through `01KX6YCGZT017VZWQEZRAKZX7C`.
+
+Key conclusions:
+
+**UQ-1 (Invisible contracts — safe path discoverability)**
+- Three-layer convention: (1) Naming — `/core` subpath, `createLazy` vs `createWarm`; (2) Types —
+  `Promise<Provider>` signals async init, `LazyProvider` defers; (3) Compile-time — lint rules
+  prevent dangerous paths from compiling.
+- The API Design Test: "Would an AI agent call this correctly without reading docs?"
+- **Action:** Document `/core` entrypoints in every README. Add type-level markers to provider
+  factories. Add lint rules that make dangerous patterns fail at compile time.
+
+**UQ-2 (Shared primitive vs hand-rolled — Rule of Three)**
+- Two copies: keep duplication (premature abstraction is riskier). Three copies: extract.
+  For infra code (IPC plumbing, DB init), threshold drops — well-understood abstractions can
+  be shared earlier. The 3-Service Rule decision matrix: serviceCount >= 3, changeFrequency
+  != often, businessLogic == false, apiStability != unstable.
+- **Action:** The worker IPC client is at 2 instances (threshold not yet crossed for infra code
+  since the abstraction is well-understood). The SQLite open helper is at 2 instances (below).
+  Create the shared CJS boundary verification script NOW — before the second package invents
+  its own.
+
+**UQ-3 (Lint rules — strict default with opt-out)**
+- Error-by-default for all rules in the shared ESLint config. Three-level opt-out: repo-level
+  (documented in eslint config), per-package (with justification comment), line-level
+  (eslint-disable with reason). All overrides are auditable via grep. "eslint-disable without
+  a reason is a code smell."
+- **Action:** Write the lint rules for: no-top-level-await, no-static-native-import,
+  no-constructor-io, require-unref, no-worker-outside-owner.
+
+**UQ-4 (Generator-bake vs retrofit economics)**
+- Two-track: (1) New packages get conventions baked into generator templates (zero adoption
+  cost). (2) Existing packages via Boy Scout Rule — every file you touch gets left conforming.
+  Mechanical violations (imports, .unref()): codemod immediately. Architectural violations
+  (package split, init redesign): per-edit incremental progress. P0 (known bugs): fix now.
+  P1 (active violations): Boy Scout. P2 (messy but working): codemod when available.
+
+**UQ-5 (Prose-to-test pipeline)**
+- At invariant DISCOVERY — not at fix time, not at close time — write the conformance test.
+  May be marked skip until the fix lands, but EXISTS from discovery. The test is named,
+  self-describing, and reusable across affected packages via a shared assertion factory.
+- **Action:** Create `tools/conformance/` with assertion factories for: onnx-singleton,
+  cjs-boundary, no-tla, native-unref, constructor-purity.
+
+**UQ-6 (Package classification tags)**
+- Minimum tag set: `platform:node` (native deps) or `platform:shared` (pure JS),
+  `invariant:<name>` per runtime constraint, `native-addon:<name>` per native dep,
+  `init:async` or `init:lazy`. Auto-detected from dependency graph and enforced by CI.
+- **Action:** Add `verify:tags` CI gate. Tag all 5 storage packages. Enable impact analysis
+  ("which packages are affected by an onnxruntime version bump?").
