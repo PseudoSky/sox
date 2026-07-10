@@ -63,6 +63,14 @@ A model switch is a **re-embed migration** — call `reembed()` explicitly to mi
 spaces; never hot-swap a different model into the same vec0 table. `reembed()` does NOT delete source
 vectors — the caller decides when the old space is safe to drop.
 
+> **[BL-256] `memory-core` no longer uses this multi-space API.** As of the BL-92 fix, `memory-core`'s
+> own `reembedStore()` migrates the single fixed-schema `vec_node` table in place — it does **not** call
+> `vector-store`'s `ensureSpace()` / generic `vec_<model>` / `_vector_spaces` machinery. That generic
+> multi-space abstraction is retained for **external consumers** (`agent-source` imports `VectorBackend`
+> and `VectorSpace` as a `file:` dep). So: the re-embed-migration story above is the *vector-store
+> library's* contract for external callers, not the path memory-recall takes. Do not "fix" memory-core
+> to route through `ensureSpace` on the strength of this section.
+
 ### 4. `INSERT OR REPLACE` on vec0 tables
 
 sqlite-vec `vec0` virtual tables do NOT implement OR-REPLACE conflict resolution. `INSERT OR REPLACE`
@@ -81,6 +89,38 @@ Data packages that depend on `better-sqlite3` (vector-store, graph-store) extern
 do not bundle the native `.node` binding. Callers must `pnpm rebuild better-sqlite3` on a new
 Node ABI. The root `postinstall` script does this.
 
+### 7. Top-level await in a data package breaks every CJS consumer — BL-231
+
+`memory-core` compiles to **CommonJS** (`tsconfig.lib.json` → `"module": "CommonJS"`), and
+`tools/bundle-extension.cjs` bundles **every** sox extension with esbuild `format: 'cjs'`. Neither
+can consume an ESM module containing a top-level `await`:
+
+```
+Error [ERR_REQUIRE_ASYNC_MODULE]: require() cannot be used on an ESM graph with top-level await.
+Top-level await is currently not supported with the "cjs" output format
+```
+
+A data package that adds a module-scope `await` — however legitimate as ESM — therefore breaks
+`nx build`, `nx test`, and `scripts/smoke-test.mjs` for everything downstream of `memory-core`.
+This happened: `c01ddeb` added `await Parser.init()` to `ingest/src/ast-chunker.ts` and silently
+zeroed two test suites and the repo-wide smoke gate for two days.
+
+**Rule:** if a data package needs async initialization, keep it out of the module graph any CJS
+consumer imports. `ingest` does this with a `./core` subpath export (TLA-free, CJS-safe) alongside an
+ESM-only root that carries the async-init surface. See `libs/data/ingest/ingest/AGENTS.md`.
+Guard: `node tools/test-bl231-cjs-boundary.mjs`.
+
+`exports` maps alone are not enough — TypeScript's legacy `node10` `moduleResolution`, which CJS
+consumers are pinned to, cannot read them. A `typesVersions` block is required for the subpath's
+types to resolve.
+
+### 8. `nx build` deletes `dist/` before it knows the rebuild succeeds — BL-235
+
+Several `build` targets begin with `rm -rf .../dist`. A build against non-compiling source therefore
+**destroys a working artifact and cannot restore it**. A merely diagnostic `npx nx build <pkg>` is a
+destructive operation, and doubly so in a shared checkout with concurrent agents. Before running a
+build purely to see an error, know that you may not get the old artifact back.
+
 ## Package listing
 
 | Package | Path | Published | Key concern |
@@ -90,7 +130,7 @@ Node ABI. The root `postinstall` script does this.
 | `graph-store` | `libs/data/graph/graph-store/` | PUBLIC | bi-temporal graph; FTS5; supersession chains |
 | `hybrid-search` | `libs/data/search/hybrid-search/` | PUBLIC | vec+BM25 fusion; degrade-to-text; field boosting |
 | `analysis` | `libs/data/analysis/analysis/` | PUBLIC | clustering; near-dup; importance; graph algorithms |
-| `ingest` | `libs/data/ingest/ingest/` | PRIVATE | content-hash; extractive summary; deterministic tags |
+| `ingest` | `libs/data/ingest/ingest/` | PUBLIC | content-hash; extractive summary; deterministic tags |
 
 For detailed concerns and invariants per package, see the auto-generated
 [`libs/data/INDEX.md`](INDEX.md) or the machine-readable [`docs/routing/map.json`](../docs/routing/map.json).

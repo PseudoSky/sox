@@ -22,6 +22,24 @@
  *   R2: one .db per scope; idempotent init.
  *   R5: dedup via content_hash; never deletes existing episodes.
  *   R6: no OS advisory lock (host holds singleton via lifecycle block).
+ *
+ * BL-62 (project_path attribution): the E1 precedence chain (provenance.ts: explicit
+ * arg > SOX_CONFIG_PROJECT_PATH env > cwd-git) can only ever reflect the CALLER's real
+ * project when the caller passes `project_path` explicitly. For a long-lived server
+ * process (the shared proxy backend, or any stdio shim whose spawn cwd differs from
+ * the caller's LIVE working directory at call time — e.g. an agent that `cd`s mid-
+ * session) the env/cwd tiers observe the SERVER's fixed process cwd, not the caller's
+ * — Node's `process.cwd()` cannot change per-request within one process. Distinguishing
+ * "the server's frozen cwd" from "the caller's actual current project" per-call requires
+ * either an explicit `project_path` arg (works today) or the MCP `roots` capability
+ * (NOT negotiated by this server's transport — libs/mcp-runtime's serve() has no roots
+ * support; wiring it touches libs/mcp-runtime + the shim/backend protocol, outside this
+ * module's scope and NOT invented here per the BL-62 hard gate — see BACKLOG.md).
+ * `memoryWritePhaseA` therefore stamps `WriteResult.enrichment.project_path_source`
+ * ('explicit' | 'inferred') on every write so a caller/operator can detect low-
+ * confidence attribution instead of it being silently, permanently unrecoverable — a
+ * flagged episode can be corrected in place via `memory_update`'s `project_path` field
+ * (BL-221, see update.ts).
  */
 
 import { enrichOnWrite } from './enrich.js';
@@ -32,13 +50,26 @@ import type { PendingEmbed } from './embed-pipeline.js';
 // Normalization (trim + toLowerCase) is applied here before the hash call to preserve
 // byte-identical dedup fingerprints with all pre-existing store rows. See parity spec:
 // libs/memory-core/src/ingest-parity.spec.ts
-import { hexSha256 } from '@adhd/sox-ingest';
+import { hexSha256 } from '@adhd/sox-ingest/core';
 import Database from 'better-sqlite3';
 import { performance } from 'node:perf_hooks';
 import { monotonicFactory } from 'ulid';
 import { embed, vecToJson } from './embed.js';
 
 const ulid = monotonicFactory();
+
+/**
+ * BL-62 / BL-233: 'explicit' iff a non-empty `project_path` argument was
+ * supplied on THIS call — the only tier of the E1 precedence chain
+ * (provenance.ts: override > env > cwd-git) guaranteed to reflect the
+ * CALLER's real project rather than the server process's fixed cwd/env.
+ * Shared by the single-item (`memoryWritePhaseA`) and batch
+ * (`memoryWriteBatch`/`memoryWriteBatchPhaseA`) write paths so the two never
+ * drift (BL-233 parity fix).
+ */
+function projectPathSourceFor(project_path: string | undefined): 'explicit' | 'inferred' {
+  return project_path !== undefined && project_path.length > 0 ? 'explicit' : 'inferred';
+}
 
 export interface WriteParams {
   content: string;
@@ -72,6 +103,24 @@ export interface WriteResult {
   enrichment?: {
     topic: string | null;
     project_path: string | null;
+    /**
+     * BL-62 (safe, in-scope mitigation — see libs/memory-core/src/write.ts comment
+     * above `memoryWritePhaseA`): whether `project_path` came from an EXPLICIT
+     * caller-supplied argument ('explicit') or from provenance.ts's env/cwd
+     * fallback chain ('inferred'). 'inferred' does NOT mean wrong — most callers
+     * run with a stable, correct cwd — but for a shared/long-lived server process
+     * (proxy backend, or a shim whose spawn cwd differs from the caller's live
+     * working directory) the fallback chain cannot distinguish "the server's
+     * fixed process cwd" from "the caller's actual current project" (that
+     * distinction requires either an explicit `project_path` arg or the MCP
+     * `roots` capability, which this server does not currently negotiate — see
+     * the BL-62 write-up in BACKLOG.md). Surfacing the source lets a caller (or
+     * an operator auditing `memory_stats`/`memory_recall` output) detect
+     * low-confidence attribution and correct it via `memory_update`'s
+     * `project_path` field (BL-221) instead of the episode being silently,
+     * permanently mis-filed.
+     */
+    project_path_source: 'explicit' | 'inferred';
     summary: string | null;
     tags: string[];
     near_dup: { existing_uid: string; cosine_sim: number } | null;
@@ -312,12 +361,17 @@ export function memoryWritePhaseA(
     importance, // pass caller-supplied importance so enrichOnWrite respects it
   });
 
+  // BL-62: see WriteResult.enrichment.project_path_source doc comment above for
+  // the full rationale and the BL-221 remediation path.
+  const projectPathSource = projectPathSourceFor(project_path);
+
   return {
     result: {
       episode_uid: episodeUid,
       enrichment: {
         topic: enrichResult.topic,
         project_path: enrichResult.project_path,
+        project_path_source: projectPathSource,
         summary: enrichResult.summary,
         tags: enrichResult.tags,
         near_dup: enrichResult.near_dup
@@ -392,7 +446,18 @@ export interface InvalidateResult {
 
 export type InvalidateError =
   | { code: 'E_NOT_FOUND'; message: string }
-  | { code: 'E_SCOPE_RO'; message: string };
+  | { code: 'E_SCOPE_RO'; message: string }
+  /**
+   * BL-247: raised when `replacement_uid` is supplied but does not resolve to
+   * a LIVE node (nonexistent uid OR a uid that has itself already been
+   * invalidated). Previously this was a silent no-op — invalidation
+   * "succeeded" with `ok:true` and the caller-requested SUPERSEDES edge was
+   * simply never written, with no signal anything was wrong. A caller that
+   * explicitly asked for a supersession link and didn't get one needs to
+   * know, so this now fails the whole call (the claim is NOT invalidated
+   * either — see the BL-247 write-up above `memoryInvalidate`).
+   */
+  | { code: 'E_REPLACEMENT_NOT_FOUND'; message: string };
 
 // ── Batch write (WP-3, BL-125) ──────────────────────────────────────────────
 
@@ -416,6 +481,14 @@ export interface BatchItem {
 export interface BatchItemOk {
   ok: true;
   episode_uid: string;
+  /**
+   * BL-233 (parity with single-item WriteResult.enrichment.project_path_source):
+   * 'explicit' iff THIS item supplied a non-empty `project_path`; 'inferred'
+   * otherwise (the shim/env/cwd fallback chain — see the BL-62 doc comment
+   * above `memoryWritePhaseA`). Computed identically to the single-item path
+   * so batch writers can detect low-confidence attribution per item.
+   */
+  project_path_source: 'explicit' | 'inferred';
 }
 
 export interface BatchItemError {
@@ -455,7 +528,11 @@ export async function memoryWriteBatch(
     try {
       const r = await memoryWrite(db, item);
       if ('episode_uid' in r) {
-        results.push({ ok: true, episode_uid: r.episode_uid });
+        results.push({
+          ok: true,
+          episode_uid: r.episode_uid,
+          project_path_source: projectPathSourceFor(item.project_path),
+        });
       } else {
         // WriteError: E_DEDUP, E_SCOPE_RO, etc.
         results.push({
@@ -513,7 +590,11 @@ export function memoryWriteBatchPhaseA(
           ...('existing_uid' in r ? { details: { existing_uid: r.existing_uid } as Record<string, unknown> } : {}),
         });
       } else {
-        results.push({ ok: true, episode_uid: r.result.episode_uid });
+        results.push({
+          ok: true,
+          episode_uid: r.result.episode_uid,
+          project_path_source: projectPathSourceFor(item.project_path),
+        });
         if (r.pending !== null) pendings.push(r.pending);
       }
     } catch (err) {
@@ -559,24 +640,39 @@ export function memoryInvalidate(
     return { code: 'E_NOT_FOUND', message: `Claim not found or already invalidated: ${claim_uid}` };
   }
 
+  // BL-247: resolve (and validate) replacement_uid BEFORE mutating anything.
+  // A caller who supplies `replacement_uid` is explicitly asking for a
+  // SUPERSEDES edge — a mistyped, nonexistent, or already-invalidated uid
+  // must fail the WHOLE call (including the claim's own invalidation)
+  // rather than silently dropping the edge and reporting ok:true. Validating
+  // up front — outside the transaction, before any write — guarantees this
+  // is all-or-nothing: no half-invalidated claim left behind on a bad uid.
+  let replacementRowid: number | undefined;
+  if (replacement_uid) {
+    const replacement = db
+      .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ? AND t_invalid IS NULL`)
+      .get(replacement_uid);
+    if (!replacement) {
+      return {
+        code: 'E_REPLACEMENT_NOT_FOUND',
+        message: `replacement_uid not found or already invalidated: ${replacement_uid}`,
+      };
+    }
+    replacementRowid = replacement.rowid;
+  }
+
   let supersedgesEdgeUid: string | undefined;
 
   db.transaction(() => {
     // Close t_invalid (R5: never delete, invalidate instead)
     db.prepare(`UPDATE node SET t_invalid = ? WHERE uid = ?`).run(tTransition, claim_uid);
 
-    if (replacement_uid) {
-      const replacement = db
-        .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ? AND t_invalid IS NULL`)
-        .get(replacement_uid);
-
-      if (replacement) {
-        supersedgesEdgeUid = `sup-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        db.prepare(
-          `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
-           VALUES (?, ?, 'SUPERSEDES', 'user_asserted', ?, ?)`,
-        ).run(replacement.rowid, claim.rowid, tTransition, JSON.stringify({ reason }));
-      }
+    if (replacementRowid !== undefined) {
+      supersedgesEdgeUid = `sup-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      db.prepare(
+        `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
+         VALUES (?, ?, 'SUPERSEDES', 'user_asserted', ?, ?)`,
+      ).run(replacementRowid, claim.rowid, tTransition, JSON.stringify({ reason }));
     }
   })();
 

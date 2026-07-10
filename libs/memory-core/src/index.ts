@@ -325,7 +325,7 @@ export type { BackupStoreOptions, BackupStoreResult, BackupStoreError } from './
 // ── Canonical ingestion primitives (S11 / BL-165 — re-exported from @adhd/sox-ingest) ─
 // Consumers (e.g. memory-server) that need chunking or hashing should import these
 // from memory-core rather than depending directly on @adhd/sox-ingest.
-export { hexSha256, splitIntoChunksSentence } from '@adhd/sox-ingest';
+export { hexSha256, splitIntoChunksSentence } from '@adhd/sox-ingest/core';
 
 // ── Convenience wrappers (guard C5: write(dbPath, params) + recall(dbPath, params)) ──
 

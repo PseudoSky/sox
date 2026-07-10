@@ -1,4 +1,4 @@
-import { ingest } from '@adhd/sox-ingest';
+import { ingest } from '@adhd/sox-ingest/core';
 
 export function extractiveSummary(content: string): string {
   if (content.length < 100) return content;

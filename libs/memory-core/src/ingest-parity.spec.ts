@@ -46,7 +46,7 @@
 
 import { describe, it, expect } from 'vitest';
 import * as crypto from 'node:crypto';
-import { hexSha256, splitIntoChunksSentence } from '@adhd/sox-ingest';
+import { hexSha256, splitIntoChunksSentence } from '@adhd/sox-ingest/core';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // GOLDEN FIXTURES — incumbent implementations captured before S11 consolidation.
