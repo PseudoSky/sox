@@ -20,8 +20,10 @@ import type {
   MilestoneStatus,
   OperationDag,
   OperationSnapshot,
+  OperationConflict,
   DispatchUnit,
   DispatchExecutionMode,
+  DispatchKind,
   OpenQuestion,
   PairwiseOverlapMap,
   SnapshotOptimization,
@@ -29,6 +31,7 @@ import type {
   ShapeSnapshot,
   ShapeOpDag,
   ShapeOpSnapshot,
+  ShapeOpType,
   ProviderConfig,
   KindFamily,
   ModelTier,
@@ -264,12 +267,71 @@ function dispatchesForMilestone(
 
 /**
  * Find dispatch log entries that include a specific op id.
+ *
+ * BL-209: `entry.kind` was never checked, so callers could not distinguish a
+ * genuine execution attempt from a guard-verification entry that happens to
+ * mention the op id in its `operations[]` list. `kind` is now optionally
+ * filterable — pass a `DispatchKind` to restrict the match to entries of
+ * that kind (e.g. `"guard"` to count real guard runs).
  */
 function dispatchesForOp(
   log: DagJson["dispatch_log"],
-  opId: string
+  opId: string,
+  kind?: DispatchKind
 ): DagJson["dispatch_log"] {
-  return log.filter((entry) => entry.operations.includes(opId));
+  return log.filter(
+    (entry) =>
+      entry.operations.includes(opId) &&
+      (kind === undefined || entry.kind === kind)
+  );
+}
+
+// ---------------------------------------------------------------------------
+// BL-209 — attempt_count confidence
+// ---------------------------------------------------------------------------
+
+/** The full `DispatchKind` union, used to detect untyped dispatch_log entries. */
+const KNOWN_DISPATCH_KINDS: ReadonlySet<string> = new Set<DispatchKind>([
+  "planning",
+  "execution",
+  "guard",
+  "replan",
+  "correction",
+]);
+
+/**
+ * A dispatch_log entry is "typed" when its `kind` is present at runtime and
+ * matches a known `DispatchKind` value. `DagJson["dispatch_log"][number].kind`
+ * is typed as required in TypeScript, but dag.json is parsed from disk JSON
+ * with no runtime schema enforcement of that requirement — pre-convention
+ * plans authored before `kind` existed may have entries where the field is
+ * `undefined` at runtime despite the compile-time type guarantee.
+ */
+function isTypedDispatchEntry(entry: DagJson["dispatch_log"][number]): boolean {
+  const kind: unknown = (entry as unknown as Record<string, unknown>)["kind"];
+  return typeof kind === "string" && KNOWN_DISPATCH_KINDS.has(kind);
+}
+
+/**
+ * BL-209 — confidence tag for attempt_count. Disambiguates
+ * `attempt_count === 0` meaning "verified never ran" (every entry in the
+ * plan's dispatch_log carries a trustworthy typed `kind`, so filtering by
+ * kind and finding no match is real evidence of "never ran") from
+ * `attempt_count === 0` meaning "pre-convention plan, unknown" (at least one
+ * entry in the log has a missing/unrecognized `kind` at runtime, so the
+ * kind-based filtering this function's callers rely on cannot be trusted for
+ * *any* op in this plan — a `0` count might just mean the matching entry
+ * predates the `kind` convention and was never correctly attributable by
+ * kind in the first place).
+ *
+ * An empty dispatch_log is vacuously "verified" — there is nothing untyped
+ * to distrust.
+ */
+function attemptCountConfidence(
+  log: DagJson["dispatch_log"]
+): "verified" | "unknown" {
+  if (log.length === 0) return "verified";
+  return log.every(isTypedDispatchEntry) ? "verified" : "unknown";
 }
 
 // ---------------------------------------------------------------------------
@@ -415,8 +477,19 @@ function buildOperationSnapshot(
   milestoneEffort: EffortTier | null,
   log: DagJson["dispatch_log"]
 ): OperationSnapshot {
+  // Broad match set (any kind) — used for dispatch_ids traceability and
+  // guard_result lookup, both of which are legitimately kind-agnostic (a
+  // guard result can be reported on any dispatch entry that ran the op).
   const dispatches = dispatchesForOp(log, op.id);
   const dispatch_ids = dispatches.map((d) => d.id);
+
+  // BL-209: attempt_count for an authored op counts genuine execution
+  // attempts only — dispatch_log entries whose kind is anything OTHER than
+  // "guard" (a guard-kind entry only verifies artifacts; it is never itself
+  // an attempt to execute this op, even when the op's id appears in that
+  // entry's operations[] list).
+  const executionAttempts = dispatches.filter((d) => d.kind !== "guard");
+  const attempt_count_confidence = attemptCountConfidence(log);
 
   // guard_result: latest non-null guard result for this op
   let guard_result: "pass" | "fail" | null = null;
@@ -447,9 +520,9 @@ function buildOperationSnapshot(
     ki_estimate,
     shape: enrichedShape,
     dispatch_ids,
-    // attempt_count: count of dispatch_log entries that include this op (each retry
-    // adds a new log entry), so dispatch_ids.length is the real attempt count.
-    attempt_count: dispatch_ids.length,
+    // BL-209: see executionAttempts/attempt_count_confidence above.
+    attempt_count: executionAttempts.length,
+    attempt_count_confidence,
     guard_result,
     guard_output,
     guard_ran_at,
@@ -457,23 +530,20 @@ function buildOperationSnapshot(
     // file+symbol target. The gitnexus integration milestone (adhd-build dag) is the
     // planned data source. Until then the field is an empty array.
     blast_radius: [],
-    // STUB(BL-105): conflict — requires a same-wave op-key collision scan comparing
-    // each op's (file, action, symbol) triple against all other ops assigned to the
-    // same wave in the current optimize() pass. The wave assignment happens AFTER
-    // buildOperationSnapshot() runs (in snapshot()), so this data is not available
-    // here without a two-pass approach. Stub as "no conflict detected".
+    // BL-105: conflict — computed by computeConflicts() as a post-pass over
+    // allOpsSnapshot once every operation's milestone wave assignment is
+    // known (see snapshot() Step 5.5). Placeholder here; overwritten below.
     conflict: {
       detected: false,
       competing_op: null,
       op_key: null,
       resolution: null,
     },
-    // STUB(BL-105): tokens_actual per-op — requires prorating the milestone's
-    // tokens_actual across ops by their ki_estimate share. The milestone-level
-    // tokens_actual is computed later in snapshot() after all ops are built, so it is
-    // not available at this call site without restructuring. Proration formula:
+    // BL-105: tokens_actual per-op — placeholder here; the milestone-level
+    // tokens_actual total isn't known yet at this call site (computed later
+    // in the same snapshot() milestone loop). Overwritten by
+    // prorateTokensActual() immediately after that total is derived:
     //   op.tokens_actual = milestone.tokens_actual × (op.ki_estimate / sum(ki_estimates))
-    // Implement when the snapshot() restructuring milestone lands.
     tokens_actual: null,
   };
 }
@@ -537,8 +607,16 @@ function synthesizeGuardOp(
   log: DagJson["dispatch_log"]
 ): OperationSnapshot {
   const guardId = `${slug}.guard`;
+  // Broad match set (any kind) — dispatch_ids/guard_result stay kind-agnostic.
   const dispatches = dispatchesForOp(log, guardId);
   const dispatch_ids = dispatches.map((d) => d.id);
+
+  // BL-209: attempt_count for the synthesized guard op must reflect genuine
+  // guard-run attempts — dispatch_log entries whose kind is specifically
+  // "guard" (dag/types.ts:87). Entries of another kind (e.g. "execution")
+  // that happen to list the guard id in operations[] are not guard attempts.
+  const guardAttempts = dispatchesForOp(log, guardId, "guard");
+  const attempt_count_confidence = attemptCountConfidence(log);
 
   let guard_result: "pass" | "fail" | null = null;
   let guard_output: string | null = null;
@@ -577,23 +655,253 @@ function synthesizeGuardOp(
     status: "pending",
     shape: null,
     dispatch_ids,
-    // attempt_count for synthesized guard ops: same as authored ops — count of
-    // dispatch_log entries that include this guard op id.
-    attempt_count: dispatch_ids.length,
+    // BL-209: see guardAttempts/attempt_count_confidence above.
+    attempt_count: guardAttempts.length,
+    attempt_count_confidence,
     guard_result,
     guard_output,
     guard_ran_at,
-    // STUB(BL-105): blast_radius — guard ops have no file/symbol target; the field
-    // is always [] for synthesized guard ops by definition.
+    // blast_radius: guard ops have no file/symbol target; the field is always
+    // [] for synthesized guard ops by definition (not a BL-105 stub — this is
+    // the correct permanent value, no external data source needed).
     blast_radius: [],
-    // STUB(BL-105): conflict — guard ops are never in conflict with each other (one
-    // per milestone by construction). Stub as "no conflict detected".
+    // conflict: guard ops are never in conflict with each other (one per
+    // milestone by construction, excluded from computeConflicts()'s
+    // candidate set via `action !== "guard"`). Not a BL-105 stub — correct
+    // permanent value.
     conflict: { detected: false, competing_op: null, op_key: null, resolution: null },
-    // STUB(BL-105): tokens_actual — guard ops are tool-calls; they do not consume
-    // model tokens. Real value is always 0; null used here for schema consistency
-    // with authored ops until the proration pass is implemented.
-    tokens_actual: null,
+    // tokens_actual: guard ops are tool-calls; they never consume model
+    // tokens. Real value is always 0 (not a BL-105 stub — resolved now that
+    // prorateTokensActual() exists to own the authored-op proration).
+    tokens_actual: 0,
   };
+}
+
+// ---------------------------------------------------------------------------
+// BL-105 — conflict: same-wave op_key collision scan
+// ---------------------------------------------------------------------------
+
+/**
+ * op-category grouping for `ShapeOpType`, used to build the
+ * `op_key = target::op-category` collision key described in
+ * PROPOSED_DAG_STRUCTURE.md:730 ("op_key = target::op-category, e.g.
+ * 'options::param-by-name'") and MIGRATE.md:84-85 ("group ops by
+ * (target, op-category) — collision = potential conflict").
+ *
+ * No complete category table is defined anywhere in the plan docs — only one
+ * worked example. This is an authored taxonomy (not extracted from an
+ * authoritative source) that groups every `ShapeOpType` member by the kind of
+ * schema element it mutates (param, field, generic, extends clause, key,
+ * array item, var, section, table, column, index, entry, version, checksum,
+ * return type), so that two ops mutating the *same* element in the *same*
+ * aspect collide, while ops touching orthogonal aspects of the same symbol do
+ * not. Exhaustive over `ShapeOpType` — TypeScript enforces every member has
+ * an entry. Flag for owner review if the grouping doesn't match intent.
+ */
+const SHAPE_OP_CATEGORY: Record<ShapeOpType, string> = {
+  "add-param": "param-by-name",
+  "remove-param": "param-by-name",
+  "rename-param": "param-by-name",
+  "retype-param": "param-by-name",
+  "change-param-optional": "param-by-name",
+  "reorder-params": "param-by-position",
+  "change-return": "return",
+  "add-field": "field",
+  "remove-field": "field",
+  "rename-field": "field",
+  "retype-field": "field",
+  "change-field-optional": "field",
+  "add-generic": "generic",
+  "remove-generic": "generic",
+  "constrain-generic": "generic",
+  "add-extends": "extends",
+  "remove-extends": "extends",
+  "set-key": "key",
+  "remove-key": "key",
+  "rename-key": "key",
+  "add-array-item": "array-item",
+  "remove-array-item": "array-item",
+  "add-var": "var",
+  "remove-var": "var",
+  "rename-var": "var",
+  "change-default": "var",
+  "add-section": "section",
+  "remove-section": "section",
+  "rename-section": "section",
+  "update-section": "section",
+  "add-table": "table",
+  "remove-table": "table",
+  "add-column": "column",
+  "remove-column": "column",
+  "rename-column": "column",
+  "retype-column": "column",
+  "change-nullable": "column",
+  "add-index": "index",
+  "remove-index": "index",
+  "add-entry": "entry",
+  "remove-entry": "entry",
+  "update-entry": "entry",
+  "bump-version": "version",
+  "update-checksum": "checksum",
+};
+
+/** Extract the shape-op array from a snapshot-enriched Shape, if it has one. */
+function getShapeOps(shape: ShapeSnapshot | null): ShapeOpSnapshot[] {
+  if (shape !== null && "ops" in shape && Array.isArray(shape.ops)) {
+    return shape.ops;
+  }
+  return [];
+}
+
+/** Resolution severity ordering used to keep the "worst" candidate conflict. */
+const RESOLUTION_SEVERITY: Record<string, number> = {
+  "safe-merge": 0,
+  warning: 1,
+  error: 2,
+};
+
+function isWorseConflict(
+  candidate: OperationConflict,
+  current: OperationConflict | null
+): boolean {
+  if (current === null) return true;
+  const cs = candidate.resolution !== null ? (RESOLUTION_SEVERITY[candidate.resolution] ?? -1) : -1;
+  const ks = current.resolution !== null ? (RESOLUTION_SEVERITY[current.resolution] ?? -1) : -1;
+  return cs > ks;
+}
+
+/**
+ * Classify a pair of operations that share the same (file, symbol) and wave
+ * for op_key collisions between their shape.ops[] entries.
+ *
+ * Rules (MIGRATE.md:85, PROPOSED_DAG_STRUCTURE.md:731-736):
+ *   - same op_key + same op type + same `to`  → "safe-merge" (dedupe)
+ *   - same op_key + (different op type or `to`) → "error"
+ *
+ * The fourth documented rule — "one breaking + one non-breaking, same
+ * target → warning" — requires `breaking`/`severity`, which are themselves a
+ * STUB(BL-105) pending ts-morph AST-diff integration (see enrichShape()).
+ * This classifier never produces "warning" as a result; it degrades safely
+ * to "error" for any op_key collision it cannot further refine, which is the
+ * conservative (never silently-safe) outcome.
+ *
+ * Returns the worst (highest-severity) collision found between the two ops,
+ * or null if none of their shape-op targets collide.
+ */
+function classifyPair(
+  opA: OperationSnapshot,
+  opB: OperationSnapshot
+): OperationConflict | null {
+  let best: OperationConflict | null = null;
+
+  for (const sopA of getShapeOps(opA.shape)) {
+    if (sopA.target === null) continue;
+    const keyA = `${sopA.target}::${SHAPE_OP_CATEGORY[sopA.op]}`;
+
+    for (const sopB of getShapeOps(opB.shape)) {
+      if (sopB.target === null) continue;
+      const keyB = `${sopB.target}::${SHAPE_OP_CATEGORY[sopB.op]}`;
+      if (keyA !== keyB) continue;
+
+      const sameChange = sopA.op === sopB.op && sopA.to === sopB.to;
+      const candidate: OperationConflict = {
+        detected: true,
+        competing_op: opB.id,
+        op_key: keyA,
+        resolution: sameChange ? "safe-merge" : "error",
+      };
+      if (isWorseConflict(candidate, best)) best = candidate;
+    }
+  }
+
+  return best;
+}
+
+/**
+ * BL-105 — same-wave op_key collision scan.
+ *
+ * Runs as a post-pass over the fully-built operation array once every
+ * operation's milestone wave assignment is known (wave is milestone-level
+ * data from Step 3 of snapshot(); buildOperationSnapshot() only ever sees
+ * one milestone's ops at a time, so it cannot see across-milestone,
+ * same-wave collisions on its own).
+ *
+ * Scope (MIGRATE.md:395,412): two ops can only conflict if they target the
+ * same (file, symbol) — file/symbol pre-scope the comparison; op_key
+ * (target::op-category) is the fine-grained key within that scope. Guard
+ * ops and ops with no (file, symbol) or no shape.ops[] never participate.
+ *
+ * Mutates `.conflict` on each candidate op in place.
+ */
+function computeConflicts(
+  ops: OperationSnapshot[],
+  waves: Map<string, number>
+): void {
+  const candidates = ops.filter(
+    (op) =>
+      op.action !== "guard" &&
+      op.file !== null &&
+      op.symbol !== null &&
+      getShapeOps(op.shape).length > 0
+  );
+
+  for (const opA of candidates) {
+    const waveA = waves.get(opA.milestone) ?? 0;
+    let best: OperationConflict | null = null;
+
+    for (const opB of candidates) {
+      if (opB.id === opA.id) continue;
+      const waveB = waves.get(opB.milestone) ?? 0;
+      if (waveA !== waveB) continue;
+      if (opA.file !== opB.file || opA.symbol !== opB.symbol) continue;
+
+      const candidate = classifyPair(opA, opB);
+      if (candidate !== null && isWorseConflict(candidate, best)) {
+        best = candidate;
+      }
+    }
+
+    opA.conflict =
+      best ?? { detected: false, competing_op: null, op_key: null, resolution: null };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BL-105 — tokens_actual: per-op ki_estimate-share proration
+// ---------------------------------------------------------------------------
+
+/**
+ * Prorate a milestone's actual token total across its ops by ki_estimate
+ * share, per the formula documented in buildOperationSnapshot():
+ *   op.tokens_actual = milestone.tokens_actual × (op.ki_estimate / sum(ki_estimates))
+ *
+ * Returns null for every op (honest "we don't know the split", not a
+ * fabricated even split) when:
+ *   - the milestone has no completed dispatches yet (tokens_actual is null), or
+ *   - every op's ki_estimate is 0 (the proportional split is undefined at 0/0 —
+ *     e.g. a milestone made entirely of tool-call ops).
+ *
+ * Mutates `.tokens_actual` on each op in place.
+ */
+function prorateTokensActual(
+  ops: OperationSnapshot[],
+  milestoneTokensActual: number | null
+): void {
+  if (milestoneTokensActual === null) {
+    for (const op of ops) op.tokens_actual = null;
+    return;
+  }
+
+  const kiSum = ops.reduce((acc, op) => acc + (op.ki_estimate ?? 0), 0);
+  if (kiSum <= 0) {
+    for (const op of ops) op.tokens_actual = null;
+    return;
+  }
+
+  for (const op of ops) {
+    const share = (op.ki_estimate ?? 0) / kiSum;
+    op.tokens_actual = Math.round(milestoneTokensActual * share);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -878,6 +1186,11 @@ export function snapshot(dag: DagJson): DagSnapshot {
       }, 0);
     }
 
+    // BL-105: prorate the milestone's tokens_actual total across its ops by
+    // ki_estimate share, now that both enrichedOps (with ki_estimate) and the
+    // milestone-level tokens_actual total are available.
+    prorateTokensActual(enrichedOps, tokens_actual);
+
     // Synthesize guard op
     const guardOp = synthesizeGuardOp(
       slug,
@@ -918,6 +1231,12 @@ export function snapshot(dag: DagJson): DagSnapshot {
       tokens_actual,
     };
   }
+
+  // BL-105: same-wave op_key collision scan — must run after the loop above
+  // so every operation's milestone wave assignment is known (see
+  // computeConflicts() JSDoc for why this can't run inside
+  // buildOperationSnapshot()).
+  computeConflicts(allOpsSnapshot, waves);
 
   // Step 6 — pairwise_overlap
   const pairwiseOverlap = buildPairwiseOverlap(opsByMilestone, milestoneStatuses);

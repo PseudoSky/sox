@@ -374,10 +374,28 @@ export interface OperationSnapshot extends OperationDag {
   /** derived — ids of all dispatch_log entries whose operations[] includes this op id. */
   dispatch_ids: string[];
   /**
-   * derived — count(dispatch_ids); > 1 indicates retries.
-   * TODO: stubbed as 0 — op-level dispatch log scan is not yet implemented.
+   * derived — count of dispatch_log entries that represent a genuine execution
+   * attempt of this op: for the synthesized guard op, entries with
+   * `kind === "guard"`; for authored ops, entries with `kind !== "guard"`
+   * (a guard-kind entry only verifies artifacts — it is never itself an
+   * attempt to execute an authored op, even if that op's id appears in the
+   * entry's `operations[]` list). `> 1` indicates retries.
    */
   attempt_count: number;
+  /**
+   * derived (BL-209) — confidence tag for `attempt_count`, disambiguating
+   * `attempt_count === 0` meaning "verified never ran" from `attempt_count
+   * === 0` meaning "pre-convention plan, unknown". `"verified"` when every
+   * entry in `dispatch_log` carries a `kind` value drawn from the
+   * `DispatchKind` union (the typed-kind convention was followed for this
+   * whole plan, so the absence of a matching entry is trustworthy).
+   * `"unknown"` when at least one `dispatch_log` entry has a missing or
+   * unrecognized `kind` at runtime (parsed-from-disk JSON is not
+   * compile-time-checked; older/pre-convention dag.json files may omit
+   * `kind` even though the type marks it required) — in that case a `0`
+   * count is not reliable evidence the op never ran.
+   */
+  attempt_count_confidence: "verified" | "unknown";
   /** derived — guard_result from latest dispatch result with a non-null guard_result. */
   guard_result: GuardResult | null;
   /** derived — guard_output from the same results entry. */
