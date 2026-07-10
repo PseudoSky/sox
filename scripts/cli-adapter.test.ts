@@ -11,8 +11,10 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import { resolve, join } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 
 const ROOT = resolve(import.meta.dirname ?? process.cwd(), '..');
 const SOX = join(ROOT, 'bin', 'soxe');
@@ -73,6 +75,26 @@ describe('Global options', () => {
 // ── validate ─────────────────────────────────────────────────────────────────
 
 describe('validate verb', () => {
+  // BL-251: `/tmp` is machine-global mutable state, not a fixture this suite owns —
+  // it can (and does, on real machines) contain foreign extension.json files dropped
+  // there by unrelated tools, including invalid ones (e.g. type:"rules"). A test that
+  // shells out to `sox(['validate', '/tmp'])` and asserts status===0 is asserting on
+  // whatever happens to be in the OS's shared scratch dir at run time, not on adapter
+  // behavior. Every case below uses a private mkdtempSync'd directory instead.
+  const tmpDirs: string[] = [];
+
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) {
+      fs.rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  function makeEmptyTmpDir(): string {
+    const dir = fs.mkdtempSync(join(os.tmpdir(), 'cli-adapter-validate-'));
+    tmpDirs.push(dir);
+    return dir;
+  }
+
   it('exits 0 on the clean repo', () => {
     const r = sox(['validate']);
     expect(r.status).toBe(0);
@@ -83,14 +105,27 @@ describe('validate verb', () => {
     expect(r.status).toBe(0);
   });
 
-  it('exits non-zero when given a non-existent path', () => {
-    // validate-manifests.ts exits 0 with "no extensions found" for an empty dir,
-    // but exits non-zero when given a completely bad path that it can't walk.
-    // Here we pass a temp path with no extensions — engine says OK (0), which is
-    // correct behaviour. We just verify the adapter propagates whatever the engine says.
-    const r = sox(['validate', '/tmp']);
-    // The engine exits 0 ("no extensions found") — adapter must propagate 0.
+  it('exits 0 and reports "no extensions found" for an existing empty directory', () => {
+    // This test's actual invariant: the adapter propagates whatever exit code the
+    // engine returns for a walk that finds zero extension.json files (0, "no
+    // extensions found") — it is NOT a claim that any particular real directory
+    // (e.g. /tmp) is extension-free, since that is machine-global mutable state
+    // this suite does not own. Use a private, guaranteed-empty directory instead.
+    const dir = makeEmptyTmpDir();
+    const r = sox(['validate', dir]);
     expect(r.status).toBe(0);
+    expect(r.stdout).toContain('no extensions found');
+  });
+
+  it('exits non-zero (2) for a genuinely non-existent path', () => {
+    // The suite previously had no case actually covering this despite the old
+    // test's name claiming to — cmdValidate treats a path that fails
+    // fs.existsSync() as single-file mode and exits 2 ("file not found").
+    const dir = makeEmptyTmpDir();
+    const missing = join(dir, 'does-not-exist-xyz');
+    const r = sox(['validate', missing]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('file not found');
   });
 });
 

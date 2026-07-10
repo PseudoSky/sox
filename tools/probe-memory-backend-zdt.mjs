@@ -112,7 +112,12 @@ const handle = runFrontShim({
         SOX_PROXY_BACKEND_SOCKET: sock,
         SOX_PROXY_BACKEND_SCHEMA: memSchema,
         SOX_CONFIG_DB_PATH: dbPath,
-        SOX_EMBED_BACKEND: 'hash',
+        // No hash embedding backend exists (removed — see libs/memory-core/src/embed.ts:43,
+        // EmbedBackend = 'auto' | 'real'). This probe does not override HOME, so
+        // resolveConfig()'s default cacheDir (embed.ts:51-60) already resolves to this
+        // machine's real, persistent ~/.cache/sox-memory/models — the bge-base-en-v1.5
+        // ONNX model is loaded from cache, not re-downloaded, on every run.
+        SOX_EMBED_BACKEND: 'real',
       },
       onDiagnostic: (l) => process.stderr.write('[ensure] ' + l + '\\n'),
       readyTimeoutMs: 12000,

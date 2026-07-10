@@ -1,3 +1,10 @@
+> ⚠️ **HISTORICAL — DO NOT FOLLOW. [BL-250]** This document predates the removal of the hash
+> embedding backend. There is no hash backend: `EmbedBackend = 'auto' | 'real'`
+> (`libs/memory-core/src/embed.ts:43`), and `createEmbeddingProvider()` throws `ResolutionError`
+> rather than silently downgrading (`libs/data/CLAUDE.md` §2). Any instruction below to set
+> `SOX_EMBED_BACKEND=hash`, or any claim that a hash fallback exists, is **wrong**. The active
+> model is `bge-base-en-v1.5` (768-dim). `nomic-embed-text-v1.5` is likewise gone.
+
 # Memory System: Implementation Plan
 
 Items: BL-2, BL-3, BL-8, BL-9, BL-10, BL-11, BL-12, BL-13, BL-14, BL-15
@@ -342,7 +349,8 @@ Add a prominent module-level comment to `libs/memory-core/src/index.ts`:
  *   - Use openDb() in a process that never calls embed() with backend='real'.
  *   - Use embed() in a process that never calls openDb() with sqlite-vec loaded.
  *   - Route all writes through the MCP server (separate process, safe by default).
- *   - Use SOX_EMBED_BACKEND=hash to eliminate the ONNX addon entirely.
+ *   - [BL-250 — STALE, DO NOT DO THIS] SOX_EMBED_BACKEND=hash is not a valid value; the hash
+ *     backend was removed. EmbedBackend = 'auto' | 'real' (libs/memory-core/src/embed.ts:43).
  */
 ```
 

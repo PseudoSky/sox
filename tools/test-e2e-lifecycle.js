@@ -1084,73 +1084,94 @@ async function main() {
   // Step 7c: SLICE 1 (docs/spec/service-lifecycle.md) — CROSS-SCOPE SINGLETON.
   //
   // The genuinely-open half of BL-50 (F1/F7): two scopes that resolve the SAME
-  // backing store (db_path) but DIFFERENT sockets must NOT produce two writers.
-  // The pre-Slice-1 socket-only guard missed this — a project scope overriding
-  // sock_path but sharing db_path slipped past and spawned a second daemon.
+  // backing store-resource but DIFFERENT unrelated config must NOT produce two
+  // writers. The pre-Slice-1 socket-only guard missed this class of collision.
   //
-  // Proof: configure user + project to share db_path, differ on sock_path; spawn
-  // a live "scope A" daemon on the memory-daemon entrypoint token; then run the
-  // service-registry start for "scope B" and assert it does NOT spawn a second
-  // process (it records the existing one RUNNING via the §5.2 entrypoint scan /
-  // cross-scope check) and the live daemon SURVIVES (no healthy-daemon reap).
+  // Fixture (BL-181/BL-213): memory-daemon was deleted wholesale (src+dist).
+  // Repointed to tokenguard — a real, currently-built type:"service" extension
+  // (extensions/services/tokenguard) that goes through the SAME run-service.ts /
+  // `.sox/registry.json` code path this guard (main.ts ~L3915, keyed off
+  // serviceRegistry entries) actually drives. tokenguard's config_schema has no
+  // db_path/sock_path (that was memory-daemon's shape); resolveStoreResource's
+  // priority order (libs/host-runtime/src/singleton.ts) falls through db_path →
+  // socket-health → host:port for a plain HTTP service like tokenguard, so the
+  // store-resource anchor here is `port` (kind:'port') instead of `db_path`
+  // (kind:'db') — same invariant (one writer per resolved resource), different
+  // resource kind. Proof: configure user + project to share `port`, differ on
+  // `capture_dir` (the unrelated per-scope override, standing in for the old
+  // sock_path); spawn a live "scope A" service on the tokenguard entrypoint
+  // token; then run the service-registry start for "scope B" and assert it does
+  // NOT spawn a second process (it records the existing one RUNNING via the
+  // §5.2 entrypoint scan / cross-scope check) and the live service SURVIVES (no
+  // healthy-instance reap).
   // ═══════════════════════════════════════════════════════════════════════════
   console.log('\nStep 7c: Slice 1 — cross-scope singleton (one writer per store)');
 
-  const DAEMON_ENTRY = path.join(
-    ROOT, 'extensions', 'bundles', 'sox-memory-bundle', 'members',
-    'memory-daemon', 'dist', 'index.js',
+  const SERVICE_ENTRY = path.join(
+    ROOT, 'extensions', 'services', 'tokenguard', 'dist', 'index.js',
   );
-  if (!fs.existsSync(DAEMON_ENTRY)) {
-    assert(false, `Slice1: memory-daemon dist exists at ${DAEMON_ENTRY} (run nx build memory-daemon)`);
+  if (!fs.existsSync(SERVICE_ENTRY)) {
+    assert(false, `Slice1: tokenguard dist exists at ${SERVICE_ENTRY} (run nx build tokenguard)`);
   } else {
-    // A project root with a service registry.json describing memory-daemon.
+    // A project root with a service registry.json describing tokenguard.
     const SLICE1_ROOT = path.join(TMP_DIR, 'slice1-proj');
     const SLICE1_DATA = path.join(SLICE1_ROOT, '.adhd', 'sox-ecosystem');
-    const SLICE1_STORE = path.join(SLICE1_DATA, 'ext', 'memory-daemon');
+    const SLICE1_STORE = path.join(SLICE1_DATA, 'ext', 'tokenguard');
     fs.mkdirSync(SLICE1_STORE, { recursive: true });
     // Materialize a manifest in the store so the singleton guard can read the
-    // lifecycle + config_schema (db_path is the store-resource anchor).
+    // lifecycle + config_schema (port is the store-resource anchor for a plain
+    // HTTP service with no db_path/socket-health declared).
     fs.copyFileSync(
-      path.join(path.dirname(DAEMON_ENTRY), '..', 'extension.json'),
+      path.join(path.dirname(SERVICE_ENTRY), '..', 'extension.json'),
       path.join(SLICE1_STORE, 'extension.json'),
     );
 
-    const SHARED_DB = path.join(os.homedir(), '.memory', `sox-e2e-slice1-${process.pid}.db`);
-    const PROJECT_SOCK = path.join(TMP_DIR, `slice1-project-${process.pid}.sock`);
+    const SHARED_PORT = String(29000 + (process.pid % 3000));
+    const PROJECT_CAPTURE_DIR = path.join(TMP_DIR, `slice1-project-capture-${process.pid}`);
 
-    // project-scope config: shares db_path, overrides sock_path.
+    // project-scope config: shares port, overrides capture_dir (unrelated).
     fs.writeFileSync(path.join(SLICE1_DATA, 'extensions.json'), JSON.stringify({
-      install: [{ id: 'memory-daemon', version: '^0.1.0' }],
-      config: { 'memory-daemon': { db_path: SHARED_DB, sock_path: PROJECT_SOCK } },
+      install: [{ id: 'tokenguard', version: '^0.1.0' }],
+      config: {
+        tokenguard: {
+          upstream: 'https://sox-e2e-upstream.invalid',
+          port: SHARED_PORT,
+          capture_dir: PROJECT_CAPTURE_DIR,
+        },
+      },
     }, null, 2) + '\n', 'utf8');
     fs.writeFileSync(path.join(SLICE1_DATA, 'extensions.lock'), JSON.stringify({
       version: 1,
-      resolved: { 'memory-daemon@0.1.0': { source: `file://${DAEMON_ENTRY}` } },
+      resolved: { 'tokenguard@0.1.0': { source: `file://${SERVICE_ENTRY}` } },
     }, null, 2) + '\n', 'utf8');
 
     // The service registry the start path reads (<root>/.sox/registry.json).
     const SLICE1_REG_DIR = path.join(SLICE1_ROOT, '.sox');
     fs.mkdirSync(SLICE1_REG_DIR, { recursive: true });
     fs.writeFileSync(path.join(SLICE1_REG_DIR, 'registry.json'), JSON.stringify({
-      'memory-daemon': {
-        id: 'memory-daemon',
+      tokenguard: {
+        id: 'tokenguard',
         command: NODE,
-        args: ['--enable-source-maps', DAEMON_ENTRY],
-        env: {},
+        args: ['--enable-source-maps', SERVICE_ENTRY],
+        env: {
+          SOX_CONFIG_UPSTREAM: 'https://sox-e2e-upstream.invalid',
+          SOX_CONFIG_PORT: SHARED_PORT,
+          SOX_CONFIG_CAPTURE_DIR: PROJECT_CAPTURE_DIR,
+        },
         cwd: SLICE1_STORE,
         status: 'installed',
         storePath: SLICE1_STORE,
       },
     }, null, 2) + '\n', 'utf8');
 
-    // Spawn the live "scope A" daemon on the memory-daemon entrypoint token.
-    const scopeAPid = await spawnOrphan(DAEMON_ENTRY, `slice1-scopeA-${process.pid}`);
-    assert(isAlive(scopeAPid), `Slice1: scope-A daemon spawned + alive (pid=${scopeAPid})`);
+    // Spawn the live "scope A" service on the tokenguard entrypoint token.
+    const scopeAPid = await spawnOrphan(SERVICE_ENTRY, `slice1-scopeA-${process.pid}`);
+    assert(isAlive(scopeAPid), `Slice1: scope-A service spawned + alive (pid=${scopeAPid})`);
 
-    const baselineDaemons = pidsMatching('memory-daemon/dist/index.js').length;
+    const baselineServices = pidsMatching('tokenguard/dist/index.js').length;
 
     // Run the service-registry start for the project scope. The singleton guard
-    // must see the live entrypoint-token process and NOT spawn a second daemon.
+    // must see the live entrypoint-token process and NOT spawn a second instance.
     const slice1Start = runSox([
       'start', '-s', 'project', `--root=${SLICE1_ROOT}`,
       `--runtime-file=${path.join(SLICE1_DATA, 'runtime.json')}`,
@@ -1164,31 +1185,31 @@ async function main() {
       /skipping spawn/.test(slice1Start.stdout);
     assert(guardFired,
       `Slice1: start refused the second spawn via the §5.2 singleton guard\n` +
-      `        stdout: ${slice1Start.stdout.split('\n').filter((l) => /memory-daemon/.test(l)).join(' | ')}`);
+      `        stdout: ${slice1Start.stdout.split('\n').filter((l) => /tokenguard/.test(l)).join(' | ')}`);
 
     await sleep(400);
-    // REALITY: exactly ONE memory-daemon process on this entrypoint (no second writer).
-    const afterDaemons = pidsMatching('memory-daemon/dist/index.js').length;
-    assert(afterDaemons === baselineDaemons,
-      `Slice1: NO second daemon spawned — one writer per store (before=${baselineDaemons}, after=${afterDaemons})`);
+    // REALITY: exactly ONE tokenguard process on this entrypoint (no second writer).
+    const afterServices = pidsMatching('tokenguard/dist/index.js').length;
+    assert(afterServices === baselineServices,
+      `Slice1: NO second service spawned — one writer per store (before=${baselineServices}, after=${afterServices})`);
 
-    // The healthy scope-A daemon must SURVIVE (we never reap a single live daemon).
+    // The healthy scope-A service must SURVIVE (we never reap a single live instance).
     assert(isAlive(scopeAPid),
-      `Slice1: the live scope-A daemon (pid=${scopeAPid}) SURVIVED — no healthy-daemon reap`);
+      `Slice1: the live scope-A service (pid=${scopeAPid}) SURVIVED — no healthy-instance reap`);
 
     // The project runtime.json records the shared instance as RUNNING.
     try {
       const r = JSON.parse(fs.readFileSync(path.join(SLICE1_DATA, 'runtime.json'), 'utf8'));
-      const e = (r.entries ?? []).find((/** @type {any} */ x) => x.id === 'memory-daemon');
+      const e = (r.entries ?? []).find((/** @type {any} */ x) => x.id === 'tokenguard');
       assert(e?.running === true,
-        `Slice1: project runtime.json records memory-daemon RUNNING (shared instance)`);
+        `Slice1: project runtime.json records tokenguard RUNNING (shared instance)`);
     } catch (e) {
       assert(false, `Slice1: project runtime.json readable (${String(e)})`);
     }
 
-    // Cleanup the scope-A daemon we spawned.
+    // Cleanup the scope-A service we spawned.
     if (isAlive(scopeAPid)) { try { process.kill(scopeAPid, 'SIGKILL'); } catch { /* ignore */ } }
-    try { fs.rmSync(SHARED_DB, { force: true }); fs.rmSync(SHARED_DB + '-wal', { force: true }); fs.rmSync(SHARED_DB + '-shm', { force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(PROJECT_CAPTURE_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 
 
@@ -1650,19 +1671,32 @@ async function main() {
   //
   // The service-mode reality that ALL prior gates missed: a type:service extension
   // is materialized into a COPIED store (.sox/ext/<id>/) and the supervisor spawns
-  // `node <storePath>/index.js` from that COPY — NOT from the repo. memory-daemon
-  // converged onto @adhd/sox-memory-core (BL-25); a plain-tsc dist carried bare
-  // require("@adhd/sox-memory-core") into the copy, which has no resolvable
-  // workspace dep → `Cannot find module '@adhd/sox-memory-core'` → crash on start.
+  // `node <storePath>/index.js` from that COPY — NOT from the repo. A plain-tsc
+  // dist that still carries a bare require("@adhd/sox-*") into the copy has no
+  // resolvable workspace dep there → `Cannot find module` → crash on start. Only
+  // a self-contained esbuild bundle (zero bare @adhd/sox-* requires) survives
+  // the copy.
+  //
+  // Fixture (BL-181/BL-213): memory-daemon was deleted wholesale (src+dist), so
+  // this gate died at the `daemonBundle` existsSync guard. Repointed to
+  // tokenguard — a real, currently-built type:"service" extension
+  // (extensions/services/tokenguard) that ships the same self-contained
+  // `bundle/index.js` build artifact (nx build tokenguard runs
+  // tools/bundle-extension.cjs, the same bundled-extension standard
+  // memory-server pilots) and goes through the identical declarativeInstall
+  // service-store-copy path.
   //
   // This step exercises the EXACT service path:
-  //   1. declarativeInstall(type:service) materializes the daemon's self-contained
-  //      esbuild bundle into <scopeRoot>/.sox/ext/memory-daemon/ and writes the
+  //   1. declarativeInstall(type:service) materializes tokenguard's self-contained
+  //      esbuild bundle into <scopeRoot>/ext/tokenguard/ and writes the
   //      run-service registry spec (command/args/env — incl. the BL-37 NODE_PATH).
   //   2. Spawn `node <storePath>/index.js` from the COPY using that exact spec env.
   //   3. Assert it STARTS and STAYS UP (pid alive after a beat) with no module error.
+  //   4. Assert it does REAL WORK from the copy: binds its HTTP port and answers
+  //      GET /_tokenguard/health with a genuine 200 — not just "process alive".
   //
-  // [inv:reality] verification is the real OS process, not a runtime record.
+  // [inv:reality] verification is the real OS process (+ a real HTTP round trip),
+  // not a runtime record.
   // [inv:self-contained] the copied store has ZERO external @adhd/sox-* deps.
   // ═══════════════════════════════════════════════════════════════════════════
   if (declarativeInstall) {
@@ -1670,63 +1704,79 @@ async function main() {
     console.log('Section E: SERVICE-STORE COPY + SPAWN [BL-37]');
     console.log('═'.repeat(60));
 
-    const daemonSrcDir = path.join(
-      ROOT, 'extensions', 'bundles', 'sox-memory-bundle', 'members', 'memory-daemon',
-    );
-    const eScopeRoot = path.join(os.tmpdir(), `sox-e2e-daemon-${process.pid}-${Date.now()}`);
-    // db_path / sock_path must live inside the daemon's fs allowlist (~/.memory/**).
-    const eDbPath = path.join(os.homedir(), '.memory', `sox-e2e-daemon-${process.pid}.db`);
-    const eSockPath = path.join(os.homedir(), '.memory', `sox-e2e-daemon-${process.pid}.sock`);
-    let eDaemonPid = null;
+    const tgSrcDir = path.join(ROOT, 'extensions', 'services', 'tokenguard');
+    const eScopeRoot = path.join(os.tmpdir(), `sox-e2e-tokenguard-${process.pid}-${Date.now()}`);
+    const eCaptureDir = path.join(os.tmpdir(), `sox-e2e-tg-capture-${process.pid}-${Date.now()}`);
+    const eMapPath = path.join(eCaptureDir, 'token-mapping.json');
+    const ePort = 31000 + (process.pid % 3000);
+    let eSvcPid = null;
 
     function cleanupSectionE() {
-      if (eDaemonPid != null && isAlive(eDaemonPid)) {
-        try { process.kill(eDaemonPid, 'SIGKILL'); } catch { /* ignore */ }
+      if (eSvcPid != null && isAlive(eSvcPid)) {
+        try { process.kill(eSvcPid, 'SIGKILL'); } catch { /* ignore */ }
       }
       try { fs.rmSync(eScopeRoot, { recursive: true, force: true }); } catch { /* ignore */ }
-      // BL-53: remove the db AND its SQLite WAL/SHM sidecars
-      for (const suffix of ['', '-wal', '-shm']) {
-        try { fs.rmSync(eDbPath + suffix, { force: true }); } catch { /* ignore */ }
-      }
-      try { if (fs.existsSync(eSockPath)) fs.rmSync(eSockPath, { force: true }); } catch { /* ignore */ }
+      try { fs.rmSync(eCaptureDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
     process.on('exit', cleanupSectionE);
 
     fs.mkdirSync(eScopeRoot, { recursive: true });
-    fs.mkdirSync(path.join(os.homedir(), '.memory'), { recursive: true });
+    fs.mkdirSync(eCaptureDir, { recursive: true });
 
-    // Precondition: the daemon must ship a self-contained bundle/ (the build target).
-    const daemonBundle = path.join(daemonSrcDir, 'bundle', 'index.js');
-    assert(fs.existsSync(daemonBundle),
-      `E0: memory-daemon ships a self-contained bundle (${daemonBundle})`);
-    if (fs.existsSync(daemonBundle)) {
-      const bundleSrc = fs.readFileSync(daemonBundle, 'utf8');
+    // Precondition: tokenguard must ship a self-contained bundle/ (the build target).
+    const tgBundle = path.join(tgSrcDir, 'bundle', 'index.js');
+    assert(fs.existsSync(tgBundle),
+      `E0: tokenguard ships a self-contained bundle (${tgBundle})`);
+    if (fs.existsSync(tgBundle)) {
+      const bundleSrc = fs.readFileSync(tgBundle, 'utf8');
       const hasBareSoxRequire = /require\(["']@adhd\/sox-/.test(bundleSrc);
       assert(!hasBareSoxRequire,
         'E0: bundle has ZERO bare @adhd/sox-* requires (fully inlined)');
     }
 
+    // [inv:no-untracked-injection] guard: declarativeInstall(scope:'user') resolves
+    // its data root (and therefore the lockfile it syncs into after materializing
+    // the service store) via dataRoot('user',...) → userDataRoot() → the
+    // SOX_ECOSYSTEM_HOME env var, falling back to the REAL ~/.adhd/sox-ecosystem
+    // when unset — NOT the scopeRoot positional argument. Without this override
+    // the lockfile-sync step at the end of the service-install branch writes a
+    // "tokenguard" entry straight into the operator's real
+    // ~/.adhd/sox-ecosystem/extensions.lock (reproduced live during this fix — a
+    // bogus /var/folders/... tmp-path entry landed there). Sandbox it exactly like
+    // Section D5 does for the same reason.
+    const prevEcohomeE = process.env['SOX_ECOSYSTEM_HOME'];
+    process.env['SOX_ECOSYSTEM_HOME'] = eScopeRoot;
     try {
       // 1. Real service install → materialize bundle into copied store + run-service spec.
       const eResults = await declarativeInstall(
         {
-          ext: 'memory-daemon',
+          ext: 'tokenguard',
           type: 'service',
           hosts: ['claude'],
-          srcPath: daemonSrcDir,
-          resolvedConfig: { db_path: eDbPath, sock_path: eSockPath },
+          srcPath: tgSrcDir,
+          resolvedConfig: {
+            upstream: 'https://sox-e2e-upstream.invalid',
+            port: ePort,
+            capture_dir: eCaptureDir,
+            map_path: eMapPath,
+            provider: 'generic',
+          },
         },
         'user',
-        eScopeRoot,   // workspaceRoot (NODE_PATH is derived from this; ROOT is the real one below)
-        eScopeRoot,   // scopeRoot
+        ROOT,         // workspaceRoot — the REAL repo (has node_modules), exactly what a
+                      // real user-scope install (workspaceRoot=repo) produces; proves the
+                      // BL-37 NODE_PATH injection actually fires (E3b below). Only used for
+                      // NODE_PATH derivation + the (here scope:'user', so ignored) lockfile
+                      // path helper — never for materialization (that uses scopeRoot).
+        eScopeRoot,   // scopeRoot — throwaway; this IS the data dir the store materializes into.
         { isProject: false },
       );
       assert(Array.isArray(eResults) && eResults.length > 0,
         'E1: declarativeInstall(service) returned a result');
 
-      // The copied store: <scopeRoot>/ext/memory-daemon/index.js
+      // The copied store: <scopeRoot>/ext/tokenguard/index.js
       // ADR-0004 §D2: scopeRoot IS the data dir; the store lives directly under it.
-      const storePath = path.join(eScopeRoot, 'ext', 'memory-daemon');
+      const storePath = path.join(eScopeRoot, 'ext', 'tokenguard');
       const storeEntry = path.join(storePath, 'index.js');
       assert(fs.existsSync(storeEntry),
         `E2: bundle materialized into copied store at ${storeEntry}`);
@@ -1743,17 +1793,24 @@ async function main() {
       const registryPath = path.join(eScopeRoot, 'registry.json');
       assert(fs.existsSync(registryPath), `E3: run-service registry written (${registryPath})`);
       const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
-      const spec = registry['memory-daemon'];
+      const spec = registry['tokenguard'];
       assert(spec && spec.command === 'node' && Array.isArray(spec.args),
         'E3: registry spec has node command + args targeting the store');
 
       // BL-37: the spec env must inject NODE_PATH so the bundle's createRequire can
-      // resolve the native addons (better-sqlite3, sqlite-vec) from any scope. The
-      // installer derives NODE_PATH from workspaceRoot; here workspaceRoot was the
-      // temp scope (no node_modules), so we point NODE_PATH at the REAL repo's
-      // node_modules — exactly what a real user-scope install (workspaceRoot=repo)
-      // produces. This proves the native-addon resolution path, not just JS deps.
+      // resolve any @adhd/sox-* dep from any scope, portably — the SAME guarantee
+      // memory-daemon needed for its native addons (better-sqlite3, sqlite-vec).
+      // tokenguard's bundle happens to be fully self-contained with no native
+      // addons (E0 above proves zero bare requires either way), but the installer
+      // injects NODE_PATH unconditionally for every type:service install, so this
+      // assertion still proves the general BL-37 guarantee independent of whether
+      // THIS particular service needs it. The installer derives NODE_PATH from
+      // workspaceRoot; here workspaceRoot was the temp scope (no node_modules), so
+      // we point NODE_PATH at the REAL repo's node_modules — exactly what a real
+      // user-scope install (workspaceRoot=repo) produces.
       const specEnv = spec.env ?? {};
+      assert(typeof specEnv.NODE_PATH === 'string' && specEnv.NODE_PATH.length > 0,
+        'E3b: registry spec env has NODE_PATH injected (BL-37)');
       const repoNodeModules = path.join(ROOT, 'node_modules');
       const childEnv = {
         ...process.env,
@@ -1765,7 +1822,7 @@ async function main() {
 
       // 3. Spawn from the COPY (not the repo), exactly as the supervisor does:
       //    node --enable-source-maps <storePath>/index.js, cwd=storePath.
-      const daemonProc = spawn(
+      const svcProc = spawn(
         NODE,
         ['--enable-source-maps', storeEntry],
         {
@@ -1774,46 +1831,74 @@ async function main() {
           stdio: ['ignore', 'pipe', 'pipe'],
         },
       );
-      eDaemonPid = daemonProc.pid;
-      let daemonOut = '';
-      daemonProc.stdout.on('data', (d) => { daemonOut += d.toString(); });
-      daemonProc.stderr.on('data', (d) => { daemonOut += d.toString(); });
+      eSvcPid = svcProc.pid;
+      let svcOut = '';
+      svcProc.stdout.on('data', (d) => { svcOut += d.toString(); });
+      svcProc.stderr.on('data', (d) => { svcOut += d.toString(); });
 
-      // Give it a beat to either start or crash-on-load.
-      await sleep(2500);
-
-      const aliveAfterBeat = eDaemonPid != null && isAlive(eDaemonPid);
-      assert(aliveAfterBeat,
-        `E4: daemon spawned from copied store STARTS + STAYS UP (pid=${eDaemonPid})`);
-
-      const hadModuleError = /Cannot find module/.test(daemonOut);
-      assert(!hadModuleError,
-        'E4: daemon log has NO "Cannot find module" error (self-contained resolves)');
-
-      const startedOk = /\[memoryd\] started/.test(daemonOut);
-      assert(startedOk,
-        'E5: daemon emitted "[memoryd] started" (real start path, not a no-op entry)');
-
-      if (!aliveAfterBeat || hadModuleError || !startedOk) {
-        console.error('  E daemon output (first 600 chars):');
-        console.error('  ' + daemonOut.slice(0, 600).replace(/\n/g, '\n  '));
+      // Poll for either the port.txt liveness marker (real listen succeeded) or
+      // process death (crash-on-load), whichever comes first — deterministic
+      // instead of a blind sleep.
+      const portFile = path.join(eCaptureDir, 'port.txt');
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (fs.existsSync(portFile)) break;
+        if (eSvcPid != null && !isAlive(eSvcPid)) break;
+        await sleep(100);
       }
 
-      // The DB file must exist (start() opened it via better-sqlite3 — native addon
-      // resolved from the copied store via the injected NODE_PATH).
-      assert(fs.existsSync(eDbPath),
-        `E6: daemon opened its SQLite db (native addon resolved) at ${eDbPath}`);
+      const aliveAfterBeat = eSvcPid != null && isAlive(eSvcPid);
+      assert(aliveAfterBeat,
+        `E4: service spawned from copied store STARTS + STAYS UP (pid=${eSvcPid})`);
 
-      // Teardown: stop the daemon.
-      if (eDaemonPid != null && isAlive(eDaemonPid)) {
-        try { process.kill(eDaemonPid, 'SIGTERM'); } catch { /* ignore */ }
+      const hadModuleError = /Cannot find module/.test(svcOut);
+      assert(!hadModuleError,
+        'E4: service log has NO "Cannot find module" error (self-contained resolves)');
+
+      const startedOk = /tokenguard: listening on/.test(svcOut);
+      assert(startedOk,
+        'E5: service emitted "tokenguard: listening on" (real start path, not a no-op entry)');
+
+      if (!aliveAfterBeat || hadModuleError || !startedOk) {
+        console.error('  E service output (first 600 chars):');
+        console.error('  ' + svcOut.slice(0, 600).replace(/\n/g, '\n  '));
+      }
+
+      // E6: prove REAL functionality from the copy, not just "pid alive" — a live
+      // HTTP round trip against the port the copied entrypoint actually bound
+      // (read from port.txt in case the configured port was occupied and the
+      // walk-to-+9 logic picked a different one).
+      let boundPort = ePort;
+      try { boundPort = Number(fs.readFileSync(portFile, 'utf8').trim()) || ePort; } catch { /* fall back */ }
+      let healthOk = false;
+      let healthBody = '';
+      if (aliveAfterBeat) {
+        try {
+          const res = await fetch(`http://127.0.0.1:${boundPort}/_tokenguard/health`, {
+            signal: AbortSignal.timeout(2000),
+          });
+          healthBody = await res.text();
+          const parsed = JSON.parse(healthBody);
+          healthOk = res.status === 200 && parsed.status === 'ok' && parsed.service === 'tokenguard';
+        } catch (e) {
+          healthBody = String(e);
+        }
+      }
+      assert(healthOk,
+        `E6: service answers GET /_tokenguard/health from the copied store (port=${boundPort}, body=${healthBody.slice(0, 200)})`);
+
+      // Teardown: stop the service.
+      if (eSvcPid != null && isAlive(eSvcPid)) {
+        try { process.kill(eSvcPid, 'SIGTERM'); } catch { /* ignore */ }
         await sleep(300);
-        if (isAlive(eDaemonPid)) { try { process.kill(eDaemonPid, 'SIGKILL'); } catch { /* ignore */ } }
+        if (isAlive(eSvcPid)) { try { process.kill(eSvcPid, 'SIGKILL'); } catch { /* ignore */ } }
       }
     } catch (e) {
       console.error('  Section E error:', String(e));
       assertionsFailed++;
     } finally {
+      if (prevEcohomeE !== undefined) process.env['SOX_ECOSYSTEM_HOME'] = prevEcohomeE;
+      else delete process.env['SOX_ECOSYSTEM_HOME'];
       cleanupSectionE();
     }
   }
@@ -1902,7 +1987,7 @@ async function main() {
     const probe = spawnSync(NODE, [path.join(ROOT, 'tools', 'probe-bl41-tilde-dbpath.mjs')], {
       cwd: ROOT,
       encoding: 'utf8',
-      env: { ...process.env, SOX_SANDBOX_ROOT: '', SOX_HOME: '', SOX_ECOSYSTEM_HOME: '', SOX_EMBED_BACKEND: 'hash' },
+      env: { ...process.env, SOX_SANDBOX_ROOT: '', SOX_HOME: '', SOX_ECOSYSTEM_HOME: '' },
     });
     if (probe.stdout) process.stdout.write(probe.stdout);
     if (probe.status === 0) {

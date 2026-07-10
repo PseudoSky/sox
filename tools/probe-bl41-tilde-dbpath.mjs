@@ -9,7 +9,17 @@
  *   (2) NO literal `~` directory is created relative to cwd (the BL-41 regression).
  *
  * Runs the bundle in a child process with HOME = throwaway temp and cwd = a second
- * throwaway temp, SOX_EMBED_BACKEND=hash for deterministic speed.
+ * throwaway temp.
+ *
+ * There is no hash embedding backend to fall back to for speed (removed — see
+ * libs/memory-core/src/embed.ts:43, EmbedBackend = 'auto' | 'real'; `resolveProvider()`
+ * always creates the real fastembed/ONNX provider regardless of SOX_EMBED_BACKEND's
+ * value). Because HOME is thrown away above, the default cacheDir
+ * (`homedir()/.cache/sox-memory/models`, see embed.ts:51-60) would resolve to a fresh
+ * empty temp dir on every run, forcing a full model re-download each invocation. We pin
+ * SOX_EMBED_CACHE_DIR to THIS process's real (pre-override) persistent cache dir so the
+ * already-downloaded bge-base-en-v1.5 ONNX model (~228MB) is reused across runs instead
+ * of re-fetched from HuggingFace every time.
  *
  * Exit 0 = the gate holds.
  */
@@ -21,6 +31,17 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// Persistent embed-model cache dir, resolved against THIS process's real HOME/XDG env
+// (before the child below gets a throwaway HOME) — mirrors libs/memory-core/src/embed.ts
+// resolveConfig()'s own precedence: SOX_EMBED_CACHE_DIR > XDG_CACHE_HOME > ~/.cache.
+const PERSISTENT_EMBED_CACHE_DIR =
+  process.env['SOX_EMBED_CACHE_DIR'] ??
+  path.join(
+    process.env['XDG_CACHE_HOME'] ?? path.join(os.homedir(), '.cache'),
+    'sox-memory',
+    'models',
+  );
 
 let failed = 0;
 const ok = (cond, msg) => {
@@ -62,7 +83,14 @@ const res = spawnSync(process.execPath, [BUNDLE], {
   cwd: TMP_CWD,
   input: rpc,
   encoding: 'utf8',
-  env: { ...process.env, HOME: TMP_HOME, USERPROFILE: TMP_HOME, SOX_EMBED_BACKEND: 'hash', NODE_PATH: path.join(ROOT, 'node_modules') },
+  env: {
+    ...process.env,
+    HOME: TMP_HOME,
+    USERPROFILE: TMP_HOME,
+    SOX_EMBED_BACKEND: 'real',
+    SOX_EMBED_CACHE_DIR: PERSISTENT_EMBED_CACHE_DIR,
+    NODE_PATH: path.join(ROOT, 'node_modules'),
+  },
 });
 
 ok(res.status === 0, `bundle exited 0 (got ${res.status})`);

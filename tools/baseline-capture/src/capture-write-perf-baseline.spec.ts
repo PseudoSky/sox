@@ -161,6 +161,10 @@ describe('captureWritePerfBaseline', () => {
       captureWritePerfBaseline({ baselineDir: dir, iterations: 1, log: (...a) => logs.push(a) }),
     ).resolves.toBeDefined();
 
-    expect(logs.some((l) => String(l[0]).includes('Warmup failed'))).toBe(true);
+    // [BL-250] Assert on the SEMANTICS (a warmup failure is logged, not thrown), not on exact
+    // prose. The old assertion pinned the literal string 'Warmup failed'; correcting the message
+    // to say embeddings are UNAVAILABLE (there is no hash fallback to degrade to) broke it.
+    expect(logs.some((l) => /warmup\s+failed/i.test(String(l[0])))).toBe(true);
+    expect(logs.some((l) => /no fallback exists/i.test(String(l[0])))).toBe(true);
   });
 });

@@ -45,7 +45,7 @@ You coordinate the team of `implement` and `flash` agents through file-based art
 - **MCP**: Model Context Protocol — JSON-RPC 2.0 over stdio/SSE/HTTP, `@modelcontextprotocol/sdk ^1.0.0`
 - **Extensions**: Manifest-driven (`extension.json`), install engine with host registry (claude/codex/opencode), content-addressed artifacts (ADR-0003)
 - **Service lifecycle**: `ProcessSupervisor` (in-process) + OS supervisor (launchd/systemd) via `libs/host-runtime`
-- **Embeddings**: ONNX runtime, hash fallback
+- **Embeddings**: real ONNX runtime, `bge-base-en-v1.5` (768-dim). **There is no hash fallback** — it was removed. `createEmbeddingProvider()` throws `ResolutionError` rather than silently downgrading (`libs/data/CLAUDE.md` §2; `EmbedBackend = 'auto' | 'real'` at `libs/memory-core/src/embed.ts:43`). `SOX_EMBED_BACKEND=hash` is not a valid value.
 - **Testing**: Vitest, `describe`/`it`/`expect` with `.spec.ts` convention
 - **Linting**: ESLint flat config with area `depConstraints`
 

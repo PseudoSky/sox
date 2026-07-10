@@ -105,6 +105,86 @@ function removeDirRecursive(dir: string): void {
   }
 }
 
+/**
+ * BL-245: the "live repo" acceptance tests below validate the real working
+ * tree's extensions/ (+ committed .extensions/ scope config). Under
+ * `nx run-many -t test`, sibling tasks concurrently rebuild dist/ and
+ * regenerate registry/index.json, which races the validator's own
+ * sequential fs reads across ~14 manifests and their entrypoints — nx
+ * observed this as a flaky task (fail, then pass on retry, no source change).
+ *
+ * Fix: snapshot the live tree into an mkdtempSync'd directory, then validate
+ * the copy. This does not change *what* is validated (real repo content,
+ * including built dist/ output for the P0 entrypoint-reachability gate and
+ * the real committed scope config for shadow-copy/dedup checks) — it only
+ * collapses the race window from "the full sequential validation pass" down
+ * to "one copy pass", so concurrent sibling rebuilds can no longer tear a
+ * read mid-validation. A regression in any real manifest is still caught
+ * because the snapshot is taken fresh, from disk, at test-run time — not a
+ * stale fixture.
+ *
+ * The copy step itself is still exposed to two concrete races against
+ * tools/bundle-extension.cjs's atomic dist swap (BL-235), both confirmed via
+ * adversarial reproduction while writing this fix:
+ *   1. `dist.staging-<pid>` / `dist.prev-<pid>` are transient scratch dirs
+ *      that the bundler creates and removes *within* a single build — cpSync
+ *      can enumerate one and then ENOENT trying to read it once the bundler
+ *      deletes it. Fix: filter them out — they are never part of the
+ *      validated manifest tree, only ephemeral build scratch.
+ *   2. Between the bundler's two renameSync calls (old dist -> .prev,
+ *      staged -> dist) there is a sub-millisecond window where `dist/`
+ *      itself does not exist. Fix: retry the whole copy a bounded number of
+ *      times on ENOENT. This retries the SNAPSHOT step only (a mechanical,
+ *      pre-validation copy) — it never retries a test assertion or loosens
+ *      what is asserted once the copy has succeeded.
+ */
+function cpSyncSnapshot(src: string, dest: string): void {
+  const isTransientBuildScratch = (p: string): boolean => /\.(?:staging|prev)-\d+$/.test(path.basename(p));
+
+  const attempt = (): void => {
+    fs.rmSync(dest, { recursive: true, force: true });
+    fs.cpSync(src, dest, {
+      recursive: true,
+      filter: (source) => !isTransientBuildScratch(source),
+    });
+  };
+
+  const MAX_ATTEMPTS = 10;
+  for (let i = 1; i <= MAX_ATTEMPTS; i++) {
+    try {
+      attempt();
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' || i === MAX_ATTEMPTS) throw err;
+      // A concurrent sibling build tore the tree mid-copy (BL-245 mechanism
+      // #2 above) — retry the snapshot copy, not the validation.
+    }
+  }
+}
+
+function snapshotLiveRepo(): { root: string; cleanup: () => void } {
+  const liveRoot = path.resolve(import.meta.dirname ?? process.cwd(), '..');
+  const snapRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-live-repo-snapshot-'));
+
+  cpSyncSnapshot(path.join(liveRoot, 'extensions'), path.join(snapRoot, 'extensions'));
+
+  const dotExtSrc = path.join(liveRoot, '.extensions');
+  if (fs.existsSync(dotExtSrc)) {
+    cpSyncSnapshot(dotExtSrc, path.join(snapRoot, '.extensions'));
+  }
+
+  const fixturesSrc = path.join(liveRoot, 'scripts', '__fixtures__');
+  if (fs.existsSync(fixturesSrc)) {
+    cpSyncSnapshot(fixturesSrc, path.join(snapRoot, 'scripts', '__fixtures__'));
+  }
+
+  return {
+    root: snapRoot,
+    cleanup: () => removeDirRecursive(snapRoot),
+  };
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('validate-manifests — P2 dedup + secret lint', () => {
@@ -1792,28 +1872,38 @@ describe('validate-manifests — P4 DX-conformance advisory rules', () => {
   // must pass with zero errors and zero P3 self-description diagnostics.
 
   it('live repo: default mode exits ok=true on the 11 retrofitted extensions', () => {
-    const ROOT = path.resolve(import.meta.dirname ?? process.cwd(), '..');
-    const result = validateManifests(ROOT);
-    // ok must be true: all 11 manifests are retrofitted, no P3 self-description errors.
-    expect(result.ok).toBe(true);
-    // P3: all retrofitted — zero errors expected.
-    const errors = result.errors.filter((d) => d.severity === 'error');
-    expect(errors).toHaveLength(0);
-    // P3: no P3 self-description diagnostics (all fields present).
-    const p3Diags = result.errors.filter(
-      (d) => d.message.startsWith('P3:'),
-    );
-    expect(p3Diags).toHaveLength(0);
+    // BL-245: snapshot the live tree first — see snapshotLiveRepo() for why.
+    const snapshot = snapshotLiveRepo();
+    try {
+      const result = validateManifests(snapshot.root);
+      // ok must be true: all 11 manifests are retrofitted, no P3 self-description errors.
+      expect(result.ok).toBe(true);
+      // P3: all retrofitted — zero errors expected.
+      const errors = result.errors.filter((d) => d.severity === 'error');
+      expect(errors).toHaveLength(0);
+      // P3: no P3 self-description diagnostics (all fields present).
+      const p3Diags = result.errors.filter(
+        (d) => d.message.startsWith('P3:'),
+      );
+      expect(p3Diags).toHaveLength(0);
+    } finally {
+      snapshot.cleanup();
+    }
   });
 
   it('live repo: strict mode exits ok=true on the 11 retrofitted extensions (P5)', () => {
-    const ROOT = path.resolve(import.meta.dirname ?? process.cwd(), '..');
-    const result = validateManifests(ROOT, { strict: true });
-    // P5: all 11 DX-conformance rules are satisfied — strict mode exits 0.
-    // P3: all manifests retrofitted — no self-description errors.
-    expect(result.ok).toBe(true);
-    const errors = result.errors.filter((d) => d.severity === 'error');
-    expect(errors).toHaveLength(0);
+    // BL-245: snapshot the live tree first — see snapshotLiveRepo() for why.
+    const snapshot = snapshotLiveRepo();
+    try {
+      const result = validateManifests(snapshot.root, { strict: true });
+      // P5: all 11 DX-conformance rules are satisfied — strict mode exits 0.
+      // P3: all manifests retrofitted — no self-description errors.
+      expect(result.ok).toBe(true);
+      const errors = result.errors.filter((d) => d.severity === 'error');
+      expect(errors).toHaveLength(0);
+    } finally {
+      snapshot.cleanup();
+    }
   });
 
   // ─── Single-dir mode (validateSingleExtensionDir path) ────────────────────
@@ -2366,11 +2456,16 @@ describe('validate-manifests — PB config schema + resource/permission declarat
   // ─── 8. Live repo: all 11 retrofitted manifests validate ─────────────────────
 
   it('live repo: all 11 retrofitted manifests pass with PB config_schema + permissions fields', () => {
-    const repoRoot = path.resolve(import.meta.dirname ?? process.cwd(), '..');
-    const result = validateManifests(repoRoot);
-    const errors = result.errors.filter((d) => d.severity === 'error');
-    expect(errors).toHaveLength(0);
-    expect(result.ok).toBe(true);
+    // BL-245: snapshot the live tree first — see snapshotLiveRepo() for why.
+    const snapshot = snapshotLiveRepo();
+    try {
+      const result = validateManifests(snapshot.root);
+      const errors = result.errors.filter((d) => d.severity === 'error');
+      expect(errors).toHaveLength(0);
+      expect(result.ok).toBe(true);
+    } finally {
+      snapshot.cleanup();
+    }
   });
 });
 
@@ -2590,16 +2685,25 @@ describe('validate-manifests — P0 entrypoint-reachability gate', () => {
 
   it('live repo: all 9 process-type extension entrypoints are reachable post-build', () => {
     // After pnpm -r build, every process-type extension must have dist/index.js.
-    // This test runs against the real repo (not a temp fixture) and will fail
-    // if pnpm -r build has not been run first — that is intentional: the gate
-    // enforces the build contract in CI.
-    const repoRoot = path.resolve(import.meta.dirname ?? process.cwd(), '..');
-    const result = validateManifests(repoRoot);
-    const entrypointErrors = result.errors.filter(
-      (e) => e.severity === 'error' && e.message.includes('P0 entrypoint-reachability gate'),
-    );
-    expect(entrypointErrors).toHaveLength(0);
-    expect(result.ok).toBe(true);
+    // This test runs against the real repo's built output (not a temp fixture) and
+    // will fail if pnpm -r build has not been run first — that is intentional: the
+    // gate enforces the build contract in CI.
+    //
+    // BL-245: snapshot the live tree (including built dist/) first — see
+    // snapshotLiveRepo() for why. The snapshot is taken fresh from disk at test-run
+    // time, so a real missing/rebuilt-but-broken dist/index.js is still caught;
+    // only the race against *concurrent* sibling rebuilds is eliminated.
+    const snapshot = snapshotLiveRepo();
+    try {
+      const result = validateManifests(snapshot.root);
+      const entrypointErrors = result.errors.filter(
+        (e) => e.severity === 'error' && e.message.includes('P0 entrypoint-reachability gate'),
+      );
+      expect(entrypointErrors).toHaveLength(0);
+      expect(result.ok).toBe(true);
+    } finally {
+      snapshot.cleanup();
+    }
   });
 });
 
@@ -3217,17 +3321,22 @@ describe('validate-manifests — P3 per-type self-description (enforced)', () =>
     // This is the key P3 acceptance check: all 11 manifests have been retrofitted with
     // their type-specific self-description fields. They must validate with exit 0 (ok=true)
     // and zero P3 self-description errors.
-    const ROOT = path.resolve(import.meta.dirname ?? process.cwd(), '..');
-    const result = validateManifests(ROOT);
-    // MUST exit 0 — all 11 manifests are retrofitted
-    expect(result.ok).toBe(true);
-    // MUST have no errors — P3 fields are all present
-    const errors = result.errors.filter((d) => d.severity === 'error');
-    expect(errors).toHaveLength(0);
-    // No P3 self-description diagnostics (all fields present)
-    const p3Diags = result.errors.filter(
-      (d) => d.message.startsWith('P3:'),
-    );
-    expect(p3Diags).toHaveLength(0);
+    // BL-245: snapshot the live tree first — see snapshotLiveRepo() for why.
+    const snapshot = snapshotLiveRepo();
+    try {
+      const result = validateManifests(snapshot.root);
+      // MUST exit 0 — all 11 manifests are retrofitted
+      expect(result.ok).toBe(true);
+      // MUST have no errors — P3 fields are all present
+      const errors = result.errors.filter((d) => d.severity === 'error');
+      expect(errors).toHaveLength(0);
+      // No P3 self-description diagnostics (all fields present)
+      const p3Diags = result.errors.filter(
+        (d) => d.message.startsWith('P3:'),
+      );
+      expect(p3Diags).toHaveLength(0);
+    } finally {
+      snapshot.cleanup();
+    }
   });
 });

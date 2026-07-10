@@ -1,3 +1,10 @@
+> ⚠️ **HISTORICAL — DO NOT FOLLOW. [BL-250]** This document predates the removal of the hash
+> embedding backend. There is no hash backend: `EmbedBackend = 'auto' | 'real'`
+> (`libs/memory-core/src/embed.ts:43`), and `createEmbeddingProvider()` throws `ResolutionError`
+> rather than silently downgrading (`libs/data/CLAUDE.md` §2). Any instruction below to set
+> `SOX_EMBED_BACKEND=hash`, or any claim that a hash fallback exists, is **wrong**. The active
+> model is `bge-base-en-v1.5` (768-dim). `nomic-embed-text-v1.5` is likewise gone.
+
 # Memory System: Design Flaws and Solution
 
 ## Executive Summary

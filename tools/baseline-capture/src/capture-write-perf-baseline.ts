@@ -153,7 +153,9 @@ export async function captureWritePerfBaseline(
     await warmupEmbed();
     log('  Embed warm.');
   } catch (e) {
-    log('  Warmup failed (may use hash fallback):', e instanceof Error ? e.message : String(e));
+    // [BL-250] There is no hash fallback — createEmbeddingProvider() throws rather than downgrade.
+    // A warmup failure here means embeddings are UNAVAILABLE, not degraded.
+    log('  Warmup FAILED — embeddings unavailable (no fallback exists):', e instanceof Error ? e.message : String(e));
   }
 
   // ── Step 2: Create disposable DB ─────────────────────────────────────────────
