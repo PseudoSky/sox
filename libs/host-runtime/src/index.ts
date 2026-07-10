@@ -178,6 +178,8 @@ export {
   realPidAlive,
   realLockSweepFs,
   sweepProxyBackendLocks,
+  // BL-176: fast-path GC + split-brain heal for `list`/`status` (phases 0/3)
+  quickReconcile,
 } from './reconcile.js';
 export type {
   LsofExec,
@@ -190,6 +192,9 @@ export type {
   LockSweepEntry,
   LockSweepResult,
   PidAliveCheck,
+  // BL-176
+  QuickReconcileHealedEntry,
+  QuickReconcileResult,
 } from './reconcile.js';
 
 // ─── OS-supervisor control surface (service-lifecycle spec Slice 2) ──────────

@@ -450,7 +450,9 @@ describe('[process-boundary.5] carried-forward supervisor behaviors ([def:sessio
 //
 // The enforced env allowlist previously stripped SOX_EMBED_BACKEND and
 // SOX_EMBED_CACHE_DIR, leaving the served/spawned server's embed() resolveConfig()
-// reading undefined → backend='auto' → worker fails → hash fallback (BL-52).
+// reading undefined → backend='auto' → worker fails. (Historically this silently fell back to a
+// hash backend; that backend was removed — createEmbeddingProvider() now throws ResolutionError
+// instead of downgrading. See BL-52 for the original incident, BL-250 for the removal.)
 // These tests assert the vars pass through the scrub.
 
 describe('[BL-52] SOX_EMBED_* forwarded through enforced env scrub', () => {

@@ -54,6 +54,10 @@
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { readGlobalRegistry } from './gc.js';
+import { findOrphansByIdentity, identityToken, pidAlive } from './reaper.js';
+import type { SupervisorRegistryEntry } from './registry.js';
+import { getRuntimeFilePath, getScopePaths, type RuntimeRecord } from './runtime.js';
 
 // ─── Injectable lsof seam ─────────────────────────────────────────────────────────
 
@@ -424,4 +428,127 @@ export function sweepProxyBackendLocks(
   }
 
   return result;
+}
+
+// ─── BL-176: quickReconcile — fast-path GC + split-brain heal for list/status ────
+//
+// Extracted from apps/sox/src/main.ts's `doctorReconcile()` (phases 0 and 3 ONLY —
+// docs/spec/service-lifecycle.md §10.2). This is the subset that is SAFE to run as
+// an automatic pre-step of a READ command (`soxe list`, `soxe status`):
+//
+//   Phase 0 — `readGlobalRegistry()` (gc.ts): probes every registered supervisor
+//     (pid + exec-socket) and prunes DEAD ones, marking every entry in a dead
+//     supervisor's runtime.json running:false as it goes (`cleanUpDeadEntry`).
+//   Phase 3 — for every OTHER runtime.json across the requested scopes (one NOT
+//     owned by a still-live supervisor — authority rule 1, §3.3), mark any entry
+//     still claiming running:true with NO process reality (dead pid AND no
+//     identity-token match anywhere in the process table) as running:false,
+//     persisted to disk.
+//
+// Deliberately EXCLUDES doctorReconcile's phase 1/2 (identity-token stray scan +
+// SAFE heal, which can call `killAndVerify` and terminate a live zombie process)
+// and phases 4-6 (OS-unit reconcile, crash-loop markers, proxy-lock-debris sweep)
+// — those are report-only or process-killing and stay exclusively behind the
+// explicit operator action `soxe doctor --reconcile`. quickReconcile NEVER signals
+// a process; it only rewrites a JSON bookkeeping file.
+//
+// Idempotent: a clean second pass over the same state finds nothing left to heal
+// (mirrors the doctorReconcile "0 healed" no-op proven by
+// apps/sox/src/doctor-reconcile.spec.ts). Never touches a runtime.json whose
+// `supervisorPid` is still alive — an actively-owned record is never rewritten
+// out from under its live supervisor.
+
+/** A single split-brain entry healed (persisted running:false) by phase 3. */
+export interface QuickReconcileHealedEntry {
+  scope: string;
+  id: string;
+  pid: number | null;
+  detail: string;
+}
+
+export interface QuickReconcileResult {
+  /** Live, GC-verified supervisors — same shape/semantics as `readGlobalRegistry()`. */
+  liveSupervisors: SupervisorRegistryEntry[];
+  /** Split-brain entries healed (persisted running:false) by this pass. */
+  healed: QuickReconcileHealedEntry[];
+}
+
+/**
+ * Fast-path reconcile: GC dead supervisors (phase 0) + heal split-brain
+ * runtime.json records (phase 3). Intended to run on every `soxe list` and
+ * `soxe status` invocation so `[inv:list-never-lies]` holds without requiring an
+ * explicit `soxe doctor --reconcile` first.
+ *
+ * @param opts.root            Workspace/scope root (for project/local scope
+ *                              resolution — same `root` cmdList/cmdStatus already
+ *                              compute from `--root`/`process.cwd()`).
+ * @param opts.scopes           Scopes to sweep for phase 3. Default: the full
+ *                              `['org', 'user', 'project', 'local']` (matches
+ *                              doctorReconcile's own `scopes` constant).
+ * @param opts.filterId         Only heal entries for this extension id.
+ * @param opts.socketTimeoutMs  Per-supervisor socket probe timeout for phase 0
+ *                              (passed straight to `readGlobalRegistry`). Default:
+ *                              gc.ts's own default (1000ms).
+ */
+export async function quickReconcile(opts: {
+  root: string;
+  scopes?: readonly string[];
+  filterId?: string;
+  socketTimeoutMs?: number;
+}): Promise<QuickReconcileResult> {
+  const scopes = opts.scopes ?? (['org', 'user', 'project', 'local'] as const);
+  const healed: QuickReconcileHealedEntry[] = [];
+
+  // ── Phase 0: GC dead supervisors (prunes supervisors.json + marks their own
+  //    runtime.json entries running:false — gc.ts `cleanUpDeadEntry`). ─────────
+  const liveSupervisors = await readGlobalRegistry(
+    opts.socketTimeoutMs !== undefined ? { socketTimeoutMs: opts.socketTimeoutMs } : {},
+  );
+
+  // ── Phase 3: split-brain heal — any OTHER runtime.json (not owned by a still-
+  //    live supervisor) still claiming running:true for a dead process. ────────
+  for (const sc of scopes) {
+    let scopePaths: { config: string; lockfile: string };
+    try {
+      scopePaths = getScopePaths(sc, opts.root);
+    } catch {
+      continue;
+    }
+    const runtimeFilePath = getRuntimeFilePath(scopePaths.lockfile);
+    if (!fs.existsSync(runtimeFilePath)) continue;
+    let recRt: RuntimeRecord;
+    try {
+      recRt = JSON.parse(fs.readFileSync(runtimeFilePath, 'utf8')) as RuntimeRecord;
+    } catch {
+      continue;
+    }
+    // Authority rule 1 (§3.3): a LIVE supervisor owns its record — never rewritten here.
+    if (typeof recRt.supervisorPid === 'number' && pidAlive(recRt.supervisorPid)) continue;
+
+    let changed = false;
+    for (const e of recRt.entries ?? []) {
+      if (e.running !== true) continue;
+      if (opts.filterId !== undefined && e.id !== opts.filterId) continue;
+      const pidLive = typeof e.pid === 'number' && e.pid > 0 && pidAlive(e.pid);
+      // Short-circuits before the (relatively) expensive `ps` snapshot when the
+      // pid check alone already proves liveness.
+      const tokenLive = pidLive
+        ? false
+        : (e.source ? findOrphansByIdentity(identityToken(e.source), { excludePids: [process.pid] }).length > 0 : false);
+      if (pidLive || tokenLive) continue;
+
+      const detail = `runtime.json ${sc}: '${e.id}' running:true with NO process reality (pid=${String(e.pid)})`;
+      e.running = false;
+      e.pid = null;
+      changed = true;
+      healed.push({ scope: sc, id: e.id, pid: 0, detail: `${detail} → running:false` });
+    }
+    if (changed) {
+      const tmp = `${runtimeFilePath}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(recRt, null, 2) + '\n', 'utf8');
+      fs.renameSync(tmp, runtimeFilePath);
+    }
+  }
+
+  return { liveSupervisors, healed };
 }

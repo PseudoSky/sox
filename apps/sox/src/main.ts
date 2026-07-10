@@ -47,6 +47,8 @@ import {
   McpClient,
   osUnitLabel,
   pidAlive as pidAliveRT,
+  // BL-176: fast-path GC + split-brain heal (phases 0/3), wired into cmdList/cmdStatus.
+  quickReconcile,
   readGlobalRegistry,
   readUnitMeta,
   realOsExec,
@@ -76,7 +78,20 @@ import {
   type ScopeResource,
   type StoreResource,
 } from '@adhd/sox-host-runtime';
-import type { DeclarativeInstallResult, InstallDescriptor, InstallRecord, OwnedEntry, Scope, UpdateCtx } from '@adhd/sox-install-engine';
+// NOTE: `@adhd/sox-manifest` is deliberately LAZY-LOADED in this file (see the
+// `await import('@adhd/sox-manifest')` in cmdValidate, and printHelp below).
+// A static import here pulls the whole manifest library into CLI startup just to
+// print help text, and `@nx/enforce-module-boundaries` rejects it:
+//   "Static imports of lazy-loaded libraries are forbidden."
+import {
+  SCOPES,
+  type DeclarativeInstallResult,
+  type InstallDescriptor,
+  type InstallRecord,
+  type OwnedEntry,
+  type Scope,
+  type UpdateCtx,
+} from '@adhd/sox-install-engine';
 import {
   DeclarativeDeniedError,
   declarativeInstall,
@@ -247,7 +262,7 @@ async function main(): Promise<void> {
     case '--help':
     case '-h':
     case 'help':
-      printHelp();
+      await printHelp();
       break;
 
     // ── Version ───────────────────────────────────────────────────────────────
@@ -258,7 +273,7 @@ async function main(): Promise<void> {
 
     default:
       if (verb === undefined) {
-        printHelp();
+        await printHelp();
       } else {
         process.stderr.write(`sox: unknown verb '${String(verb)}'\n`);
         process.stderr.write(`Run '${CLI} --help' for usage.\n`);
@@ -274,11 +289,17 @@ async function main(): Promise<void> {
  *
  * Primary source is `registry/index.json` under the invoking cwd (the dev/repo
  * path — unchanged behaviour). When that is absent or empty (a consumer running
- * the published `@adhd/sox-cli` with NO repo checkout), fall back to the registry
- * copy embedded inside the CLI bundle at `<bundle dir>/registry/index.json`
- * (written by apps/sox/scripts/embed-registry.cjs at build time). `__dirname` in
- * the published CJS bundle is `.../sox/dist`, so the embedded copy sits at
- * `.../sox/dist/registry/index.json` — i.e. `loadRegistryIndex(__dirname)`.
+ * the published `@adhd/sox-cli` with NO repo checkout, OR running the CLI's own
+ * dev build from outside its repo), fall back to the registry copy embedded
+ * inside the CLI bundle (written by apps/sox/scripts/embed-registry.cjs at
+ * build time, which only ever targets `apps/sox/dist/registry/index.json`).
+ *
+ * BL-217: which directory `__dirname` actually is at runtime depends on which
+ * of the CLI's two build outputs is executing — the same three layouts
+ * printVersion() already disambiguates. Published bundle / dev esbuild land
+ * `__dirname` AT the embedded copy's directory; dev tsc build — what `bin/soxe`
+ * runs — lands `__dirname` at `dist/apps/sox`, which has no embedded copy of its
+ * own. Try both rather than assuming one.
  */
 function loadRegistryResolved(cwdRoot: string): ReturnType<typeof loadRegistryIndex> {
   try {
@@ -287,11 +308,22 @@ function loadRegistryResolved(cwdRoot: string): ReturnType<typeof loadRegistryIn
   } catch {
     /* fall through to bundled copy */
   }
-  try {
-    return loadRegistryIndex(__dirname);
-  } catch {
-    return [];
+  const pathMod = require('node:path') as typeof import('node:path');
+  const bundledCandidates = [
+    __dirname,
+    // dev tsc build (`dist/apps/sox`): the embedded copy lives in the sibling
+    // esbuild output at `apps/sox/dist`, three levels up then back down.
+    pathMod.resolve(__dirname, '../../../apps/sox/dist'),
+  ];
+  for (const dir of bundledCandidates) {
+    try {
+      const fromBundle = loadRegistryIndex(dir);
+      if (fromBundle.length > 0) return fromBundle;
+    } catch {
+      /* try next candidate */
+    }
   }
+  return [];
 }
 
 /**
@@ -325,45 +357,43 @@ function buildExtConfigEnv(extId: string, root: string): Record<string, string> 
 
 // ─── Help ─────────────────────────────────────────────────────────────────────
 
-function printHelp(): void {
-  process.stdout.write(`${CLI} — LLM extension ecosystem CLI (extension #0)
+async function printHelp(): Promise<void> {
+  // Lazy: keep @adhd/sox-manifest out of CLI startup (nx boundary rule).
+  const { VALID_TYPES, VALID_RUNTIMES, VALID_HOOK_EVENTS, KNOWN_HOSTS } =
+    await import('@adhd/sox-manifest');
+  process.stdout.write(`${CLI} — LLM extension ecosystem CLI
 
 Usage: ${CLI} <verb> [flags]
 
 Authoring:
-  init <type> <id>   Scaffold a born-conformant extension (uses libs/authoring)
-                     id: lowercase ^[a-z][a-z0-9-]*$, must not end in the type name
-                     Types: agent | skill | mcp-server | hook | command | bundle | service
+  init <type> <id>   Scaffold a new extension
+                     id: lowercase, kebab-case, must not end in the type name
+                      Types: ${Array.from(VALID_TYPES).filter((t: string) => t !== 'prompt').join(' | ')}
                      Flags: --out=<dir>       write into <dir>/<id>/ (default: cwd)
-                            --bundle=<name>   scaffold into a bundle's members/ dir and
-                                              auto-register the member in the bundle's
-                                              extension.json members[] array.
-                                              Mutually exclusive with --out.
+                            --bundle=<name>   scaffold into a bundle's members/ dir
                             --title=<str>  --description=<str>
                             --author=<str>  --keywords=<k1,k2>
-                            --events=<E1,E2>  --runtime=<runtime>
-                            --transport=<t>  --transports=<t1,t2>  (service type)
+                            --events=<E1,E2>  (hook: ${Array.from(VALID_HOOK_EVENTS).slice(0, 3).join(', ')}, ...)
+                            --runtime=<runtime>  (${Array.from(VALID_RUNTIMES).filter((r: string) => r !== 'stdio-any').join(' | ')})
+                            --transport=<t>  --transports=<t1,t2>  (stdio | sse | http)
 
 Validation:
   validate [path]    Validate extension.json at path (default: ./extension.json)
-                     Flags: --help
 
 Registry / Search:
   search <query>     Search the extension registry
-                     Flags: --scope=<scope>  --type=<type>
+                     Flags: --type=<type>  --json
 
 Extension management:
   install <id|bundle>   Install extension by id (or expand a bundle) at scope
-                      Flags: --scope=<scope>  --host=<h1,h2,...>  --frozen-lockfile  --update
+                       Flags: --scope=<scope>  --host=<hosts>  --frozen-lockfile  --update
                             --no-restart
   update             Update installed extensions
                      Flags: --scope=<scope>
-  upgrade <ext-id>   Re-install stale consumers across all scopes/projects (P9):
-                     verify checksum → re-install if stale → rolling-restart.
+  upgrade <ext-id>   Re-install stale consumers across all scopes/projects
                      Flags: --all (required)
                             --force  also reconcile user-scope MCP servers into
-                                     every known project .mcp.json (#16728) —
-                                     unconditionally, even when nothing is stale
+                                     every known project .mcp.json
                             --host=<host>  host for the --force reconcile (default: claude)
   uninstall          Remove an extension
                      Flags: --id=<ext-id>  --scope=<scope>
@@ -381,55 +411,50 @@ Config:
                      Flags: --scope=<scope>  --no-restart  --dry-run
 
 Runtime:
-  start              Start the ${CLI} host runtime
+  start [<ext-id>]   Start the host runtime (or a specific extension)
                      Flags: --scope=<scope>  --root=<root>  --id=<ext-id>
-  stop               Stop the runtime or a single extension
+  stop [<ext-id>]    Stop the runtime or a single extension
                      Flags: --scope=<scope>  --id=<ext-id>
-  serve              Launch a stdio MCP server with live cascade config (for .mcp.json)
+  serve <ext-id>     Launch an MCP server with live cascade config (for .mcp.json)
                      Flags: --scope=<scope>  --root=<dir>
   service            OS-supervisor control (launchd/systemd) for reboot persistence
-                     Sub: enable | disable | status | list   (spec §9, Slice 2)
+                     Sub: enable | disable | status | list
                      Flags: --scope=<scope>  --dry-run  --unit-dir=<dir>
                             --supervisor=<launchd|systemd>  --node-path=<path>
                             --allow-volatile-node
-  exec               Call a tool on a running extension (A11: via running server)
+  exec <ext-id> <tool> Call a tool on a running extension
                      Flags: --scope=<scope>  --id=<ext-id>  --tool=<tool>  --args='<json>'
   list               List activated extensions
                      Flags: --scope=<scope>  --all  --global  --id=<ext>  --json
-  details            Show details for an extension
+  details <id>       Show details for an extension
                      Flags: --id=<ext-id>  --scope=<scope>
-  status             Show live health for all running extensions (R7)
-                      Flags: --id=<ext-id>  --project=<path>  --scope=<scope>
-                             --lines=<n>  --json
-                      Exit: 0=healthy 1=degraded 2=dead
-  doctor             Diagnose and repair soxe state (stray processes, cross-build orphans)
-                      Flags: --id=<ext-id>  --fix (reap strays)  --scope=<scope>
+  status [<ext-id>]  Show live health for all running extensions
+                     Flags: --id=<ext-id>  --project=<path>  --scope=<scope>
+                     --lines=<n>  --json
+                     Exit: 0=healthy 1=degraded 2=dead
+  doctor [<ext-id>]  Diagnose and repair soxe state (stray processes, orphans)
+                     Flags: --id=<ext-id>  --fix (reap strays)  --scope=<scope>
                              --old-match  (use old path-based matching for comparison)
-                      Continuous supervision (spec §14 Slice 4):
+                      Continuous supervision:
                              --reconcile [--dry-run]  safe idempotent heal pass
-                               (GC, zombie strays, split-brain runtime.json,
-                                stale/orphaned os-units, crash-loop give-ups)
-                             --install-tick [--interval <sec>]  schedule the
+                             --install-tick [--interval <sec>]  schedule periodic
                                reconcile under launchd/systemd (default 300s)
                              --remove-tick  reverse --install-tick
-                             (tick honors --dry-run --unit-dir --supervisor
-                              --node-path --allow-volatile-node)
-  logs               Tail or follow extension log output (R4 / PI-3)
+  logs <ext-id>      Tail or follow extension log output
                      Flags: --id=<ext-id>  --scope=<scope>  --lines=<n>
-                            --follow  --history  --json
-                            --stream=<label> (process|backend|os-out|os-err|serve)
-  ps                 Show merged process snapshot (PI-4): supervisor registry +
-                     OS-units (launchd/systemctl) + proxy locks + OS-truth pass
+                     --follow  --history  --json
+                     --stream=<label> (process|backend|os-out|os-err|serve)
+  ps                 Show merged process snapshot (supervisor + OS-units + locks)
                      Flags: --scope=<scope>  --json
-  follow             Merged, prefixed, colorized live tail (PI-4, docker-compose
-                     semantics). Omits --stream to show all streams.
+  follow [<ext-id>]  Merged, prefixed, colorized live tail
                      Flags: --id=<ext-id>  --scope=<scope>  --lines=<n>
-  migrate-home       Relocate soxe data to the ADR-0004 .adhd/sox-ecosystem layout
+  migrate-home       Relocate soxe data to the .adhd/sox-ecosystem layout
                      Flags: --old-home  --old-config  --old-sandbox  --new-home
                             --dry-run
 
-Flags accept both forms: --flag=value  and  --flag value  (A12)
-
+Scopes:  ${SCOPES.join(' | ')}  (narrower overrides wider)
+Hosts:   ${Array.from(KNOWN_HOSTS).join(' | ')}
+Types:   ${Array.from(VALID_TYPES).filter((t: string) => t !== 'prompt').join(' | ')}
 `);
 }
 
@@ -906,14 +931,9 @@ Exit codes:
 
 function cmdSearch(flags: Record<string, string>): void {
   // Accept query as either --query=<q> or the first positional after 'search'.
-  let query = flags['query'] ?? '';
-  if (query === '') {
-    const rawAfterVerb = argv.slice(1); // argv[0] === 'search'
-    for (const tok of rawAfterVerb) {
-      if (!tok.startsWith('-')) { query = tok; break; }
-    }
-  }
+  let query = flags['query'] ?? flags['_'] ?? '';
   const typeFilter = flags['type'];
+  const jsonMode = flags['json'] !== undefined;
   // R9: --all includes internal (bundle member) entries. Default: exclude them.
   const showAll = flags['all'] !== undefined || flags['all'] === '';
 
@@ -945,6 +965,11 @@ function cmdSearch(flags: Record<string, string>): void {
   }
   if (typeFilter !== undefined) {
     results = results.filter((e) => e.type === typeFilter);
+  }
+
+  if (jsonMode) {
+    process.stdout.write(JSON.stringify(results, null, 2) + '\n');
+    process.exit(0);
   }
 
   if (results.length === 0) {
@@ -988,13 +1013,13 @@ async function cmdInstall(flags: Record<string, string>): Promise<void> {
 
 Usage:
   ${CLI} install [<id>] [-s <scope>] [--frozen-lockfile] [--update]
-  ${CLI} install <id> --host=<h1,h2,...> [--scope=project] [--root=<dir>]
+  ${CLI} install <id> --host=<hosts> [--scope=project] [--root=<dir>]
 
 Options:
-  -s, --scope <scope>    Scope: user | project | local  (default: user)
+  -s, --scope <scope>    Scope: user | project | local  (default: local)
   --frozen-lockfile      Use frozen-lockfile mode
-  --update               Update pinned hashes
-  --host=<h1,h2,...>     Target host(s) (claude, codex, opencode)
+  --update               Update pinned hashes (with --host or positional) or run full sync (no id)
+  --host=<hosts>         Target host(s) (claude, codex, opencode)
   --root <dir>           Workspace root override
    --profile=<p>          MCP transport profile (stdio, sse, http; default: stdio)
    --version=<semver>     Install from npm package at the given version range (e.g. 1.1.0, ^1.0.0)
@@ -1219,7 +1244,6 @@ Options:
   }
 
   // ── Existing resolver path: --host absent ──────────────────────────────────
-  const scope = (flags['scope'] ?? 'user') as 'org' | 'user' | 'project' | 'local';
   const frozen = flags['frozen-lockfile'] === 'true';
   const update = flags['update'] === 'true';
   const mode = frozen ? 'frozen' : update ? 'update' : 'default';
@@ -1242,7 +1266,15 @@ Options:
   // Use parseArgs-produced flags['_'] instead of scanning raw argv: the latter
   // mis-identifies flag VALUES (e.g. `user` from `-s user`) as positionals (A12).
   const positionalId: string | undefined = flags['_'];
+  const explicitScope = flags['scope'];
 
+  // Default scope is 'local' for all no-host installs. When a positional <id> is
+  // given, BL-219 targets it at local scope (machine-local, gitignored). When no
+  // positional is given, local is still the default — the command validates or
+  // scaffolds the local config rather than cascading from user scope.
+  const scope = (explicitScope ?? 'local') as 'org' | 'user' | 'project' | 'local';
+
+  // ── Positional: install the named extension ─────────────────────────────────
   if (positionalId !== undefined && positionalId !== '') {
     // BL-19 source guard: a reserved scope name must NEVER be written as an extension id.
     // Older CLIs that scanned raw argv could capture a `--scope <name>` value as a positional,
@@ -1290,127 +1322,250 @@ Options:
       }
 
       cfg.install.push({ id: positionalId });
-      fsMod2.mkdirSync(pathMod2.dirname(cfgPath), { recursive: true });
+      const cfgDir = pathMod2.dirname(cfgPath);
+      if (!fsMod2.existsSync(cfgDir)) {
+        fsMod2.mkdirSync(cfgDir, { recursive: true });
+      }
       fsMod2.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
       process.stdout.write(`${CLI} install: added '${positionalId}' to ${cfgPath}\n`);
     }
-  }
 
-  // Interactive config prompting: when stdout is a TTY, provide readline-based
-  // prompt for missing required config keys declared in config_schema.
-  // BL-42 fresh-machine fallback: resolve the registry (cwd → CLI-bundled copy)
-  // and inject it so install() works with no repo checkout under its REPO_ROOT.
-  const resolvedRegistryForInstall = loadRegistryResolved(process.cwd());
-  const installOpts: Parameters<typeof import('@adhd/sox-install-engine').install>[0] = {
-    scope,
-    mode,
-    // BL-73: pass workspaceRoot as root so install() derives config/lockfile paths
-    // relative to the target project, not the CLI's own REPO_ROOT.
-    root: workspaceRoot,
-    ...(configPathFlag !== undefined ? { configPath: configPathFlag } : {}),
-    ...(lockfilePathFlag !== undefined ? { lockfilePath: lockfilePathFlag } : {}),
-    ...(resolvedRegistryForInstall.length > 0 ? { registryIndex: resolvedRegistryForInstall } : {}),
-  };
+    // ── Build install opts and install ────────────────────────────────────────
+    const resolvedRegistryForInstall = loadRegistryResolved(process.cwd());
 
-  // Interactive config prompting: when stdout is a TTY, provide readline-based
-  // prompt for missing required config keys declared in config_schema.
-  if (process.stdout.isTTY) {
-    installOpts.onMissingConfig = async (_extId: string, _key: string, prompt: string, defaultVal: unknown): Promise<string | undefined> => {
-      const rl = require('node:readline') as typeof import('node:readline');
-      const iface = rl.createInterface({ input: process.stdin, output: process.stdout });
-      const defaultStr = defaultVal !== undefined ? String(defaultVal) : '';
-      const fullPrompt = defaultStr
-        ? `${CLI} install: ${prompt} [${defaultStr}]: `
-        : `${CLI} install: ${prompt}: `;
-      return new Promise((resolve) => {
-        iface.question(fullPrompt, (answer: string) => {
-          iface.close();
-          const val = answer.trim() || defaultStr;
-          resolve(val || undefined);
-        });
-      });
+    // BL-219: positional install must target only the named extension — derive the
+    // scope config path and pass it to trigger singleScopeOnly in loadScopeCascade,
+    // bypassing the org→user→project→local cascade that would install everything.
+    const configForPositional = configPathFlag ?? getScopePaths(scope, workspaceRoot).config;
+
+    const installOpts: Parameters<typeof import('@adhd/sox-install-engine').install>[0] = {
+      scope,
+      mode,
+      root: workspaceRoot,
+      configPath: configForPositional,
+      ...(lockfilePathFlag !== undefined ? { lockfilePath: lockfilePathFlag } : {}),
+      ...(resolvedRegistryForInstall.length > 0 ? { registryIndex: resolvedRegistryForInstall } : {}),
     };
-  }
 
-  await install(installOpts);
+    if (process.stdout.isTTY) {
+      installOpts.onMissingConfig = async (_id: string, _k: string, prompt: string, defaultVal: unknown): Promise<string | undefined> => {
+        const rl = require('node:readline') as typeof import('node:readline');
+        const iface = rl.createInterface({ input: process.stdin, output: process.stdout });
+        const defaultStr = defaultVal !== undefined ? String(defaultVal) : '';
+        const fullPrompt = defaultStr
+          ? `${CLI} install: ${prompt} [${defaultStr}]: `
+          : `${CLI} install: ${prompt}: `;
+        return new Promise((resolve) => {
+          iface.question(fullPrompt, (answer: string) => {
+            iface.close();
+            resolve(answer.trim() || defaultStr || undefined);
+          });
+        });
+      };
+    }
 
-  // ── Re-materialize service-registered extensions ───────────────────────────
-  // The main install() call only writes the lockfile. If any extension is
-  // registered as a service in the scope's run-service registry.json, re-copy the
-  // bundle from its source dir to the store dir so the next `soxe start` picks up
-  // the updated bundle without requiring `--profile=service` or a full reinstall.
-  // ADR-0004 §D2: the registry lives under the scope's data dir.
-  rematerializeServiceStores(
-    scope,
-    workspaceRoot,
-    lockfilePathFlag ?? getScopePaths(scope, workspaceRoot).lockfile,
-  );
+    await install(installOpts);
 
-  // ── Host-place declarative members (BL-17) ────────────────────────────────
-  // After install() writes the lockfile, host-place every resolved extension
-  // whose manifest declares `install.hosts`. This covers bundle members (e.g.
-  // memory-usage skill) and standalone declarative extensions installed via the
-  // config/lockfile path. Service and mcp-server runtime types have no file-drop
-  // surface and are skipped automatically by declarativeInstall.
-  {
-    const fsMod4 = require('node:fs') as typeof import('node:fs');
-    const pathMod4 = require('node:path') as typeof import('node:path');
+    // ── Re-materialize + host-place (same as positional path) ────────────────
+    rematerializeServiceStores(
+      scope,
+      workspaceRoot,
+      lockfilePathFlag ?? getScopePaths(scope, workspaceRoot).lockfile,
+    );
 
-    // BL-73: read back from the same root install() just wrote to.
-    const lockfilePath4 = lockfilePathFlag ?? getScopePaths(scope, workspaceRoot).lockfile;
-    const lockfile4 = loadLockfile(lockfilePath4);
+    {
+      const fsMod4 = require('node:fs') as typeof import('node:fs');
+      const pathMod4 = require('node:path') as typeof import('node:path');
+      const lockfilePath4 = lockfilePathFlag ?? getScopePaths(scope, workspaceRoot).lockfile;
+      const lockfile4 = loadLockfile(lockfilePath4);
 
-    if (lockfile4 !== null) {
-      const repoRoot4 = process.cwd();
-
-      for (const [lockKey, lkEntry4] of Object.entries(lockfile4.resolved)) {
-        // Strip the @version suffix to get the bare extension id.
-        const atIdx = lockKey.lastIndexOf('@');
-        const extId4 = atIdx > 0 ? lockKey.slice(0, atIdx) : lockKey;
-
-        // Resolve the extension source directory from the lockfile entry.
-        // resolveExtensionDir returns the directory for a file:// source but may
-        // return a file path (e.g. SKILL.md, dist/index.js) when the lockfile
-        // source was pinned to the entrypoint artifact. In that case, use dirname.
-        const resolved4 = resolveExtensionDir(lkEntry4.source, repoRoot4);
-        if (!resolved4) continue;
-        const extDir4 = fsMod4.existsSync(resolved4) && fsMod4.statSync(resolved4).isDirectory()
-          ? resolved4
-          : pathMod4.dirname(resolved4);
-
-        // Load manifest to check install.hosts.
-        const manifestPath4 = pathMod4.join(extDir4, 'extension.json');
-        if (!fsMod4.existsSync(manifestPath4)) continue;
-        let mf4: Record<string, unknown>;
-        try {
-          mf4 = JSON.parse(fsMod4.readFileSync(manifestPath4, 'utf8')) as Record<string, unknown>;
-        } catch { continue; }
-
-        const installBlock4 = mf4['install'] as
-          | { type?: string; hosts?: string[] }
-          | undefined;
-        if (!installBlock4?.hosts || installBlock4.hosts.length === 0) continue;
-
-        const extType4 = (mf4['type'] as string | undefined) ?? '';
-
-        // Skip non-declarative (runtime) types — they have no file-drop surface.
-        // declarativeInstall will silently return [] for them, but skip early to
-        // avoid unnecessary I/O.
-        if (extType4 === 'service' || extType4 === 'bundle') continue;
-
-        await hostPlaceExtension(
-          extId4,
-          extDir4,
-          extType4,
-          installBlock4.hosts,
-          scope,
-          repoRoot4,
-        );
+      if (lockfile4 !== null) {
+        const repoRoot4 = process.cwd();
+        for (const [lockKey, lkEntry4] of Object.entries(lockfile4.resolved)) {
+          const atIdx = lockKey.lastIndexOf('@');
+          const extId4 = atIdx > 0 ? lockKey.slice(0, atIdx) : lockKey;
+          const resolved4 = resolveExtensionDir(lkEntry4.source, repoRoot4);
+          if (!resolved4) continue;
+          const extDir4 = fsMod4.existsSync(resolved4) && fsMod4.statSync(resolved4).isDirectory()
+            ? resolved4
+            : pathMod4.dirname(resolved4);
+          const manifestPath4 = pathMod4.join(extDir4, 'extension.json');
+          if (!fsMod4.existsSync(manifestPath4)) continue;
+          let mf4: Record<string, unknown>;
+          try { mf4 = JSON.parse(fsMod4.readFileSync(manifestPath4, 'utf8')) as Record<string, unknown>; } catch { continue; }
+          const installBlock4 = mf4['install'] as
+            | { type?: string; hosts?: string[] }
+            | undefined;
+          if (!installBlock4?.hosts || installBlock4.hosts.length === 0) continue;
+          const extType4 = (mf4['type'] as string | undefined) ?? '';
+          if (extType4 === 'service' || extType4 === 'bundle') continue;
+          await hostPlaceExtension(extId4, extDir4, extType4, installBlock4.hosts, scope, repoRoot4);
+        }
       }
     }
+
+    // ── Check if already installed and up-to-date ─────────────────────────────
+    // After install(), verify the lockfile has the extension and print status.
+    const lfPath = lockfilePathFlag ?? getScopePaths(scope, workspaceRoot).lockfile;
+    const lf = loadLockfile(lfPath);
+    const entry = lf?.resolved?.[positionalId];
+    if (entry) {
+      process.stdout.write(`${CLI} install: installed ${positionalId} (scope=${scope})\n`);
+    } else {
+      process.stdout.write(`${CLI} install: done (scope=${scope})\n`);
+    }
+    process.exit(0);
   }
 
-  process.stdout.write(`${CLI} install: done (scope=${scope}, mode=${mode})\n`);
+  // ── No positional: validate/suggest mode (or --update for backwards compat) ──
+  const fsMod3 = require('node:fs') as typeof import('node:fs');
+  const pathMod3 = require('node:path') as typeof import('node:path');
+
+  const scopePaths = getScopePaths(scope, workspaceRoot);
+  const cfgDir = pathMod3.dirname(scopePaths.config);
+  const cfgExists = fsMod3.existsSync(scopePaths.config);
+
+  if (!cfgExists) {
+    // Scaffold empty config + first-run experience
+    fsMod3.mkdirSync(cfgDir, { recursive: true });
+    fsMod3.writeFileSync(scopePaths.config, JSON.stringify({ install: [] }, null, 2) + '\n', 'utf8');
+    process.stdout.write(
+      `${CLI} install: initialised empty extension list at ${scopePaths.config}\n` +
+      `  Run '${CLI} search' to see all installable extensions\n` +
+      `  Run '${CLI} install <id>' to install an extension\n`,
+    );
+    process.exit(0);
+  }
+
+  // --update flag: run full install with cascade for backwards compat
+  if (update) {
+    const resolvedRegistryForInstall = loadRegistryResolved(process.cwd());
+    const installOpts: Parameters<typeof import('@adhd/sox-install-engine').install>[0] = {
+      scope,
+      mode,
+      root: workspaceRoot,
+      ...(configPathFlag !== undefined ? { configPath: configPathFlag } : {}),
+      ...(lockfilePathFlag !== undefined ? { lockfilePath: lockfilePathFlag } : {}),
+      ...(resolvedRegistryForInstall.length > 0 ? { registryIndex: resolvedRegistryForInstall } : {}),
+    };
+
+    if (process.stdout.isTTY) {
+      installOpts.onMissingConfig = async (_id: string, _k: string, prompt: string, defaultVal: unknown): Promise<string | undefined> => {
+        const rl = require('node:readline') as typeof import('node:readline');
+        const iface = rl.createInterface({ input: process.stdin, output: process.stdout });
+        const defaultStr = defaultVal !== undefined ? String(defaultVal) : '';
+        const fullPrompt = defaultStr
+          ? `${CLI} install: ${prompt} [${defaultStr}]: `
+          : `${CLI} install: ${prompt}: `;
+        return new Promise((resolve) => {
+          iface.question(fullPrompt, (answer: string) => {
+            iface.close();
+            resolve(answer.trim() || defaultStr || undefined);
+          });
+        });
+      };
+    }
+
+    await install(installOpts);
+    rematerializeServiceStores(
+      scope,
+      workspaceRoot,
+      lockfilePathFlag ?? getScopePaths(scope, workspaceRoot).lockfile,
+    );
+
+    {
+      const fsMod4 = require('node:fs') as typeof import('node:fs');
+      const pathMod4 = require('node:path') as typeof import('node:path');
+      const lockfilePath4 = lockfilePathFlag ?? getScopePaths(scope, workspaceRoot).lockfile;
+      const lockfile4 = loadLockfile(lockfilePath4);
+      if (lockfile4 !== null) {
+        const repoRoot4 = process.cwd();
+        for (const [lockKey, lkEntry4] of Object.entries(lockfile4.resolved)) {
+          const atIdx = lockKey.lastIndexOf('@');
+          const extId4 = atIdx > 0 ? lockKey.slice(0, atIdx) : lockKey;
+          const resolved4 = resolveExtensionDir(lkEntry4.source, repoRoot4);
+          if (!resolved4) continue;
+          const extDir4 = fsMod4.existsSync(resolved4) && fsMod4.statSync(resolved4).isDirectory()
+            ? resolved4
+            : pathMod4.dirname(resolved4);
+          const manifestPath4 = pathMod4.join(extDir4, 'extension.json');
+          if (!fsMod4.existsSync(manifestPath4)) continue;
+          let mf4: Record<string, unknown>;
+          try { mf4 = JSON.parse(fsMod4.readFileSync(manifestPath4, 'utf8')) as Record<string, unknown>; } catch { continue; }
+          const installBlock4 = mf4['install'] as
+            | { type?: string; hosts?: string[] }
+            | undefined;
+          if (!installBlock4?.hosts || installBlock4.hosts.length === 0) continue;
+          const extType4 = (mf4['type'] as string | undefined) ?? '';
+          if (extType4 === 'service' || extType4 === 'bundle') continue;
+          await hostPlaceExtension(extId4, extDir4, extType4, installBlock4.hosts, scope, repoRoot4);
+        }
+      }
+    }
+
+    process.stdout.write(`${CLI} install: done (scope=${scope}, mode=${mode})\n`);
+    process.exit(0);
+  }
+
+  // Load config
+  let installList: Array<{ id: string }> = [];
+  try {
+    const parsed = JSON.parse(fsMod3.readFileSync(scopePaths.config, 'utf8')) as { install?: Array<{ id: string }> };
+    installList = parsed.install ?? [];
+  } catch {
+    process.stderr.write(`${CLI} install: failed to parse ${scopePaths.config}\n`);
+    process.exit(1);
+  }
+
+  if (installList.length === 0) {
+    process.stdout.write(`${CLI} install: no extensions configured at '${scope}' scope.\n`);
+    process.stdout.write(`  Run '${CLI} install <id>' to install an extension.\n`);
+    process.exit(0);
+  }
+
+  // Load lockfile if it exists
+  const lockfile = fsMod3.existsSync(scopePaths.lockfile)
+    ? loadLockfile(scopePaths.lockfile)
+    : null;
+
+  // Validate each configured extension
+  const registryIndex = loadRegistryResolved(process.cwd());
+  const upgradeNeeded: string[] = [];
+
+  for (const entry of installList) {
+    const extId = entry.id;
+    const locked = lockfile?.resolved?.[extId];
+
+    if (!locked) {
+      upgradeNeeded.push(extId);
+      process.stdout.write(`  ${extId} — not installed\n`);
+      continue;
+    }
+
+    const srcPath = locked.source.startsWith('file://') ? locked.source.slice(7) : locked.source;
+    if (!fsMod3.existsSync(srcPath)) {
+      upgradeNeeded.push(extId);
+      process.stdout.write(`  ${extId} — source missing (was: ${srcPath})\n`);
+      continue;
+    }
+
+    // Verify against registry checksum
+    const regEntry = resolveFromRegistry(extId, registryIndex);
+    if (regEntry && regEntry.checksum !== locked.checksum) {
+      upgradeNeeded.push(extId);
+      process.stdout.write(`  ${extId} — update available\n`);
+      continue;
+    }
+
+    process.stdout.write(`  ${extId} — installed\n`);
+  }
+
+  if (upgradeNeeded.length > 0) {
+    process.stdout.write(`\n  Run '${CLI} upgrade --scope=${scope}' to update ${upgradeNeeded.length} extension(s)\n`);
+    process.exit(1);
+  }
+
+  process.stdout.write(`\n  All ${installList.length} extension(s) up-to-date at '${scope}' scope.\n`);
   process.exit(0);
 }
 
@@ -3182,11 +3337,12 @@ Options:
 
   // ── --all mode: reads ~/.sox/supervisors.json and merges runtime records ───
   // Shows what is running across all projects on this machine.
-  // Stale entries (dead pid or unreachable socket) are cleaned up by readGlobalRegistry.
+  // Stale entries (dead pid or unreachable socket) are cleaned up by quickReconcile.
   if (flags['all'] !== undefined) {
-    // R2: use readGlobalRegistry() which runs full probeEntryLiveness (pid + socket)
-    // and removes stale entries before returning.
-    const supervisors = await readGlobalRegistry();
+    // R2 / BL-176: quickReconcile phase 0 (readGlobalRegistry — full
+    // probeEntryLiveness pid+socket, removes stale entries) + phase 3
+    // (split-brain runtime.json heal, persisted) before rendering.
+    const { liveSupervisors: supervisors } = await quickReconcile({ root: flags['root'] ?? ROOT2 });
 
     type AllRow = {
       id: string;
@@ -3291,6 +3447,13 @@ Options:
   const scopesToScan = effectiveScopeOverride !== undefined
     ? [effectiveScopeOverride]
     : ['user', 'project', 'local'];
+
+  // BL-176: fast-path reconcile — phase 0 (GC dead supervisors) + phase 3
+  // (split-brain runtime.json heal, persisted) before reading runtime.json for
+  // display, so a stale running:true survives neither this read NOR a
+  // subsequent one ([inv:list-never-lies], §10.2). Never touches a scope whose
+  // runtime.json is owned by a still-live supervisor.
+  await quickReconcile({ root, scopes: scopesToScan });
 
   // Strip file:// scheme prefix from a source path for clean display.
   function cleanSource(src: string | undefined): string {
@@ -3435,7 +3598,7 @@ Exits non-zero if the id is not found.
 
   // ── Registry lookup ──────────────────────────────────────────────────────
   const repoRoot = process.cwd();
-  const registryIndex = loadRegistryIndex(repoRoot);
+  const registryIndex = loadRegistryResolved(repoRoot);
   const entry = registryIndex.find((e) => e.id === id);
 
   if (entry === undefined) {
@@ -3635,7 +3798,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
   // before we spawn, so a start can never duplicate a daemon. Opt out with
   // --no-reap (e.g. to deliberately run alongside, which we never want here).
   if (flags['no-reap'] === undefined && flags['_daemon-child'] === undefined) {
-    const startId = flags['id'];
+    const startId = flags['_'] ?? flags['id'];
     const lock0 = loadLockfile(lockfilePath);
     const reapIds: string[] = startId
       ? [startId]
@@ -4407,7 +4570,7 @@ function resolveOsUnitContext(
 async function cmdService(argvIn: string[], flags: Record<string, string>): Promise<void> {
   const sub = argvIn[1];
   if (sub === undefined || flags['help'] !== undefined || flags['h'] !== undefined) {
-    process.stdout.write(`${CLI} service — OS-supervisor control surface (launchd / systemd), spec §9
+    process.stdout.write(`${CLI} service — OS-supervisor control (launchd / systemd)
 
 Usage:
   ${CLI} service enable  <ext> [-s <scope>]   Generate + load an OS unit (reboot persistence)
@@ -5272,7 +5435,7 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
   const fsMod = require('node:fs') as typeof import('node:fs');
   const pathMod = require('node:path') as typeof import('node:path');
   const root = flags['root'] ?? process.cwd();
-  const filterId = flags['id'];
+  const filterId = flags['_'] ?? flags['id'];
   const filterScope = flags['scope'];
   const doFix = flags['fix'] !== undefined;
   const useOldMatch = flags['old-match'] !== undefined;
@@ -6081,15 +6244,17 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
   const fsMod = require('node:fs') as typeof import('node:fs');
   const pathMod = require('node:path') as typeof import('node:path');
 
-  const filterId = flags['id'];
+  const filterId = flags['_'] ?? flags['id'];
   const filterProject = flags['project'];
   const filterScope = flags['scope'];
   const jsonMode = flags['json'] !== undefined;
   const linesArg = parseInt(flags['lines'] ?? '20', 10);
   const logLines = Number.isFinite(linesArg) && linesArg > 0 ? linesArg : 20;
 
-  // R2: lazy GC — returns only live supervisors; dead entries are cleaned up.
-  const liveSupervisors = await readGlobalRegistry();
+  // R2 / BL-176: fast-path reconcile — phase 0 (lazy GC: returns only live
+  // supervisors, dead entries cleaned up) + phase 3 (split-brain runtime.json
+  // heal, persisted) on every `status` invocation ([inv:list-never-lies], §10.2).
+  const { liveSupervisors } = await quickReconcile({ root: process.cwd() });
   const hasRuntimeSupervisors = liveSupervisors.length > 0;
 
   // PI-5 / BL-141: detect lockfile-empty-but-registry-populated divergence.
@@ -6929,7 +7094,7 @@ async function cmdFollow(flags: Record<string, string>): Promise<void> {
   const fsMod = require('node:fs') as typeof import('node:fs');
   const pathMod = require('node:path') as typeof import('node:path');
 
-  const id = flags['id'];
+  const id = flags['_'] ?? flags['id'];
   const scope = flags['scope'] ?? 'user';
   const root = flags['root'] ?? process.cwd();
   const linesArg = parseInt(flags['lines'] ?? '20', 10);
@@ -7075,9 +7240,9 @@ async function cmdLogs(flags: Record<string, string>): Promise<void> {
   const fsMod = require('node:fs') as typeof import('node:fs');
   const pathMod = require('node:path') as typeof import('node:path');
 
-  const id = flags['id'];
+  const id = flags['_'] ?? flags['id'];
   if (!id) {
-    process.stderr.write(`${CLI} logs: --id is required\n`);
+    process.stderr.write(`${CLI} logs: extension id is required (positional or --id)\n`);
     process.exit(1);
   }
 
@@ -7617,7 +7782,7 @@ Designed for use as the .mcp.json command for stdio MCP servers.
 Flags:
   --scope=<scope>   Restrict lookup to one scope (default: cascade project→user→org→local)
   --root=<dir>      Workspace root (default: cwd)
-  --proxy           Force front-shim proxy mode (spec §9.5): serve initialize +
+  --proxy           Force front-shim proxy mode: serve initialize +
                     tools/list from a cached schema and proxy tools/call to a
                     persistent sox-owned backend over a UDS, so a backend upgrade
                     is a rolling restart with NO client reconnect. The shim
