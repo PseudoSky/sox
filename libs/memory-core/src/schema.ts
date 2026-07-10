@@ -84,7 +84,7 @@ CREATE INDEX IF NOT EXISTS ix_edge_src  ON edge(src, rel) WHERE t_expired IS NUL
 CREATE INDEX IF NOT EXISTS ix_edge_dst  ON edge(dst, rel) WHERE t_expired IS NULL;
 CREATE INDEX IF NOT EXISTS ix_edge_live ON edge(t_invalid) WHERE t_invalid IS NULL;
 
--- vec0 virtual table (dim from embed_model: 768 for nomic)
+-- vec0 virtual table (dim from embed_model: 768 for bge-base-en-v1.5)
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_node USING vec0(node_id INTEGER PRIMARY KEY, embedding FLOAT[768]);
 
 -- FTS5 virtual table

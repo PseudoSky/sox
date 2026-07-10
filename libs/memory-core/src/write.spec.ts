@@ -233,6 +233,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const result = r as { episode_uid: string; enrichment: Record<string, unknown> };
       expect(result.enrichment.topic).toBe('security');
       expect(result.enrichment.project_path).toBe('/projects/api');
+      expect(result.enrichment.project_path_source).toBe('explicit');
       expect(result.enrichment.tags).toEqual(['validation', 'security']);
       expect(result.enrichment.summary).toBe('Input validation best practice');
       expect(result.enrichment.near_dup).toBeNull();
@@ -266,6 +267,133 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       expect(edge?.rel).toBe('DERIVED_FROM');
       db.close();
     } finally { cleanup(); }
+  });
+});
+
+// ── BL-62: project_path attribution visibility (shim-cwd ≠ working-dir) ──────────
+//
+// BACKLOG.md BL-62 "REGRESSION / incomplete-fix evidence (2026-07-08)": an unqualified
+// `memory_write` (no explicit `project_path`) from a session whose REAL working
+// project differed from the serving process's cwd/env was silently attributed to the
+// WRONG project — specifically, the MCP shim/backend's frozen process cwd
+// (SOX_CONFIG_PROJECT_PATH, injected once at shim spawn — apps/sox/src/main.ts) is
+// NOT the same thing as the caller's LIVE working directory, and Node's
+// `process.cwd()` cannot change per-request within a single long-lived process. This
+// is a DIFFERENT case from the original BL-62 "shim-cwd == project" fix (which only
+// proved the single-project-per-shim case): here the shim/backend's own cwd is
+// stipulated to differ from the caller's true project (the exact qusececure vs
+// agent-source repro, episode 01KX1WZSGSN4KZZM812Q2FCVCE).
+//
+// HARD GATE (per task brief): the only fully-correct fix requires either (a) the
+// caller ALWAYS passing `project_path` explicitly (works today — precedence:
+// explicit-arg > env > cwd-git, provenance.ts), or (b) the MCP `roots` capability,
+// which this server's transport (libs/mcp-runtime serve()) does NOT negotiate.
+// Inventing that protocol wiring here is explicitly out of scope. What IS safely
+// implementable within write.ts: stamp WHICH tier resolved project_path
+// (`enrichment.project_path_source`) so a caller/operator can DETECT low-confidence
+// attribution instead of it being silent and permanently unrecoverable (the
+// BL-221 companion fix then makes it correctable via memory_update).
+describe('memoryWrite — BL-62 project_path attribution visibility (shim-cwd ≠ working-dir)', () => {
+  let savedEnv: string | undefined;
+
+  beforeEach(() => {
+    savedEnv = process.env['SOX_CONFIG_PROJECT_PATH'];
+  });
+  afterEach(() => {
+    if (savedEnv === undefined) delete process.env['SOX_CONFIG_PROJECT_PATH'];
+    else process.env['SOX_CONFIG_PROJECT_PATH'] = savedEnv;
+  });
+
+  it('BL-62: an unqualified write under a shim-cwd ≠ working-dir env is (still, by design) mis-attributed to the shim cwd, but is now flagged project_path_source:"inferred" instead of silently unrecoverable', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      // Simulate the exact repro topology: the serving process's env/cwd fallback
+      // (SOX_CONFIG_PROJECT_PATH, set once at shim spawn) is "agent-source", but the
+      // caller's REAL, live working project this session is "qusececure" — a fact
+      // this write path has NO way to observe without an explicit arg or MCP roots.
+      process.env['SOX_CONFIG_PROJECT_PATH'] = '/Users/nix/dev/ai/agent-source';
+      const trueWorkingDir = '/Users/nix/Documents/professional/qusececure';
+
+      const db = openDb(path.join(dir, 't.db'));
+      // No project_path arg — this is the "unqualified memory_write" from the repro.
+      const r = await memoryWrite(db, { content: 'BL-62 repro: unqualified write.' });
+      expect('episode_uid' in r).toBe(true);
+      const result = r as {
+        episode_uid: string;
+        enrichment: { project_path: string | null; project_path_source: string };
+      };
+
+      // The underlying mis-attribution is NOT fixed here (that requires MCP roots
+      // or an explicit arg, per the HARD GATE) — prove it still happens exactly as
+      // reported, so this test cannot pass by accident once roots eventually ships
+      // without anyone noticing the assertion went stale.
+      expect(result.enrichment.project_path).toBe('/Users/nix/dev/ai/agent-source');
+      expect(result.enrichment.project_path).not.toBe(trueWorkingDir);
+
+      // GREEN (the safe, in-scope mitigation): the response now HONESTLY reports
+      // this attribution as inferred/low-confidence rather than indistinguishable
+      // from a correct, caller-supplied value.
+      expect(result.enrichment.project_path_source).toBe('inferred');
+
+      const row = db
+        .prepare<[string], { project_path: string | null }>(
+          'SELECT project_path FROM node WHERE uid = ?',
+        )
+        .get(result.episode_uid)!;
+      expect(row.project_path).toBe('/Users/nix/dev/ai/agent-source');
+      db.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('BL-62: passing project_path explicitly overrides the wrong shim-cwd env and is reported project_path_source:"explicit" (the documented workaround)', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      // Same wrong-env topology as above...
+      process.env['SOX_CONFIG_PROJECT_PATH'] = '/Users/nix/dev/ai/agent-source';
+      const trueWorkingDir = '/Users/nix/Documents/professional/qusececure';
+
+      const db = openDb(path.join(dir, 't.db'));
+      // ...but this time the caller (agent) knows its own real cwd and passes it.
+      const r = await memoryWrite(db, {
+        content: 'BL-62 workaround: qualified write with explicit project_path.',
+        project_path: trueWorkingDir,
+      });
+      expect('episode_uid' in r).toBe(true);
+      const result = r as {
+        episode_uid: string;
+        enrichment: { project_path: string | null; project_path_source: string };
+      };
+
+      expect(result.enrichment.project_path).toBe(trueWorkingDir);
+      expect(result.enrichment.project_path_source).toBe('explicit');
+
+      const row = db
+        .prepare<[string], { project_path: string | null }>(
+          'SELECT project_path FROM node WHERE uid = ?',
+        )
+        .get(result.episode_uid)!;
+      expect(row.project_path).toBe(trueWorkingDir);
+      db.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('BL-62: an empty-string project_path arg is treated as omitted (falls back, reported "inferred") — matches provenance.ts override semantics', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      process.env['SOX_CONFIG_PROJECT_PATH'] = '/Users/nix/dev/ai/agent-source';
+      const db = openDb(path.join(dir, 't.db'));
+      const r = await memoryWrite(db, { content: 'BL-62 empty-string edge case.', project_path: '' });
+      const result = r as { enrichment: { project_path: string | null; project_path_source: string } };
+      expect(result.enrichment.project_path).toBe('/Users/nix/dev/ai/agent-source');
+      expect(result.enrichment.project_path_source).toBe('inferred');
+      db.close();
+    } finally {
+      cleanup();
+    }
   });
 });
 
@@ -433,6 +561,62 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
         (ok[0] as { episode_uid: string }).episode_uid,
       );
     }
+  });
+});
+
+// ── BL-233: memory_write_batch project_path_source parity ──────────────────────
+//
+// The BL-62 mitigation added WriteResult.enrichment.project_path_source to the
+// single-item memoryWrite path. BatchItemOk had no equivalent, so batch writers
+// could not tell whether a given item's attribution was inferred (and thus
+// possibly wrong, per BL-62) or explicit. This computes it identically to the
+// single-item path (a non-empty project_path on THAT item => 'explicit').
+describe('memoryWriteBatch — project_path_source parity (BL-233)', () => {
+  let cleanupDb: () => void;
+  let db: Database.Database;
+
+  beforeEach(() => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'batch-pps-'));
+    cleanupDb = () => fs.rmSync(dir, { recursive: true, force: true });
+    db = openDb(path.join(dir, 'batch-pps.db'));
+  });
+
+  afterEach(() => {
+    if (db && db.open) db.close();
+    cleanupDb();
+  });
+
+  it('BL-233: per-item project_path_source is "explicit" when that item supplies project_path, "inferred" otherwise', async () => {
+    const items = [
+      { content: 'Batch item with explicit project_path A.', project_path: '/projects/alpha' },
+      { content: 'Batch item with NO project_path at all.' },
+      { content: 'Batch item with explicit project_path B.', project_path: '/projects/beta' },
+    ];
+
+    const result = await memoryWriteBatch(db, items);
+    expect(result.results).toHaveLength(3);
+
+    const first = result.results[0] as { ok: true; project_path_source: string };
+    const second = result.results[1] as { ok: true; project_path_source: string };
+    const third = result.results[2] as { ok: true; project_path_source: string };
+
+    expect(first.ok).toBe(true);
+    expect(first.project_path_source).toBe('explicit');
+
+    expect(second.ok).toBe(true);
+    expect(second.project_path_source).toBe('inferred');
+
+    expect(third.ok).toBe(true);
+    expect(third.project_path_source).toBe('explicit');
+  });
+
+  it('BL-233: an empty-string project_path on a batch item is reported "inferred" (matches single-item semantics)', async () => {
+    const result = await memoryWriteBatch(db, [
+      { content: 'Batch item with empty-string project_path.', project_path: '' },
+    ]);
+    const first = result.results[0] as { ok: true; project_path_source: string };
+    expect(first.ok).toBe(true);
+    expect(first.project_path_source).toBe('inferred');
   });
 });
 

@@ -6,7 +6,15 @@
  *
  * Spec (locked):
  *   - Selector:         uid (required). E_NOT_FOUND if no live node with that uid.
- *   - Replaceable:      content, summary, name, topic, tags, importance.
+ *   - Replaceable:      content, summary, name, topic, tags, importance, project_path.
+ *   - project_path:     (BL-221) added to the editable field set so a mis-attributed
+ *                       episode (BL-62 — wrong provenance from a shared/long-lived
+ *                       server process's env/cwd fallback) can be corrected IN PLACE.
+ *                       Deliberately option (a) of the three BL-221 sketches: content-
+ *                       hash dedup (write.ts content_hash) is NOT part of this change —
+ *                       it stays computed over content only, so no existing store row's
+ *                       dedup fingerprint changes. Does NOT trigger re-embed (the vector
+ *                       is derived from content/summary only).
  *   - metadata:         DEEP-MERGE into existing meta by default (recursive for objects,
  *                       arrays REPLACED not concatenated). `metadata_merge:'replace'`
  *                       overwrites meta wholesale.
@@ -80,6 +88,16 @@ export interface UpdateParams {
   tags?: string[] | undefined;
   /** Replace node.importance. */
   importance?: number | undefined;
+  /**
+   * (BL-221) Replace node.project_path. The sole in-place remediation path for a
+   * mis-attributed episode (BL-62): re-writing the identical content with a
+   * corrected project_path is rejected by E_DEDUP (content_hash ignores
+   * project_path by design — see write.ts), so this field must be updatable here.
+   * Compared/stored like every other scalar field (topic, name, ...): omit the
+   * field to leave it untouched, or supply a string (including `''`) to replace it
+   * verbatim — no implicit null-coercion.
+   */
+  project_path?: string | undefined;
 
   /**
    * Metadata to merge into (or replace) existing node.meta.
@@ -144,6 +162,7 @@ export function memoryUpdatePhaseA(
     metadata_merge = 'deep',
     t_occurred,
     t_valid,
+    project_path,
   } = params;
 
   // ── 1. Load the existing live node ──────────────────────────────────────────
@@ -161,10 +180,11 @@ export function memoryUpdatePhaseA(
         meta: string | null;
         t_occurred: string | null;
         t_valid: string | null;
+        project_path: string | null;
       }
     >(
       `SELECT rowid, content, summary, name, topic, tags, importance, meta,
-              t_occurred, t_valid
+              t_occurred, t_valid, project_path
        FROM node
        WHERE uid = ? AND t_invalid IS NULL
        LIMIT 1`,
@@ -209,6 +229,13 @@ export function memoryUpdatePhaseA(
     setClauses.push('topic = ?');
     setValues.push(topic);
     updatedFields.push('topic');
+  }
+
+  // project_path (BL-221 — the in-place remediation path for BL-62 mis-attribution)
+  if (project_path !== undefined && project_path !== existing.project_path) {
+    setClauses.push('project_path = ?');
+    setValues.push(project_path);
+    updatedFields.push('project_path');
   }
 
   // tags — compare by serialised form

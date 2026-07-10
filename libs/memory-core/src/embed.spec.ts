@@ -20,6 +20,7 @@ const RUN_REAL_EMBED =
 import {
   embed,
   getActiveEmbedModel,
+  getConfiguredEmbedBackend,
   getEmbedHealth,
   getLastEmbedError,
   warmupEmbed,
@@ -62,6 +63,45 @@ afterEach(() => {
     process.env['SOX_EMBED_BACKEND'] = savedBackend;
   }
   _resetEmbedSingleton();
+});
+
+// ── BL-250: SOX_EMBED_BACKEND validation ──────────────────────────────────────
+//
+// The hash backend was removed (EmbedBackend = 'auto' | 'real' only); an
+// unchecked `as EmbedBackend` cast previously let ANY string value (e.g. a
+// stale SOX_EMBED_BACKEND=hash) flow straight through and be reported back to
+// callers via memory_ping/memory_stats as if it were a real, honoured backend.
+// getConfiguredEmbedBackend()/getEmbedHealth() must now throw a clear error
+// instead.
+
+describe('SOX_EMBED_BACKEND validation (BL-250)', () => {
+  it('getConfiguredEmbedBackend() throws a clear error on an unknown backend value', () => {
+    process.env['SOX_EMBED_BACKEND'] = 'hash';
+    expect(() => getConfiguredEmbedBackend()).toThrow(/Invalid SOX_EMBED_BACKEND.*"hash"/);
+  });
+
+  it('getEmbedHealth() throws the same way (memory_ping must not silently report "hash")', () => {
+    process.env['SOX_EMBED_BACKEND'] = 'hash';
+    expect(() => getEmbedHealth()).toThrow(/Invalid SOX_EMBED_BACKEND/);
+  });
+
+  it('accepts the documented union values without throwing', () => {
+    process.env['SOX_EMBED_BACKEND'] = 'auto';
+    expect(getConfiguredEmbedBackend()).toBe('auto');
+    process.env['SOX_EMBED_BACKEND'] = 'real';
+    expect(getConfiguredEmbedBackend()).toBe('real');
+  });
+
+  it('defaults to "auto" when unset', () => {
+    delete process.env['SOX_EMBED_BACKEND'];
+    expect(getConfiguredEmbedBackend()).toBe('auto');
+  });
+
+  it('EmbedHealth carries no on_hash_fallback field (the hash backend does not exist)', () => {
+    process.env['SOX_EMBED_BACKEND'] = 'auto';
+    const health = getEmbedHealth();
+    expect(Object.prototype.hasOwnProperty.call(health, 'on_hash_fallback')).toBe(false);
+  });
 });
 
 // ── Real backend semantics (skipped if model not cached) ─────────────────────
