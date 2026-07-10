@@ -218,12 +218,6 @@ interface ExtensionManifest {
   [key: string]: unknown;
 }
 
-interface PackageJson {
-  name: string;
-  version: string;
-  [key: string]: unknown;
-}
-
 interface InstallEntry {
   id: string;
   version?: string | undefined;

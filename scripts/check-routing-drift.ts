@@ -30,7 +30,9 @@ function readFileOrNull(fp: string): string | null {
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'routing-drift-'));
 
 try {
-  buildRoutingIndex({ root, outDir: tempDir });
+  // BL-257: pass a scratch libsRoot so this dry-run comparison build never
+  // touches the real committed `libs/<area>/INDEX.md` before we've diffed it.
+  buildRoutingIndex({ root, outDir: tempDir, libsRoot: tempDir });
 
   const driftFiles: string[] = [];
 
@@ -74,13 +76,6 @@ try {
 
     const libsAreaIndexPath = path.join(root, 'libs', entry, 'INDEX.md');
     const committedLibsAreaIndex = readFileOrNull(libsAreaIndexPath);
-
-    const tempAsLibs = tempAreaIndex
-      ? tempAreaIndex.replace(
-        `# \`libs/${entry}/\` — Area Index`,
-        `# \`libs/${entry}/\` — Area Index`
-      )
-      : null;
 
     if (tempAreaIndex !== committedLibsAreaIndex) {
       if (!committedLibsAreaIndex) {

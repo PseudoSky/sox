@@ -28,8 +28,8 @@ interface SoxMetadata {
 interface ProjectEntry {
   name: string;
   path: string;
-  pkgName?: string;
-  description?: string;
+  pkgName?: string | undefined;
+  description?: string | undefined;
   concerns: string[];
   invariants: string[];
   entrypoints: string[];
@@ -52,7 +52,7 @@ function getProjectNames(root: string): string[] {
   return result;
 }
 
-function getProjectInfo(root: string, projectName: string): { root: string; tags: string[]; pkgName?: string; description?: string } {
+function getProjectInfo(root: string, projectName: string): { root: string; tags: string[]; pkgName?: string | undefined; description?: string | undefined } {
   const info = execJson(`npx nx show project "${projectName}" --json`, root) as {
     root: string;
     tags: string[];
@@ -157,10 +157,15 @@ function emitRootIndex(outDir: string, entries: ProjectEntry[]): string {
     lines.push('');
 
     const groups = grouped[area];
+    // Invariant: `area` was just drawn from Object.keys(grouped), so grouped[area]
+    // is always present — noUncheckedIndexedAccess can't see that, hence the guard.
+    if (!groups) continue;
     const sortedGroups = Object.keys(groups).sort();
 
     for (const group of sortedGroups) {
       const projects = groups[group];
+      // Invariant: `group` was just drawn from Object.keys(groups); see above.
+      if (!projects) continue;
       const sortedProjects = Object.keys(projects).sort();
 
       lines.push(`### Group: \`${group}\``);
@@ -170,6 +175,8 @@ function emitRootIndex(outDir: string, entries: ProjectEntry[]): string {
 
       for (const projName of sortedProjects) {
         const proj = projects[projName];
+        // Invariant: `projName` was just drawn from Object.keys(projects); see above.
+        if (!proj) continue;
         const desc = proj.description ? mdEscape(proj.description.slice(0, 120)) : '-';
         const pkgRef = proj.pkgName ? `\`${proj.pkgName}\`` : `\`${projName}\``;
         lines.push(`| ${pkgRef} | ${desc} |`);
@@ -222,6 +229,9 @@ function emitAreaIndex(entries: ProjectEntry[], area: string, outDir: string): s
 
   for (const group of sortedGroups) {
     const projects = groups[group];
+    // Invariant: `group` was just drawn from Object.keys(groups); noUncheckedIndexedAccess
+    // can't see that, hence the guard.
+    if (!projects) continue;
     const sortedProjects = Object.keys(projects).sort();
 
     lines.push(`## Group: \`${group}\``);
@@ -229,6 +239,8 @@ function emitAreaIndex(entries: ProjectEntry[], area: string, outDir: string): s
 
     for (const projName of sortedProjects) {
       const proj = projects[projName];
+      // Invariant: `projName` was just drawn from Object.keys(projects); see above.
+      if (!proj) continue;
       const pkgRef = proj.pkgName ? `\`${proj.pkgName}\`` : `\`${projName}\``;
 
       lines.push(`### ${pkgRef}`);
@@ -278,8 +290,8 @@ function copyAreaIndexToLibs(root: string, outDir: string, area: string): void {
   fs.copyFileSync(srcPath, dstPath);
 }
 
-export function buildRoutingIndex(opts: { root: string; outDir: string }): string[] {
-  const { root, outDir } = opts;
+export function buildRoutingIndex(opts: { root: string; outDir: string; libsRoot?: string | undefined }): string[] {
+  const { root, outDir, libsRoot = root } = opts;
   const entries = buildProjectEntries(root);
   const files: string[] = [];
 
@@ -291,8 +303,14 @@ export function buildRoutingIndex(opts: { root: string; outDir: string }): strin
     const f = emitAreaIndex(entries, area, outDir);
     if (f) {
       files.push(f);
-      copyAreaIndexToLibs(root, outDir, area);
-      files.push(path.join(root, 'libs', area, 'INDEX.md'));
+      // `libsRoot` defaults to `root` for real generation runs (routing:build-index),
+      // preserving existing behaviour byte-for-byte. Dry-run callers that pass a
+      // scratch `outDir` for comparison purposes (check-routing-drift.ts) MUST also
+      // pass a scratch `libsRoot` — otherwise this copy mutates the real committed
+      // `root/libs/<area>/INDEX.md` as a side effect of merely running the check,
+      // which made that half of the drift gate tautological (see BL-257 report).
+      copyAreaIndexToLibs(libsRoot, outDir, area);
+      files.push(path.join(libsRoot, 'libs', area, 'INDEX.md'));
     }
   }
 
@@ -301,6 +319,18 @@ export function buildRoutingIndex(opts: { root: string; outDir: string }): strin
   return files;
 }
 
-const root = process.argv[2] ?? process.cwd();
-const outDir = process.argv[3] ?? path.join(root, 'docs', 'routing');
-buildRoutingIndex({ root, outDir });
+// Only auto-run when this file is the process entry point (`npx tsx
+// scripts/build-routing-index.ts`). Without this guard, importing
+// `buildRoutingIndex` for its side effects (as check-routing-drift.ts does)
+// ALSO re-ran this top-level block on import — using the importer's own
+// process.argv, i.e. root=cwd/outDir=docs/routing by default — silently
+// overwriting the real committed docs/routing/*.md, map.json, and
+// libs/data/INDEX.md as an import side effect. That made the drift gate
+// (check-routing-drift.ts) tautological: it clobbered the committed
+// baseline with a fresh regen *before* diffing a temp regen against it,
+// so it could never observe real drift. See BL-257 report.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const root = process.argv[2] ?? process.cwd();
+  const outDir = process.argv[3] ?? path.join(root, 'docs', 'routing');
+  buildRoutingIndex({ root, outDir });
+}

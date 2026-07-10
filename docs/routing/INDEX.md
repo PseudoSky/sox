@@ -30,7 +30,13 @@ See [`data/INDEX.md`](data/INDEX.md) for area-level guidance.
 
 | Package | Description |
 |---------|-------------|
-| `@adhd/sox-ingest` | Write-path single-item transforms for the memory domain — content-hash (SHA-256), extractive summary (sentence-scoring,  |
+| `@adhd/sox-ingest` | Write-path single-item transforms for the memory domain — content-hash (SHA-256), extractive summary (lead-N sentences,  |
+
+### Group: `queue`
+
+| Package | Description |
+|---------|-------------|
+| `@adhd/sox-task-queue` | Durable SQLite-backed task queue — atomic priority-aware FIFO claim/lease, retry with exponential backoff, heartbeat lea |
 
 ### Group: `search`
 
@@ -38,11 +44,29 @@ See [`data/INDEX.md`](data/INDEX.md) for area-level guidance.
 |---------|-------------|
 | `@adhd/sox-hybrid-search` | Generic hybrid retrieval ranker — fuses vector similarity + text relevance signals (mechanism-agnostic: textScore / vecS |
 
+### Group: `source`
+
+| Package | Description |
+|---------|-------------|
+| `@adhd/sox-source-provider` | Unified SCM/filesystem abstraction — file tree enumeration and raw content retrieval from GitHub, Bitbucket, and the loc |
+
+### Group: `store`
+
+| Package | Description |
+|---------|-------------|
+| `@adhd/sox-blob-store` | Content-addressable blob storage: SHA-256 CAS write, SQLite reference tracking, stream-based API, mark-and-sweep GC with |
+
 ### Group: `vectors`
 
 | Package | Description |
 |---------|-------------|
-| `@adhd/sox-vector-store` | Multi-space vector persistence (sqlite-vec vec0) + kNN/cosine search. Enforces the embedding space invariant: one (model |
+| `@adhd/sox-vector-store` | Multi-space vector persistence with two real, swappable VectorBackend implementations: sqlite-vec (vec0, brute-force kNN |
+
+### Group: `verify`
+
+| Package | Description |
+|---------|-------------|
+| `@adhd/sox-claim-verification` | NLI-based (Natural Language Inference) claim grounding engine. Cross-encoder NLI via worker thread, embedding pre-filter |
 
 ---
 

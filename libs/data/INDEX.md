@@ -41,23 +41,21 @@ For area-level guidance, see [`libs/data/CLAUDE.md`](../libs/data/CLAUDE.md).
 ### `@adhd/sox-embedding-provider`
 
 - **Path:** `libs/data/embed/embedding-provider`
-- **Description:** Pluggable text→vector embedding provider — generic EmbeddingProvider interface, config-driven model resolution, async batch-first API (AsyncIterable), symmetric + asymmetric encoding via role param. Default: fastembed (local ONNX, >=3 model dims proven). Loud-fail: createEmbeddingProvider() throws ResolutionError if config is invalid or model cannot load — no silent hash downgrade.
+- **Description:** Pluggable text→vector embedding provider — generic EmbeddingProvider interface, config-driven model resolution, async batch-first API (AsyncIterable). Default: fastembed (local ONNX, >=3 model dims proven). Loud-fail: createEmbeddingProvider() throws ResolutionError if config is invalid or model cannot load — no silent downgrade.
 
 **Concerns:**
 - text→vector (EmbeddingProvider interface)
 - config-driven model resolution (createEmbeddingProvider factory)
 - async batch embed (AsyncIterable<Float32Array>)
-- asymmetric encoding via role param (document | query)
-- warmUp cache for hot/topic texts
+- EmbedRole param (document | query) accepted on embedSingle/embedBatch for interface compatibility — currently ignored (not yet applied) by the fastembed provider
 - loud-fail ResolutionError at factory time (never mid-call)
 - three-tier error taxonomy (Transient / Permanent / Resolution)
-- deterministic hash provider as first-class alternative
 
 **Invariants:**
-- createEmbeddingProvider() THROWS ResolutionError synchronously or as a rejection if the config is invalid or the model/runtime cannot load — never silently downgrades to hash
+- createEmbeddingProvider() THROWS ResolutionError synchronously or as a rejection if the config is invalid or the model/runtime cannot load — never silently downgrades
 - every provider advertises { modelId, dimensions, isRemote, isDeterministic, providerUri? } via metadata — callers never hardcode dims
 - embedBatch() returns AsyncIterable<Float32Array> — callers receive first result before last batch finishes (critical for sequential local inference)
-- warmUp() is a no-op when isDeterministic === false
+- warmUp() is a no-op when isDeterministic === false — currently ALWAYS true, since every shipped provider (fastembed, remote) hard-codes isDeterministic: false, so warmUp() is a no-op on every path today
 - TransientEmbeddingError → caller may retry; PermanentEmbeddingError → caller must not retry; ResolutionError → factory-time only, never thrown mid-call
 
 **Build:** `npx nx build embedding-provider`
@@ -100,22 +98,51 @@ For area-level guidance, see [`libs/data/CLAUDE.md`](../libs/data/CLAUDE.md).
 ### `@adhd/sox-ingest`
 
 - **Path:** `libs/data/ingest/ingest`
-- **Description:** Write-path single-item transforms for the memory domain — content-hash (SHA-256), extractive summary (sentence-scoring, zero LLM), deterministic tag extraction, and chunking/normalization. Pure stateless functions; no storage deps. Private: only the memory domain composer calls these before graph-store writes.
+- **Description:** Write-path single-item transforms for the memory domain — content-hash (SHA-256), extractive summary (lead-N sentences, zero LLM), deterministic tag extraction, and chunking/normalization. Pure stateless functions; no storage deps.
 
 **Concerns:**
 - content-hash (SHA-256 of normalized content — used for graph-store dedup)
-- extractive summary (sentence-scoring, summaryMaxSentences, zero LLM)
+- extractive summary (lead-N sentences — first summaryMaxSentences sentences, no scoring; zero LLM; content under 100 chars is returned unchanged via content.trim())
 - deterministic tag extraction (noun phrases, high-frequency terms, tagMaxCount)
 - chunking (maxChars / overlapChars sliding window)
 - per-chunk contentHash for dedup at the chunk level
 
 **Invariants:**
-- zero-LLM, zero-I/O, synchronous — ingest() is a pure function, always safe to call in the write path without latency budget concerns
+- zero-LLM, zero-I/O, synchronous — ingest() is a pure function, always safe to call in the write path without latency budget concerns (it lives in core.ts and reaches no chunker; the AstChunker WASM grammar load IS disk I/O but is not on ingest()'s path)
 - deterministic + byte-reproducible — same input always produces the same hash, summary, and tags (no random or time-based components)
-- PRIVATE — never published to npm; only the memory domain composer may call this package
+- [BL-231] dist/core.js is the CJS-SAFE entry — its module graph must never contain a top-level await. dist/index.js (the root) is ESM-ONLY and cannot be require()d: it re-exports AstChunker, whose module-scope `await Parser.init()` is required to keep chunk()/estimate() synchronous. CommonJS consumers import @adhd/sox-ingest/core. Guarded by tools/test-bl231-cjs-boundary.mjs
 
 **Build:** `npx nx build ingest`
 **Test:** `npx nx test ingest`
+
+## Group: `queue`
+
+### `@adhd/sox-task-queue`
+
+- **Path:** `libs/data/queue/task-queue`
+- **Description:** Durable SQLite-backed task queue — atomic priority-aware FIFO claim/lease, retry with exponential backoff, heartbeat lease management, a worker pool with graceful shutdown, and a croner-backed cron scheduler.
+
+**Concerns:**
+- durable SQLite-backed task queue (tasks table + request_ledger + scheduler_entries, WAL mode)
+- atomic claim via UPDATE ... RETURNING inside a transaction (priority DESC, created_at ASC FIFO)
+- heartbeat-based lease management with a setInterval reaper reclaiming expired leases
+- exponential backoff on retry (min(1000*2^retryCount, 86_400_000)), dead-letter on maxRetries exhaustion
+- clientRequestId idempotent enqueue via an append-only request_ledger dedup table
+- WorkerPool: in-process async pool, concurrency-bounded, heartbeats in-flight tasks, graceful drain on stop()
+- Scheduler: croner-backed cron entries persisted in scheduler_entries, tick loop enqueues due entries
+- TaskQueueError taxonomy — no external error library
+
+**Invariants:**
+- durability: enqueue() is committed to SQLite before the returned Promise resolves
+- at-least-once execution: every queued task executes at least once; duplicates are possible on crash recovery
+- dequeue() eligibility is uniform for 'queued' and 'scheduled' rows: (scheduled_at IS NULL OR scheduled_at <= now) — this is what makes retry backoff actually delay redelivery (see README 'Spec reconciliations')
+- fail() applies exponential backoff using the PRE-increment retryCount (first failure: retryCount=0 -> 2^0=1s)
+- lease-expiry re-queue (reaper) consumes one retry slot and applies the same backoff formula as fail(), per spec section 9
+- close()/WorkerPool.stop() never force-kill running handlers — the lease-expiry reaper is the crash-recovery safety net
+- all task/scheduler-entry mutating operations THROW TaskQueueNotOpenError when called before open() or after close()
+
+**Build:** `npx nx build task-queue`
+**Test:** `npx nx test task-queue`
 
 ## Group: `search`
 
@@ -143,20 +170,74 @@ For area-level guidance, see [`libs/data/CLAUDE.md`](../libs/data/CLAUDE.md).
 **Build:** `npx nx build hybrid-search`
 **Test:** `npx nx test hybrid-search`
 
+## Group: `source`
+
+### `@adhd/sox-source-provider`
+
+- **Path:** `libs/source-provider`
+- **Description:** Unified SCM/filesystem abstraction — file tree enumeration and raw content retrieval from GitHub, Bitbucket, and the local filesystem through a single SourceProvider interface, without cloning. Provider registry, SourceRef URL normalization, and a first-class fake provider for integration testing.
+
+**Concerns:**
+- no-clone file tree enumeration + content read (GitHub, Bitbucket, local filesystem)
+- SourceRef URL normalization + validation (github.com/owner/repo[@ref], bitbucket.org/ws/repo[@ref], local:/abs/path)
+- ProviderRegistry — scheme-routed provider resolution, consumers never instanceof a concrete provider
+- createFakeProvider — first-class in-memory test double, same interface as real providers
+- typed SourceProviderError taxonomy (auth, rate-limit, truncation, not-found, transient)
+
+**Invariants:**
+- no search()/discovery — explicit refs only (D-1)
+- SourceRef.parse() THROWS InvalidSourceRefError on unparseable input — never returns a partial ref
+- Manifest.truncated === true means the entry list is incomplete — consumers MUST NOT infer absence from a truncated manifest
+- every thrown error is a typed subclass of SourceProviderError
+- no on-disk or in-memory caching — SourceProvider is the I/O layer only
+
+**Build:** `npx nx build source-provider`
+**Test:** `npx nx test source-provider`
+
+## Group: `store`
+
+### `@adhd/sox-blob-store`
+
+- **Path:** `libs/data/store/blob-store`
+- **Description:** Content-addressable blob storage: SHA-256 CAS write, SQLite reference tracking, stream-based API, mark-and-sweep GC with grace periods, FD guard, integrity verification.
+
+**Concerns:**
+- content-addressable blob storage (SHA-256 CAS)
+- two-phase write (temp → atomic rename)
+- SQLite reference tracking (refs, blob_meta, gc_runs)
+- mark-and-sweep GC with configurable grace period
+- stream-based API (putStream / getStream)
+- in-process FD guard (prevents GC of open blobs)
+- cross-process GC lock (flock)
+- integrity verification on read (default) and write (optional)
+
+**Invariants:**
+- put() is always idempotent — content-hash dedup is universal
+- rename() is atomic when tempDir and basePath are on the same filesystem
+- GC never deletes a blob that has an open FD in the in-process guard
+- get() returns null for not-found; throws IntegrityMismatch for corruption
+- orphan temp files are cleaned up on next open() (crash recovery)
+
+**Build:** `npx nx build blob-store`
+**Test:** `npx nx test blob-store`
+
 ## Group: `vectors`
 
 ### `@adhd/sox-vector-store`
 
 - **Path:** `libs/data/vectors/vector-store`
-- **Description:** Multi-space vector persistence (sqlite-vec vec0) + kNN/cosine search. Enforces the embedding space invariant: one (modelId, dim) pair per vec0 virtual table, rejects any upsert whose vec.length ≠ space.dim. Owns per-record modelId provenance. reembed() migrates vectors between spaces.
+- **Description:** Multi-space vector persistence with two real, swappable VectorBackend implementations: sqlite-vec (vec0, brute-force kNN, production default) and @lancedb/lancedb (on-disk tables + real HNSW/IVF-PQ ANN indexes, bridged to the synchronous interface via a worker_threads + synckit sync RPC). Enforces the embedding space invariant: one (modelId, dim) pair per table, rejects any upsert whose vec.length ≠ space.dim. Owns per-record modelId provenance. reembed() migrates vectors between spaces (and backends).
 
 **Concerns:**
-- multi-space vec0 persistence (one virtual table per VectorSpace)
-- kNN/cosine search (VectorBackend.knn)
+- multi-space vec0 persistence (SqliteVectorBackend — one virtual table per VectorSpace)
+- multi-space on-disk LanceDB persistence (LanceDbVectorBackend — one real @lancedb/lancedb table per VectorSpace, plus a persisted _vector_spaces metadata table)
+- real HNSW (hnswSq) / IVF-PQ (ivfPq) ANN index construction from LanceDbVectorBackendConfig.index
+- worker_threads + synckit sync RPC bridge (lancedb-worker.ts) — makes the async @lancedb/lancedb client satisfy the synchronous VectorBackend interface
+- kNN/cosine search (VectorBackend.knn) — brute-force (sqlite-vec) or ANN-accelerated (LanceDB)
 - space invariant enforcement (SpaceInvariantError on dim mismatch)
 - per-record modelId provenance (VectorSpace.modelId)
 - corpus scan for clustering + reembed (iter)
-- reembed() — cross-space migration (walks old space, re-embeds, writes into target space)
+- reembed() — cross-space (and cross-backend) migration (walks old space, re-embeds, writes into target space)
 
 **Invariants:**
 - ensureSpace(space) MUST be called before the first upsert on any new (modelId, dim) pair — idempotent on existing spaces
@@ -167,3 +248,30 @@ For area-level guidance, see [`libs/data/CLAUDE.md`](../libs/data/CLAUDE.md).
 
 **Build:** `npx nx build vector-store`
 **Test:** `npx nx test vector-store`
+
+## Group: `verify`
+
+### `@adhd/sox-claim-verification`
+
+- **Path:** `libs/data/verify/claim-verification`
+- **Description:** NLI-based (Natural Language Inference) claim grounding engine. Cross-encoder NLI via worker thread, embedding pre-filter, configurable truncation strategy, LRU result cache. Worker-thread isolated from better-sqlite3 (BL-11).
+
+**Concerns:**
+- NLI claim grounding via cross-encoder
+- worker-thread ONNX inference (BL-11 isolation)
+- embedding pre-filter for topic gating
+- configurable truncation (tail/head)
+- LRU verification cache
+- multi-source verification (one claim, many sources)
+- streaming batch verification
+- model registry with version tracking
+
+**Invariants:**
+- ONNX inference runs exclusively in worker threads - never on main thread
+- pre-filter uses its OWN embedding provider instance (not coupled to retrieval pipeline)
+- warmUp() must complete before verify* calls
+- language mismatch downgrades to 'neutral' with warning flag - never throws
+- claim normalization strips citation markers and quotation marks before NLI
+
+**Build:** `npx nx build claim-verification`
+**Test:** `npx nx test claim-verification`
