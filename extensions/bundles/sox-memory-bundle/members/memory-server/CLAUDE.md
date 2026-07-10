@@ -125,9 +125,47 @@ Write a memory episode. Runs deterministic enrichment synchronously (provenance,
 }
 ```
 
-**Output:** `{ "episode_uid": "<string>", "enrichment": { "topic", "project_path", "summary", "tags", "near_dup" } }`
+**Output:** `{ "episode_uid": "<string>", "enrichment": { "topic", "project_path", "project_path_source", "summary", "tags", "near_dup" } }`
 
 `near_dup` is `null` under the async default (deferred to the off-slot embed phase); it is only populated when the server runs with `SOX_SYNC_EMBED=1`.
+
+**⚠️ `project_path_source` (`"explicit" | "inferred"`) — read this before trusting provenance (BL-62).**
+`"explicit"` means *this call* supplied a non-empty `project_path`. `"inferred"` means the server fell
+back to the **shim process cwd**, which is NOT necessarily the caller's working project. A single shim
+serving a caller who works in a different repo mis-attributes the episode, silently. The root fix needs
+an MCP `roots` capability that `libs/mcp-runtime/src/serve.ts` does not negotiate.
+
+**Always pass `project_path` explicitly.** That is the documented workaround, not a nicety.
+If you already wrote a mis-attributed episode, it is repairable — see `memory_update` below (BL-221).
+Re-writing the same content with the corrected path does **not** work: the content-hash dedup key
+ignores `project_path` and returns `E_DEDUP` with the existing uid.
+
+Known gap: `memory_write_batch` does not surface `project_path_source` per item (BL-233).
+
+---
+
+### `memory_update` (v1 — MODIFIED)
+
+Edits an existing episode in place. `uid` is always immutable.
+
+**New (BL-221):** `project_path` is now an editable field. It is the *only* way to repair provenance
+corrupted by BL-62 — `memory_update` does not trigger a re-embed, and it does not touch the dedup key.
+
+```json
+{
+  "uid":          "<string, required — immutable identity>",
+  "db_path":      "<string, required>",
+  "content":      "<string, optional>",
+  "name":         "<string, optional>",
+  "topic":        "<string, optional>",
+  "tags":         "<string[], optional>",
+  "metadata":     "<object, optional>",
+  "importance":   "<number 1–10, optional>",
+  "project_path": "<string, optional — BL-221: repairs mis-attributed provenance>"
+}
+```
+
+Returns `E_NO_FIELDS` when every supplied field already equals the stored value.
 
 ---
 
@@ -161,6 +199,23 @@ Hybrid vec+BM25+temporal recall, <50 ms, zero LLM. `query` is now optional — o
 ```
 
 **Output:** `{ "results": [{ "uid", "content", "score", "t_valid", "scope", "provenance", "importance", "content_hash", "agent_id", "summary", "topic", "tags", "project_path", "is_superseded", "supersedes_uid", "community_uid" }], "provider_call_count": 0 }`
+
+#### ⚠️ The two recall paths do not honour the same parameters
+
+Omitting `query` selects a **different code path** — a flat, importance-ranked SQL listing, not the
+vec+BM25+temporal fusion. Several top-level params are accepted on both and applied on only one:
+
+| Param | With `query` | Without `query` (listing) |
+|---|---|---|
+| `agent_id` | hard filter (`AND n.agent_id = ?`) | hard filter — **fixed 2026-07-09 (BL-229)**; previously *accepted and silently ignored*, returning every agent's episodes |
+| `as_of` | bi-temporal window | bi-temporal window — **fixed 2026-07-10 (BL-240)**; previously returned today's live state |
+| `token_budget` | trims by cumulative estimated tokens | trims by cumulative estimated tokens — **fixed 2026-07-10 (BL-241)**; previously a bare row-count `LIMIT` |
+| `depth` | graph-neighbour expansion | not applicable — listing does no expansion (by design) |
+| `scope` | cosmetic label | cosmetic label (single-store; scope weighting lives only in `federatedRecall`) |
+| `limit` | applied | applied |
+
+Until BL-240/BL-241 land, **do not rely on `as_of` or `token_budget` in a no-query listing call.**
+They will not error; they will quietly do nothing.
 
 ---
 
@@ -277,12 +332,15 @@ Return enrichment coverage and cluster quality statistics. Use `tools` (capabili
 
 **Input:** `{ "db_path": "<string>", "project_path"?: string }`
 
-**Output:** `{ "tools", "enrich_version", "embed_model", "embed_backend_configured", "embed_on_hash_fallback", "total_episodes", "with_topic", "with_summary", "with_tags", "with_project_path", "with_community", "legacy_episodes", "stale_episodes", "cluster_count", "largest_cluster_size", "mean_intra_cluster_sim", "coverage", "cluster_quality" }`
+**Output:** `{ "tools", "enrich_version", "embed_model", "embed_backend_configured", "total_episodes", "with_topic", "with_summary", "with_tags", "with_project_path", "with_community", "legacy_episodes", "stale_episodes", "cluster_count", "largest_cluster_size", "mean_intra_cluster_sim", "coverage", "cluster_quality" }`
 
 **BL-48 fields:**
 - `embed_model` — the RESOLVED model id (e.g. `bge-base-en-v1.5` for real ONNX, `nomic-embed-text-v1.5-hash` for hash). Reflects actual runtime state, not the env var.
 - `embed_backend_configured` — value of `SOX_EMBED_BACKEND` env (or `'auto'` if unset).
-- `embed_on_hash_fallback` — `true` when backend is `auto`/`real` but hash is active (model unavailable / silent fallback). `false` when intentionally on hash or real backend confirmed.
+- ⚠️ **`embed_on_hash_fallback` was REMOVED (2026-07-10, BL-250).** It was a hardcoded `false` reporting on a
+  hash backend that no longer exists (`EmbedBackend = 'auto' | 'real'`, `libs/memory-core/src/embed.ts:43`).
+  This is a **breaking response change** — callers reading that field will now get `undefined`.
+  `SOX_EMBED_BACKEND` is now validated: an unknown value **throws** instead of being cast.
 
 ---
 
@@ -336,7 +394,15 @@ Retrieve or upsert session working-memory state (a JSON blob keyed by session_id
 
 ---
 
-### `memory_invalidate` (unchanged)
+### `memory_invalidate` (v1 — MODIFIED 2026-07-10)
+
+**Breaking (BL-247):** `replacement_uid` is now validated **before any mutation**. If it does not resolve to a
+live node — nonexistent, or already invalidated — the call **atomic-aborts** with
+`{ code: 'E_REPLACEMENT_NOT_FOUND' }` and the claim is **not** invalidated.
+
+Previously a bad `replacement_uid` still invalidated the claim, silently skipped the `SUPERSEDES` edge, and
+returned `ok: true`. Callers that relied on that silent no-op will now see `isError: true`. All in-repo callers
+were audited; none did.
 
 Bi-temporally invalidate a claim: sets `t_invalid` on the node (never deletes). Optionally records a SUPERSEDES edge to a replacement.
 

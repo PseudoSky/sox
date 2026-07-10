@@ -16,5 +16,16 @@ export default defineConfig({
     globals: false,
     environment: 'node',
     passWithNoTests: true,
+    testTimeout: 30_000,
+    // Install the deterministic test embedding provider before any test runs
+    // so fireSessionEnd()'s auto-export path never triggers a real ONNX
+    // warmup unless explicitly opted in (BL-161). Mirrors memory-core's
+    // vitest.setup.ts pattern.
+    setupFiles: [resolve(__dirname, 'vitest.setup.ts')],
+    // Run all spec files in a single forked worker — prevents per-file ONNX
+    // re-loads and eliminates concurrency-driven timeout flake (BL-161).
+    pool: 'forks',
+    maxWorkers: 1,
+    minWorkers: 1,
   },
 });

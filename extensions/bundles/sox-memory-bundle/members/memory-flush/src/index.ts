@@ -19,7 +19,6 @@
 import { applyPromotion as memCoreApplyPromotion, exportMarkdown as memCoreExportMarkdown, openDb as memCoreOpenDb } from '@adhd/sox-memory-core';
 import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import * as sqliteVec from 'sqlite-vec';
 
 export const events = ['SessionEnd', 'ScopePromotionProposed'];

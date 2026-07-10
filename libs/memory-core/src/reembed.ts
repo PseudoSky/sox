@@ -6,19 +6,67 @@
  * which has been deleted. The memory-cli `reembed` verb calls this function.
  *
  * Invariants:
- *   - --dry-run performs ZERO writes. It does NOT create the target vector space.
- *   - Idempotent by default: skips when all scopes already use the target model.
- *     Override with opts.force = true.
+ *   - --dry-run performs ZERO writes.
+ *   - Idempotent by default: skips a node whose PER-RECORD `node.embed_model`
+ *     already equals the target model. Override with opts.force = true.
  *   - Backs up the DB (+ -wal/-shm) before any write unless opts.backup = false.
  *   - Model id is always 'bge-base-en-v1.5' (the canonical fastembed model).
  *     NOT the cache-dir name 'fast-bge-base-en-v1.5'.
+ *
+ * ── BL-92 (data-integrity fix) ────────────────────────────────────────────────
+ * BL-88 added a per-record `node.embed_model` column, stamped by the write path
+ * (embed-pipeline.ts's applyEmbedding) in the same transaction as every vector
+ * write. Before this fix, reembedStore ignored that column entirely and keyed
+ * idempotency / source-model detection / grouping off the single scope-level
+ * `memory_scope.embed_model` tag — one value for the WHOLE store. A store with
+ * mixed vectors (some records on model A, some on model B) could not be
+ * targeted: the only lever was --force, which blasts every row regardless of
+ * whether it already matched the target model (burning GPU + rewriting vectors
+ * that were already correct — an over-migration).
+ *
+ * This rewires all three concerns onto the per-record `node.embed_model`
+ * column:
+ *   - Idempotency: "current" means EVERY live, vectorized episode's own
+ *     `embed_model` already equals the target — not the scope tag.
+ *   - Source-model detection / grouping: candidates are grouped by their own
+ *     `embed_model` value (querying `node` directly), so a store with N
+ *     distinct stale models gets ALL N groups migrated in one pass — not just
+ *     one arbitrarily chosen "the differing model" as before.
+ *   - `memory_scope.embed_model` is updated at the end purely as a courtesy /
+ *     backward-compat signal for other soft-mismatch consumers (db.ts's
+ *     open-time warning, stats.ts's fallback probe) — it is NEVER read to
+ *     decide what to migrate.
+ *
+ * NULL `embed_model` decision (rows written before BL-88's column existed):
+ * NULL is treated as "provenance unknown, must migrate" — NOT as "assume
+ * already current". This mirrors the explicit precedent already established
+ * in embed-pipeline.ts's `healStaleVectors`, whose own comment (BL-88) says
+ * NULL rows are deliberately EXCLUDED from ITS staleness pass and are "left
+ * for the operator to handle via the full reembed path" — i.e. THIS function.
+ * Treating NULL as "current" risks the under-migration failure mode this
+ * ticket explicitly calls out as unacceptable: stale/unknown vectors silently
+ * poisoning recall forever because nothing ever revisits them. Treating NULL
+ * as "needs migration" costs at most one redundant re-embed per legacy row
+ * (cheap, safe, self-healing — after which it carries a real stamp and is
+ * never re-visited by this logic again).
+ *
+ * Because a genuinely mixed-model store must be reachable by tests, and the
+ * REAL production vector table that `memory_recall`/embed-pipeline read and
+ * write is the single fixed-schema `vec_node` table (schema.ts — NOT the
+ * generic multi-space `vec_<model>` side tables from `@adhd/sox-vector-store`,
+ * which nothing in the live recall path ever queries), this implementation
+ * migrates vectors directly in `vec_node`, matching the exact
+ * UPDATE-then-INSERT convention embed.ts / embed-pipeline.ts already use
+ * (`vec0` virtual tables do not support `INSERT OR REPLACE` — BL-91). This
+ * makes a reembed genuinely change what recall sees, rather than populating a
+ * side table nothing reads.
  */
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createEmbeddingProvider } from '@adhd/sox-embedding-provider';
-import { SqliteVectorBackend, reembed } from '@adhd/sox-vector-store';
+import { EMBED_DIM, vecToJson } from './embed.js';
 import { openDb, expandDbPath } from './db.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -26,7 +74,7 @@ import { openDb, expandDbPath } from './db.js';
 export interface ReembedStoreOptions {
   /** Perform no writes; report what would change. Default: false. */
   dryRun?: boolean;
-  /** Re-embed even if the store already uses the target model. Default: false. */
+  /** Re-embed even if a record already uses the target model. Default: false. */
   force?: boolean;
   /** Create .bak-reembed-<ts> copies of the db before writing. Default: true. */
   backup?: boolean;
@@ -46,13 +94,21 @@ export interface ReembedStoreResult {
   skipped: number;
   errors: Array<{ id: number; error: string }>;
   /**
-   * True when the store was already on the target model and opts.force was
-   * not set, so no migration ran.
+   * True when every live, vectorized episode was already on the target model
+   * and opts.force was not set, so no migration ran.
    */
   alreadyCurrent: boolean;
   /** True when opts.dryRun was set; no writes were performed. */
   dryRun: boolean;
   backups: string[];
+  /**
+   * BL-92: per-source-model candidate counts considered for this run (before
+   * `limit` clamping), keyed by the record's own `embed_model` value. The
+   * literal key `"(null)"` groups pre-BL-88 rows with no stamp at all.
+   * Present for observability — lets an operator see exactly what a mixed
+   * store looked like going in.
+   */
+  sourceModelGroups: Record<string, number>;
 }
 
 // ── Default DB path ───────────────────────────────────────────────────────────
@@ -62,15 +118,55 @@ export function defaultMemoryDbPath(): string {
   return path.join(os.homedir(), '.memory', 'memory.db');
 }
 
+// ── Internal: per-record candidate discovery (BL-92) ──────────────────────────
+
+interface EmbedCandidate {
+  rowid: number;
+  embed_model: string | null;
+}
+
+/** Sentinel key for the NULL-embed_model group in sourceModelGroups reporting. */
+const NULL_MODEL_KEY = '(null)';
+
+/**
+ * Every live episode with an existing `vec_node` vector and non-empty content
+ * — i.e. every row this function is capable of re-embedding — grouped
+ * implicitly by its own `node.embed_model` (the per-record BL-92 column).
+ *
+ * Deliberately does NOT consult `memory_scope` — that table is a single
+ * store-wide tag and cannot represent a mixed-model store.
+ */
+function getReembedCandidates(db: import('better-sqlite3').Database): EmbedCandidate[] {
+  return db
+    .prepare<[], EmbedCandidate>(
+      `SELECT n.rowid AS rowid, n.embed_model AS embed_model
+       FROM node n
+       WHERE n.kind = 'episode'
+         AND n.t_invalid IS NULL
+         AND n.content IS NOT NULL AND n.content != ''
+         AND EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)
+       ORDER BY n.rowid ASC`,
+    )
+    .all();
+}
+
+function groupBySourceModel(candidates: EmbedCandidate[]): Record<string, number> {
+  const groups: Record<string, number> = {};
+  for (const c of candidates) {
+    const key = c.embed_model ?? NULL_MODEL_KEY;
+    groups[key] = (groups[key] ?? 0) + 1;
+  }
+  return groups;
+}
+
 // ── Implementation ────────────────────────────────────────────────────────────
 
 /**
  * Open the DB at `dbPath`, warm up the fastembed 'bge-base-en-v1.5' provider,
- * and migrate all nodes in the store to the target vector space.
+ * and migrate nodes in the store to the target vector space.
  *
  * Dry-run contract: when `opts.dryRun` is `true` this function performs ZERO
- * writes — it does NOT call `backend.ensureSpace()`, so no empty vec0 table
- * is created (fixes the BL-159 cosmetic side-effect).
+ * writes.
  *
  * @param dbPath  Absolute or tilde-prefixed path to the memory.db file.
  * @param opts    Orchestration options.
@@ -131,25 +227,44 @@ async function _reembedStore(
   log(`[reembedStore] active model   : ${targetModelId}`);
   log(`[reembedStore] dimensions     : ${targetDim}`);
 
+  // libs/data/CLAUDE.md §3 (space invariant): `vec_node` is a FIXED-schema
+  // vec0 table declared FLOAT[768] at DDL time (schema.ts) — it is the single
+  // table `memory_recall` / embed-pipeline actually read and write, unlike the
+  // generic multi-space `vec_<model>` tables `@adhd/sox-vector-store` can
+  // create for arbitrary dims. A model whose dimension differs from
+  // `vec_node`'s fixed column would require a physical schema migration
+  // (recreate vec_node with the new FLOAT[N]) that this function does not
+  // perform. Fail loud instead of attempting a dim-mismatched write that
+  // sqlite-vec would otherwise reject row-by-row with cryptic errors.
+  if (targetDim !== EMBED_DIM) {
+    throw new Error(
+      `[reembedStore] target model '${targetModelId}' has dimension ${targetDim}, but ` +
+        `vec_node is a fixed FLOAT[${EMBED_DIM}] column (libs/memory-core/src/schema.ts). ` +
+        `Migrating to a different-dimension model requires a vec_node schema migration, ` +
+        `which reembedStore does not perform. Aborting to avoid silent corruption.`,
+    );
+  }
+
   // ── Open DB (memory-core: schema + sqlite-vec) ──────────────────────────────
   const db = openDb(resolvedDbPath);
 
   try {
-    // ── Idempotency check ─────────────────────────────────────────────────────
-    const scopes = db
-      .prepare<[], { scope: string; embed_model: string; embed_dim: number }>(
-        `SELECT scope, embed_model, embed_dim FROM memory_scope`,
-      )
-      .all();
+    // ── BL-92: per-record candidate discovery + idempotency check ────────────
+    const candidates = getReembedCandidates(db);
+    const sourceModelGroups = groupBySourceModel(candidates);
+    const nonTarget = candidates.filter((c) => c.embed_model !== targetModelId);
 
-    log(`[reembedStore] scopes         : ${JSON.stringify(scopes)}`);
+    // Vacuously "current" when there is nothing to migrate at all (empty
+    // store / no vectorized episodes yet) — otherwise current iff every
+    // candidate's OWN embed_model already equals the target.
+    const allCurrent = candidates.length === 0 || nonTarget.length === 0;
 
-    const allCurrent =
-      scopes.length > 0 && scopes.every((s) => s.embed_model === targetModelId);
+    log(`[reembedStore] candidates     : ${candidates.length} live vectorized episode(s)`);
+    log(`[reembedStore] source groups  : ${JSON.stringify(sourceModelGroups)}`);
 
     if (allCurrent && !force && !dryRun) {
       log(
-        `[reembedStore] all scopes already on '${targetModelId}' — nothing to do (use --force to re-embed anyway).`,
+        `[reembedStore] all records already on '${targetModelId}' — nothing to do (use --force to re-embed anyway).`,
       );
       return {
         dbPath: resolvedDbPath,
@@ -161,6 +276,7 @@ async function _reembedStore(
         alreadyCurrent: true,
         dryRun: false,
         backups: [],
+        sourceModelGroups,
       };
     }
 
@@ -179,24 +295,12 @@ async function _reembedStore(
       }
     }
 
-    // ── Dry-run path: NO writes, no ensureSpace ───────────────────────────────
-    // The original script's dry-run bug: it called backend.ensureSpace() before
-    // checking dryRun, which created an empty vec_bge_base_en_v1_5 table in the
-    // database. We skip ensureSpace entirely in dry-run mode.
+    // ── Dry-run path: NO writes ────────────────────────────────────────────────
     if (dryRun) {
-      const backend = new SqliteVectorBackend(db);
-
-      // Count nodes that would be migrated: find source space nodes
-      const sourceModelId = scopes.find((s) => s.embed_model !== targetModelId)?.embed_model
-        ?? (scopes[0]?.embed_model ?? null);
-
-      let wouldMigrate = 0;
-      if (sourceModelId) {
-        for (const _ of backend.iter(sourceModelId)) {
-          wouldMigrate++;
-          if (limit > 0 && wouldMigrate >= limit) break;
-        }
-      }
+      // force re-embeds everything; a targeted run only touches non-target rows.
+      const wouldMigrateRows = force ? candidates : nonTarget;
+      const wouldMigrate =
+        limit > 0 ? Math.min(wouldMigrateRows.length, limit) : wouldMigrateRows.length;
 
       log(
         `[reembedStore] DRY-RUN: would migrate ${wouldMigrate} nodes. No writes performed.`,
@@ -211,18 +315,19 @@ async function _reembedStore(
         alreadyCurrent: allCurrent && !force,
         dryRun: true,
         backups: [],
+        sourceModelGroups,
       };
     }
 
     // ── Live reembed ──────────────────────────────────────────────────────────
-    const backend = new SqliteVectorBackend(db);
-    const targetSpace = { modelId: targetModelId, dim: targetDim };
-
-    // Determine source model (the non-target space, or first scope model if all
-    // same — this handles --force re-embed against the same model).
-    const sourceModelId =
-      scopes.find((s) => s.embed_model !== targetModelId)?.embed_model
-      ?? (limit > 0 ? scopes[0]?.embed_model : undefined);
+    // force = touch every vectorized candidate (even ones already on target,
+    // matching the historical --force "re-embed everything" contract).
+    // !force = touch ONLY records whose own embed_model differs from target
+    // (including NULL — see the NULL decision documented at file top). This
+    // is the core BL-92 fix: a targeted, non-force run leaves already-correct
+    // records byte-for-byte untouched.
+    let targets = force ? candidates : nonTarget;
+    if (limit > 0) targets = targets.slice(0, limit);
 
     const getText = (id: number): string | null => {
       const row = db
@@ -234,22 +339,89 @@ async function _reembedStore(
       return [row.content, row.name].filter(Boolean).join(' ') || null;
     };
 
-    log(`[reembedStore] re-embedding with model '${targetModelId}'...`);
+    log(`[reembedStore] re-embedding with model '${targetModelId}' (${targets.length} target row(s))...`);
 
-    const result = await reembed(backend, provider, {
-      targetSpace,
-      ...(sourceModelId !== undefined ? { sourceModelId } : {}),
-      dryRun: false,
-      getText,
-    });
+    const result: Pick<ReembedStoreResult, 'migrated' | 'skipped' | 'errors'> = {
+      migrated: 0,
+      skipped: 0,
+      errors: [],
+    };
 
-    // Update memory_scope to reflect the new model.
+    const writeVector = (rowid: number, vec: Float32Array): void => {
+      if (vec.length !== targetDim) {
+        throw new Error(`dim mismatch for node ${rowid}: got ${vec.length}, expected ${targetDim}`);
+      }
+      const vecJson = vecToJson(vec);
+      const info = db
+        .prepare(`UPDATE vec_node SET embedding = ? WHERE node_id = CAST(? AS INTEGER)`)
+        .run(vecJson, rowid);
+      if (info.changes === 0) {
+        db.prepare(`INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)`).run(
+          rowid,
+          vecJson,
+        );
+      }
+      // BL-92: stamp the per-record column so this row is never re-visited by
+      // a future targeted (non-force) reembed once it's genuinely current.
+      db.prepare(`UPDATE node SET embed_model = ? WHERE rowid = ?`).run(targetModelId, rowid);
+    };
+
+    const BATCH_SIZE = 32;
+    let batch: Array<{ rowid: number; text: string }> = [];
+
+    const flushBatch = async (): Promise<void> => {
+      if (batch.length === 0) return;
+      const texts = batch.map((b) => b.text);
+      const embeddings: Float32Array[] = [];
+      try {
+        for await (const emb of provider.embedBatch(texts)) {
+          embeddings.push(emb);
+        }
+      } catch (err) {
+        const msg = `Batch embedding failed: ${String(err)}`;
+        for (const b of batch) result.errors.push({ id: b.rowid, error: msg });
+        batch = [];
+        return;
+      }
+
+      for (let i = 0; i < batch.length; i++) {
+        const item = batch[i]!;
+        const emb = embeddings[i];
+        if (!emb) {
+          result.errors.push({ id: item.rowid, error: 'Missing embedding from batch' });
+          continue;
+        }
+        try {
+          writeVector(item.rowid, emb);
+          result.migrated++;
+        } catch (err) {
+          result.errors.push({ id: item.rowid, error: String(err) });
+        }
+      }
+      batch = [];
+    };
+
+    for (const t of targets) {
+      const text = getText(t.rowid);
+      if (!text) {
+        result.skipped++;
+        continue;
+      }
+      batch.push({ rowid: t.rowid, text });
+      if (batch.length >= BATCH_SIZE) {
+        await flushBatch();
+      }
+    }
+    await flushBatch();
+
+    // Update memory_scope as a courtesy/backward-compat fallback tag ONLY —
+    // never read by this function to decide what to migrate (see file-top note).
     if (result.migrated > 0 || force) {
       db.prepare(`UPDATE memory_scope SET embed_model = ?, embed_dim = ?`).run(
         targetModelId,
         targetDim,
       );
-      log(`[reembedStore] memory_scope.embed_model -> '${targetModelId}'`);
+      log(`[reembedStore] memory_scope.embed_model -> '${targetModelId}' (fallback tag only)`);
     }
 
     log(
@@ -271,6 +443,7 @@ async function _reembedStore(
       alreadyCurrent: false,
       dryRun: false,
       backups,
+      sourceModelGroups,
     };
   } finally {
     db.close();

@@ -202,6 +202,58 @@ function cmdInit(scope: ScopeKind, basePath: string): void {
 }
 
 function cmdStatus(basePath: string): void {
+  // BL-95: discovery mirrors cmdList exactly via the shared discoverStorePaths()
+  // helper — same fallback order, same unregistered-store scan. Do not fork this
+  // logic; two commands disagreeing about where stores live is the next bug.
+  const { paths, unregisteredStores } = discoverStorePaths(basePath);
+
+  if (paths.length === 0) {
+    console.log('No memory stores found.');
+    return;
+  }
+  for (const dbPath of paths) {
+    try {
+      const db = openDb(dbPath);
+      const meta = db.prepare('SELECT * FROM memory_scope').get() as
+        | { scope: string; embed_model: string; created_at: string }
+        | undefined;
+      const nodeCount = (db.prepare('SELECT COUNT(*) as c FROM node').get() as { c: number }).c;
+
+      // BL-95: surface the unregistered note
+      const unreg = unregisteredStores.find((s) => s.path === dbPath);
+      const scopeLabel = unreg
+        ? unreg.scope
+        : (meta?.scope ?? '?');
+
+      console.log(`${path.basename(dbPath)}: scope=${scopeLabel} nodes=${nodeCount} model=${meta?.embed_model ?? '?'} path=${dbPath}`);
+      db.close();
+    } catch (e) {
+      console.log(`${path.basename(dbPath)}: error - ${String(e)}`);
+    }
+  }
+
+  // BL-95: if any bare stores found, print registration guidance
+  if (unregisteredStores.length > 0) {
+    console.log(`\n${unregisteredStores.length} unregistered store(s) found. Run 'memory init --scope <scope> --path <dir>' to register.`);
+  }
+}
+
+/**
+ * Discover live store paths for a given basePath, using the exact same
+ * fallback order + unregistered-store scan as cmdStatus's BL-95 fix.
+ *
+ * Fallback order (mirrors cmdStatus):
+ *   1. --base-path/--path given  → <basePath>/.memory/*.db
+ *   2. no basePath               → registry.json entries + <cwd>/.memory/*.db
+ *   3. always                    → BL-95 scan of KNOWN_STORE_DIRS
+ *      (~/.memory, <cwd>/.memory) for bare *.db files not already found above,
+ *      so a live store that predates the scope-naming convention (e.g. a bare
+ *      ~/.memory/memory.db) is never silently skipped.
+ *
+ * Do NOT diverge this from cmdStatus's discovery — two commands disagreeing
+ * about where stores live is the next bug (see BL-95).
+ */
+function discoverStorePaths(basePath: string): { paths: string[]; unregisteredStores: Array<{ path: string; scope: string }> } {
   const paths: string[] = [];
   if (basePath) {
     const memDir = path.resolve(basePath, '.memory');
@@ -250,46 +302,19 @@ function cmdStatus(basePath: string): void {
     } catch { /* permission error */ }
   }
 
+  return { paths, unregisteredStores };
+}
+
+function cmdList(basePath: string): void {
+  const { paths, unregisteredStores } = discoverStorePaths(basePath);
+
   if (paths.length === 0) {
     console.log('No memory stores found.');
     return;
   }
+
   for (const dbPath of paths) {
-    try {
-      const db = openDb(dbPath);
-      const meta = db.prepare('SELECT * FROM memory_scope').get() as
-        | { scope: string; embed_model: string; created_at: string }
-        | undefined;
-      const nodeCount = (db.prepare('SELECT COUNT(*) as c FROM node').get() as { c: number }).c;
-
-      // BL-95: surface the unregistered note
-      const unreg = unregisteredStores.find((s) => s.path === dbPath);
-      const scopeLabel = unreg
-        ? unreg.scope
-        : (meta?.scope ?? '?');
-
-      console.log(`${path.basename(dbPath)}: scope=${scopeLabel} nodes=${nodeCount} model=${meta?.embed_model ?? '?'} path=${dbPath}`);
-      db.close();
-    } catch (e) {
-      console.log(`${path.basename(dbPath)}: error - ${String(e)}`);
-    }
-  }
-
-  // BL-95: if any bare stores found, print registration guidance
-  if (unregisteredStores.length > 0) {
-    console.log(`\n${unregisteredStores.length} unregistered store(s) found. Run 'memory init --scope <scope> --path <dir>' to register.`);
-  }
-}
-
-function cmdList(basePath: string): void {
-  const memoryDir = path.resolve(basePath || process.cwd(), '.memory');
-  if (!fs.existsSync(memoryDir)) {
-    console.log('No .memory directory found at', memoryDir);
-    return;
-  }
-  const dbs = fs.readdirSync(memoryDir).filter((f) => f.endsWith('.db'));
-  for (const dbFile of dbs) {
-    const dbPath = path.join(memoryDir, dbFile);
+    const dbFile = path.basename(dbPath);
     try {
       const db = openDb(dbPath);
       const nodes = db
@@ -297,7 +322,9 @@ function cmdList(basePath: string): void {
           `SELECT uid, kind, content, t_created FROM node WHERE t_invalid IS NULL ORDER BY t_created DESC LIMIT 20`,
         )
         .all() as { uid: string; kind: string; content: string | null; t_created: string }[];
-      console.log(`\n=== ${dbFile} (${nodes.length} recent) ===`);
+      const unreg = unregisteredStores.find((s) => s.path === dbPath);
+      const label = unreg ? `${dbFile} ${unreg.scope}` : dbFile;
+      console.log(`\n=== ${label} (${nodes.length} recent) ===`);
       for (const n of nodes) {
         const snippet = (n.content ?? '').slice(0, 80);
         console.log(`  [${n.kind}] ${n.uid}: ${snippet}`);
@@ -306,6 +333,11 @@ function cmdList(basePath: string): void {
     } catch (e) {
       console.log(`${dbFile}: error - ${String(e)}`);
     }
+  }
+
+  // BL-95: if any bare stores found, print registration guidance (parity with cmdStatus)
+  if (unregisteredStores.length > 0) {
+    console.log(`\n${unregisteredStores.length} unregistered store(s) found. Run 'memory init --scope <scope> --path <dir>' to register.`);
   }
 }
 

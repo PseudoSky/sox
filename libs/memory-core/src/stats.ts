@@ -11,7 +11,12 @@ import * as fs from 'node:fs';
 import { ENRICH_VERSION } from './enrich-version.js';
 import { clusterStats } from './cluster.js';
 import type { ClusterStats } from './cluster.js';
-import { getActiveEmbedModel, getEmbedState, getLastEmbedError } from './embed.js';
+import {
+  getActiveEmbedModel,
+  getConfiguredEmbedBackend,
+  getEmbedState,
+  getLastEmbedError,
+} from './embed.js';
 import { WriteQueue } from './write-queue.js';
 
 /**
@@ -39,7 +44,6 @@ export interface StatsResult {
   embed_model: string;
   embed_backend_configured: string;
   embed_state: string;
-  embed_on_hash_fallback: boolean;
   last_embed_error: string | null;
   degraded_record_count: number;
   total_episodes: number;
@@ -175,9 +179,10 @@ export async function memoryGetStats(
   };
 
   // Embed health (resolvedEmbedModel already set above)
-  const configuredBackend = process.env['SOX_EMBED_BACKEND'] ?? 'auto';
+  // BL-250: validated against the live union instead of a raw unchecked env read —
+  // an unknown SOX_EMBED_BACKEND value throws here rather than being silently reported.
+  const configuredBackend = getConfiguredEmbedBackend();
   const resolvedEmbedState = getEmbedState();
-  const onHashFallback = false;
 
   // Degraded record count
   let degradedRecordCount = 0;
@@ -215,7 +220,6 @@ export async function memoryGetStats(
     embed_model: resolvedEmbedModel,
     embed_backend_configured: configuredBackend,
     embed_state: resolvedEmbedState,
-    embed_on_hash_fallback: onHashFallback,
     last_embed_error: getLastEmbedError(),
     degraded_record_count: degradedRecordCount,
     total_episodes: totalEpisodes,

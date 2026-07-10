@@ -24,7 +24,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 // These tests assert db_path permission ENFORCEMENT, not embedding quality — pin the fast,
 // deterministic hash backend so a `memory_write`'s cold real-ONNX model load never tips the

@@ -42,14 +42,39 @@ export function resetProviderCallCount(): void {
 
 export type EmbedBackend = 'auto' | 'real';
 
+const VALID_EMBED_BACKENDS: readonly EmbedBackend[] = ['auto', 'real'];
+
 export interface EmbedConfig {
   backend: EmbedBackend;
   cacheDir: string;
   model: string;
 }
 
+/**
+ * BL-250: SOX_EMBED_BACKEND is validated against the live union instead of an
+ * unchecked `as EmbedBackend` cast. The hash backend was removed (embedWorker.ts
+ * deleted); an unknown value (e.g. a stale `SOX_EMBED_BACKEND=hash` left over from
+ * before this removal) must fail LOUDLY here rather than silently flow through and
+ * be reported back to a caller via memory_ping/memory_stats as if it were real.
+ */
+function resolveBackendEnv(): EmbedBackend {
+  const raw = process.env['SOX_EMBED_BACKEND'];
+  if (raw === undefined || raw === '') return 'auto';
+  if ((VALID_EMBED_BACKENDS as readonly string[]).includes(raw)) {
+    return raw as EmbedBackend;
+  }
+  throw new Error(
+    `[sox-memory] Invalid SOX_EMBED_BACKEND: "${raw}". Valid values: ${VALID_EMBED_BACKENDS.join(', ')}.`,
+  );
+}
+
+/** Public accessor so other modules (e.g. stats.ts) never re-implement the raw env read. */
+export function getConfiguredEmbedBackend(): EmbedBackend {
+  return resolveBackendEnv();
+}
+
 function resolveConfig(): EmbedConfig {
-  const backend = (process.env['SOX_EMBED_BACKEND'] ?? 'auto') as EmbedBackend;
+  const backend = resolveBackendEnv();
   const cacheDir =
     process.env['SOX_EMBED_CACHE_DIR'] ??
     join(
@@ -115,7 +140,7 @@ export interface EmbedHealth {
 
 /** Truthful embed-subsystem health for memory_ping / memory_stats. */
 export function getEmbedHealth(): EmbedHealth {
-  const backend = (process.env['SOX_EMBED_BACKEND'] ?? 'auto') as EmbedBackend;
+  const backend = resolveBackendEnv();
   const state = getEmbedState();
   return {
     state,

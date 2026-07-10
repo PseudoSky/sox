@@ -1,19 +1,52 @@
 /**
- * memory_recall — deterministic hot path, <50ms, zero LLM/provider calls.
+ * memory_recall — deterministic hot path, <50ms.
  * federatedRecall — cross-scope RRF union (design.md §2.7).
  *
  * Algorithm per-store (design.md §2.3):
- *   1. query-embed (local hash embedding, zero provider calls)
+ *   1. query-embed — ONE real local ONNX/fastembed inference call via `embed()`
+ *      (embed.ts:203/:206 → provider.embedSingle(); called at :401 below). This
+ *      is NOT a hash projection: the hash backend was removed entirely —
+ *      `EmbedBackend = 'auto' | 'real'` (embed.ts:43) and
+ *      `createEmbeddingProvider()` throws rather than silently downgrading
+ *      (libs/data/CLAUDE.md §2). "Zero LLM/provider calls" below means zero
+ *      REMOTE/network LLM calls (no external API dependency) — the local
+ *      embedding provider IS invoked once per recall, unavoidably, to embed
+ *      the query text.
+ *      CAVEAT: the `getProviderCallCount()` instrumentation this file reads
+ *      at :302/:929 (embed.ts:33-36 `providerCallCount`) is never incremented
+ *      anywhere in embed.ts, so the delta computed at :930 is always 0
+ *      regardless of how many embed() calls actually happened — it is dead
+ *      instrumentation today, not a live enforcement of the "zero remote
+ *      calls" invariant. Do not trust `response.provider_call_count` as
+ *      evidence either way; verify by other means (e.g. mock call counts).
  *   2. parallel: vec0 KNN + FTS5 BM25 + temporal filter
  *   3. graph expand depth-1 over live edges (project store only in federation)
  *   4. RRF (k=60) fusion
  *   5. recency × importance rerank (decay 0.995/h)
  *   6. assemble within token_budget
  *
- * Federation (design.md §2.7):
+ * Federation (design.md §2.7) — `federatedRecall` ONLY:
  *   score = scope_weight(scope) · Σ 1/(k+rank), k=60
  *   weights: project=1.0, user=0.6, org=0.4, local=1.0
  *   agent_id match ×1.25 boost; cross-store content-hash dedup; SUPERSEDES suppression.
+ *
+ * [BL-230] `agent_id` means two DIFFERENT things depending on the entry point — do not
+ * carry the federation semantics above into the single-store path:
+ *   - `federatedRecall` (below): agent_id match is a ×1.25 scoring BOOST.
+ *     A non-matching node still ranks, just lower.
+ *   - `memoryRecall` (this function, single-store): agent_id is a HARD FILTER —
+ *     `agentFilter` is built at :410 and applied to all three candidate
+ *     channels: the vec0 KNN query (:419), the FTS5 BM25 query (:450), and the
+ *     temporal-recency query (:465). A non-matching node cannot appear at all.
+ *     An empty/absent agent_id disables the filter entirely (it does NOT
+ *     filter to the empty string).
+ * Tuning ranking off the federation comment alone will mislead you about which rows are even
+ * eligible in the single-store case.
+ *
+ * NOTE: the `:line` citations above are point-in-time (verified against this
+ * file as of this edit) — they will drift as the file grows. If a citation
+ * looks off by more than a few lines, trust the described behavior/symbol
+ * name over the number and re-grep.
  */
 
 import Database from 'better-sqlite3';
@@ -108,6 +141,14 @@ export interface RecallResponse {
     totalChunksRetrieved: number;
     totalChunksAfterExpansion: number;
     lateChunkingApplied: boolean;
+    /**
+     * BL-117: present ONLY when `params.lateChunking?.enabled` was requested
+     * but `lateChunkingApplied` is false — a machine-readable reason a caller
+     * can branch on to distinguish "ran" from "silently ignored". Absent
+     * entirely when late chunking was not requested, or when (hypothetically)
+     * it was genuinely applied.
+     */
+    lateChunkingSkipReason?: string;
     totalTokensAfterExpansion: number;
     expansionTruncated: boolean;
   };
@@ -129,6 +170,44 @@ export interface LateChunkingConfig {
   enabled: boolean;
   boundaries: Array<{ startToken: number; endToken: number; metadata?: Record<string, unknown> }>;
   overlapTokens?: number;
+}
+
+/**
+ * BL-117: genuine late chunking (Günther et al.) mean-pools PER-TOKEN
+ * (pre-pool) embeddings over caller-supplied boundary token ranges, so each
+ * chunk's vector is contextualised by the surrounding document instead of
+ * being embedded in isolation. That requires a token-level embedding matrix
+ * (or per-boundary embeddings) to pool from at recall time.
+ *
+ * Today `vec_node` (schema.ts) stores exactly ONE mean-pooled FLOAT[768]
+ * vector per node — the final, already-pooled document embedding. There is
+ * no token-level embedding matrix and no persisted chunk-boundary metadata
+ * anywhere in the schema to pool from. Recall is also a zero-provider-call
+ * hot path (R1) — it cannot legitimately call the embedding provider again
+ * per candidate to manufacture the missing data on the fly.
+ *
+ * Conclusion: late chunking is NOT implementable from data already persisted
+ * ingest-side. Previously this flag was accepted and silently reported as
+ * `applied: true` while doing nothing (the defect). This helper is the single
+ * source of truth for the honest, non-lying answer: never "applied", always a
+ * machine-readable reason describing exactly what ingest-side storage would
+ * be required to make it real (see BL-117 report for the full remediation
+ * plan — out of scope for memory-core, requires libs/data/ingest/** changes).
+ */
+function evaluateLateChunking(config: LateChunkingConfig | undefined): {
+  applied: boolean;
+  skipReason?: string;
+} {
+  if (!config?.enabled) return { applied: false };
+  return {
+    applied: false,
+    skipReason:
+      'late_chunking_unsupported: no per-token/pre-pool embedding matrix or persisted ' +
+      'chunk-boundary metadata exists ingest-side — vec_node stores exactly one mean-pooled ' +
+      'FLOAT[768] vector per node (schema.ts), and memory_recall is a zero-provider-call hot ' +
+      'path (R1) so it cannot compute one on the fly. Required ingest-side work: persist ' +
+      'per-chunk (or per-token) embeddings plus boundary token offsets at write time.',
+  };
 }
 
 // ── Error types ───────────────────────────────────────────────────────────────
@@ -314,8 +393,11 @@ export async function memoryRecall(
     }
   }
 
-  // 1. Query embedding — zero per-query network calls (R1).
-  //    Real backend: local ONNX inference; hash backend: deterministic projection.
+  // 1. Query embedding — zero per-query NETWORK calls (R1): embed() always
+  //    resolves the real local ONNX/fastembed provider (bge-base-en-v1.5).
+  //    There is no hash backend to fall back to — it was removed; see the
+  //    file-top docblock for the full trace + the dead-instrumentation caveat
+  //    on getProviderCallCount().
   const queryVec = await embed(query);
   const queryVecJson = vecToJson(queryVec);
 
@@ -417,13 +499,18 @@ export async function memoryRecall(
         candidates_after_filter: afterCount,
       };
     }
+    // BL-117: honestly report late chunking even on the empty-corpus path —
+    // a caller who asked for it and got zero results should still learn it
+    // was never applied, and why, rather than an empty response masking it.
+    const { applied: lcApplied0, skipReason: lcSkip0 } = evaluateLateChunking(params.lateChunking);
     const response: RecallResponse = {
       results: [],
       provider_call_count: 0,
       metadata: {
         totalChunksRetrieved: 0,
         totalChunksAfterExpansion: 0,
-        lateChunkingApplied: false,
+        lateChunkingApplied: lcApplied0,
+        ...(lcSkip0 ? { lateChunkingSkipReason: lcSkip0 } : {}),
         totalTokensAfterExpansion: 0,
         expansionTruncated: false,
       },
@@ -506,15 +593,27 @@ export async function memoryRecall(
   //   The final score is: baseRrf × rerank, where rerank = recency × (0.5 + 0.5×imp).
   //   We decompose the score into three additive channels whose sum equals the final
   //   score exactly:
-  //     vec_contrib     = vecNorm  × rerank × (1/normTotal)  [proportional share]
-  //     bm25_contrib    = ftsNorm  × rerank × (1/normTotal)
+  //     vec_contrib      = vecNorm  × rerank × (1/normTotal)  [proportional share]
+  //     bm25_contrib     = ftsNorm  × rerank × (1/normTotal)
   //     temporal_contrib = tempNorm × rerank × (1/normTotal)
   //   where normTotal = vecNorm + ftsNorm + tempNorm (sum of normalised values).
-  //   If normTotal == 0, all three channels get 0 and total gets the raw score.
+  //   The normalised channel values are per-query min-max scaled so scores from
+  //   different queries are comparable.
   //
-  //   This guarantees: vec_contrib + bm25_contrib + temporal_contrib = score,
-  //   and each channel value is in [0, score].  The normalised channel values are
-  //   per-query min-max scaled so scores from different queries are comparable.
+  //   Degenerate case (BL-167): min-max normalisation can legitimately collapse
+  //   every channel to 0 for a node whose raw per-channel value equals that
+  //   channel's minimum across the whole candidate set on ALL THREE channels
+  //   simultaneously (e.g. a node whose only contributing channel is also that
+  //   channel's minimum). When that happens normTotal === 0 even though
+  //   finalScore > 0 (baseRrf, and therefore finalScore, are driven by raw —
+  //   not normalised — magnitudes). In that case we fall back to splitting the
+  //   score proportionally by *raw* RRF channel contribution instead
+  //   (rc.vecRaw/rc.ftsRaw/rc.tempRaw, whose sum rc.total is exactly baseRrf by
+  //   construction — see step 3 above), so the identity below always holds
+  //   rather than only holding "usually":
+  //
+  //   This guarantees: vec_contrib + bm25_contrib + temporal_contrib === score
+  //   for every node, and each channel value is in [0, score].
   const ranked = validNodes.map((n) => {
     const baseRrf = rrfScores.get(n.rowid) ?? 0;
     const recency = recencyMultiplier(n.t_created);
@@ -524,12 +623,22 @@ export async function memoryRecall(
 
     const nc = normChannels.get(n.rowid) ?? { vecNorm: 0, ftsNorm: 0, tempNorm: 0 };
     const normTotal = nc.vecNorm + nc.ftsNorm + nc.tempNorm;
+    const rc = rrfChannels.get(n.rowid);
     let vecContrib = 0, bm25Contrib = 0, tempContrib = 0;
     if (normTotal > 0) {
       vecContrib  = finalScore * (nc.vecNorm  / normTotal);
       bm25Contrib = finalScore * (nc.ftsNorm  / normTotal);
       tempContrib = finalScore * (nc.tempNorm / normTotal);
+    } else if (rc && rc.total > 0) {
+      // BL-167 fallback: normalisation collapsed to 0 but the raw RRF total
+      // (and therefore finalScore) is positive. Split by raw contribution so
+      // vec + bm25 + temporal === total still holds exactly.
+      vecContrib  = finalScore * (rc.vecRaw  / rc.total);
+      bm25Contrib = finalScore * (rc.ftsRaw  / rc.total);
+      tempContrib = finalScore * (rc.tempRaw / rc.total);
     }
+    // else: rc.total === baseRrf === 0 here too, so finalScore is also 0 and
+    // leaving all three channels at 0 still satisfies the invariant (0 === 0).
 
     const breakdown: ScoreBreakdown = {
       vec:      vecContrib,
@@ -809,19 +918,13 @@ export async function memoryRecall(
     results.sort((a, b) => b.score - a.score);
   }
 
-  // ── Late chunking ───────────────────────────────────────────────────────────
-  // Opt-in: when enabled, mean-pools per-chunk boundaries at retrieval time.
-  // Currently a no-op that records the flag for downstream processing.
-  // Real implementation would re-embed result chunks at retrieval time using
-  // the stored full-document embedding and per-chunk boundaries.
-  let lateChunkingApplied = false;
-  if (params.lateChunking?.enabled) {
-    lateChunkingApplied = true;
-    // Placeholder: late chunking aggregation would transform the recalled chunks
-    // by mean-pooling embedding boundaries at retrieval time. The boundaries
-    // are pre-computed at ingest time and stored alongside the full-document
-    // embedding in the vec_node table.
-  }
+  // ── Late chunking (BL-117) ─────────────────────────────────────────────────
+  // See evaluateLateChunking() for the full rationale: genuine late chunking
+  // is not implementable from data persisted today, so the flag is honestly
+  // reported as NOT applied — never silently flipped to true — with a
+  // machine-readable reason a caller can branch on.
+  const { applied: lateChunkingApplied, skipReason: lateChunkingSkipReason } =
+    evaluateLateChunking(params.lateChunking);
 
   const afterCount = getProviderCallCount();
   const providerCallCount = afterCount - beforeCount; // must be 0
@@ -866,6 +969,7 @@ export async function memoryRecall(
       totalChunksRetrieved: results.length,
       totalChunksAfterExpansion,
       lateChunkingApplied,
+      ...(lateChunkingSkipReason ? { lateChunkingSkipReason } : {}),
       totalTokensAfterExpansion: finalTokensAfterExpansion,
       expansionTruncated,
     },

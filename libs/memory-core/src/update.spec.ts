@@ -11,7 +11,9 @@
  *   - FTS reflects content change (fts_node_au trigger fires on node UPDATE)
  *   - no-op (all values identical) → E_NO_FIELDS
  *
- * All operations are deterministic — SOX_EMBED_BACKEND=hash, no ONNX, no LLM.
+ * All operations are deterministic via the _setEmbedProviderForTest() DI hook — no ONNX, no LLM.
+ * (This comment previously claimed SOX_EMBED_BACKEND=hash. There is no hash backend:
+ *  EmbedBackend = 'auto' | 'real', libs/memory-core/src/embed.ts:43. [BL-250])
  */
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 
@@ -73,13 +75,14 @@ interface NodeRow {
   t_updated: string | null;
   t_occurred: string | null;
   t_valid: string | null;
+  project_path: string | null;
 }
 
 function getNode(db: Database.Database, uid: string): NodeRow | undefined {
   return db
     .prepare<[string], NodeRow>(
       `SELECT rowid, uid, content, summary, name, topic, tags, importance, meta,
-              t_created, t_updated, t_occurred, t_valid
+              t_created, t_updated, t_occurred, t_valid, project_path
        FROM node WHERE uid = ?`,
     )
     .get(uid);
@@ -275,6 +278,31 @@ describe('memoryUpdate — individual field updates', () => {
     }
   });
 
+  it('BL-221: updates project_path in place without triggering re-embed', async () => {
+    const { db, dir } = tmpDb();
+    try {
+      const wr = await memoryWrite(db, {
+        content: 'a note written under the wrong project',
+        project_path: '/Users/nix/dev/ai/agent-source',
+      });
+      const uid = (wr as { episode_uid: string }).episode_uid;
+      expect(getNode(db, uid)!.project_path).toBe('/Users/nix/dev/ai/agent-source');
+
+      const result = await memoryUpdate(db, {
+        uid,
+        project_path: '/Users/nix/Documents/professional/qusececure',
+      });
+      const ok = result as import('./update.js').UpdateResult;
+      expect(ok.updated_fields).toContain('project_path');
+      expect(ok.reembedded).toBe(false);
+
+      const node = getNode(db, uid)!;
+      expect(node.project_path).toBe('/Users/nix/Documents/professional/qusececure');
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+
   it('updates tags', async () => {
     const { db, dir } = tmpDb();
     try {
@@ -332,6 +360,81 @@ describe('memoryUpdate — individual field updates', () => {
       const node = getNode(db, uid)!;
       expect(node.t_occurred).toBe(newOccurred);
       expect(node.t_valid).toBe(newValid);
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+});
+
+// ── BL-221: mis-attributed episodes are now correctable in place ────────────────
+//
+// BACKLOG.md BL-221 ("mis-attributed episodes are UNCORRECTABLE in place"): a BL-62
+// mis-attribution (project_path resolved from the server's env/cwd fallback instead
+// of the caller's real project) previously could NOT be repaired, because (1)
+// `memory_update` did not have `project_path` in its editable field set, and (2)
+// re-writing the identical content with the corrected `project_path` is rejected by
+// `E_DEDUP` — the content_hash dedup key (write.ts) is computed over content only and
+// ignores project_path, so `memoryWrite` returns the ORIGINAL (wrongly-attributed)
+// uid instead of creating a corrected row. This block proves the full end-to-end
+// repair path end-to-end: E_DEDUP still fires on re-write (unchanged, by design —
+// see the write.ts HARD GATE note: the dedup key itself is intentionally NOT
+// touched), but `memory_update` now edits `project_path` directly, which is the
+// documented option (a) remediation.
+describe('memoryUpdate — BL-221: project_path is correctable in place', () => {
+  it('BL-221 (red→green): a mis-attributed episode is uncorrectable via re-write (E_DEDUP) but IS correctable via memory_update', async () => {
+    const { db, dir } = tmpDb();
+    try {
+      // 1. Simulate the BL-62 failure mode: an episode is written with a WRONG
+      //    project_path (e.g. the shared backend's frozen shim-spawn cwd, not the
+      //    caller's real working directory).
+      const wrongProjectPath = '/Users/nix/dev/ai/agent-source';
+      const correctProjectPath = '/Users/nix/Documents/professional/qusececure';
+      const content = 'BL-221 repro: a fact recorded while misattributed.';
+      const wr = await memoryWrite(db, { content, project_path: wrongProjectPath });
+      expect('episode_uid' in wr).toBe(true);
+      const uid = (wr as { episode_uid: string }).episode_uid;
+      expect(getNode(db, uid)!.project_path).toBe(wrongProjectPath);
+
+      // 2. Confirm the compounding sub-finding still holds (by design, NOT touched
+      //    by this fix — the dedup key is intentionally content-only, per the
+      //    BL-221 HARD GATE): re-writing identical content under the CORRECT
+      //    project_path is rejected as a duplicate, returning the WRONG uid's
+      //    content instead of creating a corrected row.
+      const rewrite = await memoryWrite(db, { content, project_path: correctProjectPath });
+      expect('code' in rewrite && rewrite.code).toBe('E_DEDUP');
+      expect((rewrite as { existing_uid: string }).existing_uid).toBe(uid);
+      // The dedup-rejected rewrite must NOT have mutated project_path as a side effect.
+      expect(getNode(db, uid)!.project_path).toBe(wrongProjectPath);
+
+      // 3. GREEN: memory_update (option (a), BL-221) repairs the SAME row in place.
+      const result = await memoryUpdate(db, { uid, project_path: correctProjectPath });
+      const ok = result as import('./update.js').UpdateResult;
+      expect('code' in result).toBe(false);
+      expect(ok.updated_fields).toEqual(['project_path']);
+      expect(ok.reembedded).toBe(false); // project_path is not part of the embed text
+
+      const node = getNode(db, uid)!;
+      expect(node.project_path).toBe(correctProjectPath);
+      expect(node.content).toBe(content); // content untouched — uid/content identity preserved
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+
+  it('BL-221: memoryUpdatePhaseA reports E_NO_FIELDS when project_path is resupplied unchanged (no false positive)', async () => {
+    const { db, dir } = tmpDb();
+    try {
+      const wr = await memoryWrite(db, {
+        content: 'BL-221 no-op guard',
+        project_path: '/Users/nix/dev/ai/sox-ecosystem',
+      });
+      const uid = (wr as { episode_uid: string }).episode_uid;
+
+      const result = memoryUpdatePhaseA(db, {
+        uid,
+        project_path: '/Users/nix/dev/ai/sox-ecosystem',
+      });
+      expect('code' in result && result.code).toBe('E_NO_FIELDS');
     } finally {
       cleanup(db, dir);
     }

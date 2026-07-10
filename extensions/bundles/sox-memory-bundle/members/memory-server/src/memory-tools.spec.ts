@@ -15,7 +15,9 @@
  * Setup: a small SQLite DB with a couple of writes + a cluster pass,
  * so the tool outputs can be asserted against the contract shapes.
  *
- * All operations are deterministic — no LLM, no provider calls (SOX_EMBED_BACKEND=hash).
+ * All operations are deterministic — no LLM calls. Embeddings use the real local
+ * fastembed/ONNX backend (BL-250: the hash backend was removed — EmbedBackend is
+ * 'auto' | 'real' only, and both resolve to the same real model; see embed.ts).
  */
 
 import { clusterStore, openDb } from '@adhd/sox-memory-core';
@@ -247,6 +249,97 @@ describe('memory_recall with filters (C2.2)', () => {
     for (let i = 1; i < importances.length; i++) {
       expect(importances[i]!).toBeLessThanOrEqual(importances[i - 1]!);
     }
+  });
+});
+
+// ── BL-229: agent_id scoping leak on the importance-ranked listing path ────────
+//
+// `memory_recall` accepts a top-level `agent_id` param. On the QUERY path
+// (recall.ts) it is a hard SQL scope filter (`AND n.agent_id = ?`) applied to
+// every channel (vec/FTS/temporal). On the no-query "importance-ranked listing"
+// branch (index.ts, `if (!query || !query.trim())`), the WHERE clause was built
+// from `filters` ONLY — `agent_id` was accepted into the schema, read nowhere,
+// and silently dropped: a caller doing "list my memories" with no `query` and
+// `agent_id:'A'` got EVERY agent's episodes back, not just A's. Fixed via option
+// (a) — the listing path applies `agent_id` to its own WHERE, matching the
+// query path's scope semantics exactly (same column, same store).
+describe('memory_recall — BL-229 agent_id scoping (importance-ranked listing)', () => {
+  const BL229_DIR = path.join(os.tmpdir(), `sox-bl229-spec-${process.pid}`);
+  const BL229_DB_PATH = path.join(BL229_DIR, 'test.db');
+  // Deliberately lexically DISSIMILAR content (not a templated "agent A"/"agent B"
+  // near-duplicate pair) — this suite runs with SOX_SYNC_EMBED=1 (vitest.setup.ts),
+  // so E8 near-dup detection runs INLINE on every write and would invalidate the
+  // older of two near-identical episodes (neardup.ts: `should_invalidate: cosine >=
+  // threshold`), silently removing it from every listing regardless of agent_id —
+  // a fixture artifact, not the BL-229 behavior under test. Distinct topics avoid it.
+  const AGENT_A_CONTENT = 'Quarterly revenue projections rely on the Q3 pipeline forecast.';
+  const AGENT_B_CONTENT = 'The kitchen faucet needs a new O-ring washer to stop the drip.';
+
+  beforeAll(async () => {
+    fs.mkdirSync(BL229_DIR, { recursive: true });
+    const r1 = await handleToolCall('memory_write', {
+      db_path: BL229_DB_PATH,
+      content: AGENT_A_CONTENT,
+      agent_id: 'agent-A',
+      importance: 5,
+    });
+    if ('isError' in r1 && r1.isError) throw new Error(`BL-229 fixture write (agent-A) failed: ${JSON.stringify(r1)}`);
+    const r2 = await handleToolCall('memory_write', {
+      db_path: BL229_DB_PATH,
+      content: AGENT_B_CONTENT,
+      agent_id: 'agent-B',
+      importance: 9, // deliberately HIGHER importance than A's episode: if agent_id
+      // scoping is broken, B's higher-importance episode sorts FIRST and would be
+      // the most likely to be surfaced/observed by a caller scoped to A — a strong
+      // negative control against "it happened to not show up" false negatives.
+    });
+    if ('isError' in r2 && r2.isError) throw new Error(`BL-229 fixture write (agent-B) failed: ${JSON.stringify(r2)}`);
+  });
+
+  afterAll(() => {
+    try { fs.rmSync(BL229_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('BL-229: a no-query listing scoped to agent_id:"agent-A" returns ONLY agent-A-authored episodes — never agent-B content', async () => {
+    const out = parseResult(await handleToolCall('memory_recall', {
+      db_path: BL229_DB_PATH,
+      agent_id: 'agent-A',
+      // no `query` — exercises the importance-ranked listing branch specifically.
+    }));
+    const results = out['results'] as JsonObj[];
+    expect(results.length).toBeGreaterThan(0);
+
+    // Assert on AUTHORSHIP (agent_id field + actual content), not merely on count —
+    // a count-only assertion would pass even if the WHERE clause silently matched
+    // the wrong column or the fixture only ever had one agent's data.
+    for (const r of results) {
+      expect(r['agent_id']).toBe('agent-A');
+      expect(r['content']).not.toBe(AGENT_B_CONTENT);
+    }
+    expect(results.some((r) => r['content'] === AGENT_A_CONTENT)).toBe(true);
+    expect(results.some((r) => r['content'] === AGENT_B_CONTENT)).toBe(false);
+  });
+
+  it('BL-229: symmetric check — agent_id:"agent-B" returns ONLY agent-B content, never agent-A', async () => {
+    const out = parseResult(await handleToolCall('memory_recall', {
+      db_path: BL229_DB_PATH,
+      agent_id: 'agent-B',
+    }));
+    const results = out['results'] as JsonObj[];
+    expect(results.length).toBeGreaterThan(0);
+    for (const r of results) {
+      expect(r['agent_id']).toBe('agent-B');
+    }
+    expect(results.some((r) => r['content'] === AGENT_A_CONTENT)).toBe(false);
+    expect(results.some((r) => r['content'] === AGENT_B_CONTENT)).toBe(true);
+  });
+
+  it('BL-229: negative control — an unscoped listing (no agent_id) DOES return both agents (proves the fixture + endpoint are otherwise working, isolating the assertion to the scoping behavior)', async () => {
+    const out = parseResult(await handleToolCall('memory_recall', { db_path: BL229_DB_PATH }));
+    const results = out['results'] as JsonObj[];
+    const authors = new Set(results.map((r) => r['agent_id']));
+    expect(authors.has('agent-A')).toBe(true);
+    expect(authors.has('agent-B')).toBe(true);
   });
 });
 

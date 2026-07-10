@@ -41,12 +41,9 @@ import {
   communityUidForRowid,
   embedBacklogStats,
   expandTilde,
-  getActiveEmbedModel,
   getDb,
   getEmbedHealth,
   getEmbedPipelineMetrics,
-  getEmbedState,
-  getLastEmbedError,
   hasPendingFullEnrich,
   healMissingVectors,
   memoryCurate,
@@ -71,7 +68,6 @@ import {
   memoryWriteBatchPhaseA,
   memoryWritePhaseA,
   resolveStoreOrDbPath,
-  rowidsToUids,
   runBatchEnrich,
   schedulePendingEmbeds,
   setLeaseInstanceId,
@@ -88,7 +84,6 @@ import type { PendingEmbed, PhaseAOutcome, WriteError, WriteResult } from '@adhd
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 // ─── ADR-0003: content-addressed self-identity ───────────────────────────────
 //
@@ -307,7 +302,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_write',
     description:
-      'Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, extractive summary). Returns {episode_uid}. The embedding + near-dup detection run asynchronously moments after the write (enrichment.near_dup is null in the response; the episode is keyword/temporal-recallable immediately and vector-recallable once the async embed lands — set SOX_SYNC_EMBED=1 server-side to restore fully synchronous behaviour). Batch enrichments (clustering, auto-links, importance link-score) run in-process on a periodic interval within this server (no separate daemon process).',
+      'Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, extractive summary). Returns {episode_uid}. The embedding + near-dup detection run asynchronously moments after the write (enrichment.near_dup is null in the response; the episode is keyword/temporal-recallable immediately and vector-recallable once the async embed lands — set SOX_SYNC_EMBED=1 server-side to restore fully synchronous behaviour). Batch enrichments (clustering, auto-links, importance link-score) run in-process on a periodic interval within this server (no separate daemon process). (BL-62) enrichment.project_path_source is "explicit" when this call supplied project_path, or "inferred" when it was auto-detected from the server\'s env/cwd — pass project_path explicitly whenever your working directory may differ from the server process\'s (e.g. a long-lived shared session), since "inferred" attribution can be wrong and is only correctable afterward via memory_update.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -493,7 +488,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_update',
     description:
-      'In-place editor for an existing live node. Distinct from supersession (which mints a new node). The uid is the required selector and is immutable — it can never change. Updates content, summary, name, topic, tags, importance, metadata (deep-merge by default), t_occurred, and t_valid. t_created is never modified (audit anchor). When content or summary changes, the embedding is refreshed automatically. FTS is auto-synced by the node UPDATE trigger. Returns {uid, updated_fields, reembedded}.',
+      'In-place editor for an existing live node. Distinct from supersession (which mints a new node). The uid is the required selector and is immutable — it can never change. Updates content, summary, name, topic, project_path, tags, importance, metadata (deep-merge by default), t_occurred, and t_valid. t_created is never modified (audit anchor). When content or summary changes, the embedding is refreshed automatically. FTS is auto-synced by the node UPDATE trigger. Returns {uid, updated_fields, reembedded}. (BL-221) project_path is editable here specifically so a mis-attributed episode (memory_write.enrichment.project_path_source:"inferred" — see memory_write) can be corrected without a rewrite: re-writing identical content with a different project_path is rejected as a duplicate (content_hash dedup ignores project_path by design), so this is the only in-place remediation path.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -504,6 +499,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         summary: { type: 'string', description: 'Replace node.summary. Triggers re-embed and FTS update.' },
         name: { type: 'string', description: 'Replace node.name.' },
         topic: { type: 'string', description: 'Replace node.topic.' },
+        project_path: { type: 'string', description: '(BL-221) Replace node.project_path — corrects mis-attributed provenance (e.g. a prior write whose enrichment.project_path_source was "inferred" and later found wrong) in place, without content_hash dedup rejecting the correction.' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Replace node.tags (replaces existing tags wholesale — not additive).' },
         importance: { type: 'number', minimum: 1, maximum: 10, description: 'Replace node.importance.' },
         metadata: { type: 'object', additionalProperties: true, description: 'Metadata to merge into (or replace) existing node.meta. See metadata_merge.' },
@@ -762,6 +758,16 @@ function parseTags(raw: string | null | undefined): string[] {
   return [];
 }
 
+/**
+ * BL-241: rough token estimate (1 token ≈ 4 chars) — mirrors recall.ts's own
+ * `estimateTokens` (not exported; duplicated here so the no-query listing branch
+ * of memory_recall can honour `token_budget` with the SAME cumulative-estimate
+ * semantics as the query path instead of a plain row-count LIMIT).
+ */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
 // rowidsToUids, communityUidForRowid, supersedesUidForRowid, isSuperseded,
 // buildFiltersClause are imported from @adhd/sox-memory-core above.
 
@@ -813,7 +819,6 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       model: embedHealth.model,
       backend: embedHealth.backend,
       state: embedHealth.state,
-      on_hash_fallback: embedHealth.on_hash_fallback,
       last_error: embedHealth.last_error,
     };
 
@@ -949,10 +954,12 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           store: storeBlock,
           embed: embedBlock,
           // ── Legacy flat keys (preserved for one minor version) ─────────────
+          // BL-250: embed_on_hash_fallback removed — the hash backend no longer
+          // exists (EmbedBackend = 'auto' | 'real' only), so this key always
+          // reported the hardcoded constant `false` and never reflected reality.
           embed_model: embedHealth.model,
           embed_backend_configured: embedHealth.backend,
           embed_state: embedHealth.state,
-          embed_on_hash_fallback: embedHealth.on_hash_fallback,
           last_embed_error: embedHealth.last_error,
         }),
       }],
@@ -1107,7 +1114,13 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       // returned its slot — never from inside it (BL-154). The response's
       // enrichment.near_dup is null (deferred); the episode is BM25/temporal-
       // recallable immediately and vec-recallable once Phase B lands.
-      const outcome = await wq.enqueue('memory_write', (writeDb) => {
+      // Explicit type argument (rather than bare inference) so each branch's inline
+      // `response` object literal is CONTEXTUALLY typed against ToolResult — without
+      // it, TS widens `type: 'text'` to `type: string` and `isError: true` to
+      // `isError: boolean` across the union of return statements (no target type to
+      // check literals against), which fails ToolResultContent's `type: 'text'`
+      // literal requirement under exactOptionalPropertyTypes.
+      const outcome = await wq.enqueue<{ response: ToolResult; pendings: PendingEmbed[] }>('memory_write', (writeDb) => {
         const pendings: PendingEmbed[] = [];
 
         if (chunks.length > 1) {
@@ -1224,6 +1237,34 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       // If no query (or empty), fall back to importance-ranked listing (UC7, OQ-6).
       if (!query || !query.trim()) {
         const { sql: filterSql, params: filterParams } = buildFiltersClause(filters);
+        // BL-229: the top-level `agent_id` param is a HARD scope filter on the query
+        // path (recall.ts: `AND n.agent_id = ?` on every vec/FTS/temporal channel) —
+        // it MUST behave identically here, option (a) (apply it to the WHERE), not
+        // option (b) (reject it), because the listing path can trivially express it:
+        // `agent_id` is a plain column on the SAME `node` table this query already
+        // filters. Before this fix the param was accepted into the schema, silently
+        // read nowhere on this branch, and every agent's episodes were returned to a
+        // caller who asked to be scoped to their own — a confidentiality leak, not a
+        // cosmetic gap. Parameterized (never interpolated) to preempt injection, and
+        // falsy-checked (`agentId ?`) to match recall.ts's own `agent_id ? ... : ''`
+        // semantics exactly (an empty string is "no filter", not "filter to '').
+        const agentId = args['agent_id'] as string | undefined;
+        const agentSql = agentId ? ' AND n.agent_id = ?' : '';
+        const agentParams = agentId ? [agentId] : [];
+
+        // BL-240: `as_of` was accepted into the schema and hardcoded to `n.t_invalid
+        // IS NULL` (today's live state only) on this branch, while the query path
+        // (recall.ts) swaps in a bi-temporal validity window. "List my memories as
+        // of last week" silently returned today's state. Mirror recall.ts's own
+        // predicate exactly (`n.t_valid IS NULL OR n.t_valid <= as_of` — a null
+        // t_valid means "always been valid" — `AND` `n.t_invalid IS NULL OR
+        // n.t_invalid > as_of`), parameterized rather than interpolated.
+        const asOf = args['as_of'] as string | undefined;
+        const validitySql = asOf
+          ? '(n.t_valid IS NULL OR n.t_valid <= ?) AND (n.t_invalid IS NULL OR n.t_invalid > ?)'
+          : 'n.t_invalid IS NULL';
+        const validityParams = asOf ? [asOf, asOf] : [];
+
         const rows = db
           .prepare<unknown[], {
             rowid: number; uid: string; content: string | null; importance: number;
@@ -1235,13 +1276,35 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
                     n.content_hash, n.summary, n.topic, n.tags, n.project_path,
                     n.t_invalid, n.t_created
              FROM node n
-             WHERE n.kind = 'episode' AND n.t_invalid IS NULL${filterSql}
+             WHERE n.kind = 'episode' AND ${validitySql}${agentSql}${filterSql}
              ORDER BY n.importance DESC, n.t_created DESC
              LIMIT ?`,
           )
-          .all(...filterParams, limit);
+          .all(...validityParams, ...agentParams, ...filterParams, limit);
 
-        const results = rows.map((r) => ({
+        // BL-241: `token_budget` was accepted into the schema and silently ignored on
+        // this branch (a plain SQL `LIMIT` by row count), while the query path
+        // (recall.ts:602-619) trims by cumulative estimated tokens. Mirror that here:
+        // rows are already capped at `limit` by the SQL above; further trim by
+        // cumulative token estimate, always keeping at least one row so a single
+        // oversized episode is never dropped entirely (matches recall.ts's
+        // `tokenCount + tokens > token_budget && results.length > 0` guard).
+        // Default 4000 matches this tool's documented schema default (see the
+        // memory_recall inputSchema above) — NOT recall.ts's internal
+        // DEFAULT_TOKEN_BUDGET (32000), a pre-existing, separately-flagged
+        // documentation/implementation drift on the query path (see report).
+        const tokenBudget = (args['token_budget'] as number | undefined) ?? 4000;
+        const budgetedRows: typeof rows = [];
+        let tokenCount = 0;
+        for (const r of rows) {
+          const text = [r.content, r.summary].filter(Boolean).join(' ');
+          const tokens = estimateTokens(text);
+          if (tokenCount + tokens > tokenBudget && budgetedRows.length > 0) break;
+          tokenCount += tokens;
+          budgetedRows.push(r);
+        }
+
+        const results = budgetedRows.map((r) => ({
           uid: r.uid,
           content: r.content,
           score: r.importance / 10.0,
@@ -1349,9 +1412,13 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_search_entities': {
+      // SearchEntitiesParams.entity_type is `?: string` (no `| undefined` in the
+      // member type) — under exactOptionalPropertyTypes the KEY must be omitted
+      // entirely when absent, not present with an explicit `undefined` value.
+      const entityType = args['entity_type'] as string | undefined;
       const result = memorySearchEntities(db, {
         query: args['query'] as string,
-        entity_type: args['entity_type'] as string | undefined,
+        ...(entityType !== undefined ? { entity_type: entityType } : {}),
         limit: (args['limit'] as number) ?? 10,
       });
       return {
@@ -1475,13 +1542,18 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_invalidate': {
+      // InvalidateParams' t_transition/replacement_uid are `?: string` (no `| undefined`
+      // in the member type) — under exactOptionalPropertyTypes the keys must be omitted
+      // entirely when absent, not present with an explicit `undefined` value.
+      const tTransition = args['t_transition'] as string | undefined;
+      const replacementUid = args['replacement_uid'] as string | undefined;
       const wq = WriteQueue.forPath(dbPath);
       return wq.enqueue('memory_invalidate', (writeDb) => {
         const result = memoryInvalidate(writeDb, {
           claim_uid: args['claim_uid'] as string,
           reason: args['reason'] as string,
-          t_transition: args['t_transition'] as string | undefined,
-          replacement_uid: args['replacement_uid'] as string | undefined,
+          ...(tTransition !== undefined ? { t_transition: tTransition } : {}),
+          ...(replacementUid !== undefined ? { replacement_uid: replacementUid } : {}),
         });
         if ('code' in result) {
           return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
@@ -1504,6 +1576,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         summary: args['summary'] as string | undefined,
         name: args['name'] as string | undefined,
         topic: args['topic'] as string | undefined,
+        project_path: args['project_path'] as string | undefined,
         tags: args['tags'] as string[] | undefined,
         importance: args['importance'] as number | undefined,
         metadata: args['metadata'] as Record<string, unknown> | undefined,
@@ -1535,7 +1608,8 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       // schedulePendingEmbeds — which also records the embed-pipeline metrics
       // memory_update previously skipped (BL-191). A crashed Phase B leaves
       // the node vectorless → healMissingVectors repairs on the next tick.
-      const updOutcome = await wq.enqueue('memory_update', (writeDb) => {
+      // Explicit type argument — see the identical `memory_write` widening note above.
+      const updOutcome = await wq.enqueue<{ response: ToolResult; pending: PendingEmbed | null }>('memory_update', (writeDb) => {
         const a = memoryUpdatePhaseA(writeDb, updateParams);
         if ('code' in a) {
           return {
@@ -1553,14 +1627,19 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_link': {
+      // BL-249: memoryLinkNode is `async function` (Promise<LinkResult>) — the enqueue
+      // callback MUST await it. Awaiting here does NOT nest a wq.enqueue call inside a
+      // running queue task (the re-entrancy hazard write-queue.ts's header warns about);
+      // it is a plain await of a non-queue async DB call, which _processNext's `await
+      // result` already supports for any queue task (write-queue.ts:684-687).
       const wq = WriteQueue.forPath(dbPath);
-      return wq.enqueue('memory_link', (writeDb) => {
-        const result = memoryLinkNode(writeDb, args);
+      return wq.enqueue('memory_link', async (writeDb) => {
+        const result = await memoryLinkNode(writeDb, args);
         if (result.isError) {
-          return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+          return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
         }
         return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
         };
       });
     }
@@ -1907,21 +1986,17 @@ if (require.main === module) {
     process.exit(0);
   }
   // BL-89: proactively warm the real embedding backend at startup so a missing/broken
-  // embedding runtime is reported LOUDLY at boot (stderr + memory_ping.last_embed_error)
-  // instead of silently degrading to hash on the first write. Fire-and-forget: for
-  // backend='auto' this records the fallback cause; for backend='real' warmupEmbed throws,
-  // which we log prominently (the server keeps serving non-embed tools, but the failure is
+  // embedding runtime is reported LOUDLY at boot (stderr + memory_ping.last_embed_error).
+  // Fire-and-forget: warmupEmbed() throws on failure (no degraded fallback — BL-250: the
+  // hash backend was removed, EmbedBackend = 'auto' | 'real' only), which we log
+  // prominently (the server keeps serving non-embed tools, but the failure is
   // unmissable). Never writes to stdout (the JSON-RPC channel).
   // setImmediate defers to the next event loop tick so the MCP transport starts serving
   // before the synchronous portion of ONNX model loading blocks the event loop.
   setImmediate(() => {
     void warmupEmbed().then(
     (h) => {
-      if (h.on_hash_fallback) {
-        process.stderr.write(
-          `[memory-server] WARNING: embeddings on HASH fallback (degraded recall). cause=${h.last_error ?? 'unknown'}\n`,
-        );
-      } else if (h.state === 'real') {
+      if (h.state === 'real') {
         process.stderr.write(`[memory-server] embeddings: real model active (${h.model})\n`);
       }
     },

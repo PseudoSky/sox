@@ -64,6 +64,89 @@ describe('LateChunkingConfig', () => {
   });
 });
 
+// ── BL-117: late chunking must NOT lie about being applied ────────────────────
+//
+// Before this fix, `params.lateChunking?.enabled` unconditionally set
+// `lateChunkingApplied = true` regardless of whether any chunking actually
+// happened (recall.ts:851-852, pre-fix). These tests exercise the REAL
+// memoryRecall() behavior (not just a config object's shape, which cannot
+// catch this class of defect) and prove the flag now honestly reports
+// non-application with a machine-readable reason.
+describe('memoryRecall — BL-117 late chunking honesty', () => {
+  it('reports lateChunkingApplied=false with a skip reason when requested (not silently true)', async () => {
+    const { db, dir } = tmpDb();
+    try {
+      await memoryWrite(db, { content: 'a document about distributed systems and consensus' });
+
+      const response = await memoryRecall(db, 'project', {
+        query: 'distributed systems',
+        lateChunking: {
+          enabled: true,
+          boundaries: [{ startToken: 0, endToken: 50 }],
+        },
+      });
+
+      expect(response.metadata.lateChunkingApplied).toBe(false);
+      expect(response.metadata.lateChunkingSkipReason).toBeDefined();
+      expect(response.metadata.lateChunkingSkipReason).toMatch(/late_chunking_unsupported/);
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+
+  it('reports lateChunkingApplied=false with a skip reason even on the empty-corpus path', async () => {
+    const { db, dir } = tmpDb();
+    try {
+      // No writes at all — allRowids.size === 0, exercising the early-return branch.
+      const response = await memoryRecall(db, 'project', {
+        query: 'nothing has ever been written to this store',
+        lateChunking: {
+          enabled: true,
+          boundaries: [{ startToken: 0, endToken: 10 }],
+        },
+      });
+
+      expect(response.results).toHaveLength(0);
+      expect(response.metadata.lateChunkingApplied).toBe(false);
+      expect(response.metadata.lateChunkingSkipReason).toBeDefined();
+      expect(response.metadata.lateChunkingSkipReason).toMatch(/late_chunking_unsupported/);
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+
+  it('does NOT set lateChunkingSkipReason when late chunking was not requested', async () => {
+    const { db, dir } = tmpDb();
+    try {
+      await memoryWrite(db, { content: 'a document with no late chunking request' });
+
+      const response = await memoryRecall(db, 'project', { query: 'no late chunking request' });
+
+      expect(response.metadata.lateChunkingApplied).toBe(false);
+      expect(response.metadata.lateChunkingSkipReason).toBeUndefined();
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+
+  it('does NOT set lateChunkingSkipReason when enabled is explicitly false', async () => {
+    const { db, dir } = tmpDb();
+    try {
+      await memoryWrite(db, { content: 'a document with late chunking explicitly disabled' });
+
+      const response = await memoryRecall(db, 'project', {
+        query: 'explicitly disabled',
+        lateChunking: { enabled: false, boundaries: [] },
+      });
+
+      expect(response.metadata.lateChunkingApplied).toBe(false);
+      expect(response.metadata.lateChunkingSkipReason).toBeUndefined();
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+});
+
 // ── Parent-context expansion: session_id fallback path ─────────────────────────
 
 describe('Parent-context expansion — session_id fallback', () => {
@@ -166,15 +249,13 @@ describe('score_breakdown — channel sum invariant (HF-3)', () => {
         // total must equal score (the stable per-result invariant)
         expect(Math.abs(total - result.score)).toBeLessThan(SCORE_TOLERANCE);
 
-        // Channels sum to total when normTotal > 0 (i.e., at least one channel
-        // has a non-zero normalised contribution). The lowest-ranked node in a
-        // single-channel scenario maps to normTotal=0, yielding channels=0
-        // while total > 0 — that edge case is excluded here.
-        const hasChannelSignal = vec > 0 || bm25 > 0 || temporal > 0;
-        if (hasChannelSignal) {
-          const channelSum = vec + bm25 + temporal;
-          expect(Math.abs(channelSum - total)).toBeLessThan(SCORE_TOLERANCE);
-        }
+        // BL-167: vec + bm25 + temporal === total unconditionally, including
+        // the previously-degenerate zero-normTotal case (min-max normalisation
+        // collapsing every channel to 0 while total > 0). See the dedicated
+        // "BL-167 — ScoreBreakdown invariant" describe block below for the
+        // targeted red→green regression covering that exact scenario.
+        const channelSum = vec + bm25 + temporal;
+        expect(Math.abs(channelSum - total)).toBeLessThan(SCORE_TOLERANCE);
       }
     } finally {
       cleanup(db, dir);
@@ -198,14 +279,117 @@ describe('score_breakdown — channel sum invariant (HF-3)', () => {
         const { vec, bm25, temporal, total } = result.score_breakdown;
         // total must always equal score (both ranked and graph-expanded nodes)
         expect(Math.abs(total - result.score)).toBeLessThan(SCORE_TOLERANCE);
-        // Channel sum === total when normTotal > 0; graph-expanded nodes and
-        // zero-normTotal ranked nodes (lowest rank in a single channel) carry
-        // channels=0 with total=score — the per-result invariant is: total===score.
+        // BL-167: for ranked (non-graph-expanded) nodes, channel sum === total
+        // unconditionally now — including the previously-degenerate
+        // zero-normTotal case. Graph-expanded neighbors are a separate,
+        // intentional design (recall.ts ~L634): they carry a zero breakdown
+        // by construction since they originate from graph traversal, not a
+        // ranked channel signal, so total (their score) is deliberately not
+        // decomposed into vec/bm25/temporal — that exception is unrelated to
+        // BL-167 and stays excluded here.
         const isGraphExpanded = result.provenance.length === 1 && result.provenance[0] === 'graph';
-        const hasChannelSignal = vec > 0 || bm25 > 0 || temporal > 0;
-        if (!isGraphExpanded && hasChannelSignal) {
+        if (!isGraphExpanded) {
           const channelSum = vec + bm25 + temporal;
           expect(Math.abs(channelSum - total)).toBeLessThan(SCORE_TOLERANCE);
+        }
+      }
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+});
+
+describe('BL-167 — ScoreBreakdown invariant (normTotal === 0 degenerate case)', () => {
+  /**
+   * Red→green regression for BL-167.
+   *
+   * Before the fix: `libs/memory-core/src/recall.ts:526-531` computed the
+   * proportional channel split purely from per-query min-max-normalised
+   * values. A node whose raw per-channel value equals that channel's minimum
+   * on ALL THREE channels simultaneously normalises to vecNorm=ftsNorm=
+   * tempNorm=0, so normTotal===0 — even though its raw RRF total (and
+   * therefore `finalScore`/`total`) is > 0. The old code left all three
+   * *Contrib fields at 0 in that branch, violating the documented invariant
+   * `vec + bm25 + temporal === total` (recall.ts:508-513) for that node.
+   *
+   * This test deterministically engineers that exact scenario using the
+   * feature-hash DeterministicTestProvider (shared tokens → high cosine,
+   * disjoint tokens → near-zero cosine, wired globally via vitest.setup.ts):
+   *
+   *   - Nodes B and C share the query token "widget" → both rank ahead of A
+   *     on the vec channel AND match on the FTS channel.
+   *   - Node A shares no tokens with the query or with B/C ("giraffe canyon
+   *     nebula quartz") → excluded entirely from the FTS channel (ftsRaw=0,
+   *     which is trivially that channel's array minimum) and ranks last
+   *     (worst/smallest raw contribution) on the vec channel.
+   *   - Node A is additionally backdated (t_created 10 days in the past,
+   *     recency multiplier still comfortably nonzero) so it also ranks last
+   *     on the temporal channel — its raw temporal contribution is that
+   *     channel's array minimum too.
+   *
+   * Node A's raw value is therefore simultaneously the per-channel minimum on
+   * vec, fts, AND temporal → normTotal(A) === 0 by construction, while its
+   * raw RRF total (vecRaw + tempRaw, both > 0) drives finalScore/total > 0.
+   * This reproduces the invariant violation exactly; the fixed code must
+   * still satisfy vec + bm25 + temporal === total for node A.
+   */
+  it('channel sum equals total even when min-max normalisation collapses every channel to 0', async () => {
+    const { db, dir } = tmpDb();
+    try {
+      const bResult = await memoryWrite(db, { content: 'widget alpha assembly', name: 'node-b', importance: 5 });
+      const cResult = await memoryWrite(db, { content: 'widget beta assembly', name: 'node-c', importance: 5 });
+      const aResult = await memoryWrite(db, { content: 'giraffe canyon nebula quartz', name: 'node-a', importance: 5 });
+
+      const aUid = (aResult as { episode_uid: string }).episode_uid;
+
+      // Backdate node A so it is strictly the oldest → worst (highest rank
+      // number, smallest rrfScore) on the temporal channel. 10 days keeps the
+      // recency multiplier (0.995^hours) comfortably away from fp underflow.
+      const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+      db.prepare(`UPDATE node SET t_created = ? WHERE uid = ?`).run(tenDaysAgo, aUid);
+
+      const response = await memoryRecall(db, 'project', {
+        query: 'widget',
+        limit: 10,
+        depth: 0, // no graph expansion — keep this test focused on the ranked path
+      });
+
+      const resultA = response.results.find((r) => r.uid === aUid);
+      expect(resultA).toBeDefined();
+
+      const { vec, bm25, temporal, total } = resultA!.score_breakdown;
+
+      // Precondition sanity check: this test only proves what it claims to
+      // prove if node A actually landed in the degenerate normTotal===0
+      // scenario (all channels non-negative, total strictly positive). If a
+      // future embedding/ranking change breaks this precondition the test
+      // should fail loudly here rather than silently passing on a
+      // no-longer-degenerate case.
+      expect(total).toBeGreaterThan(0);
+      expect(vec).toBeGreaterThanOrEqual(0);
+      expect(bm25).toBeGreaterThanOrEqual(0);
+      expect(temporal).toBeGreaterThanOrEqual(0);
+
+      // The core BL-167 assertion: the additive identity holds exactly, even
+      // in the degenerate normTotal===0 case.
+      expect(Math.abs(vec + bm25 + temporal - total)).toBeLessThan(SCORE_TOLERANCE);
+      expect(Math.abs(total - resultA!.score)).toBeLessThan(SCORE_TOLERANCE);
+
+      // bm25 must be exactly 0 (node A never matched the FTS query "widget"),
+      // while vec/temporal carry the (raw-proportional) remainder — proving
+      // the fallback split by raw contribution, not a trivial all-zero or
+      // equal three-way split.
+      expect(bm25).toBe(0);
+      expect(vec + temporal).toBeCloseTo(total, 9);
+
+      // Sanity: nodes B and C (which share tokens with the query and are
+      // fresh) should NOT hit the degenerate branch — confirms the fix
+      // didn't regress the common path.
+      for (const uid of [(bResult as { episode_uid: string }).episode_uid, (cResult as { episode_uid: string }).episode_uid]) {
+        const r = response.results.find((res) => res.uid === uid);
+        if (r) {
+          const bd = r.score_breakdown;
+          expect(Math.abs(bd.vec + bd.bm25 + bd.temporal - bd.total)).toBeLessThan(SCORE_TOLERANCE);
         }
       }
     } finally {
@@ -268,18 +452,17 @@ describe('score_breakdown — cross-query comparability (HF-3)', () => {
       }
 
       // score_breakdown must still sum correctly for cross-query results.
-      // Two edge cases skip the channel-sum check:
-      //  1. Graph-expanded nodes (provenance === ['graph']): channels are
-      //     intentionally zero with total = score.
-      //  2. Lowest-ranked nodes in a single-channel scenario: after per-query
-      //     min-max normalisation, the worst candidate maps to normTotal=0, so
-      //     channels are 0 while total > 0. The stable invariant is total===score.
+      // Graph-expanded nodes (provenance === ['graph']) are the one documented
+      // exception: their channels are intentionally zero with total = score
+      // (recall.ts ~L634 — they originate from graph traversal, not a ranked
+      // channel signal). BL-167: every other (ranked) node now satisfies
+      // vec + bm25 + temporal === total unconditionally, including the
+      // previously-degenerate zero-normTotal case.
       for (const result of [...responseA.results, ...responseB.results]) {
         const { vec, bm25, temporal, total } = result.score_breakdown;
         expect(Math.abs(total - result.score)).toBeLessThan(SCORE_TOLERANCE);
         const isGraphExpanded = result.provenance.length === 1 && result.provenance[0] === 'graph';
-        const hasChannelSignal = vec > 0 || bm25 > 0 || temporal > 0;
-        if (!isGraphExpanded && hasChannelSignal) {
+        if (!isGraphExpanded) {
           expect(Math.abs(vec + bm25 + temporal - total)).toBeLessThan(SCORE_TOLERANCE);
         }
       }

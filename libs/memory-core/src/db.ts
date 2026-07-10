@@ -72,12 +72,23 @@ export function getWriterArtifact(): string {
  * After stamping, calls verifyStoreMeta() to detect mismatches.
  *
  * NOTE on embed_model: we write getActiveEmbedModel() at open-for-write time,
- * not at first embed. A fresh server that has not yet warmed up the real
- * backend will stamp `nomic-embed-text-v1.5-hash` (the default). On reconnect
- * after a warmup, the real model is active but the stamp still says hash.
- * This is by design — the stamp captures what wrote the vectors.
- * The embed-model comparison is therefore between the STAMP and the RESOLVED
- * runtime model; a warning (not fatal) is issued when they differ.
+ * not at first embed.
+ *
+ * ⚠️ [BL-252] This stamp is currently UNFALSIFIABLE. `_activeModel`
+ * (`embed.ts:26`) is *initialised* to `'bge-base-en-v1.5'` — the same value it
+ * is assigned after a real provider loads (`embed.ts:114`). So a fresh server
+ * that has never warmed up an embedding provider still stamps
+ * `bge-base-en-v1.5`, asserting which model wrote the vectors when no model has
+ * run at all. The STAMP-vs-RESOLVED comparison below can therefore never detect
+ * the un-warmed case, and the "warning on mismatch" never fires for it.
+ *
+ * (The old comment here claimed the default stamp was `nomic-embed-text-v1.5-hash`.
+ * That was true when a hash backend existed. It was removed —
+ * `EmbedBackend = 'auto' | 'real'`, `embed.ts:43` — and the comment was never updated.)
+ *
+ * The intent stands: the stamp should capture what wrote the vectors, and the
+ * comparison is STAMP vs RESOLVED runtime model, warning (not fatal) on mismatch.
+ * To make it honest, `_activeModel` must start as `null` until a provider loads.
  */
 export function stampStoreMeta(db: Database.Database): void {
   const upsert = db.prepare(

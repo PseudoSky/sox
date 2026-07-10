@@ -32,5 +32,20 @@ export default defineConfig({
     // so model-load-on-first-embed does not trip the default 5s test timeout.
     testTimeout: 30_000,
     hookTimeout: 30_000,
+    // BL-171: recall-sqlite.test.ts's 'real embedding semantic proof' describe
+    // (and in fact every describe in that file — both the 'auto' and 'real'
+    // SOX_EMBED_BACKEND values resolve to the same real fastembed/ONNX backend;
+    // see libs/memory-core/src/embed.ts resolveProvider(), "always uses the real
+    // fastembed backend... no degraded fallback") loads onnxruntime-node's native
+    // V8 HandleScope machinery. Running multiple spec files as concurrent forked
+    // workers risks the same native-addon crash class memory-core pinned around
+    // (libs/memory-core/vitest.config.ts). Decision: PIN the pool rather than
+    // split into a separate CI target — this keeps the "real embedding proof"
+    // test exercising the actual real backend (not stubbed), while eliminating
+    // the concurrency hazard by serialising all memory-server spec files into a
+    // single forked worker, matching memory-core's proven pattern exactly.
+    pool: 'forks',
+    maxWorkers: 1,
+    minWorkers: 1,
   },
 });
