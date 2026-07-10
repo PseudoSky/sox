@@ -1,0 +1,20 @@
+{
+  "name": "@adhd/sox-extension-tui-design",
+  "version": "0.1.0",
+  "description": "Design and build clean, professional, minimal terminal UI (TUI) applications and command-line tools. Covers full-screen TUIs (file managers, dashboards, monitors, git/k8s tools, REPLs), interactive CLI prompts, and simple command-line utilities. Includes per-ecosystem deep-dives (Go/Bubble Tea, Rust/Ratatui, Python/Textual, TypeScript/Ink), visual and interaction pattern references, exemplar app analysis, and universal TUI design principles.",
+  "private": true,
+  "license": "MIT",
+  "author": "gfargo (harvested); sox-ecosystem",
+  "keywords": [
+    "tui",
+    "cli",
+    "terminal",
+    "bubble-tea",
+    "ratatui",
+    "textual",
+    "ink",
+    "charm",
+    "design",
+    "ux"
+  ]
+}

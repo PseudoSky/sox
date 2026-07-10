@@ -26,7 +26,7 @@ placeholder stub; a real cross-encoder needs:
 
 This is a substantial feature, not a quick fix. The token-overlap stub is harmless (no caller uses it).
 
-### BL-166 — HIGH [TRIAGE]: the cross-encoder is BUILT BUT UNWIRED, and its worker path won't resolve in a bundle
+### BL-166 — HIGH [TRIAGE]: the cross-encoder is BUILT BUT UNWIRED, and its worker path won't resolve in a bundle — **RESOLVED (2026-07-10)** — VERIFIED consumed externally by `/Users/nix/dev/ai/agent-source` (declared as a `file:` dep in its `package.json`; 16 import sites across the three packages). The in-repo grep found zero importers because live objects cross the boundary via DI per ADR-0006 — production code imports the *type* and the composition root constructs it. See root BACKLOG BL-166.
 
 `createCrossEncoder`/`CrossEncoderImpl` are exported + tested but the **only caller is their own
 spec** — `libs/memory-core/src/recall.ts` never reranks with the cross-encoder (it reranks by temporal

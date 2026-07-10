@@ -1,0 +1,62 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "tui-design",
+  "version": "0.1.0",
+  "type": "skill",
+  "title": "TUI & CLI Design — design and build professional terminal interfaces",
+  "description": "Use this when designing or building clean, professional, minimal terminal UI (TUI) applications and command-line tools. Covers full-screen TUIs (file managers, dashboards, monitors, git/k8s tools, REPLs), interactive CLI prompts, and simple command-line utilities. Includes per-ecosystem deep-dives (Go/Bubble Tea, Rust/Ratatui, Python/Textual, TypeScript/Ink), visual and interaction pattern references, exemplar app analysis, and universal TUI design principles. Harvested from gfargo/skills v1.4.0.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "gfargo (harvested); sox-ecosystem",
+  "keywords": [
+    "tui",
+    "cli",
+    "terminal",
+    "bubble-tea",
+    "ratatui",
+    "textual",
+    "ink",
+    "charm",
+    "design",
+    "ux",
+    "ncurses",
+    "terminal-ui",
+    "command-line"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "SKILL.md",
+  "run_interface": {
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "ecosystem": {
+          "type": "string",
+          "description": "The ecosystem to target: go, rust, python, typescript. Auto-detected from user context if omitted."
+        },
+        "task": {
+          "type": "string",
+          "description": "The task: build, design, review, refactor. Determines which sections of the skill to emphasize."
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "spec": {
+          "type": "string",
+          "description": "Path to any generated design spec or code."
+        }
+      }
+    }
+  },
+  "install": {
+    "type": "skill",
+    "hosts": [
+      "claude",
+      "opencode",
+      "codex"
+    ]
+  }
+}

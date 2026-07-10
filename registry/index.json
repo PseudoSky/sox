@@ -56,7 +56,7 @@
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "checksum": "sha256:cdef44c78d699d80558b4d9f4ba5a6ed8105b15dec1912a5e7d1e997027d9eff",
+    "checksum": "sha256:0c29f3ced4f415104ded27c2c596a7e6fac04cecc1131f61ba13afbab45b1a29",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -70,7 +70,7 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-flush",
-    "checksum": "sha256:0431413904f9451a879afacb0a247b58f09434801bba955ab4b669e42868ede2",
+    "checksum": "sha256:f8bfe9adddec78a9c48499cac38c66431a5ae74a8be604b944819f7bb8d8c15c",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -84,7 +84,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:e3c924de1a3fb83918ccc9f2f0f6a35ff5aa74b85bfec20efcfb21c7d105f2b0",
+    "checksum": "sha256:7aea12e2137830138d87b950fc67a20a8ecb23856cb9b80d7fb4f51be4fbcd93",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -102,7 +102,7 @@
     "title": "Using the soxe memory system",
     "description": "Use when an agent should recall prior knowledge or store durable findings in the soxe graph-memory system via the memory_* MCP tools (memory_recall / memory_write / memory_search_entities / memory_invalidate).",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-usage",
-    "checksum": "sha256:4ffeed267eb9423c5a1c2e9e03a41df7d4d8c409ac476d12fd1e325a258a36db",
+    "checksum": "sha256:456ac2e12a799f9dfb7f76acd8e71d9940ebb1115167c7500fbcaed6cf79b55f",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -194,13 +194,25 @@
     }
   },
   {
+    "id": "tui-design",
+    "type": "skill",
+    "version": "0.1.0",
+    "title": "TUI & CLI Design — design and build professional terminal interfaces",
+    "description": "Use this when designing or building clean, professional, minimal terminal UI (TUI) applications and command-line tools. Covers full-screen TUIs (file managers, dashboards, monitors, git/k8s tools, REPLs), interactive CLI prompts, and simple command-line utilities. Includes per-ecosystem deep-dives (Go/Bubble Tea, Rust/Ratatui, Python/Textual, TypeScript/Ink), visual and interaction pattern references, exemplar app analysis, and universal TUI design principles. Harvested from gfargo/skills v1.4.0.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/tui-design",
+    "checksum": "sha256:530d04e570f53a129a32a91695a80b0ee2dcff70cb73c0d8932e7ff777953828",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    }
+  },
+  {
     "id": "sox",
     "type": "command",
     "version": "1.1.1",
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/apps/sox",
-    "checksum": "sha256:0fdf66f0fd8544b54d82cb612721008baa8ce7831a09ada12f2d722a01d2fdc1",
+    "checksum": "sha256:ab7334acd57d5cb69204589779730d590a4271f4400a13679112d168218f56e8",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     }

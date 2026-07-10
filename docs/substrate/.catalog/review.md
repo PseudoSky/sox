@@ -1,190 +1,257 @@
-# Substrate Surface Review — Verdict (Re-audit)
+# Substrate Surface Review — Final Audit (FINAL DECISION)
 
 **VERDICT: PASS**
 
-README now comprehensively covers all 11 shipped substrate packages (8 core + 2 extended + 1 utility) with non-empty sections, per-package error taxonomies, and sufficient detail for fresh agents to succeed on canonical tasks.
+All three audit lenses green. The substrate README comprehensively documents all 11 shipped packages with complete per-package details, per-package error taxonomies, and sufficient information for fresh agents to succeed on canonical tasks. Zero contradictions to capabilities.json.
 
 ---
 
 ## Lens 1: Closed-Loop Metric ✓ PASS
 
-**Claim:** "Complete reference for the **10 substrate packages**"  
-**Finding:** README now documents all **11 shipped packages**:
+**Claim:** README is complete reference for the substrate packages  
+**Finding:** README documents all **11 shipped packages** across three segments:
 
 | Segment | Count | Packages |
 |---------|-------|----------|
 | Core | 8 | source-provider, task-queue, vector-store, ingest, embedding-provider, hybrid-search, blob-store, claim-verification |
 | Extended | 2 | graph-store, analysis |
 | Utilities | 1 | manifest |
-| **Total** | **11** | ✓ All documented with non-empty sections |
+| **Total** | **11** | ✓ All documented with complete, non-empty sections |
 
 **Sub-checks:**
-- ✓ Zero stubs/TBD placeholders
-- ✓ All packages carry purpose, public API, quickstart, and invariants/errors
-- ✓ No roadmap items masquerading as shipped
-- ✓ @adhd/sox-analysis: complete (clustering, graph algorithms, batch enrichment, all APIs present)
-- ✓ @adhd/sox-manifest: complete (validation, error types, key invariant about id/package.json match)
-- ⚠ **Minor note:** Headline still says "10 substrate packages" (should be "11" or clarify "8 core + 2 extended + 1 utility")
 
-**Improvement vs. prior audit:** sox-analysis and sox-manifest sections went from missing/stub to fully documented. Closed-loop metric improved: 8/11 → 11/11 packages documented.
+| Check | Result | Evidence |
+|-------|--------|----------|
+| Zero stubs/TBD masquerading as shipped | ✓ PASS | No TBD, TODO, stub, roadmap, or "not yet" placeholders (only one caveat: embedRole "not yet applied" — acceptable as parameter compatibility note) |
+| All packages carry purpose, API, quickstart, invariants/errors | ✓ PASS | Spot-checked sox-source-provider (lines 43–105), sox-analysis (lines 744–944), sox-manifest (lines 1064–1131), sox-hybrid-search (lines 467–546): all conform |
+| No roadmap items masquerading as shipped | ✓ PASS | Headline states "All packages are shipped (v0.1.0+, real-backend implementations, zero stubs)" and no contradictions found |
+| Capabilities.json matches README package list | ✓ PASS | capabilities.json contains 11 packages, all marked "shipped"; README documents same 11 with matching names and status |
+
+**Closed-loop improvement:** 11/11 packages documented (100%). Per-package sections include invariants + error types. sox-analysis and sox-manifest fully documented (not stubs). Metric is complete.
 
 ---
 
 ## Lens 2: Template/Rubric Conformance ✓ PASS
 
-**Required template per brief:**
-- Intro → quick ref → package details → integration → cross-workspace → testing/errors → license
+**Required template structure:**
+1. Headline + status statement
+2. Quick reference table (all packages + entrypoints)
+3. Detailed package sections (purpose, API, quickstart, invariants)
+4. Per-package error handling (error taxonomy tables)
+5. Integration example (wires multiple packages)
+6. Cross-workspace consumption guidance
+7. Testing/examples section
+8. License
+9. TypeScript support notes
 
 **Findings:**
 
-| Component | Status | Evidence |
-|-----------|--------|----------|
-| Intro | ✓ PASS | Lines 1–3, clear purpose |
-| Quick ref table | ✓ PASS | Lines 13–37, all 11 packages listed + entrypoints |
-| Package details (11/11) | ✓ PASS | Each package has dedicated section with purpose, API types/functions, quickstart, key invariants |
-| Integration example | ✓ PASS | Lines 1134–1254, wires 8+ packages into semantic search + claim verification pipeline |
-| Cross-workspace | ✓ PASS | Lines 1258–1318, file-link + pnpm.overrides pattern documented |
-| Testing/examples | ✓ PASS | Lines 1321–1335, test commands + example paths provided |
-| Error handling by package | ✓ PASS | Lines 1338–1451, comprehensive per-package error taxonomy (11 subsections) with retriable/non-retriable decision matrix |
-| License | ✓ PASS | Line 1472, MIT licensed |
-| TypeScript support | ✓ PASS | Lines 1454–1468, ESM-only + CJS-safe subpath documented |
+| Component | Lines | Status | Evidence |
+|-----------|-------|--------|----------|
+| Headline + status | 1–5 | ✓ PASS | Clear purpose, "10 substrate packages" claimed (note: documents 11, see §Minor gaps), "All packages shipped v0.1.0+, zero stubs" |
+| Quick reference | 11–37 | ✓ PASS | All 11 packages listed (8 core, 2 extended, 1 utility) with entrypoint paths |
+| Package details (11/11) | 41–1131 | ✓ PASS | Each package has: **Purpose**, **Public API** (types + function sigs), **Quickstart** (runnable code), **Key invariants** or **Fusion modes** |
+| Error handling by package (11/11) | 1338–1451 | ✓ PASS | Each package subsection: Error Type \| Cause \| Retriable \| Action. All 11 packages covered in tables |
+| Integration example | 1134–1254 | ✓ PASS | Real TypeScript code wiring 8+ packages (source-provider, task-queue, vector-store, ingest, embedding-provider, blob-store, graph-store, claim-verification, hybrid-search) into semantic search + claim verification pipeline |
+| Cross-workspace | 1258–1318 | ✓ PASS | File linking + pnpm.overrides pattern documented for monorepo consumption |
+| Testing/examples | 1321–1335 | ✓ PASS | Test commands + example repository paths provided |
+| License | 1472 | ✓ PASS | MIT licensed |
+| TypeScript support | 1454–1468 | ✓ PASS | ESM-only + CJS-safe subpath documented |
 
-**Per-package rubric conformance (sample checks):**
+**Per-package rubric conformance (detailed sample):**
 
-1. **@adhd/sox-analysis** (Lines 744–944)
+1. **@adhd/sox-source-provider** (Lines 43–105)
+   - Purpose: ✓ "Unified abstraction for enumerating and retrieving file content…without cloning"
+   - Public API: ✓ SourceRef, Manifest, SourceProvider, ProviderRegistry interfaces + factory functions
+   - Quickstart: ✓ Real code example (lines 82–100) shows registry setup, fileTree enumeration, content fetch
+   - Error hierarchy: ✓ All extend SourceProviderError; specific types (lines 103): InvalidSourceRefError, ProviderAuthenticationError, ProviderRateLimitError, FileNotFoundError, ManifestTooLargeError, ProviderTransientError
+   - Error handling section: ✓ Lines 1342–1351 provide per-error retriable guidance
+
+2. **@adhd/sox-analysis** (Lines 744–944)
    - Purpose: ✓ "Batch corpus derivation: density-based clustering, near-duplicate detection, importance scoring, auto-linking, and pure graph algorithms"
-   - Public API: ✓ ClusterOpts, ClusterResult, NearDupOpts, NearDupPair, TopoSortResult, PackItem, PackResult + functions (clusterVectors, detectNearDups, computeImportance, buildAutoLinks, runBatchEnrich, topoSort, criticalPath, detectCycles, packBatches)
-   - Quickstart: ✓ Real code example (lines 863–929) shows clustering, near-dup detection, importance scoring, topo sort, critical path, cycles, batch packing
-   - Key invariants: ✓ Listed (lines 931–938): corpus-level only, deterministic under model, incremental by default, DB-integrated, pure graph algorithms, submodular packing
-   - Error types: ✓ Listed (lines 939–942): ClusteringError, GraphTopologyError, PackingError
+   - Public API: ✓ ClusterOpts, NearDupOpts, TopoSortResult, PackItem, PackResult + 9 functions (clusterVectors, detectNearDups, computeImportance, buildAutoLinks, runBatchEnrich, topoSort, criticalPath, detectCycles, packBatches)
+   - Quickstart: ✓ Real code example (lines 863–929) demonstrates clustering, near-dup detection, importance scoring, topological sort, critical path, cycle detection, bin-packing
+   - Key invariants: ✓ Lines 931–938 list corpus-level-only, deterministic-under-model, incremental-by-default, DB-integrated, pure-graph-algorithms, submodular-packing
+   - Error types: ✓ ClusteringError, GraphTopologyError, PackingError (lines 939–942); extended in error section (lines 1435–1442)
 
-2. **@adhd/sox-manifest** (Lines 1064–1131)
+3. **@adhd/sox-manifest** (Lines 1064–1131)
    - Purpose: ✓ "Extension manifest schema + validation"
-   - Public API: ✓ ExtensionManifest interface + validate(), validatePartial() functions
-   - Quickstart: ✓ Real code example (lines 1095–1127) shows load, validate, error handling
-   - Key invariant: ✓ "id field must match the package.json name field"
-   - Error types: ✓ Listed (line 1091): ValidationError (schema mismatch), SchemaVersionMismatch
+   - Public API: ✓ ExtensionManifest interface, validate(), validatePartial() functions (lines 1087–1089)
+   - Quickstart: ✓ Real code example (lines 1095–1127) shows load JSON, validate with try-catch, error type check, access error properties, partial validation
+   - Key invariant: ✓ "id field must match package.json name field" (line 1129)
+   - Error types: ✓ ValidationError, SchemaVersionMismatch (line 1091); error handling section (lines 1445–1450)
 
-3. **@adhd/sox-embedding-provider** (Lines 405–465)
-   - Error types in error handling section (lines 1382–1390): ✓ ResolutionError, TransientEmbeddingError, PermanentEmbeddingError + retry guidance
-   - Factory-time exception behavior: ✓ Documented ("throws at factory time; never mid-call")
+4. **@adhd/sox-hybrid-search** (Lines 467–545)
+   - Purpose: ✓ "Mechanism-agnostic hybrid retrieval ranker: fuses vector + text signals"
+   - Public API: ✓ SearchQuery, SearchResult interfaces, SqliteSearchBackend class, pure fusion functions (fuse, normalize) (lines 473–510)
+   - Quickstart: ✓ Real code example (lines 514–540) shows backend instantiation, hybrid search call with text + vector + filters, result scoring, degradation behavior
+   - Fusion modes: ✓ Lines 542–544 document RRF vs. max-score trade-offs
 
-4. **@adhd/sox-claim-verification** (Lines 637–741)
-   - Error handling section (lines 1412–1422): ✓ ModelNotLoadedError, VerifierBusyError, UnsupportedLanguageError, PreFilterSkippedError, InvalidClaimInputError
-   - Language mismatch strategy: ✓ Documented ("downgrades result to 'neutral' with languageMismatch=true flag")
-   - ONNX worker isolation: ✓ Documented (line 740, "ONNX inference runs exclusively in worker threads")
+**Error handling coverage:** 11 subsections (lines 1342–1450), each with structured retriable decision matrix:
+- sox-source-provider: 6 error types (lines 1342–1351)
+- sox-task-queue: 6 error types (lines 1353–1362)
+- sox-vector-store: 2 error types (lines 1364–1371)
+- sox-ingest: 2 error types (lines 1373–1380)
+- sox-embedding-provider: 3 error types (lines 1382–1390)
+- sox-hybrid-search: 1 error type (lines 1392–1398)
+- sox-blob-store: 5 error types (lines 1400–1410)
+- sox-claim-verification: 5 error types (lines 1412–1422)
+- sox-graph-store: 4 error types (lines 1424–1433)
+- sox-analysis: 3 error types (lines 1435–1442)
+- sox-manifest: 2 error types (lines 1445–1450)
 
-5. **@adhd/sox-vector-store** (Lines 225–305)
-   - Error handling section (lines 1364–1371): ✓ SpaceInvariantError (vector dim ≠ space.dim), BlobStoreSystemError, retry strategy
-   - Key invariant: ✓ "upsert() throws SpaceInvariantError if vec.length !== space.dim. A model switch is always an explicit reembed() migration, never a hot-swap."
-
-**Error handling taxonomy:** Lines 1338–1451 break down by package (11 subsections):
-- @adhd/sox-source-provider (lines 1342–1351)
-- @adhd/sox-task-queue (lines 1353–1362)
-- @adhd/sox-vector-store (lines 1364–1371)
-- @adhd/sox-ingest (lines 1373–1380)
-- @adhd/sox-embedding-provider (lines 1382–1390)
-- @adhd/sox-hybrid-search (lines 1392–1398)
-- @adhd/sox-blob-store (lines 1400–1410)
-- @adhd/sox-claim-verification (lines 1412–1422)
-- @adhd/sox-graph-store (lines 1424–1433)
-- @adhd/sox-analysis (lines 1435–1442)
-- @adhd/sox-manifest (lines 1445–1450)
-
-Each subsection includes error type + cause + retriable flag + action.
+Total: 39 distinct error types across 11 packages, all actionable.
 
 ---
 
 ## Lens 3: Fresh-Agent Consumer Test ✓ PASS
 
-**Task 1: "Implement cluster-based near-duplicate detection (sox-analysis)"**
-- Agent searches README for "cluster", "detectNearDup", "near-duplicate"
-- Finds ✓ §@adhd/sox-analysis (lines 744–944)
-- Finds ✓ `detectNearDups()` function signature (lines 819–822)
-- Finds ✓ Real quickstart code (lines 884–894) showing:
-  - `detectNearDups(vectorBackend, { nearDupThreshold: 0.95, distinctThreshold: 0.8 })`
-  - Result iteration over `NearDupPair` objects with `.status` enum
-- Finds ✓ Error types (NearDupOpts interface, lines 767–772)
-- Finds ✓ How to integrate with VectorBackend (line 873: `await clusterVectors(vectorBackend, ...)`)
-- **Outcome:** PASS — docs sufficient; can implement without source code
+**Task 1: Implement cluster-based near-duplicate detection (sox-analysis)**
 
-**Task 2: "Validate an extension manifest (manifest with error handling)"**
-- Agent searches README for "manifest", "validate"
-- Finds ✓ §@adhd/sox-manifest (lines 1064–1131)
-- Finds ✓ `validate()` function + `ValidationError` exception (lines 1087–1088)
-- Finds ✓ Real quickstart code (lines 1095–1127) showing:
-  - Load JSON from file
-  - `validate(rawManifest)` call with try-catch
-  - Error type check: `error instanceof ValidationError`
-  - Access to error properties: `error.message`, `error.path`
-  - Partial validation with `validatePartial()`
-- Finds ✓ Error types (lines 1091): ValidationError, SchemaVersionMismatch
-- Finds ✓ Key invariant (line 1129): id/package.json match
-- **Outcome:** PASS — docs sufficient; complete error-handling pattern shown
+Steps a fresh agent would take:
+1. Search README for "cluster", "near-dup", "detectNearDups"
+2. **Finds:** §@adhd/sox-analysis (line 744) ✓
+3. **Finds:** `detectNearDups(backend, opts): NearDupPair[]` signature (lines 819–822) ✓
+4. **Finds:** Real quickstart code (lines 884–894):
+   ```typescript
+   const nearDups = await detectNearDups(vectorBackend, {
+     nearDupThreshold: 0.95,
+     distinctThreshold: 0.8,
+   })
+   for (const pair of nearDups) {
+     if (pair.status === 'near_dup') {
+       console.log(`Likely duplicate: ${pair.a} ≈ ${pair.b}...`)
+     }
+   }
+   ```
+5. **Finds:** NearDupPair interface with `.a`, `.b`, `.cosine`, `.status` fields (lines 774–779) ✓
+6. **Finds:** NearDupOpts with `nearDupThreshold` and `distinctThreshold` parameters (lines 767–772) ✓
+7. **Finds:** Error handling: NearDupError (implicitly ClusteringError in error section, line 1437) ✓
+8. **Can implement?** YES — sufficient detail to write clustering + deduplication logic without source code.
 
-**Task 3: "Embed, search, and rank with hybrid backend"**
-- Agent searches README for "hybrid", "embed", "search"
-- Finds ✓ §@adhd/sox-embedding-provider (lines 405–465)
-  - `createEmbeddingProvider()`, `embedSingle()`, `embedBatch()` documented
-  - Quickstart (lines 441–461) shows full flow: create embedder, embed single, batch embed with async iterable
-- Finds ✓ §@adhd/sox-vector-store (lines 225–305)
-  - `openSqliteVecStore()`, `ensureSpace()`, `upsert()`, `knn()` documented
-  - Quickstart (lines 269–302) shows vector storage and retrieval
-- Finds ✓ §@adhd/sox-hybrid-search (lines 467–545)
-  - `SqliteSearchBackend`, `search()` method documented
-  - Quickstart (lines 514–540) shows:
-    - Creating backend with vectorBackend + graphBackend
-    - Calling `search()` with text + vec + filters
-    - Accessing result.textScore, result.vecScore, result.score
-    - Degradation behavior ("No vec? Falls back to text-only")
-- Finds ✓ Integration example (lines 1134–1254) wires all three packages + vector store + blob store + graph store into a complete semantic search + claim verification pipeline
-- **Outcome:** PASS — docs sufficient; integration example provides runnable pseudocode for orchestrating all three
-
-**All three canonical tasks succeed using README only; no source code required.**
+**Outcome:** PASS ✓
 
 ---
 
-## Improvements from Prior Audit
+**Task 2: Validate an extension manifest (sox-manifest with error handling)**
 
-| Finding | Before | After | Delta |
-|---------|--------|-------|-------|
-| Packages documented | 8/11 (73%) | 11/11 (100%) | +3 packages (analysis, manifest, error details) |
-| sox-analysis section | Missing entirely | Complete (200 lines) | Covers DBSCAN, graph algorithms, batch packing, 6 public functions, full quickstart |
-| sox-manifest section | Table entry only | Complete (68 lines) | Covers validation, error handling, quickstart, key invariant |
-| Error handling | Generic list, no per-package detail | Per-package taxonomy (114 lines) | 11 subsections, each with retriable flag + action guidance |
-| Fresh-agent test (predicted) | FAIL on 2/3 tasks | PASS on 3/3 tasks | All canonical tasks executable from docs |
+Steps:
+1. Search for "manifest", "validate", "ValidationError"
+2. **Finds:** §@adhd/sox-manifest (line 1064) ✓
+3. **Finds:** `validate(manifest): ExtensionManifest` throws ValidationError (lines 1087–1088) ✓
+4. **Finds:** Real quickstart code (lines 1095–1127):
+   ```typescript
+   try {
+     const manifest = validate(rawManifest)
+     console.log(`Valid: ${manifest.name} v${manifest.version}`)
+     if (manifest.exports) {
+       for (const [exportPath, target] of Object.entries(manifest.exports)) {
+         console.log(`  ${exportPath} → ${target}`)
+       }
+     }
+   } catch (error) {
+     if (error instanceof ValidationError) {
+       console.error(`Manifest validation failed: ${error.message}`)
+       console.error(`Failed at field: ${error.path}`)
+     }
+   }
+   const partial = validatePartial({ name: '...', version: '...' })
+   ```
+5. **Finds:** ValidationError properties: `.message`, `.path` (lines 1113–1116) ✓
+6. **Finds:** `validatePartial()` for incremental validation (line 1122) ✓
+7. **Finds:** ExtensionManifest schema (lines 1071–1085) including optional fields ✓
+8. **Finds:** Error section (lines 1445–1450): ValidationError (schema mismatch) + SchemaVersionMismatch ✓
+9. **Finds:** Key invariant: id must match package.json name (line 1129) ✓
+10. **Can implement?** YES — complete error handling pattern demonstrated with code + error types.
+
+**Outcome:** PASS ✓
 
 ---
 
-## Minor Gaps (Non-Blocking)
+**Task 3: Embed, search, and rank (hybrid-search with embedding-provider and vector-store)**
 
-1. **Headline count:** Line 3 says "10 substrate packages" but documents 11 (8 core + 2 extended + 1 utility)
-   - **Fix:** Change to "11 substrate packages" or expand to "8 core + 2 extended + 1 utility = 11 packages"
-   - **Impact:** Cosmetic; tables are accurate and clear
-   - **Recommendation:** Tier 3 (backlog), not blocking
+Steps:
+1. Search for "embed", "search", "hybrid"
+2. **Finds:** §@adhd/sox-embedding-provider (line 405) ✓
+   - Quickstart (lines 441–461): createEmbeddingProvider(), embedSingle(), embedBatch() with async iteration
+3. **Finds:** §@adhd/sox-vector-store (line 225) ✓
+   - Quickstart (lines 269–302): openSqliteVecStore(), ensureSpace(), upsert(), knn()
+4. **Finds:** §@adhd/sox-hybrid-search (line 467) ✓
+   - Quickstart (lines 514–540): SqliteSearchBackend constructor, search() with text + vec + filters, result scoring
+5. **Finds:** Degradation behavior: "No vec? Falls back to text-only. No text? Falls back to vec-only. Both absent? Throws." (lines 536–540) ✓
+6. **Finds:** Integration example (lines 1134–1254):
+   - Initializes vectorBackend, graphBackend, blobStore
+   - Creates embedder (embedding-provider)
+   - Creates search (SqliteSearchBackend wiring both backends)
+   - Processes documents: chunk, embed, upsert to vector store, store in graph
+   - Performs hybrid search: embedText query, call search() with vec + text
+   - Results: access `.id`, `.score`, `.textScore`, `.vecScore`
+7. **Can implement?** YES — complete orchestration shown with real code examples for all three packages.
 
-2. **Integration example wiring:** Excellent coverage (8+ packages), but doesn't show every package
-   - Missing: direct use of sox-analysis functions in the pipeline
-   - **Workaround:** Reader can combine lines 884–929 (near-dup quickstart) with lines 1134–1254 (integration)
-   - **Impact:** Negligible; analysis is corpus-level, not hot-path
-   - **Recommendation:** Tier 3 (defer to advanced guide)
+**Outcome:** PASS ✓
 
-3. **LanceDB backend details:** Vector store mentions LanceDB (HNSW/IVF-PQ) but focuses on sqlite-vec
+**All three canonical tasks succeed using README alone; no source code access required.**
+
+---
+
+## Capabilities.json Alignment ✓ PASS
+
+**Cross-check:**
+
+| Package | README sections | Capabilities.json status | Match? |
+|---------|-----------------|-------------------------|--------|
+| sox-source-provider | Lines 43–105 + errors 1342–1351 | shipped | ✓ |
+| sox-task-queue | Lines 107–223 + errors 1353–1362 | shipped | ✓ |
+| sox-vector-store | Lines 225–305 + errors 1364–1371 | shipped | ✓ |
+| sox-ingest | Lines 308–403 + errors 1373–1380 | shipped | ✓ |
+| sox-embedding-provider | Lines 405–465 + errors 1382–1390 | shipped | ✓ |
+| sox-hybrid-search | Lines 467–545 + errors 1392–1398 | shipped | ✓ |
+| sox-blob-store | Lines 548–635 + errors 1400–1410 | shipped | ✓ |
+| sox-claim-verification | Lines 637–741 + errors 1412–1422 | shipped | ✓ |
+| sox-graph-store | Lines 946–1062 + errors 1424–1433 | shipped | ✓ |
+| sox-analysis | Lines 744–944 + errors 1435–1442 | shipped | ✓ |
+| sox-manifest | Lines 1064–1131 + errors 1445–1450 | shipped | ✓ |
+
+**Zero contradictions found.** All 11 packages documented in README match capabilities.json package list (all marked shipped).
+
+---
+
+## Minor Gaps (Non-Blocking, Tier 3)
+
+1. **Headline count mismatch:**
+   - Line 3: "Complete reference for the **10 substrate packages**"
+   - Reality: 11 packages documented (8 core + 2 extended + 1 utility)
+   - **Fix:** Change "10" to "11" or expand to "8 core + 2 extended + 1 utility = 11 packages"
+   - **Impact:** Cosmetic; tables and package count are accurate
+   - **Recommendation:** Backlog, not blocking PASS
+
+2. **Integration example coverage:**
+   - Wires 8+ packages; sox-analysis not directly shown in pipeline
+   - **Workaround:** Reader combines lines 884–929 (near-dup quickstart) + lines 1134–1254 (integration example)
+   - **Impact:** Negligible; analysis is corpus-level (not hot-path)
+   - **Recommendation:** Defer to advanced guide
+
+3. **LanceDB backend tuning:**
+   - Vector store mentions LanceDB but focuses on sqlite-vec
    - **Coverage:** Adequate (config interface provided, lines 247–257)
-   - **Recommendation:** Tier 3 (link to sox-ecosystem docs for advanced tuning)
+   - **Recommendation:** Link to sox-ecosystem docs for advanced tuning
 
 ---
 
 ## Verdict Summary
 
-**Closed-loop metric:** 11/11 packages documented (100%) → PASS  
-**Template conformance:** All 11 packages follow rubric (purpose, API, quickstart, invariants, errors) → PASS  
-**Fresh-agent test:** All 3 canonical tasks executable from README alone → PASS  
+| Lens | Metric | Status | Evidence |
+|------|--------|--------|----------|
+| 1. Closed-Loop | 11/11 packages documented (100%) | ✓ PASS | All segments complete; per-package errors included; zero stubs |
+| 2. Template Conformance | All 11 packages follow rubric structure | ✓ PASS | Purpose + API + quickstart + invariants present; error taxonomies comprehensive |
+| 3. Fresh-Agent Test | All 3 canonical tasks succeed from README | ✓ PASS | clustering, validation, hybrid-search all demonstrable from docs alone |
+| Capabilities.json Alignment | No contradictions | ✓ PASS | All 11 README packages match capabilities.json (all shipped) |
 
-**Status:** PASS with strong conformance. Package count label should be corrected (10 → 11), but this is a label issue, not a content gap.
+**FINAL VERDICT: PASS** — The substrate README is a closed-loop, complete reference for 11 shipped packages. Fresh agents can implement canonical tasks using the documentation. All audit gates satisfied.
 
 ---
 
-**Re-audit completed:** 2026-07-09  
-**Previous verdict:** FAIL (8/11 packages, missing analysis + manifest, generic error handling)  
-**Current verdict:** PASS (11/11 packages, per-package errors, all canonical tasks succeed)
+**Audit completed:** 2026-07-09  
+**Previous verdict:** PASS (prior audit 2026-07-09)  
+**Current verdict:** PASS (final decision confirms all three lenses green)  
+**Confidence:** High — zero blockers, three minor cosmetic gaps.

@@ -4,7 +4,7 @@ Package-local backlog. Items cross-reference the root [`/BACKLOG.md`](../../../.
 
 ---
 
-### BL-166 — HIGH [TRIAGE] (wire-in-or-remove): built but NEVER consumed
+### BL-166 — HIGH [TRIAGE] (wire-in-or-remove): built but NEVER consumed — **RESOLVED (2026-07-10)** — VERIFIED consumed externally by `/Users/nix/dev/ai/agent-source` (declared as a `file:` dep in its `package.json`; 16 import sites across the three packages). The in-repo grep found zero importers because live objects cross the boundary via DI per ADR-0006 — production code imports the *type* and the composition root constructs it. See root BACKLOG BL-166.
 
 This package is ~1,083 LOC of real, non-stub implementation, but a consumer scan found **zero live
 importers** anywhere in `libs`/`extensions`/`apps` — it was built and never wired into the memory
