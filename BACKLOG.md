@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-10 (regenerated mechanically; see BL-224)
 
-**Total open: 20.** This block is DERIVED from the `**...**` status marker on each
+**Total open: 21.** This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
 five already-RESOLVED items as top priorities, including `BL-62` as the "#1 only PROVEN live bug"
@@ -21,7 +21,7 @@ node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.
 |---|---|
 | **HIGH** | `BL-62`, `BL-96`, `BL-97`, `BL-225`, `BL-254` |
 | **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-257`, `BL-259`, `BL-260` |
-| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261` |
+| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264` |
 | **FEATURE** | `BL-163`, `BL-215` |
 
 ### Where to start
@@ -4900,6 +4900,10 @@ Fixed twice over:
 2. **Class kill**: `osUnitLabel()` (`libs/host-runtime/src/os-unit.ts`) now namespaces the label when `SOX_ECOSYSTEM_HOME` is set — `com.sox.<scope>.<id>.sbx-<8-hex sha256(data-root)>`. Distinct data roots are distinct service universes; a sandboxed run can never register, collide with, or bootout a production label. New pure `osUnitLabelFor()` exported; specs (`service-os-unit`, `doctor-reconcile`) compute expected labels the same way.
 
 Red→green: `os-unit.spec.ts` `BL-263` test fails with the suffix disabled (seen red 2026-07-10), passes restored. Side effect on BL-259: smoke/e2e sandboxes now use per-run unique labels, so the cross-run `Bootstrap failed: 5` collision cannot recur — but leaked sandbox registrations (now identifiable by `.sbx-` suffix) still want a teardown `bootout`; BL-259's teardown fix stands.
+
+### BL-264 — memory-server logs `FATAL: ... embedding warmup failed` for a condition it deliberately survives — **Open (LOW, log-hygiene)** (2026-07-10)
+
+`extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:2005` — when `warmupEmbed()` rejects, the server writes `[memory-server] FATAL: SOX_EMBED_BACKEND=real but embedding warmup failed: ...` and then **keeps serving** non-embed tools. That behaviour is intentional and documented in the adjacent comment ("the server keeps serving... the failure is unmissable") — but the `FATAL` word contradicts it and misled the BL-262 forensics on first read (a FATAL that isn't fatal reads as a crash that didn't happen). Contrast: the better-sqlite3 probe 15 lines below says FATAL and actually `process.exit(1)`s. **Fix (pick one, don't split the difference):** reword to `DEGRADED:`/`ERROR (serving without embeddings):`, or honour `SOX_EMBED_BACKEND=real` fail-loud semantics by exiting nonzero and letting the shim's ensure path surface it. Wording-only change is fine; silent semantics change is not.
 
 ### BL-232 — `concurrency-harness.spec.ts:121` asserts a hardcoded wall-clock p99 latency budget — **RESOLVED (2026-07-10)** — the wall-clock p99 latency check is now informational-only (logs a `[wp6/BL-232]` warning), never gating; the gating invariant is the lock-error count the test is actually named for. Red→green documented at `concurrency-harness.spec.ts:259`. `nx test memory-core` 408 pass
 
