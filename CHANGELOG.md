@@ -90,3 +90,7 @@ The `sox-ecosystem:typecheck` script (`tsc --noEmit`) had **24 pre-existing erro
 ### Audit criteria wired
 
 **`memory-refactor` audit states completed** — all five audit-state acceptance criteria (`[audit-*.N]`) wired to real, falsifiable checks in `audit_memrefactor.py`. Gap count dropped 39→9. Red→green proven on 5 sample checks; live write-path probes return blocked-red without an opt-in disposable DB (never a vacuous pass).
+
+### Phantom-package audit resolved
+
+**BL-304 — all 5 packages previously flagged "dead/phantom" verified as actively consumed.** Architect audit confirmed: `@adhd/sox-analysis` (imported by memory-core cluster/neardup/importance), `@adhd/sox-vector-store` (imported by hybrid-search), `@adhd/sox-blob-store` (agent-source `file:` dep, BL-166), `@adhd/sox-claim-verification` (agent-source `file:` dep, BL-166), `@adhd/sox-hybrid-search` (agent-source `file:` dep, BL-166), `@adhd/sox-graph-store` (8 memory-core modules call `createGraphBackend`). `drizzle-orm` in graph-store genuinely dead → BL-303 (already separately tracked and removed). No packages deleted. No code changes.
