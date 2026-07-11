@@ -5265,4 +5265,32 @@ Existing BL-134 harness runs in-process against `memory-core`, not through UDS p
 **Fix:** create `tools/stress/proxy-concurrency.mjs` with interleaved `memory_write` +
 `memory_recall` over UDS. Assert no timeouts, no `SQLITE_BUSY`, read-your-writes.
 
+### BL-275 — asp-gateway install capabilities: soxe lacks 3 install behaviors the asp-gateway bundle needs — **Open (HIGH)** (2026-07-11)
+
+Spec / work order: [`docs/plan/asp-gateway-install-capabilities/SPEC.md`](docs/plan/asp-gateway-install-capabilities/SPEC.md).
+Origin: `agent-source` BL-249 (founder decision "enhance soxe to match the plan") — this is the **sole
+remaining blocker** on `agent-source`'s P4 `delivery-surface` plan (`delivery-surface-e2e` dod.3). Driven &
+verified from `agent-source`'s plan per ADR 0002; implemented here. soxe still v1.1.1 — **no prior
+enhancement has landed** (empirically confirmed 2026-07-11).
+
+Three capabilities (2 of 3 need **no new engine primitive** — machinery exists, just unwired):
+- **C1 — Claude `hook` install surface (PostToolUse arming, reversible):** add a `hook` surface to
+  `buildSurfaces()` (`libs/host-registry/src/claude.ts`) that both file-drops the hook script AND arms a
+  `settings.json` entry; add a new **`object-array-merge`** capability (`libs/install-engine/src/capabilities/`)
+  for identity-scoped reversible append (neither `config-merge` — clobbers keyPath — nor `array-merge` —
+  `string[]` only — fits). **The only new primitive.** Re-confirm live PostToolUse JSON shape first.
+- **C2 — lockfile-less `--host` file-drop uninstall:** surgical — `cmdUninstall` hard-exits `"no lockfile"`
+  (`apps/sox/src/main.ts:2844`) *before* its own BL-109 ownership fallback (`:2857`, `:2958`); make the
+  null-lockfile case fall through. No new primitive.
+- **C3 — service running after install:** pure wiring — `cmdStart`/os-unit/port.txt-handshake/list-running/
+  uninstall-stop all exist; `run-service.apply` (`libs/install-engine/src/capabilities/run-service.ts:89`)
+  only records intent. Add an install-time `enableOsUnit`+start behind a `--start` flag (~10 lines).
+- **Adjacent:** bundle-level `soxe uninstall <bundleId>` fails (lockfile/ownership keyed by member ids, not
+  bundle id, `install.ts:1697`); write a bundle-level ownership record at expand time + resolve bundle→members
+  on uninstall. Fold into the same pass.
+
+**Done:** `agent-source`'s `assert_install.js` (dod.3) passes **unchanged** against a real
+`soxe install/uninstall asp-gateway` at USER scope (`components.hook`, `service_running`,
+`uninstall.service_stopped` all true); bump soxe version; agent-source re-verifies P4.
+
 ### BL-272 — no hard-delete for memory episodes — **RESOLVED (2026-07-11)** — `memory_curate({op:"drop-episodes", uids:[...]})` implemented. Hard-deletes nodes + cascades vec_node/edge in a single transaction. `nx test memory-core` 413/413
