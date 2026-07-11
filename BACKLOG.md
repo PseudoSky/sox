@@ -5770,3 +5770,87 @@ Neither calls `applySchema()`. `applySchema()` itself (`index.ts:534-561`) is al
 - [ ] `sox.concerns`/`sox.invariants` in `graph-store/package.json` documents the `'generic'` kind and its intended non-memory reuse contract.
 
 **Effort / risk / blast radius.** S-M effort (DDL change + migration note for existing DBs — note: `_schema_version`-gated migrations, per `index.ts:543-551`, need a new version bump to alter the CHECK constraint on already-created tables, since SQLite CHECK constraints on existing tables require a table rebuild, not just a new `CREATE TABLE IF NOT EXISTS`). Risk: low for new databases; migration path for **existing** `node` tables needs care (SQLite doesn't support `ALTER TABLE ... ADD CONSTRAINT` directly — likely needs a `CREATE TABLE new_node (...) ; INSERT INTO new_node SELECT * FROM node; DROP TABLE node; ALTER TABLE new_node RENAME TO node;` migration step gated by the existing `_schema_version` mechanism). Directly unblocks adhd's prompt-component-registry use case and any future non-memory consumer wanting to reuse `SqliteSearchBackend`.
+
+
+---
+
+## agent-mcp-authoring integration audit — structural gaps (schema duplication / migration / dead dep, 2026-07-11)
+
+Surfaced while evaluating whether the adhd registry should reuse `@adhd/sox-graph-store` directly (Option A) instead of reimplementing FTS5 (Option B). These are distinct from the BL-276..295 findings and each other. Origin: adhd/agent-mcp-authoring.
+
+### BL-300 — `node`/`edge` table schema is duplicated across `graph-store` and `memory-core` (no single source of truth) — **Open (MEDIUM)** (2026-07-11)
+
+**Package:** `@adhd/sox-graph-store` (`libs/data/graph/graph-store/src/index.ts` `GRAPH_DDL`) + `@adhd/sox-memory-core` (`libs/memory-core/src/schema.ts` `DDL`)  **Origin:** adhd/agent-mcp-authoring integration audit
+
+**Problem.** The `node` and `edge` tables are each defined **twice** — once in `graph-store`'s `GRAPH_DDL` and again, independently, in `memory-core`'s `schema.ts` `DDL`. There is no shared canonical schema module; the two are copy-pasted hand-maintained SQL strings that must be kept in lockstep by convention alone. `memory-core` also *consumes* `graph-store` at runtime (`createGraphBackend` is imported in `neardup.ts:12`, `enrich-batch.ts:17`, `entity-episodes.ts:11`, `cluster.ts:18`, `near-duplicates.ts:11`, `list-entities.ts:11`) — i.e. `graph-store` operates over the very `node`/`edge` tables that `memory-core`'s own DDL created — so the two definitions describe the *same physical tables* yet live in two packages.
+
+**Evidence.** `graph-store/src/index.ts:19` and `memory-core/src/schema.ts:46` both contain `kind TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session'))`, plus full parallel `CREATE TABLE node/edge` blocks. `graph-store`'s `applySchema()` (`dist/index.js:316`) runs `CREATE TABLE IF NOT EXISTS node (...)` — a no-op when `memory-core` already created `node`, which is exactly what happens when `memory-core` passes its own `db` handle into `createGraphBackend(db)`.
+
+**Root cause.** `graph-store` was extracted from `memory-core` (or vice-versa) by copying the DDL rather than depending on a shared schema package. Two owners, one physical table.
+
+**Proposed design.** Extract the canonical `node`/`edge`/index DDL into a single source of truth — either a tiny `@adhd/sox-graph-schema` (types package, zero runtime) that both import, or have `memory-core` import `GRAPH_DDL`/`FTS_DDL` from `@adhd/sox-graph-store` and delete its private copy. Recommend the latter (graph-store already owns the graph primitives; memory-core adds only its memory-specific tables — `memory_scope`, `sox_store_meta`, `organizer_queue`, `request_ledger`, `promotion_queue` — which stay in memory-core). This makes drift structurally impossible (BL-301) and gives migrations one place to live (BL-302).
+
+**Acceptance criteria.**
+- [ ] Exactly one `CREATE TABLE ... node (` and one `... edge (` definition exists in the repo (grep proves it); `memory-core` composes graph DDL + its own memory-only tables.
+- [ ] A test asserts `memory-core`'s applied `node` schema is byte-identical to `graph-store`'s (e.g. `PRAGMA table_info(node)` equality) so a future edit to one is forced through the shared source.
+
+**Effort / risk / blast radius.** M effort. Risk: low-medium (touches the live memory schema — must keep the applied SQL identical to today's memory-core `node` to avoid an accidental migration). Blast radius: memory-core, graph-store, analysis (also imports graph-store), hybrid-search.
+
+### BL-301 — the two duplicated `node`/`edge` schemas have already DRIFTED (latent column/constraint mismatch) — **Open (HIGH)** (2026-07-11)
+
+**Package:** `@adhd/sox-graph-store` + `@adhd/sox-memory-core`  **Origin:** adhd/agent-mcp-authoring integration audit
+
+**Problem.** The two copies (BL-300) are **not** identical — they have diverged in columns, a column type, and the `edge.rel` enum. Because `memory-core` creates `node`/`edge` first and `graph-store`'s `CREATE TABLE IF NOT EXISTS` then silently no-ops, `graph-store` code that references columns present in *its* DDL but absent from *memory-core*'s table will fail at runtime (`no such column`) or read `NULL` — a latent bug gated only by which `graph-store` methods `memory-core` currently exercises.
+
+**Evidence** (graph-store `GRAPH_DDL` vs memory-core `schema.ts DDL`, read 2026-07-11):
+- **node columns only in graph-store:** `topic`, `tags`, `namespace`, `project_path`, `is_superseded`, `t_expires`.
+- **node columns only in memory-core:** `level`, `resume_state`.
+- **type mismatch:** `confidence` is `TEXT` in graph-store, `REAL` in memory-core.
+- **edge.rel CHECK drift:** graph-store allows `PART_OF` and `DEPENDS_ON`; memory-core's `rel` CHECK omits both (verified: `DEPENDS_ON` present in graph-store DDL, absent in memory-core DDL). An edge written by graph-store with `rel='DEPENDS_ON'`/`'PART_OF'` against a memory-core-created `edge` table throws a CHECK violation.
+- **index drift:** graph-store defines `ix_node_topic`, `ix_node_project`, `ix_node_namespace`, `ix_node_expires`, `ix_edge_unique` that memory-core does not; memory-core gates `ix_edge_src/dst` on `t_expired IS NULL` (a column graph-store's edge table lacks — graph-store edge has no `t_expired`).
+
+**Root cause.** Independent hand-edits to two copies of the same schema with no equality gate (direct consequence of BL-300).
+
+**Proposed design.** Fixing BL-300 (single source) eliminates the drift by construction. Before/alongside that: add a **schema-equality test** that opens a `graph-store` DB and a `memory-core` DB and asserts `PRAGMA table_info(node)` and the `edge` CHECK are identical; it must FAIL today (proving the drift) and pass after unification. Separately decide the intended superset: if `memory-core` needs `level`/`resume_state` and graph-store needs `topic`/`tags`/`namespace`/`project_path`, the unified `node` carries all of them.
+
+**Acceptance criteria.**
+- [ ] A test that reproduces a concrete failure — e.g. `createGraphBackend(memoryCoreDb).writeEdge(..., rel:'DEPENDS_ON')` throws a CHECK violation today — is added, then goes green after unification.
+- [ ] Post-fix, `PRAGMA table_info(node)` is identical across both packages' freshly-applied schemas.
+
+**Effort / risk / blast radius.** M-L effort. Risk: medium — reconciling the superset touches live memory data shapes; needs a real migration (BL-302) for existing memory stores if the unified `node` adds/changes columns. Blast radius: memory-core, graph-store, analysis, hybrid-search, and every persisted `~/.adhd`/memory store.
+
+### BL-302 — no real migration mechanism: `_schema_version` is a stub that cannot alter an existing table — **Open (HIGH)** (2026-07-11)
+
+**Package:** `@adhd/sox-graph-store` (`applySchema`, `dist/index.js:316-336`) — mirrored in `@adhd/sox-memory-core` (`memory_scope.schema_ver`)  **Origin:** adhd/agent-mcp-authoring integration audit
+
+**Problem.** `graph-store` has the *scaffold* of schema versioning — a `_schema_version` table and a `targetVersion` gate — but no actual migration capability. `targetVersion` is hard-coded to `1`, and the only action taken is `db.exec(GRAPH_DDL)` (all `CREATE TABLE/INDEX IF NOT EXISTS`). Once a DB exists at version 1, **no schema change can ever reach it**: bumping `targetVersion` would re-run `CREATE TABLE IF NOT EXISTS` which no-ops on the existing table, and SQLite cannot `ALTER TABLE ... ADD CONSTRAINT` / change a column type / change a `CHECK` in place. So any future evolution (relaxing the `node.kind` CHECK per BL-295, reconciling the drift per BL-301, adding a column) is **unshippable to existing stores** without a hand-written rebuild. `memory-core` has the same shape (`schema_ver INTEGER NOT NULL DEFAULT 1`) with no visible upgrade path.
+
+**Evidence.** `applySchema()` (`dist/index.js:322-334`): `CREATE TABLE IF NOT EXISTS _schema_version`; read latest; `const targetVersion = 1`; `if (!currentVersion || currentVersion.version < targetVersion) { db.exec(GRAPH_DDL); db.exec(FTS_DDL); db.exec(FTS_TRIGGERS); insert version }`. There is no `migrations[]`, no per-version step, no table-rebuild helper. `memory-core/src/schema.ts` `memory_scope.schema_ver DEFAULT 1` with no migration runner found.
+
+**Root cause.** Versioning was scaffolded for future use but the migration executor was never built; "v1 forever" has been sufficient so far because the schema hasn't needed to change on a live store yet.
+
+**Proposed design.** Implement an ordered migration runner: `migrations: Array<{ v: number; up(db): void }>` applied in sequence for every `v > currentVersion`, each wrapped in a transaction, with the standard SQLite CHECK/column-change idiom as a provided helper (`rebuildTable(db, name, newDDL, columnMap)` doing `PRAGMA foreign_keys=OFF; CREATE TABLE new; INSERT INTO new SELECT ... FROM old; DROP old; ALTER RENAME; recreate indexes; foreign_keys=ON` inside a txn). Bump `targetVersion` to `migrations.length`. This unblocks BL-295 (relax `kind`) and BL-301 (drift reconciliation) as ordinary migrations. Note for the adhd plan: a **fresh** component-registry DB is greenfield (no migration needed); this gap only bites *existing* stores, i.e. memory-core's — so it does not block the plan, but it does block evolving memory-core's schema safely.
+
+**Acceptance criteria.**
+- [ ] A test creates a v1 DB with a row, registers a v2 migration that relaxes/alters the `node.kind` CHECK via table-rebuild, re-opens, and asserts the pre-existing row survived AND a formerly-illegal `kind` now inserts — proving real migration, not a no-op.
+- [ ] Negative control: the same test against the current stub fails (the v2 CHECK change never takes).
+
+**Effort / risk / blast radius.** M effort for the runner; per-migration effort thereafter. Risk: medium — migrations touch live data; must be transactional + tested against a populated store. Blast radius: graph-store, memory-core, every persisted store.
+
+### BL-303 — `graph-store` declares `drizzle-orm` but never uses it (dead dependency; also the phantom source of the drizzle version-skew) — **Open (LOW)** (2026-07-11)
+
+**Package:** `@adhd/sox-graph-store` (`libs/data/graph/graph-store/package.json`)  **Origin:** adhd/agent-mcp-authoring integration audit
+
+**Problem.** `graph-store` lists `drizzle-orm: ^0.42.0` in `dependencies`, but no `src` file imports or references drizzle — the store is implemented entirely with raw SQL over `better-sqlite3` prepared statements. The dep is dead weight in every install. It is also the *sole* source of the "graph-store `drizzle-orm@^0.42.0` vs a `0.45.2` consumer → nested install" version-skew that was cited as a cost of adopting graph-store downstream — since drizzle is unused, that skew is a **non-issue** and should not influence any consume-vs-reimplement decision.
+
+**Evidence.** `grep -rn drizzle libs/data/graph/graph-store/src` → no matches (2026-07-11). `package.json` `dependencies` = `{ better-sqlite3: ^12.10.0, drizzle-orm: ^0.42.0 }`.
+
+**Root cause.** Left over from an earlier drizzle-based implementation or a scaffold default; never pruned after the raw-SQL rewrite.
+
+**Proposed design.** Remove `drizzle-orm` from `graph-store` `dependencies` (and from any consumer that only inherited it transitively). Re-run `graph-store` build + tests to confirm zero usage. If a stray type-only import exists, replace it with a local type.
+
+**Acceptance criteria.**
+- [ ] `graph-store` `package.json` has no `drizzle-orm`; `nx build`/`nx test @adhd/sox-graph-store` stay green.
+- [ ] `npm ls drizzle-orm` from a fresh install of graph-store no longer resolves it via graph-store.
+
+**Effort / risk / blast radius.** S effort, low risk. Blast radius: graph-store only (removes a transitive dep from its consumers). Removes a stated objection to Option A in the adhd agent-mcp-authoring plan.
