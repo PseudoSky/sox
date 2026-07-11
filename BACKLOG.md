@@ -5294,3 +5294,458 @@ Three capabilities (2 of 3 need **no new engine primitive** — machinery exists
 `uninstall.service_stopped` all true); bump soxe version; agent-source re-verifies P4.
 
 ### BL-272 — no hard-delete for memory episodes — **RESOLVED (2026-07-11)** — `memory_curate({op:"drop-episodes", uids:[...]})` implemented. Hard-deletes nodes + cascades vec_node/edge in a single transaction. `nx test memory-core` 413/413
+
+
+---
+
+## agent-mcp-authoring integration audit — @adhd/sox-* component specs (BL-276..BL-295, 2026-07-11)
+
+Full engineering specs for the 20 findings the adhd consumer surfaced while auditing the `@adhd/sox-*` packages for its prompt-component registry. Each was **re-verified against the current source on 2026-07-11** — `file:line`, blast radius, and RESOLVED status re-checked against HEAD, not trusted from the original audit notes. The originating `SOX-*` id is cross-referenced in every entry. 7 RESOLVED (fixes confirmed committed), 13 Open.
+
+### BL-276 — Unify duplicate `warmupTimeoutMs()` defaults in embedding-provider — **RESOLVED** (2026-07-11)
+
+**Package:** `@adhd/sox-embedding-provider` (`libs/data/embed/embedding-provider`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-BUG-001)
+
+**Problem.** `index.ts` and `fastembed.ts` each defined their own `warmupTimeoutMs()`, disagreeing on default (180 000ms vs 60 000ms) though both read `SOX_EMBED_WARMUP_TIMEOUT_MS`. Worker-init was bounded by the inner 60s copy, so the outer 180s config never actually governed a cold ONNX model download.
+
+**Verify.** A single exported `warmupTimeoutMs()` now lives in `libs/data/embed/embedding-provider/src/index.ts:260-263` (default `180_000`, reads `SOX_EMBED_WARMUP_TIMEOUT_MS`), documented at `index.ts:250-259` as the single source of truth for both call sites. `fastembed.ts:1` imports it (`import { warmupTimeoutMs } from './index.js'`) and calls it at `fastembed.ts:256`; the factory wrapper calls it at `index.ts:216`. `grep -rn "function warmupTimeoutMs" libs/data/embed/embedding-provider/src/` returns exactly one match. Committed in `c3e53e2` / `3360f8b` / `3916afd` (`git log --oneline -- libs/data/embed/embedding-provider/src/index.ts libs/data/embed/embedding-provider/src/fastembed.ts`).
+
+**Acceptance criteria.**
+- [ ] Regression test: assert `grep -c "^export function warmupTimeoutMs" libs/data/embed/embedding-provider/src/index.ts` equals 1, and `fastembed.ts` has zero local re-declarations (`grep -c "function warmupTimeoutMs" libs/data/embed/embedding-provider/src/fastembed.ts` equals 0, only the import reference).
+- [ ] A unit test sets `SOX_EMBED_WARMUP_TIMEOUT_MS=5000` and asserts both the outer factory timeout and the inner worker-init timeout observe 5000ms (fails if a second, disagreeing copy is reintroduced).
+
+**Effort / risk / blast radius.** Verification only, no new work. Low risk. Affects any consumer relying on cold-start ONNX downloads (adhd/agent-mcp) not timing out prematurely.
+
+---
+
+### BL-277 — Mark dead `ModelCache`/`FileSystemModelCache` API as deprecated — **RESOLVED** (2026-07-11)
+
+**Package:** `@adhd/sox-embedding-provider` (`libs/data/embed/embedding-provider`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-BUG-002)
+
+**Problem.** `ModelCache`/`FileSystemModelCache` were exported but referenced by no factory or provider — `createEmbeddingProvider` resolves a plain `cacheDir` string instead, so any downstream consumer wiring against `ModelCache` had no effect on runtime behavior.
+
+**Verify.** `libs/data/embed/embedding-provider/src/index.ts:112-124` now carries a `@deprecated SOX-BUG-002: dead API` JSDoc block on the `ModelCache` interface explaining the real `cacheDir` resolution order (`config.options.cacheDir` → `SOX_EMBED_CACHE_DIR` → `$XDG_CACHE_HOME/sox/models` → `~/.cache/sox/models`, see also BL-282 below), and `index.ts:138-144` carries a matching `@deprecated` tag on the `export { FileSystemModelCache } from './cache.js'` re-export. `cache.ts:64-75` still implements the class but is only reachable via the deprecated re-export.
+
+**Acceptance criteria.**
+- [ ] Regression test/lint check: `grep -B3 "export interface ModelCache" libs/data/embed/embedding-provider/src/index.ts` must contain `@deprecated`; same for the `FileSystemModelCache` re-export line. Fails if the tags are dropped in a future edit.
+
+**Effort / risk / blast radius.** Verification only. Low risk, doc-only change. Consider actually removing `ModelCache`/`FileSystemModelCache` in a future major (tracked as a follow-up, not filed separately here since the original finding explicitly deferred it).
+
+---
+
+### BL-278 — Remove false "deterministic hash provider" claim from embedding-provider `sox.concerns` — **RESOLVED** (2026-07-11)
+
+**Package:** `@adhd/sox-embedding-provider` (`libs/data/embed/embedding-provider`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DOC-001)
+
+**Problem.** `package.json`'s `sox.concerns` advertised a "deterministic hash provider as first-class alternative" that was never implemented — `createEmbeddingProvider` only switches on `'fastembed'`/`'remote'`, anything else throws `ResolutionError`. This stale doc directly caused a downstream (adhd) plan to design against a nonexistent `type:'hash'` provider.
+
+**Verify.** `libs/data/embed/embedding-provider/package.json`'s `sox.concerns` array (currently 6 entries) no longer mentions a hash/deterministic provider type — confirmed by dumping the JSON (`python3 -c "import json;print(json.load(open('libs/data/embed/embedding-provider/package.json'))['sox']['concerns'])"`). `createEmbeddingProvider`'s resolution switch (`index.ts:155-162` region, currently around that line range — re-grep on edit) still only handles `'fastembed'`/`'remote'`.
+
+**Acceptance criteria.**
+- [ ] Add a package-manifest lint/test asserting `sox.concerns` in `embedding-provider/package.json` contains no substring matching `/hash provider|deterministic.*provider/i`, paired with a unit test that `createEmbeddingProvider({ type: 'hash' as any, ... })` throws `ResolutionError` (proves the doc and the code agree, and fails if either drifts).
+
+**Effort / risk / blast radius.** Verification only. No consumer impact; prevents future doc/code drift from misleading downstream integrators again.
+
+---
+
+### BL-279 — Correct "asymmetric role encoding" claim in embedding-provider `sox.concerns` — **RESOLVED** (2026-07-11)
+
+**Package:** `@adhd/sox-embedding-provider` (`libs/data/embed/embedding-provider`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DOC-003)
+
+**Problem.** `sox.concerns` claimed "asymmetric encoding via role param (document|query)" was implemented; in reality `FastembedProvider.embedSingle(text, _role?)` ignores the parameter and `embedBatch` does `void opts?.role`.
+
+**Verify.** `sox.concerns` now reads: `"EmbedRole param (document | query) accepted on embedSingle/embedBatch for interface compatibility — currently ignored (not yet applied) by the fastembed provider"` (confirmed via JSON dump of `libs/data/embed/embedding-provider/package.json`). Code still ignores the param exactly as documented: `fastembed.ts:128` `async embedSingle(text: string, _role?: EmbedRole)` (parameter unused, prefixed `_`), `fastembed.ts:150` `void opts?.role;` inside `embedBatch`. Line numbers have drifted from the original citation (`fastembed.ts:163`) to `128`/`150` due to intervening edits — re-verified against current source.
+
+**Acceptance criteria.**
+- [ ] A unit test embeds the same text with `role:'document'` and `role:'query'` and asserts the two output vectors are bit-identical (proves the "ignored" claim stays true; fails the moment asymmetric encoding is actually implemented without updating the doc, forcing a conscious doc update alongside the code change).
+
+**Effort / risk / blast radius.** Verification only. If asymmetric encoding is implemented later, this test forces the doc to be updated in the same PR — good regression coverage for doc/code coupling.
+
+---
+
+### BL-280 — Fix `FastEmbedPoolConfig.batchSizes` JSDoc default (32 → 256) — **RESOLVED** (2026-07-11)
+
+**Package:** `@adhd/sox-embedding-provider` (`libs/data/embed/embedding-provider`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DOC-004)
+
+**Problem.** `FastEmbedPoolConfig.batchSizes` JSDoc said the override default was 32; the actual `DEFAULT_BATCH_SIZE` constant is 256.
+
+**Verify.** `libs/data/embed/embedding-provider/src/index.ts:98` now reads: `/** Per-model batch size hint. Overrides the default 256 (\`DEFAULT_BATCH_SIZE\` in fastembed.ts). */`, and `fastembed.ts:67` defines `const DEFAULT_BATCH_SIZE = 256;` (used at `fastembed.ts:153`, re-exported at `fastembed.ts:294`). Also `index.ts:88-91` now correctly documents that `FastEmbedPoolConfig` is **not currently consumed** by any factory (a related, previously-undocumented gap this doc pass also closed).
+
+**Acceptance criteria.**
+- [ ] Add a test/lint step that parses the JSDoc `default 256` string next to `batchSizes` and cross-checks it numerically against the exported `DEFAULT_BATCH_SIZE` constant (e.g. via a small doc-sync script), so a future bump of `DEFAULT_BATCH_SIZE` without a doc update fails CI.
+
+**Effort / risk / blast radius.** Verification only, doc-accuracy issue with no runtime effect (config is currently unconsumed).
+
+---
+
+### BL-281 — Remove stale "warmUp cache for hot/topic texts" claim from `sox.concerns` — **RESOLVED** (2026-07-11)
+
+**Package:** `@adhd/sox-embedding-provider` (`libs/data/embed/embedding-provider`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-BUG-003, reclassified as doc-only)
+
+**Problem.** `warmUp()` is intentionally a no-op on every shipped provider (`FastembedProvider` and `RemoteProvider` both hard-code `isDeterministic:false`, spec-pinned at `embedding-provider.spec.ts:86`). The only real defect was a `sox.concerns` line advertising a "warmUp cache for hot/topic texts" feature that never existed. Code was correctly left untouched; only the doc needed fixing.
+
+**Verify.** `embedding-provider/package.json`'s `sox.invariants` (not `concerns`) now states: `"warmUp() is a no-op when isDeterministic === false — currently ALWAYS true, since every shipped provider (fastembed, remote) hard-codes isDeterministic: false, so warmUp() is a no-op on every path today"` — no "cache for hot/topic texts" language remains anywhere in the manifest. `embedding-provider.spec.ts:86` (`it('warmUp is a no-op (isDeterministic = false)', ...)`) still pins the intended no-op behavior.
+
+**Acceptance criteria.**
+- [ ] `embedding-provider.spec.ts:86`'s existing test continues to pass and is the load-bearing regression check: if a future change makes `warmUp()` actually cache anything without also flipping `isDeterministic`, this test fails.
+
+**Effort / risk / blast radius.** Verification only. No code change was correct here; doc now matches intentional no-op design.
+
+---
+
+### BL-282 — Unify model cache-dir strategy across fastembed and `@huggingface/transformers` runtimes — **Open (MEDIUM)** (2026-07-11)
+
+**Package:** `@adhd/sox-embedding-provider` (`libs/data/embed/embedding-provider`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-CACHE-001)
+
+**Problem.** Two ONNX-driving runtimes ship in this package family with two independent, inconsistent cache-directory strategies: `FastembedProvider` honors `SOX_EMBED_CACHE_DIR` (resolved at `index.ts:207-213`, falling back through `$XDG_CACHE_HOME/sox/models` → `~/.cache/sox/models`), but the `@huggingface/transformers`-based shared ONNX worker (`embedWorker.ts`, which backs hybrid-search's cross-encoder rerank and claim-verification's NLI verifier per `worker.ts:19`'s `getSharedOnnxWorker` import) has **no** cache-dir override at all — it silently falls through to the library's own `HF_HOME`-based default.
+
+**Evidence.** `grep -n "SOX_EMBED_CACHE_DIR\|cacheDir\|HF_HOME" libs/data/embed/embedding-provider/src/embedWorker.ts` returns zero matches (checked 2026-07-11); the file only imports raw `@huggingface/transformers` symbols at `embedWorker.ts:82` and never touches `env.cacheDir`/`env.localModelPath`. Meanwhile `index.ts:207-213` resolves fastembed's `cacheDir` through `SOX_EMBED_CACHE_DIR`. `hybrid-search/cross-encoder.ts:86` and `claim-verification/worker.ts:142` both route through `getSharedOnnxWorker()` / `SharedOnnxWorkerClient`, i.e. through `embedWorker.ts`, so both consumers inherit the missing override. Also re-checked: `libs/data/ingest/ingest/src/ast-chunker.ts`'s tree-sitter WASM grammar loading (`GRAMMAR_WASM_MODULE_PATHS`, resolved via `require.resolve`) has no cache-dir concept either — it loads from `node_modules` directly, not a runtime download cache, so it's a narrower case of the same "no unified model-cache root" pattern but not equally actionable.
+
+**Root cause.** The fastembed cache-dir plumbing was added ad hoc for that one runtime; when the shared ONNX worker (`embedWorker.ts`) was introduced later (BL-238/BL-171, commit `3916afd`) to host `@huggingface/transformers` inference for rerank + verify, nobody threaded an equivalent override through it, because `transformers.js`'s `env` config object uses a different API surface (`env.cacheDir` / `env.localModelPath`) than fastembed's `cacheDir` constructor option.
+
+**Proposed design.** Introduce `SOX_MODEL_CACHE_DIR` as a single root env var, honored by both runtimes, defaulting to the existing `~/.cache/sox/models` when unset (so today's default behavior for fastembed is preserved and the transformers.js path gains a matching default instead of `HF_HOME`).
+- In `libs/data/embed/embedding-provider/src/index.ts`, change the cacheDir resolution chain at `index.ts:207-213` to check `SOX_MODEL_CACHE_DIR` before/instead-of the narrower `SOX_EMBED_CACHE_DIR` (keep `SOX_EMBED_CACHE_DIR` as a fastembed-specific override for back-compat, falling back to `SOX_MODEL_CACHE_DIR`).
+- In `libs/data/embed/embedding-provider/src/embedWorker.ts`, before the first `@huggingface/transformers` pipeline construction (near the `import ... from '@huggingface/transformers'` at line 82 and the pipeline calls around lines 176/252), set `env.cacheDir = resolveModelCacheDir()` / `env.localModelPath` using a shared `resolveModelCacheDir()` helper exported from `index.ts` (reuse, don't duplicate, per this repo's DRY convention).
+- Document the unified var in both packages' `sox.concerns`.
+- Out of scope but worth a one-line note in the same PR: `ast-chunker.ts`'s tree-sitter WASM resolution is a `require.resolve` against `node_modules`, not a runtime cache — leave as-is unless a follow-up specifically targets WASM caching.
+
+**Acceptance criteria.**
+- [ ] A test sets `SOX_MODEL_CACHE_DIR=<tmp dir>`, constructs both a `FastembedProvider` and triggers the shared ONNX worker's first `@huggingface/transformers` load, and asserts model files land under `<tmp dir>` for **both** — fails today because the transformers.js path ignores the var entirely.
+- [ ] Unsetting `SOX_MODEL_CACHE_DIR` preserves today's default paths for both runtimes (no silent behavior change for existing deployments).
+
+**Effort / risk / blast radius.** M effort (touches `index.ts`, `embedWorker.ts`, both packages' manifests). Risk: low — additive env var with safe fallback. Affects `@adhd/sox-hybrid-search` and `@adhd/sox-claim-verification` (both consume the shared ONNX worker) and any adhd consumer that wants a single configurable model-cache root (e.g. containerized deployments wanting one volume mount for all model weights).
+
+---
+
+### BL-283 — Extract shared `RequestResponseChannel<T>` base for `SharedOnnxWorkerClient` / `SharedFastembedProcessClient` — **Open (LOW)** (2026-07-11)
+
+**Package:** `@adhd/sox-embedding-provider` (`libs/data/embed/embedding-provider`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DUP-001)
+
+**Problem.** `SharedOnnxWorkerClient` (`sharedOnnxWorker.ts`, 281 lines) and `SharedFastembedProcessClient` (`sharedFastembedProcess.ts`, 200 lines) independently implement the same id-correlation / pending-request-Map / `.unref()` / timeout plumbing. Not a functional bug — a maintainability/duplication smell.
+
+**Evidence.** `sharedFastembedProcess.ts:13` explicitly says in its own doc comment: `"This mirrors sharedOnnxWorker.ts's client shape (lazy singleton, ..."`, and `sharedOnnxWorker.ts:101` and `sharedFastembedProcess.ts:32` both reference "mirrors the same `dist`-fallback pattern." `wc -l` confirms both files exist at their original sizes (281 + 200 lines respectively) with no shared base class between them as of 2026-07-11.
+
+**Root cause.** `SharedFastembedProcessClient` was written second, explicitly modeled on `SharedOnnxWorkerClient`'s shape via copy-paste-adapt rather than extraction, likely to move fast during the BL-238 concurrent-worker crash fix (commit `3916afd`) without pausing to refactor the earlier client.
+
+**Proposed design.** Extract a generic `RequestResponseChannel<TRequest, TResponse>` class into a new `libs/data/embed/embedding-provider/src/requestResponseChannel.ts` covering: monotonic id generation, a `pending: Map<id, {resolve,reject,timer}>`, `.unref()` on the underlying handle, timeout-based rejection, and a `request(payload): Promise<TResponse>` method. Both `SharedOnnxWorkerClient` and `SharedFastembedProcessClient` compose or extend it, keeping only their transport-specific bits (worker_thread `postMessage`/`on('message')` vs child_process IPC).
+- Option A (recommended): composition — `RequestResponseChannel` takes a `send(payload)` callback and an event-subscription hook injected by each client; keeps the two clients' transport code fully separate from the correlation/timeout logic.
+- Option B: class inheritance — riskier given the two transports (worker_threads vs child_process) have different lifecycle/error-surface shapes; not recommended.
+
+**Acceptance criteria.**
+- [ ] New `requestResponseChannel.spec.ts` covering id-correlation, timeout rejection, and `.unref()` behavior in isolation.
+- [ ] `sharedOnnxWorker.ts` and `sharedFastembedProcess.ts` both shrink (verify via `wc -l` before/after — expect meaningful reduction in duplicated plumbing lines, not a fabricated percentage) and both existing spec suites (`sharedOnnxWorker.spec.ts`, `sharedFastembedProcess.spec.ts`) continue to pass unmodified (proves the extraction is behavior-preserving).
+
+**Effort / risk / blast radius.** M effort, low risk (internal refactor, both files' specs already lock behavior). No external consumer surface changes — `SharedOnnxWorkerClient`/`SharedFastembedProcessClient` types stay stable.
+
+---
+
+### BL-284 — Move `tree-sitter-wasms`/`web-tree-sitter` out of `@adhd/sox-ingest`'s hard `dependencies` — **Open (HIGH)** (2026-07-11)
+
+**Package:** `@adhd/sox-ingest` (`libs/data/ingest/ingest`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DEP-001)
+
+**Problem.** `@adhd/sox-ingest` lists `tree-sitter-wasms@0.1.13` (~49 MB of WASM grammars) and `web-tree-sitter@0.25.10` (~5.7 MB) as hard `dependencies`, so `npm install @adhd/sox-ingest` unpacks ~55 MB regardless of which entrypoint a consumer actually uses. Consumers who only need `/core` (content-hash, extractive summary, tag extraction — the documented "write-path single-item transforms," per the package description) pay the full AST-chunker weight for nothing.
+
+**Evidence.** `libs/data/ingest/ingest/package.json` (re-read 2026-07-11) still declares:
+```
+"dependencies": {
+  "tree-sitter-wasms": "0.1.13",
+  "web-tree-sitter": "0.25.10"
+}
+```
+with no `optionalDependencies` split. Confirmed via `git log --oneline -- libs/data/ingest/ingest/package.json` (`5e3351d feat(ingest): expose dep-free ./core subpath`, `f4897aa`, `c01ddeb`, `c7387c9`) that none of these commits moved the deps — the `./core` subpath was added (BL-231) precisely to let CJS/lightweight consumers dodge the ESM/TLA cost (see BL-285), but the npm-install-time dependency weight was never addressed. `memory-core` (the only current internal consumer, see BL-285 evidence) imports exclusively from `@adhd/sox-ingest/core` (`extractive.ts:1`, `index.ts:329`, `write.ts:53`) and never touches the AST-chunker surface, meaning today's *only* internal consumer pays the full 55MB cost for zero benefit.
+
+**Root cause.** The package was authored as a single npm package covering both the lightweight "write-path transforms" (hash/summary/tags) and the heavyweight AST-chunker family (4 tree-sitter grammars), and `dependencies` was never split to reflect that only a subset of consumers need the WASM grammars.
+
+**Proposed design.**
+- Option A (recommended, matches the original finding's primary recommendation): Move `tree-sitter-wasms` and `web-tree-sitter` from `dependencies` to `optionalDependencies` in `libs/data/ingest/ingest/package.json`. npm/pnpm still installs them by default but a consumer can `--no-optional` or a lockfile-pruning tool can drop them for `/core`-only usage; requires `ast-chunker.ts`'s `import` of `web-tree-sitter` to already be structured so a missing optional dep doesn't break `/core`'s module graph (verify: `/core`'s `dist/core.js` must not statically pull in `ast-chunker.js` — confirmed true today since `core.ts` doesn't import `ast-chunker.ts`, so this is safe).
+- Option B (larger, more correct long-term): Split the chunker family into a new `@adhd/sox-ingest-chunkers` package depending on `@adhd/sox-ingest` for its primitives; `@adhd/sox-ingest` keeps zero heavyweight deps. This also resolves BL-285's TLA/ESM-only problem at the root, since the root barrel's top-level-await only exists to eagerly load the 4 grammars.
+- Recommendation: do Option B. Option A only reduces *install* weight for consumers who happen to prune optionals; it does nothing for BL-285 (the root barrel is still ESM-only and still eagerly TLA-loads all 4 grammars for any consumer who imports the root). Since `memory-core` — today's only internal consumer — never needs the chunker family at all, splitting the package is the durable fix and directly enables closing BL-285 in the same effort.
+
+**Acceptance criteria.**
+- [ ] After the split (or `optionalDependencies` move), a fresh `npm install @adhd/sox-ingest` (or `@adhd/sox-ingest/core`-only consumer) installs measurably less: assert via `du -sh node_modules/tree-sitter-wasms node_modules/web-tree-sitter` (or their absence) in a scratch install directory that these are either absent or optional-and-skippable, not unconditionally present.
+- [ ] `import('@adhd/sox-ingest/core')` continues to work with `tree-sitter-wasms`/`web-tree-sitter` deleted from `node_modules` (already true today per the original audit's repro — must stay true after the fix, add as a regression test alongside the existing `tools/test-bl231-cjs-boundary.mjs`).
+- [ ] If Option B: `@adhd/sox-ingest`'s own `package.json` `dependencies` no longer lists either tree-sitter package at all; `@adhd/sox-ingest-chunkers` (or equivalent) does.
+
+**Effort / risk / blast radius.** L effort if Option B (new package, publishing, workspace wiring — coordinate with `SOURCES.md`/pnpm workspace config); S-M if Option A (single package.json edit + optional-dep smoke test). Risk: Option B requires updating any consumer that imports `AstChunker` from the root today — confirmed zero internal consumers do (`memory-core` only imports `/core`), so blast radius is effectively zero internally; external/adhd consumers should be checked before the split ships (grep adhd's lockfile/imports for `sox-ingest` root imports of `AstChunker`).
+
+---
+
+### BL-285 — Split tree-sitter chunkers out of `@adhd/sox-ingest` root to remove the module-scope top-level await — **Open (MEDIUM)** (2026-07-11)
+
+**Package:** `@adhd/sox-ingest` (`libs/data/ingest/ingest`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-TLA-001)
+
+**Problem.** The root barrel (`libs/data/ingest/ingest/src/index.ts`, re-exporting `AstChunker` from `ast-chunker.ts`) is ESM-only because `ast-chunker.ts` runs `await Parser.init()` and `await Promise.all(...)` (loading all 4 grammars) at module-evaluation time — `web-tree-sitter` exposes no `initSync`, and the public `Chunker.chunk()`/`estimate()` contract is synchronous, forcing eager TLA-based preload. This makes the root un-`require()`-able, which is why the `/core` subpath (BL-231) exists purely as a CJS escape hatch. Two costs: (a) all 4 grammars load eagerly for any root import — e.g. summarizing a markdown file still pulls in the ~3.8MB C# grammar; (b) no internal consumer imports the root barrel or `AstChunker` at all today, so the entire TLA-bearing surface is currently dead weight that nonetheless forces ESM-only packaging on every consumer of the root.
+
+**Evidence.** `libs/data/ingest/ingest/src/ast-chunker.ts:174` — `await Parser.init();` — and `ast-chunker.ts:184` — `await Promise.all(SUPPORTED_LANGUAGES.map(async (language) => { ... }))` — both re-confirmed at those exact line numbers on 2026-07-11 (unchanged since original citation). `ast-chunker.ts:165-172`'s own comment block explicitly documents this as intentional: `"all grammars are eagerly loaded once at module-evaluation time via top-level await"`. `index.ts:40` re-exports `export { AstChunker } from './ast-chunker.js';`. Consumer check: `grep -rn "sox-ingest" libs/memory-core/src/*.ts | grep -v spec` shows only `@adhd/sox-ingest/core` imports (`extractive.ts:1`, `index.ts:329`, `write.ts:53`) — zero imports of the root package or `AstChunker` anywhere in the only internal consumer.
+
+**Root cause.** `web-tree-sitter`'s `Parser.init()`/`Language.load()` are inherently async (WASM instantiation), and the chunker family was designed around a synchronous `Chunker.chunk()` contract, so the original author pushed the async cost to module-eval time via TLA rather than lazy per-language loading — without anticipating that this decision would make the *entire root package* ESM-only for consumers who never touch the chunker family.
+
+**Proposed design.** This is the same root cause as BL-284 and should be fixed together:
+- Option A (recommended, same as BL-284 Option B): move `AstChunker` and its 4-grammar TLA into a separate `@adhd/sox-ingest-chunkers` package. `@adhd/sox-ingest`'s root then has zero TLA and becomes `require()`-able directly (no more need for the `/core` escape hatch's CJS-only justification, though `/core` can remain for back-compat).
+- Option B (smaller, in-place): keep one package but make grammar loading lazy-per-language instead of eager-at-module-eval. Replace the top-level `await Promise.all(...)` grammar preload with a `Map<language, Promise<Language>>` populated on first `AstChunker` construction for that language, and change `Parser.init()` to run lazily on first use (guarded by a module-level `let initPromise: Promise<void> | null`). This removes the TLA (the root barrel becomes sync-importable / `require()`-able via dynamic `import()` inside an async method) while keeping one package. Trade-off: `chunk()`/`estimate()` would need to become async (breaking the current sync contract) OR require a synchronous `ensureReady()` pre-step consumers must await before calling `chunk()` — this is a real API-shape change, not free.
+- Recommendation: Option A. It fully removes the TLA without breaking the documented sync `chunk()`/`estimate()` contract, and — since zero internal consumers use the chunker family today (confirmed above) — the blast radius of moving it out is minimal.
+
+**Acceptance criteria.**
+- [ ] After the fix, `require('@adhd/sox-ingest')` (root, not `/core`) succeeds in plain CommonJS without `ERR_REQUIRE_ESM` — add as a new case in (or alongside) `tools/test-bl231-cjs-boundary.mjs`.
+- [ ] `grep -n "^await " <root-package>/src/*.ts` (module-scope, not inside a function) returns zero matches in the post-split `@adhd/sox-ingest` root.
+- [ ] `AstChunker.chunk()`/`.estimate()` remain synchronous per their documented contract wherever they end up.
+
+**Effort / risk / blast radius.** L effort (coupled with BL-284's package split — do as one PR). Risk: low internally (zero current consumers of the chunker family per the evidence above); must confirm zero adhd-side imports of `@adhd/sox-ingest`'s root `AstChunker` before shipping, since adhd is the named downstream auditor here.
+
+---
+
+### BL-286 — Correct `sox.concerns` description of the summariser (was "sentence-scoring", is lead-N) — **RESOLVED** (2026-07-11)
+
+**Package:** `@adhd/sox-ingest` (`libs/data/ingest/ingest`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DOC-002)
+
+**Problem.** `sox.concerns` described the summariser as "sentence-scoring," but the implementation is plain lead-N (`sentences.slice(0, maxSentences)`) — no scoring involved. The frequency-scored logic actually belongs to `extractTags`; the two were conflated in the doc.
+
+**Verify.** `libs/data/ingest/ingest/package.json`'s `sox.concerns` (re-read 2026-07-11) now reads: `"extractive summary (lead-N sentences — first summaryMaxSentences sentences, no scoring; zero LLM; content under 100 chars is returned unchanged via content.trim())"` — no "sentence-scoring" language remains, and `deterministic tag extraction (noun phrases, high-frequency terms, tagMaxCount)` is correctly attributed as the separate, frequency-scored concern.
+
+**Acceptance criteria.**
+- [ ] A doc-sync test asserts `sox.concerns` in `ingest/package.json` contains the substring "lead-N" and does not contain "sentence-scoring" adjacent to the summary description — fails if the doc regresses to the old wording without the underlying implementation actually changing.
+
+**Effort / risk / blast radius.** Verification only.
+
+---
+
+### BL-287 — Add `"./package.json"` to `exports` map across all `@adhd/sox-*` data packages — **Open (LOW)** (2026-07-11)
+
+**Package:** All 9 `libs/data/**` packages (embedding-provider, ingest, graph-store, task-queue, hybrid-search, blob-store, vector-store, claim-verification, analysis)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-EXPORTS-001)
+
+**Problem.** Every `exports`-mapped `@adhd/sox-*` data package blocks `import('<pkg>/package.json')` / `require('<pkg>/package.json')` with `ERR_PACKAGE_PATH_NOT_EXPORTED`, because none declares a `"./package.json": "./package.json"` passthrough. Common Node.js footgun, but it breaks any tooling that reads a dependency's manifest at runtime (version introspection, license scanners, `sox.concerns`/`sox.invariants` metadata readers — which this very audit process itself relies on).
+
+**Evidence.** Re-scanned all 9 `libs/data/**/package.json` files with an `exports` map on 2026-07-11 via a scripted JSON check (`python3` parsing each `exports` object for the `"./package.json"` key): **zero of nine** declare it — `@adhd/sox-analysis`, `@adhd/sox-embedding-provider`, `@adhd/sox-graph-store`, `@adhd/sox-ingest`, `@adhd/sox-task-queue`, `@adhd/sox-hybrid-search`, `@adhd/sox-blob-store`, `@adhd/sox-vector-store`, `@adhd/sox-claim-verification`. This is a wider blast radius than the original finding's "all 5 data packages" estimate — the package count in this monorepo has grown to 9 `libs/data/**` packages since the original audit; all 9 need the fix, not 5.
+
+**Root cause.** The `exports` field was hand-authored per package (or scaffolded once and copy-pasted) without including the now-conventional `"./package.json"` passthrough that most modern npm packages add specifically to keep manifest introspection working under `exports` encapsulation.
+
+**Proposed design.** Add to every `libs/data/**/package.json`'s `exports` map:
+```json
+"./package.json": "./package.json"
+```
+Since this is mechanical and identical across all 9 packages, either hand-edit each (S effort, 9 small diffs) or add it to whatever package-scaffolding/generator template these packages were created from (per this repo's "bake into generator" convention) so future packages don't reintroduce the gap. Also consider adding a workspace-level lint/CI check (e.g. a small `tools/` script) that fails if any `libs/**/package.json` has an `exports` map without a `"./package.json"` entry — prevents regression on the 10th package.
+
+**Acceptance criteria.**
+- [ ] `node -e "console.log(require('@adhd/sox-<pkg>/package.json').version)"` (or ESM `import(...)` equivalent) succeeds for all 9 packages post-fix — currently fails with `ERR_PACKAGE_PATH_NOT_EXPORTED` for all 9.
+- [ ] A workspace-level test iterates every `libs/data/**/package.json` with an `exports` field and asserts `"./package.json"` is present — fails if a 10th package is added later without it.
+
+**Effort / risk / blast radius.** S effort (9 one-line JSON edits + optional CI guard). Zero behavioral risk — purely additive `exports` entry, cannot break existing subpath resolution.
+
+---
+
+### BL-288 — Declare `"require"` export conditions (or tighten `engines`) so native packages are safely `require()`-able within their declared Node range — **Open (HIGH)** (2026-07-11)
+
+**Package:** `@adhd/sox-memory-core` (`libs/memory-core`) + `@adhd/sox-graph-store` (`libs/data/graph/graph-store`) and other native-addon packages  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-PKG-ENGINES-001)
+
+**Problem.** All native packages declare an `engines.node` range (most `>=22`, `memory-core` `>=20`) but none ships a `"require"` export condition — they're only `require()`-able today via Node's `require(esm)` interop, which is only stable at ≥20.19/22.12. Concretely broken: `memory-core` is a CJS build (`module: "CommonJS"`) declaring `engines.node: ">=20"`, and its compiled `dist/*.js` does `require("@adhd/sox-graph-store")` — a pure-ESM package (`"type": "module"`, `exports` map has no `"require"` condition, `engines.node: ">=22"`) — which throws `ERR_REQUIRE_ESM` on Node 20.0–20.18, a range `memory-core` itself claims to support.
+
+**Evidence.** `libs/memory-core/package.json` `engines: { "node": ">=20" }` (re-checked 2026-07-11); `libs/memory-core/tsconfig.lib.json:4-5` — `"module": "CommonJS", "moduleResolution": "node10"`. `libs/data/graph/graph-store/package.json`: `"type": "module"`, `"engines": { "node": ">=22" }`, `"exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } }` — no `"require"` condition. Every `memory-core/src/*.ts` file that touches graph-store (`cluster.ts:18`, `enrich-batch.ts:17`, `enrich.ts:16`, `entity-episodes.ts:11-12`, `list-entities.ts:11`, `link.ts:13`, `neardup.ts:12`, `near-duplicates.ts:11`, `related.ts:11-12`, `supersession-chain.ts:13`) compiles to a `require("@adhd/sox-graph-store")` call in the corresponding `dist/*.js` — confirmed via `grep -n "sox_graph_store_1 = require" libs/memory-core/dist/*.js`, 10 files match.
+
+**Root cause.** `memory-core` was built as CommonJS (legacy `node10` module resolution, likely for tsconfig/consumer-compat reasons predating the ESM-only data packages), while newer native data packages (graph-store et al.) were authored pure-ESM without a dual-build or `"require"` condition — nobody reconciled the two when memory-core started depending on graph-store directly.
+
+**Proposed design.**
+- Option A: Add a `"require"` export condition to every ESM-only native package (graph-store, vector-store, blob-store, task-queue, etc.) via a dual build — compile a CJS bundle alongside the existing ESM `dist/index.js` (e.g. `dist/index.cjs`) and add `"exports": { ".": { "types": "...", "import": "./dist/index.js", "require": "./dist/index.cjs" } }`. This is the most robust fix but doubles the build output and requires validating native-addon (`better-sqlite3`/`sqlite-vec`) behavior identically under both module systems.
+- Option B (recommended, matches the original finding's stated fix): Tighten `engines.node` across all these native packages to the actual safe floor for `require(esm)` interop — `">=20.19"` for packages consumed by `memory-core`-style CJS requires under Node 20.x, or `">=22.12"` if the package targets the Node 22 line exclusively. This doesn't require a dual build; it just makes the declared support range honest (today's `>=20` on memory-core is simply false once you account for its `require("@adhd/sox-graph-store")` dependency).
+- Recommendation: do Option B now (S effort, closes the correctness gap immediately) and track Option A as a longer-term follow-up only if a consumer actually needs Node 20.0–20.18 support (unlikely given this is an internal monorepo — check with adhd whether it pins Node 20.19+ already before investing in dual builds).
+
+**Acceptance criteria.**
+- [ ] `libs/memory-core/package.json`'s `engines.node` reads `">=20.19"` (or `>=22.12` if scoped to Node 22), matching its actual `require("@adhd/sox-graph-store")` dependency's real floor.
+- [ ] A CI/test check enumerates every `libs/data/**` and `libs/memory-core` package with a native dep, cross-references each `require()`-ing consumer's `engines.node` against each ESM-only dependency's lack of a `"require"` condition, and fails if any consumer's declared floor is below the `require(esm)`-interop-stable version (20.19/22.12) — this is the regression guard; it would have caught this exact bug.
+- [ ] Manual/CI verification: `node@20.18.x` (or the closest available via nvm/docker) attempting `require('@adhd/sox-memory-core')` reproduces `ERR_REQUIRE_ESM` today, and no longer falls inside the corrected `engines` range after the fix (i.e., the failure now correctly happens *outside* the package's declared support window, not inside it).
+
+**Effort / risk / blast radius.** S effort for Option B (manifest edits across ~5-6 packages); L effort for Option A (dual build pipeline). Risk: Option B could surprise a consumer that (wrongly) relied on the `>=20` claim on Node 20.0-20.18 — but that consumer was already broken, this just makes the breakage honest via `npm install` engine warnings. Directly affects any adhd consumer running Node <20.19/<22.12 that imports `memory-core`.
+
+---
+
+### BL-289 — Delete dead `memory-core/src/embedWorker.ts` and fix stale BL-11 doc comment — **Open (LOW)** (2026-07-11)
+
+**Package:** `@adhd/sox-memory-core` (`libs/memory-core`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DEADCODE-001)
+
+**Problem.** `libs/memory-core/src/embedWorker.ts` is dead code: excluded from the build and superseded by embedding-provider's shared ONNX worker host, but `index.ts`'s BL-11 process-boundary doc-comment still describes it as the active isolation mechanism, misleading anyone reading the package's top-level doc about how embed isolation actually works today.
+
+**Evidence.** `libs/memory-core/tsconfig.lib.json:15` — `"exclude": ["src/**/*.spec.ts", "src/**/*.test.ts", "src/embedWorker.ts", "node_modules"]` — the file is explicitly excluded from the `tsc` build. `libs/memory-core/src/index.ts:12-13` still reads: `"Use the embed worker thread — embed() in this library already routes through embedWorker.ts (worker_threads), keeping ONNX isolated from the main thread."` But `libs/memory-core/src/embed.ts:4-5` itself documents the real current state: `"This is a thin ping/stats adapter over @adhd/sox-embedding-provider. The old embed.ts + embedWorker.ts have been replaced by the canonical [shared ONNX worker host]."` and `embed.ts:17-18` imports `createEmbeddingProvider`/`EmbeddingProvider` from `@adhd/sox-embedding-provider`, not from a local `embedWorker.ts`.
+
+**Root cause.** When embed isolation was migrated to embedding-provider's shared ONNX worker host (BL-238/BL-171, tracked in embedding-provider's own history), `memory-core/src/embed.ts` was updated and correctly self-documents the migration, but the higher-level BL-11 doc-comment in `index.ts` (written earlier, describing the original in-package `embedWorker.ts` isolation) was never revisited.
+
+**Proposed design.**
+1. Delete `libs/memory-core/src/embedWorker.ts` (confirm zero remaining references first: `grep -rn "embedWorker" libs/memory-core/src/*.ts` — expect only the stale `index.ts:13` comment and the tsconfig exclude line, both being fixed/removed in this same change).
+2. Remove the `"src/embedWorker.ts"` entry from `libs/memory-core/tsconfig.lib.json:15`'s `exclude` array (no longer needed once the file is gone).
+3. Rewrite `index.ts:9-19`'s BL-11 doc block to describe the actual current mechanism: embed isolation now lives in `@adhd/sox-embedding-provider`'s shared ONNX worker (`getSharedOnnxWorker`/`SharedOnnxWorkerClient`, per `embed.ts:4-5`'s own comment), not a local `embedWorker.ts`. Point to `embed.ts` as the integration point.
+
+**Acceptance criteria.**
+- [ ] `libs/memory-core/src/embedWorker.ts` no longer exists in the tree.
+- [ ] `grep -n "embedWorker.ts" libs/memory-core/src/index.ts` returns zero matches.
+- [ ] `nx build memory-core` and `nx test memory-core` both pass unchanged (proves the file was truly unreferenced/dead — this is the regression check: if some consumer secretly needed it, the build breaks).
+
+**Effort / risk / blast radius.** S effort, low risk — file is confirmed excluded from the build already, so deleting it cannot regress the compiled output. Doc fix is pure clarity improvement for future readers/agents of `memory-core`.
+
+---
+
+### BL-290 — Wire in or drop the phantom `@adhd/sox-vector-store` dependency of `memory-core` — **Open (LOW)** (2026-07-11)
+
+**Package:** `@adhd/sox-memory-core` (`libs/memory-core`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-PHANTOM-001)
+
+**Problem.** `@adhd/sox-vector-store` is declared as a `workspace:*` dependency in `memory-core/package.json` but is never actually imported anywhere in `src/` or `dist/` — it appears only in code comments.
+
+**Evidence.** `libs/memory-core/package.json:30` — `"@adhd/sox-vector-store": "workspace:*"`. `grep -rn "sox-vector-store" libs/memory-core/src/*.ts` matches only two comment lines: `reembed.ts:56` (`"generic multi-space \`vec_<model>\` side tables from \`@adhd/sox-vector-store\`,"`) and `reembed.ts:233` (similar comment). `grep -rln "sox-vector-store" libs/memory-core/dist/*.js` confirms only `dist/reembed.js` matches, and only in the transpiled-through comment text (same two lines) — no `require("@adhd/sox-vector-store")` exists anywhere in `dist/`.
+
+**Root cause.** `memory-core` manages vectors directly via `sqlite-vec` (`db.ts:198-201` loads `sqlite-vec` directly against its own `better-sqlite3` handle) rather than delegating to the standalone `@adhd/sox-vector-store` package's `SqliteVectorBackend`/`openVectorStore`. The dependency was likely added during an earlier design where `memory-core` was expected to delegate vector storage to `vector-store`, then the design changed to inline `sqlite-vec` usage, but the now-unnecessary `package.json` entry was never removed. `reembed.ts`'s comments suggest a *future* multi-space vector table design that would use `vector-store`'s generic `vec_<model>` tables — i.e., this may be a forward-looking placeholder, not pure leftover cruft.
+
+**Proposed design.**
+- Option A (recommended if the multi-space reembed design in `reembed.ts:56,233`'s comments is still planned): keep the dependency but file it as a tracked follow-up to actually wire it in when that design lands, and add a one-line note in `package.json` (or a `// TODO` next to the dependency) explaining why it's present-but-unused today, so a future auditor doesn't re-flag it as pure phantom cruft.
+- Option B (recommended if the multi-space design is not imminent): drop `"@adhd/sox-vector-store": "workspace:*"` from `memory-core/package.json` `dependencies` entirely. `memory-core` continues managing vectors directly via `sqlite-vec` as it does today; re-add the dependency if/when the `reembed.ts` multi-space design is actually implemented.
+- Recommendation: Option B — an unused dependency creates real audit/supply-chain noise (this exact finding exists because of it) and a `workspace:*` pin costs nothing to re-add later; "kept for a future design" is exactly the kind of speculative dependency this repo's "You always evaluate best of class 3rd party tools before authoring" / DRY discipline argues against carrying indefinitely.
+
+**Acceptance criteria.**
+- [ ] Either `@adhd/sox-vector-store` is removed from `memory-core/package.json` `dependencies`, or it has at least one real `import`/`require` in `src/` (not just a comment) wiring it into the multi-space reembed path.
+- [ ] A dependency-audit test/script (e.g. comparing `package.json` `dependencies` against actual `import`/`require` statements found by static grep across `src/`) flags this package if a declared dependency has zero non-comment usages — regression guard for future phantom deps across the monorepo, not just this one instance.
+
+**Effort / risk / blast radius.** S effort (single `package.json` edit, or documented TODO). Zero runtime risk either way — the dependency currently has no code path exercising it.
+
+---
+
+### BL-291 — Standardize a typed native-open error across all SQLite-backed data packages — **Open (MEDIUM)** (2026-07-11)
+
+**Package:** `@adhd/sox-blob-store`, `@adhd/sox-vector-store`, `@adhd/sox-memory-core` (task-queue already correct)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-ERR-001)
+
+**Problem.** Only `@adhd/sox-task-queue` wraps its native `new Database(...)` open call in a typed error (`TaskQueueSystemError`). `@adhd/sox-blob-store`, `@adhd/sox-vector-store`, and `@adhd/sox-memory-core` all throw the raw, unwrapped `better-sqlite3` exception straight through on a missing/ABI-mismatched native `.node` binary — a class of failure that's common across Node version upgrades and cross-platform installs, and one whose error message (`Could not locate the bindings file` or an ABI-version mismatch) gives no package-level context to the caller.
+
+**Evidence.** `libs/data/queue/task-queue/src/task-queue.ts:195-201` (re-verified 2026-07-11, confirmed present in current source):
+```ts
+try {
+  this.db = new Database(this.config.dbPath);
+  applySchema(this.db);
+} catch (err) {
+  throw new TaskQueueSystemError('failed to open task queue database', err as Error);
+}
+```
+By contrast: `libs/data/store/blob-store/src/store.ts:112` — `this.db = new (await import('better-sqlite3')).default(dbPath);` — no try/catch, no wrapping. `libs/data/vectors/vector-store/src/index.ts:313` — `const db = new Database(path);` inside `openVectorStore()` — no try/catch. `libs/memory-core/src/db.ts:198` — `const db = new Database(dbPath);` — no try/catch (a second unwrapped open exists at `db.ts:388` for the readonly path too).
+
+**Root cause.** `task-queue` was (per its own package history) the package where native-open error handling was deliberately hardened; the pattern was never propagated to the other three native-addon packages when they were authored, so each independently reinvented (or omitted) native-open error handling.
+
+**Proposed design.** Extract a single shared typed error + wrapping helper, since 4 packages independently need the identical pattern (this repo's Two-Use Refactor Rule applies directly here):
+- Add a new tiny shared package/module (recommend `libs/data/native-open-error` or, if a shared low-level `libs/shared`-equivalent already exists in this repo, place it there) exporting: a `NativeOpenError extends Error` class carrying `{ dbPath, cause }`, and a `openSqliteDatabase(path, opts?): Database.Database` helper that wraps `new Database(...)` in a try/catch and throws `NativeOpenError` with a message identifying the package/dbPath and preserving the original error as `cause`.
+- `task-queue.ts:195-201`, `store.ts:112`, `vector-store/index.ts:313`, and `memory-core/db.ts:198` (+`db.ts:388`) all switch to calling the shared helper instead of `new Database(...)` directly, each still able to catch the shared `NativeOpenError` and re-wrap into their own package-specific error type if desired (e.g. `task-queue` can keep `TaskQueueSystemError` but construct it from a caught `NativeOpenError`).
+- Do not introduce a circular dependency: this shared module must sit below `task-queue`/`blob-store`/`vector-store`/`memory-core` in the dependency graph (pure `better-sqlite3` wrapper, no domain logic) — consistent with this repo's "Dependency Purity" rule for shared packages.
+
+**Acceptance criteria.**
+- [ ] A test that deletes/corrupts the `better-sqlite3` native binding (or mocks `Database` constructor to throw an ABI-mismatch-shaped error) and asserts each of `blob-store.open()`, `vector-store.openVectorStore()`, and `memory-core.openDb()` throws the shared typed error (not a raw better-sqlite3 exception) — fails today for all three, passes for `task-queue` already.
+- [ ] The typed error's message includes enough context (package name, resolved db path) to be actionable in a production log without needing to attach a debugger.
+
+**Effort / risk / blast radius.** M effort (new shared module + 4 call-site edits + tests across 4 packages). Risk: low — purely additive error-wrapping, does not change the happy path. Improves production diagnosability for every consumer (including adhd) hitting native-binding issues across Node/platform upgrades.
+
+---
+
+### BL-292 — Require `platform:node` tag on every native-addon-bound package — **Open (LOW)** (2026-07-11)
+
+**Package:** `@adhd/sox-vector-store`, `@adhd/sox-graph-store`, `@adhd/sox-memory-core`, `@adhd/sox-blob-store`, `@adhd/sox-task-queue`  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-PLATFORM-001)
+
+**Problem.** None of the five native-addon-bound packages (`vector-store`, `graph-store`, `memory-core`, `blob-store`, `task-queue`) carries a `platform:*` tag in its `project.json`, despite every one of them depending on `better-sqlite3`/`sqlite-vec` native bindings (Node-only). No package currently makes a *false* `platform:shared`/`platform:browser` claim, but there's also no positive guard — a future rename, tag-inheritance change, or careless refactor could drift one of these into a browser-targeted bundle graph with nothing catching it.
+
+**Evidence.** Re-checked all five `project.json` files on 2026-07-11 via `find <pkg-dir> -maxdepth 1 -iname project.json -exec grep -A5 '"tags"' {} \;`:
+- `libs/data/vectors/vector-store/project.json`: `["type:lib", "area:data", "group:vectors"]` — no `platform:*`.
+- `libs/data/graph/graph-store/project.json`: `["type:lib", "area:data", "group:graph"]` — no `platform:*`.
+- `libs/memory-core/project.json`: `["type:lib"]` — no `platform:*`, and notably no `area:*`/`group:*` either (sparser than the others).
+- `libs/data/store/blob-store/project.json`: `["type:lib", "area:data", "group:store"]` — no `platform:*`.
+- `libs/data/queue/task-queue/project.json`: `["type:lib", "area:data", "group:queue"]` — no `platform:*`.
+
+**Root cause.** This repo's tagging convention (`type:*`, `area:*`, `group:*`) was applied consistently, but a `platform:*` dimension was never added to the tag taxonomy for this repo's Nx project graph, so there's no Nx lint rule (e.g. `@nx/enforce-module-boundaries`) that could even reference it to block a native package from being imported into a browser-tagged consumer.
+
+**Proposed design.**
+1. Add `"platform:node"` to the `tags` array of all five `project.json` files listed above.
+2. Add an Nx module-boundary lint rule (`.eslintrc`/`nx.json` `depConstraints`) that forbids any project tagged `platform:browser` (or untagged/`platform:shared` claiming browser use) from depending on a `platform:node`-tagged project — this is the actual regression guard; the tag alone is just metadata until it's enforced.
+3. Extend the check to auto-detect: any package whose `dependencies` includes a known native-addon package (`better-sqlite3`, `sqlite-vec`, `onnxruntime-node`, `web-tree-sitter`'s native fallback if any) but lacks `platform:node` in `project.json` tags should fail CI — this generalizes the guard beyond just these 5 packages to catch the *next* native package too, addressing this repo's own `docs/plan` UQ-6 note ("Minimum tag set: platform:node (native deps)... Auto-detected from dependency graph and enforced by CI").
+
+**Acceptance criteria.**
+- [ ] All 5 `project.json` files have `"platform:node"` in `tags`.
+- [ ] A new Nx lint constraint test: create a scratch `platform:browser`-tagged project that attempts to depend on one of these 5 packages, and assert `nx lint`/`nx graph` (or `@nx/enforce-module-boundaries`) fails the build — proves the guard is real, not just a label.
+- [ ] The auto-detection CI check (native dep present, tag absent) passes clean today after step 1, and is proven to fail-loud by temporarily removing the tag from one package in a test harness.
+
+**Effort / risk / blast radius.** S-M effort (5 tag additions + one new lint constraint + CI wiring). Zero behavioral risk to existing builds (additive tag + a new constraint that today's graph already satisfies once tags are added). Prevents a real future regression class — directly relevant to adhd's own `platform:node`/`platform:browser`/`platform:shared` isolation convention (this project's own CLAUDE.md enforces the identical pattern), so this is a good example to point to when adhd audits sox-ecosystem's tagging hygiene.
+
+---
+
+### BL-293 — `createGraphBackend(db)` must apply schema (or fail loudly) instead of silently deferring to a separate `applySchema()` call — **Open (HIGH)** (2026-07-11)
+
+**Package:** `@adhd/sox-graph-store` (`libs/data/graph/graph-store`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DX-001, footgun)
+
+**Problem.** `createGraphBackend(db)`'s constructor is a pure field assignment — it does not apply the DDL schema. The first `writeNode()`/`searchNodes()` call against a freshly-opened database throws `SqliteError: no such table: node` unless the caller separately, and non-obviously, calls `graph.applySchema()` first. Confirmed from a real downstream (adhd) consumer install — this is not a theoretical edge case.
+
+**Evidence.** `libs/data/graph/graph-store/src/index.ts:528-530`:
+```ts
+constructor(db: Database.Database) {
+  this.db = db;
+}
+```
+`index.ts:1265-1267`:
+```ts
+export function createGraphBackend(db: Database.Database): GraphBackend {
+  return new SqliteGraphBackend(db);
+}
+```
+Neither calls `applySchema()`. `applySchema()` itself (`index.ts:534-561`) is already idempotent-guarded — `if (this.schemaApplied) return;` at `index.ts:535`, and further version-gated via a `_schema_version` table check at `index.ts:543-551` — so it is safe to call unconditionally on every construction; the guard work needed for a fix is already in place, only the call site is missing. `writeNode()` (`index.ts:566` onward) issues raw `INSERT INTO node`-shaped queries against a table that doesn't exist yet if `applySchema()` was never called.
+
+**Root cause.** The constructor was written to accept an already-open `Database.Database` handle (so the caller controls DB lifecycle/pragmas), but schema application was factored out as a separate explicit step — presumably to let advanced callers control *when* DDL runs relative to other setup — without the factory function (`createGraphBackend`) defaulting to the safe, common-case behavior of "just make it work."
+
+**Proposed design.**
+- Option A (recommended): Call `this.applySchema()` at the end of the `SqliteGraphBackend` constructor (`index.ts:528-530`). Since `applySchema()` is already idempotent (guarded by `schemaApplied` + `_schema_version`), this is safe even for callers who explicitly call `applySchema()` again afterward (no-op) or who pass in a DB that already has the schema from a prior process (version-check skips re-running DDL). This directly fixes `createGraphBackend(db)` for every caller with zero API change.
+- Option B: Keep the constructor a no-op, but have `createGraphBackend()` (the actual public factory, not the class) call `.applySchema()` before returning — equivalent effect, slightly smaller diff if there's a reason the raw class constructor must stay side-effect-free (e.g. some caller constructs `SqliteGraphBackend` directly and wants to defer schema application). Check `grep -rn "new SqliteGraphBackend" libs/**/src` for direct-construction callers before choosing.
+- Recommendation: Option A unless a direct `new SqliteGraphBackend(db)` caller is found needing deferred schema application (none found in this repo as of 2026-07-11 — grep returns no matches outside `index.ts` itself); Option A also protects any future direct-construction caller from the same footgun, whereas Option B only protects factory-function callers.
+
+**Acceptance criteria.**
+- [ ] `const graph = createGraphBackend(new Database(':memory:')); graph.writeNode('test', {kind:'episode', ...})` succeeds without a prior explicit `.applySchema()` call — fails today with `SqliteError: no such table: node`.
+- [ ] Calling `.applySchema()` explicitly after construction remains a safe no-op (proves idempotency wasn't broken by the fix).
+- [ ] Existing `graph-store` spec suite continues to pass unmodified.
+
+**Effort / risk / blast radius.** S effort (one-line constructor change), low risk given `applySchema()`'s existing idempotency guards. High-value fix — this is a first-contact footgun for every new consumer of `@adhd/sox-graph-store` (confirmed hit by the adhd integration audit itself), so closing it removes a guaranteed onboarding failure for every future consumer, including hybrid-search's `SqliteSearchBackend` (BL-294) which composes a `GraphBackend`.
+
+---
+
+### BL-294 — Surface a degrade signal when `SqliteSearchBackend`'s text channel returns zero hits due to a namespace/filter mismatch — **Open (MEDIUM)** (2026-07-11)
+
+**Package:** `@adhd/sox-hybrid-search` (`libs/data/search/hybrid-search`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DX-002)
+
+**Problem.** `SqliteSearchBackend.search()`'s text channel calls `this.graph.searchNodes(query.text, searchOpts)` with a `filter` derived from `query.filters`. If that filter doesn't match how nodes were written (a namespace mismatch is the common case), the FTS5 text channel silently returns zero rows and the fused ranking collapses to pure-kNN vector-only results — with no channel-level signal that the text side found nothing. A consumer calling this expecting hybrid fusion silently gets vector-only search and has no way to detect it short of manually diffing against a vector-only call, unless they pass `explain:true` and manually inspect every result's `signalScores` for an empty `.text` field.
+
+**Evidence.** `libs/data/search/hybrid-search/src/index.ts:454-538` (`SqliteSearchBackend.search()`, re-verified 2026-07-11) builds `merged` purely from whatever `this.graph.searchNodes(...)` (`index.ts:487`) and `this.vec.knn(...)` (`index.ts:507`) return — no code path checks or reports "textResults.length === 0 while textPresent === true." The fusion function `fuse()`'s caller-facing path (`index.ts:330-437`, specifically the `textPresent && vecPresent` branch at `index.ts:346-359`) does populate a per-result `signalScores` map (`index.ts:344,352`) that *would*, on close inspection with `explain:true` (`index.ts:430-432`), show every result missing a `.text` score — but this is an opt-in, per-item, post-hoc signal, not a proactive channel-level warning, and `grep -n "console.warn\|degrade" libs/data/search/hybrid-search/src/index.ts` returns zero matches — there is no warning emitted anywhere in the file. Verified behaviorally per the original audit: fused ranking under a namespace mismatch is exactly identical to a pure vector-only call.
+
+**Root cause.** `fuse()`/`SqliteSearchBackend.search()` were designed around the *scoring* mechanics of combining two channels' resultsets, not around *observability* of channel health — the `signalScores` field exists for per-result explainability (why did this ID rank where it did), not for aggregate "did channel X find anything at all" reporting, so a total-miss on one channel produces a well-formed but silently misleading response.
+
+**Proposed design.**
+- Add a `channelStats` (or similarly named) field to the `search()`/`fuse()` return contract: `{ textHitCount: number, vecHitCount: number }`, computed once per call from `candidates.filter(c => c.textScore !== undefined).length` / `candidates.filter(c => c.vecScore !== undefined).length` in `fuse()` (around `index.ts:338`, right after `const candidates = backend.search(...)`).
+- When `textPresent === true && textHitCount === 0` (or the symmetric vec case), attach a non-fatal `degraded: { channel: 'text', reason: 'zero hits — check namespace/filter' }` marker on the result set (top-level, not per-item) so a consumer can branch on it without manually diffing.
+- Keep this additive/opt-in at the type level (new optional field) so it's non-breaking for existing consumers destructuring `SearchResult[]`.
+- Do not add a `console.warn` inside the library itself (library code emitting to stdout/stderr by default is generally undesirable for a pure data package) — surface the signal in the return value and let the consumer (e.g. `memory-core`'s `memory_recall`) decide whether to log/surface it. This matches how `signalScores` is already exposed via `explain`, just promoted from per-item to per-call and made unconditional (not gated behind `explain:true`) since "did the channel find anything" is operationally important even when full explainability isn't requested.
+
+**Acceptance criteria.**
+- [ ] A test constructs a graph-store with nodes written under namespace A, searches with a filter for namespace B (guaranteed zero text hits) plus a valid vector query (guaranteed vec hits), and asserts the returned result includes a `degraded`/`channelStats` field indicating `textHitCount: 0` — fails today (no such field exists).
+- [ ] The same test asserts the actual returned `SearchResult[]` ranking is unchanged from today's behavior (this is additive metadata, not a ranking-behavior fix) — so the fix doesn't regress existing consumers' rankings, only adds the missing observability.
+- [ ] A consumer-facing doc note in `hybrid-search`'s `sox.concerns` describes the new degrade signal.
+
+**Effort / risk / blast radius.** M effort (new field threaded through `fuse()` + `SqliteSearchBackend`, plus tests). Low risk — additive field, no behavior change to scoring/ranking. Directly benefits any consumer building fusion search (adhd's own hybrid-search integration explicitly hit this exact silent-degrade case per the original audit).
+
+---
+
+### BL-295 — Add an extensible/generic `kind` escape hatch to graph-store's `node.kind` CHECK constraint — **Open (MEDIUM)** (2026-07-11)
+
+**Package:** `@adhd/sox-graph-store` (`libs/data/graph/graph-store`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-FEAT-001, missing feature)
+
+**Problem.** `graph-store`'s `node` table schema hard-codes `kind IN ('episode','entity','claim','community','session')` — a fixed enum tied to the memory domain. Any consumer wanting to reuse graph-store purely as an FTS5+vector-fusion host for a **non-memory** entity type (adhd's concrete example: a prompt-component registry, where a "component" is none of the five allowed kinds) is structurally blocked by the CHECK constraint, not just by convention. This forced adhd to implement its own parallel FTS5 host rather than reuse `SqliteSearchBackend`, duplicating infrastructure this package was otherwise well-suited to provide.
+
+**Evidence.** `libs/data/graph/graph-store/src/index.ts:19` (re-verified 2026-07-11, unchanged): `kind         TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session')),`. No `'generic'`/`'component'`/wildcard escape exists anywhere in the DDL. `writeNode(content, meta)` (`index.ts:566` onward) passes `meta.kind` straight into the `INSERT`, so any caller supplying an out-of-enum kind gets an immediate `SqliteError: CHECK constraint failed` — a hard block, not a soft warning.
+
+**Root cause.** `graph-store`'s schema was designed exclusively for the memory subsystem's domain model (episodes/entities/claims/communities/sessions per this repo's memory-core design) and the CHECK constraint was never revisited when the package's `SqliteSearchBackend` (hybrid-search) started being positioned as generically reusable FTS5+vector fusion infrastructure — the schema and the reuse ambition drifted apart.
+
+**Proposed design.**
+- Option A (recommended, matches the original finding's suggestion): Add a `'generic'` kind to the CHECK enum — `kind IN ('episode','entity','claim','community','session','generic')` — and document that non-memory consumers should write nodes with `kind:'generic'` plus their own domain-specific data carried in the existing free-form `meta`/fields columns (check current schema for a JSON metadata column consumers can use to carry a sub-kind like `'component'` without needing schema changes). This is the minimal, additive, backward-compatible change — existing memory-domain rows and queries are untouched.
+- Option B (more flexible, larger change): Remove the CHECK constraint entirely and replace `kind` validation with an application-level (TypeScript type + optional runtime validator function passed to `createGraphBackend`) check, letting each consumer define its own allowed-kinds set. More flexible for future non-memory reuse but loses the DB-level guarantee that's valuable for the memory subsystem's own data integrity (a typo'd `kind` would no longer be caught by SQLite itself).
+- Option C (namespaced escape): Instead of one `'generic'` kind, support a `kind` format like `'domain:subkind'` (e.g. `'component:prompt'`) validated by a relaxed CHECK (`kind GLOB '*:*' OR kind IN (...)`) or a regex-shaped constraint, giving non-memory consumers their own kind namespace without colliding with the memory domain's reserved five.
+- Recommendation: Option A first (smallest safe step, unblocks adhd's stated use case immediately), with Option C as a fast-follow if multiple non-memory consumers emerge and start colliding on what `'generic'` means to each of them (a single `'generic'` bucket won't scale past one non-memory consumer using graph-store this way).
+
+**Acceptance criteria.**
+- [ ] `createGraphBackend(db).writeNode('some prompt component text', { kind: 'generic', ... })` succeeds (currently fails with `SqliteError: CHECK constraint failed: kind`).
+- [ ] Existing memory-domain kinds (`episode`, `entity`, `claim`, `community`, `session`) continue to be accepted and a deliberately wrong kind (e.g. `'nonsense'`) continues to be rejected by the CHECK constraint — proves the fix is additive, not a removal of the domain-integrity guarantee.
+- [ ] `SqliteSearchBackend` (hybrid-search) is proven end-to-end against a `'generic'`-kind node: write it, search it via FTS5 text query, confirm it's returned — this is the actual consumer-facing outcome adhd needs, not just a schema-level CHECK pass.
+- [ ] `sox.concerns`/`sox.invariants` in `graph-store/package.json` documents the `'generic'` kind and its intended non-memory reuse contract.
+
+**Effort / risk / blast radius.** S-M effort (DDL change + migration note for existing DBs — note: `_schema_version`-gated migrations, per `index.ts:543-551`, need a new version bump to alter the CHECK constraint on already-created tables, since SQLite CHECK constraints on existing tables require a table rebuild, not just a new `CREATE TABLE IF NOT EXISTS`). Risk: low for new databases; migration path for **existing** `node` tables needs care (SQLite doesn't support `ALTER TABLE ... ADD CONSTRAINT` directly — likely needs a `CREATE TABLE new_node (...) ; INSERT INTO new_node SELECT * FROM node; DROP TABLE node; ALTER TABLE new_node RENAME TO node;` migration step gated by the existing `_schema_version` mechanism). Directly unblocks adhd's prompt-component-registry use case and any future non-memory consumer wanting to reuse `SqliteSearchBackend`.
