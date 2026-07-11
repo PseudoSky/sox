@@ -32,8 +32,8 @@
       },
       "cache": true,
       "inputs": [
-        "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/tsconfig.app.json"
+        "production",
+        "^production"
       ],
       "dependsOn": [
         "^build"
@@ -56,8 +56,8 @@
       },
       "cache": true,
       "inputs": [
-        "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/tsconfig.app.json",
+        "production",
+        "^production",
         "{projectRoot}/extension.json",
         "{projectRoot}/scripts/rewrite-paths.cjs",
         "{projectRoot}/scripts/stamp-build.cjs",

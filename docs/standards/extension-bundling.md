@@ -277,8 +277,96 @@ behaviors**, even if it replaces `tools/bundle-extension.cjs`'s hand-rolled driv
 
 ## Post-migration reality (BL-266)
 
-*(Updated as Phase 2 of BL-266 lands. As of this writing, describes what changed vs. §1–§6 above; if
-this section is empty or says "no migration has landed yet," everything above is still exactly what
-ships.)*
+BL-266's Phase 2 evaluation (2026-07-11) migrated what could be provably migrated without weakening
+an invariant, and stopped — deliberately — at a coherent boundary for the rest. §1–§6 above still
+describe exactly what ships for all five bundled extensions (memory-server, memory-cli, memory-flush,
+tokenguard, sox). Nothing in the bundler driver itself (`tools/bundle-extension.cjs`) changed.
 
-See the end of this document for the current state once BL-266 Phase 2 has made its determination.
+### What migrated
+
+1. **Exports-map verification** (the `pnpm verify:exports` / `tools/verify-package-exports.mjs` gate):
+   replaced by `tools/verify-exports-publint-attw.mjs` running `publint` (universal — proven a strict
+   superset of the old file-existence check across `main`/`exports`/`bin`, by red→green pin against
+   real broken fixtures) and `@arethetypeswrong/cli` (scoped to `libs/`+`packages/` — a check the old
+   script never performed at all: does type resolution agree with runtime module format across
+   node10/node16/bundler algorithms). See the script's header comment for the full evidence trail.
+   `tools/verify-package-exports.mjs` is deleted.
+2. **Cache-invalidation inputs**: the hand-maintained absolute-path input lists on all five bundle
+   `build`/`compile` targets (previously naming only `embedding-provider`'s three sidecar files —
+   because that ONE cross-package staleness incident, BL-259, had been fixed at the file level but
+   never at the *cache* level) are replaced by the workspace-standard `["production", "^production"]`
+   named-input pattern nx's own `targetDefaults.build` already uses everywhere else. This is a
+   **strictly stronger** fix, proven by reproducing a real, previously-undiscovered bug: with the old
+   inputs list, editing `memory-core`'s source (a package `memory-server`/`memory-cli`/`memory-flush`
+   inline via the bundler's `@adhd` alias map, transitively two hops away in the project graph) and
+   rebuilding `memory-core` did **not** invalidate `memory-server`'s build cache — `nx build
+   memory-server` reported an **11/11 cache hit** against a workspace whose actual dependency source
+   had changed. `["production", "^production"]` correctly turns this into a cache miss (verified with
+   `--verbose`: `NX Cloud: Cache miss ... > nx run memory-server:build` after the identical edit). The
+   same latent gap existed on tokenguard's and sox's `compile`/`build` targets (neither declared
+   `^production` at all) and is fixed identically. This closes a real gap in the workaround
+   `libs/data/CLAUDE.md` already documents under BL-4 ("always rebuild the chain") — the chain now
+   rebuilds itself correctly without a human remembering to force it.
+
+### What did NOT migrate, and why (the bundler driver itself)
+
+**`tools/bundle-extension.cjs` was NOT replaced with `@nx/esbuild:esbuild`.** This was evaluated with
+a real spike (not a design-doc guess) against `tokenguard` — the simplest of the five bundles — using
+an `esbuildConfig` file to replicate the `import.meta.url` banner shim and the `@adhd/sox-*` inlining.
+Two of the five required invariants hold; two do not, and neither gap has a clean fix within the
+executor's design:
+
+- **Invariant (a) self-contained bundle + lazy externals: HOLDS.** The spike correctly inlined
+  `@adhd/sox-tokenguard-core` (0 residual `@adhd/sox-` references in the output — confirmed by
+  `require()`-loading the spike bundle directly) and the `import.meta.url` shim worked verbatim via
+  `esbuildConfig`'s plain `require()`'d JS module (banner/define are ordinary esbuild `BuildOptions`
+  fields — no JSON-only limitation blocks them).
+- **Invariant (d) typecheck as a first-class gate: HOLDS, and is a genuine improvement.**
+  `@nx/esbuild:esbuild`'s `skipTypeCheck` defaults to `false` — it runs a real `tsc` pass by default,
+  unlike bare esbuild. (`declaration` also defaults from the project's own `tsconfig.json`, which
+  would emit real `.d.ts` files nested under the full source path unless explicitly set `false` —
+  extensions don't need declarations since they're never `import`ed as typed libraries, matching the
+  attw-scoping rationale above; the spike set `declaration: false` explicitly.)
+- **Invariant (b) sidecar auto-discovery: DOES NOT HOLD, and cannot be expressed as configuration.**
+  Read directly from `@nx/esbuild`'s source
+  (`lib/normalize.js` + `lib/build-esbuild-options.js`): the full `entryPoints` array — `main` plus
+  every `additionalEntryPoints` path — is assembled from the **project.json-declared static list**
+  *before* the executor ever calls into esbuild, and `esbuildConfig`'s `require()`'d module only
+  patches the resulting `BuildOptions` object for that already-fixed entry list. There is no discovery
+  hook that runs after a first pass's metafile is known and can name *additional* entry points in
+  response — the mechanism `discoverSidecars()` in `bundle-extension.cjs` depends on (build main,
+  inspect its metafile, THEN decide which sidecars every transitively-inlined package needs) has no
+  `@nx/esbuild` equivalent. Migrating would mean returning every sidecar-bearing consumer's
+  `additionalEntryPoints` to a hand-maintained per-project list — precisely Fix 1 from §3, precisely
+  the BL-259 failure mode (a new sidecar silently missing from one consumer's list) the auto-discovery
+  mechanism was built to eliminate. (`verifySidecarReferences` itself — the fail-closed safety net —
+  IS bundler-agnostic and would keep working verbatim against any tool's output; only the
+  *discovery* half is blocked.)
+- **Invariant (c) atomic never-destroy: DOES NOT HOLD BY DEFAULT, and fixing it re-creates the exact
+  class of bespoke machinery BL-266 exists to eliminate.** Proven empirically, not inferred: with
+  `deleteOutputPath: true` (the executor's **default**), injecting a syntax error into the spike's
+  source and running the target **deleted the working `index.js`/`index.js.map`**, leaving only the
+  separately-copied `package.json` asset — the identical BL-235 failure mode
+  (`libs/data/CLAUDE.md` §8 / `AGENTS.md`'s "A DIAGNOSTIC `nx build` IS A DESTRUCTIVE OPERATION")
+  reproduced against a different tool. Setting `deleteOutputPath: false` avoids destruction but has no
+  staged-commit-on-success semantic in exchange — a file whose source is later deleted would linger in
+  `dist/` forever (the exact §5 stale-dist hazard `module-resolution.md` already documents), because
+  nothing in the executor ever cleans a successful output. Preserving genuine atomicity would require
+  writing a **new custom nx executor** wrapping `@nx/esbuild:esbuild` in stage-then-rename logic — the
+  same shape of bespoke machinery as the *already-existing* `@adhd/sox-nx:atomic-tsc` (itself built for
+  the identical reason, against a different underlying tool). That is not eliminating bespoke build
+  substrate; it is relocating it to wrap a different library, at real engineering cost, for a
+  safety-critical invariant with two prior live-production incidents behind it.
+
+**Conclusion:** the bundler-driver sub-migration stops here, at this boundary, deliberately. The
+CURRENT `tools/bundle-extension.cjs` remains the correct, load-bearing implementation for all five
+bundles. A future revisit should watch for `@nx/esbuild` gaining either (1) a documented post-metafile
+dynamic-entry-point hook, or (2) a native atomic/staged output mode — either would remove one of the
+two blockers above; both are needed before a full swap is not a regression.
+
+`tools/test-bl266-bundle-invariants.mjs` is the reusable red→green harness that produced the evidence
+above (self-contained/lazy-external check, sidecar-completeness scan, break-source-and-rebuild atomicity
+probe, inject-a-type-error typecheck probe, no-op-rebuild checksum-stability diff). Run it against any
+candidate replacement bundler's output before trusting a future attempt — e.g.
+`node tools/test-bl266-bundle-invariants.mjs --outdir <dir> --externals <a,b> --sidecars <x.js,y.js>
+--build-cmd "npx nx run <proj>:<target>" --source <file-to-mutate>`.

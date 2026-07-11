@@ -23,13 +23,9 @@
       },
       "cache": true,
       "inputs": [
-        "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/tsconfig.json",
-        "{workspaceRoot}/tools/bundle-extension.cjs",
-        "{workspaceRoot}/libs/data/embed/embedding-provider/src/embedWorker.ts",
-        "{workspaceRoot}/libs/data/embed/embedding-provider/src/fastembedProcessHost.ts",
-        "{workspaceRoot}/libs/data/embed/embedding-provider/src/sharedOnnxWorker.ts",
-        "{workspaceRoot}/libs/data/embed/embedding-provider/package.json"
+        "production",
+        "^production",
+        "{workspaceRoot}/tools/bundle-extension.cjs"
       ],
       "dependsOn": [
         "^build"
