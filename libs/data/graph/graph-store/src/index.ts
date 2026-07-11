@@ -527,6 +527,7 @@ export class SqliteGraphBackend implements GraphBackend {
 
   constructor(db: Database.Database) {
     this.db = db;
+    this.applySchema();
   }
 
   // ── Schema ────────────────────────────────────────────────────────────────
