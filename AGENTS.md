@@ -128,6 +128,12 @@ the `os-unit` generator, or any `cmdStart/Stop/Serve/Enable/Disable` in `apps/so
 4. Commit source changes AND regenerated `registry/index.json` together
 5. `node bin/soxe upgrade --all` — upgrade every consumer spanning all scopes
 
+For what a bundled `dist` artifact actually IS and guarantees (self-contained CJS, sidecar
+auto-discovery, atomic staging, the tests-bypass-artifact trap), see
+[`docs/standards/extension-bundling.md`](./docs/standards/extension-bundling.md) — read it before
+touching `tools/bundle-extension.cjs`, any `sox.sidecars`/`sox.sidecarExternals` declaration, or any
+project's `--worker`/`--external` build flags.
+
 ---
 
 ## ⛔ AGENT CONSTRAINT — NEVER MARK A BACKLOG ITEM RESOLVED WITHOUT A RED→GREEN TEST
