@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-10 (regenerated mechanically; see BL-224)
 
-**Total open: 21.** This block is DERIVED from the `**...**` status marker on each
+**Total open: 25.** This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
 five already-RESOLVED items as top priorities, including `BL-62` as the "#1 only PROVEN live bug"
@@ -19,8 +19,9 @@ node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.
 
 | Priority | Open items |
 |---|---|
-| **HIGH** | `BL-62`, `BL-96`, `BL-97`, `BL-225`, `BL-254` |
-| **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-257`, `BL-259`, `BL-260` |
+| **CRITICAL** | `BL-254` |
+| **HIGH** | `BL-62`, `BL-96`, `BL-97`, `BL-225`, `BL-273` |
+| **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-257`, `BL-259`, `BL-260`, `BL-265`, `BL-266`, `BL-274` |
 | **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264` |
 | **FEATURE** | `BL-163`, `BL-215` |
 
@@ -4905,6 +4906,35 @@ Red→green: `os-unit.spec.ts` `BL-263` test fails with the suffix disabled (see
 
 `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:2005` — when `warmupEmbed()` rejects, the server writes `[memory-server] FATAL: SOX_EMBED_BACKEND=real but embedding warmup failed: ...` and then **keeps serving** non-embed tools. That behaviour is intentional and documented in the adjacent comment ("the server keeps serving... the failure is unmissable") — but the `FATAL` word contradicts it and misled the BL-262 forensics on first read (a FATAL that isn't fatal reads as a crash that didn't happen). Contrast: the better-sqlite3 probe 15 lines below says FATAL and actually `process.exit(1)`s. **Fix (pick one, don't split the difference):** reword to `DEGRADED:`/`ERROR (serving without embeddings):`, or honour `SOX_EMBED_BACKEND=real` fail-loud semantics by exiting nonzero and letting the shim's ensure path surface it. Wording-only change is fine; silent semantics change is not.
 
+### BL-265 — the extension build/bundling contract is UNDOCUMENTED; what docs exist are stale and wrong — **Open (MEDIUM, docs)** (2026-07-10)
+
+BL-262 was a documentation failure before it was a build failure: `3916afd`'s author changed embedding-provider's runtime process topology (new forked sidecar) and **no document anywhere said "a runtime-spawned sibling file must be emitted by every consuming bundle."** The knowledge lived only in `tools/bundle-extension.cjs` comments and the `--worker` flags of three `project.json` files.
+
+What exists is stale or partial:
+- `libs/data/CLAUDE.md` §"BL-11 — Embedding worker boundary" still claims `embedWorker.ts` is "the only file that lazy-requires fastembed at runtime" (false since `3916afd` — `fastembedProcessHost.ts` is the fastembed carrier now) and that a missing sibling means "embed falls back to hash silently" (the hash backend was DELETED, BL-250 — the real symptom is loud init failure + a stranded embed backlog, exactly the BL-262 outage).
+- `docs/standards/module-resolution.md` §4b covers the tsc dist-layout contract but says nothing about the esbuild bundle surface (sidecars, externals, lazy natives, atomic staging, the `import.meta` shim).
+- The BL-262 mechanism itself (`sox.sidecars` / `sox.sidecarExternals` declaration, metafile auto-discovery, `verifySidecarReferences` fail-on-missing) exists only in bundler source comments.
+
+**Fix:** author `docs/standards/extension-bundling.md` as the single contract doc — what a bundle is (self-contained CJS + declared externals), how sidecars are declared/discovered/verified, externals policy (native addons, `sidecarExternals`), atomic staging + BL-235 semantics, registry checksum interplay, and the tests-bypass-artifact trap (BL-248/BL-262: vitest runs source; only the shipped bundle proves shipping). Correct the stale BL-11 section in `libs/data/CLAUDE.md`, cross-link from `AGENTS.md`'s build-sequence constraint. The test of done: a future `3916afd`-class author following the docs cannot ship the gap.
+
+### BL-266 — the build substrate is hand-rolled where standardized tools exist; owner directive: it should not be implemented this way — **Open (MEDIUM, architecture, owner-directive)** (2026-07-10)
+
+Owner call (2026-07-10, during BL-262 forensics): the bespoke build layer is the disease, not any one bug in it. Inventory of hand-rolled machinery shadowing standard tooling:
+
+- `tools/bundle-extension.cjs` (~450 lines): hand-rolled esbuild driver with a **hardcoded 11-entry `SOX_ALIASES` map** (silently incomplete — data packages resolve through pnpm symlinks by a different mechanism than platform libs), a bespoke lazy-native `createRequire` stub plugin, an `import.meta.url` banner shim (BL-155), hand-rolled atomic staging/rollback (BL-235), a tsconfig-walking fallback (BL-214), and now sidecar auto-discovery + output verification (BL-262). Standard equivalents: the `@nx/esbuild:esbuild` executor (`additionalEntryPoints`, `external`, `assets`, `thirdParty`) or `tsup`/`tsdown`.
+- `@adhd/sox-nx:atomic-tsc` custom executor — exists only because bare `rm -rf dist && tsc` destroyed live artifacts twice; a standard executor under nx's outputs/caching model makes the destructive-diagnostic-build a non-category.
+- `tools/verify-package-exports.mjs` — reimplements `publint` + `@arethetypeswrong/cli`, less thoroughly (no types-resolution check; BL-208/BL-222 both lived in that blind spot).
+- Hand-maintained per-project `inputs` lists naming OTHER packages' source files (the BL-262 fix itself had to add four such lines ×3 projects) — standard `dependentTasksOutputFiles`/`^production` inputs eliminate the class.
+
+The incident ledger of this layer IS the argument: BL-87/89 (worker never emitted), BL-155 (`import.meta` undefined crash-loop), BL-214 (silent wrong tsconfig), BL-231 (CJS/TLA boundary), BL-235 (dist self-destruction, twice, once taking the live memory server down), BL-248 (esbuild strips types unchecked → 15 shipped TS errors), the `0ba5d78` dist-nesting break, BL-262 (missing sidecar, ~5h embeddings outage). Every one was patched by ADDING bespoke machinery; under a standard toolchain's defaults most would not exist to be found.
+
+**Fix (plan-scale — route through plan-builder, not an ad-hoc rewrite):** research-then-migrate to standardized tools while preserving the REAL invariants the bespoke layer encodes, each pinned by a red→green contract test before the swap: (1) self-contained bundle + externalized natives with lazy-load semantics, (2) sidecar emission + fail-on-missing output verification (keep `verifySidecarReferences` as a post-build assertion regardless of bundler), (3) atomic never-destroy-working-artifact output (BL-235), (4) typecheck as a first-class gate (BL-248), (5) registry checksum stability across no-op rebuilds. Candidate stack: `@nx/esbuild` + `publint`/`attw` + nx dependency-derived inputs. Sequencing: BL-265 documents the CURRENT contract first so the migration has a spec to preserve.
+
+**Prior research already in memory (recalled 2026-07-11 — do not re-research, extend):** a 2026-07-10 research sweep in `~/.memory/memory.db` covers this ground with verified sources:
+- `01KX6WF02N3SF175DYA6D16S2N` (Native/WASM asset resolution): externalize natives + `require.resolve` IS the ecosystem convention, and it explicitly endorses two bespoke pieces as CORRECT — the `import.meta.url` banner shim and §4b's verify-through-the-bundle rule. Migration must not lose those; the deviation to fix is the hand-rolled *driver*, not those conventions.
+- `01KX6VSB4SS45B09J8N4D805F4` (CJS/ESM dual packaging 2025-26): `require(esm)` is stable ≥20.19/≥22.12 → ESM-only is the consensus for new packages (engines `>=22.12`); the `/core` subpath convention (already adopted for BL-231) is the recognized CJS-safe-subset pattern. A migration could retire the CJS-bundle constraint entirely rather than port it.
+- `01KX6WDKN7VW9RQRM2SH9WB5RA` (+ refs sibling): `publint` + `@arethetypeswrong/cli` against built `dist/` in CI is the standard exports-map verification (supersedes `verify-package-exports.mjs`); `@nx/rollup format:['esm','cjs']` / `tsup` are the standard dual-build tools; memory-core's per-package `module: CommonJS` override is an accepted pattern, not a hack.
+
 ### BL-232 — `concurrency-harness.spec.ts:121` asserts a hardcoded wall-clock p99 latency budget — **RESOLVED (2026-07-10)** — the wall-clock p99 latency check is now informational-only (logs a `[wp6/BL-232]` warning), never gating; the gating invariant is the lock-error count the test is actually named for. Red→green documented at `concurrency-harness.spec.ts:259`. `nx test memory-core` 408 pass
 
 `libs/memory-core/src/concurrency-harness.spec.ts:121` —
@@ -5208,3 +5238,31 @@ Key conclusions:
   `init:async` or `init:lazy`. Auto-detected from dependency graph and enforced by CI.
 - **Action:** Add `verify:tags` CI gate. Tag all 5 storage packages. Enable impact analysis
   ("which packages are affected by an onnxruntime version bump?").
+
+---
+
+## Open — surfaced during live investigation (2026-07-11)
+
+### BL-273 — vec-dependent memory tools (recall/search/topics) timeout when the embedding pipeline is dead, rather than fast-failing or degrading gracefully — **Open (HIGH)** (2026-07-10)
+
+**Symptom:** `memory_ping` returns `ok:true`, but `memory_recall`, `memory_search_entities`,
+and `memory_topics` all hang until client timeout.
+
+**Root cause evidence** (`proxy-backend-memory-server/memory-server-backend-2026-07-10.log`):
+- `Cannot find module '.../dist/fastembedProcessHost.js'` — sidecar missing
+- `FATAL: embedding warmup failed: shared fastembed process exited with code 1`
+- Every Phase-B embed + periodic heal cycle: `embed_healed=0, embed_heal_failed=33`
+
+**Fix:** degrade gracefully (remove vec from fusion, BM25-only + degrade signal) or fast-fail
+instead of hanging. Surface `embed.state: 'degraded'` in `memory_ping`.
+
+### BL-274 — no concurrency stress test for parallel writes + reads against memory server — **Open (MEDIUM)** (2026-07-11)
+
+Ad-hoc stress test proved parallel reads fine (8 concurrent, 1.7s, 0 timeouts). Untested:
+concurrent writes, mixed reads+writes, writes+enrich through the live proxy backend.
+Existing BL-134 harness runs in-process against `memory-core`, not through UDS proxy.
+
+**Fix:** create `tools/stress/proxy-concurrency.mjs` with interleaved `memory_write` +
+`memory_recall` over UDS. Assert no timeouts, no `SQLITE_BUSY`, read-your-writes.
+
+### BL-272 — no hard-delete for memory episodes — **RESOLVED (2026-07-11)** — `memory_curate({op:"drop-episodes", uids:[...]})` implemented. Hard-deletes nodes + cascades vec_node/edge in a single transaction. `nx test memory-core` 413/413
