@@ -4,9 +4,9 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
-## Current status — 2026-07-10 (regenerated mechanically; see BL-224)
+## Current status — 2026-07-11 (regenerated mechanically; see BL-224)
 
-**Total open: 45.** This block is DERIVED from the `**...**` status marker on each
+**Total open: 44.** This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
 five already-RESOLVED items as top priorities, including `BL-62` as the "#1 only PROVEN live bug"
@@ -19,9 +19,9 @@ node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.
 
 | Priority | Open items |
 |---|---|
-| **HIGH** | `BL-62`, `BL-96`, `BL-97`, `BL-225`, `BL-254`, `BL-273`, `BL-275`, `BL-284`, `BL-288`, `BL-293` |
-| **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-257`, `BL-259`, `BL-265`, `BL-266`, `BL-274`, `BL-282`, `BL-285`, `BL-291`, `BL-294`, `BL-295`, `BL-296`, `BL-297` |
-| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264`, `BL-283`, `BL-287`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299` |
+| **HIGH** | `BL-62`, `BL-96`, `BL-97`, `BL-225`, `BL-254`, `BL-273`, `BL-275`, `BL-284`, `BL-288`, `BL-293`, `BL-301`, `BL-302` |
+| **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-259`, `BL-274`, `BL-282`, `BL-285`, `BL-291`, `BL-294`, `BL-295`, `BL-296`, `BL-297`, `BL-300`, `BL-304` |
+| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264`, `BL-283`, `BL-287`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299`, `BL-303` |
 | **FEATURE** | `BL-163`, `BL-215` |
 
 ### Where to start
@@ -4905,7 +4905,7 @@ Red→green: `os-unit.spec.ts` `BL-263` test fails with the suffix disabled (see
 
 `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:2005` — when `warmupEmbed()` rejects, the server writes `[memory-server] FATAL: SOX_EMBED_BACKEND=real but embedding warmup failed: ...` and then **keeps serving** non-embed tools. That behaviour is intentional and documented in the adjacent comment ("the server keeps serving... the failure is unmissable") — but the `FATAL` word contradicts it and misled the BL-262 forensics on first read (a FATAL that isn't fatal reads as a crash that didn't happen). Contrast: the better-sqlite3 probe 15 lines below says FATAL and actually `process.exit(1)`s. **Fix (pick one, don't split the difference):** reword to `DEGRADED:`/`ERROR (serving without embeddings):`, or honour `SOX_EMBED_BACKEND=real` fail-loud semantics by exiting nonzero and letting the shim's ensure path surface it. Wording-only change is fine; silent semantics change is not.
 
-### BL-265 — the extension build/bundling contract is UNDOCUMENTED; what docs exist are stale and wrong — **Open (MEDIUM, docs)** (2026-07-10)
+### BL-265 — the extension build/bundling contract is UNDOCUMENTED; what docs exist are stale and wrong — **RESOLVED (2026-07-11, `5161435` via merge `c87d0f3`)** — `docs/standards/extension-bundling.md` authored (§1 bundle anatomy + `type:commonjs` sidecar + import.meta shim, §2 externals/lazy natives, §3 sidecar contract incl. `sox.sidecars` auto-discovery + `verifySidecarReferences`, §4 atomic staging/BL-235, §5 registry checksums, §6 tests-bypass-artifact trap, §7 prior-research grounding, plus the BL-266 post-migration reality section). Stale `libs/data/CLAUDE.md` BL-11 section rewritten to the real post-`3916afd` topology (fastembed in a forked child via `fastembedProcessHost.ts`; the "silent hash fallback" claim purged — that backend was deleted in BL-250; failure mode documented as LOUD `ResolutionError` + visible `embed_backlog`). Cross-linked from `AGENTS.md`. Done-test met: the doc names exactly the gap `3916afd`'s author fell into
 
 BL-262 was a documentation failure before it was a build failure: `3916afd`'s author changed embedding-provider's runtime process topology (new forked sidecar) and **no document anywhere said "a runtime-spawned sibling file must be emitted by every consuming bundle."** The knowledge lived only in `tools/bundle-extension.cjs` comments and the `--worker` flags of three `project.json` files.
 
@@ -4916,7 +4916,7 @@ What exists is stale or partial:
 
 **Fix:** author `docs/standards/extension-bundling.md` as the single contract doc — what a bundle is (self-contained CJS + declared externals), how sidecars are declared/discovered/verified, externals policy (native addons, `sidecarExternals`), atomic staging + BL-235 semantics, registry checksum interplay, and the tests-bypass-artifact trap (BL-248/BL-262: vitest runs source; only the shipped bundle proves shipping). Correct the stale BL-11 section in `libs/data/CLAUDE.md`, cross-link from `AGENTS.md`'s build-sequence constraint. The test of done: a future `3916afd`-class author following the docs cannot ship the gap.
 
-### BL-266 — the build substrate is hand-rolled where standardized tools exist; owner directive: it should not be implemented this way — **Open (MEDIUM, architecture, owner-directive)** (2026-07-10)
+### BL-266 — the build substrate is hand-rolled where standardized tools exist; owner directive: it should not be implemented this way — **RESOLVED (2026-07-11, evidence-based partial adoption — `a1dd9d0`+`eeca90f` via merge `c87d0f3`; owner may reopen for a full driver swap)** — standardized where the standard tool is equal-or-better, retained the driver where the standard tool provably regresses a safety invariant. (1) `tools/verify-package-exports.mjs` DELETED, replaced by `publint` (red→green proven a strict superset on broken fixtures) + `@arethetypeswrong/cli` (a types-resolution check the old script never had — the BL-208/222 blind spot), wired into the smoke preflight. (2) Hand-maintained cross-package cache `inputs` on all five bundle targets replaced by standard `["production","^production"]` — this exposed and fixed a REAL latent bug: editing `memory-core` did not invalidate `memory-server`'s build cache (verified 11/11 cache hit against changed dep source → now a cache miss), the cache-level root of the BL-4 "always rebuild the chain" workaround. (3) `@nx/esbuild:esbuild` migration evaluated with a live spike on tokenguard, NOT adopted: no post-metafile sidecar-discovery hook exists (a swap re-creates the exact BL-262 per-consumer-list failure mode), and its default `deleteOutputPath:true` empirically REPRODUCED the BL-235 artifact destruction; fixing that needs a new custom executor — relocating bespoke machinery, not removing it. Full rationale + revisit triggers in `docs/standards/extension-bundling.md` §"Post-migration reality"; reusable invariant harness at `tools/test-bl266-bundle-invariants.mjs`. All five invariants verified on main post-merge (whole-repo build/lint/test/typecheck 32 projects green, smoke 13/0 isolation OK, registry checksum-stable across no-op rebuilds, live memory-server healthy on the new artifact)
 
 Owner call (2026-07-10, during BL-262 forensics): the bespoke build layer is the disease, not any one bug in it. Inventory of hand-rolled machinery shadowing standard tooling:
 
