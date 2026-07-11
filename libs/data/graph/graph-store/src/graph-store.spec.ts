@@ -14,7 +14,9 @@ import {
   FTS_TRIGGERS,
   PRAGMAS,
   PUBLIC_EDGE_RELS,
+  rebuildTable,
 } from './index.js';
+import { MIGRATIONS, runMigrations } from './migrations.js';
 import type { GraphBackend, NodeMeta, NodeRecord, EdgeRel } from './index.js';
 
 function freshBackend(): { db: Database.Database; backend: GraphBackend } {
@@ -1321,6 +1323,302 @@ describe('namespace isolation', () => {
     backend.writeNode('b', { namespace: 'ns-b' });
 
     expect(backend.queryNodes()).toHaveLength(2);
+    db.close();
+  });
+});
+
+// ─── Migration runner ──────────────────────────────────────────────────────────
+
+/**
+ * Minimal v1 schema DDL — represents the schema before any migration.
+ * No level/resume_state on node, no t_expired on edge, old CHECK
+ * constraints (no 'generic' kind, no 'DEPENDS_ON' rel).
+ */
+const V1_NODE_DDL = `CREATE TABLE IF NOT EXISTS node (
+  rowid        INTEGER PRIMARY KEY,
+  uid          TEXT UNIQUE NOT NULL,
+  kind         TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session')),
+  content      TEXT,
+  name         TEXT,
+  summary      TEXT,
+  topic        TEXT,
+  tags         TEXT,
+  importance   REAL DEFAULT 1.0,
+  confidence   REAL,
+  content_hash TEXT,
+  namespace    TEXT DEFAULT 'global',
+  meta         TEXT,
+  agent_id     TEXT,
+  session_id   TEXT,
+  source       TEXT CHECK (source IN ('message','tool_output','observation','document','reflection','import')),
+  project_path TEXT,
+  t_occurred   TEXT,
+  t_expires    TEXT,
+  t_created    TEXT NOT NULL,
+  t_valid      TEXT,
+  t_invalid    TEXT,
+  is_superseded INTEGER DEFAULT 0,
+  access_count INTEGER DEFAULT 0,
+  last_access  TEXT,
+  t_updated    TEXT
+)`;
+
+const V1_EDGE_DDL = `CREATE TABLE IF NOT EXISTS edge (
+  rowid     INTEGER PRIMARY KEY,
+  src       INTEGER NOT NULL REFERENCES node(rowid) ON DELETE CASCADE,
+  dst       INTEGER NOT NULL REFERENCES node(rowid) ON DELETE CASCADE,
+  rel       TEXT NOT NULL CHECK (rel IN ('MENTIONS','SUPPORTS','RELATES_TO','SUPERSEDES','DERIVED_FROM','MEMBER_OF','PART_OF','SAME_AS','ASSIGNED_TO')),
+  weight    REAL DEFAULT 1.0,
+  confidence REAL,
+  origin    TEXT CHECK (origin IN ('extracted','inferred','user_asserted')),
+  meta      TEXT,
+  t_created TEXT NOT NULL,
+  t_valid   TEXT,
+  t_invalid TEXT
+)`;
+
+const V1_FTS_DDL = `CREATE VIRTUAL TABLE IF NOT EXISTS fts_node USING fts5(content, name, summary,
+  content='node', content_rowid='rowid', tokenize='unicode61')`;
+
+const V1_FTS_TRIGGERS = `
+CREATE TRIGGER IF NOT EXISTS fts_node_ai AFTER INSERT ON node BEGIN
+  INSERT INTO fts_node(rowid, content, name, summary)
+    VALUES (new.rowid, new.content, new.name, new.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS fts_node_ad AFTER DELETE ON node BEGIN
+  INSERT INTO fts_node(fts_node, rowid, content, name, summary)
+    VALUES ('delete', old.rowid, old.content, old.name, old.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS fts_node_au AFTER UPDATE ON node BEGIN
+  INSERT INTO fts_node(fts_node, rowid, content, name, summary)
+    VALUES ('delete', old.rowid, old.content, old.name, old.summary);
+  INSERT INTO fts_node(rowid, content, name, summary)
+    VALUES (new.rowid, new.content, new.name, new.summary);
+END;
+`;
+
+const V1_INDEXES = [
+  `CREATE INDEX IF NOT EXISTS ix_node_kind       ON node(kind)`,
+  `CREATE INDEX IF NOT EXISTS ix_node_hash       ON node(content_hash)`,
+  `CREATE INDEX IF NOT EXISTS ix_node_agent      ON node(agent_id)`,
+  `CREATE INDEX IF NOT EXISTS ix_node_session    ON node(session_id)`,
+  `CREATE INDEX IF NOT EXISTS ix_node_validity   ON node(t_invalid) WHERE t_invalid IS NULL`,
+  `CREATE INDEX IF NOT EXISTS ix_node_importance ON node(importance)`,
+  `CREATE INDEX IF NOT EXISTS ix_node_temporal   ON node(t_invalid, t_created DESC) WHERE t_invalid IS NULL`,
+  `CREATE INDEX IF NOT EXISTS ix_node_topic      ON node(topic) WHERE topic IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS ix_node_namespace  ON node(namespace)`,
+  `CREATE INDEX IF NOT EXISTS ix_node_expires    ON node(t_expires) WHERE t_expires IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS ix_edge_src        ON edge(src, rel)`,
+  `CREATE INDEX IF NOT EXISTS ix_edge_dst        ON edge(dst, rel)`,
+  `CREATE INDEX IF NOT EXISTS ix_edge_live       ON edge(t_invalid) WHERE t_invalid IS NULL`,
+];
+
+/**
+ * Create a database with the v1 schema (no migrations applied).
+ * Returns an open Database handle. The caller must close it.
+ */
+function createV1Store(): Database.Database {
+  const db = new Database(':memory:');
+  for (const pragma of PRAGMAS) {
+    db.exec(pragma);
+  }
+  db.exec(V1_NODE_DDL);
+  db.exec(V1_EDGE_DDL);
+  db.exec(V1_FTS_DDL);
+  db.exec(V1_FTS_TRIGGERS);
+  for (const idx of V1_INDEXES) {
+    db.exec(idx);
+  }
+  // Stamp version 1 in _schema_version
+  db.exec(`CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)`);
+  db.prepare(`INSERT INTO _schema_version (version) VALUES (?)`).run(1);
+  // Rebuild FTS index for any pre-existing data
+  db.exec(
+    `INSERT INTO fts_node(rowid, content, name, summary)
+     SELECT rowid, content, name, summary FROM node`,
+  );
+  return db;
+}
+
+describe('migrations', () => {
+  it('v1→latest migration: preserves data and adds all columns', () => {
+    const db = createV1Store();
+
+    // Seed a row before migration
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO node (uid, kind, content, name, t_created)
+       VALUES (?, 'episode', ?, ?, ?)`,
+    ).run('test-uid-1', 'original content', 'test-name', now);
+
+    // Also insert a v1 edge (without t_expired column — old store)
+    db.prepare(
+      `INSERT INTO edge (src, dst, rel, t_created)
+       VALUES (1, 1, 'MENTIONS', ?)`,
+    ).run(now);
+
+    // Apply schema with full migration
+    const backend = new SqliteGraphBackend(db);
+    backend.applySchema();
+
+    // Row survived
+    const row1 = db.prepare(`SELECT * FROM node WHERE rowid = 1`).get() as Record<string, unknown>;
+    expect(row1).not.toBeUndefined();
+    expect(row1!.uid).toBe('test-uid-1');
+    expect(row1!.content).toBe('original content');
+
+    // New columns exist on node
+    for (const col of ['level', 'resume_state']) {
+      const ci = db
+        .prepare(`SELECT * FROM pragma_table_info('node') WHERE name = ?`)
+        .get(col) as { name: string } | undefined;
+      expect(ci).toBeDefined();
+    }
+
+    // New column exists on edge
+    const tExpiredCol = db
+      .prepare(`SELECT * FROM pragma_table_info('edge') WHERE name = 't_expired'`)
+      .get() as { name: string } | undefined;
+    expect(tExpiredCol).toBeDefined();
+
+    // ix_edge_unique index exists
+    const uniqueIndex = db
+      .prepare(
+        `SELECT name FROM sqlite_master WHERE type='index' AND name='ix_edge_unique'`,
+      )
+      .get() as { name: string } | undefined;
+    expect(uniqueIndex).toBeDefined();
+
+    // Schema version reflects latest migration
+    const latestVersion = db
+      .prepare(`SELECT version FROM _schema_version ORDER BY version DESC LIMIT 1`)
+      .get() as { version: number };
+    const latestMigration = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 1);
+    expect(latestVersion.version).toBeGreaterThanOrEqual(latestMigration);
+
+    db.close();
+  });
+
+  it('v1→latest migration: kind=generic is accepted after v3', () => {
+    const db = createV1Store();
+    const backend = new SqliteGraphBackend(db);
+    backend.applySchema();
+
+    // Attempt to insert a node with kind='generic' (would fail under old CHECK)
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO node (uid, kind, content, t_created)
+       VALUES (?, ?, ?, ?)`,
+    ).run('generic-uid-1', 'generic', 'generic content', now);
+
+    const row = db.prepare(`SELECT uid, kind FROM node WHERE uid = 'generic-uid-1'`).get() as {
+      uid: string;
+      kind: string;
+    };
+    expect(row).toBeDefined();
+    expect(row.kind).toBe('generic');
+
+    db.close();
+  });
+
+  it('v1→latest migration: DEPENDS_ON edge is accepted after v4', () => {
+    const db = createV1Store();
+    const backend = new SqliteGraphBackend(db);
+    backend.applySchema();
+
+    // Insert two nodes first
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO node (uid, kind, content, t_created)
+       VALUES (?, 'episode', ?, ?)`,
+    ).run('dep-src-1', 'source node', now);
+    db.prepare(
+      `INSERT INTO node (uid, kind, content, t_created)
+       VALUES (?, 'episode', ?, ?)`,
+    ).run('dep-dst-1', 'target node', now);
+
+    // Insert edge with DEPENDS_ON (would fail under old CHECK)
+    db.prepare(
+      `INSERT INTO edge (src, dst, rel, t_created)
+       VALUES (1, 2, 'DEPENDS_ON', ?)`,
+    ).run(now);
+
+    const edgeRow = db.prepare(`SELECT * FROM edge WHERE rel = 'DEPENDS_ON'`).get() as {
+      src: number;
+      dst: number;
+      rel: string;
+    };
+    expect(edgeRow).toBeDefined();
+    expect(edgeRow.rel).toBe('DEPENDS_ON');
+
+    db.close();
+  });
+
+  it('transactional rollback: failed migration leaves store at previous version', () => {
+    const db = createV1Store();
+
+    // Inject a failing migration into MIGRATIONS
+    const badMigration = {
+      version: 99,
+      description: 'Failing migration for rollback test',
+      up(_db: Database.Database): void {
+        throw new Error('Intentional migration failure');
+      },
+    };
+    MIGRATIONS.push(badMigration);
+
+    try {
+      runMigrations(db);
+    } catch {
+      // expected
+    }
+
+    // Clean up the bad migration
+    const idx = MIGRATIONS.indexOf(badMigration);
+    if (idx >= 0) MIGRATIONS.splice(idx, 1);
+
+    // The failed migration (v99) was rolled back, so the highest version
+    // should still be v1 or whatever was stamped before the failure.
+    const versions = db
+      .prepare(`SELECT version FROM _schema_version ORDER BY version DESC`)
+      .all() as { version: number }[];
+    expect(versions.length).toBeGreaterThanOrEqual(1);
+    // No v99 row exists
+    const hasV99 = versions.some((r) => r.version === 99);
+    expect(hasV99).toBe(false);
+
+    db.close();
+  });
+
+  it('multiple calls to runMigrations are idempotent', () => {
+    const db = createV1Store();
+
+    // Run migrations once
+    runMigrations(db);
+    const versionAfterFirst = (
+      db
+        .prepare(`SELECT version FROM _schema_version ORDER BY version DESC LIMIT 1`)
+        .get() as { version: number }
+    ).version;
+
+    // Run again — should be no-op
+    runMigrations(db);
+    const versionAfterSecond = (
+      db
+        .prepare(`SELECT version FROM _schema_version ORDER BY version DESC LIMIT 1`)
+        .get() as { version: number }
+    ).version;
+
+    expect(versionAfterSecond).toBe(versionAfterFirst);
+
+    // All CHECK constraints still work after idempotent re-run
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO node (uid, kind, content, t_created)
+       VALUES (?, 'generic', ?, ?)`,
+    ).run('idempotent-generic', 'generic content', now);
+
     db.close();
   });
 });

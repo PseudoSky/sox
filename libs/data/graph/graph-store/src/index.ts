@@ -1,6 +1,8 @@
 // @adhd/sox-graph-store — Bi-temporal graph store over SQLite
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
+import { runMigrations, rebuildTable } from './migrations.js';
+export { runMigrations, rebuildTable }; // re-export for consumers (memory-core, etc.)
 
 // ─── Schema DDL ───────────────────────────────────────────────────────────────
 
@@ -542,6 +544,7 @@ export class SqliteGraphBackend implements GraphBackend {
       this.db.exec(pragma);
     }
 
+    // Ensure the version tracking table exists
     this.db.exec(`CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)`);
 
     const currentVersion = this.db
@@ -572,11 +575,8 @@ export class SqliteGraphBackend implements GraphBackend {
         .run(targetVersion);
     }
 
-    // Ensure the unique edge index exists on pre-unification stores.
-    // The version gate above means GRAPH_DDL (which contains this index)
-    // is only executed on version < 1 — stores already at version 1
-    // need this applied separately.
-    this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ix_edge_unique ON edge(src, dst, rel)`);
+    // Run any pending migrations (v2, v3, …) on pre-existing stores.
+    runMigrations(this.db);
 
     this.schemaApplied = true;
   }
@@ -1278,43 +1278,6 @@ export class SqliteGraphBackend implements GraphBackend {
 
     return { nodes, edges };
   }
-}
-
-// ─── Rebuild table helper ──────────────────────────────────────────────────────
-
-/**
- * Rebuild a table with a new DDL while preserving data.
- * SQLite cannot ALTER TABLE CHECK constraints, so this is the standard
- * rename→create→copy→drop→rename dance. Runs in a transaction.
- *
- * @param db          Database handle
- * @param tableName   Table to rebuild (e.g., 'node', 'edge', 'organizer_queue')
- * @param newDDL      Full CREATE TABLE statement with the updated constraints
- * @param columnMap   Map of old column names to new column names (for renames)
- *                    or an array of column names (if no renames)
- */
-export function rebuildTable(
-  db: Database.Database,
-  tableName: string,
-  newDDL: string,
-  columnMap: string[] | Record<string, string>,
-): void {
-  const columns: string[] = Array.isArray(columnMap)
-    ? columnMap
-    : Object.keys(columnMap);
-  const selectCols = Array.isArray(columnMap)
-    ? columns.join(', ')
-    : Object.entries(columnMap).map(([old, nu]) => `${old} AS ${nu}`).join(', ');
-
-  db.transaction(() => {
-    db.exec(`ALTER TABLE ${tableName} RENAME TO ${tableName}_old`);
-    db.exec(newDDL);
-    db.exec(
-      `INSERT INTO ${tableName} (${columns.join(', ')})
-       SELECT ${selectCols} FROM ${tableName}_old`,
-    );
-    db.exec(`DROP TABLE ${tableName}_old`);
-  })();
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
