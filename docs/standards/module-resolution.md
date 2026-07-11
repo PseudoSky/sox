@@ -127,11 +127,17 @@ Changing the emit layout without moving every contract in the same commit is a t
 the break was cache-masked until an unrelated doc edit busted one project's nx inputs, then the
 first honest rebuild failed TS2307 across the data packages.
 
-**Guard:** `pnpm verify:exports` (`tools/verify-package-exports.mjs`) checks that every entry-point
-path in every workspace package resolves to a real file. It runs automatically inside the
+**Guard:** `pnpm verify:publint-attw` (`tools/verify-exports-publint-attw.mjs`, BL-266 — supersedes
+the retired `tools/verify-package-exports.mjs`) runs `publint` against every workspace package to
+check that every entry-point path resolves to a real file (proven a strict superset of the old
+script's check, plus packaging-correctness findings the old script never had), and
+`@arethetypeswrong/cli` against every typed `libs/`/`packages/` package to check that its type
+resolution agrees with its runtime module format across node10/node16/bundler algorithms — a check
+`tools/verify-package-exports.mjs` never performed at all. Both run automatically inside the
 mandatory smoke-test preflight, so a contract break cannot reach a merge. If you INTEND a layout
 change: move the `rootDir` options, all `package.json` entry points, and the bundler aliases in
-one commit, then prove it cache-busted (`npx nx run-many -t build --skip-nx-cache`).
+one commit, then prove it cache-busted (`npx nx run-many -t build --skip-nx-cache`). See
+[`extension-bundling.md`](./extension-bundling.md) for the bundle-surface half of this contract.
 
 ## §5 Stale `dist/` Hazard — Delete Source, Delete Its Dist
 

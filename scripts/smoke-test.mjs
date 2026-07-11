@@ -308,17 +308,22 @@ async function main() {
     process.exit(2);
   }
 
-  // ── Exports-contract preflight: every workspace package.json entry point
-  //    must resolve to a real file. Rides the mandatory smoke gate so a build-
-  //    layout change that breaks the contract (the 0ba5d78 @nx/js:tsc nesting
-  //    incident — cache-masked for hours) fails loudly pre-merge instead of
-  //    detonating on the next cache bust.
+  // ── Exports-contract preflight (BL-266): publint + attw against every
+  //    workspace package.json/dist pair. Rides the mandatory smoke gate so a
+  //    build-layout change that breaks the contract (the 0ba5d78 @nx/js:tsc
+  //    nesting incident — cache-masked for hours) fails loudly pre-merge
+  //    instead of detonating on the next cache bust. Supersedes the former
+  //    tools/verify-package-exports.mjs (deleted) — publint proved a strict
+  //    superset of its file-existence check (main/module/types/bin/exports),
+  //    plus packaging-correctness checks it never had; attw adds the
+  //    type/runtime-format resolution check verify-package-exports.mjs never
+  //    performed at all. See docs/standards/extension-bundling.md.
   try {
-    execSync(`node ${JSON.stringify(path.join(WORKSPACE, 'tools', 'verify-package-exports.mjs'))} --root ${JSON.stringify(WORKSPACE)}`, {
+    execSync(`node ${JSON.stringify(path.join(WORKSPACE, 'tools', 'verify-exports-publint-attw.mjs'))} --root ${JSON.stringify(WORKSPACE)}`, {
       stdio: ['ignore', 'inherit', 'inherit'],
     });
   } catch {
-    console.error('[smoke] FATAL: package exports contract violated — see verify-package-exports output above.');
+    console.error('[smoke] FATAL: package exports contract violated — see verify-exports-publint-attw output above.');
     process.exit(2);
   }
 
