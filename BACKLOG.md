@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-10 (regenerated mechanically; see BL-224)
 
-**Total open: 42.** This block is DERIVED from the `**...**` status marker on each
+**Total open: 45.** This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
 five already-RESOLVED items as top priorities, including `BL-62` as the "#1 only PROVEN live bug"
@@ -4829,7 +4829,7 @@ That leaves the generic abstraction stranded: `vector-store`'s `ensureSpace` / `
 
 **Decision required (owner):** retire the multi-space machinery in favour of the fixed-schema `vec_node` model memory-core actually uses, **or** keep it and document that it is for external consumers (`agent-source` declares `@adhd/sox-vector-store`? — verify before deciding). Either way `libs/data/CLAUDE.md` §3 needs correcting: it describes a migration path memory-core no longer takes.
 
-### BL-257 — the root `sox-ecosystem:typecheck` script has 24 pre-existing TypeScript errors, never gated — **Open (MEDIUM)** (2026-07-10)
+### BL-257 — the root `sox-ecosystem:typecheck` script has 24 pre-existing TypeScript errors, never gated — **RESOLVED (2026-07-11)** — fixed in commit `334f266`: all 24 errors cleared without weakening any tsconfig flag (no `as any`/`!`/`@ts-expect-error`); `tsc --noEmit` now 0 errors (verified on current HEAD). Also fixed the tautological routing-drift gate it uncovered (the generator clobbered its own baseline). Marker was left stale-open at fix time — flipped here.
 
 `package.json`'s `typecheck` script (`tsc --noEmit`, surfaced as the `sox-ecosystem:typecheck` nx target) reports **24 errors**. It was never part of the whole-repo gate, which until 2026-07-10 was `build,lint,test`. Adding `typecheck` to that gate (BL-248) surfaced them.
 
@@ -5854,3 +5854,20 @@ Surfaced while evaluating whether the adhd registry should reuse `@adhd/sox-grap
 - [ ] `npm ls drizzle-orm` from a fresh install of graph-store no longer resolves it via graph-store.
 
 **Effort / risk / blast radius.** S effort, low risk. Blast radius: graph-store only (removes a transitive dep from its consumers). Removes a stated objection to Option A in the adhd agent-mcp-authoring plan.
+
+
+### BL-304 — REFRAME: the "unused / dead / phantom" findings are un-wired integration seams, not cruft — these packages were built for this project — **Open (MEDIUM)** (2026-07-11)
+
+**Origin:** project-owner directive, adhd/agent-mcp-authoring integration.
+
+**Correction of stance.** Several earlier findings (and the Option-B decision in the adhd plan) applied an *outside-consumer, "remove the cruft"* lens to the sox data packages. That lens is wrong: `@adhd/sox-{embedding-provider,vector-store,ingest,graph-store,hybrid-search}` were **built for this project** — specifically to stand up a hybrid-search (FTS5 keyword + vector) prompt-component registry for agent-mcp-authoring. A package/dep that is "declared but not imported yet," or a search backend that "doesn't fit the component use case," is a **not-yet-wired seam of the intended architecture**, and the correct resolution is to **complete the wiring**, not amputate the seam or fork a parallel implementation.
+
+**Per-item disposition update:**
+- **`@adhd/sox-vector-store` (was BL-290 "phantom, drop it"): NOT dead — keep it.** Its intended consumer is the **component registry's vector channel** (Option A), which hasn't been wired yet. `memory-core` deliberately uses its own fixed-schema `vec_node` (documented space-invariant, `libs/data/CLAUDE.md §3`, `reembed.ts:55-58,230-233`), so vector-store's home was never memory-core — it's the registry. BL-290's memory-core `package.json` hygiene point stands *only* as a memory-core detail; it is **not** a verdict that vector-store is unused.
+- **graph-store FTS5 + hybrid-search `fuse()` (BL-292/293/294/295): built for this — use them, don't fork.** Relax the `node.kind` CHECK so a component is a valid node, and the registry gets sox's `fts_node` (BM25) + vector fusion via `SqliteSearchBackend`. Kills the Option-B parallel FTS5.
+- **`memory-core/src/embedWorker.ts` (BL-289): treat as retired only because the code itself says so** (`embed.ts:5,55` "replaced by the canonical shared ONNX host"; `stats.spec.ts:7`). If the owner intends it to stay, it stays. This is the one "dead" flag with in-code provenance, not an assumption.
+- **`drizzle-orm` in graph-store (BL-303): verify intended use before removing** — it may be scaffolding for a query layer not yet built. Do not delete on grep-absence alone.
+
+**Definition of done (the fully-wired system, replacing the "route around it" posture):** the agent-mcp-authoring component registry stores components as `graph-store` nodes (`kind:'component'`), so `fts_node` triggers index them (sox FTS5, BM25) → `vector-store` provides the vec channel → `hybrid-search` `SqliteSearchBackend` fuses both → `component_search` graded by the golden-set nDCG@5 ≥ 0.70 bar. No bespoke FTS5, no dropped "phantom" deps — every sox package built for this is wired into that path.
+
+**Supersedes/reframes:** BL-289, BL-290, BL-303 (disposition), and the adhd plan's decisions.md §D6 (flip Option B → Option A).
