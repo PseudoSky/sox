@@ -777,49 +777,61 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
 });
 
 describe('openDb — P1 enrichment column migrations (D3.1)', () => {
-  it('a fresh store has all P1 enrichment columns', () => {
+  it('a fresh store has all canonical columns', () => {
     const { dir, cleanup } = tmpDir();
     try {
       const db = openDb(path.join(dir, 'fresh.db'));
       const cols = (db.prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
+      // Base graph-store columns
       expect(cols).toContain('topic');
       expect(cols).toContain('tags');
       expect(cols).toContain('project_path');
+      expect(cols).toContain('namespace');
+      expect(cols).toContain('level');
+      expect(cols).toContain('resume_state');
+      // Memory-specific enrichment columns
       expect(cols).toContain('enrich_ver');
+      expect(cols).toContain('embed_model');
       db.close();
     } finally { cleanup(); }
   });
 
-  it('adds P1 columns to a pre-existing store that lacks them (idempotent)', () => {
+  it('adds memory-specific columns to a pre-existing store that lacks them (idempotent)', () => {
     const { dir, cleanup } = tmpDir();
     try {
       const dbPath = path.join(dir, 'old-p1.db');
       const raw = new Database(dbPath);
-      // Simulate a pre-P1 store: node table without enrichment columns.
+      // Simulate a pre-memory-core store: node table without the memory-specific
+      // enrichment columns (enrich_ver, embed_model). All canonical graph-store
+      // columns are included so the canonical DDL's CREATE INDEX statements
+      // (ix_node_topic, ix_node_project, ix_node_namespace, ix_node_expires, etc.)
+      // do not fail with "no such column".
       raw.exec(
         `CREATE TABLE node (
            rowid INTEGER PRIMARY KEY, uid TEXT UNIQUE NOT NULL, kind TEXT NOT NULL,
-           content TEXT, name TEXT, summary TEXT, meta TEXT,
+           content TEXT, name TEXT, summary TEXT, meta TEXT, topic TEXT, tags TEXT,
+           project_path TEXT,
            agent_id TEXT, session_id TEXT, source TEXT, importance REAL DEFAULT 1.0,
-           content_hash TEXT, level INTEGER, resume_state TEXT,
+           confidence REAL, content_hash TEXT, level INTEGER, resume_state TEXT,
+           namespace TEXT DEFAULT 'global',
+           t_expires TEXT, is_superseded INTEGER DEFAULT 0,
            t_created TEXT NOT NULL, t_occurred TEXT, t_valid TEXT, t_invalid TEXT,
-           last_access TEXT, access_count INTEGER DEFAULT 0
+           last_access TEXT, access_count INTEGER DEFAULT 0,
+           t_updated TEXT
          )`,
       );
       raw.close();
 
       const db = openDb(dbPath);
       const cols = (db.prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
-      expect(cols).toContain('topic');
-      expect(cols).toContain('tags');
-      expect(cols).toContain('project_path');
       expect(cols).toContain('enrich_ver');
+      expect(cols).toContain('embed_model');
       db.close();
 
       // Idempotent: re-opening does not duplicate or error
       const db2 = openDb(dbPath);
       const cols2 = (db2.prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
-      for (const col of ['topic', 'tags', 'project_path', 'enrich_ver']) {
+      for (const col of ['enrich_ver', 'embed_model']) {
         expect(cols2.filter((c) => c === col)).toHaveLength(1);
       }
       db2.close();
@@ -831,15 +843,16 @@ describe('openDb — P1 enrichment column migrations (D3.1)', () => {
     try {
       const dbPath = path.join(dir, 'partial.db');
       const raw = new Database(dbPath);
-      // Simulate a store that already has meta + topic but not the rest.
-      // Use full schema so FTS triggers work correctly.
+      // Simulate a store that already has most base columns but is missing
+      // memory-specific columns (enrich_ver, embed_model).
       raw.exec(
         `CREATE TABLE node (
            rowid INTEGER PRIMARY KEY, uid TEXT UNIQUE NOT NULL,
-           kind TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session')),
+           kind TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session','generic')),
            content TEXT, name TEXT, summary TEXT,
-           meta TEXT,
-           topic TEXT,
+           meta TEXT, topic TEXT, tags TEXT, project_path TEXT,
+           namespace TEXT DEFAULT 'global', t_expires TEXT,
+           is_superseded INTEGER DEFAULT 0, t_updated TEXT,
            agent_id TEXT, session_id TEXT, source TEXT,
            importance REAL DEFAULT 1.0, confidence REAL, content_hash TEXT,
            level INTEGER, resume_state TEXT,
@@ -849,60 +862,66 @@ describe('openDb — P1 enrichment column migrations (D3.1)', () => {
       );
       raw.close();
 
-      // topic already exists — openDb must add tags/project_path/enrich_ver without error
+      // Most columns already exist — openDb must add enrich_ver and embed_model without error
       const db = openDb(dbPath);
       const cols = (db.prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
-      expect(cols).toContain('topic');
-      expect(cols).toContain('tags');
-      expect(cols).toContain('project_path');
       expect(cols).toContain('enrich_ver');
+      expect(cols).toContain('embed_model');
       db.close();
     } finally { cleanup(); }
   });
 });
 
-describe('openDb — node.meta migration (BL-23)', () => {
-  it('a fresh store has the meta column', () => {
+describe('openDb — memory-specific column migration', () => {
+  it('a fresh store has embed_model', () => {
     const { dir, cleanup } = tmpDir();
     try {
       const db = openDb(path.join(dir, 'fresh.db'));
       const cols = (db.prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
-      expect(cols).toContain('meta');
+      expect(cols).toContain('embed_model');
+      expect(cols).toContain('enrich_ver');
       db.close();
     } finally {
       cleanup();
     }
   });
 
-  it('adds meta to a pre-existing store that lacks it (idempotent migration)', () => {
+  it('adds embed_model to a pre-existing store that lacks it (idempotent migration)', () => {
     const { dir, cleanup } = tmpDir();
     try {
       const dbPath = path.join(dir, 'old.db');
-      // Simulate an older store: a node table without the meta column.
+      // Simulate an older store: a node table without the memory-specific columns
+      // (embed_model, enrich_ver). All canonical graph-store columns are included
+      // so the canonical DDL's CREATE INDEX statements do not fail.
       const raw = new Database(dbPath);
-      // Real old-store node table = current schema MINUS the new `meta` column.
       raw.exec(
         `CREATE TABLE node (
            rowid INTEGER PRIMARY KEY, uid TEXT UNIQUE NOT NULL, kind TEXT NOT NULL,
            content TEXT, name TEXT, summary TEXT,
-           agent_id TEXT, session_id TEXT, source TEXT, importance REAL DEFAULT 1.0,
-           confidence REAL, content_hash TEXT, level INTEGER, resume_state TEXT,
+           meta TEXT, topic TEXT, tags TEXT, project_path TEXT,
+           agent_id TEXT, session_id TEXT, source TEXT,
+           importance REAL DEFAULT 1.0, confidence REAL, content_hash TEXT,
+           level INTEGER, resume_state TEXT,
+           namespace TEXT DEFAULT 'global',
+           t_expires TEXT, is_superseded INTEGER DEFAULT 0,
            t_created TEXT NOT NULL, t_occurred TEXT, t_valid TEXT, t_invalid TEXT,
-           last_access TEXT, access_count INTEGER DEFAULT 0
+           last_access TEXT, access_count INTEGER DEFAULT 0,
+           t_updated TEXT
          )`,
       );
       raw.close();
 
-      // openDb must migrate it in place.
+      // openDb must migrate in place.
       const db = openDb(dbPath);
       const cols = (db.prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
-      expect(cols).toContain('meta');
+      expect(cols).toContain('embed_model');
+      expect(cols).toContain('enrich_ver');
       db.close();
 
       // Idempotent: re-opening doesn't error or duplicate.
       const db2 = openDb(dbPath);
       const cols2 = (db2.prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
-      expect(cols2.filter((c) => c === 'meta')).toHaveLength(1);
+      expect(cols2.filter((c) => c === 'embed_model')).toHaveLength(1);
       db2.close();
     } finally {
       cleanup();

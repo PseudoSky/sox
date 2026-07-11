@@ -335,9 +335,15 @@ export function materializeClusters(
     }
 
     for (const memberRowid of cluster.member_rowids) {
+      // Use UPSERT to handle the UNIQUE(edge.src, dst, rel) constraint from the
+      // canonical graph-store DDL. On re-cluster, old MEMBER_OF edges are
+      // invalidated (t_invalid set, line 298) but the unique index still prevents
+      // a duplicate (src, dst, rel). UPSERT reuses the existing edge slot by
+      // clearing t_invalid — mirrors graph-store's writeEdge() pattern.
       db.prepare(
         `INSERT INTO edge (src, dst, rel, origin, weight, t_created)
-         VALUES (?, ?, 'MEMBER_OF', 'inferred', 1.0, ?)`,
+         VALUES (?, ?, 'MEMBER_OF', 'inferred', 1.0, ?)
+         ON CONFLICT(src, dst, rel) DO UPDATE SET t_invalid = NULL`,
       ).run(memberRowid, communityRowid, now);
     }
   }
@@ -497,7 +503,8 @@ export function clusterStore(
   db: Database,
   opts: ClusterStoreOptions = {},
 ): ClusterStoreResult {
-  // GraphBackend not yet wired into clusterStore (uses raw SQL for materialization).
+  // GraphBackend ensures the canonical DDL (including ix_edge_unique) is applied.
+  createGraphBackend(db);
 
   const episodes = selectEpisodes(db);
   const result = computeClusters(db, episodes, {

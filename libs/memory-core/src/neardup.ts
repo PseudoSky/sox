@@ -9,7 +9,6 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import { createGraphBackend } from '@adhd/sox-graph-store';
 import { detectNearDupPairs } from '@adhd/sox-analysis';
 import type { NearDupOpts } from '@adhd/sox-analysis';
 
@@ -34,9 +33,6 @@ export function detectNearDup(
   embedding: Float32Array,
   threshold: number,
 ): NearDupResult | null {
-  // Create GraphBackend instance for node/edge CRUD (pattern: sibling read-path modules)
-  const graph = createGraphBackend(db);
-
   // ── KNN via vec_node (memory-core specific vec0 table) ─────────────────
   const embJson = '[' + Array.from(embedding).map((v) => v.toFixed(8)).join(',') + ']';
   const knnRows = db
@@ -75,10 +71,13 @@ export function detectNearDup(
 
   const neighborId = bestPair.a === rowid ? bestPair.b : bestPair.a;
 
-  // Check node existence + get content via GraphBackend; uid via raw SQL
-  // (NodeRecord does not expose uid, which is memory-core-specific)
-  const neighborNodeRecord = graph.getNode(neighborId);
-  if (!neighborNodeRecord) return null;
+  // Check node existence via raw SQL — avoids calling createGraphBackend (which
+  // runs PRAGMAs that throw "Safety level may not be changed inside a transaction"
+  // when detectNearDup is called from within applyEmbedding's transaction).
+  const neighborExists = db
+    .prepare<[number], { rowid: number }>('SELECT rowid FROM node WHERE rowid = ?')
+    .get(neighborId);
+  if (!neighborExists) return null;
 
   const neighborUidRow = db
     .prepare<[number], { uid: string }>(`SELECT uid FROM node WHERE rowid = ?`)

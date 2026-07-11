@@ -37,7 +37,12 @@ import {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Minimal schema for test DB (mirrors memory-core schema without FTS triggers). */
+/**
+ * Minimal DDL matching the canonical graph-store schema columns that indexes
+ * reference (namespace, t_expires, etc.), plus memory-specific tables.
+ * Needed so createGraphBackend → applySchema → ix_node_namespace etc. do not
+ * fail with "no such column" on pre-existing tables.
+ */
 const MINIMAL_DDL = `
 CREATE TABLE IF NOT EXISTS node (
   rowid INTEGER PRIMARY KEY,
@@ -46,10 +51,13 @@ CREATE TABLE IF NOT EXISTS node (
   content TEXT, name TEXT, summary TEXT,
   meta TEXT, agent_id TEXT, session_id TEXT, source TEXT,
   importance REAL DEFAULT 1.0, content_hash TEXT, level INTEGER,
-  resume_state TEXT, t_created TEXT NOT NULL, t_occurred TEXT,
+  resume_state TEXT, confidence REAL,
+  namespace TEXT DEFAULT 'global',
+  t_created TEXT NOT NULL, t_occurred TEXT, t_expires TEXT,
   t_valid TEXT, t_invalid TEXT, last_access TEXT,
   access_count INTEGER DEFAULT 0,
   tags TEXT, topic TEXT, project_path TEXT, enrich_ver TEXT,
+  is_superseded INTEGER DEFAULT 0,
   t_updated TEXT
 );
 
@@ -58,8 +66,8 @@ CREATE TABLE IF NOT EXISTS edge (
   src INTEGER NOT NULL REFERENCES node(rowid),
   dst INTEGER NOT NULL REFERENCES node(rowid),
   rel TEXT NOT NULL,
-  weight REAL DEFAULT 1.0, origin TEXT,
-  t_created TEXT NOT NULL, t_expired TEXT, t_invalid TEXT, meta TEXT
+  weight REAL DEFAULT 1.0, origin TEXT, confidence REAL,
+  t_created TEXT NOT NULL, t_expired TEXT, t_valid TEXT, t_invalid TEXT, meta TEXT
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_node USING vec0(node_id INTEGER PRIMARY KEY, embedding FLOAT[768]);

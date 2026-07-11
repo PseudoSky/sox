@@ -1,7 +1,12 @@
 /**
  * SQLite schema DDL for sox-memory.
  * Single file per scope. Exact schema from design.md §2.2 (minus promotion_queue, deferred to P4).
+ *
+ * The canonical node/edge table DDL is owned by graph-store and imported here.
+ * This module adds memory-only tables on top of the graph primitives.
  */
+
+import { GRAPH_DDL, FTS_DDL, FTS_TRIGGERS as GraphFTS_TRIGGERS } from '@adhd/sox-graph-store';
 
 /**
  * CONTRACTS §C mandated pragmas for EVERY connection:
@@ -21,7 +26,8 @@ PRAGMA foreign_keys = ON;
 PRAGMA cache_size   = -64000;
 `;
 
-export const DDL = `
+/** Memory-only DDL — graph primitives (node/edge/FTS) are in graph-store. */
+const MEMORY_ONLY_DDL = `
 -- scope metadata (one row)
 CREATE TABLE IF NOT EXISTS memory_scope (
   scope        TEXT PRIMARY KEY CHECK (scope IN ('project','user','org','local')),
@@ -39,57 +45,8 @@ CREATE TABLE IF NOT EXISTS sox_store_meta (
   value TEXT NOT NULL
 );
 
--- nodes (Episode/Entity/Claim/Community/Session unified)
-CREATE TABLE IF NOT EXISTS node (
-  rowid        INTEGER PRIMARY KEY,
-  uid          TEXT UNIQUE NOT NULL,
-  kind         TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session')),
-  content      TEXT, name TEXT, summary TEXT,
-  meta         TEXT,  -- caller-supplied metadata (JSON); persisted, not dropped
-  agent_id     TEXT,
-  session_id   TEXT,
-  source       TEXT CHECK (source IN ('message','tool_output','observation','document','reflection','import')),
-  importance   REAL DEFAULT 1.0,
-  confidence   REAL,
-  content_hash TEXT,
-  level        INTEGER,
-  resume_state TEXT,
-  t_created    TEXT NOT NULL, t_occurred TEXT,
-  t_valid      TEXT,  t_invalid TEXT,
-  last_access  TEXT,  access_count INTEGER DEFAULT 0,
-  t_updated    TEXT
-);
-CREATE INDEX IF NOT EXISTS ix_node_kind       ON node(kind);
-CREATE INDEX IF NOT EXISTS ix_node_hash       ON node(content_hash);
-CREATE INDEX IF NOT EXISTS ix_node_agent      ON node(agent_id);
-CREATE INDEX IF NOT EXISTS ix_node_session    ON node(session_id);
-CREATE INDEX IF NOT EXISTS ix_node_validity   ON node(t_invalid) WHERE t_invalid IS NULL;
-CREATE INDEX IF NOT EXISTS ix_node_importance ON node(importance);
-CREATE INDEX IF NOT EXISTS ix_node_temporal   ON node(t_invalid, t_created DESC) WHERE t_invalid IS NULL;
-
--- edges (bi-temporal)
-CREATE TABLE IF NOT EXISTS edge (
-  rowid     INTEGER PRIMARY KEY,
-  src       INTEGER NOT NULL REFERENCES node(rowid) ON DELETE CASCADE,
-  dst       INTEGER NOT NULL REFERENCES node(rowid) ON DELETE CASCADE,
-  rel       TEXT NOT NULL CHECK (rel IN
-              ('MENTIONS','SUPPORTS','RELATES_TO','SUPERSEDES','DERIVED_FROM','MEMBER_OF','PART_OF','SAME_AS','ASSIGNED_TO')),
-  weight     REAL DEFAULT 1.0, confidence REAL,
-  origin     TEXT CHECK (origin IN ('extracted','inferred','user_asserted')),
-  t_created  TEXT NOT NULL, t_expired TEXT,
-  t_valid    TEXT,          t_invalid TEXT,
-  meta       TEXT
-);
-CREATE INDEX IF NOT EXISTS ix_edge_src  ON edge(src, rel) WHERE t_expired IS NULL;
-CREATE INDEX IF NOT EXISTS ix_edge_dst  ON edge(dst, rel) WHERE t_expired IS NULL;
-CREATE INDEX IF NOT EXISTS ix_edge_live ON edge(t_invalid) WHERE t_invalid IS NULL;
-
 -- vec0 virtual table (dim from embed_model: 768 for bge-base-en-v1.5)
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_node USING vec0(node_id INTEGER PRIMARY KEY, embedding FLOAT[768]);
-
--- FTS5 virtual table
-CREATE VIRTUAL TABLE IF NOT EXISTS fts_node USING fts5(content, name, summary,
-  content='node', content_rowid='rowid', tokenize='unicode61');
 
 -- batch-enrich trigger queue (formerly "organizer work queue").
 -- 'ingest' and 'enrich' ops trigger a runBatchEnrich pass (deterministic, no LLM).
@@ -124,20 +81,11 @@ CREATE TABLE IF NOT EXISTS promotion_queue (
 );
 `;
 
-/** FTS5 content table trigger for auto-sync */
-export const FTS_TRIGGERS = `
-CREATE TRIGGER IF NOT EXISTS fts_node_ai AFTER INSERT ON node BEGIN
-  INSERT INTO fts_node(rowid, content, name, summary)
-    VALUES (new.rowid, new.content, new.name, new.summary);
-END;
-CREATE TRIGGER IF NOT EXISTS fts_node_ad AFTER DELETE ON node BEGIN
-  INSERT INTO fts_node(fts_node, rowid, content, name, summary)
-    VALUES ('delete', old.rowid, old.content, old.name, old.summary);
-END;
-CREATE TRIGGER IF NOT EXISTS fts_node_au AFTER UPDATE ON node BEGIN
-  INSERT INTO fts_node(fts_node, rowid, content, name, summary)
-    VALUES ('delete', old.rowid, old.content, old.name, old.summary);
-  INSERT INTO fts_node(rowid, content, name, summary)
-    VALUES (new.rowid, new.content, new.name, new.summary);
-END;
-`;
+/**
+ * Composed DDL: graph primitives (graph-store) + memory-only tables.
+ * The FTS virtual table is created by graph-store's FTS_DDL.
+ */
+export const DDL = GRAPH_DDL + '\n' + FTS_DDL + '\n' + MEMORY_ONLY_DDL;
+
+/** FTS5 content table trigger for auto-sync — re-exported from graph-store. */
+export const FTS_TRIGGERS = GraphFTS_TRIGGERS;

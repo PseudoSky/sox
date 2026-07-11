@@ -9,6 +9,7 @@ import * as sqliteVec from 'sqlite-vec';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import { rebuildTable } from '@adhd/sox-graph-store';
 import { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
 import { EMBED_DIM, getActiveEmbedModel } from './embed.js';
 import { closeDbWithLease } from './lease.js';
@@ -217,14 +218,9 @@ export function openDb(dbPath: string): Database.Database {
 
   // Idempotent column migrations for pre-existing stores (CREATE IF NOT EXISTS won't
   // add columns to a table that already exists). Add new columns when missing.
-  migrateAddColumn(db, 'node', 'meta', 'TEXT');
-  // P1 enrichment columns (D3.1) — all NULL-defaulting, idempotent.
-  migrateAddColumn(db, 'node', 'tags', 'TEXT');
-  migrateAddColumn(db, 'node', 'topic', 'TEXT');
-  migrateAddColumn(db, 'node', 'project_path', 'TEXT');
+  // These columns are memory-specific — graph primitives (topic, tags, project_path, meta, t_updated)
+  // are now in the canonical graph-store DDL and don't need migration.
   migrateAddColumn(db, 'node', 'enrich_ver', 'TEXT');
-  // memory_update timestamp (set on every in-place edit; immutable t_created is the audit anchor).
-  migrateAddColumn(db, 'node', 't_updated', 'TEXT');
   // BL-88: per-record embedding provenance. NULL = embedded before provenance existed
   // (or not yet embedded). Do NOT backfill existing rows — NULL is honest (provenance unknown).
   // Stamped by applyEmbedding() at vec insert time (the single choke-point for all write/update/heal paths).
@@ -233,6 +229,12 @@ export function openDb(dbPath: string): Database.Database {
   db.exec(`CREATE INDEX IF NOT EXISTS ix_node_topic      ON node(topic)        WHERE topic IS NOT NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS ix_node_enrich_ver ON node(enrich_ver)   WHERE enrich_ver IS NOT NULL`);
+
+  // Defensive: columns present in the unified graph-store DDL but potentially
+  // missing from stores created by old standalone graph-store (without memory-core).
+  migrateAddColumn(db, 'node', 'level', 'INTEGER');
+  migrateAddColumn(db, 'node', 'resume_state', 'TEXT');
+  migrateAddColumn(db, 'edge', 't_expired', 'TEXT');
 
   // WP-4: request_ledger table migration — ensures the table exists on upgraded stores
   // that were created before the request_ledger DDL was added to schema.ts.
@@ -290,28 +292,20 @@ function migrateOrganizerQueueCheckConstraint(db: Database.Database): void {
   // If the current definition already includes 'enrich', nothing to do.
   if (row.sql.includes("'enrich'")) return;
 
-  // Rebuild dance — wrapped in a transaction for atomicity.
-  db.transaction(() => {
-    db.exec(`ALTER TABLE organizer_queue RENAME TO organizer_queue_old`);
-    db.exec(`
-      CREATE TABLE organizer_queue (
-        seq        INTEGER PRIMARY KEY AUTOINCREMENT,
-        op         TEXT NOT NULL CHECK (op IN ('ingest','enrich','extract','link','consolidate','decay','reindex')),
-        payload    TEXT NOT NULL,
-        priority   INTEGER NOT NULL DEFAULT 100,
-        enqueued   TEXT NOT NULL, claimed_at TEXT, done_at TEXT,
-        attempts   INTEGER DEFAULT 0
-      )
-    `);
-    db.exec(`
-      INSERT INTO organizer_queue (seq, op, payload, priority, enqueued, claimed_at, done_at, attempts)
-      SELECT seq, op, payload, priority, enqueued, claimed_at, done_at, attempts
-      FROM organizer_queue_old
-    `);
-    db.exec(`DROP TABLE organizer_queue_old`);
-    // Recreate the open-queue index (idempotent via IF NOT EXISTS).
-    db.exec(`CREATE INDEX IF NOT EXISTS ix_q_open ON organizer_queue(done_at, priority, seq) WHERE done_at IS NULL`);
-  })();
+  // Rebuild dance using the general-purpose helper.
+  rebuildTable(db, 'organizer_queue', `
+    CREATE TABLE organizer_queue (
+      seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+      op         TEXT NOT NULL CHECK (op IN ('ingest','enrich','extract','link','consolidate','decay','reindex')),
+      payload    TEXT NOT NULL,
+      priority   INTEGER NOT NULL DEFAULT 100,
+      enqueued   TEXT NOT NULL, claimed_at TEXT, done_at TEXT,
+      attempts   INTEGER DEFAULT 0
+    )
+  `, ['seq', 'op', 'payload', 'priority', 'enqueued', 'claimed_at', 'done_at', 'attempts']);
+
+  // Recreate the open-queue index (idempotent via IF NOT EXISTS).
+  db.exec(`CREATE INDEX IF NOT EXISTS ix_q_open ON organizer_queue(done_at, priority, seq) WHERE done_at IS NULL`);
 }
 
 /** Add a column to a table if it does not already exist (idempotent migration). */

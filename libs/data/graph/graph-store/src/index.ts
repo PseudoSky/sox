@@ -16,14 +16,14 @@ export const GRAPH_DDL = `
 CREATE TABLE IF NOT EXISTS node (
   rowid        INTEGER PRIMARY KEY,
   uid          TEXT UNIQUE NOT NULL,
-  kind         TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session')),
+  kind         TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session','generic')),
   content      TEXT,
   name         TEXT,
   summary      TEXT,
   topic        TEXT,
   tags         TEXT,
   importance   REAL DEFAULT 1.0,
-  confidence   TEXT,
+  confidence   REAL,
   content_hash TEXT,
   namespace    TEXT DEFAULT 'global',
   meta         TEXT,
@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS node (
   session_id   TEXT,
   source       TEXT CHECK (source IN ('message','tool_output','observation','document','reflection','import')),
   project_path TEXT,
+  level        INTEGER,
+  resume_state TEXT,
   t_occurred   TEXT,
   t_expires    TEXT,
   t_created    TEXT NOT NULL,
@@ -52,6 +54,7 @@ CREATE TABLE IF NOT EXISTS edge (
   origin    TEXT CHECK (origin IN ('extracted','inferred','user_asserted')),
   meta      TEXT,
   t_created TEXT NOT NULL,
+  t_expired TEXT,
   t_valid   TEXT,
   t_invalid TEXT
 );
@@ -67,8 +70,8 @@ CREATE INDEX IF NOT EXISTS ix_node_topic      ON node(topic) WHERE topic IS NOT 
 CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_node_namespace  ON node(namespace);
 CREATE INDEX IF NOT EXISTS ix_node_expires    ON node(t_expires) WHERE t_expires IS NOT NULL;
-CREATE INDEX IF NOT EXISTS ix_edge_src        ON edge(src, rel);
-CREATE INDEX IF NOT EXISTS ix_edge_dst        ON edge(dst, rel);
+CREATE INDEX IF NOT EXISTS ix_edge_src        ON edge(src, rel) WHERE t_expired IS NULL;
+CREATE INDEX IF NOT EXISTS ix_edge_dst        ON edge(dst, rel) WHERE t_expired IS NULL;
 CREATE INDEX IF NOT EXISTS ix_edge_live       ON edge(t_invalid) WHERE t_invalid IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ix_edge_unique ON edge(src, dst, rel);
 `;
@@ -282,7 +285,7 @@ interface DbNodeRow {
   topic: string | null;
   tags: string | null;
   importance: number | null;
-  confidence: string | null;
+  confidence: number | null;
   content_hash: string | null;
   namespace: string | null;
   meta: string | null;
@@ -353,7 +356,7 @@ function rowToNodeRecord(row: DbNodeRow): NodeRecord {
   if (row.summary != null) rec.summary = row.summary;
   if (row.topic != null) rec.topic = row.topic;
   if (row.importance != null) rec.importance = row.importance;
-  if (row.confidence != null) rec.confidence = row.confidence as Confidence;
+  if (row.confidence != null) rec.confidence = row.confidence as unknown as Confidence;
   if (row.t_invalid != null) rec.tInvalid = row.t_invalid;
   if (row.t_expires != null) rec.tExpires = row.t_expires;
   const meta = parseJsonOptional(row.meta);
@@ -554,10 +557,26 @@ export class SqliteGraphBackend implements GraphBackend {
       this.db.exec(FTS_DDL);
       this.db.exec(FTS_TRIGGERS);
 
+      // Rebuild FTS index from existing rows (content='node' external mode).
+      // Rows inserted before FTS triggers existed must be registered in the FTS
+      // index; otherwise the first UPDATE trigger fails with SQLITE_CORRUPT_VTAB
+      // because content='node' mode detects the row in the content table but not
+      // in the FTS index. Safe on fresh DBs (no rows → no-op).
+      this.db.exec(
+        `INSERT INTO fts_node(rowid, content, name, summary)
+         SELECT rowid, content, name, summary FROM node`,
+      );
+
       this.db
         .prepare(`INSERT INTO _schema_version (version) VALUES (?)`)
         .run(targetVersion);
     }
+
+    // Ensure the unique edge index exists on pre-unification stores.
+    // The version gate above means GRAPH_DDL (which contains this index)
+    // is only executed on version < 1 — stores already at version 1
+    // need this applied separately.
+    this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ix_edge_unique ON edge(src, dst, rel)`);
 
     this.schemaApplied = true;
   }
@@ -1259,6 +1278,43 @@ export class SqliteGraphBackend implements GraphBackend {
 
     return { nodes, edges };
   }
+}
+
+// ─── Rebuild table helper ──────────────────────────────────────────────────────
+
+/**
+ * Rebuild a table with a new DDL while preserving data.
+ * SQLite cannot ALTER TABLE CHECK constraints, so this is the standard
+ * rename→create→copy→drop→rename dance. Runs in a transaction.
+ *
+ * @param db          Database handle
+ * @param tableName   Table to rebuild (e.g., 'node', 'edge', 'organizer_queue')
+ * @param newDDL      Full CREATE TABLE statement with the updated constraints
+ * @param columnMap   Map of old column names to new column names (for renames)
+ *                    or an array of column names (if no renames)
+ */
+export function rebuildTable(
+  db: Database.Database,
+  tableName: string,
+  newDDL: string,
+  columnMap: string[] | Record<string, string>,
+): void {
+  const columns: string[] = Array.isArray(columnMap)
+    ? columnMap
+    : Object.keys(columnMap);
+  const selectCols = Array.isArray(columnMap)
+    ? columns.join(', ')
+    : Object.entries(columnMap).map(([old, nu]) => `${old} AS ${nu}`).join(', ');
+
+  db.transaction(() => {
+    db.exec(`ALTER TABLE ${tableName} RENAME TO ${tableName}_old`);
+    db.exec(newDDL);
+    db.exec(
+      `INSERT INTO ${tableName} (${columns.join(', ')})
+       SELECT ${selectCols} FROM ${tableName}_old`,
+    );
+    db.exec(`DROP TABLE ${tableName}_old`);
+  })();
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
