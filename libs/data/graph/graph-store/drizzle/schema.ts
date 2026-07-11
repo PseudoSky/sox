@@ -53,6 +53,9 @@ export const node = sqliteTable(
     ixNodeSession: index('ix_node_session').on(table.sessionId),
     ixNodeValidity: index('ix_node_validity').on(table.tInvalid).where(sql`${table.tInvalid} IS NULL`),
     ixNodeImportance: index('ix_node_importance').on(table.importance),
+    // NOTE: Drizzle's SQLite index types don't support `.desc()` on index columns.
+    // The baseline migration SQL (0000_sad_onslaught.sql) uses raw SQL with `t_created DESC`.
+    // If drizzle-kit generate is re-run, manually restore DESC in the generated migration.
     ixNodeTemporal: index('ix_node_temporal').on(table.tInvalid, table.tCreated).where(sql`${table.tInvalid} IS NULL`),
     ixNodeTopic: index('ix_node_topic').on(table.topic).where(sql`${table.topic} IS NOT NULL`),
     ixNodeProject: index('ix_node_project').on(table.projectPath).where(sql`${table.projectPath} IS NOT NULL`),

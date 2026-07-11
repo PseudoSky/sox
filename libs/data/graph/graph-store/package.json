@@ -59,8 +59,5 @@
     "entrypoints": [
       "dist/index.js"
     ]
-  },
-  "devDependencies": {
-    "drizzle-kit": "^0.31.10"
   }
 }

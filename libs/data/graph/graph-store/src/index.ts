@@ -1,7 +1,7 @@
 // @adhd/sox-graph-store — Bi-temporal graph store over SQLite
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
-import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { rebuildTable } from './rebuild-table.js';
@@ -640,12 +640,7 @@ export class SqliteGraphBackend implements GraphBackend {
     // for idempotency), all indexes, and CHECK constraints. Uses the
     // __drizzle_migrations table for version tracking (replaces old _schema_version).
     const drizzleDb = drizzle(this.db);
-    const migrationsFolder = path.join(
-      path.dirname(new URL(import.meta.url).pathname),
-      '..',
-      'drizzle',
-      'migrations',
-    );
+    const migrationsFolder = fileURLToPath(new URL('../drizzle/migrations', import.meta.url));
     migrate(drizzleDb, { migrationsFolder });
 
     // Drizzle cannot express FTS5 virtual tables or triggers.
