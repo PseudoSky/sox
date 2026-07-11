@@ -1,8 +1,16 @@
 // @adhd/sox-graph-store — Bi-temporal graph store over SQLite
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
-import { runMigrations, rebuildTable } from './migrations.js';
-export { runMigrations, rebuildTable }; // re-export for consumers (memory-core, etc.)
+import * as path from 'node:path';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { rebuildTable } from './rebuild-table.js';
+export { rebuildTable }; // re-export for consumers (memory-core, etc.)
+
+// GRAPH_DDL / FTS_DDL / FTS_TRIGGERS are kept exported for backward-compat with
+// consumers (memory-core/schema.ts) that compose them into their own DDL strings.
+// The Drizzle migration handles table creation via drizzle/migrations/ at startup;
+// these raw DDL strings are still valid for idempotent (IF NOT EXISTS) composition.
 
 // ─── Schema DDL ───────────────────────────────────────────────────────────────
 
@@ -99,6 +107,90 @@ CREATE TRIGGER IF NOT EXISTS fts_node_au AFTER UPDATE ON node BEGIN
     VALUES (new.rowid, new.content, new.name, new.summary);
 END;
 `;
+
+// ─── Table rebuild helpers for CHECK constraint upgrades ─────────────────────
+
+// The canonical node table DDL (without IF NOT EXISTS) for table rebuilds.
+// See also: drizzle/schema.ts (migration management) and graph-store.spec.ts V1_* (test helpers).
+const NODE_TABLE_DDL = `CREATE TABLE node (
+  rowid        INTEGER PRIMARY KEY,
+  uid          TEXT UNIQUE NOT NULL,
+  kind         TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session','generic')),
+  content      TEXT,
+  name         TEXT,
+  summary      TEXT,
+  topic        TEXT,
+  tags         TEXT,
+  importance   REAL DEFAULT 1.0,
+  confidence   REAL,
+  content_hash TEXT,
+  namespace    TEXT DEFAULT 'global',
+  meta         TEXT,
+  agent_id     TEXT,
+  session_id   TEXT,
+  source       TEXT CHECK (source IN ('message','tool_output','observation','document','reflection','import')),
+  project_path TEXT,
+  level        INTEGER,
+  resume_state TEXT,
+  t_occurred   TEXT,
+  t_expires    TEXT,
+  t_created    TEXT NOT NULL,
+  t_valid      TEXT,
+  t_invalid    TEXT,
+  is_superseded INTEGER DEFAULT 0,
+  access_count INTEGER DEFAULT 0,
+  last_access  TEXT,
+  t_updated    TEXT
+)`;
+
+const EDGE_TABLE_DDL = `CREATE TABLE edge (
+  rowid     INTEGER PRIMARY KEY,
+  src       INTEGER NOT NULL REFERENCES node(rowid) ON DELETE CASCADE,
+  dst       INTEGER NOT NULL REFERENCES node(rowid) ON DELETE CASCADE,
+  rel       TEXT NOT NULL CHECK (rel IN ('MENTIONS','SUPPORTS','RELATES_TO','SUPERSEDES','DERIVED_FROM','MEMBER_OF','PART_OF','SAME_AS','ASSIGNED_TO','DEPENDS_ON')),
+  weight    REAL DEFAULT 1.0,
+  confidence REAL,
+  origin    TEXT CHECK (origin IN ('extracted','inferred','user_asserted')),
+  meta      TEXT,
+  t_created TEXT NOT NULL,
+  t_expired TEXT,
+  t_valid   TEXT,
+  t_invalid TEXT
+)`;
+
+const NODE_COLUMNS = [
+  'rowid', 'uid', 'kind', 'content', 'name', 'summary', 'topic', 'tags',
+  'importance', 'confidence', 'content_hash', 'namespace', 'meta', 'agent_id',
+  'session_id', 'source', 'project_path', 'level', 'resume_state', 't_occurred',
+  't_expires', 't_created', 't_valid', 't_invalid', 'is_superseded',
+  'access_count', 'last_access', 't_updated',
+];
+
+const EDGE_COLUMNS = [
+  'rowid', 'src', 'dst', 'rel', 'weight', 'confidence', 'origin', 'meta',
+  't_created', 't_expired', 't_valid', 't_invalid',
+];
+
+const NODE_INDEX_DDLS = [
+  `CREATE INDEX IF NOT EXISTS ix_node_kind       ON node(kind)`,
+  `CREATE INDEX IF NOT EXISTS ix_node_hash       ON node(content_hash)`,
+  `CREATE INDEX IF NOT EXISTS ix_node_agent      ON node(agent_id)`,
+  `CREATE INDEX IF NOT EXISTS ix_node_session    ON node(session_id)`,
+  `CREATE INDEX IF NOT EXISTS ix_node_validity   ON node(t_invalid) WHERE t_invalid IS NULL`,
+  `CREATE INDEX IF NOT EXISTS ix_node_importance ON node(importance)`,
+  `CREATE INDEX IF NOT EXISTS ix_node_temporal   ON node(t_invalid, t_created DESC) WHERE t_invalid IS NULL`,
+  `CREATE INDEX IF NOT EXISTS ix_node_topic      ON node(topic) WHERE topic IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS ix_node_namespace  ON node(namespace)`,
+  `CREATE INDEX IF NOT EXISTS ix_node_expires    ON node(t_expires) WHERE t_expires IS NOT NULL`,
+];
+
+const EDGE_INDEX_DDLS = [
+  `CREATE INDEX IF NOT EXISTS ix_edge_src        ON edge(src, rel) WHERE t_expired IS NULL`,
+  `CREATE INDEX IF NOT EXISTS ix_edge_dst        ON edge(dst, rel) WHERE t_expired IS NULL`,
+  `CREATE INDEX IF NOT EXISTS ix_edge_live       ON edge(t_invalid) WHERE t_invalid IS NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS ix_edge_unique ON edge(src, dst, rel)`,
+];
 
 // ─── Error taxonomy ───────────────────────────────────────────────────────────
 
@@ -544,41 +636,104 @@ export class SqliteGraphBackend implements GraphBackend {
       this.db.exec(pragma);
     }
 
-    // Ensure the version tracking table exists
-    this.db.exec(`CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)`);
+    // Run Drizzle migrations — creates node + edge tables (with IF NOT EXISTS
+    // for idempotency), all indexes, and CHECK constraints. Uses the
+    // __drizzle_migrations table for version tracking (replaces old _schema_version).
+    const drizzleDb = drizzle(this.db);
+    const migrationsFolder = path.join(
+      path.dirname(new URL(import.meta.url).pathname),
+      '..',
+      'drizzle',
+      'migrations',
+    );
+    migrate(drizzleDb, { migrationsFolder });
 
-    const currentVersion = this.db
-      .prepare<[], { version: number }>(
-        `SELECT version FROM _schema_version ORDER BY version DESC LIMIT 1`,
-      )
-      .get();
+    // Drizzle cannot express FTS5 virtual tables or triggers.
+    // These are applied every startup (CREATE IF NOT EXISTS / triggers are idempotent).
+    this.db.exec(FTS_DDL);
+    this.db.exec(FTS_TRIGGERS);
 
-    const targetVersion = 1;
+    // Rebuild FTS index from existing rows (content='node' external mode).
+    // Rows inserted before FTS triggers existed must be registered in the FTS
+    // index; otherwise the first UPDATE trigger fails with SQLITE_CORRUPT_VTAB
+    // because content='node' mode detects the row in the content table but not
+    // in the FTS index. Safe on fresh DBs (no rows → no-op).
+    this.db.exec(
+      `INSERT INTO fts_node(rowid, content, name, summary)
+       SELECT rowid, content, name, summary FROM node`,
+    );
 
-    if (!currentVersion || currentVersion.version < targetVersion) {
-      this.db.exec(GRAPH_DDL);
-      this.db.exec(FTS_DDL);
-      this.db.exec(FTS_TRIGGERS);
-
-      // Rebuild FTS index from existing rows (content='node' external mode).
-      // Rows inserted before FTS triggers existed must be registered in the FTS
-      // index; otherwise the first UPDATE trigger fails with SQLITE_CORRUPT_VTAB
-      // because content='node' mode detects the row in the content table but not
-      // in the FTS index. Safe on fresh DBs (no rows → no-op).
-      this.db.exec(
-        `INSERT INTO fts_node(rowid, content, name, summary)
-         SELECT rowid, content, name, summary FROM node`,
-      );
-
-      this.db
-        .prepare(`INSERT INTO _schema_version (version) VALUES (?)`)
-        .run(targetVersion);
-    }
-
-    // Run any pending migrations (v2, v3, …) on pre-existing stores.
-    runMigrations(this.db);
+    // Ensure CHECK constraints are up-to-date on pre-existing stores.
+    // Drizzle's CREATE TABLE IF NOT EXISTS is a no-op on existing tables,
+    // so old CHECK constraints (without 'generic', without 'DEPENDS_ON')
+    // from earlier versions must be upgraded explicitly.
+    this.ensureCheckConstraints();
 
     this.schemaApplied = true;
+  }
+
+  /**
+   * Upgrade CHECK constraints on pre-existing tables that were created by an
+   * earlier version of graph-store before Drizzle migration management was in
+   * place. Uses the rename→create→copy→drop→rename dance (rebuildTable) since
+   * SQLite does not support ALTER TABLE CHECK constraint changes.
+   *
+   * Also adds any canonical columns that may be missing from pre-Drizzle stores
+   * (e.g. level, resume_state on node; t_expired on edge, added in the old v2
+   * migration). Safe to call on fresh stores — checks exit early when columns
+   * exist and constraints already include the expected values.
+   */
+  private ensureCheckConstraints(): void {
+    // Step 1: Ensure all canonical columns exist on pre-existing stores.
+    // The old v1 schema (before custom migrations) was missing level, resume_state
+    // on node and t_expired on edge. These must be present before any table rebuild
+    // so the INSERT…SELECT copy in rebuildTable doesn't fail with "no such column".
+    this.addColumnIfMissing('node', 'level', 'INTEGER');
+    this.addColumnIfMissing('node', 'resume_state', 'TEXT');
+    this.addColumnIfMissing('edge', 't_expired', 'TEXT');
+
+    // Step 2: Node kind CHECK must include 'generic' (upgraded from old v3).
+    const nodeRow = this.db
+      .prepare<[], { sql: string }>(
+        `SELECT sql FROM sqlite_master WHERE type='table' AND name='node'`,
+      )
+      .get();
+    if (nodeRow && !nodeRow.sql.includes("'generic'")) {
+      this.db.transaction(() => {
+        rebuildTable(this.db, 'node', NODE_TABLE_DDL, NODE_COLUMNS);
+        for (const ddl of NODE_INDEX_DDLS) this.db.exec(ddl);
+        // Recreate FTS triggers + rebuild FTS index after table rebuild
+        this.db.exec(FTS_TRIGGERS);
+        this.db.exec(
+          `INSERT INTO fts_node(rowid, content, name, summary)
+           SELECT rowid, content, name, summary FROM node`,
+        );
+      })();
+    }
+
+    // Step 3: Edge rel CHECK must include 'DEPENDS_ON' (upgraded from old v4).
+    const edgeRow = this.db
+      .prepare<[], { sql: string }>(
+        `SELECT sql FROM sqlite_master WHERE type='table' AND name='edge'`,
+      )
+      .get();
+    if (edgeRow && !edgeRow.sql.includes("'DEPENDS_ON'")) {
+      this.db.transaction(() => {
+        rebuildTable(this.db, 'edge', EDGE_TABLE_DDL, EDGE_COLUMNS);
+        for (const ddl of EDGE_INDEX_DDLS) this.db.exec(ddl);
+      })();
+    }
+  }
+
+  /** Add a column if it does not already exist (idempotent). */
+  private addColumnIfMissing(table: string, column: string, type: string): void {
+    const cols = this.db
+      .prepare<[], { name: string }>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((c) => c.name);
+    if (!cols.includes(column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
   }
 
   // ── Node writes ───────────────────────────────────────────────────────────

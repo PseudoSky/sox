@@ -27,7 +27,8 @@
       "cache": true,
       "inputs": [
         "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/tsconfig.lib.json"
+        "{projectRoot}/tsconfig.lib.json",
+        "{projectRoot}/drizzle/**"
       ]
     },
     "test": {

@@ -16,7 +16,6 @@ import {
   PUBLIC_EDGE_RELS,
   rebuildTable,
 } from './index.js';
-import { MIGRATIONS, runMigrations } from './migrations.js';
 import type { GraphBackend, NodeMeta, NodeRecord, EdgeRel } from './index.js';
 
 function freshBackend(): { db: Database.Database; backend: GraphBackend } {
@@ -1430,9 +1429,6 @@ function createV1Store(): Database.Database {
   for (const idx of V1_INDEXES) {
     db.exec(idx);
   }
-  // Stamp version 1 in _schema_version
-  db.exec(`CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)`);
-  db.prepare(`INSERT INTO _schema_version (version) VALUES (?)`).run(1);
   // Rebuild FTS index for any pre-existing data
   db.exec(
     `INSERT INTO fts_node(rowid, content, name, summary)
@@ -1458,7 +1454,7 @@ describe('migrations', () => {
        VALUES (1, 1, 'MENTIONS', ?)`,
     ).run(now);
 
-    // Apply schema with full migration
+    // Apply schema with Drizzle migration
     const backend = new SqliteGraphBackend(db);
     backend.applySchema();
 
@@ -1490,22 +1486,22 @@ describe('migrations', () => {
       .get() as { name: string } | undefined;
     expect(uniqueIndex).toBeDefined();
 
-    // Schema version reflects latest migration
-    const latestVersion = db
-      .prepare(`SELECT version FROM _schema_version ORDER BY version DESC LIMIT 1`)
-      .get() as { version: number };
-    const latestMigration = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 1);
-    expect(latestVersion.version).toBeGreaterThanOrEqual(latestMigration);
+    // Schema migration tracking table exists
+    const drizzleMigrations = db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='__drizzle_migrations'`)
+      .get() as { name: string } | undefined;
+    expect(drizzleMigrations).toBeDefined();
 
     db.close();
   });
 
-  it('v1→latest migration: kind=generic is accepted after v3', () => {
+  it('v1→latest migration: kind=generic is accepted after migration', () => {
     const db = createV1Store();
     const backend = new SqliteGraphBackend(db);
     backend.applySchema();
 
-    // Attempt to insert a node with kind='generic' (would fail under old CHECK)
+    // Attempt to insert a node with kind='generic' (would fail under old CHECK
+    // on v1 store). The migration should have updated the CHECK constraint.
     const now = new Date().toISOString();
     db.prepare(
       `INSERT INTO node (uid, kind, content, t_created)
@@ -1522,7 +1518,7 @@ describe('migrations', () => {
     db.close();
   });
 
-  it('v1→latest migration: DEPENDS_ON edge is accepted after v4', () => {
+  it('v1→latest migration: DEPENDS_ON edge is accepted after migration', () => {
     const db = createV1Store();
     const backend = new SqliteGraphBackend(db);
     backend.applySchema();
@@ -1538,7 +1534,7 @@ describe('migrations', () => {
        VALUES (?, 'episode', ?, ?)`,
     ).run('dep-dst-1', 'target node', now);
 
-    // Insert edge with DEPENDS_ON (would fail under old CHECK)
+    // Insert edge with DEPENDS_ON (would fail under old CHECK on v1 store)
     db.prepare(
       `INSERT INTO edge (src, dst, rel, t_created)
        VALUES (1, 2, 'DEPENDS_ON', ?)`,
@@ -1555,64 +1551,52 @@ describe('migrations', () => {
     db.close();
   });
 
-  it('transactional rollback: failed migration leaves store at previous version', () => {
+  it('Drizzle __drizzle_migrations table is created and tracked', () => {
     const db = createV1Store();
 
-    // Inject a failing migration into MIGRATIONS
-    const badMigration = {
-      version: 99,
-      description: 'Failing migration for rollback test',
-      up(_db: Database.Database): void {
-        throw new Error('Intentional migration failure');
-      },
-    };
-    MIGRATIONS.push(badMigration);
+    // Verify __drizzle_migrations does not exist yet
+    let tbl = db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='__drizzle_migrations'`)
+      .get() as { name: string } | undefined;
+    expect(tbl).toBeUndefined();
 
-    try {
-      runMigrations(db);
-    } catch {
-      // expected
-    }
+    // Apply schema — Drizzle creates and stamps the migration
+    const backend = new SqliteGraphBackend(db);
+    backend.applySchema();
 
-    // Clean up the bad migration
-    const idx = MIGRATIONS.indexOf(badMigration);
-    if (idx >= 0) MIGRATIONS.splice(idx, 1);
+    // __drizzle_migrations now exists and has one entry
+    tbl = db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='__drizzle_migrations'`)
+      .get() as { name: string } | undefined;
+    expect(tbl).toBeDefined();
 
-    // The failed migration (v99) was rolled back, so the highest version
-    // should still be v1 or whatever was stamped before the failure.
-    const versions = db
-      .prepare(`SELECT version FROM _schema_version ORDER BY version DESC`)
-      .all() as { version: number }[];
-    expect(versions.length).toBeGreaterThanOrEqual(1);
-    // No v99 row exists
-    const hasV99 = versions.some((r) => r.version === 99);
-    expect(hasV99).toBe(false);
+    const rows = db
+      .prepare(`SELECT * FROM __drizzle_migrations`)
+      .all() as Array<{ hash: string; created_at: string }>;
+    expect(rows.length).toBeGreaterThanOrEqual(1);
 
     db.close();
   });
 
-  it('multiple calls to runMigrations are idempotent', () => {
+  it('re-applying schema is idempotent', () => {
     const db = createV1Store();
 
-    // Run migrations once
-    runMigrations(db);
-    const versionAfterFirst = (
-      db
-        .prepare(`SELECT version FROM _schema_version ORDER BY version DESC LIMIT 1`)
-        .get() as { version: number }
-    ).version;
+    const backend = new SqliteGraphBackend(db);
+    backend.applySchema(); // first call
 
-    // Run again — should be no-op
-    runMigrations(db);
-    const versionAfterSecond = (
-      db
-        .prepare(`SELECT version FROM _schema_version ORDER BY version DESC LIMIT 1`)
-        .get() as { version: number }
-    ).version;
+    // Count migration rows before second call
+    const rowsBefore = db
+      .prepare(`SELECT COUNT(*) AS cnt FROM __drizzle_migrations`)
+      .get() as { cnt: number };
 
-    expect(versionAfterSecond).toBe(versionAfterFirst);
+    backend.applySchema(); // second call — should be no-op (schemaApplied guard)
 
-    // All CHECK constraints still work after idempotent re-run
+    const rowsAfter = db
+      .prepare(`SELECT COUNT(*) AS cnt FROM __drizzle_migrations`)
+      .get() as { cnt: number };
+    expect(rowsAfter.cnt).toBe(rowsBefore.cnt);
+
+    // All CHECK constraints still work after idempotent re-apply
     const now = new Date().toISOString();
     db.prepare(
       `INSERT INTO node (uid, kind, content, t_created)

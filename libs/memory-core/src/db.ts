@@ -9,7 +9,7 @@ import * as sqliteVec from 'sqlite-vec';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { rebuildTable, runMigrations } from '@adhd/sox-graph-store';
+import { rebuildTable } from '@adhd/sox-graph-store';
 import { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
 import { EMBED_DIM, getActiveEmbedModel } from './embed.js';
 import { closeDbWithLease } from './lease.js';
@@ -235,12 +235,6 @@ export function openDb(dbPath: string): Database.Database {
   migrateAddColumn(db, 'node', 'level', 'INTEGER');
   migrateAddColumn(db, 'node', 'resume_state', 'TEXT');
   migrateAddColumn(db, 'edge', 't_expired', 'TEXT');
-
-  // Run graph-store migrations (v2, v3, v4) for any schema evolution that
-  // the ad-hoc migrateAddColumn above doesn't cover — CHECK constraint
-  // relaxations (kind:generic, rel:DEPENDS_ON), indexes, etc.
-  // Idempotent: already-applied migrations are skipped.
-  runMigrations(db);
 
   // WP-4: request_ledger table migration — ensures the table exists on upgraded stores
   // that were created before the request_ledger DDL was added to schema.ts.

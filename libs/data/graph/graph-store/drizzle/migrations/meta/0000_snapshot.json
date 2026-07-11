@@ -1,0 +1,477 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "27e22775-bf17-4a29-bc87-d4fe2e8a0641",
+  "prevId": "00000000-0000-0000-0000-000000000000",
+  "tables": {
+    "edge": {
+      "name": "edge",
+      "columns": {
+        "rowid": {
+          "name": "rowid",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "src": {
+          "name": "src",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "dst": {
+          "name": "dst",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "rel": {
+          "name": "rel",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "weight": {
+          "name": "weight",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false,
+          "default": 1
+        },
+        "confidence": {
+          "name": "confidence",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "meta": {
+          "name": "meta",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "t_created": {
+          "name": "t_created",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "t_expired": {
+          "name": "t_expired",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "t_valid": {
+          "name": "t_valid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "t_invalid": {
+          "name": "t_invalid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "ix_edge_src": {
+          "name": "ix_edge_src",
+          "columns": [
+            "src",
+            "rel"
+          ],
+          "isUnique": false,
+          "where": "\"edge\".\"t_expired\" IS NULL"
+        },
+        "ix_edge_dst": {
+          "name": "ix_edge_dst",
+          "columns": [
+            "dst",
+            "rel"
+          ],
+          "isUnique": false,
+          "where": "\"edge\".\"t_expired\" IS NULL"
+        },
+        "ix_edge_live": {
+          "name": "ix_edge_live",
+          "columns": [
+            "t_invalid"
+          ],
+          "isUnique": false,
+          "where": "\"edge\".\"t_invalid\" IS NULL"
+        },
+        "ix_edge_unique": {
+          "name": "ix_edge_unique",
+          "columns": [
+            "src",
+            "dst",
+            "rel"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "edge_src_node_rowid_fk": {
+          "name": "edge_src_node_rowid_fk",
+          "tableFrom": "edge",
+          "tableTo": "node",
+          "columnsFrom": [
+            "src"
+          ],
+          "columnsTo": [
+            "rowid"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "edge_dst_node_rowid_fk": {
+          "name": "edge_dst_node_rowid_fk",
+          "tableFrom": "edge",
+          "tableTo": "node",
+          "columnsFrom": [
+            "dst"
+          ],
+          "columnsTo": [
+            "rowid"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "node": {
+      "name": "node",
+      "columns": {
+        "rowid": {
+          "name": "rowid",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "uid": {
+          "name": "uid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "summary": {
+          "name": "summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "topic": {
+          "name": "topic",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "tags": {
+          "name": "tags",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "importance": {
+          "name": "importance",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false,
+          "default": 1
+        },
+        "confidence": {
+          "name": "confidence",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "content_hash": {
+          "name": "content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "namespace": {
+          "name": "namespace",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false,
+          "default": "'global'"
+        },
+        "meta": {
+          "name": "meta",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "project_path": {
+          "name": "project_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "level": {
+          "name": "level",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "resume_state": {
+          "name": "resume_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "t_occurred": {
+          "name": "t_occurred",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "t_expires": {
+          "name": "t_expires",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "t_created": {
+          "name": "t_created",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "t_valid": {
+          "name": "t_valid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "t_invalid": {
+          "name": "t_invalid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "is_superseded": {
+          "name": "is_superseded",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false,
+          "default": 0
+        },
+        "access_count": {
+          "name": "access_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false,
+          "default": 0
+        },
+        "last_access": {
+          "name": "last_access",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "t_updated": {
+          "name": "t_updated",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "node_uid_unique": {
+          "name": "node_uid_unique",
+          "columns": [
+            "uid"
+          ],
+          "isUnique": true
+        },
+        "ix_node_kind": {
+          "name": "ix_node_kind",
+          "columns": [
+            "kind"
+          ],
+          "isUnique": false
+        },
+        "ix_node_hash": {
+          "name": "ix_node_hash",
+          "columns": [
+            "content_hash"
+          ],
+          "isUnique": false
+        },
+        "ix_node_agent": {
+          "name": "ix_node_agent",
+          "columns": [
+            "agent_id"
+          ],
+          "isUnique": false
+        },
+        "ix_node_session": {
+          "name": "ix_node_session",
+          "columns": [
+            "session_id"
+          ],
+          "isUnique": false
+        },
+        "ix_node_validity": {
+          "name": "ix_node_validity",
+          "columns": [
+            "t_invalid"
+          ],
+          "isUnique": false,
+          "where": "\"node\".\"t_invalid\" IS NULL"
+        },
+        "ix_node_importance": {
+          "name": "ix_node_importance",
+          "columns": [
+            "importance"
+          ],
+          "isUnique": false
+        },
+        "ix_node_temporal": {
+          "name": "ix_node_temporal",
+          "columns": [
+            "t_invalid",
+            "t_created"
+          ],
+          "isUnique": false,
+          "where": "\"node\".\"t_invalid\" IS NULL"
+        },
+        "ix_node_topic": {
+          "name": "ix_node_topic",
+          "columns": [
+            "topic"
+          ],
+          "isUnique": false,
+          "where": "\"node\".\"topic\" IS NOT NULL"
+        },
+        "ix_node_project": {
+          "name": "ix_node_project",
+          "columns": [
+            "project_path"
+          ],
+          "isUnique": false,
+          "where": "\"node\".\"project_path\" IS NOT NULL"
+        },
+        "ix_node_namespace": {
+          "name": "ix_node_namespace",
+          "columns": [
+            "namespace"
+          ],
+          "isUnique": false
+        },
+        "ix_node_expires": {
+          "name": "ix_node_expires",
+          "columns": [
+            "t_expires"
+          ],
+          "isUnique": false,
+          "where": "\"node\".\"t_expires\" IS NOT NULL"
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {}
+  }
+}
