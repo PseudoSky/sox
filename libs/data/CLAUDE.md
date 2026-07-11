@@ -31,13 +31,36 @@ in each package directory — see those for package-specific rules.
 
 ## BL-11 — Embedding worker boundary
 
-**The real `embed()` runs in a worker thread.** Do NOT load `onnxruntime-node` or `fastembed` inline
-on the main thread alongside `openDb`. The worker boundary lives in
-`libs/data/embed/embedding-provider/src/embedWorker.ts` (the only file that lazy-requires fastembed
-at runtime). The bundle tool (`tools/bundle-extension.cjs`) must emit `dist/embedWorker.js` as a
-sibling bundle — a missing sibling is a silent regression (the Worker spawn fails, no immediate error,
-embed falls back to hash silently). After building the `embedding-provider`, confirm
-`dist/embedWorker.js` exists.
+**The real `embed()` runs off the main thread — but NOT all in the same place.** Do NOT load
+`onnxruntime-node` or `fastembed` inline on the main thread alongside `openDb`. As of `3916afd`
+(BL-238, 2026-07-09) the process topology is **split across two isolation mechanisms**, because a
+single shared `worker_threads.Worker` hosting fastembed's `onnxruntime-node@1.21.0` alongside
+transformers.js's `onnxruntime-node@1.24.3` crashes the whole process (a real native thread-safety
+limitation, proven via from-scratch repro — not an ABI mismatch):
+
+- **`libs/data/embed/embedding-provider/src/fastembedProcessHost.ts`** — the fastembed carrier, run
+  in a **forked child PROCESS** (never a worker thread) via `sharedFastembedProcess.ts`'s
+  `getSharedFastembedProcess()`. This is the file that lazy-requires `fastembed` at runtime today.
+- **`libs/data/embed/embedding-provider/src/embedWorker.ts`** — hosts cross-encoder rerank + NLI
+  verify (both `onnxruntime-node@1.24.3`, proven safe to share) in **one shared
+  `worker_threads.Worker`** via `sharedOnnxWorker.ts`'s `getSharedOnnxWorker()`. It no longer carries
+  fastembed.
+
+All three files (`embedWorker.ts`, `fastembedProcessHost.ts`, `sharedOnnxWorker.ts`) are declared as
+`sox.sidecars` in `embedding-provider`'s own `package.json` and are bundled automatically into every
+consumer via the bundler's sidecar auto-discovery (BL-262) — see
+[`docs/standards/extension-bundling.md`](../standards/extension-bundling.md) §3 for the full
+mechanism. A missing sidecar is **not a silent regression** under that mechanism: the bundle build
+itself fails (`verifySidecarReferences`) if a consumer's bundle references a sibling `.js` that was
+never emitted. The residual risk is narrower — a *new* consumer whose build somehow doesn't inline
+`embedding-provider` at all, or a hand-rolled bundle pipeline outside `tools/bundle-extension.cjs` —
+and the runtime symptom there is **loud, not silent**: `createEmbeddingProvider()` throws
+`ResolutionError` at init (there is no fallback path to fall back to — `SOX_EMBED_BACKEND=hash` and
+the hash backend were deleted, BL-250), and any embed calls already in flight strand in the backlog
+(visible via `memory_ping.store.embed_backlog`). "Embed falls back to hash silently" describes a
+backend that no longer exists; do not repeat that claim. After building any bundle that inlines
+`embedding-provider`, confirm `dist/embedWorker.js`, `dist/fastembedProcessHost.js`, and
+`dist/sharedOnnxWorker.js` all exist.
 
 ## Key footguns
 

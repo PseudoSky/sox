@@ -24,8 +24,8 @@
       },
       "cache": true,
       "inputs": [
-        "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/tsconfig.json"
+        "production",
+        "^production"
       ],
       "dependsOn": [
         "^build"
@@ -43,8 +43,9 @@
       },
       "cache": true,
       "inputs": [
-        "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/tsconfig.json"
+        "production",
+        "^production",
+        "{workspaceRoot}/tools/bundle-extension.cjs"
       ],
       "dependsOn": [
         "compile",

@@ -23,14 +23,10 @@
       },
       "cache": true,
       "inputs": [
-        "{projectRoot}/src/**/*.ts",
-        "{projectRoot}/tsconfig.json",
+        "production",
+        "^production",
         "{projectRoot}/scripts/gen-schema.cjs",
-        "{workspaceRoot}/tools/bundle-extension.cjs",
-        "{workspaceRoot}/libs/data/embed/embedding-provider/src/embedWorker.ts",
-        "{workspaceRoot}/libs/data/embed/embedding-provider/src/fastembedProcessHost.ts",
-        "{workspaceRoot}/libs/data/embed/embedding-provider/src/sharedOnnxWorker.ts",
-        "{workspaceRoot}/libs/data/embed/embedding-provider/package.json"
+        "{workspaceRoot}/tools/bundle-extension.cjs"
       ],
       "dependsOn": [
         "^build"
