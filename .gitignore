@@ -48,3 +48,6 @@ docs/plan/runtime-productionization/_shared/baselines/*.db-shm
 
 # git worktrees (house rule: always under .worktrees/)
 .worktrees/
+
+# project/local-scope sox data root (machine-local state, never committed)
+.adhd/

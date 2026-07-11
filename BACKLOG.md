@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-11 (regenerated mechanically; see BL-224)
 
-**Total open: 44.** This block is DERIVED from the `**...**` status marker on each
+**Total open: 45.** This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
 five already-RESOLVED items as top priorities, including `BL-62` as the "#1 only PROVEN live bug"
@@ -21,7 +21,7 @@ node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.
 |---|---|
 | **HIGH** | `BL-62`, `BL-96`, `BL-97`, `BL-225`, `BL-254`, `BL-273`, `BL-275`, `BL-284`, `BL-288`, `BL-293`, `BL-301`, `BL-302` |
 | **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-259`, `BL-274`, `BL-282`, `BL-285`, `BL-291`, `BL-294`, `BL-295`, `BL-296`, `BL-297`, `BL-300`, `BL-304` |
-| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264`, `BL-283`, `BL-287`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299`, `BL-303` |
+| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264`, `BL-283`, `BL-287`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299`, `BL-303`, `BL-305` |
 | **FEATURE** | `BL-163`, `BL-215` |
 
 ### Where to start
@@ -5871,3 +5871,9 @@ Surfaced while evaluating whether the adhd registry should reuse `@adhd/sox-grap
 **Definition of done (the fully-wired system, replacing the "route around it" posture):** the agent-mcp-authoring component registry stores components as `graph-store` nodes (`kind:'component'`), so `fts_node` triggers index them (sox FTS5, BM25) → `vector-store` provides the vec channel → `hybrid-search` `SqliteSearchBackend` fuses both → `component_search` graded by the golden-set nDCG@5 ≥ 0.70 bar. No bespoke FTS5, no dropped "phantom" deps — every sox package built for this is wired into that path.
 
 **Supersedes/reframes:** BL-289, BL-290, BL-303 (disposition), and the adhd plan's decisions.md §D6 (flip Option B → Option A).
+
+### BL-305 — tsc-built packages ship a verbatim `dist/package.json` whose nested `exports` field Node.js IGNORES — **Open (LOW, packaging)** (2026-07-11)
+
+Surfaced mechanically by the new `verify:publint-attw` gate (BL-266) and reported by the BL-265/266 worker: `libs/data/embed/embedding-provider/dist/package.json` (and likely every `@adhd/sox-nx:atomic-tsc`-built package that copies its manifest into `dist/`) is a byte-for-byte copy of the source `package.json`, including `main`/`types`/`exports` paths written for the PACKAGE root (`./dist/index.js`). publint flags it: a nested `package.json`'s `exports` field "only works in root package.json files, not nested ones" — from inside `dist/` those paths would mean `dist/dist/index.js`, which doesn't exist. Today it is harmless (nothing resolves the nested manifest as a package root; publint reports it as a non-gating Warning), but it is a landmine for any future consumer that treats `dist/` as a publishable root (`npm pack` from dist, `file:` deps pointing at dist, the pack-smoke tarball path).
+
+**Fix:** the atomic-tsc copy step should REWRITE the manifest for dist context (strip or re-root `main`/`types`/`exports`, drop `files`), or stop copying it entirely if nothing consumes it — decide by checking what `pack-smoke.mjs` and the npm publish path actually read. Sweep all tsc-built packages, not just embedding-provider; keep the publint warning as the regression signal (it goes quiet when fixed).

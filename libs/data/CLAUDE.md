@@ -19,9 +19,13 @@ in each package directory — see those for package-specific rules.
 
 - **Build via nx targets only** — `npx nx build <package>` (e.g. `npx nx build vector-store`). Never bare
   `tsc` — it emits into `src/`, bypasses project-graph dependency ordering, and leaves `dist/` stale.
-- **Before any memory test** — `npx nx build memory-core && npx nx build memory-server` first (BL-4 stale-dist).
-  Data packages are dependencies of those bundles; stale data-package `dist/` → stale memory-core dist → stale
-  memory-server bundle → tests pass against stale code. Always rebuild the chain.
+- **Before any memory test** — `npx nx build memory-server` first (BL-4 stale-dist). Data packages are
+  dependencies of that bundle; stale data-package `dist/` → stale memory-core dist → stale memory-server
+  bundle → tests pass against stale code. One command now genuinely rebuilds the whole chain:
+  `dependsOn: ["^build"]` orders it, and since BL-266 (2026-07-11) the bundle targets use
+  `["production", "^production"]` inputs, so a transitive source change is a real cache MISS (previously
+  a memory-core edit could report an `nx build memory-server` cache hit against changed dependency
+  source — the reason this note used to demand building each link by hand).
 - **After changing a data package** — lint (`npx nx lint <pkg>`), build (`npx nx build <pkg>`), test
   (`npx nx test <pkg>`). The registry sync (`npx nx run registry:sync-index`) is NOT needed for data packages
   since they are NOT registered in `registry/index.json` (libs only, not extensions).
