@@ -5,7 +5,8 @@
   "root": "libs/memory-core",
   "sourceRoot": "libs/memory-core/src",
   "tags": [
-    "type:lib"
+    "type:lib",
+    "platform:node"
   ],
   "targets": {
     "build": {

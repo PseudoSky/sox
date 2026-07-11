@@ -1290,6 +1290,18 @@ export interface InstallDescriptor {
   configKeyPath?: string | undefined;
   configValue?: unknown;
   /**
+   * For array-merge types: values to append to the target array (deny-wins).
+   */
+  configValues?: string[] | undefined;
+  /**
+   * For object-array-merge types: object entries to append to the target array.
+   * Each entry is tagged with configIdentityField = configIdentityValue for
+   * identity-scoped reversible removal (foreign entries are preserved).
+   */
+  configEntries?: Record<string, unknown>[] | undefined;
+  configIdentityField?: string | undefined;
+  configIdentityValue?: string | undefined;
+  /**
    * Transport for mcp-server: "stdio" | "sse" | "http".
    * Used for the stdio-in-.mcp.json denial check.
    */
@@ -1680,6 +1692,130 @@ export async function declarativeInstall(
         file: absTarget,
         keyPath: resolvedKeyPath,
       });
+    } else if (surface.capability === 'array-merge') {
+      // array-merge: append values to an array in the shared config file.
+      // Used for permissions arrays, MCP trust arrays, etc.
+      if (!descriptor.configValues || descriptor.configValues.length === 0) {
+        throw new Error(
+          `[declarative-install] array-merge requires configValues for ext=${descriptor.ext}`,
+        );
+      }
+      const resolvedKeyPath = descriptor.configKeyPath ?? `permissions.allow`;
+      const { apply: arrayMergeApply } = await import('./capabilities/array-merge.js');
+      await arrayMergeApply({
+        host: hostName,
+        scope,
+        scopeRoot,
+        isProject,
+        ext: descriptor.ext,
+        ledger,
+        target: { filePath: absTarget, keyPath: resolvedKeyPath },
+        payload: { values: descriptor.configValues },
+      });
+      results.push({
+        host: hostName,
+        scope,
+        capability: 'array-merge',
+        target: absTarget,
+        applied: true,
+      });
+      ownedEntries.push({
+        kind: 'array-values',
+        file: absTarget,
+        keyPath: resolvedKeyPath,
+        values: descriptor.configValues,
+      });
+    } else if (surface.capability === 'object-array-merge') {
+      // object-array-merge: append identity-tagged objects to an array.
+      // Used for Claude Code PostToolUse hooks (hooks.PostToolUse[] in settings.json).
+      // Reversible: identity-scoped removal preserves foreign hooks.
+      if (!descriptor.configEntries || descriptor.configEntries.length === 0) {
+        throw new Error(
+          `[declarative-install] object-array-merge requires configEntries for ext=${descriptor.ext}`,
+        );
+      }
+      const resolvedKeyPath = descriptor.configKeyPath ?? `hooks.PostToolUse`;
+      const identityField = descriptor.configIdentityField ?? '_sox';
+      const identityValue = descriptor.configIdentityValue ?? descriptor.ext;
+      const { apply: oamApply } = await import('./capabilities/object-array-merge.js');
+      await oamApply({
+        host: hostName,
+        scope,
+        scopeRoot,
+        isProject,
+        ext: descriptor.ext,
+        ledger,
+        target: { filePath: absTarget, keyPath: resolvedKeyPath },
+        payload: {
+          entries: descriptor.configEntries,
+          identityField,
+          identityValue,
+        },
+      });
+      results.push({
+        host: hostName,
+        scope,
+        capability: 'object-array-merge',
+        target: absTarget,
+        applied: true,
+      });
+      if (surface.postInstallHint) {
+        results[results.length - 1]!.hints = [surface.postInstallHint];
+      }
+      ownedEntries.push({
+        kind: 'object-array-values',
+        file: absTarget,
+        keyPath: resolvedKeyPath,
+        entries: descriptor.configEntries,
+        identityField,
+        identityValue,
+      });
+
+      // Secondary surface: hook-script file-drop for type:hook extensions.
+      // The hook script is dropped to ~/.claude/hooks/<id>/ using the existing
+      // hook-script surface, while the settings entry was handled above.
+      if (descriptor.type === 'hook' && descriptor.srcPath) {
+        const hookScriptSurface = hostMod.surfaces['hook-script'];
+        if (hookScriptSurface) {
+          const hookScriptRawTarget = hookScriptSurface.paths[scope];
+          if (hookScriptRawTarget) {
+            const hookScriptAbsTarget = path.isAbsolute(hookScriptRawTarget)
+              ? _expandHome(hookScriptRawTarget)
+              : path.join(workspaceRoot, hookScriptRawTarget);
+            const srcBasename = path.basename(descriptor.srcPath);
+            const hookDestPath = path.join(hookScriptAbsTarget, srcBasename);
+            if (!fs.existsSync(hookDestPath)) {
+              const srcStat = fs.statSync(descriptor.srcPath);
+              if (srcStat.isDirectory()) {
+                fs.cpSync(descriptor.srcPath, hookDestPath, { recursive: true, force: true });
+              } else {
+                const dir = path.dirname(hookDestPath);
+                if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                fs.copyFileSync(descriptor.srcPath, hookDestPath);
+              }
+            }
+            ownedEntries.push({ kind: 'file-drop', path: hookDestPath });
+            // Record in ledger for reversal
+            const hookScriptLedgerFilePath = isProject
+              ? path.relative(workspaceRoot, hookDestPath)
+              : hookDestPath;
+            ledger.record({
+              ext: descriptor.ext,
+              host: hostName,
+              scope,
+              action: { cap: 'file-drop', file: hookScriptLedgerFilePath, keyPath: '', appliedHash: hashPathForInstall(hookDestPath) },
+            });
+            // Also push a result entry so the CLI knows about the file-drop
+            results.push({
+              host: hostName,
+              scope,
+              capability: 'file-drop',
+              target: hookDestPath,
+              applied: true,
+            });
+          }
+        }
+      }
     }
   }
 

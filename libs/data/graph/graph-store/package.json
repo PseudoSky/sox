@@ -1,7 +1,7 @@
 {
   "name": "@adhd/sox-graph-store",
   "version": "0.1.0",
-  "description": "Bi-temporal graph store — nodes + edges over SQLite with t_valid/t_invalid correctness, tExpires TTL, content-hash dedup, FTS5 sync, namespace isolation, and supersession chains. Uses drizzle-orm + drizzle-kit for schema migration. GraphBackendCapabilities flags prevent silent misuse of bitemporal / FTS / metadata-filter features.",
+  "description": "Bi-temporal graph store — nodes + edges over SQLite with t_valid/t_invalid correctness, tExpires TTL, content-hash dedup, FTS5 sync, namespace isolation, and supersession chains. Schema migration via offline-generated DDL (applied idempotently at runtime). GraphBackendCapabilities flags prevent silent misuse of bitemporal / FTS / metadata-filter features.",
   "license": "MIT",
   "private": false,
   "publishConfig": {
@@ -17,20 +17,20 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"
   ],
   "dependencies": {
-    "better-sqlite3": "^12.10.0",
-    "drizzle-orm": "^0.42.0"
+    "better-sqlite3": "^12.10.0"
   },
   "sox": {
     "area": "data",
     "group": "graph",
     "concerns": [
-      "schema migration via drizzle-orm + drizzle-kit (generated offline, applied idempotently at runtime)",
+      "schema migration via offline-generated DDL (applied idempotently at runtime)",
       "bi-temporal nodes (t_valid / t_invalid) + tExpires TTL + isStale derived field",
       "namespace isolation (NodeMeta.namespace — hard graph partition, default: \"global\")",
       "content-hash dedup (writeGraph / writeNodeBatch atomic transactions)",

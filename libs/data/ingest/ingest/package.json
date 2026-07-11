@@ -21,7 +21,8 @@
     "./core": {
       "types": "./dist/core.d.ts",
       "default": "./dist/core.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "//typesVersions": "[BL-231] `exports` maps are invisible to TypeScript's legacy node10 moduleResolution, which CJS consumers (memory-core: module=CommonJS) are pinned to. typesVersions is the supported way to expose the ./core subpath's types to them. Runtime resolution still goes through `exports` above, for both Node and esbuild.",
   "typesVersions": {

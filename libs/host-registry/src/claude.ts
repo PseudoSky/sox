@@ -184,6 +184,20 @@ function buildSurfaces(): SurfaceMap {
       },
     },
 
+    // hook surface: for type:hook extensions — applies PostToolUse arming via
+    // object-array-merge into settings.json → hooks.PostToolUse[]. The hook script
+    // file-drop is handled as a secondary surface during install (same path as
+    // hook-script). Reversible: identity-scoped removal preserves foreign hooks.
+    hook: {
+      capability: 'object-array-merge',
+      format: 'json',
+      paths: {
+        project: '.claude/settings.json',
+        user: path.join(base, '.claude', 'settings.json'),
+        local: '.claude/settings.local.json',
+      },
+    },
+
     // Plugins: ~/.claude/plugins/ registry (installed_plugins.json + marketplaces/)
     plugin: {
       capability: 'file-drop',

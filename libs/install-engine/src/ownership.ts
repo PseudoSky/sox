@@ -33,6 +33,7 @@ export type OwnedEntry =
   | { kind: 'materialize'; path: string }
   | { kind: 'config-key'; file: string; keyPath: string; appliedHash?: string }
   | { kind: 'array-values'; file: string; keyPath: string; values: string[] }
+  | { kind: 'object-array-values'; file: string; keyPath: string; entries: Array<Record<string, unknown>>; identityField: string; identityValue: string }
   | { kind: 'lockfile-key'; file: string; keyPath: string }
   | { kind: 'registry-record'; extId: string; scope: string; root: string }
   // Slice 2 (service-lifecycle spec §9.4 / [inv:reversible-injection]): an OS unit
@@ -176,6 +177,7 @@ export class OwnershipIndex {
         return `${e.kind}:${e.path}`;
       case 'config-key':
       case 'array-values':
+      case 'object-array-values':
         return `${e.kind}:${e.file}:${e.keyPath}`;
       case 'lockfile-key':
         return `${e.kind}:${e.file}:${e.keyPath}`;
@@ -266,6 +268,7 @@ export function supersededEntries(
         return `${e.kind}:${e.path}`;
       case 'config-key':
       case 'array-values':
+      case 'object-array-values':
         return `${e.kind}:${e.file}:${e.keyPath}`;
       case 'lockfile-key':
         return `${e.kind}:${e.file}:${e.keyPath}`;

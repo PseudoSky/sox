@@ -48,6 +48,7 @@ export type CapabilityId =
   | 'file-drop'
   | 'config-merge'
   | 'array-merge'
+  | 'object-array-merge'
   | 'bin-link'
   | 'run-service'
   | 'materialize';

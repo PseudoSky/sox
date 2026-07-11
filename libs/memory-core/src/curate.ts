@@ -101,6 +101,15 @@ export interface CurateDropLensResult {
   edges_dropped?: number;
 }
 
+export interface CurateDropEpisodesResult {
+  op: 'drop-episodes';
+  deleted: number;
+  cascaded: {
+    vec_node: number;
+    edges: number;
+  };
+}
+
 export interface CurateListLensesResult {
   op: 'list_lenses';
   lenses: unknown[];
@@ -114,6 +123,7 @@ export type CurateResult =
   | CurateReclusterSubsetResult
   | CurateReclusterGlobalResult
   | CurateDropLensResult
+  | CurateDropEpisodesResult
   | CurateListLensesResult
   | { code: string; message?: string; op?: string };
 
@@ -145,6 +155,9 @@ export async function memoryCurate(
 
     case 'drop_lens':
       return curateDropLens(db, args, dryRun);
+
+    case 'drop-episodes':
+      return curateDropEpisodes(db, args);
 
     case 'list_lenses':
       return { op: 'list_lenses', lenses: listSubsetLenses(db) };
@@ -411,5 +424,66 @@ function curateDropLens(
     communities_dropped: result.communities_dropped,
     edges_dropped: result.edges_dropped,
     dry_run: false,
+  };
+}
+
+function curateDropEpisodes(
+  db: Database.Database,
+  args: Record<string, unknown>,
+): CurateDropEpisodesResult | { code: string; message?: string } {
+  const rawUids = args['uids'];
+  const uids: string[] = Array.isArray(rawUids)
+    ? rawUids.filter((u): u is string => typeof u === 'string')
+    : [];
+  if (uids.length === 0) {
+    return { code: 'E_MISSING', message: 'uids must be a non-empty array of episode UIDs' };
+  }
+
+  // Resolve rowids for live nodes matching the given UIDs.
+  // Only live nodes (t_invalid IS NULL) are eligible for deletion.
+  // Non-existent or already-invalidated UIDs are silently skipped.
+  const uidPlaceholders = uids.map(() => '?').join(',');
+  const rows = db
+    .prepare<unknown[], { rowid: number }>(
+      `SELECT rowid FROM node WHERE uid IN (${uidPlaceholders}) AND t_invalid IS NULL`,
+    )
+    .all(...uids) as { rowid: number }[];
+
+  if (rows.length === 0) {
+    return { op: 'drop-episodes', deleted: 0, cascaded: { vec_node: 0, edges: 0 } };
+  }
+
+  const rowids = rows.map((r) => r.rowid);
+  const rowidPlaceholders = rowids.map(() => '?').join(',');
+
+  let deletedVec = 0;
+  let deletedEdges = 0;
+
+  db.transaction(() => {
+    // Delete from vec_node (virtual table without FK cascade)
+    const vecRes = db
+      .prepare(`DELETE FROM vec_node WHERE node_id IN (${rowidPlaceholders})`)
+      .run(...rowids);
+    deletedVec = vecRes.changes;
+
+    // Delete from edge — explicit cascade (src or dst references the node rowid)
+    const edgeRes = db
+      .prepare(`DELETE FROM edge WHERE src IN (${rowidPlaceholders}) OR dst IN (${rowidPlaceholders})`)
+      .run(...rowids, ...rowids);
+    deletedEdges = edgeRes.changes;
+
+    // Delete the nodes themselves. The FTS cleanup trigger (fts_node_ad) handles
+    // the fts_node virtual table automatically. Edge ON DELETE CASCADE is
+    // irrelevant since edges were already removed above.
+    db.prepare(`DELETE FROM node WHERE rowid IN (${rowidPlaceholders})`).run(...rowids);
+  })();
+
+  return {
+    op: 'drop-episodes',
+    deleted: rows.length,
+    cascaded: {
+      vec_node: deletedVec,
+      edges: deletedEdges,
+    },
   };
 }

@@ -19,7 +19,7 @@ node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.
 
 | Priority | Open items |
 |---|---|
-| **HIGH** | `BL-62`, `BL-96`, `BL-97`, `BL-225`, `BL-254`, `BL-273`, `BL-275`, `BL-284`, `BL-288`, `BL-293`, `BL-301`, `BL-302` |
+| **HIGH** | `BL-62`, `BL-96`, `BL-97`, `BL-225`, `BL-254`, `BL-273`, `BL-284`, `BL-288`, `BL-293`, `BL-301`, `BL-302` |
 | **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-259`, `BL-274`, `BL-282`, `BL-285`, `BL-291`, `BL-294`, `BL-295`, `BL-296`, `BL-297`, `BL-300`, `BL-304` |
 | **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264`, `BL-283`, `BL-287`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299`, `BL-303`, `BL-305` |
 | **FEATURE** | `BL-163`, `BL-215` |
@@ -4829,25 +4829,6 @@ That leaves the generic abstraction stranded: `vector-store`'s `ensureSpace` / `
 
 **Decision required (owner):** retire the multi-space machinery in favour of the fixed-schema `vec_node` model memory-core actually uses, **or** keep it and document that it is for external consumers (`agent-source` declares `@adhd/sox-vector-store`? — verify before deciding). Either way `libs/data/CLAUDE.md` §3 needs correcting: it describes a migration path memory-core no longer takes.
 
-### BL-257 — the root `sox-ecosystem:typecheck` script has 24 pre-existing TypeScript errors, never gated — **RESOLVED (2026-07-11)** — fixed in commit `334f266`: all 24 errors cleared without weakening any tsconfig flag (no `as any`/`!`/`@ts-expect-error`); `tsc --noEmit` now 0 errors (verified on current HEAD). Also fixed the tautological routing-drift gate it uncovered (the generator clobbered its own baseline). Marker was left stale-open at fix time — flipped here.
-
-`package.json`'s `typecheck` script (`tsc --noEmit`, surfaced as the `sox-ecosystem:typecheck` nx target) reports **24 errors**. It was never part of the whole-repo gate, which until 2026-07-10 was `build,lint,test`. Adding `typecheck` to that gate (BL-248) surfaced them.
-
-| Count | Code | Meaning |
-|---|---|---|
-| 16 | TS18048 | value is possibly `undefined` |
-| 3 | TS2769 | no overload matches |
-| 2 | TS6133 | declared but never read |
-| 1 | TS6196 | declared but never used |
-| 1 | TS2379 | `exactOptionalPropertyTypes` violation |
-| 1 | TS2375 | `undefined` not assignable |
-
-By file: `scripts/build-routing-index.ts` (21), `scripts/validate-manifests.ts` (1), `scripts/check-routing-drift.ts` (1), `scripts/build-index.test.ts` (1). All four are pristine in the working tree — these predate this session's changes.
-
-`scripts/build-routing-index.ts` generates `docs/routing/map.json`, which `docs/routing/ROUTER.md` and `libs/data/INDEX.md` are derived from. 16 possibly-`undefined` accesses in a code-generator that feeds agent-facing routing docs is not cosmetic — a bad index sends every future agent to the wrong file.
-
-**Fix:** repair all 24. **Do not** weaken `strict`, `noUncheckedIndexedAccess`, or `exactOptionalPropertyTypes` to silence them; that is explicitly forbidden by ⛔ AGENT CONSTRAINT. Then the whole-repo gate `npx nx run-many -t build,lint,test,typecheck` goes green for the first time.
-
 ### BL-258 — `memory-refactor` plan is content-complete but its state machine reads 0/15 pending — **Open (LOW, plan-hygiene)** — CONFIRMED by the 2026-07-10 project-status full scan: verdict COMPLETE-BUT-STATE-STALE. All 10 work-state deliverables reality-present (p0-baseline, p1-layout, w2a/b/c, w2d-{ingest,analysis,hybrid-search}, w2e-domain-rewire, p4-routing — evidence: 6 data libs build + memory-core imports all six + memory-enrich dissolved as planned). Reconciliation is NOT a blind fast-forward: the 5 audit states are blocked on BL-260 (criteria↔check wiring) and a live-server reality proof for audit-final. Route: plan-builder fixes BL-260, then plan-orchestrator drives `state-transition.js --complete` per state with guards actually running
 
 `docs/plan/memory-refactor/state.json`: `current_state: p0-baseline`, `transition_log: []`, 1 in_progress + 14 pending. But every deliverable shipped: the six extracted data libs all build, and `memory-core` imports all six (the `w2e-domain-rewire` goal). The plan's work landed via the P1 substrate commits without the state machine ever being driven.
@@ -4865,14 +4846,6 @@ Reproduced 2026-07-10: a full smoke run reported `11 passed, 2 failed` (`memory-
 This is NOT a code defect in the enable path (the plist is created correctly, node + entrypoint resolve; only the `launchctl bootstrap` load collides). It's a test-harness isolation gap, same family as the e2e orphan-scan false-positive from live dev-box state. It makes the mandatory pre-merge smoke gate **non-idempotent** — green on a clean domain, red on a second run — which will intermittently block merges for reasons unrelated to the change under test.
 
 **Fix:** smoke-test teardown must `launchctl bootout gui/$UID/com.sox.project.<ext>` for every unit it enabled (in a `finally`), and/or use a unique per-run label prefix so runs cannot collide. Must never touch `com.sox.user.*` (real services). Note also that the disposable-scope enable writes a plist to the operator's real `~/Library/LaunchAgents/` — verify that is intended and cleaned up.
-
-### BL-260 — `memory-refactor` audit states cannot be completed: acceptance criteria are not wired to checks — **RESOLVED (2026-07-11)** — plan-builder wired all audit criteria to real, falsifiable checks in `audit_memrefactor.py` (surgical: that one file only). gap-check 39→9. Red→green proven on 5 sample checks (each fails against a deliberately-wrong artifact). Live write-path probes return blocked-red without an opt-in disposable DB — never a vacuous pass. The 9 residual fails are NOT audit-wiring defects: 5 are the criterion-ID/slug mismatch (BL-296), 3 are missing DoD `entrypoint:` fields (BL-298), 1 is a legitimately-open owner-review checklist (`final-review.md`, stays red until the plan is walked). Live-server findings: tool-contract drift (BL-297), probe timing-flakiness (BL-299)
-
-Found by the `workflow:project-status` full-corpus scan (BL-258) and independently confirmed. `memory-refactor`'s five `audit-*` states declare acceptance criteria `[audit-<phase>.N]` in `docs/plan/memory-refactor/contexts/audit-*.md`, but those IDs have **no matching check** in `docs/plan/memory-refactor/scripts/audit_memrefactor.py`. `gap-check.js` reports **39** such criteria↔check mismatches. Spot-verified: `[audit-final.2]` and `[audit-final.3]` → 0 matches in the audit script (`[audit-final.1]` → 1).
-
-Consequence for BL-258 reconciliation: the plan's ten **work** states are reality-present and can be driven to done, but the **audit** gates will FAIL if run as-is (their criteria resolve to no check), so `memory-refactor` cannot be legitimately walked to `done` without first fixing this wiring. `audit-final` additionally requires a **live memory-server reality proof** (real write→recall, cosine sanity, degrade-to-bm25) — currently un-runnable because the live memory-server is down (BL-235 dist-wipe collateral).
-
-**Fix:** plan-builder (update mode) wires each `[audit-*.N]` criterion to a concrete check ID in `audit_memrefactor.py`. Do NOT "reconcile" by stamping the audit states done — that reintroduces the vacuous-gate pattern (BL-250/252/254) at the plan level. The gates exist to be run.
 
 ### BL-261 — `tokenguard-service` dag.json: two nodes fail `compile-task.js` (unterminated string) — **Open (LOW, plan defect)** (2026-07-10)
 
@@ -4905,34 +4878,7 @@ Red→green: `os-unit.spec.ts` `BL-263` test fails with the suffix disabled (see
 
 `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:2005` — when `warmupEmbed()` rejects, the server writes `[memory-server] FATAL: SOX_EMBED_BACKEND=real but embedding warmup failed: ...` and then **keeps serving** non-embed tools. That behaviour is intentional and documented in the adjacent comment ("the server keeps serving... the failure is unmissable") — but the `FATAL` word contradicts it and misled the BL-262 forensics on first read (a FATAL that isn't fatal reads as a crash that didn't happen). Contrast: the better-sqlite3 probe 15 lines below says FATAL and actually `process.exit(1)`s. **Fix (pick one, don't split the difference):** reword to `DEGRADED:`/`ERROR (serving without embeddings):`, or honour `SOX_EMBED_BACKEND=real` fail-loud semantics by exiting nonzero and letting the shim's ensure path surface it. Wording-only change is fine; silent semantics change is not.
 
-### BL-265 — the extension build/bundling contract is UNDOCUMENTED; what docs exist are stale and wrong — **RESOLVED (2026-07-11, `5161435` via merge `c87d0f3`)** — `docs/standards/extension-bundling.md` authored (§1 bundle anatomy + `type:commonjs` sidecar + import.meta shim, §2 externals/lazy natives, §3 sidecar contract incl. `sox.sidecars` auto-discovery + `verifySidecarReferences`, §4 atomic staging/BL-235, §5 registry checksums, §6 tests-bypass-artifact trap, §7 prior-research grounding, plus the BL-266 post-migration reality section). Stale `libs/data/CLAUDE.md` BL-11 section rewritten to the real post-`3916afd` topology (fastembed in a forked child via `fastembedProcessHost.ts`; the "silent hash fallback" claim purged — that backend was deleted in BL-250; failure mode documented as LOUD `ResolutionError` + visible `embed_backlog`). Cross-linked from `AGENTS.md`. Done-test met: the doc names exactly the gap `3916afd`'s author fell into
 
-BL-262 was a documentation failure before it was a build failure: `3916afd`'s author changed embedding-provider's runtime process topology (new forked sidecar) and **no document anywhere said "a runtime-spawned sibling file must be emitted by every consuming bundle."** The knowledge lived only in `tools/bundle-extension.cjs` comments and the `--worker` flags of three `project.json` files.
-
-What exists is stale or partial:
-- `libs/data/CLAUDE.md` §"BL-11 — Embedding worker boundary" still claims `embedWorker.ts` is "the only file that lazy-requires fastembed at runtime" (false since `3916afd` — `fastembedProcessHost.ts` is the fastembed carrier now) and that a missing sibling means "embed falls back to hash silently" (the hash backend was DELETED, BL-250 — the real symptom is loud init failure + a stranded embed backlog, exactly the BL-262 outage).
-- `docs/standards/module-resolution.md` §4b covers the tsc dist-layout contract but says nothing about the esbuild bundle surface (sidecars, externals, lazy natives, atomic staging, the `import.meta` shim).
-- The BL-262 mechanism itself (`sox.sidecars` / `sox.sidecarExternals` declaration, metafile auto-discovery, `verifySidecarReferences` fail-on-missing) exists only in bundler source comments.
-
-**Fix:** author `docs/standards/extension-bundling.md` as the single contract doc — what a bundle is (self-contained CJS + declared externals), how sidecars are declared/discovered/verified, externals policy (native addons, `sidecarExternals`), atomic staging + BL-235 semantics, registry checksum interplay, and the tests-bypass-artifact trap (BL-248/BL-262: vitest runs source; only the shipped bundle proves shipping). Correct the stale BL-11 section in `libs/data/CLAUDE.md`, cross-link from `AGENTS.md`'s build-sequence constraint. The test of done: a future `3916afd`-class author following the docs cannot ship the gap.
-
-### BL-266 — the build substrate is hand-rolled where standardized tools exist; owner directive: it should not be implemented this way — **RESOLVED (2026-07-11, evidence-based partial adoption — `a1dd9d0`+`eeca90f` via merge `c87d0f3`; owner may reopen for a full driver swap)** — standardized where the standard tool is equal-or-better, retained the driver where the standard tool provably regresses a safety invariant. (1) `tools/verify-package-exports.mjs` DELETED, replaced by `publint` (red→green proven a strict superset on broken fixtures) + `@arethetypeswrong/cli` (a types-resolution check the old script never had — the BL-208/222 blind spot), wired into the smoke preflight. (2) Hand-maintained cross-package cache `inputs` on all five bundle targets replaced by standard `["production","^production"]` — this exposed and fixed a REAL latent bug: editing `memory-core` did not invalidate `memory-server`'s build cache (verified 11/11 cache hit against changed dep source → now a cache miss), the cache-level root of the BL-4 "always rebuild the chain" workaround. (3) `@nx/esbuild:esbuild` migration evaluated with a live spike on tokenguard, NOT adopted: no post-metafile sidecar-discovery hook exists (a swap re-creates the exact BL-262 per-consumer-list failure mode), and its default `deleteOutputPath:true` empirically REPRODUCED the BL-235 artifact destruction; fixing that needs a new custom executor — relocating bespoke machinery, not removing it. Full rationale + revisit triggers in `docs/standards/extension-bundling.md` §"Post-migration reality"; reusable invariant harness at `tools/test-bl266-bundle-invariants.mjs`. All five invariants verified on main post-merge (whole-repo build/lint/test/typecheck 32 projects green, smoke 13/0 isolation OK, registry checksum-stable across no-op rebuilds, live memory-server healthy on the new artifact)
-
-Owner call (2026-07-10, during BL-262 forensics): the bespoke build layer is the disease, not any one bug in it. Inventory of hand-rolled machinery shadowing standard tooling:
-
-- `tools/bundle-extension.cjs` (~450 lines): hand-rolled esbuild driver with a **hardcoded 11-entry `SOX_ALIASES` map** (silently incomplete — data packages resolve through pnpm symlinks by a different mechanism than platform libs), a bespoke lazy-native `createRequire` stub plugin, an `import.meta.url` banner shim (BL-155), hand-rolled atomic staging/rollback (BL-235), a tsconfig-walking fallback (BL-214), and now sidecar auto-discovery + output verification (BL-262). Standard equivalents: the `@nx/esbuild:esbuild` executor (`additionalEntryPoints`, `external`, `assets`, `thirdParty`) or `tsup`/`tsdown`.
-- `@adhd/sox-nx:atomic-tsc` custom executor — exists only because bare `rm -rf dist && tsc` destroyed live artifacts twice; a standard executor under nx's outputs/caching model makes the destructive-diagnostic-build a non-category.
-- `tools/verify-package-exports.mjs` — reimplements `publint` + `@arethetypeswrong/cli`, less thoroughly (no types-resolution check; BL-208/BL-222 both lived in that blind spot).
-- Hand-maintained per-project `inputs` lists naming OTHER packages' source files (the BL-262 fix itself had to add four such lines ×3 projects) — standard `dependentTasksOutputFiles`/`^production` inputs eliminate the class.
-
-The incident ledger of this layer IS the argument: BL-87/89 (worker never emitted), BL-155 (`import.meta` undefined crash-loop), BL-214 (silent wrong tsconfig), BL-231 (CJS/TLA boundary), BL-235 (dist self-destruction, twice, once taking the live memory server down), BL-248 (esbuild strips types unchecked → 15 shipped TS errors), the `0ba5d78` dist-nesting break, BL-262 (missing sidecar, ~5h embeddings outage). Every one was patched by ADDING bespoke machinery; under a standard toolchain's defaults most would not exist to be found.
-
-**Fix (plan-scale — route through plan-builder, not an ad-hoc rewrite):** research-then-migrate to standardized tools while preserving the REAL invariants the bespoke layer encodes, each pinned by a red→green contract test before the swap: (1) self-contained bundle + externalized natives with lazy-load semantics, (2) sidecar emission + fail-on-missing output verification (keep `verifySidecarReferences` as a post-build assertion regardless of bundler), (3) atomic never-destroy-working-artifact output (BL-235), (4) typecheck as a first-class gate (BL-248), (5) registry checksum stability across no-op rebuilds. Candidate stack: `@nx/esbuild` + `publint`/`attw` + nx dependency-derived inputs. Sequencing: BL-265 documents the CURRENT contract first so the migration has a spec to preserve.
-
-**Prior research already in memory (recalled 2026-07-11 — do not re-research, extend):** a 2026-07-10 research sweep in `~/.memory/memory.db` covers this ground with verified sources:
-- `01KX6WF02N3SF175DYA6D16S2N` (Native/WASM asset resolution): externalize natives + `require.resolve` IS the ecosystem convention, and it explicitly endorses two bespoke pieces as CORRECT — the `import.meta.url` banner shim and §4b's verify-through-the-bundle rule. Migration must not lose those; the deviation to fix is the hand-rolled *driver*, not those conventions.
-- `01KX6VSB4SS45B09J8N4D805F4` (CJS/ESM dual packaging 2025-26): `require(esm)` is stable ≥20.19/≥22.12 → ESM-only is the consensus for new packages (engines `>=22.12`); the `/core` subpath convention (already adopted for BL-231) is the recognized CJS-safe-subset pattern. A migration could retire the CJS-bundle constraint entirely rather than port it.
-- `01KX6WDKN7VW9RQRM2SH9WB5RA` (+ refs sibling): `publint` + `@arethetypeswrong/cli` against built `dist/` in CI is the standard exports-map verification (supersedes `verify-package-exports.mjs`); `@nx/rollup format:['esm','cjs']` / `tsup` are the standard dual-build tools; memory-core's per-package `module: CommonJS` override is an accepted pattern, not a hack.
 
 ### BL-296 — `memory-refactor`: 5 extraction work-states use short criterion IDs that don't match their slugs, so gap-check counts them as criterion-less — **Open (MEDIUM, plan defect)** (2026-07-11)
 
@@ -5286,133 +5232,13 @@ Existing BL-134 harness runs in-process against `memory-core`, not through UDS p
 **Fix:** create `tools/stress/proxy-concurrency.mjs` with interleaved `memory_write` +
 `memory_recall` over UDS. Assert no timeouts, no `SQLITE_BUSY`, read-your-writes.
 
-### BL-275 — asp-gateway install capabilities: soxe lacks 3 install behaviors the asp-gateway bundle needs — **Open (HIGH)** (2026-07-11)
-
-Spec / work order: [`docs/plan/asp-gateway-install-capabilities/SPEC.md`](docs/plan/asp-gateway-install-capabilities/SPEC.md).
-Origin: `agent-source` BL-249 (founder decision "enhance soxe to match the plan") — this is the **sole
-remaining blocker** on `agent-source`'s P4 `delivery-surface` plan (`delivery-surface-e2e` dod.3). Driven &
-verified from `agent-source`'s plan per ADR 0002; implemented here. soxe still v1.1.1 — **no prior
-enhancement has landed** (empirically confirmed 2026-07-11).
-
-Three capabilities (2 of 3 need **no new engine primitive** — machinery exists, just unwired):
-- **C1 — Claude `hook` install surface (PostToolUse arming, reversible):** add a `hook` surface to
-  `buildSurfaces()` (`libs/host-registry/src/claude.ts`) that both file-drops the hook script AND arms a
-  `settings.json` entry; add a new **`object-array-merge`** capability (`libs/install-engine/src/capabilities/`)
-  for identity-scoped reversible append (neither `config-merge` — clobbers keyPath — nor `array-merge` —
-  `string[]` only — fits). **The only new primitive.** Re-confirm live PostToolUse JSON shape first.
-- **C2 — lockfile-less `--host` file-drop uninstall:** surgical — `cmdUninstall` hard-exits `"no lockfile"`
-  (`apps/sox/src/main.ts:2844`) *before* its own BL-109 ownership fallback (`:2857`, `:2958`); make the
-  null-lockfile case fall through. No new primitive.
-- **C3 — service running after install:** pure wiring — `cmdStart`/os-unit/port.txt-handshake/list-running/
-  uninstall-stop all exist; `run-service.apply` (`libs/install-engine/src/capabilities/run-service.ts:89`)
-  only records intent. Add an install-time `enableOsUnit`+start behind a `--start` flag (~10 lines).
-- **Adjacent:** bundle-level `soxe uninstall <bundleId>` fails (lockfile/ownership keyed by member ids, not
-  bundle id, `install.ts:1697`); write a bundle-level ownership record at expand time + resolve bundle→members
-  on uninstall. Fold into the same pass.
-
-**Done:** `agent-source`'s `assert_install.js` (dod.3) passes **unchanged** against a real
-`soxe install/uninstall asp-gateway` at USER scope (`components.hook`, `service_running`,
-`uninstall.service_stopped` all true); bump soxe version; agent-source re-verifies P4.
-
-### BL-272 — no hard-delete for memory episodes — **RESOLVED (2026-07-11)** — `memory_curate({op:"drop-episodes", uids:[...]})` implemented. Hard-deletes nodes + cascades vec_node/edge in a single transaction. `nx test memory-core` 413/413
 
 
 ---
 
-## agent-mcp-authoring integration audit — @adhd/sox-* component specs (BL-276..BL-295, 2026-07-11)
+## agent-mcp-authoring integration audit — @adhd/sox-* component specs (BL-282..BL-295, 2026-07-11)
 
-Full engineering specs for the 20 findings the adhd consumer surfaced while auditing the `@adhd/sox-*` packages for its prompt-component registry. Each was **re-verified against the current source on 2026-07-11** — `file:line`, blast radius, and RESOLVED status re-checked against HEAD, not trusted from the original audit notes. The originating `SOX-*` id is cross-referenced in every entry. 7 RESOLVED (fixes confirmed committed), 13 Open.
-
-### BL-276 — Unify duplicate `warmupTimeoutMs()` defaults in embedding-provider — **RESOLVED** (2026-07-11)
-
-**Package:** `@adhd/sox-embedding-provider` (`libs/data/embed/embedding-provider`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-BUG-001)
-
-**Problem.** `index.ts` and `fastembed.ts` each defined their own `warmupTimeoutMs()`, disagreeing on default (180 000ms vs 60 000ms) though both read `SOX_EMBED_WARMUP_TIMEOUT_MS`. Worker-init was bounded by the inner 60s copy, so the outer 180s config never actually governed a cold ONNX model download.
-
-**Verify.** A single exported `warmupTimeoutMs()` now lives in `libs/data/embed/embedding-provider/src/index.ts:260-263` (default `180_000`, reads `SOX_EMBED_WARMUP_TIMEOUT_MS`), documented at `index.ts:250-259` as the single source of truth for both call sites. `fastembed.ts:1` imports it (`import { warmupTimeoutMs } from './index.js'`) and calls it at `fastembed.ts:256`; the factory wrapper calls it at `index.ts:216`. `grep -rn "function warmupTimeoutMs" libs/data/embed/embedding-provider/src/` returns exactly one match. Committed in `c3e53e2` / `3360f8b` / `3916afd` (`git log --oneline -- libs/data/embed/embedding-provider/src/index.ts libs/data/embed/embedding-provider/src/fastembed.ts`).
-
-**Acceptance criteria.**
-- [ ] Regression test: assert `grep -c "^export function warmupTimeoutMs" libs/data/embed/embedding-provider/src/index.ts` equals 1, and `fastembed.ts` has zero local re-declarations (`grep -c "function warmupTimeoutMs" libs/data/embed/embedding-provider/src/fastembed.ts` equals 0, only the import reference).
-- [ ] A unit test sets `SOX_EMBED_WARMUP_TIMEOUT_MS=5000` and asserts both the outer factory timeout and the inner worker-init timeout observe 5000ms (fails if a second, disagreeing copy is reintroduced).
-
-**Effort / risk / blast radius.** Verification only, no new work. Low risk. Affects any consumer relying on cold-start ONNX downloads (adhd/agent-mcp) not timing out prematurely.
-
----
-
-### BL-277 — Mark dead `ModelCache`/`FileSystemModelCache` API as deprecated — **RESOLVED** (2026-07-11)
-
-**Package:** `@adhd/sox-embedding-provider` (`libs/data/embed/embedding-provider`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-BUG-002)
-
-**Problem.** `ModelCache`/`FileSystemModelCache` were exported but referenced by no factory or provider — `createEmbeddingProvider` resolves a plain `cacheDir` string instead, so any downstream consumer wiring against `ModelCache` had no effect on runtime behavior.
-
-**Verify.** `libs/data/embed/embedding-provider/src/index.ts:112-124` now carries a `@deprecated SOX-BUG-002: dead API` JSDoc block on the `ModelCache` interface explaining the real `cacheDir` resolution order (`config.options.cacheDir` → `SOX_EMBED_CACHE_DIR` → `$XDG_CACHE_HOME/sox/models` → `~/.cache/sox/models`, see also BL-282 below), and `index.ts:138-144` carries a matching `@deprecated` tag on the `export { FileSystemModelCache } from './cache.js'` re-export. `cache.ts:64-75` still implements the class but is only reachable via the deprecated re-export.
-
-**Acceptance criteria.**
-- [ ] Regression test/lint check: `grep -B3 "export interface ModelCache" libs/data/embed/embedding-provider/src/index.ts` must contain `@deprecated`; same for the `FileSystemModelCache` re-export line. Fails if the tags are dropped in a future edit.
-
-**Effort / risk / blast radius.** Verification only. Low risk, doc-only change. Consider actually removing `ModelCache`/`FileSystemModelCache` in a future major (tracked as a follow-up, not filed separately here since the original finding explicitly deferred it).
-
----
-
-### BL-278 — Remove false "deterministic hash provider" claim from embedding-provider `sox.concerns` — **RESOLVED** (2026-07-11)
-
-**Package:** `@adhd/sox-embedding-provider` (`libs/data/embed/embedding-provider`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DOC-001)
-
-**Problem.** `package.json`'s `sox.concerns` advertised a "deterministic hash provider as first-class alternative" that was never implemented — `createEmbeddingProvider` only switches on `'fastembed'`/`'remote'`, anything else throws `ResolutionError`. This stale doc directly caused a downstream (adhd) plan to design against a nonexistent `type:'hash'` provider.
-
-**Verify.** `libs/data/embed/embedding-provider/package.json`'s `sox.concerns` array (currently 6 entries) no longer mentions a hash/deterministic provider type — confirmed by dumping the JSON (`python3 -c "import json;print(json.load(open('libs/data/embed/embedding-provider/package.json'))['sox']['concerns'])"`). `createEmbeddingProvider`'s resolution switch (`index.ts:155-162` region, currently around that line range — re-grep on edit) still only handles `'fastembed'`/`'remote'`.
-
-**Acceptance criteria.**
-- [ ] Add a package-manifest lint/test asserting `sox.concerns` in `embedding-provider/package.json` contains no substring matching `/hash provider|deterministic.*provider/i`, paired with a unit test that `createEmbeddingProvider({ type: 'hash' as any, ... })` throws `ResolutionError` (proves the doc and the code agree, and fails if either drifts).
-
-**Effort / risk / blast radius.** Verification only. No consumer impact; prevents future doc/code drift from misleading downstream integrators again.
-
----
-
-### BL-279 — Correct "asymmetric role encoding" claim in embedding-provider `sox.concerns` — **RESOLVED** (2026-07-11)
-
-**Package:** `@adhd/sox-embedding-provider` (`libs/data/embed/embedding-provider`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DOC-003)
-
-**Problem.** `sox.concerns` claimed "asymmetric encoding via role param (document|query)" was implemented; in reality `FastembedProvider.embedSingle(text, _role?)` ignores the parameter and `embedBatch` does `void opts?.role`.
-
-**Verify.** `sox.concerns` now reads: `"EmbedRole param (document | query) accepted on embedSingle/embedBatch for interface compatibility — currently ignored (not yet applied) by the fastembed provider"` (confirmed via JSON dump of `libs/data/embed/embedding-provider/package.json`). Code still ignores the param exactly as documented: `fastembed.ts:128` `async embedSingle(text: string, _role?: EmbedRole)` (parameter unused, prefixed `_`), `fastembed.ts:150` `void opts?.role;` inside `embedBatch`. Line numbers have drifted from the original citation (`fastembed.ts:163`) to `128`/`150` due to intervening edits — re-verified against current source.
-
-**Acceptance criteria.**
-- [ ] A unit test embeds the same text with `role:'document'` and `role:'query'` and asserts the two output vectors are bit-identical (proves the "ignored" claim stays true; fails the moment asymmetric encoding is actually implemented without updating the doc, forcing a conscious doc update alongside the code change).
-
-**Effort / risk / blast radius.** Verification only. If asymmetric encoding is implemented later, this test forces the doc to be updated in the same PR — good regression coverage for doc/code coupling.
-
----
-
-### BL-280 — Fix `FastEmbedPoolConfig.batchSizes` JSDoc default (32 → 256) — **RESOLVED** (2026-07-11)
-
-**Package:** `@adhd/sox-embedding-provider` (`libs/data/embed/embedding-provider`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DOC-004)
-
-**Problem.** `FastEmbedPoolConfig.batchSizes` JSDoc said the override default was 32; the actual `DEFAULT_BATCH_SIZE` constant is 256.
-
-**Verify.** `libs/data/embed/embedding-provider/src/index.ts:98` now reads: `/** Per-model batch size hint. Overrides the default 256 (\`DEFAULT_BATCH_SIZE\` in fastembed.ts). */`, and `fastembed.ts:67` defines `const DEFAULT_BATCH_SIZE = 256;` (used at `fastembed.ts:153`, re-exported at `fastembed.ts:294`). Also `index.ts:88-91` now correctly documents that `FastEmbedPoolConfig` is **not currently consumed** by any factory (a related, previously-undocumented gap this doc pass also closed).
-
-**Acceptance criteria.**
-- [ ] Add a test/lint step that parses the JSDoc `default 256` string next to `batchSizes` and cross-checks it numerically against the exported `DEFAULT_BATCH_SIZE` constant (e.g. via a small doc-sync script), so a future bump of `DEFAULT_BATCH_SIZE` without a doc update fails CI.
-
-**Effort / risk / blast radius.** Verification only, doc-accuracy issue with no runtime effect (config is currently unconsumed).
-
----
-
-### BL-281 — Remove stale "warmUp cache for hot/topic texts" claim from `sox.concerns` — **RESOLVED** (2026-07-11)
-
-**Package:** `@adhd/sox-embedding-provider` (`libs/data/embed/embedding-provider`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-BUG-003, reclassified as doc-only)
-
-**Problem.** `warmUp()` is intentionally a no-op on every shipped provider (`FastembedProvider` and `RemoteProvider` both hard-code `isDeterministic:false`, spec-pinned at `embedding-provider.spec.ts:86`). The only real defect was a `sox.concerns` line advertising a "warmUp cache for hot/topic texts" feature that never existed. Code was correctly left untouched; only the doc needed fixing.
-
-**Verify.** `embedding-provider/package.json`'s `sox.invariants` (not `concerns`) now states: `"warmUp() is a no-op when isDeterministic === false — currently ALWAYS true, since every shipped provider (fastembed, remote) hard-codes isDeterministic: false, so warmUp() is a no-op on every path today"` — no "cache for hot/topic texts" language remains anywhere in the manifest. `embedding-provider.spec.ts:86` (`it('warmUp is a no-op (isDeterministic = false)', ...)`) still pins the intended no-op behavior.
-
-**Acceptance criteria.**
-- [ ] `embedding-provider.spec.ts:86`'s existing test continues to pass and is the load-bearing regression check: if a future change makes `warmUp()` actually cache anything without also flipping `isDeterministic`, this test fails.
-
-**Effort / risk / blast radius.** Verification only. No code change was correct here; doc now matches intentional no-op design.
-
----
+Full engineering specs for the 20 findings the adhd consumer surfaced while auditing the `@adhd/sox-*` packages for its prompt-component registry. Each was **re-verified against the current source on 2026-07-11** — `file:line`, blast radius, and RESOLVED status re-checked against HEAD, not trusted from the original audit notes. The originating `SOX-*` id is cross-referenced in every entry. 0 RESOLVED, 13 Open.
 
 ### BL-282 — Unify model cache-dir strategy across fastembed and `@huggingface/transformers` runtimes — **Open (MEDIUM)** (2026-07-11)
 
@@ -5515,20 +5341,7 @@ with no `optionalDependencies` split. Confirmed via `git log --oneline -- libs/d
 
 ---
 
-### BL-286 — Correct `sox.concerns` description of the summariser (was "sentence-scoring", is lead-N) — **RESOLVED** (2026-07-11)
 
-**Package:** `@adhd/sox-ingest` (`libs/data/ingest/ingest`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DOC-002)
-
-**Problem.** `sox.concerns` described the summariser as "sentence-scoring," but the implementation is plain lead-N (`sentences.slice(0, maxSentences)`) — no scoring involved. The frequency-scored logic actually belongs to `extractTags`; the two were conflated in the doc.
-
-**Verify.** `libs/data/ingest/ingest/package.json`'s `sox.concerns` (re-read 2026-07-11) now reads: `"extractive summary (lead-N sentences — first summaryMaxSentences sentences, no scoring; zero LLM; content under 100 chars is returned unchanged via content.trim())"` — no "sentence-scoring" language remains, and `deterministic tag extraction (noun phrases, high-frequency terms, tagMaxCount)` is correctly attributed as the separate, frequency-scored concern.
-
-**Acceptance criteria.**
-- [ ] A doc-sync test asserts `sox.concerns` in `ingest/package.json` contains the substring "lead-N" and does not contain "sentence-scoring" adjacent to the summary description — fails if the doc regresses to the old wording without the underlying implementation actually changing.
-
-**Effort / risk / blast radius.** Verification only.
-
----
 
 ### BL-287 — Add `"./package.json"` to `exports` map across all `@adhd/sox-*` data packages — **Open (LOW)** (2026-07-11)
 
@@ -5776,7 +5589,7 @@ Neither calls `applySchema()`. `applySchema()` itself (`index.ts:534-561`) is al
 
 ## agent-mcp-authoring integration audit — structural gaps (schema duplication / migration / dead dep, 2026-07-11)
 
-Surfaced while evaluating whether the adhd registry should reuse `@adhd/sox-graph-store` directly (Option A) instead of reimplementing FTS5 (Option B). These are distinct from the BL-276..295 findings and each other. Origin: adhd/agent-mcp-authoring.
+Surfaced while evaluating whether the adhd registry should reuse `@adhd/sox-graph-store` directly (Option A) instead of reimplementing FTS5 (Option B). These are distinct from the BL-282..295 findings and each other. Origin: adhd/agent-mcp-authoring.
 
 ### BL-300 — `node`/`edge` table schema is duplicated across `graph-store` and `memory-core` (no single source of truth) — **Open (MEDIUM)** (2026-07-11)
 

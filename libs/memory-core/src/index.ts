@@ -9,14 +9,18 @@
  * Safe patterns:
  *   1. Route writes through the MCP server process (memory-server handles DB writes; your
  *      process only calls the MCP tool over stdio/socket).
- *   2. Use the embed worker thread — `embed()` in this library already routes through
- *      embedWorker.ts (worker_threads), keeping ONNX isolated from the main thread.
+ *   2. Use the embedding-provider's ONNX isolation — `embed()` in this library delegates
+ *      to embedding-provider, which runs fastembed in a forked child process
+ *      (fastembedProcessHost.ts) and cross-encoder/NLI in a shared worker_threads Worker
+ *      (sharedOnnxWorker.ts). Both keep ONNX off the main thread, away from better-sqlite3.
  *   3. Set SOX_EMBED_BACKEND=real to force onnxruntime-node; omit for auto (the default).
  *
  * The worker isolation (option 2) is already active in embed.ts, so direct callers of
  * `openDb()` + `await embed()` in the same process are safe as long as they go through
  * this library's `embed()` export (not a raw onnxruntime-node import). Do NOT bypass the
  * worker boundary by importing onnxruntime-node directly alongside better-sqlite3.
+ * The local embedWorker.ts was deleted (BL-289) — all ONNX worker hosting now lives
+ * in `@adhd/sox-embedding-provider` (fastembedProcessHost.ts, sharedOnnxWorker.ts).
  *
  * Internal: not published. Consumed by the memory extensions (R9: co-located in bundle):
  *   - extensions/bundles/sox-memory-bundle/members/memory-server
@@ -291,6 +295,7 @@ export type {
   CurateReclusterSubsetResult,
   CurateReclusterGlobalResult,
   CurateDropLensResult,
+  CurateDropEpisodesResult,
   CurateListLensesResult,
 } from './curate.js';
 export { memoryGetStats } from './stats.js';

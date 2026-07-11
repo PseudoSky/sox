@@ -1240,6 +1240,59 @@ Options:
       }
     }
 
+    // BL-275/C3: service running after install — enable OS unit + start when --start flag is set.
+    // This wires the existing enableOsUnit/start path for a freshly-installed service.
+    // Only triggers for type:service installs where the artifact changed (was applied).
+    const startService = flags['start'] !== undefined;
+    if (startService && extType === 'service') {
+      const anyServiceApplied = results.some(
+        (r) => r.applied && !r.denied && r.capability === 'run-service',
+      );
+      if (anyServiceApplied) {
+        const ctx = resolveOsUnitContext(id, scope, workspaceRoot, flags);
+        if (ctx) {
+          const platform = ctx.platform;
+          const unitDir = resolveOsUnitDir(flags, platform);
+          try {
+            const result = enableOsUnit(ctx.spec, platform, {
+              unitDir,
+              load: true,
+              log: (m) => process.stdout.write(`sox: ${m}\n`),
+            });
+
+            // Record the os-unit in the ownership index ([inv:reversible-injection], §9.4)
+            try {
+              const pathM = require('node:path') as typeof import('node:path');
+              const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, workspaceRoot), 'ownership.json'));
+              own.addEntries(id, scope, [{
+                kind: 'os-unit',
+                label: ctx.spec.label,
+                unitPath: result.unitPath,
+                supervisor: platform.kind,
+                appliedHash: result.contentHash,
+              }]);
+              own.save();
+            } catch (e) {
+              process.stderr.write(`post-install: warning: could not record os-unit ownership: ${String(e)}\n`);
+            }
+
+            process.stdout.write(
+              `post-install: ${id} ${result.action} ${platform.kind} unit '${ctx.spec.label}'\n` +
+              `  unit:       ${result.unitPath}\n` +
+              `  entrypoint: ${ctx.entrypoint}\n` +
+              (result.loaded
+                ? `  loaded:     yes\n`
+                : `  loaded:     NO (load failed — see warnings)\n`),
+            );
+          } catch (e: unknown) {
+            process.stderr.write(`post-install: ${id} enable failed: ${String(e)}\n`);
+          }
+        } else {
+          process.stderr.write(`post-install: ${id} not resolvable as os-unit (scope=${scope}) — cannot start\n`);
+        }
+      }
+    }
+
     process.exit(0);
   }
 
@@ -2797,6 +2850,200 @@ function rematerializeServiceStores(scope: string, root: string, lockfilePath: s
   }
 }
 
+// ─── uninstall helpers (BL-275 bundle-level uninstall) ─────────────────────────
+
+/**
+ * Resolve bundle members for uninstall. Returns null if `id` is NOT a bundle
+ * (resolved by checking the registry for a type:bundle entry with members).
+ */
+function resolveBundleMembersForUninstall(
+  bundleId: string,
+  registryIndex: ReturnType<typeof loadRegistryIndex>,
+  _root: string,
+): string[] | null {
+  const entry = registryIndex.find((e) => e.id === bundleId && e.type === 'bundle');
+  if (entry?.members !== undefined && entry.members.length > 0) {
+    return entry.members.map((m) => m.id);
+  }
+  return null;
+}
+
+/**
+ * Uninstall one extension id at a given scope/root.
+ * This is the CORE uninstall logic, extracted so bundle-level uninstall can
+ * recurse per member without re-parsing argv.
+ */
+async function uninstallOne(
+  id: string,
+  scope: string,
+  root: string,
+  flags: Record<string, string>,
+  _opts?: { isBundleMember?: boolean },
+): Promise<void> {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const scopeTyped = scope as 'org' | 'user' | 'project' | 'local';
+
+  let scopePaths5: { config: string; lockfile: string };
+  try {
+    scopePaths5 = getScopePaths(scope, root);
+  } catch (e) {
+    process.stderr.write(`${CLI} uninstall: ${String(e)}\n`);
+    process.exit(1);
+  }
+
+  // Honor explicit --lockfile / --config overrides (used by e2e to operate on temp paths).
+  const lockfilePath5 = flags['lockfile'] ?? scopePaths5.lockfile;
+  const configPath5 = flags['config'] ?? scopePaths5.config;
+
+  const lockfile = loadLockfile(lockfilePath5);
+
+  // BL-275/C2: lockfile-less --host file-drop uninstall.
+  if (lockfile === null) {
+    // Fall through with an empty lockfile.
+  }
+
+  const lockKeys = lockfile !== null ? Object.keys(lockfile.resolved) : [];
+  const matchKey = lockKeys.find((k) => {
+    if (k === id) return true;
+    const atIdx = k.lastIndexOf('@');
+    return atIdx !== -1 && k.slice(0, atIdx) === id;
+  });
+
+  if (lockfile === null) {
+    // No lockfile — rely entirely on ownership/ledger index below.
+  } else if (matchKey === undefined) {
+    // BL-109: fall back to ownership index.
+    try {
+      const pathM4 = require('node:path') as typeof import('node:path');
+      const dataDir4 = dataRoot(scopeTyped as DataScope, root);
+      const ownPath4 = pathM4.join(dataDir4, 'ownership.json');
+      if (fsMod.existsSync(ownPath4)) {
+        const ownership4 = OwnershipIndex.loadFromFile(ownPath4);
+        const ownedRec = ownership4.get(id, scopeTyped);
+        if (ownedRec && ownedRec.entries.length > 0) {
+          process.stderr.write(`${CLI} uninstall: '${id}' found in ownership index (not lockfile) — proceeding with ledger reversal\n`);
+        } else {
+          process.stderr.write(`${CLI} uninstall: extension '${id}' not found in lockfile or ownership index\n`);
+          process.stderr.write(`  Installed: ${lockKeys.join(', ') || '(none)'}\n`);
+          process.exit(1);
+        }
+      } else {
+        process.stderr.write(`${CLI} uninstall: extension '${id}' not found in lockfile\n`);
+        process.stderr.write(`  Installed: ${lockKeys.join(', ') || '(none)'}\n`);
+        process.exit(1);
+      }
+    } catch {
+      process.stderr.write(`${CLI} uninstall: extension '${id}' not found in lockfile\n`);
+      process.stderr.write(`  Installed: ${lockKeys.join(', ') || '(none)'}\n`);
+      process.exit(1);
+    }
+  }
+
+  // ── ADR-0004 §D6 [inv:reversible-injection]: consume the ownership index ────
+  const dataDir = dataRoot(scopeTyped as DataScope, root);
+  const pathMod = require('node:path') as typeof import('node:path');
+  const ownership = OwnershipIndex.loadFromFile(pathMod.join(dataDir, 'ownership.json'));
+  const owned = ownership.get(id, scopeTyped);
+
+  // ── #16728 durable fix: reverse the propagated project .mcp.json merges ─────
+  if (scopeTyped === 'user' || scopeTyped === 'org') {
+    try {
+      const host0 = owned?.host ?? 'claude';
+      const reversed = await reverseUserMcpFromProjects({ extId: id, host: host0 });
+      for (const p of reversed) {
+        process.stdout.write(`${CLI} uninstall: mcp-sync removed  ${id} ← ${p}\n`);
+      }
+    } catch (e) {
+      process.stderr.write(`${CLI} uninstall: warning: mcp project-sync reversal failed for '${id}' — ${String(e)}\n`);
+    }
+  }
+
+  if (owned !== undefined) {
+    const host = owned.host ?? 'claude';
+    try {
+      await lifecycleUninstall({
+        ext: id,
+        host,
+        scope: scopeTyped,
+        scopeRoot: dataDir,
+        isProject: scopeTyped === 'project',
+      });
+    } catch (e) {
+      process.stderr.write(`${CLI} uninstall: config reversal aborted: ${String(e)}\n`);
+      process.exit(1);
+    }
+
+    for (const entry of owned.entries) {
+      if (entry.kind !== 'os-unit') continue;
+      const platform = getOsUnitPlatform(entry.supervisor);
+      const unitDir = process.env['SOX_OS_UNIT_DIR'] ?? pathMod.dirname(entry.unitPath);
+      const ctx = resolveOsUnitContext(id, scopeTyped, root, {});
+      if (ctx?.entrypoint) {
+        const res = await unloadThenReap({
+          label: entry.label,
+          entrypoint: ctx.entrypoint,
+          platform,
+          unitDir,
+          excludePids: [process.pid],
+          log: (m) => process.stdout.write(`${CLI} uninstall: ${m}\n`),
+        });
+        if (res.undead) {
+          process.stderr.write(`${CLI} uninstall: warning: a survivor of '${entry.label}' could not be confirmed dead\n`);
+        }
+      }
+      disableOsUnit(entry.label, platform, { unitDir, log: (m) => process.stdout.write(`${CLI} uninstall: ${m}\n`) });
+    }
+
+    for (const entry of owned.entries) {
+      if (entry.kind === 'file-drop' || entry.kind === 'materialize') {
+        try {
+          if (fsMod.existsSync(entry.path)) {
+            fsMod.rmSync(entry.path, { recursive: true, force: true });
+          }
+        } catch (e) {
+          process.stderr.write(
+            `${CLI} uninstall: warning: could not remove ${entry.path}: ${String(e)}\n`,
+          );
+        }
+      }
+    }
+
+    ownership.remove(id, scopeTyped);
+    ownership.save();
+  }
+
+  // Remove from lockfile.
+  if (lockfile !== null) {
+    const updatedLock = { ...lockfile, resolved: { ...lockfile.resolved } };
+    if (matchKey !== undefined) {
+      delete updatedLock.resolved[matchKey];
+    }
+    fsMod.writeFileSync(lockfilePath5, JSON.stringify(updatedLock, null, 2) + '\n', 'utf-8');
+  }
+
+  // Also remove from extensions.json.
+  if (fsMod.existsSync(configPath5)) {
+    try {
+      const cfg = JSON.parse(fsMod.readFileSync(configPath5, 'utf8')) as {
+        install?: Array<{ id: string }>;
+      };
+      if (Array.isArray(cfg.install)) {
+        cfg.install = cfg.install.filter((e) => e.id !== id);
+        fsMod.writeFileSync(configPath5, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
+      }
+    } catch { /* config parse failure — lockfile is already cleaned up */ }
+  }
+
+  // P9: remove the install record from the global install ledger.
+  try {
+    removeInstallRecord(id, scopeTyped, root);
+  } catch (e) {
+    process.stderr.write(`${CLI} uninstall: warning: failed to remove install record: ${String(e)}\n`);
+  }
+
+  process.stdout.write(`${CLI} uninstall: done  ${id} (${scopeTyped})\n`);
+}
+
 // ─── uninstall ────────────────────────────────────────────────────────────────
 
 async function cmdUninstall(flags: Record<string, string>): Promise<void> {
@@ -2825,188 +3072,32 @@ Options:
     process.exit(1);
   }
 
-  const fsMod = require('node:fs') as typeof import('node:fs');
-
-  let scopePaths5: { config: string; lockfile: string };
-  try {
-    scopePaths5 = getScopePaths(scope, root);
-  } catch (e) {
-    process.stderr.write(`${CLI} uninstall: ${String(e)}\n`);
-    process.exit(1);
-  }
-
-  // Honor explicit --lockfile / --config overrides (used by e2e to operate on temp paths).
-  const lockfilePath5 = flags['lockfile'] ?? scopePaths5.lockfile;
-  const configPath5 = flags['config'] ?? scopePaths5.config;
-
-  const lockfile = loadLockfile(lockfilePath5);
-
-  if (lockfile === null) {
-    process.stderr.write(`${CLI} uninstall: no lockfile at ${lockfilePath5}\n`);
-    process.exit(1);
-  }
-
-  // Lockfile keys are "<id>@<version>". Accept either form: bare id or versioned key.
-  const lockKeys = Object.keys(lockfile.resolved);
-  const matchKey = lockKeys.find((k) => {
-    if (k === id) return true;                          // exact match (unlikely but safe)
-    const atIdx = k.lastIndexOf('@');
-    return atIdx !== -1 && k.slice(0, atIdx) === id;   // base-id match
-  });
-
-  if (matchKey === undefined) {
-    // BL-109: fall back to ownership index for extensions installed via --host path
-    // (declarativeInstall writes to ownership/ledger but not to lockfile).
-    try {
-      const pathM4 = require('node:path') as typeof import('node:path');
-      const dataDir4 = dataRoot(scope as DataScope, root);
-      const ownPath4 = pathM4.join(dataDir4, 'ownership.json');
-      if (fsMod.existsSync(ownPath4)) {
-        const ownership4 = OwnershipIndex.loadFromFile(ownPath4);
-        const ownedRec = ownership4.get(id, scope);
-        if (ownedRec && ownedRec.entries.length > 0) {
-          process.stderr.write(`${CLI} uninstall: '${id}' found in ownership index (not lockfile) — proceeding with ledger reversal\n`);
-          // fall through — skip the exit, proceed to ownership/ledger reversal below
-        } else {
-          process.stderr.write(`${CLI} uninstall: extension '${id}' not found in lockfile or ownership index\n`);
-          process.stderr.write(`  Installed: ${lockKeys.join(', ') || '(none)'}\n`);
-          process.exit(1);
-        }
-      } else {
-        process.stderr.write(`${CLI} uninstall: extension '${id}' not found in lockfile\n`);
-        process.stderr.write(`  Installed: ${lockKeys.join(', ') || '(none)'}\n`);
-        process.exit(1);
-      }
-    } catch {
-      process.stderr.write(`${CLI} uninstall: extension '${id}' not found in lockfile\n`);
-      process.stderr.write(`  Installed: ${lockKeys.join(', ') || '(none)'}\n`);
-      process.exit(1);
-    }
-  }
-
-  // ── ADR-0004 §D6 [inv:reversible-injection]: consume the ownership index ────
-  // Reverse EXACTLY what this install placed, leaving host files byte-clean of
-  // sox-owned content while preserving foreign entries. The data dir (= scopeRoot)
-  // is where ownership.json + the ledger live.
-  const dataDir = dataRoot(scope as DataScope, root);
-  const pathMod = require('node:path') as typeof import('node:path');
-  const ownership = OwnershipIndex.loadFromFile(pathMod.join(dataDir, 'ownership.json'));
-  const owned = ownership.get(id, scope);
-
-  // ── #16728 durable fix: reverse the propagated project .mcp.json merges ─────
-  // For a user/global-scope MCP server, the install also merged its entry into
-  // every known project's .mcp.json (recorded in the user-scope ownership index,
-  // keyed per project). Reverse those FIRST so each project's .mcp.json is left
-  // byte-clean of the sox-owned entry while foreign servers are preserved. This
-  // is independent of the standard config-key reversal below (which handles the
-  // global ~/.claude.json entry).
-  if (scope === 'user' || scope === 'org') {
-    try {
-      const host0 = owned?.host ?? 'claude';
-      const reversed = await reverseUserMcpFromProjects({ extId: id, host: host0 });
-      for (const p of reversed) {
-        process.stdout.write(`${CLI} uninstall: mcp-sync removed  ${id} ← ${p}\n`);
-      }
-    } catch (e) {
-      process.stderr.write(`${CLI} uninstall: warning: mcp project-sync reversal failed for '${id}' — ${String(e)}\n`);
-    }
-  }
-
-  if (owned !== undefined) {
-    // 1. Reverse config-key / array-value merges via the ledger path
-    //    (lifecycleUninstall preserves foreign keys — [inv:ledger-reversible]).
-    const host = owned.host ?? 'claude';
-    try {
-      await lifecycleUninstall({
-        ext: id,
-        host,
-        scope,
-        scopeRoot: dataDir,
-        isProject: scope === 'project',
-      });
-    } catch (e) {
-      process.stderr.write(`${CLI} uninstall: config reversal aborted: ${String(e)}\n`);
-      process.exit(1);
-    }
-
-    // 2a. Tear down any owned OS unit FIRST (§9.4 / [inv:reversible-injection]
-    //     extends to OS units): unload-then-reap, then delete the unit file —
-    //     BEFORE the store is removed (else launchd could respawn against a
-    //     half-deleted store). [inv:unload-then-reap].
-    for (const entry of owned.entries) {
-      if (entry.kind !== 'os-unit') continue;
-      const platform = getOsUnitPlatform(entry.supervisor);
-      const unitDir = process.env['SOX_OS_UNIT_DIR'] ?? pathMod.dirname(entry.unitPath);
-      // Resolve the entrypoint identity token for the survivor reap (best-effort).
-      const ctx = resolveOsUnitContext(id, scope, root, {});
-      if (ctx?.entrypoint) {
-        const res = await unloadThenReap({
-          label: entry.label,
-          entrypoint: ctx.entrypoint,
-          platform,
-          unitDir,
-          excludePids: [process.pid],
-          log: (m) => process.stdout.write(`${CLI} uninstall: ${m}\n`),
-        });
-        if (res.undead) {
-          process.stderr.write(`${CLI} uninstall: warning: a survivor of '${entry.label}' could not be confirmed dead\n`);
-        }
-      }
-      disableOsUnit(entry.label, platform, { unitDir, log: (m) => process.stdout.write(`${CLI} uninstall: ${m}\n`) });
-    }
-
-    // 2. Remove owned file-drops and materialized stores directly.
-    for (const entry of owned.entries) {
-      if (entry.kind === 'file-drop' || entry.kind === 'materialize') {
-        try {
-          if (fsMod.existsSync(entry.path)) {
-            fsMod.rmSync(entry.path, { recursive: true, force: true });
-          }
-        } catch (e) {
-          process.stderr.write(
-            `${CLI} uninstall: warning: could not remove ${entry.path}: ${String(e)}\n`,
-          );
-        }
+  // BL-275: bundle-level uninstall — resolve bundle id → member set → reverse each.
+  // Lockfile + ownership are keyed by member ids, not bundle id. When the user runs
+  // `soxe uninstall <bundleId>`, we resolve the member set from the registry and
+  // uninstall each member individually. Each member has its own ownership record
+  // (with bundleId field) so the reversal is identical to per-member uninstall.
+  const registryIndexForUninstall = loadRegistryResolved(ROOT5);
+  const bundleMemberIds = resolveBundleMembersForUninstall(id, registryIndexForUninstall, ROOT5);
+  if (bundleMemberIds !== null) {
+    process.stdout.write(`${CLI} uninstall: '${id}' is a bundle — uninstalling ${bundleMemberIds.length} member(s): ${bundleMemberIds.join(', ')}\n`);
+    let anyFailed = false;
+    for (const memberId of bundleMemberIds) {
+      process.stdout.write(`${CLI} uninstall:  → ${memberId}\n`);
+      try {
+        // Recurse: run uninstall for each member id. We reuse the same flags but
+        // override the id. We call the internal uninstall logic directly rather than
+        // re-parsing argv to avoid infinite recursion.
+        await uninstallOne(memberId, scope, root, flags, { isBundleMember: true });
+      } catch (e) {
+        process.stderr.write(`${CLI} uninstall: member '${memberId}' failed: ${String(e)}\n`);
+        anyFailed = true;
       }
     }
-
-    // 3. Clear the ownership entry — nothing this install owned remains tracked.
-    ownership.remove(id, scope);
-    ownership.save();
+    process.exit(anyFailed ? 1 : 0);
   }
 
-  // Remove from lockfile (matchKey may be undefined for --host path fallback — no-op).
-  const updatedLock = { ...lockfile, resolved: { ...lockfile.resolved } };
-  if (matchKey !== undefined) {
-    delete updatedLock.resolved[matchKey];
-  }
-  fsMod.writeFileSync(lockfilePath5, JSON.stringify(updatedLock, null, 2) + '\n', 'utf-8');
-
-  // Also remove from extensions.json so the next `soxe install` doesn't re-add it.
-  if (fsMod.existsSync(configPath5)) {
-    try {
-      const cfg = JSON.parse(fsMod.readFileSync(configPath5, 'utf8')) as {
-        install?: Array<{ id: string }>;
-      };
-      if (Array.isArray(cfg.install)) {
-        cfg.install = cfg.install.filter((e) => e.id !== id);
-        fsMod.writeFileSync(configPath5, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
-      }
-    } catch { /* config parse failure — lockfile is already cleaned up, that's enough */ }
-  }
-
-  // P9: remove the install record from the global install ledger.
-  // Best-effort — a failed registry write must not fail the uninstall.
-  try {
-    removeInstallRecord(id, scope, root);
-  } catch (e) {
-    process.stderr.write(
-      `sox: warning: could not update install registry: ${String(e)}\n`,
-    );
-  }
-
-  const matchLabel = matchKey ?? '(ownership-reversed)';
-  process.stdout.write(`${CLI} uninstall: removed '${id}' (${matchLabel}) from scope '${scope}'\n`);
+  await uninstallOne(id, scope, root, flags);
   process.exit(0);
 }
 

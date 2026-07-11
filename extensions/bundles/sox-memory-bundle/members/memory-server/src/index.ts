@@ -656,7 +656,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_curate',
     description:
-      'Curation operations: retag, set topic, override importance, merge near-duplicates, or trigger a (optionally filtered) re-cluster pass.',
+      'Curation operations: retag, set topic, override importance, merge near-duplicates, drop episodes, or trigger a (optionally filtered) re-cluster pass.',
       inputSchema: {
       type: 'object',
       properties: {
@@ -664,10 +664,11 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         op: {
           type: 'string',
-          enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster', 'drop_lens', 'list_lenses'],
-          description: 'The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. list_lenses returns all live subset lenses.',
+          enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster', 'drop_lens', 'drop-episodes', 'list_lenses'],
+          description: 'The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. drop-episodes hard-deletes episode node rows and cascading data. list_lenses returns all live subset lenses.',
         },
         uid: { type: 'string', description: 'Target episode UID (required for retag, set_topic, set_importance).' },
+        uids: { type: 'array', items: { type: 'string' }, description: '(drop-episodes) Array of episode UIDs to hard-delete. Only live nodes (t_invalid IS NULL) are removed; non-existent or already-invalidated UIDs are silently skipped.' },
         tags: { type: 'array', items: { type: 'string' }, description: '(retag) Tags to add. Additive; duplicates are ignored.' },
         topic: { type: 'string', description: '(set_topic) New topic string.' },
         importance: { type: 'number', minimum: 1, maximum: 10, description: '(set_importance) User-asserted importance.' },
@@ -2002,7 +2003,7 @@ if (require.main === module) {
     },
     (err) => {
       process.stderr.write(
-        `[memory-server] FATAL: SOX_EMBED_BACKEND=real but embedding warmup failed: ${String(err)}\n`,
+        `[memory-server] DEGRADED: SOX_EMBED_BACKEND=real but embedding warmup failed: ${String(err)}\n`,
       );
     },
   );

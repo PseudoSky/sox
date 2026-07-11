@@ -159,6 +159,31 @@ Do not hand-maintain `BACKLOG.md`'s status header — it is derived from heading
 
 ---
 
+## ⛔ AGENT CONSTRAINT — RESOLVED BACKLOG ITEMS MUST BE MOVED TO CHANGELOG AND REMOVED FROM BACKLOG
+
+When you mark a `### BL-<n>` item **RESOLVED**, you are NOT done. You MUST complete the full lifecycle:
+
+1. **Move to CHANGELOG.** Write the completed item into `CHANGELOG.md` following the
+   [`changelog-writer`](./.claude/skills/changelog-writer/SKILL.md) skill format:
+   - Killer features with CLI code examples first, supporting features as named bullets,
+     fixes grouped at the end.
+   - Show commands, not prose descriptions.
+   - The version header matches the bumped version (e.g. `## [1.2.0] — YYYY-MM-DD`).
+
+2. **Remove from BACKLOG.** Delete the entire `### BL-<n>` section (heading + body + trailing
+   `---` separator) from `BACKLOG.md`. A resolved item has no business staying in the
+   backlog — it is now a shipped changelog entry.
+
+3. **Update the status table.** After removal, the status header counts (total open/closed,
+   per-priority lists) must reflect the new reality. Regenerate the counts from the remaining
+   heading markers — never hand-edit the numbers.
+
+This is not optional. A backlog full of RESOLVED items is stale documentation that wastes
+every agent's token budget on every read. The backlog is for what remains; the changelog is
+for what shipped.
+
+---
+
 ## ⛔ AGENT CONSTRAINT — A DIAGNOSTIC `nx build` IS A DESTRUCTIVE OPERATION
 
 Governed by **BL-235**. Several `build` targets begin with `rm -rf .../dist`. They delete the existing

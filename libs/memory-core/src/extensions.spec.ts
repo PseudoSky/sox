@@ -369,3 +369,135 @@ describe('memoryGetStats (B3)', () => {
     }
   });
 });
+
+// ── memoryCurate drop-episodes ──────────────────────────────────────────────
+
+describe('memoryCurate drop-episodes (B2)', () => {
+  it('hard-deletes a single live episode', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const db = createDb(path.join(dir, 't.db'));
+      const uid = await seedEpisode(db, { content: 'unique drop me' });
+
+      // Verify the node exists before deletion
+      const before = db.prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uid) as { c: number };
+      expect(before.c).toBe(1);
+
+      const result = await memoryCurate(db, { op: 'drop-episodes', uids: [uid] });
+
+      expect(result).toEqual({
+        op: 'drop-episodes',
+        deleted: 1,
+        cascaded: { vec_node: 0, edges: 0 },
+      });
+
+      // Verify the node is gone
+      const after = db.prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uid) as { c: number };
+      expect(after.c).toBe(0);
+      db.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('cascades to vec_node and edge rows', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const db = createDb(path.join(dir, 't.db'));
+
+      // Seed two episodes and an edge between them
+      const uidA = await seedEpisode(db, { content: 'ep A' });
+      const uidB = await seedEpisode(db, { content: 'ep B' });
+      const rowidA = rowidForUid(db, uidA);
+      const rowidB = rowidForUid(db, uidB);
+
+      // Insert a vec_node row for uidA
+      db.prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(rowidA, JSON.stringify(new Array(768).fill(0.1)));
+      // Insert a MENTIONS edge from uidA to uidB (entity relationship)
+      db.prepare("INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'RELATES_TO', 'user_asserted', ?)").run(rowidA, rowidB, new Date().toISOString());
+
+      const result = await memoryCurate(db, { op: 'drop-episodes', uids: [uidA] });
+
+      expect(result.op).toBe('drop-episodes');
+      expect(result.deleted).toBe(1);
+      expect(result.cascaded.vec_node).toBe(1);
+      expect(result.cascaded.edges).toBe(1);
+
+      // Verify uidA is gone, uidB still exists
+      const nodeA = db.prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uidA) as { c: number };
+      expect(nodeA.c).toBe(0);
+      const nodeB = db.prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uidB) as { c: number };
+      expect(nodeB.c).toBe(1);
+      db.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('silently skips non-existent and invalidated UIDs', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const db = createDb(path.join(dir, 't.db'));
+      const liveUid = await seedEpisode(db, { content: 'live one' });
+      const invalidatedUid = await seedEpisode(db, { content: 'invalidated one' });
+      // Invalidate the second one
+      db.prepare('UPDATE node SET t_invalid = ? WHERE uid = ?').run(new Date().toISOString(), invalidatedUid);
+      const fakeUid = 'nonexistent-uid-0000';
+
+      const result = await memoryCurate(db, {
+        op: 'drop-episodes',
+        uids: [fakeUid, invalidatedUid, liveUid],
+      });
+
+      // Only the live one should be deleted
+      expect(result.op).toBe('drop-episodes');
+      expect(result.deleted).toBe(1);
+      expect(result.cascaded.vec_node).toBe(0);
+      expect(result.cascaded.edges).toBe(0);
+
+      // liveUid is gone
+      const liveCheck = db.prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(liveUid) as { c: number };
+      expect(liveCheck.c).toBe(0);
+      // invalidatedUid still exists (was already t_invalid, not live)
+      const invCheck = db.prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(invalidatedUid) as { c: number };
+      expect(invCheck.c).toBe(1);
+      db.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('returns zero counts when no UIDs match', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const db = createDb(path.join(dir, 't.db'));
+
+      const result = await memoryCurate(db, {
+        op: 'drop-episodes',
+        uids: ['nonexistent-uid'],
+      });
+
+      expect(result.op).toBe('drop-episodes');
+      expect(result.deleted).toBe(0);
+      expect(result.cascaded.vec_node).toBe(0);
+      expect(result.cascaded.edges).toBe(0);
+      db.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('returns E_MISSING error when uids is empty or missing', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const db = createDb(path.join(dir, 't.db'));
+
+      const result = await memoryCurate(db, { op: 'drop-episodes', uids: [] });
+
+      expect(result).toHaveProperty('code', 'E_MISSING');
+      db.close();
+    } finally {
+      cleanup();
+    }
+  });
+});

@@ -7,7 +7,8 @@
   "tags": [
     "type:lib",
     "area:data",
-    "group:vectors"
+    "group:vectors",
+    "platform:node"
   ],
   "targets": {
     "build": {

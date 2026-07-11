@@ -30,10 +30,11 @@ import { ledgerPathFor } from './data-paths.js';
 
 // --- Shape: LedgerAction ([shape:ledger-action]) ---
 
-/** The six capability identifiers that can appear in a ledger action. */
+/** The seven capability identifiers that can appear in a ledger action. */
 export type CapabilityId =
   | 'config-merge'
   | 'array-merge'
+  | 'object-array-merge'
   | 'materialize'
   | 'file-drop'
   | 'bin-link'
@@ -45,6 +46,7 @@ export type CapabilityId =
  * - keyPath   : dot/bracket path within the shared file (e.g. "mcpServers.tokenguard")
  * - values    : array-merge only - the exact values soxe appended (deny-wins)
  * - appliedHash: config-merge only - sha256 of the value soxe set
+ * - meta      : object-array-merge only - serialised entries + identity fields for reverse
  */
 export interface LedgerAction {
   cap: CapabilityId;
@@ -52,6 +54,7 @@ export interface LedgerAction {
   keyPath: string;
   values?: string[];
   appliedHash?: string;
+  meta?: Record<string, unknown>;
 }
 
 /** One entry in the ledger keyed by (ext@version, host, scope). */

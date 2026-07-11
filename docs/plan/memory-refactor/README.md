@@ -100,11 +100,14 @@ the live MCP (`[inv:reality]`).
 - **[dod.4]** A real `memory_write` + `memory_recall` on the live user-scope server returns
   semantically ranked results; the `[fix:cosine-sanity]` probe shows cosine of unrelated
   strings ≈ 0, not ≈ 0.99.
+  - `entrypoint: python3 docs/plan/memory-refactor/scripts/audit_memrefactor.py --phase final`
 - **[dod.5]** `hybrid-search` degrades to BM25 when vectors are unavailable — returns
   results, no crash (`[def:degrade-to-bm25]`).
+  - `entrypoint: npx nx test hybrid-search`
 - **[dod.6]** `pack-smoke.mjs` passes: each public `data/*` tarball installs into a clean tmp
   dir outside the workspace and its native carriers (fastembed/onnxruntime-node +
   better-sqlite3/sqlite-vec) resolve from declared `dependencies` (the BL-87 affirmative guard).
+  - `entrypoint: node docs/plan/memory-refactor/scripts/pack-smoke.mjs`
 - **[dod.7]** The routing index `docs/routing/map.json` is generated (not hand-maintained);
   the drift gate fails on a synthetic metadata change and passes after regeneration.
 - **[dod.8]** `feat/memory-refactor` merges to `main` with zero new red gates (e2e zero

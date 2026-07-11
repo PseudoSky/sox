@@ -28,6 +28,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import tempfile
 from pathlib import Path
 
@@ -189,36 +190,53 @@ function rpc(id, method, params) {
 
 def _mcp(plan: list[dict] | None = None) -> tuple[dict | None, str]:
     """Run the MCP client with an optional caller RPC plan. Returns the parsed payload
-    ({ok, tools, results}) or (None, reason). FAILS LOUD when the server is absent/unreachable."""
+    ({ok, tools, results}) or (None, reason). FAILS LOUD when the server is absent/unreachable.
+    
+    Retry logic: if the server dist exists but the spawn fails (server startup/warmup is
+    not yet ready), retry up to 30 seconds with 5-second intervals before declaring failure.
+    This prevents flaky audit failures when ONNX model warmup or better-sqlite3 init
+    exceeds the initial spawn window."""
     if not SERVER_DIST.exists():
         return None, "BLOCKED: built memory-server dist absent (BL-235 dist-wipe) — cannot probe live surface"
-    with tempfile.NamedTemporaryFile("w", suffix=".cjs", delete=False) as f:
-        f.write(_MCP_CLIENT)
-        client = f.name
-    plan_path = ""
-    if plan is not None:
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as pf:
-            pf.write(json.dumps(plan))
-            plan_path = pf.name
-    try:
-        rc, out = run(["node", client, str(SERVER_DIST), plan_path], timeout=90)
-    finally:
-        for p in (client, plan_path):
-            if p:
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
-    marker = out.find("@@AUDIT@@")
-    if marker >= 0:
+    
+    deadline = time.time() + 30
+    last_error: str | None = None
+    
+    while time.time() < deadline:
+        with tempfile.NamedTemporaryFile("w", suffix=".cjs", delete=False) as f:
+            f.write(_MCP_CLIENT)
+            client = f.name
+        plan_path = ""
+        if plan is not None:
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as pf:
+                pf.write(json.dumps(plan))
+                plan_path = pf.name
         try:
-            payload = json.loads(out[marker + 9:].splitlines()[0])
-            if payload.get("ok"):
-                return payload, "live server ok"
-            return None, f"BLOCKED: live server errored: {payload.get('error')}"
-        except Exception:  # noqa: BLE001
-            pass
-    return None, f"BLOCKED: live server unreachable (rc={rc})"
+            rc, out = run(["node", client, str(SERVER_DIST), plan_path], timeout=90)
+        finally:
+            for p in (client, plan_path):
+                if p:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+        
+        marker = out.find("@@AUDIT@@")
+        if marker >= 0:
+            try:
+                payload = json.loads(out[marker + 9:].splitlines()[0])
+                if payload.get("ok"):
+                    return payload, "live server ok"
+                last_error = f"live server errored: {payload.get('error')}"
+            except Exception:  # noqa: BLE001
+                last_error = "unparseable audit marker"
+        else:
+            last_error = f"live server unreachable (rc={rc})"
+        
+        if time.time() < deadline:
+            time.sleep(5)
+    
+    return None, f"BLOCKED (after 30s retries): {last_error}"
 
 
 def probe_live_tools() -> tuple[list[str] | None, str]:

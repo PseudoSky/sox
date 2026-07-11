@@ -274,6 +274,62 @@ async function reverseAction(action: LedgerAction, ctx: LifecycleCtx): Promise<v
       break;
     }
 
+    case 'object-array-merge': {
+      // object-array-merge: remove ONLY the identity-tagged entries soxe appended.
+      // [inv:ledger-reversible]: other entries (foreign identities) are untouched.
+      if (!fs.existsSync(action.file)) break;
+
+      const metaEntries = action.meta?.entries as Record<string, unknown>[] | undefined;
+      if (!metaEntries || metaEntries.length === 0) break;
+
+      const removedHashes = new Set(metaEntries.map((e) => JSON.stringify(e)));
+
+      let config: Record<string, unknown>;
+      try {
+        config = readJsonSafe(action.file);
+      } catch (e) {
+        throw new ReverseAbortError(
+          'object-array-merge',
+          action.file,
+          `cannot read config for reversal: ${String(e)}`,
+        );
+      }
+
+      const parts = action.keyPath.split('.').filter(Boolean);
+      let cur: Record<string, unknown> = config;
+      for (let i = 0; i < parts.length - 1; i++) {
+        const p = parts[i];
+        if (p === undefined) continue;
+        const next = cur[p];
+        if (next === null || typeof next !== 'object' || Array.isArray(next)) {
+          cur[p] = {};
+        }
+        cur = cur[p] as Record<string, unknown>;
+      }
+      const lastKey = parts[parts.length - 1];
+      if (lastKey === undefined) break;
+
+      const existing = cur[lastKey];
+      if (Array.isArray(existing)) {
+        cur[lastKey] = (existing as Record<string, unknown>[]).filter(
+          (e) => !removedHashes.has(JSON.stringify(e)),
+        );
+      }
+
+      try {
+        const dir = path.dirname(action.file);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(action.file, JSON.stringify(config, null, 2) + '\n', 'utf8');
+      } catch (e) {
+        throw new ReverseAbortError(
+          'object-array-merge',
+          action.file,
+          `cannot write config after object-array-merge reversal: ${String(e)}`,
+        );
+      }
+      break;
+    }
+
     case 'materialize':
     case 'bin-link':
     case 'run-service': {
