@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-10 (regenerated mechanically; see BL-224)
 
-**Total open: 25.** This block is DERIVED from the `**...**` status marker on each
+**Total open: 42.** This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
 five already-RESOLVED items as top priorities, including `BL-62` as the "#1 only PROVEN live bug"
@@ -19,10 +19,9 @@ node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.
 
 | Priority | Open items |
 |---|---|
-| **CRITICAL** | `BL-254` |
-| **HIGH** | `BL-62`, `BL-96`, `BL-97`, `BL-225`, `BL-273` |
-| **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-257`, `BL-259`, `BL-260`, `BL-265`, `BL-266`, `BL-274` |
-| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264` |
+| **HIGH** | `BL-62`, `BL-96`, `BL-97`, `BL-225`, `BL-254`, `BL-273`, `BL-275`, `BL-284`, `BL-288`, `BL-293` |
+| **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-257`, `BL-259`, `BL-265`, `BL-266`, `BL-274`, `BL-282`, `BL-285`, `BL-291`, `BL-294`, `BL-295`, `BL-296`, `BL-297` |
+| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264`, `BL-283`, `BL-287`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299` |
 | **FEATURE** | `BL-163`, `BL-215` |
 
 ### Where to start
@@ -4867,7 +4866,7 @@ This is NOT a code defect in the enable path (the plist is created correctly, no
 
 **Fix:** smoke-test teardown must `launchctl bootout gui/$UID/com.sox.project.<ext>` for every unit it enabled (in a `finally`), and/or use a unique per-run label prefix so runs cannot collide. Must never touch `com.sox.user.*` (real services). Note also that the disposable-scope enable writes a plist to the operator's real `~/Library/LaunchAgents/` — verify that is intended and cleaned up.
 
-### BL-260 — `memory-refactor` audit states cannot be completed: acceptance criteria are not wired to checks — **Open (MEDIUM, plan defect)** (2026-07-10)
+### BL-260 — `memory-refactor` audit states cannot be completed: acceptance criteria are not wired to checks — **RESOLVED (2026-07-11)** — plan-builder wired all audit criteria to real, falsifiable checks in `audit_memrefactor.py` (surgical: that one file only). gap-check 39→9. Red→green proven on 5 sample checks (each fails against a deliberately-wrong artifact). Live write-path probes return blocked-red without an opt-in disposable DB — never a vacuous pass. The 9 residual fails are NOT audit-wiring defects: 5 are the criterion-ID/slug mismatch (BL-296), 3 are missing DoD `entrypoint:` fields (BL-298), 1 is a legitimately-open owner-review checklist (`final-review.md`, stays red until the plan is walked). Live-server findings: tool-contract drift (BL-297), probe timing-flakiness (BL-299)
 
 Found by the `workflow:project-status` full-corpus scan (BL-258) and independently confirmed. `memory-refactor`'s five `audit-*` states declare acceptance criteria `[audit-<phase>.N]` in `docs/plan/memory-refactor/contexts/audit-*.md`, but those IDs have **no matching check** in `docs/plan/memory-refactor/scripts/audit_memrefactor.py`. `gap-check.js` reports **39** such criteria↔check mismatches. Spot-verified: `[audit-final.2]` and `[audit-final.3]` → 0 matches in the audit script (`[audit-final.1]` → 1).
 
@@ -4934,6 +4933,28 @@ The incident ledger of this layer IS the argument: BL-87/89 (worker never emitte
 - `01KX6WF02N3SF175DYA6D16S2N` (Native/WASM asset resolution): externalize natives + `require.resolve` IS the ecosystem convention, and it explicitly endorses two bespoke pieces as CORRECT — the `import.meta.url` banner shim and §4b's verify-through-the-bundle rule. Migration must not lose those; the deviation to fix is the hand-rolled *driver*, not those conventions.
 - `01KX6VSB4SS45B09J8N4D805F4` (CJS/ESM dual packaging 2025-26): `require(esm)` is stable ≥20.19/≥22.12 → ESM-only is the consensus for new packages (engines `>=22.12`); the `/core` subpath convention (already adopted for BL-231) is the recognized CJS-safe-subset pattern. A migration could retire the CJS-bundle constraint entirely rather than port it.
 - `01KX6WDKN7VW9RQRM2SH9WB5RA` (+ refs sibling): `publint` + `@arethetypeswrong/cli` against built `dist/` in CI is the standard exports-map verification (supersedes `verify-package-exports.mjs`); `@nx/rollup format:['esm','cjs']` / `tsup` are the standard dual-build tools; memory-core's per-package `module: CommonJS` override is an accepted pattern, not a hack.
+
+### BL-296 — `memory-refactor`: 5 extraction work-states use short criterion IDs that don't match their slugs, so gap-check counts them as criterion-less — **Open (MEDIUM, plan defect)** (2026-07-11)
+
+Found by plan-builder while fixing BL-260. `w2a-embedding-provider`, `w2b-graph-store`, `w2c-vector-store`, `w2d-hybrid-search`, `w2e-domain-rewire` declare their acceptance criteria under **short IDs** (`[w2a.N]`, `[w2b.N]`, `[w2c.N]`, `[w2d-hs.N]`, `[w2e.N]`) in `contexts/*.md`, but `gap-check.js` credits a criterion only when its prefix equals the full state slug. So it sees these 5 states as declaring **zero** criteria — one of the 9 residual gap-check fails after BL-260. (Real checks for all 33 short-ID criteria were wired in `audit_memrefactor.py` regardless, so the extraction phase genuinely runs; gap-check just doesn't credit them.)
+
+**Fix (needs a work-context edit — plan-builder, deferred here as it wasn't audit-wiring):** rename the criterion IDs in the 5 `contexts/*.md` to the full slug (`[w2a.1]`→`[w2a-embedding-provider.1]` …) and update the matching `check("w2a.1"…)`→`check("w2a-embedding-provider.1"…)` IDs in `audit_memrefactor.py`. Pure label rename; no scope/deliverable change.
+
+Also surfaced (report-only): several criterion PROSE strings drifted from the shipped API — prose says `resolveProvider`/`applyGraphSchema`/`applyVecSchema`/`contentHash`, ships `createEmbeddingProvider`/`createGraphBackend`/`SqliteVectorBackend` methods/`hexSha256`. The checks were wired to the shipped truth with inline `NOTE:` flags; the prose should be reconciled during the rename.
+
+### BL-297 — live memory-server tool contract drifted to 20 tools vs the 19-tool baseline snapshot — **Open (MEDIUM)** (2026-07-11)
+
+`docs/plan/memory-refactor/baseline/tool-snapshot.json` lists **19** tools and does NOT include `memory_write_batch`; the shipped `memory-server/src/index.ts` registers `memory_write_batch` (4 refs) and the live server exposes **20** tools. So the `[inv:tool-contract-stable]` audit criteria (`w2e.3` / `audit-extraction.2` / `audit-final.2`) correctly go RED against a *real* divergence — not a down server (the server is up; two `soxe serve memory-server` procs, bundle rebuilt Jul 10 21:13).
+
+**Decide which is authoritative:** either the baseline snapshot is stale and should be regenerated to 20 tools (if `memory_write_batch` is a sanctioned addition — it carries this session's BL-233 `project_path_source` work), or the tool was added outside the refactor's stable contract and needs review. Until reconciled, those three criteria cannot green. Note `memory-server/CLAUDE.md` says "19 memory_* tools (v1.1.0)" — also stale if 20 is correct.
+
+### BL-298 — `dod.4/.5/.6` behavioral DoD clauses lack `entrypoint:` sub-fields — **Open (LOW, doc)** (2026-07-11)
+
+Wiring the 8 DoD checks (BL-260) cleared the "not proven" fails and let gap-check advance to its behavioral-fidelity rule, which requires an `entrypoint:` sub-bullet on behavioral DoD clauses. `[dod.4]/[dod.5]/[dod.6]` in `docs/plan/memory-refactor/README.md` lack it (3 of the 9 residual fails). **Fix:** add an `entrypoint:` line under each naming the exact invocation.
+
+### BL-299 — `memory-refactor` audit live-MCP probe is startup-timing-flaky — **Open (LOW, robustness)** (2026-07-11)
+
+The `audit_memrefactor.py` live write→recall probes (`audit-final.2/.3`, `dod.4`) spawn an MCP stdio client; server startup/model warmup sometimes exceeds the spawn window, yielding a *blocked* (red) result. It fails LOUD (never fabricates a pass — the safe direction), but the orchestrator should expect occasional blocked results and retry. **Fix:** add a readiness handshake or longer warmup window before the probe asserts.
 
 ### BL-232 — `concurrency-harness.spec.ts:121` asserts a hardcoded wall-clock p99 latency budget — **RESOLVED (2026-07-10)** — the wall-clock p99 latency check is now informational-only (logs a `[wp6/BL-232]` warning), never gating; the gating invariant is the lock-error count the test is actually named for. Red→green documented at `concurrency-harness.spec.ts:259`. `nx test memory-core` 408 pass
 
