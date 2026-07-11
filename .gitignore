@@ -45,3 +45,6 @@ extensions/bundles/sox-memory-bundle/members/memory-server/bundle/
 docs/plan/runtime-productionization/_shared/baselines/*.db
 docs/plan/runtime-productionization/_shared/baselines/*.db-wal
 docs/plan/runtime-productionization/_shared/baselines/*.db-shm
+
+# git worktrees (house rule: always under .worktrees/)
+.worktrees/
