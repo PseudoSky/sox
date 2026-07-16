@@ -2,40 +2,45 @@
 
 ---
 
-## [Unreleased] — graph-store extensible node kinds; hybrid-search filter/vector-channel correctness
+## [Unreleased] — graph-store kind:'generic' reuse contract; hybrid-search filter/vector-channel correctness
 
 `@adhd/sox-graph-store` and `@adhd/sox-hybrid-search` fixes closing out the four blockers the
 adhd agent-mcp-authoring integration audit filed as BL-293/294/295/303. Both packages remain
 at their current published versions (`graph-store@0.2.0`, `hybrid-search@0.1.0`) pending a
 version bump — not yet published.
 
-### `@adhd/sox-graph-store` — extensible node `kind` allowlist (BL-295)
+### `@adhd/sox-graph-store` — `kind:'generic'` is now actually reachable through the public API (BL-295)
 
 ```ts
 import { createGraphBackend } from '@adhd/sox-graph-store';
 
-// Register a domain-specific kind beyond the built-in
-// episode/entity/claim/community/session/generic set.
-const graph = createGraphBackend(db, { kinds: ['component'] });
+// Non-memory reuse (e.g. a component registry): write kind:'generic' and carry
+// your own sub-kind in tags/metadata. The node.kind CHECK constraint is a fixed
+// enum and is NEVER extended per consumer — this is the sanctioned escape hatch.
+const graph = createGraphBackend(db);
 
 const id = graph.writeNode('A reusable Button component', {
-  kind: 'component',
+  kind: 'generic',
   name: 'Button',
+  tags: ['component'],
+  metadata: { subKind: 'component' },
 });
-graph.getNode(id)!.kind;              // 'component'
-graph.queryNodes({ kind: 'component' }); // [...]
+graph.getNode(id)!.kind;            // 'generic'
+graph.queryNodes({ kind: 'generic' }); // [...]
 ```
 
-`NodeMeta.kind` / `NodeRecord.kind` / `NodeFilter.kind` are now first-class (previously `kind`
-was hardcoded to `'episode'` on every write and not exposed on read at all, despite the `node`
-table's CHECK constraint already gating it — the escape hatch existed at the SQL layer with no
-way to reach it through the public API). Custom kind names are validated against
-`/^[a-z][a-z0-9_]*$/` (rejects anything unsafe to interpolate into the underlying
-`CHECK (kind IN (...))` constraint — SQLite can't parameterize DDL) and, for a store re-opened
-with new kinds, the constraint is upgraded in place via the existing `rebuildTable`
-rename→create→copy→drop→rename mechanism — the same path already used to add
-`'generic'`/`'DEPENDS_ON'` to older stores. `NodeFilter` also gained `projectPath`/`agentId`,
-closing a gap where those columns were indexed but unfilterable through the public read API.
+`NodeMeta.kind` / `NodeRecord.kind` / `NodeFilter.kind` are now first-class. Previously `kind`
+was hardcoded to `'episode'` on every `writeNode()` call regardless of what a caller passed — so
+a caller could never even write `kind:'generic'`, despite that value already sitting in the
+`node.kind` CHECK constraint's enum. The fix threads `meta.kind` (default `'episode'`) into the
+INSERT, validated against the fixed `DEFAULT_NODE_KINDS` enum
+(`episode`/`entity`/`claim`/`community`/`session`/`generic`) — an out-of-enum kind throws
+`ConstraintError` rather than a raw SQLite CHECK failure. **The CHECK constraint itself is never
+extended per consumer** — this is sox-ecosystem's own Option A resolution for BL-295, chosen over
+adding an extensible constructor-level kind allowlist (an earlier implementation attempt at the
+allowlist approach was built, then reverted, per that decision). `NodeFilter` also gained
+`kind`/`projectPath`/`agentId`, closing a gap where those columns (indexed already) were
+unfilterable through the public read API.
 
 ### `@adhd/sox-hybrid-search` — vector channel now honors query filters (BL-294)
 
