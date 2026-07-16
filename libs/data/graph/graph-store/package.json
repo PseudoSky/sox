@@ -45,8 +45,7 @@
       "graph traversal (getNeighbors / getNeighborsWithEdges / isReachable / getSubgraph)",
       "GraphBackendCapabilities (bitemporal / fullTextSearch / metadataFilter flags)",
       "confidence as first-class epistemic field (distinct from importance ranking weight)",
-      "DEPENDS_ON edge rel for typed dependency graphs (plan DAGs, tool dep trees)",
-      "extensible node kind allowlist (BL-295) — createGraphBackend(db, { kinds: [...] }) registers custom kinds (e.g. 'component') beyond the built-in episode/entity/claim/community/session/generic set; kind names are validated (/^[a-z][a-z0-9_]*$/) and enforced by the node.kind CHECK constraint, upgraded in place via rebuildTable for stores opened with new kinds"
+      "DEPENDS_ON edge rel for typed dependency graphs (plan DAGs, tool dep trees)"
     ],
     "invariants": [
       "records are NEVER deleted — invalidate() sets t_invalid (audit-preserving), supersede() mints a new node linked by SUPERSEDES",
@@ -55,9 +54,7 @@
       "writeGraph() / writeNodeBatch() are atomic (single SQLite transaction) — all or nothing",
       "searchNodes() returns [] (not an error) when capabilities.fullTextSearch === false",
       "NodeFilter.validAt is honored only when capabilities.bitemporal === true, ignored silently otherwise",
-      "namespace is a hard isolation field (not a tag/filter convention) — absent → \"global\"",
-      "writeNode()'s kind defaults to 'episode' when omitted; an unregistered kind throws ConstraintError rather than a raw SQLite CHECK failure",
-      "createGraphBackend(db)'s constructor applies schema automatically (idempotent) — no separate .applySchema() call is required before the first write/read"
+      "namespace is a hard isolation field (not a tag/filter convention) — absent → \"global\""
     ],
     "entrypoints": [
       "dist/index.js"
