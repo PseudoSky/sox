@@ -110,6 +110,13 @@ END;
 
 // ─── Table rebuild helpers for CHECK constraint upgrades ─────────────────────
 
+// The kinds accepted by the node.kind CHECK constraint (BL-295). This is a fixed,
+// non-configurable set — per sox-ecosystem's own BL-295 design decision (Option A),
+// the CHECK is never extended per-consumer. A non-memory reuse case (e.g. a component
+// registry) writes with kind:'generic' and carries its own sub-kind (e.g. 'component')
+// in `tags`/`metadata` instead.
+export const DEFAULT_NODE_KINDS = ['episode', 'entity', 'claim', 'community', 'session', 'generic'] as const;
+
 // The canonical node table DDL (without IF NOT EXISTS) for table rebuilds.
 // See also: drizzle/schema.ts (migration management) and graph-store.spec.ts V1_* (test helpers).
 const NODE_TABLE_DDL = `CREATE TABLE node (
@@ -236,6 +243,16 @@ export type EdgeRel =
 export type Confidence = 'confirmed' | 'unverified' | 'disputed' | 'deprecated';
 
 export interface NodeMeta {
+  /**
+   * Node kind. Defaults to 'episode' when omitted. Must be one of DEFAULT_NODE_KINDS
+   * ('episode' | 'entity' | 'claim' | 'community' | 'session' | 'generic') — an
+   * out-of-enum kind throws ConstraintError. The 'generic' kind is the sanctioned
+   * escape hatch for non-memory reuse (e.g. a component registry): write with
+   * `kind: 'generic'` and carry your own sub-kind (e.g. 'component') in `tags` or
+   * `metadata` — the node.kind CHECK constraint is never extended per-consumer.
+   * (BL-295)
+   */
+  kind?: string;
   name?: string;
   summary?: string;
   topic?: string;
@@ -254,6 +271,7 @@ export interface NodeMeta {
 
 export interface NodeRecord {
   id: number;
+  kind: string;                // always present on read; 'episode' unless written otherwise (BL-295)
   content: string;
   name?: string;
   summary?: string;
@@ -287,6 +305,7 @@ export interface EdgeRecord {
 
 export interface NodeFilter {
   ids?: number[];
+  kind?: string | string[];    // OR semantics when array (BL-295)
   topic?: string | string[];
   tags?: string[];
   tagsMatchAll?: boolean;
@@ -297,6 +316,8 @@ export interface NodeFilter {
   validAt?: string;
   isStale?: boolean;
   namespace?: string;
+  projectPath?: string;        // absent = all project paths; present = exact match (BL-294)
+  agentId?: string;            // absent = all agents; present = exact match (BL-294)
   metadata?: Record<string, unknown>;
   orderBy?: 'importance' | 'tCreated' | 'tValid' | 'name';
   orderDir?: 'asc' | 'desc';
@@ -438,6 +459,7 @@ function isStale(tExpires: string | null | undefined): boolean {
 function rowToNodeRecord(row: DbNodeRow): NodeRecord {
   const rec: NodeRecord = {
     id: row.rowid,
+    kind: row.kind,
     content: row.content ?? '',
     tags: parseJson<string[]>(row.tags, []),
     tCreated: row.t_created,
@@ -510,6 +532,16 @@ function buildNodeFilterClause(
       params.push(...filter.ids);
     }
 
+    if (filter.kind !== undefined) {
+      if (Array.isArray(filter.kind)) {
+        clauses.push(`${alias}kind IN (${filter.kind.map(() => '?').join(',')})`);
+        params.push(...filter.kind);
+      } else {
+        clauses.push(`${alias}kind = ?`);
+        params.push(filter.kind);
+      }
+    }
+
     if (filter.topic !== undefined) {
       if (Array.isArray(filter.topic)) {
         clauses.push(`${alias}topic IN (${filter.topic.map(() => '?').join(',')})`);
@@ -576,6 +608,16 @@ function buildNodeFilterClause(
     if (filter.namespace !== undefined) {
       clauses.push(`${alias}namespace = ?`);
       params.push(filter.namespace);
+    }
+
+    if (filter.projectPath !== undefined) {
+      clauses.push(`${alias}project_path = ?`);
+      params.push(filter.projectPath);
+    }
+
+    if (filter.agentId !== undefined) {
+      clauses.push(`${alias}agent_id = ?`);
+      params.push(filter.agentId);
     }
 
     if (filter.metadata !== undefined) {
@@ -734,6 +776,19 @@ export class SqliteGraphBackend implements GraphBackend {
   // ── Node writes ───────────────────────────────────────────────────────────
 
   writeNode(content: string, meta: NodeMeta): number {
+    // BL-295 (Option A, sox-ecosystem's own decision): kind is validated against the
+    // fixed DEFAULT_NODE_KINDS enum — never a per-instance/per-consumer allowlist. A
+    // non-memory reuse case writes kind:'generic' and carries its own sub-kind in
+    // tags/metadata; the node.kind CHECK constraint is never extended.
+    const kind = meta.kind ?? 'episode';
+    if (!DEFAULT_NODE_KINDS.includes(kind as (typeof DEFAULT_NODE_KINDS)[number])) {
+      throw new ConstraintError(
+        `Unknown node kind "${kind}". Allowed kinds: ${DEFAULT_NODE_KINDS.join(', ')}. ` +
+          `Non-memory reuse (e.g. a component registry) should write kind:'generic' and ` +
+          `carry a sub-kind in tags/metadata instead of registering a new kind.`,
+      );
+    }
+
     const hash = hashContent(content);
     const existing = this.db
       .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE content_hash = ?')
@@ -754,11 +809,12 @@ export class SqliteGraphBackend implements GraphBackend {
         `INSERT INTO node (uid, kind, content, name, summary, topic, tags, importance,
           confidence, content_hash, namespace, meta, agent_id, session_id, source,
           project_path, t_occurred, t_expires, t_created, t_valid)
-         VALUES (?, 'episode', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING rowid`,
       )
       .get(
         uid,
+        kind,
         content,
         meta.name ?? null,
         meta.summary ?? null,

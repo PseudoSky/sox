@@ -673,39 +673,57 @@ describe('SqliteSearchBackend integration', () => {
     });
   });
 
-  // ── BL-295: kind:'component' storage + hybrid FTS5+vector retrieval, end to end ──
+  // ── BL-295 criterion 3: kind:'generic' storage + hybrid FTS5+vector retrieval, end to end ──
+  //
+  // Per sox-ecosystem's own BL-295 resolution (Option A): the node.kind CHECK constraint
+  // is never extended per consumer. A non-memory reuse case (e.g. a component registry)
+  // writes with kind:'generic' and carries its own sub-kind (here: 'component') in
+  // tags/metadata. This proves the actual consumer-facing outcome BL-295 asks for — not
+  // just a schema-level CHECK pass — using the DEFAULT createGraphBackend(db) with no
+  // constructor options at all.
 
-  describe('kind:"component" end-to-end via SqliteSearchBackend (BL-295)', () => {
-    it('stores AND retrieves a kind:"component" node through real hybrid FTS5(BM25)+vector search', () => {
+  describe('kind:"generic" end-to-end via SqliteSearchBackend (BL-295 criterion 3)', () => {
+    it('stores AND retrieves a kind:"generic" (sub-kind:"component") node through real hybrid FTS5(BM25)+vector search', () => {
       const db = createTestDb();
-      const componentVec = createTestVecStore(db);
-      const componentGraph = new SqliteGraphBackend(db, { kinds: ['component'] });
-      componentGraph.applySchema();
-      const componentBackend = new SqliteSearchBackend(componentVec, componentGraph);
+      const genericVec = createTestVecStore(db);
+      const genericGraph = new SqliteGraphBackend(db);
+      genericGraph.applySchema();
+      const genericBackend = new SqliteSearchBackend(genericVec, genericGraph);
 
-      const id = componentGraph.writeNode(
+      const id = genericGraph.writeNode(
         'A reusable Button component with primary and secondary variants',
-        { kind: 'component', name: 'Button', topic: 'ui-primitives', importance: 5 },
+        {
+          kind: 'generic',
+          name: 'Button',
+          topic: 'ui-primitives',
+          importance: 5,
+          tags: ['component'],
+          metadata: { subKind: 'component' },
+        },
       );
-      componentVec.upsert(id, new Float32Array([1.0, 0.0, 0.0, 0.0]), {
+      genericVec.upsert(id, new Float32Array([1.0, 0.0, 0.0, 0.0]), {
         modelId: 'test-model',
         dim: 4,
       });
 
-      // (a) it is genuinely a graph-store `node` row of kind='component'.
-      const stored = componentGraph.getNode(id);
+      // (a) it is genuinely a graph-store `node` row of kind='generic' carrying its
+      // sub-kind in tags/metadata — the sanctioned non-memory reuse contract.
+      const stored = genericGraph.getNode(id);
       expect(stored).not.toBeNull();
-      expect(stored!.kind).toBe('component');
+      expect(stored!.kind).toBe('generic');
+      expect(stored!.tags).toContain('component');
+      expect(stored!.metadata).toEqual({ subKind: 'component' });
 
-      // (b) real hybrid FTS5(BM25) + vector-kNN search finds it via SqliteSearchBackend.
-      const results = componentBackend.search(
-        { text: 'Button component', vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { kind: 'component' } },
+      // (b) real hybrid FTS5(BM25) + vector-kNN search finds it via SqliteSearchBackend,
+      // filterable by kind:'generic' through the public filter surface.
+      const results = genericBackend.search(
+        { text: 'Button component', vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { kind: 'generic' } },
         10,
       );
       expect(results.length).toBeGreaterThan(0);
       const found = results.find((r) => r.id === id);
       expect(found).toBeDefined();
-      expect(found!.fields.kind).toBe('component');
+      expect(found!.fields.kind).toBe('generic');
       expect(found!.textScore).toBeGreaterThan(0);
       expect(found!.vecScore).toBeGreaterThan(0);
 

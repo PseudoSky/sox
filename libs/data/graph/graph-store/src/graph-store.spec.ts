@@ -257,6 +257,84 @@ describe('writeNode', () => {
   });
 });
 
+// ─── node kind (BL-295, sox-ecosystem's Option A — kind:'generic' escape hatch) ─
+//
+// Per BACKLOG.md BL-295's own resolution: the node.kind CHECK constraint is a fixed
+// enum (episode/entity/claim/community/session/generic) that is NEVER extended per
+// consumer. A non-memory reuse case (e.g. a component registry) writes with
+// kind:'generic' and carries its own sub-kind (e.g. 'component') in tags/metadata.
+// There is no constructor-level kind allowlist — createGraphBackend(db) takes no opts.
+
+describe('node kind', () => {
+  it('defaults to "episode" when kind is omitted', () => {
+    const { backend, db } = freshBackend();
+    const id = backend.writeNode('untyped content', {});
+    const node = backend.getNode(id);
+    expect(node!.kind).toBe('episode');
+    db.close();
+  });
+
+  it('accepts every DEFAULT_NODE_KINDS value, including "generic" (BL-295 criterion 1)', () => {
+    const { backend, db } = freshBackend();
+    for (const kind of ['episode', 'entity', 'claim', 'community', 'session', 'generic']) {
+      const id = backend.writeNode(`content for ${kind}`, { kind });
+      expect(backend.getNode(id)!.kind).toBe(kind);
+    }
+    db.close();
+  });
+
+  it('writes a kind:"generic" node carrying its own sub-kind in metadata/tags — the intended non-memory reuse contract', () => {
+    const { backend, db } = freshBackend();
+    const id = backend.writeNode('A reusable Button component', {
+      kind: 'generic',
+      name: 'Button',
+      tags: ['component', 'ui-primitives'],
+      metadata: { subKind: 'component' },
+    });
+    const node = backend.getNode(id);
+    expect(node!.kind).toBe('generic');
+    expect(node!.tags).toContain('component');
+    expect(node!.metadata).toEqual({ subKind: 'component' });
+    db.close();
+  });
+
+  it('rejects a kind outside DEFAULT_NODE_KINDS with ConstraintError, not a raw SQLite error (BL-295 criterion 2)', () => {
+    const { backend, db } = freshBackend();
+    expect(() => backend.writeNode('bogus kind', { kind: 'nonsense' })).toThrow(ConstraintError);
+    db.close();
+  });
+
+  it('still rejects an out-of-enum kind after this fix — CHECK is additive, not removed (negative control for criterion 2)', () => {
+    const { backend, db } = freshBackend();
+    // The five original memory kinds plus 'generic' still round-trip...
+    for (const kind of ['episode', 'entity', 'claim', 'community', 'session', 'generic']) {
+      expect(() => backend.writeNode(`ok-${kind}`, { kind })).not.toThrow();
+    }
+    // ...while a kind that was never in the enum is still hard-rejected, proving the
+    // fix (surfacing writeNode's kind param) did not loosen the domain-integrity guarantee.
+    expect(() => backend.writeNode('still rejected', { kind: 'component' })).toThrow(
+      ConstraintError,
+    );
+    db.close();
+  });
+
+  it('queryNodes filters by kind (string and array forms)', () => {
+    const { backend, db } = freshBackend();
+    const genericId = backend.writeNode('generic node', { kind: 'generic' });
+    const episodeId = backend.writeNode('episode node', { kind: 'episode' });
+    backend.writeNode('entity node', { kind: 'entity' });
+
+    const generics = backend.queryNodes({ kind: 'generic' });
+    expect(generics.map((n) => n.id)).toEqual([genericId]);
+
+    const genericsAndEpisodes = backend.queryNodes({ kind: ['generic', 'episode'] });
+    expect(new Set(genericsAndEpisodes.map((n) => n.id))).toEqual(
+      new Set([genericId, episodeId]),
+    );
+    db.close();
+  });
+});
+
 // ─── supersede ────────────────────────────────────────────────────────────────
 
 describe('supersede', () => {

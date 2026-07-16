@@ -45,7 +45,8 @@
       "graph traversal (getNeighbors / getNeighborsWithEdges / isReachable / getSubgraph)",
       "GraphBackendCapabilities (bitemporal / fullTextSearch / metadataFilter flags)",
       "confidence as first-class epistemic field (distinct from importance ranking weight)",
-      "DEPENDS_ON edge rel for typed dependency graphs (plan DAGs, tool dep trees)"
+      "DEPENDS_ON edge rel for typed dependency graphs (plan DAGs, tool dep trees)",
+      "node.kind non-memory reuse contract (BL-295) — the node.kind CHECK constraint is a fixed enum (episode/entity/claim/community/session/generic) and is NEVER extended per consumer. A non-memory reuse case (e.g. a component registry) writes with kind:'generic' and carries its own sub-kind (e.g. 'component') in tags/metadata instead of registering a new kind. writeNode()'s kind param defaults to 'episode' and is validated against DEFAULT_NODE_KINDS, throwing ConstraintError for anything outside the enum."
     ],
     "invariants": [
       "records are NEVER deleted — invalidate() sets t_invalid (audit-preserving), supersede() mints a new node linked by SUPERSEDES",
@@ -54,7 +55,8 @@
       "writeGraph() / writeNodeBatch() are atomic (single SQLite transaction) — all or nothing",
       "searchNodes() returns [] (not an error) when capabilities.fullTextSearch === false",
       "NodeFilter.validAt is honored only when capabilities.bitemporal === true, ignored silently otherwise",
-      "namespace is a hard isolation field (not a tag/filter convention) — absent → \"global\""
+      "namespace is a hard isolation field (not a tag/filter convention) — absent → \"global\"",
+      "kind is one of DEFAULT_NODE_KINDS ('episode'|'entity'|'claim'|'community'|'session'|'generic'); an out-of-enum kind throws ConstraintError rather than a raw SQLite CHECK failure — there is no per-consumer kind registration"
     ],
     "entrypoints": [
       "dist/index.js"
