@@ -30,9 +30,11 @@ type Confidence = 'confirmed' | 'unverified' | 'disputed' | 'deprecated'
 
 interface NodeMeta {
   // Node kind. Default: 'episode' when omitted. Must be one of DEFAULT_NODE_KINDS
-  // ('episode' | 'entity' | 'claim' | 'community' | 'session' | 'generic') or a kind
-  // registered on this store instance via createGraphBackend(db, { kinds: [...] });
-  // an unregistered kind throws ConstraintError. (BL-295)
+  // ('episode' | 'entity' | 'claim' | 'community' | 'session' | 'generic') — an
+  // out-of-enum kind throws ConstraintError. The node.kind CHECK constraint is a
+  // fixed enum and is NEVER extended per consumer (sox-ecosystem's own BL-295
+  // Option A resolution). Non-memory reuse (e.g. a component registry) writes
+  // kind:'generic' and carries its own sub-kind (e.g. 'component') in tags/metadata.
   kind?: string
   name?: string
   summary?: string
@@ -330,27 +332,23 @@ interface GraphBackend {
 
 **Default implementation:**
 ```ts
-// Additional node kinds beyond DEFAULT_NODE_KINDS this store instance should accept.
-// Each entry must match /^[a-z][a-z0-9_]*$/ (validated at construction; invalid names throw
-// ConstraintError — kind names are interpolated into a CHECK(kind IN (...)) constraint, which
-// SQLite cannot parameterize). Registering a kind not yet present in an EXISTING store's CHECK
-// constraint upgrades it in place via the rebuildTable rename→create→copy→drop→rename dance —
-// same mechanism already used to add 'generic'/'DEPENDS_ON' to older stores. (BL-295)
-interface GraphBackendOpts {
-  kinds?: readonly string[]
-}
-
+// The fixed set of kinds accepted by the node.kind CHECK constraint. Non-configurable —
+// per sox-ecosystem's own BL-295 resolution (Option A), the CHECK is NEVER extended per
+// consumer. writeNode()'s kind param (default 'episode') is validated against this set;
+// an out-of-enum kind throws ConstraintError. Non-memory reuse (e.g. a component
+// registry) writes kind:'generic' and carries its own sub-kind (e.g. 'component') in
+// tags/metadata instead of registering a new kind.
 const DEFAULT_NODE_KINDS: readonly string[] // ['episode','entity','claim','community','session','generic']
 
 class SqliteGraphBackend implements GraphBackend {
   readonly capabilities = { bitemporal: true, fullTextSearch: true, metadataFilter: true }
-  constructor(db: Database, opts?: GraphBackendOpts) {}
+  constructor(db: Database) {}
   // FTS via FTS5 triggers; score is bm25() rank; validAt honored via t_valid/t_invalid columns
   // Schema is applied automatically by the constructor — callers never see "no such table"
   // from a freshly-constructed backend; applySchema() is idempotent and safe to call again.
 }
 
-function createGraphBackend(db: Database, opts?: GraphBackendOpts): GraphBackend
+function createGraphBackend(db: Database): GraphBackend
 ```
 
 **Schema-only exports (for the composer):**
