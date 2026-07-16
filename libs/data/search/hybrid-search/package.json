@@ -38,14 +38,17 @@
       "degrade-to-text when vec signal absent ([def:degrade-to-text-only])",
       "pure fuse() + normalize() exports (no storage dep)",
       "explain mode (signal-level breakdown only — not field-level)",
-      "SchemaAdapter is SQLite-internal (NOT exported — filters wired into SqliteSearchBackend)"
+      "SchemaAdapter is SQLite-internal (NOT exported — filters wired into SqliteSearchBackend)",
+      "vector-channel filter parity (BL-294) — SqliteSearchBackend resolves query.filters through graph.queryNodes() and constrains vec.knn() to the matching id set, so namespace/kind/topic/projectPath/agentId filters scope BOTH channels identically, not just the text channel",
+      "degrade signal (BL-294) — SearchBackend.search() results carry an additive degraded?: { unsupportedFilters: string[] } field whenever query.filters included a key with no NodeFilter mapping; surfaced unconditionally on SearchResult, not gated behind explain"
     ],
     "invariants": [
       "SearchBackend.search() degrades to text-only when query.vec is absent, degrades to vec-only when query.text is absent — never errors on a missing signal",
       "scores are normalized BEFORE combining (never raw scale-blind additive merge)",
       "textScore / vecScore are mechanism-agnostic names — BM25 / cosine are implementation details inside backends (never surfaced through SearchBackend interface)",
       "SchemaAdapter is an internal SQLite concern — NOT exported; MCP handlers pass raw filters via SearchQuery.filters; SqliteSearchBackend resolves them internally",
-      "fuse() weights must be multiplicative (field boosting), never additive (scale-blind)"
+      "fuse() weights must be multiplicative (field boosting), never additive (scale-blind)",
+      "a NodeFilter that matches zero nodes yields zero vector candidates — never an unfiltered knn() fallback (an empty VecFilter.ids means \"no filter\" to the vector backend, not \"match nothing\")"
     ],
     "entrypoints": [
       "dist/index.js"

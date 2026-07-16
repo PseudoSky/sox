@@ -23,6 +23,16 @@ export interface SearchQuery {
   filters?: Record<string, unknown>;
 }
 
+/**
+ * Signals that a query's stated filters could not be fully honored (BL-294) — e.g. a
+ * filter key with no mapping onto the backing store's queryable fields. Callers should
+ * treat a search flagged `degraded` as scoped more loosely than requested, not as an error
+ * (per the "never error on a missing signal" invariant).
+ */
+export interface SearchDegradeInfo {
+  unsupportedFilters: string[];
+}
+
 export interface SearchBackend {
   search(
     query: SearchQuery,
@@ -32,6 +42,7 @@ export interface SearchBackend {
     textScore?: number;
     vecScore?: number;
     fields: Record<string, unknown>;
+    degraded?: SearchDegradeInfo;
   }>;
 }
 
@@ -50,6 +61,7 @@ export interface SearchResult {
   score: number;
   signalScores?: { text?: number; vec?: number } | undefined;
   fields: Record<string, unknown>;
+  degraded?: SearchDegradeInfo | undefined;
 }
 
 export interface FusionOpts {
@@ -337,6 +349,11 @@ export function search(
   const fetchLimit = Math.max(limit * 2, 20);
   const candidates = backend.search(query, fetchLimit);
 
+  // A query-level degrade signal (BL-294) — one query's filters either apply or they
+  // don't, so every candidate from a single backend.search() call carries the same
+  // `degraded` value; take it from the first candidate that has one.
+  const queryDegraded = candidates.find((c) => c.degraded !== undefined)?.degraded;
+
   const textPresent = query.text !== undefined && query.text.length > 0;
   const vecPresent = query.vec !== undefined;
 
@@ -430,6 +447,9 @@ export function search(
     if (explain) {
       result.signalScores = signalScoresMap.get(b.id);
     }
+    if (queryDegraded) {
+      result.degraded = queryDegraded;
+    }
     results.push(result);
   }
 
@@ -459,12 +479,14 @@ export class SqliteSearchBackend implements SearchBackend {
     textScore?: number;
     vecScore?: number;
     fields: Record<string, unknown>;
+    degraded?: SearchDegradeInfo;
   }> {
     const textPresent = query.text !== undefined && query.text.length > 0;
     const vecPresent = query.vec !== undefined;
     const filters = query.filters ?? {};
 
-    const { nodeFilter } = buildFilterClause(filters);
+    const { nodeFilter, unsupportedFilters } = buildFilterClause(filters);
+    const hasNodeFilter = Object.keys(nodeFilter).length > 0;
 
     const merged = new Map<
       number,
@@ -481,7 +503,7 @@ export class SqliteSearchBackend implements SearchBackend {
       const searchOpts: { limit: number; filter?: NodeFilter } = {
         limit: textLimit,
       };
-      if (Object.keys(nodeFilter).length > 0) {
+      if (hasNodeFilter) {
         searchOpts.filter = nodeFilter;
       }
       const textResults = this.graph.searchNodes(query.text!, searchOpts);
@@ -504,7 +526,25 @@ export class SqliteSearchBackend implements SearchBackend {
       const spaces = this.vec.listSpaces();
       const matchingSpace = spaces.find((s) => s.dim === query.vec!.length);
       if (matchingSpace) {
-        const vecResults = this.vec.knn(query.vec!, matchingSpace, limit * 2);
+        // BL-294: the vector channel must honor the same NodeFilter (namespace, kind,
+        // topic, project_path, …) as the text channel, or a scoped hybrid query silently
+        // leaks unscoped vector hits into fusion. VecFilter only supports `ids`, so when
+        // a filter is present we first resolve the matching node-id set through the
+        // graph store, then constrain knn() to exactly those ids. A filter that matches
+        // zero nodes must yield zero vector candidates — never "no filter applied", which
+        // is what an empty `ids` array means to the vector backend (BL-294).
+        let vecIdFilter: { ids: number[] } | undefined;
+        let vecCandidateIds: Set<number> | undefined;
+        if (hasNodeFilter) {
+          const matchedIds = this.graph.queryNodes(nodeFilter).map((n) => n.id);
+          vecCandidateIds = new Set(matchedIds);
+          vecIdFilter = { ids: matchedIds };
+        }
+
+        const skipVecSearch = hasNodeFilter && (vecCandidateIds?.size ?? 0) === 0;
+        const vecResults = skipVecSearch
+          ? []
+          : this.vec.knn(query.vec!, matchingSpace, limit * 2, vecIdFilter);
 
         for (const r of vecResults) {
           const entry = merged.get(r.id);
@@ -523,6 +563,9 @@ export class SqliteSearchBackend implements SearchBackend {
       }
     }
 
+    const degraded: SearchDegradeInfo | undefined =
+      unsupportedFilters.length > 0 ? { unsupportedFilters } : undefined;
+
     return Array.from(merged.entries())
       .map(([id, data]) => {
         const entry: {
@@ -530,9 +573,11 @@ export class SqliteSearchBackend implements SearchBackend {
           textScore?: number;
           vecScore?: number;
           fields: Record<string, unknown>;
+          degraded?: SearchDegradeInfo;
         } = { id, fields: data.fields };
         if (data.textScore !== undefined) entry.textScore = data.textScore;
         if (data.vecScore !== undefined) entry.vecScore = data.vecScore;
+        if (degraded) entry.degraded = degraded;
         return entry;
       })
       .slice(0, limit);
@@ -540,6 +585,7 @@ export class SqliteSearchBackend implements SearchBackend {
 
   private nodeRecordToFields(node: NodeRecord): Record<string, unknown> {
     const fields: Record<string, unknown> = {
+      kind: node.kind,
       content: node.content,
       tags: node.tags,
       namespace: node.namespace,

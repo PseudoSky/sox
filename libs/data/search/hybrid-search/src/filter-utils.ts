@@ -8,15 +8,32 @@ interface FilterClause {
 interface NodeFilterResult {
   nodeFilter: NodeFilter;
   extraClauses: FilterClause;
+  /**
+   * Filter keys that could not be mapped onto NodeFilter (graph-store's read/search
+   * surface) — these are silently unenforceable by SqliteSearchBackend today
+   * (BL-294). Non-empty means the caller's stated filters do not fully constrain
+   * either the text or vector channel of the search; SqliteSearchBackend surfaces
+   * this as `degraded.unsupportedFilters` on every result of the affected query.
+   */
+  unsupportedFilters: string[];
 }
 
 export function buildFilterClause(filters: Record<string, unknown>): NodeFilterResult {
   const nodeFilter: NodeFilter = {};
   const extraClauses: string[] = [];
   const extraParams: unknown[] = [];
+  const unsupportedFilters: string[] = [];
 
   for (const [key, value] of Object.entries(filters)) {
     switch (key) {
+      case 'kind': {
+        if (typeof value === 'string') {
+          nodeFilter.kind = value;
+        } else if (Array.isArray(value)) {
+          nodeFilter.kind = value.map((v) => String(v));
+        }
+        break;
+      }
       case 'topic': {
         if (typeof value === 'string') {
           nodeFilter.topic = value;
@@ -36,13 +53,11 @@ export function buildFilterClause(filters: Record<string, unknown>): NodeFilterR
         break;
       }
       case 'project_path': {
-        extraClauses.push('project_path = ?');
-        extraParams.push(String(value));
+        nodeFilter.projectPath = String(value);
         break;
       }
       case 'agent_id': {
-        extraClauses.push('agent_id = ?');
-        extraParams.push(String(value));
+        nodeFilter.agentId = String(value);
         break;
       }
       case 'namespace': {
@@ -64,8 +79,12 @@ export function buildFilterClause(filters: Record<string, unknown>): NodeFilterR
         break;
       }
       default: {
+        // Unrecognized filter key — kept in extraClauses (raw SQL, back-compat) but
+        // SqliteSearchBackend never applies extraClauses to either search channel, so
+        // this is also recorded as unsupported (BL-294) and surfaced as a degrade signal.
         extraClauses.push(`${key} = ?`);
         extraParams.push(value);
+        unsupportedFilters.push(key);
       }
     }
   }
@@ -78,5 +97,6 @@ export function buildFilterClause(filters: Record<string, unknown>): NodeFilterR
         : '',
       params: extraParams,
     },
+    unsupportedFilters,
   };
 }

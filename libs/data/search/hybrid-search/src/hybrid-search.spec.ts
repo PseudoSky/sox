@@ -353,6 +353,16 @@ describe('buildFilterClause', () => {
     expect(result.nodeFilter.topic).toEqual(['python', 'rust']);
   });
 
+  it('handles kind as string (BL-295)', () => {
+    const result = buildFilterClause({ kind: 'component' });
+    expect(result.nodeFilter.kind).toBe('component');
+  });
+
+  it('handles kind as array (BL-295)', () => {
+    const result = buildFilterClause({ kind: ['component', 'entity'] });
+    expect(result.nodeFilter.kind).toEqual(['component', 'entity']);
+  });
+
   it('handles tags', () => {
     const result = buildFilterClause({ tags: ['ai', 'ml'] });
     expect(result.nodeFilter.tags).toEqual(['ai', 'ml']);
@@ -363,16 +373,18 @@ describe('buildFilterClause', () => {
     expect(result.nodeFilter.importanceMin).toBe(5);
   });
 
-  it('handles project_path as extra clause', () => {
+  it('handles project_path as a first-class nodeFilter field, not a dropped extra clause (BL-294)', () => {
     const result = buildFilterClause({ project_path: '/home/user/project' });
-    expect(result.extraClauses.sql).toContain('project_path');
-    expect(result.extraClauses.params).toEqual(['/home/user/project']);
+    expect(result.nodeFilter.projectPath).toBe('/home/user/project');
+    expect(result.extraClauses.sql).toBe('');
+    expect(result.unsupportedFilters).toEqual([]);
   });
 
-  it('handles agent_id as extra clause', () => {
+  it('handles agent_id as a first-class nodeFilter field, not a dropped extra clause (BL-294)', () => {
     const result = buildFilterClause({ agent_id: 'agent-1' });
-    expect(result.extraClauses.sql).toContain('agent_id');
-    expect(result.extraClauses.params).toEqual(['agent-1']);
+    expect(result.nodeFilter.agentId).toBe('agent-1');
+    expect(result.extraClauses.sql).toBe('');
+    expect(result.unsupportedFilters).toEqual([]);
   });
 
   it('handles namespace', () => {
@@ -401,20 +413,23 @@ describe('buildFilterClause', () => {
     expect(result.nodeFilter.topic).toBe('python');
     expect(result.nodeFilter.tags).toEqual(['ai']);
     expect(result.nodeFilter.importanceMin).toBe(3);
-    expect(result.extraClauses.sql).toContain('project_path');
-    expect(result.extraClauses.sql).toContain('agent_id');
+    expect(result.nodeFilter.projectPath).toBe('/test');
+    expect(result.nodeFilter.agentId).toBe('agent-42');
+    expect(result.unsupportedFilters).toEqual([]);
   });
 
   it('handles empty filters', () => {
     const result = buildFilterClause({});
     expect(result.extraClauses.sql).toBe('');
     expect(result.extraClauses.params).toEqual([]);
+    expect(result.unsupportedFilters).toEqual([]);
   });
 
-  it('passes through unknown filter keys', () => {
+  it('passes through unknown filter keys but flags them as unsupported (BL-294)', () => {
     const result = buildFilterClause({ custom_field: 'value' });
     expect(result.extraClauses.sql).toContain('custom_field');
     expect(result.extraClauses.params).toEqual(['value']);
+    expect(result.unsupportedFilters).toEqual(['custom_field']);
   });
 });
 
@@ -558,6 +573,144 @@ describe('SqliteSearchBackend integration', () => {
     for (const r of results) {
       expect(typeof r.id).toBe('number');
     }
+  });
+
+  // ── BL-294: filter/namespace must constrain the vector channel too ───────────
+
+  describe('vector channel filter isolation (BL-294)', () => {
+    function seedNodeInNamespace(
+      content: string,
+      namespace: string,
+      vecValues: number[],
+    ): number {
+      const id = graph.writeNode(content, { namespace, importance: 5 });
+      vec.upsert(id, new Float32Array(vecValues), { modelId: 'test-model', dim: 4 });
+      return id;
+    }
+
+    it('does not leak cross-namespace vector hits into a namespace-scoped vec-only search', () => {
+      seedNodeInNamespace('tenant A secret', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
+      const bId = seedNodeInNamespace('tenant B secret', 'tenant-b', [1.0, 0.0, 0.0, 0.0]);
+
+      // Identical vector, DIFFERENT namespace — a caller scoped to tenant-b must never
+      // see tenant-a's node, even though it is the nearest (in fact identical) vector.
+      const queryVec = new Float32Array([1.0, 0.0, 0.0, 0.0]);
+      const results = backend.search(
+        { vec: queryVec, filters: { namespace: 'tenant-b' } },
+        10,
+      );
+
+      expect(results.length).toBeGreaterThan(0);
+      for (const r of results) {
+        expect(r.fields.namespace).toBe('tenant-b');
+      }
+      expect(results.some((r) => r.id === bId)).toBe(true);
+    });
+
+    it('does not leak cross-namespace vector hits into a namespace-scoped hybrid (text+vec) search', () => {
+      const aId = graph.writeNode('shared phrase alpha', { namespace: 'tenant-a' });
+      vec.upsert(aId, new Float32Array([1.0, 0.0, 0.0, 0.0]), { modelId: 'test-model', dim: 4 });
+      const bId = graph.writeNode('shared phrase beta', { namespace: 'tenant-b' });
+      vec.upsert(bId, new Float32Array([1.0, 0.0, 0.0, 0.0]), { modelId: 'test-model', dim: 4 });
+
+      const results = backend.search(
+        { text: 'shared phrase', vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { namespace: 'tenant-b' } },
+        10,
+      );
+
+      expect(results.length).toBeGreaterThan(0);
+      for (const r of results) {
+        expect(r.fields.namespace).toBe('tenant-b');
+      }
+    });
+
+    it('returns zero vector candidates (not unfiltered results) when the filter matches no nodes', () => {
+      seedNodeInNamespace('only node', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
+
+      const results = backend.search(
+        { vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { namespace: 'nonexistent-tenant' } },
+        10,
+      );
+
+      expect(results).toEqual([]);
+    });
+
+    it('surfaces a degrade signal when a filter key cannot be enforced by either channel', () => {
+      seedNodeInNamespace('some content', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
+
+      const backendResults = backend.search(
+        { vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { totally_unrecognized_key: 'x' } },
+        10,
+      );
+      expect(backendResults.length).toBeGreaterThan(0);
+      for (const r of backendResults) {
+        expect(r.degraded?.unsupportedFilters).toEqual(['totally_unrecognized_key']);
+      }
+
+      // The degrade signal must also propagate through the top-level search() function.
+      const topLevelResults = search(
+        backend,
+        { vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { totally_unrecognized_key: 'x' } },
+        { limit: 10 },
+      );
+      expect(topLevelResults.length).toBeGreaterThan(0);
+      for (const r of topLevelResults) {
+        expect(r.degraded?.unsupportedFilters).toEqual(['totally_unrecognized_key']);
+      }
+    });
+
+    it('does NOT set a degrade signal when all filter keys are recognized', () => {
+      seedNodeInNamespace('clean filter node', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
+
+      const results = backend.search(
+        { vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { namespace: 'tenant-a' } },
+        10,
+      );
+      expect(results.length).toBeGreaterThan(0);
+      for (const r of results) {
+        expect(r.degraded).toBeUndefined();
+      }
+    });
+  });
+
+  // ── BL-295: kind:'component' storage + hybrid FTS5+vector retrieval, end to end ──
+
+  describe('kind:"component" end-to-end via SqliteSearchBackend (BL-295)', () => {
+    it('stores AND retrieves a kind:"component" node through real hybrid FTS5(BM25)+vector search', () => {
+      const db = createTestDb();
+      const componentVec = createTestVecStore(db);
+      const componentGraph = new SqliteGraphBackend(db, { kinds: ['component'] });
+      componentGraph.applySchema();
+      const componentBackend = new SqliteSearchBackend(componentVec, componentGraph);
+
+      const id = componentGraph.writeNode(
+        'A reusable Button component with primary and secondary variants',
+        { kind: 'component', name: 'Button', topic: 'ui-primitives', importance: 5 },
+      );
+      componentVec.upsert(id, new Float32Array([1.0, 0.0, 0.0, 0.0]), {
+        modelId: 'test-model',
+        dim: 4,
+      });
+
+      // (a) it is genuinely a graph-store `node` row of kind='component'.
+      const stored = componentGraph.getNode(id);
+      expect(stored).not.toBeNull();
+      expect(stored!.kind).toBe('component');
+
+      // (b) real hybrid FTS5(BM25) + vector-kNN search finds it via SqliteSearchBackend.
+      const results = componentBackend.search(
+        { text: 'Button component', vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { kind: 'component' } },
+        10,
+      );
+      expect(results.length).toBeGreaterThan(0);
+      const found = results.find((r) => r.id === id);
+      expect(found).toBeDefined();
+      expect(found!.fields.kind).toBe('component');
+      expect(found!.textScore).toBeGreaterThan(0);
+      expect(found!.vecScore).toBeGreaterThan(0);
+
+      db.close();
+    });
   });
 });
 
