@@ -2,6 +2,79 @@
 
 ---
 
+## [Unreleased] — graph-store extensible node kinds; hybrid-search filter/vector-channel correctness
+
+`@adhd/sox-graph-store` and `@adhd/sox-hybrid-search` fixes closing out the four blockers the
+adhd agent-mcp-authoring integration audit filed as BL-293/294/295/303. Both packages remain
+at their current published versions (`graph-store@0.2.0`, `hybrid-search@0.1.0`) pending a
+version bump — not yet published.
+
+### `@adhd/sox-graph-store` — extensible node `kind` allowlist (BL-295)
+
+```ts
+import { createGraphBackend } from '@adhd/sox-graph-store';
+
+// Register a domain-specific kind beyond the built-in
+// episode/entity/claim/community/session/generic set.
+const graph = createGraphBackend(db, { kinds: ['component'] });
+
+const id = graph.writeNode('A reusable Button component', {
+  kind: 'component',
+  name: 'Button',
+});
+graph.getNode(id)!.kind;              // 'component'
+graph.queryNodes({ kind: 'component' }); // [...]
+```
+
+`NodeMeta.kind` / `NodeRecord.kind` / `NodeFilter.kind` are now first-class (previously `kind`
+was hardcoded to `'episode'` on every write and not exposed on read at all, despite the `node`
+table's CHECK constraint already gating it — the escape hatch existed at the SQL layer with no
+way to reach it through the public API). Custom kind names are validated against
+`/^[a-z][a-z0-9_]*$/` (rejects anything unsafe to interpolate into the underlying
+`CHECK (kind IN (...))` constraint — SQLite can't parameterize DDL) and, for a store re-opened
+with new kinds, the constraint is upgraded in place via the existing `rebuildTable`
+rename→create→copy→drop→rename mechanism — the same path already used to add
+`'generic'`/`'DEPENDS_ON'` to older stores. `NodeFilter` also gained `projectPath`/`agentId`,
+closing a gap where those columns were indexed but unfilterable through the public read API.
+
+### `@adhd/sox-hybrid-search` — vector channel now honors query filters (BL-294)
+
+**Fix (namespace/tenant leak):** a `namespace`/`kind`/`topic`/`project_path`/`agent_id` filter
+passed to `SqliteSearchBackend.search()` previously constrained only the FTS5 text channel — the
+vector (kNN) channel ran completely unfiltered. A namespace-scoped hybrid or vec-only query could
+therefore return another namespace's nodes fused into the results (proven with a red→green test:
+two nodes with identical vectors in different namespaces, `filters: { namespace: 'tenant-b' }`
+leaked `tenant-a`'s node on unfixed code). The vector channel now resolves the same `NodeFilter`
+through `graph.queryNodes()` and constrains `vec.knn()` to the matching id set; a filter matching
+zero nodes now correctly yields zero vector candidates instead of falling back to an unfiltered
+`knn()` call (an empty `VecFilter.ids` array means "no filter" to the vector backend, not "match
+nothing", so this required an explicit skip-the-call path, not just passing `{ ids: [] }`).
+
+**New: degrade signal.** `SearchBackend.search()` results (and the top-level `search()`
+function's `SearchResult[]`) gained an additive `degraded?: { unsupportedFilters: string[] }`
+field, set whenever a caller's `filters` included a key with no mapping onto `NodeFilter`.
+Surfaced unconditionally — not gated behind `explain: true`, since "was my filter actually
+applied" is a correctness question, not a diagnostic one.
+
+`buildFilterClause()`'s `project_path`/`agent_id` filter keys now route to
+`NodeFilter.projectPath`/`NodeFilter.agentId` (previously silently dropped into an `extraClauses`
+value that `SqliteSearchBackend` never actually applied to either search channel).
+
+### Fixes (backlog evidence corrections — no code change)
+
+- **BL-293** — `createGraphBackend(db)` already applies schema automatically
+  (`SqliteGraphBackend`'s constructor calls `applySchema()`, which is idempotent). Confirmed via
+  a fresh in-memory store round-trip and a live check against the **built** `dist/index.js`,
+  invoked from a `cwd` outside the package with a real file-backed SQLite store — ruling out any
+  `import.meta.url`/migrations-folder resolution issue. The constructor already carried the fix
+  as of the 2026-07-11 Drizzle migration port (commit `9c63d40`, same day the blocker was filed
+  against a pre-port line reference); this entry only corrects the stale backlog evidence.
+- **BL-303** — `drizzle-orm` is not a dead dependency: `libs/data/graph/graph-store/src/index.ts`
+  imports `drizzle`/`migrate` from it and runs it in every `applySchema()` call. The 2026-07-11
+  Drizzle migration port (commit `9c63d40`) wired it up rather than removing it, closing the
+  underlying finding by the opposite resolution than originally proposed. No code change
+  required; this entry only corrects the stale backlog evidence.
+
 ## [1.2.0] — 2026-07-11 — asp-gateway install surface, build integrity, and embedding-provider audit
 
 This release is where `soxe` grew the install capabilities the asp-gateway bundle needs to deploy on a fresh machine, the build substrate was standardized against off-the-shelf tools with the contract published, and the embedding-provider package's documentation was reconciled with reality through a component-spec audit.

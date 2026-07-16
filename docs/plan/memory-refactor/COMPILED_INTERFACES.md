@@ -29,6 +29,11 @@ type EdgeRel =
 type Confidence = 'confirmed' | 'unverified' | 'disputed' | 'deprecated'
 
 interface NodeMeta {
+  // Node kind. Default: 'episode' when omitted. Must be one of DEFAULT_NODE_KINDS
+  // ('episode' | 'entity' | 'claim' | 'community' | 'session' | 'generic') or a kind
+  // registered on this store instance via createGraphBackend(db, { kinds: [...] });
+  // an unregistered kind throws ConstraintError. (BL-295)
+  kind?: string
   name?: string
   summary?: string
   topic?: string
@@ -47,6 +52,7 @@ interface NodeMeta {
 
 interface NodeRecord {
   id: number
+  kind: string                // always present on read; 'episode' unless written otherwise (BL-295)
   content: string
   name?: string
   summary?: string
@@ -80,6 +86,7 @@ interface EdgeRecord {
 
 interface NodeFilter {
   ids?: number[]
+  kind?: string | string[]    // OR semantics when array (BL-295)
   topic?: string | string[]
   tags?: string[]
   tagsMatchAll?: boolean
@@ -92,6 +99,8 @@ interface NodeFilter {
   validAt?: string
   isStale?: boolean           // false = exclude stale; true = only stale; absent = all
   namespace?: string          // absent = all namespaces; present = exact match
+  projectPath?: string        // absent = all project paths; present = exact match (BL-294)
+  agentId?: string            // absent = all agents; present = exact match (BL-294)
   // Shallow equality on metadata fields (AND semantics). Check capabilities.metadataFilter
   // before relying on this — backends that don't support it will ignore it.
   metadata?: Record<string, unknown>
@@ -321,13 +330,27 @@ interface GraphBackend {
 
 **Default implementation:**
 ```ts
-class SqliteGraphBackend implements GraphBackend {
-  readonly capabilities = { bitemporal: true, fullTextSearch: true, metadataFilter: true }
-  constructor(db: Database) {}
-  // FTS via FTS5 triggers; score is bm25() rank; validAt honored via t_valid/t_invalid columns
+// Additional node kinds beyond DEFAULT_NODE_KINDS this store instance should accept.
+// Each entry must match /^[a-z][a-z0-9_]*$/ (validated at construction; invalid names throw
+// ConstraintError — kind names are interpolated into a CHECK(kind IN (...)) constraint, which
+// SQLite cannot parameterize). Registering a kind not yet present in an EXISTING store's CHECK
+// constraint upgrades it in place via the rebuildTable rename→create→copy→drop→rename dance —
+// same mechanism already used to add 'generic'/'DEPENDS_ON' to older stores. (BL-295)
+interface GraphBackendOpts {
+  kinds?: readonly string[]
 }
 
-function createGraphBackend(db: Database): GraphBackend
+const DEFAULT_NODE_KINDS: readonly string[] // ['episode','entity','claim','community','session','generic']
+
+class SqliteGraphBackend implements GraphBackend {
+  readonly capabilities = { bitemporal: true, fullTextSearch: true, metadataFilter: true }
+  constructor(db: Database, opts?: GraphBackendOpts) {}
+  // FTS via FTS5 triggers; score is bm25() rank; validAt honored via t_valid/t_invalid columns
+  // Schema is applied automatically by the constructor — callers never see "no such table"
+  // from a freshly-constructed backend; applySchema() is idempotent and safe to call again.
+}
+
+function createGraphBackend(db: Database, opts?: GraphBackendOpts): GraphBackend
 ```
 
 **Schema-only exports (for the composer):**
@@ -727,6 +750,14 @@ interface SearchQuery {
   filters?: Record<string, unknown>
 }
 
+// Signals that a query's stated filters could not be fully honored — e.g. a filter key
+// with no mapping onto the backing store's queryable fields, so it silently constrained
+// neither the text nor the vector channel. Not an error — callers should treat a flagged
+// result as scoped more loosely than requested. (BL-294)
+interface SearchDegradeInfo {
+  unsupportedFilters: string[]
+}
+
 interface SearchBackend {
   // text absent → vecScore only; vec absent → textScore only; neither → error
   // Never throws for a missing signal — degrades to whichever signal is present.
@@ -739,6 +770,7 @@ interface SearchBackend {
     textScore?: number    // text relevance — mechanism is the backend's concern
     vecScore?: number     // vector similarity — metric is the backend's concern
     fields: Record<string, unknown>
+    degraded?: SearchDegradeInfo   // present only when query.filters had unsupported keys
   }>
 }
 ```
@@ -766,7 +798,14 @@ class SqliteSearchBackend implements SearchBackend {
     graph: GraphBackend,
     opts?: SqliteSearchOpts
   ) {}
-  // Delegates to graph.searchNodes() for textScore, vec.knn() for vecScore
+  // Delegates to graph.searchNodes() for textScore, vec.knn() for vecScore.
+  // NodeFilter (namespace/kind/topic/projectPath/agentId/…) constrains BOTH channels:
+  // the text channel via graph.searchNodes()'s filter param, and the vector channel by
+  // first resolving the matching node-id set through graph.queryNodes(filter) and
+  // passing it as VecFilter.ids to vec.knn() — VecFilter has no native namespace/kind
+  // filter, only `ids`. A filter matching zero nodes yields zero vector candidates
+  // (skips the knn() call rather than passing an empty `ids` array, which the vector
+  // backend treats as "no filter", not "match nothing"). (BL-294)
   // buildFilterClause is resolved internally — not exported
 }
 ```
@@ -795,6 +834,9 @@ interface SearchResult {
   // Populated only when explain: true. Signal-level only — mechanism-agnostic.
   signalScores?: { text?: number; vec?: number }
   fields: Record<string, unknown>
+  // Propagated from SearchBackend.search() whenever the backend flagged the query's
+  // filters as not fully enforceable — always surfaced, not gated behind explain. (BL-294)
+  degraded?: SearchDegradeInfo
 }
 ```
 

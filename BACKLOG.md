@@ -6,7 +6,8 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-11 (regenerated mechanically; see BL-224)
 
-**Total open: 44.** This block is DERIVED from the `**...**` status marker on each
+**Total open: 40** (BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16 — see CHANGELOG.md).
+This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
 five already-RESOLVED items as top priorities, including `BL-62` as the "#1 only PROVEN live bug"
@@ -19,9 +20,9 @@ node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.
 
 | Priority | Open items |
 |---|---|
-| **HIGH** | `BL-62`, `BL-96`, `BL-97`, `BL-225`, `BL-254`, `BL-273`, `BL-284`, `BL-288`, `BL-293`, `BL-301`, `BL-302` |
-| **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-259`, `BL-274`, `BL-282`, `BL-285`, `BL-291`, `BL-294`, `BL-295`, `BL-296`, `BL-297`, `BL-300` |
-| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264`, `BL-283`, `BL-287`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299`, `BL-303`, `BL-305` |
+| **HIGH** | `BL-62`, `BL-96`, `BL-97`, `BL-225`, `BL-254`, `BL-273`, `BL-284`, `BL-288`, `BL-301`, `BL-302` |
+| **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-259`, `BL-274`, `BL-282`, `BL-285`, `BL-291`, `BL-296`, `BL-297`, `BL-300` |
+| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264`, `BL-283`, `BL-287`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299`, `BL-305` |
 | **FEATURE** | `BL-163`, `BL-215` |
 
 ### Where to start
@@ -5499,94 +5500,6 @@ By contrast: `libs/data/store/blob-store/src/store.ts:112` — `this.db = new (a
 
 ---
 
-### BL-293 — `createGraphBackend(db)` must apply schema (or fail loudly) instead of silently deferring to a separate `applySchema()` call — **Open (HIGH)** (2026-07-11)
-
-**Package:** `@adhd/sox-graph-store` (`libs/data/graph/graph-store`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DX-001, footgun)
-
-**Problem.** `createGraphBackend(db)`'s constructor is a pure field assignment — it does not apply the DDL schema. The first `writeNode()`/`searchNodes()` call against a freshly-opened database throws `SqliteError: no such table: node` unless the caller separately, and non-obviously, calls `graph.applySchema()` first. Confirmed from a real downstream (adhd) consumer install — this is not a theoretical edge case.
-
-**Evidence.** `libs/data/graph/graph-store/src/index.ts:528-530`:
-```ts
-constructor(db: Database.Database) {
-  this.db = db;
-}
-```
-`index.ts:1265-1267`:
-```ts
-export function createGraphBackend(db: Database.Database): GraphBackend {
-  return new SqliteGraphBackend(db);
-}
-```
-Neither calls `applySchema()`. `applySchema()` itself (`index.ts:534-561`) is already idempotent-guarded — `if (this.schemaApplied) return;` at `index.ts:535`, and further version-gated via a `_schema_version` table check at `index.ts:543-551` — so it is safe to call unconditionally on every construction; the guard work needed for a fix is already in place, only the call site is missing. `writeNode()` (`index.ts:566` onward) issues raw `INSERT INTO node`-shaped queries against a table that doesn't exist yet if `applySchema()` was never called.
-
-**Root cause.** The constructor was written to accept an already-open `Database.Database` handle (so the caller controls DB lifecycle/pragmas), but schema application was factored out as a separate explicit step — presumably to let advanced callers control *when* DDL runs relative to other setup — without the factory function (`createGraphBackend`) defaulting to the safe, common-case behavior of "just make it work."
-
-**Proposed design.**
-- Option A (recommended): Call `this.applySchema()` at the end of the `SqliteGraphBackend` constructor (`index.ts:528-530`). Since `applySchema()` is already idempotent (guarded by `schemaApplied` + `_schema_version`), this is safe even for callers who explicitly call `applySchema()` again afterward (no-op) or who pass in a DB that already has the schema from a prior process (version-check skips re-running DDL). This directly fixes `createGraphBackend(db)` for every caller with zero API change.
-- Option B: Keep the constructor a no-op, but have `createGraphBackend()` (the actual public factory, not the class) call `.applySchema()` before returning — equivalent effect, slightly smaller diff if there's a reason the raw class constructor must stay side-effect-free (e.g. some caller constructs `SqliteGraphBackend` directly and wants to defer schema application). Check `grep -rn "new SqliteGraphBackend" libs/**/src` for direct-construction callers before choosing.
-- Recommendation: Option A unless a direct `new SqliteGraphBackend(db)` caller is found needing deferred schema application (none found in this repo as of 2026-07-11 — grep returns no matches outside `index.ts` itself); Option A also protects any future direct-construction caller from the same footgun, whereas Option B only protects factory-function callers.
-
-**Acceptance criteria.**
-- [ ] `const graph = createGraphBackend(new Database(':memory:')); graph.writeNode('test', {kind:'episode', ...})` succeeds without a prior explicit `.applySchema()` call — fails today with `SqliteError: no such table: node`.
-- [ ] Calling `.applySchema()` explicitly after construction remains a safe no-op (proves idempotency wasn't broken by the fix).
-- [ ] Existing `graph-store` spec suite continues to pass unmodified.
-
-**Effort / risk / blast radius.** S effort (one-line constructor change), low risk given `applySchema()`'s existing idempotency guards. High-value fix — this is a first-contact footgun for every new consumer of `@adhd/sox-graph-store` (confirmed hit by the adhd integration audit itself), so closing it removes a guaranteed onboarding failure for every future consumer, including hybrid-search's `SqliteSearchBackend` (BL-294) which composes a `GraphBackend`.
-
----
-
-### BL-294 — Surface a degrade signal when `SqliteSearchBackend`'s text channel returns zero hits due to a namespace/filter mismatch — **Open (MEDIUM)** (2026-07-11)
-
-**Package:** `@adhd/sox-hybrid-search` (`libs/data/search/hybrid-search`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DX-002)
-
-**Problem.** `SqliteSearchBackend.search()`'s text channel calls `this.graph.searchNodes(query.text, searchOpts)` with a `filter` derived from `query.filters`. If that filter doesn't match how nodes were written (a namespace mismatch is the common case), the FTS5 text channel silently returns zero rows and the fused ranking collapses to pure-kNN vector-only results — with no channel-level signal that the text side found nothing. A consumer calling this expecting hybrid fusion silently gets vector-only search and has no way to detect it short of manually diffing against a vector-only call, unless they pass `explain:true` and manually inspect every result's `signalScores` for an empty `.text` field.
-
-**Evidence.** `libs/data/search/hybrid-search/src/index.ts:454-538` (`SqliteSearchBackend.search()`, re-verified 2026-07-11) builds `merged` purely from whatever `this.graph.searchNodes(...)` (`index.ts:487`) and `this.vec.knn(...)` (`index.ts:507`) return — no code path checks or reports "textResults.length === 0 while textPresent === true." The fusion function `fuse()`'s caller-facing path (`index.ts:330-437`, specifically the `textPresent && vecPresent` branch at `index.ts:346-359`) does populate a per-result `signalScores` map (`index.ts:344,352`) that *would*, on close inspection with `explain:true` (`index.ts:430-432`), show every result missing a `.text` score — but this is an opt-in, per-item, post-hoc signal, not a proactive channel-level warning, and `grep -n "console.warn\|degrade" libs/data/search/hybrid-search/src/index.ts` returns zero matches — there is no warning emitted anywhere in the file. Verified behaviorally per the original audit: fused ranking under a namespace mismatch is exactly identical to a pure vector-only call.
-
-**Root cause.** `fuse()`/`SqliteSearchBackend.search()` were designed around the *scoring* mechanics of combining two channels' resultsets, not around *observability* of channel health — the `signalScores` field exists for per-result explainability (why did this ID rank where it did), not for aggregate "did channel X find anything at all" reporting, so a total-miss on one channel produces a well-formed but silently misleading response.
-
-**Proposed design.**
-- Add a `channelStats` (or similarly named) field to the `search()`/`fuse()` return contract: `{ textHitCount: number, vecHitCount: number }`, computed once per call from `candidates.filter(c => c.textScore !== undefined).length` / `candidates.filter(c => c.vecScore !== undefined).length` in `fuse()` (around `index.ts:338`, right after `const candidates = backend.search(...)`).
-- When `textPresent === true && textHitCount === 0` (or the symmetric vec case), attach a non-fatal `degraded: { channel: 'text', reason: 'zero hits — check namespace/filter' }` marker on the result set (top-level, not per-item) so a consumer can branch on it without manually diffing.
-- Keep this additive/opt-in at the type level (new optional field) so it's non-breaking for existing consumers destructuring `SearchResult[]`.
-- Do not add a `console.warn` inside the library itself (library code emitting to stdout/stderr by default is generally undesirable for a pure data package) — surface the signal in the return value and let the consumer (e.g. `memory-core`'s `memory_recall`) decide whether to log/surface it. This matches how `signalScores` is already exposed via `explain`, just promoted from per-item to per-call and made unconditional (not gated behind `explain:true`) since "did the channel find anything" is operationally important even when full explainability isn't requested.
-
-**Acceptance criteria.**
-- [ ] A test constructs a graph-store with nodes written under namespace A, searches with a filter for namespace B (guaranteed zero text hits) plus a valid vector query (guaranteed vec hits), and asserts the returned result includes a `degraded`/`channelStats` field indicating `textHitCount: 0` — fails today (no such field exists).
-- [ ] The same test asserts the actual returned `SearchResult[]` ranking is unchanged from today's behavior (this is additive metadata, not a ranking-behavior fix) — so the fix doesn't regress existing consumers' rankings, only adds the missing observability.
-- [ ] A consumer-facing doc note in `hybrid-search`'s `sox.concerns` describes the new degrade signal.
-
-**Effort / risk / blast radius.** M effort (new field threaded through `fuse()` + `SqliteSearchBackend`, plus tests). Low risk — additive field, no behavior change to scoring/ranking. Directly benefits any consumer building fusion search (adhd's own hybrid-search integration explicitly hit this exact silent-degrade case per the original audit).
-
----
-
-### BL-295 — Add an extensible/generic `kind` escape hatch to graph-store's `node.kind` CHECK constraint — **Open (MEDIUM)** (2026-07-11)
-
-**Package:** `@adhd/sox-graph-store` (`libs/data/graph/graph-store`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-FEAT-001, missing feature)
-
-**Problem.** `graph-store`'s `node` table schema hard-codes `kind IN ('episode','entity','claim','community','session')` — a fixed enum tied to the memory domain. Any consumer wanting to reuse graph-store purely as an FTS5+vector-fusion host for a **non-memory** entity type (adhd's concrete example: a prompt-component registry, where a "component" is none of the five allowed kinds) is structurally blocked by the CHECK constraint, not just by convention. This forced adhd to implement its own parallel FTS5 host rather than reuse `SqliteSearchBackend`, duplicating infrastructure this package was otherwise well-suited to provide.
-
-**Evidence.** `libs/data/graph/graph-store/src/index.ts:19` (re-verified 2026-07-11, unchanged): `kind         TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session')),`. No `'generic'`/`'component'`/wildcard escape exists anywhere in the DDL. `writeNode(content, meta)` (`index.ts:566` onward) passes `meta.kind` straight into the `INSERT`, so any caller supplying an out-of-enum kind gets an immediate `SqliteError: CHECK constraint failed` — a hard block, not a soft warning.
-
-**Root cause.** `graph-store`'s schema was designed exclusively for the memory subsystem's domain model (episodes/entities/claims/communities/sessions per this repo's memory-core design) and the CHECK constraint was never revisited when the package's `SqliteSearchBackend` (hybrid-search) started being positioned as generically reusable FTS5+vector fusion infrastructure — the schema and the reuse ambition drifted apart.
-
-**Proposed design.**
-- Option A (recommended, matches the original finding's suggestion): Add a `'generic'` kind to the CHECK enum — `kind IN ('episode','entity','claim','community','session','generic')` — and document that non-memory consumers should write nodes with `kind:'generic'` plus their own domain-specific data carried in the existing free-form `meta`/fields columns (check current schema for a JSON metadata column consumers can use to carry a sub-kind like `'component'` without needing schema changes). This is the minimal, additive, backward-compatible change — existing memory-domain rows and queries are untouched.
-- Option B (more flexible, larger change): Remove the CHECK constraint entirely and replace `kind` validation with an application-level (TypeScript type + optional runtime validator function passed to `createGraphBackend`) check, letting each consumer define its own allowed-kinds set. More flexible for future non-memory reuse but loses the DB-level guarantee that's valuable for the memory subsystem's own data integrity (a typo'd `kind` would no longer be caught by SQLite itself).
-- Option C (namespaced escape): Instead of one `'generic'` kind, support a `kind` format like `'domain:subkind'` (e.g. `'component:prompt'`) validated by a relaxed CHECK (`kind GLOB '*:*' OR kind IN (...)`) or a regex-shaped constraint, giving non-memory consumers their own kind namespace without colliding with the memory domain's reserved five.
-- Recommendation: Option A first (smallest safe step, unblocks adhd's stated use case immediately), with Option C as a fast-follow if multiple non-memory consumers emerge and start colliding on what `'generic'` means to each of them (a single `'generic'` bucket won't scale past one non-memory consumer using graph-store this way).
-
-**Acceptance criteria.**
-- [ ] `createGraphBackend(db).writeNode('some prompt component text', { kind: 'generic', ... })` succeeds (currently fails with `SqliteError: CHECK constraint failed: kind`).
-- [ ] Existing memory-domain kinds (`episode`, `entity`, `claim`, `community`, `session`) continue to be accepted and a deliberately wrong kind (e.g. `'nonsense'`) continues to be rejected by the CHECK constraint — proves the fix is additive, not a removal of the domain-integrity guarantee.
-- [ ] `SqliteSearchBackend` (hybrid-search) is proven end-to-end against a `'generic'`-kind node: write it, search it via FTS5 text query, confirm it's returned — this is the actual consumer-facing outcome adhd needs, not just a schema-level CHECK pass.
-- [ ] `sox.concerns`/`sox.invariants` in `graph-store/package.json` documents the `'generic'` kind and its intended non-memory reuse contract.
-
-**Effort / risk / blast radius.** S-M effort (DDL change + migration note for existing DBs — note: `_schema_version`-gated migrations, per `index.ts:543-551`, need a new version bump to alter the CHECK constraint on already-created tables, since SQLite CHECK constraints on existing tables require a table rebuild, not just a new `CREATE TABLE IF NOT EXISTS`). Risk: low for new databases; migration path for **existing** `node` tables needs care (SQLite doesn't support `ALTER TABLE ... ADD CONSTRAINT` directly — likely needs a `CREATE TABLE new_node (...) ; INSERT INTO new_node SELECT * FROM node; DROP TABLE node; ALTER TABLE new_node RENAME TO node;` migration step gated by the existing `_schema_version` mechanism). Directly unblocks adhd's prompt-component-registry use case and any future non-memory consumer wanting to reuse `SqliteSearchBackend`.
-
-
----
-
 ## agent-mcp-authoring integration audit — structural gaps (schema duplication / migration / dead dep, 2026-07-11)
 
 Surfaced while evaluating whether the adhd registry should reuse `@adhd/sox-graph-store` directly (Option A) instead of reimplementing FTS5 (Option B). These are distinct from the BL-282..295 findings and each other. Origin: adhd/agent-mcp-authoring.
@@ -5649,25 +5562,6 @@ Surfaced while evaluating whether the adhd registry should reuse `@adhd/sox-grap
 - [ ] Negative control: the same test against the current stub fails (the v2 CHECK change never takes).
 
 **Effort / risk / blast radius.** M effort for the runner; per-migration effort thereafter. Risk: medium — migrations touch live data; must be transactional + tested against a populated store. Blast radius: graph-store, memory-core, every persisted store.
-
-### BL-303 — `graph-store` declares `drizzle-orm` but never uses it (dead dependency; also the phantom source of the drizzle version-skew) — **Open (LOW)** (2026-07-11)
-
-**Package:** `@adhd/sox-graph-store` (`libs/data/graph/graph-store/package.json`)  **Origin:** adhd/agent-mcp-authoring integration audit
-
-**Problem.** `graph-store` lists `drizzle-orm: ^0.42.0` in `dependencies`, but no `src` file imports or references drizzle — the store is implemented entirely with raw SQL over `better-sqlite3` prepared statements. The dep is dead weight in every install. It is also the *sole* source of the "graph-store `drizzle-orm@^0.42.0` vs a `0.45.2` consumer → nested install" version-skew that was cited as a cost of adopting graph-store downstream — since drizzle is unused, that skew is a **non-issue** and should not influence any consume-vs-reimplement decision.
-
-**Evidence.** `grep -rn drizzle libs/data/graph/graph-store/src` → no matches (2026-07-11). `package.json` `dependencies` = `{ better-sqlite3: ^12.10.0, drizzle-orm: ^0.42.0 }`.
-
-**Root cause.** Left over from an earlier drizzle-based implementation or a scaffold default; never pruned after the raw-SQL rewrite.
-
-**Proposed design.** Remove `drizzle-orm` from `graph-store` `dependencies` (and from any consumer that only inherited it transitively). Re-run `graph-store` build + tests to confirm zero usage. If a stray type-only import exists, replace it with a local type.
-
-**Acceptance criteria.**
-- [ ] `graph-store` `package.json` has no `drizzle-orm`; `nx build`/`nx test @adhd/sox-graph-store` stay green.
-- [ ] `npm ls drizzle-orm` from a fresh install of graph-store no longer resolves it via graph-store.
-
-**Effort / risk / blast radius.** S effort, low risk. Blast radius: graph-store only (removes a transitive dep from its consumers). Removes a stated objection to Option A in the adhd agent-mcp-authoring plan.
-
 
 ### BL-305 — tsc-built packages ship a verbatim `dist/package.json` whose nested `exports` field Node.js IGNORES — **Open (LOW, packaging)** (2026-07-11)
 
