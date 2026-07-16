@@ -257,6 +257,115 @@ describe('writeNode', () => {
   });
 });
 
+// ─── node kind (BL-295 — extensible constructor-allowlist) ────────────────────
+
+describe('node kind', () => {
+  it('defaults to "episode" when kind is omitted', () => {
+    const { backend, db } = freshBackend();
+    const id = backend.writeNode('untyped content', {});
+    const node = backend.getNode(id);
+    expect(node!.kind).toBe('episode');
+    db.close();
+  });
+
+  it('accepts every DEFAULT_NODE_KINDS value out of the box', () => {
+    const { backend, db } = freshBackend();
+    for (const kind of ['episode', 'entity', 'claim', 'community', 'session', 'generic']) {
+      const id = backend.writeNode(`content for ${kind}`, { kind });
+      expect(backend.getNode(id)!.kind).toBe(kind);
+    }
+    db.close();
+  });
+
+  it('rejects an unregistered kind by default (ConstraintError, not a raw SQLite error)', () => {
+    const { backend, db } = freshBackend();
+    expect(() => backend.writeNode('a component record', { kind: 'component' })).toThrow(
+      ConstraintError,
+    );
+    db.close();
+  });
+
+  it('stores AND retrieves a kind:"component" node when registered via createGraphBackend(db, { kinds })', () => {
+    const db = new Database(':memory:');
+    const backend = createGraphBackend(db, { kinds: ['component'] });
+
+    const id = backend.writeNode('a reusable UI component', {
+      kind: 'component',
+      name: 'Button',
+      topic: 'ui-primitives',
+    });
+
+    const node = backend.getNode(id);
+    expect(node).not.toBeNull();
+    expect(node!.kind).toBe('component');
+    expect(node!.content).toBe('a reusable UI component');
+    expect(node!.name).toBe('Button');
+
+    // Round-trips through the sqlite_master CHECK constraint, not just app-level state.
+    const row = db
+      .prepare<[], { sql: string }>(
+        `SELECT sql FROM sqlite_master WHERE type='table' AND name='node'`,
+      )
+      .get();
+    expect(row!.sql).toContain("'component'");
+
+    db.close();
+  });
+
+  it('queryNodes filters by kind (string and array forms)', () => {
+    const db = new Database(':memory:');
+    const backend = createGraphBackend(db, { kinds: ['component'] });
+    const compId = backend.writeNode('Button component', { kind: 'component' });
+    const epId = backend.writeNode('an episode', { kind: 'episode' });
+    backend.writeNode('an entity', { kind: 'entity' });
+
+    const components = backend.queryNodes({ kind: 'component' });
+    expect(components.map((n) => n.id)).toEqual([compId]);
+
+    const compsAndEpisodes = backend.queryNodes({ kind: ['component', 'episode'] });
+    expect(new Set(compsAndEpisodes.map((n) => n.id))).toEqual(new Set([compId, epId]));
+
+    db.close();
+  });
+
+  it('upgrades the CHECK constraint on an existing store opened with new kinds (rebuildTable path)', () => {
+    const db = new Database(':memory:');
+    // First open: no custom kinds — matches the common "default store" case.
+    const backend1 = createGraphBackend(db);
+    const episodeId = backend1.writeNode('pre-existing episode', {});
+    expect(() => backend1.writeNode('x', { kind: 'component' })).toThrow(ConstraintError);
+
+    // Re-open the SAME db with the custom kind registered — must rebuild in place
+    // and preserve the pre-existing row.
+    const backend2 = createGraphBackend(db, { kinds: ['component'] });
+    const compId = backend2.writeNode('now allowed', { kind: 'component' });
+
+    expect(backend2.getNode(episodeId)!.content).toBe('pre-existing episode');
+    expect(backend2.getNode(compId)!.kind).toBe('component');
+    db.close();
+  });
+
+  it('registers multiple custom kinds together', () => {
+    const db = new Database(':memory:');
+    const backend = createGraphBackend(db, { kinds: ['component', 'workflow'] });
+    const compId = backend.writeNode('a component', { kind: 'component' });
+    const flowId = backend.writeNode('a workflow', { kind: 'workflow' });
+    expect(backend.getNode(compId)!.kind).toBe('component');
+    expect(backend.getNode(flowId)!.kind).toBe('workflow');
+    db.close();
+  });
+
+  it('rejects a custom kind name that is not safe to interpolate into a CHECK constraint', () => {
+    const db = new Database(':memory:');
+    expect(() => createGraphBackend(db, { kinds: ['Component'] })).toThrow(ConstraintError);
+    expect(() => createGraphBackend(db, { kinds: ["comp'; DROP TABLE node; --"] })).toThrow(
+      ConstraintError,
+    );
+    expect(() => createGraphBackend(db, { kinds: ['has space'] })).toThrow(ConstraintError);
+    db.close();
+  });
+});
+
 // ─── supersede ────────────────────────────────────────────────────────────────
 
 describe('supersede', () => {

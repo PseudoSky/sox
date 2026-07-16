@@ -110,12 +110,28 @@ END;
 
 // ─── Table rebuild helpers for CHECK constraint upgrades ─────────────────────
 
-// The canonical node table DDL (without IF NOT EXISTS) for table rebuilds.
-// See also: drizzle/schema.ts (migration management) and graph-store.spec.ts V1_* (test helpers).
-const NODE_TABLE_DDL = `CREATE TABLE node (
+// The kinds baked into the committed Drizzle migration (0000_sad_onslaught.sql). This is
+// the floor every store starts with — createGraphBackend()'s `kinds` option extends it
+// per-instance (BL-295).
+export const DEFAULT_NODE_KINDS = ['episode', 'entity', 'claim', 'community', 'session', 'generic'] as const;
+
+// Custom kind names are interpolated directly into a CHECK (...) IN (...) clause — SQLite
+// cannot parameterize DDL/CHECK constraints. Restrict to a safe identifier shape so a caller
+// can never inject SQL via a crafted kind string.
+const KIND_NAME_RE = /^[a-z][a-z0-9_]*$/;
+
+/**
+ * Builds the `node` table DDL (no `IF NOT EXISTS` — used by rebuildTable's
+ * rename→create→copy→drop→rename dance) with a CHECK (kind IN (...)) clause covering
+ * exactly the given kinds. See also: drizzle/schema.ts (migration management) and
+ * graph-store.spec.ts V1_* (test helpers).
+ */
+function nodeTableDDL(kinds: readonly string[]): string {
+  const kindList = kinds.map((k) => `'${k}'`).join(',');
+  return `CREATE TABLE node (
   rowid        INTEGER PRIMARY KEY,
   uid          TEXT UNIQUE NOT NULL,
-  kind         TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session','generic')),
+  kind         TEXT NOT NULL CHECK (kind IN (${kindList})),
   content      TEXT,
   name         TEXT,
   summary      TEXT,
@@ -142,6 +158,7 @@ const NODE_TABLE_DDL = `CREATE TABLE node (
   last_access  TEXT,
   t_updated    TEXT
 )`;
+}
 
 const EDGE_TABLE_DDL = `CREATE TABLE edge (
   rowid     INTEGER PRIMARY KEY,
@@ -236,6 +253,12 @@ export type EdgeRel =
 export type Confidence = 'confirmed' | 'unverified' | 'disputed' | 'deprecated';
 
 export interface NodeMeta {
+  /**
+   * Node kind. Defaults to 'episode' when omitted (backward-compatible with every
+   * existing caller). Must be one of DEFAULT_NODE_KINDS or a kind registered via
+   * createGraphBackend(db, { kinds: [...] }) — an unregistered kind throws ConstraintError.
+   */
+  kind?: string;
   name?: string;
   summary?: string;
   topic?: string;
@@ -254,6 +277,7 @@ export interface NodeMeta {
 
 export interface NodeRecord {
   id: number;
+  kind: string;
   content: string;
   name?: string;
   summary?: string;
@@ -287,6 +311,7 @@ export interface EdgeRecord {
 
 export interface NodeFilter {
   ids?: number[];
+  kind?: string | string[];
   topic?: string | string[];
   tags?: string[];
   tagsMatchAll?: boolean;
@@ -297,6 +322,8 @@ export interface NodeFilter {
   validAt?: string;
   isStale?: boolean;
   namespace?: string;
+  projectPath?: string;
+  agentId?: string;
   metadata?: Record<string, unknown>;
   orderBy?: 'importance' | 'tCreated' | 'tValid' | 'name';
   orderDir?: 'asc' | 'desc';
@@ -308,6 +335,18 @@ export interface GraphBackendCapabilities {
   bitemporal: boolean;
   fullTextSearch: boolean;
   metadataFilter: boolean;
+}
+
+/** Options accepted by createGraphBackend() / the SqliteGraphBackend constructor. */
+export interface GraphBackendOpts {
+  /**
+   * Additional node kinds beyond DEFAULT_NODE_KINDS this store instance should accept.
+   * Each entry must match /^[a-z][a-z0-9_]*$/ — validated at construction time and
+   * enforced by both an in-process check (writeNode) and the underlying SQLite
+   * CHECK (kind IN (...)) constraint, which is upgraded in place (rebuildTable) if the
+   * store already exists with a narrower constraint. (BL-295)
+   */
+  kinds?: readonly string[];
 }
 
 export interface GraphBackend {
@@ -438,6 +477,7 @@ function isStale(tExpires: string | null | undefined): boolean {
 function rowToNodeRecord(row: DbNodeRow): NodeRecord {
   const rec: NodeRecord = {
     id: row.rowid,
+    kind: row.kind,
     content: row.content ?? '',
     tags: parseJson<string[]>(row.tags, []),
     tCreated: row.t_created,
@@ -510,6 +550,16 @@ function buildNodeFilterClause(
       params.push(...filter.ids);
     }
 
+    if (filter.kind !== undefined) {
+      if (Array.isArray(filter.kind)) {
+        clauses.push(`${alias}kind IN (${filter.kind.map(() => '?').join(',')})`);
+        params.push(...filter.kind);
+      } else {
+        clauses.push(`${alias}kind = ?`);
+        params.push(filter.kind);
+      }
+    }
+
     if (filter.topic !== undefined) {
       if (Array.isArray(filter.topic)) {
         clauses.push(`${alias}topic IN (${filter.topic.map(() => '?').join(',')})`);
@@ -578,6 +628,16 @@ function buildNodeFilterClause(
       params.push(filter.namespace);
     }
 
+    if (filter.projectPath !== undefined) {
+      clauses.push(`${alias}project_path = ?`);
+      params.push(filter.projectPath);
+    }
+
+    if (filter.agentId !== undefined) {
+      clauses.push(`${alias}agent_id = ?`);
+      params.push(filter.agentId);
+    }
+
     if (filter.metadata !== undefined) {
       for (const [key, value] of Object.entries(filter.metadata)) {
         clauses.push(`json_extract(${alias}meta, ?) = ?`);
@@ -621,9 +681,19 @@ export class SqliteGraphBackend implements GraphBackend {
 
   private db: Database.Database;
   private schemaApplied = false;
+  private allowedKinds: Set<string>;
 
-  constructor(db: Database.Database) {
+  constructor(db: Database.Database, opts?: GraphBackendOpts) {
     this.db = db;
+    this.allowedKinds = new Set(DEFAULT_NODE_KINDS);
+    for (const kind of opts?.kinds ?? []) {
+      if (!KIND_NAME_RE.test(kind)) {
+        throw new ConstraintError(
+          `Invalid custom node kind "${kind}": must match ${KIND_NAME_RE} (lowercase, starts with a letter, [a-z0-9_] only).`,
+        );
+      }
+      this.allowedKinds.add(kind);
+    }
     this.applySchema();
   }
 
@@ -687,15 +757,23 @@ export class SqliteGraphBackend implements GraphBackend {
     this.addColumnIfMissing('node', 'resume_state', 'TEXT');
     this.addColumnIfMissing('edge', 't_expired', 'TEXT');
 
-    // Step 2: Node kind CHECK must include 'generic' (upgraded from old v3).
+    // Step 2: Node kind CHECK must include every kind this instance was constructed
+    // with — the built-in floor ('generic' upgraded from old v3) plus any custom
+    // kinds passed to createGraphBackend(db, { kinds: [...] }) (BL-295). SQLite CHECK
+    // constraints can't be parameterized/ALTERed, so a kind that isn't yet present in
+    // the existing table's constraint SQL forces the same rename→create→copy→drop→
+    // rename upgrade already used for the 'generic'/'DEPENDS_ON' migrations.
     const nodeRow = this.db
       .prepare<[], { sql: string }>(
         `SELECT sql FROM sqlite_master WHERE type='table' AND name='node'`,
       )
       .get();
-    if (nodeRow && !nodeRow.sql.includes("'generic'")) {
+    const requiredKinds = [...this.allowedKinds];
+    const nodeKindsMissing =
+      nodeRow !== undefined && requiredKinds.some((k) => !nodeRow.sql.includes(`'${k}'`));
+    if (nodeRow && nodeKindsMissing) {
       this.db.transaction(() => {
-        rebuildTable(this.db, 'node', NODE_TABLE_DDL, NODE_COLUMNS);
+        rebuildTable(this.db, 'node', nodeTableDDL(requiredKinds), NODE_COLUMNS);
         for (const ddl of NODE_INDEX_DDLS) this.db.exec(ddl);
         // Recreate FTS triggers + rebuild FTS index after table rebuild
         this.db.exec(FTS_TRIGGERS);
@@ -734,6 +812,14 @@ export class SqliteGraphBackend implements GraphBackend {
   // ── Node writes ───────────────────────────────────────────────────────────
 
   writeNode(content: string, meta: NodeMeta): number {
+    const kind = meta.kind ?? 'episode';
+    if (!this.allowedKinds.has(kind)) {
+      throw new ConstraintError(
+        `Unknown node kind "${kind}". Registered kinds: ${[...this.allowedKinds].join(', ')}. ` +
+          `Pass { kinds: ['${kind}'] } to createGraphBackend(db, opts) to register it.`,
+      );
+    }
+
     const hash = hashContent(content);
     const existing = this.db
       .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE content_hash = ?')
@@ -754,11 +840,12 @@ export class SqliteGraphBackend implements GraphBackend {
         `INSERT INTO node (uid, kind, content, name, summary, topic, tags, importance,
           confidence, content_hash, namespace, meta, agent_id, session_id, source,
           project_path, t_occurred, t_expires, t_created, t_valid)
-         VALUES (?, 'episode', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING rowid`,
       )
       .get(
         uid,
+        kind,
         content,
         meta.name ?? null,
         meta.summary ?? null,
@@ -1432,6 +1519,6 @@ export class SqliteGraphBackend implements GraphBackend {
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
-export function createGraphBackend(db: Database.Database): GraphBackend {
-  return new SqliteGraphBackend(db);
+export function createGraphBackend(db: Database.Database, opts?: GraphBackendOpts): GraphBackend {
+  return new SqliteGraphBackend(db, opts);
 }
