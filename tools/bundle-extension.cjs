@@ -31,14 +31,15 @@ const fs   = require('fs');
 
 // ---------------------------------------------------------------------------
 // Resolve esbuild from the pnpm store (the .bin shim is a bash script that
-// Node 24 cannot exec directly).
+// Node 24 cannot exec directly). require.resolve() with an explicit `paths`
+// root is the portable way to do this — a hardcoded
+// `node_modules/.pnpm/node_modules/esbuild` flat path only exists under some
+// pnpm virtual-store hoisting layouts and breaks (MODULE_NOT_FOUND) in a
+// fresh clean-room install or an isolated worktree checkout, where the real
+// path is versioned (`node_modules/.pnpm/esbuild@<version>/node_modules/esbuild`).
 // ---------------------------------------------------------------------------
 const REPO_ROOT = path.resolve(__dirname, '..');
-const ESBUILD_PATH = path.join(
-  REPO_ROOT,
-  'node_modules/.pnpm/node_modules/esbuild',
-);
-const esbuild = require(ESBUILD_PATH);
+const esbuild = require(require.resolve('esbuild', { paths: [REPO_ROOT] }));
 
 // ---------------------------------------------------------------------------
 // @adhd/sox-* alias map — point every workspace package to its pre-built dist.

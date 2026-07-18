@@ -370,6 +370,238 @@ describe('runFrontShim', () => {
     expect(handle.backend.isConnected()).toBe(true);
   });
 
+  /**
+   * Opens the classic HTTP+SSE handshake (GET /sse), parses the `endpoint` event,
+   * and returns both the messages URL and a way to read the next SSE `data:` frame —
+   * mirroring exactly what the official @modelcontextprotocol/sdk's SSEClientTransport
+   * does (verified by reading its client/sse.js source), without pulling that package
+   * in as a dependency of this deliberately dependency-free leaf lib.
+   */
+  function openSse(port: number): Promise<{
+    endpointPath: string;
+    nextMessage: () => Promise<Record<string, unknown>>;
+    close: () => void;
+  }> {
+    return new Promise((resolve, reject) => {
+      const req = http.get({ host: '127.0.0.1', port, path: '/sse', headers: { Accept: 'text/event-stream' } }, (res) => {
+        let buf = '';
+        const waiters: Array<(v: Record<string, unknown>) => void> = [];
+        const pending: Record<string, unknown>[] = [];
+        let endpointPath: string | undefined;
+        res.on('data', (chunk: Buffer) => {
+          buf += chunk.toString();
+          let idx: number;
+          while ((idx = buf.indexOf('\n\n')) !== -1) {
+            const frame = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            const eventLine = frame.split('\n').find((l) => l.startsWith('event: '));
+            const dataLine = frame.split('\n').find((l) => l.startsWith('data: '));
+            if (!dataLine) continue;
+            const data = dataLine.slice('data: '.length);
+            if (eventLine?.slice('event: '.length) === 'endpoint') {
+              endpointPath = data;
+              resolve({
+                endpointPath,
+                nextMessage: () =>
+                  pending.length > 0 ? Promise.resolve(pending.shift()!) : new Promise((r) => waiters.push(r)),
+                close: () => req.destroy(),
+              });
+            } else {
+              const parsed = JSON.parse(data) as Record<string, unknown>;
+              const w = waiters.shift();
+              if (w) w(parsed);
+              else pending.push(parsed);
+            }
+          }
+        });
+      });
+      req.on('error', reject);
+    });
+  }
+
+  /** POST a JSON-RPC request to an SSE messages endpoint; resolve the parsed POST-body response. */
+  function postMessages(port: number, endpointPath: string, body: unknown): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => {
+      const payload = JSON.stringify(body);
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          path: endpointPath,
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (c: Buffer) => (data += c.toString()));
+          res.on('end', () => {
+            try {
+              resolve(JSON.parse(data) as Record<string, unknown>);
+            } catch (e) {
+              reject(new Error(`bad JSON from shim: ${data} (${(e as Error).message})`));
+            }
+          });
+        },
+      );
+      req.on('error', reject);
+      req.write(payload);
+      req.end();
+    });
+  }
+
+  it('SSE transport: a client that reads ONLY the SSE stream (spec-compliant, e.g. official SDK) gets the response', async () => {
+    const sock = tmpSock('sse-stream-only');
+    await startBackend(sock, 'v1');
+    const port = await freePort();
+
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    stdout.on('data', () => {});
+    const handle = runFrontShim({ id: 'sse-test', socketPath: sock, httpPort: port, input: stdin, output: stdout, onDiagnostic: () => {} });
+    cleanups.push(() => handle.close());
+    await new Promise((r) => setTimeout(r, 150));
+
+    const sse = await openSse(port);
+    cleanups.push(sse.close);
+
+    // Fire the POST but deliberately IGNORE its body — a spec-compliant client
+    // (per the official SDK's `response.body?.cancel()`) never reads it.
+    void postMessages(port, sse.endpointPath, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { capabilities: {} } });
+    const initMsg = await sse.nextMessage();
+    expect(initMsg['error']).toBeUndefined();
+    expect((initMsg['result'] as { serverInfo: { version: string } }).serverInfo.version).toBe('v1');
+
+    void postMessages(port, sse.endpointPath, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'echo', arguments: { v: 'hi' } } });
+    const callMsg = await sse.nextMessage();
+    expect(callMsg['error']).toBeUndefined();
+    expect((callMsg['result'] as { version: string }).version).toBe('v1');
+  });
+
+  it('SSE transport: a client that reads ONLY the POST body (non-spec, e.g. OpenCode remote) ALSO gets the response', async () => {
+    const sock = tmpSock('sse-postbody-only');
+    await startBackend(sock, 'v1');
+    const port = await freePort();
+
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    stdout.on('data', () => {});
+    const handle = runFrontShim({ id: 'sse-test-2', socketPath: sock, httpPort: port, input: stdin, output: stdout, onDiagnostic: () => {} });
+    cleanups.push(() => handle.close());
+    await new Promise((r) => setTimeout(r, 150));
+
+    const sse = await openSse(port);
+    cleanups.push(sse.close);
+
+    // This time we read the POST response directly and ignore the SSE stream.
+    const initResp = await postMessages(port, sse.endpointPath, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { capabilities: {} } });
+    expect(initResp['error']).toBeUndefined();
+    expect((initResp['result'] as { serverInfo: { version: string } }).serverInfo.version).toBe('v1');
+
+    const callResp = await postMessages(port, sse.endpointPath, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'echo', arguments: { v: 'hi' } } });
+    expect(callResp['error']).toBeUndefined();
+    expect((callResp['result'] as { version: string }).version).toBe('v1');
+  });
+
+  /** POST to an arbitrary path; resolve with status code + parsed JSON body (empty object if no body). */
+  function postJson(port: number, urlPath: string, body: unknown): Promise<{ status: number; json: Record<string, unknown> }> {
+    return new Promise((resolve, reject) => {
+      const payload = JSON.stringify(body);
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          path: urlPath,
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'Content-Length': Buffer.byteLength(payload) },
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (c: Buffer) => (data += c.toString()));
+          res.on('end', () => {
+            resolve({ status: res.statusCode ?? 0, json: data ? (JSON.parse(data) as Record<string, unknown>) : {} });
+          });
+        },
+      );
+      req.on('error', reject);
+      req.write(payload);
+      req.end();
+    });
+  }
+
+  it('StreamableHTTP: POST /sse (no GET handshake) is served identically to POST /mcp — matches OpenCode real-traffic capture (2026-07-18)', async () => {
+    // OpenCode's "type: remote" client never performs a GET /sse handshake — it
+    // POSTs JSON-RPC directly to whatever URL is configured (confirmed by
+    // capturing its real requests: method=POST url=/sse, no prior GET). Before
+    // this fix, POST /sse fell through to the shim's catch-all 405 and every
+    // OpenCode request silently failed.
+    const sock = tmpSock('streamable-sse-path');
+    await startBackend(sock, 'v1');
+    const port = await freePort();
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    stdout.on('data', () => {});
+    const handle = runFrontShim({ id: 'streamable-sse', socketPath: sock, httpPort: port, input: stdin, output: stdout, onDiagnostic: () => {} });
+    cleanups.push(() => handle.close());
+    await new Promise((r) => setTimeout(r, 150));
+
+    const { status, json } = await postJson(port, '/sse', { jsonrpc: '2.0', id: 1, method: 'initialize', params: { capabilities: {} } });
+    expect(status).toBe(200);
+    expect(json['error']).toBeUndefined();
+    expect((json['result'] as { serverInfo: { version: string } }).serverInfo.version).toBe('v1');
+  });
+
+  it('notifications (id-less, e.g. notifications/initialized) complete the HTTP response instead of hanging — /mcp', async () => {
+    // Regression for a real hang: dial.ts's `send()` only tracks a promise in its
+    // `pending` map when `request.id !== undefined` (see writeToBackend). Before
+    // this fix, every HTTP handler called `backend.send()` unconditionally for any
+    // method it didn't special-case — including notifications — so the returned
+    // promise NEVER resolved and the client's POST request hung forever.
+    const sock = tmpSock('notif-no-hang-mcp');
+    await startBackend(sock, 'v1');
+    const port = await freePort();
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    stdout.on('data', () => {});
+    const handle = runFrontShim({ id: 'notif-mcp', socketPath: sock, httpPort: port, input: stdin, output: stdout, onDiagnostic: () => {} });
+    cleanups.push(() => handle.close());
+    await new Promise((r) => setTimeout(r, 150));
+
+    const result = await Promise.race([
+      postJson(port, '/mcp', { jsonrpc: '2.0', method: 'notifications/initialized' }),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 1500)),
+    ]);
+    expect(result).not.toBe('timeout');
+    expect((result as { status: number }).status).toBe(202);
+  });
+
+  it('notifications (id-less) complete the HTTP response instead of hanging — /sse (StreamableHTTP path) and /messages (classic SSE)', async () => {
+    const sock = tmpSock('notif-no-hang-sse');
+    await startBackend(sock, 'v1');
+    const port = await freePort();
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    stdout.on('data', () => {});
+    const handle = runFrontShim({ id: 'notif-sse', socketPath: sock, httpPort: port, input: stdin, output: stdout, onDiagnostic: () => {} });
+    cleanups.push(() => handle.close());
+    await new Promise((r) => setTimeout(r, 150));
+
+    const sseResult = await Promise.race([
+      postJson(port, '/sse', { jsonrpc: '2.0', method: 'notifications/initialized' }),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 1500)),
+    ]);
+    expect(sseResult).not.toBe('timeout');
+    expect((sseResult as { status: number }).status).toBe(202);
+
+    const sse = await openSse(port);
+    cleanups.push(sse.close);
+    const messagesResult = await Promise.race([
+      postJson(port, sse.endpointPath, { jsonrpc: '2.0', method: 'notifications/initialized' }),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 1500)),
+    ]);
+    expect(messagesResult).not.toBe('timeout');
+    expect((messagesResult as { status: number }).status).toBe(202);
+  });
+
   it('BL-157: pure stdio mode STILL closes the backend on pipe end (no regression)', async () => {
     const sock = tmpSock('stdio-close');
     await startBackend(sock, 'v1');

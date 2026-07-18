@@ -2,6 +2,107 @@
 
 ---
 
+## [Unreleased] — memory-server remote MCP transport: OpenCode connectivity, notification hang, stale port defaults
+
+Four independent, previously-undiscovered bugs surfaced while diagnosing "why is the memory
+server not working" for both Claude Code and OpenCode against the live `memory-server` remote
+(`type: "remote"`, port 3099) deployment. All four are fixed, tested (unit + live end-to-end
+against the real `opencode` CLI), and deployed to the running `com.sox.user.memory-server`
+launchd unit.
+
+### `service-proxy` shim: OpenCode's remote MCP client never performs the classic SSE handshake
+
+**Root cause (proven by capturing OpenCode's real traffic):** OpenCode's `type: "remote"` MCP
+client does not implement the classic two-step HTTP+SSE transport (`GET /sse` → parse an
+`endpoint` event → `POST /messages?sessionId=...`) at all. It POSTs JSON-RPC directly to
+whatever URL the host config gives it — in our case literally `http://localhost:3099/sse` — with
+`Accept: application/json, text/event-stream`, and reads the JSON-RPC response straight from the
+POST body. That is StreamableHTTP semantics, applied to whatever path string was configured; the
+URL's path (`/sse` vs `/mcp`) is opaque to it. The shim's `/sse` route only accepted `GET`, so
+every OpenCode request landed on the catch-all `405` handler and every connection attempt failed
+silently ("server unavailable", logged continuously in `~/.local/share/opencode/log/opencode.log`
+across many independent debugging sessions before this fix).
+
+**Fix:** `libs/service-proxy/src/shim.ts` now serves `POST /sse` identically to `POST /mcp`
+(both routed through one shared `handleStreamableHttpPost` / `handleHttpRpc`), so every host
+config we generate (`/mcp` for the http profile, `/sse` for the sse profile) works against
+OpenCode's actual client behavior without requiring it to implement the classic transport.
+Verified against the real `opencode` CLI (`opencode mcp list`) both in a scratch project and in
+the live `sox-ecosystem` project — `memory-server ✓ connected` — not just a unit test.
+
+### `service-proxy` shim: a bad fix regressed the classic SSE transport for spec-compliant clients
+
+A same-day, separately-authored, uncommitted edit to `shim.ts`'s `/messages` handler had removed
+the `sseRes.write(...)` response delivery and replaced it with returning the JSON-RPC response
+only in the POST body. That breaks every spec-compliant HTTP+SSE client — verified by reading the
+official `@modelcontextprotocol/sdk`'s `SSEClientTransport.send()` (`client/sse.js`), which
+explicitly does `await response.body?.cancel()` on the POST response ("POST responses don't have
+content we need") and reads the result exclusively from the SSE stream's `onmessage`. The classic
+`/messages` endpoint now dual-writes the response to both the SSE stream (for spec-compliant
+clients) and the POST body (for clients that read it synchronously) — satisfying both without
+regressing either.
+
+### `service-proxy` shim: an HTTP JSON-RPC *notification* hung the connection forever
+
+**Root cause:** `dial.ts`'s `send()` only registers a promise in its `pending`-by-id map when
+`request.id !== undefined` (`writeToBackend`). A JSON-RPC notification (no `id` — e.g.
+`notifications/initialized`, which every conformant MCP client sends immediately after
+`initialize`) written via `send()` therefore never resolves the caller's promise. The stdio
+transport path already special-cased this correctly (`if (req.id === undefined) { backend.notify(req); return; }`)
+but neither the `/mcp` (StreamableHTTP) nor the `/messages` (classic SSE) HTTP handlers did — both
+called `backend.send()` unconditionally on any method they didn't special-case, so the very first
+notification after `initialize` hung the HTTP response forever. This affected the `/mcp` endpoint
+too, independent of the OpenCode-specific routing bug above — any conformant HTTP/StreamableHTTP
+client (Codex, Claude Code's http profile) sending `notifications/initialized` would have hit it.
+Proven red→green: `libs/service-proxy/src/shim.spec.ts` — with the guard disabled, both new
+notification tests time out (1.5s race against the real request); restored, both return `202` in
+single-digit milliseconds.
+
+**Fix:** all three HTTP-facing paths (`/mcp`, `/sse`, `/messages`) now go through one shared
+`handleHttpRpc()` that checks `isNotification()` first and calls `backend.notify()`
+(fire-and-forget, `202` immediately) — mirroring the stdio path exactly.
+
+### `host-registry`: Claude Code's generated `.mcp.json` pointed at the wrong port
+
+`libs/host-registry/src/claude.ts`'s `mcp-server` surface had no `mcpConfig` builder (unlike
+`opencode.ts`, which already had one). `install-engine`'s generic fallback (`libs/install-engine/src/install.ts`,
+"Default: Claude-format auto-derivation") therefore generated remote URLs against a hardcoded
+`port ?? 3000` default — stale since the 2026-07-04 proxy-mode hardening (BL-155/156/157) moved
+the real deployment to port 3099 (`SOX_CONFIG_PORT=3099`, documented in
+`extensions/bundles/sox-memory-bundle/members/memory-server/CLAUDE.md`). The extension's own
+config schema (`extension.json`'s `http_port`, `x-sox-default: 3000`) had drifted the same way and
+was never updated to match. Every regenerated `.mcp.json` for Claude Code silently pointed at a
+port nothing was listening on.
+
+**Fix:** `claude.ts` now owns an explicit `mcpConfig` (mirroring `codex.ts`'s pattern, default
+port 3099), and `extension.json`'s `http_port` schema default is corrected to 3099. New
+`host-registry.spec.ts` coverage pins both the stdio command shape and the corrected remote-URL
+defaults for both `http`/`sse` profiles.
+
+### `tools/bundle-extension.cjs`: hardcoded pnpm virtual-store path broke clean-room builds
+
+`ESBUILD_PATH` was a literal `node_modules/.pnpm/node_modules/esbuild` — a flat path that only
+exists under some pnpm virtual-store hoisting layouts. A fresh `pnpm install` (clean-room reinstall,
+or any isolated worktree) lays esbuild out at the real versioned path
+(`node_modules/.pnpm/esbuild@<version>/node_modules/esbuild`) instead, so every extension build
+failed immediately with `MODULE_NOT_FOUND` outside whatever machine state happened to produce the
+flat layout. Fixed with `require.resolve('esbuild', { paths: [REPO_ROOT] })` — the portable way to
+resolve a package from an explicit root, independent of virtual-store layout.
+
+### Operational note: `service-proxy` has two independent deployment surfaces
+
+Discovered while deploying this fix: the running shim (`soxe serve`, i.e. `dist/apps/sox/main.js`)
+resolves `@adhd/sox-service-proxy` **externally** via the `node_modules` workspace symlink →
+`libs/service-proxy/dist` — it is not bundled into `apps/sox`'s esbuild output. `memory-server`'s
+own extension bundle, by contrast, **does** inline `service-proxy`'s source directly (it is not in
+that build's `--external` list). Redeploying only `extensions/bundles/sox-memory-bundle/members/memory-server/dist`
+after a `service-proxy` fix therefore does nothing for the live HTTP-facing shim — `libs/service-proxy/dist`
+itself must also be rebuilt/redeployed, and the `soxe serve` process (the OS-unit) restarted.
+Both surfaces were out of sync with the fix until this was caught by a live `curl` reproduction of
+the notification-hang bug even after the first (memory-server-only) redeploy.
+
+---
+
 ## [Unreleased] — graph-store kind:'generic' reuse contract; hybrid-search filter/vector-channel correctness
 
 `@adhd/sox-graph-store` and `@adhd/sox-hybrid-search` fixes closing out the four blockers the
