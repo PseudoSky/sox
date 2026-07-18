@@ -177,6 +177,40 @@ describe('host-registry.2 — scopePaths: project and user on Claude', () => {
     expect(claudeHost.surfaces['mcp-server']?.format).toBe('json');
   });
 
+  it('surfaces.mcp-server emits mcpServers.{id} stdio configuration', () => {
+    const mcpConfig = claudeHost.surfaces['mcp-server']!.mcpConfig!;
+    expect(mcpConfig.keyPath('memory-server')).toBe('mcpServers.memory-server');
+    expect(mcpConfig.value('stdio', '/usr/local/bin/soxe', 'memory-server')).toEqual({
+      type: 'stdio',
+      command: '/usr/local/bin/soxe',
+      args: ['serve', 'memory-server'],
+    });
+  });
+
+  it('surfaces.mcp-server defaults remote profiles to port 3099 (matches live memory-server deployment, BL-156/157)', () => {
+    const mcpConfig = claudeHost.surfaces['mcp-server']!.mcpConfig!;
+    expect(mcpConfig.value('http', 'soxe', 'memory-server')).toEqual({
+      type: 'remote',
+      url: 'http://localhost:3099/mcp',
+    });
+    expect(mcpConfig.value('sse', 'soxe', 'memory-server')).toEqual({
+      type: 'remote',
+      url: 'http://localhost:3099/sse',
+    });
+  });
+
+  it('surfaces.mcp-server emits profile-specific remote endpoints with explicit port/host', () => {
+    const mcpConfig = claudeHost.surfaces['mcp-server']!.mcpConfig!;
+    expect(mcpConfig.value('http', 'soxe', 'memory-server', 3099, '127.0.0.1')).toEqual({
+      type: 'remote',
+      url: 'http://localhost:3099/mcp',
+    });
+    expect(mcpConfig.value('sse', 'soxe', 'memory-server', 4001, '0.0.0.0')).toEqual({
+      type: 'remote',
+      url: 'http://0.0.0.0:4001/sse',
+    });
+  });
+
   it('surfaces.permissions uses array-merge capability', () => {
     expect(claudeHost.surfaces['permissions']?.capability).toBe('array-merge');
   });

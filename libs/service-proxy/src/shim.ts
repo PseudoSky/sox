@@ -34,6 +34,7 @@ import {
   type JsonRpcResponse,
   errorResponse,
   isJsonRpcRequest,
+  isNotification,
 } from './jsonrpc.js';
 import { computeSchemaHash } from './schema-hash.js';
 
@@ -380,6 +381,96 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
     // SSE sessions: active SSE response per session ID.
     const sseSessions = new Map<string, http.ServerResponse>();
 
+    /**
+     * Handle one JSON-RPC request/notification received over HTTP — shared by
+     * StreamableHTTP (POST /mcp, and POST to whatever URL a "remote" host config
+     * points at — e.g. OpenCode ALWAYS POSTs directly to the configured URL and
+     * never does the classic SSE GET-handshake, confirmed by capturing its real
+     * traffic: it POSTs to `/sse` itself with `Accept: application/json,
+     * text/event-stream` and reads the JSON-RPC response straight from the POST
+     * body) and the classic HTTP+SSE `/messages` endpoint.
+     *
+     * Returns `null` for a notification (e.g. `notifications/initialized`, which
+     * every conformant client sends right after `initialize`) — mirroring the
+     * stdio path's `backend.notify()` fire-and-forget handling. This guard is
+     * REQUIRED: `backend.send()` (dial.ts) only tracks a promise in its
+     * `pending` map when `request.id !== undefined` — an id-less request is
+     * written to the backend but never resolves the caller's promise, so
+     * calling `backend.send()` on a notification hangs the HTTP response
+     * forever. Every method branch below MUST go through this notification
+     * check first; none may call `backend.send()` directly on `reqRpc`.
+     */
+    async function handleHttpRpc(reqRpc: JsonRpcRequest): Promise<JsonRpcResponse | null> {
+      if (isNotification(reqRpc)) {
+        backend.notify(reqRpc);
+        return null;
+      }
+      try {
+        if (reqRpc.method === 'initialize') {
+          const caps = ((reqRpc.params ?? {}) as { capabilities?: Record<string, unknown> }).capabilities ?? {};
+          const toolsCap = (caps as { tools?: { listChanged?: boolean } }).tools;
+          if (toolsCap?.listChanged === true) clientSupportsListChanged = true;
+          initialized = true;
+          return await backend.send(reqRpc);
+        }
+        if (reqRpc.method === 'tools/list') {
+          if (cachedToolsList !== null) return { jsonrpc: '2.0', id: reqRpc.id ?? null, result: cachedToolsList };
+          const resp = await backend.send(reqRpc);
+          if (!resp.error && resp.result !== undefined) {
+            cachedToolsList = resp.result;
+            servedSchemaHash = computeSchemaHash(resp.result);
+          }
+          return resp;
+        }
+        // BL-62: inject client_context for tools/call over HTTP transport.
+        return await backend.send(injectClientContext(reqRpc, opts.clientProjectPath));
+      } catch (e) {
+        return errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`);
+      }
+    }
+
+    /** Parse the request body as a JSON-RPC frame, or write a JSON-RPC error and return null. */
+    function parseJsonRpcBody(body: string, res: http.ServerResponse, badStatus: number): JsonRpcRequest | null {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        res.writeHead(badStatus);
+        res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' } }));
+        return null;
+      }
+      if (!isJsonRpcRequest(parsed)) {
+        res.writeHead(badStatus);
+        res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' } }));
+        return null;
+      }
+      return parsed;
+    }
+
+    /** StreamableHTTP-style handler: single request in, single JSON (or 202) response out. */
+    function handleStreamableHttpPost(req: http.IncomingMessage, res: http.ServerResponse): void {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+      let body = '';
+      req.on('data', (chunk: string) => (body += chunk));
+      req.on('end', () => {
+        const reqRpc = parseJsonRpcBody(body, res, 400);
+        if (!reqRpc) return;
+        void handleHttpRpc(reqRpc).then((resp) => {
+          if (resp === null) {
+            // Notification: no JSON-RPC response is ever sent for one.
+            res.writeHead(202);
+            res.end();
+            return;
+          }
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(resp));
+        });
+      });
+    }
+
     httpServer = http.createServer((req, res) => {
       // ── SSE endpoint ──────────────────────────────────────────────────
       if (req.method === 'GET' && req.url === '/sse') {
@@ -400,7 +491,7 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
         return;
       }
 
-      // ── SSE messages endpoint ─────────────────────────────────────────
+      // ── SSE messages endpoint (classic HTTP+SSE transport) ─────────────
       const msgMatch = req.method === 'POST' && req.url?.match(/^\/messages\?sessionId=([a-f0-9-]+)$/);
       if (msgMatch) {
         const sessionId = msgMatch[1]!;
@@ -410,80 +501,50 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
           res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Session not found' } }));
           return;
         }
-        res.writeHead(200, {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-        });
         let body = '';
         req.on('data', (chunk: string) => (body += chunk));
         req.on('end', () => {
-          let parsed: unknown;
-          try { parsed = JSON.parse(body); } catch { res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' } })); return; }
-          if (!isJsonRpcRequest(parsed)) { res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' } })); return; }
-          const reqRpc = parsed as JsonRpcRequest;
-          // Proxy to backend, send response through SSE stream.
-          const respond = (resp: JsonRpcResponse) => {
-            sseRes!.write(`data: ${JSON.stringify(resp)}\n\n`);
-            res.end(JSON.stringify({ accepted: true }));
-          };
-          if (reqRpc.method === 'initialize') {
-            const caps = ((reqRpc.params ?? {}) as { capabilities?: Record<string, unknown> }).capabilities ?? {};
-            const toolsCap = (caps as { tools?: { listChanged?: boolean } }).tools;
-            if (toolsCap?.listChanged === true) clientSupportsListChanged = true;
-            initialized = true;
-            backend.send(reqRpc).then(respond).catch((e) => respond(errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`)));
-          } else if (reqRpc.method === 'tools/list') {
-            if (cachedToolsList !== null) { respond({ jsonrpc: '2.0', id: reqRpc.id ?? null, result: cachedToolsList }); return; }
-            backend.send(reqRpc).then((resp) => {
-              if (!resp.error && resp.result !== undefined) { cachedToolsList = resp.result; servedSchemaHash = computeSchemaHash(resp.result); }
-              respond(resp);
-            }).catch((e) => respond(errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`)));
-          } else {
-            // BL-62: inject client_context for tools/call over SSE transport.
-            backend.send(injectClientContext(reqRpc, opts.clientProjectPath)).then(respond).catch((e) => respond(errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`)));
-          }
+          const reqRpc = parseJsonRpcBody(body, res, 200);
+          if (!reqRpc) return;
+          void handleHttpRpc(reqRpc).then((resp) => {
+            if (resp === null) {
+              // Notification: no JSON-RPC response is ever sent for one.
+              res.writeHead(202);
+              res.end();
+              return;
+            }
+            // Dual-write the response for broad client compatibility:
+            //  - Spec-compliant clients (e.g. the official @modelcontextprotocol/sdk
+            //    SSEClientTransport — verified via its client/sse.js `send()`, which
+            //    calls `response.body?.cancel()` and reads the result exclusively off
+            //    the SSE stream's `onmessage`) get it over the SSE channel, as the
+            //    classic HTTP+SSE transport spec requires.
+            //  - Simplified/non-compliant remote clients that read the JSON-RPC
+            //    response synchronously from the POST body get it there too.
+            // Writing both channels satisfies both without regressing either.
+            if (sseRes.writable) {
+              sseRes.write(`data: ${JSON.stringify(resp)}\n\n`);
+            }
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify(resp));
+          });
         });
         return;
       }
 
-      // ── StreamableHTTP endpoint (POST /mcp) ───────────────────────────
-      if (req.method === 'POST' && req.url === '/mcp') {
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'POST');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-        res.setHeader('Content-Type', 'application/json');
-
-        let body = '';
-        req.on('data', (chunk: string) => (body += chunk));
-        req.on('end', () => {
-          let parsed: unknown;
-          try { parsed = JSON.parse(body); } catch { res.writeHead(400); res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' } })); return; }
-          if (!isJsonRpcRequest(parsed)) { res.writeHead(400); res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' } })); return; }
-
-          const reqRpc = parsed as JsonRpcRequest;
-
-          const handleAndRespond = (handler: () => Promise<JsonRpcResponse>) => {
-            handler().then((resp) => res.end(JSON.stringify(resp))).catch((e) => res.end(JSON.stringify(errorResponse(reqRpc.id ?? null, -32603, `proxy error: ${(e as Error).message}`))));
-          };
-
-          if (reqRpc.method === 'initialize') {
-            const caps = ((reqRpc.params ?? {}) as { capabilities?: Record<string, unknown> }).capabilities ?? {};
-            const toolsCap = (caps as { tools?: { listChanged?: boolean } }).tools;
-            if (toolsCap?.listChanged === true) clientSupportsListChanged = true;
-            initialized = true;
-            handleAndRespond(() => backend.send(reqRpc));
-          } else if (reqRpc.method === 'tools/list') {
-            if (cachedToolsList !== null) { res.end(JSON.stringify({ jsonrpc: '2.0', id: reqRpc.id ?? null, result: cachedToolsList })); return; }
-            handleAndRespond(async () => {
-              const resp = await backend.send(reqRpc);
-              if (!resp.error && resp.result !== undefined) { cachedToolsList = resp.result; servedSchemaHash = computeSchemaHash(resp.result); }
-              return resp;
-            });
-          } else {
-            // BL-62: inject client_context for tools/call over HTTP transport.
-            handleAndRespond(() => backend.send(injectClientContext(reqRpc, opts.clientProjectPath)));
-          }
-        });
+      // ── StreamableHTTP endpoint ─────────────────────────────────────────
+      // POST /mcp is the documented StreamableHTTP endpoint. We ALSO accept
+      // POST /sse here: real-traffic capture (2026-07-18) proved OpenCode's
+      // "type: remote" client does not perform the classic SSE GET-handshake
+      // at all — it POSTs JSON-RPC directly to whatever URL the host config
+      // gives it (in OpenCode's case, literally the `/sse`-suffixed URL
+      // host-registry generates) and reads the response from the POST body,
+      // i.e. it always speaks StreamableHTTP regardless of the URL's path.
+      // Serving both paths identically satisfies every host config we generate
+      // (`/mcp` for the http profile, `/sse` for the sse profile) without
+      // requiring every remote client to implement the classic transport.
+      if (req.method === 'POST' && (req.url === '/mcp' || req.url === '/sse')) {
+        handleStreamableHttpPost(req, res);
         return;
       }
 

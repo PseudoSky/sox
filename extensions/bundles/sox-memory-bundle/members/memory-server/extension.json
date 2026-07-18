@@ -162,7 +162,7 @@
         "description": "CONTRACTS §I: read at os-unit generation. always-on → RunAtLoad+KeepAlive; on-demand → socket-activation spec. soxe config set triggers restartOsUnit hook."
       },
       "transports": { "type": "array", "items": { "type": "string", "enum": ["stdio", "uds", "http", "sse"] }, "default": ["stdio", "uds", "http"], "description": "CONTRACTS §I: which listeners the backend binds simultaneously (TR-1 multi-bind). SSE added by context 04." },
-      "http_port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 3000, "description": "CONTRACTS §I: pinned default so generated :3000 URLs are correct-by-construction. Listener AND host-config generation MUST read this key (TR-3, BL-148).", "x-sox-default": 3000, "x-sox-prompt": "Enter HTTP port for MCP server (default: 3000):" },
+      "http_port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 3099, "description": "CONTRACTS §I: pinned default so generated :3099 URLs are correct-by-construction. Listener AND host-config generation MUST read this key (TR-3, BL-148). Moved off 3000 (a common webapp dev-server port) to 3099 during the 2026-07-04 proxy-mode hardening (BL-155/156/157); this schema default had drifted stale until now.", "x-sox-default": 3099, "x-sox-prompt": "Enter HTTP port for MCP server (default: 3099):" },
       "bind_address": { "type": "string", "default": "127.0.0.1", "description": "CONTRACTS §I: HTTP bind address. Defaults to loopback. Non-loopback requires auth_token (TR-2)." },
       "auth_token": { "type": "string", "default": "", "description": "CONTRACTS §I: Bearer token for HTTP transport auth. Required when bind_address is non-loopback (TR-2). Env-ref (e.g. ${SOX_MEMORY_TOKEN}) supported." }
     }

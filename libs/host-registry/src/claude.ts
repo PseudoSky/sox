@@ -40,8 +40,36 @@
 
 import * as os from 'os';
 import * as path from 'path';
-import type { HostModule, HostScope, ScopePathMap, SurfaceMap } from './internal.js';
+import type { HostModule, HostScope, ScopePathMap, SurfaceMap, McpConfig } from './internal.js';
 import { existsIn } from './internal.js';
+
+// ---------------------------------------------------------------------------
+// MCP config builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Claude MCP entries live under `mcpServers.{id}` in .mcp.json (project) /
+ * ~/.claude.json (user). This mirrors the shape install-engine's generic
+ * fallback used to auto-derive (see install.ts "Default: Claude-format
+ * auto-derivation"), now owned explicitly here with a port default that
+ * matches the ACTUAL memory-server deployment (SOX_CONFIG_PORT=3099, per
+ * BL-156/BL-157) instead of the stale 3000 the fallback carried.
+ */
+const mcpConfig: McpConfig = {
+  keyPath(extId: string): string {
+    return `mcpServers.${extId}`;
+  },
+  value(profile: string, cliBin: string, extId: string, port?: number, bindAddress?: string): unknown {
+    if (profile === 'sse' || profile === 'http') {
+      const p = port ?? 3099;
+      const host = bindAddress ?? '127.0.0.1';
+      const displayHost = host === '127.0.0.1' || host === '::1' ? 'localhost' : host;
+      const endpoint = profile === 'sse' ? 'sse' : 'mcp';
+      return { type: 'remote', url: `http://${displayHost}:${p}/${endpoint}` };
+    }
+    return { type: 'stdio', command: cliBin, args: ['serve', extId] };
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Detection
@@ -224,6 +252,7 @@ function buildSurfaces(): SurfaceMap {
     'mcp-server': {
       capability: 'config-merge',
       format: 'json',
+      mcpConfig,
       paths: {
         project: '.mcp.json',
         user: path.join(base, '.claude.json'),
