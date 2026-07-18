@@ -1624,15 +1624,24 @@ export async function declarativeInstall(
           resolvedValue = surface.mcpConfig.value(profile, cliBin, descriptor.ext, httpPort, bindAddress);
         } else {
           // Default: Claude-format auto-derivation (preserved for backward compat).
+          // (Currently dead for host==='claude' — claude.ts now owns an explicit
+          // mcpConfig, so this branch only fires for a future host lacking one.)
           const profile = descriptor.profile ?? 'stdio';
           resolvedKeyPath = `mcpServers.${descriptor.ext}`;
           if (profile === 'sse' || profile === 'http') {
             // Build URL from resolved port and bind address (TR-3, BL-148).
-            // No literal 3000 — the port comes from config cascade.
-            const port = httpPort ?? 3000;
+            // Port default matches the live memory-server deployment
+            // (SOX_CONFIG_PORT=3099, BL-156/157) — 3000 went stale 2026-07-04.
+            const port = httpPort ?? 3099;
             const host = bindAddress ?? '127.0.0.1';
             const displayHost = host === '127.0.0.1' || host === '::1' ? 'localhost' : host;
-            resolvedValue = { type: 'remote', url: `http://${displayHost}:${port}/mcp` };
+            const endpoint = profile === 'sse' ? 'sse' : 'mcp';
+            // `type` is Claude Code's mandatory transport discriminator — the only
+            // recognized remote values are "http"/"sse"/"ws"; there is no "remote"
+            // type (verified against code.claude.com/docs/en/mcp, 2026-07-18). A
+            // url-only entry with a missing/wrong type is silently treated as a
+            // broken stdio server and skipped. `profile` IS the correct value.
+            resolvedValue = { type: profile, url: `http://${displayHost}:${port}/${endpoint}` };
           } else {
             // stdio — soxe serve <ext> keeps soxe in the spawn chain so cascade config
             // (SOX_CONFIG_*) is injected fresh at each Claude Code session start.

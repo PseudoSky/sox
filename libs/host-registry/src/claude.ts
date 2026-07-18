@@ -8,7 +8,7 @@
  *   - CLAUDE.md / rules -> file-drop
  *   - settings / MCP servers -> config-merge (JSON)
  *   - permissions -> array-merge
- *   - MCP trust -> array-merge (enabledMcpjsonServers); DEFAULT = prompt (no auto-flag)
+ *   - MCP trust -> array-merge (enabledMcpjsonServers); see [ref:mcp-trust-sync] below
  *   - plugins -> registry + config-merge
  *
  * P0.5 CORRECTIONS (verified against live Claude docs, 2026-06):
@@ -16,9 +16,24 @@
  *     Do NOT add it as a surface here.
  *   - hooks are file-drop (script at ~/.claude/hooks/<id>/) + config-merge
  *     (settings.json -> hooks entry referencing the script by absolute path).
- *   - MCP trust is a prompt (no enableAllProjectMcpServers flag to auto-write).
+ *   - MCP trust is a per-server prompt by default — there is still NO
+ *     `enableAllProjectMcpServers`-style blanket flag, and soxe never writes one.
  *   - User MCP lives in ~/.claude.json (not settings.json).
- *   - Project .mcp.json trust is an approval prompt — soxe never auto-writes a trust flag.
+ *
+ * [ref:mcp-trust-sync] (2026-07-18): soxe DOES now auto-write one specific,
+ * narrow thing — `libs/install-engine/src/mcp-trust-sync.ts` appends the EXACT
+ * extId a `soxe install <id> --host=claude` just installed to
+ * `~/.claude.json` -> `projects["<root>"].enabledMcpjsonServers`, and removes
+ * exactly that grant on uninstall. This is not the P0.5-forbidden blanket
+ * bypass (it never touches any OTHER server's trust, and never disables the
+ * prompt for a server the user adds some other way) — it closes a real gap:
+ * `.mcp.json` alone is NOT sufficient for Claude Code to load a remote MCP
+ * server, and any context that cannot answer the interactive trust prompt (a
+ * background job, a fresh headless session) silently got zero tools with no
+ * visible error until this landed. Incident: this project's own
+ * `enabledMcpjsonServers` was found empty for a correctly-installed,
+ * correctly-reachable `memory-server` — hours of live debugging before the
+ * root cause (an untrusted-not-unreachable server) was found.
  *
  * [inv:never-managed]: soxe NEVER writes the Claude managed tier (org/enterprise policy).
  *   MANAGED tier paths are NEVER emitted by scopePaths() or surfaces.
@@ -54,6 +69,17 @@ import { existsIn } from './internal.js';
  * auto-derivation"), now owned explicitly here with a port default that
  * matches the ACTUAL memory-server deployment (SOX_CONFIG_PORT=3099, per
  * BL-156/BL-157) instead of the stale 3000 the fallback carried.
+ *
+ * `type` is Claude Code's transport discriminator and is MANDATORY — a `url`
+ * entry with no `type` (or an unrecognized value) is silently treated as a
+ * broken stdio server and skipped (verified against the official docs,
+ * code.claude.com/docs/en/mcp, 2026-07-18). The only valid remote values are
+ * `"http"` (Streamable HTTP — recommended) and `"sse"` (deprecated). There is
+ * NO `"remote"` type — that was this codebase's own (and install-engine's
+ * fallback's) mistaken assumption; every prior `soxe install --profile=sse|http
+ * --host=claude` therefore generated a `.mcp.json` entry Claude Code could
+ * never actually load. `profile` already carries the exact right value
+ * (`'sse'` | `'http'`) — just use it directly as `type`.
  */
 const mcpConfig: McpConfig = {
   keyPath(extId: string): string {
@@ -65,7 +91,7 @@ const mcpConfig: McpConfig = {
       const host = bindAddress ?? '127.0.0.1';
       const displayHost = host === '127.0.0.1' || host === '::1' ? 'localhost' : host;
       const endpoint = profile === 'sse' ? 'sse' : 'mcp';
-      return { type: 'remote', url: `http://${displayHost}:${p}/${endpoint}` };
+      return { type: profile, url: `http://${displayHost}:${p}/${endpoint}` };
     }
     return { type: 'stdio', command: cliBin, args: ['serve', extId] };
   },

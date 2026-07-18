@@ -101,6 +101,39 @@ itself must also be rebuilt/redeployed, and the `soxe serve` process (the OS-uni
 Both surfaces were out of sync with the fix until this was caught by a live `curl` reproduction of
 the notification-hang bug even after the first (memory-server-only) redeploy.
 
+### `host-registry`/`install-engine`: `.mcp.json` used `"type": "remote"` — not a real Claude Code value
+
+**A second, more fundamental bug in the fix above:** even with the port corrected, Claude Code
+could still never have loaded the generated `.mcp.json` entry. `"type": "remote"` is not a value
+Claude Code recognizes — confirmed against the official docs (code.claude.com/docs/en/mcp,
+fetched live 2026-07-18). The only valid transport discriminators for a `url`-based entry are
+`"http"` (Streamable HTTP, recommended) and `"sse"` (deprecated); `type` is **mandatory** — an
+entry with a `url` but a missing or unrecognized `type` is silently treated as a broken stdio
+server (which expects `command`, not `url`) and skipped, with no error surfaced to the user. This
+was a pre-existing bug in `install-engine`'s "Claude-format auto-derivation" fallback (predates
+this session), inherited verbatim into `claude.ts`'s new `mcpConfig` above.
+
+**Fix:** both `libs/host-registry/src/claude.ts` and the fallback in
+`libs/install-engine/src/install.ts` now emit `type: profile` directly (`profile` is already
+exactly `'sse'` or `'http'`) instead of the invented `'remote'`. `.mcp.json` corrected to
+`{"type": "http", "url": "http://localhost:3099/mcp"}`. New `host-registry.spec.ts` coverage
+pins the corrected type values and asserts `'remote'` is never emitted. (OpenCode's own
+`opencode.ts` legitimately uses `type: "remote"` — that is OpenCode's real schema value,
+confirmed by capturing its actual traffic; this bug was Claude-specific.)
+
+### `~/.claude.json`: new sessions had no memory-server tools even with a correct `.mcp.json`
+
+Separately from the above: Claude Code gates every `.mcp.json` remote server behind a per-project
+trust list (`~/.claude.json` → `projects["<root>"].enabledMcpjsonServers`), approved via an
+interactive prompt on first use. `soxe install` has never written to this list — by design
+(`claude.ts`'s original docblock: "soxe never auto-writes a trust flag"), matching Claude's own
+P0.5-verified behavior of no blanket `enableAllProjectMcpServers` flag. But a *specific, named*
+trust entry for the exact extension the user just ran `soxe install <id> --host=claude` for is a
+much narrower action than a blanket trust-everything flag, and its absence means any context that
+can't answer an interactive prompt (a background job, a fresh headless session) silently gets zero
+MCP tools with no visible error — exactly what happened here. See the trust auto-management fix
+below.
+
 ---
 
 ## [Unreleased] — graph-store kind:'generic' reuse contract; hybrid-search filter/vector-channel correctness

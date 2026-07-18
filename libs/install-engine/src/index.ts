@@ -105,6 +105,10 @@ export {
 } from './mcp-project-sync.js';
 export type { ProjectSyncResult, SyncMcpOptions } from './mcp-project-sync.js';
 
+// ─── mcp-trust auto-management: Claude's per-project enabledMcpjsonServers ─────
+export { syncMcpTrustToProjects, reverseMcpTrustFromProjects } from './mcp-trust-sync.js';
+export type { TrustSyncResult, SyncTrustOptions } from './mcp-trust-sync.js';
+
 // ─── ADR-0004: data-paths resolver (leaf) ────────────────────────────────────
 export {
   dataRoot,
