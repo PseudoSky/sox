@@ -1683,4 +1683,129 @@ describe('migrations', () => {
 
     db.close();
   });
+
+  it('BL-313: simultaneous node+edge CHECK-constraint rebuild does not cascade-delete edges', () => {
+    // Reproduces the live 2026-07-18 incident exactly: createV1Store() has BOTH
+    // stale CHECK constraints at once (node missing 'generic', edge missing
+    // 'DEPENDS_ON'), so ensureCheckConstraints() rebuilds BOTH tables. With
+    // foreign_keys=ON, renaming node→node_old auto-rewrites edge's FK to dangle
+    // at "node_old"; naively dropping node_old before edge is rebuilt fires
+    // ON DELETE CASCADE and silently empties the ENTIRE edge table — even
+    // though edge itself hadn't been touched yet. A single seeded edge (as in
+    // the test above) can't catch this: this test seeds many, across many
+    // nodes, and asserts every single one survives.
+    const db = createV1Store();
+    const now = new Date().toISOString();
+
+    const NODE_COUNT = 10;
+    for (let i = 0; i < NODE_COUNT; i++) {
+      db.prepare(
+        `INSERT INTO node (rowid, uid, kind, content, t_created) VALUES (?, ?, 'episode', ?, ?)`,
+      ).run(i + 1, `bl313-multi-uid-${i}`, `content ${i}`, now);
+    }
+
+    let edgesSeeded = 0;
+    for (let i = 1; i <= NODE_COUNT; i++) {
+      for (let j = 1; j <= NODE_COUNT; j++) {
+        if (i === j) continue;
+        db.prepare(
+          `INSERT INTO edge (src, dst, rel, t_created) VALUES (?, ?, 'RELATES_TO', ?)`,
+        ).run(i, j, now);
+        edgesSeeded++;
+      }
+    }
+    expect(edgesSeeded).toBe(NODE_COUNT * (NODE_COUNT - 1)); // 90
+
+    const backend = new SqliteGraphBackend(db);
+    backend.applySchema();
+
+    const nodeCount = (db.prepare(`SELECT COUNT(*) AS c FROM node`).get() as { c: number }).c;
+    const edgeCount = (db.prepare(`SELECT COUNT(*) AS c FROM edge`).get() as { c: number }).c;
+    expect(nodeCount).toBeGreaterThanOrEqual(NODE_COUNT);
+    expect(edgeCount).toBe(edgesSeeded);
+
+    db.close();
+  });
+
+  it('BL-313: pre-existing store missing node.is_superseded gets it backfilled', () => {
+    // Matches the actual live-store gap found 2026-07-18: a node table created
+    // before is_superseded was added to the CREATE TABLE DDL — everything else
+    // (level, resume_state, namespace, t_expires, edge.t_expired) already
+    // present, matching a store that had already run memory-core's own earlier
+    // defensive column migrations but predates graph-store's is_superseded
+    // column. CREATE TABLE IF NOT EXISTS in the Drizzle migration is a no-op
+    // against this table, so migrate() alone never adds it — only
+    // ensureCheckConstraints()'s addColumnIfMissing does.
+    const db = new Database(':memory:');
+    for (const pragma of PRAGMAS) db.exec(pragma);
+    db.exec(`CREATE TABLE node (
+      rowid        INTEGER PRIMARY KEY,
+      uid          TEXT UNIQUE NOT NULL,
+      kind         TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session','generic')),
+      content      TEXT,
+      name         TEXT,
+      summary      TEXT,
+      topic        TEXT,
+      tags         TEXT,
+      importance   REAL DEFAULT 1.0,
+      confidence   REAL,
+      content_hash TEXT,
+      namespace    TEXT DEFAULT 'global',
+      meta         TEXT,
+      agent_id     TEXT,
+      session_id   TEXT,
+      source       TEXT CHECK (source IN ('message','tool_output','observation','document','reflection','import')),
+      project_path TEXT,
+      level        INTEGER,
+      resume_state TEXT,
+      t_occurred   TEXT,
+      t_expires    TEXT,
+      t_created    TEXT NOT NULL,
+      t_valid      TEXT,
+      t_invalid    TEXT,
+      access_count INTEGER DEFAULT 0,
+      last_access  TEXT,
+      t_updated    TEXT
+    )`);
+    db.exec(`CREATE TABLE edge (
+      rowid     INTEGER PRIMARY KEY,
+      src       INTEGER NOT NULL REFERENCES node(rowid) ON DELETE CASCADE,
+      dst       INTEGER NOT NULL REFERENCES node(rowid) ON DELETE CASCADE,
+      rel       TEXT NOT NULL CHECK (rel IN ('MENTIONS','SUPPORTS','RELATES_TO','SUPERSEDES','DERIVED_FROM','MEMBER_OF','PART_OF','SAME_AS','ASSIGNED_TO','DEPENDS_ON')),
+      weight    REAL DEFAULT 1.0,
+      confidence REAL,
+      origin    TEXT CHECK (origin IN ('extracted','inferred','user_asserted')),
+      meta      TEXT,
+      t_created TEXT NOT NULL,
+      t_expired TEXT,
+      t_valid   TEXT,
+      t_invalid TEXT
+    )`);
+
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO node (uid, kind, content, t_created) VALUES (?, 'episode', ?, ?)`,
+    ).run('bl313-uid-1', 'pre-existing content', now);
+
+    // Reproduces the original live failure: querying is_superseded before the fix.
+    expect(() => db.prepare(`SELECT is_superseded FROM node`).all()).toThrow(/no such column/);
+
+    const backend = new SqliteGraphBackend(db);
+    backend.applySchema();
+
+    const col = db
+      .prepare(`SELECT * FROM pragma_table_info('node') WHERE name = 'is_superseded'`)
+      .get() as { name: string } | undefined;
+    expect(col).toBeDefined();
+
+    // Existing row survived and defaults to not-superseded.
+    const row = db.prepare(`SELECT uid, is_superseded FROM node WHERE uid = 'bl313-uid-1'`).get() as {
+      uid: string;
+      is_superseded: number;
+    };
+    expect(row.uid).toBe('bl313-uid-1');
+    expect(row.is_superseded).toBe(0);
+
+    db.close();
+  });
 });
