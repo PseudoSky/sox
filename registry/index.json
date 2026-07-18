@@ -60,7 +60,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "npm-package:@adhd/sox-extension-memory-server@1.3.0",
-    "checksum": "sha256:9af71a6bbc6f3164cad26b327725fda115a4fcc246df850ef9fb2a6275127721",
+    "checksum": "sha256:31e8559c1f09902d64f163aff2b8ae74cc8766861cff4048e0bf52c8bab65e1d",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -78,7 +78,7 @@
     "title": "Using the soxe memory system",
     "description": "Use when an agent should recall prior knowledge or store durable findings in the soxe graph-memory system via the memory_* MCP tools (memory_recall / memory_write / memory_search_entities / memory_invalidate).",
     "source": "npm-package:@adhd/sox-extension-memory-usage@0.2.0",
-    "checksum": "sha256:456ac2e12a799f9dfb7f76acd8e71d9940ebb1115167c7500fbcaed6cf79b55f",
+    "checksum": "sha256:1239e096623c4d97d43f8095853b0cc978610a6c80f508e168af71b617a06a62",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
