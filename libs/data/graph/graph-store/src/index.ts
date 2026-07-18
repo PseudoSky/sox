@@ -716,48 +716,71 @@ export class SqliteGraphBackend implements GraphBackend {
    * SQLite does not support ALTER TABLE CHECK constraint changes.
    *
    * Also adds any canonical columns that may be missing from pre-Drizzle stores
-   * (e.g. level, resume_state on node; t_expired on edge, added in the old v2
-   * migration). Safe to call on fresh stores — checks exit early when columns
-   * exist and constraints already include the expected values.
+   * (e.g. level, resume_state, is_superseded on node; t_expired on edge, added in
+   * the old v2 migration). Safe to call on fresh stores — checks exit early when
+   * columns exist and constraints already include the expected values.
    */
   private ensureCheckConstraints(): void {
     // Step 1: Ensure all canonical columns exist on pre-existing stores.
-    // The old v1 schema (before custom migrations) was missing level, resume_state
-    // on node and t_expired on edge. These must be present before any table rebuild
-    // so the INSERT…SELECT copy in rebuildTable doesn't fail with "no such column".
+    // BL-313: is_superseded was added to the CREATE TABLE DDL after some live
+    // stores' node table already existed — Drizzle's CREATE TABLE IF NOT EXISTS
+    // is a no-op against an existing table, so migrate() never adds it. Same class
+    // as level/resume_state/t_expired below (all predate Drizzle migration
+    // management). These must be present before any table rebuild so the
+    // INSERT…SELECT copy in rebuildTable doesn't fail with "no such column".
     this.addColumnIfMissing('node', 'level', 'INTEGER');
     this.addColumnIfMissing('node', 'resume_state', 'TEXT');
+    this.addColumnIfMissing('node', 'is_superseded', 'INTEGER DEFAULT 0');
     this.addColumnIfMissing('edge', 't_expired', 'TEXT');
 
-    // Step 2: Node kind CHECK must include 'generic' (upgraded from old v3).
+    // Steps 2+3: node.kind CHECK must include 'generic' (old v3), edge.rel CHECK
+    // must include 'DEPENDS_ON' (old v4). Both checked up front and, if EITHER
+    // needs a rebuild, BOTH copy-steps run (via rebuildTable's skipDrop) before
+    // EITHER `_old` table is dropped — see rebuildTable's doc comment (BL-313):
+    // dropping `node_old` while a not-yet-rebuilt `edge` still carries a FK that
+    // SQLite auto-rewrote to dangle at `node_old` cascade-deletes every edge row,
+    // even though `edge` itself was never asked to change. Deferring every drop
+    // until every new table is fully populated makes any resulting cascade land
+    // only on tables already scheduled for deletion.
     const nodeRow = this.db
       .prepare<[], { sql: string }>(
         `SELECT sql FROM sqlite_master WHERE type='table' AND name='node'`,
       )
       .get();
-    if (nodeRow && !nodeRow.sql.includes("'generic'")) {
-      this.db.transaction(() => {
-        rebuildTable(this.db, 'node', NODE_TABLE_DDL, NODE_COLUMNS);
-        for (const ddl of NODE_INDEX_DDLS) this.db.exec(ddl);
-        // Recreate FTS triggers + rebuild FTS index after table rebuild
-        this.db.exec(FTS_TRIGGERS);
-        this.db.exec(
-          `INSERT INTO fts_node(rowid, content, name, summary)
-           SELECT rowid, content, name, summary FROM node`,
-        );
-      })();
-    }
+    const nodeNeedsRebuild = !!nodeRow && !nodeRow.sql.includes("'generic'");
 
-    // Step 3: Edge rel CHECK must include 'DEPENDS_ON' (upgraded from old v4).
     const edgeRow = this.db
       .prepare<[], { sql: string }>(
         `SELECT sql FROM sqlite_master WHERE type='table' AND name='edge'`,
       )
       .get();
-    if (edgeRow && !edgeRow.sql.includes("'DEPENDS_ON'")) {
+    const edgeNeedsRebuild = !!edgeRow && !edgeRow.sql.includes("'DEPENDS_ON'");
+
+    if (nodeNeedsRebuild || edgeNeedsRebuild) {
       this.db.transaction(() => {
-        rebuildTable(this.db, 'edge', EDGE_TABLE_DDL, EDGE_COLUMNS);
-        for (const ddl of EDGE_INDEX_DDLS) this.db.exec(ddl);
+        if (nodeNeedsRebuild) {
+          rebuildTable(this.db, 'node', NODE_TABLE_DDL, NODE_COLUMNS, { skipDrop: true });
+        }
+        if (edgeNeedsRebuild) {
+          rebuildTable(this.db, 'edge', EDGE_TABLE_DDL, EDGE_COLUMNS, { skipDrop: true });
+        }
+
+        // Every new table is now fully populated — safe to drop the old ones.
+        if (nodeNeedsRebuild) this.db.exec(`DROP TABLE node_old`);
+        if (edgeNeedsRebuild) this.db.exec(`DROP TABLE edge_old`);
+
+        if (nodeNeedsRebuild) {
+          for (const ddl of NODE_INDEX_DDLS) this.db.exec(ddl);
+          // Recreate FTS triggers + rebuild FTS index after table rebuild
+          this.db.exec(FTS_TRIGGERS);
+          this.db.exec(
+            `INSERT INTO fts_node(rowid, content, name, summary)
+             SELECT rowid, content, name, summary FROM node`,
+          );
+        }
+        if (edgeNeedsRebuild) {
+          for (const ddl of EDGE_INDEX_DDLS) this.db.exec(ddl);
+        }
       })();
     }
   }
