@@ -1064,6 +1064,17 @@ Options:
     const profile = flags['profile'];
     const versionRange = flags['version'];
 
+    // Nudge toward the modern standard: Claude Code's own docs (code.claude.com/docs/en/mcp)
+    // mark "sse" deprecated in favor of "http" (Streamable HTTP); the official MCP SDK's
+    // SSEClientTransport carries the same @deprecated notice. --profile=sse still WORKS for
+    // Claude (both transports stay fully supported server-side) — this is guidance, not a block.
+    if (profile === 'sse' && hosts.includes('claude')) {
+      process.stderr.write(
+        `${CLI} install: note: --profile=sse is deprecated for Claude Code — prefer --profile=http ` +
+        `(Streamable HTTP). Both work; "sse" still installs successfully.\n`,
+      );
+    }
+
     // Resolve the extension: load registry from the REAL repo root (process.cwd()),
     // not from workspaceRoot (which may be a temp dir when --root is given for sandboxing).
     // The registry/index.json always lives in the repo root where 'node bin/sox' is invoked.

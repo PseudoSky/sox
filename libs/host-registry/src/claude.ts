@@ -80,6 +80,35 @@ import { existsIn } from './internal.js';
  * --host=claude` therefore generated a `.mcp.json` entry Claude Code could
  * never actually load. `profile` already carries the exact right value
  * (`'sse'` | `'http'`) — just use it directly as `type`.
+ *
+ * [ref:mcp-remote-type-matrix] (2026-07-18) — THREE DIFFERENT HOSTS, THREE
+ * DIFFERENT SCHEMAS for the exact same "remote MCP server" concept. Verified
+ * against each host's own docs/real client traffic; do not assume any of
+ * these generalizes to another host without re-checking:
+ *
+ *   | Host     | `type` field for a remote entry          | Source of truth |
+ *   |----------|-------------------------------------------|-----------------|
+ *   | Claude   | REQUIRED: `"http"` (recommended) or       | code.claude.com/docs/en/mcp |
+ *   |          | `"sse"` (deprecated). No `type` at all,   | |
+ *   |          | or any other value, = silently treated    | |
+ *   |          | as a broken stdio server and skipped.     | |
+ *   | OpenCode | REQUIRED: literally `"remote"` — a value  | Empirically proven: a scratch |
+ *   |          | that means nothing to Claude or Codex.    | opencode.json with type:"remote" |
+ *   |          | OpenCode ALSO never does the classic SSE  | connected via the real opencode |
+ *   |          | GET-handshake regardless of the URL's     | CLI (`opencode mcp list`).      |
+ *   |          | path — it always POSTs StreamableHTTP-    | See opencode.ts, shim.ts.       |
+ *   |          | style directly to the configured `url`.   | |
+ *   | Codex    | NO `type` field at all, ever. Transport   | learn.chatgpt.com/docs/extend/mcp |
+ *   |          | is inferred purely from `url` (remote)    | (redirected from developers.    |
+ *   |          | vs `command` (stdio) being present.       | openai.com/codex/mcp)           |
+ *
+ * `"sse"` is deprecated ecosystem-wide, not just a Claude quirk — the official
+ * `@modelcontextprotocol/sdk`'s own `SSEClientTransport` carries a
+ * `@deprecated` notice pointing at `StreamableHTTPClientTransport`. Both
+ * transports remain fully supported server-side here (shim.ts serves `/mcp`
+ * and `/sse` identically) — `cmdInstall` in apps/sox/src/main.ts emits a
+ * soft stderr note (not a hard error) when `--profile=sse --host=claude` is
+ * used, pointing at `--profile=http` instead.
  */
 const mcpConfig: McpConfig = {
   keyPath(extId: string): string {
