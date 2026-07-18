@@ -2,6 +2,62 @@
 
 ---
 
+## [Unreleased] — BL-313 (CRITICAL): CHECK-constraint table rebuild silently cascade-deleted the entire live `edge` table
+
+While deploying this session's other memory-server fixes, `memory_stats`/`memory_list_entities`
+started throwing `Can't find meta/_journal.json file` against the bundled artifact — a second,
+independent bug from BL-62 (esbuild inlines `@adhd/sox-graph-store` into memory-server/memory-cli/
+memory-flush's single-file bundles; graph-store's Drizzle migration folder resolves relative to
+`import.meta.url`, which at runtime is the CONSUMER's own bundled file, not graph-store's — so the
+migrations folder was never found. Fixed in `tools/bundle-extension.cjs` via static-asset
+auto-discovery mirroring the existing sidecar mechanism: an owning package declares
+`"sox": {"assets": [...]}`; any consumer that inlines it gets the directory copied to the same
+outdir-sibling position at build time. Covered by `tools/test-bl313-graph-store-migrations-asset.mjs`,
+which builds the real memory-server entry point, calls the two previously-broken tools against the
+bundled artifact, and proves the test isn't vacuous by removing the asset dir and confirming the
+exact original error reproduces.
+
+Fixing that surfaced a second, far more serious bug on the SAME code path. Once the migration could
+actually run, `SqliteGraphBackend.ensureCheckConstraints()` — which upgrades `node.kind`/`edge.rel`
+CHECK constraints on stores older than the Drizzle migration via a rename→create→copy→drop table
+rebuild — turned out to **silently cascade-delete the entire `edge` table** on any store whose CHECK
+constraints predate both the `'generic'` node kind and the `'DEPENDS_ON'` edge relation (i.e. any
+store older than mid-2026). With `PRAGMA foreign_keys = ON` (always on for this store),
+`ALTER TABLE node RENAME TO node_old` auto-rewrites `edge`'s FK definitions to dangle at
+`"node_old"` — real SQLite behavior. SQLite then treats `DROP TABLE node_old` (run once the new
+`node` table is fully populated) as deleting every row of `node_old` for `ON DELETE CASCADE`
+purposes, so `edge` — whose FK now points at the table being dropped — has **all of its rows
+silently deleted**. No exception, no warning, nothing in any log.
+
+Confirmed live: the production `~/.memory/memory.db` (4,692 episodes / 3,065 entities / 150
+communities / **40,930 edges** accumulated over months) had exactly this stale CHECK-constraint
+signature. Root-caused by direct reproduction against a WAL-consistent backup of the real database
+(not synthetic data) — isolated the exact failing statement (`DROP TABLE node_old` cascading into
+`edge`) before writing the fix. The running backend process was not affected only because it had
+`schemaApplied` cached in memory from an earlier restart this session; the very next cold start
+(crash, deploy, launchd respawn) would have silently wiped all 40,930 edges with no indication
+anything had gone wrong.
+
+**Fix:** `rebuildTable()` gains an `opts.skipDrop` flag. `ensureCheckConstraints()` now runs BOTH the
+node and edge rebuild's rename→create→copy steps (via `skipDrop`) before dropping EITHER `_old`
+table — by the time any drop-induced cascade can fire, every FK-related table's data has already
+been copied into its new incarnation, so a cascade only empties tables already scheduled for
+deletion. New regression test seeds 90 edges across 10 nodes in a store with both constraints stale
+simultaneously (a single-edge fixture, as the pre-existing migration test used, cannot catch this),
+confirmed RED against the old sequential code (0 edges survived — reproducing the incident exactly)
+and GREEN restored.
+
+**Deployed and verified against the real production database**: pre-deploy backup taken
+(`~/.claude/jobs/32533e0b/tmp/memory-db-backup-pre-BL313-deploy-*.db`); live backend restarted;
+`memory_stats` (which triggers the migration) called; post-migration counts confirmed identical to
+pre-migration (7,907 nodes / 40,930 edges, full per-relation breakdown unchanged); `memory_stats`,
+`memory_list_entities`, `memory_topics`, and `memory_write`'s `E_MISSING_PROJECT_PATH` rejection all
+verified working correctly live, end to end.
+
+Also closed the same session: `tools/baseline-capture`'s write-perf benchmark harness (a missed
+`memoryWrite()` consumer outside the test suites) needed an explicit `project_path` after BL-62 made
+it required — fixed with a synthetic value, consistent with the new "no inference, ever" contract.
+
 ## [Unreleased] — BL-311 verified: live `memory-server` launchd unit has no `SOX_EMBED_BACKEND` misconfiguration
 
 BL-311 flagged that `memory_stats` fail-loud's (BL-250, intentional) if `SOX_EMBED_BACKEND` is set to
