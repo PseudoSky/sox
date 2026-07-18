@@ -1150,12 +1150,26 @@ acceptance.
   - `registry:sync-index` → **memory-server checksum drift EXPECTED** (its entrypoint artifact changed)
     → regenerated `registry/index.json` (new `memory-server` checksum `sha256:c04806ae1ace…`); only
     memory-server's checksum changed.
-- **`(unverified)` — shared-backend project_path attribution (carried from BL-56):** the backend is a
-  shared singleton per store, so a per-connecting-client workspace (`SOX_CONFIG_PROJECT_PATH`) injected
-  at shim spawn does NOT propagate to the already-running shared backend. Each shim still passes its own
-  `SOX_CONFIG_PROJECT_PATH`, but the FIRST shim's value is what the backend captured. Multi-project
-  attribution for a shared backend likely needs the per-call MCP-roots / caller path threaded through
-  `tools/call` — flagged for the human; NOT silently regressed (single-project use is unaffected).
+- **RESOLVED 2026-07-18 (BL-62)** — shared-backend project_path attribution (carried from BL-56): the
+  original concern below (spawn-time `SOX_CONFIG_PROJECT_PATH` env captured only from the FIRST shim to
+  connect to a shared singleton backend) turned out to be one symptom of a broader class — ANY
+  server-side fallback for an omitted `project_path` (env tier, shim cwd, or otherwise) mis-attributes
+  data for a multi-project shared backend, because the fallback value is fixed at spawn/connect time
+  while the actual caller can vary per call. The per-call MCP-roots thread-through mentioned below was
+  never built; instead `memory_write`/`memory_write_batch` now REQUIRE `project_path` explicitly on
+  every call and reject with `E_MISSING_PROJECT_PATH` if it's omitted — no server-side fallback of any
+  kind, so there is no captured-at-spawn value left to be wrong. Reads (`memory_recall`/`memory_topics`/
+  etc.) never inferred a per-call `project_path` either; omitting it there was and remains a valid
+  "search every project" request, not an attribution concern. See
+  `libs/memory-core/src/write.ts`'s top-of-file BL-62 doc comment and
+  `extensions/bundles/sox-memory-bundle/members/memory-server/CLAUDE.md` for the full current contract.
+  Original note, preserved for history:
+  > `(unverified)` — the backend is a shared singleton per store, so a per-connecting-client workspace
+  > (`SOX_CONFIG_PROJECT_PATH`) injected at shim spawn does NOT propagate to the already-running shared
+  > backend. Each shim still passes its own `SOX_CONFIG_PROJECT_PATH`, but the FIRST shim's value is
+  > what the backend captured. Multi-project attribution for a shared backend likely needs the per-call
+  > MCP-roots / caller path threaded through `tools/call` — flagged for the human; NOT silently
+  > regressed (single-project use is unaffected).
 
 ### Slice 2 — `soxe service enable|disable` (OS-supervisor control surface, subsumes BL-51 + reboot half of BL-50) — ✅ IMPLEMENTED
 
