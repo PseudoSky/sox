@@ -282,6 +282,7 @@ describe('memory_recall — BL-229 agent_id scoping (importance-ranked listing)'
       content: AGENT_A_CONTENT,
       agent_id: 'agent-A',
       importance: 5,
+      project_path: '/test/project',
     });
     if ('isError' in r1 && r1.isError) throw new Error(`BL-229 fixture write (agent-A) failed: ${JSON.stringify(r1)}`);
     const r2 = await handleToolCall('memory_write', {
@@ -292,6 +293,7 @@ describe('memory_recall — BL-229 agent_id scoping (importance-ranked listing)'
       // scoping is broken, B's higher-importance episode sorts FIRST and would be
       // the most likely to be surfaced/observed by a caller scoped to A — a strong
       // negative control against "it happened to not show up" false negatives.
+      project_path: '/test/project',
     });
     if ('isError' in r2 && r2.isError) throw new Error(`BL-229 fixture write (agent-B) failed: ${JSON.stringify(r2)}`);
   });
@@ -661,6 +663,7 @@ describe('backward compat — existing tools unbroken', () => {
     const result = await handleToolCall('memory_write', {
       db_path: DB_PATH,
       content: 'Backward compat test episode.',
+      project_path: '/test/project',
     });
     // May be E_DEDUP if content matches; either way, no isError
     const text = (result.content[0] as { text: string }).text;
@@ -689,11 +692,13 @@ describe('memory_curate recluster — filtered subset', () => {
       db_path: DB_PATH,
       content: 'Calibration of the pneumatic widget press requires a torque of forty newton metres.',
       tags: [UNIQ, 'alpha'],
+      project_path: '/test/project',
     });
     await handleToolCall('memory_write', {
       db_path: DB_PATH,
       content: 'Migratory albatross navigation relies on geomagnetic field gradients over open ocean.',
       tags: [UNIQ, 'beta'],
+      project_path: '/test/project',
     });
   });
 
@@ -930,6 +935,7 @@ describe('memory_update MCP tool', () => {
     const wr = await handleToolCall('memory_write', {
       db_path: UPDATE_DB,
       content: 'initial mcp content',
+      project_path: '/test/project',
     });
     const wrBody = parseResult(wr);
     const uid = wrBody['episode_uid'] as string;
@@ -953,6 +959,7 @@ describe('memory_update MCP tool', () => {
       name: 'old name',
       topic: 'old-topic',
       importance: 2,
+      project_path: '/test/project',
     });
     const uid = (parseResult(wr))['episode_uid'] as string;
 
@@ -977,6 +984,7 @@ describe('memory_update MCP tool', () => {
       db_path: UPDATE_DB,
       content: 'mcp meta test',
       metadata: { a: { x: 1 }, list: [1, 2, 3] },
+      project_path: '/test/project',
     });
     const uid = (parseResult(wr))['episode_uid'] as string;
 
@@ -1007,6 +1015,7 @@ describe('memory_update MCP tool', () => {
       db_path: UPDATE_DB,
       content: 'mcp meta replace test',
       metadata: { old: true, nested: { deep: 1 } },
+      project_path: '/test/project',
     });
     const uid = (parseResult(wr))['episode_uid'] as string;
 

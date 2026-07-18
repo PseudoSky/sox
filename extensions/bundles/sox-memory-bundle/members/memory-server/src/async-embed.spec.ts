@@ -114,6 +114,7 @@ describe('memory_write (async default) — response resolves before the embeddin
     const resp = await handleToolCall('memory_write', {
       db_path: dbPath,
       content: 'The response must not wait for this embedding to compute.',
+      project_path: '/test/project',
     });
     const out = parseResult(resp);
     expect(typeof out['episode_uid']).toBe('string');
@@ -136,11 +137,13 @@ describe('memory_write (async default) — response resolves before the embeddin
       db_path: dbPath,
       content: 'Idempotent through the MCP surface.',
       client_request_id: 'mcp-replay-1',
+      project_path: '/test/project',
     }));
     const second = parseResult(await handleToolCall('memory_write', {
       db_path: dbPath,
       content: 'Changed content, same request id.',
       client_request_id: 'mcp-replay-1',
+      project_path: '/test/project',
     }));
     expect(second['replayed']).toBe(true);
     expect(second['episode_uid']).toBe(first['episode_uid']);
@@ -160,7 +163,7 @@ describe('memory_write (async default) — response resolves before the embeddin
     const content = sentences.join(' ');
     expect(content.length).toBeGreaterThan(2000);
 
-    const out = parseResult(await handleToolCall('memory_write', { db_path: dbPath, content }));
+    const out = parseResult(await handleToolCall('memory_write', { db_path: dbPath, content, project_path: '/test/project' }));
     expect(typeof out['episode_uid']).toBe('string');
     expect((out['chunk_count'] as number)).toBeGreaterThan(1);
     expect((out['chunk_uids'] as string[]).length).toBeGreaterThan(0);
@@ -176,9 +179,9 @@ describe('memory_write_batch (async default) — one queue entry, pipelined Phas
     const resp = parseResult(await handleToolCall('memory_write_batch', {
       db_path: dbPath,
       items: [
-        { content: 'Migratory birds navigate using geomagnetic gradients.' },
-        { content: 'Deep-sea vents host chemosynthetic bacterial mats.' },
-        { content: 'MIGRATORY BIRDS NAVIGATE USING GEOMAGNETIC GRADIENTS.' }, // byte-dup of [0]
+        { content: 'Migratory birds navigate using geomagnetic gradients.', project_path: '/test/project' },
+        { content: 'Deep-sea vents host chemosynthetic bacterial mats.', project_path: '/test/project' },
+        { content: 'MIGRATORY BIRDS NAVIGATE USING GEOMAGNETIC GRADIENTS.', project_path: '/test/project' }, // byte-dup of [0]
       ],
     }));
     const results = resp['results'] as Array<{ ok: boolean; code?: string }>;
@@ -294,6 +297,7 @@ describe('memory_ping — embed_pipeline block (time_to_vector + counters + mirr
     await handleToolCall('memory_write', {
       db_path: dbPath,
       content: 'Ping observability episode about basalt column formation.',
+      project_path: '/test/project',
     });
     await flushPendingEmbeds();
 
@@ -378,10 +382,12 @@ describe('memory_curate recluster (global) — BL-186: honest enqueue, consumed 
     await handleToolCall('memory_write', {
       db_path: dbPath,
       content: 'Calibration of the pneumatic widget press requires forty newton metres.',
+      project_path: '/test/project',
     });
     await handleToolCall('memory_write', {
       db_path: dbPath,
       content: 'Albatross navigation relies on geomagnetic field gradients over open ocean.',
+      project_path: '/test/project',
     });
     await flushPendingEmbeds();
 

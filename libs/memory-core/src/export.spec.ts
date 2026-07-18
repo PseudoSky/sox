@@ -49,6 +49,7 @@ describe('exportMarkdown — basic', () => {
         agent_id: 'test-agent',
         source: 'observation',
         importance: 2.5,
+        project_path: '/test/project',
       });
 
       const uid1 = (w1 as { episode_uid: string }).episode_uid;
@@ -94,6 +95,7 @@ describe('exportMarkdown — basic', () => {
       await memoryWrite(db, {
         content: 'Event sourcing is a pattern for durable state.',
         tags: ['event-sourcing', 'patterns'],
+        project_path: '/test/project',
       });
 
       exportMarkdown(db, { dir: exportDir, enabled: true });
@@ -126,8 +128,8 @@ describe('exportMarkdown — INDEX.md', () => {
     try {
       const db = openDb(path.join(dbDir, 'test.db'));
 
-      await memoryWrite(db, { content: 'First memory.', tags: ['alpha'] });
-      await memoryWrite(db, { content: 'Second memory.', tags: ['beta'] });
+      await memoryWrite(db, { content: 'First memory.', tags: ['alpha'], project_path: '/test/project' });
+      await memoryWrite(db, { content: 'Second memory.', tags: ['beta'], project_path: '/test/project' });
 
       exportMarkdown(db, { dir: exportDir, enabled: true });
 
@@ -153,8 +155,8 @@ describe('exportMarkdown — INDEX.md', () => {
     try {
       const db = openDb(path.join(dbDir, 'test.db'));
 
-      await memoryWrite(db, { content: 'Low importance.', tags: ['topic-x'], importance: 1.0 });
-      await memoryWrite(db, { content: 'High importance.', tags: ['topic-x'], importance: 9.0 });
+      await memoryWrite(db, { content: 'Low importance.', tags: ['topic-x'], importance: 1.0, project_path: '/test/project' });
+      await memoryWrite(db, { content: 'High importance.', tags: ['topic-x'], importance: 9.0, project_path: '/test/project' });
 
       exportMarkdown(db, { dir: exportDir, enabled: true });
 
@@ -191,7 +193,7 @@ describe('exportMarkdown — idempotency', () => {
     try {
       const db = openDb(path.join(dbDir, 'test.db'));
 
-      const w = await memoryWrite(db, { content: 'Idempotent memory.', tags: ['idempotency'] });
+      const w = await memoryWrite(db, { content: 'Idempotent memory.', tags: ['idempotency'], project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
 
       exportMarkdown(db, { dir: exportDir, enabled: true });
@@ -227,8 +229,8 @@ describe('exportMarkdown — pruning', () => {
       const db = openDb(path.join(dbDir, 'test.db'));
 
       // Write two episodes
-      const w1 = await memoryWrite(db, { content: 'Ephemeral memory.', tags: ['prune-test'] });
-      const w2 = await memoryWrite(db, { content: 'Keeper memory.', tags: ['prune-test'] });
+      const w1 = await memoryWrite(db, { content: 'Ephemeral memory.', tags: ['prune-test'], project_path: '/test/project' });
+      const w2 = await memoryWrite(db, { content: 'Keeper memory.', tags: ['prune-test'], project_path: '/test/project' });
 
       const uid1 = (w1 as { episode_uid: string }).episode_uid;
       const uid2 = (w2 as { episode_uid: string }).episode_uid;
@@ -271,7 +273,7 @@ describe('exportMarkdown — pruning', () => {
     try {
       const db = openDb(path.join(dbDir, 'test.db'));
 
-      const w = await memoryWrite(db, { content: '[topic-a] Original content.', topic: 'topic-a' });
+      const w = await memoryWrite(db, { content: '[topic-a] Original content.', topic: 'topic-a', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
 
       exportMarkdown(db, { dir: exportDir, enabled: true });
@@ -308,7 +310,7 @@ describe('exportMarkdown — disabled', () => {
     try {
       const db = openDb(path.join(dbDir, 'test.db'));
 
-      await memoryWrite(db, { content: 'This should not be exported.', tags: ['test'] });
+      await memoryWrite(db, { content: 'This should not be exported.', tags: ['test'], project_path: '/test/project' });
 
       const result = exportMarkdown(db, { dir: exportDir, enabled: false });
 
@@ -336,7 +338,7 @@ describe('exportMarkdown — topic derivation', () => {
     try {
       const db = openDb(path.join(dbDir, 'test.db'));
 
-      const w = await memoryWrite(db, { content: 'No tags here.' });
+      const w = await memoryWrite(db, { content: 'No tags here.', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
 
       exportMarkdown(db, { dir: exportDir, enabled: true });
@@ -361,6 +363,7 @@ describe('exportMarkdown — topic derivation', () => {
 
       const w = await memoryWrite(db, {
         content: '[agent-graph-memory] Bi-temporal edges for fact supersession.',
+        project_path: '/test/project',
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
@@ -386,7 +389,7 @@ describe('exportMarkdown — topic derivation', () => {
     try {
       const db = openDb(path.join(dbDir, 'test.db'));
 
-      const w = await memoryWrite(db, { content: 'Community-grouped memory.' });
+      const w = await memoryWrite(db, { content: 'Community-grouped memory.', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
 
       // Manually insert a community node and MEMBER_OF edge
@@ -429,6 +432,7 @@ describe('exportMarkdown — topic derivation', () => {
       const w = await memoryWrite(db, {
         content: 'Rust memory safety model.',
         tags: ['rust'],
+        project_path: '/test/project',
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
@@ -458,7 +462,7 @@ describe('exportMarkdown — topic derivation', () => {
       fs.writeFileSync(path.join(exportDir, 'principles', 'my-principle.md'), '# Principle\n', 'utf8');
 
       const db = openDb(path.join(dbDir, 'test.db'));
-      await memoryWrite(db, { content: 'A memory alongside principles.', tags: ['test'] });
+      await memoryWrite(db, { content: 'A memory alongside principles.', tags: ['test'], project_path: '/test/project' });
 
       exportMarkdown(db, { dir: exportDir, enabled: true });
 
@@ -487,6 +491,7 @@ describe('exportMarkdown — P5 structured topic precedence', () => {
       const w = await memoryWrite(db, {
         content: '[prefix-topic] Content with a conflicting text prefix.',
         topic: 'structured-topic',
+        project_path: '/test/project',
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
@@ -515,6 +520,7 @@ describe('exportMarkdown — P5 structured topic precedence', () => {
       // then NULL it out to simulate a legacy store where node.topic wasn't populated.
       const w = await memoryWrite(db, {
         content: '[fallback-prefix] Content using the legacy text prefix convention.',
+        project_path: '/test/project',
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
@@ -546,6 +552,7 @@ describe('exportMarkdown — P5 structured topic precedence', () => {
         content: 'Discussing TypeScript generics and mapped types.',
         topic: 'typescript-types',
         tags: ['generics', 'mapped-types'],
+        project_path: '/test/project',
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
@@ -579,6 +586,7 @@ describe('exportMarkdown — P5 entity names in frontmatter (BL-22)', () => {
       const w = await memoryWrite(db, {
         content: 'JWT and OAuth2 are authentication protocols.',
         tags: ['JWT', 'OAuth2'],
+        project_path: '/test/project',
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
@@ -623,6 +631,7 @@ describe('exportMarkdown — P5 entity names in frontmatter (BL-22)', () => {
       const w = await memoryWrite(db, {
         content: 'Null-named entity test.',
         topic: 'test-topic',
+        project_path: '/test/project',
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
@@ -671,6 +680,7 @@ describe('exportMarkdown — P5 structured provenance fields in frontmatter', ()
         content: 'JWT tokens expire after one hour for security reasons.',
         topic: 'security',
         summary: 'JWT token expiry policy',
+        project_path: '/test/project',
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
@@ -728,6 +738,7 @@ describe('exportMarkdown — P5 structured provenance fields in frontmatter', ()
         content: 'SQLite WAL mode enables concurrent reads.',
         topic: 'database',
         tags: ['sqlite', 'wal', 'concurrency'],
+        project_path: '/test/project',
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 

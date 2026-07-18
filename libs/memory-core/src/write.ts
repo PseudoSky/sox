@@ -23,23 +23,27 @@
  *   R5: dedup via content_hash; never deletes existing episodes.
  *   R6: no OS advisory lock (host holds singleton via lifecycle block).
  *
- * BL-62 (project_path attribution): the E1 precedence chain (provenance.ts: explicit
- * arg > SOX_CONFIG_PROJECT_PATH env > cwd-git) can only ever reflect the CALLER's real
- * project when the caller passes `project_path` explicitly. For a long-lived server
- * process (the shared proxy backend, or any stdio shim whose spawn cwd differs from
- * the caller's LIVE working directory at call time — e.g. an agent that `cd`s mid-
- * session) the env/cwd tiers observe the SERVER's fixed process cwd, not the caller's
- * — Node's `process.cwd()` cannot change per-request within one process. Distinguishing
- * "the server's frozen cwd" from "the caller's actual current project" per-call requires
- * either an explicit `project_path` arg (works today) or the MCP `roots` capability
- * (NOT negotiated by this server's transport — libs/mcp-runtime's serve() has no roots
- * support; wiring it touches libs/mcp-runtime + the shim/backend protocol, outside this
- * module's scope and NOT invented here per the BL-62 hard gate — see BACKLOG.md).
- * `memoryWritePhaseA` therefore stamps `WriteResult.enrichment.project_path_source`
- * ('explicit' | 'inferred') on every write so a caller/operator can detect low-
- * confidence attribution instead of it being silently, permanently unrecoverable — a
- * flagged episode can be corrected in place via `memory_update`'s `project_path` field
- * (BL-221, see update.ts).
+ * BL-62 (project_path attribution — RESOLVED 2026-07-18 by requiring, not inferring):
+ * the E1 precedence chain (provenance.ts: explicit arg > SOX_CONFIG_PROJECT_PATH env >
+ * cwd-git) can only ever reflect the CALLER's real project when the caller passes
+ * `project_path` explicitly. For a long-lived server process (the shared proxy backend,
+ * or any stdio shim whose spawn cwd differs from the caller's LIVE working directory at
+ * call time — e.g. an agent that `cd`s mid-session, or a shim spawned from inside a
+ * throwaway git worktree) the env/cwd tiers observe the SERVER's fixed process cwd, not
+ * the caller's — Node's `process.cwd()` cannot change per-request within one process,
+ * and a worktree cwd has zero prior episodes, so the mis-attribution is silent and
+ * permanent once written. Originally mitigated by stamping
+ * `WriteResult.enrichment.project_path_source` ('explicit' | 'inferred') so an operator
+ * COULD detect low-confidence attribution after the fact — but detection after the fact
+ * still means bad data landed. `memoryWritePhaseA` now REJECTS a write with no explicit
+ * `project_path` outright (`E_MISSING_PROJECT_PATH`) rather than falling through to any
+ * inference tier: the calling agent must always know and state which project an episode
+ * belongs to. `project_path_source` stays on `WriteResult` for API stability but is now
+ * always `'explicit'` — the `'inferred'` value is unreachable in practice, since
+ * inference no longer happens on this path. (Reads are UNCHANGED: omitting
+ * `project_path` on `memory_recall`/`memory_topics`/etc. is a deliberate, valid "search
+ * every project" request — this only applies to writes, where inference risks silent,
+ * permanent data corruption rather than a merely-wrong query result.)
  */
 
 import { enrichOnWrite } from './enrich.js';
@@ -79,8 +83,9 @@ export interface WriteParams {
   name?: string | undefined;
   /** (E5) Explicit topic override. Stored to node.topic; takes priority over [<topic>] prefix. */
   topic?: string | undefined;
-  /** (E1) Caller project root path. Auto-detected from cwd+git if omitted. */
-  project_path?: string | undefined;
+  /** (E1) Caller project root path. REQUIRED (BL-62) — no cwd/env inference; a
+   *  write with no explicit project_path is rejected with E_MISSING_PROJECT_PATH. */
+  project_path: string;
   /** (E9) UID of a parent episode; emits a DERIVED_FROM edge from this episode to parent. */
   derived_from_uid?: string | undefined;
   session_id?: string | undefined;
@@ -130,7 +135,8 @@ export interface WriteResult {
 export type WriteError =
   | { code: 'E_SCOPE_RO'; message: string }
   | { code: 'E_DEDUP'; message: string; existing_uid: string }
-  | { code: 'E_QUEUE_FULL'; message: string };
+  | { code: 'E_QUEUE_FULL'; message: string }
+  | { code: 'E_MISSING_PROJECT_PATH'; message: string };
 
 /** Outcome of the synchronous Phase-A write (two-phase split, 2026-07-04). */
 export interface PhaseAOutcome {
@@ -179,6 +185,21 @@ export function memoryWritePhaseA(
     metadata,
   } = params;
 
+  // BL-62: project_path is REQUIRED — reject before any DB work or enrichment runs,
+  // rather than falling through to enrichOnWrite's env/cwd inference tiers. Runtime
+  // check (not just the WriteParams.project_path: string type) because callers cross
+  // an untyped JSON boundary (MCP tool args) before constructing this object.
+  if (!project_path || project_path.length === 0) {
+    return {
+      code: 'E_MISSING_PROJECT_PATH',
+      message:
+        'project_path is required — the calling agent\'s actual workspace root, passed ' +
+        'explicitly. No cwd/env inference: a long-lived server process\'s cwd reflects ' +
+        'wherever it happened to be spawned, not the caller\'s real project, and a wrong ' +
+        'guess here permanently mis-attributes the episode.',
+    };
+  }
+
   // Caller-supplied metadata is persisted as JSON (previously silently dropped).
   const metaJson = metadata !== undefined ? JSON.stringify(metadata) : null;
 
@@ -193,9 +214,9 @@ export function memoryWritePhaseA(
   // (E4) Tags JSON column — retain the raw string[] alongside the MENTIONS edges.
   const tagsJson = tags && tags.length > 0 ? JSON.stringify(tags) : null;
 
-  // (E1) project_path — use caller value if supplied; auto-detection (resolveProjectPath)
-  // will be wired in P2 via enrichOnWrite. For P1 we store caller-supplied value only.
-  const resolvedProjectPath: string | null = project_path ?? null;
+  // (E1) project_path is guaranteed non-empty by the guard above (BL-62) — always
+  // stored as the caller's explicit value, never inferred.
+  const resolvedProjectPath: string = project_path;
 
   if (!content || !content.trim()) {
     return { code: 'E_SCOPE_RO', message: 'content must not be empty' };
@@ -466,7 +487,8 @@ export interface BatchItem {
   summary?: string | undefined;
   name?: string | undefined;
   topic?: string | undefined;
-  project_path?: string | undefined;
+  /** REQUIRED (BL-62) — no cwd/env inference; see WriteParams.project_path. */
+  project_path: string;
   derived_from_uid?: string | undefined;
   session_id?: string | undefined;
   t_occurred?: string | undefined;

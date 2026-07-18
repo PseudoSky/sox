@@ -27,7 +27,8 @@ describe('memoryWrite — summary + metadata (BL-23)', () => {
       const r = await memoryWrite(db, {
         content: 'Bi-temporal edges supersede facts.',
         summary: 'graph supersession',
-        metadata: { project_path: '/Users/nix/dev/ai/foo', url: 'x' },
+        project_path: '/Users/nix/dev/ai/foo',
+        metadata: { url: 'x' },
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
@@ -39,7 +40,7 @@ describe('memoryWrite — summary + metadata (BL-23)', () => {
         .get(uid)!;
 
       expect(row.summary).toBe('graph supersession');
-      expect(JSON.parse(row.meta!)).toEqual({ project_path: '/Users/nix/dev/ai/foo', url: 'x' });
+      expect(JSON.parse(row.meta!)).toEqual({ url: 'x' });
       db.close();
     } finally {
       cleanup();
@@ -52,7 +53,7 @@ describe('memoryWrite — summary + metadata (BL-23)', () => {
       const db = openDb(path.join(dir, 't.db'));
       // P2: enrichOnWrite runs extractiveSummary when no caller summary is supplied.
       // Content < 100 chars → extractiveSummary returns it as-is (still non-null).
-      const r = await memoryWrite(db, { content: 'Plain content, no extras.' });
+      const r = await memoryWrite(db, { content: 'Plain content, no extras.', project_path: '/test/project' });
       const uid = (r as { episode_uid: string }).episode_uid;
       const row = db
         .prepare<[string], { summary: string | null; meta: string | null }>(
@@ -79,6 +80,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const r = await memoryWrite(db, {
         content: 'TypeScript strict mode improves type safety.',
         topic: 'typescript',
+        project_path: '/test/project',
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
@@ -96,6 +98,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const db = openDb(path.join(dir, 't.db'));
       const r = await memoryWrite(db, {
         content: '[authentication] JWT tokens expire after 1 hour.',
+        project_path: '/test/project',
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
@@ -114,6 +117,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const r = await memoryWrite(db, {
         content: '[old-topic] Some content here.',
         topic: 'new-topic',
+        project_path: '/test/project',
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
@@ -132,6 +136,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const r = await memoryWrite(db, {
         content: 'Discussing JWT and OAuth flows.',
         tags: ['JWT', 'OAuth'],
+        project_path: '/test/project',
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
@@ -174,13 +179,13 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
     } finally { cleanup(); }
   });
 
-  it('leaves topic/tags null when not supplied; project_path is auto-detected by enrichOnWrite', async () => {
+  it('leaves topic/tags null when not supplied; project_path is caller-supplied', async () => {
     const { dir, cleanup } = tmpDir();
     try {
       const db = openDb(path.join(dir, 't.db'));
-      // P2: enrichOnWrite auto-detects project_path from git root — it will be non-null.
+      // BL-62: project_path is now required (caller-supplied, not auto-detected).
       // topic and tags remain null when not supplied (no prefix, no tags param).
-      const r = await memoryWrite(db, { content: 'A plain episode with no enrichment fields.' });
+      const r = await memoryWrite(db, { content: 'A plain episode with no enrichment fields.', project_path: '/test/project' });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
       const row = db
@@ -190,8 +195,8 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
         .get(uid)!;
       expect(row.topic).toBeNull();
       expect(row.tags).toBeNull();
-      // project_path is auto-detected from git root (non-null in a git repo)
-      expect(typeof row.project_path).toBe('string');
+      // project_path is the caller-supplied value
+      expect(row.project_path).toBe('/test/project');
       db.close();
     } finally { cleanup(); }
   });
@@ -203,6 +208,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const r = await memoryWrite(db, {
         content: 'Memory graph stores semantic knowledge.',
         tags: ['memory', 'graph'],
+        project_path: '/test/project',
       });
       const uid = (r as { episode_uid: string }).episode_uid;
 
@@ -245,13 +251,14 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
     const { dir, cleanup } = tmpDir();
     try {
       const db = openDb(path.join(dir, 't.db'));
-      const parent = await memoryWrite(db, { content: 'Parent episode with important context.' });
+      const parent = await memoryWrite(db, { content: 'Parent episode with important context.', project_path: '/test/project' });
       expect('episode_uid' in parent).toBe(true);
       const parentUid = (parent as { episode_uid: string }).episode_uid;
 
       const child = await memoryWrite(db, {
         content: 'Child episode derived from parent context.',
         derived_from_uid: parentUid,
+        project_path: '/test/project',
       });
       expect('episode_uid' in child).toBe(true);
       const childUid = (child as { episode_uid: string }).episode_uid;
@@ -293,7 +300,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
 // (`enrichment.project_path_source`) so a caller/operator can DETECT low-confidence
 // attribution instead of it being silent and permanently unrecoverable (the
 // BL-221 companion fix then makes it correctable via memory_update).
-describe('memoryWrite — BL-62 project_path attribution visibility (shim-cwd ≠ working-dir)', () => {
+describe('memoryWrite — BL-62 project_path required (resolved)', () => {
   let savedEnv: string | undefined;
 
   beforeEach(() => {
@@ -304,60 +311,42 @@ describe('memoryWrite — BL-62 project_path attribution visibility (shim-cwd �
     else process.env['SOX_CONFIG_PROJECT_PATH'] = savedEnv;
   });
 
-  it('BL-62: an unqualified write under a shim-cwd ≠ working-dir env is (still, by design) mis-attributed to the shim cwd, but is now flagged project_path_source:"inferred" instead of silently unrecoverable', async () => {
+  it('BL-62: an unqualified write (no project_path) is rejected with E_MISSING_PROJECT_PATH and creates no node', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      // Simulate the exact repro topology: the serving process's env/cwd fallback
-      // (SOX_CONFIG_PROJECT_PATH, set once at shim spawn) is "agent-source", but the
-      // caller's REAL, live working project this session is "qusececure" — a fact
-      // this write path has NO way to observe without an explicit arg or MCP roots.
       process.env['SOX_CONFIG_PROJECT_PATH'] = '/Users/nix/dev/ai/agent-source';
-      const trueWorkingDir = '/Users/nix/Documents/professional/qusececure';
-
       const db = openDb(path.join(dir, 't.db'));
-      // No project_path arg — this is the "unqualified memory_write" from the repro.
-      const r = await memoryWrite(db, { content: 'BL-62 repro: unqualified write.' });
-      expect('episode_uid' in r).toBe(true);
-      const result = r as {
-        episode_uid: string;
-        enrichment: { project_path: string | null; project_path_source: string };
-      };
 
-      // The underlying mis-attribution is NOT fixed here (that requires MCP roots
-      // or an explicit arg, per the HARD GATE) — prove it still happens exactly as
-      // reported, so this test cannot pass by accident once roots eventually ships
-      // without anyone noticing the assertion went stale.
-      expect(result.enrichment.project_path).toBe('/Users/nix/dev/ai/agent-source');
-      expect(result.enrichment.project_path).not.toBe(trueWorkingDir);
+      // Count nodes before
+      const before = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
 
-      // GREEN (the safe, in-scope mitigation): the response now HONESTLY reports
-      // this attribution as inferred/low-confidence rather than indistinguishable
-      // from a correct, caller-supplied value.
-      expect(result.enrichment.project_path_source).toBe('inferred');
+      // No project_path arg — this is now rejected
+      const r = await memoryWrite(db, { content: 'BL-62 resolved: unqualified write rejected.' });
+      expect('episode_uid' in r).toBe(false);
+      const result = r as { code: string; message: string };
+      expect(result.code).toBe('E_MISSING_PROJECT_PATH');
+      expect(result.message).toContain('project_path is required');
 
-      const row = db
-        .prepare<[string], { project_path: string | null }>(
-          'SELECT project_path FROM node WHERE uid = ?',
-        )
-        .get(result.episode_uid)!;
-      expect(row.project_path).toBe('/Users/nix/dev/ai/agent-source');
+      // Count nodes after — should be unchanged (no node created)
+      const after = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
+      expect(after.cnt).toBe(before.cnt);
+
       db.close();
     } finally {
       cleanup();
     }
   });
 
-  it('BL-62: passing project_path explicitly overrides the wrong shim-cwd env and is reported project_path_source:"explicit" (the documented workaround)', async () => {
+  it('BL-62: passing project_path explicitly succeeds and is reported project_path_source:"explicit"', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      // Same wrong-env topology as above...
       process.env['SOX_CONFIG_PROJECT_PATH'] = '/Users/nix/dev/ai/agent-source';
       const trueWorkingDir = '/Users/nix/Documents/professional/qusececure';
 
       const db = openDb(path.join(dir, 't.db'));
-      // ...but this time the caller (agent) knows its own real cwd and passes it.
+      // Caller knows its own real cwd and passes it explicitly.
       const r = await memoryWrite(db, {
-        content: 'BL-62 workaround: qualified write with explicit project_path.',
+        content: 'BL-62 resolved: qualified write with explicit project_path.',
         project_path: trueWorkingDir,
       });
       expect('episode_uid' in r).toBe(true);
@@ -381,15 +370,25 @@ describe('memoryWrite — BL-62 project_path attribution visibility (shim-cwd �
     }
   });
 
-  it('BL-62: an empty-string project_path arg is treated as omitted (falls back, reported "inferred") — matches provenance.ts override semantics', async () => {
+  it('BL-62: an empty-string project_path arg is rejected (treated as omitted) with E_MISSING_PROJECT_PATH', async () => {
     const { dir, cleanup } = tmpDir();
     try {
       process.env['SOX_CONFIG_PROJECT_PATH'] = '/Users/nix/dev/ai/agent-source';
       const db = openDb(path.join(dir, 't.db'));
-      const r = await memoryWrite(db, { content: 'BL-62 empty-string edge case.', project_path: '' });
-      const result = r as { enrichment: { project_path: string | null; project_path_source: string } };
-      expect(result.enrichment.project_path).toBe('/Users/nix/dev/ai/agent-source');
-      expect(result.enrichment.project_path_source).toBe('inferred');
+
+      // Count nodes before
+      const before = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
+
+      // Empty-string is treated as omitted → rejected
+      const r = await memoryWrite(db, { content: 'BL-62 empty-string now rejected.', project_path: '' });
+      expect('episode_uid' in r).toBe(false);
+      const result = r as { code: string; message: string };
+      expect(result.code).toBe('E_MISSING_PROJECT_PATH');
+
+      // Count nodes after — should be unchanged
+      const after = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
+      expect(after.cnt).toBe(before.cnt);
+
       db.close();
     } finally {
       cleanup();
@@ -431,17 +430,17 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
     // The tenth item is a byte-duplicate of the first (same content after
     // trim+lowercase normalization).
     const items = [
-      { content: 'The volcano erupted at dawn revealing ancient lava flows.' },
-      { content: 'Stock markets closed higher amid positive earnings reports.' },
-      { content: 'Scientists discovered a new antibiotic compound in soil bacteria.' },
-      { content: 'Astronomers photographed a black hole swallowing a star.' },
-      { content: 'The architect designed a bridge spanning the river gorge.' },
-      { content: 'Fishermen reported unusually large hauls of bluefin tuna.' },
-      { content: 'Cryptography underpins secure communication across digital networks.' },
-      { content: 'Medieval manuscripts revealed recipes for herbal remedies.' },
-      { content: 'Marathon runners competed under intense summer heat conditions.' },
+      { content: 'The volcano erupted at dawn revealing ancient lava flows.', project_path: '/test/project' },
+      { content: 'Stock markets closed higher amid positive earnings reports.', project_path: '/test/project' },
+      { content: 'Scientists discovered a new antibiotic compound in soil bacteria.', project_path: '/test/project' },
+      { content: 'Astronomers photographed a black hole swallowing a star.', project_path: '/test/project' },
+      { content: 'The architect designed a bridge spanning the river gorge.', project_path: '/test/project' },
+      { content: 'Fishermen reported unusually large hauls of bluefin tuna.', project_path: '/test/project' },
+      { content: 'Cryptography underpins secure communication across digital networks.', project_path: '/test/project' },
+      { content: 'Medieval manuscripts revealed recipes for herbal remedies.', project_path: '/test/project' },
+      { content: 'Marathon runners competed under intense summer heat conditions.', project_path: '/test/project' },
       // Byte-duplicate of first item (same content after trim+lowercase)
-      { content: '  The Volcano Erupted At Dawn Revealing Ancient Lava Flows.  ' },
+      { content: '  The Volcano Erupted At Dawn Revealing Ancient Lava Flows.  ', project_path: '/test/project' },
     ];
 
     const result = await memoryWriteBatch(db, items);
@@ -487,8 +486,8 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
     // one char) score >NEARDUP_THRESHOLD (0.95) under the real bge model and one
     // would be invalidated as a near-duplicate, collapsing the count to 1.
     const items = [
-      { content: 'The database migration completed at noon on Tuesday.' },
-      { content: 'Rainfall over the Amazon basin peaked during the wet season.' },
+      { content: 'The database migration completed at noon on Tuesday.', project_path: '/test/project' },
+      { content: 'Rainfall over the Amazon basin peaked during the wet season.', project_path: '/test/project' },
     ];
 
     // Simulate the MCP handler pattern: one queue entry for the whole batch
@@ -520,8 +519,8 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
    */
   it('negative control: empty content in a batch item returns E_SCOPE_RO per-item', async () => {
     const result = await memoryWriteBatch(db, [
-      { content: '' },
-      { content: 'Valid content after empty.' },
+      { content: '', project_path: '/test/project' },
+      { content: 'Valid content after empty.', project_path: '/test/project' },
     ]);
     expect(result.results).toHaveLength(2);
 
@@ -539,11 +538,11 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
    */
   it('negative control: all identical items → one success, rest E_DEDUP', async () => {
     const items = [
-      { content: 'Identical batch item content for dedup test.' },
-      { content: 'Identical batch item content for dedup test.' },
-      { content: 'Identical batch item content for dedup test.' },
-      { content: 'Identical batch item content for dedup test.' },
-      { content: 'Identical batch item content for dedup test.' },
+      { content: 'Identical batch item content for dedup test.', project_path: '/test/project' },
+      { content: 'Identical batch item content for dedup test.', project_path: '/test/project' },
+      { content: 'Identical batch item content for dedup test.', project_path: '/test/project' },
+      { content: 'Identical batch item content for dedup test.', project_path: '/test/project' },
+      { content: 'Identical batch item content for dedup test.', project_path: '/test/project' },
     ];
 
     const result = await memoryWriteBatch(db, items);
@@ -586,7 +585,7 @@ describe('memoryWriteBatch — project_path_source parity (BL-233)', () => {
     cleanupDb();
   });
 
-  it('BL-233: per-item project_path_source is "explicit" when that item supplies project_path, "inferred" otherwise', async () => {
+  it('BL-233: per-item project_path_source is "explicit" when that item supplies project_path, items without project_path return E_MISSING_PROJECT_PATH', async () => {
     const items = [
       { content: 'Batch item with explicit project_path A.', project_path: '/projects/alpha' },
       { content: 'Batch item with NO project_path at all.' },
@@ -596,27 +595,33 @@ describe('memoryWriteBatch — project_path_source parity (BL-233)', () => {
     const result = await memoryWriteBatch(db, items);
     expect(result.results).toHaveLength(3);
 
-    const first = result.results[0] as { ok: true; project_path_source: string };
-    const second = result.results[1] as { ok: true; project_path_source: string };
-    const third = result.results[2] as { ok: true; project_path_source: string };
-
+    // First item: explicit project_path → succeeds
+    const first = result.results[0];
     expect(first.ok).toBe(true);
-    expect(first.project_path_source).toBe('explicit');
+    if (first.ok) {
+      expect(first.project_path_source).toBe('explicit');
+    }
 
-    expect(second.ok).toBe(true);
-    expect(second.project_path_source).toBe('inferred');
+    // Second item: no project_path → rejected with E_MISSING_PROJECT_PATH
+    const second = result.results[1];
+    expect(second.ok).toBe(false);
+    expect((second as { code: string }).code).toBe('E_MISSING_PROJECT_PATH');
 
+    // Third item: explicit project_path → succeeds
+    const third = result.results[2];
     expect(third.ok).toBe(true);
-    expect(third.project_path_source).toBe('explicit');
+    if (third.ok) {
+      expect(third.project_path_source).toBe('explicit');
+    }
   });
 
-  it('BL-233: an empty-string project_path on a batch item is reported "inferred" (matches single-item semantics)', async () => {
+  it('BL-233: an empty-string project_path on a batch item is rejected with E_MISSING_PROJECT_PATH', async () => {
     const result = await memoryWriteBatch(db, [
       { content: 'Batch item with empty-string project_path.', project_path: '' },
     ]);
-    const first = result.results[0] as { ok: true; project_path_source: string };
-    expect(first.ok).toBe(true);
-    expect(first.project_path_source).toBe('inferred');
+    const first = result.results[0];
+    expect(first.ok).toBe(false);
+    expect((first as { code: string }).code).toBe('E_MISSING_PROJECT_PATH');
   });
 });
 
@@ -650,6 +655,7 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
     const params = {
       content: 'Idempotent write test with client_request_id.',
       client_request_id: 'test-replay-id-001',
+      project_path: '/test/project',
     };
 
     // First call: fresh write
@@ -724,6 +730,7 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
     const result = await memoryWrite(db, {
       content: 'Test content for long ID validation.',
       client_request_id: longId,
+      project_path: '/test/project',
     });
 
     expect('episode_uid' in result).toBe(false);
@@ -740,6 +747,7 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
     const result = await memoryWrite(db, {
       content: 'Test content for non-string ID validation.',
       client_request_id: 12345 as unknown as string,
+      project_path: '/test/project',
     });
 
     expect('episode_uid' in result).toBe(false);
@@ -757,6 +765,7 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
     const first = await memoryWrite(db, {
       content: 'Original content for fixed id.',
       client_request_id: id,
+      project_path: '/test/project',
     });
     const firstResult = first as { episode_uid: string; replayed?: boolean };
     const firstUid = firstResult.episode_uid;
@@ -765,6 +774,7 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
     const second = await memoryWrite(db, {
       content: 'COMPLETELY DIFFERENT content with same id.',
       client_request_id: id,
+      project_path: '/test/project',
     });
     const secondResult = second as { episode_uid: string; replayed?: boolean };
     expect(secondResult.replayed).toBe(true);

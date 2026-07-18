@@ -81,7 +81,7 @@ function tmpDb(): { dir: string; dbPath: string; db: Database.Database; cleanup:
 
 /** Phase A helper — asserts no error */
 function phaseA(db: Database.Database, content: string): PhaseAOutcome {
-  const r = memoryWritePhaseA(db, { content });
+  const r = memoryWritePhaseA(db, { content, project_path: '/test/project' });
   expect('code' in r).toBe(false);
   return r as PhaseAOutcome;
 }
@@ -208,7 +208,7 @@ describe('BL-88 stamp on write path — applyEmbedding stamps embed_model', () =
   });
 
   it('sync composition (memoryWrite) stamps embed_model', async () => {
-    const result = await memoryWrite(ctx.db, { content: 'sync write stamping test' });
+    const result = await memoryWrite(ctx.db, { content: 'sync write stamping test', project_path: '/test/project' });
     expect('code' in result).toBe(false);
     const uid = (result as { episode_uid: string }).episode_uid;
 
@@ -262,7 +262,7 @@ describe('BL-88 stamp on write path — applyEmbedding stamps embed_model', () =
 describe('BL-88 stamp on update path — memoryUpdate content change re-embeds and stamps', () => {
   it('memoryUpdate with content change stamps the new model on the node', async () => {
     // Write initial episode.
-    const writeResult = await memoryWrite(ctx.db, { content: 'initial content' });
+    const writeResult = await memoryWrite(ctx.db, { content: 'initial content', project_path: '/test/project' });
     expect('code' in writeResult).toBe(false);
     const uid = (writeResult as { episode_uid: string }).episode_uid;
 
@@ -280,7 +280,7 @@ describe('BL-88 stamp on update path — memoryUpdate content change re-embeds a
   });
 
   it('memoryUpdate without content/summary change does NOT run applyEmbedding (embed_model unchanged)', async () => {
-    const writeResult = await memoryWrite(ctx.db, { content: 'content to keep' });
+    const writeResult = await memoryWrite(ctx.db, { content: 'content to keep', project_path: '/test/project' });
     expect('code' in writeResult).toBe(false);
     const uid = (writeResult as { episode_uid: string }).episode_uid;
     const beforeStamp = readEmbedModel(ctx.db, uid);
@@ -321,8 +321,8 @@ describe('BL-88 stamp on heal path — healMissingVectors stamps embed_model', (
 describe('BL-88 stats — embed_provenance field in memoryGetStats', () => {
   it('stamped/unstamped counts reflect actual node state', async () => {
     // Write two episodes (stamped after Phase B).
-    await memoryWrite(ctx.db, { content: 'first stamped episode' });
-    await memoryWrite(ctx.db, { content: 'second stamped episode' });
+    await memoryWrite(ctx.db, { content: 'first stamped episode', project_path: '/test/project' });
+    await memoryWrite(ctx.db, { content: 'second stamped episode', project_path: '/test/project' });
 
     // Insert a raw orphan with no embed_model (unstamped).
     insertOrphan(ctx.db, 'unstamped-1', 'pre-bl88 orphan content');
@@ -353,7 +353,7 @@ describe('BL-88 stats — embed_provenance field in memoryGetStats', () => {
   });
 
   it('stale_vector_count is 0 for a clean store with all current-model vectors', async () => {
-    await memoryWrite(ctx.db, { content: 'all good' });
+    await memoryWrite(ctx.db, { content: 'all good', project_path: '/test/project' });
 
     const stats = await memoryGetStats(ctx.db, {}, []);
     expect(stats.embed_provenance.stale_vector_count).toBe(0);

@@ -76,7 +76,7 @@ describe('memoryRecall — BL-117 late chunking honesty', () => {
   it('reports lateChunkingApplied=false with a skip reason when requested (not silently true)', async () => {
     const { db, dir } = tmpDb();
     try {
-      await memoryWrite(db, { content: 'a document about distributed systems and consensus' });
+      await memoryWrite(db, { content: 'a document about distributed systems and consensus', project_path: '/test/project' });
 
       const response = await memoryRecall(db, 'project', {
         query: 'distributed systems',
@@ -118,7 +118,7 @@ describe('memoryRecall — BL-117 late chunking honesty', () => {
   it('does NOT set lateChunkingSkipReason when late chunking was not requested', async () => {
     const { db, dir } = tmpDb();
     try {
-      await memoryWrite(db, { content: 'a document with no late chunking request' });
+      await memoryWrite(db, { content: 'a document with no late chunking request', project_path: '/test/project' });
 
       const response = await memoryRecall(db, 'project', { query: 'no late chunking request' });
 
@@ -132,7 +132,7 @@ describe('memoryRecall — BL-117 late chunking honesty', () => {
   it('does NOT set lateChunkingSkipReason when enabled is explicitly false', async () => {
     const { db, dir } = tmpDb();
     try {
-      await memoryWrite(db, { content: 'a document with late chunking explicitly disabled' });
+      await memoryWrite(db, { content: 'a document with late chunking explicitly disabled', project_path: '/test/project' });
 
       const response = await memoryRecall(db, 'project', {
         query: 'explicitly disabled',
@@ -157,6 +157,7 @@ describe('Parent-context expansion — session_id fallback', () => {
       const parentResult = await memoryWrite(db, {
         content: 'Parent context document about machine learning algorithms',
         name: 'parent-doc',
+        project_path: '/test/project',
       });
       expect(parentResult).toHaveProperty('episode_uid');
       const parentUid = (parentResult as { episode_uid: string }).episode_uid;
@@ -167,6 +168,7 @@ describe('Parent-context expansion — session_id fallback', () => {
         content: 'Child chunk discussing transformer architectures',
         name: 'child-chunk',
         session_id: parentUid,
+        project_path: '/test/project',
       });
       expect(childResult).toHaveProperty('episode_uid');
       const childUid = (childResult as { episode_uid: string }).episode_uid;
@@ -225,10 +227,10 @@ describe('score_breakdown — channel sum invariant (HF-3)', () => {
     const { db, dir } = tmpDb();
     try {
       // Seed multiple episodes so there are real ranked candidates.
-      await memoryWrite(db, { content: 'neural networks and deep learning architecture', name: 'nn-deep' });
-      await memoryWrite(db, { content: 'machine learning gradient descent optimization', name: 'ml-grad' });
-      await memoryWrite(db, { content: 'transformer self-attention mechanisms', name: 'transformer' });
-      await memoryWrite(db, { content: 'convolutional neural network image recognition', name: 'cnn-img' });
+      await memoryWrite(db, { content: 'neural networks and deep learning architecture', name: 'nn-deep', project_path: '/test/project' });
+      await memoryWrite(db, { content: 'machine learning gradient descent optimization', name: 'ml-grad', project_path: '/test/project' });
+      await memoryWrite(db, { content: 'transformer self-attention mechanisms', name: 'transformer', project_path: '/test/project' });
+      await memoryWrite(db, { content: 'convolutional neural network image recognition', name: 'cnn-img', project_path: '/test/project' });
 
       const response = await memoryRecall(db, 'project', {
         query: 'neural network architectures',
@@ -265,8 +267,8 @@ describe('score_breakdown — channel sum invariant (HF-3)', () => {
   it('score_breakdown total equals score for graph-expanded results', async () => {
     const { db, dir } = tmpDb();
     try {
-      await memoryWrite(db, { content: 'primary document about quantum computing', name: 'quantum-primary' });
-      await memoryWrite(db, { content: 'related quantum entanglement details', name: 'quantum-related' });
+      await memoryWrite(db, { content: 'primary document about quantum computing', name: 'quantum-primary', project_path: '/test/project' });
+      await memoryWrite(db, { content: 'related quantum entanglement details', name: 'quantum-related', project_path: '/test/project' });
 
       const response = await memoryRecall(db, 'project', {
         query: 'quantum',
@@ -336,9 +338,9 @@ describe('BL-167 — ScoreBreakdown invariant (normTotal === 0 degenerate case)'
   it('channel sum equals total even when min-max normalisation collapses every channel to 0', async () => {
     const { db, dir } = tmpDb();
     try {
-      const bResult = await memoryWrite(db, { content: 'widget alpha assembly', name: 'node-b', importance: 5 });
-      const cResult = await memoryWrite(db, { content: 'widget beta assembly', name: 'node-c', importance: 5 });
-      const aResult = await memoryWrite(db, { content: 'giraffe canyon nebula quartz', name: 'node-a', importance: 5 });
+      const bResult = await memoryWrite(db, { content: 'widget alpha assembly', name: 'node-b', importance: 5, project_path: '/test/project' });
+      const cResult = await memoryWrite(db, { content: 'widget beta assembly', name: 'node-c', importance: 5, project_path: '/test/project' });
+      const aResult = await memoryWrite(db, { content: 'giraffe canyon nebula quartz', name: 'node-a', importance: 5, project_path: '/test/project' });
 
       const aUid = (aResult as { episode_uid: string }).episode_uid;
 
@@ -412,13 +414,13 @@ describe('score_breakdown — cross-query comparability (HF-3)', () => {
     const { db, dir } = tmpDb();
     try {
       // Write episodes relevant to Query A (generic topic)
-      await memoryWrite(db, { content: 'python programming language features and syntax', name: 'py-1' });
-      await memoryWrite(db, { content: 'python data science libraries pandas numpy', name: 'py-2' });
-      await memoryWrite(db, { content: 'python web frameworks django flask', name: 'py-3' });
-      await memoryWrite(db, { content: 'python async concurrency asyncio event loop', name: 'py-4' });
+      await memoryWrite(db, { content: 'python programming language features and syntax', name: 'py-1', project_path: '/test/project' });
+      await memoryWrite(db, { content: 'python data science libraries pandas numpy', name: 'py-2', project_path: '/test/project' });
+      await memoryWrite(db, { content: 'python web frameworks django flask', name: 'py-3', project_path: '/test/project' });
+      await memoryWrite(db, { content: 'python async concurrency asyncio event loop', name: 'py-4', project_path: '/test/project' });
 
       // Write one episode relevant to Query B (very specific, niche)
-      await memoryWrite(db, { content: 'zygomorphic floral symmetry in orchidaceae taxonomy', name: 'orchid' });
+      await memoryWrite(db, { content: 'zygomorphic floral symmetry in orchidaceae taxonomy', name: 'orchid', project_path: '/test/project' });
 
       // Query A: common term, many relevant results
       const responseA = await memoryRecall(db, 'project', {
@@ -474,7 +476,7 @@ describe('score_breakdown — cross-query comparability (HF-3)', () => {
   it('score_breakdown fields have correct TypeScript shape', async () => {
     const { db, dir } = tmpDb();
     try {
-      await memoryWrite(db, { content: 'test episode for shape verification' });
+      await memoryWrite(db, { content: 'test episode for shape verification', project_path: '/test/project' });
       const response = await memoryRecall(db, 'project', { query: 'test episode' });
 
       if (response.results.length > 0) {

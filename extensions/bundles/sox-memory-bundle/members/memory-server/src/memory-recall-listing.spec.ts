@@ -50,6 +50,7 @@ describe('memory_recall (no query) — as_of (BL-240)', () => {
         db_path: DB_PATH,
         content: 'BL-240 regression fixture: an episode that will be invalidated.',
         importance: 9,
+        project_path: '/test/project',
       }),
     );
     uid = w['episode_uid'] as string;
@@ -133,6 +134,7 @@ describe('memory_recall (no query) — token_budget (BL-241)', () => {
           content,
           summary: '',
           importance,
+          project_path: '/test/project',
         }),
       );
       const u = w['episode_uid'] as string;

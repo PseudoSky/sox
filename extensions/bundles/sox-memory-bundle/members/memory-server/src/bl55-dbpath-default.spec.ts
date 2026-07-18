@@ -95,6 +95,7 @@ describe('handleToolCall — BL-55 db_path omitted uses SOX_CONFIG_DB_PATH', () 
 
   it('memory_write WITHOUT db_path lands in the configured store, recallable WITHOUT db_path', async () => {
     const writeRes = await handleToolCall('memory_write', {
+      project_path: '/test/project',
       content: 'BL-55 configured-default episode — recall me without a db_path',
     });
     expect(writeRes.isError).toBeFalsy();
@@ -121,6 +122,7 @@ describe('handleToolCall — BL-55 db_path omitted uses SOX_CONFIG_DB_PATH', () 
 
   it('explicit db_path overrides the configured store (write to override, absent from config store)', async () => {
     const w = await handleToolCall('memory_write', {
+      project_path: '/test/project',
       db_path: OVERRIDE_DB,
       content: 'BL-55 override-only episode — should not appear in the configured store',
     });

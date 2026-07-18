@@ -72,38 +72,31 @@ export function publishSchema(schemaPath: string): void {
 }
 
 /**
- * BL-62: extract the per-request workspace context injected by the shim (see
- * libs/service-proxy/src/shim.ts `injectClientContext`). Returns the project_path
- * string when present and non-empty, or undefined when absent.
- *
- * The `client_context` field is INTERNAL to the shim↔backend UDS protocol — it is
- * never present in direct-stdio or HTTP requests from real MCP clients; it is only
- * injected by our own shim. This function defensively validates the shape so a
- * malformed or missing field never throws.
- */
-function extractClientProjectPath(
-  params: { client_context?: unknown },
-): string | undefined {
-  const ctx = params.client_context;
-  if (typeof ctx !== 'object' || ctx === null) return undefined;
-  const pp = (ctx as { project_path?: unknown }).project_path;
-  return typeof pp === 'string' && pp.length > 0 ? pp : undefined;
-}
-
-/**
  * The JSON-RPC handler the backend serves. Mirrors mcp-runtime serve():
  *   - initialize → serverInfo + tools capability
  *   - tools/list → the canonical tools list
  *   - tools/call → handleToolCall(name, args) (which runs the C6 guard)
  * Notifications (no id) get no response.
  *
- * BL-62: for tools/call, if the shim injected a `client_context.project_path` in the
- * internal frame AND the tool's own `arguments.project_path` is absent, the context
- * value is used as the project_path default. Precedence:
- *   1. Explicit caller arg (`arguments.project_path`, non-empty) — always wins.
- *   2. `client_context.project_path` from the shim frame — per-request workspace.
- *   3. Process env / cwd fallback inside resolveProjectPath — existing behavior for
- *      direct-stdio, HTTP, and old-shim requests (no client_context field).
+ * BL-62 (RESOLVED 2026-07-18): tool call arguments are passed through UNMODIFIED —
+ * no `client_context.project_path` injection. That injection (removed) used to
+ * override ANY omitted `arguments.project_path` with the shim's spawn-time
+ * `process.cwd()` (no worktree canonicalization, computed once and frozen for the
+ * shim's whole lifetime) — which silently broke `memory_topics`/`memory_list_entities`
+ * /`memory_stats` (they read the top-level `project_path` key the injection targeted)
+ * whenever the shim happened to be spawned from a directory with no episodes (a git
+ * worktree, in the incident that surfaced this). `memory_recall` was only ever
+ * accidentally immune, because its filter lives at `arguments.filters.project_path`,
+ * a different key the injection never touched.
+ *
+ * There is no server-side inference of `project_path` anywhere anymore, for any
+ * tool: a WRITE (`memory_write`/`memory_write_batch`) with no explicit
+ * `project_path` is now rejected outright by memory-core
+ * (`E_MISSING_PROJECT_PATH` — see write.ts) rather than silently guessing, since a
+ * bad guess there permanently mis-attributes the episode. A READ omitting
+ * `project_path` is a deliberate, valid "no filter / every project" request —
+ * exactly `memory_recall`'s existing behavior — never something to silently
+ * override with a guess about which directory the server happened to start in.
  */
 export async function handleBackendRequest(
   req: JsonRpcRequest,
@@ -130,19 +123,9 @@ export async function handleBackendRequest(
     const params = (req.params ?? {}) as {
       name?: string;
       arguments?: Record<string, unknown>;
-      client_context?: unknown;
     };
     const toolName = params.name ?? '';
-    // BL-62: merge per-request client context into args (lower precedence than
-    // an explicit caller-supplied project_path arg).
-    const baseArgs = params.arguments ?? {};
-    const clientProjectPath = extractClientProjectPath(params);
-    const args: Record<string, unknown> =
-      clientProjectPath !== undefined &&
-      (typeof baseArgs['project_path'] !== 'string' ||
-        (baseArgs['project_path'] as string).length === 0)
-        ? { ...baseArgs, project_path: clientProjectPath }
-        : baseArgs;
+    const args: Record<string, unknown> = params.arguments ?? {};
     let result: ToolResult;
     try {
       result = await handleToolCall(toolName, args);
