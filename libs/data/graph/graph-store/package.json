@@ -34,6 +34,9 @@
   "sox": {
     "area": "data",
     "group": "graph",
+    "assets": [
+      "drizzle/migrations"
+    ],
     "concerns": [
       "schema migration via Drizzle ORM (ADR-0008) — drizzle-kit generated, applied at startup",
       "bi-temporal nodes (t_valid / t_invalid) + tExpires TTL + isStale derived field",

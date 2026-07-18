@@ -232,6 +232,52 @@ function discoverSidecars(metafile) {
 }
 
 /**
+ * Static-asset auto-discovery — same shape as discoverSidecars, but for
+ * non-JS runtime assets an inlined package resolves at RUNTIME relative to
+ * its own compiled file location (`import.meta.url` / `__dirname`), rather
+ * than files esbuild can trace as imports.
+ *
+ * Concretely: @adhd/sox-graph-store's SqliteGraphBackend.applySchema() calls
+ * drizzle-orm's migrate() with `fileURLToPath(new URL('../drizzle/migrations',
+ * import.meta.url))` — a path resolved relative to wherever the CURRENTLY
+ * EXECUTING file lives. In graph-store's own unbundled dist/index.js, that
+ * correctly points at graph-store/drizzle/migrations (a sibling of dist/,
+ * per its own package.json `"files": ["dist", "drizzle/migrations"]`). Once
+ * esbuild inlines graph-store's source into a consumer's single-file bundle,
+ * import.meta.url at runtime is the CONSUMER's dist/index.js — the same
+ * relative '../drizzle/migrations' now resolves to a sibling of the
+ * consumer's own dist/, which was never populated. drizzle-orm's migrate()
+ * then throws "Can't find meta/_journal.json file", live, for every caller
+ * that constructs a SqliteGraphBackend — vitest never catches this because it
+ * runs from source (tsx), where import.meta.url is graph-store's own file and
+ * the relative path is correct by construction; only the bundled artifact is
+ * broken. Same class of bug as the sidecar problem above (BL-87/89/259):
+ * a bundled artifact that passes every test because tests bypass the artifact.
+ *
+ * Fix: the owning package declares its runtime asset directories once, in its
+ * own package.json (`"sox": { "assets": ["drizzle/migrations"] } }`), and any
+ * consumer that inlines it gets that directory copied to the SAME relative
+ * position from its own outdir (sibling of dist/) — reproducing, post-bundle,
+ * the exact layout the runtime path resolution already assumes. Zero runtime
+ * code changes required.
+ */
+function discoverAssets(metafile) {
+  const found = new Map(); // srcDir (absolute) → relPath (e.g. 'drizzle/migrations')
+  for (const input of Object.keys(metafile.inputs || {})) {
+    if (input.startsWith('lazy-external:') || input.includes('node_modules/')) continue;
+    const abs = path.resolve(REPO_ROOT, input);
+    const pkg = nearestPackageJson(path.dirname(abs), REPO_ROOT);
+    const assets = pkg?.json?.sox?.assets;
+    if (!Array.isArray(assets)) continue;
+    for (const rel of assets) {
+      const srcDir = path.join(pkg.root, rel);
+      if (!found.has(srcDir)) found.set(srcDir, rel);
+    }
+  }
+  return found;
+}
+
+/**
  * Scan every emitted .js in the staged outdir for `__dirname`-sibling .js
  * references (string literals within the same expression as __dirname) and
  * return the referenced names that do NOT exist in the staged output.
@@ -313,6 +359,12 @@ async function main() {
   const stageDir = `${args.outdir}.staging-${process.pid}`;
   fs.rmSync(stageDir, { recursive: true, force: true });
   fs.mkdirSync(stageDir, { recursive: true });
+
+  // Staging root for auto-discovered static assets (see discoverAssets) — these
+  // land as SIBLINGS of `<outdir>`, not inside it, so a fresh temp dir per relPath
+  // gets swapped into place independently of the main dist/ swap below.
+  const assetsStageRoot = `${args.outdir}.staging-assets-${process.pid}`;
+  fs.rmSync(assetsStageRoot, { recursive: true, force: true });
 
   console.log(`bundle-extension: bundling ${args.entry}`);
   console.log(`bundle-extension: outdir   ${args.outdir} (atomic; staged via ${path.basename(stageDir)})`);
@@ -436,10 +488,23 @@ async function main() {
     // ESM-root package and throws "ReferenceError: module is not defined in ES module scope".
     const pkgSidecar = path.join(stageDir, 'package.json');
     fs.writeFileSync(pkgSidecar, JSON.stringify({ type: 'commonjs' }, null, 2) + '\n', 'utf8');
+
+    // Static-asset auto-discovery: copy every runtime asset dir declared by any
+    // inlined package (see discoverAssets doc comment) into staging, one level
+    // per relPath, so each ends up as a sibling of `<outdir>` after commit —
+    // matching what each package's own unbundled runtime path resolution expects.
+    var discoveredAssets = discoverAssets(mainResult.metafile || { inputs: {} });
+    for (const [srcDir, relPath] of discoveredAssets) {
+      const assetStageDir = path.join(assetsStageRoot, relPath);
+      fs.mkdirSync(path.dirname(assetStageDir), { recursive: true });
+      fs.cpSync(srcDir, assetStageDir, { recursive: true });
+      console.log(`bundle-extension: asset    ${relPath} (auto-discovered from ${path.relative(REPO_ROOT, srcDir)})`);
+    }
   } catch (err) {
     // [BL-235] The staged build failed. `<outdir>` was never touched — the previous
     // working artifact is still there. Drop staging and surface the real error.
     fs.rmSync(stageDir, { recursive: true, force: true });
+    fs.rmSync(assetsStageRoot, { recursive: true, force: true });
     console.error('bundle-extension: build failed — existing output left intact at');
     console.error(`  ${args.outdir}`);
     console.error(err.message || err);
@@ -460,12 +525,40 @@ async function main() {
       fs.renameSync(prevDir, args.outdir);
     }
     fs.rmSync(stageDir, { recursive: true, force: true });
+    fs.rmSync(assetsStageRoot, { recursive: true, force: true });
     console.error('bundle-extension: could not swap staged output into place');
     console.error(err.message || err);
     process.exit(1);
   }
   fs.rmSync(prevDir, { recursive: true, force: true });
   console.log(`bundle-extension: committed → ${args.outdir}`);
+
+  // Commit each discovered asset dir the same way, as a sibling of `<outdir>`.
+  // Runs after the main dist/ commit succeeds — an asset-swap failure here
+  // never leaves dist/ itself in a bad state (worst case: a stale/missing
+  // asset dir next to a freshly-committed, otherwise-valid dist/).
+  const outParent = path.dirname(args.outdir);
+  for (const relPath of discoveredAssets.values()) {
+    const finalAssetDir = path.join(outParent, relPath);
+    const stagedAssetDir = path.join(assetsStageRoot, relPath);
+    const prevAssetDir = `${finalAssetDir}.prev-${process.pid}`;
+    const hadPrevAsset = fs.existsSync(finalAssetDir);
+    try {
+      if (hadPrevAsset) fs.renameSync(finalAssetDir, prevAssetDir);
+      fs.mkdirSync(path.dirname(finalAssetDir), { recursive: true });
+      fs.renameSync(stagedAssetDir, finalAssetDir);
+      fs.rmSync(prevAssetDir, { recursive: true, force: true });
+      console.log(`bundle-extension: committed → ${finalAssetDir}`);
+    } catch (err) {
+      if (hadPrevAsset && !fs.existsSync(finalAssetDir) && fs.existsSync(prevAssetDir)) {
+        fs.renameSync(prevAssetDir, finalAssetDir);
+      }
+      console.error(`bundle-extension: could not swap staged asset dir into place: ${relPath}`);
+      console.error(err.message || err);
+      process.exit(1);
+    }
+  }
+  fs.rmSync(assetsStageRoot, { recursive: true, force: true });
 }
 
 // ---------------------------------------------------------------------------

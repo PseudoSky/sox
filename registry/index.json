@@ -32,7 +32,7 @@
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "npm-package:@adhd/sox-extension-memory-cli@0.2.0",
-    "checksum": "sha256:9c20b4857a62fec5478a2ee822fdd5a8135ed10c454a90ca735933a3507cf690",
+    "checksum": "sha256:d9eeed0f40fcc5d73dfb07e259f1e7c06c878bac738ac055200b3986ddf83e1d",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -46,7 +46,7 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "npm-package:@adhd/sox-extension-memory-flush@0.2.0",
-    "checksum": "sha256:d1aef681e96a9016206be50910ad97d325ab0767687136d47f20748ad13c28ad",
+    "checksum": "sha256:fc6fa7347b48233d8cda11f1df811bd3df50ab10cf775ba2850e57e7a441f5f0",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -60,7 +60,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "npm-package:@adhd/sox-extension-memory-server@1.3.0",
-    "checksum": "sha256:4227b64708a7050e93ed591ff3368568f1542ffe5f193f1b992b2d74259fede5",
+    "checksum": "sha256:b3225085a7a0fa93db9152f09f266580e242663abdbf6f44d3139dd3500fafb0",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -92,7 +92,7 @@
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
     "source": "npm-package:@adhd/sox-cli@1.2.0",
-    "checksum": "sha256:f8dff81145e9648e49f004d607bcbf26c534f23fd78d8039a32ba2379cb0ecb4",
+    "checksum": "sha256:95dbc7b1dc6f01c73d82de6d65af732a43f5f0d96404fa976700d089dc6b3657",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     }
