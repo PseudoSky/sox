@@ -18,7 +18,7 @@ extractive summary, near-duplicate detection — with **zero LLM calls and no
 provider** (the legacy LLM organizer was removed; clustering/auto-links run as a
 deterministic batch pass in-process inside `memory-server` itself — ADR-0007's
 single-writer architecture, no separate daemon process). `memory-server` exposes
-**19 `memory_*` tools** (v1.1.0). See the server's `CLAUDE.md` for full per-tool
+**20 `memory_*` tools** (v1.1.0). See the server's `CLAUDE.md` for full per-tool
 schemas; this skill covers the everyday recall / write / update path.
 
 Interact with it only through the `memory_*` MCP tools. Never open the DB file
@@ -60,12 +60,18 @@ memory_recall({
 ```
 
 `memory_write` — store one focused finding. `topic`/`tags`/`name`/`project_path`/
-`summary` are **first-class fields** (not just `metadata`):
+`summary` are **first-class fields** (not just `metadata`). **`project_path` is REQUIRED** —
+pass your actual workspace root explicitly, always. There is no cwd/env/git fallback: an omitted
+or empty `project_path` fails the call outright with `{ code: "E_MISSING_PROJECT_PATH" }` before
+anything is written, and a wrong guess would permanently mis-attribute the finding (the dedup key
+ignores `project_path`, so you can't fix it by re-writing — see `memory_update` in the server's
+`CLAUDE.md` for the only in-place remediation path):
 
 ```jsonc
 memory_write({
   content: "<the finding — one focused idea>",
   db_path: "~/.memory/memory.db",
+  project_path: "/Users/.../repo", // REQUIRED — your actual workspace root, never inferred
   topic: "<topic>",         // first-class — drives organization + filtered recall
   tags: ["<concept>"],      // first-class — also creates linkable entity nodes
   source: "document",       // message | tool_output | observation | document | reflection | import
@@ -74,6 +80,14 @@ memory_write({
   scope: "user"             // user = this machine, all agents
 })
 ```
+
+`memory_write_batch` enforces the same rule per item — any item missing `project_path` rejects the
+whole batch before any of it is written.
+
+Reads are the opposite: `memory_recall`/`memory_topics`/`memory_list_entities`/`memory_stats` never
+infer `project_path` either, but omitting it there is a **valid, deliberate "search every project"
+request** — not an error. Pass `filters.project_path` only when you actually want to narrow the
+search to one project.
 
 `memory_update` — **edit an existing node in place** (the `uid` is immutable;
 distinct from supersession). Use to correct/enrich a finding. Changing `content`
@@ -152,6 +166,7 @@ for, then recall by that tag:
 memory_write({
   content: "Orchestrators: dispatch.json depends_on must declare a dep for any shared file.",
   db_path: "~/.memory/memory.db",
+  project_path: "/Users/.../repo",  // REQUIRED
   tags: ["audience:orchestrator", "kind:pattern"],
   source: "observation", agent_id: "flash-impl", scope: "user"
 })
@@ -243,7 +258,7 @@ project_path, summary, tags, near_dup } }`, or `{ code: "E_DEDUP", existing_uid 
 ## Examples
 
 - *Recall before researching:* `memory_recall({query:"token cost optimization for multi-agent dispatch", db_path:"~/.memory/memory.db", token_budget:50000, limit:5})` → reuse the top findings by `uid`, research only the gap.
-- *Write a finding:* `memory_write({content:"Thin orchestrator holds only board + state deltas; executors hold working context.", db_path:"~/.memory/memory.db", source:"document", agent_id:"workflow-researcher", metadata:{topic:"execution-context-partition"}, scope:"user"})`.
+- *Write a finding:* `memory_write({content:"Thin orchestrator holds only board + state deltas; executors hold working context.", db_path:"~/.memory/memory.db", project_path:"/Users/.../repo", source:"document", agent_id:"workflow-researcher", metadata:{topic:"execution-context-partition"}, scope:"user"})`.
 
 ## Skill id
 
