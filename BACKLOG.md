@@ -4,9 +4,9 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
-## Current status — 2026-07-11 (regenerated mechanically; see BL-224)
+## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 40** (BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16 — see CHANGELOG.md).
+**Total open: 45** (BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17 from debug agent investigation into stale shim processes; BL-311, BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -20,9 +20,9 @@ node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.
 
 | Priority | Open items |
 |---|---|
-| **HIGH** | `BL-62`, `BL-96`, `BL-97`, `BL-225`, `BL-254`, `BL-273`, `BL-284`, `BL-288`, `BL-301`, `BL-302` |
-| **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-259`, `BL-274`, `BL-282`, `BL-285`, `BL-291`, `BL-296`, `BL-297`, `BL-300` |
-| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264`, `BL-283`, `BL-287`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299`, `BL-305` |
+| **HIGH** | `BL-96`, `BL-97`, `BL-225`, `BL-254`, `BL-273`, `BL-284`, `BL-288`, `BL-301`, `BL-302` |
+| **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-259`, `BL-274`, `BL-282`, `BL-285`, `BL-291`, `BL-296`, `BL-297`, `BL-300`, `BL-306`, `BL-307`, `BL-308`, `BL-310`, `BL-312` |
+| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264`, `BL-283`, `BL-287`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299`, `BL-305`, `BL-309`, `BL-311` |
 | **FEATURE** | `BL-163`, `BL-215` |
 
 ### Where to start
@@ -2492,71 +2492,50 @@ change still emits `notifications/tools/list_changed` and falls back to reconnec
 ignore it. **Action for the human:** after this merge + `soxe upgrade --all`, reconnect/reload the
 memory-server MCP server once.
 
-### BL-62 — shared-backend `project_path` attribution: an unqualified `memory_write` is attributed to the SHIM PROCESS CWD, not the caller`s working project — **REOPENED (2026-07-08): Open (HIGH) data-integrity — partially mitigated, root fix blocked**
+### BL-311 — `memory_stats` fails outright (not just empty) when `SOX_EMBED_BACKEND` is set to anything other than `auto`/`real` — **Open (LOW, unverified against live env) (2026-07-18)**
 
-**Status (2026-07-09):** the 2026-07-05 fix covered only the `shim-cwd == project` case. The
-`shim-cwd != working-dir` case reproduces (episode UID `01KX1WZSGSN4KZZM812Q2FCVCE`) — see the
-REGRESSION block below. **Mitigated, not fixed:** `WriteResult.enrichment.project_path_source:
-`explicit`|`inferred`` now flags inferred attribution, and BL-221 makes a mis-attributed episode
-correctable via `memory_update`. So corruption is now *detectable* and *repairable* rather than silent
-and permanent. **The root fix remains blocked:** `libs/mcp-runtime/src/serve.ts` negotiates no MCP
-`roots` capability (`grep roots` -> zero matches), and no other per-request signal for the caller`s true
-working directory exists — `process.cwd()` is fixed at process spawn. Wiring point if pursued:
-`memory-server/src/index.ts:1663` (`handler: (_args, _ctx) => ...` — `_ctx` is unused).
-**Workaround, documented in the tool description:** callers pass `project_path` explicitly.
+Found while triaging the `memory_topics`/`memory_list_entities` empty-result bug (BL-62,
+RESOLVED — see CHANGELOG.md). `memoryGetStats` (`libs/memory-core/src/stats.ts:184`)
+unconditionally calls `getConfiguredEmbedBackend()`, which (`libs/memory-core/src/embed.ts:60-68`,
+BL-250) `throw`s if `process.env.SOX_EMBED_BACKEND` is set but not `'auto'|'real'`. Neither
+`stats.ts` nor the `case 'memory_stats'` dispatch in
+`extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:1721-1726` catches this —
+the exception propagates to the outer catch in `backend.ts`/`serve.ts`, which converts it to
+`isError:true`. This is **intentional, tested, fail-loud behavior** (BL-250's own
+`stats.spec.ts:70-87` asserts it deliberately) — not a code defect. What's unverified: whether the
+LIVE `com.sox.user.memory-server` launchd unit's actual `SOX_EMBED_BACKEND` env value is
+accidentally set to something invalid (rather than unset/`auto`), which would make every
+`memory_stats` call fail needlessly in production. Check `launchctl print
+gui/$(id -u)/com.sox.user.memory-server | grep -i embed` (or the unit's plist directly) against
+the valid set (`auto`/`real`/unset) before closing this — if the env is correct, this item should
+just be closed as "confirmed working as designed, no live bug."
 
+### BL-312 — 2026-07-18 memory-server 73%+ CPU / 50s+-90s+ tool-call hang: service restored, root cause not definitively pinned — **Open (MEDIUM, incident follow-up) (2026-07-18)**
 
-**Resolution:** shim attaches `client_context.project_path` (SOX_CONFIG_PROJECT_PATH or shim cwd) to every tools/call; shared backend precedence explicit-arg > request-context > process-fallback; both compat directions tested (10 tests). LIVE-VERIFIED: fresh shim with cwd=sox-ecosystem writing through the SHARED backend attributes to `/Users/nix/dev/ai/sox-ecosystem` (pre-fix: `/Users/nix/dot`). Long-lived shims pick the fix up on their next session restart.
+Live incident: every `memory_*` tool call (including `memory_ping`) hung 50s-90s+ with zero
+response; a `sample <pid> 5` profile of the backend process showed 100% of the 5-second window
+inside `sqlite3_step` → deep B-tree traversal — the single-threaded Node event loop fully blocked
+on a synchronous `better-sqlite3` query the entire time. Restored service by `SIGTERM` (ignored —
+event loop too busy to process it) then `SIGKILL` on the backend pid, letting the shim's
+`ensure-backend` respawn a fresh one; has not recurred since. Two candidate root causes were found
+during the same investigation but NEITHER was proven as the specific trigger for this exact
+incident:
+1. `meanIntraSim()` (`libs/memory-core/src/cluster.ts:157-168`) is an O(n²) nested-loop pairwise
+   cosine-similarity computation over cluster member vectors — with ~4,692 episode vectors this is
+   ~22M comparisons if ever invoked over the full episode set, easily explaining multi-minute
+   blocking. However, this is pure JS/V8 compute, not SQL — it would NOT show up as 100% time
+   inside `sqlite3_step` the way the profile actually showed, so it's a plausible latent risk, not
+   a confirmed match for the captured symptom.
+2. The dormant duplicate-edge bug (146,006 stale `MEMBER_OF` rows, fixed separately — see
+   CHANGELOG.md / the `db.ts` schema-migration fix) stopped recurring 2026-07-03, two weeks before
+   this incident — unlikely to be the direct trigger, though the resulting DB bloat (4.5x more
+   edge rows than necessary) plausibly contributed to slower-than-expected query times generally.
 
-**Wave-2 progress (2026-07-04):** protocol landed — shim attaches optional `client_context.project_path` to tools/call frames; backend precedence explicit-arg > request-context > process-fallback; 10 new tests, both compat directions covered. REMAINING: one-line cmdServe wiring (`clientProjectPath` into FrontShimOptions — deferred to avoid conflicting with the in-flight main.ts agent) + live verification. Stays open until live-verified.
-
-**Live confirmation (2026-07-04, HF-6 validation sweep):** a `memory_write` issued from a session
-whose project is `/Users/nix/dev/ai/sox-ecosystem` (no explicit `project_path` arg) returned
-`enrichment.project_path: "/Users/nix/dot"` — the cwd of whichever shim spawned the current
-backend (pid 16305). Exactly the predicted misattribution; no longer `(unverified)`. The fix
-sketch below stands (per-request workspace threading). Workaround until then: callers pass
-`project_path` explicitly.
-
-The proxy backend is a SINGLETON per store (single-writer, by design). The BL-56 fix injects the
-client's workspace as `SOX_CONFIG_PROJECT_PATH` at **shim spawn**, but the shared backend captured the
-value of whichever shim's `ensure` first spawned it — a second shim from a DIFFERENT project dials the
-SAME backend and its `SOX_CONFIG_PROJECT_PATH` does NOT propagate to the already-running backend. So
-for a memory store shared across multiple project workspaces, episodes written via the second project's
-shim would be attributed to the FIRST project's path. Single-project use is unaffected (the common
-case). **Fix sketch:** thread the per-call workspace (MCP `roots` / a caller-supplied `project_path`
-arg) through `tools/call` so attribution is per-request, not per-backend-process; until then the shared
-backend's `project_path` is `(unverified)` for multi-project setups. Surfaced + flagged during Slice
-1.6; NOT silently regressed (BL-56's per-shim injection still happens, it just can't reach a shared
-running backend).
-
-**Triage context:** Marked `(unverified)` — the actual multi-project contention has never been
-reproduced in a test or observed in production. Before a fix can be designed, two questions need
-answering: (1) Is multi-project memory-server usage a supported scenario? (currently single-project
-is the documented pattern), (2) if yes, does the actual behavior match the hypothesized race (second
-shim's `SOX_CONFIG_PROJECT_PATH` ignored)? The fix path (per-call workspace via MCP `roots`) is
-clear but adds complexity to the tool-call dispatch path. If multi-project is not a supported
-scenario, document as unsupported and close. If it is, invest in reproducing first, then fix.
-
-**⚠️ REGRESSION / incomplete-fix evidence (2026-07-08) — consider REOPEN:** the per-request
-attribution fix does NOT cover the case where the agent/shim **process cwd differs from the user's
-actual working project.** Observed: an unqualified `memory_write` from a session whose working
-project is `/Users/nix/Documents/professional/qusececure` (all files edited there this session;
-Bash cwd + git root both that path) was attributed to `enrichment.project_path:
-"/Users/nix/dev/ai/agent-source"` — the MCP server/shim **process cwd**, not the caller's project.
-The precedence chain (explicit-arg > request-context > process-fallback) resolved request-context to
-the *shim's* cwd (agent-source), not the true working directory, so a single shim serving a caller
-who works in a different repo still mis-attributes. BL-62's "LIVE-VERIFIED" case only exercised
-shim-cwd == project; this is the shim-cwd ≠ working-dir case. Episode UID
-`01KX1WZSGSN4KZZM812Q2FCVCE`. Workaround confirmed: callers pass `project_path` explicitly (the
-agent should thread the real working dir / MCP `roots`, not the shim cwd).
-
-**Compounding sub-finding (candidate NEW item): a mis-attributed episode is UNCORRECTABLE in place.**
-`memory_update` cannot edit `project_path` (not in its editable field set), and re-writing the
-identical content with the correct `project_path` is rejected by `E_DEDUP` (content-hash dedup
-ignores `project_path`; returns `existing_uid`). So provenance corruption from this bug can't be
-repaired without altering content or invalidate+rewrite. Fix options: (a) let `memory_update` edit
-`project_path`; (b) include `project_path` in the dedup key; (c) an explicit re-scope/reattribute op.
-Interim mitigation used: annotated the true project in `metadata.project_path_actual`.
+Follow-up if this recurs: capture a LONGER `sample` (30s+) and/or use `node --prof` on a fresh
+repro to get symbol-level attribution inside the SQL layer itself (which specific prepared
+statement, not just "somewhere in sqlite3_step"), and check `PRAGMA compile_options`/index usage
+via `EXPLAIN QUERY PLAN` on any query suspected of a missing/wrong index for the now-larger
+(post-dedup, ~41K-edge) table.
 
 ### BL-63 — `host-runtime:test-e2e` BL-31 orphan scan uses a global `pgrep -f memory-server/dist/index.js`, so a CONCURRENT live proxy session on the dev box is mis-counted as a leaked orphan — **RESOLVED (2026-06-25, `feat/proxy-default-memory-backend`)**
 
@@ -4895,6 +4874,52 @@ Also surfaced (report-only): several criterion PROSE strings drifted from the sh
 
 **Decide which is authoritative:** either the baseline snapshot is stale and should be regenerated to 20 tools (if `memory_write_batch` is a sanctioned addition — it carries this session's BL-233 `project_path_source` work), or the tool was added outside the refactor's stable contract and needs review. Until reconciled, those three criteria cannot green. Note `memory-server/CLAUDE.md` says "19 memory_* tools (v1.1.0)" — also stale if 20 is correct.
 
+## Open — research findings: native addon packaging & database adapter gaps (2026-07-11)
+
+Full research report: `docs/research/packaging-recommendations.md` (generated 2026-07-11).
+
+### BL-306 — `verify-native-abi.mjs` does not probe `sqlite-vec` or `@lancedb/lancedb` — **Open (MEDIUM)** (2026-07-11)
+
+`tools/verify-native-abi.mjs` probes only `better-sqlite3` and `onnxruntime-node`. `sqlite-vec` is used by 3 bundled extensions (memory-server, memory-cli, memory-flush) and 5 libraries; `@lancedb/lancedb` (Rust napi-rs) is used by `@adhd/sox-vector-store`. Both are native addons that can fail at runtime on ABI mismatch, but neither is checked. A Node upgrade that changes the ABI breaks sqlite-vec silently (no probe warning).
+
+**Fix:** add `sqlite-vec` and `@lancedb/lancedb` probe targets to `verify-native-abi.mjs`, following the same `require.resolve` → `process.dlopen` pattern used for `better-sqlite3`. Document the probe matrix in the script header. Run `pnpm verify:abi` and confirm exit 0 on current Node; test that a deliberately mismatched Node version causes exit 1 for each new probe target.
+
+**Effort:** S. Single-file change + CI gate update.
+
+### BL-307 — `@lancedb/lancedb` is missing from the bundler externals policy — **Open (MEDIUM)** (2026-07-11)
+
+`docs/standards/extension-bundling.md` §2 defines the externals policy: "Only true third-party native addons are passed `--external`." Currently `better-sqlite3`, `sqlite-vec`, `fastembed`, and `onnxruntime-node` are listed. `@lancedb/lancedb` (Rust napi-rs, consumed by `@adhd/sox-vector-store`) is NOT listed. If any bundled extension ever imports vector-store's `LanceDbVectorBackend`, esbuild will attempt to inline the `.node` binary and fail at runtime.
+
+Currently latent — no bundled extension imports vector-store. But the policy doc is the single source of truth and omitting a known native addon makes it a trap for future authors.
+
+**Fix:** add `@lancedb/lancedb` to the externals list in `extension-bundling.md` §2. Add it to the `--external` union in every bundled `project.json` that transitively imports `@adhd/sox-vector-store` (if any). Add a CI gate (or smoke-test preflight) that enumerates every `--external` flag and cross-checks against the declared native deps of all transitively-bundled packages — so missing-native externals are caught at build time, not at crash time.
+
+**Effort:** M (doc update + CI gate script). Risk: low (additive, no behavior change until a consumer actually imports the backend).
+
+### BL-308 — `vector-store` bundles both backends in one package; sqlite-only consumers pay for LanceDB deps — **Open (MEDIUM)** (2026-07-11)
+
+`@adhd/sox-vector-store` exports both `SqliteVectorBackend` and `LanceDbVectorBackend` from the same entry point. A consumer who only needs the SQLite backend still gets `@lancedb/lancedb` plus its transitive deps (`apache-arrow` ~4 MB, `synckit`) in `node_modules`. The same `exports` map entry resolves both.
+
+Currently no consumer in the repo suffers from this (memory-core's `reembedStore()` was rewired to `vec_node` directly per BL-256 and no longer imports vector-store at all). But the package is declared as consumed by `agent-source` (BL-304), and any future internal consumer pays the bloat.
+
+**Fix:** two approaches:
+- (A) **Subpath exports** — add separate entrypoints: `@adhd/sox-vector-store` (both backends, current API), `@adhd/sox-vector-store/sqlite` (sqlite-only), `@adhd/sox-vector-store/lancedb` (lancedb-only). The subpath entry's `package.json` declares only the deps that backend needs. Requires `typesVersions` for legacy `moduleResolution`.
+- (B) **Package split** — extract into `@adhd/sox-vector-store-sqlite` and `@adhd/sox-vector-store-lancedb` with a root re-export barrel for back-compat. Cleaner dep isolation but larger blast radius.
+
+Recommend (A) as the intermediate step — preserves the existing import surface for external consumers while letting new internal consumers opt into a lighter subpath. `docs/research/packaging-recommendations.md` covers both patterns with pros/cons.
+
+**Effort:** M (exports map changes + typesVersions + consumer updates). Risk: low (additive entrypoints, back-compat).
+
+### BL-309 — No CI gate enforces that every native dep in a bundled extension is `--external` — **Open (LOW)** (2026-07-11)
+
+The bundler externals policy (`extension-bundling.md` §2) is a manual checklist. If a developer adds a new native dep to a bundled extension but forgets to add it to the `--external` flags in `project.json`, the bundle compiles successfully and only fails at runtime with `ERR_REQUIRE_ESM` or a missing `.node` binary. This is the same class as BL-262 (sidecar list) and BL-248 (typecheck) — a test that bypasses the shipped artifact.
+
+**Fix:** add a post-build CI step that introspects the bundle's `--external` list (via the esbuild metafile or by parsing `project.json`), enumerates every `better-sqlite3`/`sqlite-vec`/`onnxruntime-node`/`fastembed`/`@lancedb/lancedb` reference across the transpiled bundle, and FAILS the build when a native dep is statically referenced but not in the external list. Alternatively, add a smoke-test preflight (`verify-external-natives`) that `require()`s every bundled extension's entrypoint in a clean-room `node_modules` where only externalized deps are available — a missing `--external` crashes at module load. Pattern follows `tools/verify-sidecar-references.ts` from BL-262.
+
+**Effort:** M (script + project.json integration). Risk: low (additive gate, cannot introduce false negatives since it only catches what it checks).
+
+---
+
 ### BL-298 — `dod.4/.5/.6` behavioral DoD clauses lack `entrypoint:` sub-fields — **Open (LOW, doc)** (2026-07-11)
 
 Wiring the 8 DoD checks (BL-260) cleared the "not proven" fails and let gap-check advance to its behavioral-fidelity rule, which requires an `entrypoint:` sub-bullet on behavioral DoD clauses. `[dod.4]/[dod.5]/[dod.6]` in `docs/plan/memory-refactor/README.md` lack it (3 of the 9 residual fails). **Fix:** add an `entrypoint:` line under each naming the exact invocation.
@@ -5568,3 +5593,43 @@ Surfaced while evaluating whether the adhd registry should reuse `@adhd/sox-grap
 Surfaced mechanically by the new `verify:publint-attw` gate (BL-266) and reported by the BL-265/266 worker: `libs/data/embed/embedding-provider/dist/package.json` (and likely every `@adhd/sox-nx:atomic-tsc`-built package that copies its manifest into `dist/`) is a byte-for-byte copy of the source `package.json`, including `main`/`types`/`exports` paths written for the PACKAGE root (`./dist/index.js`). publint flags it: a nested `package.json`'s `exports` field "only works in root package.json files, not nested ones" — from inside `dist/` those paths would mean `dist/dist/index.js`, which doesn't exist. Today it is harmless (nothing resolves the nested manifest as a package root; publint reports it as a non-gating Warning), but it is a landmine for any future consumer that treats `dist/` as a publishable root (`npm pack` from dist, `file:` deps pointing at dist, the pack-smoke tarball path).
 
 **Fix:** the atomic-tsc copy step should REWRITE the manifest for dist context (strip or re-root `main`/`types`/`exports`, drop `files`), or stop copying it entirely if nothing consumes it — decide by checking what `pack-smoke.mjs` and the npm publish path actually read. Sweep all tsc-built packages, not just embedding-provider; keep the publint warning as the regression signal (it goes quiet when fixed).
+
+---
+
+### BL-310 — `soxe serve memory-server` front-shim processes accumulate indefinitely after MCP host disconnects — **Open (MEDIUM, lifecycle)**
+
+**Observed 2026-07-17 by debug agent during memory-server health investigation.** There are **20 stale `soxe serve memory-server` processes** (and 3 more from `~/.adhd/sox-cli/`) in sleeping state, ranging from 1.5 hours to 6 days old, consuming ~617MB RSS total. The actual memory-server backend (PID 3025, PPID 1, started Jul 11) is healthy — the stale processes are the front-shim (proxy) processes that should have exited when the MCP host disconnected.
+
+**Root cause analysis (code):** In `cmdServe` (`apps/sox/src/main.ts:8164-8174`), the proxy-mode path calls `runFrontShim` and then waits for `handle.done` (the stdio pipe closing) or a signal. When the MCP host (Claude/OpenCode/VS Code) disconnects its stdio pipe, `handle.done` should resolve and the process exits. But **20 previous shims never exited**. Likely causes (in order of suspicion):
+
+1. **SIGHUP isolation** — the shim spawned by `runFrontShim` may not receive SIGHUP when the host terminal/session ends (many are `S+` — foreground process group of a now-dead terminal), so they survive the host death without a pipe-close to trigger `handle.done`.
+2. **`handle.done` promise leak** — if the shim's connection to the backend UDS socket fails or reconnects in a way that doesn't resolve `handle.done`, the shim stays alive waiting for a signal.
+3. **No timeout/fallback** — there is no upper bound on how long a disconnected shim lingers; it spins forever until SIGTERM.
+
+**Evidence:**
+```
+$ ps aux | grep "soxe.*serve.*memory" | grep -v grep | wc -l
+22
+$ ps aux | grep "soxe.*serve.*memory" | grep -v grep | awk '{sum+=$6} END {printf "%.0fMB\n", sum/1024}'
+617MB
+```
+Oldest shim: PID 21629, started Sat Jul 11 17:28 (6 days ago). Parent: `launchd`. No controlling terminal.
+
+**Symptoms:**
+- Process table bloat (20+ `soxe serve` processes per host restart)
+- Memory pressure (~617MB RSS for sleeping processes)
+- Confusing diagnostics: `ps` shows many memory-server processes, making it look like the server is "down" or broken
+- Can eventually exhaust process limits on constrained systems
+
+**Fix sketch (several options, equally viable):**
+1. **Watchdog timeout** in the shim: if the stdio pipe has been silent for N minutes with no active requests, exit.
+2. **SIGHUP propagation** — ensure the shim traps SIGHUP and exits cleanly (or is in the same session/process group as the MCP host).
+3. **Shim lifecycle guard** — before spawning a new shim, kill any existing shim for the same extension id from the same scope.
+4. **Heartbeat from the backend** — the shim pings the backend; if the backend reports no active client for >30s, exit.
+5. **`handle.done` audit** — investigate why the promise does not resolve when the stdio pipe closes in a host-disconnect scenario; fix the root cause.
+
+**Related backlog items (all RESOLVED, about the backend orphan class):** BL-170 (O_EXCL-lock loser orphan), BL-31 (daemon orphans), BL-157 (backend spawn-race orphan), BL-63 (orphan scan in e2e). BL-310 is distinct — it's about the FRONT-SHIM processes, not the backend.
+
+**Blast radius:** Every `soxe serve` invocation for ANY proxy-mode mcp-server, not just memory-server. Any extension with `lifecycle.serve_mode: "proxy"` (the default for type:mcp-server) accumulates shim processes.
+
+**Workaround (applied 2026-07-17):** Reinstall with `--profile=sse` or `--profile=http` and enable as a service (`soxe service enable`). This converts the install from `{ type: "local", command: ["soxe", "serve", "<ext>"] }` (spawns per session) to `{ type: "remote", url: "http://localhost:<port>/sse" }` (connects to persistent daemon). Applied to memory-server on both OpenCode (`~/.config/opencode/opencode.json`) and Claude (`~/.claude.json`) hosts at user scope. The shim accumulation bug is still present and affects other proxy-mode servers; the workaround avoids it for memory-server by sidestepping the per-session shim pattern entirely.

@@ -2,6 +2,58 @@
 
 ---
 
+## [Unreleased] — memory-server data-integrity: schema drift, silent mis-scoping, project_path now required for writes (closes BL-62)
+
+Continuing the same-day memory-server investigation (see the transport section below): once
+transport was fixed, real queries against the live `~/.memory/memory.db` (4,692 episodes, spanning
+months of use) still failed or silently mis-scoped. Three more root causes, all fixed.
+
+### `memory-core`: `openDb()` permanently broke on a store missing `namespace`/`t_expires`/dedup'd edges
+
+`openDb()`'s `db.exec(DDL)` runs unconditional `CREATE INDEX ... ON node(namespace)` /
+`ON node(t_expires)` / `CREATE UNIQUE INDEX ix_edge_unique ON edge(src, dst, rel)` statements (the
+graph-store unification, BL-302, commit `64a2056`). `CREATE TABLE IF NOT EXISTS` is a no-op on a
+table that already exists, so a pre-unification store missing either node column — or carrying
+duplicate `(src, dst, rel)` edge rows predating the unique constraint — makes `db.exec(DDL)` throw
+before ever reaching the `migrateAddColumn()` calls that used to live after it. Found live
+2026-07-18: every `memory_*` tool needing a DB handle (`recall`, `topics`, `list_projects`,
+`list_entities`, `stats`) failed with `no such column: namespace`; separately, 146,006 duplicate
+edge rows (mostly repeated `MEMBER_OF` cluster-membership edges written 2026-06-23 through
+2026-07-03 — a since-dormant re-clustering bug that kept re-inserting the same edge without
+checking for an existing one) blocked the unique index from ever being created. Fixed: the
+defensive column migrations now run *before* `db.exec(DDL)` (gated on the table already existing),
+and duplicate edges are deduped (keeping the earliest row per triple) before the unique index is
+created. Verified against a simulated broken store (self-heals, preserves data) and a fresh store
+(unaffected).
+
+### `memory-server`: `memory_topics`/`memory_list_entities`/`memory_stats` silently returned wrong/empty results
+
+Root cause: `backend.ts`'s `client_context.project_path` merge (BL-62's original mitigation)
+unconditionally overrode any omitted `arguments.project_path` with the shim's spawn-time
+`process.cwd()` — no worktree canonicalization, frozen for the shim's whole lifetime — which is
+exactly the top-level key these three tools read. `memory_recall` was only ever accidentally
+immune, since its filter lives at `arguments.filters.project_path`, a different key the injection
+never touched. A shim spawned from inside a git worktree (zero prior episodes there) meant these
+three tools always came back empty, even with real, populated data elsewhere in the store.
+
+### Design change: `project_path` is now REQUIRED for writes, NEVER inferred for reads
+
+Given the above, the fix went further than patching the injection: **writes** (`memory_write`,
+`memory_write_batch`) now reject outright with `E_MISSING_PROJECT_PATH` when `project_path` is
+omitted — no fallback to `client_context`, env, or cwd, ever — because a wrong guess there
+permanently mis-attributes the episode with no way to detect it after the fact, unlike a bad read
+(wrong/empty result, retryable). **Reads** never get `project_path` injected on the server's
+behalf at all: omitting it is a deliberate, valid "search every project" request, restoring
+`memory_topics`/`memory_list_entities`/`memory_stats` to the same behavior `memory_recall` already
+had. Also fixed along the way: `memory_write`'s auto-chunk path built chunk params *without*
+`project_path` at all (silently relying on inference) — chunks now inherit the parent's explicit
+value. Covered by a rewritten `backend.spec.ts` BL-62 suite proving all of this against a real
+scratch store (not just `memory_ping`), plus ~35 pre-existing tests across memory-core and
+memory-server updated to supply the now-required field in their setup, with zero change to what
+any of them assert about the behavior actually under test.
+
+---
+
 ## [Unreleased] — memory-server remote MCP transport: OpenCode connectivity, notification hang, stale port defaults
 
 Four independent, previously-undiscovered bugs surfaced while diagnosing "why is the memory
