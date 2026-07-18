@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 44** (BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17 from debug agent investigation into stale shim processes; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation).
+**Total open: 45** (BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17 from debug agent investigation into stale shim processes; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -22,7 +22,7 @@ node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.
 |---|---|
 | **HIGH** | `BL-96`, `BL-97`, `BL-225`, `BL-254`, `BL-273`, `BL-284`, `BL-288`, `BL-301`, `BL-302` |
 | **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-259`, `BL-274`, `BL-282`, `BL-285`, `BL-291`, `BL-296`, `BL-297`, `BL-300`, `BL-306`, `BL-307`, `BL-308`, `BL-310`, `BL-312` |
-| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264`, `BL-283`, `BL-287`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299`, `BL-305`, `BL-309` |
+| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264`, `BL-283`, `BL-287`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299`, `BL-305`, `BL-309`, `BL-314` |
 | **FEATURE** | `BL-163`, `BL-215` |
 
 ### Where to start
@@ -2518,6 +2518,37 @@ repro to get symbol-level attribution inside the SQL layer itself (which specifi
 statement, not just "somewhere in sqlite3_step"), and check `PRAGMA compile_options`/index usage
 via `EXPLAIN QUERY PLAN` on any query suspected of a missing/wrong index for the now-larger
 (post-dedup, ~41K-edge) table.
+
+### BL-314 — `soxe upgrade --all` fails against `npm-package:` locators because the local content-store mirror is stale — **Open (LOW, dev-environment tooling) (2026-07-18)**
+
+Found while syncing the installed `.claude/skills/memory-usage/SKILL.md` copy after a docs update.
+`registry/index.json` is committed in publish mode (`SOX_REGISTRY_PUBLISH=npm`), so every entry's
+`source` is an `npm-package:@adhd/sox-extension-<id>@<version>` locator rather than a `file://` path.
+`soxe upgrade --all` resolves those locators against a local content-store mirror — but that mirror
+was last refreshed at some earlier point and is now stale relative to the actual current `dist/`
+checksums recorded in `registry/index.json`. Running the upgrade fails outright:
+
+```
+Error: install: CHECKSUM MISMATCH for source "npm-package:@adhd/sox-extension-memory-server@1.3.0"
+  expected: sha256:31e8559c1f09902d64f163aff2b8ae74cc8766861cff4048e0bf52c8bab65e1d
+  got:      sha256:4227b64708a7050e93ed591ff3368568f1542ffe5f193f1b992b2d74259fede5
+```
+
+The "got" checksum (`4227b64...`) is the ORIGINAL memory-server checksum from before this session's
+work even began — the mirror hasn't tracked any of today's rebuilds. This blocks the documented
+"5. `node bin/soxe upgrade --all`" step of the `⛔ AGENT SEQUENCE` in `AGENTS.md` for any change
+that touches a `dist` artifact, in a local dev checkout that never ran a real `npm publish`. Worked
+around this session by directly copying canonical source content into the installed copy (safe only
+for non-compiled extension types like skills; would not work for a bundled `mcp-server`/`service`
+extension, which needs the actual rebuilt `dist/` bytes an upgrade would fetch).
+
+**Fix options:** (a) refresh/regenerate the local content-store mirror as part of the standard
+dev-loop after a `dist` rebuild (mirrors the "commit `registry/index.json` after `sync-index`"
+step this repo already has), or (b) make `soxe upgrade` fall back to a `file://`-mode resolution
+when the `npm-package:` fetch's checksum mismatches AND the source extension's `.git` metadata shows
+it's a local, non-published dev checkout, or (c) document that `soxe upgrade --all` in a local dev
+checkout requires `SOX_REGISTRY_PUBLISH` unset (dev-mode `file://` locators) rather than the
+committed publish-mode registry.
 
 ### BL-63 — `host-runtime:test-e2e` BL-31 orphan scan uses a global `pgrep -f memory-server/dist/index.js`, so a CONCURRENT live proxy session on the dev box is mis-counted as a leaked orphan — **RESOLVED (2026-06-25, `feat/proxy-default-memory-backend`)**
 
