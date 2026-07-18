@@ -1976,6 +1976,31 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // Section MCP-TRUST: an mcp-server install for the claude host grants trust
+  // (~/.claude.json → projects["<root>"].enabledMcpjsonServers) for the relevant
+  // project root(s) — WITHOUT which Claude Code never loads a correctly-configured
+  // .mcp.json entry (interactive-prompt-only trust gate). Foreign trust entries
+  // preserved; uninstall reverses byte-clean. Child process, throwaway HOME.
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\n' + '═'.repeat(60));
+  console.log('Section MCP-TRUST: mcp-server install grants ~/.claude.json trust + reversal');
+  console.log('═'.repeat(60));
+  {
+    const probe = spawnSync(NODE, [path.join(ROOT, 'tools', 'probe-mcp-trust-sync.mjs')], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: { ...process.env, SOX_SANDBOX_ROOT: '', SOX_HOME: '', SOX_ECOSYSTEM_HOME: '' },
+    });
+    if (probe.stdout) process.stdout.write(probe.stdout);
+    if (probe.status === 0) {
+      assert(true, 'MCP-TRUST: install grants enabledMcpjsonServers trust (foreign preserved); uninstall byte-clean');
+    } else {
+      if (probe.stderr) process.stderr.write(probe.stderr);
+      assert(false, `MCP-TRUST: auto-trust gate failed (exit ${probe.status})`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Section BL41: a memory_* call with db_path "~/.memory/<x>.db" writes to
   // $HOME/.memory and creates NO literal `~` dir relative to cwd (BL-41). Drives
   // the materialized memory-server bundle over stdio in a throwaway HOME/cwd.

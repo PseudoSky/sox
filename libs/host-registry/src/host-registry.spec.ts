@@ -190,11 +190,11 @@ describe('host-registry.2 — scopePaths: project and user on Claude', () => {
   it('surfaces.mcp-server defaults remote profiles to port 3099 (matches live memory-server deployment, BL-156/157)', () => {
     const mcpConfig = claudeHost.surfaces['mcp-server']!.mcpConfig!;
     expect(mcpConfig.value('http', 'soxe', 'memory-server')).toEqual({
-      type: 'remote',
+      type: 'http',
       url: 'http://localhost:3099/mcp',
     });
     expect(mcpConfig.value('sse', 'soxe', 'memory-server')).toEqual({
-      type: 'remote',
+      type: 'sse',
       url: 'http://localhost:3099/sse',
     });
   });
@@ -202,13 +202,19 @@ describe('host-registry.2 — scopePaths: project and user on Claude', () => {
   it('surfaces.mcp-server emits profile-specific remote endpoints with explicit port/host', () => {
     const mcpConfig = claudeHost.surfaces['mcp-server']!.mcpConfig!;
     expect(mcpConfig.value('http', 'soxe', 'memory-server', 3099, '127.0.0.1')).toEqual({
-      type: 'remote',
+      type: 'http',
       url: 'http://localhost:3099/mcp',
     });
     expect(mcpConfig.value('sse', 'soxe', 'memory-server', 4001, '0.0.0.0')).toEqual({
-      type: 'remote',
+      type: 'sse',
       url: 'http://0.0.0.0:4001/sse',
     });
+  });
+
+  it('surfaces.mcp-server never emits "type": "remote" — not a real Claude Code value (code.claude.com/docs/en/mcp: only "http"/"sse"/"ws" are recognized; a url-only entry is silently treated as broken stdio)', () => {
+    const mcpConfig = claudeHost.surfaces['mcp-server']!.mcpConfig!;
+    expect((mcpConfig.value('http', 'soxe', 'memory-server') as { type: string }).type).not.toBe('remote');
+    expect((mcpConfig.value('sse', 'soxe', 'memory-server') as { type: string }).type).not.toBe('remote');
   });
 
   it('surfaces.permissions uses array-merge capability', () => {

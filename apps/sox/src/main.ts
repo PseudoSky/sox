@@ -112,7 +112,9 @@ import {
   registerUserMcpServer,
   removeInstallRecord,
   resolveFromRegistry,
+  reverseMcpTrustFromProjects,
   reverseUserMcpFromProjects,
+  syncMcpTrustToProjects,
   syncUserMcpToProjects,
   IntegrityResult,
   verifyIntegrity,
@@ -1697,6 +1699,12 @@ async function hostPlaceExtension(
     // OVERRIDES — does not inherit — user-scope servers). Best-effort: a failure
     // here must not fail the install.
     await maybePropagateUserMcp(extType, scope, hostName, id);
+
+    // ── mcp-trust durable fix: ensure Claude Code will actually load the entry ──
+    // .mcp.json alone is not enough — Claude Code gates it behind a per-project
+    // enabledMcpjsonServers approval. Best-effort: a failure here must not fail
+    // the install (matches maybePropagateUserMcp's own non-fatal contract).
+    await maybeSyncMcpTrust(extType, scope, hostName, id, workspaceRoot);
   }
 }
 
@@ -1727,6 +1735,45 @@ async function maybePropagateUserMcp(
     }
   } catch (e) {
     process.stderr.write(`${CLI} install: warning: mcp project-sync failed for '${id}' — ${String(e)}\n`);
+  }
+}
+
+/**
+ * mcp-trust durable fix: ensure Claude Code will actually LOAD the `.mcp.json`/
+ * `~/.claude.json` entry `hostPlaceExtension` just wrote — Claude gates every
+ * remote MCP server behind a per-project `enabledMcpjsonServers` approval, and
+ * without an entry there any context that cannot answer the interactive trust
+ * prompt (a background job, a fresh headless session) silently gets zero tools.
+ *
+ * Appends ONLY the exact extId just installed — never a blanket
+ * enableAllProjectMcpServers-style bypass — mirroring maybePropagateUserMcp's
+ * scope split: a project/local-scope install trusts exactly the project being
+ * installed into; a user/org-scope install trusts every known project root
+ * (since its `.mcp.json` entry is itself propagated to every known project by
+ * maybePropagateUserMcp above). Claude-specific; a no-op for any other host.
+ * Best-effort + non-fatal, matching maybePropagateUserMcp's contract.
+ */
+async function maybeSyncMcpTrust(
+  extType: string,
+  scope: 'org' | 'user' | 'project' | 'local',
+  host: string,
+  id: string,
+  workspaceRoot: string,
+): Promise<void> {
+  if (extType !== 'mcp-server') return;
+  if (host !== 'claude') return;
+  try {
+    const rootsOpt = scope === 'project' || scope === 'local' ? { roots: [workspaceRoot] } : {};
+    const results = await syncMcpTrustToProjects({ extId: id, host, ...rootsOpt });
+    for (const r of results) {
+      if (r.action === 'trusted') {
+        process.stdout.write(`${CLI} install: mcp-trust enabled ${id} → ${r.projectRoot}\n`);
+      } else if (r.action === 'skipped' && r.reason !== 'no ~/.claude.json project entry yet') {
+        process.stderr.write(`${CLI} install: mcp-trust skipped ${id} → ${r.projectRoot} (${r.reason ?? ''})\n`);
+      }
+    }
+  } catch (e) {
+    process.stderr.write(`${CLI} install: warning: mcp-trust sync failed for '${id}' — ${String(e)}\n`);
   }
 }
 
@@ -2956,6 +3003,20 @@ async function uninstallOne(
     } catch (e) {
       process.stderr.write(`${CLI} uninstall: warning: mcp project-sync reversal failed for '${id}' — ${String(e)}\n`);
     }
+  }
+
+  // ── mcp-trust durable fix: reverse any trust grants sox made (any scope) ────
+  // Trust entries always live in the user-scope ownership record regardless of
+  // which install scope created them (~/.claude.json is a single user-level
+  // file) — unlike the .mcp.json propagation above, this is NOT scope-gated.
+  try {
+    const hostTrust = owned?.host ?? 'claude';
+    const untrusted = await reverseMcpTrustFromProjects({ extId: id, host: hostTrust });
+    for (const p of untrusted) {
+      process.stdout.write(`${CLI} uninstall: mcp-trust removed  ${id} ← ${p}\n`);
+    }
+  } catch (e) {
+    process.stderr.write(`${CLI} uninstall: warning: mcp-trust reversal failed for '${id}' — ${String(e)}\n`);
   }
 
   if (owned !== undefined) {

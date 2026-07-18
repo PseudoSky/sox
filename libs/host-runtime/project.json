@@ -64,6 +64,7 @@
       "inputs": [
         "{workspaceRoot}/tools/test-e2e-lifecycle.js",
         "{workspaceRoot}/tools/probe-service-proxy-zdt.mjs",
+        "{workspaceRoot}/tools/probe-mcp-trust-sync.mjs",
         "{workspaceRoot}/libs/host-runtime/dist/**",
         "{workspaceRoot}/libs/service-proxy/dist/**",
         "{workspaceRoot}/dist/apps/sox/**"
