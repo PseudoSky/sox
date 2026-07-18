@@ -302,7 +302,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_write',
     description:
-      'Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, extractive summary). Returns {episode_uid}. The embedding + near-dup detection run asynchronously moments after the write (enrichment.near_dup is null in the response; the episode is keyword/temporal-recallable immediately and vector-recallable once the async embed lands — set SOX_SYNC_EMBED=1 server-side to restore fully synchronous behaviour). Batch enrichments (clustering, auto-links, importance link-score) run in-process on a periodic interval within this server (no separate daemon process). (BL-62) enrichment.project_path_source is "explicit" when this call supplied project_path, or "inferred" when it was auto-detected from the server\'s env/cwd — pass project_path explicitly whenever your working directory may differ from the server process\'s (e.g. a long-lived shared session), since "inferred" attribution can be wrong and is only correctable afterward via memory_update.',
+      'Write a memory episode. Runs deterministic enrichment synchronously (provenance, tags, topic, extractive summary). Returns {episode_uid}. The embedding + near-dup detection run asynchronously moments after the write (enrichment.near_dup is null in the response; the episode is keyword/temporal-recallable immediately and vector-recallable once the async embed lands — set SOX_SYNC_EMBED=1 server-side to restore fully synchronous behaviour). Batch enrichments (clustering, auto-links, importance link-score) run in-process on a periodic interval within this server (no separate daemon process). (BL-62) project_path is REQUIRED — no cwd/env inference. A long-lived server process\'s cwd reflects wherever it happened to be spawned (e.g. a throwaway git worktree with zero prior episodes), not the calling agent\'s real project; a wrong guess here permanently mis-attributes the episode. Pass the calling agent\'s actual workspace root explicitly every time.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -314,7 +314,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         topic: { type: 'string', description: '(E5) Explicit topic override. Stored to node.topic; takes priority over [<topic>] prefix and cluster label.' },
         tags: { type: 'array', items: { type: 'string' }, description: '(E4) Concept/entity tags. Persisted as node.tags JSON array AND as entity nodes + MENTIONS edges.' },
         metadata: { type: 'object', additionalProperties: true, description: '(E3) Arbitrary caller metadata persisted as node.meta JSON. Queryable via json_extract.' },
-        project_path: { type: 'string', description: '(E1) Caller project root path. Auto-detected from cwd+git if omitted.' },
+        project_path: { type: 'string', description: '(E1, REQUIRED) Caller project root path. No cwd/env inference — the write is rejected with E_MISSING_PROJECT_PATH if omitted.' },
         derived_from_uid: { type: 'string', description: '(E9) UID of a parent episode; emits a DERIVED_FROM edge from this episode to parent.' },
         session_id: { type: 'string' },
         t_occurred: { type: 'string', description: 'ISO timestamp when this occurred.' },
@@ -335,13 +335,13 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
           description: '(WP-4) Client-supplied request idempotency key. Replay of a known id returns the original result with "replayed": true. No new episode is created.',
         },
       },
-      required: ['content'],
+      required: ['content', 'project_path'],
     },
   },
   {
     name: 'memory_write_batch',
     description:
-      'Write multiple memory episodes as a single batch. Each item follows the same shape as memory_write. Per-item E_DEDUP is returned as ok:false (not a batch failure). The entire batch routes through one queue entry.',
+      'Write multiple memory episodes as a single batch. Each item follows the same shape as memory_write. Per-item E_DEDUP is returned as ok:false (not a batch failure). The entire batch routes through one queue entry. (BL-62) project_path is REQUIRED on every item — no cwd/env inference; the whole batch is rejected with E_MISSING_PROJECT_PATH if any item omits it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -357,7 +357,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
               topic: { type: 'string', description: '(E5) Explicit topic override.' },
               tags: { type: 'array', items: { type: 'string' }, description: '(E4) Concept/entity tags.' },
               metadata: { type: 'object', additionalProperties: true, description: '(E3) Arbitrary caller metadata.' },
-              project_path: { type: 'string', description: '(E1) Caller project root path.' },
+              project_path: { type: 'string', description: '(E1, REQUIRED) Caller project root path. No cwd/env inference.' },
               derived_from_uid: { type: 'string', description: '(E9) UID of a parent episode.' },
               session_id: { type: 'string' },
               t_occurred: { type: 'string', description: 'ISO timestamp when this occurred.' },
@@ -366,7 +366,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
               importance: { type: 'number', minimum: 1, maximum: 10, description: 'User-asserted importance (1–10).' },
               client_request_id: { type: 'string', maxLength: 128, description: '(WP-4) Client-supplied request idempotency key. Replay returns the original result.' },
             },
-            required: ['content'],
+            required: ['content', 'project_path'],
           },
           description: 'Array of memory_write payloads.',
         },
@@ -1015,12 +1015,33 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       // Full write params (shared by both embed modes). client_request_id was
       // previously dropped by this handler (WP-4 idempotency dead through MCP)
       // — now forwarded.
+      // BL-62: project_path is REQUIRED — no cwd/env inference. Checked here (fast,
+      // clear MCP error, before any chunking/queue work) AND in memoryWritePhaseA
+      // (defense in depth for the other call sites — memory-cli, direct memoryWrite()
+      // callers — that don't go through this MCP handler).
+      const writeProjectPath = args['project_path'] as string | undefined;
+      if (!writeProjectPath || writeProjectPath.length === 0) {
+        return {
+          isError: true,
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              code: 'E_MISSING_PROJECT_PATH',
+              message:
+                'project_path is required — the calling agent\'s actual workspace root, ' +
+                'passed explicitly. No cwd/env inference: a long-lived server process\'s ' +
+                'cwd reflects wherever it happened to be spawned, not the caller\'s real ' +
+                'project, and a wrong guess here permanently mis-attributes the episode.',
+            }),
+          }],
+        };
+      }
       const parentParams = {
         content,
         summary: args['summary'] as string | undefined,
         name: args['name'] as string | undefined,
         topic: args['topic'] as string | undefined,
-        project_path: args['project_path'] as string | undefined,
+        project_path: writeProjectPath,
         derived_from_uid: args['derived_from_uid'] as string | undefined,
         metadata: args['metadata'] as Record<string, unknown> | undefined,
         session_id: args['session_id'] as string | undefined,
@@ -1033,6 +1054,10 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       };
       const chunkParams = (chunk: string) => ({
         content: chunk,
+        // BL-62 fix: chunks previously omitted project_path entirely, relying on
+        // whatever inference the write path fell back to — now inherits the
+        // parent's explicit, already-validated value.
+        project_path: writeProjectPath,
         agent_id: args['agent_id'] as string | undefined,
         source: (args['source'] as 'message' | undefined) ?? ('document' as const),
         metadata: args['metadata'] as Record<string, unknown> | undefined,
@@ -1189,12 +1214,34 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       if (!Array.isArray(items) || items.length === 0) {
         return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_INVALID_INPUT', message: 'items must be a non-empty array' }) }] };
       }
+      // BL-62: project_path is REQUIRED per item — no cwd/env inference. Reject the
+      // WHOLE batch (matching the single-queue-entry atomicity of the write below)
+      // rather than silently writing some items with a bad guess.
+      const missingProjectPath = items
+        .map((item, i) => ({ i, ok: typeof item['project_path'] === 'string' && (item['project_path'] as string).length > 0 }))
+        .filter((r) => !r.ok)
+        .map((r) => r.i);
+      if (missingProjectPath.length > 0) {
+        return {
+          isError: true,
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              code: 'E_MISSING_PROJECT_PATH',
+              message:
+                `project_path is required on every batch item — missing on item(s) at index ` +
+                `${missingProjectPath.join(', ')}. No cwd/env inference: pass each item's ` +
+                `calling agent's actual workspace root explicitly.`,
+            }),
+          }],
+        };
+      }
       const batchItems = items.map((item) => ({
         content: item['content'] as string,
         summary: item['summary'] as string | undefined,
         name: item['name'] as string | undefined,
         topic: item['topic'] as string | undefined,
-        project_path: item['project_path'] as string | undefined,
+        project_path: item['project_path'] as string,
         derived_from_uid: item['derived_from_uid'] as string | undefined,
         metadata: item['metadata'] as Record<string, unknown> | undefined,
         session_id: item['session_id'] as string | undefined,

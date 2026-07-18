@@ -77,7 +77,7 @@ function insertOrphanEpisode(db: Database.Database, content: string, tCreated: s
 }
 
 function phaseA(db: Database.Database, content: string): PhaseAOutcome {
-  const r = memoryWritePhaseA(db, { content });
+  const r = memoryWritePhaseA(db, { content, project_path: '/test/project' });
   expect('code' in r).toBe(false);
   return r as PhaseAOutcome;
 }
@@ -234,7 +234,7 @@ describe('per-store keying (mirrors WriteQueue.metricsForPath) + snapshot purity
       expect(getEmbedPipelineMetrics(other.dbPath)).toBeNull();
 
       const wqB = WriteQueue.forPath(other.dbPath);
-      const b = memoryWritePhaseA(other.db, { content: 'store B episode about tidal harmonics' });
+      const b = memoryWritePhaseA(other.db, { content: 'store B episode about tidal harmonics', project_path: '/test/project' });
       await schedulePendingEmbeds(wqB, [(b as PhaseAOutcome).pending!]);
 
       const mA = getEmbedPipelineMetrics(ctx.dbPath)!;
@@ -270,7 +270,7 @@ describe('pipeline applies are apply-kind queue tasks (write_latency_ms stays ho
     const wq = WriteQueue.forPath(ctx.dbPath);
     // Phase A through the queue (write-kind), Phase B apply (apply-kind).
     const outcome = await wq.enqueue('memory_write', (qdb) =>
-      memoryWritePhaseA(qdb, { content: 'kind separation end to end proof' }),
+      memoryWritePhaseA(qdb, { content: 'kind separation end to end proof', project_path: '/test/project' }),
     );
     await schedulePendingEmbeds(wq, [(outcome as PhaseAOutcome).pending!]);
 

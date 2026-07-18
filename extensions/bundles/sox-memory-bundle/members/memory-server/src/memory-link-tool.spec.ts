@@ -53,12 +53,14 @@ let dstUid: string;
 beforeAll(async () => {
   const a = parseResult(
     await handleToolCall('memory_write', {
+      project_path: '/test/project',
       db_path: DB_PATH,
       content: 'BL-249 regression fixture: source episode.',
     }),
   );
   const b = parseResult(
     await handleToolCall('memory_write', {
+      project_path: '/test/project',
       db_path: DB_PATH,
       content: 'BL-249 regression fixture: destination episode.',
     }),

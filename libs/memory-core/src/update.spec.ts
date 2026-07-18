@@ -150,7 +150,7 @@ describe('memoryUpdate — E_NOT_FOUND', () => {
   it('returns E_NOT_FOUND for an invalidated node', async () => {
     const { db, dir } = tmpDb();
     try {
-      const wr = await memoryWrite(db, { content: 'will be invalidated' });
+      const wr = await memoryWrite(db, { content: 'will be invalidated', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
       db.prepare(`UPDATE node SET t_invalid = ? WHERE uid = ?`).run(
         new Date().toISOString(),
@@ -170,7 +170,7 @@ describe('memoryUpdate — E_NO_FIELDS', () => {
   it('returns E_NO_FIELDS when no updatable params supplied', async () => {
     const { db, dir } = tmpDb();
     try {
-      const wr = await memoryWrite(db, { content: 'initial content' });
+      const wr = await memoryWrite(db, { content: 'initial content', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
       const result = await memoryUpdate(db, { uid });
       expect(result).toMatchObject({ code: 'E_NO_FIELDS' });
@@ -185,6 +185,7 @@ describe('memoryUpdate — E_NO_FIELDS', () => {
       const wr = await memoryWrite(db, {
         content: 'same content',
         importance: 5,
+        project_path: '/test/project',
       });
       const uid = (wr as { episode_uid: string }).episode_uid;
       const result = await memoryUpdate(db, { uid, content: 'same content' });
@@ -201,7 +202,7 @@ describe('memoryUpdate — individual field updates', () => {
   it('updates content and reports reembedded:true', async () => {
     const { db, dir } = tmpDb();
     try {
-      const wr = await memoryWrite(db, { content: 'original content' });
+      const wr = await memoryWrite(db, { content: 'original content', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
       const nodeBefore = getNode(db, uid)!;
 
@@ -227,7 +228,7 @@ describe('memoryUpdate — individual field updates', () => {
   it('updates summary and reports reembedded:true', async () => {
     const { db, dir } = tmpDb();
     try {
-      const wr = await memoryWrite(db, { content: 'content', summary: 'old summary' });
+      const wr = await memoryWrite(db, { content: 'content', summary: 'old summary', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
 
       const result = await memoryUpdate(db, { uid, summary: 'new summary' });
@@ -245,7 +246,7 @@ describe('memoryUpdate — individual field updates', () => {
   it('updates name', async () => {
     const { db, dir } = tmpDb();
     try {
-      const wr = await memoryWrite(db, { content: 'episode content', name: 'old name' });
+      const wr = await memoryWrite(db, { content: 'episode content', name: 'old name', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
 
       const result = await memoryUpdate(db, { uid, name: 'new name' });
@@ -263,7 +264,7 @@ describe('memoryUpdate — individual field updates', () => {
   it('updates topic', async () => {
     const { db, dir } = tmpDb();
     try {
-      const wr = await memoryWrite(db, { content: 'content about TS', topic: 'typescript' });
+      const wr = await memoryWrite(db, { content: 'content about TS', topic: 'typescript', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
 
       const result = await memoryUpdate(db, { uid, topic: 'javascript' });
@@ -306,7 +307,7 @@ describe('memoryUpdate — individual field updates', () => {
   it('updates tags', async () => {
     const { db, dir } = tmpDb();
     try {
-      const wr = await memoryWrite(db, { content: 'tag test', tags: ['a', 'b'] });
+      const wr = await memoryWrite(db, { content: 'tag test', tags: ['a', 'b'], project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
 
       const result = await memoryUpdate(db, { uid, tags: ['c', 'd', 'e'] });
@@ -324,7 +325,7 @@ describe('memoryUpdate — individual field updates', () => {
   it('updates importance', async () => {
     const { db, dir } = tmpDb();
     try {
-      const wr = await memoryWrite(db, { content: 'importance test', importance: 2 });
+      const wr = await memoryWrite(db, { content: 'importance test', importance: 2, project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
 
       const result = await memoryUpdate(db, { uid, importance: 8 });
@@ -342,7 +343,7 @@ describe('memoryUpdate — individual field updates', () => {
   it('updates t_occurred and t_valid', async () => {
     const { db, dir } = tmpDb();
     try {
-      const wr = await memoryWrite(db, { content: 'temporal test' });
+      const wr = await memoryWrite(db, { content: 'temporal test', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
 
       const newOccurred = '2024-01-01T00:00:00.000Z';
@@ -447,7 +448,7 @@ describe('memoryUpdate — t_created immutable, t_updated set', () => {
   it('never changes t_created; always sets t_updated', async () => {
     const { db, dir } = tmpDb();
     try {
-      const wr = await memoryWrite(db, { content: 'time anchor test' });
+      const wr = await memoryWrite(db, { content: 'time anchor test', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
       const nodeBefore = getNode(db, uid)!;
       // t_updated is now set by enrichOnWrite → graph.touch() so it's no longer null
@@ -481,6 +482,7 @@ describe('memoryUpdate — metadata merging', () => {
       const wr = await memoryWrite(db, {
         content: 'meta merge test',
         metadata: { a: { x: 1 }, list: [1, 2, 3], stable: 'keep' },
+        project_path: '/test/project',
       });
       const uid = (wr as { episode_uid: string }).episode_uid;
 
@@ -519,6 +521,7 @@ describe('memoryUpdate — metadata merging', () => {
       const wr = await memoryWrite(db, {
         content: 'meta replace test',
         metadata: { old_key: 'will be gone', nested: { deep: true } },
+        project_path: '/test/project',
       });
       const uid = (wr as { episode_uid: string }).episode_uid;
 
@@ -542,7 +545,7 @@ describe('memoryUpdate — metadata merging', () => {
   it('metadata-only update does NOT re-embed', async () => {
     const { db, dir } = tmpDb();
     try {
-      const wr = await memoryWrite(db, { content: 'embed stability test' });
+      const wr = await memoryWrite(db, { content: 'embed stability test', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
       const nodeBefore = getNode(db, uid)!;
       const vecBefore = getVecHex(db, nodeBefore.rowid);
@@ -570,7 +573,7 @@ describe('memoryUpdate — re-embed on content change', () => {
   it('vec_node vector changes when content updates', async () => {
     const { db, dir } = tmpDb();
     try {
-      const wr = await memoryWrite(db, { content: 'first version of the content' });
+      const wr = await memoryWrite(db, { content: 'first version of the content', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
       const nodeBefore = getNode(db, uid)!;
       const vecBefore = getVecHex(db, nodeBefore.rowid);
@@ -598,7 +601,7 @@ describe('memoryUpdate — re-embed on content change', () => {
   it('vec_node vector unchanged for a non-content/summary update', async () => {
     const { db, dir } = tmpDb();
     try {
-      const wr = await memoryWrite(db, { content: 'stable content for vector test' });
+      const wr = await memoryWrite(db, { content: 'stable content for vector test', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
       const nodeBefore = getNode(db, uid)!;
       const vecBefore = getVecHex(db, nodeBefore.rowid);
@@ -637,6 +640,7 @@ describe('memoryUpdate — FTS reflects content change (fts_node_au trigger)', (
       const wr = await memoryWrite(db, {
         content: 'the quick zorbflux ran over the lazy dog',
         summary: 'canine speed test',   // no 'zorbflux' here
+        project_path: '/test/project',
       });
       const uid = (wr as { episode_uid: string }).episode_uid;
       const nodeRow = db
@@ -686,7 +690,7 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
   it('content change: commits columns, DELETES the stale vector, returns a PendingEmbed', async () => {
     const { db, dir } = tmpDb();
     try {
-      const w = await memoryWrite(db, { content: 'original text for phase-a' });
+      const w = await memoryWrite(db, { content: 'original text for phase-a', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
       const rowid = (db.prepare('SELECT rowid FROM node WHERE uid = ?').get(uid) as { rowid: number }).rowid;
       expect(getVecHex(db, rowid)).not.toBeNull(); // sync composition embedded it
@@ -720,7 +724,7 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
   it('metadata-only change: no pending, vector untouched', async () => {
     const { db, dir } = tmpDb();
     try {
-      const w = await memoryWrite(db, { content: 'stable text' });
+      const w = await memoryWrite(db, { content: 'stable text', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
       const rowid = (db.prepare('SELECT rowid FROM node WHERE uid = ?').get(uid) as { rowid: number }).rowid;
       const before = getVecHex(db, rowid);
@@ -739,7 +743,7 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
   it('summary-only change: pending text is the EXISTING content (pre-BL-189 semantics preserved)', async () => {
     const { db, dir } = tmpDb();
     try {
-      const w = await memoryWrite(db, { content: 'content stays', summary: 'old summary' });
+      const w = await memoryWrite(db, { content: 'content stays', summary: 'old summary', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
 
       const a = memoryUpdatePhaseA(db, { uid, summary: 'new summary' });

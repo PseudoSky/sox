@@ -45,7 +45,7 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
   });
 
   async function writeEpisode(content: string): Promise<string> {
-    const r = await memoryWrite(db, { content });
+    const r = await memoryWrite(db, { content, project_path: '/test/project' });
     expect('episode_uid' in r).toBe(true);
     return (r as { episode_uid: string }).episode_uid;
   }

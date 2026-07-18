@@ -167,137 +167,147 @@ describe('memory-server backend handler', () => {
   });
 });
 
-// ── BL-62: per-request project_path attribution via client_context ─────────────
+// ── BL-62 (RESOLVED 2026-07-18): no server-side project_path inference ─────────
 //
-// Tests the three-tier precedence implemented in handleBackendRequest:
-//   1. Explicit caller arg (arguments.project_path, non-empty) — always wins.
-//   2. client_context.project_path from the shim's internal frame — per-request.
-//   3. Process env/cwd fallback — existing behavior, no client_context present.
+// The old `client_context.project_path` injection (a per-request frame the shim
+// attached, sourced from its OWN spawn-time process.cwd() — no worktree
+// canonicalization, frozen for the shim's whole lifetime) is GONE. It used to
+// silently override any omitted `arguments.project_path`, which broke
+// memory_topics/memory_list_entities/memory_stats (they read the top-level
+// project_path key the injection targeted) whenever the shim was spawned from a
+// directory with zero episodes — a git worktree, in the incident that surfaced
+// this. memory_recall was only ever accidentally immune (its filter lives at
+// `arguments.filters.project_path`, a key the injection never touched).
 //
-// memory_ping is used as the probe because it requires NO db — no real store path
-// is needed and the test never touches ~/.memory. The project_path value propagates
-// into the enrichment output of memory_write, but for this unit we only need to
-// prove the args merging logic, which lives entirely in handleBackendRequest.
+// New contract, proved below against a REAL scratch store (not memory_ping,
+// which touches no db and can't prove anything about project_path resolution):
+//   - WRITES reject outright with E_MISSING_PROJECT_PATH when project_path is
+//     omitted — no fallback to client_context, env, or cwd, ever.
+//   - READS omitting project_path get NO filter (search every project) — never
+//     silently scoped to whatever the (now-removed) client_context said.
+//   - `client_context` in the wire payload is inert: present or absent, valid or
+//     malformed, it has zero effect on any tool's behavior.
 
-describe('BL-62 — handleBackendRequest client_context project_path attribution', () => {
-  /**
-   * Capture the `args` object that `handleToolCall` would receive for a
-   * `tools/call` request. We intercept by using a thin wrapper: call
-   * `handleBackendRequest` with a crafted request and inspect what args the
-   * `memory_ping` handler receives (ping echoes its resolved project through
-   * the ping store block when a real db is available, but we just want to
-   * assert the arg merging happens correctly BEFORE handleToolCall is invoked).
-   *
-   * Because esbuild bundles memory-server (no typecheck), we verify the merging
-   * by calling handleBackendRequest directly and checking that the request was
-   * structured correctly — we can do this by intercepting at the JSON-RPC layer
-   * with a spy approach.
-   *
-   * Simpler approach: exercise `handleBackendRequest` with memory_ping (which
-   * touches no db) and verify that the returned `client_context` field is NOT
-   * in the response (it must be stripped — it's internal), and that the call
-   * succeeds.
-   */
+describe('BL-62 — no server-side project_path inference (resolved)', () => {
+  function scratchDbPath(): string {
+    return path.join(tmpDir(), 'test.db');
+  }
 
-  it('BL-62 [presence]: client_context field is accepted without error (new backend ← new shim)', async () => {
-    // A tools/call with client_context injected by the shim must succeed — not error.
+  it('memory_write with client_context but NO explicit project_path is REJECTED (no fallback to context)', async () => {
     const resp = await handleBackendRequest({
       jsonrpc: '2.0',
       id: 1,
       method: 'tools/call',
       params: {
-        name: 'memory_ping',
-        arguments: {},
+        name: 'memory_write',
+        arguments: { content: 'hello', db_path: scratchDbPath() },
         client_context: { project_path: '/workspace/project-a' },
-      },
+      } as unknown as Record<string, unknown>,
     });
-    // The call succeeds — client_context does not cause a crash or an error response.
-    expect(resp?.error).toBeUndefined();
     const result = resp?.result as { content: Array<{ text: string }>; isError?: boolean };
-    expect(result.isError).not.toBe(true);
-    expect(result.content[0]?.text).toContain('ok');
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('E_MISSING_PROJECT_PATH');
   });
 
-  it('BL-62 [absent]: no client_context → falls back to process env/cwd (backward compat: old shim → new backend)', async () => {
-    // A tools/call WITHOUT client_context (old shim or direct stdio) must still work.
+  it('memory_write with NO project_path and NO client_context is ALSO rejected (no cwd/env fallback either)', async () => {
     const resp = await handleBackendRequest({
       jsonrpc: '2.0',
       id: 2,
       method: 'tools/call',
-      params: { name: 'memory_ping', arguments: {} },
+      params: { name: 'memory_write', arguments: { content: 'hello', db_path: scratchDbPath() } },
     });
-    expect(resp?.error).toBeUndefined();
-    const result = resp?.result as { content: Array<{ text: string }> };
-    expect(result.content[0]?.text).toContain('ok');
+    const result = resp?.result as { content: Array<{ text: string }>; isError?: boolean };
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('E_MISSING_PROJECT_PATH');
   });
 
-  it('BL-62 [explicit wins]: args.project_path present and non-empty takes precedence over client_context', async () => {
-    // When the caller explicitly passes project_path in arguments, client_context
-    // must NOT override it. We verify by inspecting that a well-formed request with
-    // BOTH succeeds (the explicit arg is passed through, not overwritten by context).
+  it('memory_write with explicit project_path succeeds and stores exactly that value — client_context (if present) is ignored, never merged', async () => {
+    const dbPath = scratchDbPath();
     const resp = await handleBackendRequest({
       jsonrpc: '2.0',
       id: 3,
       method: 'tools/call',
       params: {
-        name: 'memory_ping',
-        arguments: { project_path: '/explicit/project' },
-        client_context: { project_path: '/context/project' },
-      },
+        name: 'memory_write',
+        arguments: { content: 'hello from project-real', project_path: '/real/project', db_path: dbPath },
+        client_context: { project_path: '/decoy/project' },
+      } as unknown as Record<string, unknown>,
     });
-    expect(resp?.error).toBeUndefined();
-    // memory_ping succeeds either way; the key invariant is that the request didn't
-    // error — explicit arg presence is preserved, context doesn't stomp it.
     const result = resp?.result as { content: Array<{ text: string }>; isError?: boolean };
     expect(result.isError).not.toBe(true);
-  });
+    const written = JSON.parse(result.content[0]?.text ?? '{}') as { enrichment?: { project_path?: string } };
+    expect(written.enrichment?.project_path).toBe('/real/project');
 
-  it('BL-62 [malformed context ignored]: client_context with non-string project_path is gracefully ignored', async () => {
-    // A malformed client_context (wrong type) must not crash the backend.
-    const resp = await handleBackendRequest({
+    // Confirm via a scoped read: filtering by the DECOY path finds nothing;
+    // filtering by the REAL path finds it.
+    const decoyRead = await handleBackendRequest({
       jsonrpc: '2.0',
       id: 4,
       method: 'tools/call',
-      params: {
-        name: 'memory_ping',
-        arguments: {},
-        client_context: { project_path: 42 }, // wrong type
-      },
+      params: { name: 'memory_recall', arguments: { db_path: dbPath, filters: { project_path: '/decoy/project' } } },
     });
-    expect(resp?.error).toBeUndefined();
-    const result = resp?.result as { content: Array<{ text: string }> };
-    expect(result.content[0]?.text).toContain('ok');
-  });
+    const decoyResult = JSON.parse((decoyRead?.result as { content: Array<{ text: string }> }).content[0]?.text ?? '{}') as { results: unknown[] };
+    expect(decoyResult.results.length).toBe(0);
 
-  it('BL-62 [null context ignored]: null client_context is gracefully ignored', async () => {
-    const resp = await handleBackendRequest({
+    const realRead = await handleBackendRequest({
       jsonrpc: '2.0',
       id: 5,
       method: 'tools/call',
-      params: {
-        name: 'memory_ping',
-        arguments: {},
-        client_context: null,
-      },
+      params: { name: 'memory_recall', arguments: { db_path: dbPath, filters: { project_path: '/real/project' } } },
     });
-    expect(resp?.error).toBeUndefined();
-    const result = resp?.result as { content: Array<{ text: string }> };
-    expect(result.content[0]?.text).toContain('ok');
+    const realResult = JSON.parse((realRead?.result as { content: Array<{ text: string }> }).content[0]?.text ?? '{}') as { results: unknown[] };
+    expect(realResult.results.length).toBe(1);
   });
 
-  it('BL-62 [empty project_path in context ignored]: empty string in client_context falls through to env/cwd', async () => {
-    const resp = await handleBackendRequest({
+  it('memory_topics with client_context present but NO explicit project_path returns UNSCOPED results (not silently filtered to the context value)', async () => {
+    const dbPath = scratchDbPath();
+    // Write an episode explicitly attributed to a project the client_context does NOT match.
+    await handleBackendRequest({
       jsonrpc: '2.0',
       id: 6,
       method: 'tools/call',
       params: {
-        name: 'memory_ping',
-        arguments: {},
-        client_context: { project_path: '' }, // empty — treated as absent
+        name: 'memory_write',
+        arguments: { content: 'cve research notes', topic: 'cve-research', project_path: '/actual/project', db_path: dbPath },
       },
     });
-    expect(resp?.error).toBeUndefined();
-    const result = resp?.result as { content: Array<{ text: string }> };
-    expect(result.content[0]?.text).toContain('ok');
+
+    // Query topics with a client_context pointing at a DIFFERENT (empty) project.
+    // Before the fix, this would have silently scoped to '/some/other/worktree'
+    // (zero episodes there) and returned an empty topics list, even though data
+    // clearly exists — exactly the reported bug.
+    const resp = await handleBackendRequest({
+      jsonrpc: '2.0',
+      id: 7,
+      method: 'tools/call',
+      params: {
+        name: 'memory_topics',
+        arguments: { db_path: dbPath },
+        client_context: { project_path: '/some/other/worktree' },
+      } as unknown as Record<string, unknown>,
+    });
+    const result = resp?.result as { content: Array<{ text: string }>; isError?: boolean };
+    expect(result.isError).not.toBe(true);
+    const parsed = JSON.parse(result.content[0]?.text ?? '{}') as { topics: Array<{ topic: string }>; total: number };
+    expect(parsed.total).toBeGreaterThan(0);
+    expect(parsed.topics.some((t) => t.topic === 'cve-research')).toBe(true);
+  });
+
+  it('malformed/null client_context is gracefully ignored (does not crash the backend)', async () => {
+    for (const badContext of [{ project_path: 42 }, null, { project_path: '' }]) {
+      const resp = await handleBackendRequest({
+        jsonrpc: '2.0',
+        id: 8,
+        method: 'tools/call',
+        params: {
+          name: 'memory_ping',
+          arguments: {},
+          client_context: badContext,
+        } as unknown as Record<string, unknown>,
+      });
+      const result = resp?.result as { content: Array<{ text: string }>; isError?: boolean };
+      expect(result.isError).not.toBe(true);
+      expect(result.content[0]?.text).toContain('ok');
+    }
   });
 });

@@ -108,7 +108,7 @@ describe('Phase A holds the queue slot with ZERO embed calls (seam-level proof)'
 
     const wq = WriteQueue.forPath(ctx.dbPath);
     const outcome = await wq.enqueue('memory_write', (qdb) =>
-      memoryWritePhaseA(qdb, { content: 'Phase A must not run ONNX inference on the slot.' }),
+      memoryWritePhaseA(qdb, { content: 'Phase A must not run ONNX inference on the slot.', project_path: '/test/project' }),
     );
 
     // The queue-slot task is complete — not a single provider call was made.
@@ -129,7 +129,7 @@ describe('Phase A holds the queue slot with ZERO embed calls (seam-level proof)'
   });
 
   it('memoryWritePhaseA is fully synchronous (returns a value, not a promise)', () => {
-    const r = memoryWritePhaseA(ctx.db, { content: 'synchronous phase A return value' });
+    const r = memoryWritePhaseA(ctx.db, { content: 'synchronous phase A return value', project_path: '/test/project' });
     expect(r).not.toBeInstanceOf(Promise);
     expect('code' in r).toBe(false);
   });
@@ -142,12 +142,14 @@ describe('fresh Phase-A write is BM25-recallable before its vector exists', () =
     // Node A: full write (has a vector) — background population.
     const a = await memoryWrite(ctx.db, {
       content: 'Astronomy telescopes capture distant galaxies through long exposures.',
+      project_path: '/test/project',
     });
     expect('episode_uid' in a).toBe(true);
 
     // Node B: Phase A only — committed, FTS-indexed, NO vec row.
     const b = memoryWritePhaseA(ctx.db, {
       content: 'Zanzibar spice merchants traded cloves cardamom and vanilla pods.',
+      project_path: '/test/project',
     });
     expect('code' in b).toBe(false);
     const bOut = b as PhaseAOutcome;
@@ -186,12 +188,12 @@ describe('fresh Phase-A write is BM25-recallable before its vector exists', () =
 
 describe('E_DEDUP and client_request_id replay are identical pre/post split', () => {
   it('Phase A of duplicate content returns E_DEDUP with existing_uid — even before the vector lands', () => {
-    const first = memoryWritePhaseA(ctx.db, { content: 'Dedup is content-hash based, not vector based.' });
+    const first = memoryWritePhaseA(ctx.db, { content: 'Dedup is content-hash based, not vector based.', project_path: '/test/project' });
     expect('code' in first).toBe(false);
     const firstUid = (first as PhaseAOutcome).result.episode_uid;
 
     // Duplicate (same content after trim+lowercase) while the first still has NO vec row.
-    const second = memoryWritePhaseA(ctx.db, { content: '  DEDUP IS CONTENT-HASH BASED, NOT VECTOR BASED.  ' });
+    const second = memoryWritePhaseA(ctx.db, { content: '  DEDUP IS CONTENT-HASH BASED, NOT VECTOR BASED.  ', project_path: '/test/project' });
     expect('code' in second).toBe(true);
     expect((second as { code: string }).code).toBe('E_DEDUP');
     expect((second as { existing_uid: string }).existing_uid).toBe(firstUid);
@@ -201,6 +203,7 @@ describe('E_DEDUP and client_request_id replay are identical pre/post split', ()
     const first = memoryWritePhaseA(ctx.db, {
       content: 'Idempotent write via request ledger.',
       client_request_id: 'req-pipeline-1',
+      project_path: '/test/project',
     });
     expect('code' in first).toBe(false);
     const firstOut = first as PhaseAOutcome;
@@ -209,6 +212,7 @@ describe('E_DEDUP and client_request_id replay are identical pre/post split', ()
     const replay = memoryWritePhaseA(ctx.db, {
       content: 'Different content, same request id — must replay.',
       client_request_id: 'req-pipeline-1',
+      project_path: '/test/project',
     });
     expect('code' in replay).toBe(false);
     const replayOut = replay as PhaseAOutcome;
@@ -231,10 +235,10 @@ describe('memoryWriteBatchPhaseA — one sync queue task, pipelined Phase B', ()
     WriteQueue.resetAllEnqueueCounts();
 
     const items = [
-      { content: 'The volcano erupted at dawn revealing ancient lava flows.' },
-      { content: 'Stock markets closed higher amid positive earnings reports.' },
-      { content: '' }, // per-item validation error
-      { content: 'THE VOLCANO ERUPTED AT DAWN REVEALING ANCIENT LAVA FLOWS.' }, // byte-dup of [0]
+      { content: 'The volcano erupted at dawn revealing ancient lava flows.', project_path: '/test/project' },
+      { content: 'Stock markets closed higher amid positive earnings reports.', project_path: '/test/project' },
+      { content: '', project_path: '/test/project' }, // per-item validation error
+      { content: 'THE VOLCANO ERUPTED AT DAWN REVEALING ANCIENT LAVA FLOWS.', project_path: '/test/project' }, // byte-dup of [0]
     ];
 
     const outcome = await wq.enqueue('memory_write_batch', (qdb) =>
@@ -273,6 +277,7 @@ describe('deferred E8 near-dup runs in Phase B', () => {
     // Full write: the "older" episode with a vector.
     const older = await memoryWrite(ctx.db, {
       content: 'quartz garnet topaz obsidian feldspar mineral catalogue',
+      project_path: '/test/project',
     });
     expect('episode_uid' in older).toBe(true);
     const olderUid = (older as { episode_uid: string }).episode_uid;
@@ -281,6 +286,7 @@ describe('deferred E8 near-dup runs in Phase B', () => {
     // under the feature-hash provider) but different bytes → passes content-hash dedup.
     const newer = memoryWritePhaseA(ctx.db, {
       content: 'garnet quartz topaz obsidian feldspar mineral catalogue',
+      project_path: '/test/project',
     });
     expect('code' in newer).toBe(false);
     const newerOut = newer as PhaseAOutcome;
@@ -313,7 +319,7 @@ describe('deferred E8 near-dup runs in Phase B', () => {
 
 describe('applyEmbedding — node lifecycle between phases', () => {
   it('node invalidated between phases: vector still lands (bi-temporal), near-dup pass skipped', async () => {
-    const a = memoryWritePhaseA(ctx.db, { content: 'ephemeral fact invalidated before its embedding lands' });
+    const a = memoryWritePhaseA(ctx.db, { content: 'ephemeral fact invalidated before its embedding lands', project_path: '/test/project' });
     expect('code' in a).toBe(false);
     const out = a as PhaseAOutcome;
 
@@ -337,7 +343,7 @@ describe('applyEmbedding — node lifecycle between phases', () => {
   });
 
   it('double apply (pipeline/heal race) → second returns exists, no duplicate vec row', async () => {
-    const a = memoryWritePhaseA(ctx.db, { content: 'raced by the heal pass' });
+    const a = memoryWritePhaseA(ctx.db, { content: 'raced by the heal pass', project_path: '/test/project' });
     const out = a as PhaseAOutcome;
     const vec = await embed(out.pending!.text);
     expect(applyEmbedding(ctx.db, out.pending!, vec).status).toBe('applied');
@@ -359,8 +365,8 @@ describe('Phase-B crash recovery: embedBacklogStats + healMissingVectors', () =>
     _setEmbedProviderForTest(new FailingProvider());
     const logLines: string[] = [];
 
-    const a = memoryWritePhaseA(ctx.db, { content: 'first orphan awaiting its embedding vector' });
-    const b = memoryWritePhaseA(ctx.db, { content: 'second orphan from a different write entirely' });
+    const a = memoryWritePhaseA(ctx.db, { content: 'first orphan awaiting its embedding vector', project_path: '/test/project' });
+    const b = memoryWritePhaseA(ctx.db, { content: 'second orphan from a different write entirely', project_path: '/test/project' });
     const pendings = [(a as PhaseAOutcome).pending!, (b as PhaseAOutcome).pending!];
 
     const sched = await schedulePendingEmbeds(wq, pendings, { logSink: (l) => logLines.push(l) });
@@ -390,7 +396,7 @@ describe('Phase-B crash recovery: embedBacklogStats + healMissingVectors', () =>
   it.skip('NC: with SOX_DISABLE_EMBED_HEAL=1 the orphan stays orphaned', async () => {
     const wq = WriteQueue.forPath(ctx.dbPath);
     _setEmbedProviderForTest(new FailingProvider());
-    const a = memoryWritePhaseA(ctx.db, { content: 'orphan that nobody heals' });
+    const a = memoryWritePhaseA(ctx.db, { content: 'orphan that nobody heals', project_path: '/test/project' });
     await schedulePendingEmbeds(wq, [(a as PhaseAOutcome).pending!], { logSink: () => {} });
     expect(embedBacklogStats(ctx.db).count).toBe(1);
 
@@ -415,8 +421,8 @@ describe('SOX_SYNC_EMBED kill-switch', () => {
   });
 
   it('memoryWrite (the sync composition) still returns near_dup and leaves no backlog', async () => {
-    await memoryWrite(ctx.db, { content: 'silver copper bronze pewter alloys reference table' });
-    const r = await memoryWrite(ctx.db, { content: 'copper silver bronze pewter alloys reference table' });
+    await memoryWrite(ctx.db, { content: 'silver copper bronze pewter alloys reference table', project_path: '/test/project' });
+    const r = await memoryWrite(ctx.db, { content: 'copper silver bronze pewter alloys reference table', project_path: '/test/project' });
     expect('episode_uid' in r).toBe(true);
     const wr = r as { enrichment?: { near_dup: { existing_uid: string } | null } };
     expect(wr.enrichment?.near_dup).not.toBeNull(); // synchronous E8 — pre-split behaviour

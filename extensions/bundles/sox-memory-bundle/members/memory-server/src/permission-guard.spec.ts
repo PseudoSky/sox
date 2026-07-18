@@ -181,6 +181,7 @@ describe('permission-guard — mcp-path-guard enforcement', () => {
       const result = await handleToolCall('memory_write', {
         db_path: ALLOWED_DB,
         content: 'allowed write test',
+        project_path: '/test/project',
       }) as { isError?: boolean; content?: Array<{ type: string; text: string }> };
 
       // Should NOT be a permission error — content array has the episode_uid
@@ -212,6 +213,7 @@ describe('permission-guard — mcp-path-guard enforcement', () => {
       const result = await handleToolCall('memory_write', {
         db_path: tmpDb,
         content: 'legacy compat test',
+        project_path: '/test/project',
       }) as { isError?: boolean; content?: Array<{ type: string; text: string }> };
 
       // Legacy path: no guard, opens fine
@@ -292,6 +294,7 @@ describe('memory_write auto_chunk — BL-13', () => {
     const result = await handleToolCall('memory_write', {
       db_path: tmpDb,
       content: 'Short content that does not need chunking.',
+      project_path: '/test/project',
     }) as { isError?: boolean; content?: Array<{ type: string; text: string }> };
 
     expect(result.isError).not.toBe(true);
@@ -314,6 +317,7 @@ describe('memory_write auto_chunk — BL-13', () => {
       db_path: tmpDb,
       content: longContent,
       chunk_size: 20, // small chunk size to force splitting
+      project_path: '/test/project',
     }) as { isError?: boolean; content?: Array<{ type: string; text: string }> };
 
     expect(result.isError).not.toBe(true);
@@ -348,6 +352,7 @@ describe('memory_write auto_chunk — BL-13', () => {
       db_path: tmpDb,
       content: 'Normal write with large chunk_size. Should not be split.',
       chunk_size: 1000,
+      project_path: '/test/project',
     }) as { isError?: boolean; content?: Array<{ type: string; text: string }> };
 
     expect(result.isError).not.toBe(true);
