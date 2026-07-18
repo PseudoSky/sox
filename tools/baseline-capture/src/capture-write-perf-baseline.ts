@@ -174,6 +174,7 @@ export async function captureWritePerfBaseline(
         content: `Baseline write-perf test episode ${i}. This is a synthetic content payload for timing measurement. The quick brown fox jumps over the lazy dog.`,
         tags: ['baseline', 'write-perf', `test-${i % 10}`],
         source: 'import',
+        project_path: '/tmp/baseline-capture-write-perf',
       });
       const elapsed = performance.now() - start;
       latenciesMs.push(elapsed);
