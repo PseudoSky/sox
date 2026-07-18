@@ -207,6 +207,76 @@ export function openDb(dbPath: string): Database.Database {
     if (line) db.exec(line);
   }
 
+  // Pre-DDL defensive column migrations for PRE-EXISTING stores. MUST run before
+  // db.exec(DDL) below, not after: the unconditional DDL includes bare
+  // `CREATE INDEX ... ON node(namespace)` / `ON node(t_expires)` statements (added
+  // by the graph-store unification, BL-302) that reference these columns directly.
+  // `CREATE TABLE IF NOT EXISTS` is a no-op on a table that already exists, so a
+  // pre-unification store missing a column the DDL's own CREATE INDEX statements
+  // reference makes db.exec(DDL) throw "no such column" on EVERY open — before
+  // ever reaching the migrateAddColumn calls that used to live after it. That
+  // silent trap is exactly what took this class of column-migration out of
+  // service: `level`/`resume_state`/`t_expired` "worked" only because they had
+  // already been migrated under an older DDL ordering before namespace/t_expires
+  // were added to the unconditional index list; a store never touched since is
+  // permanently stuck failing every real query (found live 2026-07-18 — every
+  // memory_* tool needing a DB handle failed with "no such column: namespace";
+  // memory_ping alone survived because it needs no DB handle at all).
+  // No-op on a fresh store: `PRAGMA table_info` on a not-yet-created table
+  // returns an empty row set, so the `tableExists` guard below skips cleanly —
+  // the CREATE TABLE statement in DDL defines every column natively instead.
+  const nodeTableExists = db
+    .prepare<[], { name: string }>(`SELECT name FROM sqlite_master WHERE type='table' AND name='node'`)
+    .get();
+  if (nodeTableExists) {
+    migrateAddColumn(db, 'node', 'namespace', `TEXT DEFAULT 'global'`);
+    migrateAddColumn(db, 'node', 't_expires', 'TEXT');
+    migrateAddColumn(db, 'node', 'level', 'INTEGER');
+    migrateAddColumn(db, 'node', 'resume_state', 'TEXT');
+  }
+  const edgeTableExists = db
+    .prepare<[], { name: string }>(`SELECT name FROM sqlite_master WHERE type='table' AND name='edge'`)
+    .get();
+  if (edgeTableExists) {
+    migrateAddColumn(db, 'edge', 't_expired', 'TEXT');
+
+    // BL-302's `ix_edge_unique` (src, dst, rel) — added unconditionally to the
+    // DDL to support ON CONFLICT edge upserts (commit 64a2056) — fails outright
+    // if the live table already has duplicate (src, dst, rel) rows predating the
+    // constraint, hitting the exact same "db.exec(DDL) throws before reaching
+    // anything downstream" trap as the column migrations above. Found live
+    // 2026-07-18: 146,006 duplicate edge rows (mostly repeated MEMBER_OF cluster
+    // edges from 2026-06-23 through 2026-07-03 — a since-dormant re-clustering
+    // bug that kept re-inserting the same membership edge without checking for
+    // an existing one first) blocking the index from ever being created.
+    // Dedup BEFORE the DDL runs, keeping the earliest (lowest rowid) row per
+    // (src, dst, rel) — the same deterministic tie-break an ON CONFLICT upsert
+    // would produce. Gated on the index not already existing so this full-table
+    // scan runs once per store, not on every open.
+    const uniqueIndexExists = db
+      .prepare<[], { name: string }>(
+        `SELECT name FROM sqlite_master WHERE type='index' AND name='ix_edge_unique'`,
+      )
+      .get();
+    if (!uniqueIndexExists) {
+      const dupeGroups = db
+        .prepare<[], { c: number }>(
+          `SELECT COUNT(*) AS c FROM (
+             SELECT 1 FROM edge GROUP BY src, dst, rel HAVING COUNT(*) > 1
+           )`,
+        )
+        .get();
+      if ((dupeGroups?.c ?? 0) > 0) {
+        db.exec(`
+          DELETE FROM edge
+          WHERE rowid NOT IN (
+            SELECT MIN(rowid) FROM edge GROUP BY src, dst, rel
+          )
+        `);
+      }
+    }
+  }
+
   // Apply DDL (idempotent — uses CREATE IF NOT EXISTS)
   db.exec(DDL);
   db.exec(FTS_TRIGGERS);
@@ -229,12 +299,6 @@ export function openDb(dbPath: string): Database.Database {
   db.exec(`CREATE INDEX IF NOT EXISTS ix_node_topic      ON node(topic)        WHERE topic IS NOT NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS ix_node_enrich_ver ON node(enrich_ver)   WHERE enrich_ver IS NOT NULL`);
-
-  // Defensive: columns present in the unified graph-store DDL but potentially
-  // missing from stores created by old standalone graph-store (without memory-core).
-  migrateAddColumn(db, 'node', 'level', 'INTEGER');
-  migrateAddColumn(db, 'node', 'resume_state', 'TEXT');
-  migrateAddColumn(db, 'edge', 't_expired', 'TEXT');
 
   // WP-4: request_ledger table migration — ensures the table exists on upgraded stores
   // that were created before the request_ledger DDL was added to schema.ts.
