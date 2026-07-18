@@ -2,6 +2,16 @@
 
 ---
 
+## [Unreleased] — BL-311 verified: live `memory-server` launchd unit has no `SOX_EMBED_BACKEND` misconfiguration
+
+BL-311 flagged that `memory_stats` fail-loud's (BL-250, intentional) if `SOX_EMBED_BACKEND` is set to
+anything other than `auto`/`real`, and asked whether the live `com.sox.user.memory-server` launchd
+unit's env was accidentally set to an invalid value. Checked via `launchctl print
+gui/$(id -u)/com.sox.user.memory-server` and the unit's plist directly (`~/Library/LaunchAgents/
+com.sox.user.memory-server.plist`): `SOX_EMBED_BACKEND` is absent from the environment entirely —
+not set to an invalid value, simply unset, which resolves to the valid `'auto'` default. No live bug.
+Closed per the item's own stated closing criterion.
+
 ## [Unreleased] — memory-server data-integrity: schema drift, silent mis-scoping, project_path now required for writes (closes BL-62)
 
 Continuing the same-day memory-server investigation (see the transport section below): once

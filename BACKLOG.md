@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 45** (BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17 from debug agent investigation into stale shim processes; BL-311, BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation).
+**Total open: 44** (BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17 from debug agent investigation into stale shim processes; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -22,7 +22,7 @@ node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.
 |---|---|
 | **HIGH** | `BL-96`, `BL-97`, `BL-225`, `BL-254`, `BL-273`, `BL-284`, `BL-288`, `BL-301`, `BL-302` |
 | **MEDIUM** | `BL-99`, `BL-104`, `BL-105`, `BL-228`, `BL-252`, `BL-259`, `BL-274`, `BL-282`, `BL-285`, `BL-291`, `BL-296`, `BL-297`, `BL-300`, `BL-306`, `BL-307`, `BL-308`, `BL-310`, `BL-312` |
-| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264`, `BL-283`, `BL-287`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299`, `BL-305`, `BL-309`, `BL-311` |
+| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-264`, `BL-283`, `BL-287`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299`, `BL-305`, `BL-309` |
 | **FEATURE** | `BL-163`, `BL-215` |
 
 ### Where to start
@@ -2491,24 +2491,6 @@ behaviour/code upgrade is a BACKEND rolling-restart behind the shim → **no fur
 change still emits `notifications/tools/list_changed` and falls back to reconnect only for clients that
 ignore it. **Action for the human:** after this merge + `soxe upgrade --all`, reconnect/reload the
 memory-server MCP server once.
-
-### BL-311 — `memory_stats` fails outright (not just empty) when `SOX_EMBED_BACKEND` is set to anything other than `auto`/`real` — **Open (LOW, unverified against live env) (2026-07-18)**
-
-Found while triaging the `memory_topics`/`memory_list_entities` empty-result bug (BL-62,
-RESOLVED — see CHANGELOG.md). `memoryGetStats` (`libs/memory-core/src/stats.ts:184`)
-unconditionally calls `getConfiguredEmbedBackend()`, which (`libs/memory-core/src/embed.ts:60-68`,
-BL-250) `throw`s if `process.env.SOX_EMBED_BACKEND` is set but not `'auto'|'real'`. Neither
-`stats.ts` nor the `case 'memory_stats'` dispatch in
-`extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:1721-1726` catches this —
-the exception propagates to the outer catch in `backend.ts`/`serve.ts`, which converts it to
-`isError:true`. This is **intentional, tested, fail-loud behavior** (BL-250's own
-`stats.spec.ts:70-87` asserts it deliberately) — not a code defect. What's unverified: whether the
-LIVE `com.sox.user.memory-server` launchd unit's actual `SOX_EMBED_BACKEND` env value is
-accidentally set to something invalid (rather than unset/`auto`), which would make every
-`memory_stats` call fail needlessly in production. Check `launchctl print
-gui/$(id -u)/com.sox.user.memory-server | grep -i embed` (or the unit's plist directly) against
-the valid set (`auto`/`real`/unset) before closing this — if the env is correct, this item should
-just be closed as "confirmed working as designed, no live bug."
 
 ### BL-312 — 2026-07-18 memory-server 73%+ CPU / 50s+-90s+ tool-call hang: service restored, root cause not definitively pinned — **Open (MEDIUM, incident follow-up) (2026-07-18)**
 
