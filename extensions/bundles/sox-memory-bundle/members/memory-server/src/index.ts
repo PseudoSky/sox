@@ -488,7 +488,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_update',
     description:
-      'In-place editor for an existing live node. Distinct from supersession (which mints a new node). The uid is the required selector and is immutable — it can never change. Updates content, summary, name, topic, project_path, tags, importance, metadata (deep-merge by default), t_occurred, and t_valid. t_created is never modified (audit anchor). When content or summary changes, the embedding is refreshed automatically. FTS is auto-synced by the node UPDATE trigger. Returns {uid, updated_fields, reembedded}. (BL-221) project_path is editable here specifically so a mis-attributed episode (memory_write.enrichment.project_path_source:"inferred" — see memory_write) can be corrected without a rewrite: re-writing identical content with a different project_path is rejected as a duplicate (content_hash dedup ignores project_path by design), so this is the only in-place remediation path.',
+      'In-place editor for an existing live node. Distinct from supersession (which mints a new node). The uid is the required selector and is immutable — it can never change. Updates content, summary, name, topic, project_path, tags, importance, metadata (deep-merge by default), t_occurred, and t_valid. t_created is never modified (audit anchor). When content or summary changes, the embedding is refreshed automatically. FTS is auto-synced by the node UPDATE trigger. Returns {uid, updated_fields, reembedded}. (BL-221) project_path is editable here specifically so an episode mis-attributed by memory_write\'s old cwd-inference fallback (removed 2026-07-18 — memory_write now requires project_path explicitly and rejects an omitted one outright, so this can only affect episodes written before that fix) can be corrected without a rewrite: re-writing identical content with a different project_path is rejected as a duplicate (content_hash dedup ignores project_path by design), so this is the only in-place remediation path.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -499,7 +499,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         summary: { type: 'string', description: 'Replace node.summary. Triggers re-embed and FTS update.' },
         name: { type: 'string', description: 'Replace node.name.' },
         topic: { type: 'string', description: 'Replace node.topic.' },
-        project_path: { type: 'string', description: '(BL-221) Replace node.project_path — corrects mis-attributed provenance (e.g. a prior write whose enrichment.project_path_source was "inferred" and later found wrong) in place, without content_hash dedup rejecting the correction.' },
+        project_path: { type: 'string', description: '(BL-221) Replace node.project_path — corrects mis-attributed provenance from before 2026-07-18 (e.g. a prior write whose enrichment.project_path_source was "inferred", back when memory_write still had a cwd-inference fallback) in place, without content_hash dedup rejecting the correction.' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Replace node.tags (replaces existing tags wholesale — not additive).' },
         importance: { type: 'number', minimum: 1, maximum: 10, description: 'Replace node.importance.' },
         metadata: { type: 'object', additionalProperties: true, description: 'Metadata to merge into (or replace) existing node.meta. See metadata_merge.' },

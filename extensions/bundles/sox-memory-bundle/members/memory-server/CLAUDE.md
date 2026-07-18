@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Use this when an agent needs durable, searchable memory across sessions — exposes **19 `memory_*` tools** (v1.1.0) over a single-file SQLite graph store with hybrid recall (<50 ms, zero LLM), deterministic enrichment (provenance, tags, topic, near-dup detection), session state, community/cluster lookup, curation, bi-temporal invalidation, and in-place node editing.
+Use this when an agent needs durable, searchable memory across sessions — exposes **20 `memory_*` tools** (v1.1.0) over a single-file SQLite graph store with hybrid recall (<50 ms, zero LLM), deterministic enrichment (provenance, tags, topic, near-dup detection), session state, community/cluster lookup, curation, bi-temporal invalidation, and in-place node editing.
 
 > **`db_path` is OPTIONAL — omit it (BL-55).** Every tool defaults `db_path` to the bundle-configured store the host injects as `SOX_CONFIG_DB_PATH` (normally `~/.memory/memory.db`), falling back to `~/.memory/memory.db`. Do **not** guess a path like `~/.sox/memory` — just leave `db_path` out and the server uses the right store. Pass `db_path` only to target a non-default store inside the `~/.memory/**` allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.
 
@@ -104,17 +104,25 @@ Write a memory episode. Runs deterministic enrichment synchronously (provenance,
 
 **New in v1:** `name`, `topic`, `project_path`, `derived_from_uid` inputs; `enrichment` in output.
 
+**⚠️ `project_path` is REQUIRED (BL-62, resolved 2026-07-18).** Omitting it — or passing an empty
+string — makes the call fail outright with `{ "code": "E_MISSING_PROJECT_PATH" }` before any write
+happens. There is no cwd/env/git fallback of any kind: a long-lived server process's `cwd` reflects
+wherever it happened to be spawned, not the calling agent's actual working project, and a wrong guess
+here permanently mis-attributes the episode (the content-hash dedup key ignores `project_path`, so a
+later corrected re-write just returns `E_DEDUP` with the old, wrong-project uid instead of fixing
+anything). Pass the calling agent's real workspace root, always, explicitly.
+
 **Input:**
 ```json
 {
   "content":          "<string, required>",
   "db_path":          "<string, required — path to .db file>",
+  "project_path":     "<string, REQUIRED — the calling agent's actual workspace root>",
   "summary":          "<string, optional — persisted to node.summary>",
   "name":             "<string, optional — title for this episode>",
   "topic":            "<string, optional — explicit topic override>",
   "tags":             "<string[], optional — concept tags (also creates entity nodes)>",
   "metadata":         "<object, optional — persisted as node.meta JSON>",
-  "project_path":     "<string, optional — auto-detected from cwd+git if omitted>",
   "derived_from_uid": "<string, optional — emits DERIVED_FROM edge to parent>",
   "session_id":       "<string, optional>",
   "t_occurred":       "<ISO timestamp, optional>",
@@ -125,22 +133,72 @@ Write a memory episode. Runs deterministic enrichment synchronously (provenance,
 }
 ```
 
-**Output:** `{ "episode_uid": "<string>", "enrichment": { "topic", "project_path", "project_path_source", "summary", "tags", "near_dup" } }`
+**Output (success):** `{ "episode_uid": "<string>", "enrichment": { "topic", "project_path", "project_path_source", "summary", "tags", "near_dup" } }`
+**Output (missing project_path):** `{ "code": "E_MISSING_PROJECT_PATH", "message": "..." }`
 
 `near_dup` is `null` under the async default (deferred to the off-slot embed phase); it is only populated when the server runs with `SOX_SYNC_EMBED=1`.
 
-**⚠️ `project_path_source` (`"explicit" | "inferred"`) — read this before trusting provenance (BL-62).**
-`"explicit"` means *this call* supplied a non-empty `project_path`. `"inferred"` means the server fell
-back to the **shim process cwd**, which is NOT necessarily the caller's working project. A single shim
-serving a caller who works in a different repo mis-attributes the episode, silently. The root fix needs
-an MCP `roots` capability that `libs/mcp-runtime/src/serve.ts` does not negotiate.
+`project_path_source` is always `"explicit"` now — it's kept on the response only for API stability
+with older clients. It used to also report `"inferred"` when the server silently fell back to the
+shim process's `cwd`; that inference path was removed entirely by the required-field validation
+above, so `"inferred"` can no longer occur on a fresh write.
 
-**Always pass `project_path` explicitly.** That is the documented workaround, not a nicety.
-If you already wrote a mis-attributed episode, it is repairable — see `memory_update` below (BL-221).
-Re-writing the same content with the corrected path does **not** work: the content-hash dedup key
-ignores `project_path` and returns `E_DEDUP` with the existing uid.
+**If an OLDER episode was mis-attributed** (written before 2026-07-18, when inference could still
+silently guess the wrong project), it's still repairable in place — see `memory_update` below
+(BL-221). Re-writing the same content with the corrected `project_path` does **not** work: the
+content-hash dedup key ignores `project_path` and returns `E_DEDUP` with the existing (wrong) uid.
 
-Known gap: `memory_write_batch` does not surface `project_path_source` per item (BL-233).
+`memory_write_batch` enforces the same required-`project_path` rule per item — a batch containing
+any item without `project_path` is rejected wholesale, with the failing indices reported.
+
+**Reads never infer `project_path` either, but for a different reason: omitting it is a valid
+request, not an error.** `memory_recall`, `memory_topics`, `memory_list_entities`, `memory_stats`,
+and `memory_list_projects` all treat an omitted `project_path`/`filters.project_path` as "search
+every project" — never as "guess the caller's project from the server's cwd." This is deliberate:
+a wrong guess on a *write* permanently corrupts data, but a wrong guess on a *read* would only
+narrow a query, so the tools take the strictly safer default (search everything) instead of
+guessing at all.
+
+---
+
+### `memory_write_batch` (v1 — MODIFIED)
+
+Write multiple episodes as a single batch. Each item follows the same shape as `memory_write`,
+including its required `project_path`. Routes through one queue entry; per-item `E_DEDUP` is
+reported as `ok:false` within the batch response, not a whole-batch failure.
+
+**`project_path` is required on every item, no exceptions.** If any item omits it, the entire batch
+is rejected before any item is written — `{ "code": "E_MISSING_PROJECT_PATH", "message": "project_path
+is required on every batch item — missing on item(s) at index <N, M, ...>. ..." }` (the offending
+indices are named in the message text). There is no partial-batch fallback; fix every item and resubmit.
+
+**Input:**
+```json
+{
+  "db_path": "<string, optional>",
+  "items": [
+    {
+      "content":          "<string, required>",
+      "project_path":     "<string, REQUIRED>",
+      "summary":          "<string, optional>",
+      "name":             "<string, optional>",
+      "topic":            "<string, optional>",
+      "tags":             "<string[], optional>",
+      "metadata":         "<object, optional>",
+      "derived_from_uid": "<string, optional>",
+      "session_id":       "<string, optional>",
+      "t_occurred":       "<ISO timestamp, optional>",
+      "agent_id":         "<string, optional>",
+      "source":           "<'message'|'tool_output'|'observation'|'document'|'reflection'|'import', optional>",
+      "importance":       "<number 1–10, optional>",
+      "client_request_id":"<string, optional — idempotency key; replay returns the original result>"
+    }
+  ]
+}
+```
+
+**Output (success):** per-item results, each `{ ok, episode_uid, enrichment }` or `{ ok: false, code: "E_DEDUP", existing_uid }`.
+**Output (rejected):** `{ "code": "E_MISSING_PROJECT_PATH", "message": "...index N, M..." }`.
 
 ---
 
@@ -149,7 +207,10 @@ Known gap: `memory_write_batch` does not surface `project_path_source` per item 
 Edits an existing episode in place. `uid` is always immutable.
 
 **New (BL-221):** `project_path` is now an editable field. It is the *only* way to repair provenance
-corrupted by BL-62 — `memory_update` does not trigger a re-embed, and it does not touch the dedup key.
+corrupted by BL-62's old inference behavior (resolved 2026-07-18 — a fresh `memory_write` can no
+longer mis-attribute an episode this way, since it rejects an omitted `project_path` outright; this
+remediation path exists for episodes written *before* that fix). `memory_update` does not trigger a
+re-embed, and it does not touch the dedup key.
 
 ```json
 {
@@ -447,7 +508,7 @@ Implements: `initialize`, `tools/list`, `tools/call`.
 └──────────────────┴──────────────────┴────────────┘
 ```
 
-The `client/` directory was extracted during refactoring and then deleted — all 19 tools
+The `client/` directory was extracted during refactoring and then deleted — all 20 tools
 now import logic directly from `@adhd/sox-memory-core`. No intermediate layer.
 
 ## Permissions and db_path constraint
