@@ -3,6 +3,12 @@ node_modules/
 __pycache__
 dist/
 
+# [BL-313] bundle-extension.cjs auto-discovered static assets (e.g. graph-store's
+# Drizzle migrations folder) land as a sibling of a bundled extension's dist/ —
+# build output, copied fresh from the owning package's own tracked source
+# (libs/data/graph/graph-store/drizzle/migrations/ IS tracked) on every build.
+extensions/**/drizzle/
+
 # [BL-235] Atomic-build scratch dirs. `dist/` above does NOT match `dist.staging-1234`
 # or `dist.prev-1234`. Both bundle-extension.cjs and @adhd/sox-nx:atomic-tsc stage a
 # build into a sibling dir and swap it in on success; a hard-killed build (OOM, ^C,
