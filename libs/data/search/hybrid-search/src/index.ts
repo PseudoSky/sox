@@ -528,23 +528,19 @@ export class SqliteSearchBackend implements SearchBackend {
       if (matchingSpace) {
         // BL-294: the vector channel must honor the same NodeFilter (namespace, kind,
         // topic, project_path, …) as the text channel, or a scoped hybrid query silently
-        // leaks unscoped vector hits into fusion. VecFilter only supports `ids`, so when
-        // a filter is present we first resolve the matching node-id set through the
-        // graph store, then constrain knn() to exactly those ids. A filter that matches
-        // zero nodes must yield zero vector candidates — never "no filter applied", which
-        // is what an empty `ids` array means to the vector backend (BL-294).
-        let vecIdFilter: { ids: number[] } | undefined;
-        let vecCandidateIds: Set<number> | undefined;
-        if (hasNodeFilter) {
-          const matchedIds = this.graph.queryNodes(nodeFilter).map((n) => n.id);
-          vecCandidateIds = new Set(matchedIds);
-          vecIdFilter = { ids: matchedIds };
-        }
-
-        const skipVecSearch = hasNodeFilter && (vecCandidateIds?.size ?? 0) === 0;
-        const vecResults = skipVecSearch
-          ? []
-          : this.vec.knn(query.vec!, matchingSpace, limit * 2, vecIdFilter);
+        // leaks unscoped vector hits into fusion. Pushed directly into knn() via
+        // VecFilter.nodeFilter (filtered-KNN upgrade) — this collapses the previous
+        // two-step `queryNodes(nodeFilter).map(id)` -> `{ids}` workaround (which also
+        // hit SQLITE_LIMIT_VARIABLE_NUMBER for large matched-id sets) onto a single JOIN
+        // pushed down into @adhd/sox-vector-store. A filter that matches zero nodes
+        // naturally yields zero vector candidates via the JOIN — never "no filter
+        // applied" (BL-294's invariant, preserved by construction, not a special case).
+        const vecResults = this.vec.knn(
+          query.vec!,
+          matchingSpace,
+          limit * 2,
+          hasNodeFilter ? { nodeFilter } : undefined,
+        );
 
         for (const r of vecResults) {
           const entry = merged.get(r.id);

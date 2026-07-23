@@ -508,12 +508,29 @@ function nowISO(): string {
 
 // ─── Filter clause builder ────────────────────────────────────────────────────
 
-interface FilterClause {
+/** Return type of {@link buildNodeFilterClause} — exported alongside it so the
+ * function's public signature is fully nameable from a consuming package. */
+export interface FilterClause {
   where: string;
   params: unknown[];
 }
 
-function buildNodeFilterClause(
+/**
+ * Translate a {@link NodeFilter} into a SQL `WHERE` clause + bound params
+ * against the `node` table (or an aliased join of it).
+ *
+ * Exported (additive, BL — filtered-KNN pushdown) so consumers that need to
+ * scope a *different* query against the `node` table — e.g.
+ * `@adhd/sox-vector-store`'s `knn` candidate-selection JOIN — reuse the exact
+ * same `NodeFilter` -> SQL translation this package's own `queryNodes` /
+ * `countNodes` / `searchNodes` already use internally, rather than
+ * reimplementing it and risking silent drift on a future `NodeFilter` field.
+ *
+ * `liveOnly` gates the `t_invalid IS NULL` clause; `tableAlias` is the SQL
+ * alias of the `node` table in the caller's query (pass `''` for an
+ * unaliased `node` table).
+ */
+export function buildNodeFilterClause(
   filter: NodeFilter | undefined,
   liveOnly: boolean,
   tableAlias: string,

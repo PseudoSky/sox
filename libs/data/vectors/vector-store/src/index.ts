@@ -1,5 +1,7 @@
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
+import { buildNodeFilterClause } from '@adhd/sox-graph-store';
+import type { NodeFilter } from '@adhd/sox-graph-store';
 
 type SQLiteDB = Database.Database;
 
@@ -13,6 +15,14 @@ export interface VectorSpace {
 
 export interface VecFilter {
   ids?: number[];
+  /** NEW, additive. When present, pushed into the candidate-selection query as
+   *  a JOIN + WHERE against the `node` table (via `@adhd/sox-graph-store`'s
+   *  `buildNodeFilterClause` — the same NodeFilter->SQL translation that
+   *  package's own queryNodes/countNodes/searchNodes use internally, so both
+   *  packages can never silently diverge on a future NodeFilter field).
+   *  ANDed with `ids` when both are given. Absent -> no behavior change from
+   *  before this field existed. */
+  nodeFilter?: NodeFilter;
 }
 
 export interface VectorBackend {
@@ -99,6 +109,19 @@ function tableExists(db: SQLiteDB, name: string): boolean {
 }
 
 // ── SimilarityBackend (internal seam — NOT exported) ────────────────────────
+//
+// Contract for `filter?.nodeFilter` on any FUTURE non-brute-force
+// SimilarityBackend (e.g. one issuing sqlite-vec's native
+// `WHERE embedding MATCH ? AND k = ?`): ANN traversal picks its `k` nearest
+// BEFORE a joined WHERE on non-partition-key columns is applied, so
+// `MATCH ... AND k=? JOIN node WHERE n.namespace=?` can legitimately return
+// fewer than `k` rows even when plenty of matching-namespace items exist
+// further out in vector space. Any such backend MUST over-fetch
+// (`k' = k * overFetchMultiplier`, widening/retrying, or falling back to
+// brute force) rather than passing the filter straight into `MATCH ... AND
+// k=?` and returning whatever survives. BruteForceBackend below does not have
+// this problem: it scores every SQL-filtered row before truncating to `k`,
+// so its result is always the exact true top-k among filter-matching rows.
 
 interface SimilarityBackend {
   search(
@@ -120,21 +143,30 @@ class BruteForceBackend implements SimilarityBackend {
   ): Array<{ nodeId: number; score: number }> {
     if (!tableExists(db, tbl)) return [];
 
-    let rows: Array<{ node_id: number; embedding: Buffer }>;
-    if (filter?.ids && filter.ids.length > 0) {
-      const placeholders = filter.ids.map(() => '?').join(',');
-      rows = db
-        .prepare<unknown[], { node_id: number; embedding: Buffer }>(
-          `SELECT node_id, embedding FROM "${tbl}" WHERE node_id IN (${placeholders})`,
-        )
-        .all(...filter.ids);
-    } else {
-      rows = db
-        .prepare<[], { node_id: number; embedding: Buffer }>(
-          `SELECT node_id, embedding FROM "${tbl}"`,
-        )
-        .all();
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+
+    if (filter?.nodeFilter) {
+      // Reuse the EXACT predicate builder @adhd/sox-graph-store's own
+      // queryNodes/countNodes/searchNodes already use internally — one
+      // canonical NodeFilter->SQL translation across both packages, not two
+      // that could silently diverge.
+      const { where, params: fParams } = buildNodeFilterClause(filter.nodeFilter, true, 'n');
+      if (where) clauses.push(where.replace(/^WHERE /, ''));
+      params.push(...fParams);
     }
+    if (filter?.ids && filter.ids.length > 0) {
+      clauses.push(`v.node_id IN (${filter.ids.map(() => '?').join(',')})`);
+      params.push(...filter.ids);
+    }
+
+    const whereSql = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    const joinSql = filter?.nodeFilter ? `JOIN node n ON n.rowid = v.node_id` : '';
+    const rows = db
+      .prepare<unknown[], { node_id: number; embedding: Buffer }>(
+        `SELECT v.node_id, v.embedding FROM "${tbl}" v ${joinSql} ${whereSql}`,
+      )
+      .all(...params);
 
     const results: Array<{ nodeId: number; score: number }> = [];
     for (const row of rows) {

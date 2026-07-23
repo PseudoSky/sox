@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createGraphBackend, type GraphBackend } from '@adhd/sox-graph-store';
 
 import {
   openVectorStore,
@@ -292,6 +293,103 @@ describe('SqliteVectorBackend', () => {
     it('returns empty for empty table', () => {
       const results = backend.knn(makeVec(4, 0), space, 10);
       expect(results).toEqual([]);
+    });
+  });
+
+  // ── knn — filtered-KNN pushdown (VecFilter.nodeFilter) ──────────────────
+  //
+  // Proves the real correctness gap this upgrade closes: a neighbor that is
+  // nearest by cosine but out-of-scope must be EXCLUDED once a nodeFilter is
+  // supplied, and the same query WITHOUT a filter must still return that
+  // out-of-scope neighbor unchanged (the pre-upgrade behavior, preserved).
+  describe('knn — nodeFilter (filtered-KNN pushdown)', () => {
+    const space: VectorSpace = { modelId: 'test-model', dim: 4 };
+    let graph: GraphBackend;
+    let inScopeId: number;
+    let outOfScopeId: number;
+
+    beforeEach(() => {
+      backend.ensureSpace(space);
+      // SqliteVectorBackend.knn's nodeFilter JOINs against the `node` table —
+      // this is only meaningful when the vector store is constructed over the
+      // SAME db handle as a real GraphBackend (per RAG-SPEC §2.1 / DESIGN.md
+      // §2's "constructed directly over an existing Database handle" usage),
+      // exactly as production backlog/hybrid-search callers do.
+      graph = createGraphBackend(db);
+
+      inScopeId = graph.writeNode('in-scope node content', {
+        namespace: 'scope-a',
+        kind: 'generic',
+      });
+      outOfScopeId = graph.writeNode('out-of-scope node content', {
+        namespace: 'scope-b',
+        kind: 'generic',
+      });
+
+      const query = unitVec(4, 0); // [1, 0, 0, 0]
+      // out-of-scope vector is the TRUE nearest neighbor (cos = 1.0, identical
+      // to the query); in-scope vector is farther (cos = 0.0) — so an
+      // unfiltered/pre-filter-pushdown knn call must prefer the out-of-scope
+      // node, and only the nodeFilter forces it out of the result.
+      backend.upsert(outOfScopeId, unitVec(4, 0), space);
+      backend.upsert(inScopeId, unitVec(4, 1), space);
+    });
+
+    it('negative control: WITHOUT a filter, the nearer out-of-scope neighbor IS returned (pre-change behavior, unaffected by this upgrade)', () => {
+      const query = unitVec(4, 0);
+      const results = backend.knn(query, space, 1);
+      expect(results).toHaveLength(1);
+      expect(results[0]!.id).toBe(outOfScopeId);
+      expect(results[0]!.score).toBeCloseTo(1.0, 5);
+    });
+
+    it('WITH nodeFilter.namespace, the nearer out-of-scope neighbor is excluded and the farther in-scope neighbor is returned', () => {
+      const query = unitVec(4, 0);
+      const results = backend.knn(query, space, 1, {
+        nodeFilter: { namespace: 'scope-a' },
+      });
+      expect(results).toHaveLength(1);
+      expect(results[0]!.id).toBe(inScopeId);
+    });
+
+    it('WITH nodeFilter over the full k, only in-scope ids ever appear — the out-of-scope id never leaks in', () => {
+      const query = unitVec(4, 0);
+      const results = backend.knn(query, space, 10, {
+        nodeFilter: { namespace: 'scope-a' },
+      });
+      const resultIds = results.map((r) => r.id);
+      expect(resultIds).toContain(inScopeId);
+      expect(resultIds).not.toContain(outOfScopeId);
+    });
+
+    it('nodeFilter matching zero nodes returns zero candidates (never "no filter applied")', () => {
+      const query = unitVec(4, 0);
+      const results = backend.knn(query, space, 10, {
+        nodeFilter: { namespace: 'scope-does-not-exist' },
+      });
+      expect(results).toEqual([]);
+    });
+
+    it('nodeFilter is ANDed with ids when both are given', () => {
+      const query = unitVec(4, 0);
+      // ids includes BOTH nodes, but nodeFilter restricts to scope-a only —
+      // the AND must still exclude the out-of-scope id even though it passes
+      // the ids filter alone.
+      const results = backend.knn(query, space, 10, {
+        ids: [inScopeId, outOfScopeId],
+        nodeFilter: { namespace: 'scope-a' },
+      });
+      const resultIds = results.map((r) => r.id);
+      expect(resultIds).toEqual([inScopeId]);
+    });
+
+    it('unfiltered ids-only path (no nodeFilter) is unaffected — existing {ids} callers keep working byte-identically', () => {
+      const query = unitVec(4, 0);
+      const results = backend.knn(query, space, 10, {
+        ids: [inScopeId, outOfScopeId],
+      });
+      const resultIds = results.map((r) => r.id).sort();
+      expect(resultIds).toEqual([inScopeId, outOfScopeId].sort());
     });
   });
 
