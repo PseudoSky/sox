@@ -70,12 +70,8 @@
   },
   "mcp": {
     "memory-server": {
-      "type": "local",
-      "command": [
-        "/Users/nix/dev/ai/sox-ecosystem/bin/soxe",
-        "serve",
-        "memory-server"
-      ]
+      "type": "remote",
+      "url": "http://localhost:3099/sse"
     }
   }
 }

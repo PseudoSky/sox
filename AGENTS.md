@@ -270,7 +270,7 @@ See `CLAUDE.md` (pre-symlink) for full DoD breakdown with per-item evidence.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **sox-ecosystem** (12973 symbols, 20034 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **sox-ecosystem** (19649 symbols, 32533 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

@@ -49,7 +49,7 @@
 
 import * as os from 'os';
 import * as path from 'path';
-import type { HostModule, HostScope, ScopePathMap, SurfaceMap } from './internal.js';
+import type { HostModule, HostScope, ScopePathMap, SurfaceMap, McpConfig } from './internal.js';
 import { existsIn } from './internal.js';
 
 // ---------------------------------------------------------------------------
@@ -160,6 +160,38 @@ function scopePaths(scope: HostScope): ScopePathMap {
 }
 
 // ---------------------------------------------------------------------------
+// MCP config builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Codex MCP entries live under `mcp_servers`, not Claude's `mcpServers`.
+ *
+ * Codex has NO `type` field for a remote entry, ever — verified against
+ * official docs (learn.chatgpt.com/docs/extend/mcp, redirected from
+ * developers.openai.com/codex/mcp). Transport is inferred purely from which
+ * key is present: `url` = remote (Streamable HTTP), `command` = stdio. Do NOT
+ * add a `type` key here to "match" Claude or OpenCode — see
+ * [ref:mcp-remote-type-matrix] in claude.ts for the full three-host
+ * comparison (Claude requires "http"/"sse"; OpenCode requires "remote";
+ * Codex requires no type field at all — none of the three generalizes).
+ */
+const mcpConfig: McpConfig = {
+  keyPath(extId: string): string {
+    return `mcp_servers.${extId}`;
+  },
+  value(profile: string, cliBin: string, extId: string, port?: number, bindAddress?: string): unknown {
+    if (profile === 'sse' || profile === 'http') {
+      const p = port ?? 3099;
+      const host = bindAddress ?? '127.0.0.1';
+      const displayHost = host === '::1' ? '[::1]' : host;
+      const endpoint = profile === 'sse' ? 'sse' : 'mcp';
+      return { url: `http://${displayHost}:${p}/${endpoint}` };
+    }
+    return { command: cliBin, args: ['serve', extId] };
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Surfaces — the §4b matrix (P0.6 verified)
 // ---------------------------------------------------------------------------
 
@@ -228,6 +260,7 @@ function buildSurfaces(): SurfaceMap {
     'mcp-server': {
       capability: 'config-merge',
       format: 'toml',
+      mcpConfig,
       paths: {
         project: '.codex/config.toml',
         user: path.join(codexBase, 'config.toml'),

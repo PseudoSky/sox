@@ -74,21 +74,37 @@ function scopePaths(scope: HostScope): ScopePathMap {
  * OpenCode MCP format:
  *   - Key path: mcp.{id} (NOT mcpServers.{id})
  *   - stdio profile: { type: "local", command: [cliBin, "serve", extId] }
- *   - sse/http profile: { type: "remote", url: "http://<host>:<port>/mcp" }
+ *   - remote profile (sse/http): { type: "remote", url: "http://<host>:<port>/sse" }
  *   Port and host come from config cascade (http_port, bind_address).
+ *
+ * `"remote"` here is OpenCode's OWN correct value — verified by capturing its
+ * REAL traffic (not assumed): OpenCode does NOT perform the classic HTTP+SSE
+ * GET-handshake at all, regardless of the URL path — it POSTs JSON-RPC
+ * directly to whatever URL is configured with StreamableHTTP semantics. The
+ * server (libs/service-proxy/src/shim.ts) serves POST /sse identically to
+ * POST /mcp for exactly this reason, so the /sse vs /mcp endpoint choice
+ * below is cosmetic, not functional. See [ref:mcp-remote-type-matrix] in
+ * claude.ts for the full three-host comparison: Claude requires
+ * "http"/"sse" and rejects "remote" outright; Codex has no type field at
+ * all. None of the three schemas generalizes to another — do not "fix"
+ * this value to match Claude's.
  */
 const mcpConfig: McpConfig = {
   keyPath(extId: string): string {
     return `mcp.${extId}`;
   },
   value(profile: string, cliBin: string, extId: string, port?: number, bindAddress?: string): unknown {
+    const p = port ?? 3000;
+    const host = bindAddress ?? '127.0.0.1';
+    // Use localhost for loopback addresses (more portable in host configs)
+    const displayHost = host === '127.0.0.1' || host === '::1' ? 'localhost' : host;
+
     if (profile === 'sse' || profile === 'http') {
-      const p = port ?? 3000;
-      const host = bindAddress ?? '127.0.0.1';
-      // Use localhost for loopback addresses (more portable in host configs)
-      const displayHost = host === '127.0.0.1' || host === '::1' ? 'localhost' : host;
-      return { type: 'remote', url: `http://${displayHost}:${p}/mcp` };
+      // Endpoint choice is cosmetic (see docblock above) — the server treats
+      // /sse and /mcp identically for a POST. Kept as /sse for readability.
+      return { type: 'remote', url: `http://${displayHost}:${p}/sse` };
     }
+    // stdio (default)
     return { type: 'local', command: [cliBin, 'serve', extId] };
   },
 };
