@@ -8233,15 +8233,32 @@ Flags:
         else backendCrashLoop.recordSuccess();
       },
     });
-    // The shim lives until the client closes the stdio pipe, or until SIGTERM
-    // when an HTTP listener is active (dual transport).
+    // The shim lives until the client closes the stdio pipe, or until a signal
+    // is received (SIGHUP when the MCP host disconnects, or SIGTERM/SIGINT).
     if (httpPort !== undefined && !Number.isNaN(httpPort)) {
       await new Promise<void>((resolve) => {
         process.on('SIGTERM', () => resolve());
         process.on('SIGINT', () => resolve());
       });
     } else {
-      await handle.done;
+      // BL-310: In pure-stdio mode, install SIGHUP/SIGTERM handlers so the shim
+      // exits when the MCP host disconnects without cleanly closing its stdin pipe
+      // (crash, SIGKILL, terminal session end). Without these, `handle.done` never
+      // resolves → the shim becomes an orphan with PPID=1.
+      const signalDone = new Promise<void>((resolve) => {
+        const onSignal = () => {
+          handle.close();
+          resolve();
+        };
+        process.on('SIGHUP', onSignal);
+        process.on('SIGTERM', onSignal);
+        // Clean up listeners when handle.done resolves first (graceful pipe close).
+        handle.done.then(() => {
+          process.off('SIGHUP', onSignal);
+          process.off('SIGTERM', onSignal);
+        });
+      });
+      await Promise.race([handle.done, signalDone]);
     }
     process.exit(0);
   }

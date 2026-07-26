@@ -21,7 +21,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { openDb, openDbReadOnly, expandDbPath, stampStoreMeta, verifyStoreMeta, EStoreMismatch, STORE_META_KEYS } from './db.js';
-import { EMBED_DIM, getActiveEmbedModel } from './embed.js';
+import { _resetEmbedSingleton, _setEmbedProviderForTest, EMBED_DIM, getActiveEmbedModel } from './embed.js';
+import { DeterministicTestProvider } from './embed-test-provider.js';
 
 // Embedding is provided by the deterministic test provider installed in vitest.setup.ts —
 // no reset needed here (these tests assert DB mechanics, not embedding quality).
@@ -215,5 +216,32 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
 
     expect(newRows).toEqual(originalRows);
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // ── BL-252: embed_model stamp is unfalsifiable ──────────────────────────────
+
+  it('BL-252: store stamped with "unknown" when embed provider never warmed up', () => {
+    // Temporarily clear the test provider so _activeModel becomes null.
+    const prevProvider = new DeterministicTestProvider();
+    _setEmbedProviderForTest(null);
+    _resetEmbedSingleton();
+    // At this point _activeModel is null — no embed provider initialised.
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bl252-'));
+    const dbPath = path.join(dir, 'bl252.db');
+    const db = openDb(dbPath);
+
+    const rows = db.prepare<[], { key: string; value: string }>(
+      'SELECT key, value FROM sox_store_meta ORDER BY key',
+    ).all();
+    const meta = new Map(rows.map((r) => [r.key, r.value]));
+    // Must NOT be 'bge-base-en-v1.5' (the unfalsifiable default) — should be 'unknown'
+    expect(meta.get('embed_model')).toBe('unknown');
+
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+
+    // Restore the test provider for subsequent tests.
+    _setEmbedProviderForTest(prevProvider);
   });
 });

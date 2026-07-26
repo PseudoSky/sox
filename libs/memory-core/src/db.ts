@@ -98,7 +98,8 @@ export function stampStoreMeta(db: Database.Database): void {
 
   upsert.run(STORE_META_KEYS.SCHEMA_VERSION, String(STORE_SCHEMA_VERSION));
   upsert.run(STORE_META_KEYS.WRITER_ARTIFACT, getWriterArtifact());
-  upsert.run(STORE_META_KEYS.EMBED_MODEL, getActiveEmbedModel());
+  // BL-252: stamp "unknown" when no embed provider has been initialised
+  upsert.run(STORE_META_KEYS.EMBED_MODEL, getActiveEmbedModel() ?? 'unknown');
   upsert.run(STORE_META_KEYS.EMBED_DIMENSIONS, String(EMBED_DIM));
 
   verifyStoreMeta(db);
@@ -142,10 +143,11 @@ export function verifyStoreMeta(db: Database.Database): void {
 
   // embed_model — soft mismatch (warn, don't abort)
   const storedModel = meta.get(STORE_META_KEYS.EMBED_MODEL);
-  if (storedModel !== undefined && storedModel !== getActiveEmbedModel()) {
+  const runtimeModel = getActiveEmbedModel();
+  if (storedModel !== undefined && storedModel !== 'unknown' && runtimeModel !== null && storedModel !== runtimeModel) {
     console.error(
       `[sox-memory] WARNING: store was stamped with embed_model "${storedModel}" ` +
-        `but the current runtime has "${getActiveEmbedModel()}". ` +
+        `but the current runtime has "${runtimeModel}". ` +
         `Vectors may be in a different embedding space. ` +
         `Run "memory reembed --force" to re-embed in the current model.`,
     );
@@ -403,15 +405,16 @@ export function initScope(
   if (existing) return existing;
 
   const now = new Date().toISOString();
+  const embedModel = getActiveEmbedModel() ?? 'unknown';
   db.prepare(
     `INSERT INTO memory_scope(scope, scope_id, embed_model, embed_dim, schema_ver, created_at)
      VALUES (?, ?, ?, ?, 1, ?)`,
-  ).run(scope, scopeId, getActiveEmbedModel(), EMBED_DIM, now);
+  ).run(scope, scopeId, embedModel, EMBED_DIM, now);
 
   return {
     scope,
     scope_id: scopeId,
-    embed_model: getActiveEmbedModel(),
+    embed_model: embedModel,
     embed_dim: EMBED_DIM,
     schema_ver: 1,
     created_at: now,

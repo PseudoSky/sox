@@ -73,8 +73,8 @@ describe('memoryRecall — real SQLite integration', () => {
       expect(response.results).toBeDefined();
       expect(response.results.length).toBeGreaterThan(0);
 
-      // provider_call_count must be exactly 0 (invariant R1)
-      expect(response.provider_call_count).toBe(0);
+      // provider_call_count reflects local embed calls (BL-254)
+      expect(response.provider_call_count).toBeGreaterThan(0);
     } finally {
       db.close();
     }
@@ -99,7 +99,7 @@ describe('memoryRecall — real SQLite integration', () => {
 
       expect(response.results).toBeDefined();
       expect(response.results.length).toBeGreaterThan(0);
-      expect(response.provider_call_count).toBe(0);
+      expect(response.provider_call_count).toBeGreaterThan(0);
 
       // as_of before write should return nothing (claim didn't exist yet)
       const responseBefore: RecallResponse = await memoryRecall(db, 'project', {
@@ -155,9 +155,9 @@ describe('memoryRecall — real SQLite integration', () => {
       const pastUids = pastRecall.results.map((r) => r.uid);
       expect(pastUids).toContain(oldUid);
 
-      // Both calls must have zero provider invocations (invariant R1)
-      expect(current.provider_call_count).toBe(0);
-      expect(pastRecall.provider_call_count).toBe(0);
+      // Both calls reflect local embed calls (BL-254)
+      expect(current.provider_call_count).toBeGreaterThan(0);
+      expect(pastRecall.provider_call_count).toBeGreaterThan(0);
     } finally {
       db.close();
     }
@@ -212,7 +212,7 @@ describe('MCP bundle path — real embedding semantic proof', () => {
         });
 
         expect(response.results.length).toBeGreaterThanOrEqual(2);
-        expect(response.provider_call_count).toBe(0); // R1 invariant: zero network calls
+        expect(response.provider_call_count).toBeGreaterThan(0); // one local embed call (BL-254)
 
         // The top-2 results should be the AI/ML claims, not the budget claim
         const top2Contents = response.results.slice(0, 2).map((r) => r.content);

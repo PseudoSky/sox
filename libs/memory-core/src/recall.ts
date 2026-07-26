@@ -12,13 +12,12 @@
  *      REMOTE/network LLM calls (no external API dependency) — the local
  *      embedding provider IS invoked once per recall, unavoidably, to embed
  *      the query text.
- *      CAVEAT: the `getProviderCallCount()` instrumentation this file reads
- *      at :302/:929 (embed.ts:33-36 `providerCallCount`) is never incremented
- *      anywhere in embed.ts, so the delta computed at :930 is always 0
- *      regardless of how many embed() calls actually happened — it is dead
- *      instrumentation today, not a live enforcement of the "zero remote
- *      calls" invariant. Do not trust `response.provider_call_count` as
- *      evidence either way; verify by other means (e.g. mock call counts).
+ *      CAVEAT (historical): BL-254 fixed the dead instrumentation gap on
+ *      2026-07-23 — `providerCallCount` is now incremented inside embed(),
+ *      so the delta at :930 reflects actual local embed calls. The count
+ *      is >0 on every query-path recall (one local ONNX inference per query).
+ *      The "zero NETWORK calls" invariant (R1) is guaranteed by the provider
+ *      architecture — no remote API is called — not by the counter.
  *   2. parallel: vec0 KNN + FTS5 BM25 + temporal filter
  *   3. graph expand depth-1 over live edges (project store only in federation)
  *   4. RRF (k=60) fusion
@@ -227,8 +226,8 @@ const RRF_K = 60;
 const RECENCY_DECAY_PER_HOUR = 0.995;
 const DEFAULT_TOKEN_BUDGET = 32000; // was 4000 — too small for doc-scale nodes
 const DEFAULT_DEPTH = 1;
-const KNN_LIMIT = 20;
-const FTS_LIMIT = 20;
+const DEFAULT_KNN_LIMIT = 20;
+const DEFAULT_FTS_LIMIT = 20;
 
 // Per-signal RRF weights. Temporal is down-weighted (0.4) because recency
 // already enters via the recency × importance rerank; giving it equal 1:1:1
@@ -298,6 +297,10 @@ export async function memoryRecall(
     fts_weight = FTS_WEIGHT,
     temporal_weight = TEMPORAL_WEIGHT,
   } = params;
+
+  // BL-316: scale candidate limits with caller's limit when filters are active
+  const knnLimit = filters ? Math.max(DEFAULT_KNN_LIMIT, (limit || 20) * 2) : DEFAULT_KNN_LIMIT;
+  const ftsLimit = filters ? Math.max(DEFAULT_FTS_LIMIT, (limit || 20) * 2) : DEFAULT_FTS_LIMIT;
 
   const beforeCount = getProviderCallCount();
 
@@ -398,8 +401,17 @@ export async function memoryRecall(
   //    There is no hash backend to fall back to — it was removed; see the
   //    file-top docblock for the full trace + the dead-instrumentation caveat
   //    on getProviderCallCount().
-  const queryVec = await embed(query);
-  const queryVecJson = vecToJson(queryVec);
+  //
+  //    BL-273: if embedding is dead (worker process gone), skip vec channel.
+  let embedVecFailed = false;
+  let queryVecJson: string | undefined;
+  try {
+    const queryVec = await embed(query);
+    queryVecJson = vecToJson(queryVec);
+  } catch (err) {
+    console.error(`[sox-memory] WARNING: embed() failed in recall, skipping vec channel: ${err instanceof Error ? err.message : String(err)}`);
+    embedVecFailed = true;
+  }
 
   // Validity predicate
   const validityPred = as_of
@@ -411,19 +423,22 @@ export async function memoryRecall(
     agent_id ? `AND n.agent_id = '${agent_id.replace(/'/g, "''")}'` : '';
 
   // 2a. Vec0 KNN search
-  const vecSql = `SELECT v.node_id, v.distance
-       FROM vec_node v
-       JOIN node n ON n.rowid = v.node_id
-       WHERE v.embedding MATCH ? AND k = ?
-         AND ${validityPred}
-         ${agentFilter}
-         ${filterSql}
-       ORDER BY v.distance
-       LIMIT ?`;
-  const vecParams: unknown[] = [queryVecJson, KNN_LIMIT, ...filterParams, KNN_LIMIT];
-  const vecRows = db
-    .prepare(vecSql)
-    .all(...vecParams) as unknown as { node_id: number; distance: number }[];
+  let vecRows: { node_id: number; distance: number }[] = [];
+  if (queryVecJson && !embedVecFailed) {
+    const vecSql = `SELECT v.node_id, v.distance
+         FROM vec_node v
+         JOIN node n ON n.rowid = v.node_id
+         WHERE v.embedding MATCH ? AND k = ?
+           AND ${validityPred}
+           ${agentFilter}
+           ${filterSql}
+         ORDER BY v.distance
+         LIMIT ?`;
+    const vecParams: unknown[] = [queryVecJson, knnLimit, ...filterParams, knnLimit];
+    vecRows = db
+      .prepare(vecSql)
+      .all(...vecParams) as unknown as { node_id: number; distance: number }[];
+  }
 
   // Build rowid → vec rank map
   const vecRanks = new Map<number, number>();
@@ -452,7 +467,7 @@ export async function memoryRecall(
            ORDER BY fts_node.rank
            LIMIT ?`,
         )
-        .all(ftsQuery, ...filterParams, FTS_LIMIT);
+        .all(ftsQuery, ...filterParams, ftsLimit);
       ftsRows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
     } catch {
       // FTS query may fail on special chars — silently ignore
@@ -464,7 +479,7 @@ export async function memoryRecall(
   const temporalSql = `SELECT n.rowid, n.t_created FROM node n
        WHERE ${validityPred} ${agentFilter} ${filterSql}
        ORDER BY n.t_created DESC LIMIT ?`;
-  const temporalParams: unknown[] = [...filterParams, KNN_LIMIT];
+  const temporalParams: unknown[] = [...filterParams, knnLimit];
   const temporalRows = db
     .prepare(temporalSql)
     .all(...temporalParams) as unknown as { rowid: number; t_created: string }[];

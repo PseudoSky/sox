@@ -558,9 +558,25 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
     });
   }
 
+  // ── BL-310: inactivity watchdog (defense-in-depth) ──────────────────────
+  // Fallback 30-minute timeout for pure-stdio mode: if stdin never closes
+  // (MCP host disconnected without cleanly closing the pipe), force-shutdown.
+  // Unref'd so it doesn't prevent process exit when stdin closes normally.
+  let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+  if (!httpActive) {
+    watchdogTimer = setTimeout(() => {
+      diag(`[service-proxy shim:${opts.id}] inactivity watchdog after 30min — forcing close`);
+      if (httpServer) httpServer.close();
+      backend.close();
+      resolveDone();
+    }, 30 * 60 * 1000);
+    watchdogTimer.unref();
+  }
+
   return {
     done,
     close: () => {
+      if (watchdogTimer !== undefined) clearTimeout(watchdogTimer);
       if (httpServer) httpServer.close();
       backend.close();
       resolveDone();

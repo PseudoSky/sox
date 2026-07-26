@@ -23,8 +23,8 @@ import { join } from 'node:path';
 
 export const EMBED_DIM = 768;
 
-let _activeModel = 'bge-base-en-v1.5';
-export function getActiveEmbedModel(): string {
+let _activeModel: string | null = null;
+export function getActiveEmbedModel(): string | null {
   return _activeModel;
 }
 
@@ -123,7 +123,7 @@ export function _setEmbedProviderForTest(p: EmbeddingProvider | null): void {
 export type EmbedState = 'real' | 'uninitialized';
 export function getEmbedState(): EmbedState {
   if (_testProvider !== null) return 'real';
-  if (_activeModel === 'bge-base-en-v1.5' && _resolvedBackend === 'real') return 'real';
+  if (_activeModel !== null && _resolvedBackend === 'real') return 'real';
   return 'uninitialized';
 }
 
@@ -144,7 +144,7 @@ export function getEmbedHealth(): EmbedHealth {
   const state = getEmbedState();
   return {
     state,
-    model: _activeModel,
+    model: _activeModel ?? 'unknown',
     backend,
     last_error: _lastEmbedError,
   };
@@ -203,6 +203,7 @@ let _configCache: EmbedConfig | null = null;
 export async function embed(text: string): Promise<Float32Array> {
   _configCache ??= resolveConfig();
   const provider = await getOrCreateProvider();
+  providerCallCount++; // BL-254: track actual local embed calls
   return provider.embedSingle(text);
 }
 
@@ -222,7 +223,7 @@ export async function warmupEmbed(_timeoutMs?: number): Promise<EmbedHealth> {
   } catch (err) {
     const cause = String(err instanceof Error ? err.message : err);
     _lastEmbedError = cause;
-    throw new Error(`[sox-memory] FATAL: Embedding warmup failed: ${cause}`);
+    throw new Error(`[sox-memory] Embedding warmup failed: ${cause}`);
   }
 }
 
@@ -289,7 +290,7 @@ export function _resetEmbedSingleton(): void {
   _provider = null;
   _providerPromise = null;
   _resolvedBackend = null;
-  _activeModel = _testProvider ? _testProvider.metadata.modelId : 'bge-base-en-v1.5';
+  _activeModel = _testProvider ? _testProvider.metadata.modelId : null;
   _configCache = null;
   _lastEmbedError = null;
 }

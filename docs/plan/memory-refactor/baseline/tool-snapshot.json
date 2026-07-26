@@ -91,6 +91,102 @@
       }
     },
     {
+      "name": "memory_write_batch",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "db_path": {
+            "type": "string",
+            "description": "Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "content": {
+                  "type": "string",
+                  "description": "The content to memorize. Required."
+                },
+                "summary": {
+                  "type": "string",
+                  "description": "(E2) Human-readable summary."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "(E2) Title/name for this episode."
+                },
+                "topic": {
+                  "type": "string",
+                  "description": "(E5) Explicit topic override."
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "(E4) Concept/entity tags."
+                },
+                "metadata": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "(E3) Arbitrary caller metadata."
+                },
+                "project_path": {
+                  "type": "string",
+                  "description": "(E1, REQUIRED) Caller project root path. No cwd/env inference."
+                },
+                "derived_from_uid": {
+                  "type": "string",
+                  "description": "(E9) UID of a parent episode."
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "t_occurred": {
+                  "type": "string",
+                  "description": "ISO timestamp when this occurred."
+                },
+                "agent_id": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "message",
+                    "tool_output",
+                    "observation",
+                    "document",
+                    "reflection",
+                    "import"
+                  ]
+                },
+                "importance": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 10,
+                  "description": "User-asserted importance (1\u201310)."
+                },
+                "client_request_id": {
+                  "type": "string",
+                  "maxLength": 128,
+                  "description": "(WP-4) Client-supplied request idempotency key. Replay returns the original result."
+                }
+              },
+              "required": [
+                "content",
+                "project_path"
+              ]
+            },
+            "description": "Array of memory_write payloads."
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
       "name": "memory_recall",
       "inputSchema": {
         "type": "object",

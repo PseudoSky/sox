@@ -321,7 +321,7 @@ export function applyEmbedding(
     // paths — every vector that lands on any node goes through applyEmbedding.
     // NULL rows are honest: provenance unknown (pre-BL-88 or not yet embedded).
     db.prepare('UPDATE node SET embed_model = ? WHERE rowid = ?').run(
-      getActiveEmbedModel(),
+      getActiveEmbedModel() ?? 'unknown',
       pending.rowid,
     );
 
@@ -578,7 +578,7 @@ export async function healStaleVectors(
     return out;
   }
 
-  const activeModel = getActiveEmbedModel();
+  const activeModel = getActiveEmbedModel() ?? 'unknown';
   const limit = opts?.limit ?? 500;
   const log = opts?.logSink ?? ((line: string) => console.error(line));
   const metrics = stateFor(wq.storePath);

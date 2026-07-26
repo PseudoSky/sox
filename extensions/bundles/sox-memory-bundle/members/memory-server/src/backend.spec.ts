@@ -3,7 +3,7 @@
  *
  * Proves the backend JSON-RPC handler mirrors the MCP serve() surface:
  *   - initialize → serverInfo (content-addressed version) + tools capability
- *   - tools/list → the canonical 19-tool list (same shape serve() returns)
+   *   - tools/list → the canonical 20-tool list (same shape serve() returns)
  *   - tools/call → routes to handleToolCall (here: memory_ping, no db touched)
  *   - the published schema.json hashes identically to the live tools/list
  *     ([contract:schema-hash], §9.5.3) so the shim's cache matches the backend.

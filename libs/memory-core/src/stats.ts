@@ -147,7 +147,7 @@ export async function memoryGetStats(
   // BL-88: embed provenance counts (additive field).
   // Counts over ALL live episodes (no project_path filter) — provenance is a
   // store-wide data-integrity signal, not a per-project coverage metric.
-  const resolvedEmbedModel = getActiveEmbedModel();
+  const resolvedEmbedModel = getActiveEmbedModel() ?? 'unknown';
 
   const stampedRow = db
     .prepare<[], { cnt: number }>(
