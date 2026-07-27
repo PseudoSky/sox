@@ -1,0 +1,65 @@
+{
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "name": "store-adapter",
+  "projectType": "library",
+  "root": "libs/data/store/store-adapter",
+  "sourceRoot": "libs/data/store/store-adapter/src",
+  "tags": [
+    "type:lib",
+    "area:data",
+    "platform:node"
+  ],
+  "targets": {
+    "build": {
+      "executor": "@adhd/sox-nx:atomic-tsc",
+      "outputs": [
+        "{workspaceRoot}/libs/data/store/store-adapter/dist"
+      ],
+      "options": {
+        "main": "libs/data/store/store-adapter/src/index.ts",
+        "outputPath": "libs/data/store/store-adapter/dist",
+        "tsConfig": "libs/data/store/store-adapter/tsconfig.lib.json",
+        "assets": [],
+        "clean": true,
+        "rootDir": "libs/data/store/store-adapter/src"
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.lib.json"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config libs/data/store/store-adapter/vitest.config.ts",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": [
+          "libs/data/store/store-adapter/**/*.ts"
+        ]
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p libs/data/store/store-adapter/tsconfig.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    }
+  }
+}

@@ -24,7 +24,7 @@
     "dist"
   ],
   "dependencies": {
-    "better-sqlite3": "^12.10.0"
+    "@adhd/sox-store-adapter": "workspace:*"
   },
   "sox": {
     "area": "data",

@@ -9,7 +9,7 @@
  */
 
 import * as crypto from 'node:crypto';
-import type Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { PUBLIC_EDGE_RELS } from '@adhd/sox-graph-store';
 
 const VALID_RELS: readonly string[] = PUBLIC_EDGE_RELS;
@@ -21,7 +21,7 @@ export interface LinkResult {
 }
 
 export async function memoryLinkNode(
-  db: Database.Database,
+  adapter: StoreAdapter,
   args: Record<string, unknown>,
 ): Promise<LinkResult> {
   const rel = args['rel'] as string;
@@ -32,28 +32,30 @@ export async function memoryLinkNode(
   const srcUid = args['src_uid'] as string;
   const dstUid = args['dst_uid'] as string;
 
-  const srcRow = db
-    .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?')
-    .get(srcUid);
+  const srcRow = await adapter.executeGet<{ rowid: number }>(
+    'SELECT rowid FROM node WHERE uid = ?',
+    [srcUid],
+  );
   if (!srcRow) return { isError: true, message: `src_uid not found: ${srcUid}` };
 
-  const dstRow = db
-    .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?')
-    .get(dstUid);
+  const dstRow = await adapter.executeGet<{ rowid: number }>(
+    'SELECT rowid FROM node WHERE uid = ?',
+    [dstUid],
+  );
   if (!dstRow) return { isError: true, message: `dst_uid not found: ${dstUid}` };
 
-  // Check for existing edge via NOT EXISTS guard
   const now = new Date().toISOString();
   const weight = args['weight'] as number | undefined;
   const meta = args['meta'] as Record<string, unknown> | undefined;
   const metaJson = meta !== undefined ? JSON.stringify(meta) : '{}';
+  const w = typeof weight === 'number' ? weight : 1.0;
 
-  db.prepare(
+  await adapter.executeRun(
     `INSERT INTO edge (src, dst, rel, weight, origin, meta, t_created)
      SELECT ?, ?, ?, ?, 'user_asserted', ?, ?
      WHERE NOT EXISTS (SELECT 1 FROM edge WHERE src=? AND dst=? AND rel=? AND t_expired IS NULL)`,
-  ).run(srcRow.rowid, dstRow.rowid, rel, typeof weight === 'number' ? weight : 1.0, metaJson, now,
-    srcRow.rowid, dstRow.rowid, rel);
+    [srcRow.rowid, dstRow.rowid, rel, w, metaJson, now, srcRow.rowid, dstRow.rowid, rel],
+  );
 
   const edgeUid = crypto.randomUUID();
   return { edge_uid: edgeUid };

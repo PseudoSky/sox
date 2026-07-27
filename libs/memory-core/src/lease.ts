@@ -15,7 +15,7 @@
  */
 
 import * as fs from 'node:fs';
-import type Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 const { O_WRONLY, O_CREAT, O_EXCL } = fs.constants;
 
@@ -149,21 +149,21 @@ export function releaseWriteLease(dbPath: string): void {
 // ── Close with lease ───────────────────────────────────────────────────────────
 
 /**
- * Safely close a Database and release its write lease:
+ * Safely close a StoreAdapter and release its write lease:
  *   1. PRAGMA wal_checkpoint(TRUNCATE) to flush WAL
- *   2. db.close()
+ *   2. adapter.close()
  *   3. releaseWriteLease()
  */
-export function closeDbWithLease(db: Database.Database, dbPath: string): void {
+export async function closeDbWithLease(adapter: StoreAdapter, dbPath: string): Promise<void> {
   try {
-    db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    await adapter.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   } catch {
-    // best effort — db may already be closing
+    // best effort — adapter may already be closing
   }
   try {
-    db.close();
+    await adapter.close();
   } catch {
-    // best effort — db may already be closed
+    // best effort — adapter may already be closed
   }
   releaseWriteLease(dbPath);
 }

@@ -1,7 +1,12 @@
 /**
  * Database connection factory for sox-memory.
  * Opens a SQLite database with WAL mode, loads sqlite-vec extension,
- * applies schema DDL (idempotent), and returns a ready-to-use Database.
+ * applies schema DDL (idempotent), and returns a ready-to-use StoreAdapter.
+ *
+ * MIGRATED (turso-adapter): returns Promise<StoreAdapter> instead of Database.Database.
+ * Internally creates a SqliteAdapter, loads sqlite-vec via unwrap(), applies
+ * pragmas via adapter.pragmaSet() and DDL via adapter.exec(). Callers that
+ * need raw better-sqlite3 access can cast to SqliteAdapter and call unwrap().
  */
 
 import Database from 'better-sqlite3';
@@ -13,6 +18,7 @@ import { rebuildTable } from '@adhd/sox-graph-store';
 import { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
 import { EMBED_DIM, getActiveEmbedModel } from './embed.js';
 import { closeDbWithLease } from './lease.js';
+import type { StoreAdapter, SqliteAdapter } from '@adhd/sox-store-adapter';
 
 // ── Store identity stamp keys (SA-5 / BL-121) ────────────────────────────────
 export const STORE_META_KEYS = {
@@ -186,10 +192,10 @@ export interface MemoryScope {
 
 /**
  * Open (or create) a memory database at the given path.
- * Applies pragmas, loads sqlite-vec, creates schema if missing.
- * Returns a connected Database instance.
+ * Creates a SqliteAdapter, loads sqlite-vec, applies pragmas + schema, and
+ * returns a ready-to-use StoreAdapter.
  */
-export function openDb(dbPath: string): Database.Database {
+export async function openDb(dbPath: string): Promise<StoreAdapter> {
   // BL-41: expand a leading ~ to $HOME at the file-create sink so every caller —
   // regardless of whether it expanded — opens the real path, never a literal `~` dir.
   dbPath = expandDbPath(dbPath);
@@ -198,24 +204,31 @@ export function openDb(dbPath: string): Database.Database {
   const dir = path.dirname(dbPath);
   fs.mkdirSync(dir, { recursive: true });
 
-  const db = new Database(dbPath);
+  // Create SqliteAdapter (dynamically imported to bridge CJS→ESM).
+  const { createSqliteAdapter } = await import('@adhd/sox-store-adapter');
+  const adapter = createSqliteAdapter({ dbPath }) as SqliteAdapter;
+  const rawDb = adapter.unwrap();
 
   // Load sqlite-vec extension
-  sqliteVec.load(db);
+  sqliteVec.load(rawDb);
 
-  // Apply pragmas
-  for (const pragma of PRAGMAS.trim().split('\n').filter(Boolean)) {
-    const line = pragma.trim();
-    if (line) db.exec(line);
+  // Apply pragmas via adapter.pragmaSet()
+  for (const line of PRAGMAS.trim().split('\n').filter(Boolean)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parsed = parsePragma(trimmed);
+    if (parsed) {
+      await adapter.pragmaSet(parsed.key, parsed.value);
+    }
   }
 
   // Pre-DDL defensive column migrations for PRE-EXISTING stores. MUST run before
-  // db.exec(DDL) below, not after: the unconditional DDL includes bare
+  // adapter.exec(DDL) below, not after: the unconditional DDL includes bare
   // `CREATE INDEX ... ON node(namespace)` / `ON node(t_expires)` statements (added
   // by the graph-store unification, BL-302) that reference these columns directly.
   // `CREATE TABLE IF NOT EXISTS` is a no-op on a table that already exists, so a
   // pre-unification store missing a column the DDL's own CREATE INDEX statements
-  // reference makes db.exec(DDL) throw "no such column" on EVERY open — before
+  // reference makes adapter.exec(DDL) throw "no such column" on EVERY open — before
   // ever reaching the migrateAddColumn calls that used to live after it. That
   // silent trap is exactly what took this class of column-migration out of
   // service: `level`/`resume_state`/`t_expired` "worked" only because they had
@@ -227,25 +240,25 @@ export function openDb(dbPath: string): Database.Database {
   // No-op on a fresh store: `PRAGMA table_info` on a not-yet-created table
   // returns an empty row set, so the `tableExists` guard below skips cleanly —
   // the CREATE TABLE statement in DDL defines every column natively instead.
-  const nodeTableExists = db
+  const nodeTableExists = rawDb
     .prepare<[], { name: string }>(`SELECT name FROM sqlite_master WHERE type='table' AND name='node'`)
     .get();
   if (nodeTableExists) {
-    migrateAddColumn(db, 'node', 'namespace', `TEXT DEFAULT 'global'`);
-    migrateAddColumn(db, 'node', 't_expires', 'TEXT');
-    migrateAddColumn(db, 'node', 'level', 'INTEGER');
-    migrateAddColumn(db, 'node', 'resume_state', 'TEXT');
+    migrateAddColumn(rawDb, 'node', 'namespace', `TEXT DEFAULT 'global'`);
+    migrateAddColumn(rawDb, 'node', 't_expires', 'TEXT');
+    migrateAddColumn(rawDb, 'node', 'level', 'INTEGER');
+    migrateAddColumn(rawDb, 'node', 'resume_state', 'TEXT');
   }
-  const edgeTableExists = db
+  const edgeTableExists = rawDb
     .prepare<[], { name: string }>(`SELECT name FROM sqlite_master WHERE type='table' AND name='edge'`)
     .get();
   if (edgeTableExists) {
-    migrateAddColumn(db, 'edge', 't_expired', 'TEXT');
+    migrateAddColumn(rawDb, 'edge', 't_expired', 'TEXT');
 
     // BL-302's `ix_edge_unique` (src, dst, rel) — added unconditionally to the
     // DDL to support ON CONFLICT edge upserts (commit 64a2056) — fails outright
     // if the live table already has duplicate (src, dst, rel) rows predating the
-    // constraint, hitting the exact same "db.exec(DDL) throws before reaching
+    // constraint, hitting the exact same "adapter.exec(DDL) throws before reaching
     // anything downstream" trap as the column migrations above. Found live
     // 2026-07-18: 146,006 duplicate edge rows (mostly repeated MEMBER_OF cluster
     // edges from 2026-06-23 through 2026-07-03 — a since-dormant re-clustering
@@ -255,13 +268,13 @@ export function openDb(dbPath: string): Database.Database {
     // (src, dst, rel) — the same deterministic tie-break an ON CONFLICT upsert
     // would produce. Gated on the index not already existing so this full-table
     // scan runs once per store, not on every open.
-    const uniqueIndexExists = db
+    const uniqueIndexExists = rawDb
       .prepare<[], { name: string }>(
         `SELECT name FROM sqlite_master WHERE type='index' AND name='ix_edge_unique'`,
       )
       .get();
     if (!uniqueIndexExists) {
-      const dupeGroups = db
+      const dupeGroups = rawDb
         .prepare<[], { c: number }>(
           `SELECT COUNT(*) AS c FROM (
              SELECT 1 FROM edge GROUP BY src, dst, rel HAVING COUNT(*) > 1
@@ -269,7 +282,7 @@ export function openDb(dbPath: string): Database.Database {
         )
         .get();
       if ((dupeGroups?.c ?? 0) > 0) {
-        db.exec(`
+        rawDb.exec(`
           DELETE FROM edge
           WHERE rowid NOT IN (
             SELECT MIN(rowid) FROM edge GROUP BY src, dst, rel
@@ -280,43 +293,43 @@ export function openDb(dbPath: string): Database.Database {
   }
 
   // Apply DDL (idempotent — uses CREATE IF NOT EXISTS)
-  db.exec(DDL);
-  db.exec(FTS_TRIGGERS);
+  await adapter.exec(DDL);
+  await adapter.exec(FTS_TRIGGERS);
 
   // SA-5 / BL-121: stamp store identity meta on every open-for-write.
   // INSERT OR IGNORE ensures first-write wins; subsequent opens verify.
   // A mismatch (schema_version, embed_dimensions) throws EStoreMismatch.
-  stampStoreMeta(db);
+  stampStoreMeta(rawDb);
 
   // Idempotent column migrations for pre-existing stores (CREATE IF NOT EXISTS won't
   // add columns to a table that already exists). Add new columns when missing.
   // These columns are memory-specific — graph primitives (topic, tags, project_path, meta, t_updated)
   // are now in the canonical graph-store DDL and don't need migration.
-  migrateAddColumn(db, 'node', 'enrich_ver', 'TEXT');
+  migrateAddColumn(rawDb, 'node', 'enrich_ver', 'TEXT');
   // BL-88: per-record embedding provenance. NULL = embedded before provenance existed
   // (or not yet embedded). Do NOT backfill existing rows — NULL is honest (provenance unknown).
   // Stamped by applyEmbedding() at vec insert time (the single choke-point for all write/update/heal paths).
-  migrateAddColumn(db, 'node', 'embed_model', 'TEXT');
+  migrateAddColumn(rawDb, 'node', 'embed_model', 'TEXT');
   // D3.4 partial indices for enrichment columns
-  db.exec(`CREATE INDEX IF NOT EXISTS ix_node_topic      ON node(topic)        WHERE topic IS NOT NULL`);
-  db.exec(`CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`);
-  db.exec(`CREATE INDEX IF NOT EXISTS ix_node_enrich_ver ON node(enrich_ver)   WHERE enrich_ver IS NOT NULL`);
+  await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_node_topic      ON node(topic)        WHERE topic IS NOT NULL`);
+  await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`);
+  await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_node_enrich_ver ON node(enrich_ver)   WHERE enrich_ver IS NOT NULL`);
 
   // WP-4: request_ledger table migration — ensures the table exists on upgraded stores
   // that were created before the request_ledger DDL was added to schema.ts.
   // Idempotent: CREATE TABLE IF NOT EXISTS, so re-opening does not error.
-  const rlExists = db
+  const rlExists = rawDb
     .prepare<[], { name: string }>(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='request_ledger'`,
     )
     .get();
   if (!rlExists) {
-    db.exec(`CREATE TABLE IF NOT EXISTS request_ledger (
+    await adapter.exec(`CREATE TABLE IF NOT EXISTS request_ledger (
       request_id TEXT PRIMARY KEY,
       episode_uid TEXT NOT NULL,
       created_at TEXT NOT NULL
     )`);
-    db.exec(`CREATE INDEX IF NOT EXISTS ix_request_ledger_created_at ON request_ledger(created_at)`);
+    await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_request_ledger_created_at ON request_ledger(created_at)`);
   }
 
   // Idempotent migration: add 'enrich' to the organizer_queue CHECK constraint if
@@ -326,9 +339,26 @@ export function openDb(dbPath: string): Database.Database {
   //   2. If stale, do the safe rebuild dance inside a transaction:
   //      rename → create-new → copy → drop-old → recreate index.
   // This is a no-op on fresh stores (the DDL already contains 'enrich').
-  migrateOrganizerQueueCheckConstraint(db);
+  await migrateOrganizerQueueCheckConstraint(adapter);
 
-  return db;
+  return adapter;
+}
+
+/**
+ * Parse a `PRAGMA key = value;` line into { key, value } suitable for
+ * adapter.pragmaSet(). Numeric values are parsed to numbers; 'ON'/'OFF'
+ * become boolean true/false; everything else stays a string.
+ */
+function parsePragma(sql: string): { key: string; value: string | number | boolean } | null {
+  const m = sql.match(/^PRAGMA\s+(\w+)\s*=\s*([^;]+);?$/i);
+  if (!m) return null;
+  const key = m[1]!;
+  const rawVal = m[2]!.trim();
+  if (rawVal === 'ON') return { key, value: true };
+  if (rawVal === 'OFF') return { key, value: false };
+  const num = Number(rawVal);
+  if (!isNaN(num) && String(num) === rawVal) return { key, value: num };
+  return { key, value: rawVal };
 }
 
 /**
@@ -338,28 +368,24 @@ export function openDb(dbPath: string): Database.Database {
  * Safe to call multiple times: exits immediately if the constraint already
  * includes 'enrich' or if the table doesn't exist.
  */
-function migrateOrganizerQueueCheckConstraint(db: Database.Database): void {
+async function migrateOrganizerQueueCheckConstraint(adapter: StoreAdapter): Promise<void> {
   // Check if the table exists first.
-  const tableExists = db
-    .prepare<[], { name: string }>(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='organizer_queue'`,
-    )
-    .get();
+  const tableExists = await adapter.executeGet<{ name: string }>(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name='organizer_queue'`,
+  );
   if (!tableExists) return; // fresh DB — DDL will create it with the right constraint
 
   // Retrieve the current CREATE statement to inspect the CHECK constraint.
-  const row = db
-    .prepare<[], { sql: string }>(
-      `SELECT sql FROM sqlite_master WHERE type='table' AND name='organizer_queue'`,
-    )
-    .get();
+  const row = await adapter.executeGet<{ sql: string }>(
+    `SELECT sql FROM sqlite_master WHERE type='table' AND name='organizer_queue'`,
+  );
   if (!row) return;
 
   // If the current definition already includes 'enrich', nothing to do.
   if (row.sql.includes("'enrich'")) return;
 
   // Rebuild dance using the general-purpose helper.
-  rebuildTable(db, 'organizer_queue', `
+  await rebuildTable(adapter, 'organizer_queue', `
     CREATE TABLE organizer_queue (
       seq        INTEGER PRIMARY KEY AUTOINCREMENT,
       op         TEXT NOT NULL CHECK (op IN ('ingest','enrich','extract','link','consolidate','decay','reindex')),
@@ -371,7 +397,7 @@ function migrateOrganizerQueueCheckConstraint(db: Database.Database): void {
   `, ['seq', 'op', 'payload', 'priority', 'enqueued', 'claimed_at', 'done_at', 'attempts']);
 
   // Recreate the open-queue index (idempotent via IF NOT EXISTS).
-  db.exec(`CREATE INDEX IF NOT EXISTS ix_q_open ON organizer_queue(done_at, priority, seq) WHERE done_at IS NULL`);
+  await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_q_open ON organizer_queue(done_at, priority, seq) WHERE done_at IS NULL`);
 }
 
 /** Add a column to a table if it does not already exist (idempotent migration). */
@@ -421,50 +447,153 @@ export function initScope(
   };
 }
 
-// ── DB connection cache (singleton map keyed by resolved path) ────────────────
+// ── Adapter connection cache (singleton map keyed by resolved path) ────────────
 
-const dbCache = new Map<string, Database.Database>();
+const adapterCache = new Map<string, StoreAdapter>();
 
 /**
- * Return a cached Database handle for the given `dbPath`, or open a new
+ * Return a cached StoreAdapter for the given `dbPath`, or open a new
  * connection and cache it.
  *
  * The caller is responsible for resolving tilde/relative paths before
  * calling (e.g. via `expandTilde` + `path.resolve`).
  */
-export function getDb(dbPath: string): Database.Database {
-  const cached = dbCache.get(dbPath);
+export async function getDb(dbPath: string): Promise<StoreAdapter> {
+  const cached = adapterCache.get(dbPath);
   if (cached) return cached;
-  const db = openDb(dbPath);
-  dbCache.set(dbPath, db);
-  return db;
+  const adapter = await openDb(dbPath);
+  adapterCache.set(dbPath, adapter);
+  return adapter;
 }
 
 /**
  * Open a read-only WAL connection (for federated recall from non-primary stores).
  */
-export function openDbReadOnly(dbPath: string): Database.Database {
+export async function openDbReadOnly(dbPath: string): Promise<StoreAdapter> {
   // BL-41: expand ~ at the sink (mirrors openDb).
   dbPath = expandDbPath(dbPath);
-  const db = new Database(dbPath, { readonly: true });
-  sqliteVec.load(db);
+  const { createSqliteAdapter } = await import('@adhd/sox-store-adapter');
+  const adapter = createSqliteAdapter({ dbPath, readonly: true }) as SqliteAdapter;
+  const rawDb = adapter.unwrap();
+  sqliteVec.load(rawDb);
   // WAL pragma needed for read-only connections; query_only prevents accidental writes
-  db.exec('PRAGMA journal_mode = WAL;');
-  db.exec('PRAGMA busy_timeout = 3000;');
-  db.exec('PRAGMA query_only = ON;');
-  return db;
+  await adapter.pragmaSet('journal_mode', 'WAL');
+  await adapter.pragmaSet('busy_timeout', 3000);
+  await adapter.pragmaSet('query_only', true);
+  return adapter;
 }
 
 /**
- * Close all cached DB connections with lease release.
+ * Close all cached adapter connections with lease release.
  *
- * Iterates the dbCache, calls closeDbWithLease on each entry, then clears
+ * Iterates the adapterCache, calls closeDbWithLease on each entry, then clears
  * the cache. Used by the memory-server backend shutdown handler to ensure
  * all write leases are released before process exit.
  */
-export function closeAllDbs(): void {
-  for (const [dbPath, db] of dbCache) {
-    closeDbWithLease(db, dbPath);
+export async function closeAllAdapters(): Promise<void> {
+  for (const [dbPath, adapter] of adapterCache) {
+    await closeDbWithLease(adapter, dbPath);
   }
-  dbCache.clear();
+  adapterCache.clear();
+}
+
+/**
+ * Synchronously wrap a raw better-sqlite3 Database handle as a StoreAdapter.
+ * Used as a bridge for memory-core functions that still receive Database.Database
+ * but need to pass a StoreAdapter to graph-store APIs (which have been migrated).
+ *
+ * The returned adapter does NOT own the connection — close() is a no-op.
+ * Callers remain responsible for the raw db lifecycle.
+ */
+export function wrapRawDbAsAdapter(rawDb: Database.Database): StoreAdapter {
+  return {
+    config: { type: 'sqlite', dbPath: rawDb.name ?? undefined, readonly: rawDb.memory },
+    capabilities: { multiprocessWrite: false, nativeVectors: false, concurrentTransactions: false },
+
+    async executeGet<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<T | null> {
+      const stmt = rawDb.prepare(sql);
+      const row = args !== undefined ? stmt.get(...args) : stmt.get();
+      return (row as T | null) ?? null;
+    },
+
+    async executeAll<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<{ columns: string[]; rows: T[] }> {
+      const stmt = rawDb.prepare(sql);
+      const rows = args !== undefined ? stmt.all(...args) : stmt.all();
+      const columns = stmt.columns().map((c: { name: string }) => c.name);
+      return { columns, rows: rows as T[] };
+    },
+
+    async executeRun(sql: string, args?: unknown[]): Promise<{ rowsAffected: number; lastInsertRowid: number | bigint }> {
+      const stmt = rawDb.prepare(sql);
+      const info = args !== undefined ? stmt.run(...args) : stmt.run();
+      return { rowsAffected: info.changes, lastInsertRowid: info.lastInsertRowid };
+    },
+
+    async exec(sql: string): Promise<void> {
+      rawDb.exec(sql);
+    },
+
+    async pragmaSet(key: string, value: string | number | boolean): Promise<void> {
+      const boolVal = typeof value === 'boolean' ? (value ? 1 : 0) : value;
+      rawDb.pragma(`${key} = ${boolVal}`);
+    },
+
+    async pragmaGet<T = unknown>(key: string): Promise<T> {
+      const result = rawDb.pragma(key, { simple: true });
+      return result as T;
+    },
+
+    async transaction<T>(fn: (tx: import('@adhd/sox-store-adapter').AdapterTransaction) => T | Promise<T>, opts?: import('@adhd/sox-store-adapter').TransactionOptions): Promise<T> {
+      const mode = opts?.mode ?? 'deferred';
+      const beginSQL = mode === 'exclusive' ? 'BEGIN EXCLUSIVE'
+        : mode === 'immediate' ? 'BEGIN IMMEDIATE'
+        : mode === 'concurrent' ? 'BEGIN CONCURRENT'
+        : 'BEGIN DEFERRED';
+
+      rawDb.exec(beginSQL);
+      const tx = {
+        async executeGet<T2 = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<T2 | null> {
+          const stmt = rawDb.prepare(sql);
+          const row = args !== undefined ? stmt.get(...args) : stmt.get();
+          return (row as T2 | null) ?? null;
+        },
+        async executeAll<T2 = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<{ columns: string[]; rows: T2[] }> {
+          const stmt = rawDb.prepare(sql);
+          const rows = args !== undefined ? stmt.all(...args) : stmt.all();
+          const columns = stmt.columns().map((c: { name: string }) => c.name);
+          return { columns, rows: rows as T2[] };
+        },
+        async executeRun(sql: string, args?: unknown[]): Promise<{ rowsAffected: number; lastInsertRowid: number | bigint }> {
+          const stmt = rawDb.prepare(sql);
+          const info = args !== undefined ? stmt.run(...args) : stmt.run();
+          return { rowsAffected: info.changes, lastInsertRowid: info.lastInsertRowid };
+        },
+        async exec(sql: string): Promise<void> { rawDb.exec(sql); },
+      };
+      try {
+        const result = await fn(tx);
+        rawDb.exec('COMMIT');
+        return result;
+      } catch (err) {
+        try { rawDb.exec('ROLLBACK'); } catch { /* ignore */ }
+        throw err;
+      }
+    },
+
+    async executeMany(stmts: { sql: string; args?: unknown[] }[]): Promise<{ rowsAffected: number; lastInsertRowid: number | bigint }[]> {
+      return stmts.map(({ sql, args }) => {
+        const stmt = rawDb.prepare(sql);
+        const info = args !== undefined ? stmt.run(...args) : stmt.run();
+        return { rowsAffected: info.changes, lastInsertRowid: info.lastInsertRowid };
+      });
+    },
+
+    async close(): Promise<void> {
+      // no-op — the raw db lifecycle is managed by the caller
+    },
+
+    unwrap(): unknown {
+      return rawDb;
+    },
+  };
 }

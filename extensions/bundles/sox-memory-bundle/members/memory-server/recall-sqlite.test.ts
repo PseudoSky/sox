@@ -15,6 +15,7 @@
 
 import type { RecallResponse } from '@adhd/sox-memory-core';
 import { _resetEmbedSingleton, _shutdownEmbedWorker, getActiveEmbedModel, memoryRecall, memoryWrite, openDb, runBatchEnrich } from '@adhd/sox-memory-core';
+import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -57,11 +58,12 @@ describe('memoryRecall — real SQLite integration', () => {
   // ── Test 1: basic recall returns results and does not throw ──────────────────
 
   it('writes two claims and recalls them without throwing', async () => {
-    const db = openDb(dbPath);
+    const db = await openDb(dbPath);
+    const raw = db.unwrap() as Database.Database;
 
     try {
-      const w1 = await memoryWrite(db, { content: 'The sky is blue and vast.', project_path: '/test/project' });
-      const w2 = await memoryWrite(db, { content: 'The ocean has deep trenches.', project_path: '/test/project' });
+      const w1 = await memoryWrite(raw, { content: 'The sky is blue and vast.', project_path: '/test/project' });
+      const w2 = await memoryWrite(raw, { content: 'The ocean has deep trenches.', project_path: '/test/project' });
 
       expect(w1).toHaveProperty('episode_uid');
       expect(w2).toHaveProperty('episode_uid');
@@ -76,18 +78,19 @@ describe('memoryRecall — real SQLite integration', () => {
       // provider_call_count reflects local embed calls (BL-254)
       expect(response.provider_call_count).toBeGreaterThan(0);
     } finally {
-      db.close();
+      await db.close();
     }
   });
 
   // ── Test 2: as_of (point-in-time) recall branch executes without throwing ────
 
   it('as_of point-in-time recall executes and returns results', async () => {
-    const db = openDb(dbPath);
+    const db = await openDb(dbPath);
+    const raw = db.unwrap() as Database.Database;
 
     try {
       const before = new Date().toISOString();
-      await memoryWrite(db, { content: 'Temporal recall test: first claim written.', project_path: '/test/project' });
+      await memoryWrite(raw, { content: 'Temporal recall test: first claim written.', project_path: '/test/project' });
       const after = new Date().toISOString();
 
       // This is the exact branch that was broken: as_of triggers the aliased
@@ -109,18 +112,19 @@ describe('memoryRecall — real SQLite integration', () => {
 
       expect(responseBefore.results).toBeDefined();
     } finally {
-      db.close();
+      await db.close();
     }
   });
 
   // ── Test 3: invalidated claim excluded from current recall, visible in as_of ──
 
   it('invalidated claim is excluded from current recall but visible in as_of recall', async () => {
-    const db = openDb(dbPath);
+    const db = await openDb(dbPath);
+    const raw = db.unwrap() as Database.Database;
 
     try {
       // Write old claim
-      const w1 = await memoryWrite(db, { content: 'Old claim: the bridge is red.', project_path: '/test/project' });
+      const w1 = await memoryWrite(raw, { content: 'Old claim: the bridge is red.', project_path: '/test/project' });
       expect(w1).toHaveProperty('episode_uid');
       const oldUid = (w1 as { episode_uid: string }).episode_uid;
 
@@ -132,10 +136,10 @@ describe('memoryRecall — real SQLite integration', () => {
       // Manually set t_invalid on the old claim to simulate bi-temporal invalidation.
       // invalidationTime must be strictly after snapshotTime.
       const invalidationTime = new Date().toISOString();
-      db.prepare('UPDATE node SET t_invalid = ? WHERE uid = ?').run(invalidationTime, oldUid);
+      raw.prepare('UPDATE node SET t_invalid = ? WHERE uid = ?').run(invalidationTime, oldUid);
 
       // Write a new (replacement) claim
-      const w2 = await memoryWrite(db, { content: 'New claim: the bridge is painted blue.', project_path: '/test/project' });
+      const w2 = await memoryWrite(raw, { content: 'New claim: the bridge is painted blue.', project_path: '/test/project' });
       expect(w2).toHaveProperty('episode_uid');
 
       // Current recall: invalidated claim must NOT appear
@@ -159,7 +163,7 @@ describe('memoryRecall — real SQLite integration', () => {
       expect(current.provider_call_count).toBeGreaterThan(0);
       expect(pastRecall.provider_call_count).toBeGreaterThan(0);
     } finally {
-      db.close();
+      await db.close();
     }
   });
 });
@@ -193,13 +197,14 @@ describe('MCP bundle path — real embedding semantic proof', () => {
     'getActiveEmbedModel() reports real BGE model and cosine(similar) > cosine(dissimilar) [BL-48]',
     async () => {
 
-      const db = openDb(dbPath);
+      const db = await openDb(dbPath);
+      const raw = db.unwrap() as Database.Database;
 
       try {
         // Write two semantically related claims and one unrelated claim
-        await memoryWrite(db, { content: 'Neural networks learn representations from data.', project_path: '/test/project' });
-        await memoryWrite(db, { content: 'Deep learning models train on large datasets.', project_path: '/test/project' });
-        await memoryWrite(db, { content: 'The quarterly budget report is due on Friday.', project_path: '/test/project' });
+        await memoryWrite(raw, { content: 'Neural networks learn representations from data.', project_path: '/test/project' });
+        await memoryWrite(raw, { content: 'Deep learning models train on large datasets.', project_path: '/test/project' });
+        await memoryWrite(raw, { content: 'The quarterly budget report is due on Friday.', project_path: '/test/project' });
 
         // Verify the active model is the real BGE model (not 'hash')
         const activeModel = getActiveEmbedModel();
@@ -219,7 +224,7 @@ describe('MCP bundle path — real embedding semantic proof', () => {
         const budgetInTop2 = top2Contents.some((c) => c?.includes('budget'));
         expect(budgetInTop2).toBe(false);
       } finally {
-        db.close();
+        await db.close();
       }
     },
     30_000, // allow fastembed model download on first run
@@ -244,21 +249,22 @@ describe('BL-162: in-process periodic batch enrichment', () => {
 
   it('runBatchEnrich with incrementalCluster:true succeeds in-process on a live DB', async () => {
     const { dbPath, cleanup } = makeTempDb();
-    const db = openDb(dbPath);
+    const db = await openDb(dbPath);
+    const raw = db.unwrap() as Database.Database;
     try {
       // Write a couple of episodes so enrichment has something to process.
-      await memoryWrite(db, { content: 'Fallback enrichment test: first episode content here.', project_path: '/test/project' });
-      await memoryWrite(db, { content: 'Fallback enrichment test: second episode content here.', project_path: '/test/project' });
+      await memoryWrite(raw, { content: 'Fallback enrichment test: first episode content here.', project_path: '/test/project' });
+      await memoryWrite(raw, { content: 'Fallback enrichment test: second episode content here.', project_path: '/test/project' });
 
       // This is exactly what the in-process periodic enrichment loop calls.
-      const result = runBatchEnrich(db, { incrementalCluster: true });
+      const result = await runBatchEnrich(raw, { incrementalCluster: true });
 
       // Must not throw; must return a valid result shape.
       expect(typeof result.importance_updated).toBe('number');
       expect(typeof result.legacy_nodes_stamped).toBe('number');
       expect(typeof result.relates_to_edges).toBe('number');
     } finally {
-      db.close();
+      await db.close();
       cleanup();
     }
   });

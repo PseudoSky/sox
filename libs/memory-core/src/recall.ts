@@ -48,13 +48,13 @@
  * name over the number and re-grep.
  */
 
-import Database from 'better-sqlite3';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { embed, vecToJson, getProviderCallCount } from './embed.js';
 import { openDbReadOnly } from './db.js';
 import { buildFilterClause } from '@adhd/sox-hybrid-search';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 export interface RecallParams {
   query: string;
@@ -281,7 +281,7 @@ interface NodeRow {
  * Invariant R1: zero provider/LLM calls (enforced by not calling any provider).
  */
 export async function memoryRecall(
-  db: Database.Database,
+  adapter: StoreAdapter,
   scope: string,
   params: RecallParams,
 ): Promise<RecallResponse> {
@@ -435,9 +435,8 @@ export async function memoryRecall(
          ORDER BY v.distance
          LIMIT ?`;
     const vecParams: unknown[] = [queryVecJson, knnLimit, ...filterParams, knnLimit];
-    vecRows = db
-      .prepare(vecSql)
-      .all(...vecParams) as unknown as { node_id: number; distance: number }[];
+    const vecResult = await adapter.executeAll<{ node_id: number; distance: number }>(vecSql, vecParams);
+    vecRows = vecResult.rows;
   }
 
   // Build rowid → vec rank map
@@ -455,20 +454,19 @@ export async function memoryRecall(
   const ftsRowids = new Map<number, number>();
   if (ftsQuery) {
     try {
-      const ftsRows = db
-        .prepare<[string, ...unknown[]], { rowid: number; rank: number }>(
-          `SELECT fts_node.rowid, fts_node.rank
-           FROM fts_node
-           JOIN node n ON n.rowid = fts_node.rowid
-           WHERE fts_node MATCH ?
-             AND ${validityPred}
-             ${agentFilter}
-             ${filterSql}
-           ORDER BY fts_node.rank
-           LIMIT ?`,
-        )
-        .all(ftsQuery, ...filterParams, ftsLimit);
-      ftsRows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
+      const ftsResult = await adapter.executeAll<{ rowid: number; rank: number }>(
+        `SELECT fts_node.rowid, fts_node.rank
+         FROM fts_node
+         JOIN node n ON n.rowid = fts_node.rowid
+         WHERE fts_node MATCH ?
+           AND ${validityPred}
+           ${agentFilter}
+           ${filterSql}
+         ORDER BY fts_node.rank
+         LIMIT ?`,
+        [ftsQuery, ...filterParams, ftsLimit],
+      );
+      ftsResult.rows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
     } catch {
       // FTS query may fail on special chars — silently ignore
     }
@@ -480,9 +478,8 @@ export async function memoryRecall(
        WHERE ${validityPred} ${agentFilter} ${filterSql}
        ORDER BY n.t_created DESC LIMIT ?`;
   const temporalParams: unknown[] = [...filterParams, knnLimit];
-  const temporalRows = db
-    .prepare(temporalSql)
-    .all(...temporalParams) as unknown as { rowid: number; t_created: string }[];
+  const temporalResult = await adapter.executeAll<{ rowid: number; t_created: string }>(temporalSql, temporalParams);
+  const temporalRows = temporalResult.rows;
 
   const temporalRanks = new Map<number, number>();
   temporalRows.forEach((r, i) => temporalRanks.set(r.rowid, i + 1));
@@ -499,16 +496,13 @@ export async function memoryRecall(
     // distinguish filtered-empty from empty-corpus.
     let filterStats: RecallResponse['filterStats'] | undefined;
     if (filterSql) {
-      const beforeCount = (
-        db.prepare<[], { cnt: number }>(
-          `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred}`,
-        ).get()
-      )?.cnt ?? 0;
-      const afterCount = (
-        db.prepare(
-          `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred} ${filterSql}`,
-        ).get(...filterParams) as { cnt: number } | undefined
-      )?.cnt ?? 0;
+      const beforeCount = (await adapter.executeGet<{ cnt: number }>(
+        `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred}`,
+      ))?.cnt ?? 0;
+      const afterCount = (await adapter.executeGet<{ cnt: number }>(
+        `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred} ${filterSql}`,
+        filterParams,
+      ))?.cnt ?? 0;
       filterStats = {
         candidates_before_filter: beforeCount,
         candidates_after_filter: afterCount,
@@ -585,12 +579,11 @@ export async function memoryRecall(
 
   // 4. Fetch node details for all candidates
   const rowidList = [...allRowids].join(',');
-  const nodes = db
-    .prepare<[], NodeRow>(
-      `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash, session_id
-       FROM node WHERE rowid IN (${rowidList})`,
-    )
-    .all();
+  const nodeResult = await adapter.executeAll<NodeRow>(
+    `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash, session_id
+     FROM node WHERE rowid IN (${rowidList})`,
+  );
+  const nodes = nodeResult.rows;
 
   // Filter by validity
   const validNodes = nodes.filter((n) => {
@@ -674,14 +667,13 @@ export async function memoryRecall(
     const validPred = as_of
       ? `(t_valid IS NULL OR t_valid <= '${as_of}') AND (t_invalid IS NULL OR t_invalid > '${as_of}')`
       : 't_invalid IS NULL';
-    const neighborRows = db
-      .prepare<[], { neighbor_id: number }>(
-        `SELECT DISTINCT CASE WHEN src IN (${topRowids.join(',')}) THEN dst ELSE src END AS neighbor_id
-         FROM edge
-         WHERE (src IN (${topRowids.join(',')}) OR dst IN (${topRowids.join(',')}))
-           AND t_expired IS NULL AND ${validPred}`,
-      )
-      .all();
+    const neighborResult = await adapter.executeAll<{ neighbor_id: number }>(
+      `SELECT DISTINCT CASE WHEN src IN (${topRowids.join(',')}) THEN dst ELSE src END AS neighbor_id
+       FROM edge
+       WHERE (src IN (${topRowids.join(',')}) OR dst IN (${topRowids.join(',')}))
+         AND t_expired IS NULL AND ${validPred}`,
+    );
+    const neighborRows = neighborResult.rows;
     neighborRows.forEach((r) => expandedRowids.add(r.neighbor_id));
   }
 
@@ -693,12 +685,11 @@ export async function memoryRecall(
     const nodeValidPred = as_of
       ? `(t_valid IS NULL OR t_valid <= '${as_of.replace(/'/g, "''")}') AND (t_invalid IS NULL OR t_invalid > '${as_of.replace(/'/g, "''")}')`
       : 't_invalid IS NULL';
-    expandedNodes = db
-      .prepare<[], NodeRow>(
-        `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash, session_id
-         FROM node WHERE rowid IN (${expandedNew.join(',')}) AND ${nodeValidPred}`,
-      )
-      .all();
+    const expResult = await adapter.executeAll<NodeRow>(
+      `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash, session_id
+       FROM node WHERE rowid IN (${expandedNew.join(',')}) AND ${nodeValidPred}`,
+    );
+    expandedNodes = expResult.rows;
   }
 
   // Assemble final results within token_budget
@@ -780,15 +771,6 @@ export async function memoryRecall(
       nodeByUid.set(node.uid, node);
     }
 
-    // Prepared statements for parent traversal.
-    const stmtParentEdge = db.prepare<[number], { dst: number }>(
-      `SELECT dst FROM edge WHERE src = ? AND rel = 'DERIVED_FROM' AND t_expired IS NULL LIMIT 1`,
-    );
-    const stmtNodeByRowid = db.prepare<[number], NodeRow>(
-      `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash, session_id
-       FROM node WHERE rowid = ?`,
-    );
-
     for (const result of results) {
       const sources: Array<{ chunk: { uid: string; content: string | null; name: string | null }; depth: number }> = [];
 
@@ -812,15 +794,19 @@ export async function memoryRecall(
         }
 
         // Find parent via DERIVED_FROM edge.
-        const parentEdge = stmtParentEdge.get(currentRowid);
+        const parentEdge = await adapter.executeGet<{ dst: number }>(
+          `SELECT dst FROM edge WHERE src = ? AND rel = 'DERIVED_FROM' AND t_expired IS NULL LIMIT 1`,
+          [currentRowid],
+        );
         if (!parentEdge) {
           // Fallback: parentDocId lookup — session_id IS the parent's UID
           const currentNode = nodeByRowid.get(currentRowid);
           if (currentNode?.session_id) {
-            const parentRow = db.prepare(
+            const parentRow = await adapter.executeGet<NodeRow>(
               `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash
                FROM node WHERE uid = ?`,
-            ).get(currentNode.session_id) as NodeRow | undefined;
+              [currentNode.session_id],
+            );
             if (parentRow) {
               const parentText = [parentRow.content, parentRow.name, parentRow.summary]
                 .filter(Boolean)
@@ -858,7 +844,11 @@ export async function memoryRecall(
         // outside the initial candidate set.
         let parentRow = nodeByRowid.get(parentRowid);
         if (!parentRow) {
-          parentRow = stmtNodeByRowid.get(parentRowid) as NodeRow | undefined;
+          parentRow = await adapter.executeGet<NodeRow>(
+            `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash, session_id
+             FROM node WHERE rowid = ?`,
+            [parentRowid],
+          ) as NodeRow | undefined;
           if (parentRow) nodeByRowid.set(parentRowid, parentRow); // cache for reuse
         }
         if (!parentRow) break;
@@ -948,16 +938,13 @@ export async function memoryRecall(
   // empty-corpus. This is an additive output field — does not change the tool contract.
   let filterStats: RecallResponse['filterStats'] | undefined;
     if (filterSql) {
-      const beforeCount = (
-        db.prepare<[], { cnt: number }>(
-          `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred}`,
-        ).get()
-      )?.cnt ?? 0;
-      const afterCount = (
-        db.prepare(
-          `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred} ${filterSql}`,
-        ).get(...filterParams) as { cnt: number } | undefined
-      )?.cnt ?? 0;
+      const beforeCount = (await adapter.executeGet<{ cnt: number }>(
+        `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred}`,
+      ))?.cnt ?? 0;
+      const afterCount = (await adapter.executeGet<{ cnt: number }>(
+        `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred} ${filterSql}`,
+        filterParams,
+      ))?.cnt ?? 0;
       filterStats = {
         candidates_before_filter: beforeCount,
         candidates_after_filter: afterCount,
@@ -1088,23 +1075,23 @@ export function discoverStores(requestedScopes?: string[]): StoreDescriptor[] {
   return [...found.values()];
 }
 
-// Connection cache: dbPath → read-only Database connection.
+// Connection cache: dbPath → read-only StoreAdapter connection.
 // Keeps connections alive across multiple federatedRecall calls (warm page cache).
-const _connCache = new Map<string, Database.Database>();
+const _connCache = new Map<string, StoreAdapter>();
 
-export function getFederationConnection(dbPath: string): Database.Database | null {
+export async function getFederationConnection(dbPath: string): Promise<StoreAdapter | null> {
   if (!_connCache.has(dbPath)) {
     try {
-      const db = openDbReadOnly(dbPath);
-      _connCache.set(dbPath, db);
+      const adapter = await openDbReadOnly(dbPath);
+      _connCache.set(dbPath, adapter);
     } catch { return null; }
   }
   return _connCache.get(dbPath) ?? null;
 }
 
-export function closeFederationConnections(): void {
-  for (const [, db] of _connCache) {
-    try { db.close(); } catch { /* ignore */ }
+export async function closeFederationConnections(): Promise<void> {
+  for (const [, adapter] of _connCache) {
+    try { await adapter.close(); } catch { /* ignore */ }
   }
   _connCache.clear();
 }
@@ -1114,12 +1101,12 @@ export function closeFederationConnections(): void {
  * Zero LLM calls.
  */
 async function recallFromOpenDb(
-  db: Database.Database,
+  adapter: StoreAdapter,
   scope: string,
   params: RecallParams,
 ): Promise<RecallResult[]> {
   try {
-    const res = await memoryRecall(db, scope, params);
+    const res = await memoryRecall(adapter, scope, params);
     return res.results;
   } catch {
     return [];
@@ -1127,17 +1114,17 @@ async function recallFromOpenDb(
 }
 
 /**
- * Collect SUPERSEDES targets from a pre-opened DB.
+ * Collect SUPERSEDES targets from a pre-opened adapter.
  */
-function collectSupersededFromDb(db: Database.Database, suppressed: Set<string>): void {
+async function collectSupersededFromDb(adapter: StoreAdapter, suppressed: Set<string>): Promise<void> {
   try {
-    const rows = db.prepare(
+    const result = await adapter.executeAll<{ superseded_uid: string }>(
       `SELECT n_dst.uid AS superseded_uid
        FROM edge e
        JOIN node n_dst ON n_dst.rowid = e.dst
        WHERE e.rel = 'SUPERSEDES' AND e.t_expired IS NULL`,
-    ).all() as Array<{ superseded_uid: string }>;
-    for (const r of rows) {
+    );
+    for (const r of result.rows) {
       if (r.superseded_uid) suppressed.add(r.superseded_uid);
     }
   } catch { /* ignore */ }
@@ -1169,25 +1156,27 @@ export async function federatedRecall(
   const { agent_id, token_budget = DEFAULT_TOKEN_BUDGET, limit = 10 } = params;
 
   // Use cached connections (warm page cache, amortize open cost).
-  interface OpenConn { scope: string; db: Database.Database | null }
-  const openConns: OpenConn[] = stores.map(({ scope, dbPath }) => ({
-    scope,
-    db: getFederationConnection(dbPath),
-  }));
+  interface OpenConn { scope: string; adapter: StoreAdapter | null }
+  const openConns: OpenConn[] = await Promise.all(
+    stores.map(async ({ scope, dbPath }): Promise<OpenConn> => {
+      const adapter = await getFederationConnection(dbPath);
+      return { scope, adapter };
+    }),
+  );
 
   // 1. Collect SUPERSEDES targets.
   const suppressedUids = new Set<string>();
-  for (const { db } of openConns) {
-    if (db) collectSupersededFromDb(db, suppressedUids);
+  for (const { adapter } of openConns) {
+    if (adapter) await collectSupersededFromDb(adapter, suppressedUids);
   }
 
   // 2. Per-store recall.
   //    agent_id is NOT forwarded as SQL filter — boost applied post-recall.
   const storeParams: RecallParams = { ...params, agent_id: undefined };
   const allStoreResults: Array<{ scope: string; results: RecallResult[] }> = [];
-  for (const { scope, db } of openConns) {
-    if (!db) continue;
-    const results = await recallFromOpenDb(db, scope, storeParams);
+  for (const { scope, adapter } of openConns) {
+    if (!adapter) continue;
+    const results = await recallFromOpenDb(adapter, scope, storeParams);
     allStoreResults.push({ scope, results });
   }
 
@@ -1275,12 +1264,11 @@ export async function federatedRecall(
  * Check whether an episode is superseded (i.e. some other episode's SUPERSEDES
  * edge points to it via rowid).
  */
-export function isSuperseded(db: Database.Database, rowid: number): boolean {
-  const row = db
-    .prepare<[number], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM edge WHERE dst = ? AND rel = 'SUPERSEDES' AND t_expired IS NULL`,
-    )
-    .get(rowid);
+export async function isSuperseded(adapter: StoreAdapter, rowid: number): Promise<boolean> {
+  const row = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM edge WHERE dst = ? AND rel = 'SUPERSEDES' AND t_expired IS NULL`,
+    [rowid],
+  );
   return (row?.cnt ?? 0) > 0;
 }
 
@@ -1288,18 +1276,17 @@ export function isSuperseded(db: Database.Database, rowid: number): boolean {
  * Return the UID of the episode that `rowid` supersedes (outbound SUPERSEDES
  * edge from src=rowid to dst). Returns null if no such edge exists.
  */
-export function supersedesUidForRowid(
-  db: Database.Database,
+export async function supersedesUidForRowid(
+  adapter: StoreAdapter,
   rowid: number,
-): string | null {
-  const row = db
-    .prepare<[number], { uid: string }>(
-      `SELECT n.uid FROM edge e
-       JOIN node n ON n.rowid = e.dst AND n.t_invalid IS NULL
-       WHERE e.src = ? AND e.rel = 'SUPERSEDES' AND e.t_expired IS NULL
-       LIMIT 1`,
-    )
-    .get(rowid);
+): Promise<string | null> {
+  const row = await adapter.executeGet<{ uid: string }>(
+    `SELECT n.uid FROM edge e
+     JOIN node n ON n.rowid = e.dst AND n.t_invalid IS NULL
+     WHERE e.src = ? AND e.rel = 'SUPERSEDES' AND e.t_expired IS NULL
+     LIMIT 1`,
+    [rowid],
+  );
   return row?.uid ?? null;
 }
 
@@ -1310,39 +1297,37 @@ export function supersedesUidForRowid(
  * global) so that persisted subset lenses never leak into recall's
  * `community_uid` field.
  */
-export function communityUidForRowid(
-  db: Database.Database,
+export async function communityUidForRowid(
+  adapter: StoreAdapter,
   rowid: number,
-): string | null {
-  const row = db
-    .prepare<[number], { uid: string }>(
-      `SELECT n2.uid FROM edge e
-       JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.t_invalid IS NULL
-         AND (json_extract(n2.meta, '$.cluster_scope.kind') IS NULL
-              OR json_extract(n2.meta, '$.cluster_scope.kind') = 'global')
-       WHERE e.src = ? AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
-       ORDER BY e.rowid ASC
-       LIMIT 1`,
-    )
-    .get(rowid);
+): Promise<string | null> {
+  const row = await adapter.executeGet<{ uid: string }>(
+    `SELECT n2.uid FROM edge e
+     JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.t_invalid IS NULL
+       AND (json_extract(n2.meta, '$.cluster_scope.kind') IS NULL
+            OR json_extract(n2.meta, '$.cluster_scope.kind') = 'global')
+     WHERE e.src = ? AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+     ORDER BY e.rowid ASC
+     LIMIT 1`,
+    [rowid],
+  );
   return row?.uid ?? null;
 }
 
 /**
  * Resolve episode rowids → uids, preserving the input order.
  */
-export function rowidsToUids(
-  db: Database.Database,
+export async function rowidsToUids(
+  adapter: StoreAdapter,
   rowids: number[],
-): string[] {
+): Promise<string[]> {
   if (rowids.length === 0) return [];
   const ph = rowids.map(() => '?').join(',');
-  const rows = db
-    .prepare<unknown[], { rowid: number; uid: string }>(
-      `SELECT rowid, uid FROM node WHERE rowid IN (${ph})`,
-    )
-    .all(...rowids);
-  const byRowid = new Map(rows.map((r) => [r.rowid, r.uid]));
+  const result = await adapter.executeAll<{ rowid: number; uid: string }>(
+    `SELECT rowid, uid FROM node WHERE rowid IN (${ph})`,
+    rowids,
+  );
+  const byRowid = new Map(result.rows.map((r) => [r.rowid, r.uid]));
   return rowids
     .map((r) => byRowid.get(r))
     .filter((u): u is string => typeof u === 'string');

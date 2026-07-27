@@ -7,7 +7,7 @@
  * [inv:no-mcp] — returns a plain result object, never an MCP ToolResult.
  */
 
-import type Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 export interface TopicEntry {
   topic: string;
@@ -29,10 +29,10 @@ const ORDER_MAP: Record<string, string> = {
   last_written: 'last_written DESC',
 };
 
-export function memoryListTopics(
-  db: Database.Database,
+export async function memoryListTopics(
+  adapter: StoreAdapter,
   args: Record<string, unknown>,
-): TopicsResult {
+): Promise<TopicsResult> {
   const projectPath = args['project_path'] as string | undefined;
   const search = args['search'] as string | undefined;
   const sortBy = (args['sort_by'] as string | undefined) ?? 'episode_count';
@@ -56,60 +56,57 @@ export function memoryListTopics(
   const extraSql = extraFilters.join(' ');
 
   // Total count
-  const countRow = db
-    .prepare<unknown[], { cnt: number }>(
-      `SELECT COUNT(DISTINCT n.topic) AS cnt
-       FROM node n
-       WHERE n.kind = 'episode' AND n.t_invalid IS NULL AND n.topic IS NOT NULL
-       ${extraSql}`,
-    )
-    .get(...extraParams);
+  const countRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(DISTINCT n.topic) AS cnt
+     FROM node n
+     WHERE n.kind = 'episode' AND n.t_invalid IS NULL AND n.topic IS NOT NULL
+     ${extraSql}`,
+    extraParams.length > 0 ? extraParams : undefined,
+  );
   const total = countRow?.cnt ?? 0;
 
   // Per-topic aggregate
-  type TopicRow = {
+  const topicResult = await adapter.executeAll(
+    `SELECT n.topic AS topic,
+            COUNT(*) AS episode_count,
+            AVG(n.importance) AS avg_importance,
+            MAX(n.t_created) AS last_written
+     FROM node n
+     WHERE n.kind = 'episode' AND n.t_invalid IS NULL AND n.topic IS NOT NULL
+     ${extraSql}
+     GROUP BY n.topic
+     ORDER BY ${orderClause}
+     LIMIT ? OFFSET ?`,
+    [...extraParams, limit, offset],
+  );
+  const rows = topicResult.rows as Array<{
     topic: string;
     episode_count: number;
     avg_importance: number;
     last_written: string;
-  };
-
-  const rows = db
-    .prepare<unknown[], TopicRow>(
-      `SELECT n.topic AS topic,
-              COUNT(*) AS episode_count,
-              AVG(n.importance) AS avg_importance,
-              MAX(n.t_created) AS last_written
-       FROM node n
-       WHERE n.kind = 'episode' AND n.t_invalid IS NULL AND n.topic IS NOT NULL
-       ${extraSql}
-       GROUP BY n.topic
-       ORDER BY ${orderClause}
-       LIMIT ? OFFSET ?`,
-    )
-    .all(...extraParams, limit, offset);
+  }>;
 
   // Enrich each topic with community_uid
-  const topics: TopicEntry[] = rows.map((r: TopicRow) => {
-    const commRow = db
-      .prepare<[string], { uid: string }>(
-        `SELECT n2.uid FROM node n1
-         JOIN edge e ON e.src = n1.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
-         JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.t_invalid IS NULL
-         WHERE n1.kind = 'episode' AND n1.t_invalid IS NULL AND n1.topic = ?
-         LIMIT 1`,
-      )
-      .get(r.topic);
+  const topics: TopicEntry[] = [];
+  for (const r of rows) {
+    const commRow = await adapter.executeGet<{ uid: string }>(
+      `SELECT n2.uid FROM node n1
+       JOIN edge e ON e.src = n1.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+       JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.t_invalid IS NULL
+       WHERE n1.kind = 'episode' AND n1.t_invalid IS NULL AND n1.topic = ?
+       LIMIT 1`,
+      [r.topic],
+    );
 
-    return {
+    topics.push({
       topic: r.topic,
       episode_count: r.episode_count,
       avg_importance: r.avg_importance,
       last_written: r.last_written,
       community_uid: commRow?.uid ?? null,
       has_community: commRow !== undefined,
-    };
-  });
+    });
+  }
 
   return { topics, total };
 }

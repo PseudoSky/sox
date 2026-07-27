@@ -33,15 +33,15 @@ class MockSearchBackend implements SearchBackend {
     this.candidates = candidates;
   }
 
-  search(
+  async search(
     _query: SearchQuery,
     _limit: number,
-  ): Array<{
+  ): Promise<Array<{
     id: number;
     textScore?: number;
     vecScore?: number;
     fields: Record<string, unknown>;
-  }> {
+  }>> {
     return this.candidates;
   }
 }
@@ -245,9 +245,9 @@ describe('search() with mock backend', () => {
     },
   ];
 
-  it('returns SearchResult[] with scores', () => {
+  it('returns SearchResult[] with scores', async () => {
     const backend = new MockSearchBackend(mockCandidates);
-    const results = search(
+    const results = await search(
       backend,
       { text: 'python', vec: new Float32Array([0.1, 0.2]) },
     );
@@ -257,9 +257,9 @@ describe('search() with mock backend', () => {
     expect(results[0]!.fields).toBeDefined();
   });
 
-  it('with explain: true returns signalScores', () => {
+  it('with explain: true returns signalScores', async () => {
     const backend = new MockSearchBackend(mockCandidates);
-    const results = search(
+    const results = await search(
       backend,
       { text: 'python', vec: new Float32Array([0.1, 0.2]) },
       { explain: true },
@@ -272,31 +272,31 @@ describe('search() with mock backend', () => {
     expect(results[0]!.signalScores!.vec).toBe(0.85);
   });
 
-  it('degrades to text-only when vec is absent', () => {
+  it('degrades to text-only when vec is absent', async () => {
     const backend = new MockSearchBackend(mockCandidates);
-    const results = search(
+    const results = await search(
       backend,
       { text: 'python' },
     );
     expect(results.length).toBeGreaterThan(0);
   });
 
-  it('degrades to vec-only when text is absent', () => {
+  it('degrades to vec-only when text is absent', async () => {
     const backend = new MockSearchBackend(mockCandidates);
-    const results = search(
+    const results = await search(
       backend,
       { vec: new Float32Array([0.1, 0.2]) },
     );
     expect(results.length).toBeGreaterThan(0);
   });
 
-  it('handles neither text nor vec gracefully', () => {
+  it('handles neither text nor vec gracefully', async () => {
     const backend = new MockSearchBackend(mockCandidates);
-    const results = search(backend, {});
+    const results = await search(backend, {});
     expect(results.length).toBeGreaterThan(0);
   });
 
-  it('respects limit option', () => {
+  it('respects limit option', async () => {
     const largeList = Array.from({ length: 50 }, (_, i) => ({
       id: i + 1,
       textScore: Math.random(),
@@ -304,7 +304,7 @@ describe('search() with mock backend', () => {
       fields: { content: `item ${i}` },
     }));
     const backend = new MockSearchBackend(largeList);
-    const results = search(
+    const results = await search(
       backend,
       { text: 'test', vec: new Float32Array([0.1, 0.2]) },
       { limit: 10 },
@@ -312,25 +312,25 @@ describe('search() with mock backend', () => {
     expect(results).toHaveLength(10);
   });
 
-  it('defaults limit to 20', () => {
+  it('defaults limit to 20', async () => {
     const largeList = Array.from({ length: 50 }, (_, i) => ({
       id: i + 1,
       textScore: Math.random(),
       fields: { content: `item ${i}` },
     }));
     const backend = new MockSearchBackend(largeList);
-    const results = search(backend, { text: 'test' });
+    const results = await search(backend, { text: 'test' });
     expect(results.length).toBeLessThanOrEqual(20);
   });
 
-  it('respects normalizer option', () => {
+  it('respects normalizer option', async () => {
     const backend = new MockSearchBackend(mockCandidates);
-    const resultsMinMax = search(
+    const resultsMinMax = await search(
       backend,
       { text: 'test', vec: new Float32Array([0.1, 0.2]) },
       { normalizer: 'min_max' },
     );
-    const resultsZ = search(
+    const resultsZ = await search(
       backend,
       { text: 'test', vec: new Float32Array([0.1, 0.2]) },
       { normalizer: 'z_score' },
@@ -483,62 +483,62 @@ describe('SqliteSearchBackend integration', () => {
     return id;
   }
 
-  it('performs text-only search', () => {
+  it('performs text-only search', async () => {
     seedNode('Python is a great language for AI and data science', 'python', ['ai', 'programming'], [1.0, 0.0, 0.0, 0.0]);
     seedNode('Rust is a systems language with memory safety', 'rust', ['systems', 'programming'], [0.0, 1.0, 0.0, 0.0]);
     seedNode('TypeScript adds types to JavaScript', 'typescript', ['web', 'programming'], [0.0, 0.0, 1.0, 0.0]);
 
-    const results = backend.search({ text: 'python' }, 10);
+    const results = await backend.search({ text: 'python' }, 10);
     expect(results.length).toBeGreaterThan(0);
     const pythonResult = results.find((r) => r.fields.topic === 'python');
     expect(pythonResult).toBeDefined();
     expect(pythonResult!.textScore).toBeGreaterThan(0);
   });
 
-  it('performs vec-only search', () => {
+  it('performs vec-only search', async () => {
     seedNode('Vector A — should match', 'topic-a', ['test'], [1.0, 0.5, 0.3, 0.1]);
     seedNode('Vector B — far away', 'topic-b', ['test'], [-1.0, -0.5, -0.3, -0.1]);
 
     const queryVec = new Float32Array([1.0, 0.5, 0.3, 0.1]);
-    const results = backend.search({ vec: queryVec }, 10);
+    const results = await backend.search({ vec: queryVec }, 10);
     expect(results.length).toBeGreaterThan(0);
   });
 
-  it('performs hybrid text + vec search', () => {
+  it('performs hybrid text + vec search', async () => {
     seedNode('Python async programming guide', 'python', ['programming'], [1.0, 0.0, 0.0, 0.0]);
     seedNode('Rust programming guide', 'rust', ['programming'], [0.0, 1.0, 0.0, 0.0]);
 
     const queryVec = new Float32Array([1.0, 0.1, 0.0, 0.0]);
-    const results = backend.search(
+    const results = await backend.search(
       { text: 'programming', vec: queryVec },
       10,
     );
     expect(results.length).toBeGreaterThan(0);
   });
 
-  it('applies topic boost on exact match', () => {
+  it('applies topic boost on exact match', async () => {
     const id = seedNode('Python language details', 'python', ['programming'], [1.0, 0.0, 0.0, 0.0]);
     seedNode('Other topics for contrast', 'other', ['misc'], [0.1, 0.1, 0.1, 0.1]);
 
-    const results = backend.search({ text: 'python' }, 10);
+    const results = await backend.search({ text: 'python' }, 10);
     const pythonResult = results.find((r) => r.id === id);
     expect(pythonResult).toBeDefined();
   });
 
-  it('respects limit', () => {
+  it('respects limit', async () => {
     for (let i = 0; i < 20; i++) {
       seedNode(`Content ${i}`, `topic-${i}`, ['test'], [i * 0.05, (i % 4) * 0.25, 0, 0]);
     }
 
-    const results = backend.search({ text: 'Content' }, 5);
+    const results = await backend.search({ text: 'Content' }, 5);
     expect(results.length).toBeLessThanOrEqual(5);
   });
 
-  it('filters by topic via graph backend', () => {
+  it('filters by topic via graph backend', async () => {
     const pyId = seedNode('Python async guide', 'python', ['ai'], [1.0, 0.0, 0.0, 0.0]);
     seedNode('Rust ownership guide', 'rust', ['systems'], [0.0, 1.0, 0.0, 0.0]);
 
-    const results = backend.search(
+    const results = await backend.search(
       { text: 'guide', filters: { topic: 'python' } },
       10,
     );
@@ -549,10 +549,10 @@ describe('SqliteSearchBackend integration', () => {
     }
   });
 
-  it('returns fields for each result', () => {
+  it('returns fields for each result', async () => {
     seedNode('Test content here', 'test-topic', ['demo'], [0.5, 0.5, 0.0, 0.0]);
 
-    const results = backend.search({ text: 'Test' }, 10);
+    const results = await backend.search({ text: 'Test' }, 10);
     expect(results.length).toBeGreaterThan(0);
     for (const r of results) {
       expect(r.fields).toBeDefined();
@@ -561,15 +561,15 @@ describe('SqliteSearchBackend integration', () => {
     }
   });
 
-  it('handles no matching results', () => {
-    const results = backend.search({ text: 'zzz_nonexistent_zzz' }, 10);
+  it('handles no matching results', async () => {
+    const results = await backend.search({ text: 'zzz_nonexistent_zzz' }, 10);
     expect(Array.isArray(results)).toBe(true);
   });
 
-  it('returns results with correct id types', () => {
+  it('returns results with correct id types', async () => {
     const id = seedNode('Number test', 'num', ['test'], [1.0, 0.0, 0.0, 0.0]);
 
-    const results = backend.search({ text: 'Number' }, 10);
+    const results = await backend.search({ text: 'Number' }, 10);
     for (const r of results) {
       expect(typeof r.id).toBe('number');
     }
@@ -588,14 +588,14 @@ describe('SqliteSearchBackend integration', () => {
       return id;
     }
 
-    it('does not leak cross-namespace vector hits into a namespace-scoped vec-only search', () => {
+    it('does not leak cross-namespace vector hits into a namespace-scoped vec-only search', async () => {
       seedNodeInNamespace('tenant A secret', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
       const bId = seedNodeInNamespace('tenant B secret', 'tenant-b', [1.0, 0.0, 0.0, 0.0]);
 
       // Identical vector, DIFFERENT namespace — a caller scoped to tenant-b must never
       // see tenant-a's node, even though it is the nearest (in fact identical) vector.
       const queryVec = new Float32Array([1.0, 0.0, 0.0, 0.0]);
-      const results = backend.search(
+      const results = await backend.search(
         { vec: queryVec, filters: { namespace: 'tenant-b' } },
         10,
       );
@@ -607,13 +607,13 @@ describe('SqliteSearchBackend integration', () => {
       expect(results.some((r) => r.id === bId)).toBe(true);
     });
 
-    it('does not leak cross-namespace vector hits into a namespace-scoped hybrid (text+vec) search', () => {
+    it('does not leak cross-namespace vector hits into a namespace-scoped hybrid (text+vec) search', async () => {
       const aId = graph.writeNode('shared phrase alpha', { namespace: 'tenant-a' });
       vec.upsert(aId, new Float32Array([1.0, 0.0, 0.0, 0.0]), { modelId: 'test-model', dim: 4 });
       const bId = graph.writeNode('shared phrase beta', { namespace: 'tenant-b' });
       vec.upsert(bId, new Float32Array([1.0, 0.0, 0.0, 0.0]), { modelId: 'test-model', dim: 4 });
 
-      const results = backend.search(
+      const results = await backend.search(
         { text: 'shared phrase', vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { namespace: 'tenant-b' } },
         10,
       );
@@ -624,10 +624,10 @@ describe('SqliteSearchBackend integration', () => {
       }
     });
 
-    it('returns zero vector candidates (not unfiltered results) when the filter matches no nodes', () => {
+    it('returns zero vector candidates (not unfiltered results) when the filter matches no nodes', async () => {
       seedNodeInNamespace('only node', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
 
-      const results = backend.search(
+      const results = await backend.search(
         { vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { namespace: 'nonexistent-tenant' } },
         10,
       );
@@ -635,10 +635,10 @@ describe('SqliteSearchBackend integration', () => {
       expect(results).toEqual([]);
     });
 
-    it('surfaces a degrade signal when a filter key cannot be enforced by either channel', () => {
+    it('surfaces a degrade signal when a filter key cannot be enforced by either channel', async () => {
       seedNodeInNamespace('some content', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
 
-      const backendResults = backend.search(
+      const backendResults = await backend.search(
         { vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { totally_unrecognized_key: 'x' } },
         10,
       );
@@ -648,7 +648,7 @@ describe('SqliteSearchBackend integration', () => {
       }
 
       // The degrade signal must also propagate through the top-level search() function.
-      const topLevelResults = search(
+      const topLevelResults = await search(
         backend,
         { vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { totally_unrecognized_key: 'x' } },
         { limit: 10 },
@@ -659,10 +659,10 @@ describe('SqliteSearchBackend integration', () => {
       }
     });
 
-    it('does NOT set a degrade signal when all filter keys are recognized', () => {
+    it('does NOT set a degrade signal when all filter keys are recognized', async () => {
       seedNodeInNamespace('clean filter node', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
 
-      const results = backend.search(
+      const results = await backend.search(
         { vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { namespace: 'tenant-a' } },
         10,
       );
@@ -683,7 +683,7 @@ describe('SqliteSearchBackend integration', () => {
   // constructor options at all.
 
   describe('kind:"generic" end-to-end via SqliteSearchBackend (BL-295 criterion 3)', () => {
-    it('stores AND retrieves a kind:"generic" (sub-kind:"component") node through real hybrid FTS5(BM25)+vector search', () => {
+    it('stores AND retrieves a kind:"generic" (sub-kind:"component") node through real hybrid FTS5(BM25)+vector search', async () => {
       const db = createTestDb();
       const genericVec = createTestVecStore(db);
       const genericGraph = new SqliteGraphBackend(db);
@@ -716,7 +716,7 @@ describe('SqliteSearchBackend integration', () => {
 
       // (b) real hybrid FTS5(BM25) + vector-kNN search finds it via SqliteSearchBackend,
       // filterable by kind:'generic' through the public filter surface.
-      const results = genericBackend.search(
+      const results = await genericBackend.search(
         { text: 'Button component', vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { kind: 'generic' } },
         10,
       );

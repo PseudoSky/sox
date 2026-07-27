@@ -27,7 +27,7 @@
  *   - Returns:          { uid, updated_fields, reembedded }
  */
 
-import Database from 'better-sqlite3';
+import type { StoreAdapter, SqliteAdapter } from '@adhd/sox-store-adapter';
 import { performance } from 'node:perf_hooks';
 import { embed } from './embed.js';
 import { applyEmbedding, type PendingEmbed } from './embed-pipeline.js';
@@ -146,10 +146,10 @@ export interface UpdatePhaseAOutcome {
  * here; when content/summary changed the stale vector is deleted in the same
  * transaction and the re-embed is returned as a PendingEmbed for Phase B.
  */
-export function memoryUpdatePhaseA(
-  db: Database.Database,
+export async function memoryUpdatePhaseA(
+  adapter: StoreAdapter,
   params: UpdateParams,
-): UpdatePhaseAOutcome | UpdateError {
+): Promise<UpdateError | UpdatePhaseAOutcome> {
   const {
     uid,
     content,
@@ -166,30 +166,26 @@ export function memoryUpdatePhaseA(
   } = params;
 
   // ── 1. Load the existing live node ──────────────────────────────────────────
-  const existing = db
-    .prepare<
-      [string],
-      {
-        rowid: number;
-        content: string | null;
-        summary: string | null;
-        name: string | null;
-        topic: string | null;
-        tags: string | null;
-        importance: number;
-        meta: string | null;
-        t_occurred: string | null;
-        t_valid: string | null;
-        project_path: string | null;
-      }
-    >(
-      `SELECT rowid, content, summary, name, topic, tags, importance, meta,
-              t_occurred, t_valid, project_path
-       FROM node
-       WHERE uid = ? AND t_invalid IS NULL
-       LIMIT 1`,
-    )
-    .get(uid);
+  const existing = await adapter.executeGet<{
+    rowid: number;
+    content: string | null;
+    summary: string | null;
+    name: string | null;
+    topic: string | null;
+    tags: string | null;
+    importance: number;
+    meta: string | null;
+    t_occurred: string | null;
+    t_valid: string | null;
+    project_path: string | null;
+  }>(
+    `SELECT rowid, content, summary, name, topic, tags, importance, meta,
+            t_occurred, t_valid, project_path
+     FROM node
+     WHERE uid = ? AND t_invalid IS NULL
+     LIMIT 1`,
+    [uid],
+  );
 
   if (!existing) {
     return {
@@ -321,18 +317,15 @@ export function memoryUpdatePhaseA(
       : (existing.content ?? '');
 
   // ── 5. Atomic transaction: UPDATE node + drop stale vec_node if re-embedding ─
-  db.transaction(() => {
+  await adapter.transaction(async (tx) => {
     const sql = `UPDATE node SET ${setClauses.join(', ')} WHERE uid = ?`;
     setValues.push(uid);
-    db.prepare(sql).run(...setValues);
+    await tx.executeRun(sql, setValues);
 
     if (needsReembed) {
-      // vec_node has no UPDATE trigger — delete the stale row NOW so recall
-      // never serves the old vector for new text; Phase B (or the sync
-      // composition / heal) re-inserts. A missing row is heal-eligible.
-      db.prepare(`DELETE FROM vec_node WHERE node_id = CAST(? AS INTEGER)`).run(existing.rowid);
+      await tx.executeRun(`DELETE FROM vec_node WHERE node_id = CAST(? AS INTEGER)`, [existing.rowid]);
     }
-  })();
+  });
   // Note: FTS is auto-synced by the fts_node_au trigger on the node UPDATE — no manual touch needed.
 
   return {
@@ -355,14 +348,14 @@ export function memoryUpdatePhaseA(
  * off the WriteQueue slot).
  */
 export async function memoryUpdate(
-  db: Database.Database,
+  adapter: StoreAdapter,
   params: UpdateParams,
 ): Promise<UpdateResult | UpdateError> {
-  const phaseA = memoryUpdatePhaseA(db, params);
+  const phaseA = await memoryUpdatePhaseA(adapter, params);
   if ('code' in phaseA) return phaseA;
   if (phaseA.pending === null) return phaseA.result;
 
   const vec = await embed(phaseA.pending.text);
-  applyEmbedding(db, phaseA.pending, vec);
+  applyEmbedding((adapter as SqliteAdapter).unwrap(), phaseA.pending, vec);
   return phaseA.result;
 }

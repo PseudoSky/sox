@@ -65,10 +65,11 @@ describe('memory-cli discovery (BL-95)', () => {
   });
 
   /** Create a bare, unregistered `<dir>/<name>.db` store with one live node. */
-  function seedBareStore(dir: string, name: string, uid: string, content: string): string {
+  async function seedBareStore(dir: string, name: string, uid: string, content: string): Promise<string> {
     fs.mkdirSync(dir, { recursive: true });
     const dbPath = path.join(dir, `${name}.db`);
-    const db = openDb(dbPath);
+    const adapter = await openDb(dbPath);
+    const db = adapter.unwrap() as any;
     initScope(db, 'user', 'test-scope-id');
     db.prepare(
       `INSERT INTO node (uid, kind, content, t_created) VALUES (?, ?, ?, ?)`,
@@ -77,9 +78,9 @@ describe('memory-cli discovery (BL-95)', () => {
     return dbPath;
   }
 
-  it('`list` finds ~/.memory/memory.db with no --base-path (regression for BL-95)', () => {
+  it('`list` finds ~/.memory/memory.db with no --base-path (regression for BL-95)', async () => {
     const memDir = path.join(sandboxHome, '.memory');
-    seedBareStore(memDir, 'memory', 'n1', 'hello world');
+    await seedBareStore(memDir, 'memory', 'n1', 'hello world');
 
     runCli(['list']);
 
@@ -93,9 +94,9 @@ describe('memory-cli discovery (BL-95)', () => {
     expect(output).toContain('unregistered store(s) found');
   });
 
-  it('`list` and `status` agree on discovered stores (no divergent strategy)', () => {
+  it('`list` and `status` agree on discovered stores (no divergent strategy)', async () => {
     const memDir = path.join(sandboxHome, '.memory');
-    seedBareStore(memDir, 'memory', 'n2', 'parity check');
+    await seedBareStore(memDir, 'memory', 'n2', 'parity check');
 
     runCli(['list']);
     const listOutput = logs.join('\n');
@@ -110,10 +111,10 @@ describe('memory-cli discovery (BL-95)', () => {
     expect(statusOutput).toContain('(unregistered/memory)');
   });
 
-  it('`list` still finds stores under an explicit --base-path', () => {
+  it('`list` still finds stores under an explicit --base-path', async () => {
     const explicitBase = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-memory-cli-base-'));
     try {
-      seedBareStore(path.join(explicitBase, '.memory'), 'project', 'n3', 'explicit base-path store');
+      await seedBareStore(path.join(explicitBase, '.memory'), 'project', 'n3', 'explicit base-path store');
 
       runCli(['list', '--base-path', explicitBase]);
 

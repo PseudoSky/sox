@@ -7,7 +7,7 @@
  * [inv:no-mcp] — returns a plain result object, never an MCP ToolResult.
  */
 
-import type Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { createGraphBackend } from '@adhd/sox-graph-store';
 import type { EdgeRecord } from '@adhd/sox-graph-store';
 import { parseTags, isSuperseded, supersedesUidForRowid, communityUidForRowid } from './recall.js';
@@ -46,7 +46,7 @@ export interface EntityEpisodesResult {
 // ── Main ───────────────────────────────────────────────────────────────────────
 
 export async function memoryGetEntityEpisodes(
-  db: Database.Database,
+  adapter: StoreAdapter,
   args: Record<string, unknown>,
 ): Promise<EntityEpisodesResult> {
   const entityUid = args['entity_uid'] as string | undefined;
@@ -58,11 +58,11 @@ export async function memoryGetEntityEpisodes(
   let resolvedEntityName = '';
 
   if (!resolvedEntityUid && entityName) {
-    const matchRows = db
-      .prepare<[string], { uid: string; name: string }>(
-        `SELECT uid, name FROM node WHERE kind = 'entity' AND LOWER(name) = LOWER(?) AND t_invalid IS NULL`,
-      )
-      .all(entityName);
+    const matchResult = await adapter.executeAll<{ uid: string; name: string }>(
+      `SELECT uid, name FROM node WHERE kind = 'entity' AND LOWER(name) = LOWER(?) AND t_invalid IS NULL`,
+      [entityName],
+    );
+    const matchRows = matchResult.rows;
 
     if (matchRows.length === 0) {
       return {
@@ -95,15 +95,17 @@ export async function memoryGetEntityEpisodes(
   }
 
   if (!resolvedEntityName) {
-    const nameRow = db
-      .prepare<[string], { name: string | null }>(`SELECT name FROM node WHERE uid = ? LIMIT 1`)
-      .get(resolvedEntityUid);
+    const nameRow = await adapter.executeGet<{ name: string | null }>(
+      `SELECT name FROM node WHERE uid = ? LIMIT 1`,
+      [resolvedEntityUid],
+    );
     resolvedEntityName = nameRow?.name ?? resolvedEntityUid;
   }
 
-  const entityRow = db
-    .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ? LIMIT 1`)
-    .get(resolvedEntityUid);
+  const entityRow = await adapter.executeGet<{ rowid: number }>(
+    `SELECT rowid FROM node WHERE uid = ? LIMIT 1`,
+    [resolvedEntityUid],
+  );
 
   if (!entityRow) {
     return {
@@ -114,10 +116,10 @@ export async function memoryGetEntityEpisodes(
     };
   }
 
-  const backend = createGraphBackend(db);
+  const backend = createGraphBackend(adapter);
 
   // Get MENTIONS edges where dst = entity
-  const edges = backend.getEdges({ dst: entityRow.rowid, rel: 'MENTIONS' });
+  const edges = await backend.getEdges({ dst: entityRow.rowid, rel: 'MENTIONS' });
   const total = edges.length;
 
   // Paginate in code
@@ -154,14 +156,13 @@ export async function memoryGetEntityEpisodes(
       agent_id: string | null;
       t_invalid: string | null;
     }
-    const rows = db
-      .prepare<unknown[], EpRow>(
-        `SELECT rowid, uid, content, summary, topic, tags, project_path,
-                importance, t_created, agent_id, t_invalid
-         FROM node WHERE rowid IN (${ph}) AND kind = 'episode' AND t_invalid IS NULL`,
-      )
-      .all(...episodeRowids);
-    for (const r of rows) {
+    const result = await adapter.executeAll<EpRow>(
+      `SELECT rowid, uid, content, summary, topic, tags, project_path,
+              importance, t_created, agent_id, t_invalid
+       FROM node WHERE rowid IN (${ph}) AND kind = 'episode' AND t_invalid IS NULL`,
+      episodeRowids,
+    );
+    for (const r of result.rows) {
       episodeMap.set(r.rowid, r);
     }
   }
@@ -180,9 +181,9 @@ export async function memoryGetEntityEpisodes(
         importance: r.importance,
         t_created: r.t_created,
         agent_id: r.agent_id ?? null,
-        is_superseded: isSuperseded(db, r.rowid),
-        supersedes_uid: supersedesUidForRowid(db, r.rowid),
-        community_uid: communityUidForRowid(db, r.rowid),
+        is_superseded: await isSuperseded(adapter, r.rowid),
+        supersedes_uid: await supersedesUidForRowid(adapter, r.rowid),
+        community_uid: await communityUidForRowid(adapter, r.rowid),
       });
     }
   }

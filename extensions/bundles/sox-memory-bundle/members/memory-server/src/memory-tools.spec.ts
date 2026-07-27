@@ -24,6 +24,7 @@ import { clusterStore, openDb } from '@adhd/sox-memory-core';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { handleToolCall } from './index.js';
 
@@ -86,8 +87,8 @@ beforeAll(async () => {
   }
 
   // Run a cluster pass so community data is available
-  const db = openDb(DB_PATH);
-  clusterStore(db);
+  const db = await openDb(DB_PATH);
+  await clusterStore(db);
 });
 
 afterAll(() => {
@@ -497,8 +498,8 @@ describe('memory_curate (C2.11)', () => {
     expect(out['new_importance']).toBe(8);
 
     // Verify it shows up in stats — episode is now high importance
-    const db = openDb(DB_PATH);
-    const row = db.prepare<[string], { importance: number; enrich_ver: string | null }>(
+    const adapter = await openDb(DB_PATH);
+    const row = (adapter.unwrap() as Database.Database).prepare<[string], { importance: number; enrich_ver: string | null }>(
       `SELECT importance, enrich_ver FROM node WHERE uid = ?`,
     ).get(uid);
     expect(row?.importance).toBe(8);
@@ -536,8 +537,8 @@ describe('memory_curate (C2.11)', () => {
     expect(out['dry_run']).toBe(false);
 
     // uid_drop should now be invalidated
-    const db = openDb(DB_PATH);
-    const dropped = db.prepare<[string], { t_invalid: string | null }>(
+    const adapter = await openDb(DB_PATH);
+    const dropped = (adapter.unwrap() as Database.Database).prepare<[string], { t_invalid: string | null }>(
       `SELECT t_invalid FROM node WHERE uid = ?`,
     ).get(uidDrop);
     expect(dropped?.t_invalid).not.toBeNull();
@@ -818,18 +819,19 @@ describe('read-path scope isolation at server layer (fix ①)', () => {
   let ISO_DB_PATH: string;
   let isoDir: string;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     isoDir = path.join(os.tmpdir(), `sox-iso-spec-${process.pid}`);
     fs.mkdirSync(isoDir, { recursive: true });
     ISO_DB_PATH = path.join(isoDir, 'iso.db');
 
     // Open DB directly (bypasses memoryWrite near-dup path) and insert raw episodes.
-    const isoDb = openDb(ISO_DB_PATH);
+    const isoDb = await openDb(ISO_DB_PATH);
+    const raw = isoDb.unwrap() as Database.Database;
     const now = new Date().toISOString();
     type InsRow = { rowid: number };
     const ins = (content: string, tags: string[]): number => {
       const uid = `iso-ep-${Math.random().toString(36).slice(2)}`;
-      return (isoDb.prepare<unknown[], InsRow>(
+      return (raw.prepare<unknown[], InsRow>(
         `INSERT INTO node (uid, kind, content, t_created, t_valid, tags) VALUES (?, 'episode', ?, ?, ?, ?) RETURNING rowid`,
       ).get(uid, content, now, now, JSON.stringify(tags)) as InsRow).rowid;
     };
@@ -851,12 +853,12 @@ describe('read-path scope isolation at server layer (fix ①)', () => {
       return '[' + Array.from(v).map((x) => x.toFixed(8)).join(',') + ']';
     };
     for (const [rowid, g] of [[r0, 0], [r1, 0], [r2, 1], [r3, 1]] as [number, number][]) {
-      isoDb.prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(rowid, encodeVec(g));
+      raw.prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(rowid, encodeVec(g));
     }
 
     // Run a global cluster pass — 2 communities (iso:A group, iso:B group).
-    clusterStore(isoDb);
-    isoDb.close();
+    await clusterStore(isoDb);
+    raw.close();
   });
 
   afterAll(() => {
@@ -1000,11 +1002,12 @@ describe('memory_update MCP tool', () => {
     expect((body['updated_fields'] as string[])).toContain('meta');
 
     // Verify DB state by reading back via a recall
-    const db = openDb(UPDATE_DB);
-    const row = db
+    const adapter = await openDb(UPDATE_DB);
+    const raw = adapter.unwrap() as Database.Database;
+    const row = raw
       .prepare<[string], { meta: string | null }>(`SELECT meta FROM node WHERE uid = ?`)
       .get(uid);
-    db.close();
+    raw.close();
     const meta = JSON.parse(row!.meta!) as Record<string, unknown>;
     expect(meta['a']).toEqual({ x: 1, y: 2 });
     expect(meta['list']).toEqual([4, 5]);
@@ -1026,11 +1029,12 @@ describe('memory_update MCP tool', () => {
       metadata_merge: 'replace',
     });
 
-    const db = openDb(UPDATE_DB);
-    const row = db
+    const adapter2 = await openDb(UPDATE_DB);
+    const raw2 = adapter2.unwrap() as Database.Database;
+    const row = raw2
       .prepare<[string], { meta: string | null }>(`SELECT meta FROM node WHERE uid = ?`)
       .get(uid);
-    db.close();
+    raw2.close();
     const meta = JSON.parse(row!.meta!) as Record<string, unknown>;
     expect(meta).toEqual({ brand_new: 42 });
     expect('old' in meta).toBe(false);

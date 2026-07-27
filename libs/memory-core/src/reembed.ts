@@ -68,6 +68,7 @@ import * as path from 'node:path';
 import { createEmbeddingProvider } from '@adhd/sox-embedding-provider';
 import { EMBED_DIM, vecToJson } from './embed.js';
 import { openDb, expandDbPath } from './db.js';
+import type { SqliteAdapter } from '@adhd/sox-store-adapter';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -246,7 +247,8 @@ async function _reembedStore(
   }
 
   // ── Open DB (memory-core: schema + sqlite-vec) ──────────────────────────────
-  const db = openDb(resolvedDbPath);
+  const adapter = await openDb(resolvedDbPath);
+  const db = (adapter as SqliteAdapter).unwrap();
 
   try {
     // ── BL-92: per-record candidate discovery + idempotency check ────────────

@@ -37,7 +37,7 @@
  */
 
 // ── Database ──────────────────────────────────────────────────────────────────
-export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION, closeAllDbs } from './db.js';
+export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION, closeAllAdapters, wrapRawDbAsAdapter } from './db.js';
 export type { ScopeKind, MemoryScope } from './db.js';
 
 // ── Writer lease (SA-8, BL-128) ───────────────────────────────────────────────
@@ -335,6 +335,7 @@ export { hexSha256, splitIntoChunksSentence } from '@adhd/sox-ingest/core';
 // ── Convenience wrappers (guard C5: write(dbPath, params) + recall(dbPath, params)) ──
 
 import { openDb } from './db.js';
+import type { SqliteAdapter } from '@adhd/sox-store-adapter';
 import { closeDbWithLease } from './lease.js';
 import { memoryWrite as _write } from './write.js';
 import { memoryRecall as _recall } from './recall.js';
@@ -349,11 +350,12 @@ export async function write(
   dbPath: string,
   params: WriteParams,
 ): Promise<WriteResult | WriteError> {
-  const db = openDb(dbPath);
+  const adapter = await openDb(dbPath);
+  const rawDb = (adapter as SqliteAdapter).unwrap();
   try {
-    return await _write(db, params);
+    return await _write(rawDb, params);
   } finally {
-    closeDbWithLease(db, dbPath);
+    await closeDbWithLease(adapter, dbPath);
   }
 }
 
@@ -365,12 +367,12 @@ export async function recall(
   dbPath: string,
   params: RecallParams,
 ): Promise<RecallResult[]> {
-  const db = openDb(dbPath);
+  const adapter = await openDb(dbPath);
   try {
     const scope = (params.scopes && params.scopes[0]) ?? 'project';
-    const res = await _recall(db, scope, params);
+    const res = await _recall(adapter, scope, params);
     return res.results;
   } finally {
-    closeDbWithLease(db, dbPath);
+    await closeDbWithLease(adapter, dbPath);
   }
 }

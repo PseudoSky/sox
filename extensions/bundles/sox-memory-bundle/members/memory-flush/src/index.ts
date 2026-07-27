@@ -157,7 +157,7 @@ function resolveExportConfig(payload: SessionEndPayload): ExportConfig {
  *
  * @returns true if export ran, false if throttled or skipped.
  */
-function tryAutoExport(db_path: string, exportDir: string, throttleSecs: number): boolean {
+async function tryAutoExport(db_path: string, exportDir: string, throttleSecs: number): Promise<boolean> {
   // Throttle check
   const nowMs = Date.now();
   const elapsedSecs = (nowMs - _lastExportMs) / 1000;
@@ -175,16 +175,16 @@ function tryAutoExport(db_path: string, exportDir: string, throttleSecs: number)
       return false;
     }
 
-    const db = memCoreOpenDb(db_path);
+    const adapter = await memCoreOpenDb(db_path);
     try {
-      const result = memCoreExportMarkdown(db, { dir: exportDir, enabled: true });
+      const result = memCoreExportMarkdown(adapter, { dir: exportDir, enabled: true });
       _lastExportMs = Date.now();
       console.log(
         `[memory-flush] auto-export complete: ${result.nodesWritten} nodes written, ` +
         `${result.topics} topics → ${exportDir}`,
       );
     } finally {
-      db.close();
+      await adapter.close();
     }
     return true;
   } catch (err) {
@@ -280,7 +280,7 @@ async function handleSessionEnd(payload: SessionEndPayload): Promise<void> {
   // Failure-isolated: tryAutoExport catches all errors internally.
   const exportCfg = resolveExportConfig(payload);
   if (exportCfg.export_enabled && exportCfg.export_dir.trim()) {
-    tryAutoExport(db_path, exportCfg.export_dir.trim(), exportCfg.export_throttle_secs);
+    await tryAutoExport(db_path, exportCfg.export_dir.trim(), exportCfg.export_throttle_secs);
   }
 }
 

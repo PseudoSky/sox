@@ -39,12 +39,12 @@ CREATE TABLE IF NOT EXISTS gc_runs (
 CREATE INDEX IF NOT EXISTS idx_gc_runs_t_started ON gc_runs(t_started);
 ` as const;
 
-import type Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 /**
  * Apply the blob store schema to an open SQLite database.
  * Idempotent — uses IF NOT EXISTS for all tables and indexes.
  */
-export function applySchema(db: Database.Database): void {
-  db.exec(SCHEMA_SQL);
+export async function applySchema(adapter: StoreAdapter): Promise<void> {
+  await adapter.exec(SCHEMA_SQL);
 }

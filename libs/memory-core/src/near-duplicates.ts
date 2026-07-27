@@ -7,7 +7,7 @@
  * [inv:no-mcp] — returns a plain result object, never an MCP ToolResult.
  */
 
-import type Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { createGraphBackend } from '@adhd/sox-graph-store';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ export interface NearDuplicatesResult {
 // ── Main ───────────────────────────────────────────────────────────────────────
 
 export async function memoryGetNearDuplicates(
-  db: Database.Database,
+  adapter: StoreAdapter,
   args: Record<string, unknown>,
 ): Promise<NearDuplicatesResult> {
   const projectPath = args['project_path'] as string | undefined;
@@ -38,10 +38,10 @@ export async function memoryGetNearDuplicates(
   const limit = Math.min((args['limit'] as number | undefined) ?? 20, 200);
   const offset = (args['offset'] as number | undefined) ?? 0;
 
-  const backend = createGraphBackend(db);
+  const backend = createGraphBackend(adapter);
 
   // Get all SAME_AS edges
-  const edges = backend.getEdges({ rel: 'SAME_AS' });
+  const edges = await backend.getEdges({ rel: 'SAME_AS' });
 
   // Collect all src+dst rowids to batch-look up nodes
   const nodeRowids = new Set<number>();
@@ -61,13 +61,12 @@ export async function memoryGetNearDuplicates(
   const nodeMap = new Map<number, NodeInfo>();
   if (nodeRowids.size > 0) {
     const ph = Array.from(nodeRowids, () => '?').join(',');
-    const rows = db
-      .prepare<unknown[], NodeInfo>(
-        `SELECT rowid, uid, content, topic, project_path, t_invalid
-         FROM node WHERE rowid IN (${ph})`,
-      )
-      .all(...nodeRowids);
-    for (const r of rows) {
+    const result = await adapter.executeAll<NodeInfo>(
+      `SELECT rowid, uid, content, topic, project_path, t_invalid
+       FROM node WHERE rowid IN (${ph})`,
+      Array.from(nodeRowids),
+    );
+    for (const r of result.rows) {
       nodeMap.set(r.rowid, r);
     }
   }

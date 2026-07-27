@@ -3,7 +3,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
-import type Database from 'better-sqlite3';
+
+import { type StoreAdapter, createSqliteAdapter } from '@adhd/sox-store-adapter';
 
 import {
   BlobNotFound,
@@ -23,6 +24,7 @@ export interface StoreConfig {
   tempDir?: string;
   refDbPath?: string;
   maxBlobSize?: number;
+  adapter?: StoreAdapter;
   gc?: {
     gracePeriodMs?: number;
     maxDeletePerCycle?: number;
@@ -72,7 +74,7 @@ export class BlobStore {
 
   private config!: StoreConfig;
   private resolvedTempDir!: string;
-  private db: Database.Database | null = null;
+  private adapter: StoreAdapter | null = null;
   private _isOpen = false;
   private gcInProgress = false;
   private gcStartedAt: string | null = null;
@@ -109,11 +111,15 @@ export class BlobStore {
     await fsp.mkdir(basePath, { recursive: true });
     await fsp.mkdir(tempDir, { recursive: true });
 
-    this.db = new (await import('better-sqlite3')).default(dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('busy_timeout = 5000');
-    this.db.pragma('foreign_keys = ON');
-    applySchema(this.db);
+    if (cfg.adapter) {
+      this.adapter = cfg.adapter;
+    } else {
+      this.adapter = createSqliteAdapter({ dbPath });
+    }
+    await this.adapter.pragmaSet('journal_mode', 'WAL');
+    await this.adapter.pragmaSet('busy_timeout', 5000);
+    await this.adapter.pragmaSet('foreign_keys', 'ON');
+    await applySchema(this.adapter);
 
     this._isOpen = true;
     console.info(`[blob-store] store opened: basePath=${basePath}`);
@@ -139,9 +145,9 @@ export class BlobStore {
       clearInterval(this.autoGcTimer);
       this.autoGcTimer = null;
     }
-    if (this.db) {
-      this.db.close();
-      this.db = null;
+    if (this.adapter) {
+      await this.adapter.close();
+      this.adapter = null;
     }
     this._isOpen = false;
     console.info('[blob-store] store closed');
@@ -184,7 +190,7 @@ export class BlobStore {
       }
     }
 
-    this.upsertMeta(hash, data.byteLength);
+    await this.upsertMeta(hash, data.byteLength);
     return hash;
   }
 
@@ -260,7 +266,7 @@ export class BlobStore {
       }
     }
 
-    this.upsertMeta(digest, totalBytes);
+    await this.upsertMeta(digest, totalBytes);
     return digest;
   }
 
@@ -413,7 +419,7 @@ export class BlobStore {
     const fp = this.blobPath(hash);
     try {
       await fsp.unlink(fp);
-      this.db!.prepare('DELETE FROM blob_meta WHERE hash = ?').run(hash);
+      await this.adapter!.executeRun('DELETE FROM blob_meta WHERE hash = ?', [hash]);
       return true;
     } catch (err) {
       if (isNotFound(err)) return false;
@@ -452,21 +458,18 @@ export class BlobStore {
 
   async totalSize(): Promise<number> {
     this.ensureOpen();
-    const row = this.db!
-      .prepare<[], { total: number | null }>(
-        'SELECT COALESCE(SUM(size), 0) as total FROM blob_meta',
-      )
-      .get();
+    const row = await this.adapter!.executeGet<{ total: number | null }>(
+      'SELECT COALESCE(SUM(size), 0) as total FROM blob_meta',
+    );
     return row?.total ?? 0;
   }
 
   async sizeOf(hash: string): Promise<number> {
     this.ensureOpen();
-    const row = this.db!
-      .prepare<[string], { size: number }>(
-        'SELECT size FROM blob_meta WHERE hash = ?',
-      )
-      .get(hash);
+    const row = await this.adapter!.executeGet<{ size: number }>(
+      'SELECT size FROM blob_meta WHERE hash = ?',
+      [hash],
+    );
     return row?.size ?? 0;
   }
 
@@ -550,29 +553,21 @@ export class BlobStore {
 
   // ── Metrics ─────────────────────────────────────────────────────────────
 
-  metrics(): BlobStoreMetrics {
-    const orphanCount = this.db
-      ? (this.db
-          .prepare<[], { cnt: number }>(
-            `SELECT COUNT(*) as cnt FROM blob_meta b
-             WHERE NOT EXISTS (SELECT 1 FROM refs r WHERE r.blob_hash = b.hash)`,
-          )
-          .get())?.cnt ?? 0
-      : 0;
-    const totalBlobs = this.db
-      ? (this.db
-          .prepare<[], { cnt: number }>(
-            'SELECT COUNT(*) as cnt FROM blob_meta',
-          )
-          .get())?.cnt ?? 0
-      : 0;
-    const totalBytes = this.db
-      ? (this.db
-          .prepare<[], { total: number | null }>(
-            'SELECT COALESCE(SUM(size), 0) as total FROM blob_meta',
-          )
-          .get())?.total ?? 0
-      : 0;
+  async metrics(): Promise<BlobStoreMetrics> {
+    this.ensureOpen();
+    const orphanRow = await this.adapter!.executeGet<{ cnt: number }>(
+      `SELECT COUNT(*) as cnt FROM blob_meta b
+       WHERE NOT EXISTS (SELECT 1 FROM refs r WHERE r.blob_hash = b.hash)`,
+    );
+    const orphanCount = orphanRow?.cnt ?? 0;
+    const totalRow = await this.adapter!.executeGet<{ cnt: number }>(
+      'SELECT COUNT(*) as cnt FROM blob_meta',
+    );
+    const totalBlobs = totalRow?.cnt ?? 0;
+    const bytesRow = await this.adapter!.executeGet<{ total: number | null }>(
+      'SELECT COALESCE(SUM(size), 0) as total FROM blob_meta',
+    );
+    const totalBytes = bytesRow?.total ?? 0;
 
     return {
       totalBlobs,
@@ -703,14 +698,13 @@ export class BlobStore {
     this.ensureOpen();
     if (!(await this.has(blobHash))) throw new BlobNotFound(blobHash);
     const ctx = context ? JSON.stringify(context) : null;
-    this.db!
-      .prepare(
-        `INSERT INTO refs(blob_hash, referrer, context) VALUES(?, ?, ?)
-         ON CONFLICT(blob_hash, referrer) DO UPDATE SET
-           t_touched = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-           context = COALESCE(EXCLUDED.context, refs.context)`,
-      )
-      .run(blobHash, referrer, ctx);
+    await this.adapter!.executeRun(
+      `INSERT INTO refs(blob_hash, referrer, context) VALUES(?, ?, ?)
+       ON CONFLICT(blob_hash, referrer) DO UPDATE SET
+         t_touched = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+         context = COALESCE(EXCLUDED.context, refs.context)`,
+      [blobHash, referrer, ctx],
+    );
   }
 
   async addRefs(
@@ -720,71 +714,66 @@ export class BlobStore {
   ): Promise<void> {
     this.ensureOpen();
     const ctx = context ? JSON.stringify(context) : null;
-    const txn = this.db!.transaction((hashes: string[]) => {
-      for (const h of hashes) {
-        if (
-          !this.db!
-            .prepare('SELECT 1 FROM blob_meta WHERE hash = ?')
-            .get(h)
-        ) {
+    await this.adapter!.transaction(async (tx) => {
+      for (const h of blobHashes) {
+        const exists = await tx.executeGet(
+          'SELECT 1 FROM blob_meta WHERE hash = ?',
+          [h],
+        );
+        if (!exists) {
           throw new BlobNotFound(h);
         }
-        this.db!
-          .prepare(
-            `INSERT INTO refs(blob_hash, referrer, context) VALUES(?, ?, ?)
-             ON CONFLICT(blob_hash, referrer) DO UPDATE SET
-               t_touched = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-               context = COALESCE(EXCLUDED.context, refs.context)`,
-          )
-          .run(h, referrer, ctx);
+        await tx.executeRun(
+          `INSERT INTO refs(blob_hash, referrer, context) VALUES(?, ?, ?)
+           ON CONFLICT(blob_hash, referrer) DO UPDATE SET
+             t_touched = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+             context = COALESCE(EXCLUDED.context, refs.context)`,
+          [h, referrer, ctx],
+        );
       }
     });
-    txn(blobHashes);
   }
 
   async removeRef(blobHash: string, referrer: string): Promise<void> {
     this.ensureOpen();
-    this.db!
-      .prepare(
-        'DELETE FROM refs WHERE blob_hash = ? AND referrer = ?',
-      )
-      .run(blobHash, referrer);
+    await this.adapter!.executeRun(
+      'DELETE FROM refs WHERE blob_hash = ? AND referrer = ?',
+      [blobHash, referrer],
+    );
   }
 
   async removeAllRefs(referrer: string): Promise<void> {
     this.ensureOpen();
-    this.db!
-      .prepare('DELETE FROM refs WHERE referrer = ?')
-      .run(referrer);
+    await this.adapter!.executeRun(
+      'DELETE FROM refs WHERE referrer = ?',
+      [referrer],
+    );
   }
 
   async getRefsForReferrer(referrer: string): Promise<string[]> {
     this.ensureOpen();
-    const rows = this.db!
-      .prepare<[string], { blob_hash: string }>(
-        'SELECT blob_hash FROM refs WHERE referrer = ?',
-      )
-      .all(referrer);
-    return rows.map((r) => r.blob_hash);
+    const result = await this.adapter!.executeAll<{ blob_hash: string }>(
+      'SELECT blob_hash FROM refs WHERE referrer = ?',
+      [referrer],
+    );
+    return result.rows.map((r) => r.blob_hash);
   }
 
   async getReferrersForBlob(blobHash: string): Promise<string[]> {
     this.ensureOpen();
-    const rows = this.db!
-      .prepare<[string], { referrer: string }>(
-        'SELECT referrer FROM refs WHERE blob_hash = ?',
-      )
-      .all(blobHash);
-    return rows.map((r) => r.referrer);
+    const result = await this.adapter!.executeAll<{ referrer: string }>(
+      'SELECT referrer FROM refs WHERE blob_hash = ?',
+      [blobHash],
+    );
+    return result.rows.map((r) => r.referrer);
   }
 
   async refCount(blobHash: string): Promise<number> {
     this.ensureOpen();
-    const row = this.db!
-      .prepare<[string], { cnt: number }>(
-        'SELECT COUNT(*) as cnt FROM refs WHERE blob_hash = ?',
-      )
-      .get(blobHash);
+    const row = await this.adapter!.executeGet<{ cnt: number }>(
+      'SELECT COUNT(*) as cnt FROM refs WHERE blob_hash = ?',
+      [blobHash],
+    );
     return row?.cnt ?? 0;
   }
 
@@ -805,23 +794,21 @@ export class BlobStore {
       opts?.t_before ?? new Date().toISOString();
     const limit = opts?.limit ?? 1000;
 
-    const rows = this.db!
-      .prepare<
-        [string, number],
-        { hash: string; size: number; lastRefRemoved: string | null }
-      >(
-        `SELECT b.hash, b.size, MAX(r.t_created) as lastRefRemoved
-         FROM blob_meta b
-         LEFT JOIN refs r ON r.blob_hash = b.hash
-         WHERE pinned = 0
-           AND (r.blob_hash IS NULL
-             OR (SELECT COUNT(*) FROM refs r2 WHERE r2.blob_hash = b.hash) = 0)
-         GROUP BY b.hash
-         HAVING lastRefRemoved IS NULL OR lastRefRemoved < ?
-         LIMIT ?`,
-      )
-      .all(tBefore, limit);
-    return rows;
+    const result = await this.adapter!.executeAll<{
+      hash: string; size: number; lastRefRemoved: string | null;
+    }>(
+      `SELECT b.hash, b.size, MAX(r.t_created) as lastRefRemoved
+       FROM blob_meta b
+       LEFT JOIN refs r ON r.blob_hash = b.hash
+       WHERE pinned = 0
+         AND (r.blob_hash IS NULL
+           OR (SELECT COUNT(*) FROM refs r2 WHERE r2.blob_hash = b.hash) = 0)
+       GROUP BY b.hash
+       HAVING lastRefRemoved IS NULL OR lastRefRemoved < ?
+       LIMIT ?`,
+      [tBefore, limit],
+    );
+    return result.rows;
   }
 
   // ── GC ──────────────────────────────────────────────────────────────────
@@ -863,11 +850,10 @@ export class BlobStore {
         if (this.fdGuard.isHeld(o.hash)) continue;
 
         // Double-check refs inside same SQLite txn
-        const refCheck = this.db!
-          .prepare<[string], { cnt: number }>(
-            'SELECT COUNT(*) as cnt FROM refs WHERE blob_hash = ?',
-          )
-          .get(o.hash);
+        const refCheck = await this.adapter!.executeGet<{ cnt: number }>(
+          'SELECT COUNT(*) as cnt FROM refs WHERE blob_hash = ?',
+          [o.hash],
+        );
         if ((refCheck?.cnt ?? 0) > 0) continue;
 
         candidates.push({
@@ -923,9 +909,10 @@ export class BlobStore {
 
             const fp = this.blobPath(c.hash);
             await fsp.unlink(fp);
-            this.db!
-              .prepare('DELETE FROM blob_meta WHERE hash = ?')
-              .run(c.hash);
+            await this.adapter!.executeRun(
+              'DELETE FROM blob_meta WHERE hash = ?',
+              [c.hash],
+            );
             deleted++;
             bytesFreed += c.size;
           } catch (err) {
@@ -953,12 +940,10 @@ export class BlobStore {
       }
 
       // Record GC run
-      this.db!
-        .prepare(
-          `INSERT INTO gc_runs(t_started, t_ended, dry_run, blobs_marked, blobs_deleted, bytes_freed, error)
-           VALUES(?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
+      await this.adapter!.executeRun(
+        `INSERT INTO gc_runs(t_started, t_ended, dry_run, blobs_marked, blobs_deleted, bytes_freed, error)
+         VALUES(?, ?, ?, ?, ?, ?, ?)`,
+        [
           this.gcStartedAt,
           new Date().toISOString(),
           dryRun ? 1 : 0,
@@ -966,7 +951,8 @@ export class BlobStore {
           deleted,
           bytesFreed,
           errors.length > 0 ? JSON.stringify(errors) : null,
-        );
+        ],
+      );
 
       this.gcRuns++;
       this.gcBytesFreed += bytesFreed;
@@ -1049,12 +1035,11 @@ export class BlobStore {
     this.ensureOpen();
     const limit = opts?.limit ?? 10;
     const offset = opts?.offset ?? 0;
-    const rows = this.db!
-      .prepare<[number, number], GcResultRow>(
-        `SELECT * FROM gc_runs ORDER BY id DESC LIMIT ? OFFSET ?`,
-      )
-      .all(limit, offset);
-    return rows.map((r) => ({
+    const result = await this.adapter!.executeAll<GcResultRow>(
+      `SELECT * FROM gc_runs ORDER BY id DESC LIMIT ? OFFSET ?`,
+      [limit, offset],
+    );
+    return result.rows.map((r) => ({
       dryRun: r.dry_run === 1,
       tStarted: r.t_started,
       tEnded: r.t_ended ?? '',
@@ -1081,32 +1066,33 @@ export class BlobStore {
   async pin(hash: string): Promise<void> {
     this.ensureOpen();
     if (!(await this.has(hash))) throw new BlobNotFound(hash);
-    this.db!
-      .prepare('UPDATE blob_meta SET pinned = 1 WHERE hash = ?')
-      .run(hash);
+    await this.adapter!.executeRun(
+      'UPDATE blob_meta SET pinned = 1 WHERE hash = ?',
+      [hash],
+    );
   }
 
   async unpin(hash: string): Promise<void> {
     this.ensureOpen();
-    this.db!
-      .prepare('UPDATE blob_meta SET pinned = 0 WHERE hash = ?')
-      .run(hash);
+    await this.adapter!.executeRun(
+      'UPDATE blob_meta SET pinned = 0 WHERE hash = ?',
+      [hash],
+    );
   }
 
   async isPinned(hash: string): Promise<boolean> {
     this.ensureOpen();
-    const row = this.db!
-      .prepare<[string], { pinned: number }>(
-        'SELECT pinned FROM blob_meta WHERE hash = ?',
-      )
-      .get(hash);
+    const row = await this.adapter!.executeGet<{ pinned: number }>(
+      'SELECT pinned FROM blob_meta WHERE hash = ?',
+      [hash],
+    );
     return row?.pinned === 1;
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────
 
   private ensureOpen(): void {
-    if (!this._isOpen || !this.db) {
+    if (!this._isOpen || !this.adapter) {
       throw new BlobStoreNotOpenError();
     }
   }
@@ -1139,13 +1125,12 @@ export class BlobStore {
     };
   }
 
-  private upsertMeta(hash: string, size: number): void {
-    this.db!
-      .prepare(
-        `INSERT INTO blob_meta(hash, size) VALUES(?, ?)
-         ON CONFLICT(hash) DO NOTHING`,
-      )
-      .run(hash, size);
+  private async upsertMeta(hash: string, size: number): Promise<void> {
+    await this.adapter!.executeRun(
+      `INSERT INTO blob_meta(hash, size) VALUES(?, ?)
+       ON CONFLICT(hash) DO NOTHING`,
+      [hash, size],
+    );
   }
 
   private async cleanupOrphanedTemp(): Promise<void> {

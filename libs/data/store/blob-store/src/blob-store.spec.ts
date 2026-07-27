@@ -262,7 +262,7 @@ describe('BlobStore', () => {
     it('returns approximate metrics', async () => {
       const data = new TextEncoder().encode('metrics test');
       await store.put(data);
-      const m = store.metrics();
+      const m = await store.metrics();
       expect(m.totalBlobs).toBeGreaterThanOrEqual(1);
       expect(m.readCount).toBeGreaterThanOrEqual(0);
       expect(m.writeCount).toBeGreaterThanOrEqual(1);

@@ -76,6 +76,7 @@ import {
   warmupEmbed,
   isSuperseded,
   WriteQueue,
+  wrapRawDbAsAdapter,
   // S11 / BL-165: canonical chunking re-exported from @adhd/sox-ingest via memory-core.
   // Replaces the local splitIntoChunks function (deleted below).
   splitIntoChunksSentence,
@@ -857,16 +858,16 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         try { walBytes = fs.statSync(walPath).size; } catch { /* no WAL yet */ }
 
         // Open DB for live metadata queries
-        const db = getDb(resolvedPath);
+        const rawDb = (await getDb(resolvedPath)).unwrap() as Database.Database;
 
         // Queue depth (pending enrichments)
-        const qRow = db
+        const qRow = rawDb
           .prepare<[], { q: number }>('SELECT COUNT(*) AS q FROM organizer_queue WHERE done_at IS NULL')
           .get();
         const queueDepth = qRow?.q ?? 0;
 
         // Enrichment watermark (latest enrich_ver)
-        const eRow = db
+        const eRow = rawDb
           .prepare<[], { ev: string | null }>('SELECT MAX(enrich_ver) AS ev FROM node WHERE enrich_ver IS NOT NULL')
           .get();
         const enrichmentWatermark = eRow?.ev ?? null;
@@ -876,12 +877,12 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         // NOTE: enrichment_watermark above is MAX(enrich_ver) over nodes — the
         // SYNCHRONOUS write-path enrichment stamps it; it does NOT prove the
         // async consumer is alive. These fields do.
-        const oldRow = db
+        const oldRow = rawDb
           .prepare<[], { o: string | null }>(
             'SELECT MIN(enqueued) AS o FROM organizer_queue WHERE done_at IS NULL',
           )
           .get();
-        const doneRow = db
+        const doneRow = rawDb
           .prepare<[], { d: string | null }>('SELECT MAX(done_at) AS d FROM organizer_queue')
           .get();
         const queueOldestPendingAt = oldRow?.o ?? null;
@@ -890,7 +891,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         // Phase-B embed backlog (two-phase write, 2026-07-04): live episodes
         // whose vec_node row has not landed yet. Cheap SQL; folded into the
         // enrichment verdict so a dead Phase-B pipeline reads `stalled`.
-        const embedBacklog = embedBacklogStats(db);
+        const embedBacklog = embedBacklogStats(rawDb);
 
         const enrichmentHealth = computeEnrichmentHealth(
           queueDepth,
@@ -1002,12 +1003,13 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
   const denied = checkDbPathPolicy(dbPath);
   if (denied) return denied;
 
-  const db = getDb(dbPath);
+  const adapter = await getDb(dbPath);
+  const rawDb = (adapter as any).unwrap() as Database.Database;
   openedPaths.add(dbPath);
 
   switch (name) {
     case 'memory_write': {
-      const wq = WriteQueue.forPath(dbPath);
+      const wq = await WriteQueue.forPath(dbPath);
       const content = args['content'] as string;
       const chunkSize = (args['chunk_size'] as number | undefined) ?? 500;
       // S11 / BL-165: routed through ingest's canonical sentence-boundary chunker.
@@ -1209,7 +1211,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_write_batch': {
-      const wq = WriteQueue.forPath(dbPath);
+      const wq = await WriteQueue.forPath(dbPath);
       const items = args['items'] as Array<Record<string, unknown>> | undefined;
       if (!Array.isArray(items) || items.length === 0) {
         return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_INVALID_INPUT', message: 'items must be a non-empty array' }) }] };
@@ -1313,7 +1315,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           : 'n.t_invalid IS NULL';
         const validityParams = asOf ? [asOf, asOf] : [];
 
-        const rows = db
+          const rows = rawDb
           .prepare<unknown[], {
             rowid: number; uid: string; content: string | null; importance: number;
             t_valid: string | null; agent_id: string | null; content_hash: string | null;
@@ -1352,7 +1354,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           budgetedRows.push(r);
         }
 
-        const results = budgetedRows.map((r) => ({
+        const results = await Promise.all(budgetedRows.map(async (r) => ({
           uid: r.uid,
           content: r.content,
           score: r.importance / 10.0,
@@ -1367,10 +1369,10 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           topic: r.topic ?? null,
           tags: parseTags(r.tags),
           project_path: r.project_path ?? null,
-          is_superseded: isSuperseded(db, r.rowid),
-          supersedes_uid: supersedesUidForRowid(db, r.rowid),
-          community_uid: communityUidForRowid(db, r.rowid),
-        }));
+          is_superseded: await isSuperseded(adapter, r.rowid),
+          supersedes_uid: await supersedesUidForRowid(adapter, r.rowid),
+          community_uid: await communityUidForRowid(adapter, r.rowid),
+        })));
 
         return {
           content: [{ type: 'text', text: JSON.stringify({ results, provider_call_count: 0 }) }],
@@ -1402,7 +1404,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         if (tb !== undefined) recallFilters['t_created_before'] = tb;
       }
 
-      const recallResult = await memoryRecall(db, (args['scope'] as string) ?? 'project', {
+      const recallResult = await memoryRecall(adapter, (args['scope'] as string) ?? 'project', {
         query,
         agent_id: args['agent_id'] as string | undefined,
         as_of: args['as_of'] as string | undefined,
@@ -1413,9 +1415,9 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       });
 
       // Augment each result with v1 enrichment fields
-      const enrichedResults = recallResult.results.map((r) => {
+      const enrichedResults = await Promise.all(recallResult.results.map(async (r) => {
         // Fetch enrichment columns for this uid
-        const nodeRow = db
+        const nodeRow = rawDb
           .prepare<[string], {
             rowid: number; summary: string | null; topic: string | null;
             tags: string | null; project_path: string | null; t_invalid: string | null;
@@ -1430,11 +1432,11 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           topic: nodeRow?.topic ?? null,
           tags: parseTags(nodeRow?.tags),
           project_path: nodeRow?.project_path ?? null,
-          is_superseded: nodeRow ? isSuperseded(db, nodeRow.rowid) : false,
-          supersedes_uid: nodeRow ? supersedesUidForRowid(db, nodeRow.rowid) : null,
-          community_uid: nodeRow ? communityUidForRowid(db, nodeRow.rowid) : null,
+          is_superseded: nodeRow ? await isSuperseded(adapter, nodeRow.rowid) : false,
+          supersedes_uid: nodeRow ? await supersedesUidForRowid(adapter, nodeRow.rowid) : null,
+          community_uid: nodeRow ? await communityUidForRowid(adapter, nodeRow.rowid) : null,
         };
-      });
+      }));
 
       // Apply filter-level post-processing for fields not handled by the core recall.
       // The core recall path does not yet understand the enrichment filters natively,
@@ -1444,7 +1446,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         const { sql: filterSql, params: filterParams } = buildFiltersClause(filters);
         if (filterSql) {
           // Collect the uids that pass the SQL filter
-          const uidsRaw = db
+          const uidsRaw = rawDb
             .prepare<unknown[], { uid: string }>(
               `SELECT n.uid FROM node n WHERE n.uid IN (${enrichedResults.map(() => '?').join(',')})${filterSql}`,
             )
@@ -1464,7 +1466,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       // member type) — under exactOptionalPropertyTypes the KEY must be omitted
       // entirely when absent, not present with an explicit `undefined` value.
       const entityType = args['entity_type'] as string | undefined;
-      const result = memorySearchEntities(db, {
+      const result = await memorySearchEntities(adapter, {
         query: args['query'] as string,
         ...(entityType !== undefined ? { entity_type: entityType } : {}),
         limit: (args['limit'] as number) ?? 10,
@@ -1475,14 +1477,14 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_get_session_state': {
-      const result = await memoryGetSessionState(db, args);
+      const result = await memoryGetSessionState(adapter, args);
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
     case 'memory_save_session_state': {
-      const result = await memorySaveSessionState(db, args);
+      const result = await memorySaveSessionState(adapter, args);
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };
@@ -1511,7 +1513,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       if (communityUidArg) {
         commUid = communityUidArg;
       } else {
-        const viaMemberOf = db
+        const viaMemberOf = rawDb
           .prepare<[number, string], { uid: string }>(
             `SELECT n2.uid FROM node n1
              JOIN edge e ON e.src = n1.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
@@ -1528,7 +1530,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         commUid = viaMemberOf.uid;
       }
 
-      const commRow = db
+      const commRow = rawDb
         .prepare<[string], { rowid: number; uid: string; name: string | null; meta: string | null; t_created: string }>(
           `SELECT rowid, uid, name, meta, t_created FROM node
            WHERE uid = ? AND kind = 'community' AND t_invalid IS NULL`,
@@ -1551,7 +1553,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         } catch { /* malformed */ }
       }
 
-      const members = db
+      const members = rawDb
         .prepare<[number], { uid: string; name: string | null; summary: string | null; topic: string | null; importance: number; t_created: string; project_path: string | null; tags: string | null }>(
           `SELECT n.uid, n.name, n.summary, n.topic, n.importance, n.t_created, n.project_path, n.tags
            FROM edge e
@@ -1595,7 +1597,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       // entirely when absent, not present with an explicit `undefined` value.
       const tTransition = args['t_transition'] as string | undefined;
       const replacementUid = args['replacement_uid'] as string | undefined;
-      const wq = WriteQueue.forPath(dbPath);
+      const wq = await WriteQueue.forPath(dbPath);
       return wq.enqueue('memory_invalidate', (writeDb) => {
         const result = memoryInvalidate(writeDb, {
           claim_uid: args['claim_uid'] as string,
@@ -1617,7 +1619,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       if (!uid) {
         return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING', message: 'uid is required' }) }] };
       }
-      const wq = WriteQueue.forPath(dbPath);
+      const wq = await WriteQueue.forPath(dbPath);
       const updateParams = {
         uid,
         content: args['content'] as string | undefined,
@@ -1637,7 +1639,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       // inside the queue slot via the sync composition.
       if (syncEmbedEnabled()) {
         return wq.enqueue('memory_update', async (writeDb) => {
-          const updateResult = await memoryUpdate(writeDb, updateParams);
+          const updateResult = await memoryUpdate(wrapRawDbAsAdapter(writeDb), updateParams);
           if ('code' in updateResult) {
             return {
               isError: true,
@@ -1657,8 +1659,8 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       // memory_update previously skipped (BL-191). A crashed Phase B leaves
       // the node vectorless → healMissingVectors repairs on the next tick.
       // Explicit type argument — see the identical `memory_write` widening note above.
-      const updOutcome = await wq.enqueue<{ response: ToolResult; pending: PendingEmbed | null }>('memory_update', (writeDb) => {
-        const a = memoryUpdatePhaseA(writeDb, updateParams);
+      const updOutcome = await wq.enqueue<{ response: ToolResult; pending: PendingEmbed | null }>('memory_update', async (writeDb) => {
+        const a = await memoryUpdatePhaseA(wrapRawDbAsAdapter(writeDb), updateParams);
         if ('code' in a) {
           return {
             response: { isError: true, content: [{ type: 'text', text: JSON.stringify(a) }] },
@@ -1680,9 +1682,9 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       // running queue task (the re-entrancy hazard write-queue.ts's header warns about);
       // it is a plain await of a non-queue async DB call, which _processNext's `await
       // result` already supports for any queue task (write-queue.ts:684-687).
-      const wq = WriteQueue.forPath(dbPath);
+      const wq = await WriteQueue.forPath(dbPath);
       return wq.enqueue('memory_link', async (writeDb) => {
-        const result = await memoryLinkNode(writeDb, args);
+        const result = await memoryLinkNode(wrapRawDbAsAdapter(writeDb), args);
         if (result.isError) {
           return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
         }
@@ -1695,28 +1697,28 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     // ── P4 NEW TOOL HANDLERS ──────────────────────────────────────────────────
 
     case 'memory_topics': {
-      const result = memoryListTopics(db, args);
+      const result = await memoryListTopics(adapter, args);
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
     case 'memory_list_projects': {
-      const result = memoryListProjects(db, args);
+      const result = await memoryListProjects(adapter, args);
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
     case 'memory_list_entities': {
-      const result = await memoryListEntities(db, args);
+      const result = await memoryListEntities(adapter, args);
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
     case 'memory_entity_episodes': {
-      const result = await memoryGetEntityEpisodes(db, args);
+      const result = await memoryGetEntityEpisodes(adapter, args);
       if (result.code) {
         return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
@@ -1726,7 +1728,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_related': {
-      const result = await memoryGetRelated(db, args);
+      const result = await memoryGetRelated(adapter, args);
       if (result.code) {
         return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
@@ -1736,7 +1738,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_supersession_chain': {
-      const result = await memoryGetSupersessionChain(db, args);
+      const result = await memoryGetSupersessionChain(adapter, args);
       if (result.code) {
         return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
@@ -1746,16 +1748,16 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_near_duplicates': {
-      const result = await memoryGetNearDuplicates(db, args);
+      const result = await memoryGetNearDuplicates(adapter, args);
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     }
 
     case 'memory_curate': {
-      const wq = WriteQueue.forPath(dbPath);
+      const wq = await WriteQueue.forPath(dbPath);
       return wq.enqueue('memory_curate', async (writeDb) => {
-        const result = await memoryCurate(writeDb, args);
+        const result = await memoryCurate(wrapRawDbAsAdapter(writeDb), args);
         if ('code' in result) {
           return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
         }
@@ -1766,7 +1768,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
 
     case 'memory_stats': {
-      const result = await memoryGetStats(db, args, TOOL_NAMES);
+      const result = await memoryGetStats(adapter, args, TOOL_NAMES);
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };
@@ -1957,11 +1959,11 @@ export async function runEnrichPassOnDb(
   db: Database.Database,
   dbPath: string,
 ): Promise<{ queue_completed: number; full_pass: boolean; healed: number; heal_failed: number }> {
-  const heal = await healMissingVectors(db, WriteQueue.forPath(dbPath));
+  const heal = await healMissingVectors(db, await WriteQueue.forPath(dbPath));
 
   const maxSeq = maxOpenEnrichTriggerSeq(db);
   const fullPass = hasPendingFullEnrich(db, maxSeq);
-  const result = runBatchEnrich(db, { incrementalCluster: !fullPass });
+  const result = await runBatchEnrich(db, { incrementalCluster: !fullPass });
   const queueCompleted = completeEnrichTriggerRows(db, maxSeq);
   console.error(
     `[memory-server] periodic enrich (${dbPath}):` +
@@ -1988,8 +1990,8 @@ async function runPeriodicEnrichPass(): Promise<void> {
 
   for (const dbPath of openedPaths) {
     try {
-      const db = getDb(dbPath);
-      await runEnrichPassOnDb(db, dbPath);
+      const adapter = await getDb(dbPath);
+      await runEnrichPassOnDb((adapter as any).unwrap() as Database.Database, dbPath);
     } catch (err) {
       // Log to stderr only — never stdout (JSON-RPC channel).
       console.error(`[memory-server] periodic enrich error (${dbPath}):`, err);

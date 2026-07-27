@@ -96,13 +96,13 @@ CREATE INDEX IF NOT EXISTS idx_scheduler_enabled
   ON scheduler_entries(enabled, last_enqueued_at);
 `;
 
-/** Apply pragmas + schema DDL to a fresh or existing better-sqlite3 connection. */
-export function applySchema(db: import('better-sqlite3').Database): void {
-  for (const pragma of PRAGMAS) db.exec(pragma);
-  db.exec(SCHEMA_VERSION_DDL);
-  db.exec(TASK_QUEUE_DDL);
-  const row = db.prepare('SELECT COUNT(*) as n FROM _schema_version').get() as { n: number };
-  if (row.n === 0) {
-    db.prepare('INSERT INTO _schema_version (version) VALUES (?)').run(SCHEMA_VERSION);
+/** Apply pragmas + schema DDL to a fresh or existing StoreAdapter connection. */
+export async function applySchema(adapter: import('@adhd/sox-store-adapter').StoreAdapter): Promise<void> {
+  for (const pragma of PRAGMAS) await adapter.exec(pragma);
+  await adapter.exec(SCHEMA_VERSION_DDL);
+  await adapter.exec(TASK_QUEUE_DDL);
+  const row = await adapter.executeGet<{ n: number }>('SELECT COUNT(*) as n FROM _schema_version');
+  if ((row?.n ?? 0) === 0) {
+    await adapter.executeRun('INSERT INTO _schema_version (version) VALUES (?)', [SCHEMA_VERSION]);
   }
 }

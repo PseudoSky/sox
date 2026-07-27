@@ -14,6 +14,7 @@
 
 import type { Database } from 'better-sqlite3';
 import { createGraphBackend } from '@adhd/sox-graph-store';
+import { wrapRawDbAsAdapter } from './db.js';
 import { resolveProjectPath } from './provenance.js';
 import { detectNearDup } from './neardup.js';
 import { extractiveSummary } from './extractive.js';
@@ -131,7 +132,7 @@ export function enrichOnWrite(
   p: EnrichOnWriteParams,
 ): EnrichOnWriteResult {
   // Create GraphBackend for node/edge CRUD (pattern: sibling read-path modules)
-  const graph = createGraphBackend(db);
+  const graph = createGraphBackend(wrapRawDbAsAdapter(db));
 
   // E1: resolve project_path (caller override → git root → cwd)
   const resolvedProjectPath = resolveProjectPath(p.project_path);

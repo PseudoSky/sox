@@ -1,0 +1,49 @@
+{
+  "name": "@adhd/sox-store-adapter",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Unified store adapter — Turso Database (primary) and SQLite (backward-compat) behind a single async interface",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist"],
+  "dependencies": {
+    "better-sqlite3": "^12.10.0"
+  },
+  "peerDependencies": {
+    "@tursodatabase/database": "^0.7.1"
+  },
+  "peerDependenciesMeta": {
+    "@tursodatabase/database": {
+      "optional": true
+    }
+  },
+  "sox": {
+    "area": "data",
+    "group": "store",
+    "concerns": [
+      "unified async database interface (Turso + SQLite)",
+      "capability-flagged adapter factory",
+      "transaction mode support (deferred/immediate/exclusive/concurrent)",
+      "portable error helpers (duck-typed, no instanceof driver classes)",
+      "retry utilities with exponential backoff"
+    ],
+    "invariants": [
+      "Adapter instances are NOT shared across consumers — each opens its own connection",
+      "transaction() always uses raw BEGIN/COMMIT/ROLLBACK — no db.transaction(fn) wrapper",
+      "BEGIN CONCURRENT is TursoAdapter-only — SqliteAdapter throws for mode: 'concurrent'",
+      "Errors are driver-native — consumers use portable helpers, never instanceof"
+    ],
+    "entrypoints": [
+      "dist/index.js"
+    ]
+  }
+}

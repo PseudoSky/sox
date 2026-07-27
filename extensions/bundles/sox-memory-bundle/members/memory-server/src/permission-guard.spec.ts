@@ -24,6 +24,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 // These tests assert db_path permission ENFORCEMENT, not embedding quality — pin the fast,
@@ -335,14 +336,15 @@ describe('memory_write auto_chunk — BL-13', () => {
     expect(parsed.chunk_uids.length).toBe(parsed.chunk_count);
 
     // Verify DERIVED_FROM edges exist in the DB
-    const db = openDb(tmpDb);
+    const adapter = await openDb(tmpDb);
     try {
+      const db = adapter.unwrap() as Database.Database;
       const edgeCount = db.prepare(
         `SELECT COUNT(*) as cnt FROM edge WHERE rel = 'DERIVED_FROM' AND t_expired IS NULL`,
       ).get() as { cnt: number };
       expect(edgeCount.cnt).toBe(parsed.chunk_count);
     } finally {
-      db.close();
+      (adapter.unwrap() as Database.Database).close();
     }
   }, 30_000);
 

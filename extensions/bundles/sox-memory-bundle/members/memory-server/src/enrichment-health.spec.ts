@@ -244,7 +244,8 @@ describe('queue-drain SLO: memory_ping surfaces the verdict', () => {
     const dbPath = path.join(tmpDir(), 'store.db');
     // Initialize a REAL store (full schema) — the ping store block opens it via
     // the same getDb path, so a partial schema would silently omit the block.
-    const db = getDb(dbPath);
+    const adapter = await getDb(dbPath);
+    const db = (adapter as any).unwrap() as Database.Database;
 
     // Seed the incident shape: one ingest row, 14h old, never claimed.
     const old = new Date(Date.now() - 14 * 3600 * 1000).toISOString();
@@ -265,7 +266,8 @@ describe('queue-drain SLO: memory_ping surfaces the verdict', () => {
 
   it('reports ok for fresh pending work (no false stall alarms)', async () => {
     const dbPath = path.join(tmpDir(), 'store2.db');
-    const db = getDb(dbPath);
+    const adapter = await getDb(dbPath);
+    const db = (adapter as any).unwrap() as Database.Database;
     enqueue(db, 'ingest', new Date().toISOString());
 
     const h = await pingStore(dbPath);

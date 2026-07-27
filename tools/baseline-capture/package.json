@@ -10,10 +10,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "devDependencies": {
-    "@adhd/sox-memory-core": "workspace:*"
-  },
-  "dependencies": {
-    "better-sqlite3": "^12.10.0",
-    "sqlite-vec": "^0.1.9"
+    "@adhd/sox-memory-core": "workspace:*",
+    "@adhd/sox-store-adapter": "workspace:*"
   }
 }

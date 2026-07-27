@@ -8,7 +8,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { openDb, closeAllDbs } from '@adhd/sox-memory-core';
+import { openDb, closeAllAdapters } from '@adhd/sox-memory-core';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 import {
   buildEnrichmentBaseline,
@@ -19,11 +20,12 @@ import {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function seedEpisode(db: ReturnType<typeof openDb>, uid: string, content: string): void {
+async function seedEpisode(adapter: StoreAdapter, uid: string, content: string): Promise<void> {
   const now = new Date().toISOString();
-  db.prepare(
+  await adapter.executeRun(
     `INSERT INTO node (uid, kind, content, t_created, importance) VALUES (?, 'episode', ?, ?, 1.0)`,
-  ).run(uid, content, now);
+    [uid, content, now],
+  );
 }
 
 const tmpDirs: string[] = [];
@@ -33,8 +35,8 @@ function mkTmpDir(): string {
   return dir;
 }
 
-afterEach(() => {
-  closeAllDbs();
+afterEach(async () => {
+  await closeAllAdapters();
   for (const dir of tmpDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -102,16 +104,16 @@ describe('buildEnrichmentBaseline', () => {
 // ── runEnrichmentBaselinePass (real schema, zero embeddings, no ONNX) ─────────
 
 describe('runEnrichmentBaselinePass', () => {
-  it('runs a batch-enrich pass over a seeded db and returns accurate live counts', () => {
+  it('runs a batch-enrich pass over a seeded db and returns accurate live counts', async () => {
     const dir = mkTmpDir();
     const dbPath = path.join(dir, 'test.db');
-    const db = openDb(dbPath);
+    const adapter = await openDb(dbPath);
 
-    seedEpisode(db, 'ep-1', 'The quick brown fox jumps over the lazy dog.');
-    seedEpisode(db, 'ep-2', 'A second unrelated episode about kayaking.');
-    seedEpisode(db, 'ep-3', 'A third episode, also about kayaking trips.');
+    await seedEpisode(adapter, 'ep-1', 'The quick brown fox jumps over the lazy dog.');
+    await seedEpisode(adapter, 'ep-2', 'A second unrelated episode about kayaking.');
+    await seedEpisode(adapter, 'ep-3', 'A third episode, also about kayaking trips.');
 
-    const { batchEnrichResult, counts } = runEnrichmentBaselinePass(db, DEFAULT_BATCH_ENRICH_OPTIONS);
+    const { batchEnrichResult, counts } = await runEnrichmentBaselinePass(adapter, DEFAULT_BATCH_ENRICH_OPTIONS);
 
     expect(counts.totalNodes).toBe(3);
     expect(counts.totalEpisodes).toBe(3);
@@ -121,35 +123,35 @@ describe('runEnrichmentBaselinePass', () => {
     expect(typeof batchEnrichResult.communities_upserted).toBe('number');
     expect(typeof batchEnrichResult.cluster_pass_skipped).toBe('boolean');
 
-    db.close();
+    await adapter.close();
   });
 
-  it('is safe on an empty store (zero nodes)', () => {
+  it('is safe on an empty store (zero nodes)', async () => {
     const dir = mkTmpDir();
     const dbPath = path.join(dir, 'empty.db');
-    const db = openDb(dbPath);
+    const adapter = await openDb(dbPath);
 
-    const { counts } = runEnrichmentBaselinePass(db);
+    const { counts } = await runEnrichmentBaselinePass(adapter);
 
     expect(counts).toEqual({ totalNodes: 0, totalEdges: 0, totalEpisodes: 0 });
-    db.close();
+    await adapter.close();
   });
 });
 
 // ── captureEnrichmentBaseline (full orchestration, real snapshot + sha256) ────
 
 describe('captureEnrichmentBaseline', () => {
-  it('snapshots the "live" db without mutating it, and writes a well-shaped baseline JSON', () => {
+  it('snapshots the "live" db without mutating it, and writes a well-shaped baseline JSON', async () => {
     const liveDir = mkTmpDir();
     const outDir = mkTmpDir();
     const liveDbPath = path.join(liveDir, 'live.db');
 
-    const liveDb = openDb(liveDbPath);
-    seedEpisode(liveDb, 'ep-a', 'Episode A content for the enrichment baseline capture test.');
-    seedEpisode(liveDb, 'ep-b', 'Episode B content, distinct topic entirely.');
-    liveDb.close();
+    const liveAdapter = await openDb(liveDbPath);
+    await seedEpisode(liveAdapter, 'ep-a', 'Episode A content for the enrichment baseline capture test.');
+    await seedEpisode(liveAdapter, 'ep-b', 'Episode B content, distinct topic entirely.');
+    await liveAdapter.close();
 
-    const result = captureEnrichmentBaseline({
+    const result = await captureEnrichmentBaseline({
       liveDbPath,
       snapshotDir: outDir,
       log: () => {
@@ -174,18 +176,18 @@ describe('captureEnrichmentBaseline', () => {
 
     // NEVER mutates the live store's content: the batch-enrich pass ran exclusively
     // against the snapshot copy, so the live db's episode content is unaffected.
-    const liveDbAfter = openDb(liveDbPath);
-    const row = liveDbAfter
-      .prepare("SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode'")
-      .get() as { cnt: number };
-    expect(row.cnt).toBe(2);
-    const contentRows = liveDbAfter
-      .prepare("SELECT content FROM node WHERE kind = 'episode' ORDER BY uid")
-      .all() as Array<{ content: string }>;
-    expect(contentRows.map((r) => r.content)).toEqual([
+    const liveAdapterAfter = await openDb(liveDbPath);
+    const row = await liveAdapterAfter.executeGet<{ cnt: number }>(
+      "SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode'",
+    );
+    expect(row?.cnt).toBe(2);
+    const allResult = await liveAdapterAfter.executeAll<{ content: string }>(
+      "SELECT content FROM node WHERE kind = 'episode' ORDER BY uid",
+    );
+    expect(allResult.rows.map((r) => r.content)).toEqual([
       'Episode A content for the enrichment baseline capture test.',
       'Episode B content, distinct topic entirely.',
     ]);
-    liveDbAfter.close();
+    await liveAdapterAfter.close();
   });
 });

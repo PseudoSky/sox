@@ -9,7 +9,7 @@
  * [inv:no-mcp] — returns a plain result object, never an MCP ToolResult.
  */
 
-import type Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { createGraphBackend } from '@adhd/sox-graph-store';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -31,7 +31,7 @@ export interface SupersessionChainResult {
 // ── Main ───────────────────────────────────────────────────────────────────────
 
 export async function memoryGetSupersessionChain(
-  db: Database.Database,
+  adapter: StoreAdapter,
   args: Record<string, unknown>,
 ): Promise<SupersessionChainResult> {
   const uid = args['uid'] as string;
@@ -46,19 +46,16 @@ export async function memoryGetSupersessionChain(
   const visited = new Set<string>();
   const edgeReasons = new Map<string, string | null>();
 
-  const backend = createGraphBackend(db);
+  const backend = createGraphBackend(adapter);
 
   while (queue.length > 0) {
     const current = queue.shift()!;
     if (visited.has(current)) continue;
     visited.add(current);
 
-    const row = db
-      .prepare<
-        [string],
-        { uid: string; t_created: string; t_invalid: string | null; rowid: number }
-      >(`SELECT uid, t_created, t_invalid, rowid FROM node WHERE uid = ? LIMIT 1`)
-      .get(current);
+    const row = await adapter.executeGet<
+      { uid: string; t_created: string; t_invalid: string | null; rowid: number }
+    >(`SELECT uid, t_created, t_invalid, rowid FROM node WHERE uid = ? LIMIT 1`, [current]);
     if (!row) continue;
 
     allRows.set(current, {
@@ -69,11 +66,11 @@ export async function memoryGetSupersessionChain(
     });
 
     // Outbound: what does this episode supersede?
-    const supersededEdges = backend.getEdges({ src: row.rowid, rel: 'SUPERSEDES' });
+    const supersededEdges = await backend.getEdges({ src: row.rowid, rel: 'SUPERSEDES' });
     for (const e of supersededEdges) {
-      const dstNode = db
-        .prepare<[number], { uid: string }>(`SELECT uid FROM node WHERE rowid = ? LIMIT 1`)
-        .get(e.dst);
+      const dstNode = await adapter.executeGet<{ uid: string }>(
+        `SELECT uid FROM node WHERE rowid = ? LIMIT 1`, [e.dst],
+      );
       if (dstNode) {
         queue.push(dstNode.uid);
         edgeReasons.set(dstNode.uid, (e.metadata as { reason?: string } | undefined)?.reason ?? null);
@@ -81,11 +78,11 @@ export async function memoryGetSupersessionChain(
     }
 
     // Inbound: what supersedes this episode?
-    const supersederEdges = backend.getEdges({ dst: row.rowid, rel: 'SUPERSEDES' });
+    const supersederEdges = await backend.getEdges({ dst: row.rowid, rel: 'SUPERSEDES' });
     for (const e of supersederEdges) {
-      const srcNode = db
-        .prepare<[number], { uid: string }>(`SELECT uid FROM node WHERE rowid = ? LIMIT 1`)
-        .get(e.src);
+      const srcNode = await adapter.executeGet<{ uid: string }>(
+        `SELECT uid FROM node WHERE rowid = ? LIMIT 1`, [e.src],
+      );
       if (srcNode) {
         queue.push(srcNode.uid);
         edgeReasons.set(current, (e.metadata as { reason?: string } | undefined)?.reason ?? null);

@@ -37,13 +37,13 @@ export interface SearchBackend {
   search(
     query: SearchQuery,
     limit: number,
-  ): Array<{
+  ): Promise<Array<{
     id: number;
     textScore?: number;
     vecScore?: number;
     fields: Record<string, unknown>;
     degraded?: SearchDegradeInfo;
-  }>;
+  }>>;
 }
 
 export interface SqliteSearchOpts {
@@ -337,17 +337,17 @@ function topicBoost(
   return 1.0;
 }
 
-export function search(
+export async function search(
   backend: SearchBackend,
   query: SearchQuery,
   opts?: SearchOpts,
-): SearchResult[] {
+): Promise<SearchResult[]> {
   const limit = opts?.limit ?? 20;
   const explain = opts?.explain ?? false;
   const normalizer = opts?.normalizer ?? 'min_max';
 
   const fetchLimit = Math.max(limit * 2, 20);
-  const candidates = backend.search(query, fetchLimit);
+  const candidates = await backend.search(query, fetchLimit);
 
   // A query-level degrade signal (BL-294) — one query's filters either apply or they
   // don't, so every candidate from a single backend.search() call carries the same
@@ -471,16 +471,16 @@ export class SqliteSearchBackend implements SearchBackend {
     this.graph = graph;
   }
 
-  search(
+  async search(
     query: SearchQuery,
     limit: number,
-  ): Array<{
+  ): Promise<Array<{
     id: number;
     textScore?: number;
     vecScore?: number;
     fields: Record<string, unknown>;
     degraded?: SearchDegradeInfo;
-  }> {
+  }>> {
     const textPresent = query.text !== undefined && query.text.length > 0;
     const vecPresent = query.vec !== undefined;
     const filters = query.filters ?? {};
@@ -506,7 +506,7 @@ export class SqliteSearchBackend implements SearchBackend {
       if (hasNodeFilter) {
         searchOpts.filter = nodeFilter;
       }
-      const textResults = this.graph.searchNodes(query.text!, searchOpts);
+      const textResults = await this.graph.searchNodes(query.text!, searchOpts);
 
       for (const r of textResults) {
         const entry = merged.get(r.id);
@@ -547,7 +547,7 @@ export class SqliteSearchBackend implements SearchBackend {
           if (entry) {
             entry.vecScore = r.score;
           } else {
-            const node = this.graph.getNode(r.id);
+            const node = await this.graph.getNode(r.id);
             if (node) {
               merged.set(r.id, {
                 vecScore: r.score,

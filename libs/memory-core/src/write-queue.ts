@@ -282,9 +282,9 @@ export class WriteQueue {
    *  same key as the `instances` map / `metricsForPath`). */
   private readonly _storePath: string;
 
-  private constructor(dbPath: string, maxSize = DEFAULT_MAX_QUEUE_SIZE) {
-    // Open a dedicated write connection with the mandated pragmas.
-    this.db = openDb(dbPath);
+  private constructor(rawDb: Database.Database, dbPath: string, maxSize = DEFAULT_MAX_QUEUE_SIZE) {
+    // Use the pre-opened connection with the mandated pragmas.
+    this.db = rawDb;
     // Override busy_timeout per CONTRACTS §C (openDb currently uses 5000, but
     // schema.ts PRAGMAS have been updated to 3000 — this is a belt-and-suspenders).
     this.db.exec('PRAGMA busy_timeout = 3000;');
@@ -330,16 +330,22 @@ export class WriteQueue {
    * When `_bypass` is true, creates a new queue each time (no serialisation) so
    * the ordering negative control works.
    */
-  static forPath(dbPath: string, maxSize?: number): WriteQueue {
+  static async forPath(dbPath: string, maxSize?: number): Promise<WriteQueue> {
     if (WriteQueue._bypass) {
-      return new WriteQueue(dbPath, maxSize);
+      return WriteQueue._create(dbPath, maxSize);
     }
     let instance = WriteQueue.instances.get(dbPath);
     if (!instance) {
-      instance = new WriteQueue(dbPath, maxSize);
+      instance = await WriteQueue._create(dbPath, maxSize);
       WriteQueue.instances.set(dbPath, instance);
     }
     return instance;
+  }
+
+  private static async _create(dbPath: string, maxSize?: number): Promise<WriteQueue> {
+    const adapter = await openDb(dbPath);
+    const rawDb = adapter.unwrap() as Database.Database;
+    return new WriteQueue(rawDb, dbPath, maxSize);
   }
 
   /** Number of pending items (0 when idle). */

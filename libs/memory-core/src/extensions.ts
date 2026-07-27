@@ -10,7 +10,7 @@
  *   R5: bi-temporal — invalidation closes t_invalid, never deletes
  */
 
-import Database from 'better-sqlite3';
+import type { StoreAdapter, AdapterTransaction } from '@adhd/sox-store-adapter';
 import * as crypto from 'node:crypto';
 import { embed, vecToJson } from './embed.js';
 
@@ -106,52 +106,52 @@ export function validatePromotionConfig(config: unknown): PromotionConfigValidat
  *
  * Returns { candidates, inserted }.
  */
-export function detectPromotionCandidates(
-  db: Database.Database,
+export async function detectPromotionCandidates(
+  adapter: StoreAdapter,
   promotionConfig: PromotionConfig | null | undefined,
   fromScope: string,
   toScope: string,
-): PromotionCandidateResult {
+): Promise<PromotionCandidateResult> {
   const minOccurrences = promotionConfig?.min_occurrences ?? 3;
   const minAgeDays = promotionConfig?.min_age_days ?? 60;
 
   const cutoff = new Date(Date.now() - minAgeDays * 24 * 60 * 60 * 1000).toISOString();
 
-  const candidates = db
-    .prepare(
-      `SELECT n.uid, n.t_created,
-              (COALESCE(n.access_count, 0) + 1 +
-               (SELECT COUNT(*) FROM edge e WHERE e.dst = n.rowid AND e.rel = 'MENTIONS' AND e.t_expired IS NULL)) AS occ,
-              CAST((julianday('now') - julianday(n.t_created)) AS INTEGER) AS age_days
-       FROM node n
-       WHERE n.t_invalid IS NULL
-         AND n.kind IN ('entity', 'claim', 'episode')
-         AND n.t_created <= ?
-         AND (COALESCE(n.access_count, 0) + 1 +
-              (SELECT COUNT(*) FROM edge e WHERE e.dst = n.rowid AND e.rel = 'MENTIONS' AND e.t_expired IS NULL)) >= ?`,
-    )
-    .all(cutoff, minOccurrences) as Array<{
-      uid: string;
-      t_created: string;
-      occ: number;
-      age_days: number;
-    }>;
+  const candidatesResult = await adapter.executeAll<{
+    uid: string;
+    t_created: string;
+    occ: number;
+    age_days: number;
+  }>(
+    `SELECT n.uid, n.t_created,
+            (COALESCE(n.access_count, 0) + 1 +
+             (SELECT COUNT(*) FROM edge e WHERE e.dst = n.rowid AND e.rel = 'MENTIONS' AND e.t_expired IS NULL)) AS occ,
+            CAST((julianday('now') - julianday(n.t_created)) AS INTEGER) AS age_days
+     FROM node n
+     WHERE n.t_invalid IS NULL
+       AND n.kind IN ('entity', 'claim', 'episode')
+       AND n.t_created <= ?
+       AND (COALESCE(n.access_count, 0) + 1 +
+            (SELECT COUNT(*) FROM edge e WHERE e.dst = n.rowid AND e.rel = 'MENTIONS' AND e.t_expired IS NULL)) >= ?`,
+    [cutoff, minOccurrences],
+  );
+  const candidates = candidatesResult.rows;
 
   const now = new Date().toISOString();
   let inserted = 0;
 
   for (const row of candidates) {
-    const existing = db
-      .prepare(
-        `SELECT id FROM promotion_queue WHERE node_uid = ? AND from_scope = ? AND to_scope = ? AND status NOT IN ('rejected','applied')`,
-      )
-      .get(row.uid, fromScope, toScope);
+    const existing = await adapter.executeGet<{ id: number }>(
+      `SELECT id FROM promotion_queue WHERE node_uid = ? AND from_scope = ? AND to_scope = ? AND status NOT IN ('rejected','applied')`,
+      [row.uid, fromScope, toScope],
+    );
 
     if (!existing) {
-      db.prepare(
+      await adapter.executeRun(
         `INSERT INTO promotion_queue (node_uid, from_scope, to_scope, occurrences, first_seen, age_days, status)
          VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
-      ).run(row.uid, fromScope, toScope, row.occ, now, row.age_days);
+        [row.uid, fromScope, toScope, row.occ, now, row.age_days],
+      );
       inserted++;
     }
   }
@@ -166,7 +166,7 @@ export function detectPromotionCandidates(
  * Sets status='proposed' for each proposed row.
  */
 export async function proposePendingCandidates(
-  db: Database.Database,
+  adapter: StoreAdapter,
   fromScope: string,
   toScope: string,
   proposePromotionFn: (
@@ -183,21 +183,20 @@ export async function proposePendingCandidates(
   ) => Promise<void>,
   extensionId: string,
 ): Promise<ProposePendingResult> {
-  const pending = db
-    .prepare(
-      `SELECT pq.id, pq.node_uid, n.content, n.kind, n.name, n.summary
-       FROM promotion_queue pq
-       LEFT JOIN node n ON n.uid = pq.node_uid
-       WHERE pq.from_scope = ? AND pq.to_scope = ? AND pq.status = 'pending'`,
-    )
-    .all(fromScope, toScope) as Array<{
-      id: number;
-      node_uid: string;
-      content: string | null;
-      kind: string | null;
-      name: string | null;
-      summary: string | null;
-    }>;
+  const pending = (await adapter.executeAll<{
+    id: number;
+    node_uid: string;
+    content: string | null;
+    kind: string | null;
+    name: string | null;
+    summary: string | null;
+  }>(
+    `SELECT pq.id, pq.node_uid, n.content, n.kind, n.name, n.summary
+     FROM promotion_queue pq
+     LEFT JOIN node n ON n.uid = pq.node_uid
+     WHERE pq.from_scope = ? AND pq.to_scope = ? AND pq.status = 'pending'`,
+    [fromScope, toScope],
+  )).rows;
 
   if (pending.length === 0) return { proposed: 0 };
 
@@ -214,25 +213,27 @@ export async function proposePendingCandidates(
 
   // Mark rows as proposed
   const ids = pending.map((r) => r.id);
-  db.prepare(
+  await adapter.executeRun(
     `UPDATE promotion_queue SET status = 'proposed' WHERE id IN (${ids.map(() => '?').join(',')})`,
-  ).run(...ids);
+    ids,
+  );
 
   return { proposed: pending.length };
 }
 
-function _writePromotionQueueApplied(
-  db: Database.Database,
+async function _writePromotionQueueApplied(
+  adapter: StoreAdapter,
   nodeUid: string,
   fromScope: string,
   toScope: string,
   _dstUid: string,
-): void {
+): Promise<void> {
   const now = new Date().toISOString();
-  db.prepare(
+  await adapter.executeRun(
     `UPDATE promotion_queue SET status = 'applied', decided_at = ?, decided_by = ?
      WHERE node_uid = ? AND from_scope = ? AND to_scope = ? AND status IN ('proposed','pending','approved')`,
-  ).run(now, `scope:${toScope}`, nodeUid, fromScope, toScope);
+    [now, `scope:${toScope}`, nodeUid, fromScope, toScope],
+  );
 }
 
 /**
@@ -241,35 +242,34 @@ function _writePromotionQueueApplied(
  * Sets status='applied' in src's promotion_queue.
  */
 export async function applyPromotion(
-  srcDb: Database.Database,
-  dstDb: Database.Database,
+  srcAdapter: StoreAdapter,
+  dstAdapter: StoreAdapter,
   nodeUid: string,
   fromScope: string,
   toScope: string,
 ): Promise<ApplyPromotionResult> {
-  const srcNode = srcDb
-    .prepare(
-      `SELECT uid, kind, content, name, summary, agent_id, session_id, source,
-              importance, confidence, content_hash, level, t_created, t_occurred, t_valid
-       FROM node WHERE uid = ? AND t_invalid IS NULL`,
-    )
-    .get(nodeUid) as {
-      uid: string;
-      kind: string;
-      content: string | null;
-      name: string | null;
-      summary: string | null;
-      agent_id: string | null;
-      session_id: string | null;
-      source: string | null;
-      importance: number;
-      confidence: number | null;
-      content_hash: string | null;
-      level: number | null;
-      t_created: string;
-      t_occurred: string | null;
-      t_valid: string | null;
-    } | undefined;
+  const srcNode = await srcAdapter.executeGet<{
+    uid: string;
+    kind: string;
+    content: string | null;
+    name: string | null;
+    summary: string | null;
+    agent_id: string | null;
+    session_id: string | null;
+    source: string | null;
+    importance: number;
+    confidence: number | null;
+    content_hash: string | null;
+    level: number | null;
+    t_created: string;
+    t_occurred: string | null;
+    t_valid: string | null;
+  }>(
+    `SELECT uid, kind, content, name, summary, agent_id, session_id, source,
+            importance, confidence, content_hash, level, t_created, t_occurred, t_valid
+     FROM node WHERE uid = ? AND t_invalid IS NULL`,
+    [nodeUid],
+  );
 
   if (!srcNode) {
     return { ok: false, error: `Source node not found or invalidated: ${nodeUid}` };
@@ -277,11 +277,12 @@ export async function applyPromotion(
 
   // Check if already promoted (content_hash dedup)
   if (srcNode.content_hash) {
-    const dstExisting = dstDb
-      .prepare(`SELECT uid FROM node WHERE content_hash = ? AND t_invalid IS NULL`)
-      .get(srcNode.content_hash) as { uid: string } | undefined;
+    const dstExisting = await dstAdapter.executeGet<{ uid: string }>(
+      `SELECT uid FROM node WHERE content_hash = ? AND t_invalid IS NULL`,
+      [srcNode.content_hash],
+    );
     if (dstExisting) {
-      _writePromotionQueueApplied(srcDb, nodeUid, fromScope, toScope, dstExisting.uid);
+      await _writePromotionQueueApplied(srcAdapter, nodeUid, fromScope, toScope, dstExisting.uid);
       return { ok: true, dst_uid: dstExisting.uid, note: 'already_exists' };
     }
   }
@@ -290,14 +291,12 @@ export async function applyPromotion(
   const dstUid = `promoted-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   try {
-    const dstRow = dstDb
-      .prepare(
-        `INSERT INTO node (uid, kind, content, name, summary, agent_id, session_id, source,
-                           importance, confidence, content_hash, level, t_created, t_occurred, t_valid)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         RETURNING rowid`,
-      )
-      .get(
+    const dstRow = await dstAdapter.executeGet<{ rowid: number }>(
+      `INSERT INTO node (uid, kind, content, name, summary, agent_id, session_id, source,
+                         importance, confidence, content_hash, level, t_created, t_occurred, t_valid)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       RETURNING rowid`,
+      [
         dstUid,
         srcNode.kind,
         srcNode.content,
@@ -313,7 +312,8 @@ export async function applyPromotion(
         srcNode.t_created,
         srcNode.t_occurred,
         srcNode.t_valid ?? now,
-      ) as { rowid: number } | undefined;
+      ],
+    );
 
     if (!dstRow) throw new Error('Insert into dst DB failed');
 
@@ -323,35 +323,34 @@ export async function applyPromotion(
       const vec = await embed(text);
       const vecJson = vecToJson(vec);
       try {
-        dstDb
-          .prepare(
-            'INSERT OR IGNORE INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',
-          )
-          .run(dstRow.rowid, vecJson);
+        await dstAdapter.executeRun(
+          'INSERT OR IGNORE INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',
+          [dstRow.rowid, vecJson],
+        );
       } catch {
         /* non-fatal */
       }
     }
 
     // Write SAME_AS edge in src DB
-    const srcRow = srcDb
-      .prepare(`SELECT rowid FROM node WHERE uid = ?`)
-      .get(nodeUid) as { rowid: number } | undefined;
+    const srcRow = await srcAdapter.executeGet<{ rowid: number }>(
+      `SELECT rowid FROM node WHERE uid = ?`,
+      [nodeUid],
+    );
     if (srcRow) {
-      srcDb
-        .prepare(
-          `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
-           VALUES (?, ?, 'SAME_AS', 'user_asserted', ?, ?)`,
-        )
-        .run(
+      await srcAdapter.executeRun(
+        `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
+         VALUES (?, ?, 'SAME_AS', 'user_asserted', ?, ?)`,
+        [
           srcRow.rowid,
           srcRow.rowid,
           now,
           JSON.stringify({ promoted_to: dstUid, to_scope: toScope }),
-        );
+        ],
+      );
     }
 
-    _writePromotionQueueApplied(srcDb, nodeUid, fromScope, toScope, dstUid);
+    await _writePromotionQueueApplied(srcAdapter, nodeUid, fromScope, toScope, dstUid);
     return { ok: true, dst_uid: dstUid };
   } catch (err) {
     return { ok: false, error: String(err) };
@@ -361,37 +360,38 @@ export async function applyPromotion(
 /**
  * Reject a promotion candidate.
  */
-export function rejectPromotion(
-  db: Database.Database,
+export async function rejectPromotion(
+  adapter: StoreAdapter,
   nodeUid: string,
   fromScope: string,
   toScope: string,
   decidedBy?: string,
-): RejectPromotionResult {
+): Promise<RejectPromotionResult> {
   const now = new Date().toISOString();
-  db.prepare(
+  await adapter.executeRun(
     `UPDATE promotion_queue SET status = 'rejected', decided_at = ?, decided_by = ?
      WHERE node_uid = ? AND from_scope = ? AND to_scope = ? AND status IN ('proposed','pending')`,
-  ).run(now, decidedBy ?? 'user', nodeUid, fromScope, toScope);
+    [now, decidedBy ?? 'user', nodeUid, fromScope, toScope],
+  );
   return { ok: true };
 }
 
 /**
  * Get promotion queue entries for a scope pair.
  */
-export function getPromotionQueue(
-  db: Database.Database,
+export async function getPromotionQueue(
+  adapter: StoreAdapter,
   fromScope: string,
   toScope: string,
   status?: string,
-): unknown[] {
+): Promise<unknown[]> {
   let sql = `SELECT * FROM promotion_queue WHERE from_scope = ? AND to_scope = ?`;
   const args: unknown[] = [fromScope, toScope];
   if (status) {
     sql += ` AND status = ?`;
     args.push(status);
   }
-  return db.prepare(sql).all(...args);
+  return (await adapter.executeAll(sql, args)).rows;
 }
 
 // ── P4: Graphify import bridge (design.md §4 G4) ─────────────────────────────
@@ -506,7 +506,7 @@ export interface GraphifyImportError {
  *   3. Atomic import only after full validation.
  */
 export async function graphifyImport(
-  db: Database.Database,
+  adapter: StoreAdapter,
   graphJson: unknown,
   options?: { agent_id?: string },
 ): Promise<GraphifyImportResult | GraphifyImportError> {
@@ -578,8 +578,8 @@ export async function graphifyImport(
   }
 
   // 3. Atomic import — all validation passed.
-  //    Pre-compute embeddings before the transaction (better-sqlite3 transactions
-  //    are synchronous — cannot await inside them).
+  //    Pre-compute embeddings before the transaction (StoreAdapter transactions
+  //    are async, and embed is async — safe to pre-compute).
   const now = new Date().toISOString();
   let importedNodes = 0;
   let importedEdges = 0;
@@ -600,7 +600,7 @@ export async function graphifyImport(
     }),
   );
 
-  const tx = db.transaction(() => {
+  await adapter.transaction(async (tx: AdapterTransaction) => {
     for (let nodeIdx = 0; nodeIdx < nodes.length; nodeIdx++) {
       const node = nodes[nodeIdx]!;
       const origId = (shapeName === 'v2' ? node['uid'] : node['id']) as string;
@@ -618,30 +618,29 @@ export async function graphifyImport(
         .update((content ?? '').trim().toLowerCase())
         .digest('hex');
 
-      const existing = db
-        .prepare(`SELECT rowid, uid FROM node WHERE content_hash = ?`)
-        .get(contentHash) as { rowid: number; uid: string } | undefined;
+      const existing = await tx.executeGet<{ rowid: number; uid: string }>(
+        `SELECT rowid, uid FROM node WHERE content_hash = ?`,
+        [contentHash],
+      );
       if (existing) {
         uidMap.set(origId, existing.uid);
         continue;
       }
 
-      const row = db
-        .prepare(
-          `INSERT INTO node (uid, kind, content, name, summary, agent_id, source, importance, content_hash, t_created, t_valid)
-           VALUES (?, ?, ?, ?, ?, ?, 'import', ?, ?, ?, ?)
-           RETURNING rowid`,
-        )
-        .get(uid, kind, content, name, summary, agentId, importance, contentHash, now, now) as
-        | { rowid: number }
-        | undefined;
+      const row = await tx.executeGet<{ rowid: number }>(
+        `INSERT INTO node (uid, kind, content, name, summary, agent_id, source, importance, content_hash, t_created, t_valid)
+         VALUES (?, ?, ?, ?, ?, ?, 'import', ?, ?, ?, ?)
+         RETURNING rowid`,
+        [uid, kind, content, name, summary, agentId, importance, contentHash, now, now],
+      );
 
       if (row) {
         const vecJson = nodeEmbedJsons[nodeIdx] ?? null;
         try {
-          db.prepare(
+          await tx.executeRun(
             'INSERT OR IGNORE INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',
-          ).run(row.rowid, vecJson);
+            [row.rowid, vecJson],
+          );
         } catch {
           /* non-fatal */
         }
@@ -655,26 +654,29 @@ export async function graphifyImport(
       const dstOrigId = edge['dst'] as string;
       const srcUid = uidMap.get(srcOrigId) ?? srcOrigId;
       const dstUid = uidMap.get(dstOrigId) ?? dstOrigId;
-      const srcRow = db
-        .prepare(`SELECT rowid FROM node WHERE uid = ?`)
-        .get(srcUid) as { rowid: number } | undefined;
-      const dstRow = db
-        .prepare(`SELECT rowid FROM node WHERE uid = ?`)
-        .get(dstUid) as { rowid: number } | undefined;
+      const srcRow = await tx.executeGet<{ rowid: number }>(
+        `SELECT rowid FROM node WHERE uid = ?`,
+        [srcUid],
+      );
+      const dstRow = await tx.executeGet<{ rowid: number }>(
+        `SELECT rowid FROM node WHERE uid = ?`,
+        [dstUid],
+      );
       if (!srcRow || !dstRow) continue;
       const rel = _mapGraphifyRel(edge['rel'] as string | undefined);
       if (!rel) continue;
       try {
-        db.prepare(
+        await tx.executeRun(
           `INSERT OR IGNORE INTO edge (src, dst, rel, weight, confidence, origin, t_created)
            VALUES (?, ?, ?, ?, ?, 'user_asserted', ?)`,
-        ).run(
-          srcRow.rowid,
-          dstRow.rowid,
-          rel,
-          (edge['weight'] as number | undefined) ?? 1.0,
-          (edge['confidence'] as number | null | undefined) ?? null,
-          now,
+          [
+            srcRow.rowid,
+            dstRow.rowid,
+            rel,
+            (edge['weight'] as number | undefined) ?? 1.0,
+            (edge['confidence'] as number | null | undefined) ?? null,
+            now,
+          ],
         );
         importedEdges++;
       } catch {
@@ -683,7 +685,6 @@ export async function graphifyImport(
     }
   });
 
-  tx();
   return { ok: true, imported: importedNodes, edges_imported: importedEdges, shape: shapeName };
 }
 
@@ -732,18 +733,16 @@ export interface BuildCommunitiesResult {
  * Batch clustering runs in-process inside memory-server via memory-core runBatchEnrich
  * (ADR-0007 single-writer architecture — no separate daemon process).
  */
-export function buildCommunities(
-  db: Database.Database,
+export async function buildCommunities(
+  adapter: StoreAdapter,
   options?: BuildCommunitiesOptions,
-): BuildCommunitiesResult {
+): Promise<BuildCommunitiesResult> {
   const maxIterations = options?.maxIterations ?? 20;
   const minSize = options?.minCommunitySize ?? 2;
 
-  const nodes = db
-    .prepare(
-      `SELECT rowid, uid FROM node WHERE t_invalid IS NULL AND kind IN ('entity','episode','claim')`,
-    )
-    .all() as Array<{ rowid: number; uid: string }>;
+  const nodes = (await adapter.executeAll<{ rowid: number; uid: string }>(
+    `SELECT rowid, uid FROM node WHERE t_invalid IS NULL AND kind IN ('entity','episode','claim')`,
+  )).rows;
 
   if (nodes.length === 0) return { communities: 0, members: 0 };
 
@@ -758,18 +757,16 @@ export function buildCommunities(
   const adj = new Map<string, Set<string>>();
   for (const uid of rowidToUid.values()) adj.set(uid, new Set());
 
-  const edges = db
-    .prepare(
-      `SELECT n1.uid AS src_uid, n2.uid AS dst_uid
-       FROM edge e
-       JOIN node n1 ON n1.rowid = e.src
-       JOIN node n2 ON n2.rowid = e.dst
-       WHERE e.t_expired IS NULL
-         AND n1.t_invalid IS NULL AND n2.t_invalid IS NULL
-         AND n1.kind IN ('entity','episode','claim')
-         AND n2.kind IN ('entity','episode','claim')`,
-    )
-    .all() as Array<{ src_uid: string; dst_uid: string }>;
+  const edges = (await adapter.executeAll<{ src_uid: string; dst_uid: string }>(
+    `SELECT n1.uid AS src_uid, n2.uid AS dst_uid
+     FROM edge e
+     JOIN node n1 ON n1.rowid = e.src
+     JOIN node n2 ON n2.rowid = e.dst
+     WHERE e.t_expired IS NULL
+       AND n1.t_invalid IS NULL AND n2.t_invalid IS NULL
+       AND n1.kind IN ('entity','episode','claim')
+       AND n2.kind IN ('entity','episode','claim')`,
+  )).rows;
 
   for (const e of edges) {
     if (adj.has(e.src_uid)) adj.get(e.src_uid)!.add(e.dst_uid);
@@ -821,34 +818,36 @@ export function buildCommunities(
 
   // Invalidate old community nodes
   const now = new Date().toISOString();
-  db.transaction(() => {
-    db.prepare(
+  await adapter.transaction(async (tx: AdapterTransaction) => {
+    await tx.executeRun(
       `UPDATE node SET t_invalid = ? WHERE kind = 'community' AND level = 0 AND t_invalid IS NULL`,
-    ).run(now);
-  })();
+      [now],
+    );
+  });
 
   let commCreated = 0;
   let memberCount = 0;
 
-  db.transaction(() => {
+  await adapter.transaction(async (tx: AdapterTransaction) => {
     for (const [label, memberUids] of validCommunities) {
       const commUid = `community-${label.substring(0, 8)}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const memberNames = memberUids.slice(0, 3).map((uid) => {
-        const n = db
-          .prepare(`SELECT name, content FROM node WHERE uid = ?`)
-          .get(uid) as { name: string | null; content: string | null } | undefined;
-        return n?.name ?? (n?.content ?? '').substring(0, 30) ?? uid.substring(0, 8);
-      });
+      const memberNames = [];
+      for (const uid of memberUids.slice(0, 3)) {
+        const n = await tx.executeGet<{ name: string | null; content: string | null }>(
+          `SELECT name, content FROM node WHERE uid = ?`,
+          [uid],
+        );
+        memberNames.push(n?.name ?? (n?.content ?? '').substring(0, 30) ?? uid.substring(0, 8));
+      }
       const communityName = `Community: ${memberNames.filter(Boolean).join(', ')}`;
 
       // Insert community node (label derived from member names — deterministic)
-      const commRow = db
-        .prepare(
-          `INSERT INTO node (uid, kind, name, level, t_created, t_valid)
-           VALUES (?, 'community', ?, 0, ?, ?)
-           RETURNING rowid`,
-        )
-        .get(commUid, communityName, now, now) as { rowid: number } | undefined;
+      const commRow = await tx.executeGet<{ rowid: number }>(
+        `INSERT INTO node (uid, kind, name, level, t_created, t_valid)
+         VALUES (?, 'community', ?, 0, ?, ?)
+         RETURNING rowid`,
+        [commUid, communityName, now, now],
+      );
 
       if (!commRow) continue;
       commCreated++;
@@ -857,17 +856,18 @@ export function buildCommunities(
         const memberRowid = uidToRowid.get(memberUid);
         if (!memberRowid) continue;
         try {
-          db.prepare(
+          await tx.executeRun(
             `INSERT OR IGNORE INTO edge (src, dst, rel, origin, t_created)
              VALUES (?, ?, 'MEMBER_OF', 'extracted', ?)`,
-          ).run(memberRowid, commRow.rowid, now);
+            [memberRowid, commRow.rowid, now],
+          );
           memberCount++;
         } catch {
           /* skip */
         }
       }
     }
-  })();
+  });
 
   return { communities: commCreated, members: memberCount };
 }
@@ -897,38 +897,45 @@ export interface GetCommunityError {
  * memory_get_community — tool 6 (design.md §2.3).
  * Returns the community a node belongs to at the given level.
  */
-export function memoryGetCommunity(
-  db: Database.Database,
+export async function memoryGetCommunity(
+  adapter: StoreAdapter,
   entity_uid: string,
   level?: number,
-): GetCommunitySuccess | GetCommunityError {
+): Promise<GetCommunitySuccess | GetCommunityError> {
   const targetLevel = level ?? 0;
 
-  const node = db
-    .prepare(`SELECT rowid, uid, name, content, kind FROM node WHERE uid = ? AND t_invalid IS NULL`)
-    .get(entity_uid) as
-    | { rowid: number; uid: string; name: string | null; content: string | null; kind: string }
-    | undefined;
+  const node = await adapter.executeGet<{
+    rowid: number;
+    uid: string;
+    name: string | null;
+    content: string | null;
+    kind: string;
+  }>(
+    `SELECT rowid, uid, name, content, kind FROM node WHERE uid = ? AND t_invalid IS NULL`,
+    [entity_uid],
+  );
 
   if (!node) {
     return { code: 'E_NOT_FOUND', message: `Node not found: ${entity_uid}` };
   }
 
-  const communityRow = db
-    .prepare(
-      `SELECT n_comm.uid, n_comm.name, n_comm.summary, n_comm.level
-       FROM edge e
-       JOIN node n_comm ON n_comm.rowid = e.dst
-       WHERE e.src = ? AND e.rel = 'MEMBER_OF'
-         AND n_comm.kind = 'community'
-         AND n_comm.level = ?
-         AND e.t_expired IS NULL
-         AND n_comm.t_invalid IS NULL
-       LIMIT 1`,
-    )
-    .get(node.rowid, targetLevel) as
-    | { uid: string; name: string | null; summary: string | null; level: number }
-    | undefined;
+  const communityRow = await adapter.executeGet<{
+    uid: string;
+    name: string | null;
+    summary: string | null;
+    level: number;
+  }>(
+    `SELECT n_comm.uid, n_comm.name, n_comm.summary, n_comm.level
+     FROM edge e
+     JOIN node n_comm ON n_comm.rowid = e.dst
+     WHERE e.src = ? AND e.rel = 'MEMBER_OF'
+       AND n_comm.kind = 'community'
+       AND n_comm.level = ?
+       AND e.t_expired IS NULL
+       AND n_comm.t_invalid IS NULL
+     LIMIT 1`,
+    [node.rowid, targetLevel],
+  );
 
   if (!communityRow) {
     return {
@@ -937,25 +944,25 @@ export function memoryGetCommunity(
     };
   }
 
-  const commNode = db
-    .prepare(`SELECT rowid FROM node WHERE uid = ?`)
-    .get(communityRow.uid) as { rowid: number } | undefined;
+  const commNode = await adapter.executeGet<{ rowid: number }>(
+    `SELECT rowid FROM node WHERE uid = ?`,
+    [communityRow.uid],
+  );
 
   const members = commNode
-    ? (db
-      .prepare(
-        `SELECT n.uid, n.name, n.content, n.kind
-           FROM edge e
-           JOIN node n ON n.rowid = e.src
-           WHERE e.dst = ? AND e.rel = 'MEMBER_OF'
-             AND e.t_expired IS NULL AND n.t_invalid IS NULL`,
-      )
-      .all(commNode.rowid) as Array<{
+    ? (await adapter.executeAll<{
         uid: string;
         name: string | null;
         content: string | null;
         kind: string;
-      }>)
+      }>(
+        `SELECT n.uid, n.name, n.content, n.kind
+         FROM edge e
+         JOIN node n ON n.rowid = e.src
+         WHERE e.dst = ? AND e.rel = 'MEMBER_OF'
+           AND e.t_expired IS NULL AND n.t_invalid IS NULL`,
+        [commNode.rowid],
+      )).rows
     : [];
 
   return {
@@ -996,10 +1003,10 @@ export interface SearchEntitiesResult {
  * memory_search_entities — tool 3 (design.md §2.3).
  * Hybrid FTS + LIKE search for entity nodes. Zero LLM calls (R1).
  */
-export function memorySearchEntities(
-  db: Database.Database,
+export async function memorySearchEntities(
+  adapter: StoreAdapter,
   params: SearchEntitiesParams,
-): SearchEntitiesResult {
+): Promise<SearchEntitiesResult> {
   const { query, limit = 10 } = params;
 
   if (!query?.trim()) return { entities: [] };
@@ -1011,26 +1018,27 @@ export function memorySearchEntities(
     .filter((t) => t.length > 1)
     .join(' ');
 
-  let entities: Array<{
-    uid: string;
-    name: string | null;
-    content: string | null;
-    summary: string | null;
-    kind: string;
-    importance: number;
-  }> = [];
+  const entityRow = {
+    uid: '',
+    name: '' as string | null,
+    content: '' as string | null,
+    summary: '' as string | null,
+    kind: '',
+    importance: 0,
+  };
+  type EntityRow = typeof entityRow;
+  let entities: EntityRow[] = [];
 
   if (ftsQuery) {
     try {
-      const ftsRows = db
-        .prepare(
-          `SELECT n.uid, n.name, n.content, n.summary, n.kind, n.importance
-           FROM fts_node f
-           JOIN node n ON n.rowid = f.rowid
-           WHERE fts_node MATCH ? AND n.t_invalid IS NULL AND n.kind = 'entity'
-           ORDER BY f.rank LIMIT ?`,
-        )
-        .all(ftsQuery, limit) as typeof entities;
+      const ftsRows = (await adapter.executeAll<EntityRow>(
+        `SELECT n.uid, n.name, n.content, n.summary, n.kind, n.importance
+         FROM fts_node f
+         JOIN node n ON n.rowid = f.rowid
+         WHERE fts_node MATCH ? AND n.t_invalid IS NULL AND n.kind = 'entity'
+         ORDER BY f.rank LIMIT ?`,
+        [ftsQuery, limit],
+      )).rows;
       entities.push(...ftsRows);
     } catch {
       /* fall through */
@@ -1039,14 +1047,13 @@ export function memorySearchEntities(
 
   if (entities.length === 0) {
     try {
-      const nameRows = db
-        .prepare(
-          `SELECT uid, name, content, summary, kind, importance
-           FROM node WHERE t_invalid IS NULL AND kind = 'entity'
-             AND (name LIKE ? OR content LIKE ?)
-           ORDER BY importance DESC LIMIT ?`,
-        )
-        .all(`%${query}%`, `%${query}%`, limit) as typeof entities;
+      const nameRows = (await adapter.executeAll<EntityRow>(
+        `SELECT uid, name, content, summary, kind, importance
+         FROM node WHERE t_invalid IS NULL AND kind = 'entity'
+           AND (name LIKE ? OR content LIKE ?)
+         ORDER BY importance DESC LIMIT ?`,
+        [`%${query}%`, `%${query}%`, limit],
+      )).rows;
       entities.push(...nameRows);
     } catch {
       /* ignore */

@@ -40,6 +40,9 @@ export interface TaskQueueConfig {
   /** Path to the SQLite database file. ':memory:' is valid for testing. */
   dbPath: string;
 
+  /** Pre-constructed StoreAdapter. When provided, open() uses this instead of creating a new adapter from dbPath. */
+  adapter?: import('@adhd/sox-store-adapter').StoreAdapter;
+
   /** Maximum tasks to return in a single dequeue batch. Default: 10. */
   dequeueBatchSize?: number;
 
@@ -261,6 +264,12 @@ export interface WorkerPool {
 
 export interface SchedulerConfig {
   queue: TaskQueue;
+
+  /**
+   * Pre-constructed StoreAdapter for the scheduler_entries table. When provided,
+   * the scheduler uses this adapter directly instead of creating its own from dbPath.
+   */
+  adapter?: import('@adhd/sox-store-adapter').StoreAdapter;
 
   /** Default task type for scheduled tasks. Default: 'scheduled'. */
   defaultType?: string;

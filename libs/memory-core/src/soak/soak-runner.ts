@@ -202,7 +202,7 @@ export async function runSoak(
   WriteQueue.clearInstances();
   WriteQueue.setBypass(false);
 
-  const queue = WriteQueue.forPath(storePath, maxQueueSize);
+  const queue = await WriteQueue.forPath(storePath, maxQueueSize);
 
   // Initialize the soak table
   await queue.enqueue('soak-setup', (db) => {

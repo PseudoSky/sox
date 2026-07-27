@@ -20,6 +20,7 @@
 import { unlinkSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { openDb, memoryWrite, warmupEmbed } from '@adhd/sox-memory-core';
+import type { SqliteAdapter } from '@adhd/sox-store-adapter';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -160,7 +161,8 @@ export async function captureWritePerfBaseline(
 
   // ── Step 2: Create disposable DB ─────────────────────────────────────────────
   log('Step 2: Creating disposable DB...');
-  const db = openDb(tempDbPath);
+  const adapter = await openDb(tempDbPath);
+  const db = (adapter as SqliteAdapter).unwrap();
   log('  DB created.');
 
   // ── Step 3: Run N sequential writes, measuring each ──────────────────────────
@@ -186,7 +188,7 @@ export async function captureWritePerfBaseline(
   } finally {
     // ── Step 5: Cleanup ─────────────────────────────────────────────────────────
     log('Step 5: Cleaning up...');
-    db.close();
+    await adapter.close();
   }
 
   // ── Step 4: Compute p50 / p99 ────────────────────────────────────────────────

@@ -1,18 +1,8 @@
-// @adhd/sox-graph-store — Bi-temporal graph store over SQLite
-import Database from 'better-sqlite3';
+// @adhd/sox-graph-store — Bi-temporal graph store over StoreAdapter
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { rebuildTable } from './rebuild-table.js';
-export { rebuildTable }; // re-export for consumers (memory-core, etc.)
-
-// GRAPH_DDL / FTS_DDL / FTS_TRIGGERS are kept exported for backward-compat with
-// consumers (memory-core/schema.ts) that compose them into their own DDL strings.
-// The Drizzle migration handles table creation via drizzle/migrations/ at startup;
-// these raw DDL strings are still valid for idempotent (IF NOT EXISTS) composition.
-
-// ─── Schema DDL ───────────────────────────────────────────────────────────────
+export { rebuildTable };
 
 export const PRAGMAS: string[] = [
   'PRAGMA journal_mode = WAL;',
@@ -108,17 +98,88 @@ CREATE TRIGGER IF NOT EXISTS fts_node_au AFTER UPDATE ON node BEGIN
 END;
 `;
 
-// ─── Table rebuild helpers for CHECK constraint upgrades ─────────────────────
+export const INLINE_MIGRATION_DDL = `
+CREATE TABLE IF NOT EXISTS "node" (
+  "rowid" integer PRIMARY KEY NOT NULL,
+  "uid" text NOT NULL,
+  "kind" text NOT NULL CHECK ("kind" IN ('episode','entity','claim','community','session','generic')),
+  "content" text,
+  "name" text,
+  "summary" text,
+  "topic" text,
+  "tags" text,
+  "importance" real DEFAULT 1.0,
+  "confidence" real,
+  "content_hash" text,
+  "namespace" text DEFAULT 'global',
+  "meta" text,
+  "agent_id" text,
+  "session_id" text,
+  "source" text CHECK ("source" IN ('message','tool_output','observation','document','reflection','import')),
+  "project_path" text,
+  "level" integer,
+  "resume_state" text,
+  "t_occurred" text,
+  "t_expires" text,
+  "t_created" text NOT NULL,
+  "t_valid" text,
+  "t_invalid" text,
+  "is_superseded" integer DEFAULT 0,
+  "access_count" integer DEFAULT 0,
+  "last_access" text,
+  "t_updated" text
+);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "edge" (
+  "rowid" integer PRIMARY KEY NOT NULL,
+  "src" integer NOT NULL REFERENCES "node"("rowid") ON DELETE CASCADE,
+  "dst" integer NOT NULL REFERENCES "node"("rowid") ON DELETE CASCADE,
+  "rel" text NOT NULL CHECK ("rel" IN ('MENTIONS','SUPPORTS','RELATES_TO','SUPERSEDES','DERIVED_FROM','MEMBER_OF','PART_OF','SAME_AS','ASSIGNED_TO','DEPENDS_ON')),
+  "weight" real DEFAULT 1.0,
+  "confidence" real,
+  "origin" text CHECK ("origin" IN ('extracted','inferred','user_asserted')),
+  "meta" text,
+  "t_created" text NOT NULL,
+  "t_expired" text,
+  "t_valid" text,
+  "t_invalid" text
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "node_uid_unique" ON "node" ("uid");
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_node_kind" ON "node" ("kind");
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_node_hash" ON "node" ("content_hash");
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_node_agent" ON "node" ("agent_id");
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_node_session" ON "node" ("session_id");
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_node_validity" ON "node" ("t_invalid") WHERE "t_invalid" IS NULL;
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_node_importance" ON "node" ("importance");
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_node_temporal" ON "node" ("t_invalid", "t_created" DESC) WHERE "t_invalid" IS NULL;
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_node_topic" ON "node" ("topic") WHERE "topic" IS NOT NULL;
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_node_project" ON "node" ("project_path") WHERE "project_path" IS NOT NULL;
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_node_namespace" ON "node" ("namespace");
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_node_expires" ON "node" ("t_expires") WHERE "t_expires" IS NOT NULL;
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_edge_src" ON "edge" ("src", "rel") WHERE "t_expired" IS NULL;
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_edge_dst" ON "edge" ("dst", "rel") WHERE "t_expired" IS NULL;
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_edge_live" ON "edge" ("t_invalid") WHERE "t_invalid" IS NULL;
+--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "ix_edge_unique" ON "edge" ("src", "dst", "rel");
+`;
 
-// The kinds accepted by the node.kind CHECK constraint (BL-295). This is a fixed,
-// non-configurable set — per sox-ecosystem's own BL-295 design decision (Option A),
-// the CHECK is never extended per-consumer. A non-memory reuse case (e.g. a component
-// registry) writes with kind:'generic' and carries its own sub-kind (e.g. 'component')
-// in `tags`/`metadata` instead.
 export const DEFAULT_NODE_KINDS = ['episode', 'entity', 'claim', 'community', 'session', 'generic'] as const;
 
-// The canonical node table DDL (without IF NOT EXISTS) for table rebuilds.
-// See also: drizzle/schema.ts (migration management) and graph-store.spec.ts V1_* (test helpers).
 const NODE_TABLE_DDL = `CREATE TABLE node (
   rowid        INTEGER PRIMARY KEY,
   uid          TEXT UNIQUE NOT NULL,
@@ -199,8 +260,6 @@ const EDGE_INDEX_DDLS = [
   `CREATE UNIQUE INDEX IF NOT EXISTS ix_edge_unique ON edge(src, dst, rel)`,
 ];
 
-// ─── Error taxonomy ───────────────────────────────────────────────────────────
-
 export class ConstraintError extends Error {
   constructor(message: string) {
     super(message);
@@ -226,8 +285,6 @@ export class NodeNotFoundError extends Error {
   }
 }
 
-// ─── Shared types ─────────────────────────────────────────────────────────────
-
 export type EdgeRel =
   | 'MENTIONS'
   | 'SUPPORTS'
@@ -243,15 +300,6 @@ export type EdgeRel =
 export type Confidence = 'confirmed' | 'unverified' | 'disputed' | 'deprecated';
 
 export interface NodeMeta {
-  /**
-   * Node kind. Defaults to 'episode' when omitted. Must be one of DEFAULT_NODE_KINDS
-   * ('episode' | 'entity' | 'claim' | 'community' | 'session' | 'generic') — an
-   * out-of-enum kind throws ConstraintError. The 'generic' kind is the sanctioned
-   * escape hatch for non-memory reuse (e.g. a component registry): write with
-   * `kind: 'generic'` and carry your own sub-kind (e.g. 'component') in `tags` or
-   * `metadata` — the node.kind CHECK constraint is never extended per-consumer.
-   * (BL-295)
-   */
   kind?: string;
   name?: string;
   summary?: string;
@@ -271,7 +319,7 @@ export interface NodeMeta {
 
 export interface NodeRecord {
   id: number;
-  kind: string;                // always present on read; 'episode' unless written otherwise (BL-295)
+  kind: string;
   content: string;
   name?: string;
   summary?: string;
@@ -305,7 +353,7 @@ export interface EdgeRecord {
 
 export interface NodeFilter {
   ids?: number[];
-  kind?: string | string[];    // OR semantics when array (BL-295)
+  kind?: string | string[];
   topic?: string | string[];
   tags?: string[];
   tagsMatchAll?: boolean;
@@ -316,8 +364,8 @@ export interface NodeFilter {
   validAt?: string;
   isStale?: boolean;
   namespace?: string;
-  projectPath?: string;        // absent = all project paths; present = exact match (BL-294)
-  agentId?: string;            // absent = all agents; present = exact match (BL-294)
+  projectPath?: string;
+  agentId?: string;
   metadata?: Record<string, unknown>;
   orderBy?: 'importance' | 'tCreated' | 'tValid' | 'name';
   orderDir?: 'asc' | 'desc';
@@ -334,48 +382,48 @@ export interface GraphBackendCapabilities {
 export interface GraphBackend {
   readonly capabilities: GraphBackendCapabilities;
 
-  applySchema(): void;
+  applySchema(): Promise<void>;
 
-  writeNode(content: string, meta: NodeMeta): number;
-  supersede(oldId: number, newContent: string, meta: NodeMeta): number;
-  invalidate(nodeId: number, reason?: string): void;
-  touch(nodeId: number, meta: Partial<NodeMeta>): void;
-  writeNodeBatch(nodes: Array<{ content: string; meta: NodeMeta }>): number[];
+  writeNode(content: string, meta: NodeMeta): Promise<number>;
+  supersede(oldId: number, newContent: string, meta: NodeMeta): Promise<number>;
+  invalidate(nodeId: number, reason?: string): Promise<void>;
+  touch(nodeId: number, meta: Partial<NodeMeta>): Promise<void>;
+  writeNodeBatch(nodes: Array<{ content: string; meta: NodeMeta }>): Promise<number[]>;
   writeGraph(
     nodes: Array<{ content: string; meta: NodeMeta }>,
     edges: Array<{ srcIdx: number; dstIdx: number; rel: EdgeRel; meta?: EdgeMeta }>,
-  ): number[];
+  ): Promise<number[]>;
 
-  getNode(id: number): NodeRecord | null;
-  queryNodes(filter?: NodeFilter): NodeRecord[];
+  getNode(id: number): Promise<NodeRecord | null>;
+  queryNodes(filter?: NodeFilter): Promise<NodeRecord[]>;
   searchNodes(
     query: string,
     opts?: { limit?: number; filter?: NodeFilter },
-  ): Array<NodeRecord & { score: number }>;
-  countNodes(filter?: NodeFilter): number;
-  getSupersessionChain(nodeId: number): NodeRecord[];
+  ): Promise<Array<NodeRecord & { score: number }>>;
+  countNodes(filter?: NodeFilter): Promise<number>;
+  getSupersessionChain(nodeId: number): Promise<NodeRecord[]>;
 
-  writeEdge(src: number, dst: number, rel: EdgeRel, meta?: EdgeMeta): void;
+  writeEdge(src: number, dst: number, rel: EdgeRel, meta?: EdgeMeta): Promise<void>;
 
-  getEdges(opts: { src?: number; dst?: number; rel?: EdgeRel }): EdgeRecord[];
+  getEdges(opts: { src?: number; dst?: number; rel?: EdgeRel }): Promise<EdgeRecord[]>;
   getNeighbors(
     nodeId: number,
     opts?: { rel?: EdgeRel; depth?: number; direction?: 'in' | 'out' | 'both' },
-  ): NodeRecord[];
+  ): Promise<NodeRecord[]>;
   getNeighborsWithEdges(
     nodeId: number,
     opts?: { rel?: EdgeRel; depth?: number; direction?: 'in' | 'out' | 'both' },
-  ): Array<{ node: NodeRecord; edge: EdgeRecord }>;
+  ): Promise<Array<{ node: NodeRecord; edge: EdgeRecord }>>;
 
   isReachable(
     src: number,
     dst: number,
     opts?: { rel?: EdgeRel; direction?: 'out' | 'in' },
-  ): boolean;
+  ): Promise<boolean>;
   getSubgraph(
     rootId: number,
     opts?: { rel?: EdgeRel; depth?: number; direction?: 'out' | 'in' | 'both' },
-  ): { nodes: NodeRecord[]; edges: EdgeRecord[] };
+  ): Promise<{ nodes: NodeRecord[]; edges: EdgeRecord[] }>;
 }
 
 export const PUBLIC_EDGE_RELS: readonly EdgeRel[] = [
@@ -387,8 +435,6 @@ export const PUBLIC_EDGE_RELS: readonly EdgeRel[] = [
   'SAME_AS',
   'ASSIGNED_TO',
 ];
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 interface DbNodeRow {
   rowid: number;
@@ -506,30 +552,11 @@ function nowISO(): string {
   return new Date().toISOString();
 }
 
-// ─── Filter clause builder ────────────────────────────────────────────────────
-
-/** Return type of {@link buildNodeFilterClause} — exported alongside it so the
- * function's public signature is fully nameable from a consuming package. */
 export interface FilterClause {
   where: string;
   params: unknown[];
 }
 
-/**
- * Translate a {@link NodeFilter} into a SQL `WHERE` clause + bound params
- * against the `node` table (or an aliased join of it).
- *
- * Exported (additive, BL — filtered-KNN pushdown) so consumers that need to
- * scope a *different* query against the `node` table — e.g.
- * `@adhd/sox-vector-store`'s `knn` candidate-selection JOIN — reuse the exact
- * same `NodeFilter` -> SQL translation this package's own `queryNodes` /
- * `countNodes` / `searchNodes` already use internally, rather than
- * reimplementing it and risking silent drift on a future `NodeFilter` field.
- *
- * `liveOnly` gates the `t_invalid IS NULL` clause; `tableAlias` is the SQL
- * alias of the `node` table in the caller's query (pass `''` for an
- * unaliased `node` table).
- */
 export function buildNodeFilterClause(
   filter: NodeFilter | undefined,
   liveOnly: boolean,
@@ -669,8 +696,6 @@ function buildOrderClause(filter: NodeFilter | undefined, tableAlias: string): s
   return `ORDER BY ${col} ${dir}`;
 }
 
-// ─── SqliteGraphBackend ───────────────────────────────────────────────────────
-
 export class SqliteGraphBackend implements GraphBackend {
   readonly capabilities: GraphBackendCapabilities = {
     bitemporal: true,
@@ -678,148 +703,87 @@ export class SqliteGraphBackend implements GraphBackend {
     metadataFilter: true,
   };
 
-  private db: Database.Database;
+  private adapter: StoreAdapter;
   private schemaApplied = false;
 
-  constructor(db: Database.Database) {
-    this.db = db;
-    this.applySchema();
+  constructor(adapter: StoreAdapter) {
+    this.adapter = adapter;
   }
 
-  // ── Schema ────────────────────────────────────────────────────────────────
-
-  applySchema(): void {
+  async applySchema(): Promise<void> {
     if (this.schemaApplied) return;
 
     for (const pragma of PRAGMAS) {
-      this.db.exec(pragma);
+      await this.adapter.exec(pragma);
     }
 
-    // Run Drizzle migrations — creates node + edge tables (with IF NOT EXISTS
-    // for idempotency), all indexes, and CHECK constraints. Uses the
-    // __drizzle_migrations table for version tracking (replaces old _schema_version).
-    const drizzleDb = drizzle(this.db);
-    const migrationsFolder = fileURLToPath(new URL('../drizzle/migrations', import.meta.url));
-    migrate(drizzleDb, { migrationsFolder });
+    await this.adapter.exec(INLINE_MIGRATION_DDL);
 
-    // Drizzle cannot express FTS5 virtual tables or triggers.
-    // These are applied every startup (CREATE IF NOT EXISTS / triggers are idempotent).
-    this.db.exec(FTS_DDL);
-    this.db.exec(FTS_TRIGGERS);
+    await this.adapter.exec(FTS_DDL);
+    await this.adapter.exec(FTS_TRIGGERS);
 
-    // Rebuild FTS index from existing rows (content='node' external mode).
-    // Rows inserted before FTS triggers existed must be registered in the FTS
-    // index; otherwise the first UPDATE trigger fails with SQLITE_CORRUPT_VTAB
-    // because content='node' mode detects the row in the content table but not
-    // in the FTS index. Safe on fresh DBs (no rows → no-op).
-    this.db.exec(
+    await this.adapter.exec(
       `INSERT INTO fts_node(rowid, content, name, summary)
        SELECT rowid, content, name, summary FROM node`,
     );
 
-    // Ensure CHECK constraints are up-to-date on pre-existing stores.
-    // Drizzle's CREATE TABLE IF NOT EXISTS is a no-op on existing tables,
-    // so old CHECK constraints (without 'generic', without 'DEPENDS_ON')
-    // from earlier versions must be upgraded explicitly.
-    this.ensureCheckConstraints();
+    await this.ensureCheckConstraints();
 
     this.schemaApplied = true;
   }
 
-  /**
-   * Upgrade CHECK constraints on pre-existing tables that were created by an
-   * earlier version of graph-store before Drizzle migration management was in
-   * place. Uses the rename→create→copy→drop→rename dance (rebuildTable) since
-   * SQLite does not support ALTER TABLE CHECK constraint changes.
-   *
-   * Also adds any canonical columns that may be missing from pre-Drizzle stores
-   * (e.g. level, resume_state, is_superseded on node; t_expired on edge, added in
-   * the old v2 migration). Safe to call on fresh stores — checks exit early when
-   * columns exist and constraints already include the expected values.
-   */
-  private ensureCheckConstraints(): void {
-    // Step 1: Ensure all canonical columns exist on pre-existing stores.
-    // BL-313: is_superseded was added to the CREATE TABLE DDL after some live
-    // stores' node table already existed — Drizzle's CREATE TABLE IF NOT EXISTS
-    // is a no-op against an existing table, so migrate() never adds it. Same class
-    // as level/resume_state/t_expired below (all predate Drizzle migration
-    // management). These must be present before any table rebuild so the
-    // INSERT…SELECT copy in rebuildTable doesn't fail with "no such column".
-    this.addColumnIfMissing('node', 'level', 'INTEGER');
-    this.addColumnIfMissing('node', 'resume_state', 'TEXT');
-    this.addColumnIfMissing('node', 'is_superseded', 'INTEGER DEFAULT 0');
-    this.addColumnIfMissing('edge', 't_expired', 'TEXT');
+  private async ensureCheckConstraints(): Promise<void> {
+    await this.addColumnIfMissing('node', 'level', 'INTEGER');
+    await this.addColumnIfMissing('node', 'resume_state', 'TEXT');
+    await this.addColumnIfMissing('node', 'is_superseded', 'INTEGER DEFAULT 0');
+    await this.addColumnIfMissing('edge', 't_expired', 'TEXT');
 
-    // Steps 2+3: node.kind CHECK must include 'generic' (old v3), edge.rel CHECK
-    // must include 'DEPENDS_ON' (old v4). Both checked up front and, if EITHER
-    // needs a rebuild, BOTH copy-steps run (via rebuildTable's skipDrop) before
-    // EITHER `_old` table is dropped — see rebuildTable's doc comment (BL-313):
-    // dropping `node_old` while a not-yet-rebuilt `edge` still carries a FK that
-    // SQLite auto-rewrote to dangle at `node_old` cascade-deletes every edge row,
-    // even though `edge` itself was never asked to change. Deferring every drop
-    // until every new table is fully populated makes any resulting cascade land
-    // only on tables already scheduled for deletion.
-    const nodeRow = this.db
-      .prepare<[], { sql: string }>(
-        `SELECT sql FROM sqlite_master WHERE type='table' AND name='node'`,
-      )
-      .get();
+    const nodeRow = await this.adapter.executeGet<{ sql: string }>(
+      `SELECT sql FROM sqlite_master WHERE type='table' AND name='node'`,
+    );
     const nodeNeedsRebuild = !!nodeRow && !nodeRow.sql.includes("'generic'");
 
-    const edgeRow = this.db
-      .prepare<[], { sql: string }>(
-        `SELECT sql FROM sqlite_master WHERE type='table' AND name='edge'`,
-      )
-      .get();
+    const edgeRow = await this.adapter.executeGet<{ sql: string }>(
+      `SELECT sql FROM sqlite_master WHERE type='table' AND name='edge'`,
+    );
     const edgeNeedsRebuild = !!edgeRow && !edgeRow.sql.includes("'DEPENDS_ON'");
 
     if (nodeNeedsRebuild || edgeNeedsRebuild) {
-      this.db.transaction(() => {
+      await this.adapter.transaction(async (tx) => {
         if (nodeNeedsRebuild) {
-          rebuildTable(this.db, 'node', NODE_TABLE_DDL, NODE_COLUMNS, { skipDrop: true });
+          await rebuildTable(this.adapter, 'node', NODE_TABLE_DDL, NODE_COLUMNS, { skipDrop: true, tx });
         }
         if (edgeNeedsRebuild) {
-          rebuildTable(this.db, 'edge', EDGE_TABLE_DDL, EDGE_COLUMNS, { skipDrop: true });
+          await rebuildTable(this.adapter, 'edge', EDGE_TABLE_DDL, EDGE_COLUMNS, { skipDrop: true, tx });
         }
 
-        // Every new table is now fully populated — safe to drop the old ones.
-        if (nodeNeedsRebuild) this.db.exec(`DROP TABLE node_old`);
-        if (edgeNeedsRebuild) this.db.exec(`DROP TABLE edge_old`);
+        if (nodeNeedsRebuild) await tx.exec(`DROP TABLE node_old`);
+        if (edgeNeedsRebuild) await tx.exec(`DROP TABLE edge_old`);
 
         if (nodeNeedsRebuild) {
-          for (const ddl of NODE_INDEX_DDLS) this.db.exec(ddl);
-          // Recreate FTS triggers + rebuild FTS index after table rebuild
-          this.db.exec(FTS_TRIGGERS);
-          this.db.exec(
+          for (const ddl of NODE_INDEX_DDLS) await tx.exec(ddl);
+          await tx.exec(FTS_TRIGGERS);
+          await tx.exec(
             `INSERT INTO fts_node(rowid, content, name, summary)
              SELECT rowid, content, name, summary FROM node`,
           );
         }
         if (edgeNeedsRebuild) {
-          for (const ddl of EDGE_INDEX_DDLS) this.db.exec(ddl);
+          for (const ddl of EDGE_INDEX_DDLS) await tx.exec(ddl);
         }
-      })();
+      });
     }
   }
 
-  /** Add a column if it does not already exist (idempotent). */
-  private addColumnIfMissing(table: string, column: string, type: string): void {
-    const cols = this.db
-      .prepare<[], { name: string }>(`PRAGMA table_info(${table})`)
-      .all()
-      .map((c) => c.name);
+  private async addColumnIfMissing(table: string, column: string, type: string): Promise<void> {
+    const cols = (await this.adapter.executeAll<{ name: string }>(`PRAGMA table_info(${table})`))
+      .rows.map((c) => c.name);
     if (!cols.includes(column)) {
-      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+      await this.adapter.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
     }
   }
 
-  // ── Node writes ───────────────────────────────────────────────────────────
-
-  writeNode(content: string, meta: NodeMeta): number {
-    // BL-295 (Option A, sox-ecosystem's own decision): kind is validated against the
-    // fixed DEFAULT_NODE_KINDS enum — never a per-instance/per-consumer allowlist. A
-    // non-memory reuse case writes kind:'generic' and carries its own sub-kind in
-    // tags/metadata; the node.kind CHECK constraint is never extended.
+  async writeNode(content: string, meta: NodeMeta): Promise<number> {
     const kind = meta.kind ?? 'episode';
     if (!DEFAULT_NODE_KINDS.includes(kind as (typeof DEFAULT_NODE_KINDS)[number])) {
       throw new ConstraintError(
@@ -830,9 +794,9 @@ export class SqliteGraphBackend implements GraphBackend {
     }
 
     const hash = hashContent(content);
-    const existing = this.db
-      .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE content_hash = ?')
-      .get(hash);
+    const existing = await this.adapter.executeGet<{ rowid: number }>(
+      'SELECT rowid FROM node WHERE content_hash = ?', [hash],
+    );
     if (existing) return existing.rowid;
 
     const uid = generateUid();
@@ -841,88 +805,55 @@ export class SqliteGraphBackend implements GraphBackend {
     const tagsJson = meta.tags && meta.tags.length > 0 ? JSON.stringify(meta.tags) : null;
     const metaJson = meta.metadata !== undefined ? JSON.stringify(meta.metadata) : null;
 
-    const result = this.db
-      .prepare<
-        unknown[],
-        { rowid: number }
-      >(
-        `INSERT INTO node (uid, kind, content, name, summary, topic, tags, importance,
-          confidence, content_hash, namespace, meta, agent_id, session_id, source,
-          project_path, t_occurred, t_expires, t_created, t_valid)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         RETURNING rowid`,
-      )
-      .get(
-        uid,
-        kind,
-        content,
-        meta.name ?? null,
-        meta.summary ?? null,
-        meta.topic ?? null,
-        tagsJson,
-        meta.importance ?? 1.0,
-        meta.confidence ?? null,
-        hash,
-        meta.namespace ?? 'global',
-        metaJson,
-        meta.agentId ?? null,
-        meta.sessionId ?? null,
-        meta.source ?? null,
-        meta.projectPath ?? null,
-        tOccurred,
-        meta.tExpires ?? null,
-        now,
-        now,
-      );
+    const result = await this.adapter.executeGet<{ rowid: number }>(
+      `INSERT INTO node (uid, kind, content, name, summary, topic, tags, importance,
+        confidence, content_hash, namespace, meta, agent_id, session_id, source,
+        project_path, t_occurred, t_expires, t_created, t_valid)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       RETURNING rowid`,
+      [
+        uid, kind, content,
+        meta.name ?? null, meta.summary ?? null, meta.topic ?? null, tagsJson,
+        meta.importance ?? 1.0, meta.confidence ?? null, hash,
+        meta.namespace ?? 'global', metaJson,
+        meta.agentId ?? null, meta.sessionId ?? null, meta.source ?? null,
+        meta.projectPath ?? null, tOccurred, meta.tExpires ?? null, now, now,
+      ],
+    );
 
     if (!result) throw new Error('Insert failed: no rowid returned');
     return result.rowid;
   }
 
-  supersede(oldId: number, newContent: string, meta: NodeMeta): number {
-    const oldNode = this.db
-      .prepare<[number], DbNodeRow>('SELECT * FROM node WHERE rowid = ?')
-      .get(oldId);
+  async supersede(oldId: number, newContent: string, meta: NodeMeta): Promise<number> {
+    const oldNode = await this.adapter.executeGet<DbNodeRow>('SELECT * FROM node WHERE rowid = ?', [oldId]);
     if (!oldNode) {
       throw new NodeNotFoundError(`Node not found: ${oldId}`, oldId);
     }
     if (oldNode.t_invalid !== null) {
-      throw new BitemporalConflictError(
-        `Node ${oldId} is already invalidated`,
-        oldId,
-      );
+      throw new BitemporalConflictError(`Node ${oldId} is already invalidated`, oldId);
     }
 
-    return this.db.transaction(() => {
-      const newId = this.writeNode(newContent, meta);
-
-      this.db
-        .prepare(`UPDATE node SET is_superseded = 1 WHERE rowid = ?`)
-        .run(oldId);
-
-      this.writeEdge(newId, oldId, 'SUPERSEDES', {
-        metadata: {
-          reason: `superseded by node ${newId}`,
-          supersededAt: nowISO(),
-        },
+    return this.adapter.transaction(async (_tx) => {
+      const newId = await this.writeNode(newContent, meta);
+      await this.adapter.executeRun(`UPDATE node SET is_superseded = 1 WHERE rowid = ?`, [oldId]);
+      await this.writeEdge(newId, oldId, 'SUPERSEDES', {
+        metadata: { reason: `superseded by node ${newId}`, supersededAt: nowISO() },
       });
-
       return newId;
-    })() as number;
+    });
   }
 
-  invalidate(nodeId: number, reason?: string): void {
-    const node = this.db
-      .prepare<[number], { rowid: number }>('SELECT rowid FROM node WHERE rowid = ?')
-      .get(nodeId);
-    if (!node) {
-      throw new NodeNotFoundError(`Node not found: ${nodeId}`, nodeId);
-    }
+  async invalidate(nodeId: number, reason?: string): Promise<void> {
+    const node = await this.adapter.executeGet<{ rowid: number }>(
+      'SELECT rowid FROM node WHERE rowid = ?', [nodeId],
+    );
+    if (!node) throw new NodeNotFoundError(`Node not found: ${nodeId}`, nodeId);
 
     const now = nowISO();
-    const existingMeta = this.db
-      .prepare<[number], { meta: string | null }>('SELECT meta FROM node WHERE rowid = ?')
-      .get(nodeId);
+    const existingMeta = await this.adapter.executeGet<{ meta: string | null }>(
+      'SELECT meta FROM node WHERE rowid = ?', [nodeId],
+    );
 
     let metaObj: Record<string, unknown> = parseJson(existingMeta?.meta ?? null, {});
     if (reason) {
@@ -931,603 +862,347 @@ export class SqliteGraphBackend implements GraphBackend {
       metaObj = { ...metaObj, invalidatedAt: now };
     }
 
-    this.db
-      .prepare(`UPDATE node SET t_invalid = ?, meta = ? WHERE rowid = ?`)
-      .run(now, JSON.stringify(metaObj), nodeId);
+    await this.adapter.executeRun(
+      `UPDATE node SET t_invalid = ?, meta = ? WHERE rowid = ?`,
+      [now, JSON.stringify(metaObj), nodeId],
+    );
   }
 
-  touch(nodeId: number, meta: Partial<NodeMeta>): void {
-    const node = this.db
-      .prepare<[number], DbNodeRow>('SELECT * FROM node WHERE rowid = ?')
-      .get(nodeId);
-
+  async touch(nodeId: number, meta: Partial<NodeMeta>): Promise<void> {
+    const node = await this.adapter.executeGet<DbNodeRow>('SELECT * FROM node WHERE rowid = ?', [nodeId]);
     if (!node || node.t_invalid !== null) {
-      throw new NodeNotFoundError(
-        `Node not found or invalidated: ${nodeId}`,
-        nodeId,
-      );
+      throw new NodeNotFoundError(`Node not found or invalidated: ${nodeId}`, nodeId);
     }
 
     const now = nowISO();
     const updates: string[] = [];
     const params: unknown[] = [];
 
-    if (meta.name !== undefined) {
-      updates.push('name = ?');
-      params.push(meta.name);
-    }
-    if (meta.summary !== undefined) {
-      updates.push('summary = ?');
-      params.push(meta.summary);
-    }
-    if (meta.topic !== undefined) {
-      updates.push('topic = ?');
-      params.push(meta.topic);
-    }
-    if (meta.tags !== undefined) {
-      updates.push('tags = ?');
-      params.push(meta.tags.length > 0 ? JSON.stringify(meta.tags) : null);
-    }
-    if (meta.importance !== undefined) {
-      updates.push('importance = ?');
-      params.push(meta.importance);
-    }
-    if (meta.confidence !== undefined) {
-      updates.push('confidence = ?');
-      params.push(meta.confidence);
-    }
-    if (meta.tExpires !== undefined) {
-      updates.push('t_expires = ?');
-      params.push(meta.tExpires);
-    }
-    if (meta.metadata !== undefined) {
-      updates.push('meta = ?');
-      params.push(JSON.stringify(meta.metadata));
-    }
+    if (meta.name !== undefined) { updates.push('name = ?'); params.push(meta.name); }
+    if (meta.summary !== undefined) { updates.push('summary = ?'); params.push(meta.summary); }
+    if (meta.topic !== undefined) { updates.push('topic = ?'); params.push(meta.topic); }
+    if (meta.tags !== undefined) { updates.push('tags = ?'); params.push(meta.tags.length > 0 ? JSON.stringify(meta.tags) : null); }
+    if (meta.importance !== undefined) { updates.push('importance = ?'); params.push(meta.importance); }
+    if (meta.confidence !== undefined) { updates.push('confidence = ?'); params.push(meta.confidence); }
+    if (meta.tExpires !== undefined) { updates.push('t_expires = ?'); params.push(meta.tExpires); }
+    if (meta.metadata !== undefined) { updates.push('meta = ?'); params.push(JSON.stringify(meta.metadata)); }
     updates.push('t_updated = ?');
     params.push(now);
 
     if (updates.length > 0) {
-      this.db
-        .prepare(`UPDATE node SET ${updates.join(', ')} WHERE rowid = ?`)
-        .run(...params, nodeId);
+      await this.adapter.executeRun(
+        `UPDATE node SET ${updates.join(', ')} WHERE rowid = ?`,
+        [...params, nodeId],
+      );
     }
   }
 
-  writeNodeBatch(nodes: Array<{ content: string; meta: NodeMeta }>): number[] {
-    return this.db.transaction(() => {
-      return nodes.map((n) => this.writeNode(n.content, n.meta));
-    })() as number[];
+  async writeNodeBatch(nodes: Array<{ content: string; meta: NodeMeta }>): Promise<number[]> {
+    return this.adapter.transaction(async (_tx) => {
+      const ids: number[] = [];
+      for (const n of nodes) ids.push(await this.writeNode(n.content, n.meta));
+      return ids;
+    });
   }
 
-  writeGraph(
+  async writeGraph(
     nodes: Array<{ content: string; meta: NodeMeta }>,
     edges: Array<{ srcIdx: number; dstIdx: number; rel: EdgeRel; meta?: EdgeMeta }>,
-  ): number[] {
-    return this.db.transaction(() => {
-      const nodeIds = nodes.map((n) => this.writeNode(n.content, n.meta));
-
+  ): Promise<number[]> {
+    return this.adapter.transaction(async (_tx) => {
+      const nodeIds: number[] = [];
+      for (const n of nodes) nodeIds.push(await this.writeNode(n.content, n.meta));
       for (const edge of edges) {
-        if (edge.srcIdx < 0 || edge.srcIdx >= nodeIds.length) {
+        if (edge.srcIdx < 0 || edge.srcIdx >= nodeIds.length)
           throw new ConstraintError(`Invalid srcIdx: ${edge.srcIdx}`);
-        }
-        if (edge.dstIdx < 0 || edge.dstIdx >= nodeIds.length) {
+        if (edge.dstIdx < 0 || edge.dstIdx >= nodeIds.length)
           throw new ConstraintError(`Invalid dstIdx: ${edge.dstIdx}`);
-        }
         const srcId = nodeIds[edge.srcIdx];
         const dstId = nodeIds[edge.dstIdx];
-        if (srcId === undefined || dstId === undefined) {
+        if (srcId === undefined || dstId === undefined)
           throw new ConstraintError('Node ID resolution failed');
-        }
-        this.writeEdgeInternal(srcId, dstId, edge.rel, edge.meta);
+        await this.writeEdgeInternal(srcId, dstId, edge.rel, edge.meta);
       }
-
       return nodeIds;
-    })() as number[];
+    });
   }
 
-  // ── Node reads ────────────────────────────────────────────────────────────
-
-  getNode(id: number): NodeRecord | null {
-    const row = this.db
-      .prepare<[number], DbNodeRow>('SELECT * FROM node WHERE rowid = ?')
-      .get(id);
+  async getNode(id: number): Promise<NodeRecord | null> {
+    const row = await this.adapter.executeGet<DbNodeRow>('SELECT * FROM node WHERE rowid = ?', [id]);
     return row ? rowToNodeRecord(row) : null;
   }
 
-  queryNodes(filter?: NodeFilter): NodeRecord[] {
+  async queryNodes(filter?: NodeFilter): Promise<NodeRecord[]> {
     const { where, params } = buildNodeFilterClause(filter, true, 'n');
     const order = buildOrderClause(filter, 'n');
     let limitClause = '';
     const limitParams: unknown[] = [];
-
     if (filter?.limit !== undefined) {
       limitClause = 'LIMIT ?';
       limitParams.push(filter.limit);
-      if (filter.offset !== undefined) {
-        limitClause += ' OFFSET ?';
-        limitParams.push(filter.offset);
-      }
+      if (filter.offset !== undefined) { limitClause += ' OFFSET ?'; limitParams.push(filter.offset); }
     }
-
     const sql = `SELECT n.* FROM node n ${where} ${order} ${limitClause}`;
-    const rows = this.db
-      .prepare<unknown[], DbNodeRow>(sql)
-      .all(...params, ...limitParams);
+    const { rows } = await this.adapter.executeAll<DbNodeRow>(sql, [...params, ...limitParams]);
     return rows.map(rowToNodeRecord);
   }
 
-  searchNodes(
+  async searchNodes(
     query: string,
     opts?: { limit?: number; filter?: NodeFilter },
-  ): Array<NodeRecord & { score: number }> {
+  ): Promise<Array<NodeRecord & { score: number }>> {
     const ftsQuery = query.replace(/"/g, '""');
     const limit = opts?.limit ?? 50;
-
     const nodeFilter = buildNodeFilterClause(opts?.filter, true, 'n');
     const nodeWhere = nodeFilter.where ? `AND ${nodeFilter.where.replace(/^WHERE /, '')}` : '';
-
     const sql = `
       SELECT n.*, -fts_node.rank AS score
-      FROM fts_node
-      JOIN node n ON fts_node.rowid = n.rowid
+      FROM fts_node JOIN node n ON fts_node.rowid = n.rowid
       WHERE fts_node MATCH ? ${nodeWhere}
-      ORDER BY score DESC
-      LIMIT ?
+      ORDER BY score DESC LIMIT ?
     `;
-
-    const rows = this.db
-      .prepare<unknown[], DbNodeRow & { score: number }>(sql)
-      .all(ftsQuery, ...nodeFilter.params, limit);
-
-    return rows.map((r: DbNodeRow & { score: number }) => ({ ...rowToNodeRecord(r as unknown as DbNodeRow), score: r.score }));
+    const { rows } = await this.adapter.executeAll<DbNodeRow & { score: number }>(
+      sql, [ftsQuery, ...nodeFilter.params, limit],
+    );
+    return rows.map((r) => ({ ...rowToNodeRecord(r as unknown as DbNodeRow), score: r.score }));
   }
 
-  countNodes(filter?: NodeFilter): number {
+  async countNodes(filter?: NodeFilter): Promise<number> {
     const { where, params } = buildNodeFilterClause(filter, true, 'n');
-    const sql = `SELECT COUNT(*) as cnt FROM node n ${where}`;
-    const row = this.db
-      .prepare<unknown[], { cnt: number }>(sql)
-      .get(...params);
+    const row = await this.adapter.executeGet<{ cnt: number }>(`SELECT COUNT(*) as cnt FROM node n ${where}`, params);
     return row?.cnt ?? 0;
   }
 
-  getSupersessionChain(nodeId: number): NodeRecord[] {
+  async getSupersessionChain(nodeId: number): Promise<NodeRecord[]> {
     const sql = `
       WITH RECURSIVE
       connected(rowid) AS (
         SELECT ? AS rowid
-        UNION
-        SELECT e.src FROM edge e JOIN connected c ON e.dst = c.rowid WHERE e.rel = 'SUPERSEDES'
-        UNION
-        SELECT e.dst FROM edge e JOIN connected c ON e.src = c.rowid WHERE e.rel = 'SUPERSEDES'
+        UNION SELECT e.src FROM edge e JOIN connected c ON e.dst = c.rowid WHERE e.rel = 'SUPERSEDES'
+        UNION SELECT e.dst FROM edge e JOIN connected c ON e.src = c.rowid WHERE e.rel = 'SUPERSEDES'
       ),
       head(rowid) AS (
         SELECT c.rowid FROM connected c
-        WHERE NOT EXISTS (SELECT 1 FROM edge WHERE rel = 'SUPERSEDES' AND src = c.rowid)
-        LIMIT 1
+        WHERE NOT EXISTS (SELECT 1 FROM edge WHERE rel = 'SUPERSEDES' AND src = c.rowid) LIMIT 1
       ),
       chain(rowid, depth) AS (
         SELECT h.rowid, 0 FROM head h
-        UNION
-        SELECT e.src, ch.depth + 1
-        FROM edge e JOIN chain ch ON e.dst = ch.rowid
-        WHERE e.rel = 'SUPERSEDES'
+        UNION SELECT e.src, ch.depth + 1 FROM edge e JOIN chain ch ON e.dst = ch.rowid WHERE e.rel = 'SUPERSEDES'
       )
       SELECT n.* FROM node n JOIN chain ch ON n.rowid = ch.rowid ORDER BY ch.depth
     `;
-    const rows = this.db
-      .prepare<[number], DbNodeRow>(sql)
-      .all(nodeId);
+    const { rows } = await this.adapter.executeAll<DbNodeRow>(sql, [nodeId]);
     return rows.map(rowToNodeRecord);
   }
 
-  // ── Edge writes ───────────────────────────────────────────────────────────
-
-  writeEdge(src: number, dst: number, rel: EdgeRel, meta?: EdgeMeta): void {
-    this.writeEdgeInternal(src, dst, rel, meta);
+  async writeEdge(src: number, dst: number, rel: EdgeRel, meta?: EdgeMeta): Promise<void> {
+    await this.writeEdgeInternal(src, dst, rel, meta);
   }
 
-  private writeEdgeInternal(
-    src: number,
-    dst: number,
-    rel: EdgeRel,
-    meta?: EdgeMeta,
-  ): void {
+  private async writeEdgeInternal(src: number, dst: number, rel: EdgeRel, meta?: EdgeMeta): Promise<void> {
     try {
       const now = nowISO();
       const metaJson = meta?.metadata !== undefined ? JSON.stringify(meta.metadata) : null;
-
-      this.db
-        .prepare(
-          `INSERT INTO edge (src, dst, rel, weight, origin, meta, t_created, t_valid)
-           VALUES (?, ?, ?, ?, 'user_asserted', ?, ?, ?)
-           ON CONFLICT(src, dst, rel) DO UPDATE SET
-             meta = excluded.meta,
-             weight = excluded.weight,
-             t_invalid = NULL,
-             t_valid = excluded.t_valid`,
-        )
-        .run(src, dst, rel, meta?.weight ?? 1.0, metaJson, now, now);
+      await this.adapter.executeRun(
+        `INSERT INTO edge (src, dst, rel, weight, origin, meta, t_created, t_valid)
+         VALUES (?, ?, ?, ?, 'user_asserted', ?, ?, ?)
+         ON CONFLICT(src, dst, rel) DO UPDATE SET
+           meta = excluded.meta, weight = excluded.weight,
+           t_invalid = NULL, t_valid = excluded.t_valid`,
+        [src, dst, rel, meta?.weight ?? 1.0, metaJson, now, now],
+      );
     } catch (err: unknown) {
-      if (err instanceof Error && err.message.includes('CHECK constraint failed')) {
+      if (err instanceof Error && err.message.includes('CHECK constraint failed'))
         throw new ConstraintError(err.message);
-      }
-      if (err instanceof Error && err.message.includes('FOREIGN KEY constraint failed')) {
+      if (err instanceof Error && err.message.includes('FOREIGN KEY constraint failed'))
         throw new ConstraintError(err.message);
-      }
       throw err;
     }
   }
 
-  // ── Edge reads ────────────────────────────────────────────────────────────
-
-  getEdges(opts: { src?: number; dst?: number; rel?: EdgeRel }): EdgeRecord[] {
+  async getEdges(opts: { src?: number; dst?: number; rel?: EdgeRel }): Promise<EdgeRecord[]> {
     const clauses: string[] = ['t_invalid IS NULL'];
     const params: unknown[] = [];
-
-    if (opts.src !== undefined) {
-      clauses.push('src = ?');
-      params.push(opts.src);
-    }
-    if (opts.dst !== undefined) {
-      clauses.push('dst = ?');
-      params.push(opts.dst);
-    }
-    if (opts.rel !== undefined) {
-      clauses.push('rel = ?');
-      params.push(opts.rel);
-    }
-
-    const sql = `SELECT * FROM edge WHERE ${clauses.join(' AND ')}`;
-    const rows = this.db
-      .prepare<unknown[], DbEdgeRow>(sql)
-      .all(...params);
+    if (opts.src !== undefined) { clauses.push('src = ?'); params.push(opts.src); }
+    if (opts.dst !== undefined) { clauses.push('dst = ?'); params.push(opts.dst); }
+    if (opts.rel !== undefined) { clauses.push('rel = ?'); params.push(opts.rel); }
+    const { rows } = await this.adapter.executeAll<DbEdgeRow>(
+      `SELECT * FROM edge WHERE ${clauses.join(' AND ')}`, params,
+    );
     return rows.map(rowToEdgeRecord);
   }
 
-  getNeighbors(
-    nodeId: number,
-    opts?: { rel?: EdgeRel; depth?: number; direction?: 'in' | 'out' | 'both' },
-  ): NodeRecord[] {
+  async getNeighbors(nodeId: number, opts?: { rel?: EdgeRel; depth?: number; direction?: 'in' | 'out' | 'both' }): Promise<NodeRecord[]> {
     const direction = opts?.direction ?? 'out';
     const depth = opts?.depth ?? 1;
-
     if (depth <= 0) return [];
-
-    if (depth === 1) {
-      return this.getNeighborsDepth1(nodeId, opts?.rel, direction);
-    }
-
+    if (depth === 1) return this.getNeighborsDepth1(nodeId, opts?.rel, direction);
     return this.getNeighborsRecursive(nodeId, opts?.rel, depth, direction);
   }
 
-  private getNeighborsDepth1(
-    nodeId: number,
-    rel?: EdgeRel,
-    direction: 'in' | 'out' | 'both' = 'out',
-  ): NodeRecord[] {
+  private async getNeighborsDepth1(nodeId: number, rel?: EdgeRel, direction: 'in' | 'out' | 'both' = 'out'): Promise<NodeRecord[]> {
     if (direction === 'both') {
-      const outgoing = this.getNeighborsDepth1(nodeId, rel, 'out');
-      const incoming = this.getNeighborsDepth1(nodeId, rel, 'in');
+      const outgoing = await this.getNeighborsDepth1(nodeId, rel, 'out');
+      const incoming = await this.getNeighborsDepth1(nodeId, rel, 'in');
       const seen = new Set(outgoing.map((n) => n.id));
-      for (const n of incoming) {
-        if (!seen.has(n.id)) {
-          seen.add(n.id);
-          outgoing.push(n);
-        }
-      }
+      for (const n of incoming) { if (!seen.has(n.id)) { seen.add(n.id); outgoing.push(n); } }
       return outgoing;
     }
-
     const clauses: string[] = ['e.t_invalid IS NULL', 'n.t_invalid IS NULL'];
     const params: unknown[] = [];
-
-    if (direction === 'out') {
-      clauses.push('e.src = ?');
-    } else {
-      clauses.push('e.dst = ?');
-    }
+    if (direction === 'out') clauses.push('e.src = ?'); else clauses.push('e.dst = ?');
     params.push(nodeId);
-
-    if (rel) {
-      clauses.push('e.rel = ?');
-      params.push(rel);
-    }
-
+    if (rel) { clauses.push('e.rel = ?'); params.push(rel); }
     const joinCol = direction === 'out' ? 'e.dst' : 'e.src';
-    const sql = `
-      SELECT DISTINCT n.* FROM node n
-      JOIN edge e ON n.rowid = ${joinCol}
-      WHERE ${clauses.join(' AND ')}
-    `;
-
-    const rows = this.db
-      .prepare<unknown[], DbNodeRow>(sql)
-      .all(...params);
+    const { rows } = await this.adapter.executeAll<DbNodeRow>(
+      `SELECT DISTINCT n.* FROM node n JOIN edge e ON n.rowid = ${joinCol} WHERE ${clauses.join(' AND ')}`, params,
+    );
     return rows.map(rowToNodeRecord);
   }
 
-  private getNeighborsRecursive(
-    nodeId: number,
-    rel: EdgeRel | undefined,
-    depth: number,
-    direction: 'in' | 'out' | 'both',
-  ): NodeRecord[] {
+  private async getNeighborsRecursive(nodeId: number, rel: EdgeRel | undefined, depth: number, direction: 'in' | 'out' | 'both'): Promise<NodeRecord[]> {
     const relFilter = rel ? `AND rel = '${rel.replace(/'/g, "''")}'` : '';
-
     if (direction === 'both') {
-      const out = this.getNeighborsRecursive(nodeId, rel, depth, 'out');
-      const inNodes = this.getNeighborsRecursive(nodeId, rel, depth, 'in');
+      const out = await this.getNeighborsRecursive(nodeId, rel, depth, 'out');
+      const inNodes = await this.getNeighborsRecursive(nodeId, rel, depth, 'in');
       const seen = new Set(out.map((n) => n.id));
-      for (const n of inNodes) {
-        if (!seen.has(n.id)) {
-          seen.add(n.id);
-          out.push(n);
-        }
-      }
+      for (const n of inNodes) { if (!seen.has(n.id)) { seen.add(n.id); out.push(n); } }
       return out;
     }
-
     const joinCol = direction === 'out' ? 'e.dst' : 'e.src';
-    const sql = `
-      WITH RECURSIVE
-      neighbors(rowid) AS (
-        SELECT ?
-        UNION
-        SELECT ${joinCol}
-        FROM edge e JOIN neighbors n ON e.${direction === 'out' ? 'src' : 'dst'} = n.rowid
-        WHERE e.t_invalid IS NULL ${relFilter}
-        LIMIT ?
+    const { rows } = await this.adapter.executeAll<DbNodeRow>(
+      `WITH RECURSIVE neighbors(rowid) AS (
+        SELECT ? UNION SELECT ${joinCol} FROM edge e JOIN neighbors n ON e.${direction === 'out' ? 'src' : 'dst'} = n.rowid
+        WHERE e.t_invalid IS NULL ${relFilter} LIMIT ?
       )
-      SELECT DISTINCT n.* FROM node n
-      JOIN neighbors nb ON n.rowid = nb.rowid
-      WHERE n.t_invalid IS NULL
-    `;
-
-    const rows = this.db
-      .prepare<unknown[], DbNodeRow>(sql)
-      .all(nodeId, depth * 100);
-    return rows
-      .map(rowToNodeRecord)
-      .filter((n) => n.id !== nodeId);
+      SELECT DISTINCT n.* FROM node n JOIN neighbors nb ON n.rowid = nb.rowid WHERE n.t_invalid IS NULL`,
+      [nodeId, depth * 100],
+    );
+    return rows.map(rowToNodeRecord).filter((n) => n.id !== nodeId);
   }
 
-  getNeighborsWithEdges(
-    nodeId: number,
-    opts?: { rel?: EdgeRel; depth?: number; direction?: 'in' | 'out' | 'both' },
-  ): Array<{ node: NodeRecord; edge: EdgeRecord }> {
+  async getNeighborsWithEdges(
+    nodeId: number, opts?: { rel?: EdgeRel; depth?: number; direction?: 'in' | 'out' | 'both' },
+  ): Promise<Array<{ node: NodeRecord; edge: EdgeRecord }>> {
     const direction = opts?.direction ?? 'out';
     const depth = opts?.depth ?? 1;
-
     if (depth <= 0) return [];
     if (depth > 1) {
-      const neighbors = this.getNeighbors(nodeId, opts);
+      const neighbors = await this.getNeighbors(nodeId, opts);
       const result: Array<{ node: NodeRecord; edge: EdgeRecord }> = [];
       for (const node of neighbors) {
         const edgeOpts: { src?: number; dst?: number; rel?: EdgeRel } = {};
         if (opts?.rel !== undefined) edgeOpts.rel = opts.rel;
-        if (direction === 'in') {
-          edgeOpts.src = node.id;
-          edgeOpts.dst = nodeId;
-        } else {
-          edgeOpts.src = nodeId;
-          edgeOpts.dst = node.id;
-        }
-        const edges = this.getEdges(edgeOpts);
-        for (const edge of edges) {
-          result.push({ node, edge });
-        }
+        if (direction === 'in') { edgeOpts.src = node.id; edgeOpts.dst = nodeId; }
+        else { edgeOpts.src = nodeId; edgeOpts.dst = node.id; }
+        const edges = await this.getEdges(edgeOpts);
+        for (const edge of edges) result.push({ node, edge });
       }
       return result;
     }
-
     if (direction === 'both') {
-      const outgoing = this.getNeighborsWithEdges(nodeId, { ...opts, direction: 'out' });
-      const incoming = this.getNeighborsWithEdges(nodeId, { ...opts, direction: 'in' });
+      const outgoing = await this.getNeighborsWithEdges(nodeId, { ...opts, direction: 'out' });
+      const incoming = await this.getNeighborsWithEdges(nodeId, { ...opts, direction: 'in' });
       const seen = new Map<string, number>();
       const result: Array<{ node: NodeRecord; edge: EdgeRecord }> = [];
       for (const item of outgoing) {
         const key = `${item.edge.src}:${item.edge.dst}:${item.edge.rel}`;
-        if (!seen.has(key)) {
-          seen.set(key, result.length);
-          result.push(item);
-        }
+        if (!seen.has(key)) { seen.set(key, result.length); result.push(item); }
       }
       for (const item of incoming) {
         const key = `${item.edge.src}:${item.edge.dst}:${item.edge.rel}`;
-        if (!seen.has(key)) {
-          seen.set(key, result.length);
-          result.push(item);
-        }
+        if (!seen.has(key)) { seen.set(key, result.length); result.push(item); }
       }
       return result;
     }
-
     const clauses: string[] = ['e.t_invalid IS NULL', 'n.t_invalid IS NULL'];
     const params: unknown[] = [];
-
-    if (direction === 'out') {
-      clauses.push('e.src = ?');
-    } else {
-      clauses.push('e.dst = ?');
-    }
+    if (direction === 'out') clauses.push('e.src = ?'); else clauses.push('e.dst = ?');
     params.push(nodeId);
-
-    if (opts?.rel) {
-      clauses.push('e.rel = ?');
-      params.push(opts.rel);
-    }
-
+    if (opts?.rel) { clauses.push('e.rel = ?'); params.push(opts.rel); }
     const joinCol = direction === 'out' ? 'e.dst' : 'e.src';
-    const sql = `
-      SELECT n.*, e.rowid AS e_rowid, e.src AS e_src, e.dst AS e_dst, e.rel AS e_rel,
-             e.weight AS e_weight, e.t_created AS e_t_created, e.meta AS e_meta
-      FROM node n
-      JOIN edge e ON n.rowid = ${joinCol}
-      WHERE ${clauses.join(' AND ')}
-    `;
-
     interface NeighborRow extends DbNodeRow {
-      e_rowid: number;
-      e_src: number;
-      e_dst: number;
-      e_rel: string;
-      e_weight: number | null;
-      e_t_created: string;
-      e_meta: string | null;
+      e_rowid: number; e_src: number; e_dst: number; e_rel: string;
+      e_weight: number | null; e_t_created: string; e_meta: string | null;
     }
-
-    const rows = this.db
-      .prepare<unknown[], NeighborRow>(sql)
-      .all(...params);
-
-    return rows.map((r: NeighborRow): { node: NodeRecord; edge: EdgeRecord } => {
-      const edgeRec: EdgeRecord = {
-        src: r.e_src,
-        dst: r.e_dst,
-        rel: r.e_rel as EdgeRel,
-        tCreated: r.e_t_created,
-      };
+    const { rows } = await this.adapter.executeAll<NeighborRow>(
+      `SELECT n.*, e.rowid AS e_rowid, e.src AS e_src, e.dst AS e_dst, e.rel AS e_rel,
+              e.weight AS e_weight, e.t_created AS e_t_created, e.meta AS e_meta
+       FROM node n JOIN edge e ON n.rowid = ${joinCol} WHERE ${clauses.join(' AND ')}`, params,
+    );
+    return rows.map((r) => {
+      const edgeRec: EdgeRecord = { src: r.e_src, dst: r.e_dst, rel: r.e_rel as EdgeRel, tCreated: r.e_t_created };
       if (r.e_weight != null) edgeRec.weight = r.e_weight;
       const edgeMeta = parseJsonOptional(r.e_meta);
       if (edgeMeta !== undefined) edgeRec.metadata = edgeMeta;
-      return {
-        node: rowToNodeRecord(r as unknown as DbNodeRow),
-        edge: edgeRec,
-      };
+      return { node: rowToNodeRecord(r as unknown as DbNodeRow), edge: edgeRec };
     });
   }
 
-  // ── Graph traversal ───────────────────────────────────────────────────────
-
-  isReachable(
-    src: number,
-    dst: number,
-    opts?: { rel?: EdgeRel; direction?: 'out' | 'in' },
-  ): boolean {
+  async isReachable(src: number, dst: number, opts?: { rel?: EdgeRel; direction?: 'out' | 'in' }): Promise<boolean> {
     const direction = opts?.direction ?? 'out';
     const relFilter = opts?.rel ? `AND rel = '${opts.rel.replace(/'/g, "''")}'` : '';
-
     let sql: string;
     if (direction === 'out') {
-      sql = `
-        WITH RECURSIVE path(rowid) AS (
-          SELECT ? AS rowid
-          UNION
-          SELECT e.dst FROM edge e JOIN path p ON e.src = p.rowid
-          WHERE e.t_invalid IS NULL ${relFilter}
-        )
-        SELECT 1 FROM path WHERE rowid = ? LIMIT 1
-      `;
+      sql = `WITH RECURSIVE path(rowid) AS (
+        SELECT ? AS rowid UNION SELECT e.dst FROM edge e JOIN path p ON e.src = p.rowid
+        WHERE e.t_invalid IS NULL ${relFilter}) SELECT 1 FROM path WHERE rowid = ? LIMIT 1`;
     } else {
-      sql = `
-        WITH RECURSIVE path(rowid) AS (
-          SELECT ? AS rowid
-          UNION
-          SELECT e.src FROM edge e JOIN path p ON e.dst = p.rowid
-          WHERE e.t_invalid IS NULL ${relFilter}
-        )
-        SELECT 1 FROM path WHERE rowid = ? LIMIT 1
-      `;
+      sql = `WITH RECURSIVE path(rowid) AS (
+        SELECT ? AS rowid UNION SELECT e.src FROM edge e JOIN path p ON e.dst = p.rowid
+        WHERE e.t_invalid IS NULL ${relFilter}) SELECT 1 FROM path WHERE rowid = ? LIMIT 1`;
     }
-
-    const row = this.db
-      .prepare<[number, number], { 1: number }>(sql)
-      .get(src, dst);
-    return row !== undefined;
+    const row = await this.adapter.executeGet<{ 1: number }>(sql, [src, dst]);
+    return row !== null;
   }
 
-  getSubgraph(
-    rootId: number,
-    opts?: { rel?: EdgeRel; depth?: number; direction?: 'out' | 'in' | 'both' },
-  ): { nodes: NodeRecord[]; edges: EdgeRecord[] } {
+  async getSubgraph(
+    rootId: number, opts?: { rel?: EdgeRel; depth?: number; direction?: 'out' | 'in' | 'both' },
+  ): Promise<{ nodes: NodeRecord[]; edges: EdgeRecord[] }> {
     const direction = opts?.direction ?? 'both';
     const maxDepth = opts?.depth ?? -1;
     const relFilter = opts?.rel ? `AND e.rel = '${opts.rel.replace(/'/g, "''")}'` : '';
-
     if (direction === 'both') {
-      const outSub = this.getSubgraph(rootId, { ...opts, direction: 'out' });
-      const inSub = this.getSubgraph(rootId, { ...opts, direction: 'in' });
+      const outSub = await this.getSubgraph(rootId, { ...opts, direction: 'out' });
+      const inSub = await this.getSubgraph(rootId, { ...opts, direction: 'in' });
       const seen = new Set(outSub.nodes.map((n) => n.id));
-      for (const n of inSub.nodes) {
-        if (!seen.has(n.id)) {
-          seen.add(n.id);
-          outSub.nodes.push(n);
-        }
-      }
+      for (const n of inSub.nodes) { if (!seen.has(n.id)) { seen.add(n.id); outSub.nodes.push(n); } }
       const edgeSeen = new Set(outSub.edges.map((e) => `${e.src}:${e.dst}:${e.rel}`));
       for (const e of inSub.edges) {
         const key = `${e.src}:${e.dst}:${e.rel}`;
-        if (!edgeSeen.has(key)) {
-          edgeSeen.add(key);
-          outSub.edges.push(e);
-        }
+        if (!edgeSeen.has(key)) { edgeSeen.add(key); outSub.edges.push(e); }
       }
       return { nodes: outSub.nodes, edges: outSub.edges };
     }
-
     const joinCol = direction === 'out' ? 'e.dst' : 'e.src';
     const srcCol = direction === 'out' ? 'e.src' : 'e.dst';
-
-    let nodeSql: string;
-    let params: unknown[];
-
+    let nodeSql: string; let params: unknown[];
     if (maxDepth >= 0) {
-      nodeSql = `
-        WITH RECURSIVE
-        sub(rowid, depth) AS (
-          SELECT ?, 0
-          UNION
-          SELECT ${joinCol}, s.depth + 1
-          FROM edge e JOIN sub s ON ${srcCol} = s.rowid
-          WHERE e.t_invalid IS NULL ${relFilter} AND s.depth < ?
-        )
-        SELECT DISTINCT n.* FROM node n JOIN sub s ON n.rowid = s.rowid
-      `;
+      nodeSql = `WITH RECURSIVE sub(rowid, depth) AS (
+        SELECT ?, 0 UNION SELECT ${joinCol}, s.depth + 1 FROM edge e JOIN sub s ON ${srcCol} = s.rowid
+        WHERE e.t_invalid IS NULL ${relFilter} AND s.depth < ?)
+        SELECT DISTINCT n.* FROM node n JOIN sub s ON n.rowid = s.rowid`;
       params = [rootId, maxDepth];
     } else {
-      nodeSql = `
-        WITH RECURSIVE
-        sub(rowid) AS (
-          SELECT ?
-          UNION
-          SELECT ${joinCol}
-          FROM edge e JOIN sub s ON ${srcCol} = s.rowid
-          WHERE e.t_invalid IS NULL ${relFilter}
-        )
-        SELECT DISTINCT n.* FROM node n JOIN sub s ON n.rowid = s.rowid
-      `;
+      nodeSql = `WITH RECURSIVE sub(rowid) AS (
+        SELECT ? UNION SELECT ${joinCol} FROM edge e JOIN sub s ON ${srcCol} = s.rowid
+        WHERE e.t_invalid IS NULL ${relFilter})
+        SELECT DISTINCT n.* FROM node n JOIN sub s ON n.rowid = s.rowid`;
       params = [rootId];
     }
-
-    const nodeRows = this.db
-      .prepare<unknown[], DbNodeRow>(nodeSql)
-      .all(...params);
+    const { rows: nodeRows } = await this.adapter.executeAll<DbNodeRow>(nodeSql, params);
     const nodes = nodeRows.map(rowToNodeRecord);
-
-    if (nodes.length === 0) {
-      return { nodes: [], edges: [] };
-    }
-
-    const nodeIds = nodes.map((n: NodeRecord) => n.id);
-    const edgeRows = this.db
-      .prepare<unknown[], DbEdgeRow>(
-        `SELECT * FROM edge
-         WHERE src IN (${nodeIds.map(() => '?').join(',')})
-           AND dst IN (${nodeIds.map(() => '?').join(',')})
-           AND t_invalid IS NULL`,
-      )
-      .all(...nodeIds, ...nodeIds);
-
-    const edges = edgeRows.map(rowToEdgeRecord);
-
-    return { nodes, edges };
+    if (nodes.length === 0) return { nodes: [], edges: [] };
+    const nodeIds = nodes.map((n) => n.id);
+    const { rows: edgeRows } = await this.adapter.executeAll<DbEdgeRow>(
+      `SELECT * FROM edge WHERE src IN (${nodeIds.map(() => '?').join(',')})
+       AND dst IN (${nodeIds.map(() => '?').join(',')}) AND t_invalid IS NULL`,
+      [...nodeIds, ...nodeIds],
+    );
+    return { nodes, edges: edgeRows.map(rowToEdgeRecord) };
   }
 }
 
-// ─── Factory ──────────────────────────────────────────────────────────────────
-
-export function createGraphBackend(db: Database.Database): GraphBackend {
-  return new SqliteGraphBackend(db);
+export function createGraphBackend(adapter: StoreAdapter): GraphBackend {
+  return new SqliteGraphBackend(adapter);
 }

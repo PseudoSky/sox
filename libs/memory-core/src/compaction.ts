@@ -15,7 +15,7 @@
  *   the two paths do not double-fire in the same heartbeat.
  */
 
-import type Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { WriteQueue } from './write-queue.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -75,10 +75,10 @@ export const DEFAULT_COMPACTION_INTERVAL_MS = 5 * 60 * 1000;
  * Safe to call from any context — uses the SAME db connection passed in
  * (the caller must ensure no concurrent transaction is open on that connection).
  */
-export function runCompactionPass(
-  db: Database.Database,
+export async function runCompactionPass(
+  adapter: StoreAdapter,
   opts: CompactionOptions = {},
-): CompactionResult {
+): Promise<CompactionResult> {
   const {
     runOptimize = true,
     log = () => undefined,
@@ -91,22 +91,24 @@ export function runCompactionPass(
   let framesCheckpointed = -1;
   let error: string | null = null;
 
+  const dbPath = adapter.config.dbPath ?? '';
+
   try {
     // 1. PRAGMA optimize — SQLite auto-chooses which tables need stats refresh.
     if (runOptimize) {
-      db.exec('PRAGMA optimize;');
+      await adapter.exec('PRAGMA optimize;');
       optimized = true;
       log('[compaction] PRAGMA optimize done');
     }
 
     // 2. ANALYZE — rebuild query planner statistics for all tables.
-    db.exec('ANALYZE;');
+    await adapter.exec('ANALYZE;');
     analyzed = true;
     log('[compaction] ANALYZE done');
 
     // 3. WAL checkpoint — skip if WriteQueue already ran one very recently to avoid
     //    double-fire in the same heartbeat.
-    const lastWqCkpt = WriteQueue.lastCheckpointAtForPath(db.name);
+    const lastWqCkpt = WriteQueue.lastCheckpointAtForPath(dbPath);
     const msSinceWqCkpt = Date.now() - lastWqCkpt;
     const skipCheckpoint =
       lastWqCkpt > 0 && msSinceWqCkpt < WriteQueue.CHECKPOINT_IDLE_MS;
@@ -117,13 +119,9 @@ export function runCompactionPass(
       );
       framesCheckpointed = -1;
     } else {
-      // SQLite PRAGMA wal_checkpoint returns: {busy, log, checkpointed}
-      // `checkpointed` = number of frames checkpointed (or -1 on error/mode mismatch).
-      const row = db
-        .prepare<[], { busy: number; log: number; checkpointed: number }>(
-          'PRAGMA wal_checkpoint(TRUNCATE)',
-        )
-        .get() as { busy?: number; log?: number; checkpointed?: number } | undefined;
+      const row = await adapter.executeGet<{ busy: number; log: number; checkpointed: number }>(
+        'PRAGMA wal_checkpoint(TRUNCATE)',
+      );
       framesCheckpointed =
         row && typeof row.checkpointed === 'number'
           ? row.checkpointed
@@ -150,7 +148,7 @@ export function runCompactionPass(
  * @returns          stop function.
  */
 export function startCompactionTick(
-  db: Database.Database,
+  adapter: StoreAdapter,
   opts: CompactionOptions = {},
 ): () => void {
   const intervalMs = opts.intervalMs ?? DEFAULT_COMPACTION_INTERVAL_MS;
@@ -159,7 +157,7 @@ export function startCompactionTick(
   log(`[compaction] tick started (interval=${intervalMs} ms)`);
 
   const timer = setInterval(() => {
-    runCompactionPass(db, opts);
+    runCompactionPass(adapter, opts);
   }, intervalMs);
 
   // Unref so the timer does not keep the process alive.

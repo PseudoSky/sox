@@ -15,6 +15,7 @@
 
 import type { Database } from 'better-sqlite3';
 import { createGraphBackend } from '@adhd/sox-graph-store';
+import { wrapRawDbAsAdapter } from './db.js';
 import { buildAutoLinks } from './autolink.js';
 import { clusterStore } from './cluster.js';
 import { computeImportance } from './importance.js';
@@ -96,12 +97,13 @@ interface EpisodeRow {
  * @param opts Optional tuning parameters.
  * @returns    BatchEnrichResult with counts of all mutations made.
  */
-export function runBatchEnrich(
+export async function runBatchEnrich(
   db: Database,
   opts: BatchEnrichOptions = {},
-): BatchEnrichResult {
+): Promise<BatchEnrichResult> {
   // GraphBackend instance for node/edge CRUD (sibling pattern)
-  createGraphBackend(db);
+  const adapter = wrapRawDbAsAdapter(db);
+  createGraphBackend(adapter);
 
   const {
     clusterThreshold,
@@ -146,7 +148,7 @@ export function runBatchEnrich(
   // loop in memory-server, without the incremental flag).
   if (!hasNullEnrichVer) {
     const defaultThreshold = resolveClusterThreshold(clusterThreshold);
-    const clusterResult = clusterStore(db, {
+    const clusterResult = await clusterStore(adapter, {
       threshold: defaultThreshold,
       nodeCap: clusterNodeCap,
       incrementalOnly: incrementalCluster,
@@ -248,7 +250,7 @@ export function runBatchEnrich(
   }
 
   // ── Step 5: Auto-links (E9) ────────────────────────────────────────────────
-  const autoLinkResult = buildAutoLinks(db, entityStoplistThreshold);
+  const autoLinkResult = await buildAutoLinks(adapter, entityStoplistThreshold);
   result.relates_to_edges = autoLinkResult.edges_inserted;
 
   return result;

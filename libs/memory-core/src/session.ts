@@ -7,7 +7,7 @@
  * [inv:no-mcp] — returns a plain result object, never an MCP ToolResult.
  */
 
-import type Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -22,15 +22,14 @@ export interface SaveSessionStateResult {
 // ── get ────────────────────────────────────────────────────────────────────────
 
 export async function memoryGetSessionState(
-  db: Database.Database,
+  adapter: StoreAdapter,
   args: Record<string, unknown>,
 ): Promise<GetSessionStateResult> {
   const sessionId = args['session_id'] as string;
-  const row = db
-    .prepare<[string], { resume_state: string | null }>(
-      `SELECT resume_state FROM node WHERE kind = 'session' AND session_id = ? AND t_invalid IS NULL`,
-    )
-    .get(sessionId);
+  const row = await adapter.executeGet<{ resume_state: string | null }>(
+    `SELECT resume_state FROM node WHERE kind = 'session' AND session_id = ? AND t_invalid IS NULL`,
+    [sessionId],
+  );
 
   const state = row?.resume_state ? (JSON.parse(row.resume_state) as unknown) : null;
   return { state };
@@ -39,7 +38,7 @@ export async function memoryGetSessionState(
 // ── save ───────────────────────────────────────────────────────────────────────
 
 export async function memorySaveSessionState(
-  db: Database.Database,
+  adapter: StoreAdapter,
   args: Record<string, unknown>,
 ): Promise<SaveSessionStateResult> {
   const sessionId = args['session_id'] as string;
@@ -47,15 +46,17 @@ export async function memorySaveSessionState(
   const now = new Date().toISOString();
   const uid = `session-${sessionId}-${now}`;
 
-  db.transaction(() => {
-    db.prepare(
+  await adapter.transaction(async (tx) => {
+    await tx.executeRun(
       `UPDATE node SET t_invalid = ? WHERE kind = 'session' AND session_id = ? AND t_invalid IS NULL`,
-    ).run(now, sessionId);
-    db.prepare(
+      [now, sessionId],
+    );
+    await tx.executeRun(
       `INSERT INTO node (uid, kind, session_id, resume_state, t_created, t_valid)
        VALUES (?, 'session', ?, ?, ?, ?)`,
-    ).run(uid, sessionId, state, now, now);
-  })();
+      [uid, sessionId, state, now, now],
+    );
+  });
 
   return { ok: true };
 }

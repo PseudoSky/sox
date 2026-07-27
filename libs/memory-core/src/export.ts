@@ -26,7 +26,8 @@
  * Never touches other paths (e.g. `<dir>/principles/`).
  */
 
-import Database from 'better-sqlite3';
+import type { StoreAdapter, SqliteAdapter } from '@adhd/sox-store-adapter';
+import type Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -280,15 +281,18 @@ function renderEpisodeMarkdown(
 // ── Main export function ───────────────────────────────────────────────────────
 
 /**
- * Export live episode nodes from `db` to a markdown mirror under `opts.dir`.
+ * Export live episode nodes from `adapter` to a markdown mirror under `opts.dir`.
  *
  * Returns { nodesWritten, topics, dir }.
  * When opts.enabled is false, returns zeros without touching the filesystem.
  */
-export function exportMarkdown(db: Database.Database, opts: ExportOpts): ExportResult {
+export function exportMarkdown(adapter: StoreAdapter, opts: ExportOpts): ExportResult {
   if (!opts.enabled) {
     return { nodesWritten: 0, topics: 0, dir: opts.dir };
   }
+
+  // Unwrap the raw better-sqlite3 handle for the existing sync query logic.
+  const db = (adapter as SqliteAdapter).unwrap();
 
   const { dir } = opts;
   const topicsRoot = path.join(dir, 'topics');

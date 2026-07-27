@@ -170,13 +170,14 @@ function resolveExportEnabled(): boolean {
   return true;
 }
 
-function cmdInit(scope: ScopeKind, basePath: string): void {
+async function cmdInit(scope: ScopeKind, basePath: string): Promise<void> {
   const dbPath = resolveDbPath(scope, basePath);
   const memoryDir = path.dirname(dbPath);
   fs.mkdirSync(memoryDir, { recursive: true });
 
   const isNew = !fs.existsSync(dbPath);
-  const db = openDb(dbPath);
+  const adapter = await openDb(dbPath);
+  const db = (adapter as any).unwrap() as import('better-sqlite3').Database;
 
   const existing = db
     .prepare('SELECT scope_id FROM memory_scope WHERE scope = ?')
@@ -185,7 +186,7 @@ function cmdInit(scope: ScopeKind, basePath: string): void {
   const scopeId = existing?.scope_id ?? crypto.randomUUID();
   const meta = initScope(db, scope, scopeId);
 
-  db.close();
+  await adapter.close();
 
   const verb = isNew ? 'Created' : 'Already exists (idempotent)';
   console.log(`${verb}: ${dbPath}`);
@@ -201,7 +202,7 @@ function cmdInit(scope: ScopeKind, basePath: string): void {
   console.log(`Registry updated: ${registryPath}`);
 }
 
-function cmdStatus(basePath: string): void {
+async function cmdStatus(basePath: string): Promise<void> {
   // BL-95: discovery mirrors cmdList exactly via the shared discoverStorePaths()
   // helper — same fallback order, same unregistered-store scan. Do not fork this
   // logic; two commands disagreeing about where stores live is the next bug.
@@ -213,7 +214,8 @@ function cmdStatus(basePath: string): void {
   }
   for (const dbPath of paths) {
     try {
-      const db = openDb(dbPath);
+      const adapter = await openDb(dbPath);
+      const db = (adapter as any).unwrap() as import('better-sqlite3').Database;
       const meta = db.prepare('SELECT * FROM memory_scope').get() as
         | { scope: string; embed_model: string; created_at: string }
         | undefined;
@@ -226,7 +228,7 @@ function cmdStatus(basePath: string): void {
         : (meta?.scope ?? '?');
 
       console.log(`${path.basename(dbPath)}: scope=${scopeLabel} nodes=${nodeCount} model=${meta?.embed_model ?? '?'} path=${dbPath}`);
-      db.close();
+      await adapter.close();
     } catch (e) {
       console.log(`${path.basename(dbPath)}: error - ${String(e)}`);
     }
@@ -305,7 +307,7 @@ function discoverStorePaths(basePath: string): { paths: string[]; unregisteredSt
   return { paths, unregisteredStores };
 }
 
-function cmdList(basePath: string): void {
+async function cmdList(basePath: string): Promise<void> {
   const { paths, unregisteredStores } = discoverStorePaths(basePath);
 
   if (paths.length === 0) {
@@ -316,7 +318,8 @@ function cmdList(basePath: string): void {
   for (const dbPath of paths) {
     const dbFile = path.basename(dbPath);
     try {
-      const db = openDb(dbPath);
+      const adapter = await openDb(dbPath);
+      const db = (adapter as any).unwrap() as import('better-sqlite3').Database;
       const nodes = db
         .prepare(
           `SELECT uid, kind, content, t_created FROM node WHERE t_invalid IS NULL ORDER BY t_created DESC LIMIT 20`,
@@ -329,7 +332,7 @@ function cmdList(basePath: string): void {
         const snippet = (n.content ?? '').slice(0, 80);
         console.log(`  [${n.kind}] ${n.uid}: ${snippet}`);
       }
-      db.close();
+      await adapter.close();
     } catch (e) {
       console.log(`${dbFile}: error - ${String(e)}`);
     }
@@ -368,7 +371,7 @@ function cmdRegistry(): void {
  * Enabled resolution:
  *   SOX_CONFIG_EXPORT_ENABLED env var  >  true (default on)
  */
-function cmdExport(scope: ScopeKind, basePath: string, dirFlag: string, dbFlag: string): void {
+async function cmdExport(scope: ScopeKind, basePath: string, dirFlag: string, dbFlag: string): Promise<void> {
   // Resolve db path
   const configDbPath = process.env['SOX_CONFIG_DB_PATH'];
   const dbPath = dbFlag
@@ -390,12 +393,12 @@ function cmdExport(scope: ScopeKind, basePath: string, dirFlag: string, dbFlag: 
     return;
   }
 
-  const db = openDb(dbPath);
+  const adapter = await openDb(dbPath);
   try {
-    const result = exportMarkdown(db, { dir: exportDir, enabled });
+    const result = exportMarkdown(adapter, { dir: exportDir, enabled });
     console.log(`exported ${result.nodesWritten} nodes across ${result.topics} topics → ${result.dir}`);
   } finally {
-    db.close();
+    await adapter.close();
   }
 }
 
@@ -508,7 +511,7 @@ async function cmdBackup(dbFlag: string, destFlag: string, rest: string[]): Prom
  * This is a one-shot pass; for a recurring tick, use startCompactionTick() from
  * @adhd/sox-memory-core in a long-running process.
  */
-function cmdCompact(dbFlag: string, rest: string[], noOptimize: boolean): void {
+async function cmdCompact(dbFlag: string, rest: string[], noOptimize: boolean): Promise<void> {
   const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? os.homedir();
   const rawDb = dbFlag || rest[0] || path.join(home, '.memory', 'memory.db');
   const resolvedDb = path.resolve(rawDb.replace(/^~(?=\/|$)/, home));
@@ -519,9 +522,9 @@ function cmdCompact(dbFlag: string, rest: string[], noOptimize: boolean): void {
   }
 
   try {
-    const db = openDb(resolvedDb);
+    const adapter = await openDb(resolvedDb);
     try {
-      const result = runCompactionPass(db, {
+      const result = await runCompactionPass(adapter, {
         runOptimize: !noOptimize,
         log: (...args) => console.log(...args),
       });
@@ -538,7 +541,7 @@ function cmdCompact(dbFlag: string, rest: string[], noOptimize: boolean): void {
         console.log(`  frames_checkpointed: ${result.framesCheckpointed}`);
       }
     } finally {
-      db.close();
+      await adapter.close();
     }
   } catch (err) {
     console.error(`[compact] ERROR: ${err instanceof Error ? err.message : String(err)}`);
@@ -546,33 +549,33 @@ function cmdCompact(dbFlag: string, rest: string[], noOptimize: boolean): void {
   }
 }
 
-export function runCli(argv: string[]): void {
+export async function runCli(argv: string[]): Promise<void> {
   const { command, scope, basePath, exportDir, dbPathOverride, dryRun, force, noBackup, limit, destPath, noOptimize, rest } = parseArgs(argv);
 
   switch (command) {
     case 'init':
-      cmdInit(scope, basePath);
+      await cmdInit(scope, basePath);
       break;
     case 'status':
-      cmdStatus(basePath);
+      await cmdStatus(basePath);
       break;
     case 'list':
-      cmdList(basePath);
+      await cmdList(basePath);
       break;
     case 'registry':
       cmdRegistry();
       break;
     case 'export':
-      cmdExport(scope, basePath, exportDir, dbPathOverride);
+      await cmdExport(scope, basePath, exportDir, dbPathOverride);
       break;
     case 'reembed':
-      void cmdReembed(dbPathOverride, rest, dryRun, force, noBackup, limit);
+      await cmdReembed(dbPathOverride, rest, dryRun, force, noBackup, limit);
       break;
     case 'backup':
-      void cmdBackup(dbPathOverride, destPath, rest);
+      await cmdBackup(dbPathOverride, destPath, rest);
       break;
     case 'compact':
-      cmdCompact(dbPathOverride, rest, noOptimize);
+      await cmdCompact(dbPathOverride, rest, noOptimize);
       break;
     case 'help':
     default:
@@ -596,6 +599,6 @@ Commands:
 
 // When invoked directly (not required as a library), run the CLI.
 if (require.main === module) {
-  runCli(process.argv.slice(2));
+  void runCli(process.argv.slice(2));
 }
 

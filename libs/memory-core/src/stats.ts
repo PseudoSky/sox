@@ -6,8 +6,8 @@
  * [inv:no-mcp] — returns a plain result object, never an MCP ToolResult.
  */
 
-import type Database from 'better-sqlite3';
 import * as fs from 'node:fs';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { ENRICH_VERSION } from './enrich-version.js';
 import { clusterStats } from './cluster.js';
 import type { ClusterStats } from './cluster.js';
@@ -68,108 +68,96 @@ export interface StatsResult {
 }
 
 export async function memoryGetStats(
-  db: Database.Database,
+  adapter: StoreAdapter,
   args: Record<string, unknown>,
   toolNames: string[],
 ): Promise<StatsResult> {
   const projectPath = args['project_path'] as string | undefined;
+  const dbPath = adapter.config.dbPath ?? '';
 
   const ppFilter = projectPath ? 'AND project_path = ?' : '';
   const ppParams = projectPath ? [projectPath] : [];
 
-  const totalRow = db
-    .prepare<unknown[], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL ${ppFilter}`,
-    )
-    .get(...ppParams);
+  const totalRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL ${ppFilter}`,
+    ppParams.length > 0 ? ppParams : undefined,
+  );
   const totalEpisodes = totalRow?.cnt ?? 0;
 
-  const withTopicRow = db
-    .prepare<unknown[], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND topic IS NOT NULL ${ppFilter}`,
-    )
-    .get(...ppParams);
+  const withTopicRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND topic IS NOT NULL ${ppFilter}`,
+    ppParams.length > 0 ? ppParams : undefined,
+  );
 
-  const withSummaryRow = db
-    .prepare<unknown[], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND summary IS NOT NULL ${ppFilter}`,
-    )
-    .get(...ppParams);
+  const withSummaryRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND summary IS NOT NULL ${ppFilter}`,
+    ppParams.length > 0 ? ppParams : undefined,
+  );
 
-  const withTagsRow = db
-    .prepare<unknown[], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND tags IS NOT NULL ${ppFilter}`,
-    )
-    .get(...ppParams);
+  const withTagsRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND tags IS NOT NULL ${ppFilter}`,
+    ppParams.length > 0 ? ppParams : undefined,
+  );
 
-  const withProjectPathRow = db
-    .prepare<unknown[], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND project_path IS NOT NULL ${ppFilter}`,
-    )
-    .get(...ppParams);
+  const withProjectPathRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND project_path IS NOT NULL ${ppFilter}`,
+    ppParams.length > 0 ? ppParams : undefined,
+  );
 
   // with_community: episodes with a MEMBER_OF edge to a live GLOBAL community
-  const withCommunityRow = db
-    .prepare<unknown[], { cnt: number }>(
-      `SELECT COUNT(DISTINCT n.rowid) AS cnt
-       FROM node n
-       JOIN edge e ON e.src = n.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
-       JOIN node c ON c.rowid = e.dst AND c.kind = 'community' AND c.t_invalid IS NULL
-         AND (json_extract(c.meta, '$.cluster_scope.kind') IS NULL
-              OR json_extract(c.meta, '$.cluster_scope.kind') = 'global')
-       WHERE n.kind = 'episode' AND n.t_invalid IS NULL ${ppFilter.replace('AND project_path', 'AND n.project_path')}`,
-    )
-    .get(...ppParams);
+  const withCommunityRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(DISTINCT n.rowid) AS cnt
+     FROM node n
+     JOIN edge e ON e.src = n.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+     JOIN node c ON c.rowid = e.dst AND c.kind = 'community' AND c.t_invalid IS NULL
+       AND (json_extract(c.meta, '$.cluster_scope.kind') IS NULL
+            OR json_extract(c.meta, '$.cluster_scope.kind') = 'global')
+     WHERE n.kind = 'episode' AND n.t_invalid IS NULL ${ppFilter.replace('AND project_path', 'AND n.project_path')}`,
+    ppParams.length > 0 ? ppParams : undefined,
+  );
 
   // Legacy: enrich_ver IS NULL or note = "legacy"
-  const legacyRow = db
-    .prepare<unknown[], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM node
-       WHERE kind = 'episode' AND t_invalid IS NULL
-         AND (enrich_ver IS NULL
-           OR json_extract(enrich_ver, '$.note') = 'legacy')
-       ${ppFilter}`,
-    )
-    .get(...ppParams);
+  const legacyRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM node
+     WHERE kind = 'episode' AND t_invalid IS NULL
+       AND (enrich_ver IS NULL
+         OR json_extract(enrich_ver, '$.note') = 'legacy')
+     ${ppFilter}`,
+    ppParams.length > 0 ? ppParams : undefined,
+  );
 
   // Stale: enrich_ver.pass != current ENRICH_VERSION
-  const staleRow = db
-    .prepare<unknown[], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM node
-       WHERE kind = 'episode' AND t_invalid IS NULL AND enrich_ver IS NOT NULL
-         AND json_extract(enrich_ver, '$.pass') != ?
-       ${ppFilter}`,
-    )
-    .get(ENRICH_VERSION, ...ppParams);
+  const staleRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM node
+     WHERE kind = 'episode' AND t_invalid IS NULL AND enrich_ver IS NOT NULL
+       AND json_extract(enrich_ver, '$.pass') != ?
+     ${ppFilter}`,
+    [ENRICH_VERSION, ...ppParams],
+  );
 
-  const qStats = clusterStats(db);
+  const qStats = await clusterStats(adapter);
 
   // BL-88: embed provenance counts (additive field).
   // Counts over ALL live episodes (no project_path filter) — provenance is a
   // store-wide data-integrity signal, not a per-project coverage metric.
   const resolvedEmbedModel = getActiveEmbedModel() ?? 'unknown';
 
-  const stampedRow = db
-    .prepare<[], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND embed_model IS NOT NULL`,
-    )
-    .get();
-  const unstampedRow = db
-    .prepare<[], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND embed_model IS NULL`,
-    )
-    .get();
-  const staleVecRow = db
-    .prepare<[string], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt
-       FROM node n
-       WHERE n.kind = 'episode'
-         AND n.t_invalid IS NULL
-         AND n.embed_model IS NOT NULL
-         AND n.embed_model != ?
-         AND EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)`,
-    )
-    .get(resolvedEmbedModel);
+  const stampedRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND embed_model IS NOT NULL`,
+  );
+  const unstampedRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND embed_model IS NULL`,
+  );
+  const staleVecRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt
+     FROM node n
+     WHERE n.kind = 'episode'
+       AND n.t_invalid IS NULL
+       AND n.embed_model IS NOT NULL
+       AND n.embed_model != ?
+       AND EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)`,
+    [resolvedEmbedModel],
+  );
 
   const embedProvenance: EmbedProvenanceStats = {
     stamped: stampedRow?.cnt ?? 0,
@@ -187,16 +175,14 @@ export async function memoryGetStats(
   // Degraded record count
   let degradedRecordCount = 0;
   try {
-    const scopeModel = db
-      .prepare<[], { embed_model: string }>(`SELECT embed_model FROM memory_scope LIMIT 1`)
-      .get();
+    const scopeModel = await adapter.executeGet<{ embed_model: string }>(
+      `SELECT embed_model FROM memory_scope LIMIT 1`,
+    );
     if (scopeModel && scopeModel.embed_model !== resolvedEmbedModel) {
       degradedRecordCount =
-        db
-          .prepare<[], { cnt: number }>(
-            `SELECT COUNT(*) as cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL`,
-          )
-          .get()?.cnt ?? 0;
+        (await adapter.executeGet<{ cnt: number }>(
+          `SELECT COUNT(*) as cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL`,
+        ))?.cnt ?? 0;
     }
   } catch {
     degradedRecordCount = 0;
@@ -205,13 +191,15 @@ export async function memoryGetStats(
   // (WP-5) WAL file bytes + last checkpoint time
   let walBytes = 0;
   try {
-    const walPath = db.name + '-wal';
-    const st = fs.statSync(walPath, { throwIfNoEntry: false });
-    walBytes = st?.size ?? 0;
+    if (dbPath) {
+      const walPath = dbPath + '-wal';
+      const st = fs.statSync(walPath, { throwIfNoEntry: false });
+      walBytes = st?.size ?? 0;
+    }
   } catch {
     walBytes = 0;
   }
-  const lastCkptEpoch = WriteQueue.lastCheckpointAtForPath(db.name);
+  const lastCkptEpoch = WriteQueue.lastCheckpointAtForPath(dbPath);
   const lastCheckpointAt = lastCkptEpoch > 0 ? new Date(lastCkptEpoch).toISOString() : null;
 
   return {

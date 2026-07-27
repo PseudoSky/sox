@@ -18,10 +18,11 @@ import * as path from 'node:path';
 // value the factory closes over must itself be declared via vi.hoisted().
 const { mockClose, mockOpenDb, mockMemoryWrite, mockWarmupEmbed } = vi.hoisted(() => {
   const mockClose = vi.fn();
-  const mockDb = { close: mockClose };
+  const mockUnwrapDb = { close: mockClose };
+  const mockAdapter = { close: mockClose, unwrap: vi.fn(() => mockUnwrapDb) };
   return {
     mockClose,
-    mockOpenDb: vi.fn(() => mockDb),
+    mockOpenDb: vi.fn(() => mockAdapter),
     mockMemoryWrite: vi.fn(async () => ({ episode_uid: 'fake-uid' })),
     mockWarmupEmbed: vi.fn(async () => ({ ok: true })),
   };

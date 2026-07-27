@@ -19,6 +19,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import Database from 'better-sqlite3';
 import {
   getDb,
   _setEmbedProviderForTest,
@@ -61,8 +62,9 @@ function parseResult(resp: { content: Array<{ text?: string }> }): Record<string
   return JSON.parse(resp.content[0]?.text ?? '{}') as Record<string, unknown>;
 }
 
-function backlogOf(dbPath: string): number {
-  const row = getDb(dbPath)
+async function backlogOf(dbPath: string): Promise<number> {
+  const db = (await getDb(dbPath)).unwrap() as Database.Database;
+  const row = db
     .prepare<[], { c: number }>(
       `SELECT COUNT(*) AS c FROM node n
        WHERE n.kind='episode' AND n.t_invalid IS NULL AND n.content IS NOT NULL AND n.content != ''
@@ -73,8 +75,8 @@ function backlogOf(dbPath: string): number {
 }
 
 /** Raw-insert a live episode WITHOUT a vec row — the "crashed Phase B" shape. */
-function insertOrphanEpisode(dbPath: string, content: string, tCreated: string): void {
-  const db = getDb(dbPath);
+async function insertOrphanEpisode(dbPath: string, content: string, tCreated: string): Promise<void> {
+  const db = (await getDb(dbPath)).unwrap() as Database.Database;
   db.prepare(
     `INSERT INTO node (uid, kind, content, content_hash, t_created, t_valid)
      VALUES (?, 'episode', ?, ?, ?, ?)`,
@@ -122,13 +124,13 @@ describe('memory_write (async default) — response resolves before the embeddin
     expect((out['enrichment'] as { near_dup: unknown }).near_dup).toBeNull();
 
     // The episode is committed and DETECTED as pending-embed…
-    expect(backlogOf(dbPath)).toBe(1);
+    expect(await backlogOf(dbPath)).toBe(1);
 
     // …and once the gate opens, Phase B applies the vector off-slot.
     gated.release();
     await flushPendingEmbeds();
     expect(gated.calls).toBe(1);
-    expect(backlogOf(dbPath)).toBe(0);
+    expect(await backlogOf(dbPath)).toBe(0);
   });
 
   it('forwards client_request_id (WP-4): replay through the MCP handler returns the original uid', async () => {
@@ -147,7 +149,8 @@ describe('memory_write (async default) — response resolves before the embeddin
     }));
     expect(second['replayed']).toBe(true);
     expect(second['episode_uid']).toBe(first['episode_uid']);
-    const count = getDb(dbPath)
+    const db = (await getDb(dbPath)).unwrap() as Database.Database;
+    const count = db
       .prepare<[], { c: number }>("SELECT COUNT(*) AS c FROM node WHERE kind='episode'")
       .get()!;
     expect(count.c).toBe(1);
@@ -169,7 +172,7 @@ describe('memory_write (async default) — response resolves before the embeddin
     expect((out['chunk_uids'] as string[]).length).toBeGreaterThan(0);
 
     await flushPendingEmbeds();
-    expect(backlogOf(dbPath)).toBe(0); // parent + every chunk got its vector
+    expect(await backlogOf(dbPath)).toBe(0); // parent + every chunk got its vector
   });
 });
 
@@ -192,7 +195,7 @@ describe('memory_write_batch (async default) — one queue entry, pipelined Phas
     expect(results[2]!.code).toBe('E_DEDUP');
 
     await flushPendingEmbeds();
-    expect(backlogOf(dbPath)).toBe(0);
+    expect(await backlogOf(dbPath)).toBe(0);
   });
 });
 
@@ -214,8 +217,8 @@ describe('memory_ping — embed_backlog is machine-visible, dead Phase B reads s
 
   it('fresh pending embed → embed_backlog=1, verdict ok (no false stall alarm)', async () => {
     const dbPath = tmpStorePath();
-    getDb(dbPath); // materialise the store
-    insertOrphanEpisode(dbPath, 'freshly written, vector still in flight', new Date().toISOString());
+    await getDb(dbPath); // materialise the store
+    await insertOrphanEpisode(dbPath, 'freshly written, vector still in flight', new Date().toISOString());
 
     const store = await pingStore(dbPath);
     expect(store.embed_backlog).toBe(1);
@@ -226,9 +229,9 @@ describe('memory_ping — embed_backlog is machine-visible, dead Phase B reads s
 
   it('orphan older than the stall threshold → verdict stalled (dead Phase-B pipeline is NEVER silent)', async () => {
     const dbPath = tmpStorePath();
-    getDb(dbPath);
+    await getDb(dbPath);
     const old = new Date(Date.now() - 2 * 3600 * 1000).toISOString(); // 2h >> 15min threshold
-    insertOrphanEpisode(dbPath, 'orphan from a dead pipeline', old);
+    await insertOrphanEpisode(dbPath, 'orphan from a dead pipeline', old);
 
     const store = await pingStore(dbPath);
     expect(store.embed_backlog).toBe(1);
@@ -237,7 +240,7 @@ describe('memory_ping — embed_backlog is machine-visible, dead Phase B reads s
 
   it('no orphans, no queue rows → verdict idle with embed_backlog=0', async () => {
     const dbPath = tmpStorePath();
-    getDb(dbPath);
+    await getDb(dbPath);
     const store = await pingStore(dbPath);
     expect(store.embed_backlog).toBe(0);
     expect(store.enrichment.state).toBe('idle');
@@ -333,9 +336,10 @@ describe('memory_ping — embed_pipeline block (time_to_vector + counters + mirr
 
   it('heal-path applies surface as heals_applied + heal_lag, never as time_to_vector', async () => {
     const dbPath = tmpStorePath();
-    const db = getDb(dbPath);
+    const adapter = await getDb(dbPath);
+    const db = adapter.unwrap() as Database.Database;
     const old = new Date(Date.now() - 60_000).toISOString();
-    insertOrphanEpisode(dbPath, 'ping heal-path orphan with unique fjord tokens', old);
+    await insertOrphanEpisode(dbPath, 'ping heal-path orphan with unique fjord tokens', old);
 
     const pass = await runEnrichPassOnDb(db, dbPath);
     expect(pass.healed).toBe(1);
@@ -353,16 +357,17 @@ describe('memory_ping — embed_pipeline block (time_to_vector + counters + mirr
 describe('runEnrichPassOnDb — the tick heals missing vectors (crash between phases)', () => {
   it('orphaned no-vec episodes are re-embedded on the tick; backlog N→0; verdict flips to idle', async () => {
     const dbPath = tmpStorePath();
-    const db = getDb(dbPath);
+    const adapter = await getDb(dbPath);
+    const db = adapter.unwrap() as Database.Database;
     const old = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
-    insertOrphanEpisode(dbPath, 'first crash orphan with unique glacier tokens', old);
-    insertOrphanEpisode(dbPath, 'second crash orphan with unique monsoon tokens', old);
-    expect(backlogOf(dbPath)).toBe(2);
+    await insertOrphanEpisode(dbPath, 'first crash orphan with unique glacier tokens', old);
+    await insertOrphanEpisode(dbPath, 'second crash orphan with unique monsoon tokens', old);
+    expect(await backlogOf(dbPath)).toBe(2);
 
     const pass = await runEnrichPassOnDb(db, dbPath);
     expect(pass.healed).toBe(2);
     expect(pass.heal_failed).toBe(0);
-    expect(backlogOf(dbPath)).toBe(0);
+    expect(await backlogOf(dbPath)).toBe(0);
 
     const resp = await handleToolCall('memory_ping', { db_path: dbPath });
     const body = JSON.parse(resp.content[0]?.text ?? '{}') as {
@@ -378,7 +383,8 @@ describe('runEnrichPassOnDb — the tick heals missing vectors (crash between ph
 describe('memory_curate recluster (global) — BL-186: honest enqueue, consumed by the tick as a FULL pass', () => {
   it('enqueued:true is backed by a committed full-pass trigger row; the tick runs full then reverts to incremental', async () => {
     const dbPath = tmpStorePath();
-    const db = getDb(dbPath);
+    const adapter = await getDb(dbPath);
+    const db = adapter.unwrap() as Database.Database;
     await handleToolCall('memory_write', {
       db_path: dbPath,
       content: 'Calibration of the pneumatic widget press requires forty newton metres.',
@@ -422,7 +428,8 @@ describe('memory_curate recluster (global) — BL-186: honest enqueue, consumed 
 
   it('dry_run stays enqueued:false and writes no trigger row', async () => {
     const dbPath = tmpStorePath();
-    const db = getDb(dbPath);
+    const adapter = await getDb(dbPath);
+    const db = adapter.unwrap() as Database.Database;
     const before = db
       .prepare<[], { c: number }>('SELECT COUNT(*) AS c FROM organizer_queue')
       .get()!.c;

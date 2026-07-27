@@ -14,7 +14,7 @@
  */
 
 import * as crypto from 'node:crypto';
-import type { Database } from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { createGraphBackend } from '@adhd/sox-graph-store';
 import { cluster as analysisCluster } from '@adhd/sox-analysis';
 import { buildFiltersClause } from './memory-filters.js';
@@ -258,11 +258,11 @@ export interface MaterializeOptions {
  * Note: an episode may end up `MEMBER_OF` both a global community and one or more
  * subset communities — these are intentionally different lenses, not duplicates.
  */
-export function materializeClusters(
-  db: Database,
+export async function materializeClusters(
+  adapter: StoreAdapter,
   clusters: ClusterResult[],
   opts: MaterializeOptions = {},
-): void {
+): Promise<void> {
   const scope = opts.scope ?? 'global';
   if (scope === 'subset' && !opts.provenanceHash) {
     throw new Error('materializeClusters: scope="subset" requires a provenanceHash');
@@ -273,30 +273,26 @@ export function materializeClusters(
   //    those nodes and their MEMBER_OF edges. Edges are scoped by their dst node.
   const priorIds =
     scope === 'subset'
-      ? db
-          .prepare<[string], { rowid: number }>(
+      ? (await adapter.executeAll<{ rowid: number }>(
             `SELECT rowid FROM node
              WHERE kind = 'community' AND t_invalid IS NULL
                AND json_extract(meta, '$.cluster_scope.hash') = ?`,
-          )
-          .all(opts.provenanceHash as string)
-          .map((r) => r.rowid)
-      : db
-          .prepare<[], { rowid: number }>(
+            [opts.provenanceHash as string],
+          )).rows.map((r) => r.rowid)
+      : (await adapter.executeAll<{ rowid: number }>(
             `SELECT rowid FROM node
              WHERE kind = 'community' AND t_invalid IS NULL
                AND (json_extract(meta, '$.cluster_scope.kind') IS NULL
                     OR json_extract(meta, '$.cluster_scope.kind') = 'global')`,
-          )
-          .all()
-          .map((r) => r.rowid);
+          )).rows.map((r) => r.rowid);
 
   if (priorIds.length > 0) {
     const ph = priorIds.map(() => '?').join(',');
-    db.prepare(`UPDATE node SET t_invalid = ? WHERE rowid IN (${ph})`).run(now, ...priorIds);
-    db.prepare(
+    await adapter.executeRun(`UPDATE node SET t_invalid = ? WHERE rowid IN (${ph})`, [now, ...priorIds]);
+    await adapter.executeRun(
       `UPDATE edge SET t_invalid = ? WHERE rel = 'MEMBER_OF' AND t_invalid IS NULL AND dst IN (${ph})`,
-    ).run(now, ...priorIds);
+      [now, ...priorIds],
+    );
   }
 
   const clusterScope =
@@ -313,38 +309,35 @@ export function materializeClusters(
       cluster_scope: clusterScope,
     });
 
-    const existingRow = db
-      .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ?`)
-      .get(cluster.community_uid);
+    const existingRow = await adapter.executeGet<{ rowid: number }>(
+      `SELECT rowid FROM node WHERE uid = ?`,
+      [cluster.community_uid],
+    );
 
     let communityRowid: number;
     if (existingRow) {
-      db.prepare(
+      await adapter.executeRun(
         `UPDATE node SET t_invalid = NULL, name = ?, meta = ?, t_created = ? WHERE uid = ?`,
-      ).run(cluster.label, metaJson, now, cluster.community_uid);
+        [cluster.label, metaJson, now, cluster.community_uid],
+      );
       communityRowid = existingRow.rowid;
     } else {
-      const insertResult = db
-        .prepare<unknown[], { rowid: number }>(
-          `INSERT INTO node (uid, kind, name, level, t_created, t_valid, meta)
-           VALUES (?, 'community', ?, 0, ?, ?, ?) RETURNING rowid`,
-        )
-        .get(cluster.community_uid, cluster.label, now, now, metaJson);
-      if (!insertResult) continue; // should not happen
+      const insertResult = await adapter.executeGet<{ rowid: number }>(
+        `INSERT INTO node (uid, kind, name, level, t_created, t_valid, meta)
+         VALUES (?, 'community', ?, 0, ?, ?, ?) RETURNING rowid`,
+        [cluster.community_uid, cluster.label, now, now, metaJson],
+      );
+      if (!insertResult) continue;
       communityRowid = insertResult.rowid;
     }
 
     for (const memberRowid of cluster.member_rowids) {
-      // Use UPSERT to handle the UNIQUE(edge.src, dst, rel) constraint from the
-      // canonical graph-store DDL. On re-cluster, old MEMBER_OF edges are
-      // invalidated (t_invalid set, line 298) but the unique index still prevents
-      // a duplicate (src, dst, rel). UPSERT reuses the existing edge slot by
-      // clearing t_invalid — mirrors graph-store's writeEdge() pattern.
-      db.prepare(
+      await adapter.executeRun(
         `INSERT INTO edge (src, dst, rel, origin, weight, t_created)
          VALUES (?, ?, 'MEMBER_OF', 'inferred', 1.0, ?)
          ON CONFLICT(src, dst, rel) DO UPDATE SET t_invalid = NULL`,
-      ).run(memberRowid, communityRowid, now);
+        [memberRowid, communityRowid, now],
+      );
     }
   }
 }
@@ -357,11 +350,11 @@ export function materializeClusters(
  * and removable via `dropSubsetLens`, while `community_count` reporting excludes
  * it. The uid is derived from the hash so re-runs upsert the same marker node.
  */
-export function materializeLensMarker(
-  db: Database,
+export async function materializeLensMarker(
+  adapter: StoreAdapter,
   provenanceHash: string,
   filter: unknown = null,
-): void {
+): Promise<void> {
   const now = new Date().toISOString();
   const uid = communityUid([], `${provenanceHash}:__lens_marker__`);
   const metaJson = JSON.stringify({
@@ -369,19 +362,22 @@ export function materializeLensMarker(
     cluster_scope: { kind: 'subset', hash: provenanceHash, filter, marker: true },
   });
 
-  const existingRow = db
-    .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ?`)
-    .get(uid);
+  const existingRow = await adapter.executeGet<{ rowid: number }>(
+    `SELECT rowid FROM node WHERE uid = ?`,
+    [uid],
+  );
 
   if (existingRow) {
-    db.prepare(
+    await adapter.executeRun(
       `UPDATE node SET t_invalid = NULL, name = ?, meta = ?, t_created = ? WHERE uid = ?`,
-    ).run('(empty lens)', metaJson, now, uid);
+      ['(empty lens)', metaJson, now, uid],
+    );
   } else {
-    db.prepare(
+    await adapter.executeRun(
       `INSERT INTO node (uid, kind, name, level, t_created, t_valid, meta)
        VALUES (?, 'community', ?, 0, ?, ?, ?)`,
-    ).run(uid, '(empty lens)', now, now, metaJson);
+      [uid, '(empty lens)', now, now, metaJson],
+    );
   }
 }
 
@@ -396,19 +392,19 @@ export function materializeLensMarker(
  * filter vocabulary (tags / topic / project_path / importance_min / time range).
  * `restrict.sql` MUST be an AND-prefixed clause over alias `n` (or empty).
  */
-function selectEpisodes(
-  db: Database,
+async function selectEpisodes(
+  adapter: StoreAdapter,
   restrict?: { sql: string; params: unknown[] },
-): EpRow[] {
-  return db
-    .prepare<unknown[], EpRow>(
-      `SELECT n.rowid AS rowid, n.uid AS uid, n.content AS content, n.topic AS topic, n.name AS name
-       FROM node n
-       WHERE n.kind = 'episode' AND n.t_invalid IS NULL
-         AND n.content IS NOT NULL AND LENGTH(n.content) >= 50${restrict?.sql ?? ''}
-       ORDER BY n.rowid ASC`,
-    )
-    .all(...(restrict?.params ?? []));
+): Promise<EpRow[]> {
+  const result = await adapter.executeAll<EpRow>(
+    `SELECT n.rowid AS rowid, n.uid AS uid, n.content AS content, n.topic AS topic, n.name AS name
+     FROM node n
+     WHERE n.kind = 'episode' AND n.t_invalid IS NULL
+       AND n.content IS NOT NULL AND LENGTH(n.content) >= 50${restrict?.sql ?? ''}
+     ORDER BY n.rowid ASC`,
+    restrict?.params ?? undefined,
+  );
+  return result.rows;
 }
 
 interface ComputeClustersOptions {
@@ -425,11 +421,11 @@ interface ComputeClustersOptions {
  * connected-components pass, and return cluster descriptors. NO DB writes —
  * persistence is the caller's choice via `materializeClusters`.
  */
-function computeClusters(
-  db: Database,
+async function computeClusters(
+  adapter: StoreAdapter,
   episodes: EpRow[],
   opts: ComputeClustersOptions = {},
-): ClusterStoreResult {
+): Promise<ClusterStoreResult> {
   const threshold = opts.threshold ?? resolveDefaultThreshold();
   const nodeCap = opts.nodeCap ?? 10000;
   const salt = opts.salt ?? '';
@@ -447,13 +443,13 @@ function computeClusters(
   const rowids = episodes.map((e) => e.rowid);
   const rowidToEp = new Map<number, EpRow>(episodes.map((e) => [e.rowid, e]));
 
-  const vecRows = db
-    .prepare<unknown[], VecRow>(
-      `SELECT node_id, embedding FROM vec_node
-       WHERE node_id IN (${rowids.map(() => '?').join(',')})
-       ORDER BY node_id ASC`,
-    )
-    .all(...(rowids as unknown[]));
+  const vecResult = await adapter.executeAll<VecRow>(
+    `SELECT node_id, embedding FROM vec_node
+     WHERE node_id IN (${rowids.map(() => '?').join(',')})
+     ORDER BY node_id ASC`,
+    rowids as unknown[],
+  );
+  const vecRows = vecResult.rows;
 
   const rowidToVec = new Map<number, Float32Array>();
   for (const vRow of vecRows) {
@@ -499,24 +495,24 @@ function computeClusters(
  * @param opts Tuning parameters.
  * @returns    ClusterStoreResult with all cluster descriptors.
  */
-export function clusterStore(
-  db: Database,
+export async function clusterStore(
+  adapter: StoreAdapter,
   opts: ClusterStoreOptions = {},
-): ClusterStoreResult {
+): Promise<ClusterStoreResult> {
   // GraphBackend ensures the canonical DDL (including ix_edge_unique) is applied.
-  createGraphBackend(db);
+  createGraphBackend(adapter);
 
-  const episodes = selectEpisodes(db);
-  const result = computeClusters(db, episodes, {
+  const episodes = await selectEpisodes(adapter);
+  const result = await computeClusters(adapter, episodes, {
     threshold: opts.threshold,
     nodeCap: opts.nodeCap,
     incrementalOnly: opts.incrementalOnly,
-    // salt='' → global UIDs unchanged (back-compat).
   });
 
   if (result.clusters.length > 0) {
-    const tx = db.transaction(() => materializeClusters(db, result.clusters, { scope: 'global' }));
-    tx();
+    await adapter.transaction(async () => {
+      await materializeClusters(adapter, result.clusters, { scope: 'global' });
+    });
   }
   return result;
 }
@@ -570,12 +566,12 @@ export interface ClusterSubsetResult extends ClusterStoreResult {
  * revised communities — reusing the SAME `materializeClusters` writer as the global
  * batch pass, scoped so it never clobbers the global partition (DRY).
  */
-export function clusterSubset(
-  db: Database,
+export async function clusterSubset(
+  adapter: StoreAdapter,
   opts: ClusterSubsetOptions = {},
-): ClusterSubsetResult {
+): Promise<ClusterSubsetResult> {
   // GraphBackend instance (sibling pattern)
-  createGraphBackend(db);
+  createGraphBackend(adapter);
 
   // Guard: an empty/absent filter with persist:true would write a duplicate of the
   // global partition under a non-global salt — creating a confusing, unreachable
@@ -603,38 +599,27 @@ export function clusterSubset(
   // Provenance hash keys on the structured filter (preferred) or the raw SQL
   // fragment (legacy). The hash must be stable across calls with the same intent.
   const provenanceHash = filterProvenanceHash(opts.filter ?? opts.restrict?.sql ?? '');
-  const episodes = selectEpisodes(db, restrict);
+  const episodes = await selectEpisodes(adapter, restrict);
 
-  const result = computeClusters(db, episodes, {
+  const result = await computeClusters(adapter, episodes, {
     threshold: opts.threshold,
     nodeCap: opts.nodeCap,
-    salt: provenanceHash, // namespace community UIDs to this filter
+    salt: provenanceHash,
   });
 
   let persisted = false;
   if (opts.persist) {
     const filterRepr = opts.filter ?? opts.restrict?.sql ?? null;
-    const tx = db.transaction(() => {
-      // materializeClusters invalidates all prior nodes owned by this hash
-      // (real communities AND any prior marker) before writing the new slice,
-      // so a re-run is idempotent regardless of whether the outcome changed.
-      materializeClusters(db, result.clusters, {
+    await adapter.transaction(async () => {
+      await materializeClusters(adapter, result.clusters, {
         scope: 'subset',
         provenanceHash,
-        // Store whichever filter representation is available for traceability.
         filter: filterRepr,
       });
-      // BL-153: a subset recluster that yields zero communities (e.g. the filter
-      // selects only dissimilar, non-clustering episodes) still records a lens
-      // marker. Without it the lens would be invisible to list_lenses and
-      // un-droppable — indistinguishable from "never ran". The marker carries the
-      // provenance hash and filter but no members, so it does not inflate
-      // community counts.
       if (result.clusters.length === 0) {
-        materializeLensMarker(db, provenanceHash, filterRepr);
+        await materializeLensMarker(adapter, provenanceHash, filterRepr);
       }
     });
-    tx();
     persisted = true;
   }
 
@@ -650,9 +635,9 @@ export function clusterSubset(
  * Compute structural quality metrics for the current cluster state (D1.8).
  * Read-only: no DB writes.
  */
-export function clusterStats(db: Database): ClusterStats {
+export async function clusterStats(adapter: StoreAdapter): Promise<ClusterStats> {
   // GraphBackend for node/edge CRUD (sibling pattern)
-  createGraphBackend(db);
+  createGraphBackend(adapter);
 
   // Scope all stats to GLOBAL communities only (kind='global' or legacy NULL scope).
   // Persisted subset lenses must NOT inflate the health/CI-gate numbers reported here.
@@ -663,63 +648,50 @@ export function clusterStats(db: Database): ClusterStats {
   const globalScopeUnaliased = `(json_extract(meta, '$.cluster_scope.kind') IS NULL OR json_extract(meta, '$.cluster_scope.kind') = 'global')`;
   const globalScopeDst = `(json_extract(dst.meta, '$.cluster_scope.kind') IS NULL OR json_extract(dst.meta, '$.cluster_scope.kind') = 'global')`;
 
-  const clusterCountRow = db
-    .prepare<[], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'community' AND t_invalid IS NULL AND ${globalScopeUnaliased}`,
-    )
-    .get();
+  const clusterCountRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'community' AND t_invalid IS NULL AND ${globalScopeUnaliased}`,
+  );
   const clusterCount = clusterCountRow?.cnt ?? 0;
 
-  const totalClusteredRow = db
-    .prepare<[], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt
-       FROM edge e
-       JOIN node src ON src.rowid = e.src AND src.kind = 'episode' AND src.t_invalid IS NULL
-       JOIN node dst ON dst.rowid = e.dst AND dst.kind = 'community' AND dst.t_invalid IS NULL
-         AND ${globalScopeDst}
-       WHERE e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL`,
-    )
-    .get();
+  const totalClusteredRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt
+     FROM edge e
+     JOIN node src ON src.rowid = e.src AND src.kind = 'episode' AND src.t_invalid IS NULL
+     JOIN node dst ON dst.rowid = e.dst AND dst.kind = 'community' AND dst.t_invalid IS NULL
+       AND ${globalScopeDst}
+     WHERE e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL`,
+  );
   const totalClustered = totalClusteredRow?.cnt ?? 0;
 
-  const totalEpisodeRow = db
-    .prepare<[], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL`,
-    )
-    .get();
+  const totalEpisodeRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL`,
+  );
   const totalEpisodes = totalEpisodeRow?.cnt ?? 0;
   const totalUnclustered = totalEpisodes - totalClustered;
 
-  // largest_cluster_size: scoped to global communities only.
-  const largestRow = db
-    .prepare<[], { max_count: number | null }>(
-      `SELECT MAX(member_count) AS max_count FROM (
-         SELECT COUNT(*) AS member_count
-         FROM edge e
-         JOIN node dst ON dst.rowid = e.dst AND dst.kind = 'community' AND dst.t_invalid IS NULL
-           AND (json_extract(dst.meta, '$.cluster_scope.kind') IS NULL
-                OR json_extract(dst.meta, '$.cluster_scope.kind') = 'global')
-         WHERE e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
-         GROUP BY e.dst
-       )`,
-    )
-    .get();
+  const largestRow = await adapter.executeGet<{ max_count: number | null }>(
+    `SELECT MAX(member_count) AS max_count FROM (
+       SELECT COUNT(*) AS member_count
+       FROM edge e
+       JOIN node dst ON dst.rowid = e.dst AND dst.kind = 'community' AND dst.t_invalid IS NULL
+         AND (json_extract(dst.meta, '$.cluster_scope.kind') IS NULL
+              OR json_extract(dst.meta, '$.cluster_scope.kind') = 'global')
+       WHERE e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+       GROUP BY e.dst
+     )`,
+  );
   const largestClusterSize = largestRow?.max_count ?? 0;
 
   // Compute mean intra-cluster sim from community node metas.
-  // Guard: meta column may not exist on older stores (pre-P1 migration).
-  const communityNodeCols = (db.prepare(`PRAGMA table_info(node)`).all() as { name: string }[]).map((c) => c.name);
+  const communityNodeCols = (await adapter.executeAll<{ name: string }>(`PRAGMA table_info(node)`)).rows.map((c) => c.name);
   const hasMeta = communityNodeCols.includes('meta');
 
-  // Scoped to global communities only so subset lenses don't skew the metric.
   const communityMetas = hasMeta
-    ? db
-        .prepare<[], { meta: string | null }>(
+    ? (await adapter.executeAll<{ meta: string | null }>(
           `SELECT meta FROM node WHERE kind = 'community' AND t_invalid IS NULL AND meta IS NOT NULL
            AND (json_extract(meta, '$.cluster_scope.kind') IS NULL
                 OR json_extract(meta, '$.cluster_scope.kind') = 'global')`,
-        )
-        .all()
+        )).rows
     : [];
 
   let totalIntraSim = 0;
@@ -741,22 +713,21 @@ export function clusterStats(db: Database): ClusterStats {
 
   // Compute mean inter-sim from centroids — global communities only.
   const communityRows = hasMeta
-    ? db
-        .prepare<[], { meta: string | null }>(
+    ? (await adapter.executeAll<{ meta: string | null }>(
           `SELECT meta FROM node WHERE kind = 'community' AND t_invalid IS NULL AND meta IS NOT NULL
            AND (json_extract(meta, '$.cluster_scope.kind') IS NULL
                 OR json_extract(meta, '$.cluster_scope.kind') = 'global')`,
-        )
-        .all()
+        )).rows
     : [];
   for (const row of communityRows) {
     if (!row.meta) continue;
     try {
       const m = JSON.parse(row.meta) as { centroid_rowid?: number };
       if (typeof m.centroid_rowid === 'number') {
-        const vRow = db
-          .prepare<[number], VecRow>(`SELECT node_id, embedding FROM vec_node WHERE node_id = ?`)
-          .get(m.centroid_rowid);
+        const vRow = await adapter.executeGet<VecRow>(
+          `SELECT node_id, embedding FROM vec_node WHERE node_id = ?`,
+          [m.centroid_rowid],
+        );
         if (vRow) {
           const vec = blobToFloat32(vRow.embedding);
           centroids.push(Array.from(vec));
@@ -818,15 +789,14 @@ export interface SubsetLensDescriptor {
  * Note: only lenses with `cluster_scope.kind = 'subset'` are returned. The
  * global partition is excluded.
  */
-export function listSubsetLenses(db: Database): SubsetLensDescriptor[] {
-  const rows = db
-    .prepare<[], { meta: string | null; t_created: string }>(
-      `SELECT meta, t_created FROM node
-       WHERE kind = 'community' AND t_invalid IS NULL
-         AND json_extract(meta, '$.cluster_scope.kind') = 'subset'
-       ORDER BY t_created DESC`,
-    )
-    .all();
+export async function listSubsetLenses(adapter: StoreAdapter): Promise<SubsetLensDescriptor[]> {
+  const result = await adapter.executeAll<{ meta: string | null; t_created: string }>(
+    `SELECT meta, t_created FROM node
+     WHERE kind = 'community' AND t_invalid IS NULL
+       AND json_extract(meta, '$.cluster_scope.kind') = 'subset'
+     ORDER BY t_created DESC`,
+  );
+  const rows = result.rows;
 
   // Group by provenance_hash
   const byHash = new Map<
@@ -900,21 +870,20 @@ export interface DropSubsetLensResult {
  * If no communities exist for the given hash, returns a result with counts of 0
  * (not an error — idempotent).
  */
-export function dropSubsetLens(
-  db: Database,
+export async function dropSubsetLens(
+  adapter: StoreAdapter,
   provenanceHash: string,
-): DropSubsetLensResult {
+): Promise<DropSubsetLensResult> {
   const now = new Date().toISOString();
 
   // Find all live community nodes owned by this lens.
-  const priorIds = db
-    .prepare<[string], { rowid: number }>(
-      `SELECT rowid FROM node
-       WHERE kind = 'community' AND t_invalid IS NULL
-         AND json_extract(meta, '$.cluster_scope.hash') = ?`,
-    )
-    .all(provenanceHash)
-    .map((r) => r.rowid);
+  const priorResult = await adapter.executeAll<{ rowid: number }>(
+    `SELECT rowid FROM node
+     WHERE kind = 'community' AND t_invalid IS NULL
+       AND json_extract(meta, '$.cluster_scope.hash') = ?`,
+    [provenanceHash],
+  );
+  const priorIds = priorResult.rows.map((r) => r.rowid);
 
   if (priorIds.length === 0) {
     return { provenance_hash: provenanceHash, communities_dropped: 0, edges_dropped: 0 };
@@ -923,22 +892,19 @@ export function dropSubsetLens(
   const ph = priorIds.map(() => '?').join(',');
 
   // Count edges to be invalidated before writing.
-  const edgeCount = (
-    db
-      .prepare<unknown[], { cnt: number }>(
-        `SELECT COUNT(*) AS cnt FROM edge
-         WHERE rel = 'MEMBER_OF' AND t_invalid IS NULL AND dst IN (${ph})`,
-      )
-      .get(...priorIds)
-  )?.cnt ?? 0;
+  const edgeCount = (await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM edge
+     WHERE rel = 'MEMBER_OF' AND t_invalid IS NULL AND dst IN (${ph})`,
+    priorIds,
+  ))?.cnt ?? 0;
 
-  const tx = db.transaction(() => {
-    db.prepare(`UPDATE node SET t_invalid = ? WHERE rowid IN (${ph})`).run(now, ...priorIds);
-    db.prepare(
+  await adapter.transaction(async () => {
+    await adapter.executeRun(`UPDATE node SET t_invalid = ? WHERE rowid IN (${ph})`, [now, ...priorIds]);
+    await adapter.executeRun(
       `UPDATE edge SET t_invalid = ? WHERE rel = 'MEMBER_OF' AND t_invalid IS NULL AND dst IN (${ph})`,
-    ).run(now, ...priorIds);
+      [now, ...priorIds],
+    );
   });
-  tx();
 
   return {
     provenance_hash: provenanceHash,

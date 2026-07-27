@@ -7,7 +7,7 @@
  * [inv:no-mcp] — returns a plain result object, never an MCP ToolResult.
  */
 
-import type Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { createGraphBackend } from '@adhd/sox-graph-store';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -28,7 +28,7 @@ export interface ListEntitiesResult {
 // ── Main ───────────────────────────────────────────────────────────────────────
 
 export async function memoryListEntities(
-  db: Database.Database,
+  adapter: StoreAdapter,
   args: Record<string, unknown>,
 ): Promise<ListEntitiesResult> {
   const projectPath = args['project_path'] as string | undefined;
@@ -53,15 +53,14 @@ export async function memoryListEntities(
     uid: string;
     name: string | null;
   }
-  const entityRows = db
-    .prepare<unknown[], EntityRow>(entitySql)
-    .all(...params);
+  const entityResult = await adapter.executeAll<EntityRow>(entitySql, params.length > 0 ? params : undefined);
+  const entityRows = entityResult.rows;
 
   if (entityRows.length === 0) {
     return { entities: [], total: 0 };
   }
 
-  const backend = createGraphBackend(db);
+  const backend = createGraphBackend(adapter);
 
   // For each entity, count MENTIONS edges and compute first/last seen
   const results: Array<{
@@ -73,14 +72,12 @@ export async function memoryListEntities(
   }> = [];
 
   for (const entity of entityRows) {
-    const edges = backend.getEdges({ dst: entity.rowid, rel: 'MENTIONS' });
+    const edges = await backend.getEdges({ dst: entity.rowid, rel: 'MENTIONS' });
 
     if (edges.length === 0 && !projectPath && !topicFilter) {
-      // No mentions — skip if no filters specified (entity with 0 mentions, not interesting)
       continue;
     }
 
-    // For each edge, look up the episode node to check filters and timestamps
     const epRowids = edges.map((e) => e.src);
     if (epRowids.length === 0) continue;
 
@@ -101,13 +98,13 @@ export async function memoryListEntities(
     interface EpRow {
       t_created: string;
     }
-    const epRows = db
-      .prepare<unknown[], EpRow>(
-        `SELECT t_created FROM node
-         WHERE rowid IN (${ph}) AND kind = 'episode' AND t_invalid IS NULL ${epFilterSql}
-         ORDER BY t_created`,
-      )
-      .all(...epParams);
+    const epResult = await adapter.executeAll<EpRow>(
+      `SELECT t_created FROM node
+       WHERE rowid IN (${ph}) AND kind = 'episode' AND t_invalid IS NULL ${epFilterSql}
+       ORDER BY t_created`,
+      epParams,
+    );
+    const epRows = epResult.rows;
 
     if (epRows.length === 0) continue;
 

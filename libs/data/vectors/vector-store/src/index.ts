@@ -1,9 +1,8 @@
-import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 import { buildNodeFilterClause } from '@adhd/sox-graph-store';
 import type { NodeFilter } from '@adhd/sox-graph-store';
-
-type SQLiteDB = Database.Database;
+import type { StoreAdapter, SqliteAdapter } from '@adhd/sox-store-adapter';
+import { createSqliteAdapter } from '@adhd/sox-store-adapter';
 
 
 // ── Public types ────────────────────────────────────────────────────────────
@@ -99,7 +98,7 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
-function tableExists(db: SQLiteDB, name: string): boolean {
+function tableExists(db: import('better-sqlite3').Database, name: string): boolean {
   const row = db
     .prepare<[string], { name: string }>(
       `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
@@ -127,7 +126,7 @@ interface SimilarityBackend {
   search(
     query: Float32Array,
     k: number,
-    db: SQLiteDB,
+    adapter: StoreAdapter,
     tableName: string,
     filter?: VecFilter,
   ): Array<{ nodeId: number; score: number }>;
@@ -137,10 +136,11 @@ class BruteForceBackend implements SimilarityBackend {
   search(
     query: Float32Array,
     k: number,
-    db: SQLiteDB,
+    adapter: StoreAdapter,
     tbl: string,
     filter?: VecFilter,
   ): Array<{ nodeId: number; score: number }> {
+    const db = (adapter as SqliteAdapter).unwrap();
     if (!tableExists(db, tbl)) return [];
 
     const clauses: string[] = [];
@@ -180,14 +180,25 @@ class BruteForceBackend implements SimilarityBackend {
 
 // ── SqliteVectorBackend ─────────────────────────────────────────────────────
 
-export class SqliteVectorBackend implements VectorBackend {
-  private db: SQLiteDB;
-  private similarity: SimilarityBackend;
+export interface VectorStoreCapabilities {
+  vecEnabled: boolean;
+}
 
-  constructor(db: SQLiteDB, similarity?: SimilarityBackend) {
-    this.db = db;
+export class SqliteVectorBackend implements VectorBackend {
+  private db: import('better-sqlite3').Database;
+  private adapter: StoreAdapter;
+  private similarity: SimilarityBackend;
+  public readonly capabilities: VectorStoreCapabilities;
+
+  constructor(adapter: StoreAdapter, similarity?: SimilarityBackend) {
+    this.adapter = adapter;
     this.similarity = similarity ?? new BruteForceBackend();
-    db.exec(`
+    this.capabilities = {
+      vecEnabled: adapter.capabilities.nativeVectors || true, // sqlite-vec provides vector support via SqliteAdapter path
+    };
+
+    this.db = (adapter as SqliteAdapter).unwrap();
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS _vector_spaces (
         model_id TEXT PRIMARY KEY,
         dim INTEGER NOT NULL,
@@ -292,7 +303,7 @@ export class SqliteVectorBackend implements VectorBackend {
     filter?: VecFilter,
   ): Array<{ id: number; score: number }> {
     const tbl = tableName(space.modelId);
-    const results = this.similarity.search(query, k, this.db, tbl, filter);
+    const results = this.similarity.search(query, k, this.adapter, tbl, filter);
     return results.map((r) => ({ id: r.nodeId, score: r.score }));
   }
 
@@ -339,13 +350,19 @@ export class SqliteVectorBackend implements VectorBackend {
 // ── openVectorStore — convenience factory ───────────────────────────────────
 
 export function openVectorStore(
-  path: string,
+  adapterOrPath: string | StoreAdapter,
   opts: { dim: number; modelId: string },
 ): SqliteVectorBackend {
-  const db = new Database(path);
-  sqliteVec.load(db);
-  db.pragma('journal_mode = WAL');
-  const backend = new SqliteVectorBackend(db);
+  let adapter: StoreAdapter;
+  if (typeof adapterOrPath === 'string') {
+    adapter = createSqliteAdapter({ dbPath: adapterOrPath });
+    const db = (adapter as SqliteAdapter).unwrap();
+    sqliteVec.load(db);
+    db.pragma('journal_mode = WAL');
+  } else {
+    adapter = adapterOrPath;
+  }
+  const backend = new SqliteVectorBackend(adapter);
   backend.ensureSpace({ modelId: opts.modelId, dim: opts.dim });
   return backend;
 }
@@ -358,7 +375,7 @@ import type { LanceDbVectorBackendConfig } from './lancedb.js';
 export { LanceDbVectorBackend, type LanceDbVectorBackendConfig } from './lancedb.js';
 
 export function openLanceDbVectorStore(
-  config: LanceDbVectorBackendConfig & { db: Database.Database },
+  config: LanceDbVectorBackendConfig & { db: import('better-sqlite3').Database },
 ): LanceDbVectorBackend & VectorBackend {
   return new LanceDbVectorBackend(config);
 }

@@ -24,9 +24,9 @@ import { createHash } from 'node:crypto';
 import { readFileSync, copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import Database from 'better-sqlite3';
-import * as sqliteVec from 'sqlite-vec';
-import { runBatchEnrich, type BatchEnrichOptions, type BatchEnrichResult } from '@adhd/sox-memory-core';
+import { createSqliteAdapter } from '@adhd/sox-store-adapter';
+import type { StoreAdapter, SqliteAdapter } from '@adhd/sox-store-adapter';
+import { runBatchEnrich, openDb, type BatchEnrichOptions, type BatchEnrichResult } from '@adhd/sox-memory-core';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -98,28 +98,33 @@ export const DEFAULT_BATCH_ENRICH_OPTIONS: BatchEnrichOptions = {
 // ── Pure helpers (unit-testable without touching any store) ──────────────────
 
 /**
- * Run one batch-enrich pass over an already-open db and count live nodes/edges/
- * episodes. Pure with respect to I/O beyond the supplied db handle — does not
+ * Run one batch-enrich pass over an already-open store and count live nodes/edges/
+ * episodes. Pure with respect to I/O beyond the supplied adapter — does not
  * open, close, copy, or checksum anything.
  */
-export function runEnrichmentBaselinePass(
-  db: InstanceType<typeof Database>,
+export async function runEnrichmentBaselinePass(
+  adapter: StoreAdapter,
   batchEnrichOptions: BatchEnrichOptions = DEFAULT_BATCH_ENRICH_OPTIONS,
-): { batchEnrichResult: BatchEnrichResult; counts: EnrichmentPassCounts } {
-  const batchEnrichResult = runBatchEnrich(db, batchEnrichOptions);
+): Promise<{ batchEnrichResult: BatchEnrichResult; counts: EnrichmentPassCounts }> {
+  const rawDb = (adapter as SqliteAdapter).unwrap();
+  const batchEnrichResult = await runBatchEnrich(rawDb, batchEnrichOptions);
 
-  const nodeCountRow = db.prepare('SELECT COUNT(*) AS cnt FROM node WHERE t_invalid IS NULL').get() as { cnt: number };
-  const edgeCountRow = db.prepare('SELECT COUNT(*) AS cnt FROM edge WHERE t_expired IS NULL').get() as { cnt: number };
-  const episodeCountRow = db
-    .prepare("SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL")
-    .get() as { cnt: number };
+  const nodeCountRow = await adapter.executeGet<{ cnt: number }>(
+    'SELECT COUNT(*) AS cnt FROM node WHERE t_invalid IS NULL',
+  );
+  const edgeCountRow = await adapter.executeGet<{ cnt: number }>(
+    'SELECT COUNT(*) AS cnt FROM edge WHERE t_expired IS NULL',
+  );
+  const episodeCountRow = await adapter.executeGet<{ cnt: number }>(
+    "SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL",
+  );
 
   return {
     batchEnrichResult,
     counts: {
-      totalNodes: nodeCountRow.cnt,
-      totalEdges: edgeCountRow.cnt,
-      totalEpisodes: episodeCountRow.cnt,
+      totalNodes: nodeCountRow?.cnt ?? 0,
+      totalEdges: edgeCountRow?.cnt ?? 0,
+      totalEpisodes: episodeCountRow?.cnt ?? 0,
     },
   };
 }
@@ -167,9 +172,9 @@ export function buildEnrichmentBaseline(params: {
  * full batch-enrich pass over the snapshot, and write a baseline JSON capturing the
  * result counters + node/edge/episode totals + snapshot sha256.
  */
-export function captureEnrichmentBaseline(
+export async function captureEnrichmentBaseline(
   opts: CaptureEnrichmentBaselineOptions = {},
-): CaptureEnrichmentBaselineResult {
+): Promise<CaptureEnrichmentBaselineResult> {
   const {
     liveDbPath = join(homedir(), '.memory', 'memory.db'),
     snapshotDir = join(process.cwd(), 'docs/plan/runtime-productionization/_shared/baselines'),
@@ -183,9 +188,9 @@ export function captureEnrichmentBaseline(
   // ── Step 1: Create a consistent snapshot ────────────────────────────────────
   log('Step 1: Creating consistent snapshot...');
   {
-    const tmpDb = new Database(liveDbPath);
-    tmpDb.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-    tmpDb.close();
+    const tmpAdapter = createSqliteAdapter({ dbPath: liveDbPath });
+    await tmpAdapter.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    await tmpAdapter.close();
     log('  WAL checkpointed on live DB.');
   }
 
@@ -199,16 +204,12 @@ export function captureEnrichmentBaseline(
 
   // ── Step 2: Open snapshot and run batch enrich ──────────────────────────────
   log('Step 2: Running batch enrich...');
-  const db = new Database(snapshotPath);
-  sqliteVec.load(db);
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA busy_timeout = 3000');
-  db.exec('PRAGMA synchronous = NORMAL');
+  const adapter = await openDb(snapshotPath);
 
   let batchEnrichResult: BatchEnrichResult;
   let counts: EnrichmentPassCounts;
   try {
-    const pass = runEnrichmentBaselinePass(db, batchEnrichOptions);
+    const pass = await runEnrichmentBaselinePass(adapter, batchEnrichOptions);
     batchEnrichResult = pass.batchEnrichResult;
     counts = pass.counts;
     log('  Batch enrich result:', JSON.stringify(batchEnrichResult, null, 2));
@@ -218,7 +219,7 @@ export function captureEnrichmentBaseline(
     log(`  Total live edges: ${counts.totalEdges}`);
     log(`  Total live episodes: ${counts.totalEpisodes}`);
   } finally {
-    db.close();
+    await adapter.close();
   }
 
   // ── Step 4: Write baseline JSON ──────────────────────────────────────────────
@@ -235,11 +236,13 @@ export function captureEnrichmentBaseline(
 
 /* c8 ignore start -- exercised via direct node invocation, not unit tests */
 if (require.main === module) {
-  try {
-    captureEnrichmentBaseline();
-  } catch (err) {
-    console.error('[capture-enrichment-baseline] FAILED:', err instanceof Error ? err.stack ?? err.message : err);
-    process.exitCode = 1;
-  }
+  (async () => {
+    try {
+      await captureEnrichmentBaseline();
+    } catch (err) {
+      console.error('[capture-enrichment-baseline] FAILED:', err instanceof Error ? err.stack ?? err.message : err);
+      process.exitCode = 1;
+    }
+  })();
 }
 /* c8 ignore stop */

@@ -23,13 +23,13 @@
  *   memory-cli only). See BL-FOLLOW-backup-mcp-tool in discovered notes.
  */
 
-import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { StorageError } from './errors.js';
 import { expandDbPath } from './db.js';
+import type { SqliteAdapter } from '@adhd/sox-store-adapter';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -160,23 +160,25 @@ export async function backupStore(
     };
   }
 
-  // Open source with WAL mode.
+  // Open source with WAL mode via SqliteAdapter.
   // Note: VACUUM INTO cannot run on a connection with PRAGMA query_only = ON.
   // We open with { readonly: true } to prevent schema mutations but do NOT set
   // query_only, which allows VACUUM INTO to proceed (it writes only to the dest file).
-  let srcDb: Database.Database | null = null;
+  let srcRawDb: ReturnType<(SqliteAdapter)['unwrap']> | null = null;
   try {
-    srcDb = new Database(resolvedSrc, { readonly: true });
-    sqliteVec.load(srcDb);
-    srcDb.exec('PRAGMA journal_mode = WAL;');
-    srcDb.exec('PRAGMA busy_timeout = 3000;');
+    const { createSqliteAdapter } = await import('@adhd/sox-store-adapter');
+    const srcAdapter = createSqliteAdapter({ dbPath: resolvedSrc, readonly: true }) as SqliteAdapter;
+    srcRawDb = srcAdapter.unwrap();
+    sqliteVec.load(srcRawDb);
+    srcRawDb.exec('PRAGMA journal_mode = WAL;');
+    srcRawDb.exec('PRAGMA busy_timeout = 3000;');
     // Do NOT set PRAGMA query_only — VACUUM INTO requires it to be off.
 
     // VACUUM INTO — creates a compact, fully written copy with no WAL sidecar.
     // SQLite holds a shared lock on all pages during the vacuum, making the copy
     // consistent even when taken concurrently with WAL writers on the source.
     log(`[backup] running VACUUM INTO...`);
-    srcDb.exec(`VACUUM INTO '${resolvedDst.replace(/'/g, "''")}'`);
+    srcRawDb.exec(`VACUUM INTO '${resolvedDst.replace(/'/g, "''")}'`);
     log(`[backup] VACUUM INTO complete`);
   } catch (err) {
     // Clean up a partial dest file if it was created.
@@ -187,17 +189,19 @@ export async function backupStore(
       retryable: false,
     };
   } finally {
-    try { srcDb?.close(); } catch { /* ignore */ }
+    try { srcRawDb?.close(); } catch { /* ignore */ }
   }
 
   // Verify the backup with PRAGMA integrity_check.
   let integrityCheck = 'ok';
   if (!skipIntegrityCheck) {
-    let backupDb: Database.Database | null = null;
+    let backupRawDb: ReturnType<(SqliteAdapter)['unwrap']> | null = null;
     try {
-      backupDb = new Database(resolvedDst, { readonly: true });
-      sqliteVec.load(backupDb);
-      const rows = backupDb
+      const { createSqliteAdapter } = await import('@adhd/sox-store-adapter');
+      const backupAdapter = createSqliteAdapter({ dbPath: resolvedDst, readonly: true }) as SqliteAdapter;
+      backupRawDb = backupAdapter.unwrap();
+      sqliteVec.load(backupRawDb);
+      const rows = backupRawDb
         .prepare<[], { integrity_check: string }>('PRAGMA integrity_check')
         .all();
       // integrity_check returns one row per issue; a clean DB returns exactly 'ok'.
@@ -206,7 +210,7 @@ export async function backupStore(
     } catch (err) {
       integrityCheck = `ERROR: ${err instanceof Error ? err.message : String(err)}`;
     } finally {
-      try { backupDb?.close(); } catch { /* ignore */ }
+      try { backupRawDb?.close(); } catch { /* ignore */ }
     }
 
     if (integrityCheck !== 'ok') {

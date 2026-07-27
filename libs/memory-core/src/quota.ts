@@ -17,7 +17,7 @@
  *   succeeds — proving that the guard is what makes it fail, not something else.
  */
 
-import type Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import type { StorageError } from './errors.js';
 
@@ -90,21 +90,22 @@ export const DEFAULT_HARD_BYTES = 1024 * 1024 * 1024;
  * (for debug/test scenarios where you intentionally want to exceed hard quota).
  * The NC spec uses this toggle; production code should never set it.
  */
-export function checkStoreQuota(
-  db: Database.Database,
+export async function checkStoreQuota(
+  adapter: StoreAdapter,
   config: QuotaConfig = {},
-): QuotaCheckResult {
+): Promise<QuotaCheckResult> {
   const softBytes = config.softBytes ?? DEFAULT_SOFT_BYTES;
   const hardBytes = config.hardBytes ?? DEFAULT_HARD_BYTES;
   const warnFn = config.warn ?? ((msg: string, _d: QuotaWarningDetails) => console.warn(msg));
 
-  // Stat the DB file (db.name is the resolved absolute path from better-sqlite3).
+  const dbPath = adapter.config.dbPath ?? '';
+
+  // Stat the DB file.
   let currentBytes = 0;
   try {
-    const st = fs.statSync(db.name, { throwIfNoEntry: false });
+    const st = fs.statSync(dbPath, { throwIfNoEntry: false });
     currentBytes = st?.size ?? 0;
   } catch {
-    // If we can't stat, treat as 0 — don't block writes due to a stat failure.
     currentBytes = 0;
   }
 
@@ -114,7 +115,7 @@ export function checkStoreQuota(
     const refusal: QuotaRefusal = {
       code: 'E_IO',
       message:
-        `Store quota exceeded: ${db.name} is ${currentBytes} bytes, ` +
+        `Store quota exceeded: ${dbPath} is ${currentBytes} bytes, ` +
         `hard limit is ${hardBytes} bytes. ` +
         `Free space or increase quota via QuotaConfig.hardBytes.`,
       retryable: false,
@@ -131,13 +132,13 @@ export function checkStoreQuota(
   const softExceeded = currentBytes > softBytes;
   if (softExceeded) {
     const details: QuotaWarningDetails = {
-      dbPath: db.name,
+      dbPath,
       current_bytes: currentBytes,
       soft_bytes: softBytes,
       hard_bytes: hardBytes,
     };
     warnFn(
-      `[sox-memory] WARNING: store ${db.name} is ${currentBytes} bytes ` +
+      `[sox-memory] WARNING: store ${dbPath} is ${currentBytes} bytes ` +
         `(soft quota: ${softBytes} bytes). Consider compaction or increasing quotas.`,
       details,
     );

@@ -998,7 +998,7 @@ export async function clusterStore(
   }
 
   // Filter to only live nodes (those with vectors that are valid in the graph)
-  const liveNodeIds = new Set(graph.queryNodes({}).map((n) => n.id));
+  const liveNodeIds = new Set((await graph.queryNodes({})).map((n) => n.id));
   const liveVecs = vecs.filter((v) => liveNodeIds.has(v.id));
 
   const clusterOpts: ClusterOpts = {};
@@ -1015,21 +1015,21 @@ export async function clusterStore(
     let label: string | undefined;
     const firstMember = memberIds[0];
     if (firstMember !== undefined) {
-      const node = graph.getNode(firstMember);
+      const node = await graph.getNode(firstMember);
       if (node) {
         label = node.topic ?? node.name ?? `cluster-${community.id}`;
       }
     }
 
     // Create community node
-    const communityNodeId = graph.writeNode(`community-${community.id}`, {
+    const communityNodeId = await graph.writeNode(`community-${community.id}`, {
       name: label ?? `community-${community.id}`,
       metadata: { modelId: modelIdForMeta, clusterId: community.id, memberCount: memberIds.length },
     });
 
     // Write MEMBER_OF edges
     for (const memberId of memberIds) {
-      graph.writeEdge(memberId, communityNodeId, 'MEMBER_OF', {
+      await graph.writeEdge(memberId, communityNodeId, 'MEMBER_OF', {
         metadata: { modelId: modelIdForMeta },
       });
     }
@@ -1056,7 +1056,7 @@ export async function clusterSubset(
     vecs.push(item);
   }
 
-  const filteredNodes = graph.queryNodes(filter);
+  const filteredNodes = await graph.queryNodes(filter);
   const filteredIds = new Set(filteredNodes.map((n) => n.id));
   const subsetVecs = vecs.filter((v) => filteredIds.has(v.id));
 
@@ -1071,19 +1071,19 @@ export async function clusterSubset(
     let label: string | undefined;
     const firstMember = memberIds[0];
     if (firstMember !== undefined) {
-      const node = graph.getNode(firstMember);
+      const node = await graph.getNode(firstMember);
       if (node) {
         label = node.topic ?? node.name ?? `cluster-${community.id}`;
       }
     }
 
-    const communityNodeId = graph.writeNode(`subset-community-${community.id}`, {
+    const communityNodeId = await graph.writeNode(`subset-community-${community.id}`, {
       name: label ?? `subset-community-${community.id}`,
       metadata: { modelId: modelIdForMeta, clusterId: community.id, memberCount: memberIds.length, filter },
     });
 
     for (const memberId of memberIds) {
-      graph.writeEdge(memberId, communityNodeId, 'MEMBER_OF', {
+      await graph.writeEdge(memberId, communityNodeId, 'MEMBER_OF', {
         metadata: { modelId: modelIdForMeta },
       });
     }
@@ -1097,11 +1097,11 @@ export async function clusterSubset(
   };
 }
 
-export function detectNearDup(
+export async function detectNearDup(
   vec: VectorBackend,
   graph: GraphBackend,
   opts?: NearDupOpts,
-): NearDupPair[] {
+): Promise<NearDupPair[]> {
   const modelId = resolveModelId(vec, opts);
   const nearDupThreshold = opts?.nearDupThreshold ?? 0.95;
 
@@ -1111,7 +1111,7 @@ export function detectNearDup(
   }
 
   // Filter to live nodes
-  const liveNodeIds = new Set(graph.queryNodes({}).map((n) => n.id));
+  const liveNodeIds = new Set((await graph.queryNodes({})).map((n) => n.id));
   const liveVecs = vecs.filter((v) => liveNodeIds.has(v.id));
 
   const nearDupOptsObj: NearDupOpts = { nearDupThreshold };
@@ -1137,15 +1137,15 @@ export function detectNearDup(
   return pairs;
 }
 
-export function computeImportance(
+export async function computeImportance(
   _vec: VectorBackend,
   graph: GraphBackend,
   opts?: ImportanceOpts,
-): void {
+): Promise<void> {
   const filter = opts?.filter;
 
   // Get nodes to process (unscored or all, depending on filter)
-  const nodes = graph.queryNodes(filter);
+  const nodes = await graph.queryNodes(filter);
   const nodeMap = new Map<number, NodeRecord>();
   for (const n of nodes) {
     // Incremental: skip nodes that already have importance scored
@@ -1157,13 +1157,13 @@ export function computeImportance(
 
   for (const [id, node] of nodeMap) {
     // Compute in/out degree
-    const outEdges = graph.getEdges({ src: id });
-    const inEdges = graph.getEdges({ dst: id });
+    const outEdges = await graph.getEdges({ src: id });
+    const inEdges = await graph.getEdges({ dst: id });
     const inDegree = inEdges.length;
     const outDegree = outEdges.length;
 
     // Count nearDup edges
-    const nearDupEdges = graph.getEdges({ rel: 'SAME_AS' });
+    const nearDupEdges = await graph.getEdges({ rel: 'SAME_AS' });
     const nearDupCount = nearDupEdges.filter((e) => e.src === id || e.dst === id).length;
 
     // Recency: time since creation in ms
@@ -1178,11 +1178,11 @@ export function computeImportance(
   }
 }
 
-export function buildAutoLinks(
+export async function buildAutoLinks(
   vec: VectorBackend,
   graph: GraphBackend,
   opts?: AutoLinkOpts,
-): void {
+): Promise<void> {
   const similarityThreshold = opts?.similarityThreshold ?? 0.80;
   const maxLinksPerNode = opts?.maxLinksPerNode ?? 5;
   const rel = opts?.rel ?? 'RELATES_TO';
@@ -1190,7 +1190,7 @@ export function buildAutoLinks(
   const modelId = resolveModelId(vec);
   const filter = opts?.filter;
 
-  const nodes = graph.queryNodes(filter);
+  const nodes = await graph.queryNodes(filter);
   const nodeIds = new Set(nodes.map((n) => n.id));
 
   const vecs: Array<{ id: number; vec: Float32Array }> = [];
@@ -1253,7 +1253,7 @@ export async function runBatchEnrich(
     durationMs: 0,
   };
 
-  const nodes = graph.queryNodes(opts?.filter);
+  const nodes = await graph.queryNodes(opts?.filter);
   result.nodesProcessed = nodes.length;
 
   // Step 1: Importance
@@ -1261,12 +1261,12 @@ export async function runBatchEnrich(
     const impOpts: ImportanceOpts = {};
     if (opts?.dryRun !== undefined) impOpts.dryRun = opts.dryRun;
     if (opts?.filter !== undefined) impOpts.filter = opts.filter;
-    computeImportance(vec, graph, impOpts);
+    await computeImportance(vec, graph, impOpts);
   }
 
   // Step 2: Near-dup detection
   if (!skip.has('nearDup')) {
-    const pairs = detectNearDup(vec, graph);
+    const pairs = await detectNearDup(vec, graph);
     result.nearDupPairsFound = pairs.filter((p) => p.status === 'near_dup').length;
   }
 
@@ -1293,11 +1293,11 @@ export async function runBatchEnrich(
       result.autoLinksCreated = count;
     } else {
       // Count existing edges to track created
-      const beforeEdges = graph.getEdges({ rel: 'RELATES_TO' }).length;
+      const beforeEdges = (await graph.getEdges({ rel: 'RELATES_TO' })).length;
       const alOpts: AutoLinkOpts = {};
       if (opts?.filter !== undefined) alOpts.filter = opts.filter;
-      buildAutoLinks(vec, graph, alOpts);
-      const afterEdges = graph.getEdges({ rel: 'RELATES_TO' }).length;
+      await buildAutoLinks(vec, graph, alOpts);
+      const afterEdges = (await graph.getEdges({ rel: 'RELATES_TO' })).length;
       result.autoLinksCreated = afterEdges - beforeEdges;
     }
   }

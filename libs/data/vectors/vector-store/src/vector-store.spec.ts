@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createGraphBackend, type GraphBackend } from '@adhd/sox-graph-store';
+import { createSqliteAdapter, type StoreAdapter, type SqliteAdapter } from '@adhd/sox-store-adapter';
 
 import {
   openVectorStore,
@@ -19,15 +20,17 @@ import {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function makeTmpDb(): { db: Database.Database; cleanup: () => void } {
+function makeTmpDb(): { adapter: StoreAdapter; db: Database.Database; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vector-store-test-'));
   const dbPath = path.join(dir, 'test.db');
-  const db = new Database(dbPath);
+  const adapter = createSqliteAdapter({ dbPath });
+  const db = (adapter as SqliteAdapter).unwrap();
   sqliteVec.load(db);
   return {
+    adapter,
     db,
     cleanup: () => {
-      db.close();
+      try { adapter.close(); } catch { /* ignore */ }
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
@@ -57,14 +60,16 @@ function unitVec(dim: number, component: number): Float32Array {
 
 describe('SqliteVectorBackend', () => {
   let db: Database.Database;
+  let adapter: StoreAdapter;
   let backend: SqliteVectorBackend;
   let cleanup: () => void;
 
   beforeEach(() => {
     const tmp = makeTmpDb();
+    adapter = tmp.adapter;
     db = tmp.db;
     cleanup = tmp.cleanup;
-    backend = new SqliteVectorBackend(db);
+    backend = new SqliteVectorBackend(adapter);
   });
 
   afterEach(() => {
@@ -315,6 +320,7 @@ describe('SqliteVectorBackend', () => {
       // SAME db handle as a real GraphBackend (per RAG-SPEC §2.1 / DESIGN.md
       // §2's "constructed directly over an existing Database handle" usage),
       // exactly as production backlog/hybrid-search callers do.
+      // Phase 1: graph-store not yet migrated to StoreAdapter — pass unwrapped db.
       graph = createGraphBackend(db);
 
       inScopeId = graph.writeNode('in-scope node content', {
@@ -525,14 +531,16 @@ describe('openVectorStore', () => {
 
 describe('reembed', () => {
   let db: Database.Database;
+  let adapter: StoreAdapter;
   let backend: SqliteVectorBackend;
   let cleanup: () => void;
 
   beforeEach(() => {
     const tmp = makeTmpDb();
+    adapter = tmp.adapter;
     db = tmp.db;
     cleanup = tmp.cleanup;
-    backend = new SqliteVectorBackend(db);
+    backend = new SqliteVectorBackend(adapter);
   });
 
   afterEach(() => {
@@ -685,14 +693,16 @@ describe('reembed', () => {
 
 describe('edge cases', () => {
   let db: Database.Database;
+  let adapter: StoreAdapter;
   let backend: SqliteVectorBackend;
   let cleanup: () => void;
 
   beforeEach(() => {
     const tmp = makeTmpDb();
+    adapter = tmp.adapter;
     db = tmp.db;
     cleanup = tmp.cleanup;
-    backend = new SqliteVectorBackend(db);
+    backend = new SqliteVectorBackend(adapter);
   });
 
   afterEach(() => {

@@ -1,5 +1,6 @@
 // @adhd/sox-task-queue — Scheduler implementation (SPEC §5)
-import Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import { createSqliteAdapter } from '@adhd/sox-store-adapter';
 import { Cron } from 'croner';
 import { randomUUID } from 'node:crypto';
 import { applySchema } from './schema.js';
@@ -49,13 +50,11 @@ function rowToEntry(row: SchedulerEntryRow): ScheduledEntry {
 }
 
 /**
- * Spec reconciliation: §5's `SchedulerConfig` omits `dbPath`, but
+ * Spec reconciliation: §5's `SchedulerConfig` omits `dbPath` / `adapter`, but
  * `Scheduler.open()` documents "Open the scheduler database" and §6 defines
- * `scheduler_entries` in the same DDL block as `tasks`. We resolve the path
- * by preferring an explicit `config.dbPath`, falling back to the `dbPath`
- * property that `SqliteTaskQueue` exposes on its concrete class (duck-typed
- * here so the `Scheduler` never needs to import `SqliteTaskQueue` and the
- * pinned `TaskQueue` interface stays untouched).
+ * `scheduler_entries` in the same DDL block as `tasks`. The scheduler
+ * prefers an explicit adapter, falls back to `config.dbPath`, and finally
+ * duck-types `queue.dbPath` from a `SqliteTaskQueue`.
  */
 function resolveDbPath(config: SchedulerConfig): string {
   if (config.dbPath) return config.dbPath;
@@ -68,7 +67,8 @@ function resolveDbPath(config: SchedulerConfig): string {
 }
 
 class SqliteScheduler implements Scheduler {
-  private db: InstanceType<typeof Database> | null = null;
+  private adapter: StoreAdapter | null = null;
+  private ownAdapter = false;
   private _isRunning = false;
   private tickTimer: NodeJS.Timeout | null = null;
   private _nextTickAt: string | null = null;
@@ -87,15 +87,21 @@ class SqliteScheduler implements Scheduler {
   }
 
   async open(): Promise<void> {
-    if (this.db) return;
-    this.db = new Database(this.dbPath);
-    applySchema(this.db);
+    if (this.adapter) return;
+    if (this.config.adapter) {
+      this.adapter = this.config.adapter;
+      this.ownAdapter = false;
+    } else {
+      this.adapter = createSqliteAdapter({ dbPath: this.dbPath });
+      this.ownAdapter = true;
+    }
+    await applySchema(this.adapter);
 
     // runOnStart: fire entries that have never fired yet, once, on open().
-    const neverFired = this.db
-      .prepare(`SELECT * FROM scheduler_entries WHERE enabled = 1 AND run_on_start = 1 AND last_enqueued_at IS NULL`)
-      .all() as SchedulerEntryRow[];
-    for (const row of neverFired) {
+    const neverFiredResult = await this.adapter.executeAll<SchedulerEntryRow>(
+      `SELECT * FROM scheduler_entries WHERE enabled = 1 AND run_on_start = 1 AND last_enqueued_at IS NULL`,
+    );
+    for (const row of neverFiredResult.rows) {
       await this.fireEntry(row);
     }
 
@@ -106,8 +112,10 @@ class SqliteScheduler implements Scheduler {
 
   async close(): Promise<void> {
     this.stop();
-    this.db?.close();
-    this.db = null;
+    if (this.ownAdapter) {
+      await this.adapter?.close();
+    }
+    this.adapter = null;
   }
 
   private start(): void {
@@ -136,31 +144,30 @@ class SqliteScheduler implements Scheduler {
   }
 
   private async tick(): Promise<void> {
-    if (!this.db) return;
-    const rows = this.db
-      .prepare(`SELECT * FROM scheduler_entries WHERE enabled = 1`)
-      .all() as SchedulerEntryRow[];
+    if (!this.adapter) return;
+    const result = await this.adapter.executeAll<SchedulerEntryRow>(
+      `SELECT * FROM scheduler_entries WHERE enabled = 1`,
+    );
+    const rows = result.rows;
     const now = Date.now();
     for (const row of rows) {
       let cron: Cron;
       try {
         cron = new Cron(row.cron_expression, { paused: true, unref: true });
       } catch (err) {
-        this.recordError(row.id, `invalid cron expression: ${(err as Error).message}`);
+        await this.recordError(row.id, `invalid cron expression: ${(err as Error).message}`);
         continue;
       }
       const reference = row.last_enqueued_at ? new Date(row.last_enqueued_at) : new Date(row.created_at);
       const next = cron.nextRun(reference);
       if (next === null) {
-        // Expired cron (e.g. a one-shot date pattern already in the past
-        // with no more occurrences): disable with a logged warning, per
-        // SPEC §5 tick algorithm.
         console.warn(
           `[task-queue] scheduler: entry '${row.name}' (${row.id}) has no further cron occurrences — disabling`,
         );
-        this.db
-          .prepare(`UPDATE scheduler_entries SET enabled = 0, updated_at = ? WHERE id = ?`)
-          .run(new Date().toISOString(), row.id);
+        await this.adapter.executeRun(
+          `UPDATE scheduler_entries SET enabled = 0, updated_at = ? WHERE id = ?`,
+          [new Date().toISOString(), row.id],
+        );
         continue;
       }
       if (next.getTime() <= now) {
@@ -170,7 +177,7 @@ class SqliteScheduler implements Scheduler {
   }
 
   private async fireEntry(row: SchedulerEntryRow): Promise<void> {
-    if (!this.db) return;
+    if (!this.adapter) return;
     let payload: unknown;
     try {
       payload = JSON.parse(row.payload);
@@ -185,50 +192,52 @@ class SqliteScheduler implements Scheduler {
         maxRetries: row.max_retries,
         ttlMs: row.ttl_ms,
       });
-      this.db
-        .prepare(`UPDATE scheduler_entries SET last_enqueued_at = ?, last_error = NULL, updated_at = ? WHERE id = ?`)
-        .run(new Date().toISOString(), new Date().toISOString(), row.id);
+      await this.adapter.executeRun(
+        `UPDATE scheduler_entries SET last_enqueued_at = ?, last_error = NULL, updated_at = ? WHERE id = ?`,
+        [new Date().toISOString(), new Date().toISOString(), row.id],
+      );
     } catch (err) {
-      this.recordError(row.id, err instanceof Error ? err.message : String(err));
+      await this.recordError(row.id, err instanceof Error ? err.message : String(err));
     }
   }
 
-  private recordError(id: string, message: string): void {
-    if (!this.db) return;
+  private async recordError(id: string, message: string): Promise<void> {
+    if (!this.adapter) return;
     console.warn(`[task-queue] scheduler: enqueue failed for entry ${id}: ${message}`);
-    this.db
-      .prepare(`UPDATE scheduler_entries SET last_error = ?, updated_at = ? WHERE id = ?`)
-      .run(message, new Date().toISOString(), id);
+    await this.adapter.executeRun(
+      `UPDATE scheduler_entries SET last_error = ?, updated_at = ? WHERE id = ?`,
+      [message, new Date().toISOString(), id],
+    );
   }
 
   private assertOpen(): void {
-    if (!this.db) throw new Error('[task-queue] scheduler is not open');
+    if (!this.adapter) throw new Error('[task-queue] scheduler is not open');
   }
 
-  private getRow(id: string): SchedulerEntryRow | undefined {
-    return this.db!.prepare('SELECT * FROM scheduler_entries WHERE id = ?').get(id) as
-      | SchedulerEntryRow
-      | undefined;
+  private async getRow(id: string): Promise<SchedulerEntryRow | undefined> {
+    return await this.adapter!.executeGet<SchedulerEntryRow>(
+      'SELECT * FROM scheduler_entries WHERE id = ?',
+      [id],
+    ) ?? undefined;
   }
 
   async register(
     entry: Omit<ScheduledEntry, 'id' | 'created_at' | 'updated_at' | 'lastEnqueuedAt' | 'lastError'>,
   ): Promise<ScheduledEntry> {
     this.assertOpen();
-    const existing = this.db!
-      .prepare('SELECT id FROM scheduler_entries WHERE name = ?')
-      .get(entry.name) as { id: string } | undefined;
+    const existing = await this.adapter!.executeGet<{ id: string }>(
+      'SELECT id FROM scheduler_entries WHERE name = ?',
+      [entry.name],
+    );
     if (existing) throw new SchedulerEntryConflictError(entry.name);
 
     const id = randomUUID();
     const now = new Date().toISOString();
-    this.db!
-      .prepare(
-        `INSERT INTO scheduler_entries
-           (id, name, task_type, payload, cron_expression, priority, max_retries, ttl_ms, run_on_start, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
+    await this.adapter!.executeRun(
+      `INSERT INTO scheduler_entries
+         (id, name, task_type, payload, cron_expression, priority, max_retries, ttl_ms, run_on_start, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
         id,
         entry.name,
         entry.taskType,
@@ -241,18 +250,21 @@ class SqliteScheduler implements Scheduler {
         entry.enabled ? 1 : 0,
         now,
         now,
-      );
-    return rowToEntry(this.getRow(id)!);
+      ],
+    );
+    const row = await this.getRow(id);
+    return rowToEntry(row!);
   }
 
   async update(id: string, entry: Partial<ScheduledEntry>): Promise<ScheduledEntry> {
     this.assertOpen();
-    const existing = this.getRow(id);
+    const existing = await this.getRow(id);
     if (!existing) throw new SchedulerEntryNotFoundError(id);
     if (entry.name && entry.name !== existing.name) {
-      const conflict = this.db!
-        .prepare('SELECT id FROM scheduler_entries WHERE name = ? AND id != ?')
-        .get(entry.name, id) as { id: string } | undefined;
+      const conflict = await this.adapter!.executeGet<{ id: string }>(
+        'SELECT id FROM scheduler_entries WHERE name = ? AND id != ?',
+        [entry.name, id],
+      );
       if (conflict) throw new SchedulerEntryConflictError(entry.name);
     }
 
@@ -270,14 +282,12 @@ class SqliteScheduler implements Scheduler {
       updated_at: new Date().toISOString(),
     };
 
-    this.db!
-      .prepare(
-        `UPDATE scheduler_entries SET
-           name = ?, task_type = ?, payload = ?, cron_expression = ?, priority = ?,
-           max_retries = ?, ttl_ms = ?, run_on_start = ?, enabled = ?, updated_at = ?
-         WHERE id = ?`,
-      )
-      .run(
+    await this.adapter!.executeRun(
+      `UPDATE scheduler_entries SET
+         name = ?, task_type = ?, payload = ?, cron_expression = ?, priority = ?,
+         max_retries = ?, ttl_ms = ?, run_on_start = ?, enabled = ?, updated_at = ?
+       WHERE id = ?`,
+      [
         merged.name,
         merged.task_type,
         merged.payload,
@@ -289,41 +299,46 @@ class SqliteScheduler implements Scheduler {
         merged.enabled,
         merged.updated_at,
         id,
-      );
-    return rowToEntry(this.getRow(id)!);
+      ],
+    );
+    const row = await this.getRow(id);
+    return rowToEntry(row!);
   }
 
   async unregister(id: string): Promise<void> {
     this.assertOpen();
-    const existing = this.getRow(id);
+    const existing = await this.getRow(id);
     if (!existing) throw new SchedulerEntryNotFoundError(id);
-    this.db!.prepare('DELETE FROM scheduler_entries WHERE id = ?').run(id);
+    await this.adapter!.executeRun('DELETE FROM scheduler_entries WHERE id = ?', [id]);
   }
 
   async enable(id: string, enabled: boolean): Promise<void> {
     this.assertOpen();
-    const existing = this.getRow(id);
+    const existing = await this.getRow(id);
     if (!existing) throw new SchedulerEntryNotFoundError(id);
-    this.db!
-      .prepare('UPDATE scheduler_entries SET enabled = ?, updated_at = ? WHERE id = ?')
-      .run(enabled ? 1 : 0, new Date().toISOString(), id);
+    await this.adapter!.executeRun(
+      'UPDATE scheduler_entries SET enabled = ?, updated_at = ? WHERE id = ?',
+      [enabled ? 1 : 0, new Date().toISOString(), id],
+    );
   }
 
   async get(id: string): Promise<ScheduledEntry | null> {
     this.assertOpen();
-    const row = this.getRow(id);
+    const row = await this.getRow(id);
     return row ? rowToEntry(row) : null;
   }
 
   async list(): Promise<ScheduledEntry[]> {
     this.assertOpen();
-    const rows = this.db!.prepare('SELECT * FROM scheduler_entries ORDER BY name ASC').all() as SchedulerEntryRow[];
-    return rows.map(rowToEntry);
+    const result = await this.adapter!.executeAll<SchedulerEntryRow>(
+      'SELECT * FROM scheduler_entries ORDER BY name ASC',
+    );
+    return result.rows.map(rowToEntry);
   }
 
   async triggerNow(id: string): Promise<string> {
     this.assertOpen();
-    const row = this.getRow(id);
+    const row = await this.getRow(id);
     if (!row) throw new SchedulerEntryNotFoundError(id);
     let payload: unknown;
     try {
@@ -338,9 +353,10 @@ class SqliteScheduler implements Scheduler {
       maxRetries: row.max_retries,
       ttlMs: row.ttl_ms,
     });
-    this.db!
-      .prepare('UPDATE scheduler_entries SET last_enqueued_at = ?, last_error = NULL, updated_at = ? WHERE id = ?')
-      .run(new Date().toISOString(), new Date().toISOString(), id);
+    await this.adapter!.executeRun(
+      'UPDATE scheduler_entries SET last_enqueued_at = ?, last_error = NULL, updated_at = ? WHERE id = ?',
+      [new Date().toISOString(), new Date().toISOString(), id],
+    );
     return result.id;
   }
 }

@@ -111,11 +111,11 @@ describe('lifecycle', () => {
   it('applies schema: tasks, request_ledger, scheduler_entries tables exist', async () => {
     const q = new SqliteTaskQueue({ dbPath: ':memory:' });
     await q.open();
-    const db = q.getDatabase();
-    const tables = db
-      .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
-      .all() as Array<{ name: string }>;
-    const names = tables.map((t) => t.name);
+    const adapter = q.getAdapter();
+    const result = await adapter.executeAll<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`,
+    );
+    const names = result.rows.map((t) => t.name);
     expect(names).toContain('tasks');
     expect(names).toContain('request_ledger');
     expect(names).toContain('scheduler_entries');
@@ -413,8 +413,8 @@ describe('fail — retry with exponential backoff', () => {
     await queue.fail(id, 'err'); // -> dead (1 >= 1)
     // Force back to 'running' to hit the dead-check branch specifically
     // rather than the not-running branch.
-    const db = (queue as SqliteTaskQueue).getDatabase();
-    db.prepare(`UPDATE tasks SET status = 'running' WHERE id = ?`).run(id);
+    const adapter = (queue as SqliteTaskQueue).getAdapter();
+    await adapter.executeRun(`UPDATE tasks SET status = 'running' WHERE id = ?`, [id]);
     await expect(queue.fail(id, 'again')).rejects.toBeInstanceOf(TaskPermanentlyFailedError);
   });
 
@@ -662,7 +662,7 @@ describe('reaper — lease expiry', () => {
       const { id } = await queue.enqueue({ type: 'test', payload: {}, maxRetries: 3 });
       await queue.dequeue('worker-1');
       vi.advanceTimersByTime(1_001); // lease expires
-      queue.reap();
+      await queue.reap();
       const task = await queue.get(id);
       expect(task?.status).toBe(TaskStatus.Queued);
       expect(task?.retryCount).toBe(1);
@@ -686,7 +686,7 @@ describe('reaper — lease expiry', () => {
       const { id } = await queue.enqueue({ type: 'test', payload: {}, maxRetries: 1 });
       await queue.dequeue('worker-1');
       vi.advanceTimersByTime(1_001);
-      queue.reap(); // retryCount 0 -> 1, 1 >= 1 -> dead
+      await queue.reap(); // retryCount 0 -> 1, 1 >= 1 -> dead
       const task = await queue.get(id);
       expect(task?.dead).toBe(true);
       expect(task?.status).toBe(TaskStatus.Failed);
@@ -730,7 +730,7 @@ describe('reaper — lease expiry', () => {
       const { id } = await queue.enqueue({ type: 'test', payload: {}, ttlMs: 500 });
       await queue.dequeue('worker-1');
       vi.advanceTimersByTime(600);
-      queue.reap();
+      await queue.reap();
       const task = await queue.get(id);
       expect(task?.dead).toBe(true);
       expect(task?.status).toBe(TaskStatus.Failed);
