@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-memory-core",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Shared internal library for the sox-memory subsystem (db, schema, embed, recall, write, memoryd, extensions)",
   "license": "MIT",
   "publishConfig": {

@@ -313,21 +313,21 @@ describe('SqliteVectorBackend', () => {
     let inScopeId: number;
     let outOfScopeId: number;
 
-    beforeEach(() => {
+    beforeEach(async () => {
       backend.ensureSpace(space);
       // SqliteVectorBackend.knn's nodeFilter JOINs against the `node` table —
       // this is only meaningful when the vector store is constructed over the
       // SAME db handle as a real GraphBackend (per RAG-SPEC §2.1 / DESIGN.md
       // §2's "constructed directly over an existing Database handle" usage),
       // exactly as production backlog/hybrid-search callers do.
-      // Phase 1: graph-store not yet migrated to StoreAdapter — pass unwrapped db.
-      graph = createGraphBackend(db);
+      graph = createGraphBackend(adapter);
+      await graph.applySchema();
 
-      inScopeId = graph.writeNode('in-scope node content', {
+      inScopeId = await graph.writeNode('in-scope node content', {
         namespace: 'scope-a',
         kind: 'generic',
       });
-      outOfScopeId = graph.writeNode('out-of-scope node content', {
+      outOfScopeId = await graph.writeNode('out-of-scope node content', {
         namespace: 'scope-b',
         kind: 'generic',
       });
