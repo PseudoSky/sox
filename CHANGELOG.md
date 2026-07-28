@@ -46,6 +46,20 @@ Files: `libs/memory-core/src/write.ts`, `libs/data/store/store-adapter/src/vecto
 
 Verified: `rm -f /tmp/turso-v.db && STORE_ADAPTER=turso node scripts/verify-fresh-setup.mjs --db /tmp/turso-v.db --episodes 5 --queries 3` passes. Both `STORE_ADAPTER=sqlite` and `STORE_ADAPTER=turso` verified with 50/20 episodes/queries.
 
+### BL-001 (HIGH) — `migrateStore()` vec_node data silently skipped — three bugs
+
+The live migration of `~/.memory` from SqliteAdapter (better-sqlite3/sqlite-vec) to TursoAdapter (`@tursodatabase/database`) copied all regular tables correctly (node: 9217, edge: 45846) but silently dropped all vector embeddings — no rows copied, no error reported.
+
+**Bug 1 — SKIP_TABLES ordering (dead code):** `vec_node` was in `SKIP_TABLES`, which fires before the `name === 'vec_node'` check in the table-enumeration loop. `hasVecNode` was never set to `true` and section 5 (the special vec_node handling block) never executed. Removed `vec_node` from `SKIP_TABLES`. Also added a vec_node shadow-table skip (`vec_node_info`, `vec_node_chunks`, etc.) so sqlite-vec internal tables are not copied as regular tables.
+
+**Bug 2 — sqlite-vec ESM import:** `const { default: sqliteVec } = await import('sqlite-vec')` — sqlite-vec has no default export, so destructuring produces `undefined`. Changed to namespace import `const sqliteVec = await import('sqlite-vec')`.
+
+**Bug 3 — vec0 virtual table INSERT:** The write path used `INSERT INTO vec_node (node_id, embedding) VALUES (?, ?)`, but vec0 virtual tables do not support explicit `node_id` in INSERT — they auto-assign it sequentially. Changed to `INSERT INTO vec_node (embedding) VALUES (?)` for the sqlite-vec write path.
+
+New test coverage: 3 vec_node migration tests added (basic migration, empty vec_node, regression guard). 197 total tests passing.
+
+Files: `libs/data/store/store-adapter/src/migration.ts`, `libs/data/store/store-adapter/src/__tests__/migration.test.ts`
+
 ## [Unreleased] — BL-313 (CRITICAL): CHECK-constraint table rebuild silently cascade-deleted the entire live `edge` table
 
 While deploying this session's other memory-server fixes, `memory_stats`/`memory_list_entities`
