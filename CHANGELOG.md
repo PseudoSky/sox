@@ -34,6 +34,18 @@ The pure-stdio proxy branch in `cmdServe` awaited `handle.done` with zero fallba
 
 `embed.ts:225` threw with `[sox-memory] FATAL:` for a condition the server deliberately survives (DEGRADED mode). The "FATAL" text propagated through the catch handler's `String(err)` into a log line already correctly prefixed "DEGRADED" — making the log contradictory. Dropped the word "FATAL:" from the error message. (`libs/memory-core/src/embed.ts`)
 
+### TursoAdapter compatibility — entity tag insert FK failure and ANN index
+
+Two platform compatibility issues between SqliteAdapter (better-sqlite3/sqlite-vec) and TursoAdapter (`@tursodatabase/database` / libSQL) fixed:
+
+1. **FOREIGN KEY constraint failure on tag entity insert (HIGH)** — `write.ts` used a synchronous `adapter.unwrap().prepare().get()` pattern for entity tag inserts that only works with better-sqlite3's synchronous API. Turso/libSQL's `.get()` returns a Promise, not a row — the un-awaited Promise object was assigned to `entityRowid`, making the subsequent `INSERT INTO edge` pass `undefined` as `dst`, triggering `FOREIGN KEY constraint failed`. Fixed by replacing the sync IIFE with `await tx.executeGet()`.
+
+2. **ANN vector index not available (LOW)** — `TursoVectorDialect.createIndexDDL()` produced `CREATE INDEX ... ON "vec_node" (libsql_vector_descr(embedding))` DDL, but the `libsql_vector_descr()` function is not available in `@tursodatabase/database` v0.7.1 on macOS. Changed to return empty string — recall falls back to brute-force vector scan, which is correct for this version.
+
+Files: `libs/memory-core/src/write.ts`, `libs/data/store/store-adapter/src/vector-dialect.ts`, `libs/data/store/store-adapter/src/__tests__/vector-dialect.test.ts`
+
+Verified: `rm -f /tmp/turso-v.db && STORE_ADAPTER=turso node scripts/verify-fresh-setup.mjs --db /tmp/turso-v.db --episodes 5 --queries 3` passes. Both `STORE_ADAPTER=sqlite` and `STORE_ADAPTER=turso` verified with 50/20 episodes/queries.
+
 ## [Unreleased] — BL-313 (CRITICAL): CHECK-constraint table rebuild silently cascade-deleted the entire live `edge` table
 
 While deploying this session's other memory-server fixes, `memory_stats`/`memory_list_entities`
