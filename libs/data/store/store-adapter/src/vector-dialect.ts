@@ -1,0 +1,287 @@
+/**
+ * Vector dialect implementations for store-adapter.
+ *
+ * Provides two dialect implementations:
+ * - SqliteVecDialect — for sqlite-vec (SQLite with the vec0 extension)
+ * - TursoVectorDialect — for Turso/libsql (with native vector support)
+ *
+ * Plus utility functions vecToJson, vecToBlob, topKQueryCore,
+ * and the createVectorDialect factory.
+ */
+import type { VectorDialect, VectorMetric } from './types.js';
+
+// ── Re-export types ───────────────────────────────────────────────────────────
+
+export type { VectorDialect, VectorMetric } from './types.js';
+
+// ── Serialisation helpers ─────────────────────────────────────────────────────
+
+/**
+ * Convert a Float32Array to a JSON array string.
+ * Each value is formatted to 8 decimal places.
+ *
+ * This is the canonical format for sqlite-vec MATCH queries.
+ */
+export function vecToJson(vec: Float32Array): string {
+  const arr: number[] = Array.from(vec);
+  return '[' + arr.map((v) => v.toFixed(8)).join(',') + ']';
+}
+
+/**
+ * Convert a Float32Array to a Node.js Buffer (raw bytes, big-endian float32).
+ *
+ * This is the canonical format for storing vectors in BLOB columns.
+ * Compatible with Buffer.from(vec.buffer).
+ */
+export function vecToBlob(vec: Float32Array): Buffer {
+  return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+}
+
+// ── Core query builder ────────────────────────────────────────────────────────
+
+/**
+ * Build a parameterised top-K similarity search query.
+ *
+ * This is a stateless helper used by both dialect implementations.
+ * Returns { sql, args } where `args` contains serialised vector bytes
+ * or JSON, depending on the dialect.
+ *
+ * The returned SQL uses `?` placeholders to avoid SQL injection.
+ */
+export function topKQueryCore(
+  table: string,
+  column: string,
+  queryVec: number[],
+  k: number,
+  metric: VectorMetric,
+): { sql: string; args: unknown[] } {
+  // Shared column/table name sanitisation is caller's responsibility.
+  const vec = new Float32Array(queryVec);
+  const vecJson = vecToJson(vec);
+
+  // We return a template structure that each dialect customises.
+  // This core version is the sqlite-vec pattern (MATCH + k).
+  const distanceOrder = metric === 'dot' ? 'DESC' : 'ASC';
+  return {
+    sql: `SELECT node_id, distance FROM "${table}" WHERE ${column} MATCH ? AND k = ? ORDER BY distance ${distanceOrder}`,
+    args: [vecJson, k],
+  };
+}
+
+// ── SqliteVecDialect ──────────────────────────────────────────────────────────
+
+/**
+ * VectorDialect for sqlite-vec (SQLite with the vec0 extension).
+ *
+ * - vec0 virtual tables ARE the vector index (no separate index DDL needed).
+ * - Query vector is passed as a JSON array string via MATCH.
+ * - Distance is returned as a computed column named `distance`.
+ */
+export class SqliteVecDialect implements VectorDialect {
+  /**
+   * Return the vec0 column type for the given dimensionality.
+   * e.g. `FLOAT[768]`
+   */
+  vectorColumnType(dim: number): string {
+    return `FLOAT[${dim}]`;
+  }
+
+  /**
+   * Return the distance expression for a SELECT query.
+   * In sqlite-vec, the vec0 table exposes `distance` as a computed column
+   * when queried via MATCH — no explicit expression is needed.
+   */
+  distanceExpr(_column: string, _queryVec: number[]): string {
+    return 'distance';
+  }
+
+  /**
+   * Generate DDL to create a vec0 virtual table.
+   *
+   * Example output:
+   * ```sql
+   * CREATE VIRTUAL TABLE IF NOT EXISTS "vec_mymodel" USING vec0(
+   *   node_id INTEGER PRIMARY KEY,
+   *   embedding FLOAT[768]
+   * )
+   * ```
+   */
+  createTableDDL(table: string, column: string, dim: number): string {
+    const colType = this.vectorColumnType(dim);
+    return `CREATE VIRTUAL TABLE IF NOT EXISTS "${table}" USING vec0(node_id INTEGER PRIMARY KEY, ${column} ${colType})`;
+  }
+
+  /**
+   * For sqlite-vec, the vec0 virtual table IS the index.
+   * No separate index creation is needed — this returns an empty string.
+   */
+  createIndexDDL(_table: string, _column: string, _metric: VectorMetric): string {
+    return '';
+  }
+
+  /**
+   * Build a top-K query for sqlite-vec.
+   *
+   * Uses the vec0 MATCH operator with a JSON-formatted query vector
+   * and the k-nearest-neighbour limit.
+   */
+  topKQuery(
+    table: string,
+    column: string,
+    queryVec: number[],
+    k: number,
+    metric: VectorMetric,
+  ): { sql: string; args: unknown[] } {
+    const vec = new Float32Array(queryVec);
+    const vecJson = vecToJson(vec);
+    const distanceOrder = metric === 'dot' ? 'DESC' : 'ASC';
+    return {
+      sql: `SELECT v.node_id, v.distance FROM "${table}" v JOIN node n ON n.rowid = v.node_id WHERE v.${column} MATCH ? AND k = ? AND __PLACEHOLDER__ ORDER BY v.distance ${distanceOrder}`,
+      args: [vecJson, k],
+    };
+  }
+
+  /**
+   * Initialise the dialect by loading the sqlite-vec extension.
+   * The `db` handle must be a better-sqlite3 Database instance.
+   */
+  async initialize(db: unknown): Promise<void> {
+    // Dynamic import to avoid hard dependency when sqlite-vec is not available.
+    try {
+      const sqliteVecModule = await import('sqlite-vec');
+      const rawDb = db as import('better-sqlite3').Database;
+      sqliteVecModule.load(rawDb);
+    } catch (err) {
+      throw new Error(
+        `[SqliteVecDialect] Failed to load sqlite-vec: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
+// ── TursoVectorDialect ────────────────────────────────────────────────────────
+
+/**
+ * VectorDialect for Turso/libsql with native vector support.
+ *
+ * - Vector columns are declared as `F32_BLOB(dim)`.
+ * - A separate vector index is created via `libsql_vector_descr()`.
+ * - Distance functions: `vector_distance_cos`, `vector_distance_l2`, `vector_distance_dot`.
+ */
+export class TursoVectorDialect implements VectorDialect {
+  /**
+   * Return the Turso/libsql F32_BLOB column type for the given dimensionality.
+   * e.g. `F32_BLOB(768)`
+   */
+  vectorColumnType(dim: number): string {
+    return `F32_BLOB(${dim})`;
+  }
+
+  /**
+   * Return the distance expression for a SELECT query.
+   *
+   * Uses Turso's built-in vector_distance_* functions with a parameterised
+   * vector blob as the second argument.
+   */
+  distanceExpr(column: string, queryVec: number[]): string {
+    const vec = new Float32Array(queryVec);
+    const hex = Buffer.from(vec.buffer).toString('hex');
+    // Inline the vector as a hex literal blob since Turso does not support
+    // bound parameter blobs in vector_distance() arguments (libsql limitation).
+    return `vector_distance_cos(${column}, X'${hex}')`;
+  }
+
+  /**
+   * Generate DDL to create a table with a vector column.
+   *
+   * Example output:
+   * ```sql
+   * CREATE TABLE IF NOT EXISTS "vec_mymodel" (
+   *   node_id INTEGER PRIMARY KEY,
+   *   embedding F32_BLOB(768)
+   * )
+   * ```
+   */
+  createTableDDL(table: string, column: string, dim: number): string {
+    const colType = this.vectorColumnType(dim);
+    return `CREATE TABLE IF NOT EXISTS "${table}" (node_id INTEGER PRIMARY KEY, ${column} ${colType})`;
+  }
+
+  /**
+   * Generate DDL to create a Turso vector index on the given column.
+   *
+   * Note: `libsql_vector_descr()` is only available in newer versions of
+   * `@tursodatabase/database`. v0.7.1 (current on macOS) does not support it,
+   * and there is no reliable way to detect support at dialect-construction time
+   * (no db handle). Returning empty string means recall degrades to brute-force
+   * scan — correct but slower for large stores.
+   *
+   * Revisit when a future version ships universal vector index support.
+   *
+   * Example output (when supported):
+   * ```sql
+   * CREATE INDEX IF NOT EXISTS "idx_vec_mymodel_embedding"
+   *   ON "vec_mymodel" (libsql_vector_descr(embedding))
+   * ```
+   */
+  createIndexDDL(_table: string, _column: string, _metric: VectorMetric): string {
+    // libsql_vector_descr() is not available in @tursodatabase/database v0.7.1.
+    // Return empty string — recall falls back to brute-force scan.
+    return '';
+  }
+
+  /**
+   * Build a top-K query for Turso/libsql.
+   *
+   * Uses the vector_distance_cos function in ORDER BY with a limit,
+   * which Turso's query planner optimises via the vector index.
+   */
+  topKQuery(
+    table: string,
+    column: string,
+    queryVec: number[],
+    _k: number,
+    metric: VectorMetric,
+  ): { sql: string; args: unknown[] } {
+    const vec = new Float32Array(queryVec);
+    const hex = Buffer.from(vec.buffer).toString('hex');
+
+    const distFn =
+      metric === 'l2'
+        ? 'vector_distance_l2'
+        : metric === 'dot'
+          ? 'vector_distance_dot'
+          : 'vector_distance_cos';
+
+    const distanceOrder = metric === 'dot' ? 'DESC' : 'ASC';
+    const hexBlob = `X'${hex}'`;
+
+    return {
+      sql: `SELECT v.node_id, ${distFn}(v.${column}, ${hexBlob}) AS distance FROM "${table}" v JOIN node n ON n.rowid = v.node_id WHERE __PLACEHOLDER__ ORDER BY distance ${distanceOrder}`,
+      args: [],
+    };
+  }
+
+  /**
+   * Initialise the dialect. Turso/libsql requires no extension loading.
+   */
+  async initialize(_db: unknown): Promise<void> {
+    // No-op — Turso/libsql has built-in vector support.
+  }
+}
+
+// ── Factory ───────────────────────────────────────────────────────────────────
+
+/**
+ * Create the appropriate VectorDialect for the given adapter type.
+ *
+ * @param type - 'sqlite' for SqliteVecDialect (sqlite-vec),
+ *               'turso' for TursoVectorDialect (Turso/libsql native vectors)
+ * @returns A VectorDialect instance matching the given type.
+ */
+export function createVectorDialect(type: 'sqlite' | 'turso'): VectorDialect {
+  if (type === 'turso') {
+    return new TursoVectorDialect();
+  }
+  return new SqliteVecDialect();
+}

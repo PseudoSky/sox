@@ -55,10 +55,11 @@ import type { PendingEmbed } from './embed-pipeline.js';
 // byte-identical dedup fingerprints with all pre-existing store rows. See parity spec:
 // libs/memory-core/src/ingest-parity.spec.ts
 import { hexSha256 } from '@adhd/sox-ingest/core';
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import { performance } from 'node:perf_hooks';
 import { monotonicFactory } from 'ulid';
 import { embed, vecToJson } from './embed.js';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 const ulid = monotonicFactory();
 
@@ -164,11 +165,11 @@ export interface PhaseAOutcome {
  * behaviour. When absent, `result.enrichment.near_dup` is null (deferred to
  * Phase B) and `pending` carries the embed work.
  */
-export function memoryWritePhaseA(
-  db: Database.Database,
+export async function memoryWritePhaseA(
+  adapter: StoreAdapter,
   params: WriteParams,
   embedding?: Float32Array,
-): PhaseAOutcome | WriteError {
+): Promise<PhaseAOutcome | WriteError> {
   const {
     content,
     summary,
@@ -231,11 +232,10 @@ export function memoryWritePhaseA(
         message: 'client_request_id must be a string of at most 128 characters',
       };
     }
-    const existingLedger = db
-      .prepare<[string], { episode_uid: string }>(
-        'SELECT episode_uid FROM request_ledger WHERE request_id = ?',
-      )
-      .get(clientRequestId);
+    const existingLedger = await adapter.executeGet<{ episode_uid: string }>(
+      'SELECT episode_uid FROM request_ledger WHERE request_id = ?',
+      [clientRequestId],
+    );
     if (existingLedger) {
       return {
         result: {
@@ -255,9 +255,10 @@ export function memoryWritePhaseA(
   const contentHash = hexSha256(normalized);
 
   // Check for duplicate (R5: never delete, dedup by hash)
-  const existing = db
-    .prepare<[string], { uid: string }>('SELECT uid FROM node WHERE content_hash = ?')
-    .get(contentHash);
+  const existing = await adapter.executeGet<{ uid: string }>(
+    'SELECT uid FROM node WHERE content_hash = ?',
+    [contentHash],
+  );
   if (existing) {
     return {
       code: 'E_DEDUP',
@@ -280,17 +281,18 @@ export function memoryWritePhaseA(
   let insertedRowid = 0;
 
   // Atomic transaction: insert node + vec + FTS (via trigger)
-  const tx = db.transaction(() => {
-    const result = db.prepare<unknown[], { rowid: number }>(
+  const episodeUid: string = await adapter.transaction(async (tx) => {
+    const result = await tx.executeGet<{ rowid: number }>(
       `INSERT INTO node (uid, kind, content, name, summary, meta, agent_id, session_id, source,
                          importance, content_hash, t_created, t_occurred, t_valid,
                          topic, tags, project_path)
        VALUES (?, 'episode', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING rowid`,
-    ).get(uid, content, name ?? null, summary ?? null, metaJson,
-      agent_id ?? null, session_id ?? null, source, importance,
-      contentHash, now, tOccurred, tValid,
-      resolvedTopic, tagsJson, resolvedProjectPath);
+      [uid, content, name ?? null, summary ?? null, metaJson,
+       agent_id ?? null, session_id ?? null, source, importance,
+       contentHash, now, tOccurred, tValid,
+       resolvedTopic, tagsJson, resolvedProjectPath],
+    );
 
     if (!result) throw new Error('Insert failed: no rowid returned');
     const rowid = result.rowid;
@@ -299,88 +301,97 @@ export function memoryWritePhaseA(
     // Insert into vec_node (accepts JSON string or binary blob) — only when the
     // embedding was pre-computed; otherwise deferred to Phase B (embed-pipeline).
     if (embeddingJson !== null) {
-      db.prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(
-        rowid,
-        embeddingJson,
+      await tx.executeRun(
+        'INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',
+        [rowid, embeddingJson],
       );
     }
 
     // Transactional outbox: the row commits with the node; the in-process periodic
     // enrichment pass consumes it, and its presence/age drives memory_ping's
     // enrichment heartbeat (BL-172). No daemon, no nudge — just the row.
-    enqueueIngest(db, uid, agent_id ?? null);
+    await enqueueIngest(adapter, uid, agent_id ?? null);
 
     // Attach user-asserted tags as entity nodes + MENTIONS edges (write-time, synchronous)
     if (tags && tags.length > 0) {
       for (const tag of tags) {
         const tagName = tag.trim();
         if (!tagName) continue;
-        const existingEntity = db
-          .prepare<[string], { rowid: number }>(
-            `SELECT rowid FROM node WHERE kind = 'entity' AND name = ? AND t_invalid IS NULL`,
-          )
-          .get(tagName);
-        const entityRowid = existingEntity?.rowid ?? (() => {
-          const entityUid = ulid();
-          const r = db
-            .prepare<unknown[], { rowid: number }>(
-              `INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'entity', ?, ?, ?) RETURNING rowid`,
-            )
-            .get(entityUid, tagName, now, now);
-          if (!r) throw new Error(`Failed to insert entity node for tag: ${tagName}`);
-          return r.rowid;
-        })();
-        db.prepare(
+                const existingEntity = await tx.executeGet<{ rowid: number }>(
+                  `SELECT rowid FROM node WHERE kind = 'entity' AND name = ? AND t_invalid IS NULL`,
+                  [tagName],
+                );
+                let entityRowid = existingEntity?.rowid;
+                if (entityRowid === undefined) {
+                  const entityUid = ulid();
+                  // Use the async adapter API instead of the synchronous
+                  // adapter.unwrap().prepare().get() pattern which breaks on Turso/libSQL
+                  // (its .get() returns a Promise, not a row — so entityRowid would be
+                  // the Promise itself, and the subsequent edge INSERT's dst=undefined
+                  // would trigger a silent FK constraint failure).
+                  const r = await tx.executeGet<{ rowid: number }>(
+                    `INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'entity', ?, ?, ?) RETURNING rowid`,
+                    [entityUid, tagName, now, now],
+                  );
+                  if (!r) throw new Error(`Failed to insert entity node for tag: ${tagName}`);
+                  entityRowid = r.rowid;
+                }
+        await tx.executeRun(
           `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
            SELECT ?, ?, 'MENTIONS', 'user_asserted', ?, '{}'
            WHERE NOT EXISTS (
              SELECT 1 FROM edge WHERE src=? AND dst=? AND rel='MENTIONS' AND t_expired IS NULL
            )`,
-        ).run(rowid, entityRowid, now, rowid, entityRowid);
+          [rowid, entityRowid, now, rowid, entityRowid],
+        );
       }
     }
 
     // (WP-4) Record in request_ledger for idempotent replay.
     if (clientRequestId) {
-      db.prepare(
+      await tx.executeRun(
         `INSERT OR IGNORE INTO request_ledger(request_id, episode_uid, created_at) VALUES (?, ?, ?)`,
-      ).run(clientRequestId, uid, now);
+        [clientRequestId, uid, now],
+      );
     }
 
     // (E9) Explicit DERIVED_FROM edge when caller supplies a parent UID.
     if (derived_from_uid) {
-      const parent = db
-        .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ?`)
-        .get(derived_from_uid);
+      const parent = await tx.executeGet<{ rowid: number }>(
+        `SELECT rowid FROM node WHERE uid = ?`,
+        [derived_from_uid],
+      );
       if (parent) {
-        db.prepare(
+        await tx.executeRun(
           `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
            VALUES (?, ?, 'DERIVED_FROM', 'user_asserted', ?, '{}')`,
-        ).run(rowid, parent.rowid, now);
+          [rowid, parent.rowid, now],
+        );
       }
     }
 
     return uid;
   });
 
-  const episodeUid = tx() as string;
-
   // P2: run write-path enrichments (E1–E5, E10, E12 — plus E8 near-dup only when
   // an embedding is available) synchronously after insert.
   // enrichOnWrite updates node.topic/project_path/summary/tags/importance/enrich_ver.
-  const enrichResult = enrichOnWrite(db, {
-    uid: episodeUid,
-    rowid: insertedRowid,
-    content,
-    summary,
-    tags,
-    topic,
-    metadata,
-    project_path,
-    derived_from_uid,
-    embedding, // undefined in async Phase A → E8 near-dup deferred to Phase B
-    importance, // pass caller-supplied importance so enrichOnWrite respects it
-  });
+  // Runs inside a short adapter transaction to provide AdapterTransaction to enrichOnWrite.
+  const enrichResult = await adapter.transaction(async (tx) =>
+    enrichOnWrite(tx, {
+      uid: episodeUid,
+      rowid: insertedRowid,
+      content,
+      summary,
+      tags,
+      topic,
+      metadata,
+      project_path,
+      derived_from_uid,
+      embedding, // undefined in async Phase A → E8 near-dup deferred to Phase B
+      importance, // pass caller-supplied importance so enrichOnWrite respects it
+    }),
+  );
 
   // BL-62: see WriteResult.enrichment.project_path_source doc comment above for
   // the full rationale and the BL-221 remediation path.
@@ -431,15 +442,18 @@ export function memoryWritePhaseA(
  * existing_uid, which is the truthful outcome (the write landed).
  */
 export async function memoryWrite(
-  db: Database.Database,
+  adapter: StoreAdapter,
   params: WriteParams,
 ): Promise<WriteResult | WriteError> {
-  const phaseA = memoryWritePhaseA(db, params);
+  const phaseA = await memoryWritePhaseA(adapter, params);
   if ('code' in phaseA) return phaseA;
   if (phaseA.pending === null) return phaseA.result; // replay — nothing to embed
+  const pending: PendingEmbed = phaseA.pending;
 
-  const vec = await embed(phaseA.pending.text);
-  const applied = applyEmbedding(db, phaseA.pending, vec);
+  const vec = await embed(pending.text);
+  const applied = await adapter.transaction(async (tx) =>
+    applyEmbedding(tx, pending, vec),
+  );
   if (applied.near_dup !== null && phaseA.result.enrichment) {
     phaseA.result.enrichment.near_dup = {
       existing_uid: applied.near_dup.existing_uid,
@@ -541,14 +555,14 @@ export interface BatchResult {
  * batch writes aren't interleaved with individual writes.
  */
 export async function memoryWriteBatch(
-  db: Database.Database,
+  adapter: StoreAdapter,
   items: BatchItem[],
 ): Promise<BatchResult> {
   const results: BatchItemResult[] = [];
 
   for (const item of items) {
     try {
-      const r = await memoryWrite(db, item);
+      const r = await memoryWrite(adapter, item);
       if ('episode_uid' in r) {
         results.push({
           ok: true,
@@ -594,16 +608,16 @@ export interface BatchPhaseAOutcome {
  * `ok:false, code:'E_DEDUP', details.existing_uid` and never a batch failure;
  * client_request_id replays return the original uid and schedule no embed.
  */
-export function memoryWriteBatchPhaseA(
-  db: Database.Database,
+export async function memoryWriteBatchPhaseA(
+  adapter: StoreAdapter,
   items: BatchItem[],
-): BatchPhaseAOutcome {
+): Promise<BatchPhaseAOutcome> {
   const results: BatchItemResult[] = [];
   const pendings: PendingEmbed[] = [];
 
   for (const item of items) {
     try {
-      const r = memoryWritePhaseA(db, item);
+      const r = await memoryWritePhaseA(adapter, item);
       if ('code' in r) {
         results.push({
           ok: false,
@@ -647,16 +661,17 @@ export function requestLedgerPrune(
   return result.changes;
 }
 
-export function memoryInvalidate(
-  db: Database.Database,
+export async function memoryInvalidate(
+  adapter: StoreAdapter,
   params: InvalidateParams,
-): InvalidateResult | InvalidateError {
+): Promise<InvalidateResult | InvalidateError> {
   const { claim_uid, reason, t_transition, replacement_uid } = params;
   const tTransition = t_transition ?? new Date().toISOString();
 
-  const claim = db
-    .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ? AND t_invalid IS NULL`)
-    .get(claim_uid);
+  const claim = await adapter.executeGet<{ rowid: number }>(
+    `SELECT rowid FROM node WHERE uid = ? AND t_invalid IS NULL`,
+    [claim_uid],
+  );
 
   if (!claim) {
     return { code: 'E_NOT_FOUND', message: `Claim not found or already invalidated: ${claim_uid}` };
@@ -671,9 +686,10 @@ export function memoryInvalidate(
   // is all-or-nothing: no half-invalidated claim left behind on a bad uid.
   let replacementRowid: number | undefined;
   if (replacement_uid) {
-    const replacement = db
-      .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ? AND t_invalid IS NULL`)
-      .get(replacement_uid);
+    const replacement = await adapter.executeGet<{ rowid: number }>(
+      `SELECT rowid FROM node WHERE uid = ? AND t_invalid IS NULL`,
+      [replacement_uid],
+    );
     if (!replacement) {
       return {
         code: 'E_REPLACEMENT_NOT_FOUND',
@@ -685,18 +701,19 @@ export function memoryInvalidate(
 
   let supersedgesEdgeUid: string | undefined;
 
-  db.transaction(() => {
+  await adapter.transaction(async (tx) => {
     // Close t_invalid (R5: never delete, invalidate instead)
-    db.prepare(`UPDATE node SET t_invalid = ? WHERE uid = ?`).run(tTransition, claim_uid);
+    await tx.executeRun(`UPDATE node SET t_invalid = ? WHERE uid = ?`, [tTransition, claim_uid]);
 
     if (replacementRowid !== undefined) {
       supersedgesEdgeUid = `sup-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      db.prepare(
+      await tx.executeRun(
         `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
          VALUES (?, ?, 'SUPERSEDES', 'user_asserted', ?, ?)`,
-      ).run(replacementRowid, claim.rowid, tTransition, JSON.stringify({ reason }));
+        [replacementRowid, claim.rowid, tTransition, JSON.stringify({ reason })],
+      );
     }
-  })();
+  }, { mode: 'immediate' });
 
   const result: InvalidateResult = { ok: true };
   if (supersedgesEdgeUid !== undefined) result.supersedes_edge_uid = supersedgesEdgeUid;
