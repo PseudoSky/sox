@@ -919,3 +919,32 @@ The `time_to_vector_ms` metric exists but has 0 samples because all recent embed
 4. Is the 97% CPU from ONNX inference (expected) or from a deadlock/livelock between the enrich pass and MCP handler?
 
 **Severity:** HIGH — agents getting timeouts is a production reliability issue that undermines the entire memory system. The root cause might be a single-threaded bottleneck, not a Turso limitation.
+
+---
+
+### BL-323 — `db.ts` sqlite-vec load destructures a non-existent `default` export — every `openDb()` on the sqlite adapter throws `Cannot read properties of undefined (reading 'load')` — **Open (HIGH)** (2026-07-30)
+
+**Found while:** writing recall-live-incident regression tests for the `memory_recall` timeout/FTS-dialect fixes (wip/turso-live-metrics).[1] Not caused by that work — reproduces on `main`-derived `db.ts` as of this commit regardless of the recall.ts changes.
+
+**Root cause.** `libs/memory-core/src/db.ts:328` does:
+```ts
+const { default: sqliteVec } = await import('sqlite-vec');
+sqliteVec.load(rawDb);
+```
+but the installed `sqlite-vec@0.1.9` CJS module (`node_modules/.pnpm/sqlite-vec@0.1.9/node_modules/sqlite-vec/index.cjs`) exposes `load`/`getLoadablePath` as named exports with **no `default` export at all** — confirmed directly: `node -e "import('sqlite-vec').then(m=>console.log(Object.keys(m), typeof m.default))"` prints `[ 'getLoadablePath', 'load' ] undefined`.[2] So `sqliteVec` is always `undefined`, and every call into this branch throws `TypeError: Cannot read properties of undefined (reading 'load')`.[3]
+
+**Impact.** This branch runs for every adapter `!adapter.capabilities.nativeVectors` — i.e. every `SqliteAdapter` open (the `STORE_ADAPTER=sqlite` test/dev path). `openDb()` on sqlite therefore throws on essentially every call right now, which is why `embed-pipeline-metrics.spec.ts`'s `beforeEach` (which forces `STORE_ADAPTER=sqlite` and calls `openDb`) fails at `ctx.cleanup()` with `ctx` undefined — the `beforeEach` never got past `tmpDb()`.[4] This is very likely the dominant contributor to the ~266/267 pre-existing memory-core test failures reported alongside BL-319, independent of the previously-documented `openDb()`-without-`await` test debt.
+
+**Fix sketch:** use the named export directly instead of destructuring a `default` that doesn't exist:
+```ts
+const sqliteVecModule = await import('sqlite-vec');
+const load = sqliteVecModule.load ?? (sqliteVecModule as unknown as { default: typeof sqliteVecModule }).default?.load;
+load(rawDb);
+```
+or simply `const { load } = await import('sqlite-vec'); load(rawDb);`. Verify with a red→green: the `embed-pipeline-metrics.spec.ts` and `recall-live-incident.spec.ts` `beforeEach` hooks (both call `openDb` with `STORE_ADAPTER=sqlite`) should go from throwing `TypeError: ... reading 'load'` to succeeding.
+
+**Owner note:** `db.ts` is currently owned by another in-flight agent (repairing the Turso wiring regression) per branch coordination on `wip/turso-live-metrics` — this item documents the sqlite-path defect discovered during that work; do not let it get lost as "someone else's problem" once that repair lands, since the destructure bug is orthogonal to the Turso-wiring regression and needs its own fix/verification.
+
+**Severity:** HIGH — blocks essentially all `memory-core` unit tests that open a real sqlite-backed `StoreAdapter`, and would equally break any production code path that opens a fresh sqlite store needing the vec0 extension loaded (fresh installs, `STORE_ADAPTER=sqlite` fallback deployments).
+
+Citations: [wip/turso-live-metrics, backend-developer, claude, recall-live-incident-fix, 1: libs/memory-core/src/embed-pipeline-metrics.spec.ts:60-129, 2: libs/memory-core/src/db.ts:328-330, 3: libs/memory-core/src/db.ts:325-331, 4: libs/memory-core/src/embed-pipeline-metrics.spec.ts:112-129]
