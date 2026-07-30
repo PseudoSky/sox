@@ -199,13 +199,19 @@ async function dropVec0ViaBetterSqlite3(
   dbPath: string,
   options?: { runVacuum?: boolean },
 ): Promise<void> {
-  const [{ default: Database }, { default: sqliteVec }] = await Promise.all([
+  // BL-323: sqlite-vec has NO default export (only named `load`/`getLoadablePath`,
+  // verified against the installed 0.1.9 package — `m.default` is `undefined`).
+  // Destructuring `{ default: sqliteVec }` silently binds `sqliteVec` to `undefined`,
+  // which throws `TypeError: Cannot read properties of undefined (reading 'load')`
+  // only once this path actually runs (VACUUM repair / vec0 migration) — every
+  // other openDb() call site had the identical bug hiding the same way.
+  const [{ default: Database }, { load: loadSqliteVec }] = await Promise.all([
     import('better-sqlite3'),
     import('sqlite-vec'),
   ]);
   const bsdb = new Database(dbPath);
   try {
-    sqliteVec.load(bsdb);
+    loadSqliteVec(bsdb);
 
     // Phase 1: Drop vec0 virtual tables (cascades to shadow tables)
     // Turso cannot drop these without the vec0 module loaded.
@@ -226,6 +232,47 @@ async function dropVec0ViaBetterSqlite3(
 
     if (options?.runVacuum) {
       bsdb.exec('VACUUM');
+    }
+  } finally {
+    bsdb.close();
+  }
+}
+
+/**
+ * Detect and remove stale SQLite-era FTS5 artifacts (the `fts_node` virtual
+ * table, its four shadow tables, and the three content-sync triggers) left
+ * behind on a store that was migrated from better-sqlite3 to Turso.
+ *
+ * Turso reports `capabilities.fts5 === false` — it has no fts5 module — so
+ * once a store is Turso-backed, `fts_node` is permanently unreadable dead
+ * weight: `SELECT ... FROM fts_node` fails with "no such table", and the
+ * `fts_node_ai`/`_ad`/`_au` triggers keep firing on every INSERT/UPDATE/DELETE
+ * against `node`, referencing a table Turso cannot resolve. The correct
+ * post-migration state has ONLY the Tantivy index (`idx_fts_node`), never the
+ * old FTS5 virtual table.
+ *
+ * MUST go through better-sqlite3 (which has fts5 compiled in, unlike
+ * sqlite-vec's loadable vec0 extension) — `DROP TABLE` on an fts5 virtual
+ * table needs the module loaded to run its `xDestroy` cleanup of the shadow
+ * tables; Turso, lacking the module entirely, cannot drop it correctly (same
+ * failure mode already documented for vec0 above).
+ */
+async function dropFts5ResidueViaBetterSqlite3(dbPath: string): Promise<void> {
+  const { default: Database } = await import('better-sqlite3');
+  const bsdb = new Database(dbPath);
+  try {
+    for (const trig of ['fts_node_ai', 'fts_node_ad', 'fts_node_au']) {
+      bsdb.exec(`DROP TRIGGER IF EXISTS "${trig}"`);
+    }
+    // DROP TABLE on the fts5 virtual table cascades to its shadow tables
+    // (fts_node_data/_idx/_docsize/_config) via the module's xDestroy.
+    bsdb.exec(`DROP TABLE IF EXISTS "fts_node"`);
+    // Defensive: drop any shadow tables the cascade missed.
+    const shadowTables = bsdb.prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'fts\\_node\\_%' ESCAPE '\\'`,
+    ).all() as { name: string }[];
+    for (const t of shadowTables) {
+      bsdb.exec(`DROP TABLE IF EXISTS "${t.name}"`);
     }
   } finally {
     bsdb.close();
@@ -325,9 +372,10 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
   // Load sqlite-vec extension ONLY for adapters WITHOUT native vector support
   // (i.e. SqliteAdapter — TursoAdapter has native vectors and doesn't need it).
   if (!adapter.capabilities.nativeVectors) {
-    const { default: sqliteVec } = await import('sqlite-vec');
+    // BL-323: named export only — see dropVec0ViaBetterSqlite3() above.
+    const { load: loadSqliteVec } = await import('sqlite-vec');
     const rawDb = (adapter as SqliteAdapter).unwrap();
-    sqliteVec.load(rawDb);
+    loadSqliteVec(rawDb);
   }
 
   // Apply pragmas via adapter.pragmaSet()
@@ -479,6 +527,27 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
   // FTS setup — uses the dialect for the appropriate adapter type.
   // On SQLite, this creates an FTS5 virtual table + content-sync triggers.
   // On Turso, this creates a Tantivy-based FTS index via CREATE INDEX ... USING fts.
+  //
+  // Turso branch ONLY: first detect + remove stale SQLite-era FTS5 residue
+  // left behind by a store that was migrated in place from better-sqlite3 —
+  // see dropFts5ResidueViaBetterSqlite3() above for why this is dead weight
+  // (and actively harmful: the sync triggers fire on every node write and
+  // reference a table Turso cannot resolve). Do NOT touch the sqlite path —
+  // there fts_node + its triggers are correct and required.
+  if (adapter.config.type === 'turso') {
+    const fts5Residue = await adapter.executeGet<{ c: number }>(
+      `SELECT COUNT(*) as c FROM sqlite_master
+       WHERE (type='table' AND (name = 'fts_node' OR name LIKE 'fts\\_node\\_%' ESCAPE '\\'))
+          OR (type='trigger' AND name IN ('fts_node_ai', 'fts_node_ad', 'fts_node_au'))`,
+    );
+    if (fts5Residue && fts5Residue.c > 0) {
+      log.warn('store.open.turso_fts5_residue_drop', { db_path: dbPath, residue_count: fts5Residue.c });
+      await adapter.close();
+      await dropFts5ResidueViaBetterSqlite3(dbPath);
+      adapter = await createStoreAdapter({ dbPath });
+    }
+  }
+
   const ftsDialect = createFTSDialect(adapter.config.type);
   if (ftsDialect.supported && adapter.capabilities.fts) {
     if (adapter.config.type === 'sqlite') {
@@ -492,14 +561,34 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
         ['content', 'name', 'summary'],
         { content: 1.0, name: 1.0, summary: 1.0 },
       );
-      // Turso may reject IF NOT EXISTS if the index already exists
+      // Turso may reject IF NOT EXISTS if the index already exists — that
+      // specific case is a benign no-op and logged at debug. Any OTHER
+      // failure here means full-text search is completely dead on this
+      // store and MUST be loud (log.error), never silently downgraded:
+      // that silence is exactly how idx_fts_node went missing on the live
+      // store in the first place. (Known live cause, filed separately —
+      // TursoAdapterImpl.connect() does not currently pass the
+      // `index_method` experimental feature that `CREATE INDEX ... USING
+      // fts` requires; verified empirically against the installed
+      // @tursodatabase/database@0.7.1, which otherwise throws "Parse
+      // error: index method is an experimental feature. Enable with
+      // --experimental-index-method flag".)
       try {
         await adapter.exec(ddl);
       } catch (err) {
-        log.debug('store.open.fts_index_skip', {
-          adapter_type: adapter.config.type,
-          error: truncateForLog(err instanceof Error ? err.message : String(err)),
-        });
+        const message = err instanceof Error ? err.message : String(err);
+        if (/index .* already exists/i.test(message)) {
+          log.debug('store.open.fts_index_already_exists', {
+            adapter_type: adapter.config.type,
+            error: truncateForLog(message),
+          });
+        } else {
+          log.error('store.open.fts_index_create_failed', {
+            adapter_type: adapter.config.type,
+            db_path: dbPath,
+            error: truncateForLog(message),
+          });
+        }
       }
     }
   }
@@ -752,10 +841,11 @@ export async function openDbReadOnly(dbPath: string): Promise<StoreAdapter> {
   const adapter = await createStoreAdapter({ dbPath, readonly: true });
 
   // Load sqlite-vec extension only for adapters without native vector support.
+  // BL-323: named export only — see dropVec0ViaBetterSqlite3() above.
   if (!adapter.capabilities.nativeVectors) {
-    const { default: sqliteVec } = await import('sqlite-vec');
+    const { load: loadSqliteVec } = await import('sqlite-vec');
     const rawDb = (adapter as SqliteAdapter).unwrap();
-    sqliteVec.load(rawDb);
+    loadSqliteVec(rawDb);
   }
 
   // WAL pragma needed for read-only connections; query_only prevents accidental writes
