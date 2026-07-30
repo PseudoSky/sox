@@ -56,6 +56,36 @@ export class TursoAdapterImpl implements TursoAdapter {
   };
   private closed = false;
 
+  /**
+   * (BL-321 data-loss fix) `this.db` is a SINGLE shared connection handle —
+   * there is no per-transaction connection or session isolation in
+   * @tursodatabase/database's local mode. Two concurrent JS callers issuing
+   * BEGIN/…/COMMIT|ROLLBACK against that one handle interleave: caller A's
+   * ROLLBACK (from its own unrelated error) can discard caller B's in-flight
+   * transaction, and B's own exists-checks can observe A's uncommitted rows.
+   * `_txMutexChain` is a classic promise-chain mutex — cheap, JS-event-loop-safe
+   * (no window for a second synchronous mutation to interleave with the
+   * assignment below), and it makes `transaction()` safe for ANY caller,
+   * including code that reaches the adapter directly and bypasses WriteQueue
+   * entirely. This is defense-in-depth on top of restoring
+   * `needsWriteSerialization: true` below (see capabilities comment) — the
+   * queue-level fix alone would not protect non-WriteQueue callers.
+   */
+  private _txMutexChain: Promise<void> = Promise.resolve();
+
+  /** Run `fn` exclusively with respect to any other in-flight `transaction()`
+   *  call on this adapter instance. FIFO-ish: chains onto the previous run
+   *  regardless of whether it resolved or rejected, so one failed transaction
+   *  never wedges the mutex for subsequent ones. */
+  private _withTxLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this._txMutexChain.then(fn, fn);
+    this._txMutexChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
   private constructor(
     db: any,
     config: AdapterConfig & { type: 'turso' },
@@ -145,13 +175,30 @@ export class TursoAdapterImpl implements TursoAdapter {
     if (opts.experimental !== undefined) config.experimental = opts.experimental;
     if (opts.defaultQueryTimeout !== undefined) config.defaultQueryTimeout = opts.defaultQueryTimeout;
 
+    // (BL-321 data-loss fix) `this.db` is ONE shared connection handle with no
+    // per-transaction/session isolation — concurrent JS callers previously
+    // interleaved BEGIN/COMMIT/ROLLBACK on it (see `_withTxLock` doc comment
+    // above `transaction()`). That is not "concurrent transactions", it's a
+    // race. `needsWriteSerialization: false` told WriteQueue.forPath() to
+    // bypass its FIFO serialization for Turso entirely (write-queue.ts
+    // `_create`/`enqueue`), so every embed_apply/embed_heal write ran
+    // unserialized against the shared handle. Restoring `true` here is the
+    // safe, boring fix: it makes WriteQueue serialize Turso writes exactly
+    // like it always has for the sqlite adapter. The in-adapter `_withTxLock`
+    // mutex added above is defense-in-depth for callers that reach the
+    // adapter directly and never go through WriteQueue at all — it alone
+    // would already prevent the interleaving, but flipping this flag is the
+    // conservative choice for a store that is actively losing data: prefer
+    // "definitely serialized" over "trust one code path's mutex". Correctness
+    // over throughput. `concurrentTransactions` is set to `false` to match —
+    // it was never true for a single shared connection.
     const capabilities: AdapterCapabilities = {
       multiprocessWrite: opts.experimental?.multiprocessWal ?? true, // enabled by default
       nativeVectors: true,
-      concurrentTransactions: true,
+      concurrentTransactions: false,
       fts5: false,
       fts: true,
-      needsWriteSerialization: false,
+      needsWriteSerialization: true,
     };
 
     const instance = new TursoAdapterImpl(db, config, capabilities);
@@ -205,6 +252,19 @@ export class TursoAdapterImpl implements TursoAdapter {
   }
 
   async transaction<T>(
+    fn: (tx: AdapterTransaction) => T | Promise<T>,
+    opts?: TransactionOptions,
+  ): Promise<T> {
+    // (BL-321) Serialize the entire BEGIN…COMMIT/ROLLBACK critical section —
+    // including retries — against any other concurrent transaction() call on
+    // this adapter instance. See `_withTxLock` doc comment: this.db is one
+    // shared connection with no session isolation, so without this lock two
+    // concurrent callers interleave their BEGIN/COMMIT/ROLLBACK and silently
+    // lose or corrupt each other's writes.
+    return this._withTxLock(() => this._runTransaction(fn, opts));
+  }
+
+  private async _runTransaction<T>(
     fn: (tx: AdapterTransaction) => T | Promise<T>,
     opts?: TransactionOptions,
   ): Promise<T> {
