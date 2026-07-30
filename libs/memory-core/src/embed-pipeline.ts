@@ -27,6 +27,24 @@
  * is a plain interval callback. The apply tasks themselves are synchronous and
  * never enqueue.
  *
+ * CLARIFICATION (2026-07-30 — three agents independently misread the
+ * paragraph above as "Phase-B work must be serialized for correctness";
+ * it does not say that and never did): BL-154 is about QUEUE RE-ENTRANCY
+ * ONLY — calling `wq.enqueue()` from inside a callback already running on
+ * that same serial queue deadlocks the queue itself, full stop, regardless
+ * of backend. It says nothing about whether concurrent Phase-B PASSES
+ * (e.g. two overlapping `schedulePendingEmbeds` calls, or a heal tick
+ * overlapping an in-flight one) are safe to run at the same time against
+ * the store — that is a SEPARATE question, answered by the adapter's own
+ * concurrency contract (`AdapterCapabilities.needsWriteSerialization` /
+ * `concurrentTransactions`), not by this invariant. Do NOT read this
+ * comment as license to add serialization/locking around Phase-B calls to
+ * "fix" a concurrency bug — Turso's concurrent-transaction behavior is
+ * proven safe (owner directive, stated twice: do not change
+ * `needsWriteSerialization`, `concurrentTransactions`, or
+ * `multiprocessWrite`) and is a wholly separate mechanism from the
+ * single-caller queue re-entrancy this paragraph actually protects against.
+ *
  * FAILURE/RETRY: if Phase B fails (embed error, E_BUSY rejection of the apply
  * task, process death between phases) the node exists without a vector. That is
  * a DETECTED state, not a silent one:
@@ -312,6 +330,19 @@ function recordApplyOutcome(state: EmbedPipelineState, status: EmbedApplyResult[
 }
 
 /**
+ * Log a discarded apply outcome (`exists` or `gone`) — logging.SKILL follow-on:
+ * thousands of these previously happened with zero log lines, which is part
+ * of why a frozen backlog + climbing embeds_completed took six agents to
+ * diagnose. No-op for 'applied' (that path already logs via
+ * `embed_pipeline.apply.finish` / `heal.finish`). Never throws (telemetry.ts's
+ * `emit` swallows internally).
+ */
+function logApplyDiscarded(status: EmbedApplyResult['status'], uid: string, rowid: number): void {
+  if (status === 'applied') return;
+  tlog.info('embed_pipeline.apply.discarded', { uid, rowid, reason: status });
+}
+
+/**
  * Record an embed completion timestamp for the throughput-per-sec rolling
  * window. Prunes entries outside the window. Called after each successful
  * embed() call (both pipeline and heal paths).
@@ -421,8 +452,27 @@ export async function applyEmbedding(
   if (row.t_invalid === null) {
     try {
       nearDup = await detectNearDup(tx, pending.rowid, vec, NEARDUP_THRESHOLD, useNativeVectors);
-    } catch {
-      nearDup = null; // KNN may fail on empty stores — treat as no dup
+    } catch (err) {
+      // NOT a silent swallow (fixed 2026-07-30 — this bare `catch {}` was the
+      // mechanism that hid the embed-backfill stampede for five weeks): this
+      // runs AFTER the vec_node INSERT above has already committed, so
+      // applyEmbedding still returns status:'applied' and every caller-side
+      // counter (applies_applied, embeds_completed) reports success — a
+      // failure here was invisible in every metric memory_ping exposes. It
+      // is also NOT purely the historical "KNN may fail on empty stores"
+      // case anymore: concurrent Turso transactions on one shared connection
+      // can throw "Transaction error: cannot start a transaction within a
+      // transaction" here (index.ts's fire-and-forget
+      // `void schedulePendingEmbeds(...)` call sites let two Phase-B passes
+      // genuinely overlap). `warn`, not `debug`: silently degrading near-dup
+      // detection is a real quality loss on its own, not just a missing log
+      // line, and this catch can no longer assume the failure is benign.
+      tlog.warn('embed_pipeline.neardup.error', {
+        uid: pending.uid,
+        rowid: pending.rowid,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      nearDup = null;
     }
     if (nearDup !== null) {
       await applyNearDupResult(tx, pending.rowid, nearDup);
@@ -511,6 +561,7 @@ export async function schedulePendingEmbeds(
           out[r.status === 'applied' ? 'applied' : r.status === 'exists' ? 'exists' : 'gone']++;
           recordApplyOutcome(metrics, r.status);
           tlog.info('embed_pipeline.apply.finish', { uid: p.uid, rowid: p.rowid, status: r.status });
+          logApplyDiscarded(r.status, p.uid, p.rowid);
           // time_to_vector: Phase-A completion stamp → apply-task settled (the
           // vec row is durably visible). Only genuine pipeline applies with an
           // in-process monotonic stamp are recorded — see the clock decision.
@@ -664,6 +715,7 @@ export async function healMissingVectors(
         }
       } else if (applied.status === 'exists') out.exists++;
       else out.gone++;
+      logApplyDiscarded(applied.status, pending.uid, pending.rowid);
     } catch (err) {
       out.failed++;
       metrics.counters.heals_failed++;
@@ -811,6 +863,7 @@ export async function healStaleVectors(
       } else {
         out.gone++;
       }
+      logApplyDiscarded(applied.status, pending.uid, pending.rowid);
     } catch (err) {
       out.failed++;
       metrics.counters.heals_failed++;

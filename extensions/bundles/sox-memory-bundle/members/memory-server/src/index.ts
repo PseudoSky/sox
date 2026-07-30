@@ -1995,12 +1995,21 @@ export async function runEnrichPassOnDb(
   adapter: StoreAdapter,
   dbPath: string,
 ): Promise<{ queue_completed: number; full_pass: boolean; healed: number; heal_failed: number }> {
+  // Logging follow-on (2026-07-30, from the embed-backfill-stampede incident):
+  // a frozen backlog with embeds_completed climbing was the exact signature
+  // of the bug, and it took six agents to diagnose because backlog_before/
+  // backlog_after were never logged side by side. Cheap (embedBacklogStats is
+  // a single indexed COUNT(*) scan) — safe to call twice per pass.
+  const backlogBefore = (await embedBacklogStats(adapter)).count;
+
   const heal = await healMissingVectors(adapter, await WriteQueue.forPath(dbPath));
 
   const maxSeq = await maxOpenEnrichTriggerSeq(adapter);
   const fullPass = await hasPendingFullEnrich(adapter, maxSeq);
   const result = await runBatchEnrich(adapter, { incrementalCluster: !fullPass });
   const queueCompleted = await completeEnrichTriggerRows(adapter, maxSeq);
+
+  const backlogAfter = (await embedBacklogStats(adapter)).count;
   console.error(
     `[memory-server] periodic enrich (${dbPath}):` +
     ` communities=${result.communities_upserted}` +
@@ -2010,6 +2019,9 @@ export async function runEnrichPassOnDb(
     ` full_pass=${fullPass}` +
     ` embed_healed=${heal.healed}` +
     ` embed_heal_failed=${heal.failed}` +
+    ` backlog_before=${backlogBefore}` +
+    ` backlog_after=${backlogAfter}` +
+    ` backlog_delta=${backlogAfter - backlogBefore}` +
     (heal.disabled ? ' embed_heal=DISABLED' : ''),
   );
   return {
@@ -2091,6 +2103,17 @@ export function isEnrichPassInFlight(): boolean {
 }
 
 /**
+ * Monotonic tick counter — logged as `tick_seq` on every `enrich.tick.start`/
+ * `.finish`/`.skipped` line. Logging follow-on (2026-07-30): two `.start`
+ * lines with no `.finish` between them, at the SAME tick_seq boundary rule
+ * (a `.start` must be followed by exactly one `.finish` or `.skipped` before
+ * the next `.start`), makes reentrancy visible by log inspection alone —
+ * this is the signal that would have exposed the stampede on day one, before
+ * the reentrancy guard even existed.
+ */
+let _enrichTickSeq = 0;
+
+/**
  * Reentrancy-guarded entrypoint: runs `runPeriodicEnrichPass()` unless a pass
  * is already in flight, in which case the call is a documented no-op (counted,
  * logged to stderr — never silent). Exported so tests can invoke it directly
@@ -2098,17 +2121,30 @@ export function isEnrichPassInFlight(): boolean {
  * concurrently in a test to prove overlap is impossible.
  */
 export async function runPeriodicEnrichPassGuarded(): Promise<void> {
+  const tickSeq = ++_enrichTickSeq;
   if (_enrichPassInFlight) {
     _enrichTicksSkipped++;
     console.error(
-      `[memory-server] periodic enrich SKIPPED — previous pass still in flight` +
-      ` (skipped_total=${_enrichTicksSkipped})`,
+      `[memory-server] enrich.tick.skipped tick_seq=${tickSeq}` +
+      ` — previous pass still in flight (skipped_total=${_enrichTicksSkipped})`,
     );
     return;
   }
   _enrichPassInFlight = true;
+  const tickStartedAt = Date.now();
+  console.error(`[memory-server] enrich.tick.start tick_seq=${tickSeq}`);
   try {
     await runPeriodicEnrichPass();
+    console.error(
+      `[memory-server] enrich.tick.finish tick_seq=${tickSeq}` +
+      ` duration_ms=${Date.now() - tickStartedAt}`,
+    );
+  } catch (err) {
+    console.error(
+      `[memory-server] enrich.tick.error tick_seq=${tickSeq}` +
+      ` duration_ms=${Date.now() - tickStartedAt}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    throw err;
   } finally {
     _enrichPassInFlight = false;
   }
