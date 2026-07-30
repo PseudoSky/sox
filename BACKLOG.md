@@ -294,7 +294,7 @@ it's a local, non-published dev checkout, or (c) document that `soxe upgrade --a
 checkout requires `SOX_REGISTRY_PUBLISH` unset (dev-mode `file://` locators) rather than the
 committed publish-mode registry.
 
-### BL-114 — LanceDbVectorBackend is in-memory only, not backed by real LanceDB — **WITHDRAWN (2026-07-04, owner directive) — SEE FOLLOW-UP BELOW**
+### BL-114 — LanceDbVectorBackend is in-memory only, not backed by real LanceDB — **CLOSED (WITHDRAWN 2026-07-04, owner directive) — SEE FOLLOW-UP BELOW**
 
 **Withdrawn:** owner confirms the package is consumed externally as-is — the naming/real-dep
 decision is not open work in this repo.
@@ -872,7 +872,7 @@ Total: 13 ghost episodes from a session that wrote 8 real episodes (8 writes pro
 
 ---
 
-### BL-319 — Database operation metrics are missing computed throughput fields
+### BL-319 — Database operation metrics are missing computed throughput fields — **Open (HIGH)** (2026-07-27)
 
 **Driver:** TursoAdapter migration uncovered that `memory_ping` reports raw cumulative counters (`embeds_completed`, `embed_duration_ms`) but no computed throughput metrics. Missing:
 
@@ -896,7 +896,7 @@ The `time_to_vector_ms` metric exists but has 0 samples because all recent embed
 
 ---
 
-### BL-322 — Analyze lock contention between embedding system, daemon, proxy, and agents
+### BL-322 — Analyze lock contention between embedding system, daemon, proxy, and agents — **Open (HIGH)** (2026-07-27)
 
 **Driver:** During the TursoAdapter migration, the live memory-server reached 97% CPU with the enrich pipeline processing embeddings, causing agents to get MCP timeouts on `memory_recall` and `memory_ping`. It's unclear whether the bottleneck is:
 

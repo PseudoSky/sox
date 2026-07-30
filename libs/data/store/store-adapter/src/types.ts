@@ -88,10 +88,56 @@ export interface FTSDialect {
   readonly supported: boolean;
   /** Dialect discriminator. */
   readonly dialect: 'sqlite' | 'turso';
-  /** DDL to create the FTS index for a given table/columns.
-   *  For SQLite FTS5, this returns an empty string (DDL managed separately via
-   *  CREATE VIRTUAL TABLE). For Turso, this returns CREATE INDEX ... USING fts. */
-  createIndexDDL(table: string, columns: string[], weights?: Record<string, number>): string;
+  /** True when this dialect maintains FTS as a separate shadow table/index kept
+   *  in sync by triggers (SQLite FTS5: `fts_node` + 3 triggers). False when the
+   *  index lives directly on the base table with no trigger-synced shadow state
+   *  (Turso Tantivy: a single `CREATE INDEX ... USING fts` on `node` itself). */
+  readonly supportsShadowTable: boolean;
+
+  /**
+   * Build the ordered list of DDL statements required to create (or
+   * idempotently ensure) full-text search on `table`.
+   *
+   * - Turso: a single `CREATE INDEX ... USING fts (...)` statement generated
+   *   from `columns`/`weights`. `sqliteDDL` is ignored.
+   * - SQLite FTS5: the canonical virtual-table + trigger DDL is schema-owned
+   *   by graph-store (the single upstream source of truth for that SQL —
+   *   store-adapter cannot depend on graph-store without introducing a
+   *   circular package dependency, since graph-store itself depends on
+   *   store-adapter). Callers pass that DDL via `sqliteDDL` (typically
+   *   `[FTS_DDL, FTS_TRIGGERS]` from `memory-core`'s schema.ts) and it is
+   *   returned verbatim, in order. `columns`/`weights` are ignored.
+   */
+  createIndexDDL(
+    table: string,
+    columns: string[],
+    weights?: Record<string, number>,
+    sqliteDDL?: readonly string[],
+  ): string[];
+
+  /**
+   * Names of `sqlite_master` objects (tables + triggers) that belong to the
+   * OTHER dialect's FTS mechanism and may linger on a store migrated from
+   * that backend (e.g. a store originally created by SQLite/FTS5, later
+   * opened by Turso — or vice versa). Empty when this dialect has nothing to
+   * clean up. Used by callers to detect residue BEFORE it can break writes.
+   */
+  legacyResidueNames(table: string): string[];
+
+  /**
+   * DDL statements (run in order — triggers/indexes before their backing
+   * tables) that remove the objects named by `legacyResidueNames`.
+   *
+   * ⚠️ On Turso, issuing these DIRECTLY through the Turso engine's own
+   * connection is NOT reliable — `DROP TABLE`/`DROP TRIGGER` against objects
+   * created by a different SQLite engine module (fts5, vec0) can report
+   * success while leaving the object in `sqlite_master` untouched (verified
+   * empirically, the same silent-no-op behavior documented for vec0 DROPs).
+   * Callers on Turso MUST execute these through a better-sqlite3 connection
+   * against the same file (close the Turso connection first, reopen after).
+   */
+  dropLegacyDDL(table: string): string[];
+
   /** WHERE clause fragment for FTS matching.
    *  Returns { sql, params } where sql uses the given queryParam placeholder. */
   matchClause(columns: string[], queryParam: string): { sql: string };
