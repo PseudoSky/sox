@@ -52,6 +52,7 @@ import { applyNearDupResult, NEARDUP_THRESHOLD } from './enrich.js';
 import type { StoreAdapter, AdapterTransaction } from '@adhd/sox-store-adapter';
 import { LatencyRing, summarizeLatencies } from './latency-stats.js';
 import type { WriteQueue } from './write-queue.js';
+import { log as tlog, traceIdOrNew, withTrace } from './telemetry.js';
 
 /** Stderr log prefix — matches the writeq convention ([inv:no-stdout-diagnostics]). */
 const LOG_PREFIX = '[memory-core embed-pipeline]';
@@ -86,6 +87,12 @@ export interface PendingEmbed {
    * separately and aged via wall-clock heal_lag_ms instead).
    */
   startedAtMs?: number;
+  /** BL-320: correlation id captured at Phase-A completion (the write-queue's
+   *  task trace id) so Phase-B's embed + apply logs — which run OFF the queue
+   *  slot, in a different task/tick — still carry the SAME trace_id as the
+   *  originating write, end to end. Absent on heal-path pendings (no live
+   *  request to correlate with); those get a fresh id per item instead. */
+  traceId?: string;
 }
 
 export interface EmbedApplyResult {
@@ -473,38 +480,54 @@ export async function schedulePendingEmbeds(
 
   const run = (async () => {
     for (const p of pendings) {
-      try {
-        const embedStartMs = performance.now();
-        const vec = await embed(p.text); // off-slot: worker-thread ONNX
-        metrics.embedDuration.push(performance.now() - embedStartMs);
-        metrics.counters.embeds_completed++;
-        trackEmbedCompletion(metrics);
-        const r = await wq.enqueue(
-          `embed_apply:${p.uid}`,
-          async (qdb) => {
-            return qdb.transaction(async (tx) => {
-              return applyEmbedding(tx, p, vec, useBinaryFormat, useNativeVectors);
-            }, { mode: 'immediate' });
-          },
-          'apply',
-        );
-        out[r.status === 'applied' ? 'applied' : r.status === 'exists' ? 'exists' : 'gone']++;
-        recordApplyOutcome(metrics, r.status);
-        // time_to_vector: Phase-A completion stamp → apply-task settled (the
-        // vec row is durably visible). Only genuine pipeline applies with an
-        // in-process monotonic stamp are recorded — see the clock decision.
-        if (r.status === 'applied' && p.startedAtMs !== undefined) {
-          metrics.timeToVector.push(performance.now() - p.startedAtMs);
+      // BL-320: reuse the originating write's trace id (threaded via
+      // PendingEmbed.traceId from Phase A) so embed + apply logs correlate
+      // with the write that produced them, even though Phase B runs OFF the
+      // queue slot in a separate tick.
+      const traceId = p.traceId ?? traceIdOrNew();
+      await withTrace(traceId, async () => {
+        try {
+          // embed() itself logs embed.start/finish/error/timeout (telemetry.ts +
+          // embed.ts) — this call site adds the uid/rowid it doesn't know about
+          // via the pipeline-specific event below, and keeps its own duration
+          // measurement for the embed-pipeline metrics ring.
+          const embedStartMs = performance.now();
+          const vec = await embed(p.text); // off-slot: worker-thread ONNX
+          const embedDurationMs = performance.now() - embedStartMs;
+          tlog.debug('embed_pipeline.embed.finish', { uid: p.uid, rowid: p.rowid, duration_ms: Math.round(embedDurationMs) });
+          metrics.embedDuration.push(embedDurationMs);
+          metrics.counters.embeds_completed++;
+          trackEmbedCompletion(metrics);
+          const r = await wq.enqueue(
+            `embed_apply:${p.uid}`,
+            async (qdb) => {
+              return qdb.transaction(async (tx) => {
+                return applyEmbedding(tx, p, vec, useBinaryFormat, useNativeVectors);
+              }, { mode: 'immediate' });
+            },
+            'apply',
+            traceId,
+          );
+          out[r.status === 'applied' ? 'applied' : r.status === 'exists' ? 'exists' : 'gone']++;
+          recordApplyOutcome(metrics, r.status);
+          tlog.info('embed_pipeline.apply.finish', { uid: p.uid, rowid: p.rowid, status: r.status });
+          // time_to_vector: Phase-A completion stamp → apply-task settled (the
+          // vec row is durably visible). Only genuine pipeline applies with an
+          // in-process monotonic stamp are recorded — see the clock decision.
+          if (r.status === 'applied' && p.startedAtMs !== undefined) {
+            metrics.timeToVector.push(performance.now() - p.startedAtMs);
+          }
+        } catch (err) {
+          out.failed++;
+          metrics.counters.embeds_failed++;
+          const msg = err instanceof Error ? err.message : JSON.stringify(err);
+          log(
+            `${LOG_PREFIX} Phase-B FAILURE uid=${p.uid} rowid=${p.rowid}: ${msg} — ` +
+              `vector deferred to the periodic heal pass`,
+          );
+          tlog.error('embed_pipeline.phaseB.error', { uid: p.uid, rowid: p.rowid, error: msg });
         }
-      } catch (err) {
-        out.failed++;
-        metrics.counters.embeds_failed++;
-        const msg = err instanceof Error ? err.message : JSON.stringify(err);
-        log(
-          `${LOG_PREFIX} Phase-B FAILURE uid=${p.uid} rowid=${p.rowid}: ${msg} — ` +
-            `vector deferred to the periodic heal pass`,
-        );
-      }
+      });
     }
     return out;
   })();

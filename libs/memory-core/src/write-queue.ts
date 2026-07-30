@@ -84,6 +84,7 @@ import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { openDb } from './db.js';
 import { wrapDbError } from './errors.js';
 import { LatencyRing, summarizeLatencies } from './latency-stats.js';
+import { log, traceIdOrNew, withTrace } from './telemetry.js';
 
 // ── Error types (partial; full taxonomy is WP-2 / CONTRACTS §B) ───────────────
 
@@ -170,6 +171,9 @@ interface QueueItem<T = unknown> {
   operation: (adapter: StoreAdapter) => T | Promise<T>;
   resolve: (value: T | PromiseLike<T>) => void;
   reject: (reason: unknown) => void;
+  /** BL-320: correlation id threaded through log.* calls made by `operation` (and
+   *  anything it awaits transitively) via AsyncLocalStorage — see telemetry.ts. */
+  traceId: string;
 }
 
 const DEFAULT_MAX_QUEUE_SIZE = 100;
@@ -473,28 +477,65 @@ export class WriteQueue {
    * segregation only — ordering, admission control, and the E_BUSY contract
    * are identical for both kinds (see module header). Phase-B applyEmbedding
    * tasks pass 'apply'.
+   *
+   * `traceId` (BL-320, optional): correlation id for end-to-end tracing. When
+   * omitted, reuses the currently-active trace context (set by an enclosing
+   * `withTrace`/enqueue call — e.g. the Phase-A task's trace flows onto its
+   * Phase-B `embed_apply` follow-up task automatically via `PendingEmbed.traceId`)
+   * or mints a fresh one. `operation` runs INSIDE `withTrace(traceId, …)` so
+   * every `log.*` call made anywhere inside it — including nested awaits —
+   * carries this same id with no signature changes required downstream.
    */
   enqueue<T>(
     label: string,
     operation: (adapter: StoreAdapter) => T | Promise<T>,
     kind: TaskKind = 'write',
+    traceId?: string,
   ): Promise<T> {
+    const resolvedTraceId = traceId ?? traceIdOrNew();
+    const storeKey = this.adapter.config.dbPath ?? this._storePath;
+
     // Bypass queue → execute immediately (no serialisation)
     // Two paths:
     //   1. _bypass (static) — global kill-switch (SOX_DISABLE_WRITE_QUEUE=1)
     //   2. _noop (instance) — per-adapter: Turso et al. handle concurrent I/O natively.
     if (WriteQueue._bypass || this._noop) {
+      const t0 = performance.now();
+      log.info('writequeue.task.start', { trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass' });
       try {
-        const result = operation(this.adapter);
+        const result = withTrace(resolvedTraceId, () => operation(this.adapter));
         if (result instanceof Promise) {
-          return result.then((v) => {
-            this._trackCompletion();
-            return v;
-          });
+          return result.then(
+            (v) => {
+              this._trackCompletion();
+              log.info('writequeue.task.finish', {
+                trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
+                duration_ms: Math.round(performance.now() - t0),
+              });
+              return v;
+            },
+            (err) => {
+              log.error('writequeue.task.error', {
+                trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
+                duration_ms: Math.round(performance.now() - t0),
+                error: err instanceof Error ? err.message : String(err),
+              });
+              throw err;
+            },
+          );
         }
         this._trackCompletion();
+        log.info('writequeue.task.finish', {
+          trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
+          duration_ms: Math.round(performance.now() - t0),
+        });
         return Promise.resolve(result);
       } catch (err) {
+        log.error('writequeue.task.error', {
+          trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
+          duration_ms: Math.round(performance.now() - t0),
+          error: err instanceof Error ? err.message : String(err),
+        });
         return Promise.reject(err);
       }
     }
@@ -503,6 +544,13 @@ export class WriteQueue {
     this._cancelCheckpoint();
 
     this._enqueueCount++;
+    log.info('writequeue.enqueue', {
+      trace_id: resolvedTraceId,
+      store: storeKey,
+      label,
+      kind,
+      queue_depth: this.queue.length,
+    });
 
     // Overflow guard (hard SIZE cap — CONTRACTS §C, pinned by the
     // queue-overflow chaos spec: retry_after_ms stays the constant 250 here)
@@ -512,6 +560,9 @@ export class WriteQueue {
         `${LOG_PREFIX} REJECT E_BUSY(size) store=${this.adapter.config.dbPath ?? this._storePath} label=${label} ` +
         `depth=${this.queue.length} max=${this._maxSize}`,
       );
+      log.warn('writequeue.reject.busy_size', {
+        trace_id: resolvedTraceId, store: storeKey, label, depth: this.queue.length, max: this._maxSize,
+      });
       return Promise.reject({
         code: 'E_BUSY',
         message: `Write queue for ${this.adapter.config.dbPath ?? this._storePath} is full (${this._maxSize} pending)`,
@@ -542,6 +593,11 @@ export class WriteQueue {
             `budget_ms=${this._deadlineBudgetMs} recent_avg_ms=${Math.round(avgMs)} ` +
             `retry_after_ms=${retryAfterMs}`,
           );
+          log.warn('writequeue.reject.busy_deadline', {
+            trace_id: resolvedTraceId, store: storeKey, label,
+            depth: this.queue.length, estimated_wait_ms: Math.round(estimatedWaitMs),
+            budget_ms: this._deadlineBudgetMs, recent_avg_ms: Math.round(avgMs), retry_after_ms: retryAfterMs,
+          });
           return Promise.reject({
             code: 'E_BUSY',
             message:
@@ -562,7 +618,7 @@ export class WriteQueue {
     }
 
     return new Promise<T>((resolve, reject) => {
-      this.queue.push({ label, kind, operation, resolve, reject });
+      this.queue.push({ label, kind, operation, resolve, reject, traceId: resolvedTraceId });
       if (this.queue.length > this._highWatermark) {
         this._highWatermark = this.queue.length;
       }
@@ -736,15 +792,35 @@ export class WriteQueue {
       // Rolling average BEFORE this task — the slow-task baseline.
       const avgAtStartMs = this._latencies.recentMean(WriteQueue.RECENT_AVG_WINDOW);
       const startedAt = performance.now();
+      const storeKey = this.adapter.config.dbPath ?? this._storePath;
+      // BL-320: log the START of the dequeued task BEFORE awaiting it — this is
+      // the line that makes a hung task (never resolves) visible in the log at
+      // all, instead of leaving zero trace (the exact incident that motivated
+      // this module: a recall hang left nothing behind).
+      log.info('writequeue.task.start', {
+        trace_id: item.traceId, store: storeKey, label: item.label, kind: item.kind,
+        queue_depth: this.queue.length,
+      });
       try {
         // Pass StoreAdapter directly — callers manage their own transaction scope
         // via adapter.transaction() when needed. Simple INSERT/UPDATE operations
         // should call adapter.transaction() themselves for consistency.
-        const result = await item.operation(this.adapter);
+        const result = await withTrace(item.traceId, () => item.operation(this.adapter));
         item.resolve(result);
+        log.info('writequeue.task.finish', {
+          trace_id: item.traceId, store: storeKey, label: item.label, kind: item.kind,
+          duration_ms: Math.round(performance.now() - startedAt),
+        });
       } catch (err) {
         // WP-2: wrap raw SqliteError into CONTRACTS §B shape before surfacing.
-        item.reject(wrapDbError(err));
+        const wrapped = wrapDbError(err);
+        log.error('writequeue.task.error', {
+          trace_id: item.traceId, store: storeKey, label: item.label, kind: item.kind,
+          duration_ms: Math.round(performance.now() - startedAt),
+          error_code: wrapped.code,
+          error: wrapped.message,
+        });
+        item.reject(wrapped);
       }
       // Post-completion bookkeeping — all synchronous, no async hops (BL-154).
       // Failed tasks count too: they occupied the slot, so their duration is
