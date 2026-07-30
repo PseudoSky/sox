@@ -147,12 +147,24 @@ export class TursoAdapterImpl implements TursoAdapter {
     if (opts.readonly !== undefined) dbOpts.readonly = opts.readonly;
     if (opts.defaultQueryTimeout !== undefined) dbOpts.defaultQueryTimeout = opts.defaultQueryTimeout;
 
+    // index_method is ALWAYS on, unconditionally — not a toggle. Turso's FTS
+    // index DDL (`CREATE INDEX ... USING fts (...)`) and every subsequent
+    // fts_match/fts_score query against it require this experimental flag on
+    // the connection that runs them — not just the connection that created
+    // the index. Without it, index creation throws a parse error ("index
+    // method is an experimental feature") that was previously swallowed by a
+    // surrounding try/catch at log.debug in db.ts, so idx_fts_node silently
+    // never existed on any real Turso store and FTS was dead in production.
+    // There is no PRAGMA workaround (Turso silently no-ops unknown PRAGMAs).
+    // FTS is a core feature, so this is unconditional — merged with, never
+    // overwritten by, the multiprocess_wal toggle below.
+    const experiments: string[] = ['index_method'];
     // Enable multiprocess_wal by default for concurrent reader/writer support.
     // Uses .tshm shared memory files for WAL coordination instead of exclusive fcntl locks.
-    const experiments: string[] = ['multiprocess_wal'];
-    if (opts.experimental?.multiprocessWal === false) {
-      // Explicit opt-out via experimental: { multiprocessWal: false }
-      experiments.length = 0;
+    // Independently toggle-able via experimental: { multiprocessWal: false } —
+    // must not clobber index_method above when opted out.
+    if (opts.experimental?.multiprocessWal !== false) {
+      experiments.push('multiprocess_wal');
     }
     if (opts.encryption) {
       dbOpts.encryption = {
@@ -231,6 +243,22 @@ export class TursoAdapterImpl implements TursoAdapter {
     return { rowsAffected: info.changes as number, lastInsertRowid: info.lastInsertRowid as number };
   }
 
+  /**
+   * CAVEAT (verified independently by two agents, 2026-07-30): `DROP TABLE`
+   * and `DROP TRIGGER` issued through Turso against fts5 (and vec0) objects
+   * "succeed" with no error, but the object REMAINS in `sqlite_master` —
+   * Turso silently no-ops the drop rather than honoring it. Callers relying
+   * on `exec()`'s DDL being applied must not assume a successful `DROP` on
+   * these object kinds actually removed anything; verify via
+   * `sqlite_master` or route the drop through better-sqlite3 instead (see
+   * `db.ts`'s VACUUM/vec0-drop compatibility repair for the established
+   * pattern). Relatedly: Turso also never invokes fts5 trigger bodies at
+   * all — INSERT/UPDATE/DELETE on a triggering table succeed with stale
+   * fts5 triggers present, but the trigger body silently never runs. This
+   * happens to be harmless today only because nothing depends on those
+   * triggers firing; it would break instantly if a future Turso version
+   * starts executing them for real.
+   */
   async exec(sql: string): Promise<void> {
     await this.db.exec(sql);
   }
