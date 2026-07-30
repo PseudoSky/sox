@@ -1,27 +1,60 @@
 # Turso Adapter Go-Live Gap Analysis
 
-> **Audit date:** 2026-07-27
+> **STATUS 2026-07-30: MIX.** The gap this document identified on 2026-07-27 has been closed — do not
+> trust Section 1's table, Section 4 ("Unbuilt Components"), or Section 5 ("Go-Live Blockers") as
+> current fact; they describe a state that no longer exists and have misled agents into re-doing
+> already-shipped work. Trust the live source instead:
+> `libs/memory-core/src/db.ts` (openDb wiring), `libs/data/store/store-adapter/src/vector-dialect.ts`
+> (VectorDialect), `libs/data/store/store-adapter/src/fts-dialect.ts` (FTS dialect),
+> `libs/memory-core/src/write-queue.ts` (WriteQueue), `libs/data/store/store-adapter/src/migration.ts`
+> (`migrateStore()`). The "# Solutions" section further down (after Section 5) was largely
+> **implemented as written** and now matches shipped source closely — read it as a substantially
+> accurate implementation record, not a live proposal. Section 6 ("Optimized Execution Plan") is a
+> historical dispatch plan for that work.
+>
+> **Corrections made 2026-07-30** (inline below, at each affected section): Turso FTS does not mirror
+> SQLite's `fts_node` shadow table/triggers — it uses a native Tantivy index
+> (`CREATE INDEX ... USING fts`, matched via `fts_match()`/`fts_score()`). The claim that vec0→Turso
+> vector conversion is lossy and requires full re-embedding is contradicted by a later migration that
+> recovered 1141 vectors losslessly. The raw `Database.Database` leak-site catalog in Section 4.5 never
+> covered the real remaining leaks, which were in
+> `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (9 sites, unconditional
+> `.unwrap() as Database.Database` then sync `.prepare()` calls on what could be an async Turso handle)
+> — fixed across all 9 sites in commit `2ce65f4`, a file this document never analyzed. Turso concurrency
+> (the `needsWriteSerialization: false` WriteQueue bypass) is measured-safe: 50 concurrent transactions
+> on one shared handle produced zero lost writes and zero rejections; the only failure mode is a thrown
+> `Transaction error: cannot start a transaction within a transaction` when a transaction outlives the
+> retry budget, fixed by an in-adapter mutex in `turso-adapter.ts` — **not** by changing
+> `needsWriteSerialization` / `concurrentTransactions` / `multiprocessWrite`, which are correct as
+> shipped and must never be "fixed" back toward serialization.
+
+> **Audit date:** 2026-07-27 (original — see status banner above for what has since changed)
 > **Scope:** End-to-end review of what must be done before the live memory-server can flip from `better-sqlite3` to `TursoAdapter` — and what the external ADHD consumers need to adopt `StoreAdapter`.
-> **Finding:** The adapter package exists and both backends are implemented, but **the adapter is not wired into memory-core's hot paths**. The current architecture routes all writes through a synchronous `better-sqlite3`-coupled `WriteQueue`, every embedding operation unwraps the raw `Database.Database` handle, and schema DDL + vector queries are hardcoded to sqlite-vec. Setting `STORE_ADAPTER=turso` today has zero effect — `openDb()` hardcodes `createSqliteAdapter()`.
+> **Finding (2026-07-27, HISTORICAL — see banner above):** At the time of writing, the adapter package existed and both backends were implemented, but **the adapter was not yet wired into memory-core's hot paths**. The architecture routed all writes through a synchronous `better-sqlite3`-coupled `WriteQueue`, every embedding operation unwrapped the raw `Database.Database` handle, and schema DDL + vector queries were hardcoded to sqlite-vec. Setting `STORE_ADAPTER=turso` had zero effect — `openDb()` hardcoded `createSqliteAdapter()`. **As of 2026-07-30 this is no longer true**: `_openDbInner()` in `libs/memory-core/src/db.ts` calls `createStoreAdapter()`, `createVectorDialect()`, and `createFTSDialect()`, and `STORE_ADAPTER=turso` fully switches the engine, DDL, and vector/FTS query dialect.
 
 ---
 
 ## Section 1: What's Built vs What's Needed
 
-| Component | Built? | What's Missing | Effort |
+> **SUPERSEDED 2026-07-30** — this table records the gap as it stood on 2026-07-27. Every row marked
+> ❌/🟡 below is now ✅ in current source. Kept verbatim as the historical record of what the gap
+> looked like before the fix; do not read the ❌/🟡 markers as current status. Current status per row
+> is called out in **bold** immediately after each original entry.
+
+| Component | Built? (2026-07-27) | What's Missing (2026-07-27) | Effort (2026-07-27) |
 |-----------|--------|----------------|--------|
 | **`@adhd/sox-store-adapter` v0.1.0** | ✅ Published to npm. `StoreAdapter`, `SqliteAdapter`, `TursoAdapter`, `MockAdapter`, retry utils, error helpers, factory (`createStoreAdapter`) all implemented on `main`. | None — complete. | — |
-| **`STORE_ADAPTER` env var** | ✅ Factory reads `STORE_ADAPTER`, defaults to `'turso'`. | **Not consumed by any hot path.** `openDb()` hardcodes `createSqliteAdapter()` — never calls `createStoreAdapter()`. | **2 days** |
-| **`VectorDialect`** | ❌ **Interface defined in `types.ts`, zero concrete implementations.** No `TursoVectorDialect`, no `SqliteVecDialect` in any branch or worktree. | Both dialect classes (`TursoVectorDialect` — `vector(768)` DDL, `vector_distance_cos()` queries; `SqliteVecDialect` — `vec0` virtual table DDL, `MATCH`/`k` queries). Must be in `src/vector-dialect.ts`. | **3 days** |
-| **`SchemaDialect`** | ❌ **Does not exist — zero references anywhere.** Not in the spec, not in the codebase. | DDL abstraction for per-backend CREATE TABLE statements. Without it, `schema.ts`'s `CREATE VIRTUAL TABLE vec0 USING vec0(...)` fails on Turso. This is the VectorDialect's `vectorColumnType()` method extended to cover the full DDL surface. | **1 day** (likely folded into VectorDialect) |
-| **`memory-core` → Adapter surface** | 🟡 Partial. 29 source files import `type StoreAdapter`/`type SqliteAdapter`. `openDb()` returns `Promise<StoreAdapter>`. | **Still unwraps raw `better-sqlite3.Database` everywhere.** `stampStoreMeta()`, `verifyStoreMeta()`, `migrateAddColumn()`, `initScope()` all take `Database.Database`. The WriteQueue holds a raw `Database.Database`. `applyEmbedding()` takes raw `Database.Database`. | **5 days** |
-| **`WriteQueue` async refactor** | ❌ **Fully sync, better-sqlite3-coupled.** Constructor takes raw `Database.Database`, `enqueue()` callback receives raw `Database.Database`, `_create()` unwraps SqliteAdapter. Cannot work with TursoAdapter at all. | Must accept `StoreAdapter` instead of `Database.Database`. Task callbacks receive `AdapterTransaction`. The entire queue body becomes async. This is the **critical path** — every write routes through this queue. | **5 days** (riskiest piece) |
-| **Two-phase write (embed-pipeline)** | ❌ **Coupled to raw DB.** `applyEmbedding()`, `embedBacklogStats()`, `healMissingVectors()` all take `Database.Database`. | All functions must accept `StoreAdapter`. `applyEmbedding()` uses `db.transaction()` internally — must switch to `adapter.transaction()`. `embedBacklogStats()` uses `NOT EXISTS (SELECT 1 FROM vec_node...)` — must go through VectorDialect. | **3 days** |
-| **Recall queries** | ❌ **Sqlite-vec-specific SQL hardcoded.** `vec_node` MATCH/k query in `recall.ts:428-433` uses sqlite-vec syntax. `vec_distance_cosine()` function referenced in code comment but sqlite-vec uses `distance`. | Route through VectorDialect. For SqliteAdapter → `MATCH ? AND k = ? ORDER BY distance`. For TursoAdapter → `ORDER BY vector_distance_cos(embedding, ?) LIMIT ?`. | **2 days** |
-| **Schema DDL** | ❌ **Hardcoded `vec0` virtual table.** `schema.ts:49`: `CREATE VIRTUAL TABLE IF NOT EXISTS vec_node USING vec0(...)`. Works on sqlite-vec, fails on Turso. | DDL must go through a dialect. Sqlite: current DDL. Turso: `CREATE TABLE IF NOT EXISTS vec_node (node_id INTEGER PRIMARY KEY, embedding vector(768))`. | **1 day** |
-| **memory-server bundle** | ❌ **Dist not rebuilt with latest changes, `@tursodatabase/database` not bundled.** The bundle still links to old code. Turso's native driver isn't in the dependency chain. | Rebuild memory-server from main with adapter-aware memory-core. Add `@tursodatabase/database` as optional peerDependency (or bundle it). Smoke test with both backends. | **1 day** |
-| **Live store migration (70MB `~/.memory/memory.db`)** | ❌ **No migration path exists.** The vec0 BLOB format differs from Turso's native `vector(N)` format. FTS5 and node/edge tables are portable, but vectors must be re-indexed. | Migration script that: (1) creates Turso-compatible schema, (2) copies node/edge/FTS5 data as-is, (3) re-embeds all vectors via the embedding provider into native `vector(768)` columns, (4) verifies recall parity. | **3 days** (operations, not code) |
-| **Rollback plan** | ❌ **No rollback path documented.** | If Turso fails in production: `STORE_ADAPTER=sqlite` to revert. But if schema DDL already ran on the live store, the vec0 table may be gone — the rollback must either keep the original file untouched (copy-then-migrate) or reverse the DDL. | **1 day** |
+| **`STORE_ADAPTER` env var** | ❌ (2026-07-27) Not consumed by any hot path — `openDb()` hardcoded `createSqliteAdapter()`. **RESOLVED 2026-07-30**: `_openDbInner()` in `db.ts` calls `createStoreAdapter()`, which reads `STORE_ADAPTER` and fully switches the engine. | — | — |
+| **`VectorDialect`** | ❌ (2026-07-27) Interface defined in `types.ts`, zero concrete implementations. **RESOLVED 2026-07-30**: `SqliteVecDialect` and `TursoVectorDialect` both exist and are implemented in `libs/data/store/store-adapter/src/vector-dialect.ts`, selected via `createVectorDialect(adapter.config.type)`. | — | — |
+| **`SchemaDialect`** | ❌ (2026-07-27) Does not exist as a separate interface. **STILL TRUE 2026-07-30, by design**: there is no separate `SchemaDialect` class. Non-vector DDL responsibilities that do diverge by backend (FTS) were folded into a dedicated `createFTSDialect()` factory in `libs/data/store/store-adapter/src/fts-dialect.ts` (`SqliteFTS5Dialect` / `TursoFTSDialect`), not into VectorDialect as originally guessed. | — | — |
+| **`memory-core` → Adapter surface** | 🟡 (2026-07-27) Partial — still unwrapped raw `better-sqlite3.Database` in several helpers. **RESOLVED 2026-07-30**: `stampStoreMeta()`, `verifyStoreMeta()`, `migrateAddColumn()`, `initScope()` all accept `StoreAdapter`/execute through it; the sole remaining `unwrap()` call in `db.ts` is the single guarded sqlite-vec native-extension load, gated on `!adapter.capabilities.nativeVectors`. | — | — |
+| **`WriteQueue` async refactor** | ❌ (2026-07-27) Fully sync, better-sqlite3-coupled. **RESOLVED 2026-07-30**: `libs/memory-core/src/write-queue.ts`'s `WriteQueue` holds `private adapter: StoreAdapter`, `_create()` passes the adapter straight through from `openDb()` with no `unwrap()`, and task callbacks receive the adapter/`AdapterTransaction`. Sync serialization is bypassed per-instance for adapters reporting `needsWriteSerialization: false` (Turso). | — | — |
+| **Two-phase write (embed-pipeline)** | ❌ (2026-07-27) Coupled to raw DB. **RESOLVED 2026-07-30** — see Solution 5 below, implemented as written. | — | — |
+| **Recall queries** | ❌ (2026-07-27) Sqlite-vec-specific SQL hardcoded. **RESOLVED 2026-07-30** — routed through `VectorDialect.topKQuery()`, see Solution 3 below, implemented as written. | — | — |
+| **Schema DDL** | ❌ (2026-07-27) Hardcoded `vec0` virtual table. **RESOLVED 2026-07-30** — `vec_node` DDL now comes from `vectorDialect.createTableDDL()` inside `openDb()`. | — | — |
+| **memory-server bundle** | ❌ (2026-07-27) Stale dist, Turso driver not bundled. **RESOLVED** — memory-server has since been rebuilt multiple times against adapter-aware memory-core (see commits `2ce65f4`, `15bc78f`, `f350c83`). | — | — |
+| **Live store migration (70MB `~/.memory/memory.db`)** | ❌ (2026-07-27) No migration path existed; vectors believed to require full re-embedding. **CORRECTED 2026-07-30**: `migrateStore()` now exists in `libs/data/store/store-adapter/src/migration.ts` (copies all tables from an open source `StoreAdapter` to an open target `StoreAdapter`); separately, a live migration recovered 1141 vectors **losslessly**, contradicting the "must re-embed" claim in Section 2/Solution 10 below (see the inline correction there). | — | — |
+| **Rollback plan** | ❌ (2026-07-27) No rollback path documented. `STORE_ADAPTER=sqlite` + copy-never-mutate, as later specified in Section 2/Solution 9, is the documented answer — not independently re-verified in this pass. | — | — |
 
 ---
 
@@ -92,27 +125,43 @@ The in-place script:
 
 ### Step 2: Schema DDL differences
 
+> **CORRECTED 2026-07-30**: the `fts_node` row below is false for Turso. Turso does not mirror
+> SQLite's `fts_node` shadow table or its sync triggers at all — it has no shadow table and no
+> triggers. Instead, `createFTSDialect('turso')` (`libs/data/store/store-adapter/src/fts-dialect.ts`,
+> `TursoFTSDialect`) issues a native Tantivy index — `CREATE INDEX idx_fts_node ON "node" USING fts
+> (...)` — queried via `fts_match()` / `fts_score()`, not the FTS5 `MATCH` operator. `createFTSDialect`
+> is also where per-backend FTS DDL now lives, i.e. the "SchemaDialect" that Section 1/4.2 speculated
+> might be needed only if non-vector DDL diverged — it did diverge, for FTS specifically, and this
+> factory is the answer, not a VectorDialect extension.
+
 | Object | SqliteAdapter (current) | TursoAdapter (target) |
 |--------|------------------------|----------------------|
 | `vec_node` | `CREATE VIRTUAL TABLE vec_node USING vec0(node_id INTEGER PRIMARY KEY, embedding FLOAT[768])` | `CREATE TABLE vec_node (node_id INTEGER PRIMARY KEY, embedding vector(768))` |
 | `node` table | Standard — identical | Standard — identical |
 | `edge` table | Standard — identical | Standard — identical |
-| `fts_node` | FTS5 — identical | FTS5 — identical |
+| `fts_node` | FTS5 shadow table + sync triggers | **Not applicable.** No shadow table, no triggers. A native Tantivy index (`CREATE INDEX ... USING fts`) on `node` directly, matched via `fts_match()`/`fts_score()`. |
 | `organizer_queue` | Standard — identical | Standard — identical |
 | All other tables | Standard SQLite — identical | Standard SQLite — identical |
 
-**Only `vec_node` changes.** Every other table (node, edge, FTS, organizer_queue, memory_scope, sox_store_meta, request_ledger, promotion_queue) uses standard SQLite DDL and ports verbatim.
+**`vec_node` and FTS both change; everything else is portable.** node, edge, organizer_queue, memory_scope, sox_store_meta, request_ledger, promotion_queue use standard SQLite DDL and port verbatim. `vec_node` and FTS route through `VectorDialect`/`FTSDialect` respectively.
 
-### Step 3: Vector data migration — Re-embed, Don't Convert
+### Step 3: Vector data migration
 
-The `vec0` BLOB format differs from Turso's native `vector(N)` BLOB. **There is no lossless BLOB-to-BLOB conversion.** The migration must re-embed every vector:
+> **CORRECTED 2026-07-30**: the "no lossless BLOB-to-BLOB conversion, must re-embed every vector"
+> claim below is contradicted by a later live migration that recovered 1141 vectors **losslessly**
+> without re-embedding. Re-embedding remains an available fallback (and may still be the simplest path
+> for a fresh migration), but it is not the only correct approach, and a doc/agent that treats
+> "re-embed is mandatory" as fact will do unnecessary and costly work. See `migrateStore()` in
+> `libs/data/store/store-adapter/src/migration.ts` for the current copy path.
+
+The `vec0` BLOB format differs from Turso's native `vector(N)` BLOB. Historically this document assumed re-embedding was required for every vector:
 
 1. Read node `rowid` + `content` from the source SqliteAdapter for all live episodes
 2. For each node, call `embed(content)` via the real ONNX provider
 3. Insert into target TursoAdapter's `vec_node` table using `adapter.executeRun()`
 4. ~10K vectors × ~50ms/embed = ~500 seconds (~8 minutes). Batch in chunks of 500 to avoid OOM.
 
-**During migration, writes are blocked** (server stopped). The re-embed is offline.
+**During migration, writes are blocked** (server stopped). The re-embed, if used, is offline.
 
 ### Step 4: Verification steps
 
@@ -182,6 +231,11 @@ The ADHD backlog consumer (`phase-2-adhd-backlog.md`) **cannot start until sox-e
 ---
 
 ## Section 4: Unbuilt Components
+
+> **SUPERSEDED 2026-07-30** — every component in this section (4.1–4.6) is now built and matches the
+> "Solutions" section further below almost verbatim; several items are also corrected in Section 1's
+> table above. Kept as the historical rationale for *why* each piece was needed. Do not read "not
+> implemented" as current status for anything below.
 
 These are specified in the architecture (`turso-database-adapter.md`) but not implemented. Listed in dependency order:
 
@@ -318,6 +372,17 @@ operation: (tx: AdapterTransaction) => T | Promise<T>
 
 ### 4.5 Remaining raw `Database.Database` leak sites
 
+> **GAP NOTED 2026-07-30**: all functions listed in the table below have been migrated to
+> `StoreAdapter`. But this table never covered `memory-server`'s own tool-handling code. The real
+> remaining leaks — discovered later — were 9 unconditional `adapter.unwrap() as Database.Database`
+> call sites in `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts`
+> (`memory_ping`'s queue/watermark/SLO reads, `memory_recall`'s no-query listing + enrichment
+> augmentation + post-filter, and `memory_get_community`'s three queries), each followed by a
+> synchronous `.prepare().get()/.all()` call on what is an async Turso handle in production
+> (`adapter_type=turso`), reproduced live as `memory_recall({limit:3})` throwing `TypeError: rows is
+> not iterable`. Fixed across all 9 sites in commit `2ce65f4`. Any future audit of raw-DB leak sites
+> must include memory-server's own handler code, not just memory-core.
+
 Beyond openDb and WriteQueue, these functions in memory-core still take raw `better-sqlite3.Database`:
 
 | Function | File | Line | Usage | Migration |
@@ -366,6 +431,11 @@ dialect.createTableDDL('vec_node', 768);
 
 ## Section 5: Go-Live Blockers
 
+> **SUPERSEDED 2026-07-30** — blockers 1–7 below are resolved (see Section 1's table and the
+> "Solutions" section further down, which was implemented as written). Blocker 8 (rollback plan
+> verified) and the "CAN be done after going live" items were not independently re-verified in this
+> correction pass. Kept as the historical severity/effort record.
+
 ### MUST be done before flipping the live store
 
 | # | Blocker | Severity | Why blocking | Effort |
@@ -413,6 +483,17 @@ dialect.createTableDDL('vec_node', 768);
 ---
 
 # Solutions
+
+> **STATUS 2026-07-30**: this section was a proposal when written; it has since been **substantially
+> implemented as designed**. `libs/data/store/store-adapter/src/vector-dialect.ts`,
+> `libs/memory-core/src/write-queue.ts`, and `libs/memory-core/src/db.ts` all match the shapes
+> described in Solutions 1, 2, and 4 below closely (verified 2026-07-30 by reading current source).
+> Treat the code blocks below as "this is what shipped," not "this is what should ship." Two
+> corrections apply within this section: Solution 1's `TursoVectorDialect` is accurate, but FTS
+> dialect routing (not covered here at all) lives in a separate `createFTSDialect()` factory, not in
+> VectorDialect — see the correction at Section 2/Step 2 above. Solution 10's re-embed-only migration
+> narrative is corrected where it recurs below; `migrateStore()` in
+> `libs/data/store/store-adapter/src/migration.ts` is the actual shipped migration primitive.
 
 > **Design principle:** Every function, every path, every component works on BOTH backends. The **only** genuine exception is `sqliteVec.load(adapter.unwrap())` — native C extension loading that fundamentally cannot cross a different C ABI (Turso's `libsql` uses a different native module). Everything else is backend-agnostic. Branch on `adapter.config.type` where the adapter type matters; use `VectorDialect` where vector SQL diverges; use `adapter.execute*()` for all data access. Zero `unwrap()` calls outside the single guarded sqlite-vec load. Zero feature-flag booleans. Zero deferred work. Zero "SqliteAdapter-only maintenance" functions — every function accepts `StoreAdapter`, and every function works on both backends.
 >
@@ -1274,6 +1355,14 @@ The `STORE_ADAPTER` env var functions as a feature flag in reverse:
 
 ## Solution 10: Live data migration — both modes, both directions, sandbox coverage
 
+> **CORRECTED 2026-07-30**: this solution's migration script assumes re-embedding every vector is
+> mandatory (per the original Section 2/Step 3 claim). A later live migration recovered 1141 vectors
+> **losslessly** without re-embedding, contradicting that assumption. `migrateStore()`
+> (`libs/data/store/store-adapter/src/migration.ts`) — "Copy all tables from an already-open source
+> StoreAdapter to an already-open target StoreAdapter" — is the shipped primitive; whether it re-embeds
+> or copies vectors directly should be verified against its current implementation before relying on
+> the re-embed-only steps below.
+
 ### Two migration modes
 
 **Copy-then-swap (default, recommended):**
@@ -1618,6 +1707,12 @@ Citations: [sox-ecosystem, architect, deepseek, turso-go-live-revised, 1: libs/d
 ---
 
 ## Section 6: Optimized Execution Plan
+
+> **HISTORICAL 2026-07-30** — this wave/packet dispatch plan predates the actual implementation
+> history (commits `9aadf3a`, `15bc78f`, `2ce65f4`, `f350c83`, and the Turso concurrency mutex fix).
+> The work landed; whether it landed via these exact 26 packets in this exact order was not verified
+> for this correction pass. Useful as a reference for what a from-scratch execution plan looks like,
+> not as a checklist of what remains to be done.
 
 > **Decomposes the 7 segments (A–G) into 26 dispatchable task packets across 6 waves, with verifiable gates per packet and a comprehensive end-to-end verification protocol.**
 >

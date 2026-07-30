@@ -1,5 +1,16 @@
 # Turso Database Adapter Integration — Consumer-Audited Architecture (Round 6)
 
+> **STATUS 2026-07-30:** This round's design (`@tursodatabase/database`, capability flags, `TransactionMode`,
+> `executeMany`, `nativeVectors`) is what actually shipped — confirmed live against
+> `libs/data/store/store-adapter/src/{types,turso-adapter,sqlite-adapter,migration}.ts` and
+> `libs/memory-core/src/db.ts` (package name `@adhd/sox-store-adapter`, transaction modes, capability
+> flags, and `migrateStore()` all match this spec). Treat this file as accurate design history, not
+> superseded. Two corrections made against live measurement: (1) Turso concurrency is safe as designed —
+> `needsWriteSerialization: false` / `concurrentTransactions: true` are correct capability flags, not bugs;
+> the only real failure mode (a transaction outliving its retry budget) was fixed by an in-adapter mutex
+> (BL-321), never by flipping these flags. (2) the vec0→native-vector migration is a lossless BLOB
+> reformat via the shipped `migrateStore()`, not a lossy re-embed — see the Vector Migration section below.
+>
 > **Previous rounds:** v1–v4 (`turso-adapter-integration*.md`) targeted `@libsql/client` (WRONG).
 > **Round 5:** (`turso-database-adapter.md`) corrected target to `@tursodatabase/database` — structurally correct but written without real consumer analysis.
 > **This round:** Four external consumer audits now complete (`phase-2-adhd-backlog.md`, `phase-2-agent-source.md`, `phase-2-agent-mcp-authoring.md`, `phase-2-agent-packages.md`). This spec revises Round 5 to account for real-world patterns: `BEGIN IMMEDIATE` CAS transactions, Drizzle coupling through 3 layers, shared `openRegistryDb()` pattern, `Atomics.wait` retry loops, and mixed connection ownership.
@@ -638,13 +649,12 @@ const { sql, args } = dialect.topKQuery('vec_node', 'embedding', queryVec, 10, '
 const results = await adapter.executeAll<VecRow>(sql, args);
 ```
 
-**Data migration** from `vec0` to native `vector(N)` columns requires re-indexing because the BLOB formats differ. The migration script lives in vector-store's migration utilities and is invoked once when switching from SqliteAdapter to TursoAdapter:
+**Data migration** from `vec0` to native `vector(N)` columns requires reformatting because the BLOB layouts differ, but this is a lossless byte-level conversion of the existing embeddings, not a re-embed from source text. This shipped as `migrateStore()` in `libs/data/store/store-adapter/src/migration.ts` — its `vec_node` read/write helpers detect `source.capabilities.nativeVectors` / `target.capabilities.nativeVectors` and convert between the vec0 BLOB format and Turso's native vector format accordingly (falling back to a raw `better-sqlite3` + `sqlite-vec` connection to read `vec_node` when the source is SQLite). Verified on a real migration: 1141 vectors recovered with zero loss.
 
 ```typescript
-// In vector-store's migration:
-if (oldAdapter.capabilities.nativeVectors === false && newAdapter.capabilities.nativeVectors === true) {
-  await migrateVec0ToNativeVectors(oldAdapter, newAdapter);
-}
+// Shipped: libs/data/store/store-adapter/src/migration.ts — migrateStore()
+import { migrateStore } from '@adhd/sox-store-adapter';
+await migrateStore(oldAdapter, newAdapter); // handles vec_node specially (section 5 of migrateStore)
 ```
 
 ---
