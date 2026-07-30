@@ -994,3 +994,147 @@ Citations: [wip/turso-live-metrics, backend-developer, claude, embed-backfill-re
 **Severity:** HIGH — blocks a clean `npx nx test memory-core --skip-nx-cache` run (the mandated pre-merge gate for this package) independent of any single feature branch; well over 200 individual test cases red as of this filing, across both this item and BL-323/BL-324's overlapping symptoms.
 
 Citations: [wip/turso-live-metrics, logging, claude, BL-320-persisted-logging-tracing, 1: libs/memory-core/src/telemetry.spec.ts, 2: libs/memory-core/src/db.ts (git log --follow -p shows the sync→async signature change predates this session), 3: libs/memory-core/src/write-queue.ts:353, 4: libs/memory-core/src/write-queue.spec.ts, libs/memory-core/src/write-pipeline.spec.ts, libs/memory-core/src/embed-provenance.spec.ts, libs/memory-core/src/embed-pipeline-metrics.spec.ts, libs/memory-core/src/write.spec.ts (grep for `= openDb(` / `= WriteQueue.forPath(` without a preceding `await` across these files), 5: libs/memory-core/src/write-queue.spec.ts:54,82,103,131,206,241,275,286,314, 6: libs/memory-core/src/embed-pipeline-metrics.spec.ts:74,118,129, 7: libs/memory-core/src/embed-provenance.spec.ts:70,84 and libs/memory-core/src/write-pipeline.spec.ts:62,132]
+
+---
+
+### BL-326 — `cluster.ts` incremental path is a dead stub: no ordinary write can ever cluster — **Open (HIGH)** (2026-07-30)
+
+**Driver:** `libs/memory-core/src/cluster.ts:437-441` short-circuits unconditionally:
+```ts
+const isFullPass = !opts.incrementalOnly && episodes.length <= nodeCap;
+if (!isFullPass) return { clusters: [], full_pass: false, unclustered_count: episodes.length };
+```
+`incrementalOnly: true` returns empty regardless of how many valid vectors exist. `runEnrichPassOnDb` (`extensions/.../memory-server/src/index.ts:2024`) calls `runBatchEnrich({ incrementalCluster: !fullPass })`, and `fullPass` is true only when an explicit `organizer_queue` "enrich" row is pending — which `memory_curate {op:'recluster'}` merely ENQUEUES (`curate.ts` `enqueueEnrichFull`), never runs inline. **Net: the only clustering path an ordinary `memory_write` ever reaches is the dead stub.** Proven at both the pure `clusterStore()` level and the production wrapper by `clustering-e2e.test.ts` (commit `3e0742f`), 18/18 green across sqlite AND turso.
+
+**Fix sketch:** implement the `// TODO: local neighborhood check per D1.3`, or make full passes run automatically on a cadence/threshold. Needs an owner decision — this is a design gap, not a typo.
+
+**Acceptance (red→green, must name BL-326):** a test that writes N clusterable episodes, runs ONLY the ordinary write/enrich path (no explicit recluster row), and asserts `total_clustered > 0`. Must fail today.
+
+**Severity:** HIGH — clustering is inert in production. Paired with BL-327 it fully explains the live `cluster_count: 139 / total_clustered: 0 / coverage: 0`.
+
+Citations: [wip/turso-live-metrics, cluster-proof, claude, turso-go-live, 1: libs/memory-core/src/cluster.ts:437-441, 2: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:2024, 3: libs/memory-core/src/curate.ts (enqueueEnrichFull), 4: extensions/bundles/sox-memory-bundle/members/memory-server/clustering-e2e.test.ts]
+
+---
+
+### BL-327 — Communities orphaned by `memory_invalidate` are never garbage-collected — **Open (HIGH)** (2026-07-30)
+
+**Driver:** `materializeClusters` (`libs/memory-core/src/cluster.ts:274-296`) is the ONLY code that invalidates a community node, and it runs only during a real full pass. `memory_invalidate` — the everyday bi-temporal supersession path — sets `t_invalid` on the EPISODE only; it never touches the community node or its `MEMBER_OF` edges. `clusterStats.total_clustered` requires `src.t_invalid IS NULL` in its JOIN (`cluster.ts:659`), so ordinary churn decays `total_clustered` toward 0 while `cluster_count` stays fixed.
+
+**Reproduced** (`clustering-e2e.test.ts` REPRO A): invalidating 8 of 24 episodes drove `total_clustered` 24→16 with `cluster_count` unchanged at 3, target community confirmed still LIVE with all members gone. REPRO B proved a genuine full pass IS self-healing — it invalidates stale communities rather than abandoning them live.
+
+**SUPERSEDES the earlier "downstream of vector scarcity" theory.** Because a sparse full pass correctly RETIRES stale communities, scarcity alone cannot produce the live signature; it requires member churn plus zero full passes ever running (BL-326). Any item still asserting the scarcity explanation should be corrected.
+
+**Fix sketch:** invalidate/retire a community when its live member count reaches zero, or run GC on the invalidate path. Do not rely on full passes (see BL-326).
+
+**Acceptance (red→green, must name BL-327):** invalidate every member of a community, assert the community node is no longer live without running a full pass.
+
+**Severity:** HIGH.
+
+Citations: [wip/turso-live-metrics, cluster-proof, claude, turso-go-live, 1: libs/memory-core/src/cluster.ts:274-296, 2: libs/memory-core/src/cluster.ts:659, 3: extensions/bundles/sox-memory-bundle/members/memory-server/clustering-e2e.test.ts]
+
+---
+
+### BL-328 — Default cluster threshold 0.82 appears mis-calibrated for naturally-worded prose — **Open (MEDIUM)** (2026-07-30)
+
+**Driver:** measured with the real `bge-base-en-v1.5` model (no mocks), intra-group cosine similarity for topically-related but differently-worded episodes is **0.67–0.70**. At the production default of 0.82 a 24-episode / 3-topic corpus produced **zero** clusters. At an empirically-justified 0.65 the same corpus produced `cluster_count=3`, `coverage=1.0`, `largest=8`, `mean_intra_sim=0.809`, `mean_inter_sim=0.504`, **100% purity, zero cross-contamination**. Identical on both backends (turso `mean_intra_sim` 0.8087392163 vs sqlite 0.8087392161 — float noise only).
+
+Suggests 0.82 is calibrated for near-duplicate content, not topical relatedness. If so, clustering under-performs across the board **even after BL-326 and BL-327 are fixed**.
+
+**Fix sketch:** re-derive the default from a real corpus; consider making it adaptive or per-lens. Do NOT change it blind — pair any change with a purity/coverage measurement, since a lower threshold trades purity for coverage.
+
+**Acceptance (red→green, must name BL-328):** a calibration test asserting a realistic multi-topic corpus clusters with both coverage > 0 and 100% purity at the shipped default.
+
+**Severity:** MEDIUM — quality ceiling, not an outage.
+
+Citations: [wip/turso-live-metrics, cluster-proof, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/clustering-e2e.test.ts]
+
+---
+
+### BL-329 — A Turso FTS index permanently blocks EVERY better-sqlite3 fallback path — **Open (HIGH)** (2026-07-30)
+
+**Driver:** once `idx_fts_node` exists (Turso's native Tantivy index), better-sqlite3 fails on ANY query against the store:
+```
+malformed database schema (__turso_internal_fts_dir_idx_fts_node_key) - near "USING": syntax error
+```
+SQLite refuses all queries once a single `sqlite_master` object is unparseable, and better-sqlite3's SQLite build cannot parse `CREATE INDEX ... USING fts`. Verified directly: the Turso driver reads the same store fine (9397 nodes) with AND without the `index_method` flag; better-sqlite3 fails outright.
+
+**Blast radius — every better-sqlite3 fallback in memory-core:** sqlite-vec loading (`db.ts`), `dropVec0ViaBetterSqlite3` (`db.ts:198`), `dropFtsResidueViaBetterSqlite3` (`db.ts:259`), and any sqlite-based forensics or backup tooling. This took the live store fully down after the go-live rebuild (every tool call erroring) and blocked every Turso write on a virgin store, independently reproduced 3/3 runs by the clustering e2e work at `db.ts:218` / `_openDbInner` `db.ts:646`.
+
+The immediate trigger was fixed in commit `c3151f5` (the vec0 predicate no longer matches the native `vec_node` table), **but the architectural constraint remains**: any future code assuming it can fall back to better-sqlite3 on a Turso store is wrong, and will fail the same way.
+
+**Fix sketch:** document the constraint on the adapter interface; add a guard/assertion so a better-sqlite3 open of a Turso-native store fails loudly and early with an explanatory error rather than an opaque schema-parse error; audit remaining fallbacks.
+
+**Acceptance (red→green, must name BL-329):** a test that creates a Turso store with `idx_fts_node`, attempts a better-sqlite3 open, and asserts a clear diagnostic error rather than `malformed database schema`.
+
+**Severity:** HIGH — architectural, survives the `c3151f5` fix.
+
+Citations: [wip/turso-live-metrics, team-lead+cluster-proof, claude, turso-go-live, 1: libs/memory-core/src/db.ts:198, 2: libs/memory-core/src/db.ts:259, 3: libs/memory-core/src/db.ts:646, 4: libs/data/store/store-adapter/src/fts-dialect.ts, 5: commit c3151f5]
+
+---
+
+### BL-330 — Unlinked WAL: graceful close SILENTLY discards committed data — **Open (HIGH)** (2026-07-30)
+
+**Driver:** during the go-live the live store's `~/.memory/memory.db-wal` had **no directory entry** (`find ~/.memory -inum 243613830` returned nothing) while the backend held fd `19u` on it with 3,757,472 bytes. Proven consequence on a scratch DB with the same driver: with the WAL unlinked, a graceful `close()` **silently discarded 90 of 140 committed rows and threw no error**. Control with the WAL in place: 60/60 consistent.
+
+**Also proven:** sustained write pressure DOES drain an orphaned WAL through the still-open fd (93.7% recovered) — so a recovery path exists if detected before shutdown.
+
+**Two sub-findings, both independently costly:**
+- (a) `sqlite3 .backup` of a live Turso store **silently omits WAL contents** — its newest record was 13h stale while the live store held newer data. Every file-level snapshot taken during this incident lagged reality and repeatedly corrupted forensic conclusions. A consistent snapshot requires the server stopped.
+- (b) `~/.memory/` also holds orphaned `memory-turso.db-wal` and `memory-turso-live.db-wal` from earlier migrations, making "a cleanup mistakes a live WAL for debris" a plausible and repeatable cause.
+
+**Fix sketch:** detect an unlinked/missing WAL at open and refuse-or-recover loudly; document the correct Turso snapshot procedure (stop first, or use an in-process `VACUUM INTO`); add a maintenance guard so orphaned `*-wal` files can't be confused with live ones.
+
+**Acceptance (red→green, must name BL-330):** a test that unlinks the WAL, closes, and asserts either full data retention or a loud failure — never silent loss.
+
+**Severity:** HIGH — silent data loss with no error and no recoverable artifact. Experiments preserved at `~/.adhd/sox-ecosystem/memory/corrections-20260730/turso-concurrency/`.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: ~/.adhd/sox-ecosystem/memory/corrections-20260730/turso-concurrency/wal-unlink-test.mjs, 2: ~/.adhd/sox-ecosystem/memory/corrections-20260730/turso-concurrency/wal-autockpt-test2.mjs]
+
+---
+
+### BL-331 — Embed pipeline is now CORRECT but ~18x too slow in production — **Open (HIGH)** (2026-07-30)
+
+**Driver:** after the enrich reentrancy fix (`9d4cf0a`) the pipeline wastes nothing — live counters `embeds_completed: 84, applies_applied: 84, applies_exists: 0, embeds_failed: 0, heals_failed: 0` (previously **6721 discarded vs 169 applied**, ~98% waste). But throughput is **`embed_throughput_per_sec: 0.133`** with **`embed_duration_ms` p50 = 7253ms**, against **~2.1–2.8 embeds/sec measured in a clean-room harness on the same machine with the same CoreML execution provider** (`turso-clean-room.test.ts`). That ~18x gap turns the remaining ~3151-item backlog into roughly 6.6 hours instead of ~20 minutes, and starves concurrent reads (recall degrades to BM25/temporal via the read-path timeout guard).
+
+**Unverified candidate causes** — none confirmed:
+1. Head-of-line blocking on the single shared `fastembedProcessHost` child process (serial IPC queue), which is also BL-322's residual open question.
+2. Per-item overhead in the heal loop (`embed-pipeline.ts` `healMissingVectors`) versus the harness's tight batch.
+3. The per-tick time budget (`SOX_EMBED_HEAL_TIME_BUDGET_MS`) leaving the worker idle between passes.
+
+**Fix sketch:** instrument the gap using the BL-320 JSONL trace (`embed.start`/`embed.finish` durations vs wall-clock between them) to separate queue-wait from compute; then address whichever dominates.
+
+**Acceptance (red→green, must name BL-331):** a benchmark asserting production heal throughput is within a defined factor of the clean-room baseline.
+
+**Severity:** HIGH — the store is functional but backfill takes hours and degrades read latency throughout.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live memory_ping counters 2026-07-30, 2: extensions/bundles/sox-memory-bundle/members/memory-server/turso-clean-room.test.ts, 3: libs/memory-core/src/embed-pipeline.ts]
+
+---
+
+### BL-332 — `soxe list` reports a running service as INACTIVE (violates `[inv:list-never-lies]`) — **Open (MEDIUM)** (2026-07-30)
+
+**Driver:** with memory-server demonstrably running (launchd unit `com.sox.user.memory-server`, live pid 42844, answering MCP calls), `node bin/soxe list` reported it as `INACTIVE` with an empty PID column, for both the `user` and `project` scope rows. `node bin/soxe service status memory-server -s user` **correctly** reported `loaded: yes` / `live pids: 42844` — so the reconciliation logic exists but `cmdList` does not use it.
+
+This directly violates the `[inv:list-never-lies]` invariant in `docs/spec/service-lifecycle.md`, and is a near-exact repeat of BL-95 (which fixed `cmdStatus` and left `cmdList` broken).
+
+**Fix sketch:** route `cmdList`'s status column through the same reality-verification `cmdStatus`/`service status` uses.
+
+**Acceptance (red→green, must name BL-332):** start a service, assert `soxe list` reports it RUNNING with the correct pid.
+
+**Severity:** MEDIUM — no data risk, but it misleads operators and agents during exactly the incidents where accurate state matters most.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: apps/sox/src/main.ts (cmdList), 2: docs/spec/service-lifecycle.md]
+
+---
+
+### BL-333 — `--allow-volatile-node` is effectively mandatory: no ABI-compatible stable node exists — **Open (MEDIUM)** (2026-07-30)
+
+**Driver:** `soxe service enable memory-server -s user` refuses to pin `/Users/nix/.nvm/versions/node/v24.11.1/bin/node` because it lives under a version manager, and suggests `/opt/homebrew/Cellar/node/26.5.0/bin/node`. But the extension's native modules (`better-sqlite3`, `@tursodatabase/database`) are compiled against **node 24's** ABI — pinning node 26 would break them at load. So `--allow-volatile-node` is currently the ONLY viable option, and the guard's warning ("a version switch will orphan this unit") is a real, unmitigated risk rather than an avoidable one.
+
+**Fix sketch:** either provide/document an ABI-matched stable node, or have the guard verify ABI compatibility and recommend only compatible binaries instead of any stable one. Recommending an ABI-incompatible node is worse than recommending nothing.
+
+**Acceptance (red→green, must name BL-333):** `soxe service enable` on a project with native modules either succeeds with a compatible pinned node, or fails with an ABI-aware message.
+
+**Severity:** MEDIUM — a `nvm use` orphans the live memory-server unit with no warning at switch time.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: apps/sox/src/main.ts (cmdService enable / node pinning), 2: libs/host-runtime/src/ (os-unit generator)]
