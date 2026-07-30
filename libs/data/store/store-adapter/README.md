@@ -182,15 +182,52 @@ interface AdapterCapabilities {
   multiprocessWrite: boolean;      // Multi-process writer support (Turso multiprocess_wal)
   nativeVectors: boolean;          // Built-in vector SQL functions
   concurrentTransactions: boolean; // BEGIN CONCURRENT (MVCC)
+  /** @deprecated Use `fts` instead. */
+  fts5: boolean;
+  fts: boolean;                    // True when the adapter supports full-text search
+  needsWriteSerialization: boolean; // True for single-sync-connection adapters that require
+                                     // in-app write serialization (better-sqlite3). False for
+                                     // async adapters with native concurrent I/O (Turso).
 }
 ```
 
+| Flag | SqliteAdapter | TursoAdapter |
+|---|---|---|
+| `multiprocessWrite` | `false` (inherent SQLite single-writer limitation) | `true` by default |
+| `nativeVectors` | `false` | `true` |
+| `concurrentTransactions` | `false` | `true` |
+| `fts` | `true` (fts5 virtual table) | `true` (native Tantivy index) |
+| `needsWriteSerialization` | `true` | `false` |
+
 > **`multiprocessWrite` is `true` by default** on TursoAdapter — `multiprocess_wal` is enabled
 > at connect time via the `.tshm` shared memory coordination layer, allowing concurrent readers
-> and serialized writers across multiple OS processes. Setting `experimental: { multiprocessWal: false }`
+> and writers across multiple OS processes. Setting `experimental: { multiprocessWal: false }`
 > opts out, reverting to Turso's default EXCLUSIVE file locking (single-writer).
 >
 > SqliteAdapter always reports `multiprocessWrite: false` (inherent SQLite single-writer limitation).
+>
+> **`concurrentTransactions: true` / `needsWriteSerialization: false` on TursoAdapter are the
+> correct, measured defaults — not bugs and not something to "fix" by serializing writes.**
+> Turso's shared connection handle has been load-tested at 50 concurrent transactions (both
+> `deferred` and `immediate` modes) with zero lost writes, zero rejected commits, and isolation
+> holding throughout. The only real failure mode is a loud thrown `Transaction error: cannot
+> start a transaction within a transaction` when a transaction outlives the ~70ms retry budget
+> (`maxRetries` × `baseDelayMs`) — fixed in-adapter via `_txMutexChain` (a promise-chain mutex
+> serializing the retry-loop critical section per adapter instance), never by flipping
+> `needsWriteSerialization` to `true` or disabling `concurrentTransactions`. See the doc comment
+> on `TursoAdapterImpl` in `turso-adapter.ts` (BL-321).
+
+### Full-text search per adapter
+
+FTS implementation is adapter-specific and the two are **not** structurally alike:
+
+- **SqliteAdapter** — classic `fts5` virtual table (`fts_node`) kept in sync with the base table
+  via triggers.
+- **TursoAdapter** — no `fts_node` shadow table and no sync triggers. FTS is a native Tantivy
+  index, `CREATE INDEX idx_fts_node ON "node" USING fts (...)`, queried via `fts_match()` /
+  `fts_score()`. This requires the `index_method` experimental flag on every connection that
+  creates *or* queries the index (unconditionally enabled by this adapter — see `turso-adapter.ts`);
+  without it, index creation throws a parse error that must not be silently swallowed.
 
 ### Configuration
 
