@@ -321,11 +321,12 @@ export type { QuotaConfig, QuotaWarningDetails, QuotaOk, QuotaRefusal, QuotaChec
 // ── Store backup via VACUUM INTO (HF-4, BL-133) ───────────────────────────────
 export {
   backupStore,
+  autoBackup,
   isBackupStoreError,
   isPathInMemoryAllowlist,
   memoryAllowlistRoot,
 } from './backup.js';
-export type { BackupStoreOptions, BackupStoreResult, BackupStoreError } from './backup.js';
+export type { BackupStoreOptions, BackupStoreResult, BackupStoreError, AutoBackupResult } from './backup.js';
 
 // ── Canonical ingestion primitives (S11 / BL-165 — re-exported from @adhd/sox-ingest) ─
 // Consumers (e.g. memory-server) that need chunking or hashing should import these
