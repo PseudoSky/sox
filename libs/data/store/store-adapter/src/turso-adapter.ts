@@ -56,6 +56,47 @@ export class TursoAdapterImpl implements TursoAdapter {
   };
   private closed = false;
 
+  /**
+   * (BL-321) `this.db` is ONE shared connection handle — @tursodatabase/database
+   * local mode has no per-transaction connection or session isolation. Two
+   * concurrent JS callers each running the `transaction()` retry loop below
+   * against this one handle contend for the SAME logical transaction slot:
+   * one's `BEGIN` can land while another's is still open, which the engine
+   * correctly refuses with `Transaction error: cannot start a transaction
+   * within a transaction`. Empirically (verified against the real driver,
+   * see /tmp/turso-concurrency/exp3.mjs) this is a robustness/availability
+   * failure, NOT silent data loss or cross-transaction corruption — every
+   * commit that lands is durable, every rejection surfaces to the caller,
+   * and a rolled-back transaction never discards a concurrent sibling's
+   * committed work. But once a transaction is held open longer than the
+   * `maxRetries=3` / `baseDelayMs=10` retry budget (~70ms) can absorb — e.g.
+   * real async work between statements — the caller gets a hard throw
+   * instead of a queued wait. `_txMutexChain` is a classic promise-chain
+   * mutex (cheap, JS-event-loop-safe — no window for a second synchronous
+   * mutation to interleave with the reassignment below) that serializes the
+   * critical section per adapter instance so concurrent callers wait their
+   * turn instead of colliding. This is intentionally the ONLY change here:
+   * `needsWriteSerialization`/`concurrentTransactions`/`multiprocessWrite`
+   * stay at their Turso defaults (store owner directive — do not revert any
+   * Turso default or multiprocess-writer concurrency improvement). The
+   * WriteQueue bypass (`_noop = true` for Turso) is UNCHANGED; this mutex is
+   * defense-in-depth for callers that reach the adapter directly.
+   */
+  private _txMutexChain: Promise<void> = Promise.resolve();
+
+  /** Run `fn` exclusively with respect to any other in-flight `transaction()`
+   *  call on this adapter instance. FIFO-ish: chains onto the previous run
+   *  regardless of whether it resolved or rejected, so one failed transaction
+   *  never wedges the mutex for subsequent ones. */
+  private _withTxLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this._txMutexChain.then(fn, fn);
+    this._txMutexChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
   private constructor(
     db: any,
     config: AdapterConfig & { type: 'turso' },
@@ -205,6 +246,16 @@ export class TursoAdapterImpl implements TursoAdapter {
   }
 
   async transaction<T>(
+    fn: (tx: AdapterTransaction) => T | Promise<T>,
+    opts?: TransactionOptions,
+  ): Promise<T> {
+    // (BL-321) Serialize the entire BEGIN…COMMIT/ROLLBACK critical section —
+    // including retries — against any other concurrent transaction() call on
+    // this adapter instance. See `_withTxLock` doc comment above.
+    return this._withTxLock(() => this._runTransaction(fn, opts));
+  }
+
+  private async _runTransaction<T>(
     fn: (tx: AdapterTransaction) => T | Promise<T>,
     opts?: TransactionOptions,
   ): Promise<T> {
