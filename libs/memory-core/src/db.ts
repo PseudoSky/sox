@@ -4,21 +4,23 @@
  * applies schema DDL (idempotent), and returns a ready-to-use StoreAdapter.
  *
  * MIGRATED (turso-adapter): returns Promise<StoreAdapter> instead of Database.Database.
- * Internally creates a SqliteAdapter, loads sqlite-vec via unwrap(), applies
- * pragmas via adapter.pragmaSet() and DDL via adapter.exec(). Callers that
- * need raw better-sqlite3 access can cast to SqliteAdapter and call unwrap().
+ * Internally creates a StoreAdapter (sqlite or turso), loads sqlite-vec for sqlite,
+ * applies pragmas via adapter.pragmaSet() and DDL via adapter.exec(). vec0 DDL is
+ * produced by the VectorDialect. Callers that need raw better-sqlite3 access can
+ * cast to SqliteAdapter and call unwrap().
  */
 
-import Database from 'better-sqlite3';
-import * as sqliteVec from 'sqlite-vec';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { rebuildTable } from '@adhd/sox-graph-store';
-import { PRAGMAS, DDL_BASE, FTS_TRIGGERS } from './schema.js';
+import { PRAGMAS, DDL_BASE, FTS_DDL, FTS_TRIGGERS } from './schema.js';
 import { EMBED_DIM, getActiveEmbedModel } from './embed.js';
 import { closeDbWithLease } from './lease.js';
+import type Database from 'better-sqlite3';
 import type { StoreAdapter, SqliteAdapter } from '@adhd/sox-store-adapter';
+import { log, instrumentAdapter, truncateForLog } from './telemetry.js';
+import { performance } from 'node:perf_hooks';
 
 // ── Store identity stamp keys (SA-5 / BL-121) ────────────────────────────────
 export const STORE_META_KEYS = {
@@ -97,18 +99,16 @@ export function getWriterArtifact(): string {
  * comparison is STAMP vs RESOLVED runtime model, warning (not fatal) on mismatch.
  * To make it honest, `_activeModel` must start as `null` until a provider loads.
  */
-export function stampStoreMeta(db: Database.Database): void {
-  const upsert = db.prepare(
-    `INSERT OR IGNORE INTO sox_store_meta(key, value) VALUES (?, ?)`,
-  );
+export async function stampStoreMeta(adapter: StoreAdapter): Promise<void> {
+  const upsert = `INSERT OR IGNORE INTO sox_store_meta(key, value) VALUES (?, ?)`;
 
-  upsert.run(STORE_META_KEYS.SCHEMA_VERSION, String(STORE_SCHEMA_VERSION));
-  upsert.run(STORE_META_KEYS.WRITER_ARTIFACT, getWriterArtifact());
+  await adapter.executeRun(upsert, [STORE_META_KEYS.SCHEMA_VERSION, String(STORE_SCHEMA_VERSION)]);
+  await adapter.executeRun(upsert, [STORE_META_KEYS.WRITER_ARTIFACT, getWriterArtifact()]);
   // BL-252: stamp "unknown" when no embed provider has been initialised
-  upsert.run(STORE_META_KEYS.EMBED_MODEL, getActiveEmbedModel() ?? 'unknown');
-  upsert.run(STORE_META_KEYS.EMBED_DIMENSIONS, String(EMBED_DIM));
+  await adapter.executeRun(upsert, [STORE_META_KEYS.EMBED_MODEL, getActiveEmbedModel() ?? 'unknown']);
+  await adapter.executeRun(upsert, [STORE_META_KEYS.EMBED_DIMENSIONS, String(EMBED_DIM)]);
 
-  verifyStoreMeta(db);
+  await verifyStoreMeta(adapter);
 }
 
 /**
@@ -118,10 +118,10 @@ export function stampStoreMeta(db: Database.Database): void {
  * Warns (console.error, non-fatal) when embed_model differs — vectors may be
  * in a different space but reads still work.
  */
-export function verifyStoreMeta(db: Database.Database): void {
-  const rows = db
-    .prepare<[], { key: string; value: string }>('SELECT key, value FROM sox_store_meta')
-    .all();
+export async function verifyStoreMeta(adapter: StoreAdapter): Promise<void> {
+  const { rows } = await adapter.executeAll<{ key: string; value: string }>(
+    'SELECT key, value FROM sox_store_meta',
+  );
 
   const meta = new Map(rows.map((r) => [r.key, r.value] as const));
 
@@ -191,26 +191,144 @@ export interface MemoryScope {
 }
 
 /**
+ * Open a database via better-sqlite3 + sqlite-vec to drop vec0 virtual tables
+ * and optionally VACUUM. Turso/libSQL cannot drop vec0 VTs (no vec0 module),
+ * so this fallback is required when migrating an existing store to Turso.
+ */
+async function dropVec0ViaBetterSqlite3(
+  dbPath: string,
+  options?: { runVacuum?: boolean },
+): Promise<void> {
+  const [{ default: Database }, { default: sqliteVec }] = await Promise.all([
+    import('better-sqlite3'),
+    import('sqlite-vec'),
+  ]);
+  const bsdb = new Database(dbPath);
+  try {
+    sqliteVec.load(bsdb);
+
+    // Phase 1: Drop vec0 virtual tables (cascades to shadow tables)
+    // Turso cannot drop these without the vec0 module loaded.
+    const vec0Tables = bsdb.prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE '%VIRTUAL%' AND sql LIKE '%vec0%'`,
+    ).all() as { name: string }[];
+    for (const t of vec0Tables) {
+      bsdb.exec(`DROP TABLE IF EXISTS "${t.name}"`);
+    }
+
+    // Phase 2: Drop remaining vec-prefixed shadow tables
+    const shadowTables = bsdb.prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE 'vec\\_%' ESCAPE '\\' OR name = '_vector_spaces')`,
+    ).all() as { name: string }[];
+    for (const t of shadowTables) {
+      bsdb.exec(`DROP TABLE IF EXISTS "${t.name}"`);
+    }
+
+    if (options?.runVacuum) {
+      bsdb.exec('VACUUM');
+    }
+  } finally {
+    bsdb.close();
+  }
+}
+
+/**
  * Open (or create) a memory database at the given path.
- * Creates a SqliteAdapter, loads sqlite-vec, applies pragmas + schema, and
- * returns a ready-to-use StoreAdapter.
+ * Creates a StoreAdapter, loads sqlite-vec for sqlite type, applies pragmas +
+ * schema, and returns a ready-to-use StoreAdapter.
+ *
+ * BL-320: every open is bracketed by structured start/finish/error telemetry
+ * (see telemetry.ts) so a hang or a failure during open is durably visible
+ * even if it never returns. The real work lives in `_openDbInner` — kept
+ * separate so the telemetry wrapper stays a thin, easily-audited shell.
  */
 export async function openDb(dbPath: string): Promise<StoreAdapter> {
   // BL-41: expand a leading ~ to $HOME at the file-create sink so every caller —
   // regardless of whether it expanded — opens the real path, never a literal `~` dir.
   dbPath = expandDbPath(dbPath);
+  const openStartMs = performance.now();
+  log.info('store.open.start', { db_path: dbPath });
 
+  try {
+    const adapter = await _openDbInner(dbPath);
+    log.info('store.open.finish', {
+      db_path: dbPath,
+      adapter_type: adapter.config.type,
+      duration_ms: Math.round(performance.now() - openStartMs),
+    });
+    // BL-320: wrap the adapter so every SQL error anywhere downstream (Phase-A
+    // insert, recall query, curate op, …) is logged with the offending SQL
+    // text — not just failures during this open sequence.
+    return instrumentAdapter(adapter, adapter.config.type);
+  } catch (err) {
+    log.error('store.open.error', {
+      db_path: dbPath,
+      duration_ms: Math.round(performance.now() - openStartMs),
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+}
+
+async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
   // Ensure parent directory exists
   const dir = path.dirname(dbPath);
   fs.mkdirSync(dir, { recursive: true });
 
-  // Create SqliteAdapter (dynamically imported to bridge CJS→ESM).
-  const { createSqliteAdapter } = await import('@adhd/sox-store-adapter');
-  const adapter = createSqliteAdapter({ dbPath }) as SqliteAdapter;
-  const rawDb = adapter.unwrap();
+  // Create StoreAdapter (dynamically imported to bridge CJS→ESM).
+  const { createStoreAdapter, createVectorDialect, createFTSDialect } = await import('@adhd/sox-store-adapter');
+  let adapter = await createStoreAdapter({ dbPath });
+  const vectorDialect = createVectorDialect(adapter.config.type);
 
-  // Load sqlite-vec extension
-  sqliteVec.load(rawDb);
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TursoAdapter compatibility repair for existing better-sqlite3 stores
+  // ═══════════════════════════════════════════════════════════════════════════
+  // better-sqlite3 embeds SQLite 3.53.1, while Turso/libSQL 0.7.1 is built on
+  // SQLite 3.50.4. A database file created by the newer SQLite is readable by
+  // Turso at the sqlite_master level but NOT at the data-table level ("no such
+  // table" on any SELECT/INSERT/DELETE against a real table). The fix is a
+  // VACUUM (via better-sqlite3) which re-serialises the file in the format of
+  // whichever SQLite performed it — in this case the installed better-sqlite3
+  // carries the newer SQLite, but the resulting file is backward-compatible
+  // down to at least 3.50.4 (verified empirically 2026-07-28).
+  //
+  // Additionally, Turso/libSQL 0.7.1 cannot DROP vec0 virtual tables — the
+  // command silently succeeds but the table remains in sqlite_master.
+  // Therefore we also drop vec0-related tables through better-sqlite3 here
+  // (before VACUUM, so the pages are reclaimed).
+  //
+  // Detect by trying to query a specific essential table (node). sqlite_master
+  // is always accessible; if it lists node but a SELECT against it fails, the
+  // file needs VACUUM. We use node rather than an arbitrary first table because
+  // some tables (e.g. memory_scope) may be queryable while others are not; node
+  // is the most reliable indicator — if it fails, VACUUM fixes everything.
+  if (adapter.config.type === 'turso' && fs.existsSync(dbPath) && fs.statSync(dbPath).size > 0) {
+    const nodeInSchema = await adapter.executeGet<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='node'`,
+    );
+    if (nodeInSchema) {
+      try {
+        await adapter.executeGet('SELECT 1 FROM node LIMIT 1');
+      } catch {
+        // Table exists in sqlite_master but cannot be queried — the database
+        // was created by a newer SQLite version. VACUUM via better-sqlite3 to
+        // re-serialise in a compatible format, also dropping vec0 VTs (which
+        // Turso cannot drop) and their shadow tables, then re-create adapter.
+        log.warn('store.open.turso_vacuum_repair', { db_path: dbPath });
+        await adapter.close();
+        await dropVec0ViaBetterSqlite3(dbPath, { runVacuum: true });
+        adapter = await createStoreAdapter({ dbPath });
+      }
+    }
+  }
+
+  // Load sqlite-vec extension ONLY for adapters WITHOUT native vector support
+  // (i.e. SqliteAdapter — TursoAdapter has native vectors and doesn't need it).
+  if (!adapter.capabilities.nativeVectors) {
+    const { default: sqliteVec } = await import('sqlite-vec');
+    const rawDb = (adapter as SqliteAdapter).unwrap();
+    sqliteVec.load(rawDb);
+  }
 
   // Apply pragmas via adapter.pragmaSet()
   for (const line of PRAGMAS.trim().split('\n').filter(Boolean)) {
@@ -240,89 +358,247 @@ export async function openDb(dbPath: string): Promise<StoreAdapter> {
   // No-op on a fresh store: `PRAGMA table_info` on a not-yet-created table
   // returns an empty row set, so the `tableExists` guard below skips cleanly —
   // the CREATE TABLE statement in DDL defines every column natively instead.
-  const nodeTableExists = rawDb
-    .prepare<[], { name: string }>(`SELECT name FROM sqlite_master WHERE type='table' AND name='node'`)
-    .get();
-  if (nodeTableExists) {
-    migrateAddColumn(rawDb, 'node', 'namespace', `TEXT DEFAULT 'global'`);
-    migrateAddColumn(rawDb, 'node', 't_expires', 'TEXT');
-    migrateAddColumn(rawDb, 'node', 'level', 'INTEGER');
-    migrateAddColumn(rawDb, 'node', 'resume_state', 'TEXT');
-  }
-  const edgeTableExists = rawDb
-    .prepare<[], { name: string }>(`SELECT name FROM sqlite_master WHERE type='table' AND name='edge'`)
-    .get();
-  if (edgeTableExists) {
-    migrateAddColumn(rawDb, 'edge', 't_expired', 'TEXT');
+  //
+  // NOTE (Turso compatibility): Turso/libSQL's `PRAGMA table_info` returns 0 rows
+  // for tables created by better-sqlite3 with complex schemas (FKs, CHECK, indexes).
+  // If the ALTER TABLE calls below fail, the store is still usable — the missing
+  // columns are quality-of-life additions. Catch and continue.
+  try {
+    const nodeTableExists = await adapter.executeGet<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='node'`,
+    );
+    if (nodeTableExists) {
+      // Wrap each migration in try/catch — Turso may not support ALTER TABLE
+      // on complex tables created by better-sqlite3.
+      for (const [col, def] of [['namespace', `TEXT DEFAULT 'global'`], ['t_expires', 'TEXT'], ['level', 'INTEGER'], ['resume_state', 'TEXT']] as const) {
+        try {
+          await migrateAddColumn(adapter, 'node', col, def);
+        } catch (err) {
+          log.debug('store.open.migrate_column_skip', {
+            table: 'node',
+            column: col,
+            adapter_type: adapter.config.type,
+            error: truncateForLog(err instanceof Error ? err.message : String(err)),
+          });
+        }
+      }
+    }
+    const edgeTableExists = await adapter.executeGet<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='edge'`,
+    );
+    if (edgeTableExists) {
+      try {
+        await migrateAddColumn(adapter, 'edge', 't_expired', 'TEXT');
+      } catch (err) {
+        log.debug('store.open.migrate_column_skip', {
+          table: 'edge',
+          column: 't_expired',
+          adapter_type: adapter.config.type,
+          error: truncateForLog(err instanceof Error ? err.message : String(err)),
+        });
+      }
 
-    // BL-302's `ix_edge_unique` (src, dst, rel) — added unconditionally to the
-    // DDL to support ON CONFLICT edge upserts (commit 64a2056) — fails outright
-    // if the live table already has duplicate (src, dst, rel) rows predating the
-    // constraint, hitting the exact same "adapter.exec(DDL) throws before reaching
-    // anything downstream" trap as the column migrations above. Found live
-    // 2026-07-18: 146,006 duplicate edge rows (mostly repeated MEMBER_OF cluster
-    // edges from 2026-06-23 through 2026-07-03 — a since-dormant re-clustering
-    // bug that kept re-inserting the same membership edge without checking for
-    // an existing one first) blocking the index from ever being created.
-    // Dedup BEFORE the DDL runs, keeping the earliest (lowest rowid) row per
-    // (src, dst, rel) — the same deterministic tie-break an ON CONFLICT upsert
-    // would produce. Gated on the index not already existing so this full-table
-    // scan runs once per store, not on every open.
-    const uniqueIndexExists = rawDb
-      .prepare<[], { name: string }>(
-        `SELECT name FROM sqlite_master WHERE type='index' AND name='ix_edge_unique'`,
-      )
-      .get();
-    if (!uniqueIndexExists) {
-      const dupeGroups = rawDb
-        .prepare<[], { c: number }>(
-          `SELECT COUNT(*) AS c FROM (
-             SELECT 1 FROM edge GROUP BY src, dst, rel HAVING COUNT(*) > 1
-           )`,
-        )
-        .get();
-      if ((dupeGroups?.c ?? 0) > 0) {
-        rawDb.exec(`
-          DELETE FROM edge
-          WHERE rowid NOT IN (
-            SELECT MIN(rowid) FROM edge GROUP BY src, dst, rel
-          )
-        `);
+      // BL-302's `ix_edge_unique` (src, dst, rel) — added unconditionally to the
+      // DDL to support ON CONFLICT edge upserts (commit 64a2056) — fails outright
+      // if the live table already has duplicate (src, dst, rel) rows predating the
+      // constraint, hitting the exact same "adapter.exec(DDL) throws before reaching
+      // anything downstream" trap as the column migrations above. Found live
+      // 2026-07-18: 146,006 duplicate edge rows (mostly repeated MEMBER_OF cluster
+      // edges from 2026-06-23 through 2026-07-03 — a since-dormant re-clustering
+      // bug that kept re-inserting the same membership edge without checking for
+      // an existing one first) blocking the index from ever being created.
+      // Dedup BEFORE the DDL runs, keeping the earliest (lowest rowid) row per
+      // (src, dst, rel) — the same deterministic tie-break an ON CONFLICT upsert
+      // would produce. Gated on the index not already existing so this full-table
+      // scan runs once per store, not on every open.
+      try {
+        const uniqueIndexExists = await adapter.executeGet<{ name: string }>(
+          `SELECT name FROM sqlite_master WHERE type='index' AND name='ix_edge_unique'`,
+        );
+        if (!uniqueIndexExists) {
+          const dupeGroups = await adapter.executeGet<{ c: number }>(
+            `SELECT COUNT(*) AS c FROM (
+               SELECT 1 FROM edge GROUP BY src, dst, rel HAVING COUNT(*) > 1
+             )`,
+          );
+          if ((dupeGroups?.c ?? 0) > 0) {
+            await adapter.exec(`
+              DELETE FROM edge
+              WHERE rowid NOT IN (
+                SELECT MIN(rowid) FROM edge GROUP BY src, dst, rel
+              )
+            `);
+          }
+        }
+      } catch (err) {
+        // Non-fatal — edge dedup is a one-time optimization; Turso may not
+        // support the GROUP BY / subquery pattern on complex tables.
+        log.debug('store.open.edge_dedup_skip', {
+          adapter_type: adapter.config.type,
+          error: truncateForLog(err instanceof Error ? err.message : String(err)),
+        });
+      }
+    }
+  } catch (err) {
+    // Non-fatal — the pre-DDL migrations are QoL improvements for existing
+    // stores. If they fail (e.g. on Turso which doesn't support ALTER TABLE
+    // on better-sqlite3-created complex schemas), the store is still usable.
+    // The DDL block below handles CREATE TABLE IF NOT EXISTS correctly.
+    log.debug('store.open.pre_ddl_migrations_skip', {
+      adapter_type: adapter.config.type,
+      error: truncateForLog(err instanceof Error ? err.message : String(err)),
+    });
+  }
+
+  // Apply DDL — split into individual statements for Turso compatibility.
+  // Turso/libSQL rejects multi-statement exec() on the first error even with
+  // IF NOT EXISTS (it validates index definitions against existing indexes).
+  // Execute each statement independently so a "already exists" on one doesn't
+  // block the others.
+  // SAFETY: DDL_BASE is hand-maintained and contains no semicolons inside string literals.
+  // If this ever changes, replace with a proper SQL statement splitter.
+  const ddlStatements = DDL_BASE
+    .split(';')
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+    .map(s => s + ';');
+  for (const stmt of ddlStatements) {
+    try {
+      await adapter.exec(stmt);
+    } catch (err) {
+      // Non-fatal — table or index already exists. Turso rejects IF NOT EXISTS
+      // when the object exists (unlike SQLite which treats it as a no-op).
+      log.debug('store.open.ddl_statement_skip', {
+        adapter_type: adapter.config.type,
+        sql: truncateForLog(stmt),
+        error: truncateForLog(err instanceof Error ? err.message : String(err)),
+      });
+    }
+  }
+
+  // FTS setup — uses the dialect for the appropriate adapter type.
+  // On SQLite, this creates an FTS5 virtual table + content-sync triggers.
+  // On Turso, this creates a Tantivy-based FTS index via CREATE INDEX ... USING fts.
+  const ftsDialect = createFTSDialect(adapter.config.type);
+  if (ftsDialect.supported && adapter.capabilities.fts) {
+    if (adapter.config.type === 'sqlite') {
+      // SQLite FTS5: virtual table + content-sync triggers
+      await adapter.exec(FTS_DDL);
+      await adapter.exec(FTS_TRIGGERS);
+    } else {
+      // Turso Tantivy FTS: create the index inline
+      const ddl = ftsDialect.createIndexDDL(
+        'node',
+        ['content', 'name', 'summary'],
+        { content: 1.0, name: 1.0, summary: 1.0 },
+      );
+      // Turso may reject IF NOT EXISTS if the index already exists
+      try {
+        await adapter.exec(ddl);
+      } catch (err) {
+        log.debug('store.open.fts_index_skip', {
+          adapter_type: adapter.config.type,
+          error: truncateForLog(err instanceof Error ? err.message : String(err)),
+        });
       }
     }
   }
 
-  // Apply DDL (idempotent — uses CREATE IF NOT EXISTS)
-  await adapter.exec(DDL_BASE);
-  await adapter.exec(FTS_TRIGGERS);
+  // ── Vector table setup ─────────────────────────────────────────────────
+  // When opening an existing store created by better-sqlite3 + sqlite-vec,
+  // Turso/libSQL cannot use vec0 virtual tables (no sqlite-vec module).
+  // Check for existing vec0 VT and drop it before creating a native table.
+  //
+  // IMPORTANT: Turso/libSQL 0.7.1 silently fails to DROP vec0 virtual tables
+  // created by a different SQLite library — the command returns OK but the
+  // table remains in sqlite_master. Therefore all vec0 DROP operations for
+  // Turso MUST go through better-sqlite3 with sqlite-vec loaded.
+  //
+  // Additionally, Turso/libSQL 0.7.1 does not detect schema changes made by
+  // other connections (the schema cookie mechanism is not fully implemented).
+  // After any external DROP, the adapter MUST be closed and re-opened to
+  // refresh its schema cache — a simple sqlite_master query is insufficient.
+
+  // Check for existing vec0 tables (vec0 virtual tables or their shadow tables)
+  const anyVecTables = await adapter.executeGet<{ c: number }>(
+    `SELECT COUNT(*) as c FROM sqlite_master WHERE type='table' AND (name LIKE 'vec\\_%' ESCAPE '\\' OR name = '_vector_spaces')`,
+  );
+  if (anyVecTables && anyVecTables.c > 0 && adapter.config.type === 'turso') {
+    log.warn('store.open.turso_vec0_drop', { db_path: dbPath });
+    await adapter.close();
+    await dropVec0ViaBetterSqlite3(dbPath);
+    adapter = await createStoreAdapter({ dbPath });
+  }
+
+  // 3. Create native vector table and index via dialect
+  try {
+    await adapter.exec(vectorDialect.createTableDDL('vec_node', 'embedding', EMBED_DIM));
+    const indexDDL = vectorDialect.createIndexDDL('vec_node', 'embedding', 'cosine');
+    if (indexDDL) {
+      await adapter.exec(indexDDL);
+    }
+  } catch (err) {
+    // Log the error for diagnostics
+    log.warn('store.open.vec_node_create_failed', {
+      adapter_type: adapter.config.type,
+      error: truncateForLog(err instanceof Error ? err.message : String(err)),
+    });
+    // Verify the table exists — if not, this is a genuine failure on adapters that need native vectors
+    const vecExists = await adapter.executeGet<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='vec_node'`,
+    );
+    if (!vecExists && adapter.capabilities.nativeVectors) {
+      throw new Error(
+        `Failed to create vec_node table: ${err instanceof Error ? err.message : String(err)}. ` +
+        `Vector search will be unavailable. Check disk space and permissions.`,
+      );
+    }
+    // On SQLite (no nativeVectors), vec_node is created as a native table —
+    // CREATE TABLE IF NOT EXISTS should always succeed there. This catch is a safety net.
+  }
 
   // SA-5 / BL-121: stamp store identity meta on every open-for-write.
   // INSERT OR IGNORE ensures first-write wins; subsequent opens verify.
   // A mismatch (schema_version, embed_dimensions) throws EStoreMismatch.
-  stampStoreMeta(rawDb);
+  //
+  // DDL_BASE above is applied per-statement with individual try/catch, but Turso
+  // can still reject specific CREATE TABLE IF NOT EXISTS calls when the table exists
+  // with a different schema. Guard ensures sox_store_meta exists before we stamp it
+  // — follows the same pattern as the request_ledger migration below.
+  const smExists = await adapter.executeGet<{ name: string }>(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name='sox_store_meta'`,
+  );
+  if (!smExists) {
+    await adapter.exec(`CREATE TABLE IF NOT EXISTS sox_store_meta (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )`);
+  }
+  await stampStoreMeta(adapter);
 
   // Idempotent column migrations for pre-existing stores (CREATE IF NOT EXISTS won't
   // add columns to a table that already exists). Add new columns when missing.
   // These columns are memory-specific — graph primitives (topic, tags, project_path, meta, t_updated)
   // are now in the canonical graph-store DDL and don't need migration.
-  migrateAddColumn(rawDb, 'node', 'enrich_ver', 'TEXT');
+  await migrateAddColumn(adapter, 'node', 'enrich_ver', 'TEXT');
   // BL-88: per-record embedding provenance. NULL = embedded before provenance existed
   // (or not yet embedded). Do NOT backfill existing rows — NULL is honest (provenance unknown).
   // Stamped by applyEmbedding() at vec insert time (the single choke-point for all write/update/heal paths).
-  migrateAddColumn(rawDb, 'node', 'embed_model', 'TEXT');
+  await migrateAddColumn(adapter, 'node', 'embed_model', 'TEXT');
   // D3.4 partial indices for enrichment columns
-  await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_node_topic      ON node(topic)        WHERE topic IS NOT NULL`);
-  await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`);
-  await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_node_enrich_ver ON node(enrich_ver)   WHERE enrich_ver IS NOT NULL`);
+  // NOTE: Turso/libSQL's `CREATE INDEX IF NOT EXISTS` validates the index
+  // definition and throws "index already exists" even when IF NOT EXISTS is
+  // present. Wrap in try/catch — the index already exists, which is correct.
+  try { await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_node_topic      ON node(topic)        WHERE topic IS NOT NULL`); } catch { /* index already exists */ }
+  try { await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`); } catch { /* index already exists */ }
+  try { await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_node_enrich_ver ON node(enrich_ver)   WHERE enrich_ver IS NOT NULL`); } catch { /* index already exists */ }
 
   // WP-4: request_ledger table migration — ensures the table exists on upgraded stores
   // that were created before the request_ledger DDL was added to schema.ts.
   // Idempotent: CREATE TABLE IF NOT EXISTS, so re-opening does not error.
-  const rlExists = rawDb
-    .prepare<[], { name: string }>(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='request_ledger'`,
-    )
-    .get();
+  const rlExists = await adapter.executeGet<{ name: string }>(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name='request_ledger'`,
+  );
   if (!rlExists) {
     await adapter.exec(`CREATE TABLE IF NOT EXISTS request_ledger (
       request_id TEXT PRIMARY KEY,
@@ -401,18 +677,16 @@ async function migrateOrganizerQueueCheckConstraint(adapter: StoreAdapter): Prom
 }
 
 /** Add a column to a table if it does not already exist (idempotent migration). */
-export function migrateAddColumn(
-  db: Database.Database,
+export async function migrateAddColumn(
+  adapter: StoreAdapter,
   table: string,
   column: string,
   type: string,
-): void {
-  const cols = db
-    .prepare<[], { name: string }>(`PRAGMA table_info(${table})`)
-    .all()
-    .map((c) => c.name);
+): Promise<void> {
+  const { rows } = await adapter.executeAll<{ name: string }>(`PRAGMA table_info(${table})`);
+  const cols = rows.map((c) => c.name);
   if (!cols.includes(column)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    await adapter.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   }
 }
 
@@ -420,22 +694,24 @@ export function migrateAddColumn(
  * Initialize a new scope database with metadata.
  * Idempotent: if the scope row already exists, returns existing metadata.
  */
-export function initScope(
-  db: Database.Database,
+export async function initScope(
+  adapter: StoreAdapter,
   scope: ScopeKind,
   scopeId: string,
-): MemoryScope {
-  const existing = db
-    .prepare<[string], MemoryScope>('SELECT * FROM memory_scope WHERE scope = ?')
-    .get(scope);
+): Promise<MemoryScope> {
+  const existing = await adapter.executeGet<MemoryScope>(
+    'SELECT * FROM memory_scope WHERE scope = ?',
+    [scope],
+  );
   if (existing) return existing;
 
   const now = new Date().toISOString();
   const embedModel = getActiveEmbedModel() ?? 'unknown';
-  db.prepare(
+  await adapter.executeRun(
     `INSERT INTO memory_scope(scope, scope_id, embed_model, embed_dim, schema_ver, created_at)
      VALUES (?, ?, ?, ?, 1, ?)`,
-  ).run(scope, scopeId, embedModel, EMBED_DIM, now);
+    [scope, scopeId, embedModel, EMBED_DIM, now],
+  );
 
   return {
     scope,
@@ -472,10 +748,16 @@ export async function getDb(dbPath: string): Promise<StoreAdapter> {
 export async function openDbReadOnly(dbPath: string): Promise<StoreAdapter> {
   // BL-41: expand ~ at the sink (mirrors openDb).
   dbPath = expandDbPath(dbPath);
-  const { createSqliteAdapter } = await import('@adhd/sox-store-adapter');
-  const adapter = createSqliteAdapter({ dbPath, readonly: true }) as SqliteAdapter;
-  const rawDb = adapter.unwrap();
-  sqliteVec.load(rawDb);
+  const { createStoreAdapter } = await import('@adhd/sox-store-adapter');
+  const adapter = await createStoreAdapter({ dbPath, readonly: true });
+
+  // Load sqlite-vec extension only for adapters without native vector support.
+  if (!adapter.capabilities.nativeVectors) {
+    const { default: sqliteVec } = await import('sqlite-vec');
+    const rawDb = (adapter as SqliteAdapter).unwrap();
+    sqliteVec.load(rawDb);
+  }
+
   // WAL pragma needed for read-only connections; query_only prevents accidental writes
   await adapter.pragmaSet('journal_mode', 'WAL');
   await adapter.pragmaSet('busy_timeout', 3000);
@@ -508,7 +790,7 @@ export async function closeAllAdapters(): Promise<void> {
 export function wrapRawDbAsAdapter(rawDb: Database.Database): StoreAdapter {
   return {
     config: { type: 'sqlite', dbPath: rawDb.name ?? undefined, readonly: rawDb.memory },
-    capabilities: { multiprocessWrite: false, nativeVectors: false, concurrentTransactions: false, fts5: false, fts: false, needsWriteSerialization: true },
+    capabilities: { multiprocessWrite: false, nativeVectors: false, concurrentTransactions: false, fts5: true, fts: true, needsWriteSerialization: true },
 
     async executeGet<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<T | null> {
       const stmt = rawDb.prepare(sql);
