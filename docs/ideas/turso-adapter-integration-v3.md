@@ -1,5 +1,15 @@
 # Turso Adapter Integration — Unified Store Backend (Round 3)
 
+> **STATUS 2026-07-30: SUPERSEDED.** This round (and v1/v2 before it) targeted `@libsql/client`, which
+> Round 6 (`docs/ideas/turso-database-adapter.md`) later confirmed was the wrong client library — the
+> shipped adapter (`libs/data/store/store-adapter/`, package `@adhd/sox-store-adapter`) wraps
+> `@tursodatabase/database`. Much of this round's *interface design work* did carry forward (the
+> `executeGet`/`executeAll`/`executeRun` split, the `unwrap()` escape hatch, `readonly` on
+> `AdapterConfig`, dropping `executeValues`) — see `types.ts`/`sqlite-adapter.ts`/`turso-adapter.ts` in
+> `libs/data/store/store-adapter/src/` for the shipped shape. But the driver target, `transaction()`
+> (now takes an explicit `mode`), and `batch()` (renamed `executeMany()`) all changed in later rounds.
+> Kept as historical design record only.
+>
 > **See prior spec:** `docs/ideas/turso-adapter-integration-v2.md`  
 > **Round 2 review:** 2026-07-25 — Read the actual codebase (all `libs/data/*` packages, memory-core, host-runtime, manifest schema). Several interface gaps, an impossible segment dependency, a dangerous Drizzle assumption, and a host-runtime DI hole were discovered. This round corrects them all.
 >

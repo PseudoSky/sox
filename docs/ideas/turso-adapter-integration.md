@@ -1,5 +1,12 @@
 # Turso Adapter Integration — Initial Architect Spec (Round 1)
 
+> **STATUS 2026-07-30: SUPERSEDED.** This round targeted `@libsql/client`, which Round 6
+> (`docs/ideas/turso-database-adapter.md`) later confirmed was the wrong client library — the shipped
+> adapter (`libs/data/store/store-adapter/`) wraps `@tursodatabase/database`, not `@libsql/client`. The
+> `StoreAdapter` interface shape, the sqlite-vec escape hatch, and the segment breakdown here were all
+> superseded by later rounds. Kept as historical design record only — see `turso-database-adapter.md`
+> for what actually shipped.
+>
 > **Context:** First-pass design produced 2026-07-25 by `architect` agent, dispatched by `dispatcher`.  
 > **Feedback received:** Scope was too memory-centric. Re-dispatched with unified `libs/data/` focus + external consumer support.  
 > **See also:** `docs/ideas/turso-adapter-integration-v2.md` for the corrected spec.

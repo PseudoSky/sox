@@ -1,6 +1,16 @@
 # Turso Adapter Integration — DX & TypeScript Interface Review
 
-**Reviewer:** Typescript agent  
+> **STATUS 2026-07-30: SUPERSEDED (as a spec review), findings still historically useful.** This review
+> critiqued Round 3's interface, which targeted `@libsql/client` — later confirmed wrong; the shipped
+> adapter (`libs/data/store/store-adapter/`) wraps `@tursodatabase/database`. Most of the P0 findings
+> (F1 generics on `executeGet`/`executeAll`, F2 `exec()` on `AdapterTransaction`, F4 narrowed `unwrap()`
+> per adapter subclass, F5 dropping `executeValues`/`ValuesResult`, F6 `readonly` on `AdapterConfig`) DID
+> ship — see `libs/data/store/store-adapter/src/types.ts`. F3's `transaction()` sync/async footgun was
+> resolved differently than either option proposed here: the shipped interface takes an explicit
+> `mode?: TransactionMode` and both adapters use raw `BEGIN`/`COMMIT`/`ROLLBACK`, so the sync-only
+> constraint on `SqliteAdapter` no longer exists. Kept as historical design record only.
+>
+> **Reviewer:** Typescript agent  
 **Spec:** `docs/ideas/turso-adapter-integration-v3.md`  
 **Date:** 2026-07-25  
 **Status:** Review complete — 12 findings, 7 recommendations

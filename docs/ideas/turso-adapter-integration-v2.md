@@ -1,5 +1,12 @@
 # Turso Adapter Integration — Unified Store Backend (Round 2)
 
+> **STATUS 2026-07-30: SUPERSEDED.** Like Round 1, this round targeted `@libsql/client`, which Round 6
+> (`docs/ideas/turso-database-adapter.md`) later confirmed was wrong — the shipped adapter
+> (`libs/data/store/store-adapter/`, package `@adhd/sox-store-adapter`) wraps `@tursodatabase/database`.
+> The `createStoreAdapter`/`createTursoAdapter` 3rd-party example, `@sox/store-adapter` package name, and
+> single-mode `transaction()` shown here were all superseded by later rounds (Round 3 renamed the package
+> and split query methods; Round 6 added transaction modes). Kept as historical design record only.
+>
 > **See prior spec:** `docs/ideas/turso-adapter-integration.md`  
 > **Round 1 feedback:** The initial design was too memory-centric. This round corrects to a general-purpose, repo-wide backing-store abstraction where the memory bundle is 1 of many consumers.
 
