@@ -27,6 +27,7 @@ import * as sqliteVec from 'sqlite-vec';
 import { openDb } from './db.js';
 import { WriteQueue } from './write-queue.js';
 import {
+  autoBackup,
   backupStore,
   isBackupStoreError,
   isPathInMemoryAllowlist,
@@ -289,5 +290,205 @@ describe('isBackupStoreError', () => {
         integrityCheck: 'ok',
       }),
     ).toBe(false);
+  });
+});
+
+// ── autoBackup ──────────────────────────────────────────────────────────────────
+
+describe('autoBackup', () => {
+  let testDir: string;
+  let dbPath: string;
+  let backupDir: string;
+  // Saved env var origins for restore.
+  const envKeys = ['SOX_AUTO_BACKUP_ENABLED', 'SOX_AUTO_BACKUP_DIR'] as const;
+  const savedEnv: Partial<Record<string, string | undefined>> = {};
+
+  beforeEach(async () => {
+    // Save current env state.
+    for (const k of envKeys) savedEnv[k] = process.env[k];
+    // Unset so defaults apply within tests.
+    delete process.env.SOX_AUTO_BACKUP_ENABLED;
+
+    // Create a source DB directly inside ~/.memory/ (allowlist) using
+    // better-sqlite3 directly (not openDb which returns StoreAdapter).
+    const memRoot = os.homedir();
+    testDir = path.join(
+      memRoot, '.memory',
+      `sox-backup-test-auto-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    fs.mkdirSync(testDir, { recursive: true });
+    memoryDirsCreated.push(testDir);
+
+    dbPath = path.join(testDir, 'test.db');
+    const db = new Database(dbPath);
+    sqliteVec.load(db);
+    db.exec('PRAGMA journal_mode = WAL;');
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS node (
+        rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+        uid TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL DEFAULT 'episode',
+        content TEXT,
+        summary TEXT,
+        topic TEXT,
+        tags TEXT,
+        project_path TEXT,
+        name TEXT,
+        t_created TEXT NOT NULL,
+        t_valid TEXT NOT NULL,
+        t_invalid TEXT,
+        importance REAL DEFAULT 0,
+        agent_id TEXT,
+        enrich_ver INTEGER,
+        meta TEXT DEFAULT '{}'
+      )
+    `);
+    db.prepare(
+      `INSERT INTO node (uid, kind, content, t_created, t_valid)
+       VALUES ('auto-test-1', 'episode', 'auto backup test data', datetime('now'), datetime('now'))`,
+    ).run();
+    db.close();
+
+    // Set backup dir to a subdirectory of the test dir (also inside ~/.memory/).
+    backupDir = path.join(testDir, 'auto-backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    process.env.SOX_AUTO_BACKUP_DIR = backupDir;
+  });
+
+  afterEach(async () => {
+    // Restore env vars.
+    for (const k of envKeys) {
+      if (savedEnv[k] !== undefined) {
+        process.env[k] = savedEnv[k]!;
+      } else {
+        delete process.env[k];
+      }
+    }
+    // Cleanup of memoryDirsCreated and tmpDirs is handled by the top-level
+    // afterEach which runs after this one.
+  });
+
+  it('creates a timestamped backup file at the expected path', async () => {
+    const result = await autoBackup(dbPath, { log: () => undefined });
+
+    expect(result.skipped).toBe(false);
+    expect(result.path).toBeTruthy();
+    // Path must be inside the configured backup dir.
+    expect(result.path).toContain(backupDir);
+    // Filename must follow the timestamped pattern: memory-YYYY-MM-DDTHH-mm-ss.mmm.db
+    expect(path.basename(result.path)).toMatch(/^memory-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}\.db$/);
+    expect(result.size).toBeGreaterThan(0);
+    expect(fs.existsSync(result.path)).toBe(true);
+  });
+
+  it('backup file contains the same data as the original', async () => {
+    const result = await autoBackup(dbPath, { log: () => undefined });
+    expect(result.skipped).toBe(false);
+    expect(fs.existsSync(result.path)).toBe(true);
+
+    // Open the backup and verify its content.
+    const backupDb = new Database(result.path, { readonly: true });
+    try {
+      sqliteVec.load(backupDb);
+
+      // Verify integrity.
+      const integrityRows = backupDb
+        .prepare<[], { integrity_check: string }>('PRAGMA integrity_check')
+        .all();
+      const issues = integrityRows.filter((r) => r.integrity_check !== 'ok');
+      expect(issues).toHaveLength(0);
+
+      // Verify the row we inserted is present.
+      const row = backupDb
+        .prepare<[string], { content: string }>('SELECT content FROM node WHERE uid = ?')
+        .get('auto-test-1') as { content: string } | undefined;
+      expect(row?.content).toBe('auto backup test data');
+
+      // Row count matches the source.
+      const srcDb = new Database(dbPath, { readonly: true });
+      try {
+        const srcCount = (srcDb.prepare('SELECT COUNT(*) AS c FROM node').get() as { c: number }).c;
+        const bakCount = (backupDb.prepare('SELECT COUNT(*) AS c FROM node').get() as { c: number }).c;
+        expect(bakCount).toBe(srcCount);
+      } finally {
+        srcDb.close();
+      }
+    } finally {
+      backupDb.close();
+    }
+  });
+
+  it('skips backup when SOX_AUTO_BACKUP_ENABLED=false', async () => {
+    process.env.SOX_AUTO_BACKUP_ENABLED = 'false';
+
+    const result = await autoBackup(dbPath, { log: () => undefined });
+
+    expect(result.skipped).toBe(true);
+    expect(result.path).toBe('');
+    expect(result.size).toBe(0);
+
+    // No .db files should have been created in the backup dir.
+    const files = fs.readdirSync(backupDir).filter((f) => f.endsWith('.db'));
+    expect(files).toHaveLength(0);
+  });
+
+  it('skips backup when SOX_AUTO_BACKUP_ENABLED=0', async () => {
+    process.env.SOX_AUTO_BACKUP_ENABLED = '0';
+
+    const result = await autoBackup(dbPath, { log: () => undefined });
+
+    expect(result.skipped).toBe(true);
+    expect(result.path).toBe('');
+  });
+
+  it('skips backup when source has not changed (idempotent)', async () => {
+    // First call — creates the backup.
+    const first = await autoBackup(dbPath, { log: () => undefined });
+    expect(first.skipped).toBe(false);
+    expect(first.path).toBeTruthy();
+
+    // Second call — source mtime hasn't changed — should skip.
+    const second = await autoBackup(dbPath, { log: () => undefined });
+    expect(second.skipped).toBe(true);
+    expect(second.path).toBe('');
+
+    // Only one backup file should exist.
+    const files = fs.readdirSync(backupDir).filter((f) => f.endsWith('.db'));
+    expect(files).toHaveLength(1);
+  });
+
+  it('creates a new backup when source has changed after a previous backup', async () => {
+    // First backup.
+    const first = await autoBackup(dbPath, { log: () => undefined });
+    expect(first.skipped).toBe(false);
+
+    // Modify the source with data that goes through WAL (the main .db file's
+    // mtime may not change). Force mtime to advance by re-writing the file.
+    const writer = new Database(dbPath);
+    sqliteVec.load(writer);
+    writer.exec('PRAGMA journal_mode = WAL;');
+    writer.prepare(
+      `INSERT INTO node (uid, kind, content, t_created, t_valid)
+       VALUES ('auto-test-2', 'episode', 'more data', datetime('now'), datetime('now'))`,
+    ).run();
+    writer.close();
+    // Rewrite the file to guarantee mtime change regardless of WAL.
+    const content = fs.readFileSync(dbPath);
+    fs.writeFileSync(dbPath, content);
+
+    // Second backup — source has changed, should create new backup.
+    const second = await autoBackup(dbPath, { log: () => undefined });
+    expect(second.skipped).toBe(false);
+    expect(second.path).not.toBe(first.path);
+
+    // Two backup files should exist.
+    const files = fs.readdirSync(backupDir).filter((f) => f.endsWith('.db'));
+    expect(files).toHaveLength(2);
+  });
+
+  it('skips backup when source does not exist', async () => {
+    const result = await autoBackup('/nonexistent/path/db.db', { log: () => undefined });
+    expect(result.skipped).toBe(true);
+    expect(result.path).toBe('');
   });
 });

@@ -37,6 +37,7 @@
 import type { ToolDefinition, ToolResult } from '@adhd/sox-mcp-runtime';
 import { defineTool, serve } from '@adhd/sox-mcp-runtime';
 import {
+  autoBackup,
   buildFiltersClause,
   communityUidForRowid,
   embedBacklogStats,
@@ -775,8 +776,16 @@ function estimateTokens(text: string): number {
 /**
  * BL-55: the canonical single memory store. Used when neither a per-call `db_path`
  * arg nor the host-injected bundle config (`SOX_CONFIG_DB_PATH`) supplies a path.
+ * User-scope installs default to this path.
  */
 export const DEFAULT_DB_PATH = '~/.memory/memory.db';
+
+/**
+ * BL-55: project-scope store path. Used when `SOX_SCOPE=project` and no explicit
+ * `db_path` or `SOX_CONFIG_DB_PATH` is supplied, so project-scope installs get a
+ * separate store (`memory-dev.db`) from user-scope installs (`memory.db`).
+ */
+export const DEFAULT_DEV_DB_PATH = '~/.memory/memory-dev.db';
 
 /**
  * BL-55: resolve the effective `db_path` for a tool call. `db_path` is OPTIONAL on
@@ -784,7 +793,9 @@ export const DEFAULT_DB_PATH = '~/.memory/memory.db';
  *   1. explicit caller arg (per-call override),
  *   2. the bundle config property the host injects as `SOX_CONFIG_DB_PATH`
  *      (cascade-resolved from `config.memory-server.db_path`; see buildExtConfigEnv),
- *   3. the canonical default store (DEFAULT_DB_PATH).
+ *   3. the scope-based default store:
+ *      - `SOX_SCOPE=project` → DEFAULT_DEV_DB_PATH (`~/.memory/memory-dev.db`)
+ *      - otherwise           → DEFAULT_DB_PATH (`~/.memory/memory.db`)
  * Empty / whitespace-only values fall through so a blank arg or config never wins.
  * The result is NOT trusted blindly — handleToolCall still validates it against the
  * `~/.memory/**` fs allowlist via the permission guard before any db is opened, so a
@@ -795,6 +806,10 @@ export function resolveDbPath(argDbPath: unknown): string {
   if (fromArg) return fromArg;
   const fromConfig = (process.env['SOX_CONFIG_DB_PATH'] ?? '').trim();
   if (fromConfig) return fromConfig;
+  // BL-55: scope-based store separation — project-scope installs use a
+  // separate dev db so user-scope and project-scope stores don't collide.
+  const soxScope = (process.env['SOX_SCOPE'] ?? '').trim().toLowerCase();
+  if (soxScope === 'project') return DEFAULT_DEV_DB_PATH;
   return DEFAULT_DB_PATH;
 }
 
@@ -2236,6 +2251,30 @@ if (require.main === module) {
     );
     process.exit(1);
   }
+
+  // ── Pre-restart auto-backup (BL-313) ────────────────────────────────────────
+  //
+  // Before the process exits on SIGTERM or SIGINT, create a timestamped VACUUM
+  // INTO backup of the active database. The backup is idempotent: if the source
+  // has not changed since the last backup, it is skipped.
+  //
+  // The handler runs async (backup via VACUUM INTO) and then calls process.exit.
+  // The void wrapper is the standard Node pattern for async signal handlers.
+  const dbPathForBackup = resolveDbPath(undefined);
+  async function handleShutdown(signal: string): Promise<void> {
+    process.stderr.write(`[memory-server] received ${signal}, running pre-restart backup...\n`);
+    try {
+      const result = await autoBackup(dbPathForBackup);
+      if (!result.skipped && result.path) {
+        process.stderr.write(`[memory-server] pre-restart backup saved: ${result.path} (${result.size} bytes)\n`);
+      }
+    } catch (err) {
+      process.stderr.write(`[memory-server] pre-restart backup failed: ${err}\n`);
+    }
+    process.exit(0);
+  }
+  process.on('SIGTERM', () => { void handleShutdown('SIGTERM'); });
+  process.on('SIGINT', () => { void handleShutdown('SIGINT'); });
 
   if (process.env.SOX_PROXY_BACKEND === '1') {
     const socketPath = process.env.SOX_PROXY_BACKEND_SOCKET;

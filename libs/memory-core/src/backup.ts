@@ -24,6 +24,7 @@
  */
 
 import * as sqliteVec from 'sqlite-vec';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -243,4 +244,134 @@ export function isBackupStoreError(
   result: BackupStoreResult | BackupStoreError,
 ): result is BackupStoreError {
   return 'code' in result;
+}
+
+// ── Auto-backup ─────────────────────────────────────────────────────────────────
+
+export interface AutoBackupResult {
+  /** Absolute path to the created backup file, or '' when skipped. */
+  path: string;
+  /** File size in bytes, or 0 when skipped. */
+  size: number;
+  /** True when the backup was skipped (disabled, no changes, or error). */
+  skipped: boolean;
+}
+
+/**
+ * Pre-restart auto-backup: create a timestamped VACUUM INTO backup of the
+ * memory database when the process is about to restart or shut down.
+ *
+ * Env control:
+ *   - `SOX_AUTO_BACKUP_ENABLED` — set to `'false'` or `'0'` to disable (default: enabled)
+ *   - `SOX_AUTO_BACKUP_DIR` — backup directory (default: `~/.memory/backups/`)
+ *
+ * Idempotency:
+ *   Tracks the source DB's mtime in a hidden marker file
+ *   (`<backupDir>/.auto-backup-<pathHash>`). If the source has not been
+ *   modified since the last successful backup, the call is skipped.
+ *
+ * This function NEVER throws — all error conditions (missing source, outside
+ * allowlist, `backupStore` failure, filesystem errors) return a skipped result
+ * instead.
+ *
+ * @param dbPath  Path to the source DB. Defaults to `~/.memory/memory.db`.
+ * @param opts    Optional BackupStoreOptions (e.g. `log`, `skipIntegrityCheck`).
+ */
+export async function autoBackup(
+  dbPath?: string,
+  opts?: BackupStoreOptions,
+): Promise<AutoBackupResult> {
+  const log = opts?.log ?? (() => undefined);
+
+  // 1. Check SOX_AUTO_BACKUP_ENABLED (default: enabled).
+  const enabledRaw = process.env.SOX_AUTO_BACKUP_ENABLED;
+  if (enabledRaw !== undefined && (enabledRaw === 'false' || enabledRaw === '0' || enabledRaw === '')) {
+    log('[auto-backup] disabled via SOX_AUTO_BACKUP_ENABLED');
+    return { path: '', size: 0, skipped: true };
+  }
+
+  // 2. Resolve source path.
+  const resolvedSrc = path.resolve(expandDbPath(dbPath ?? '~/.memory/memory.db'));
+
+  // 3. Source must exist.
+  if (!fs.existsSync(resolvedSrc)) {
+    log(`[auto-backup] source not found: ${resolvedSrc}`);
+    return { path: '', size: 0, skipped: true };
+  }
+
+  // 4. Allowlist guard.
+  if (!isPathInMemoryAllowlist(resolvedSrc)) {
+    log(`[auto-backup] source outside ~/.memory/** allowlist: ${resolvedSrc}`);
+    return { path: '', size: 0, skipped: true };
+  }
+
+  // 5. Resolve backup directory.
+  const backupDirRaw = process.env.SOX_AUTO_BACKUP_DIR;
+  const backupDir = backupDirRaw
+    ? path.resolve(expandDbPath(backupDirRaw))
+    : path.join(os.homedir(), '.memory', 'backups');
+
+  // 6. Ensure backup directory exists.
+  try {
+    fs.mkdirSync(backupDir, { recursive: true });
+  } catch (err) {
+    log(`[auto-backup] cannot create backup directory ${backupDir}: ${err}`);
+    return { path: '', size: 0, skipped: true };
+  }
+
+  // 7. Idempotency: compare source mtime against the last-backup marker.
+  let srcStat: fs.Stats;
+  try {
+    srcStat = fs.statSync(resolvedSrc);
+  } catch (err) {
+    log(`[auto-backup] cannot stat source: ${err}`);
+    return { path: '', size: 0, skipped: true };
+  }
+  const currentMtime = srcStat.mtimeMs;
+
+  const pathHash = crypto.createHash('sha256').update(resolvedSrc).digest('hex').slice(0, 16);
+  const markerPath = path.join(backupDir, `.auto-backup-${pathHash}`);
+
+  let lastMtime = 0;
+  try {
+    const content = fs.readFileSync(markerPath, 'utf8').trim();
+    lastMtime = Number(content);
+  } catch {
+    /* first backup — no marker yet */
+  }
+
+  if (lastMtime > 0 && currentMtime <= lastMtime) {
+    log('[auto-backup] source unchanged since last backup — skipping');
+    return { path: '', size: 0, skipped: true };
+  }
+
+  // 8. Generate timestamped filename with millisecond precision so that
+  //    multiple backups within the same second never collide.
+  const timestamp = new Date().toISOString()
+    .replace(/:/g, '-')       // cross-platform filename safety
+    .replace(/Z$/, '');       // remove trailing Z, keep milliseconds
+  const backupName = `memory-${timestamp}.db`;
+  const destPath = path.join(backupDir, backupName);
+
+  // 9. Run the actual VACUUM INTO backup.
+  const result = await backupStore(resolvedSrc, destPath, opts);
+
+  if (isBackupStoreError(result)) {
+    log(`[auto-backup] backupStore failed: ${result.message}`);
+    return { path: '', size: 0, skipped: true };
+  }
+
+  // 10. Update idempotency marker (non-fatal).
+  try {
+    fs.writeFileSync(markerPath, String(currentMtime));
+  } catch { /* non-fatal */ }
+
+  // 11. Read file size (non-fatal — 0 is acceptable).
+  let size = 0;
+  try {
+    size = fs.statSync(destPath).size;
+  } catch { /* non-fatal */ }
+
+  log(`[auto-backup] completed: ${destPath} (${size} bytes)`);
+  return { path: destPath, size, skipped: false };
 }
