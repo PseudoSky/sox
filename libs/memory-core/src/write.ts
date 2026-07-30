@@ -59,6 +59,7 @@ import { performance } from 'node:perf_hooks';
 import { monotonicFactory } from 'ulid';
 import { embed, vecToJson, vecToBuffer } from './embed.js';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import { log, traceIdOrNew } from './telemetry.js';
 
 const ulid = monotonicFactory();
 
@@ -185,11 +186,33 @@ export async function memoryWritePhaseA(
     metadata,
   } = params;
 
+  // BL-320: request-arrival observability. Never logs `content` itself — only
+  // its length. `traceId` reuses the write-queue's task trace context when
+  // this call runs inside a WriteQueue task (the normal path), or mints a
+  // fresh one for direct/test callers — either way it is what gets stamped
+  // onto the Phase-B `PendingEmbed` below so embed/apply logs correlate.
+  const traceId = traceIdOrNew();
+  const phaseAStartMs = performance.now();
+  log.info('write.phaseA.start', {
+    trace_id: traceId,
+    project_path,
+    content_len: content?.length ?? 0,
+    has_tags: !!(tags && tags.length),
+    source,
+    session_id: session_id ?? null,
+    client_request_id: params.client_request_id ?? null,
+  });
+
   // BL-62: project_path is REQUIRED — reject before any DB work or enrichment runs,
   // rather than falling through to enrichOnWrite's env/cwd inference tiers. Runtime
   // check (not just the WriteParams.project_path: string type) because callers cross
   // an untyped JSON boundary (MCP tool args) before constructing this object.
   if (!project_path || project_path.length === 0) {
+    log.warn('write.phaseA.error', {
+      trace_id: traceId,
+      code: 'E_MISSING_PROJECT_PATH',
+      duration_ms: Math.round(performance.now() - phaseAStartMs),
+    });
     return {
       code: 'E_MISSING_PROJECT_PATH',
       message:
@@ -219,6 +242,7 @@ export async function memoryWritePhaseA(
   const resolvedProjectPath: string = project_path;
 
   if (!content || !content.trim()) {
+    log.warn('write.phaseA.error', { trace_id: traceId, code: 'E_SCOPE_RO', duration_ms: Math.round(performance.now() - phaseAStartMs) });
     return { code: 'E_SCOPE_RO', message: 'content must not be empty' };
   }
 
@@ -236,6 +260,10 @@ export async function memoryWritePhaseA(
       [clientRequestId],
     );
     if (existingLedger) {
+      log.info('write.phaseA.finish', {
+        trace_id: traceId, replayed: true, episode_uid: existingLedger.episode_uid,
+        duration_ms: Math.round(performance.now() - phaseAStartMs),
+      });
       return {
         result: {
           episode_uid: existingLedger.episode_uid,
@@ -259,6 +287,10 @@ export async function memoryWritePhaseA(
     [contentHash],
   );
   if (existing) {
+    log.info('write.phaseA.dedup', {
+      trace_id: traceId, existing_uid: existing.uid,
+      duration_ms: Math.round(performance.now() - phaseAStartMs),
+    });
     return {
       code: 'E_DEDUP',
       message: `Duplicate content: ${contentHash}`,
@@ -403,6 +435,13 @@ export async function memoryWritePhaseA(
   // the full rationale and the BL-221 remediation path.
   const projectPathSource = projectPathSourceFor(project_path);
 
+  log.info('write.phaseA.finish', {
+    trace_id: traceId,
+    episode_uid: episodeUid,
+    has_pending_embed: embedding === undefined,
+    duration_ms: Math.round(performance.now() - phaseAStartMs),
+  });
+
   return {
     result: {
       episode_uid: episodeUid,
@@ -427,6 +466,9 @@ export async function memoryWritePhaseA(
             // completion (node committed + sync enrichment done — the point
             // the episode became BM25-recallable but not yet vec-recallable).
             startedAtMs: performance.now(),
+            // BL-320: carry this write's trace id onto Phase B so embed/apply
+            // logs correlate with the originating write end to end.
+            traceId,
           }
         : null,
   };

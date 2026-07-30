@@ -19,6 +19,8 @@ import type { EmbeddingProvider } from '@adhd/sox-embedding-provider';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
+import { log } from './telemetry.js';
 
 // ── Public constants ──────────────────────────────────────────────────────────
 
@@ -201,14 +203,63 @@ async function getOrCreateProvider(): Promise<EmbeddingProvider> {
 let _configCache: EmbedConfig | null = null;
 
 /**
+ * BL-320: optional embed-call timeout, in ms. 0/unset = disabled (the
+ * historical, unbounded behaviour). Read per-call so it can be flipped live.
+ * When set, a call that exceeds the budget logs `embed.timeout` (the call
+ * itself is NOT aborted — the underlying worker-thread provider has no
+ * cancellation hook — but the timeout fires as an observability signal so a
+ * hung embed is visible in the log well before any MCP client gives up).
+ */
+function resolveEmbedTimeoutMs(): number {
+  const raw = process.env['SOX_EMBED_TIMEOUT_MS'];
+  const n = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
  * Embed `text` and return a 768-dim L2-normalised Float32Array.
  * Delegates to the embedding-provider's embedSingle().
+ *
+ * BL-320: logs `embed.start`/`embed.finish`/`embed.error` (+ an advisory
+ * `embed.timeout` line if SOX_EMBED_TIMEOUT_MS elapses first) with durations.
+ * Never logs the text itself — only its length.
  */
 export async function embed(text: string): Promise<Float32Array> {
-  _configCache ??= resolveConfig();
-  const provider = await getOrCreateProvider();
-  providerCallCount++; // BL-254: track actual local embed calls
-  return provider.embedSingle(text);
+  const t0 = performance.now();
+  const textLen = text.length;
+  log.info('embed.start', { text_len: textLen });
+
+  // Advisory timeout: fires a durable `embed.timeout` warning line if the
+  // embed hasn't settled by SOX_EMBED_TIMEOUT_MS, WITHOUT aborting or racing
+  // the real call (the worker-thread provider has no cancellation hook — an
+  // aborted-looking promise would just leak the still-running inference).
+  // This exists purely so a stuck embed is visible in the log before any MCP
+  // client timeout, instead of the silence the incident exposed.
+  const timeoutMs = resolveEmbedTimeoutMs();
+  const timeoutHandle: ReturnType<typeof setTimeout> | undefined =
+    timeoutMs > 0
+      ? setTimeout(() => {
+          log.warn('embed.timeout', { text_len: textLen, timeout_ms: timeoutMs });
+        }, timeoutMs)
+      : undefined;
+
+  try {
+    _configCache ??= resolveConfig();
+    const provider = await getOrCreateProvider();
+    providerCallCount++; // BL-254: track actual local embed calls
+    const vec = await provider.embedSingle(text);
+    log.info('embed.finish', { text_len: textLen, duration_ms: Math.round(performance.now() - t0) });
+    return vec;
+  } catch (err) {
+    log.error('embed.error', {
+      text_len: textLen,
+      duration_ms: Math.round(performance.now() - t0),
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+  }
 }
 
 /**
