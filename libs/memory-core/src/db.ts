@@ -636,9 +636,30 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
   // After any external DROP, the adapter MUST be closed and re-opened to
   // refresh its schema cache — a simple sqlite_master query is insufficient.
 
-  // Check for existing vec0 tables (vec0 virtual tables or their shadow tables)
+  // Check for existing vec0 tables (vec0 virtual tables or their shadow tables).
+  //
+  // MUST NOT match the NATIVE Turso vector table, which is legitimately named
+  // `vec_node` (`CREATE TABLE "vec_node" (node_id INTEGER PRIMARY KEY,
+  // embedding F32_BLOB(768))`). Matching purely on the `vec\_%` name prefix —
+  // as this predicate previously did — matched that native table on EVERY open
+  // of a healthy Turso store, spuriously routing into
+  // `dropVec0ViaBetterSqlite3()`. That was silently harmless until the Tantivy
+  // FTS index landed: better-sqlite3 cannot parse `CREATE INDEX ... USING fts`,
+  // so opening the store through it now fails outright with
+  // `malformed database schema (__turso_internal_fts_dir_idx_fts_node_key)`,
+  // taking down every tool call. (Diagnosed 2026-07-30 from the BL-320
+  // telemetry: `store.open.turso_vec0_drop` immediately followed by
+  // `store.open.error`.)
+  //
+  // Real vec0 artifacts are identified by their DDL (`USING vec0`) or by being
+  // a vec0 SHADOW table (`vec_node_chunks`, `vec_node_rowids`, `vec_node_info`,
+  // `vec_node_vector_chunks00`, …) — never by the bare `vec_node` name alone.
   const anyVecTables = await adapter.executeGet<{ c: number }>(
-    `SELECT COUNT(*) as c FROM sqlite_master WHERE type='table' AND (name LIKE 'vec\\_%' ESCAPE '\\' OR name = '_vector_spaces')`,
+    `SELECT COUNT(*) as c FROM sqlite_master
+      WHERE type='table'
+        AND ( sql LIKE '%USING vec0%'
+              OR name = '_vector_spaces'
+              OR (name LIKE 'vec\\_%' ESCAPE '\\' AND name <> 'vec_node') )`,
   );
   if (anyVecTables && anyVecTables.c > 0 && adapter.config.type === 'turso') {
     log.warn('store.open.turso_vec0_drop', { db_path: dbPath });
