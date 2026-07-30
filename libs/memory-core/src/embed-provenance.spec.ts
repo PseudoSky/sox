@@ -126,9 +126,9 @@ function insertEmbeddedWith(
 let ctx: ReturnType<typeof tmpDb>;
 let origStaleEnv: string | undefined;
 
-beforeEach(() => {
+beforeEach(async () => {
   ctx = tmpDb();
-  WriteQueue.clearInstances();
+  await WriteQueue.clearInstances();
   WriteQueue.setBypass(false);
   _resetEmbedPipelineMetricsForTest();
   _setEmbedProviderForTest(new DeterministicTestProvider());
@@ -138,7 +138,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await flushPendingEmbeds();
-  WriteQueue.clearInstances();
+  await WriteQueue.clearInstances();
   _resetEmbedPipelineMetricsForTest();
   ctx.cleanup();
   _setEmbedProviderForTest(new DeterministicTestProvider());

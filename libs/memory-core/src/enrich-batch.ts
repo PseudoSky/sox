@@ -11,16 +11,20 @@
  *
  * Determinism: given the same DB state and options, produces identical output.
  * No LLM, no network.
+ *
+ * ADAPTED: accepts StoreAdapter instead of better-sqlite3 Database so the same
+ * batch pipeline works on both SqliteAdapter (sync) and TursoAdapter (async).
+ * The `db` parameter was replaced by `adapter` throughout — callers that already
+ * have an unwrapped better-sqlite3 Database can pass wrapRawDbAsAdapter(db).
  */
 
-import type { Database } from 'better-sqlite3';
 import { createGraphBackend } from '@adhd/sox-graph-store';
-import { wrapRawDbAsAdapter } from './db.js';
 import { buildAutoLinks } from './autolink.js';
 import { clusterStore } from './cluster.js';
 import { computeImportance } from './importance.js';
 import type { ImportanceWeights } from './importance.js';
 import { ENRICH_VERSION } from './enrich-version.js';
+import type { StoreAdapter, AdapterTransaction } from '@adhd/sox-store-adapter';
 
 export type { ImportanceWeights } from './importance.js';
 
@@ -93,16 +97,16 @@ interface EpisodeRow {
  * - Mixed-model guard: if any live node has enrich_ver IS NULL, skips cluster pass
  *   and enqueues a reindex op first (D5.3).
  *
- * @param db   Open better-sqlite3 Database (write-capable).
- * @param opts Optional tuning parameters.
- * @returns    BatchEnrichResult with counts of all mutations made.
+ * @param adapter Open StoreAdapter (write-capable) — works on both SqliteAdapter
+ *                (better-sqlite3 sync) and TursoAdapter (async libSQL).
+ * @param opts    Optional tuning parameters.
+ * @returns       BatchEnrichResult with counts of all mutations made.
  */
 export async function runBatchEnrich(
-  db: Database,
+  adapter: StoreAdapter,
   opts: BatchEnrichOptions = {},
 ): Promise<BatchEnrichResult> {
   // GraphBackend instance for node/edge CRUD (sibling pattern)
-  const adapter = wrapRawDbAsAdapter(db);
   createGraphBackend(adapter);
 
   const {
@@ -127,18 +131,17 @@ export async function runBatchEnrich(
 
   // ── Step 1: Stamp legacy nodes (first-pass backfill, E12) ──────────────────
   const legacyStamp = JSON.stringify({ pass: 'legacy', ts: now, note: 'legacy' });
-  const legacyUpdate = db.prepare(
+  const legacyResult = await adapter.executeRun(
     `UPDATE node SET enrich_ver = ? WHERE kind = 'episode' AND t_invalid IS NULL AND enrich_ver IS NULL`,
-  ).run(legacyStamp) as unknown as { changes: number };
-  result.legacy_nodes_stamped = legacyUpdate.changes;
+    [legacyStamp],
+  );
+  result.legacy_nodes_stamped = legacyResult.rowsAffected;
 
   // ── Step 2: Mixed-model guard (D5.3) ──────────────────────────────────────
   // Check: any live episode with enrich_ver IS NULL after stamping?
-  const nullVerRow = db
-    .prepare<[], { cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND enrich_ver IS NULL`,
-    )
-    .get();
+  const nullVerRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL AND enrich_ver IS NULL`,
+  );
   const hasNullEnrichVer = (nullVerRow?.cnt ?? 0) > 0;
 
   // ── Step 3: Clustering (E6) ────────────────────────────────────────────────
@@ -166,11 +169,13 @@ export async function runBatchEnrich(
       // E5 batch: backfill topic from cluster label for episodes with no topic
       for (const cluster of clusterResult.clusters) {
         if (!cluster.label) continue;
-        const updateCount = db.prepare(
+        const params = [cluster.label, ...cluster.member_rowids];
+        const tResult = await adapter.executeRun(
           `UPDATE node SET topic = ? WHERE rowid IN (${cluster.member_rowids.map(() => '?').join(',')})
            AND kind = 'episode' AND t_invalid IS NULL AND topic IS NULL`,
-        ).run(cluster.label, ...cluster.member_rowids) as unknown as { changes: number };
-        result.topics_backfilled += updateCount.changes;
+          params,
+        );
+        result.topics_backfilled += tResult.rowsAffected;
       }
     }
   } else {
@@ -182,33 +187,26 @@ export async function runBatchEnrich(
   // Recompute importance for all live episodes using current link degree + access count.
   // BL-45: Process in chunks (importanceChunkSize, default 500) to yield the write
   // lock between chunks rather than holding it across the full corpus in one transaction.
-  const episodes = db
-    .prepare<[], EpisodeRow>(
-      `SELECT rowid, uid, content, access_count, importance, enrich_ver, topic
-       FROM node WHERE kind = 'episode' AND t_invalid IS NULL`,
-    )
-    .all();
-
-  const updateImportance = db.prepare(
-    `UPDATE node SET importance = ?, enrich_ver = ? WHERE rowid = ?`,
+  const epRows = await adapter.executeAll<EpisodeRow>(
+    `SELECT rowid, uid, content, access_count, importance, enrich_ver, topic
+     FROM node WHERE kind = 'episode' AND t_invalid IS NULL`,
   );
+  const episodes = epRows.rows;
 
   /** Process one episode row and update importance if changed. */
-  const processEpisode = (ep: EpisodeRow): void => {
+  const processEpisode = async (tx: AdapterTransaction, ep: EpisodeRow): Promise<void> => {
     const wordCount = (ep.content ?? '').split(/\s+/).filter(Boolean).length;
 
-    const linkRow = db
-      .prepare<[number, number], { cnt: number }>(
-        `SELECT COUNT(*) AS cnt FROM edge WHERE (src = ? OR dst = ?) AND t_expired IS NULL`,
-      )
-      .get(ep.rowid, ep.rowid);
+    const linkRow = await tx.executeGet<{ cnt: number }>(
+      `SELECT COUNT(*) AS cnt FROM edge WHERE (src = ? OR dst = ?) AND t_expired IS NULL`,
+      [ep.rowid, ep.rowid],
+    );
     const linkDegree = linkRow?.cnt ?? 0;
 
-    const tagsRow = db
-      .prepare<[number], { tags: string | null }>(
-        `SELECT tags FROM node WHERE rowid = ?`,
-      )
-      .get(ep.rowid);
+    const tagsRow = await tx.executeGet<{ tags: string | null }>(
+      `SELECT tags FROM node WHERE rowid = ?`,
+      [ep.rowid],
+    );
     const tagCount = tagsRow?.tags
       ? (JSON.parse(tagsRow.tags) as string[]).length
       : 0;
@@ -226,7 +224,10 @@ export async function runBatchEnrich(
     // Only update if the value changed (avoid unnecessary writes)
     if (Math.abs(newImportance - ep.importance) > 0.001) {
       const newVer = JSON.stringify({ pass: ENRICH_VERSION, ts: now });
-      updateImportance.run(newImportance, newVer, ep.rowid);
+      await tx.executeRun(
+        `UPDATE node SET importance = ?, enrich_ver = ? WHERE rowid = ?`,
+        [newImportance, newVer, ep.rowid],
+      );
       result.importance_updated++;
     }
   };
@@ -238,15 +239,16 @@ export async function runBatchEnrich(
 
   // Chunked transactions: each chunk acquires and releases the write lock independently,
   // so a concurrent MCP write can interleave between chunks instead of stalling for the
-  // full-corpus transaction duration.
+  // full-corpus transaction duration. Each chunk is isolated in its own transaction via
+  // the StoreAdapter's transaction API (async-compatible: works on both SqliteAdapter
+  // and TursoAdapter).
   for (let i = 0; i < episodes.length; i += effectiveChunkSize) {
     const chunk = episodes.slice(i, i + effectiveChunkSize);
-    const chunkTx = db.transaction(() => {
+    await adapter.transaction(async (tx) => {
       for (const ep of chunk) {
-        processEpisode(ep);
+        await processEpisode(tx, ep);
       }
     });
-    chunkTx();
   }
 
   // ── Step 5: Auto-links (E9) ────────────────────────────────────────────────

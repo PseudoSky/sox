@@ -298,6 +298,10 @@ export async function memoryRecall(
     temporal_weight = TEMPORAL_WEIGHT,
   } = params;
 
+  const { createVectorDialect, createFTSDialect } = await import('@adhd/sox-store-adapter');
+  const vectorDialect = createVectorDialect(adapter.config.type);
+  const ftsDialect = createFTSDialect(adapter.config.type);
+
   // BL-316: scale candidate limits with caller's limit when filters are active
   const knnLimit = filters ? Math.max(DEFAULT_KNN_LIMIT, (limit || 20) * 2) : DEFAULT_KNN_LIMIT;
   const ftsLimit = filters ? Math.max(DEFAULT_FTS_LIMIT, (limit || 20) * 2) : DEFAULT_FTS_LIMIT;
@@ -425,16 +429,14 @@ export async function memoryRecall(
   // 2a. Vec0 KNN search
   let vecRows: { node_id: number; distance: number }[] = [];
   if (queryVecJson && !embedVecFailed) {
-    const vecSql = `SELECT v.node_id, v.distance
-         FROM vec_node v
-         JOIN node n ON n.rowid = v.node_id
-         WHERE v.embedding MATCH ? AND k = ?
-           AND ${validityPred}
-           ${agentFilter}
-           ${filterSql}
-         ORDER BY v.distance
-         LIMIT ?`;
-    const vecParams: unknown[] = [queryVecJson, knnLimit, ...filterParams, knnLimit];
+    const queryVec = JSON.parse(queryVecJson) as number[];
+    const { sql: dialectSql, args: dialectArgs } = vectorDialect.topKQuery(
+      'vec_node', 'embedding', queryVec, knnLimit, 'cosine',
+    );
+    // Interpolate __PLACEHOLDER__ with validity + agent + custom filter clauses
+    const filterClauses = [validityPred, agentFilter, filterSql].filter(Boolean).join(' ');
+    const vecSql = dialectSql.replace('__PLACEHOLDER__', filterClauses) + ' LIMIT ?';
+    const vecParams: unknown[] = [...dialectArgs, ...filterParams, knnLimit];
     const vecResult = await adapter.executeAll<{ node_id: number; distance: number }>(vecSql, vecParams);
     vecRows = vecResult.rows;
   }
@@ -443,7 +445,7 @@ export async function memoryRecall(
   const vecRanks = new Map<number, number>();
   vecRows.forEach((r, i) => vecRanks.set(r.node_id, i + 1));
 
-  // 2b. FTS5 BM25 search (text search)
+  // 2b. FTS BM25 search (text search)
   const ftsQuery = query
     .replace(/['"*\-+]/g, ' ')
     .trim()
@@ -452,21 +454,47 @@ export async function memoryRecall(
     .join(' ');
 
   const ftsRowids = new Map<number, number>();
-  if (ftsQuery) {
+  if (ftsQuery && ftsDialect.supported) {
     try {
-      const ftsResult = await adapter.executeAll<{ rowid: number; rank: number }>(
-        `SELECT fts_node.rowid, fts_node.rank
-         FROM fts_node
-         JOIN node n ON n.rowid = fts_node.rowid
-         WHERE fts_node MATCH ?
-           AND ${validityPred}
-           ${agentFilter}
-           ${filterSql}
-         ORDER BY fts_node.rank
-         LIMIT ?`,
-        [ftsQuery, ...filterParams, ftsLimit],
-      );
-      ftsResult.rows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
+      if (adapter.config.type === 'turso') {
+        // Turso Tantivy FTS path: query inlined as SQL string literal.
+        // Single quotes in the query are escaped to prevent injection.
+        const sanitizedQuery = ftsQuery.replace(/'/g, "''");
+        const { sql: matchSql } = ftsDialect.matchClause(
+          ['content', 'name', 'summary'],
+          `'${sanitizedQuery}'`,
+        );
+        const scoreOrder = ftsDialect.scoreClause(
+          ['content', 'name', 'summary'],
+          `'${sanitizedQuery}'`,
+        );
+        const ftsResult = await adapter.executeAll<{ rowid: number; rank: number }>(
+          `SELECT rowid, ${scoreOrder} AS rank FROM node
+           WHERE ${matchSql}
+             AND ${validityPred.replace(/\bn\./g, '')}
+             ${agentFilter.replace(/\bn\./g, '')}
+             ${filterSql.replace(/\bn\./g, '')}
+           ORDER BY ${scoreOrder}
+           LIMIT ?`,
+          [...filterParams, ftsLimit],
+        );
+        ftsResult.rows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
+      } else {
+        // SQLite FTS5 path: query passed as bound parameter.
+        const ftsResult = await adapter.executeAll<{ rowid: number; rank: number }>(
+          `SELECT fts_node.rowid, fts_node.rank
+           FROM fts_node
+           JOIN node n ON n.rowid = fts_node.rowid
+           WHERE fts_node MATCH ?
+             AND ${validityPred}
+             ${agentFilter}
+             ${filterSql}
+           ORDER BY fts_node.rank
+           LIMIT ?`,
+          [ftsQuery, ...filterParams, ftsLimit],
+        );
+        ftsResult.rows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
+      }
     } catch {
       // FTS query may fail on special chars — silently ignore
     }

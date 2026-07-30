@@ -21,16 +21,16 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
   let cleanup: () => void;
   let dbPath: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     const t = tmpDir();
     cleanup = t.cleanup;
     dbPath = path.join(t.dir, 'test.db');
-    WriteQueue.clearInstances();
+    await WriteQueue.clearInstances();
     WriteQueue.setBypass(false);
   });
 
-  afterEach(() => {
-    WriteQueue.clearInstances();
+  afterEach(async () => {
+    await WriteQueue.clearInstances();
     cleanup();
   });
 
@@ -174,16 +174,16 @@ describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
   let cleanup: () => void;
   let dbPath: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     const t = tmpDir();
     cleanup = t.cleanup;
     dbPath = path.join(t.dir, 'test.db');
-    WriteQueue.clearInstances();
+    await WriteQueue.clearInstances();
     WriteQueue.setBypass(false);
   });
 
-  afterEach(() => {
-    WriteQueue.clearInstances();
+  afterEach(async () => {
+    await WriteQueue.clearInstances();
     cleanup();
   });
 
@@ -207,14 +207,13 @@ describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
     expect(walBaseline).toBeGreaterThan(0);
 
     // Write enough data to grow the WAL (50 rows of ~1KB each)
-    await queue.enqueue('seed-table', (db) => {
-      db.exec(`CREATE TABLE IF NOT EXISTS wp5_test (
+    await queue.enqueue('seed-table', async (tx) => {
+      await tx.exec(`CREATE TABLE IF NOT EXISTS wp5_test (
         id INTEGER PRIMARY KEY,
         val TEXT NOT NULL
       )`);
-      const stmt = db.prepare('INSERT INTO wp5_test (id, val) VALUES (?, ?)');
       for (let i = 0; i < 50; i++) {
-        stmt.run(i, 'x'.repeat(1000));
+        await tx.executeRun('INSERT INTO wp5_test (id, val) VALUES (?, ?)', [i, 'x'.repeat(1000)]);
       }
     });
 
@@ -239,8 +238,8 @@ describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
     const queue = WriteQueue.forPath(dbPath);
 
     // Do a quick write and let the queue drain
-    await queue.enqueue('create-table', (db) => {
-      db.exec('CREATE TABLE IF NOT EXISTS ck_lifecycle (id INTEGER PRIMARY KEY, val TEXT)');
+    await queue.enqueue('create-table', async (tx) => {
+      await tx.exec('CREATE TABLE IF NOT EXISTS ck_lifecycle (id INTEGER PRIMARY KEY, val TEXT)');
     });
 
     // Wait just enough for _processNext to finish and checkpoint to be scheduled
@@ -250,8 +249,8 @@ describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
     expect(queue._checkpointPending).toBe(true);
 
     // Enqueue new work — this should cancel the pending timer
-    queue.enqueue('new-work', (db) => {
-      db.exec("INSERT INTO ck_lifecycle (id, val) VALUES (1, 'test')");
+    queue.enqueue('new-work', async (tx) => {
+      await tx.executeRun("INSERT INTO ck_lifecycle (id, val) VALUES (1, 'test')");
     });
 
     // Wait just enough for enqueue to cancel and new item to be processed
@@ -284,21 +283,20 @@ describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
     const queue = WriteQueue.forPath(dbPath);
 
     // Write some data
-    await queue.enqueue('write-data', (db) => {
-      db.exec('CREATE TABLE IF NOT EXISTS ck_idem (id INTEGER PRIMARY KEY, val TEXT)');
-      const stmt = db.prepare('INSERT INTO ck_idem (id, val) VALUES (?, ?)');
+    await queue.enqueue('write-data', async (tx) => {
+      await tx.exec('CREATE TABLE IF NOT EXISTS ck_idem (id INTEGER PRIMARY KEY, val TEXT)');
       for (let i = 0; i < 30; i++) {
-        stmt.run(i, 'x'.repeat(300));
+        await tx.executeRun('INSERT INTO ck_idem (id, val) VALUES (?, ?)', [i, 'x'.repeat(300)]);
       }
     });
     await new Promise<void>((r) => setTimeout(r, 100));
 
     // First checkpoint: should return frame count >= 0
-    const frames1 = queue.walCheckpoint();
+    const frames1 = await queue.walCheckpoint();
     expect(typeof frames1).toBe('number');
 
     // Second checkpoint: nothing to checkpoint → -1
-    const frames2 = queue.walCheckpoint();
+    const frames2 = await queue.walCheckpoint();
     expect(frames2).toBe(-1);
 
     // lastCheckpointAt should be set
@@ -309,11 +307,11 @@ describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
    * lastCheckpointAtForPath returns 0 for unknown/unused paths,
    * and >0 after a checkpoint has been performed.
    */
-  it('lastCheckpointAtForPath: unknown path returns 0, known path >0 after checkpoint', () => {
+  it('lastCheckpointAtForPath: unknown path returns 0, known path >0 after checkpoint', async () => {
     expect(WriteQueue.lastCheckpointAtForPath('/nonexistent/path.db')).toBe(0);
 
     const queue = WriteQueue.forPath(dbPath);
-    queue.walCheckpoint();
+    await queue.walCheckpoint();
     expect(WriteQueue.lastCheckpointAtForPath(dbPath)).toBeGreaterThan(0);
   });
 });

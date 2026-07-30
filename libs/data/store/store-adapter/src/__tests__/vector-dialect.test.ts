@@ -5,15 +5,9 @@
  * serialisation helpers (vecToJson, vecToBlob), and the factory
  * (createVectorDialect).
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
-// ── Mock sqlite-vec for SqliteVecDialect.initialize() test ────────────────────
-
-vi.mock('sqlite-vec', () => ({
-  load: vi.fn(),
-}));
-
-// ── Imports (below mock so hoisting works cleanly) ────────────────────────────
+// ── Imports ───────────────────────────────────────────────────────────────────
 
 import {
   SqliteVecDialect,
@@ -175,15 +169,6 @@ describe('SqliteVecDialect', () => {
     });
   });
 
-  // ── 3f. initialize ───────────────────────────────────────────────────────
-
-  describe('initialize', () => {
-    it('loads sqlite-vec extension without error', async () => {
-      // Requires vi.mock('sqlite-vec') at the top of this file.
-      const mockDb = {};
-      await expect(dialect.initialize(mockDb)).resolves.toBeUndefined();
-    });
-  });
 });
 
 // ============================================================================
@@ -242,15 +227,19 @@ describe('TursoVectorDialect', () => {
   // ── 4d. createIndexDDL ──────────────────────────────────────────────────
 
   describe('createIndexDDL', () => {
-    it('returns empty string because libsql_vector_descr is not available in @tursodatabase/database v0.7.1', () => {
+    it('generates CREATE INDEX DDL for a vector column', () => {
       const ddl = dialect.createIndexDDL('foo', 'embedding', 'cosine');
-      expect(ddl).toBe('');
+      expect(ddl).toBe(
+        'CREATE INDEX IF NOT EXISTS "idx_foo_embedding" ON "foo" ("embedding")',
+      );
     });
 
-    it('returns empty for all three metrics (cosine, l2, dot)', () => {
-      expect(dialect.createIndexDDL('foo', 'embedding', 'cosine')).toBe('');
-      expect(dialect.createIndexDDL('foo', 'embedding', 'l2')).toBe('');
-      expect(dialect.createIndexDDL('foo', 'embedding', 'dot')).toBe('');
+    it('generates index DDL for all three metrics (same output)', () => {
+      const cos = dialect.createIndexDDL('foo', 'embedding', 'cosine');
+      const l2 = dialect.createIndexDDL('foo', 'embedding', 'l2');
+      const dot = dialect.createIndexDDL('foo', 'embedding', 'dot');
+      expect(cos).toBe(dot);
+      expect(cos).toBe(l2);
     });
   });
 
@@ -283,13 +272,6 @@ describe('TursoVectorDialect', () => {
     });
   });
 
-  // ── 4f. initialize ──────────────────────────────────────────────────────
-
-  describe('initialize', () => {
-    it('resolves without error (no-op for Turso)', async () => {
-      await expect(dialect.initialize({})).resolves.toBeUndefined();
-    });
-  });
 });
 
 // ============================================================================

@@ -534,8 +534,14 @@ export async function migrateStore(
 
   for (const fts of ftsTables) {
     const tableName = fts.name;
+    // Prefer the new `fts` capability; fall back to deprecated `fts5` for backward compat.
+    const hasFtsCapability = target.capabilities.fts ?? target.capabilities.fts5;
+    // Detect if the source FTS DDL is FTS5-specific (virtual table) — Turso cannot
+    // execute FTS5 DDL even though it supports FTS via Tantivy indexes.
+    const isFts5DDL = fts.sql?.startsWith('CREATE VIRTUAL TABLE') ?? false;
+    const dialectMismatch = target.config.type === 'turso' && isFts5DDL;
     try {
-      if (target.capabilities.fts5 && fts.sql) {
+      if (hasFtsCapability && fts.sql && !dialectMismatch) {
         await target.exec(fts.sql);
         result.tables[tableName] = { rows: 0, reason: 'DDL recreated' };
         progress?.(`"${tableName}": DDL recreated (virtual, no data copy)`);
@@ -543,9 +549,11 @@ export async function migrateStore(
         result.tables[tableName] = {
           rows: 0,
           skipped: true,
-          reason: target.capabilities.fts5
-            ? 'No CREATE DDL available from source'
-            : 'Target does not support FTS5',
+          reason: dialectMismatch
+            ? 'FTS5 virtual table DDL incompatible with Turso Tantivy FTS'
+            : hasFtsCapability
+              ? 'No CREATE DDL available from source'
+              : 'Target does not support FTS',
         };
         progress?.(`"${tableName}": skipped (${result.tables[tableName]!.reason})`);
       }

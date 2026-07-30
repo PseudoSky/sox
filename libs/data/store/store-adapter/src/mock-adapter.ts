@@ -183,6 +183,9 @@ export class MockAdapter implements StoreAdapter {
       multiprocessWrite: false,
       nativeVectors: false,
       concurrentTransactions: false,
+      fts5: true,
+      fts: true,
+      needsWriteSerialization: false,
     };
   }
 
@@ -343,6 +346,13 @@ export class MockAdapter implements StoreAdapter {
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
+
+  /**
+   * Initialise the adapter — no-op for MockAdapter (no meta table needed).
+   */
+  async init(): Promise<void> {
+    // MockAdapter is for testing; no persistent storage to stamp
+  }
 
   async close(): Promise<void> {
     this.closed = true;

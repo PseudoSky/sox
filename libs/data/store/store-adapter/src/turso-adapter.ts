@@ -1,3 +1,4 @@
+import { ensureAdapterMetaTable, stampAdapterMeta } from './adapter-meta.js';
 import type {
   TursoAdapter,
   AdapterTransaction,
@@ -24,7 +25,9 @@ class TursoTransactionImpl implements AdapterTransaction {
 
   async executeAll<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<AllResult<T>> {
     const rows = args !== undefined ? await this.db.all(sql, ...args) : await this.db.all(sql);
-    return { columns: [], rows: rows as T[] };
+    const rowsArr = rows as T[];
+    const columns = rowsArr.length > 0 ? Object.keys(rowsArr[0] as Record<string, unknown>) : [];
+    return { columns, rows: rowsArr };
   }
 
   async executeRun(sql: string, args?: unknown[]): Promise<RunResult> {
@@ -88,8 +91,12 @@ export class TursoAdapterImpl implements TursoAdapter {
 
     const { connect } = tursoModule;
 
-    // Determine connection path/url
-    const url = opts.url || (opts.dbPath ? `file:${opts.dbPath}` : undefined);
+    // Determine connection path/url.
+    // @tursodatabase/database connect() accepts a bare file path for local mode
+    // or a libsql:// URL for remote connections. Do NOT prefix local paths with
+    // 'file:' — that causes "I/O error (statfs shared WAL coordination path)"
+    // on macOS (the Rust binary's filesystem check fails on the URI-wrapped path).
+    const url = opts.url || opts.dbPath;
     if (!url) {
       throw new Error('TursoAdapter requires either url or dbPath');
     }
@@ -99,10 +106,12 @@ export class TursoAdapterImpl implements TursoAdapter {
     if (opts.readonly !== undefined) dbOpts.readonly = opts.readonly;
     if (opts.defaultQueryTimeout !== undefined) dbOpts.defaultQueryTimeout = opts.defaultQueryTimeout;
 
-    // Handle experimental features
-    const experiments: string[] = [];
-    if (opts.experimental?.multiprocessWal) {
-      experiments.push('multiprocess_wal');
+    // Enable multiprocess_wal by default for concurrent reader/writer support.
+    // Uses .tshm shared memory files for WAL coordination instead of exclusive fcntl locks.
+    const experiments: string[] = ['multiprocess_wal'];
+    if (opts.experimental?.multiprocessWal === false) {
+      // Explicit opt-out via experimental: { multiprocessWal: false }
+      experiments.length = 0;
     }
     if (opts.encryption) {
       dbOpts.encryption = {
@@ -137,12 +146,27 @@ export class TursoAdapterImpl implements TursoAdapter {
     if (opts.defaultQueryTimeout !== undefined) config.defaultQueryTimeout = opts.defaultQueryTimeout;
 
     const capabilities: AdapterCapabilities = {
-      multiprocessWrite: opts.experimental?.multiprocessWal ?? false,
+      multiprocessWrite: opts.experimental?.multiprocessWal ?? true, // enabled by default
       nativeVectors: true,
       concurrentTransactions: true,
+      fts5: false,
+      fts: true,
+      needsWriteSerialization: false,
     };
 
-    return new TursoAdapterImpl(db, config, capabilities);
+    const instance = new TursoAdapterImpl(db, config, capabilities);
+
+    // Stamp adapter metadata (non-fatal)
+    if (!opts.readonly) {
+      try {
+        await ensureAdapterMetaTable(instance);
+        await stampAdapterMeta(instance, 'turso');
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    return instance;
   }
 
   unwrap(): import('@tursodatabase/database').Database {
@@ -156,7 +180,9 @@ export class TursoAdapterImpl implements TursoAdapter {
 
   async executeAll<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<AllResult<T>> {
     const rows = args !== undefined ? await this.db.all(sql, ...args) : await this.db.all(sql);
-    return { columns: [], rows: rows as T[] };
+    const rowsArr = rows as T[];
+    const columns = rowsArr.length > 0 ? Object.keys(rowsArr[0] as Record<string, unknown>) : [];
+    return { columns, rows: rowsArr };
   }
 
   async executeRun(sql: string, args?: unknown[]): Promise<RunResult> {

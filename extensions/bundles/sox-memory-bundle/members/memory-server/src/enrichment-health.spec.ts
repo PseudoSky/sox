@@ -24,7 +24,7 @@ import Database from 'better-sqlite3';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { getDb } from '@adhd/sox-memory-core';
+import { getDb, wrapRawDbAsAdapter } from '@adhd/sox-memory-core';
 import {
   completeEnrichTriggerRows,
   computeEnrichmentHealth,
@@ -73,21 +73,22 @@ function enqueue(db: Database.Database, op: string, enqueuedAt: string): number 
 }
 
 describe('[BL-172] completeEnrichTriggerRows', () => {
-  it('completes open trigger rows up to the snapshot seq with memoryd semantics', () => {
+  it('completes open trigger rows up to the snapshot seq with memoryd semantics', async () => {
     const db = openQueueDb(path.join(tmpDir(), 'q.db'));
+    const adapter = wrapRawDbAsAdapter(db);
     const t = new Date().toISOString();
     const s1 = enqueue(db, 'ingest', t);
     const s2 = enqueue(db, 'enrich', t);
     const s3 = enqueue(db, 'consolidate', t); // legacy trigger op
     const sDecay = enqueue(db, 'decay', t); // real work item — NOT a trigger
 
-    const maxSeq = maxOpenEnrichTriggerSeq(db);
+    const maxSeq = await maxOpenEnrichTriggerSeq(adapter);
     expect(maxSeq).toBe(s3);
 
     // A row enqueued AFTER the snapshot (simulates a mid-window write).
     const sLate = enqueue(db, 'ingest', t);
 
-    const completed = completeEnrichTriggerRows(db, maxSeq);
+    const completed = await completeEnrichTriggerRows(adapter, maxSeq);
     expect(completed).toBe(3);
 
     const rows = db
@@ -105,18 +106,20 @@ describe('[BL-172] completeEnrichTriggerRows', () => {
     expect(rows.find((x) => x.seq === sLate)?.done_at).toBeNull();
   });
 
-  it('is a no-op on an empty queue (maxSeq 0)', () => {
+  it('is a no-op on an empty queue (maxSeq 0)', async () => {
     const db = openQueueDb(path.join(tmpDir(), 'q.db'));
-    expect(maxOpenEnrichTriggerSeq(db)).toBe(0);
-    expect(completeEnrichTriggerRows(db, 0)).toBe(0);
+    const adapter = wrapRawDbAsAdapter(db);
+    expect(await maxOpenEnrichTriggerSeq(adapter)).toBe(0);
+    expect(await completeEnrichTriggerRows(adapter, 0)).toBe(0);
   });
 
-  it('never re-completes already-done rows (attempts stays put)', () => {
+  it('never re-completes already-done rows (attempts stays put)', async () => {
     const db = openQueueDb(path.join(tmpDir(), 'q.db'));
+    const adapter = wrapRawDbAsAdapter(db);
     const t = new Date().toISOString();
     const s1 = enqueue(db, 'ingest', t);
-    expect(completeEnrichTriggerRows(db, s1)).toBe(1);
-    expect(completeEnrichTriggerRows(db, s1)).toBe(0);
+    expect(await completeEnrichTriggerRows(adapter, s1)).toBe(1);
+    expect(await completeEnrichTriggerRows(adapter, s1)).toBe(0);
     const r = db.prepare(`SELECT attempts FROM organizer_queue WHERE seq = ?`).get(s1) as { attempts: number };
     expect(r.attempts).toBe(1);
   });
@@ -257,7 +260,7 @@ describe('queue-drain SLO: memory_ping surfaces the verdict', () => {
     expect(stalled.enrichment.state).toBe('stalled');
 
     // Drain (what the fixed fallback pass now does) → verdict flips to idle.
-    completeEnrichTriggerRows(db, seq);
+    await completeEnrichTriggerRows(wrapRawDbAsAdapter(db), seq);
     const drained = await pingStore(dbPath);
     expect(drained.queue_depth).toBe(0);
     expect(drained.enrichment.state).toBe('idle');

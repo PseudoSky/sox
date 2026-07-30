@@ -12,6 +12,7 @@ pnpm add @adhd/sox-store-adapter
 import { createStoreAdapter } from '@adhd/sox-store-adapter';
 
 // Auto-detect from env (STORE_ADAPTER=turso|sqlite, default: turso)
+// TursoAdapter enables multiprocess_wal by default for concurrent readers/writers
 const adapter = await createStoreAdapter({ dbPath: 'app.db' });
 
 await adapter.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
@@ -31,10 +32,10 @@ await adapter.close();
 ```typescript
 import { createSqliteAdapter, createTursoAdapter } from '@adhd/sox-store-adapter';
 
-// SQLite (backward-compatible, synchronous I/O)
+// SQLite (backward-compatible fallback, synchronous I/O, single-writer)
 const sqlite = createSqliteAdapter({ dbPath: ':memory:' });
 
-// Turso (async I/O, native vectors, multi-process writers)
+// Turso (default — async I/O, native vectors, multi-process writers via multiprocess_wal)
 const turso = await createTursoAdapter({
   url: 'libsql://my-db.turso.io',
   authToken: process.env.TURSO_AUTH_TOKEN,
@@ -184,6 +185,13 @@ interface AdapterCapabilities {
 }
 ```
 
+> **`multiprocessWrite` is `true` by default** on TursoAdapter — `multiprocess_wal` is enabled
+> at connect time via the `.tshm` shared memory coordination layer, allowing concurrent readers
+> and serialized writers across multiple OS processes. Setting `experimental: { multiprocessWal: false }`
+> opts out, reverting to Turso's default EXCLUSIVE file locking (single-writer).
+>
+> SqliteAdapter always reports `multiprocessWrite: false` (inherent SQLite single-writer limitation).
+
 ### Configuration
 
 ```typescript
@@ -198,7 +206,7 @@ interface AdapterConfig {
     hexkey: string;
   };
   experimental?: {
-    multiprocessWal?: boolean;
+    multiprocessWal?: boolean; // Default: true — set false to opt out of multiprocess_wal
   };
   defaultQueryTimeout?: number;
 }
@@ -241,7 +249,7 @@ Explicit TursoAdapter. Returns narrowed `TursoAdapter` type.
 ```typescript
 import { createTursoAdapter } from '@adhd/sox-store-adapter';
 
-// Local file
+// Local file (multiprocess_wal enabled by default for concurrent readers/writers)
 const local = await createTursoAdapter({ dbPath: 'app.db' });
 
 // Remote Turso
@@ -250,10 +258,10 @@ const remote = await createTursoAdapter({
   authToken: process.env.TURSO_AUTH_TOKEN,
 });
 
-// Multi-process writers
-const multi = await createTursoAdapter({
+// Opt out of multiprocess_wal (single-writer fallback)
+const single = await createTursoAdapter({
   dbPath: 'shared.db',
-  experimental: { multiprocessWal: true },
+  experimental: { multiprocessWal: false },
 });
 ```
 

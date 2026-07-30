@@ -53,16 +53,16 @@ describe('WP-6 concurrency harness (BL-134)', () => {
   let cleanup: () => void;
   let dbPath: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     const t = tmpDir();
     cleanup = t.cleanup;
     dbPath = path.join(t.dir, 'stress.db');
-    WriteQueue.clearInstances();
+    await WriteQueue.clearInstances();
     WriteQueue.setBypass(false);
   });
 
-  afterEach(() => {
-    WriteQueue.clearInstances();
+  afterEach(async () => {
+    await WriteQueue.clearInstances();
     cleanup();
   });
 
@@ -83,8 +83,8 @@ describe('WP-6 concurrency harness (BL-134)', () => {
     const OPS_PER_WRITER = 50;
 
     // Prepare the table
-    await queue.enqueue('setup', (db) => {
-      db.exec(`CREATE TABLE IF NOT EXISTS wp6_green (
+    await queue.enqueue('setup', async (tx) => {
+      await tx.exec(`CREATE TABLE IF NOT EXISTS wp6_green (
         id INTEGER PRIMARY KEY,
         writer_id INTEGER NOT NULL,
         op_num INTEGER NOT NULL,
@@ -100,10 +100,11 @@ describe('WP-6 concurrency harness (BL-134)', () => {
       for (let j = 0; j < OPS_PER_WRITER; j++) {
         const opStart = Date.now();
         try {
-          await queue.enqueue(`green-w${id}-${j}`, (db) => {
-            db.prepare(
+          await queue.enqueue(`green-w${id}-${j}`, async (tx) => {
+            await tx.executeRun(
               'INSERT INTO wp6_green (writer_id, op_num, payload) VALUES (?, ?, ?)',
-            ).run(id, j, 'x'.repeat(200));
+              [id, j, 'x'.repeat(200)],
+            );
           });
           latencies.push(Date.now() - opStart);
         } catch {
@@ -124,11 +125,11 @@ describe('WP-6 concurrency harness (BL-134)', () => {
 
     // Assert every operation completed
     const totalWrites = results.reduce((sum, r) => sum + r.writeCount, 0);
-    const totalInDb = await queue.enqueue('count-green', (db) => {
-      const row = db.prepare<[], { cnt: number }>(
+    const totalInDb = await queue.enqueue('count-green', async (tx) => {
+      const row = await tx.executeGet<{ cnt: number }>(
         'SELECT COUNT(*) AS cnt FROM wp6_green',
-      ).get()!;
-      return row.cnt;
+      );
+      return row?.cnt ?? 0;
     });
     expect(totalInDb).toBe(N * OPS_PER_WRITER);
 

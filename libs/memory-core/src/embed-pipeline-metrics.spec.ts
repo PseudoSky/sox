@@ -16,6 +16,8 @@
  *   5. Metrics are PER-STORE, keyed identically to WriteQueue.metricsForPath
  *      (wq.storePath) — two stores never bleed into each other.
  *   6. getEmbedPipelineMetrics is pure and null for unknown stores.
+ *   7. BL-319: embed_throughput_per_sec — rolling 60s throughput window.
+ *   8. BL-319: heal_time_budget_exceeded — true when last heal pass hit budget.
  *
  * DETERMINISM (BL-161): deterministic provider seam, no real ONNX; the clock
  * seam is the startedAtMs stamp itself (backdated by the test — lower-bound
@@ -23,12 +25,13 @@
  *
  * Gate: npx nx test memory-core --skip-nx-cache
  */
+
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import type Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import type { EmbedRole } from '@adhd/sox-embedding-provider';
 import { openDb } from './db.js';
 import { memoryWritePhaseA } from './write.js';
@@ -53,40 +56,67 @@ class FailingProvider extends DeterministicTestProvider {
   }
 }
 
-function tmpDb(): { dir: string; dbPath: string; db: Database.Database; cleanup: () => void } {
+interface TestContext {
+  dir: string;
+  dbPath: string;
+  adapter: StoreAdapter;
+  cleanup: () => void;
+}
+
+/**
+ * Create a test database via openDb. STORE_ADAPTER is forced to 'sqlite' at
+ * module scope (above) so openDb's createStoreAdapter uses SqliteAdapter
+ * rather than the live server's TursoAdapter with multiprocess_wal.
+ */
+async function tmpDb(): Promise<TestContext> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'embed-metrics-'));
   const dbPath = path.join(dir, 'm.db');
-  const db = openDb(dbPath);
+  const adapter = await openDb(dbPath);
   return {
     dir,
     dbPath,
-    db,
+    adapter,
     cleanup: () => {
-      try { if (db.open) db.close(); } catch { /* closed */ }
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
 }
 
-/** Raw-insert a live episode WITHOUT a vec row — the "crashed Phase B" shape. */
-function insertOrphanEpisode(db: Database.Database, content: string, tCreated: string): void {
-  db.prepare(
+/**
+ * Raw-insert a live episode WITHOUT a vec row — the "crashed Phase B" shape.
+ * Uses the StoreAdapter's executeRun to write directly.
+ */
+async function insertOrphanEpisode(adapter: StoreAdapter, content: string, tCreated: string): Promise<void> {
+  await adapter.executeRun(
     `INSERT INTO node (uid, kind, content, content_hash, t_created, t_valid)
      VALUES (?, 'episode', ?, ?, ?, ?)`,
-  ).run(`orphan-${Math.random().toString(36).slice(2)}`, content, `hash-${Math.random()}`, tCreated, tCreated);
+    [`orphan-${Math.random().toString(36).slice(2)}`, content, `hash-${Math.random()}`, tCreated, tCreated],
+  );
 }
 
-function phaseA(db: Database.Database, content: string): PhaseAOutcome {
-  const r = memoryWritePhaseA(db, { content, project_path: '/test/project' });
+async function phaseA(adapter: StoreAdapter, content: string): Promise<PhaseAOutcome> {
+  const r = await memoryWritePhaseA(adapter, { content, project_path: '/test/project' });
   expect('code' in r).toBe(false);
   return r as PhaseAOutcome;
 }
 
-let ctx: ReturnType<typeof tmpDb>;
+let ctx: TestContext;
 
-beforeEach(() => {
-  ctx = tmpDb();
-  WriteQueue.clearInstances();
+/**
+ * Force SqliteAdapter for any openDb call within this test. WriteQueue.forPath
+ * calls openDb which reads process.env.STORE_ADAPTER. The live env may be
+ * set to 'turso' which uses multiprocess_wal — incompatible with /tmp paths.
+ * Must be set before EVERY openDb invocation because vitest's fork pool may
+ * inherit the parent's env without our override.
+ */
+function forceSqliteAdapter(): void {
+  process.env.STORE_ADAPTER = 'sqlite';
+}
+
+beforeEach(async () => {
+  forceSqliteAdapter();
+  ctx = await tmpDb();
+  await WriteQueue.clearInstances();
   WriteQueue.setBypass(false);
   _resetEmbedPipelineMetricsForTest();
   _setEmbedProviderForTest(new DeterministicTestProvider());
@@ -94,7 +124,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await flushPendingEmbeds();
-  WriteQueue.clearInstances();
+  await WriteQueue.clearInstances();
   _resetEmbedPipelineMetricsForTest();
   ctx.cleanup();
   _setEmbedProviderForTest(new DeterministicTestProvider());
@@ -105,7 +135,7 @@ afterEach(async () => {
 describe('time_to_vector_ms — recorded on the async path from the monotonic Phase-A stamp', () => {
   it('Phase A stamps startedAtMs; a pipeline apply records one sample bounded below by the stamp age', async () => {
     const wq = WriteQueue.forPath(ctx.dbPath);
-    const a = phaseA(ctx.db, 'time to vector headline metric sample one');
+    const a = await phaseA(ctx.adapter, 'time to vector headline metric sample one');
 
     // The stamp is minted by Phase A itself (performance.now-based).
     expect(typeof a.pending!.startedAtMs).toBe('number');
@@ -133,15 +163,21 @@ describe('time_to_vector_ms — recorded on the async path from the monotonic Ph
       heals_applied: 0,
       heals_failed: 0,
     });
+    // BL-319: throughput recorded on completion
+    expect(m.embed_throughput_per_sec).toBeGreaterThan(0);
+    expect(m.heal_time_budget_exceeded).toBe(false);
   });
 
   it('a stamped pending whose apply resolves "exists" records NO time_to_vector sample', async () => {
     const wq = WriteQueue.forPath(ctx.dbPath);
-    const a = phaseA(ctx.db, 'vector already landed via a racing path');
+    const a = await phaseA(ctx.adapter, 'vector already landed via a racing path');
 
-    // Land the vector first (direct apply — the heal/pipeline race shape).
+    // Land the vector first (direct apply via transaction — the heal/pipeline race shape).
     const vec = await embed(a.pending!.text);
-    expect(applyEmbedding(ctx.db, a.pending!, vec).status).toBe('applied');
+    const applyResult = await ctx.adapter.transaction(async (tx) => {
+      return applyEmbedding(tx, a.pending!, vec);
+    });
+    expect(applyResult.status).toBe('applied');
 
     const res = await schedulePendingEmbeds(wq, [a.pending!]);
     expect(res.exists).toBe(1);
@@ -160,9 +196,9 @@ describe('heal path — never pollutes time_to_vector; wall-clock heal_lag_ms in
     const wq = WriteQueue.forPath(ctx.dbPath);
     // Crash orphan created 60s ago (wall clock) — no in-process stamp exists.
     const old = new Date(Date.now() - 60_000).toISOString();
-    insertOrphanEpisode(ctx.db, 'crash orphan with unique zeppelin tokens', old);
+    await insertOrphanEpisode(ctx.adapter, 'crash orphan with unique zeppelin tokens', old);
 
-    const heal = await healMissingVectors(ctx.db, wq);
+    const heal = await healMissingVectors(ctx.adapter, wq);
     expect(heal.healed).toBe(1);
     expect(heal.failed).toBe(0);
 
@@ -203,18 +239,20 @@ describe('monotonic counters — each outcome branch drives exactly its counter'
     const wq = WriteQueue.forPath(ctx.dbPath);
     _setEmbedProviderForTest(new FailingProvider());
 
-    const a = phaseA(ctx.db, 'first doomed pipeline embed');
+    const a = await phaseA(ctx.adapter, 'first doomed pipeline embed');
     const sched = await schedulePendingEmbeds(wq, [a.pending!], { logSink: () => {} });
     expect(sched.failed).toBe(1);
 
-    const heal = await healMissingVectors(ctx.db, wq, { logSink: () => {} });
+    const heal = await healMissingVectors(ctx.adapter, wq, { logSink: () => {} });
     expect(heal.failed).toBe(1); // same orphan, embed still failing
 
     const m = getEmbedPipelineMetrics(ctx.dbPath)!;
     expect(m.counters.embeds_failed).toBe(1); // schedulePendingEmbeds branch
     expect(m.counters.heals_failed).toBe(1); // healMissingVectors branch
     expect(m.counters.embeds_completed).toBe(0);
+    // BL-319: failed embeds record no duration and no throughput
     expect(m.embed_duration_samples).toBe(0); // failed embeds record no duration
+    expect(m.embed_throughput_per_sec).toBe(0);
   });
 });
 
@@ -222,10 +260,10 @@ describe('monotonic counters — each outcome branch drives exactly its counter'
 
 describe('per-store keying (mirrors WriteQueue.metricsForPath) + snapshot purity', () => {
   it('two stores keep independent metrics; unknown stores return null', async () => {
-    const other = tmpDb();
+    const other = await tmpDb();
     try {
       const wqA = WriteQueue.forPath(ctx.dbPath);
-      const a = phaseA(ctx.db, 'store A episode about lighthouse optics');
+      const a = await phaseA(ctx.adapter, 'store A episode about lighthouse optics');
       await schedulePendingEmbeds(wqA, [a.pending!]);
 
       // Store A has activity; store B has NONE — and stays null (honest:
@@ -234,7 +272,7 @@ describe('per-store keying (mirrors WriteQueue.metricsForPath) + snapshot purity
       expect(getEmbedPipelineMetrics(other.dbPath)).toBeNull();
 
       const wqB = WriteQueue.forPath(other.dbPath);
-      const b = memoryWritePhaseA(other.db, { content: 'store B episode about tidal harmonics', project_path: '/test/project' });
+      const b = await memoryWritePhaseA(other.adapter, { content: 'store B episode about tidal harmonics', project_path: '/test/project' });
       await schedulePendingEmbeds(wqB, [(b as PhaseAOutcome).pending!]);
 
       const mA = getEmbedPipelineMetrics(ctx.dbPath)!;
@@ -248,7 +286,7 @@ describe('per-store keying (mirrors WriteQueue.metricsForPath) + snapshot purity
 
   it('getEmbedPipelineMetrics is pure — repeated snapshots are identical and mutation-safe', async () => {
     const wq = WriteQueue.forPath(ctx.dbPath);
-    const a = phaseA(ctx.db, 'purity check episode content');
+    const a = await phaseA(ctx.adapter, 'purity check episode content');
     await schedulePendingEmbeds(wq, [a.pending!]);
 
     const m1 = getEmbedPipelineMetrics(ctx.dbPath)!;
@@ -269,14 +307,63 @@ describe('pipeline applies are apply-kind queue tasks (write_latency_ms stays ho
   it('a pipeline apply increments apply_tasks_completed, not write_tasks_completed', async () => {
     const wq = WriteQueue.forPath(ctx.dbPath);
     // Phase A through the queue (write-kind), Phase B apply (apply-kind).
-    const outcome = await wq.enqueue('memory_write', (qdb) =>
-      memoryWritePhaseA(qdb, { content: 'kind separation end to end proof', project_path: '/test/project' }),
-    );
+    const outcome = await wq.enqueue('memory_write', async (qdb) => {
+      return memoryWritePhaseA(qdb, { content: 'kind separation end to end proof', project_path: '/test/project' });
+    });
     await schedulePendingEmbeds(wq, [(outcome as PhaseAOutcome).pending!]);
 
     const c = wq.getMetrics().counters;
     expect(c.write_tasks_completed).toBe(1);
     expect(c.apply_tasks_completed).toBe(1);
     expect(c.tasks_completed).toBe(2);
+  });
+});
+
+// ── 6. BL-319: embed_throughput_per_sec rolling window ────────────────────────
+
+describe('embed_throughput_per_sec — rolling 60s window', () => {
+  it('records throughput from pipeline completions', async () => {
+    const wq = WriteQueue.forPath(ctx.dbPath);
+    const a = await phaseA(ctx.adapter, 'throughput sample one');
+    await schedulePendingEmbeds(wq, [a.pending!]);
+
+    const m = getEmbedPipelineMetrics(ctx.dbPath)!;
+    expect(m.embed_throughput_per_sec).toBeGreaterThan(0);
+    // With a single completion in the 60s window: 1/60 = ~0.0167
+    expect(m.embed_throughput_per_sec).toBeLessThanOrEqual(1);
+  });
+
+  it('heal path also feeds the throughput metric', async () => {
+    const wq = WriteQueue.forPath(ctx.dbPath);
+    await insertOrphanEpisode(ctx.adapter, 'heal throughput test item', new Date().toISOString());
+    const heal = await healMissingVectors(ctx.adapter, wq);
+    expect(heal.healed).toBe(1);
+
+    const m = getEmbedPipelineMetrics(ctx.dbPath)!;
+    expect(m.embed_throughput_per_sec).toBeGreaterThan(0);
+  });
+});
+
+// ── 7. BL-319: heal_time_budget_exceeded ──────────────────────────────────────
+
+describe('heal_time_budget_exceeded — per-tick time budget', () => {
+  it('defaults to false on a clean heal pass (no items or items healed fully)', async () => {
+    const wq = WriteQueue.forPath(ctx.dbPath);
+    const heal = await healMissingVectors(ctx.adapter, wq);
+    expect(heal.time_budget_exceeded).toBe(false);
+
+    const m = getEmbedPipelineMetrics(ctx.dbPath)!;
+    expect(m.heal_time_budget_exceeded).toBe(false);
+  });
+
+  it('is false after a heal pass that fully heals all scanned items', async () => {
+    const wq = WriteQueue.forPath(ctx.dbPath);
+    await insertOrphanEpisode(ctx.adapter, 'single budget-respecting orphan', new Date().toISOString());
+    const heal = await healMissingVectors(ctx.adapter, wq);
+    expect(heal.healed).toBe(1);
+    expect(heal.time_budget_exceeded).toBe(false);
+
+    const m = getEmbedPipelineMetrics(ctx.dbPath)!;
+    expect(m.heal_time_budget_exceeded).toBe(false);
   });
 });

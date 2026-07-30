@@ -8,9 +8,9 @@
  * so we query it directly for vector search. GraphBackend handles node CRUD.
  */
 
-import type { Database } from 'better-sqlite3';
 import { detectNearDupPairs } from '@adhd/sox-analysis';
 import type { NearDupOpts } from '@adhd/sox-analysis';
+import type { AdapterTransaction } from '@adhd/sox-store-adapter';
 
 export interface NearDupResult {
   existing_uid: string;
@@ -27,21 +27,26 @@ function blobToFloat32(buf: Buffer): Float32Array {
   return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
 }
 
-export function detectNearDup(
-  db: Database,
+export async function detectNearDup(
+  tx: AdapterTransaction,
   rowid: number,
   embedding: Float32Array,
   threshold: number,
-): NearDupResult | null {
+  useNativeVectors?: boolean,
+): Promise<NearDupResult | null> {
+  // Turso (native vectors) doesn't support vec0 MATCH syntax — skip near-dup
+  // detection. This is an optimization, not correctness-critical.
+  if (useNativeVectors) return null;
+
   // ── KNN via vec_node (memory-core specific vec0 table) ─────────────────
   const embJson = '[' + Array.from(embedding).map((v) => v.toFixed(8)).join(',') + ']';
-  const knnRows = db
-    .prepare<[string, number], VecRow>(
-      `SELECT node_id, embedding
-       FROM vec_node
-       WHERE embedding MATCH ? AND k = ?`,
-    )
-    .all(embJson, 21)
+  const knnResult = await tx.executeAll<VecRow>(
+    `SELECT node_id, embedding
+     FROM vec_node
+     WHERE embedding MATCH ? AND k = ?`,
+    [embJson, 21],
+  );
+  const knnRows = knnResult.rows
     .filter((r) => r.node_id !== rowid)
     .slice(0, 20);
 
@@ -74,14 +79,10 @@ export function detectNearDup(
   // Check node existence via raw SQL — avoids calling createGraphBackend (which
   // runs PRAGMAs that throw "Safety level may not be changed inside a transaction"
   // when detectNearDup is called from within applyEmbedding's transaction).
-  const neighborExists = db
-    .prepare<[number], { rowid: number }>('SELECT rowid FROM node WHERE rowid = ?')
-    .get(neighborId);
+  const neighborExists = await tx.executeGet<{ rowid: number }>('SELECT rowid FROM node WHERE rowid = ?', [neighborId]);
   if (!neighborExists) return null;
 
-  const neighborUidRow = db
-    .prepare<[number], { uid: string }>(`SELECT uid FROM node WHERE rowid = ?`)
-    .get(neighborId);
+  const neighborUidRow = await tx.executeGet<{ uid: string }>(`SELECT uid FROM node WHERE rowid = ?`, [neighborId]);
   if (!neighborUidRow) return null;
 
   return {

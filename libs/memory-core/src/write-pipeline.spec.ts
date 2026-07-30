@@ -83,15 +83,15 @@ function rowidFor(db: Database.Database, uid: string): number {
 
 let ctx: ReturnType<typeof tmpDb>;
 
-beforeEach(() => {
+beforeEach(async () => {
   ctx = tmpDb();
-  WriteQueue.clearInstances();
+  await WriteQueue.clearInstances();
   WriteQueue.setBypass(false);
 });
 
 afterEach(async () => {
   await flushPendingEmbeds();
-  WriteQueue.clearInstances();
+  await WriteQueue.clearInstances();
   ctx.cleanup();
   // Restore the suite-wide deterministic provider (vitest.setup.ts contract).
   _setEmbedProviderForTest(new DeterministicTestProvider());

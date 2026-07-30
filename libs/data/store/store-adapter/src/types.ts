@@ -1,3 +1,11 @@
+// ── Adapter meta (adapter-type stamping) ────────────────────────────────────
+
+export interface AdapterMeta {
+  adapter_type: 'sqlite' | 'turso' | null;
+  adapter_version: string | null;
+  created_at: string | null;
+}
+
 // ── Result types ────────────────────────────────────────────────────────────
 
 export interface RunResult {
@@ -51,6 +59,14 @@ export interface AdapterCapabilities {
   multiprocessWrite: boolean;
   nativeVectors: boolean;
   concurrentTransactions: boolean;
+  /** @deprecated Use `fts` instead. */
+  fts5: boolean;
+  /** True when the adapter supports full-text search (FTS5 on SQLite, Tantivy on Turso). */
+  fts: boolean;
+  /** True when the adapter uses a single sync connection that requires write serialization
+   *  (e.g. better-sqlite3). False for async adapters with native concurrent I/O (e.g. Turso).
+   *  WriteQueue checks this to decide whether to serialize writes or execute immediately. */
+  needsWriteSerialization: boolean;
 }
 
 // ── Vector dialect ──────────────────────────────────────────────────────────
@@ -60,10 +76,27 @@ export type VectorMetric = 'cosine' | 'l2' | 'dot';
 export interface VectorDialect {
   vectorColumnType(dim: number): string;
   distanceExpr(column: string, queryVec: number[]): string;
+  createTableDDL(table: string, column: string, dim: number): string;
   createIndexDDL(table: string, column: string, metric: VectorMetric): string;
   topKQuery(table: string, column: string, queryVec: number[], k: number, metric: VectorMetric): { sql: string; args: unknown[] };
-  /** Internal: initialize the dialect with the raw driver handle. Called by vector-store (not the adapter) after selecting which dialect to use. */
-  initialize(db: unknown): Promise<void>;
+}
+
+// ── FTS dialect ──────────────────────────────────────────────────────────────
+
+export interface FTSDialect {
+  /** Whether full-text search is supported on this backend. */
+  readonly supported: boolean;
+  /** Dialect discriminator. */
+  readonly dialect: 'sqlite' | 'turso';
+  /** DDL to create the FTS index for a given table/columns.
+   *  For SQLite FTS5, this returns an empty string (DDL managed separately via
+   *  CREATE VIRTUAL TABLE). For Turso, this returns CREATE INDEX ... USING fts. */
+  createIndexDDL(table: string, columns: string[], weights?: Record<string, number>): string;
+  /** WHERE clause fragment for FTS matching.
+   *  Returns { sql, params } where sql uses the given queryParam placeholder. */
+  matchClause(columns: string[], queryParam: string): { sql: string };
+  /** ORDER BY clause for BM25 scoring. Returns a SQL expression for ranking. */
+  scoreClause(columns: string[], queryParam: string): string;
 }
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -83,6 +116,21 @@ export interface AdapterConfig {
   /** Experimental feature flags. Currently: multiprocessWal enables multi-process write support. */
   experimental?: { multiprocessWal?: boolean };
   defaultQueryTimeout?: number;
+}
+
+// ── Factory options ──────────────────────────────────────────────────────────
+
+/**
+ * Options for `createStoreAdapter()`.
+ */
+export interface CreateStoreOptions {
+  /** Auto-migrate when the store's `_adapter_meta` adapter_type differs from
+   *  the requested adapter type. When `true` and a type mismatch is detected,
+   *  the factory copies all user data to a new store of the requested type
+   *  using an atomic temp-file swap. Default: `false`. */
+  migrateOnAdapterChange?: boolean;
+  /** Options forwarded to `migrateStore` during auto-migration. */
+  migrationOptions?: import('./migration.js').MigrationOptions;
 }
 
 // ── Main interface ──────────────────────────────────────────────────────────

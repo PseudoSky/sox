@@ -63,13 +63,13 @@ function isEBusy(err: unknown): err is QueueBusyError {
   );
 }
 
-beforeEach(() => {
-  WriteQueue.clearInstances();
+beforeEach(async () => {
+  await WriteQueue.clearInstances();
   WriteQueue.setBypass(false);
 });
 
-afterEach(() => {
-  WriteQueue.clearInstances();
+afterEach(async () => {
+  await WriteQueue.clearInstances();
   _resetAllLeasesForTest();
 });
 
@@ -84,8 +84,8 @@ describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
 
     try {
       // Seed the counter table
-      await queue.enqueue('setup', (db) => {
-        db.exec(`CREATE TABLE IF NOT EXISTS overflow_test (
+      await queue.enqueue('setup', async (tx) => {
+        await tx.exec(`CREATE TABLE IF NOT EXISTS overflow_test (
           id      INTEGER PRIMARY KEY AUTOINCREMENT,
           seq_num INTEGER UNIQUE NOT NULL,
           ts      TEXT NOT NULL
@@ -95,10 +95,10 @@ describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
       // ── Phase 1: fill the queue ────────────────────────────────────────
       // Enqueue one SLOW item to occupy the processor and fill the queue.
       // It sleeps for a bounded duration (300ms) before inserting.
-      const slowComplete = queue.enqueue('slow-anchor', async (db) => {
+      const slowComplete = queue.enqueue('slow-anchor', async (tx) => {
         // This holds the queue processor for 300ms
         await new Promise<void>((r) => setTimeout(r, 300));
-        db.prepare("INSERT INTO overflow_test (seq_num, ts) VALUES (?, datetime('now'))").run(0);
+        await tx.executeRun("INSERT INTO overflow_test (seq_num, ts) VALUES (?, datetime('now'))", [0]);
         return 0;
       });
 
@@ -114,8 +114,8 @@ describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
       const TOTAL_ITEMS = MAX_SIZE + 10;
       for (let i = 1; i <= TOTAL_ITEMS; i++) {
         const seqNum = i;
-        const p = queue.enqueue(`item-${seqNum}`, (db) => {
-          db.prepare("INSERT INTO overflow_test (seq_num, ts) VALUES (?, datetime('now'))").run(seqNum);
+        const p = queue.enqueue(`item-${seqNum}`, async (tx) => {
+          await tx.executeRun("INSERT INTO overflow_test (seq_num, ts) VALUES (?, datetime('now'))", [seqNum]);
           return seqNum;
         });
 
@@ -236,17 +236,17 @@ describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
     const queue = WriteQueue.forPath(dbPath, Number.MAX_SAFE_INTEGER);
 
     try {
-      await queue.enqueue('setup', (db) => {
-        db.exec(`CREATE TABLE IF NOT EXISTS nc_overflow_test (
+      await queue.enqueue('setup', async (tx) => {
+        await tx.exec(`CREATE TABLE IF NOT EXISTS nc_overflow_test (
           id      INTEGER PRIMARY KEY AUTOINCREMENT,
           seq_num INTEGER UNIQUE NOT NULL
         )`);
       });
 
       // Slow anchor to fill time
-      const slowComplete = queue.enqueue('slow-anchor', async (db) => {
+      const slowComplete = queue.enqueue('slow-anchor', async (tx) => {
         await new Promise<void>((r) => setTimeout(r, 300));
-        db.prepare('INSERT INTO nc_overflow_test (seq_num) VALUES (?)').run(0);
+        await tx.executeRun('INSERT INTO nc_overflow_test (seq_num) VALUES (?)', [0]);
         return 0;
       });
 
@@ -256,8 +256,8 @@ describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
       for (let i = 1; i <= 15; i++) {
         const seqNum = i;
         promises.push(
-          queue.enqueue(`item-${seqNum}`, (db) => {
-            db.prepare('INSERT INTO nc_overflow_test (seq_num) VALUES (?)').run(seqNum);
+          queue.enqueue(`item-${seqNum}`, async (tx) => {
+            await tx.executeRun('INSERT INTO nc_overflow_test (seq_num) VALUES (?)', [seqNum]);
             return seqNum;
           }).then(
             () => { results.push({ ok: true }); },
@@ -290,14 +290,14 @@ describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
     const queue = WriteQueue.forPath(dbPath, MAX_SIZE);
 
     try {
-      await queue.enqueue('setup', (db) => {
-        db.exec('CREATE TABLE IF NOT EXISTS recovery_test (id INTEGER PRIMARY KEY, val TEXT)');
+      await queue.enqueue('setup', async (tx) => {
+        await tx.exec('CREATE TABLE IF NOT EXISTS recovery_test (id INTEGER PRIMARY KEY, val TEXT)');
       });
 
       // Slow anchor to trigger overflow condition
-      const slowComplete = queue.enqueue('slow', async (db) => {
+      const slowComplete = queue.enqueue('slow', async (tx) => {
         await new Promise<void>((r) => setTimeout(r, 200));
-        db.prepare("INSERT INTO recovery_test (val) VALUES ('anchor')").run();
+        await tx.executeRun("INSERT INTO recovery_test (val) VALUES ('anchor')");
         return 'anchor';
       });
 
@@ -305,8 +305,8 @@ describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
       const flood: Array<Promise<void>> = [];
       for (let i = 0; i < MAX_SIZE + 5; i++) {
         flood.push(
-          queue.enqueue(`flood-${i}`, (db) => {
-            db.prepare("INSERT INTO recovery_test (val) VALUES ('flood')").run();
+          queue.enqueue(`flood-${i}`, async (tx) => {
+            await tx.executeRun("INSERT INTO recovery_test (val) VALUES ('flood')");
             return i;
           }).then(() => {}, () => {}), // ignore results — just let them settle
         );
@@ -319,8 +319,8 @@ describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
       await new Promise<void>((r) => setTimeout(r, 200));
 
       // After overflow + drain, the queue MUST accept new items
-      const recoveredResult = await queue.enqueue('after-overflow', (db) => {
-        db.prepare("INSERT INTO recovery_test (val) VALUES ('recovered')").run();
+      const recoveredResult = await queue.enqueue('after-overflow', async (tx) => {
+        await tx.executeRun("INSERT INTO recovery_test (val) VALUES ('recovered')");
         return 'recovered';
       });
 

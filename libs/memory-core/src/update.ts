@@ -27,7 +27,7 @@
  *   - Returns:          { uid, updated_fields, reembedded }
  */
 
-import type { StoreAdapter, SqliteAdapter } from '@adhd/sox-store-adapter';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { performance } from 'node:perf_hooks';
 import { embed } from './embed.js';
 import { applyEmbedding, type PendingEmbed } from './embed-pipeline.js';
@@ -354,8 +354,11 @@ export async function memoryUpdate(
   const phaseA = await memoryUpdatePhaseA(adapter, params);
   if ('code' in phaseA) return phaseA;
   if (phaseA.pending === null) return phaseA.result;
+  const pending: PendingEmbed = phaseA.pending;
 
-  const vec = await embed(phaseA.pending.text);
-  applyEmbedding((adapter as SqliteAdapter).unwrap(), phaseA.pending, vec);
+  const vec = await embed(pending.text);
+  await adapter.transaction(async (tx) =>
+    applyEmbedding(tx, pending, vec, adapter.capabilities.nativeVectors, adapter.capabilities.nativeVectors),
+  );
   return phaseA.result;
 }

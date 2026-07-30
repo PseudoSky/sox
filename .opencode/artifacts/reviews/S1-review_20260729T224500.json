@@ -1,0 +1,88 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "flash-reviewer",
+  "task_id": "S1-review",
+  "label": "BL-319 code review: embed-pipeline.ts + memory-server index.ts",
+  "reviewed_at": "2026-07-29T22:45:00Z",
+  "files_reviewed": [
+    "libs/memory-core/src/embed-pipeline.ts",
+    "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": {
+      "passed": 0,
+      "failed": 8,
+      "skipped": 0
+    },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "high",
+      "category": "test-coverage",
+      "file": "libs/memory-core/src/embed-pipeline.ts",
+      "line": 373,
+      "description": "The `applyEmbedding` function signature changed from synchronous `(db: Database.Database, pending: PendingEmbed, vec: Float32Array) => EmbedApplyResult` to async `(tx: AdapterTransaction, pending: PendingEmbed, vec: Float32Array, useBinaryFormat?: boolean, useNativeVectors?: boolean) => Promise<EmbedApplyResult>`. Three test files call it with the old signature synchronously and will break at runtime (cannot await a non-function; type mismatch on first arg).",
+      "fix_sketch": "Update all call sites in `write-pipeline.spec.ts`, `embed-pipeline-metrics.spec.ts`, and `embed-provenance.spec.ts` to pass an AdapterTransaction (wrap via `wrapRawDbAsAdapter(ctx.db)`), await the result, and pass the new optional params. Root cause: these tests are NOT in the diff and were not updated alongside the source change."
+    },
+    {
+      "severity": "high",
+      "category": "test-coverage",
+      "file": "libs/memory-core/src/embed-pipeline.ts",
+      "line": 526,
+      "description": "The `embedBacklogStats` function signature changed from synchronous `(db: Database.Database) => EmbedBacklogStats` to async `(adapter: StoreAdapter) => Promise<EmbedBacklogStats>`. The `write-pipeline.spec.ts` test file calls it synchronously with `ctx.db` (a Database.Database) at 8 call sites. These will fail at compile-time (type mismatch) and runtime (sync access on Promise).",
+      "fix_sketch": "Update `write-pipeline.spec.ts` to pass `wrapRawDbAsAdapter(ctx.db)` or the new StoreAdapter-compatible adapter, and `await` each call."
+    },
+    {
+      "severity": "high",
+      "category": "test-coverage",
+      "file": "libs/memory-core/src/embed-pipeline.ts",
+      "line": 557,
+      "description": "The `healMissingVectors` function signature changed: first parameter from `Database.Database` to `StoreAdapter`. Tests in `embed-pipeline-metrics.spec.ts` (lines 165, 210) and `write-pipeline.spec.ts` (line 385, 405) pass `ctx.db` (a Database.Database) as the first argument. They will fail with `TypeError: db.prepare is not a function` because a StoreAdapter does not have `prepare()`.",
+      "fix_sketch": "Update all call sites to pass a StoreAdapter (the result of `getDb(dbPath)` or `wrapRawDbAsAdapter(ctx.db)`) instead of the raw Database handle."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/memory-core/src/embed-pipeline.ts",
+      "line": 312,
+      "description": "`trackEmbedCompletion` calls `performance.now()` twice — once for the push value (t1) and again for the cutoff (t2 > t1). The pushed timestamp is slightly OLDER than the cutoff's reference point, meaning the cutoff epoch is a few microseconds further in the past than if a single `performance.now()` call were used. This keeps entries that are ~1µs past the theoretical window boundary. Functionally negligible but inconsistent with the typical single-snapshot pattern.",
+      "fix_sketch": "Capture `const now = performance.now()` once, then use it for both `push(now)` and `const cutoff = now - EMBED_THROUGHPUT_WINDOW_MS`."
+    },
+    {
+      "severity": "info",
+      "category": "style",
+      "file": "libs/memory-core/src/embed-pipeline.ts",
+      "line": 312,
+      "description": "The `completionTimes` array is mutated (push/shift) from both the pipeline path (`schedulePendingEmbeds`) and the heal path (`healMissingVectors`). These execute as interleaved async functions on the event loop. Since JS is single-threaded, there is no data race, but the mutating operations on a shared array from two call paths is a maintenance concern — a future refactor that moves embed calls to worker threads would need to synchronize access.",
+      "fix_sketch": "No change needed now. Add a comment noting the single-thread assumption. If multi-threaded embed is added later, guard the array with a mutex or use an atomics-based ring buffer."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/memory-core/src/embed-pipeline.ts",
+      "line": 661,
+      "description": "`embedWithTimeout` creates the timeout timer with `timer.unref()` BEFORE registering `.then()` handlers on the `embed(text)` promise. If the event loop has no other work and the timer fires before `embed()` resolves, the promise rejects with a timeout error. The then-handlers (registered synchronously inside the Promise constructor callback) ARE in place before any timer can fire because the Promise constructor runs synchronously and `.then()` is chained within the same microtask. This is correct, but the `typeof timer.unref === 'function'` guard is defensive (unref exists on Node.js `Timeout` objects) — correct but worth noting.",
+      "fix_sketch": "No change needed."
+    },
+    {
+      "severity": "info",
+      "category": "style",
+      "file": "libs/memory-core/src/embed-pipeline.ts",
+      "line": 661,
+      "description": "`embedWithTimeout` uses `.then(resolve, reject)` (an optional error handler as the second arg to `.then`) rather than `.then(resolve).catch(reject)`. This is correct — it catches errors from `embed()` itself without catching errors from the resolve handler (which could mask a bug in `resolve()`). The pattern is sound.",
+      "fix_sketch": "No change needed."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 3,
+    "medium": 1,
+    "low": 1,
+    "info": 2
+  },
+  "backlog_entries": [
+    "BL-319 — Test files not updated for applyEmbedding/embedBacklogStats/healMissingVectors StoreAdapter signature changes"
+  ]
+}

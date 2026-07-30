@@ -23,6 +23,7 @@ export interface EmbeddingHealth {
   state: 'uninitialized' | 'warming' | 'real' | 'error';
   dimensions: number | null;
   last_error: string | null;
+  execution_provider?: string;
 }
 
 export interface EmbeddingProvider {

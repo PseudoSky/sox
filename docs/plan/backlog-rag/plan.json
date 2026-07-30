@@ -1,0 +1,43 @@
+{
+  "id": "backlog-rag",
+  "title": "backlog-rag — RAG for project backlogs",
+  "status": "draft",
+  "dependencies": [],
+  "design_decisions": [
+    {
+      "id": "DD-1",
+      "title": "Client-first architecture",
+      "decision": "The primary user interface is a CLI command extension (backlog-rag-cli). MCP tools are generated as a secondary artifact by apigen from the same api.ts function definitions. This keeps the client independent of the MCP transport.",
+      "rationale": "Backlog querying is an interactive, developer-facing task — CLI is the natural interface. MCP tools exist for agent consumption but are not the focus."
+    },
+    {
+      "id": "DD-2",
+      "title": "Storage via @adhd/sox-graph-store",
+      "decision": "Use SqliteGraphBackend from @adhd/sox-graph-store for storage, not memory-core and not a hand-rolled SQLite schema.",
+      "rationale": "graph-store provides bi-temporal nodes, FTS5 full-text search, content-hash dedup, tag filtering, metadata queries, and supersession chains out of the box. All of these are directly applicable to backlog item storage and querying."
+    },
+    {
+      "id": "DD-3",
+      "title": "Config via @adhd/environment",
+      "decision": "Use Environment<T> from @adhd/environment-core-node for cascading configuration. Config keys: store.db_path, store.namespace, scan.include_patterns, scan.exclude_patterns.",
+      "rationale": "Environment provides zero-config defaults with optional cascade overrides (global→project→local→env). This aligns with the sox ecosystem's scope handling — each scope (project/user/org/local) gets its own config layer."
+    },
+    {
+      "id": "DD-4",
+      "title": "Service via @adhd/apigen",
+      "decision": "Write pure TS functions in api.ts. These functions ARE the backend. apigen generate --type mcp produces the MCP server. apigen run --type api-express (or similar) produces the HTTP server. Both share the same function definitions.",
+      "rationale": "apigen extracts types and schemas automatically from TS function signatures — no decorators, no IDL. A single source of truth (api.ts) drives all transports. This is the 'code-first' approach the user requested."
+    },
+    {
+      "id": "DD-5",
+      "title": "Bundle structure: command + service + skill",
+      "decision": "Three co-versioned members in a bundle: backlog-rag-cli (command, client), backlog-rag (mcp-server, apigen-generated), backlog-rag-usage (skill, agent guidance). The bundle ensures they are installed together and versioned consistently.",
+      "rationale": "The client, the service, and the guidance are independently useful but designed to work together. A bundle makes one install command install all three, matching the sox-memory-bundle pattern."
+    }
+  ],
+  "open_questions": [
+    "Q1: Does @adhd/environment resolve its .adhd/ directory relative to the install scope (project/.sox vs user/.sox)? Needs investigation — the Environment class may need a scope adapter for sox's config paths.",
+    "Q2: The apigen --type cli-output plugin is generate-only (no --run mode). For the CLI client, should we use apigen-generated code as a base and wrap it, or write the CLI directly against the api.ts functions? Direct CLI is simpler and more controllable.",
+    "Q3: Should the client and service share a database (same graph-store file) or each have their own? Sharing is simpler for a single-user tool; separate makes sense if the service runs as a daemon."
+  ]
+}

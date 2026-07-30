@@ -9,7 +9,7 @@
  */
 
 import * as crypto from 'node:crypto';
-import type { StoreAdapter, SqliteAdapter } from '@adhd/sox-store-adapter';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { monotonicFactory } from 'ulid';
 import { ENRICH_VERSION } from './enrich-version.js';
 import { clusterSubset, dropSubsetLens, listSubsetLenses } from './cluster.js';
@@ -385,7 +385,7 @@ async function curateRecluster(
     return { op: 'recluster', enqueued: false, dry_run: true };
   }
 
-  const seq = enqueueEnrichFull((adapter as SqliteAdapter).unwrap(), 'memory_curate recluster');
+  const seq = await enqueueEnrichFull(adapter, 'memory_curate recluster');
   return { op: 'recluster', enqueued: true, seq };
 }
 

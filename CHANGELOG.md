@@ -2,6 +2,14 @@
 
 ---
 
+## [Unreleased] — BL-287: exported `"./package.json"` passthrough across all 9 `@adhd/sox-*` data packages
+
+### BL-287 (LOW) — `"./package.json"` now accessible via exports map on all 9 `@adhd/sox-*` packages
+
+Added `"./package.json": "./package.json"` to the `exports` map of all 9 `libs/data/**` packages (`@adhd/sox-analysis`, `@adhd/sox-embedding-provider`, `@adhd/sox-graph-store`, `@adhd/sox-ingest`, `@adhd/sox-task-queue`, `@adhd/sox-hybrid-search`, `@adhd/sox-blob-store`, `@adhd/sox-vector-store`, `@adhd/sox-claim-verification`). Previously `require('<pkg>/package.json')` threw `ERR_PACKAGE_PATH_NOT_EXPORTED` on all 9. Now version introspection, license scanners, and `sox.concerns`/`sox.invariants` metadata readers can access the manifest.
+
+Also removed BL-287 entry from `BACKLOG.md` status header.
+
 ## [Unreleased] — BL-316, BL-273, BL-254, BL-252, BL-310, BL-297, BL-264: seven memory-server stability and data-integrity fixes
 
 A coordinated batch fixing seven of the most impactful open memory-server items. Every fix was verified by existing test suites (no regressions) and the full change set spans 11 files (+228/-52 lines).

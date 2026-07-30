@@ -1,0 +1,53 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "standalone",
+  "label": "Fix remaining type errors + smoke test for turso-adapter worktree",
+  "completed_at": "2026-07-27T01:26:00.000Z",
+
+  "summary": "Fixed 26 type errors in recall-sqlite.test.ts caused by openDb becoming async (returns StoreAdapter now). Added await on openDb calls, unwrapped adapters to Database for memoryWrite/runBatchEnrich/prepare calls, added await on close(). Typecheck: 0 errors across 9 projects. Smoke: 13 passed, 0 failed. Recall-sqlite test: 5/5 pass.",
+
+  "changes": [
+    {
+      "file": "extensions/bundles/sox-memory-bundle/members/memory-server/recall-sqlite.test.ts",
+      "kind": "Added import Database from better-sqlite3; await on openDb; unwrap adapter to raw Database for memoryWrite/runBatchEnrich/prepare; retain adapter for memoryRecall; await db.close()",
+      "lines": "+15 / -11"
+    }
+  ],
+
+  "tests": {
+    "project": "memory-server",
+    "command": "nx test memory-server",
+    "passed": 129,
+    "failed": 2,
+    "skipped": 0,
+    "note": "2 pre-existing failures (async-embed.spec.ts:280 body.store null, memory-tools.spec.ts:195 provider_call_count expected 0 got 1) — unrelated to recall-sqlite changes. recall-sqlite.test.ts: 5/5 pass."
+  },
+
+  "typecheck": {
+    "command": "npx nx run-many -t typecheck --all",
+    "passed": true,
+    "errors": 0,
+    "projects": 9
+  },
+
+  "smoke": {
+    "command": "node scripts/smoke-test.mjs",
+    "passed": 13,
+    "failed": 0,
+    "skipped": 0,
+    "isolation_ok": true
+  },
+
+  "issues": [
+    "2 pre-existing test failures in turso-adapter worktree (async-embed.spec.ts, memory-tools.spec.ts) — NOT caused by these changes"
+  ],
+
+  "handoff_notes": [
+    "openDb is now async and returns StoreAdapter. Tests that need raw better-sqlite3 Database must call adapter.unwrap() as Database.Database.",
+    "memoryWrite and runBatchEnrich still take raw Database; memoryRecall takes StoreAdapter.",
+    "adapter.close() is now async — must await it."
+  ],
+
+  "backlog_entries": []
+}

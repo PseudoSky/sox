@@ -10,6 +10,7 @@ import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import { openDb } from './db.js';
 import { memoryWrite, memoryWriteBatch, requestLedgerPrune } from './write.js';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { WriteQueue } from './write-queue.js';
 
 // Mock embed to avoid real ONNX model download (these tests assert DB persistence, not embedding quality)
@@ -403,21 +404,21 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
   let dbPath: string;
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'batch-'));
     cleanupDb = () => fs.rmSync(dir, { recursive: true, force: true });
     dbPath = path.join(dir, 'batch.db');
     db = openDb(dbPath);
     // Reset queue instrumentation
-    WriteQueue.clearInstances();
+    await WriteQueue.clearInstances();
     WriteQueue.setBypass(false);
     // Embedding provided by DeterministicTestProvider installed in vitest.setup.ts
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (db && db.open) db.close();
     cleanupDb();
-    WriteQueue.clearInstances();
+    await WriteQueue.clearInstances();
   });
 
   /**
@@ -630,22 +631,22 @@ describe('memoryWriteBatch — project_path_source parity (BL-233)', () => {
 describe('client_request_id idempotency — WP-4 (BL-129)', () => {
   let cleanupDb: () => void;
   let dbPath: string;
-  let db: Database.Database;
+  let adapter: StoreAdapter;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reqid-'));
     cleanupDb = () => fs.rmSync(dir, { recursive: true, force: true });
     dbPath = path.join(dir, 'reqid.db');
-    db = openDb(dbPath);
-    WriteQueue.clearInstances();
+    adapter = await openDb(dbPath);
+    await WriteQueue.clearInstances();
     WriteQueue.setBypass(false);
     // Embedding provided by DeterministicTestProvider installed in vitest.setup.ts
   });
 
-  afterEach(() => {
-    if (db && db.open) db.close();
+  afterEach(async () => {
+    await adapter.close();
     cleanupDb();
-    WriteQueue.clearInstances();
+    await WriteQueue.clearInstances();
   });
 
   /**
@@ -659,7 +660,7 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
     };
 
     // First call: fresh write
-    const first = await memoryWrite(db, params);
+    const first = await memoryWrite(adapter, params);
     expect('episode_uid' in first).toBe(true);
     const firstResult = first as { episode_uid: string; replayed?: boolean };
     expect(firstResult.replayed).toBeUndefined();
@@ -667,22 +668,21 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
     const firstUid = firstResult.episode_uid;
 
     // Second call with same id: replay, no new node
-    const second = await memoryWrite(db, params);
+    const second = await memoryWrite(adapter, params);
     expect('episode_uid' in second).toBe(true);
     const secondResult = second as { episode_uid: string; replayed?: boolean };
     expect(secondResult.replayed).toBe(true);
     expect(secondResult.episode_uid).toBe(firstUid);
 
     // Only one episode in DB
-    const count = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL").get()!;
+    const count = (await adapter.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL"))!;
     expect(count.cnt).toBe(1);
 
     // Verify the request_ledger table has exactly one entry
-    const ledgerRow = db
-      .prepare<[string], { request_id: string; episode_uid: string }>(
-        'SELECT request_id, episode_uid FROM request_ledger WHERE request_id = ?',
-      )
-      .get('test-replay-id-001');
+    const ledgerRow = await adapter.executeGet<{ request_id: string; episode_uid: string }>(
+      'SELECT request_id, episode_uid FROM request_ledger WHERE request_id = ?',
+      ['test-replay-id-001'],
+    );
     expect(ledgerRow).toBeDefined();
     expect(ledgerRow!.episode_uid).toBe(firstUid);
   });
@@ -694,31 +694,35 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
     // Manually insert a ledger entry with a very old created_at
     const oldId = 'old-req-id';
     const oldEpoch = '2020-01-01T00:00:00.000Z';
-    db.prepare(
+    await adapter.executeRun(
       'INSERT INTO request_ledger(request_id, episode_uid, created_at) VALUES (?, ?, ?)',
-    ).run(oldId, 'stale-episode-uid', oldEpoch);
+      [oldId, 'stale-episode-uid', oldEpoch],
+    );
 
     // Insert a recent entry
     const recentId = 'recent-req-id';
     const recentEpoch = new Date().toISOString();
-    db.prepare(
+    await adapter.executeRun(
       'INSERT INTO request_ledger(request_id, episode_uid, created_at) VALUES (?, ?, ?)',
-    ).run(recentId, 'fresh-episode-uid', recentEpoch);
+      [recentId, 'fresh-episode-uid', recentEpoch],
+    );
 
     // Prune with 1-day retention (old entry is >5 years old → pruned)
-    const deleted = requestLedgerPrune(db, 1);
+    const deleted = await requestLedgerPrune(adapter, 1);
     expect(deleted).toBe(1);
 
     // Old entry is gone
-    const oldRow = db
-      .prepare<[string], { request_id: string }>('SELECT request_id FROM request_ledger WHERE request_id = ?')
-      .get(oldId);
-    expect(oldRow).toBeUndefined();
+    const oldRow = await adapter.executeGet<{ request_id: string }>(
+      'SELECT request_id FROM request_ledger WHERE request_id = ?',
+      [oldId],
+    );
+    expect(oldRow).toBeNull();
 
     // Recent entry survives
-    const recentRow = db
-      .prepare<[string], { request_id: string }>('SELECT request_id FROM request_ledger WHERE request_id = ?')
-      .get(recentId);
+    const recentRow = await adapter.executeGet<{ request_id: string }>(
+      'SELECT request_id FROM request_ledger WHERE request_id = ?',
+      [recentId],
+    );
     expect(recentRow).toBeDefined();
   });
 
@@ -727,7 +731,7 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
    */
   it('negative control: client_request_id longer than 128 chars returns E_SCOPE_RO', async () => {
     const longId = 'x'.repeat(129);
-    const result = await memoryWrite(db, {
+    const result = await memoryWrite(adapter, {
       content: 'Test content for long ID validation.',
       client_request_id: longId,
       project_path: '/test/project',
@@ -744,7 +748,7 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
   it('negative control: non-string client_request_id returns E_SCOPE_RO', async () => {
     // TypeScript would catch this at compile time but at the JS boundary
     // (e.g., MCP tool call), a non-string could arrive.
-    const result = await memoryWrite(db, {
+    const result = await memoryWrite(adapter, {
       content: 'Test content for non-string ID validation.',
       client_request_id: 12345 as unknown as string,
       project_path: '/test/project',
@@ -762,7 +766,7 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
   it('negative control: different content with same client_request_id returns original result (replayed)', async () => {
     const id = 'fixed-replay-id';
 
-    const first = await memoryWrite(db, {
+    const first = await memoryWrite(adapter, {
       content: 'Original content for fixed id.',
       client_request_id: id,
       project_path: '/test/project',
@@ -771,7 +775,7 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
     const firstUid = firstResult.episode_uid;
 
     // Second call with DIFFERENT content but SAME id
-    const second = await memoryWrite(db, {
+    const second = await memoryWrite(adapter, {
       content: 'COMPLETELY DIFFERENT content with same id.',
       client_request_id: id,
       project_path: '/test/project',
@@ -781,7 +785,7 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
     expect(secondResult.episode_uid).toBe(firstUid);
 
     // Only one episode was created
-    const count = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL").get()!;
+    const count = (await adapter.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL"))!;
     expect(count.cnt).toBe(1);
   });
 });

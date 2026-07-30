@@ -1,0 +1,53 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "S2",
+  "label": "Fix memory-server test failures — B3 curate handler + tool count",
+  "completed_at": "2026-07-03T18:59:00.000Z",
+
+  "summary": "Fixed 11/12 memory-server test failures: 2 backend.spec.ts tool count assertions (19→20 for WP-3 memory_write_batch) and 9 memory-tools.spec.ts curate failures caused by a missing `await` before async memoryCurate() in the WriteQueue callback.",
+
+  "changes": [
+    {
+      "file": "extensions/bundles/sox-memory-bundle/members/memory-server/src/backend.spec.ts",
+      "kind": "Updated tool count expectations from 19 to 20 (WP-3 added memory_write_batch)",
+      "lines": "+1 / -1"
+    },
+    {
+      "file": "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts",
+      "kind": "Added `async` to WriteQueue callback + `await` before memoryCurate() call in memory_curate handler",
+      "lines": "+2 / -2"
+    }
+  ],
+
+  "tests": {
+    "project": "memory-server",
+    "command": "npx nx test memory-server",
+    "passed": 83,
+    "failed": 1,
+    "skipped": 0,
+    "output_snippet": "83 passed, 1 failed (pre-existing flake timeout in permission-guard.spec.ts)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "issues": [
+    "Pre-existing flaky test: permission-guard.spec.ts 'long content auto-chunks into parent + chunks with DERIVED_FROM edges' times out at 5005ms (just over the 5000ms limit). Per spec: do NOT fix."
+  ],
+
+  "handoff_notes": [
+    "ROOT CAUSE: memoryCurate() in libs/memory-core/src/curate.ts is declared `async` (returns Promise<CurateResult>), but the WriteQueue callback in index.ts's memory_curate case was synchronous. The callback received a Promise object, not the actual result. 'code' in Promise → false (Promises have no enumerable `code` property), so the error branch was skipped. JSON.stringify(Promise<...>) → '{}' because Promises have no enumerable own properties.",
+    "Fix: made the callback `async` and added `await` before memoryCurate(writeDb, args). This pattern already exists in memory_write and memory_update handlers.",
+    "The other 3 operators using WriteQueue (memory_write, memory_invalidate, memory_link, memory_update) were correct — either their callbacks were already async+await, or the core function being called was synchronous."
+  ],
+
+  "backlog_entries": [
+    "permission-guard.spec.ts: 'long content auto-chunks' flaky timeout (5005ms > 5000ms default). Needs longer timeout or optimization."
+  ]
+}

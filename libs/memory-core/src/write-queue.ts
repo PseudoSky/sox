@@ -78,9 +78,9 @@
  * running task, and no async hops were added inside task execution.
  */
 
-import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import { performance } from 'node:perf_hooks';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { openDb } from './db.js';
 import { wrapDbError } from './errors.js';
 import { LatencyRing, summarizeLatencies } from './latency-stats.js';
@@ -144,6 +144,8 @@ export interface WriteQueueMetrics {
   deadline_budget_ms: number;
   /** False when SOX_WRITEQ_NO_DEADLINE=1 (kill-switch active). */
   deadline_guard_enabled: boolean;
+  /** Throughput: number of write tasks completed in the last 60s rolling window. */
+  throughput_writes_per_sec: number;
   counters: {
     /** All completed tasks regardless of kind (pre-split semantics preserved). */
     tasks_completed: number;
@@ -163,8 +165,9 @@ interface QueueItem<T = unknown> {
   label: string;
   /** Latency-shape label (metrics segregation only — see module header). */
   kind: TaskKind;
-  /** The operation to execute. Can be sync or async; runs under the queue's write connection. */
-  operation: (db: Database.Database) => T | Promise<T>;
+  /** The operation to execute. Can be sync or async; receives the StoreAdapter directly.
+   *  Tasks that need transaction isolation should call adapter.transaction() themselves. */
+  operation: (adapter: StoreAdapter) => T | Promise<T>;
   resolve: (value: T | PromiseLike<T>) => void;
   reject: (reason: unknown) => void;
 }
@@ -231,12 +234,20 @@ export class WriteQueue {
    *  SLOW_TASK_FACTOR × the rolling average at task start. */
   static readonly SLOW_TASK_MIN_MS = 1000;
   static readonly SLOW_TASK_FACTOR = 3;
+  /** Rolling window (ms) for throughput_writes_per_sec computation. */
+  static readonly THROUGHPUT_WINDOW_MS = 60_000;
   /** Saturation hysteresis: warn when depth ≥ ceil(75% of maxSize)… */
   static readonly SATURATION_ENTER_RATIO = 0.75;
   /** …clear when depth ≤ floor(40% of maxSize). One log line per transition. */
   static readonly SATURATION_CLEAR_RATIO = 0.4;
 
-  private db: Database.Database;
+  private adapter: StoreAdapter;
+  /** When true, enqueue() executes operations immediately without serialization.
+   *  Set automatically when the adapter reports needsWriteSerialization: false
+   *  (e.g. TursoAdapter — async, concurrent I/O). Distinguished from the static
+   *  _bypass flag: _bypass is a global kill-switch (SOX_DISABLE_WRITE_QUEUE=1),
+   *  _noop is per-instance based on adapter capabilities. */
+  private _noop = false;
   private queue: Array<QueueItem<any>> = [];
   private _processing = false;
   private _maxSize: number;
@@ -274,6 +285,8 @@ export class WriteQueue {
     rejections_busy_deadline: 0,
     slow_tasks: 0,
   };
+  /** Timestamps (ms epoch) of completed write tasks within the rolling throughput window. */
+  private _completionTimes: number[] = [];
   /** Stderr log sink — injectable for tests. NEVER stdout ([inv:no-stdout-diagnostics]). */
   private _logSink: (line: string) => void = (line) => console.error(line);
   /** Slow-task floor (ms) — test-overridable to avoid real 1s sleeps in specs. */
@@ -281,13 +294,15 @@ export class WriteQueue {
   /** The exact store key this queue was created with (the `forPath` argument —
    *  same key as the `instances` map / `metricsForPath`). */
   private readonly _storePath: string;
+  /** (BL-252) Track the async pragmaSet promise so rapid open/close doesn't
+   *  let it outlive the adapter. */
+  private _pragmaSetPromise: Promise<void> = Promise.resolve();
 
-  private constructor(rawDb: Database.Database, dbPath: string, maxSize = DEFAULT_MAX_QUEUE_SIZE) {
-    // Use the pre-opened connection with the mandated pragmas.
-    this.db = rawDb;
-    // Override busy_timeout per CONTRACTS §C (openDb currently uses 5000, but
-    // schema.ts PRAGMAS have been updated to 3000 — this is a belt-and-suspenders).
-    this.db.exec('PRAGMA busy_timeout = 3000;');
+  private constructor(adapter: StoreAdapter, dbPath: string, maxSize = DEFAULT_MAX_QUEUE_SIZE) {
+    this.adapter = adapter;
+    this._pragmaSetPromise = adapter.pragmaSet('busy_timeout', 3000).catch(() => {
+      // Non-fatal — busy_timeout is a quality-of-life setting, not correctness.
+    });
     this._maxSize = maxSize;
     this._storePath = dbPath;
   }
@@ -316,10 +331,11 @@ export class WriteQueue {
    * Clear all singleton instances (test teardown).
    * Ensures each test gets a fresh queue.
    */
-  static clearInstances(): void {
+  static async clearInstances(): Promise<void> {
     for (const [, q] of WriteQueue.instances) {
       q._cancelCheckpoint();
-      try { q.db.close(); } catch { /* already closed */ }
+      await q._pragmaSetPromise;  // ensure async init completes before close
+      try { await q.adapter.close(); } catch { /* already closed */ }
     }
     WriteQueue.instances.clear();
   }
@@ -344,8 +360,14 @@ export class WriteQueue {
 
   private static async _create(dbPath: string, maxSize?: number): Promise<WriteQueue> {
     const adapter = await openDb(dbPath);
-    const rawDb = adapter.unwrap() as Database.Database;
-    return new WriteQueue(rawDb, dbPath, maxSize);
+    const queue = new WriteQueue(adapter, dbPath, maxSize);
+    // Bypass serialization when the adapter handles concurrent writes natively
+    // (e.g. Turso — async Rust with concurrent I/O). Sync adapters (better-sqlite3)
+    // need serialization.
+    if (!adapter.capabilities.needsWriteSerialization) {
+      queue._noop = true;
+    }
+    return queue;
   }
 
   /** Number of pending items (0 when idle). */
@@ -388,10 +410,11 @@ export class WriteQueue {
 
   /** (WP-5) Read the WAL file size in bytes from the filesystem. Returns 0 if unavailable. */
   walBytes(): number {
+    if (this.adapter.config.type === 'turso') return 0; // remote — no local WAL file
+    const dbPath = this.adapter.config.dbPath;
+    if (!dbPath) return 0;
     try {
-      const walPath = this.db.name + '-wal';
-      const st = fs.statSync(walPath, { throwIfNoEntry: false });
-      return st?.size ?? 0;
+      return fs.statSync(dbPath + '-wal').size;
     } catch {
       return 0;
     }
@@ -402,16 +425,13 @@ export class WriteQueue {
    * and truncate the WAL. Idempotent — safe to call repeatedly.
    * Returns the number of checkpointed frames, or -1 on error.
    */
-  walCheckpoint(): number {
+  async walCheckpoint(): Promise<number> {
     try {
-      const row = this.db.prepare<[], { frames_checkpointed: number }>(
-        `PRAGMA wal_checkpoint(TRUNCATE)`,
-      ).get() as { frames_checkpointed?: number; wal_size_bytes?: number } | undefined;
+      const row = await this.adapter.executeGet<{ frames_checkpointed: number }>(
+        'PRAGMA wal_checkpoint(TRUNCATE)',
+      );
       this._lastCheckpointAt = Date.now();
-      const frames = (row && typeof row === 'object' && 'frames_checkpointed' in row)
-        ? (row as { frames_checkpointed: number }).frames_checkpointed
-        : -1;
-      return frames;
+      return row?.frames_checkpointed ?? -1;
     } catch {
       return -1;
     }
@@ -436,7 +456,7 @@ export class WriteQueue {
     if (this._checkpointTimer !== null) return; // already scheduled
     this._checkpointTimer = setTimeout(() => {
       this._checkpointTimer = null;
-      this.walCheckpoint();
+      this.walCheckpoint().catch(() => {}); // fire-and-forget
     }, WriteQueue.CHECKPOINT_IDLE_MS);
   }
 
@@ -456,16 +476,24 @@ export class WriteQueue {
    */
   enqueue<T>(
     label: string,
-    operation: (db: Database.Database) => T | Promise<T>,
+    operation: (adapter: StoreAdapter) => T | Promise<T>,
     kind: TaskKind = 'write',
   ): Promise<T> {
-    // WP-1 negative control: bypass queue → execute immediately (no serialisation)
-    if (WriteQueue._bypass) {
+    // Bypass queue → execute immediately (no serialisation)
+    // Two paths:
+    //   1. _bypass (static) — global kill-switch (SOX_DISABLE_WRITE_QUEUE=1)
+    //   2. _noop (instance) — per-adapter: Turso et al. handle concurrent I/O natively.
+    if (WriteQueue._bypass || this._noop) {
       try {
-        const result = operation(this.db);
-        return Promise.resolve(result instanceof Promise ? result : Promise.resolve(result)).then(
-          (v) => Promise.resolve(v),
-        );
+        const result = operation(this.adapter);
+        if (result instanceof Promise) {
+          return result.then((v) => {
+            this._trackCompletion();
+            return v;
+          });
+        }
+        this._trackCompletion();
+        return Promise.resolve(result);
       } catch (err) {
         return Promise.reject(err);
       }
@@ -481,12 +509,12 @@ export class WriteQueue {
     if (this.queue.length >= this._maxSize) {
       this._counters.rejections_busy_size++;
       this._logSink(
-        `${LOG_PREFIX} REJECT E_BUSY(size) store=${this.db.name} label=${label} ` +
+        `${LOG_PREFIX} REJECT E_BUSY(size) store=${this.adapter.config.dbPath ?? this._storePath} label=${label} ` +
         `depth=${this.queue.length} max=${this._maxSize}`,
       );
       return Promise.reject({
         code: 'E_BUSY',
-        message: `Write queue for ${this.db.name} is full (${this._maxSize} pending)`,
+        message: `Write queue for ${this.adapter.config.dbPath ?? this._storePath} is full (${this._maxSize} pending)`,
         retryable: true,
         retry_after_ms: 250,
       } satisfies QueueBusyError);
@@ -509,7 +537,7 @@ export class WriteQueue {
           const retryAfterMs = Math.min(Math.max(Math.ceil(excessMs + avgMs), 250), 60_000);
           this._counters.rejections_busy_deadline++;
           this._logSink(
-            `${LOG_PREFIX} REJECT E_BUSY(deadline) store=${this.db.name} label=${label} ` +
+            `${LOG_PREFIX} REJECT E_BUSY(deadline) store=${this.adapter.config.dbPath ?? this._storePath} label=${label} ` +
             `depth=${this.queue.length} est_wait_ms=${Math.round(estimatedWaitMs)} ` +
             `budget_ms=${this._deadlineBudgetMs} recent_avg_ms=${Math.round(avgMs)} ` +
             `retry_after_ms=${retryAfterMs}`,
@@ -517,7 +545,7 @@ export class WriteQueue {
           return Promise.reject({
             code: 'E_BUSY',
             message:
-              `Write queue for ${this.db.name} would exceed the deadline budget ` +
+              `Write queue for ${this.adapter.config.dbPath ?? this._storePath} would exceed the deadline budget ` +
               `(estimated wait ${Math.round(estimatedWaitMs)}ms > ${this._deadlineBudgetMs}ms ` +
               `at depth ${this.queue.length})`,
             retryable: true,
@@ -557,7 +585,7 @@ export class WriteQueue {
       await new Promise<void>((r) => setImmediate(r));
     }
     this._cancelCheckpoint();
-    this.db.close();
+    await this.adapter.close();
     // Remove from the singleton map
     for (const [key, val] of WriteQueue.instances) {
       if (val === this) {
@@ -615,6 +643,13 @@ export class WriteQueue {
   getMetrics(): WriteQueueMetrics {
     const writeSummary = summarizeLatencies(this._kindLatencies.write.values());
     const applySummary = summarizeLatencies(this._kindLatencies.apply.values());
+    // Prune stale completion timestamps so the throughput reflects only the
+    // last THROUGHPUT_WINDOW_MS of activity (defensive — _trackCompletion
+    // already prunes on each write; this catches idle periods too).
+    const cutoff = performance.now() - WriteQueue.THROUGHPUT_WINDOW_MS;
+    while (this._completionTimes.length > 0 && this._completionTimes[0]! < cutoff) {
+      this._completionTimes.shift();
+    }
     return {
       queue_depth: this.queue.length,
       in_flight: this._processing ? 1 : 0,
@@ -639,6 +674,8 @@ export class WriteQueue {
       recent_avg_task_latency_ms: this._latencies.recentMean(WriteQueue.RECENT_AVG_WINDOW),
       deadline_budget_ms: this._deadlineBudgetMs,
       deadline_guard_enabled: !deadlineGuardDisabled(),
+      throughput_writes_per_sec:
+        this._completionTimes.length / (WriteQueue.THROUGHPUT_WINDOW_MS / 1000),
       counters: { ...this._counters },
     };
   }
@@ -656,6 +693,19 @@ export class WriteQueue {
   // ── Internal ────────────────────────────────────────────────────────────────
 
   /**
+   * Record a completion timestamp and prune entries outside the rolling
+   * throughput window. Called from _processNext (queue path) and from the
+   * noop/bypass path in enqueue().
+   */
+  private _trackCompletion(): void {
+    this._completionTimes.push(performance.now());
+    const cutoff = performance.now() - WriteQueue.THROUGHPUT_WINDOW_MS;
+    while (this._completionTimes.length > 0 && this._completionTimes[0]! < cutoff) {
+      this._completionTimes.shift();
+    }
+  }
+
+  /**
    * Saturation hysteresis: warn once when pending depth rises to
    * ceil(SATURATION_ENTER_RATIO × maxSize); clear once when it falls to
    * floor(SATURATION_CLEAR_RATIO × maxSize). Called on enqueue (rising edge)
@@ -668,13 +718,13 @@ export class WriteQueue {
     if (!this._saturated && depth >= enterAt) {
       this._saturated = true;
       this._logSink(
-        `${LOG_PREFIX} SATURATION store=${this.db.name} depth=${depth} ` +
+        `${LOG_PREFIX} SATURATION store=${this.adapter.config.dbPath ?? this._storePath} depth=${depth} ` +
         `enter_threshold=${enterAt} max=${this._maxSize}`,
       );
     } else if (this._saturated && depth <= clearAt) {
       this._saturated = false;
       this._logSink(
-        `${LOG_PREFIX} SATURATION CLEARED store=${this.db.name} depth=${depth} ` +
+        `${LOG_PREFIX} SATURATION CLEARED store=${this.adapter.config.dbPath ?? this._storePath} depth=${depth} ` +
         `clear_threshold=${clearAt} max=${this._maxSize}`,
       );
     }
@@ -687,11 +737,11 @@ export class WriteQueue {
       const avgAtStartMs = this._latencies.recentMean(WriteQueue.RECENT_AVG_WINDOW);
       const startedAt = performance.now();
       try {
-        const result = item.operation(this.db);
-        // Await in case it's a promise (async operation). For sync operations,
-        // this resolves immediately on the same microtask tick.
-        const resolved = await result;
-        item.resolve(resolved);
+        // Pass StoreAdapter directly — callers manage their own transaction scope
+        // via adapter.transaction() when needed. Simple INSERT/UPDATE operations
+        // should call adapter.transaction() themselves for consistency.
+        const result = await item.operation(this.adapter);
+        item.resolve(result);
       } catch (err) {
         // WP-2: wrap raw SqliteError into CONTRACTS §B shape before surfacing.
         item.reject(wrapDbError(err));
@@ -702,6 +752,7 @@ export class WriteQueue {
       const latencyMs = performance.now() - startedAt;
       this._recordLatencySample(latencyMs, item.kind);
       this._counters.tasks_completed++;
+      this._trackCompletion();
       if (item.kind === 'apply') this._counters.apply_tasks_completed++;
       else this._counters.write_tasks_completed++;
       if (
@@ -710,7 +761,7 @@ export class WriteQueue {
       ) {
         this._counters.slow_tasks++;
         this._logSink(
-          `${LOG_PREFIX} SLOW task store=${this.db.name} label=${item.label} ` +
+          `${LOG_PREFIX} SLOW task store=${this.adapter.config.dbPath ?? this._storePath} label=${item.label} ` +
           `latency_ms=${Math.round(latencyMs)} recent_avg_ms=${Math.round(avgAtStartMs)} ` +
           `depth=${this.queue.length}`,
         );

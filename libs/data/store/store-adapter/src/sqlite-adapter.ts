@@ -1,4 +1,5 @@
 import DatabaseConstructor from 'better-sqlite3';
+import { ensureAdapterMetaTable, stampAdapterMeta } from './adapter-meta.js';
 import type {
   SqliteAdapter,
   AdapterTransaction,
@@ -122,7 +123,26 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       multiprocessWrite: false,
       nativeVectors: false,
       concurrentTransactions: false,
+      fts5: true,
+      fts: true,
+      needsWriteSerialization: true,
     };
+  }
+
+  /**
+   * Initialise the adapter — stamps adapter metadata into the store.
+   *
+   * Safe to call multiple times; idempotent via `INSERT OR REPLACE`.
+   * Skip for read-only connections.
+   */
+  async init(): Promise<void> {
+    if (this.config.readonly) return;
+    try {
+      await ensureAdapterMetaTable(this);
+      await stampAdapterMeta(this, 'sqlite');
+    } catch {
+      // Non-fatal — stamping is a convenience marker, not a correctness requirement
+    }
   }
 
   unwrap(): import('better-sqlite3').Database {

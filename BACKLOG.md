@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 40** (BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 39** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -20,7 +20,7 @@ node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.
 
 | Priority | Open items |
 |---|---|
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322 |
 | **MEDIUM** | BL-99, BL-104, BL-105, BL-312, BL-228, BL-259, BL-296, BL-306, BL-307, BL-308, BL-274, BL-282, BL-285, BL-291, BL-300, BL-315, BL-317 |
 
 ## Audit
@@ -31,7 +31,7 @@ catalogs every file/dir written outside the repo, with section 17 proposing a
 two-package refactor (`@adhd/sox-config` + `@adhd/sox-log`) and section 19
 linking to gap specifications in the adhd repo
 (`docs/environment/adoption-survey/GAP_SPECS.md`).
-| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-283`, `BL-287`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299`, `BL-305`, `BL-309`, `BL-314` |
+| **LOW** | `BL-103`, `BL-202`, `BL-255`, `BL-258`, `BL-261`, `BL-283`, `BL-289`, `BL-290`, `BL-292`, `BL-298`, `BL-299`, `BL-305`, `BL-309`, `BL-314` |
 | **FEATURE** | `BL-163`, `BL-215` |
 
 ### Where to start
@@ -582,29 +582,7 @@ with no `optionalDependencies` split. Confirmed via `git log --oneline -- libs/d
 
 
 
-### BL-287 — Add `"./package.json"` to `exports` map across all `@adhd/sox-*` data packages — **Open (LOW)** (2026-07-11)
 
-**Package:** All 9 `libs/data/**` packages (embedding-provider, ingest, graph-store, task-queue, hybrid-search, blob-store, vector-store, claim-verification, analysis)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-EXPORTS-001)
-
-**Problem.** Every `exports`-mapped `@adhd/sox-*` data package blocks `import('<pkg>/package.json')` / `require('<pkg>/package.json')` with `ERR_PACKAGE_PATH_NOT_EXPORTED`, because none declares a `"./package.json": "./package.json"` passthrough. Common Node.js footgun, but it breaks any tooling that reads a dependency's manifest at runtime (version introspection, license scanners, `sox.concerns`/`sox.invariants` metadata readers — which this very audit process itself relies on).
-
-**Evidence.** Re-scanned all 9 `libs/data/**/package.json` files with an `exports` map on 2026-07-11 via a scripted JSON check (`python3` parsing each `exports` object for the `"./package.json"` key): **zero of nine** declare it — `@adhd/sox-analysis`, `@adhd/sox-embedding-provider`, `@adhd/sox-graph-store`, `@adhd/sox-ingest`, `@adhd/sox-task-queue`, `@adhd/sox-hybrid-search`, `@adhd/sox-blob-store`, `@adhd/sox-vector-store`, `@adhd/sox-claim-verification`. This is a wider blast radius than the original finding's "all 5 data packages" estimate — the package count in this monorepo has grown to 9 `libs/data/**` packages since the original audit; all 9 need the fix, not 5.
-
-**Root cause.** The `exports` field was hand-authored per package (or scaffolded once and copy-pasted) without including the now-conventional `"./package.json"` passthrough that most modern npm packages add specifically to keep manifest introspection working under `exports` encapsulation.
-
-**Proposed design.** Add to every `libs/data/**/package.json`'s `exports` map:
-```json
-"./package.json": "./package.json"
-```
-Since this is mechanical and identical across all 9 packages, either hand-edit each (S effort, 9 small diffs) or add it to whatever package-scaffolding/generator template these packages were created from (per this repo's "bake into generator" convention) so future packages don't reintroduce the gap. Also consider adding a workspace-level lint/CI check (e.g. a small `tools/` script) that fails if any `libs/**/package.json` has an `exports` map without a `"./package.json"` entry — prevents regression on the 10th package.
-
-**Acceptance criteria.**
-- [ ] `node -e "console.log(require('@adhd/sox-<pkg>/package.json').version)"` (or ESM `import(...)` equivalent) succeeds for all 9 packages post-fix — currently fails with `ERR_PACKAGE_PATH_NOT_EXPORTED` for all 9.
-- [ ] A workspace-level test iterates every `libs/data/**/package.json` with an `exports` field and asserts `"./package.json"` is present — fails if a 10th package is added later without it.
-
-**Effort / risk / blast radius.** S effort (9 one-line JSON edits + optional CI guard). Zero behavioral risk — purely additive `exports` entry, cannot break existing subpath resolution.
-
----
 
 ### BL-288 — Declare `"require"` export conditions (or tighten `engines`) so native packages are safely `require()`-able within their declared Node range — **Open (HIGH)** (2026-07-11)
 
@@ -891,3 +869,53 @@ Total: 13 ghost episodes from a session that wrote 8 real episodes (8 writes pro
 - Longer-term: add a regression test that writes several episodes (including multi-chunk ones), waits for enrichment, and asserts `memory_recall` returns zero entries with `content: null`.
 
 **Severity:** MEDIUM — no data loss (the content simply never landed), no crash, but pollutes recall results and inflates episode counts silently. Approximately 13 ghosts per 8 real writes in this session (~1.6 ghosts/write).
+
+---
+
+### BL-319 — Database operation metrics are missing computed throughput fields
+
+**Driver:** TursoAdapter migration uncovered that `memory_ping` reports raw cumulative counters (`embeds_completed`, `embed_duration_ms`) but no computed throughput metrics. Missing:
+
+- `embed_throughput_per_sec` — rolling embeddings/second (from heal AND write-path Phase B)
+- `write_to_vector_ms` — wall-clock time from memory_write enqueue to vec_node INSERT
+- `vec_insert_duration_ms` — SQL INSERT time for vec_node (isolated from embed time)
+- `embed_tokens_per_sec` — tokens processed per second by the ONNX worker
+- `backlog_drain_rate` — rate at which the embed backlog is shrinking
+
+The `time_to_vector_ms` metric exists but has 0 samples because all recent embeddings went through `healMissingVectors` which bypasses the write-path instrumentation.
+
+**Files:** `libs/memory-core/src/embed-pipeline.ts` (heal path instrumentation), `libs/memory-core/src/embed.ts` (embed health metrics), `extensions/.../memory-server/src/index.ts` (ping response shape)
+
+**Fix sketch:**
+1. Add a rolling `_embedCompletionTimes` array (analogous to `WriteQueue._completionTimes`) in the embed provider to compute throughput
+2. Instrument the heal path's per-node timing (currently only write-path Phase B reports `time_to_vector`)
+3. Surface `embed_throughput_per_sec` in `memory_ping.embed_pipeline.metrics`
+4. Compute `backlog_drain_rate` from backlog deltas over a rolling window
+
+**Severity:** HIGH — missing observability makes capacity planning and regression detection impossible. The `throughput_writes_per_sec` field on the write queue proved its value detecting the Turso noop-queue improvement; the same is needed for embed throughput now that CoreML is active.
+
+---
+
+### BL-322 — Analyze lock contention between embedding system, daemon, proxy, and agents
+
+**Driver:** During the TursoAdapter migration, the live memory-server reached 97% CPU with the enrich pipeline processing embeddings, causing agents to get MCP timeouts on `memory_recall` and `memory_ping`. It's unclear whether the bottleneck is:
+
+- Turso's EXCLUSIVE file locking (prevents concurrent readers while the enrich pass writes)
+- The single-threaded ONNX embedding worker serializing all embed requests
+- The proxy architecture serializing MCP requests through a single backend process
+- The enrich pipeline's 5-minute tick blocking the event loop during processing
+
+**Key context on Turso locking (updated):**
+`multiprocess_wal` is now **enabled by default** in `turso-adapter.ts:111-115`. The EXCLUSIVE locking observed during the initial migration was Turso's default behavior in local file mode WITHOUT `multiprocess_wal` enabled. Now that it's enabled by default (via `.tshm` shared memory coordination), concurrent readers and serialized writers across processes work without file lock contention. Lock contention should NOT be expected behavior — if observed, investigate other bottlenecks first.
+
+`multiprocess_wal` is supported on both macOS and Linux via `.tshm` shared memory files. To opt out (reverting to EXCLUSIVE locking), set `experimental: { multiprocessWal: false }` in adapter options. SqliteAdapter (`better-sqlite3`) always remains a single-writer fallback via `STORE_ADAPTER=sqlite`.
+
+**Files:** `libs/data/store/store-adapter/src/turso-adapter.ts` (multiprocess_wal enabled by default), `libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts` (singleton worker), `libs/host-runtime/src/supervisor.ts` (proxy architecture), `libs/memory-core/src/embed-pipeline.ts` (enrich tick), `extensions/.../memory-server/src/index.ts` (MCP handler loop)
+
+**Fix sketch:** Analyze remaining bottlenecks (Turso EXCLUSIVE locking is eliminated):
+1. Does the singleton fastembed process cause head-of-line blocking for all embed requests? If so, can we have a read-only embed queue?
+2. Should the proxy route read-only requests (ping, recall, stats) around the backend when the enrich pipeline is saturated?
+3. What's the actual queuing model between MCP request arrival, backend processing, and enrich tick?
+4. Is the 97% CPU from ONNX inference (expected) or from a deadlock/livelock between the enrich pass and MCP handler?
+
+**Severity:** HIGH — agents getting timeouts is a production reliability issue that undermines the entire memory system. The root cause might be a single-threaded bottleneck, not a Turso limitation.

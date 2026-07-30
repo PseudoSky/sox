@@ -1,0 +1,139 @@
+{
+  "meta": {
+    "script": "fork-experiment",
+    "model": "deepseek-chat",
+    "temperature": 0,
+    "scenario": "Tenant Isolation (FORK)",
+    "rounds": 4,
+    "timestamp": "2026-07-28T00:30:35.002Z",
+    "isolation": "seed-prefix"
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "name": "Security",
+      "label": "Security Engineer",
+      "isRepeat": false,
+      "roleFirst": {
+        "systemPrompt": "You are a security engineer reviewing multi-tenant isolation architectures for data leakage vulnerabilities.",
+        "inputContent": "[ROLE-FIRST-RUN-415-1785198586816-1]\nNamespace isolation architecture:\n\nOption A (single store): All tenants share one database. A namespace_resolver middleware injects WHERE clause on every query. Option B (per-tenant store): Each tenant gets their own SQLite database. Option C (split enforcement): Store layer enforces isolation, middleware resolves namespace. Decision: Option C for v1.0.",
+        "inputTokens": 111,
+        "cacheHit": 0,
+        "uncachedInput": 111,
+        "outputTokens": 531,
+        "latencyMs": 6413,
+        "output": "Based on your architecture decision for Option C (split enforcement), here are the key security considerations and potential data leakage vulnerabilities to address:\n\n## Critical Vulnerability Analysis\n\n### 1. **Middleware Bypass Risks**\n- **Direct API calls** bypassing the namespace_resolver middleware\n- **Bulk operations** (batch inserts, exports) that might skip middleware processing\n- **Cached query results** that could leak across tenant boundaries\n\n### 2. **Store Layer Weak Points**\n- **Connection pooling** - ensure connections aren't reused across tenants without proper cleanup\n- **Stored procedures** - verify they enforce tenant isolation independently\n- **Database views/materialized views** - confirm they include tenant filtering\n\n### 3. **Cross-Tenant Attack Vectors**\n\n| Attack Vector | Risk Level | Mitigation |\n|--------------|------------|------------|\n| SQL injection bypassing middleware | High | Parameterized queries + store-level validation |\n| Race conditions in connection allocation | Medium | Tenant-scoped connection pools |\n| Error message leakage | Medium | Sanitize all error responses |\n| Backup/restore operations | High | Tenant-specific backup procedures |\n\n## Recommended Security Controls\n\n### **Defense in Depth Implementation**\n```python\n# Store layer enforcement (non-bypassable)\nclass TenantAwareStore:\n    def execute_query(self, tenant_id, query, params):\n        # Always validate tenant_id matches authenticated context\n        if not self._validate_tenant_access(tenant_id):\n            raise SecurityException(\"Tenant isolation violation\")\n        \n        # Inject tenant filter at store level (redundant with middleware)\n        safe_query = self._inject_tenant_filter(query, tenant_id)\n        return self._execute(safe_query, params)\n```\n\n### **Critical Testing Requirements**\n1. **Penetration testing** focusing on:\n   - Direct database access attempts\n   - Parameter manipulation in API calls\n   - Concurrent tenant operations\n\n2. **Automated isolation verification**:\n   - Random tenant data sampling\n   - Cross-tenant query injection attempts\n   - Connection leak detection\n\n## Migration to Production Checklist\n\n- [ ] Implement tenant-aware connection pooling\n- [ ] Add store-level tenant validation as second layer\n- [ ] Create isolation test suite with >95% coverage\n- [ ] Deploy with read-only replicas for isolation testing\n- [ ] Enable comprehensive audit logging at both layers\n\nThe split enforcement approach is sound, but requires rigorous validation that both layers independently enforce isolation without relying on the other. Consider adding a third validation layer for critical operations (financial data, PII)."
+      },
+      "contentFirst": {
+        "roleSuffix": "You are a security engineer. Review the namespace isolation options for data leakage risks. Output 2-3 paragraphs.",
+        "inputContent": "[CONTENT-FIRST-RUN-415-1785198606686-2]\nNamespace isolation architecture:\n\nOption A (single store): All tenants share one database. A namespace_resolver middleware injects WHERE clause on every query. Option B (per-tenant store): Each tenant gets their own SQLite database. Option C (split enforcement): Store layer enforces isolation, middleware resolves namespace. Decision: Option C for v1.0.\n\nYou are a security engineer. Review the namespace isolation options for data leakage risks. Output 2-3 paragraphs.",
+        "inputTokens": 118,
+        "cacheHit": 0,
+        "uncachedInput": 118,
+        "outputTokens": 469,
+        "latencyMs": 6490,
+        "output": "**Security Review: Namespace Isolation Options**\n\n**Option A (single store with middleware injection)** presents the highest risk of data leakage. The reliance on a middleware layer to inject `WHERE` clauses into every query creates a single point of failure where a bug, misconfiguration, or bypass (e.g., raw SQL execution, ORM edge cases, or query builder flaws) could expose all tenant data. Additionally, this approach is vulnerable to SQL injection attacks that might strip or modify the injected clause, and it offers no defense-in-depth—if the middleware is compromised or disabled, the entire multi-tenant dataset is exposed. For a v1.0 system, this is the least secure option and should be avoided unless accompanied by rigorous query auditing and runtime enforcement.\n\n**Option B (per-tenant SQLite databases)** provides strong physical isolation, as each tenant’s data resides in a separate file. This drastically reduces the blast radius: a breach in one tenant’s database cannot directly leak another tenant’s data. However, risks include file permission misconfigurations (e.g., world-readable database files), path traversal attacks if tenant identifiers are not sanitized, and resource exhaustion (e.g., one tenant’s runaway query consuming disk I/O). Additionally, SQLite’s lack of concurrent write scalability could lead to denial-of-service conditions that indirectly affect other tenants on the same host. This option is secure but operationally complex for large-scale deployments.\n\n**Option C (split enforcement: store layer enforces isolation, middleware resolves namespace)** is the recommended approach for v1.0. By enforcing isolation at the store layer (e.g., via row-level security, separate schemas, or database roles), you create a hard security boundary that cannot be bypassed by application-layer bugs. The middleware’s role is limited to namespace resolution (e.g., mapping a request to a tenant ID), which is simpler to audit and less prone to injection. This layered defense ensures that even if the middleware fails or is misconfigured, the store layer will reject cross-tenant access. The primary risk is misconfiguration of store-level policies (e.g., incorrect RLS policies), which can be mitigated through automated testing and least-privilege database accounts. This option balances security, performance, and operational complexity for an initial release."
+      }
+    },
+    {
+      "round": 2,
+      "name": "Architect",
+      "label": "Software Architect",
+      "isRepeat": false,
+      "roleFirst": {
+        "systemPrompt": "You are a software architect evaluating system boundaries and abstraction layers.",
+        "inputContent": "[ROLE-FIRST-RUN-415-1785198586816-1]\nNamespace isolation architecture:\n\nOption A (single store): All tenants share one database. A namespace_resolver middleware injects WHERE clause on every query. Option B (per-tenant store): Each tenant gets their own SQLite database. Option C (split enforcement): Store layer enforces isolation, middleware resolves namespace. Decision: Option C for v1.0.",
+        "inputTokens": 107,
+        "cacheHit": 0,
+        "uncachedInput": 107,
+        "outputTokens": 317,
+        "latencyMs": 4435,
+        "output": "## Architecture Decision: Option C (Split Enforcement) for v1.0\n\n**Rationale:** Option C provides the optimal balance of isolation guarantees and operational simplicity for v1.0.\n\n### Key Advantages\n\n1. **Defense in depth** - Two independent enforcement points prevent single-point-of-failure isolation breaches\n2. **Clear separation of concerns** - Store layer handles data integrity; middleware handles routing/context\n3. **Migration path** - Can evolve to Option A (shared) or B (per-tenant) without rewriting both layers\n\n### Implementation Guidance\n\n**Store Layer Responsibilities:**\n- Enforce tenant-scoped access at the query/connection level\n- Reject any query missing tenant context\n- Log isolation violations for audit\n\n**Middleware Responsibilities:**\n- Resolve namespace from request context (JWT, header, etc.)\n- Inject tenant context into store layer\n- Handle namespace resolution failures gracefully\n\n### Critical Considerations\n\n- **Consistency model:** Ensure both layers agree on tenant identification format (UUID vs string)\n- **Error propagation:** Middleware should not silently pass through when store rejects a query\n- **Testing strategy:** Test each layer independently, then integration test for bypass scenarios\n\n### v1.0 Constraints\n\n- Acceptable performance overhead from dual enforcement\n- Simpler debugging with explicit failure points\n- Easier to relax enforcement later than to add it\n\n**Recommendation:** Proceed with Option C, but document the specific conditions under which you'd migrate to Option A (scale pressure) or Option B (compliance requirements)."
+      },
+      "contentFirst": {
+        "roleSuffix": "You are a software architect. Evaluate the namespace isolation options for clean boundaries. Output 2-3 paragraphs.",
+        "inputContent": "[CONTENT-FIRST-RUN-415-1785198606686-2]\nNamespace isolation architecture:\n\nOption A (single store): All tenants share one database. A namespace_resolver middleware injects WHERE clause on every query. Option B (per-tenant store): Each tenant gets their own SQLite database. Option C (split enforcement): Store layer enforces isolation, middleware resolves namespace. Decision: Option C for v1.0.\n\nYou are a software architect. Evaluate the namespace isolation options for clean boundaries. Output 2-3 paragraphs.",
+        "inputTokens": 117,
+        "cacheHit": 0,
+        "uncachedInput": 117,
+        "outputTokens": 518,
+        "latencyMs": 8542,
+        "output": "As a software architect evaluating these options for clean boundaries, **Option C (split enforcement)** is the strongest architectural choice for v1.0, but it introduces a critical design tension that must be acknowledged. The core strength of this approach lies in its layered defense: the middleware resolves the namespace (e.g., extracting tenant ID from JWT or request context), while the store layer enforces the actual isolation. This separation of concerns means that even if the middleware is bypassed or misconfigured, the data layer provides a hard boundary—preventing accidental cross-tenant data leaks. It also allows the store layer to be swapped or optimized independently (e.g., moving from shared tables to sharded databases) without changing the middleware logic. However, this is not a true \"clean\" boundary in the strictest sense, because the middleware and store must share a consistent namespace contract (e.g., a tenant_id column or schema prefix), creating a coupling point that requires rigorous testing and versioning.\n\n**Option A (single store with injected WHERE clauses)** is the weakest for clean boundaries. It relies entirely on the middleware to never fail, which is a single point of failure for isolation. Any bug in query construction, caching layer, or ORM mapping can silently expose data across tenants. While it offers operational simplicity, it violates the principle of defense in depth and makes auditing isolation extremely difficult—you cannot trust the database alone to prove tenant separation. **Option B (per-tenant SQLite databases)** provides the cleanest physical boundary—each tenant is literally a separate file—but introduces significant operational complexity for v1.0: connection pooling, backup strategies, schema migrations across hundreds or thousands of databases, and resource contention. It also makes cross-tenant analytics or admin queries nearly impossible without a separate aggregation layer.\n\nFor v1.0, **Option C** strikes the right balance: it gives you a clean logical boundary at the store layer (e.g., using PostgreSQL row-level security or a dedicated schema per tenant) while keeping the middleware as a lightweight, testable resolver. The key to maintaining clean boundaries is to enforce that the store layer *never* trusts the middleware blindly—it should always validate that the resolved namespace matches the authenticated context. I would recommend implementing this with a database-level policy (like RLS) as the primary enforcement, with the middleware acting as a convenience layer for routing. This gives you a verifiable, auditable isolation boundary that can evolve into Option B or a hybrid model as scale demands, without requiring a rewrite of the entire isolation architecture."
+      }
+    },
+    {
+      "round": 3,
+      "name": "Platform",
+      "label": "Platform Engineer",
+      "isRepeat": false,
+      "roleFirst": {
+        "systemPrompt": "You are a platform engineer operating multi-tenant infrastructure at scale.",
+        "inputContent": "[ROLE-FIRST-RUN-415-1785198586816-1]\nNamespace isolation architecture:\n\nOption A (single store): All tenants share one database. A namespace_resolver middleware injects WHERE clause on every query. Option B (per-tenant store): Each tenant gets their own SQLite database. Option C (split enforcement): Store layer enforces isolation, middleware resolves namespace. Decision: Option C for v1.0.",
+        "inputTokens": 108,
+        "cacheHit": 0,
+        "uncachedInput": 108,
+        "outputTokens": 364,
+        "latencyMs": 5431,
+        "output": "## Architecture Decision: Option C (Split Enforcement) for v1.0\n\n**Rationale:**\n\nOption C provides the optimal balance of isolation, performance, and operational complexity for our multi-tenant infrastructure:\n\n### Why Not Option A (Single Store)\n- **Query injection risk**: WHERE clause injection is fragile; one missed query = cross-tenant data leak\n- **Performance degradation**: All tenants compete for same database resources; noisy neighbor problem\n- **Scaling limitations**: Cannot independently scale or backup per tenant\n- **Migration complexity**: Future per-tenant migration requires data surgery\n\n### Why Not Option B (Per-Tenant Store)\n- **Connection overhead**: N connections for N tenants; connection pooling becomes complex\n- **Operational burden**: Managing thousands of SQLite files (backup, corruption, migration)\n- **Resource fragmentation**: Each DB has overhead; inefficient for small tenants\n- **Cross-tenant queries**: Impossible without federation layer\n\n### Why Option C Wins for v1.0\n- **Defense in depth**: Store layer enforces isolation at storage level; middleware provides routing context\n- **Performance isolation**: Can shard by tenant group; noisy neighbor mitigation\n- **Operational simplicity**: Single database cluster to manage; per-tenant data still logically isolated\n- **Migration path**: Can evolve to per-tenant stores for premium tenants without breaking existing architecture\n\n**Implementation Pattern:**\n```\nRequest → Namespace Resolver (extracts tenant_id) → Store Layer (enforces tenant_id in queries)\n```\n\n**Store Layer Enforcement:**\n- All tables include `tenant_id` as partition key\n- Row-level security policies (if supported)\n- Connection pooling per tenant group (not per tenant)\n\n**Decision: Approved for v1.0 with quarterly review for scaling needs.**"
+      },
+      "contentFirst": {
+        "roleSuffix": "You are a platform engineer. Review the namespace options for operational complexity. Output 2-3 paragraphs.",
+        "inputContent": "[CONTENT-FIRST-RUN-415-1785198606686-2]\nNamespace isolation architecture:\n\nOption A (single store): All tenants share one database. A namespace_resolver middleware injects WHERE clause on every query. Option B (per-tenant store): Each tenant gets their own SQLite database. Option C (split enforcement): Store layer enforces isolation, middleware resolves namespace. Decision: Option C for v1.0.\n\nYou are a platform engineer. Review the namespace options for operational complexity. Output 2-3 paragraphs.",
+        "inputTokens": 116,
+        "cacheHit": 0,
+        "uncachedInput": 116,
+        "outputTokens": 430,
+        "latencyMs": 7244,
+        "output": "**Operational Complexity Assessment: Namespace Isolation Options**\n\nOption A (single store with middleware injection) introduces the highest long-term operational risk despite appearing simple initially. The `namespace_resolver` middleware becomes a critical single point of failure—any bug in WHERE clause injection could cause catastrophic cross-tenant data leaks. Additionally, query performance degrades as tenant count grows, since every query carries an extra filter predicate that can't leverage tenant-specific indexing. Debugging becomes a nightmare: you'll need to trace whether isolation failures originate from the middleware, the query builder, or the ORM layer. For v1.0, this option would require extensive integration testing and query plan analysis for every new feature.\n\nOption B (per-tenant SQLite databases) offers strong isolation but introduces significant operational overhead. You'll need to manage connection pooling across potentially thousands of database files, handle file descriptor limits, and implement backup/restore per tenant. Schema migrations become a distributed operation—rolling out a new column requires iterating over every database file, with no atomicity guarantees. While SQLite is lightweight, concurrent write contention under load could become a bottleneck, and you lose the ability to run cross-tenant analytics without ETL pipelines. This option is better suited for low-tenant-count, high-isolation scenarios like on-premise deployments.\n\n**Recommendation: Option C (split enforcement) is the pragmatic choice for v1.0.** By having the store layer enforce isolation (e.g., via separate connection pools or schema-per-tenant in PostgreSQL) while the middleware handles namespace resolution, you decouple concerns. The store layer provides a hard isolation boundary—if the middleware fails, no cross-tenant data leaks occur because the store rejects unqualified queries. Operational complexity is manageable: you maintain a single database instance (or cluster) with tenant-scoped schemas or row-level security, which simplifies backups, migrations, and monitoring. The middleware remains lightweight, handling only routing and context propagation. This hybrid approach gives you the operational simplicity of a shared database with the safety guarantees of per-tenant stores, making it the lowest-risk path for initial production deployment."
+      }
+    },
+    {
+      "round": 4,
+      "name": "Product",
+      "label": "Product Manager",
+      "isRepeat": false,
+      "roleFirst": {
+        "systemPrompt": "You are a product manager responsible for developer experience.",
+        "inputContent": "[ROLE-FIRST-RUN-415-1785198586816-1]\nNamespace isolation architecture:\n\nOption A (single store): All tenants share one database. A namespace_resolver middleware injects WHERE clause on every query. Option B (per-tenant store): Each tenant gets their own SQLite database. Option C (split enforcement): Store layer enforces isolation, middleware resolves namespace. Decision: Option C for v1.0.",
+        "inputTokens": 105,
+        "cacheHit": 0,
+        "uncachedInput": 105,
+        "outputTokens": 256,
+        "latencyMs": 3591,
+        "output": "Excellent architectural decision. Option C (split enforcement) provides the optimal balance for v1.0. Here's why this works well:\n\n**Key advantages of your choice:**\n- **Separation of concerns**: Store layer handles data integrity, middleware handles routing\n- **Defense in depth**: Two independent isolation mechanisms reduce risk of data leaks\n- **Testability**: Each layer can be tested independently\n- **Migration path**: Easier to evolve to Option A or B later if needed\n\n**Implementation considerations for v1.0:**\n\n1. **Store layer enforcement**: \n   - Add namespace column to all tenant-scoped tables\n   - Make namespace part of primary key or unique constraint\n   - All queries must include namespace in WHERE clause at store level\n\n2. **Middleware responsibilities**:\n   - Extract namespace from request context (auth token, subdomain, header)\n   - Validate namespace exists and user has access\n   - Inject namespace into query context for store layer\n\n3. **Guard against common pitfalls**:\n   - Never allow namespace to be passed from client-side\n   - Add integration tests that attempt cross-tenant access\n   - Log any queries that bypass namespace filtering\n\nThis architecture gives you strong isolation guarantees while maintaining development velocity. Good call."
+      },
+      "contentFirst": {
+        "roleSuffix": "You are a product manager. Review the namespace options for developer experience. Output 2-3 paragraphs.",
+        "inputContent": "[CONTENT-FIRST-RUN-415-1785198606686-2]\nNamespace isolation architecture:\n\nOption A (single store): All tenants share one database. A namespace_resolver middleware injects WHERE clause on every query. Option B (per-tenant store): Each tenant gets their own SQLite database. Option C (split enforcement): Store layer enforces isolation, middleware resolves namespace. Decision: Option C for v1.0.\n\nYou are a product manager. Review the namespace options for developer experience. Output 2-3 paragraphs.",
+        "inputTokens": 116,
+        "cacheHit": 0,
+        "uncachedInput": 116,
+        "outputTokens": 370,
+        "latencyMs": 6038,
+        "output": "**Recommendation: Option C (Split Enforcement) for v1.0**\n\nFrom a developer experience standpoint, Option C strikes the best balance between simplicity and safety. Developers will interact with a single logical database interface (like Option A), which means they don't need to manage connection pools, database file paths, or tenant-specific credentials. The middleware handles namespace resolution transparently, so your team can write queries without worrying about which tenant's data they're accessing. This eliminates the cognitive overhead of Option B, where every developer must remember to initialize the correct SQLite database for each request—a common source of bugs in multi-tenant systems.\n\nHowever, the real DX win is in the store layer's enforcement. Unlike Option A, where a missing `WHERE tenant_id = ?` clause could silently leak data across tenants, Option C makes isolation a hard guarantee at the storage level. Developers get immediate, clear failures if they forget to include the namespace filter, rather than discovering data corruption weeks later. This \"fail fast\" behavior dramatically reduces debugging time and builds confidence in the system. The middleware layer handles the repetitive task of injecting the namespace, while the store layer acts as a safety net—a pattern your team will appreciate during code reviews and incident response.\n\nThe only trade-off is a slight increase in initial setup complexity compared to Option A. Your team will need to implement both the middleware and the store-level validation, which requires clear documentation and shared conventions. But this upfront investment pays off quickly: new developers can onboard faster because they don't need to understand SQLite file management (Option B) or worry about accidental cross-tenant queries (Option A). For v1.0, Option C gives you the best of both worlds—a clean API surface for daily development with robust guardrails that prevent the most dangerous class of multi-tenant bugs."
+      }
+    }
+  ],
+  "aggregates": {
+    "roleFirst": {
+      "totalInput": 431,
+      "totalUncached": 431,
+      "totalCached": 0,
+      "totalCost": 0.0017311700000000002,
+      "totalLatency": 19870,
+      "cachingRatio": 0
+    },
+    "contentFirst": {
+      "totalInput": 467,
+      "totalUncached": 467,
+      "totalCached": 0,
+      "totalCost": 0.00209179,
+      "totalLatency": 28314,
+      "cachingRatio": 0
+    }
+  },
+  "comparison": {
+    "cfVsRfCachedMultiplier": null,
+    "costSavingsPercent": -20.83099868874807
+  }
+}

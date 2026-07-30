@@ -1,0 +1,90 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "vector-dialect",
+  "label": "Create VectorDialect foundation — backend-agnostic vector operations for SqliteVec + Turso",
+  "completed_at": "2026-07-27T17:03:00.000Z",
+
+  "summary": "Created libs/data/store/store-adapter/src/vector-dialect.ts with SqliteVecDialect and TursoVectorDialect implementations, serialization helpers, shared TopKQueryParams interface, and factory function. Added createTableDDL to the VectorDialect interface in types.ts.",
+
+  "changes": [
+    {
+      "file": "libs/data/store/store-adapter/src/types.ts",
+      "kind": "Added createTableDDL(table: string, column: string, dim: number): string to VectorDialect interface (line 63)",
+      "lines": "+1"
+    },
+    {
+      "file": "libs/data/store/store-adapter/src/vector-dialect.ts",
+      "kind": "NEW FILE — SqliteVecDialect, TursoVectorDialect, TopKQueryParams, vecToJson, vecToBlob, createVectorDialect factory",
+      "lines": "+177"
+    }
+  ],
+
+  "exports": {
+    "file": "libs/data/store/store-adapter/src/vector-dialect.ts",
+    "symbols": [
+      "TopKQueryParams (interface)",
+      "vecToJson (function)",
+      "vecToBlob (function)",
+      "SqliteVecDialect (class)",
+      "TursoVectorDialect (class)",
+      "createVectorDialect (function)"
+    ]
+  },
+
+  "sqlite_vec_dialect": {
+    "vectorColumnType": "FLOAT32[{dim}] — vec0 column type",
+    "createTableDDL": "CREATE VIRTUAL TABLE {table} USING vec0({column} FLOAT32[{dim}])",
+    "createIndexDDL": "returns '' — vec0 virtual table IS the index",
+    "distanceExpr": "returns '' — MATCH handles distance computation",
+    "topKQuery": "SELECT … FROM {table} v JOIN node n … WHERE v.{col} MATCH ? AND k = ? AND __PLACEHOLDER__ ORDER BY v.distance LIMIT ?",
+    "initialize": "no-op — vec0 tables managed by sqlite-vec extension"
+  },
+
+  "turso_vector_dialect": {
+    "vectorColumnType": "vector({dim}) — Turso native vector type",
+    "createTableDDL": "CREATE TABLE {table} (node_id INTEGER PRIMARY KEY, {column} vector({dim}))",
+    "createIndexDDL": "CREATE INDEX {table}_{column}_idx ON {table}({column} {metric})",
+    "distanceExpr": "vector_distance_cos|l2 + vector_dot_product({column}, '[vec]')",
+    "topKQuery": "SELECT … vector_distance_{fn}(v.{col}, ?) AS distance FROM {table} v JOIN node n … WHERE __PLACEHOLDER__ ORDER BY distance LIMIT ?",
+    "initialize": "no-op — Turso has built-in vector support"
+  },
+
+  "tests": {
+    "project": "store-adapter",
+    "command": "npx nx test store-adapter",
+    "passed": 125,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Tests  125 passed (125)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true,
+    "note": "atomic-tsc committed to dist/ — vector-dialect.js, vector-dialect.d.ts, and corresponding .map files emitted"
+  },
+
+  "typecheck": {
+    "passed": true,
+    "command": "npx nx typecheck store-adapter"
+  },
+
+  "issues": ["NONE"],
+
+  "handoff_notes": [
+    "Both dialects' topKQuery SQL include __PLACEHOLDER__ token — callers MUST replace it with actual WHERE conditions before execution. The TopKQueryParams.placeholder field (default '__PLACEHOLDER__') is available for custom tokens.",
+    "SqliteVecDialect's topKQuery args order: [vecJson (MATCH), k (AND k=?), k (LIMIT)]. The second and third positional args are both k.",
+    "TursoVectorDialect's topKQuery args order: [vecJson (distance function), k (LIMIT)].",
+    "vecToJson serializes via JSON.stringify(Array.from(vec)) — suitable for both sqlite-vec MATCH and Turso vector_distance_* functions.",
+    "vecToBlob serializes via Buffer.from(Float32Array.buffer) — suitable for Turso BLOB storage.",
+    "createVectorDialect factory accepts 'sqlite' | 'turso' string — no StoreAdapter instance needed.",
+    "The index.ts already exports from './vector-dialect.js' — the re-export was pre-set before this task.",
+    "No downstream consumer imports VectorDialect yet (checked vector-store, graph-store, memory-core) — safe to merge."
+  ],
+
+  "backlog_entries": []
+}

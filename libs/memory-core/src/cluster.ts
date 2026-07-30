@@ -491,9 +491,9 @@ async function computeClusters(
  * Run cosine-threshold connected-components clustering over ALL live episodes (E6, D1)
  * and persist the result as the GLOBAL community partition.
  *
- * @param db   Open better-sqlite3 Database (write-capable).
- * @param opts Tuning parameters.
- * @returns    ClusterStoreResult with all cluster descriptors.
+ * @param adapter StoreAdapter (write-capable).
+ * @param opts   Tuning parameters.
+ * @returns      ClusterStoreResult with all cluster descriptors.
  */
 export async function clusterStore(
   adapter: StoreAdapter,

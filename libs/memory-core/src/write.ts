@@ -55,10 +55,9 @@ import type { PendingEmbed } from './embed-pipeline.js';
 // byte-identical dedup fingerprints with all pre-existing store rows. See parity spec:
 // libs/memory-core/src/ingest-parity.spec.ts
 import { hexSha256 } from '@adhd/sox-ingest/core';
-import type Database from 'better-sqlite3';
 import { performance } from 'node:perf_hooks';
 import { monotonicFactory } from 'ulid';
-import { embed, vecToJson } from './embed.js';
+import { embed, vecToJson, vecToBuffer } from './embed.js';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 const ulid = monotonicFactory();
@@ -275,7 +274,13 @@ export async function memoryWritePhaseA(
   // Two-phase split (2026-07-04): Phase A performs NO embedding. When the
   // caller pre-computed one (sync composition), it lands inside the same
   // transaction as the node — otherwise the vec insert is Phase B's job.
-  const embeddingJson = embedding !== undefined ? vecToJson(embedding) : null;
+  // TursoAdapter uses F32_BLOB columns that expect binary float32 data;
+  // SqliteAdapter (vec0) uses JSON array strings. The serialization format
+  // is chosen based on adapter.capabilities.nativeVectors.
+  const useBinaryFormat = adapter.capabilities.nativeVectors;
+  const embeddingSerialized = embedding !== undefined
+    ? (useBinaryFormat ? vecToBuffer(embedding) : vecToJson(embedding))
+    : null;
 
   // Track rowid for post-transaction enrichOnWrite call
   let insertedRowid = 0;
@@ -300,10 +305,10 @@ export async function memoryWritePhaseA(
 
     // Insert into vec_node (accepts JSON string or binary blob) — only when the
     // embedding was pre-computed; otherwise deferred to Phase B (embed-pipeline).
-    if (embeddingJson !== null) {
+    if (embeddingSerialized !== null) {
       await tx.executeRun(
         'INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',
-        [rowid, embeddingJson],
+        [rowid, embeddingSerialized],
       );
     }
 
@@ -390,6 +395,7 @@ export async function memoryWritePhaseA(
       derived_from_uid,
       embedding, // undefined in async Phase A → E8 near-dup deferred to Phase B
       importance, // pass caller-supplied importance so enrichOnWrite respects it
+      useNativeVectors: adapter.capabilities.nativeVectors,
     }),
   );
 
@@ -452,7 +458,7 @@ export async function memoryWrite(
 
   const vec = await embed(pending.text);
   const applied = await adapter.transaction(async (tx) =>
-    applyEmbedding(tx, pending, vec),
+    applyEmbedding(tx, pending, vec, adapter.capabilities.nativeVectors, adapter.capabilities.nativeVectors),
   );
   if (applied.near_dup !== null && phaseA.result.enrichment) {
     phaseA.result.enrichment.near_dup = {
@@ -650,15 +656,16 @@ export async function memoryWriteBatchPhaseA(
  *
  * Returns the number of rows deleted.
  */
-export function requestLedgerPrune(
-  db: Database.Database,
+export async function requestLedgerPrune(
+  adapter: StoreAdapter,
   retentionDays: number = 7,
-): number {
+): Promise<number> {
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
-  const result = db
-    .prepare<[string]>('DELETE FROM request_ledger WHERE created_at < ?')
-    .run(cutoff);
-  return result.changes;
+  const result = await adapter.executeRun(
+    'DELETE FROM request_ledger WHERE created_at < ?',
+    [cutoff],
+  );
+  return result.rowsAffected;
 }
 
 export async function memoryInvalidate(

@@ -141,22 +141,6 @@ export class SqliteVecDialect implements VectorDialect {
     };
   }
 
-  /**
-   * Initialise the dialect by loading the sqlite-vec extension.
-   * The `db` handle must be a better-sqlite3 Database instance.
-   */
-  async initialize(db: unknown): Promise<void> {
-    // Dynamic import to avoid hard dependency when sqlite-vec is not available.
-    try {
-      const sqliteVecModule = await import('sqlite-vec');
-      const rawDb = db as import('better-sqlite3').Database;
-      sqliteVecModule.load(rawDb);
-    } catch (err) {
-      throw new Error(
-        `[SqliteVecDialect] Failed to load sqlite-vec: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
 }
 
 // ── TursoVectorDialect ────────────────────────────────────────────────────────
@@ -208,26 +192,19 @@ export class TursoVectorDialect implements VectorDialect {
   }
 
   /**
-   * Generate DDL to create a Turso vector index on the given column.
+   * Generate DDL to create a vector index on the given column.
    *
-   * Note: `libsql_vector_descr()` is only available in newer versions of
-   * `@tursodatabase/database`. v0.7.1 (current on macOS) does not support it,
-   * and there is no reliable way to detect support at dialect-construction time
-   * (no db handle). Returning empty string means recall degrades to brute-force
-   * scan — correct but slower for large stores.
+   * Uses a simple `CREATE INDEX ON table(column)` syntax — Turso/libSQL
+   * infers the index type from the F32_BLOB column type.
    *
-   * Revisit when a future version ships universal vector index support.
-   *
-   * Example output (when supported):
+   * Example output:
    * ```sql
-   * CREATE INDEX IF NOT EXISTS "idx_vec_mymodel_embedding"
-   *   ON "vec_mymodel" (libsql_vector_descr(embedding))
+   * CREATE INDEX IF NOT EXISTS "idx_vec_node_embedding"
+   *   ON "vec_node" ("embedding")
    * ```
    */
-  createIndexDDL(_table: string, _column: string, _metric: VectorMetric): string {
-    // libsql_vector_descr() is not available in @tursodatabase/database v0.7.1.
-    // Return empty string — recall falls back to brute-force scan.
-    return '';
+  createIndexDDL(table: string, column: string, _metric: VectorMetric): string {
+    return `CREATE INDEX IF NOT EXISTS "idx_${table}_${column}" ON "${table}" ("${column}")`;
   }
 
   /**
@@ -262,12 +239,6 @@ export class TursoVectorDialect implements VectorDialect {
     };
   }
 
-  /**
-   * Initialise the dialect. Turso/libsql requires no extension loading.
-   */
-  async initialize(_db: unknown): Promise<void> {
-    // No-op — Turso/libsql has built-in vector support.
-  }
 }
 
 // ── Factory ───────────────────────────────────────────────────────────────────

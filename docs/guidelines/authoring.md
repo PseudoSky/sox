@@ -211,9 +211,9 @@ Compile TypeScript in `src/` to a runnable `dist/index.js`. Two shapes:
 **(a) Self-contained esbuild bundle (Model A) — the standard for the monorepo and anything with
 deps.** `tools/bundle-extension.cjs` inlines every `@adhd/sox-*` import (resolved from each lib's
 pre-built `dist/`) so the published artifact carries **zero `@adhd` runtime deps**. Native addons
-(`better-sqlite3`, `sqlite-vec`) stay **external** (`--external <pkg>`) and are declared as real
-`dependencies`; they are loaded lazily via `createRequire` at first use. This is wired through an nx
-`project.json` build target:
+(`@tursodatabase/database`, `better-sqlite3`, `sqlite-vec`) stay **external** (`--external <pkg>`)
+and are declared as real `dependencies`; they are loaded lazily via `createRequire` at first use.
+This is wired through an nx `project.json` build target:
 
 ```jsonc
 // project.json — build target (as used by every bundle member)
@@ -223,7 +223,7 @@ pre-built `dist/`) so the published artifact carries **zero `@adhd` runtime deps
   "options": {
     "commands": [
       "rm -rf <path>/dist",
-      "node tools/bundle-extension.cjs --entry <path>/src/index.ts --outdir <path>/dist --tsconfig <path>/tsconfig.json --external better-sqlite3 --external sqlite-vec"
+      "node tools/bundle-extension.cjs --entry <path>/src/index.ts --outdir <path>/dist --tsconfig <path>/tsconfig.json --external @tursodatabase/database --external better-sqlite3 --external sqlite-vec"
     ],
     "parallel": false, "cwd": "."
   },

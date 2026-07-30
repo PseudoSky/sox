@@ -58,7 +58,7 @@
  */
 
 import * as fs from 'node:fs';
-import type { EmbeddingModel } from 'fastembed';
+import type { EmbeddingModel, ExecutionProvider } from 'fastembed';
 
 // ── Type definitions ──────────────────────────────────────────────────────────
 
@@ -83,7 +83,7 @@ interface EmbedBatchRequest {
 
 type HostRequest = InitRequest | EmbedRequest | EmbedBatchRequest | { __shutdown: true };
 
-interface InitOkResponse { id: number; initOk: true; dim: number }
+interface InitOkResponse { id: number; initOk: true; dim: number; execution_provider: string }
 interface EmbedResponse { id: number; embedding: number[] }
 interface EmbedBatchResponse { id: number; embeddings: number[][] }
 interface ErrorResponse { id: number; error: string }
@@ -108,11 +108,23 @@ let _embedder: EmbedderInstance | null = null;
 let _currentModel = '';
 let _currentCacheDir = '';
 
-async function loadModel(model: string, cacheDir: string): Promise<{ dim: number }> {
+function resolveExecutionProviders(): ExecutionProvider[] {
+  const forced = process.env.SOX_EMBED_EXECUTION_PROVIDER;
+  if (forced) {
+    console.error(`[fastembed] Using forced execution provider: ${forced}`);
+    return [forced as ExecutionProvider, 'cpu' as ExecutionProvider];
+  }
+  if (process.platform === 'darwin') return ['coreml' as ExecutionProvider, 'cpu' as ExecutionProvider];
+  if (process.platform === 'linux' && process.arch === 'x64') return ['cuda' as ExecutionProvider, 'cpu' as ExecutionProvider];
+  if (process.platform === 'win32') return ['dml' as ExecutionProvider, 'cpu' as ExecutionProvider];
+  return ['cpu' as ExecutionProvider];
+}
+
+async function loadModel(model: string, cacheDir: string): Promise<{ dim: number; execution_provider: string }> {
   if (_embedder && _currentModel === model && _currentCacheDir === cacheDir) {
     const models = _embedder.listSupportedModels();
     const info = models.find((m) => m.model === model);
-    return { dim: info?.dim ?? 0 };
+    return { dim: info?.dim ?? 0, execution_provider: 'cpu' };
   }
 
   const { FlagEmbedding, EmbeddingModel: EM } = await import('fastembed');
@@ -123,9 +135,11 @@ async function loadModel(model: string, cacheDir: string): Promise<{ dim: number
 
   fs.mkdirSync(cacheDir, { recursive: true });
 
+  const executionProviders = resolveExecutionProviders();
   _embedder = (await FlagEmbedding.init({
     model: modelEnum as Exclude<EmbeddingModel, EmbeddingModel.CUSTOM>,
     cacheDir,
+    executionProviders,
     showDownloadProgress: false,
   })) as unknown as EmbedderInstance;
 
@@ -134,7 +148,7 @@ async function loadModel(model: string, cacheDir: string): Promise<{ dim: number
 
   const models = _embedder.listSupportedModels();
   const info = models.find((m) => m.model === model);
-  return { dim: info?.dim ?? 0 };
+  return { dim: info?.dim ?? 0, execution_provider: executionProviders[0]! };
 }
 
 async function collectEmbeddings(embedder: EmbedderInstance, texts: string[]): Promise<number[][]> {
@@ -167,8 +181,8 @@ function send(msg: InitOkResponse | EmbedResponse | EmbedBatchResponse | ErrorRe
 async function handleRequest(msg: InitRequest | EmbedRequest | EmbedBatchRequest): Promise<void> {
   if (msg.type === 'init') {
     try {
-      const { dim } = await loadModel(msg.model, msg.cacheDir);
-      send({ id: msg.id, initOk: true, dim });
+      const { dim, execution_provider } = await loadModel(msg.model, msg.cacheDir);
+      send({ id: msg.id, initOk: true, dim, execution_provider });
     } catch (e) {
       send({ id: msg.id, error: String(e instanceof Error ? e.message : e) });
     }

@@ -12,7 +12,7 @@
 
 import type { StoreAdapter, AdapterTransaction } from '@adhd/sox-store-adapter';
 import * as crypto from 'node:crypto';
-import { embed, vecToJson } from './embed.js';
+import { embed, vecToJson, vecToBuffer } from './embed.js';
 
 // ── P4: Scope Promotion (design.md §2.5, docs/scope-promotion.md) ─────────────
 
@@ -321,11 +321,12 @@ export async function applyPromotion(
     if (srcNode.content || srcNode.name) {
       const text = [srcNode.content, srcNode.name].filter(Boolean).join(' ');
       const vec = await embed(text);
-      const vecJson = vecToJson(vec);
+      const useBinaryFormat = dstAdapter.capabilities.nativeVectors;
+      const serialized = useBinaryFormat ? vecToBuffer(vec) : vecToJson(vec);
       try {
         await dstAdapter.executeRun(
           'INSERT OR IGNORE INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',
-          [dstRow.rowid, vecJson],
+          [dstRow.rowid, serialized],
         );
       } catch {
         /* non-fatal */
@@ -586,14 +587,18 @@ export async function graphifyImport(
   const uidMap = new Map<string, string>(); // original id/uid → internal uid
 
   // Pre-compute embeddings keyed by node index
-  const nodeEmbedJsons: (string | null)[] = await Promise.all(
+  // Serialization format: TursoAdapter (nativeVectors) uses F32_BLOB (Buffer),
+  // SqliteAdapter (vec0) uses JSON array string.
+  const useBinaryFormat = adapter.capabilities.nativeVectors;
+  const nodeEmbedSerialized: (string | Buffer | null)[] = await Promise.all(
     nodes.map(async (node) => {
       const content = node['content'] as string | undefined;
       const name = (node['name'] as string | undefined) ?? null;
       const text = [content, name].filter(Boolean).join(' ');
       if (!text) return null;
       try {
-        return vecToJson(await embed(text));
+        const vec = await embed(text);
+        return useBinaryFormat ? vecToBuffer(vec) : vecToJson(vec);
       } catch {
         return null;
       }
@@ -635,11 +640,11 @@ export async function graphifyImport(
       );
 
       if (row) {
-        const vecJson = nodeEmbedJsons[nodeIdx] ?? null;
+        const serialized = nodeEmbedSerialized[nodeIdx] ?? null;
         try {
           await tx.executeRun(
             'INSERT OR IGNORE INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',
-            [row.rowid, vecJson],
+            [row.rowid, serialized],
           );
         } catch {
           /* non-fatal */

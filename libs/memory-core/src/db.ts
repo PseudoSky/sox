@@ -15,7 +15,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { rebuildTable } from '@adhd/sox-graph-store';
-import { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
+import { PRAGMAS, DDL_BASE, FTS_TRIGGERS } from './schema.js';
 import { EMBED_DIM, getActiveEmbedModel } from './embed.js';
 import { closeDbWithLease } from './lease.js';
 import type { StoreAdapter, SqliteAdapter } from '@adhd/sox-store-adapter';
@@ -293,7 +293,7 @@ export async function openDb(dbPath: string): Promise<StoreAdapter> {
   }
 
   // Apply DDL (idempotent — uses CREATE IF NOT EXISTS)
-  await adapter.exec(DDL);
+  await adapter.exec(DDL_BASE);
   await adapter.exec(FTS_TRIGGERS);
 
   // SA-5 / BL-121: stamp store identity meta on every open-for-write.
@@ -508,7 +508,7 @@ export async function closeAllAdapters(): Promise<void> {
 export function wrapRawDbAsAdapter(rawDb: Database.Database): StoreAdapter {
   return {
     config: { type: 'sqlite', dbPath: rawDb.name ?? undefined, readonly: rawDb.memory },
-    capabilities: { multiprocessWrite: false, nativeVectors: false, concurrentTransactions: false },
+    capabilities: { multiprocessWrite: false, nativeVectors: false, concurrentTransactions: false, fts5: false, fts: false, needsWriteSerialization: true },
 
     async executeGet<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<T | null> {
       const stmt = rawDb.prepare(sql);

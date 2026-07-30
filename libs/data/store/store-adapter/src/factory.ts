@@ -4,19 +4,26 @@
  * Source code that hardcodes the adapter type should use
  * createSqliteAdapter() or createTursoAdapter() directly.
  */
+import { detectAdapterChange } from './adapter-meta.js';
 import type {
   StoreAdapter,
   SqliteAdapter,
   TursoAdapter,
   AdapterConfig,
+  CreateStoreOptions,
 } from './types.js';
 import { SqliteAdapterImpl } from './sqlite-adapter.js';
 import { TursoAdapterImpl } from './turso-adapter.js';
 
 // ── createStoreAdapter — env-driven auto-detect ──────────────────────────────
 
-export async function createStoreAdapter(config?: Partial<AdapterConfig>): Promise<StoreAdapter> {
+export async function createStoreAdapter(
+  config?: Partial<AdapterConfig>,
+  options?: CreateStoreOptions,
+): Promise<StoreAdapter> {
   const adapterType = (process.env.STORE_ADAPTER || 'turso').toLowerCase();
+
+  let adapter: StoreAdapter;
 
   if (adapterType === 'sqlite') {
     const dbPath = config?.dbPath || process.env.SOX_CONFIG_DB_PATH;
@@ -27,10 +34,8 @@ export async function createStoreAdapter(config?: Partial<AdapterConfig>): Promi
     }
     const sqliteOpts: { dbPath: string; readonly?: boolean; statementCacheSize?: number } = { dbPath };
     if (config?.readonly !== undefined) sqliteOpts.readonly = config.readonly;
-    return createSqliteAdapter(sqliteOpts);
-  }
-
-  if (adapterType === 'turso') {
+    adapter = createSqliteAdapter(sqliteOpts);
+  } else if (adapterType === 'turso') {
     const tursoOpts: Parameters<typeof createTursoAdapter>[0] = {};
     const url = config?.url || process.env.TURSO_DB_URL;
     if (url !== undefined) tursoOpts.url = url;
@@ -39,12 +44,51 @@ export async function createStoreAdapter(config?: Partial<AdapterConfig>): Promi
     if (authToken !== undefined) tursoOpts.authToken = authToken;
     if (config?.readonly !== undefined) tursoOpts.readonly = config.readonly;
     if (config?.experimental !== undefined) tursoOpts.experimental = config.experimental;
-    return createTursoAdapter(tursoOpts);
+    adapter = await createTursoAdapter(tursoOpts);
+  } else {
+    throw new Error(
+      `Unknown STORE_ADAPTER value: "${adapterType}". Expected "sqlite" or "turso".`,
+    );
   }
 
-  throw new Error(
-    `Unknown STORE_ADAPTER value: "${adapterType}". Expected "sqlite" or "turso".`,
-  );
+  // ── Auto-migration (BEFORE init stamps the new type) ─────────────────────
+
+  if (options?.migrateOnAdapterChange) {
+    if (!config?.dbPath) {
+      throw new Error(
+        'migrateOnAdapterChange requires a local file database (config.dbPath). ' +
+        'Remote Turso stores cannot be auto-migrated — use the manual migration tools instead.',
+      );
+    }
+    const changed = await detectAdapterChange(adapter, adapterType as 'sqlite' | 'turso');
+    if (changed) {
+      // Create a temp target store with the correct adapter type
+      const tempPath = config.dbPath + '.migrate.' + Date.now() + '.db';
+      const targetAdapter = await createStoreAdapter(
+        { ...config, dbPath: tempPath },
+        { migrateOnAdapterChange: false }, // prevent recursion
+      );
+      const { migrateStore } = await import('./migration.js');
+      await migrateStore(adapter, targetAdapter, options.migrationOptions);
+      await targetAdapter.close();
+      await adapter.close();
+
+      // Atomic swap — only runs if migration completed successfully
+      const fs = await import('node:fs');
+      await fs.promises.rename(tempPath, config.dbPath);
+
+      // Re-open with the correct adapter type (no recursion)
+      return createStoreAdapter(config, { migrateOnAdapterChange: false });
+    }
+  }
+
+  // ── Init (stamp adapter metadata) ─────────────────────────────────────────
+
+  if (typeof (adapter as any).init === 'function') {
+    await (adapter as any).init();
+  }
+
+  return adapter;
 }
 
 // ── createSqliteAdapter — explicit, narrowed return type ──────────────────────

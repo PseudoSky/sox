@@ -56,9 +56,9 @@ soxe list                       # show what's installed and running
 `soxe install <id|bundle> --scope <org|user|project|local>` is the one command you need. A
 **bundle** resolves to its member set and routes each member to the right surface (a `skill`
 file-drops to `~/.claude/skills/`, a stdio `mcp-server` config-merges into `~/.claude.json`, and so
-on). Native dependencies (e.g. `better-sqlite3` for the memory store) are installed via the
-`npm-package:` install mode — a real `npm install` into a per-extension content store, so the
-platform binary resolves.
+on). Native dependencies (e.g. `@tursodatabase/database` for the Turso-based memory store, with
+`better-sqlite3` available as a fallback adapter) are installed via the `npm-package:` install
+mode — a real `npm install` into a per-extension content store, so the platform binary resolves.
 
 Full install / uninstall / `config` / scopes reference: [**USAGE.md**](./USAGE.md).
 

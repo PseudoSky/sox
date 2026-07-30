@@ -5,6 +5,7 @@ import type { EmbeddingHealth, EmbeddingProvider, EmbeddingProviderMetadata, Emb
 interface InitOkResponse {
   initOk: true;
   dim: number;
+  execution_provider: string;
 }
 
 interface EmbedResponse {
@@ -90,6 +91,7 @@ export class FastembedProvider implements EmbeddingProvider {
   private embedDim = 0;
   private maxTokensVal = 512;
   private _lastError: string | null = null;
+  private _executionProvider: string = 'cpu';
 
   constructor(model: string, dimensions: number, cacheDir: string) {
     this.model = model;
@@ -122,6 +124,7 @@ export class FastembedProvider implements EmbeddingProvider {
       state,
       dimensions: this.embedDim || this.metadata.dimensions,
       last_error: this._lastError,
+      execution_provider: this._executionProvider,
     };
   }
 
@@ -258,6 +261,7 @@ export class FastembedProvider implements EmbeddingProvider {
       if (res.dim > 0) {
         this.embedDim = res.dim;
       }
+      this._executionProvider = res.execution_provider || 'cpu';
       this.ready = true;
       this._lastError = null;
     } catch (e) {
