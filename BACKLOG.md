@@ -1138,3 +1138,38 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: apps/so
 **Severity:** MEDIUM — a `nvm use` orphans the live memory-server unit with no warning at switch time.
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: apps/sox/src/main.ts (cmdService enable / node pinning), 2: libs/host-runtime/src/ (os-unit generator)]
+
+---
+
+### BL-334 — `memory_ping`/`memory_stats` must report capability + contention facts directly instead of requiring host archaeology — **Open (HIGH)** (2026-07-30)
+
+**Driver:** during the 2026-07-30 Turso go-live, essentially every question that mattered required manual out-of-band investigation on the host, because the status surface does not report it. Each of the following cost real time and, in several cases, produced a WRONG conclusion that had to be walked back:
+
+| Question that mattered | How it had to be answered | Should have been |
+|---|---|---|
+| Which ONNX execution provider is active, and is it the fast one? | `grep` a CoreML warning out of a startup log | a status field, with a measured throughput figure |
+| Is the graph partitioned across EPs (CoreML can't take `word_embeddings` 30522x768, so it splits CPU/ANE per inference)? | reading `[W:onnxruntime] IsInputSupported` warnings by eye | an explicit `partitioned: true` + which ops fell back |
+| Are multiple fastembed/CoreML host processes contending? | `ps -eo pid,ppid,rss` archaeology | a contention field naming conflicting pids |
+| Is the machine starved (load avg, free RAM)? | `vm_stat` + `sysctl` by hand | ambient-load fields sampled alongside each latency metric |
+| Does this store support concurrent multi-process READS? | trial and error — an incorrect "Locking error" conclusion was drawn because the probing connection omitted `experimental:['multiprocess_wal']` | a capability field stating multiprocess WAL is enabled and reads are shared |
+| Does it support concurrent WRITES, and does it degrade under load? | a bespoke 3-round experiment script | a capability field plus measured write concurrency |
+| Is the embed backlog actually draining, and at what rate? | polling `vec_node` COUNT(*) from a side connection 45s apart | `backlog_drain_rate` (already requested in BL-319, still absent) |
+| Where is per-tick wall time going? | reading `enrich.tick.*` lines out of a backend log | a per-phase tick breakdown in status |
+| Is `idx_fts_node` present AND populated? | `sqlite_master` query, then a manual `fts_match` probe that returned 0 rows | an FTS health field: index present + document count + last-built |
+
+**The general defect:** `memory_ping` reports plenty of *counters* but almost no *capabilities*, no *environment*, and no *self-assessment*. It reported `"state":"real"` and `execution_provider: "coreml"` while embedding was running 25x slower than the same model on the same machine — technically true, operationally useless. It reported `wal_bytes: 0` while 3.7MB of committed data sat in an unlinked WAL. It reported `enrichment: "stalled"` for five weeks with nothing acting on it.
+
+**Requested fields** (extend `memory_ping`, and/or a new `memory_health`):
+- **Embedding:** active execution provider; whether the graph is EP-partitioned and which ops fell back; measured recent embeds/sec; p50/p99; model + dim; whether any OTHER fastembed host process is alive (pid, age) — the advisory lock added under BL-331 already computes this, it just isn't surfaced.
+- **Concurrency capabilities, as facts not guesses:** `multiprocess_wal` on/off; multi-process reads supported; multi-writer supported; `needsWriteSerialization`; whether WriteQueue is bypassed (`_noop`); and the exact connect options a second process must pass to join (this alone would have prevented the false "locking is back" conclusion).
+- **Measured under load, not just declared:** concurrent read throughput and concurrent write throughput sampled recently, each stamped with the ambient load average and free memory at sample time. A latency number without its ambient load is not evidence — that mistake was made repeatedly today.
+- **Store health:** WAL present/linked/size; last checkpoint; FTS index present + populated + doc count; vector coverage (vectored/total) and drain rate; dangling-edge count.
+- **Self-assessment:** for each subsystem, a red/yellow/green with the reason — e.g. "embedding: YELLOW — 0.13/s vs 2.5/s baseline, EP-partitioned".
+
+**Fix sketch:** most of these values are already computed somewhere (the BL-320 telemetry, the BL-331 advisory lock, `clusterStats`, `embedBacklogStats`, adapter `capabilities`) — the work is largely surfacing and stamping them, not deriving them. Sample ambient load once per status call rather than continuously.
+
+**Acceptance (red→green, must name BL-334):** a test asserting a single `memory_ping`/`memory_health` call answers every row of the table above without shelling out to `ps`, `vm_stat`, `sqlite3`, or a log file.
+
+**Severity:** HIGH — this is the meta-defect behind today's incident. A 12-hour investigation was spent rediscovering facts the server already knew, and several intermediate conclusions were wrong *specifically because* the status surface was silent (the "locking is back" false alarm, the "13 hours of at-risk writes" over-alarm, the "25x slower" figure taken without recording ambient load). Related: BL-319 (missing computed throughput fields — same root cause, narrower scope), BL-322, BL-330, BL-331, BL-332.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (memory_ping response shape), 2: libs/data/embed/embedding-provider/src/fastembedProcessHost.ts:210 (hardcoded darwin EP order), 3: libs/data/store/store-adapter/src/turso-adapter.ts (capability flags, none surfaced), 4: libs/memory-core/src/telemetry.ts (BL-320 events already computed but not aggregated into status)]
