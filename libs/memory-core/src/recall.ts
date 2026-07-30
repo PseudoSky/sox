@@ -518,45 +518,48 @@ export async function memoryRecall(
   const ftsRowids = new Map<number, number>();
   if (ftsQuery && ftsDialect.supported) {
     try {
-      if (adapter.config.type === 'turso') {
-        // Turso Tantivy FTS path: query inlined as SQL string literal.
-        // Single quotes in the query are escaped to prevent injection.
-        const sanitizedQuery = ftsQuery.replace(/'/g, "''");
-        const { sql: matchSql } = ftsDialect.matchClause(
-          ['content', 'name', 'summary'],
-          `'${sanitizedQuery}'`,
+      // Both branches ask the dialect for match/score SQL and bind the query
+      // text as a normal parameter (`?`) — never inlined as a string literal.
+      // (Turso's `fts_match`/`fts_score` accept bound params identically to
+      // literal args, verified empirically 2026-07-30; the two branches below
+      // differ only in the genuinely different table shape each backend uses
+      // — SQLite FTS5 keeps a separate `fts_node` shadow table joined back to
+      // `node`, Turso's Tantivy index lives directly on `node` — decided via
+      // `ftsDialect.supportsShadowTable`, never `adapter.config.type`.)
+      const { sql: matchSql } = ftsDialect.matchClause(['content', 'name', 'summary'], '?');
+      const scoreExpr = ftsDialect.scoreClause(['content', 'name', 'summary'], '?');
+      let ftsResult;
+      if (ftsDialect.supportsShadowTable) {
+        // SQLite FTS5: match/rank live on the fts_node shadow table.
+        // scoreExpr is the constant `fts_node.rank` (0 placeholders).
+        ftsResult = await adapter.executeAll<{ rowid: number; rank: number }>(
+          `SELECT fts_node.rowid, ${scoreExpr} AS rank
+           FROM fts_node
+           JOIN node n ON n.rowid = fts_node.rowid
+           WHERE ${matchSql}
+             AND ${validityPred}
+             ${agentFilter}
+             ${filterSql}
+           ORDER BY rank
+           LIMIT ?`,
+          [ftsQuery, ...filterParams, ftsLimit],
         );
-        const scoreOrder = ftsDialect.scoreClause(
-          ['content', 'name', 'summary'],
-          `'${sanitizedQuery}'`,
-        );
-        const ftsResult = await adapter.executeAll<{ rowid: number; rank: number }>(
-          `SELECT rowid, ${scoreOrder} AS rank FROM node
+      } else {
+        // Turso Tantivy FTS: the index lives directly on node — no join.
+        // scoreExpr binds its own `?` (used once, in the SELECT list); the
+        // ORDER BY references the SELECT alias instead of repeating it.
+        ftsResult = await adapter.executeAll<{ rowid: number; rank: number }>(
+          `SELECT rowid, ${scoreExpr} AS rank FROM node
            WHERE ${matchSql}
              AND ${validityPred.replace(/\bn\./g, '')}
              ${agentFilter.replace(/\bn\./g, '')}
              ${filterSql.replace(/\bn\./g, '')}
-           ORDER BY ${scoreOrder}
+           ORDER BY rank
            LIMIT ?`,
-          [...filterParams, ftsLimit],
+          [ftsQuery, ftsQuery, ...filterParams, ftsLimit],
         );
-        ftsResult.rows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
-      } else {
-        // SQLite FTS5 path: query passed as bound parameter.
-        const ftsResult = await adapter.executeAll<{ rowid: number; rank: number }>(
-          `SELECT fts_node.rowid, fts_node.rank
-           FROM fts_node
-           JOIN node n ON n.rowid = fts_node.rowid
-           WHERE fts_node MATCH ?
-             AND ${validityPred}
-             ${agentFilter}
-             ${filterSql}
-           ORDER BY fts_node.rank
-           LIMIT ?`,
-          [ftsQuery, ...filterParams, ftsLimit],
-        );
-        ftsResult.rows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
       }
+      ftsResult.rows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
     } catch {
       // FTS query may fail on special chars — silently ignore
     }

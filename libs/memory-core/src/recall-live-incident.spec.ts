@@ -269,8 +269,13 @@ describe('memoryRecall — Defect 2: FTS channel is dialect-aware (sqlite vs tur
     const ftsCall = adapter.calls.find((c) => /fts_match\(/i.test(c.sql));
     expect(ftsCall).toBeDefined();
     expect(ftsCall?.sql).toMatch(/FROM\s+node\b/i);
-    expect(ftsCall?.sql).toMatch(/fts_match\(\s*"content",\s*"name",\s*"summary"\s*,\s*'turso\s+adapter'\s*\)/i);
-    expect(ftsCall?.sql).toMatch(/fts_score\(/i);
+    // Query text is bound as a normal parameter (`?`), never inlined as a SQL
+    // string literal — verified empirically (2026-07-30) that Turso's
+    // fts_match/fts_score accept bound params identically to literal args,
+    // so there's no reason to hand-roll quote-escaping and risk injection.
+    expect(ftsCall?.sql).toMatch(/fts_match\(\s*"content",\s*"name",\s*"summary"\s*,\s*\?\s*\)/i);
+    expect(ftsCall?.sql).toMatch(/fts_score\(\s*"content",\s*"name",\s*"summary"\s*,\s*\?\s*\)/i);
+    expect(ftsCall?.args).toContain('turso adapter');
     // Must NEVER reference the sqlite-only shadow table on Turso — this is
     // the exact defect: fts_node does not exist on a live Turso store.
     expect(ftsCall?.sql).not.toMatch(/fts_node/i);
