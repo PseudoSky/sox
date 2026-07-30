@@ -2006,8 +2006,15 @@ export async function runEnrichPassOnDb(
   };
 }
 
-/** Run one in-process enrichment pass over all open DBs. */
-async function runPeriodicEnrichPass(): Promise<void> {
+/**
+ * Run one in-process enrichment pass over all open DBs. Exported (test seam
+ * only — see enrich-reentrancy.spec.ts) so the pre-fix stampede behaviour can
+ * be reproduced directly: calling this UNGUARDED function concurrently is
+ * exactly the bug (overlapping ticks racing the same `NOT EXISTS vec_node`
+ * scan). Production code path is `runPeriodicEnrichPassGuarded()` below,
+ * which never allows two calls in flight at once.
+ */
+export async function runPeriodicEnrichPass(): Promise<void> {
   if (openedPaths.size === 0) return;
 
   for (const dbPath of openedPaths) {
@@ -2021,12 +2028,93 @@ async function runPeriodicEnrichPass(): Promise<void> {
   }
 }
 
-// Schedule the periodic loop. unref() keeps the timer from holding the process
-// open past MCP client disconnect — the server exits cleanly on stdin close.
-const _periodicEnrichTimer = setInterval(() => {
-  void runPeriodicEnrichPass();
-}, PERIODIC_ENRICH_INTERVAL_MS);
-_periodicEnrichTimer.unref();
+// ── Reentrancy guard (root-cause fix — embed backfill self-stampede) ──────────
+//
+// PROVEN INCIDENT: the bare `setInterval(() => void runPeriodicEnrichPass(),
+// 5min)` below had ZERO reentrancy guard. A single pass (healMissingVectors'
+// sequential 500-row scan through ONE shared fastembedProcessHost.js child
+// process) routinely takes far longer than 5 minutes at real throughput. The
+// next tick fired anyway, re-ran the SAME `ORDER BY n.rowid ASC LIMIT 500`
+// scan (embed-pipeline.ts's NOT EXISTS predicate hadn't advanced because the
+// first pass's applies hadn't landed yet), and queued a second full round of
+// embeds for the SAME head-of-queue rows behind the first on that one child
+// process — compounding every 5 minutes forever. Confirmed live: whichever
+// tick finished first landed the row; every other overlapping tick finished
+// ~25 min later, hit applyEmbedding's exists-check, and discarded its work as
+// 'exists'. Net effect: embed_backlog frozen at 4241 for five weeks while one
+// child process burned 650 CPU-minutes to land 169 vectors.
+//
+// THE FIX: a self-rescheduling setTimeout chain (never setInterval) gated by
+// an in-flight flag. The next tick is scheduled ONLY after the current pass
+// has fully settled (success or error) — ticks can never overlap, by
+// construction (not just "usually don't"). If some other caller manages to
+// invoke the guarded entrypoint while a pass is already running (defensive:
+// nothing in this codebase does today), the extra invocation is skipped and
+// counted rather than silently discarded, so an operator can see the guard
+// working via getEnrichPassSkipCount().
+//
+// FORWARD PROGRESS: with overlap eliminated, each tick's healMissingVectors
+// scan (embed-pipeline.ts:582-592, `NOT EXISTS (SELECT 1 FROM vec_node v
+// WHERE v.node_id = n.rowid) ORDER BY n.rowid ASC LIMIT 500`) genuinely
+// advances: every row the PREVIOUS pass applied now has a vec_node row and is
+// excluded from the next SELECT, so the next tick's LIMIT 500 window is a
+// disjoint, later slice of the backlog — never a re-fetch of the same head.
+// This holds even when a pass is cut short by SOX_EMBED_HEAL_TIME_BUDGET_MS:
+// the rows it DID apply before the budget triggered are still excluded next
+// time; only the genuinely-unprocessed remainder is re-scanned.
+
+let _enrichPassInFlight = false;
+let _enrichTicksSkipped = 0;
+
+/** Exposed for tests/observability — never reset except by module reload. */
+export function getEnrichPassSkipCount(): number {
+  return _enrichTicksSkipped;
+}
+
+/** True while a periodic enrich pass is currently executing. Test seam. */
+export function isEnrichPassInFlight(): boolean {
+  return _enrichPassInFlight;
+}
+
+/**
+ * Reentrancy-guarded entrypoint: runs `runPeriodicEnrichPass()` unless a pass
+ * is already in flight, in which case the call is a documented no-op (counted,
+ * logged to stderr — never silent). Exported so tests can invoke it directly
+ * without waiting on the real 5-minute timer, and so it can be called
+ * concurrently in a test to prove overlap is impossible.
+ */
+export async function runPeriodicEnrichPassGuarded(): Promise<void> {
+  if (_enrichPassInFlight) {
+    _enrichTicksSkipped++;
+    console.error(
+      `[memory-server] periodic enrich SKIPPED — previous pass still in flight` +
+      ` (skipped_total=${_enrichTicksSkipped})`,
+    );
+    return;
+  }
+  _enrichPassInFlight = true;
+  try {
+    await runPeriodicEnrichPass();
+  } finally {
+    _enrichPassInFlight = false;
+  }
+}
+
+/**
+ * Self-rescheduling chain, NOT setInterval: the next tick is armed only once
+ * the current guarded pass has fully settled, so a slow pass simply pushes
+ * the next tick later instead of stacking a concurrent one on top of it.
+ * unref() keeps the timer from holding the process open past MCP client
+ * disconnect — the server exits cleanly on stdin close.
+ */
+function scheduleNextEnrichTick(): void {
+  const timer = setTimeout(() => {
+    void runPeriodicEnrichPassGuarded().finally(scheduleNextEnrichTick);
+  }, PERIODIC_ENRICH_INTERVAL_MS);
+  if (typeof timer.unref === 'function') timer.unref();
+}
+
+scheduleNextEnrichTick();
 
 // ── Entrypoint dispatch: backend mode vs direct-stdio (spec §9.5) ─────────────
 //

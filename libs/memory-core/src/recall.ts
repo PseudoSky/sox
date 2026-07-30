@@ -56,6 +56,68 @@ import { openDbReadOnly } from './db.js';
 import { buildFilterClause } from '@adhd/sox-hybrid-search';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
+// ── Query-embed timeout (read-path guard) ─────────────────────────────────────
+//
+// `memory_recall` advertises "<50ms, zero LLM" — it is a READ path and must
+// never hang, even when the shared embed provider is backed up (e.g. an
+// enrich-tick storm saturating the single fastembed child-process IPC queue;
+// live-observed embed_duration_ms p50 ≈ 25 minutes during such an incident).
+//
+// `embed()` (embed.ts) has NO cancellation hook — the underlying worker-thread
+// provider cannot be aborted, so a call that never settles will hang the
+// `await embed(query)` below FOREVER. The pre-existing try/catch at the call
+// site only handles a REJECTED promise; a promise that never settles never
+// reaches either branch. embed-pipeline.ts's `embedWithTimeout()` races
+// exactly this scenario for the heal path (SOX_EMBED_HEAL_TIMEOUT_MS,
+// default 120s) but that file is owned by another agent during this
+// incident and its 120s budget is far too generous for an interactive read
+// — a caller of memory_recall should never wait minutes for a query embed.
+// This is a minimal, recall-local duplicate of that same race pattern with a
+// read-appropriate default, so a stalled provider degrades the vec channel
+// gracefully to BM25/temporal-only (the exact fallback BL-273 already wired
+// via `embedVecFailed` below) instead of hanging the whole recall forever.
+const DEFAULT_RECALL_EMBED_TIMEOUT_MS = 3000;
+
+function resolveRecallEmbedTimeoutMs(): number {
+  const raw = process.env['SOX_RECALL_EMBED_TIMEOUT_MS'];
+  const n = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_RECALL_EMBED_TIMEOUT_MS;
+}
+
+/**
+ * Race `embed(query)` against a wall-clock timeout. Rejects with a
+ * TimeoutError-shaped Error if the embed call has not settled within
+ * `timeoutMs` — WITHOUT aborting the underlying call (there is no
+ * cancellation hook), so a slow embed may still complete after this promise
+ * has already rejected; that stray result is simply discarded by the caller
+ * here. The timer is `unref()`d so it can never keep the process alive.
+ */
+async function embedWithRecallTimeout(query: string, timeoutMs: number): Promise<Float32Array> {
+  return new Promise<Float32Array>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(`embed() timed out after ${timeoutMs}ms (recall read-path guard)`));
+    }, timeoutMs);
+    if (typeof timer.unref === 'function') timer.unref();
+    embed(query).then(
+      (v) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
+  });
+}
+
 export interface RecallParams {
   query: string;
   scopes?: string[] | undefined;
@@ -410,10 +472,10 @@ export async function memoryRecall(
   let embedVecFailed = false;
   let queryVecJson: string | undefined;
   try {
-    const queryVec = await embed(query);
+    const queryVec = await embedWithRecallTimeout(query, resolveRecallEmbedTimeoutMs());
     queryVecJson = vecToJson(queryVec);
   } catch (err) {
-    console.error(`[sox-memory] WARNING: embed() failed in recall, skipping vec channel: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`[sox-memory] WARNING: embed() failed or timed out in recall, skipping vec channel: ${err instanceof Error ? err.message : String(err)}`);
     embedVecFailed = true;
   }
 
