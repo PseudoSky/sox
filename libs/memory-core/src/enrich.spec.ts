@@ -21,6 +21,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as sqliteVec from 'sqlite-vec';
 
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import {
   buildAutoLinks,
   clusterStats,
@@ -32,6 +33,7 @@ import {
   extractiveSummary,
   resolveProjectPath,
   runBatchEnrich,
+  wrapRawDbAsAdapter,
 } from './index.js';
 
 
@@ -73,14 +75,16 @@ CREATE TABLE IF NOT EXISTS edge (
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_node USING vec0(node_id INTEGER PRIMARY KEY, embedding FLOAT[768]);
 `;
 
-function makeTmpDb(): { db: Database.Database; cleanup: () => void } {
+function makeTmpDb(): { db: Database.Database; adapter: StoreAdapter; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mem-enrich-test-'));
   const dbPath = path.join(dir, 'test.db');
   const db = new Database(dbPath);
   sqliteVec.load(db);
   db.exec(MINIMAL_DDL);
+  const adapter = wrapRawDbAsAdapter(db);
   return {
     db,
+    adapter,
     cleanup: () => {
       db.close();
       fs.rmSync(dir, { recursive: true, force: true });
@@ -813,10 +817,10 @@ describe('clusterStore — P3 clustering guarantees', () => {
 // ── runBatchEnrich ────────────────────────────────────────────────────────────
 
 describe('runBatchEnrich', () => {
-  it('returns expected shape on empty store', () => {
-    const { db, cleanup } = makeTmpDb();
+  it('returns expected shape on empty store', async () => {
+    const { db, adapter, cleanup } = makeTmpDb();
     try {
-      const result = runBatchEnrich(db);
+      const result = await runBatchEnrich(adapter);
       expect(typeof result.communities_upserted).toBe('number');
       expect(typeof result.member_of_edges).toBe('number');
       expect(typeof result.importance_updated).toBe('number');
@@ -827,8 +831,8 @@ describe('runBatchEnrich', () => {
     } finally { cleanup(); }
   });
 
-  it('stamps legacy nodes on first pass', () => {
-    const { db, cleanup } = makeTmpDb();
+  it('stamps legacy nodes on first pass', async () => {
+    const { db, adapter, cleanup } = makeTmpDb();
     try {
       const now = new Date().toISOString();
       db.prepare(
@@ -836,7 +840,7 @@ describe('runBatchEnrich', () => {
          VALUES ('ep1', 'episode', 'A legacy episode with no enrich_ver stamped yet.', ?, ?)`,
       ).run(now, now);
 
-      const result = runBatchEnrich(db);
+      const result = await runBatchEnrich(adapter);
       expect(result.legacy_nodes_stamped).toBe(1);
 
       const row = db.prepare<[], { enrich_ver: string | null }>(
@@ -849,7 +853,7 @@ describe('runBatchEnrich', () => {
     } finally { cleanup(); }
   });
 
-  it('is deterministic: same DB → same batch result counts', () => {
+  it('is deterministic: same DB → same batch result counts', async () => {
     const t1 = makeTmpDb();
     const t2 = makeTmpDb();
     try {
@@ -862,8 +866,8 @@ describe('runBatchEnrich', () => {
         ).run(now, now);
       }
 
-      const r1 = runBatchEnrich(t1.db);
-      const r2 = runBatchEnrich(t2.db);
+      const r1 = await runBatchEnrich(t1.adapter);
+      const r2 = await runBatchEnrich(t2.adapter);
 
       expect(r1.legacy_nodes_stamped).toBe(r2.legacy_nodes_stamped);
       expect(r1.importance_updated).toBe(r2.importance_updated);
@@ -876,8 +880,8 @@ describe('runBatchEnrich', () => {
   });
 
   // BL-45: incrementalCluster option skips full O(n²) pass
-  it('incrementalCluster:true skips the full cluster pass (no communities written)', () => {
-    const { db, cleanup } = makeTmpDb();
+  it('incrementalCluster:true skips the full cluster pass (no communities written)', async () => {
+    const { db, adapter, cleanup } = makeTmpDb();
     try {
       process.env['SOX_EMBED_BACKEND'] = 'auto';
       const now = new Date().toISOString();
@@ -891,7 +895,7 @@ describe('runBatchEnrich', () => {
         `UPDATE node SET enrich_ver = ? WHERE kind = 'episode'`,
       ).run(JSON.stringify({ pass: 'test', ts: now }));
 
-      const result = runBatchEnrich(db, { incrementalCluster: true });
+      const result = await runBatchEnrich(adapter, { incrementalCluster: true });
       // incremental mode: clusterStore called with incrementalOnly:true → no full O(n²) pass → 0 communities
       expect(result.communities_upserted).toBe(0);
       // cluster_pass_skipped=true because incrementalOnly returns clusters:[], full_pass:false
@@ -906,7 +910,7 @@ describe('runBatchEnrich', () => {
   });
 
   // BL-45: importanceChunkSize splits the transaction but produces same results
-  it('importanceChunkSize:1 produces same importance updates as default (chunked tx)', () => {
+  it('importanceChunkSize:1 produces same importance updates as default (chunked tx)', async () => {
     const t1 = makeTmpDb();
     const t2 = makeTmpDb();
     try {
@@ -921,9 +925,9 @@ describe('runBatchEnrich', () => {
       }
 
       // Default chunk (500): run first on t1
-      const r1 = runBatchEnrich(t1.db, { importanceChunkSize: 500 });
+      const r1 = await runBatchEnrich(t1.adapter, { importanceChunkSize: 500 });
       // Chunk size 1 (one episode per transaction): run on t2
-      const r2 = runBatchEnrich(t2.db, { importanceChunkSize: 1 });
+      const r2 = await runBatchEnrich(t2.adapter, { importanceChunkSize: 1 });
 
       // Both should produce the same importance_updated count
       expect(r1.importance_updated).toBe(r2.importance_updated);

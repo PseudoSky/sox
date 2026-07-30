@@ -64,11 +64,11 @@ describe('WriteQueue — time-based backpressure + observability', () => {
   let savedNoDeadline: string | undefined;
   let savedDeadlineMs: string | undefined;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     const t = tmpDir();
     cleanup = t.cleanup;
     dbPath = path.join(t.dir, 'test.db');
-    WriteQueue.clearInstances();
+    await WriteQueue.clearInstances();
     WriteQueue.setBypass(false);
     savedNoDeadline = process.env['SOX_WRITEQ_NO_DEADLINE'];
     savedDeadlineMs = process.env['SOX_WRITEQ_DEADLINE_MS'];
@@ -76,8 +76,8 @@ describe('WriteQueue — time-based backpressure + observability', () => {
     delete process.env['SOX_WRITEQ_DEADLINE_MS'];
   });
 
-  afterEach(() => {
-    WriteQueue.clearInstances();
+  afterEach(async () => {
+    await WriteQueue.clearInstances();
     cleanup();
     if (savedNoDeadline === undefined) delete process.env['SOX_WRITEQ_NO_DEADLINE'];
     else process.env['SOX_WRITEQ_NO_DEADLINE'] = savedNoDeadline;
@@ -265,18 +265,18 @@ describe('WriteQueue — time-based backpressure + observability', () => {
 
     // Seed table synchronously as part of the anchor (single enqueue — keeps
     // depths exact for the flood below).
-    const anchor = queue.enqueue('anchor', async (db) => {
-      db.exec(`CREATE TABLE IF NOT EXISTS bp_commit_test (
+    const anchor = queue.enqueue('anchor', async (tx) => {
+      await tx.exec(`CREATE TABLE IF NOT EXISTS bp_commit_test (
         seq_num INTEGER UNIQUE NOT NULL
       )`);
       await gate;
-      db.prepare('INSERT INTO bp_commit_test (seq_num) VALUES (?)').run(0);
+      await tx.executeRun('INSERT INTO bp_commit_test (seq_num) VALUES (?)', [0]);
     });
 
     // Flood: same profile as test 1 — items 1..2 admit, 3..10 deadline-reject.
     for (let seq = 1; seq <= 10; seq++) {
-      const p = queue.enqueue(`item-${seq}`, (db) => {
-        db.prepare('INSERT INTO bp_commit_test (seq_num) VALUES (?)').run(seq);
+      const p = queue.enqueue(`item-${seq}`, async (tx) => {
+        await tx.executeRun('INSERT INTO bp_commit_test (seq_num) VALUES (?)', [seq]);
         return seq;
       });
       settled.push(p.then(
@@ -495,16 +495,16 @@ describe('WriteQueue — time-based backpressure + observability', () => {
 
   // ── 8. Env-var surface ───────────────────────────────────────────────────────
 
-  it('SOX_WRITEQ_DEADLINE_MS overrides the default budget; invalid values fall back', () => {
+  it('SOX_WRITEQ_DEADLINE_MS overrides the default budget; invalid values fall back', async () => {
     process.env['SOX_WRITEQ_DEADLINE_MS'] = '12345';
     const q1 = WriteQueue.forPath(dbPath);
     expect(q1.deadlineBudgetMs).toBe(12_345);
-    WriteQueue.clearInstances();
+    await WriteQueue.clearInstances();
 
     process.env['SOX_WRITEQ_DEADLINE_MS'] = 'not-a-number';
     const q2 = WriteQueue.forPath(dbPath);
     expect(q2.deadlineBudgetMs).toBe(20_000);
-    WriteQueue.clearInstances();
+    await WriteQueue.clearInstances();
 
     delete process.env['SOX_WRITEQ_DEADLINE_MS'];
     const q3 = WriteQueue.forPath(dbPath);

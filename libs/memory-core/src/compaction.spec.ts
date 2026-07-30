@@ -39,14 +39,14 @@ function removeTempDir(dir: string): void {
 
 let tmpDirs: string[] = [];
 
-beforeEach(() => {
+beforeEach(async () => {
   _resetEmbedSingleton();
-  WriteQueue.clearInstances();
+  await WriteQueue.clearInstances();
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetEmbedSingleton();
-  WriteQueue.clearInstances();
+  await WriteQueue.clearInstances();
   for (const d of tmpDirs) removeTempDir(d);
   tmpDirs = [];
   vi.useRealTimers();
@@ -84,13 +84,13 @@ describe('runCompactionPass', () => {
     db.close();
   });
 
-  it('skips WAL checkpoint when WriteQueue checkpointed very recently', () => {
+  it('skips WAL checkpoint when WriteQueue checkpointed very recently', async () => {
     const { db, dbPath } = freshDb();
 
     // Simulate a very recent WriteQueue checkpoint by creating a queue instance
     // and forcing a checkpoint on it.
-    const wq = WriteQueue.forPath(dbPath);
-    wq.walCheckpoint(); // This updates lastCheckpointAt.
+    const wq = await WriteQueue.forPath(dbPath);
+    await wq.walCheckpoint(); // This updates lastCheckpointAt.
 
     // lastCheckpointAt should be very recent (within CHECKPOINT_IDLE_MS).
     expect(WriteQueue.lastCheckpointAtForPath(dbPath)).toBeGreaterThan(0);
@@ -110,13 +110,13 @@ describe('runCompactionPass', () => {
     db.close();
   });
 
-  it('runs checkpoint when WriteQueue checkpoint was long ago (beyond idle window)', () => {
+  it('runs checkpoint when WriteQueue checkpoint was long ago (beyond idle window)', async () => {
     const { db, dbPath } = freshDb();
 
     // Create a WQ, do a checkpoint, but backdate its lastCheckpointAt so the
     // compaction tick treats it as stale.
-    const wq = WriteQueue.forPath(dbPath);
-    wq.walCheckpoint();
+    const wq = await WriteQueue.forPath(dbPath);
+    await wq.walCheckpoint();
     // Monkey-patch _lastCheckpointAt to be old (beyond CHECKPOINT_IDLE_MS).
     // We use a casting trick since the field is private.
     (wq as unknown as { _lastCheckpointAt: number })._lastCheckpointAt =

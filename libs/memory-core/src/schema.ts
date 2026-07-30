@@ -6,7 +6,8 @@
  * This module adds memory-only tables on top of the graph primitives.
  */
 
-import { GRAPH_DDL, FTS_DDL, FTS_TRIGGERS as GraphFTS_TRIGGERS } from '@adhd/sox-graph-store';
+import { GRAPH_DDL, FTS_DDL as GraphFTS_DDL, FTS_TRIGGERS as GraphFTS_TRIGGERS } from '@adhd/sox-graph-store';
+export const FTS_DDL = GraphFTS_DDL;
 
 /**
  * CONTRACTS §C mandated pragmas for EVERY connection:
@@ -45,9 +46,6 @@ CREATE TABLE IF NOT EXISTS sox_store_meta (
   value TEXT NOT NULL
 );
 
--- vec0 virtual table (dim from embed_model: 768 for bge-base-en-v1.5)
-CREATE VIRTUAL TABLE IF NOT EXISTS vec_node USING vec0(node_id INTEGER PRIMARY KEY, embedding FLOAT[768]);
-
 -- batch-enrich trigger queue (formerly "organizer work queue").
 -- 'ingest' and 'enrich' ops trigger a runBatchEnrich pass (deterministic, no LLM).
 -- 'decay' and 'reindex' are handled in-daemon without the batch-enrich pass.
@@ -81,11 +79,10 @@ CREATE TABLE IF NOT EXISTS promotion_queue (
 );
 `;
 
-/**
- * Composed DDL: graph primitives (graph-store) + memory-only tables.
- * The FTS virtual table is created by graph-store's FTS_DDL.
- */
-export const DDL = GRAPH_DDL + '\n' + FTS_DDL + '\n' + MEMORY_ONLY_DDL;
+/** Base DDL without both vec0 and FTS5 — what every adapter gets.
+ *  FTS5 is applied separately only for adapters that report fts5 capability.
+ *  vec0 DDL is produced by the VectorDialect at open time. */
+export const DDL_BASE = GRAPH_DDL + '\n' + MEMORY_ONLY_DDL;
 
 /** FTS5 content table trigger for auto-sync — re-exported from graph-store. */
 export const FTS_TRIGGERS = GraphFTS_TRIGGERS;

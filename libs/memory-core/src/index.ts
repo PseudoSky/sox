@@ -68,7 +68,7 @@ export { wrapDbError } from './errors.js';
 export type { StorageError, StorageErrorCode } from './errors.js';
 
 // ── Schema ────────────────────────────────────────────────────────────────────
-export { PRAGMAS, DDL, FTS_TRIGGERS } from './schema.js';
+export { PRAGMAS, DDL_BASE, FTS_TRIGGERS } from './schema.js';
 
 // ── Embedding ─────────────────────────────────────────────────────────────────
 export {
@@ -335,7 +335,6 @@ export { hexSha256, splitIntoChunksSentence } from '@adhd/sox-ingest/core';
 // ── Convenience wrappers (guard C5: write(dbPath, params) + recall(dbPath, params)) ──
 
 import { openDb } from './db.js';
-import type { SqliteAdapter } from '@adhd/sox-store-adapter';
 import { closeDbWithLease } from './lease.js';
 import { memoryWrite as _write } from './write.js';
 import { memoryRecall as _recall } from './recall.js';
@@ -351,9 +350,8 @@ export async function write(
   params: WriteParams,
 ): Promise<WriteResult | WriteError> {
   const adapter = await openDb(dbPath);
-  const rawDb = (adapter as SqliteAdapter).unwrap();
   try {
-    return await _write(rawDb, params);
+    return await _write(adapter, params);
   } finally {
     await closeDbWithLease(adapter, dbPath);
   }

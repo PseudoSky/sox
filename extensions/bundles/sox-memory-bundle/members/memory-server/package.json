@@ -21,10 +21,12 @@
     "better-sqlite3": "^12.10.0",
     "sqlite-vec": "^0.1.9",
     "fastembed": "^2.1.0",
-    "onnxruntime-node": "1.21.0"
+    "onnxruntime-node": "1.21.0",
+    "@tursodatabase/database": "^0.7.1"
   },
   "devDependencies": {
     "@adhd/sox-memory-core": "workspace:*",
+    "@adhd/sox-store-adapter": "workspace:*",
     "@adhd/sox-mcp-runtime": "workspace:*",
     "@adhd/sox-service-proxy": "workspace:*"
   }

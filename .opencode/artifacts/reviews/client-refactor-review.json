@@ -1,0 +1,248 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "adhd-reviewer-flash",
+  "task_id": "client-refactor-S1-S5",
+  "label": "Client Refactor — memory-core consolidation review",
+  "reviewed_at": "2026-07-02T21:25:00.000Z",
+  "files_reviewed": [
+    "libs/memory-core/src/index.ts",
+    "libs/memory-core/src/db.ts",
+    "libs/memory-core/src/link.ts",
+    "libs/memory-core/src/related.ts",
+    "libs/memory-core/src/entity-episodes.ts",
+    "libs/memory-core/src/list-entities.ts",
+    "libs/memory-core/src/near-duplicates.ts",
+    "libs/memory-core/src/supersession-chain.ts",
+    "libs/memory-core/src/session.ts",
+    "libs/memory-core/src/topics.ts",
+    "libs/memory-core/src/projects.ts",
+    "libs/memory-core/src/curate.ts",
+    "libs/memory-core/src/stats.ts",
+    "libs/memory-core/src/recall.ts",
+    "libs/memory-core/src/extractive.ts",
+    "libs/memory-core/src/importance.ts",
+    "libs/memory-core/src/neardup.ts",
+    "libs/memory-core/src/cluster.ts",
+    "libs/memory-core/src/autolink.ts",
+    "libs/memory-core/src/extensions.ts",
+    "libs/memory-core/src/enrich.spec.ts",
+    "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 244, "failed": 0 },
+    "platform_isolation": "passed"
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "spec-compliance",
+      "file": "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts",
+      "line": 1187,
+      "decision_ref": "ARCH.md §3 B1",
+      "description": "memory_get_community entityUid path returns fabricated/hardcoded data. The communityUidArg path (line 1128-1185) returns correct data via raw SQL. But the entityUid path (line 1187-1216) delegates to memoryGetCommunity() then discards meaningful fields: mean_intra_sim is hardcoded to 0, centroid_episode_uid is empty string, t_created is epoch 0 (new Date(0)). Member enrichment fields are all dummy values: topic=null, importance=1, t_created=epoch 0, project_path=null, tags=[]. The GetCommunitySuccess type from extensions.ts returns members with only {uid, name, content, kind} — it lacks all enrichment fields the MCP response contract requires.",
+      "fix_sketch": "Either (a) enrich the memoryGetCommunity return type in extensions.ts to include full member enrichment data (summary, topic, importance, t_created, project_path, tags) by JOINing with more columns, or (b) keep the entityUid path using raw SQL like the communityUidArg path does. The t_created should come from the community node's t_created, not epoch 0."
+    },
+    {
+      "severity": "critical",
+      "category": "correctness",
+      "file": "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts",
+      "line": 1218,
+      "description": "Dead code in memory_get_community handler. Lines 1218-1221 return E_MISSING_INPUT when neither entity_uid nor community_uid is supplied, but this code is UNREACHABLE. When entityUid is falsy and communityUidArg is falsy, line 1187 calls memoryGetCommunity(db, undefined!, level) with undefined as entity_uid, which queries DB for uid=undefined, returns E_NOT_FOUND, and line 1188 catches it. The intended E_MISSING_INPUT error message is never returned to the caller.",
+      "fix_sketch": "Add an early guard before line 1187: `if (!entityUid && !communityUidArg) return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_MISSING_INPUT', message: 'Supply entity_uid or community_uid' }) }] };`. Then remove the unreachable return at line 1218."
+    },
+    {
+      "severity": "high",
+      "category": "test-coverage",
+      "file": "docs/plan/client-refactor/ARCH.md",
+      "line": 178,
+      "decision_ref": "ARCH.md §6",
+      "description": "ARCH.md §6 Test Strategy for B2/B3 requires: 'Add describe blocks to the memory-core test suite for each new function. At minimum: one happy-path test with a seeded in-memory database.' No test files exist for any of the 12+ new B2/B3 functions: memoryLinkNode, memoryGetRelated, memoryGetEntityEpisodes, memoryListEntities, memoryGetNearDuplicates, memoryGetSupersessionChain, memoryGetSessionState, memorySaveSessionState, memoryListTopics, memoryListProjects, memoryCurate, memoryGetStats, memoryInvalidate, memoryGetCommunity, memorySearchEntities. The existing 160 tests cover only pre-existing code (enrich, recall, write, update, embed, export, cluster-subset, db).",
+      "fix_sketch": "Add spec files (e.g., link.spec.ts, related.spec.ts, entity-episodes.spec.ts, topics.spec.ts, etc.) or a consolidated edge-functions.spec.ts with describe blocks for each new function. Each block should have at minimum one happy-path test with a seeded in-memory DB."
+    },
+    {
+      "severity": "high",
+      "category": "security",
+      "file": "libs/memory-core/src/link.ts",
+      "line": 50,
+      "decision_ref": "D-18, security guidelines",
+      "description": "Uses Math.random() for edge UID generation (lines 50 and 69): `edge-${Date.now()}-${Math.random().toString(36).slice(2)}`. The review guidelines explicitly prohibit Math.random() for collision-sensitive operations. While edge UIDs are not cryptographic keys, Math.random() is not collision-resistant and produces predictable values.",
+      "fix_sketch": "Replace Math.random() with crypto.randomUUID(): `const edgeUid = crypto.randomUUID();`. Add `import * as crypto from 'node:crypto';` at the top of link.ts."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/memory-core/src/curate.ts",
+      "line": 3,
+      "description": "Stale JSDoc: 'Uses createGraphBackend for edge creation (SAME_AS, MENTIONS) and raw SQL' — but the createGraphBackend import was removed. The code now uses only raw SQL INSERT with NOT EXISTS guards for edge operations, which is correct for a B3 function (per ARCH.md B3 doesn't need graph-store). The comment is misleading.",
+      "fix_sketch": "Update the JSDoc to say: 'Uses raw SQL for edge creation (SAME_AS, MENTIONS) with NOT EXISTS guards. No graph-store dependency (B3 domain function).'"
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/memory-core/src/extensions.ts",
+      "line": 960,
+      "decision_ref": "ARCH.md §3 B1",
+      "description": "memoryGetCommunity returns GetCommunitySuccess with members typed as {uid, name, content, kind} — lacking enrichment fields. The MCP response contract (memory-server CLI doc) expects members with {uid, summary, topic, importance, t_created, project_path, tags}. The communityUidArg path in index.ts (raw SQL) correctly fetches these fields, but the entityUid path via memoryGetCommunity cannot produce them. This causes the fabricated data reported in finding #1.",
+      "fix_sketch": "Update the GetCommunitySuccess.members member type to include enrichment fields (summary, topic, importance, t_created, project_path, tags). Update the SQL in memoryGetCommunity to SELECT these columns from the node table."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/memory-core/src/supersession-chain.ts",
+      "line": 98,
+      "description": "Redundant edge metadata query. After the BFS traversal uses createGraphBackend.getEdges() (which returns EdgeRecord with meta field), lines 98-116 re-query the edge table with raw SQL JOIN to fetch reason metadata. The EdgeRecord from getEdges() already contains metadata.",
+      "fix_sketch": "Extract the reason metadata from the EdgeRecord.meta field returned by getEdges() during BFS, storing it in the allRows map alongside each node. This eliminates the redundant per-node SQL query."
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "file": "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts",
+      "line": 693,
+      "decision_ref": "ARCH.md §3 B4",
+      "description": "Duplicate helper functions: parseTags (line 693), rowidsToUids (line 706), isSuperseded (line 756), supersedesUidForRowid (line 742), communityUidForRowid (line 726) are defined both locally in index.ts AND in libs/memory-core/src/recall.ts (lines 1054-1139). ARCH.md B4 says these should be promoted to memory-core and imported back. The memory-server index.ts was not updated to import from @adhd/sox-memory-core.",
+      "fix_sketch": "Import these helpers from '@adhd/sox-memory-core' instead of duplicating them locally: import { parseTags, rowidsToUids, isSuperseded, supersedesUidForRowid, communityUidForRowid } from '@adhd/sox-memory-core'. This may require ensuring the bundle resolves the imports correctly."
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "file": "libs/memory-core/src/curate.ts",
+      "line": 302,
+      "description": "SAME_AS edge UID uses Date.now() instead of a UUID: `same-${Date.now()}`. While less collision-sensitive than Math.random(), using a proper UUID or ULID would be more consistent with the rest of the codebase.",
+      "fix_sketch": "Replace with crypto.randomUUID() or import the ulid from the existing ulid import (line 11 already imports monotonicFactory)."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/memory-core/src/extractive.ts",
+      "line": 1,
+      "decision_ref": "ARCH.md §3 A",
+      "description": "Batch A: extractive.ts correctly delegates to @adhd/sox-ingest. The old local implementation (51 lines) was replaced with a 6-line wrapper.",
+      "fix_sketch": "None — implementation is correct."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/memory-core/src/importance.ts",
+      "line": 36,
+      "decision_ref": "ARCH.md §3 A",
+      "description": "Batch A: importance.ts correctly delegates to scoreImportance() from @adhd/sox-analysis with proper input mapping: word_count→lengthScore (line 30), link_degree→inDegree/outDegree (lines 33-34), recencyMs=0 (line 39), tag_count→nearDupCount (line 40). Correct per ARCH.md Batch A row 2.",
+      "fix_sketch": "None — implementation is correct."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/memory-core/src/neardup.ts",
+      "line": 53,
+      "decision_ref": "ARCH.md §3 A",
+      "description": "Batch A: neardup.ts correctly delegates to detectNearDupPairs() from @adhd/sox-analysis on KNN-20 subset. The embedding fetching logic and cosine comparison is consistent with old behavior.",
+      "fix_sketch": "None — implementation is correct."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/memory-core/src/cluster.ts",
+      "line": 175,
+      "decision_ref": "ARCH.md §3 A",
+      "description": "Batch A: cluster.ts correctly delegates to cluster() from @adhd/sox-analysis. All required exports are preserved: clusterStore, clusterSubset, clusterStats, materializeClusters, dropSubsetLens, listSubsetLenses.",
+      "fix_sketch": "None — implementation is correct."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/memory-core/src/autolink.ts",
+      "line": 15,
+      "decision_ref": "ARCH.md §3 A",
+      "description": "Batch A: autolink.ts retains the entity-based algorithm. No import from @adhd/sox-analysis — the unused analysis import was correctly removed. This matches the ARCH.md Batch A row 5 instruction.",
+      "fix_sketch": "None — implementation is correct."
+    },
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts",
+      "line": 1091,
+      "decision_ref": "A. API shape consistency",
+      "description": "memorySearchEntities is SYNC and called without await — correct. memoryListTopics (line 1281) is SYNC — correct. memoryListProjects (line 1288) is SYNC — correct. memoryInvalidate (line 1225) is SYNC (export function) and called without await — correct. All sync/async patterns match their implementations.",
+      "fix_sketch": "None — implementation is correct."
+    },
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts",
+      "line": 1270,
+      "decision_ref": "B. Error handling",
+      "description": "memoryLinkNode error check uses result.isError — correct per LinkResult interface. memory_curate uses 'code' in result — correct per CurateResult discriminated union. memory_entity_episodes and memory_related use result.code property — correct. All error handling patterns are consistent.",
+      "fix_sketch": "None — implementation is correct."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts",
+      "line": 1349,
+      "decision_ref": "A. API shape consistency",
+      "description": "memoryGetStats(db, args, TOOL_NAMES) — the toolNames parameter (TOOL_NAMES) is the correct type (string[]) matching the StatsResult.tools field.",
+      "fix_sketch": "None — implementation is correct."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts",
+      "line": 1225,
+      "decision_ref": "A. API shape consistency",
+      "description": "memoryInvalidate params object matches InvalidateParams from write.ts: { claim_uid, reason, t_transition?, replacement_uid? } — correct.",
+      "fix_sketch": "None — implementation is correct."
+    },
+    {
+      "severity": "info",
+      "category": "platform-isolation",
+      "file": "libs/memory-core/src/db.ts",
+      "line": 7,
+      "description": "Platform isolation: memory-core imports use node: prefix (node:os, node:path, node:fs) — correct for a platform:node package. No browser API imports detected. No upward dependency violations.",
+      "fix_sketch": "None — implementation is correct."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/",
+      "description": "Client/ directory fully deleted. All 18 client tool files removed. No remaining imports from ./client/... in index.ts. Verified by directory listing (EACCES/ENOENT) and grep for import patterns.",
+      "fix_sketch": "None — deletion is complete."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/memory-core/src/link.ts",
+      "line": 48,
+      "decision_ref": "ARCH.md §3 B2",
+      "description": "Batch B2 edge operations correctly use createGraphBackend.getEdges(). All B2 functions (link.ts, related.ts, entity-episodes.ts, list-entities.ts, near-duplicates.ts, supersession-chain.ts) use getEdges() for edge reads. B3 functions (topics.ts, projects.ts, stats.ts, curate.ts, session.ts) correctly use raw SQL per ARCH.md.",
+      "fix_sketch": "None — implementation is correct."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/memory-core/src/recall.ts",
+      "line": 1054,
+      "decision_ref": "ARCH.md §3 B4",
+      "description": "All 6 client db.ts helpers migrated to recall.ts: isSuperseded (line 1054), supersedesUidForRowid (line 1067), communityUidForRowid (line 1089), rowidsToUids (line 1110), parseTags (line 1130), expandTilde (line 1146). All exported from index.ts. Correct per ARCH.md B4.",
+      "fix_sketch": "None — implementation is correct."
+    }
+  ],
+  "summary": {
+    "critical": 2,
+    "high": 2,
+    "medium": 3,
+    "low": 2,
+    "info": 12,
+    "total": 21
+  },
+  "backlog_entries": [
+    "BL-xxx — memoryGetCommunity entityUid path returns fabricated data (critical)",
+    "BL-xxx — memoryGetCommunity handler has unreachable dead code for missing-input case (critical)",
+    "BL-xxx — Missing test coverage for 12+ new B2/B3 functions (high)",
+    "BL-xxx — Math.random() in link.ts should use crypto.randomUUID() (high)",
+    "BL-xxx — memoryGetCommunity member type lacks enrichment fields (medium)",
+    "BL-xxx — supersession-chain.ts redundant edge metadata query (medium)",
+    "BL-xxx — curate.ts stale createGraphBackend comment (medium)",
+    "BL-xxx — Duplicate helper functions in memory-server index.ts not imported from core (low)",
+    "BL-xxx — curate.ts SAME_AS edge UID uses Date.now() instead of UUID (low)"
+  ]
+}

@@ -66,9 +66,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createEmbeddingProvider } from '@adhd/sox-embedding-provider';
-import { EMBED_DIM, vecToJson } from './embed.js';
+import { EMBED_DIM, vecToJson, vecToBuffer } from './embed.js';
 import { openDb, expandDbPath } from './db.js';
-import type { SqliteAdapter } from '@adhd/sox-store-adapter';
+import type { SqliteAdapter, StoreAdapter } from '@adhd/sox-store-adapter';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -137,18 +137,17 @@ const NULL_MODEL_KEY = '(null)';
  * Deliberately does NOT consult `memory_scope` — that table is a single
  * store-wide tag and cannot represent a mixed-model store.
  */
-function getReembedCandidates(db: import('better-sqlite3').Database): EmbedCandidate[] {
-  return db
-    .prepare<[], EmbedCandidate>(
-      `SELECT n.rowid AS rowid, n.embed_model AS embed_model
-       FROM node n
-       WHERE n.kind = 'episode'
-         AND n.t_invalid IS NULL
-         AND n.content IS NOT NULL AND n.content != ''
-         AND EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)
-       ORDER BY n.rowid ASC`,
-    )
-    .all();
+async function getReembedCandidates(adapter: StoreAdapter): Promise<EmbedCandidate[]> {
+  const result = await adapter.executeAll<EmbedCandidate>(
+    `SELECT n.rowid AS rowid, n.embed_model AS embed_model
+     FROM node n
+     WHERE n.kind = 'episode'
+       AND n.t_invalid IS NULL
+       AND n.content IS NOT NULL AND n.content != ''
+       AND EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)
+     ORDER BY n.rowid ASC`,
+  );
+  return result.rows;
 }
 
 function groupBySourceModel(candidates: EmbedCandidate[]): Record<string, number> {
@@ -252,7 +251,7 @@ async function _reembedStore(
 
   try {
     // ── BL-92: per-record candidate discovery + idempotency check ────────────
-    const candidates = getReembedCandidates(db);
+    const candidates = await getReembedCandidates(adapter);
     const sourceModelGroups = groupBySourceModel(candidates);
     const nonTarget = candidates.filter((c) => c.embed_model !== targetModelId);
 
@@ -349,23 +348,28 @@ async function _reembedStore(
       errors: [],
     };
 
-    const writeVector = (rowid: number, vec: Float32Array): void => {
+    const useBinaryFormat = adapter.capabilities.nativeVectors;
+    const writeVector = async (rowid: number, vec: Float32Array): Promise<void> => {
       if (vec.length !== targetDim) {
         throw new Error(`dim mismatch for node ${rowid}: got ${vec.length}, expected ${targetDim}`);
       }
-      const vecJson = vecToJson(vec);
-      const info = db
-        .prepare(`UPDATE vec_node SET embedding = ? WHERE node_id = CAST(? AS INTEGER)`)
-        .run(vecJson, rowid);
-      if (info.changes === 0) {
-        db.prepare(`INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)`).run(
-          rowid,
-          vecJson,
+      const serialized = useBinaryFormat ? vecToBuffer(vec) : vecToJson(vec);
+      const info = await adapter.executeRun(
+        'UPDATE vec_node SET embedding = ? WHERE node_id = CAST(? AS INTEGER)',
+        [serialized, rowid],
+      );
+      if (info.rowsAffected === 0) {
+        await adapter.executeRun(
+          'INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',
+          [rowid, serialized],
         );
       }
       // BL-92: stamp the per-record column so this row is never re-visited by
       // a future targeted (non-force) reembed once it's genuinely current.
-      db.prepare(`UPDATE node SET embed_model = ? WHERE rowid = ?`).run(targetModelId, rowid);
+      await adapter.executeRun(
+        'UPDATE node SET embed_model = ? WHERE rowid = ?',
+        [targetModelId, rowid],
+      );
     };
 
     const BATCH_SIZE = 32;
@@ -394,7 +398,7 @@ async function _reembedStore(
           continue;
         }
         try {
-          writeVector(item.rowid, emb);
+          await writeVector(item.rowid, emb);
           result.migrated++;
         } catch (err) {
           result.errors.push({ id: item.rowid, error: String(err) });

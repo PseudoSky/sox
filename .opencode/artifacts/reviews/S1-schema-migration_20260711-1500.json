@@ -1,0 +1,101 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "flash-reviewer",
+  "task_id": "S1-schema-migration",
+  "label": "graph-store Drizzle port + schema unification review",
+  "reviewed_at": "2026-07-11T15:30:00.000Z",
+  "files_reviewed": [
+    "docs/decisions/0008-sql-migration-management.md",
+    "libs/data/graph/graph-store/drizzle/schema.ts",
+    "libs/data/graph/graph-store/drizzle.config.ts",
+    "libs/data/graph/graph-store/drizzle/migrations/0000_sad_onslaught.sql",
+    "libs/data/graph/graph-store/drizzle/migrations/meta/_journal.json",
+    "libs/data/graph/graph-store/drizzle/migrations/meta/0000_snapshot.json",
+    "libs/data/graph/graph-store/src/index.ts",
+    "libs/data/graph/graph-store/src/rebuild-table.ts",
+    "libs/data/graph/graph-store/src/graph-store.spec.ts",
+    "libs/data/graph/graph-store/package.json",
+    "libs/data/graph/graph-store/project.json",
+    "libs/data/graph/graph-store/tsconfig.lib.json",
+    "libs/memory-core/src/schema.ts",
+    "libs/memory-core/src/db.ts"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": {
+      "passed": 105,
+      "failed": 0,
+      "skipped": 0
+    },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "high",
+      "category": "style",
+      "file": "libs/data/graph/graph-store/package.json",
+      "line": 31,
+      "description": "Duplicate `devDependencies` key. Contains two `devDependencies` objects: lines 31-33 and lines 63-65, both declaring `drizzle-kit`. JSON spec says the last key wins (so runtime behavior is correct), but this is fragile, confusing, and violates the DRY principle. A future strict-mode parser or formatter may reject duplicate keys.",
+      "fix_sketch": "Remove the second `devDependencies` block at lines 63-65. The first occurrence at lines 31-33 already has the correct entry."
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/graph/graph-store/drizzle/schema.ts",
+      "line": 55,
+      "description": "Schema drift: ix_node_temporal index missing DESC sort order on t_created column. The Drizzle schema defines `index('ix_node_temporal').on(table.tInvalid, table.tCreated)` without `.desc()`, but both GRAPH_DDL (index.ts line 78) and the generated migration SQL (0000_sad_onslaught.sql line 64) have `ON node(t_invalid, t_created DESC)`. Drizzle's SQLite index type (IndexColumn = SQLiteColumn | SQL) does not expose a `.desc()` method on index columns. Re-running `drizzle-kit generate` after a schema change would produce a migration that drops DESC from this index.",
+      "fix_sketch": "Two options: (a) Accept as a documented limitation — Drizzle's SQLite dialect cannot express DESC on index columns. Add a comment to drizzle/schema.ts and the migration SQL annotating this. (b) Use the raw SQL escape hatch by wrapping the index in a custom migration step via `db.exec()` if a later schema change must alter it."
+    },
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "libs/data/graph/graph-store/src/index.ts",
+      "line": 643,
+      "description": "Migration folder path resolution uses `new URL(import.meta.url).pathname` instead of `fileURLToPath(import.meta.url)`. The `.pathname` property returns a raw URI-decoded path but does not handle percent-encoded characters (e.g., spaces encoded as %20). While unlikely in this codebase, this is technically incorrect per Node.js docs and would fail on paths with special characters or on Windows (file:///C:/ paths).",
+      "fix_sketch": "Import `fileURLToPath` from `node:url` and use `fileURLToPath(import.meta.url)` instead of `new URL(import.meta.url).pathname`."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/data/graph/graph-store/src/index.ts",
+      "line": 661,
+      "description": "FTS rebuild runs on every `applySchema()` call: `INSERT INTO fts_node(...) SELECT ... FROM node`. This is a full-table INSERT into the FTS index on every re-open. For large stores, repeated FTS rebuilds from repeated backend construction (new SqliteGraphBackend on the same DB across process restarts) would accumulate duplicate FTS rows. Currently safe because the schemaApplied flag prevents re-entry within a single instance lifetime, but the guard is not documented.",
+      "fix_sketch": "Add a comment explaining that the `schemaApplied` boolean prevents the FTS rebuild from running more than once per backend instance. This is an integrity guarantee, not an optimization — document it as such."
+    },
+    {
+      "severity": "low",
+      "category": "test-coverage",
+      "file": "libs/data/graph/graph-store/src/graph-store.spec.ts",
+      "line": 1440,
+      "description": "No test verifies that the baseline migration SQL (0000_sad_onslaught.sql) produces a schema byte-identical to the raw GRAPH_DDL. If someone hand-edits the migration SQL or the Drizzle schema drifts from GRAPH_DDL, there is no automated detection. Current tests verify specific properties (tables exist, indexes exist, CHECK constraints accept 'generic'/'DEPENDS_ON') but don't compare the full schema output.",
+      "fix_sketch": "Add a test that applies the raw GRAPH_DDL to a fresh DB, applies the Drizzle migration to a separate fresh DB, then compares the output of `sqlite_master` (or full `.schema`) between the two to assert they produce identical table/index/constraint definitions."
+    },
+    {
+      "severity": "low",
+      "category": "test-coverage",
+      "file": "libs/data/graph/graph-store/src/graph-store.spec.ts",
+      "line": 1581,
+      "description": "No test covers the backward-compat path for a store that had the old custom migration runner (with _schema_version at v2, v3, or v4) being opened with Drizzle for the first time. The current test (v1-latest) simulates a pre-Drizzle store. Missing: a store that already has level/resume_state/t_expired columns from the old custom runner but still has old CHECK constraints.",
+      "fix_sketch": "Add a test that creates a store with _schema_version at v2 (has `level`, `resume_state`, `t_expired` but not 'generic'/'DEPENDS_ON'), then opens it with `SqliteGraphBackend` and verifies all CHECK constraints are upgraded correctly."
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "file": "libs/data/graph/graph-store/src/index.ts",
+      "line": 25,
+      "description": "GRAPH_DDL and related DDL strings (NODE_TABLE_DDL, EDGE_TABLE_DDL, NODE_INDEX_DDLS, EDGE_INDEX_DDLS) are duplicated verbatim from the Drizzle schema. The Drizzle schema at drizzle/schema.ts is the canonical source per ADR-0008, but these raw strings are still exported for backward-compat (memory-core composes them). No cross-reference or validation ensures they stay in sync.",
+      "fix_sketch": "Low priority. Document the maintenance burden in a comment at the top of drizzle/schema.ts. Consider a future step to make memory-core consume the Drizzle-generated migration SQL instead of raw GRAPH_DDL."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 1,
+    "medium": 2,
+    "low": 4,
+    "info": 0
+  },
+  "backlog_entries": [
+    "BL-303: Document ix_node_temporal DESC schema drift — Drizzle SQLite index types do not expose .desc(); the migration SQL was hand-edited to add DESC but the Drizzle schema definition cannot express it. Either accept as a documented limitation or use raw-SQL escape hatch.",
+    "BL-302: Add byte-level schema comparison test: verify baseline migration produces the same schema as raw GRAPH_DDL."
+  ]
+}

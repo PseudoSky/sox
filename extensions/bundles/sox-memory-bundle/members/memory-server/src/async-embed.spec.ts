@@ -337,11 +337,10 @@ describe('memory_ping — embed_pipeline block (time_to_vector + counters + mirr
   it('heal-path applies surface as heals_applied + heal_lag, never as time_to_vector', async () => {
     const dbPath = tmpStorePath();
     const adapter = await getDb(dbPath);
-    const db = adapter.unwrap() as Database.Database;
     const old = new Date(Date.now() - 60_000).toISOString();
     await insertOrphanEpisode(dbPath, 'ping heal-path orphan with unique fjord tokens', old);
 
-    const pass = await runEnrichPassOnDb(db, dbPath);
+    const pass = await runEnrichPassOnDb(adapter, dbPath);
     expect(pass.healed).toBe(1);
 
     const m = (await pingStore(dbPath)).embed_pipeline.metrics!;
@@ -358,13 +357,12 @@ describe('runEnrichPassOnDb — the tick heals missing vectors (crash between ph
   it('orphaned no-vec episodes are re-embedded on the tick; backlog N→0; verdict flips to idle', async () => {
     const dbPath = tmpStorePath();
     const adapter = await getDb(dbPath);
-    const db = adapter.unwrap() as Database.Database;
     const old = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
     await insertOrphanEpisode(dbPath, 'first crash orphan with unique glacier tokens', old);
     await insertOrphanEpisode(dbPath, 'second crash orphan with unique monsoon tokens', old);
     expect(await backlogOf(dbPath)).toBe(2);
 
-    const pass = await runEnrichPassOnDb(db, dbPath);
+    const pass = await runEnrichPassOnDb(adapter, dbPath);
     expect(pass.healed).toBe(2);
     expect(pass.heal_failed).toBe(0);
     expect(await backlogOf(dbPath)).toBe(0);
@@ -412,7 +410,7 @@ describe('memory_curate recluster (global) — BL-186: honest enqueue, consumed 
     expect(row.done_at).toBeNull(); // pending until the tick
 
     // The tick consumes it as a FULL (non-incremental) pass and completes the row.
-    const pass = await runEnrichPassOnDb(db, dbPath);
+    const pass = await runEnrichPassOnDb(adapter, dbPath);
     expect(pass.full_pass).toBe(true);
     const done = db
       .prepare<[number], { done_at: string | null }>(
@@ -422,7 +420,7 @@ describe('memory_curate recluster (global) — BL-186: honest enqueue, consumed 
     expect(done.done_at).not.toBeNull();
 
     // One-shot: with the row completed, the next tick is incremental again.
-    const nextPass = await runEnrichPassOnDb(db, dbPath);
+    const nextPass = await runEnrichPassOnDb(adapter, dbPath);
     expect(nextPass.full_pass).toBe(false);
   });
 

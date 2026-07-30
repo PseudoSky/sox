@@ -15,7 +15,7 @@
  * needed, design it WITH the live periodic-tick consumer, not beside it.
  */
 
-import type { Database as DatabaseType } from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 // ── Producer ──────────────────────────────────────────────────────────────────
 
@@ -27,19 +27,20 @@ import type { Database as DatabaseType } from 'better-sqlite3';
  * ([inv:list-never-lies] for workload progress — BL-172 incident, 2026-07-04).
  * The payload is provenance detail; the consumer completes rows by seq.
  */
-export function enqueueIngest(
-  db: DatabaseType,
+export async function enqueueIngest(
+  adapter: StoreAdapter,
   uid: string,
   agentId: string | null,
-): void {
+): Promise<void> {
   const now = new Date().toISOString();
   const payload = JSON.stringify({ uid, agent_id: agentId });
   const priority = agentId ? 1 : 2;
 
-  db.prepare(
+  await adapter.executeRun(
     `INSERT INTO organizer_queue (op, payload, priority, enqueued)
      VALUES ('ingest', ?, ?, ?)`,
-  ).run(payload, priority, now);
+    [payload, priority, now],
+  );
 }
 
 /**
@@ -54,15 +55,14 @@ export function enqueueIngest(
  * Returns the inserted row's seq (also surfaced in the curate response so
  * callers can correlate with memory_ping's queue fields).
  */
-export function enqueueEnrichFull(db: DatabaseType, reason: string): number {
+export async function enqueueEnrichFull(adapter: StoreAdapter, reason: string): Promise<number> {
   const now = new Date().toISOString();
   const payload = JSON.stringify({ full: true, reason });
-  const info = db
-    .prepare(
-      `INSERT INTO organizer_queue (op, payload, priority, enqueued)
-       VALUES ('enrich', ?, 1, ?)`,
-    )
-    .run(payload, now);
+  const info = await adapter.executeRun(
+    `INSERT INTO organizer_queue (op, payload, priority, enqueued)
+     VALUES ('enrich', ?, 1, ?)`,
+    [payload, now],
+  );
   return Number(info.lastInsertRowid);
 }
 
@@ -79,18 +79,16 @@ export function enqueueEnrichFull(db: DatabaseType, reason: string): number {
  * completeEnrichTriggerRows has no dead-letter notion either — the check must
  * mirror what the drain will actually complete.
  */
-export function hasPendingFullEnrich(db: DatabaseType, maxSeq: number): boolean {
+export async function hasPendingFullEnrich(adapter: StoreAdapter, maxSeq: number): Promise<boolean> {
   if (maxSeq <= 0) return false;
-  const row = db
-    .prepare<[number], { seq: number }>(
-      `SELECT seq FROM organizer_queue
-       WHERE done_at IS NULL
-         AND op = 'enrich'
-         AND json_extract(payload, '$.full') = 1
-         AND seq <= ?
-       LIMIT 1`,
-    )
-    .get(maxSeq);
-  return row !== undefined;
+  const row = await adapter.executeGet<{ seq: number }>(
+    `SELECT seq FROM organizer_queue
+     WHERE done_at IS NULL
+       AND op = 'enrich'
+       AND json_extract(payload, '$.full') = 1
+       AND seq <= ?
+     LIMIT 1`,
+    [maxSeq],
+  );
+  return row !== null;
 }
-

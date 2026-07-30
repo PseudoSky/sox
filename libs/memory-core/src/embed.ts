@@ -16,6 +16,7 @@
 
 import { createEmbeddingProvider } from '@adhd/sox-embedding-provider';
 import type { EmbeddingProvider } from '@adhd/sox-embedding-provider';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -136,17 +137,20 @@ export interface EmbedHealth {
   model: string;
   backend: EmbedBackend;
   last_error: string | null;
+  execution_provider?: string;
 }
 
 /** Truthful embed-subsystem health for memory_ping / memory_stats. */
 export function getEmbedHealth(): EmbedHealth {
   const backend = resolveBackendEnv();
   const state = getEmbedState();
+  const execProvider = _provider?.health()?.execution_provider ?? 'cpu';
   return {
     state,
     model: _activeModel ?? 'unknown',
     backend,
     last_error: _lastEmbedError,
+    execution_provider: execProvider,
   };
 }
 
@@ -245,29 +249,31 @@ export function vecToJson(vec: Float32Array): string {
 }
 
 export function vecToBuffer(vec: Float32Array): Buffer {
-  return Buffer.from(vec.buffer);
+  return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
 }
 
 // ── Re-embed helper ───────────────────────────────────────────────────────────
 
 export async function reembedNodes(
-  db: import('better-sqlite3').Database,
+  adapter: StoreAdapter,
   nodeRowIds: number[],
   getContent: (rowid: number) => string | null,
 ): Promise<number> {
   let updated = 0;
+  const useBinaryFormat = adapter.capabilities.nativeVectors;
   for (const rowid of nodeRowIds) {
     const text = getContent(rowid);
     if (!text) continue;
     const vec = await embed(text);
-    const vecJson = vecToJson(vec);
-    const info = db
-      .prepare('UPDATE vec_node SET embedding = ? WHERE node_id = CAST(? AS INTEGER)')
-      .run(vecJson, rowid);
-    if (info.changes === 0) {
-      db.prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(
-        rowid,
-        vecJson,
+    const serialized = useBinaryFormat ? vecToBuffer(vec) : vecToJson(vec);
+    const info = await adapter.executeRun(
+      'UPDATE vec_node SET embedding = ? WHERE node_id = CAST(? AS INTEGER)',
+      [serialized, rowid],
+    );
+    if (info.rowsAffected === 0) {
+      await adapter.executeRun(
+        'INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',
+        [rowid, serialized],
       );
     }
     updated++;

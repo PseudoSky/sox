@@ -1,0 +1,84 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "flash-reviewer",
+  "task_id": "turso-adapter-review",
+  "label": "StoreAdapter migration code review — extension handlers, tools, and test failures",
+  "reviewed_at": "2026-07-27T01:08:00.000Z",
+  "files_reviewed": [
+    "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts",
+    "extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts",
+    "extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.ts",
+    "tools/baseline-capture/src/capture-enrichment-baseline.ts",
+    "extensions/bundles/sox-memory-bundle/members/memory-server/src/async-embed.spec.ts",
+    "extensions/bundles/sox-memory-bundle/members/memory-server/src/memory-tools.spec.ts",
+    "extensions/bundles/sox-memory-bundle/members/memory-server/recall-sqlite.test.ts",
+    "libs/data/store/store-adapter/src/types.ts",
+    "libs/data/store/store-adapter/src/factory.ts",
+    "libs/data/store/store-adapter/src/sqlite-adapter.ts",
+    "libs/memory-core/src/db.ts",
+    "libs/memory-core/src/write.ts",
+    "libs/memory-core/src/write-queue.ts",
+    "libs/memory-core/src/cluster.ts",
+    "libs/memory-core/src/recall.ts",
+    "libs/memory-core/src/enrich-batch.ts"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": {
+      "passed": 129,
+      "failed": 2,
+      "skipped": 0
+    },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "extensions/bundles/sox-memory-bundle/members/memory-server/src/async-embed.spec.ts",
+      "line": 286,
+      "description": "Missing await on getDb(dbPath) causes a race condition — the database file may not exist when memory_ping later checks fs.existsSync(resolvedPath). The ping handler's store block is left null, and the test assertion expect(body.store).not.toBeNull() fails.",
+      "fix_sketch": "Add `await` before `getDb(dbPath)` on line 286: `await getDb(dbPath);`"
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "extensions/bundles/sox-memory-bundle/members/memory-server/src/memory-tools.spec.ts",
+      "line": 195,
+      "description": "Stale test assertion: expect(out['provider_call_count']).toBe(0) with comment 'zero LLM calls'. BL-254 changed provider_call_count to also count local embed calls (not just LLM calls). The memory_recall call embeds the query text via the real ONNX backend, producing 1 provider call. The assertion should reflect the new semantics.",
+      "fix_sketch": "Change to `expect(out['provider_call_count']).toBeGreaterThanOrEqual(0)` or `expect(out['provider_call_count']).toBe(1)` depending on the intended assertion (the test is proving 'no LLM calls', not 'no provider calls'). Since provider_call_count now counts embed calls, a non-zero value is expected and correct."
+    },
+    {
+      "severity": "info",
+      "category": "style",
+      "file": "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts",
+      "line": 1006,
+      "description": "The memory_ping handler opens the DB store block via getDb() inside a try/catch. If the database file doesn't exist (fresh store not yet initialized), the fs.existsSync guard at line 847 skips the entire store block, returning null. This is by design (errors are non-fatal for ping), but it means memory_ping returns no store data for an uninitialized store. The test from finding #1 triggers this exact path.",
+      "fix_sketch": "No code change needed in the ping handler — the guard is intentional. The test fix (adding await) ensures the store is initialized before pinging."
+    },
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts",
+      "line": 180,
+      "description": "Memory-CLI uses (adapter as any).unwrap() pattern throughout (lines 180, 218, 322) to get a raw better-sqlite3 Database from a StoreAdapter. The `as any` is required because StoreAdapter.unwrap() returns `unknown`. This is currently safe since openDb() always creates a SqliteAdapter, but it's a fragile pattern that would fail silently if a future openDb() returns a TursoAdapter (where unwrap() returns @tursodatabase/database.Database).",
+      "fix_sketch": "Either narrow the return type at memory-core's openDb() to always return SqliteAdapter (the only implementation), or add a runtime guard: `const raw = adapter.unwrap(); if (!(raw instanceof require('better-sqlite3').Database)) throw new Error(...)`"
+    },
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "tools/baseline-capture/src/capture-enrichment-baseline.ts",
+      "line": 109,
+      "description": "runEnrichmentBaselinePass casts `adapter as SqliteAdapter` before calling `.unwrap()`. The cast is safe because callers always pass a SqliteAdapter (from openDb()), but it would fail at runtime with a TursoAdapter. The baseline-capture tool is intentionally locked to SQLite for its snapshot/VACUUM-into workflow — this is fine for its purpose but should be documented as a coupling.",
+      "fix_sketch": "Add a comment above line 109 documenting that this function is SQLite-specific and will fail with TursoAdapter."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 2,
+    "medium": 0,
+    "low": 0,
+    "info": 3
+  },
+  "backlog_entries": []
+}

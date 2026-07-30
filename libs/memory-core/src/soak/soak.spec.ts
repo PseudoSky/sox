@@ -56,16 +56,16 @@ const CI_PROFILE: SoakProfile = process.env['SOX_SOAK_LONG']
 // ── Temp artifact directory ───────────────────────────────────────────────────
 let artifactDir: string;
 
-beforeEach(() => {
+beforeEach(async () => {
   artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), 'soak-artifacts-'));
-  WriteQueue.clearInstances();
+  await WriteQueue.clearInstances();
   WriteQueue.setBypass(false);
   // Ensure degraded-run env is clear for normal-run tests
   delete process.env['SOX_SOAK_INJECT_TXN_DELAY_MS'];
 });
 
-afterEach(() => {
-  WriteQueue.clearInstances();
+afterEach(async () => {
+  await WriteQueue.clearInstances();
   try { fs.rmSync(artifactDir, { recursive: true, force: true }); } catch { /* best effort */ }
   delete process.env['SOX_SOAK_INJECT_TXN_DELAY_MS'];
 });

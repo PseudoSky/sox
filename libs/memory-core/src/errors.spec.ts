@@ -25,16 +25,16 @@ describe('Storage error taxonomy — CONTRACTS §B (WP-2)', () => {
   let cleanup: () => void;
   let dbPath: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     const t = tmpDir();
     cleanup = t.cleanup;
     dbPath = path.join(t.dir, 'test.db');
-    WriteQueue.clearInstances();
+    await WriteQueue.clearInstances();
     WriteQueue.setBypass(false);
   });
 
-  afterEach(() => {
-    WriteQueue.clearInstances();
+  afterEach(async () => {
+    await WriteQueue.clearInstances();
     cleanup();
   });
 
@@ -56,10 +56,11 @@ describe('Storage error taxonomy — CONTRACTS §B (WP-2)', () => {
       blocker.exec('BEGIN EXCLUSIVE');
 
       const locked = await queue
-        .enqueue('forced-lock', (writeDb) => {
-          writeDb.prepare(
+        .enqueue('locked-write', async (tx) => {
+          await tx.executeRun(
             'INSERT INTO node (uid, kind, content, t_created) VALUES (?,?,?,?)',
-          ).run('lock-test', 'episode', 'locked', new Date().toISOString());
+            ['lock-test', 'episode', 'locked', new Date().toISOString()],
+          );
           return 'inserted';
         })
         .then(
@@ -90,10 +91,11 @@ describe('Storage error taxonomy — CONTRACTS §B (WP-2)', () => {
 
     // ── Part 2: Lock released → write succeeds ──────────────────────
     const unlocked = await queue
-      .enqueue('unlocked-write', (writeDb) => {
-        writeDb.prepare(
+      .enqueue('unlocked-write', async (tx) => {
+        await tx.executeRun(
           'INSERT INTO node (uid, kind, content, t_created) VALUES (?,?,?,?)',
-        ).run('unlock-test', 'episode', 'unlocked', new Date().toISOString());
+          ['unlock-test', 'episode', 'unlocked', new Date().toISOString()],
+        );
         return 'ok';
       })
       .then(
@@ -114,15 +116,16 @@ describe('Storage error taxonomy — CONTRACTS §B (WP-2)', () => {
       const otherDb = path.join(otherDir, 'other.db');
       const queue = WriteQueue.forPath(otherDb);
 
-      const val = await queue.enqueue('free-write', (writeDb) => {
-        writeDb.prepare(
+      const val = await queue.enqueue('free-write', async (tx) => {
+        await tx.executeRun(
           'INSERT INTO node (uid, kind, content, t_created) VALUES (?,?,?,?)',
-        ).run('free-test', 'episode', 'free', new Date().toISOString());
+          ['free-test', 'episode', 'free', new Date().toISOString()],
+        );
         return 'ok';
       });
       expect(val).toBe('ok');
     } finally {
-      WriteQueue.clearInstances();
+      await WriteQueue.clearInstances();
       otherCleanup();
     }
   });

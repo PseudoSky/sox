@@ -47,15 +47,15 @@ function removeTempDir(dir: string): void {
 
 let tmpDirs: string[] = [];
 
-beforeEach(() => {
+beforeEach(async () => {
   _resetEmbedSingleton();
-  WriteQueue.clearInstances();
+  await WriteQueue.clearInstances();
   delete process.env['SOX_DISABLE_QUOTA_HARD'];
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetEmbedSingleton();
-  WriteQueue.clearInstances();
+  await WriteQueue.clearInstances();
   delete process.env['SOX_DISABLE_QUOTA_HARD'];
   for (const d of tmpDirs) removeTempDir(d);
   tmpDirs = [];

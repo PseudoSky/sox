@@ -79,8 +79,8 @@ function seedDb(db: Database.Database): void {
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
 }
 
-afterEach(() => {
-  WriteQueue.clearInstances();
+afterEach(async () => {
+  await WriteQueue.clearInstances();
   _resetAllLeasesForTest();
 });
 

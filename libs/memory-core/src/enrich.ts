@@ -12,15 +12,13 @@
  * Determinism: given the same params and DB state, produces identical output.
  */
 
-import type { Database } from 'better-sqlite3';
-import { createGraphBackend } from '@adhd/sox-graph-store';
-import { wrapRawDbAsAdapter } from './db.js';
 import { resolveProjectPath } from './provenance.js';
 import { detectNearDup } from './neardup.js';
 import { extractiveSummary } from './extractive.js';
 import { computeImportance } from './importance.js';
 import type { EnrichmentProvenance } from './enrich-types.js';
 import type { NearDupResult } from './neardup.js';
+import type { AdapterTransaction } from '@adhd/sox-store-adapter';
 import { ENRICH_VERSION } from './enrich-version.js';
 
 export type { NearDupResult } from './neardup.js';
@@ -55,6 +53,11 @@ export interface EnrichOnWriteParams {
    * (per CONTRACTS.md C2.1). undefined = compute importance from content.
    */
   importance: number | undefined;
+  /**
+   * When true (Turso native vectors), skip the vec0 MATCH-based near-dup check.
+   * Near-dup detection is an optimization, not correctness-critical.
+   */
+  useNativeVectors?: boolean;
 }
 
 export interface EnrichOnWriteResult {
@@ -86,37 +89,37 @@ function getNearDupThreshold(): number {
  * episode. Shared by the synchronous E8 pass (enrichOnWrite, SOX_SYNC_EMBED
  * composition) and the deferred Phase-B pass (embed-pipeline.ts applyEmbedding).
  */
-export function applyNearDupResult(
-  db: Database,
+export async function applyNearDupResult(
+  tx: AdapterTransaction,
   rowid: number,
   nearDup: NearDupResult,
-): void {
-  const neighborRow = db
-    .prepare<[string], { rowid: number }>(
-      `SELECT rowid FROM node WHERE uid = ? AND t_invalid IS NULL`,
-    )
-    .get(nearDup.existing_uid);
+): Promise<void> {
+  const neighborRow = await tx.executeGet<{ rowid: number }>(
+    `SELECT rowid FROM node WHERE uid = ? AND t_invalid IS NULL`,
+    [nearDup.existing_uid],
+  );
   if (!neighborRow) return;
 
   const now = new Date().toISOString();
   // Insert SAME_AS edge via raw SQL (memory-core schema lacks the UNIQUE index
   // on (src, dst, rel) that GraphBackend.writeEdge's ON CONFLICT requires)
-  db.prepare(
+  await tx.executeRun(
     `INSERT INTO edge (src, dst, rel, origin, weight, t_created, meta)
      SELECT ?, ?, 'SAME_AS', 'inferred', ?, ?, NULL
      WHERE NOT EXISTS (
        SELECT 1 FROM edge WHERE src = ? AND dst = ? AND rel = 'SAME_AS' AND t_expired IS NULL
      )`,
-  ).run(rowid, neighborRow.rowid, nearDup.cosine_sim, now, rowid, neighborRow.rowid);
+    [rowid, neighborRow.rowid, nearDup.cosine_sim, now, rowid, neighborRow.rowid],
+  );
 
   // If should_invalidate: invalidate the older episode (set t_invalid on the neighbour)
   if (nearDup.should_invalidate) {
-    db.prepare(
+    await tx.executeRun(
       `UPDATE node SET t_invalid = ? WHERE uid = ? AND t_invalid IS NULL`,
-    ).run(now, nearDup.existing_uid);
+      [now, nearDup.existing_uid],
+    );
   }
 }
-
 /**
  * Run write-time enrichments (E1–E5, E8, E10, E12) on an already-inserted node.
  *
@@ -127,13 +130,10 @@ export function applyNearDupResult(
  * @param p    Write params including pre-computed embedding.
  * @returns    EnrichOnWriteResult describing what was stored.
  */
-export function enrichOnWrite(
-  db: Database,
+export async function enrichOnWrite(
+  tx: AdapterTransaction,
   p: EnrichOnWriteParams,
-): EnrichOnWriteResult {
-  // Create GraphBackend for node/edge CRUD (pattern: sibling read-path modules)
-  const graph = createGraphBackend(wrapRawDbAsAdapter(db));
-
+): Promise<EnrichOnWriteResult> {
   // E1: resolve project_path (caller override → git root → cwd)
   const resolvedProjectPath = resolveProjectPath(p.project_path);
 
@@ -176,7 +176,7 @@ export function enrichOnWrite(
   let nearDup: NearDupResult | null = null;
   if (p.embedding !== undefined) {
     try {
-      nearDup = detectNearDup(db, p.rowid, p.embedding, dupThreshold);
+      nearDup = await detectNearDup(tx, p.rowid, p.embedding, dupThreshold, p.useNativeVectors);
     } catch {
       // KNN query may fail on empty stores — treat as no dup
       nearDup = null;
@@ -190,25 +190,32 @@ export function enrichOnWrite(
     ...(userOverride ? { note: 'user_override' } : {}),
   };
 
-  // Update standard enrichment fields via GraphBackend.touch()
-  // (topic, summary, tags, importance — supported by NodeMeta)
-  // Conditionally include optional fields to satisfy exactOptionalPropertyTypes
-  graph.touch(p.rowid, {
-    ...(resolvedTopic !== null ? { topic: resolvedTopic } : {}),
-    ...(resolvedSummary !== null ? { summary: resolvedSummary } : {}),
-    tags: resolvedTags,
-    importance: initialImportance,
-  });
+  // Update enrichment fields directly via the AdapterTransaction.
+  // Replaces the former createGraphBackend(wrapRawDbAsAdapter(db)).touch() pattern.
+  const touchUpdates: string[] = [];
+  const touchParams: unknown[] = [];
+  const now = new Date().toISOString();
 
-  // Update memory-core-specific columns (project_path, enrich_ver) via raw SQL
-  // project_path IS in NodeMeta but graph.touch() does not handle it yet.
-  db.prepare(
-    `UPDATE node SET project_path = ?, enrich_ver = ? WHERE rowid = ?`,
-  ).run(resolvedProjectPath, JSON.stringify(enrichVer), p.rowid);
+  if (resolvedTopic !== null) { touchUpdates.push('topic = ?'); touchParams.push(resolvedTopic); }
+  if (resolvedSummary !== null) { touchUpdates.push('summary = ?'); touchParams.push(resolvedSummary); }
+  touchUpdates.push('tags = ?'); touchParams.push(JSON.stringify(resolvedTags));
+  touchUpdates.push('importance = ?'); touchParams.push(initialImportance);
+
+  if (touchUpdates.length > 0) {
+    await tx.executeRun(
+      `UPDATE node SET ${touchUpdates.join(', ')}, project_path = ?, enrich_ver = ?, t_updated = ? WHERE rowid = ?`,
+      [...touchParams, resolvedProjectPath, JSON.stringify(enrichVer), now, p.rowid],
+    );
+  } else {
+    await tx.executeRun(
+      `UPDATE node SET project_path = ?, enrich_ver = ?, t_updated = ? WHERE rowid = ?`,
+      [resolvedProjectPath, JSON.stringify(enrichVer), now, p.rowid],
+    );
+  }
 
   // E8: insert SAME_AS edge (+ optional invalidation) if near-dup found
   if (nearDup !== null) {
-    applyNearDupResult(db, p.rowid, nearDup);
+    await applyNearDupResult(tx, p.rowid, nearDup);
   }
 
   return {

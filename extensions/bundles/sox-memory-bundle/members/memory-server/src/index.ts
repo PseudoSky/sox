@@ -76,13 +76,13 @@ import {
   warmupEmbed,
   isSuperseded,
   WriteQueue,
-  wrapRawDbAsAdapter,
   // S11 / BL-165: canonical chunking re-exported from @adhd/sox-ingest via memory-core.
   // Replaces the local splitIntoChunks function (deleted below).
   splitIntoChunksSentence,
 } from '@adhd/sox-memory-core';
 import type { PendingEmbed, PhaseAOutcome, WriteError, WriteResult } from '@adhd/sox-memory-core';
-import Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import type Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -822,6 +822,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       backend: embedHealth.backend,
       state: embedHealth.state,
       last_error: embedHealth.last_error,
+      execution_provider: embedHealth.execution_provider ?? 'cpu',
     };
 
     // ── Store block (SA-7) ───────────────────────────────────────────────────
@@ -857,8 +858,16 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         let walBytes = 0;
         try { walBytes = fs.statSync(walPath).size; } catch { /* no WAL yet */ }
 
-        // Open DB for live metadata queries
-        const rawDb = (await getDb(resolvedPath)).unwrap() as Database.Database;
+        // Open DB for live metadata queries.
+        // NOTE: track this path so the periodic enrich pass (which iterates
+        // openedPaths) finds it. memory_ping returns early (before the main
+        // handleToolCall flow at line 1011 that normally calls openedPaths.add)
+        // so we must register it here — otherwise the enrich timer fires but
+        // runPeriodicEnrichPass returns immediately (openedPaths.size === 0)
+        // and the 5k+ embed backlog is never healed or enriched.
+        const adapter = await getDb(resolvedPath);
+        openedPaths.add(resolvedPath);
+        const rawDb = adapter.unwrap() as Database.Database;
 
         // Queue depth (pending enrichments)
         const qRow = rawDb
@@ -891,7 +900,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         // Phase-B embed backlog (two-phase write, 2026-07-04): live episodes
         // whose vec_node row has not landed yet. Cheap SQL; folded into the
         // enrichment verdict so a dead Phase-B pipeline reads `stalled`.
-        const embedBacklog = embedBacklogStats(rawDb);
+        const embedBacklog = await embedBacklogStats(adapter);
 
         const enrichmentHealth = computeEnrichmentHealth(
           queueDepth,
@@ -907,6 +916,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         storeBlock = {
           name: storeName,
           path: resolvedPath,
+          adapter_type: adapter.config.type,
           fingerprint: `sha256:${sha256Fingerprint}`,
           wal_bytes: walBytes,
           last_checkpoint_at: lastCheckpointMs > 0 ? new Date(lastCheckpointMs).toISOString() : null,
@@ -935,6 +945,15 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             backlog: embedBacklog.count,
             backlog_oldest_at: embedBacklog.oldest_created_at,
             metrics: getEmbedPipelineMetrics(resolvedPath),
+            // BL-319: rolling per-second throughput (completions in last 60s).
+            // Reflects the effective embed rate accounting for child-process
+            // serial queue wait — the true system throughput, not the ~335ms
+            // inference-only time. Below ~0.5/sec suggests a stuck pipeline.
+            embed_throughput_per_sec: getEmbedPipelineMetrics(resolvedPath)?.embed_throughput_per_sec ?? null,
+            // BL-319: true when the MOST RECENT heal pass exceeded its time
+            // budget and stopped early. When persistently true, the heal
+            // cannot keep up with the backlog at the current tick interval.
+            heal_time_budget_exceeded: getEmbedPipelineMetrics(resolvedPath)?.heal_time_budget_exceeded ?? null,
           },
         };
       }
@@ -1065,27 +1084,28 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         metadata: args['metadata'] as Record<string, unknown> | undefined,
       });
       /** DERIVED_FROM auto-chunk edges — identical in both embed modes. */
-      const linkChunksToParent = (
-        writeDb: Database.Database,
+      const linkChunksToParent = async (
+        adapter: StoreAdapter,
         parentUid: string,
         chunkUids: string[],
-      ): void => {
+      ): Promise<void> => {
         const now = new Date().toISOString();
-        const parentRow = writeDb
-          .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?')
-          .get(parentUid);
+        const parentRow = await adapter.executeGet<{ rowid: number }>(
+          'SELECT rowid FROM node WHERE uid = ?', [parentUid],
+        );
         for (const chunkUid of chunkUids) {
-          const chunkRow = writeDb
-            .prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?')
-            .get(chunkUid);
+          const chunkRow = await adapter.executeGet<{ rowid: number }>(
+            'SELECT rowid FROM node WHERE uid = ?', [chunkUid],
+          );
           if (chunkRow && parentRow) {
-            writeDb.prepare(
+            await adapter.executeRun(
               `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
                SELECT ?, ?, 'DERIVED_FROM', 'user_asserted', ?, '{"auto_chunk":true}'
                WHERE NOT EXISTS (
                  SELECT 1 FROM edge WHERE src=? AND dst=? AND rel='DERIVED_FROM' AND t_expired IS NULL
                )`,
-            ).run(chunkRow.rowid, parentRow.rowid, now, chunkRow.rowid, parentRow.rowid);
+              [chunkRow.rowid, parentRow.rowid, now, chunkRow.rowid, parentRow.rowid],
+            );
           }
         }
       };
@@ -1148,11 +1168,11 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       // `isError: boolean` across the union of return statements (no target type to
       // check literals against), which fails ToolResultContent's `type: 'text'`
       // literal requirement under exactOptionalPropertyTypes.
-      const outcome = await wq.enqueue<{ response: ToolResult; pendings: PendingEmbed[] }>('memory_write', (writeDb) => {
+      const outcome = await wq.enqueue<{ response: ToolResult; pendings: PendingEmbed[] }>('memory_write', async (writeDb) => {
         const pendings: PendingEmbed[] = [];
 
         if (chunks.length > 1) {
-          const parentA = memoryWritePhaseA(writeDb, parentParams);
+          const parentA = await memoryWritePhaseA(writeDb, parentParams);
           const parentUid =
             'code' in parentA
               ? parentA.code === 'E_DEDUP'
@@ -1169,7 +1189,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
 
           const chunkUids: string[] = [];
           for (const chunk of chunks) {
-            const a: PhaseAOutcome | WriteError = memoryWritePhaseA(writeDb, chunkParams(chunk));
+            const a: PhaseAOutcome | WriteError = await memoryWritePhaseA(writeDb, chunkParams(chunk));
             const chunkUid =
               'code' in a
                 ? a.code === 'E_DEDUP'
@@ -1179,7 +1199,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             if (chunkUid) chunkUids.push(chunkUid);
             if (!('code' in a) && a.pending) pendings.push(a.pending);
           }
-          linkChunksToParent(writeDb, parentUid, chunkUids);
+          await linkChunksToParent(writeDb, parentUid, chunkUids);
           return {
             response: {
               content: [{
@@ -1191,7 +1211,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           };
         }
 
-        const a = memoryWritePhaseA(writeDb, parentParams);
+        const a = await memoryWritePhaseA(writeDb, parentParams);
         if ('code' in a) {
           return {
             response: { content: [{ type: 'text', text: JSON.stringify(a) }] },
@@ -1206,7 +1226,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       });
       // Phase B: scheduled from OUTSIDE the queue task (BL-154 audit point).
       // Fire-and-forget: failures log to stderr and the periodic heal repairs.
-      if (outcome.pendings.length > 0) void schedulePendingEmbeds(wq, outcome.pendings);
+      if (outcome.pendings.length > 0) void schedulePendingEmbeds(wq, outcome.pendings, { useBinaryFormat: adapter.capabilities.nativeVectors });
       return outcome.response;
     }
 
@@ -1273,7 +1293,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       const outcome = await wq.enqueue('memory_write_batch', (writeDb) =>
         memoryWriteBatchPhaseA(writeDb, batchItems),
       );
-      if (outcome.pendings.length > 0) void schedulePendingEmbeds(wq, outcome.pendings);
+      if (outcome.pendings.length > 0) void schedulePendingEmbeds(wq, outcome.pendings, { useBinaryFormat: adapter.capabilities.nativeVectors });
       return {
         content: [{ type: 'text', text: JSON.stringify({ results: outcome.results }) }],
       };
@@ -1598,8 +1618,8 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       const tTransition = args['t_transition'] as string | undefined;
       const replacementUid = args['replacement_uid'] as string | undefined;
       const wq = await WriteQueue.forPath(dbPath);
-      return wq.enqueue('memory_invalidate', (writeDb) => {
-        const result = memoryInvalidate(writeDb, {
+      return wq.enqueue('memory_invalidate', async (writeDb) => {
+        const result = await memoryInvalidate(writeDb, {
           claim_uid: args['claim_uid'] as string,
           reason: args['reason'] as string,
           ...(tTransition !== undefined ? { t_transition: tTransition } : {}),
@@ -1639,7 +1659,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       // inside the queue slot via the sync composition.
       if (syncEmbedEnabled()) {
         return wq.enqueue('memory_update', async (writeDb) => {
-          const updateResult = await memoryUpdate(wrapRawDbAsAdapter(writeDb), updateParams);
+          const updateResult = await memoryUpdate(writeDb, updateParams);
           if ('code' in updateResult) {
             return {
               isError: true,
@@ -1660,7 +1680,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       // the node vectorless → healMissingVectors repairs on the next tick.
       // Explicit type argument — see the identical `memory_write` widening note above.
       const updOutcome = await wq.enqueue<{ response: ToolResult; pending: PendingEmbed | null }>('memory_update', async (writeDb) => {
-        const a = await memoryUpdatePhaseA(wrapRawDbAsAdapter(writeDb), updateParams);
+        const a = await memoryUpdatePhaseA(writeDb, updateParams);
         if ('code' in a) {
           return {
             response: { isError: true, content: [{ type: 'text', text: JSON.stringify(a) }] },
@@ -1672,7 +1692,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           pending: a.pending,
         };
       });
-      if (updOutcome.pending) void schedulePendingEmbeds(wq, [updOutcome.pending]);
+      if (updOutcome.pending) void schedulePendingEmbeds(wq, [updOutcome.pending], { useBinaryFormat: adapter.capabilities.nativeVectors });
       return updOutcome.response;
     }
 
@@ -1684,7 +1704,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       // result` already supports for any queue task (write-queue.ts:684-687).
       const wq = await WriteQueue.forPath(dbPath);
       return wq.enqueue('memory_link', async (writeDb) => {
-        const result = await memoryLinkNode(wrapRawDbAsAdapter(writeDb), args);
+        const result = await memoryLinkNode(writeDb, args);
         if (result.isError) {
           return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
         }
@@ -1757,7 +1777,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     case 'memory_curate': {
       const wq = await WriteQueue.forPath(dbPath);
       return wq.enqueue('memory_curate', async (writeDb) => {
-        const result = await memoryCurate(wrapRawDbAsAdapter(writeDb), args);
+        const result = await memoryCurate(writeDb, args);
         if ('code' in result) {
           return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
         }
@@ -1907,34 +1927,32 @@ const ENRICH_TRIGGER_OPS = ['ingest', 'enrich', 'extract', 'link', 'consolidate'
  * (claim → pass → done-on-success-only). Only rows with seq <= `maxSeq` (captured
  * BEFORE the pass) are completed, so a row enqueued after the pass snapshot is
  * never marked done by work that predates it. Returns the number of completed rows.
- * Exported for the BL-172 regression test.
+ * Exported for the BL-172 regression test. Async (StoreAdapter).
  */
-export function completeEnrichTriggerRows(db: Database.Database, maxSeq: number): number {
+export async function completeEnrichTriggerRows(adapter: StoreAdapter, maxSeq: number): Promise<number> {
   if (maxSeq <= 0) return 0;
   const placeholders = ENRICH_TRIGGER_OPS.map(() => '?').join(',');
   const now = new Date().toISOString();
-  const res = db
-    .prepare(
-      `UPDATE organizer_queue
-         SET claimed_at = COALESCE(claimed_at, ?),
-             done_at = ?,
-             attempts = attempts + 1
-       WHERE done_at IS NULL AND seq <= ? AND op IN (${placeholders})`,
-    )
-    .run(now, now, maxSeq, ...ENRICH_TRIGGER_OPS);
-  return res.changes;
+  const res = await adapter.executeRun(
+    `UPDATE organizer_queue
+       SET claimed_at = COALESCE(claimed_at, ?),
+           done_at = ?,
+           attempts = attempts + 1
+     WHERE done_at IS NULL AND seq <= ? AND op IN (${placeholders})`,
+    [now, now, maxSeq, ...ENRICH_TRIGGER_OPS],
+  );
+  return res.rowsAffected;
 }
 
-/** BL-172: max open trigger-row seq — the pre-pass snapshot boundary. */
-export function maxOpenEnrichTriggerSeq(db: Database.Database): number {
+/** BL-172: max open trigger-row seq — the pre-pass snapshot boundary. Async (StoreAdapter). */
+export async function maxOpenEnrichTriggerSeq(adapter: StoreAdapter): Promise<number> {
   const placeholders = ENRICH_TRIGGER_OPS.map(() => '?').join(',');
-  const row = db
-    .prepare(
-      `SELECT COALESCE(MAX(seq), 0) AS m FROM organizer_queue
-       WHERE done_at IS NULL AND op IN (${placeholders})`,
-    )
-    .get(...ENRICH_TRIGGER_OPS) as { m: number };
-  return row.m;
+  const row = await adapter.executeGet<{ m: number }>(
+    `SELECT COALESCE(MAX(seq), 0) AS m FROM organizer_queue
+     WHERE done_at IS NULL AND op IN (${placeholders})`,
+    [...ENRICH_TRIGGER_OPS],
+  );
+  return row?.m ?? 0;
 }
 
 /**
@@ -1948,23 +1966,27 @@ export function maxOpenEnrichTriggerSeq(db: Database.Database): number {
  *      this function is only ever called from an interval callback / test —
  *      never from inside a queue task (BL-154).
  *   2. BL-172 drain: snapshot the open trigger rows this pass will satisfy, run
- *      the pass, then complete them — synchronously, no await in between (the
- *      better-sqlite3 pass blocks the event loop, so no write can interleave).
+ *      the pass, then complete them through the async StoreAdapter.
  *   3. BL-186: if a full-pass `enrich` row (memory_curate recluster) is pending
  *      INSIDE the snapshot window, the pass runs with incrementalCluster:false
  *      — the honest fulfilment of `{enqueued: true}`. A full-pass row enqueued
  *      after the snapshot stays open and drives the next tick.
+ *
+ * @param adapter Open StoreAdapter (works on both SqliteAdapter sync and
+ *                TursoAdapter async — the previous unwrap-then-call-sync-pattern
+ *                was Turso-incompatible because Turso's prepare().get() returns
+ *                a Promise, not a synchronous value).
  */
 export async function runEnrichPassOnDb(
-  db: Database.Database,
+  adapter: StoreAdapter,
   dbPath: string,
 ): Promise<{ queue_completed: number; full_pass: boolean; healed: number; heal_failed: number }> {
-  const heal = await healMissingVectors(db, await WriteQueue.forPath(dbPath));
+  const heal = await healMissingVectors(adapter, await WriteQueue.forPath(dbPath));
 
-  const maxSeq = maxOpenEnrichTriggerSeq(db);
-  const fullPass = hasPendingFullEnrich(db, maxSeq);
-  const result = await runBatchEnrich(db, { incrementalCluster: !fullPass });
-  const queueCompleted = completeEnrichTriggerRows(db, maxSeq);
+  const maxSeq = await maxOpenEnrichTriggerSeq(adapter);
+  const fullPass = await hasPendingFullEnrich(adapter, maxSeq);
+  const result = await runBatchEnrich(adapter, { incrementalCluster: !fullPass });
+  const queueCompleted = await completeEnrichTriggerRows(adapter, maxSeq);
   console.error(
     `[memory-server] periodic enrich (${dbPath}):` +
     ` communities=${result.communities_upserted}` +
@@ -1991,7 +2013,7 @@ async function runPeriodicEnrichPass(): Promise<void> {
   for (const dbPath of openedPaths) {
     try {
       const adapter = await getDb(dbPath);
-      await runEnrichPassOnDb((adapter as any).unwrap() as Database.Database, dbPath);
+      await runEnrichPassOnDb(adapter, dbPath);
     } catch (err) {
       // Log to stderr only — never stdout (JSON-RPC channel).
       console.error(`[memory-server] periodic enrich error (${dbPath}):`, err);
@@ -2058,17 +2080,20 @@ if (require.main === module) {
   );
   });
 
-  // BL-94: probe better-sqlite3 native binding at startup before accepting connections.
-  // A missing binding (new Node ABI without rebuild) would otherwise fail mid-session
-  // after an agent has already written several episodes — the crash is destructive.
+  // BL-94: probe the configured adapter's native binding at startup before accepting
+  // connections. A missing binding would otherwise fail mid-session after an agent has
+  // already written several episodes — the crash is destructive.
   // This probe exits 1 immediately with a clear message so the supervisor can restart.
+  const probeDriver = process.env.STORE_ADAPTER === 'turso' ? '@tursodatabase/database' : 'better-sqlite3';
   try {
-    require('better-sqlite3');
+    require(probeDriver);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(
-      `FATAL: better-sqlite3 native binding missing for this Node.js ABI.\n` +
-      `Run: pnpm rebuild better-sqlite3 from the sox-ecosystem root, then restart.\n` +
+      `FATAL: ${probeDriver} native binding missing for this Node.js ABI.\n` +
+      (probeDriver === 'better-sqlite3'
+        ? `Run: pnpm rebuild better-sqlite3 from the sox-ecosystem root, then restart.\n`
+        : `Run: pnpm add ${probeDriver}, then restart.\n`) +
       `Error: ${msg}\n`,
     );
     process.exit(1);

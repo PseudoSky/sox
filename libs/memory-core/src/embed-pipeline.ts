@@ -44,12 +44,12 @@
  * ~seconds later).
  */
 
-import type Database from 'better-sqlite3';
 import { performance } from 'node:perf_hooks';
-import { embed, vecToJson, getActiveEmbedModel } from './embed.js';
+import { embed, vecToJson, vecToBuffer, getActiveEmbedModel } from './embed.js';
 import { detectNearDup } from './neardup.js';
 import type { NearDupResult } from './neardup.js';
 import { applyNearDupResult, NEARDUP_THRESHOLD } from './enrich.js';
+import type { StoreAdapter, AdapterTransaction } from '@adhd/sox-store-adapter';
 import { LatencyRing, summarizeLatencies } from './latency-stats.js';
 import type { WriteQueue } from './write-queue.js';
 
@@ -115,6 +115,11 @@ export interface HealResult {
   failed: number;
   /** True when SOX_DISABLE_EMBED_HEAL=1 short-circuited the pass (test seam / NC). */
   disabled: boolean;
+  /**
+   * True when the heal pass hit its per-tick time budget and stopped early
+   * before processing all SELECTed rows. The next tick picks up the remainder.
+   */
+  time_budget_exceeded: boolean;
 }
 
 /**
@@ -140,6 +145,38 @@ export interface EmbedBacklogStats {
   /** t_created of the oldest such episode — the stall-age signal. */
   oldest_created_at: string | null;
 }
+
+/**
+ * Default timeout for a SINGLE heal-path embed call (IPC to child process).
+ * When an embed call exceeds this threshold, it is treated as a failure and
+ * the item is left for a future heal pass. Set via SOX_EMBED_HEAL_TIMEOUT_MS.
+ * Default: 120_000ms (2 minutes) — actual CoreML inference is ~335ms; the
+ * headroom covers child-process serial queue wait when concurrent loops pile up.
+ */
+const DEFAULT_EMBED_HEAL_TIMEOUT_MS = 120_000;
+
+function embedHealTimeoutMs(): number {
+  const raw = Number(process.env['SOX_EMBED_HEAL_TIMEOUT_MS']);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_EMBED_HEAL_TIMEOUT_MS;
+}
+
+/**
+ * Per-tick time budget for healMissingVectors. When the cumulative embed duration
+ * (including child-process queue wait) exceeds this threshold, the heal loop
+ * stops early so the tick does not overlap with the next periodic enrich pass.
+ * Set via SOX_EMBED_HEAL_TIME_BUDGET_MS. Default: 240_000ms (4 minutes),
+ * leaving 1 minute of the 5-minute tick interval for the rest of the enrich pass
+ * (batch enrich, queue completion).
+ */
+const DEFAULT_EMBED_HEAL_TIME_BUDGET_MS = 240_000;
+
+function embedHealTimeBudgetMs(): number {
+  const raw = Number(process.env['SOX_EMBED_HEAL_TIME_BUDGET_MS']);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_EMBED_HEAL_TIME_BUDGET_MS;
+}
+
+/** Rolling window (ms) for embed_throughput_per_sec computation. */
+const EMBED_THROUGHPUT_WINDOW_MS = 60_000;
 
 // ── Phase-B pipeline metrics (per-store, in-process) ──────────────────────────
 //
@@ -190,6 +227,12 @@ interface EmbedPipelineState {
   embedDuration: LatencyRing;
   /** WALL-CLOCK age (now − node.t_created) of heal-path applied vectors. */
   healLag: LatencyRing;
+  /** Rolling completion timestamps for throughput_writes_per_sec computation.
+   *  Mirrors WriteQueue._completionTimes. */
+  completionTimes: number[];
+  /** True when the MOST RECENT healMissingVectors pass hit its per-tick time
+   *  budget and stopped early. Reset at the start of each new heal pass. */
+  healTimeBudgetExceeded: boolean;
   counters: EmbedPipelineCounters;
 }
 
@@ -200,12 +243,30 @@ export interface EmbedPipelineMetrics {
    *  BM25-only before it becomes vec-recallable. */
   time_to_vector_ms: { p50: number; p99: number; mean: number; max: number };
   time_to_vector_samples: number;
-  /** Worker-side embed computation duration, ms (excludes queue wait). */
+  /** Duration of the `embed()` call (both paths), ms. Includes the forked
+   *  child process's serial-queue wait time — NOT just the ~335ms ONNX
+   *  inference. The child serializes all IPC requests through a promise chain,
+   *  so when multiple concurrent loops (heal + fresh-write pipelines) compete,
+   *  the measured duration includes queue wait. See embed_throughput_per_sec
+   *  for actual effective throughput. */
   embed_duration_ms: { p50: number; p99: number; mean: number; max: number };
   embed_duration_samples: number;
   /** WALL-CLOCK (t_created-based) age of heal-path applied vectors, ms. */
   heal_lag_ms: { p50: number; p99: number; mean: number; max: number };
   heal_lag_samples: number;
+  /** Rolling effective embed throughput (completions per second), computed
+   *  over the last EMBED_THROUGHPUT_WINDOW_MS (60s). Mirrors the
+   *  WriteQueue.throughput_writes_per_sec pattern — a pragmatic real-world
+   *  throughput signal that accounts for ALL time: child queue wait, IPC,
+   *  actual ONNX inference, and parent-side concurrency overhead.
+   *  Expected: ~3/sec (335ms × 3 concurrent loops) under CoreML with the
+   *  single child process. Below ~0.5/sec suggests a stuck child or stalled
+   *  pipeline. */
+  embed_throughput_per_sec: number;
+  /** True when the MOST RECENT healMissingVectors pass hit its time budget
+   *  and stopped early. When true for consecutive ping samples, reduce
+   *  healMissingVectors' per-tick limit or increase the 5-min tick interval. */
+  heal_time_budget_exceeded: boolean;
   counters: EmbedPipelineCounters;
 }
 
@@ -219,6 +280,8 @@ function stateFor(storeKey: string): EmbedPipelineState {
       timeToVector: new LatencyRing(PIPELINE_LATENCY_WINDOW),
       embedDuration: new LatencyRing(PIPELINE_LATENCY_WINDOW),
       healLag: new LatencyRing(PIPELINE_LATENCY_WINDOW),
+      completionTimes: [],
+      healTimeBudgetExceeded: false,
       counters: {
         embeds_completed: 0,
         embeds_failed: 0,
@@ -239,6 +302,24 @@ function recordApplyOutcome(state: EmbedPipelineState, status: EmbedApplyResult[
   if (status === 'applied') state.counters.applies_applied++;
   else if (status === 'exists') state.counters.applies_exists++;
   else state.counters.applies_gone++;
+}
+
+/**
+ * Record an embed completion timestamp for the throughput-per-sec rolling
+ * window. Prunes entries outside the window. Called after each successful
+ * embed() call (both pipeline and heal paths).
+ */
+function trackEmbedCompletion(state: EmbedPipelineState): void {
+  state.completionTimes.push(performance.now());
+  const cutoff = performance.now() - EMBED_THROUGHPUT_WINDOW_MS;
+  while (state.completionTimes.length > 0 && state.completionTimes[0]! < cutoff) {
+    state.completionTimes.shift();
+  }
+}
+
+/** Compute embed throughput (completions/sec) from the rolling window. */
+function embedThroughput(state: EmbedPipelineState): number {
+  return state.completionTimes.length / (EMBED_THROUGHPUT_WINDOW_MS / 1000);
 }
 
 function summaryOf(ring: LatencyRing): { p50: number; p99: number; mean: number; max: number } {
@@ -265,6 +346,8 @@ export function getEmbedPipelineMetrics(storeKey: string): EmbedPipelineMetrics 
     embed_duration_samples: s.embedDuration.count,
     heal_lag_ms: summaryOf(s.healLag),
     heal_lag_samples: s.healLag.count,
+    embed_throughput_per_sec: embedThroughput(s),
+    heal_time_budget_exceeded: s.healTimeBudgetExceeded,
     counters: { ...s.counters },
   };
 }
@@ -287,62 +370,59 @@ export function _resetEmbedPipelineMetricsForTest(): void {
  * its vector (bi-temporal: the row is kept and point-in-time recall may use
  * it) but the near-dup pass — which can invalidate OTHER nodes — is skipped.
  */
-export function applyEmbedding(
-  db: Database.Database,
+export async function applyEmbedding(
+  tx: AdapterTransaction,
   pending: PendingEmbed,
   vec: Float32Array,
-): EmbedApplyResult {
-  const tx = db.transaction((): EmbedApplyResult => {
-    const row = db
-      .prepare<[number], { uid: string; t_invalid: string | null }>(
-        'SELECT uid, t_invalid FROM node WHERE rowid = ?',
-      )
-      .get(pending.rowid);
-    if (!row || row.uid !== pending.uid) {
-      return { status: 'gone', near_dup: null };
+  useBinaryFormat?: boolean,
+  useNativeVectors?: boolean,
+): Promise<EmbedApplyResult> {
+  const row = await tx.executeGet<{ uid: string; t_invalid: string | null }>(
+    'SELECT uid, t_invalid FROM node WHERE rowid = ?',
+    [pending.rowid],
+  );
+  if (!row || row.uid !== pending.uid) {
+    return { status: 'gone', near_dup: null };
+  }
+
+  const existing = await tx.executeGet<{ node_id: number }>(
+    'SELECT node_id FROM vec_node WHERE node_id = ?',
+    [pending.rowid],
+  );
+  if (existing) {
+    return { status: 'exists', near_dup: null };
+  }
+
+  const serialized = useBinaryFormat ? vecToBuffer(vec) : vecToJson(vec);
+  await tx.executeRun(
+    'INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',
+    [pending.rowid, serialized],
+  );
+
+  // BL-88: stamp the embed_model on the node row in the same transaction as
+  // the vec insert. This is the SINGLE choke-point for all write/update/heal
+  // paths — every vector that lands on any node goes through applyEmbedding.
+  // NULL rows are honest: provenance unknown (pre-BL-88 or not yet embedded).
+  await tx.executeRun(
+    'UPDATE node SET embed_model = ? WHERE rowid = ?',
+    [getActiveEmbedModel() ?? 'unknown', pending.rowid],
+  );
+
+  // Deferred E8 near-dup: only for still-live nodes (near-dup may invalidate
+  // the OLDER neighbour — never run it on behalf of an already-dead node).
+  let nearDup: NearDupResult | null = null;
+  if (row.t_invalid === null) {
+    try {
+      nearDup = await detectNearDup(tx, pending.rowid, vec, NEARDUP_THRESHOLD, useNativeVectors);
+    } catch {
+      nearDup = null; // KNN may fail on empty stores — treat as no dup
     }
-
-    const existing = db
-      .prepare<[number], { node_id: number }>(
-        'SELECT node_id FROM vec_node WHERE node_id = ?',
-      )
-      .get(pending.rowid);
-    if (existing) {
-      return { status: 'exists', near_dup: null };
+    if (nearDup !== null) {
+      await applyNearDupResult(tx, pending.rowid, nearDup);
     }
+  }
 
-    db.prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(
-      pending.rowid,
-      vecToJson(vec),
-    );
-
-    // BL-88: stamp the embed_model on the node row in the same transaction as
-    // the vec insert. This is the SINGLE choke-point for all write/update/heal
-    // paths — every vector that lands on any node goes through applyEmbedding.
-    // NULL rows are honest: provenance unknown (pre-BL-88 or not yet embedded).
-    db.prepare('UPDATE node SET embed_model = ? WHERE rowid = ?').run(
-      getActiveEmbedModel() ?? 'unknown',
-      pending.rowid,
-    );
-
-    // Deferred E8 near-dup: only for still-live nodes (near-dup may invalidate
-    // the OLDER neighbour — never run it on behalf of an already-dead node).
-    let nearDup: NearDupResult | null = null;
-    if (row.t_invalid === null) {
-      try {
-        nearDup = detectNearDup(db, pending.rowid, vec, NEARDUP_THRESHOLD);
-      } catch {
-        nearDup = null; // KNN may fail on empty stores — treat as no dup
-      }
-      if (nearDup !== null) {
-        applyNearDupResult(db, pending.rowid, nearDup);
-      }
-    }
-
-    return { status: 'applied', near_dup: nearDup };
-  });
-
-  return tx();
+  return { status: 'applied', near_dup: nearDup };
 }
 
 // ── In-flight tracking (test/drain seam) ──────────────────────────────────────
@@ -382,9 +462,11 @@ export async function flushPendingEmbeds(): Promise<void> {
 export async function schedulePendingEmbeds(
   wq: WriteQueue,
   pendings: PendingEmbed[],
-  opts?: { logSink?: (line: string) => void },
+  opts?: { logSink?: (line: string) => void; useBinaryFormat?: boolean; useNativeVectors?: boolean },
 ): Promise<SchedulePendingResult> {
   const log = opts?.logSink ?? ((line: string) => console.error(line));
+  const useBinaryFormat = opts?.useBinaryFormat ?? false;
+  const useNativeVectors = opts?.useNativeVectors ?? false;
   const out: SchedulePendingResult = { applied: 0, exists: 0, gone: 0, failed: 0 };
   if (pendings.length === 0) return out;
   const metrics = stateFor(wq.storePath);
@@ -396,9 +478,14 @@ export async function schedulePendingEmbeds(
         const vec = await embed(p.text); // off-slot: worker-thread ONNX
         metrics.embedDuration.push(performance.now() - embedStartMs);
         metrics.counters.embeds_completed++;
+        trackEmbedCompletion(metrics);
         const r = await wq.enqueue(
           `embed_apply:${p.uid}`,
-          (qdb) => applyEmbedding(qdb, p, vec),
+          async (qdb) => {
+            return qdb.transaction(async (tx) => {
+              return applyEmbedding(tx, p, vec, useBinaryFormat, useNativeVectors);
+            }, { mode: 'immediate' });
+          },
           'apply',
         );
         out[r.status === 'applied' ? 'applied' : r.status === 'exists' ? 'exists' : 'gone']++;
@@ -436,17 +523,15 @@ export async function schedulePendingEmbeds(
  * phases may legitimately never receive a vector, and must not pin the backlog
  * above zero forever.
  */
-export function embedBacklogStats(db: Database.Database): EmbedBacklogStats {
-  const row = db
-    .prepare<[], { c: number; o: string | null }>(
-      `SELECT COUNT(*) AS c, MIN(n.t_created) AS o
-       FROM node n
-       WHERE n.kind = 'episode'
-         AND n.t_invalid IS NULL
-         AND n.content IS NOT NULL AND n.content != ''
-         AND NOT EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)`,
-    )
-    .get();
+export async function embedBacklogStats(adapter: StoreAdapter): Promise<EmbedBacklogStats> {
+  const row = await adapter.executeGet<{ c: number; o: string | null }>(
+    `SELECT COUNT(*) AS c, MIN(n.t_created) AS o
+     FROM node n
+     WHERE n.kind = 'episode'
+       AND n.t_invalid IS NULL
+       AND n.content IS NOT NULL AND n.content != ''
+       AND NOT EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)`,
+  );
   return { count: row?.c ?? 0, oldest_created_at: row?.o ?? null };
 }
 
@@ -470,11 +555,11 @@ function healDisabled(): boolean {
  * picks up the remainder.
  */
 export async function healMissingVectors(
-  db: Database.Database,
+  adapter: StoreAdapter,
   wq: WriteQueue,
   opts?: { limit?: number; logSink?: (line: string) => void },
 ): Promise<HealResult> {
-  const out: HealResult = { scanned: 0, healed: 0, exists: 0, gone: 0, failed: 0, disabled: false };
+  const out: HealResult = { scanned: 0, healed: 0, exists: 0, gone: 0, failed: 0, disabled: false, time_budget_exceeded: false };
   if (healDisabled()) {
     out.disabled = true;
     return out;
@@ -483,32 +568,65 @@ export async function healMissingVectors(
   const log = opts?.logSink ?? ((line: string) => console.error(line));
   const metrics = stateFor(wq.storePath);
 
-  const rows = db
-    .prepare<[number], { rowid: number; uid: string; content: string; t_created: string | null }>(
-      `SELECT n.rowid, n.uid, n.content, n.t_created
-       FROM node n
-       WHERE n.kind = 'episode'
-         AND n.t_invalid IS NULL
-         AND n.content IS NOT NULL AND n.content != ''
-         AND NOT EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)
-       ORDER BY n.rowid ASC
-       LIMIT ?`,
-    )
-    .all(limit);
+  // Reset the time-budget flag at the start of each heal pass.
+  metrics.healTimeBudgetExceeded = false;
+
+  const useBinaryFormat = adapter.capabilities.nativeVectors;
+  const result = await adapter.executeAll<{ rowid: number; uid: string; content: string; t_created: string | null }>(
+    `SELECT n.rowid, n.uid, n.content, n.t_created
+     FROM node n
+     WHERE n.kind = 'episode'
+       AND n.t_invalid IS NULL
+       AND n.content IS NOT NULL AND n.content != ''
+       AND NOT EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)
+     ORDER BY n.rowid ASC
+     LIMIT ?`,
+    [limit],
+  );
+  const rows = result.rows;
+
+  const timeBudgetMs = embedHealTimeBudgetMs();
+  const tickTimeoutMs = embedHealTimeoutMs();
+  const tickStartedAt = performance.now();
 
   out.scanned = rows.length;
   for (const r of rows) {
+    // Time-budget guard: stop early if the cumulative wall-clock duration of
+    // this heal pass exceeds the per-tick budget. This prevents overlapping
+    // ticks when the child-process serial queue is backed up and individual
+    // embed calls take minutes instead of milliseconds.
+    if (performance.now() - tickStartedAt > timeBudgetMs) {
+      const remaining = out.scanned - (out.healed + out.exists + out.gone + out.failed);
+      log(
+        `${LOG_PREFIX} heal TIME BUDGET EXCEEDED after ${performance.now() - tickStartedAt}ms ` +
+        `(${out.healed} healed, ${out.failed} failed, ${remaining} remaining of ${out.scanned})`,
+      );
+      metrics.healTimeBudgetExceeded = true;
+      out.time_budget_exceeded = true;
+      break;
+    }
+
     // NO startedAtMs: the in-process Phase-A stamp is gone (crash/restart) —
     // heal applies must not pollute the time_to_vector distribution.
     const pending: PendingEmbed = { uid: r.uid, rowid: r.rowid, text: r.content };
     try {
       const embedStartMs = performance.now();
-      const vec = await embed(pending.text);
+      // Use a timeout on the embed IPC call so a stuck child process does not
+      // hang the heal loop indefinitely. The timeout value is configurable via
+      // SOX_EMBED_HEAL_TIMEOUT_MS (default 120s — far above the ~335ms actual
+      // CoreML inference, but generous enough to not false-positive under
+      // moderate concurrent-loop queue wait).
+      const vec = await embedWithTimeout(pending.text, tickTimeoutMs);
       metrics.embedDuration.push(performance.now() - embedStartMs);
       metrics.counters.embeds_completed++;
+      trackEmbedCompletion(metrics);
       const applied = await wq.enqueue(
         `embed_heal:${pending.uid}`,
-        (qdb) => applyEmbedding(qdb, pending, vec),
+        async (qdb) => {
+          return qdb.transaction(async (tx) => {
+            return applyEmbedding(tx, pending, vec, useBinaryFormat, adapter.capabilities.nativeVectors);
+          }, { mode: 'immediate' });
+        },
         'apply',
       );
       recordApplyOutcome(metrics, applied.status);
@@ -531,6 +649,32 @@ export async function healMissingVectors(
     }
   }
   return out;
+}
+
+/**
+ * Call embed() with a wall-clock timeout. If the underlying IPC to the
+ * forked child process does not resolve within `timeoutMs`, rejects with a
+ * TimeoutError. This prevents a stuck child process from hanging the heal
+ * loop indefinitely (the child's serial queue can back up significantly when
+ * multiple concurrent loops compete for the single process).
+ */
+async function embedWithTimeout(text: string, timeoutMs: number): Promise<Float32Array> {
+  return new Promise<Float32Array>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`embed() timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    if (typeof timer.unref === 'function') timer.unref();
+    embed(text).then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
+  });
 }
 
 // ── Stale-vector heal (BL-88, DEFAULT-OFF) ────────────────────────────────────
@@ -568,7 +712,7 @@ function staleHealEnabled(): boolean {
  * memory-server without an explicit operator opt-in surface.
  */
 export async function healStaleVectors(
-  db: Database.Database,
+  adapter: StoreAdapter,
   wq: WriteQueue,
   opts?: { limit?: number; logSink?: (line: string) => void },
 ): Promise<StaleHealResult> {
@@ -582,24 +726,25 @@ export async function healStaleVectors(
   const limit = opts?.limit ?? 500;
   const log = opts?.logSink ?? ((line: string) => console.error(line));
   const metrics = stateFor(wq.storePath);
+  const useBinaryFormat = adapter.capabilities.nativeVectors;
 
   // BL-88: only target rows with a non-null embed_model that differs from the
   // currently active model. Rows with embed_model IS NULL are pre-provenance
   // and are left for the operator to handle via the full reembed path.
-  const rows = db
-    .prepare<[string, number], { rowid: number; uid: string; content: string; t_created: string | null }>(
-      `SELECT n.rowid, n.uid, n.content, n.t_created
-       FROM node n
-       WHERE n.kind = 'episode'
-         AND n.t_invalid IS NULL
-         AND n.content IS NOT NULL AND n.content != ''
-         AND n.embed_model IS NOT NULL
-         AND n.embed_model != ?
-         AND EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)
-       ORDER BY n.rowid ASC
-       LIMIT ?`,
-    )
-    .all(activeModel, limit);
+  const result = await adapter.executeAll<{ rowid: number; uid: string; content: string; t_created: string | null }>(
+    `SELECT n.rowid, n.uid, n.content, n.t_created
+     FROM node n
+     WHERE n.kind = 'episode'
+       AND n.t_invalid IS NULL
+       AND n.content IS NOT NULL AND n.content != ''
+       AND n.embed_model IS NOT NULL
+       AND n.embed_model != ?
+       AND EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)
+     ORDER BY n.rowid ASC
+     LIMIT ?`,
+    [activeModel, limit],
+  );
+  const rows = result.rows;
 
   out.scanned = rows.length;
   for (const r of rows) {
@@ -610,8 +755,8 @@ export async function healStaleVectors(
       // and proceeds with the INSERT (vec0 tables have no UPDATE trigger — BL-91).
       await wq.enqueue(
         `embed_stale_del:${pending.uid}`,
-        (qdb) => {
-          qdb.prepare('DELETE FROM vec_node WHERE node_id = CAST(? AS INTEGER)').run(pending.rowid);
+        async (tx) => {
+          await tx.executeRun('DELETE FROM vec_node WHERE node_id = CAST(? AS INTEGER)', [pending.rowid]);
           return { deleted: true };
         },
         'apply',
@@ -624,7 +769,11 @@ export async function healStaleVectors(
 
       const applied = await wq.enqueue(
         `embed_stale_apply:${pending.uid}`,
-        (qdb) => applyEmbedding(qdb, pending, vec),
+        async (qdb) => {
+          return qdb.transaction(async (tx) => {
+            return applyEmbedding(tx, pending, vec, useBinaryFormat, adapter.capabilities.nativeVectors);
+          }, { mode: 'immediate' });
+        },
         'apply',
       );
       recordApplyOutcome(metrics, applied.status);

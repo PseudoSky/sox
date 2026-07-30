@@ -15,7 +15,7 @@
       ],
       "options": {
         "commands": [
-          "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-server/dist --tsconfig extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json --external better-sqlite3 --external sqlite-vec --external fastembed --external onnxruntime-node",
+          "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-server/dist --tsconfig extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json --external better-sqlite3 --external sqlite-vec --external fastembed --external onnxruntime-node --external @tursodatabase/database",
           "node extensions/bundles/sox-memory-bundle/members/memory-server/scripts/gen-schema.cjs"
         ],
         "parallel": false,

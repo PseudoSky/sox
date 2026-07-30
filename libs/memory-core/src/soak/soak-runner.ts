@@ -22,7 +22,6 @@
  *   - No dependencies outside memory-core's existing dep tree.
  */
 
-import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -199,17 +198,17 @@ export async function runSoak(
   }
 
   // Reset any stale WriteQueue state for this path
-  WriteQueue.clearInstances();
+  await WriteQueue.clearInstances();
   WriteQueue.setBypass(false);
 
   const queue = await WriteQueue.forPath(storePath, maxQueueSize);
 
   // Initialize the soak table
-  await queue.enqueue('soak-setup', (db) => {
-    db.exec('PRAGMA journal_mode = WAL');
-    db.exec('PRAGMA synchronous = NORMAL');
-    db.exec('PRAGMA busy_timeout = 3000');
-    db.exec(`CREATE TABLE IF NOT EXISTS soak_writes (
+  await queue.enqueue('soak-setup', async (tx) => {
+    await tx.exec('PRAGMA journal_mode = WAL');
+    await tx.exec('PRAGMA synchronous = NORMAL');
+    await tx.exec('PRAGMA busy_timeout = 3000');
+    await tx.exec(`CREATE TABLE IF NOT EXISTS soak_writes (
       id     INTEGER PRIMARY KEY AUTOINCREMENT,
       writer INTEGER NOT NULL,
       seq    INTEGER NOT NULL,
@@ -252,7 +251,7 @@ export async function runSoak(
       const enqueuedAt = Date.now();
 
       try {
-        await queue.enqueue(`soak-w${writerId}-${seq}`, async (db: Database.Database) => {
+        await queue.enqueue(`soak-w${writerId}-${seq}`, async (tx) => {
           const execStart = Date.now();
 
           // Record lock-wait: time from enqueue to when we actually start executing
@@ -264,9 +263,10 @@ export async function runSoak(
             await new Promise<void>((r) => setTimeout(r, injectedDelayMs));
           }
 
-          db.prepare(
+          await tx.executeRun(
             'INSERT INTO soak_writes (writer, seq, payload) VALUES (?, ?, ?)',
-          ).run(writerId, seq, payload);
+            [writerId, seq, payload],
+          );
 
           txnDurations.push(Date.now() - execStart);
         });
@@ -295,7 +295,7 @@ export async function runSoak(
 
   // ── Run drain + cleanup ────────────────────────────────────────────────────
   await queue.drainAndClose();
-  WriteQueue.clearInstances();
+  await WriteQueue.clearInstances();
 
   const runCompletedAt = new Date().toISOString();
   const elapsedMs = Date.now() - runStartMs;

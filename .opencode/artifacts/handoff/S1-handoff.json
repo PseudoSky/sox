@@ -1,0 +1,17 @@
+{
+  "$schema": "handoff-v1",
+  "segment": "S1",
+  "agent": "implement",
+  "completed": true,
+  "findings": {
+    "graph_store_api": "getEdges({src, dst, rel}) works as expected. writeEdge(src, dst, rel, {weight, metadata}) works. No gaps found.",
+    "node_lookups": "raw SQL still needed for node lookups by uid since graph-store's NodeRecord doesn't expose uid field — acceptable per plan",
+    "helpers_inlined": "isSuperseded, supersedesUidForRowid, communityUidForRowid are inlined in memory-core functions — S5 will centralize them to recall.ts",
+    "session_notes": "session.ts uses raw SQL (no edge operations) — acceptable per plan",
+    "build": "memory-core and memory-server both build with 0 errors",
+    "test": "160/160 memory-core tests pass, 84/84 memory-server tests pass",
+    "package_json": "@adhd/sox-graph-store already a dependency of memory-core — no changes needed"
+  },
+  "unresolved": ["lint not yet verified", "smoke test not yet run"],
+  "handoff_to_s2": "new exports added to memory-core/src/index.ts: memoryLinkNode, memoryGetRelated, memoryGetEntityEpisodes, memoryListEntities, memoryGetNearDuplicates, memoryGetSupersessionChain, memoryGetSessionState, memorySaveSessionState and their types"
+}

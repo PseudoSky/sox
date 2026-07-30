@@ -12,5 +12,13 @@
  * The async DEFAULT path is covered explicitly and deterministically by
  * async-embed.spec.ts, which deletes this env for its own describe blocks and
  * uses the BL-161 deterministic provider seam (no real ONNX, no timing).
+ *
+ * STORE_ADAPTER=sqlite pins the pre-existing suite to the SqliteAdapter.
+ * The adapter factory now defaults to 'turso', but existing tests were written
+ * for better-sqlite3 and may not handle TursoAdapter features. Cross-backend
+ * parity is covered explicitly by recall-parity.test.ts and
+ * heal-backend-agnostic.test.ts, which set STORE_ADAPTER=turso in their
+ * own describe blocks.
  */
 process.env['SOX_SYNC_EMBED'] = '1';
+process.env['STORE_ADAPTER'] = 'sqlite';

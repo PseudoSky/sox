@@ -50,14 +50,14 @@ let tmpDirs: string[] = [];
 // create directories there. We keep a cleanup list.
 let memoryDirsCreated: string[] = [];
 
-beforeEach(() => {
+beforeEach(async () => {
   _resetEmbedSingleton();
-  WriteQueue.clearInstances();
+  await WriteQueue.clearInstances();
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetEmbedSingleton();
-  WriteQueue.clearInstances();
+  await WriteQueue.clearInstances();
   for (const d of tmpDirs) removeTempDir(d);
   tmpDirs = [];
   for (const d of memoryDirsCreated) {
@@ -272,7 +272,7 @@ describe('backupStore — successful backup', () => {
       }
     } finally {
       try { writerDb.close(); } catch { /* ignore */ }
-      WriteQueue.clearInstances();
+      await WriteQueue.clearInstances();
     }
   }, 60_000); // 60s timeout — allows for sqlite-vec load time under load
 });

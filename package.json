@@ -1,7 +1,7 @@
 {
   "name": "sox-ecosystem",
   "version": "1.0.0",
-  "description": "LLM extension ecosystem monorepo \u2014 agents, skills, mcp-servers, prompts, hooks, commands",
+  "description": "LLM extension ecosystem monorepo — agents, skills, mcp-servers, prompts, hooks, commands",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.11.1",
@@ -47,9 +47,12 @@
     "tsx": "4.22.4",
     "typescript": "6.0.3",
     "vitest": "4.1.8",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "@adhd/sox-graph-store": "workspace:*",
+    "@adhd/sox-store-adapter": "workspace:*"
   },
   "dependencies": {
+    "@tursodatabase/database": "^0.7.1",
     "better-sqlite3": "^12.10.0",
     "sqlite-vec": "^0.1.9",
     "ulid": "^3.0.2"

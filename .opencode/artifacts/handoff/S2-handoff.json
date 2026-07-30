@@ -1,0 +1,45 @@
+{
+  "segment": "S2",
+  "label": "B3: memory-core domain query functions + client wrappers",
+  "agent": "implement",
+  "timestamp": "2026-07-02T20:50:00.000Z",
+  "status": "complete",
+  "files_created": [
+    "libs/memory-core/src/topics.ts",
+    "libs/memory-core/src/projects.ts",
+    "libs/memory-core/src/curate.ts",
+    "libs/memory-core/src/stats.ts"
+  ],
+  "files_edited": [
+    "libs/memory-core/src/index.ts",
+    "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/topics.ts",
+    "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/list-projects.ts",
+    "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/curate.ts",
+    "extensions/bundles/sox-memory-bundle/members/memory-server/src/client/stats.ts"
+  ],
+  "verification": {
+    "nx_build_memory_core": "PASS",
+    "nx_test_memory_core": "160 passed, 1 skipped, 0 failed",
+    "nx_lint_memory_core": "PASS (0 errors)",
+    "nx_lint_sox_memory_bundle": "PASS",
+    "nx_build_memory_server": "PASS (19 tools in schema.json)"
+  },
+  "handoff_notes": {
+    "imports": {
+      "clusterSubset_dropSubsetLens_listSubsetLenses": "Imported cleanly from ./cluster.js. No issues — these are all synchronous functions that accept (db, opts/string).",
+      "curate_uses_createGraphBackend_for_edges": "merge_duplicates uses backend.writeEdge() for SAME_AS edges. retag uses backend.writeEdge() for MENTIONS edges. Node operations (SELECT node, UPDATE node, INSERT INTO node) stay as raw SQL since graph-store's NodeRecord doesn't expose uid.",
+      "parseTags": "Inlined into memory-core's curate.ts (simple JSON.parse wrapper). Could not import from client/db.ts — that would be a dependency inversion (core depending on client).",
+      "edge_type_SAME_AS": "Exists in graph-store EdgeRel type. No issues."
+    },
+    "client_wrapper_edge_cases": {
+      "topics": "Export re-exports TopicsResult and TopicEntry types from memory-core. Function signature unchanged.",
+      "list_projects": "Export re-exports ListProjectsResult and ProjectEntry types from memory-core. Function signature unchanged.",
+      "curate": "Thin wrapper — just calls memoryCurate(db, args). No more raw SQL, no more graph-store imports, no more parseTags import. Keeps inputSchema const unchanged.",
+      "stats": "Thin wrapper — calls memoryGetStats(db, args, toolNames). toolNames passed through as-is. No more raw SQL, no more embed imports. Keeps inputSchema const unchanged."
+    },
+    "known_issues": [],
+    "warnings": [
+      "memory-core curate.ts uses `@adhd/sox-graph-store` import. This is a data→data import, which is allowed (memory-core sits above data layer). Verified build succeeds."
+    ]
+  }
+}

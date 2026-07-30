@@ -5,3 +5,7 @@ export * from './sqlite-adapter.js';
 export * from './turso-adapter.js';
 export * from './mock-adapter.js';
 export * from './factory.js';
+export * from './vector-dialect.js';
+export * from './fts-dialect.js';
+export * from './adapter-meta.js';
+export * from './migration.js';

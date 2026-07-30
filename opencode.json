@@ -24,7 +24,7 @@
       }
     },
     "implement": {
-      "description": "Complex implementation agent (pro model) — multi-file changes, interface design, refactors, debugging. For well-specified simple tasks, use flash instead",
+      "description": "Complex implementation agent (pro model) \u2014 multi-file changes, interface design, refactors, debugging. For well-specified simple tasks, use flash instead",
       "mode": "all",
       "model": "deepseek/deepseek-v4-pro",
       "prompt": "{file:.opencode/prompts/implement-system.md}",
@@ -46,7 +46,7 @@
       }
     },
     "flash": {
-      "description": "Fast implementation agent (flash model) — single-file changes, manifest edits, boilerplate, well-specified tasks with exact code provided",
+      "description": "Fast implementation agent (flash model) \u2014 single-file changes, manifest edits, boilerplate, well-specified tasks with exact code provided",
       "mode": "all",
       "model": "deepseek/deepseek-v4-flash",
       "prompt": "{file:.opencode/prompts/flash-system.md}",
@@ -68,10 +68,37 @@
       }
     }
   },
+  "provider": {
+    "cf-proxy": {
+      "name": "CF Proxy",
+      "options": {
+        "baseURL": "http://localhost:3333/v1"
+      },
+      "models": {
+        "deepseek-rf": {
+          "id": "deepseek-rf",
+          "name": "DeepSeek (RF \u2014 passthrough)",
+          "cost": {
+            "input": 0.00027,
+            "output": 0.0011
+          }
+        },
+        "cf-v4-flash": {
+          "id": "cf-v4-flash",
+          "name": "DeepSeek V4 Flash (CF \u2014 rewrite)",
+          "cost": {
+            "input": 0.00027,
+            "output": 0.0011
+          }
+        }
+      }
+    }
+  },
   "mcp": {
     "memory-server": {
       "type": "remote",
       "url": "http://localhost:3099/sse"
     }
-  }
+  },
+  "model": "deepseek-rf"
 }

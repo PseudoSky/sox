@@ -1,0 +1,135 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "A",
+  "label": "Turso adapter integration — store-adapter package (foundation)",
+  "completed_at": "2026-07-26T16:03:00.000Z",
+
+  "summary": "Created @adhd/sox-store-adapter package at libs/data/store/store-adapter/ with full interface, SqliteAdapter, TursoAdapter, factory, error helpers, mock adapter, contract tests, and README. All 51 tests pass across both adapters.",
+
+  "changes": [
+    {
+      "file": "libs/data/store/store-adapter/package.json",
+      "kind": "new — package manifest with peer deps, exports, and sox metadata",
+      "lines": "+56"
+    },
+    {
+      "file": "libs/data/store/store-adapter/tsconfig.json",
+      "kind": "new — TypeScript config extending base with esnext bundler resolution",
+      "lines": "+12"
+    },
+    {
+      "file": "libs/data/store/store-adapter/tsconfig.lib.json",
+      "kind": "new — build-time tsconfig for tsc compilation",
+      "lines": "+12"
+    },
+    {
+      "file": "libs/data/store/store-adapter/tsconfig.spec.json",
+      "kind": "new — test-time tsconfig including test/ directory",
+      "lines": "+12"
+    },
+    {
+      "file": "libs/data/store/store-adapter/project.json",
+      "kind": "new — nx project config with build, typecheck, test, lint targets",
+      "lines": "+57"
+    },
+    {
+      "file": "libs/data/store/store-adapter/vitest.config.ts",
+      "kind": "new — vitest config with 30s timeout",
+      "lines": "+9"
+    },
+    {
+      "file": "libs/data/store/store-adapter/src/types.ts",
+      "kind": "new — StoreAdapter interface, AdapterTransaction, AdapterConfig, RunResult, GetResult, AllResult",
+      "lines": "+121"
+    },
+    {
+      "file": "libs/data/store/store-adapter/src/sqlite-adapter.ts",
+      "kind": "new — SqliteAdapter wrapping better-sqlite3 with LRU prepared statement cache (256 entries), sync-throwing for transaction safety",
+      "lines": "+288"
+    },
+    {
+      "file": "libs/data/store/store-adapter/src/turso-adapter.ts",
+      "kind": "new — TursoAdapter with lazy @libsql/client loading, explicit BEGIN/COMMIT/ROLLBACK transactions, adapter-level readonly enforcement, multi-statement exec() splitting for libsql client limitation",
+      "lines": "+262"
+    },
+    {
+      "file": "libs/data/store/store-adapter/src/factory.ts",
+      "kind": "new — createStoreAdapter auto-detection, createSqliteAdapter, createSqliteAdapterFromHandle, createTursoAdapter",
+      "lines": "+91"
+    },
+    {
+      "file": "libs/data/store/store-adapter/src/errors.ts",
+      "kind": "new — duck-typed error helpers: isUniqueConstraintError, isForeignKeyError, dbErrorCode, isDatabaseError — no driver imports",
+      "lines": "+60"
+    },
+    {
+      "file": "libs/data/store/store-adapter/src/mock-adapter.ts",
+      "kind": "new — In-memory MockStoreAdapter for unit tests with basic SQL parsing",
+      "lines": "+284"
+    },
+    {
+      "file": "libs/data/store/store-adapter/src/index.ts",
+      "kind": "new — barrel re-exports of all public symbols",
+      "lines": "+28"
+    },
+    {
+      "file": "libs/data/store/store-adapter/test/contract.test.ts",
+      "kind": "new — 51 contract tests running against both SqliteAdapter and TursoAdapter (file: mode)",
+      "lines": "+432"
+    },
+    {
+      "file": "libs/data/store/store-adapter/README.md",
+      "kind": "new — public API docs with migration guide, transaction examples, and 3rd-party consumer patterns",
+      "lines": "+157"
+    },
+    {
+      "file": "package.json",
+      "kind": "modified — added @libsql/client as root devDependency for TursoAdapter tests",
+      "lines": "+1"
+    },
+    {
+      "file": "pnpm-lock.yaml",
+      "kind": "modified — relock after adding @libsql/client devDependency",
+      "lines": "+220 / -7"
+    }
+  ],
+
+  "tests": {
+    "project": "store-adapter",
+    "command": "npx nx test store-adapter",
+    "passed": 51,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Tests  51 passed (51)"
+  },
+
+  "lint": {
+    "passed": true
+  },
+
+  "build": {
+    "passed": true
+  },
+
+  "verification": {
+    "lint": "PASS — npx nx lint store-adapter (0 errors)",
+    "build": "PASS — npx nx build store-adapter (tsc compiles cleanly, all .d.ts/.js emitted)",
+    "test": "PASS — 51/51 tests passing across SqliteAdapter and TursoAdapter (file:)",
+    "typecheck": "IMPLICIT — tsc build includes full type checking with strict + exactOptionalPropertyTypes"
+  },
+
+  "issues": [],
+
+  "handoff_notes": [
+    "SqliteAdapter transaction callbacks MUST be synchronous — async callbacks throw TypeError. This is a fundamental better-sqlite3 constraint.",
+    "TursoAdapter exec() splits multi-statement SQL on semicolons and executes each statement individually because @libsql/client.execute() only runs the first statement.",
+    "SqliteAdapter execute methods use Promise.resolve() wrapping WITHOUT the async keyword — this ensures SQL errors propagate synchronously for transaction rollback, while 'closed' and 'readonly' errors become Promise rejections for await compatibility.",
+    "TursoAdapter lazily loads @libsql/client via dynamic import() on first use — consumers who only use SqliteAdapter never load the Turso driver.",
+    "The @libsql/client dependency was added as a root devDependency (not in store-adapter's own devDependencies) because pnpm's --filter doesn't yet recognize the new nx project. This can be moved to the package's devDependencies once nx recognizes the project.",
+    "sqlite-vec cannot be loaded with TursoAdapter — different native binding ABI. Consumer code must narrow to SqliteAdapter before calling unwrap().",
+    "The `pragmaGet` return type is `Promise<unknown>` on the interface — SqliteAdapter returns whatever better-sqlite3's pragma() returns, TursoAdapter extracts the first column of the first row."
+  ],
+
+  "backlog_entries": []
+}

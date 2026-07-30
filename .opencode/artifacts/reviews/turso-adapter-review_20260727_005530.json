@@ -1,0 +1,137 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "flash-reviewer",
+  "task_id": "turso-adapter-review",
+  "label": "StoreAdapter migration correctness review — vector-store and hybrid-search",
+  "reviewed_at": "2026-07-27T00:55:30.000Z",
+  "files_reviewed": [
+    "libs/data/vectors/vector-store/src/index.ts",
+    "libs/data/vectors/vector-store/src/vector-store.spec.ts",
+    "libs/data/search/hybrid-search/src/index.ts",
+    "libs/data/search/hybrid-search/src/hybrid-search.spec.ts",
+    "libs/data/store/store-adapter/src/types.ts",
+    "libs/data/store/store-adapter/src/sqlite-adapter.ts",
+    "libs/data/store/store-adapter/src/turso-adapter.ts",
+    "libs/data/store/store-adapter/src/mock-adapter.ts",
+    "libs/data/store/store-adapter/src/factory.ts",
+    "libs/data/graph/graph-store/src/index.ts"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": {
+      "passed": 127,
+      "failed": 21,
+      "skipped": 0
+    },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "correctness",
+      "file": "libs/data/search/hybrid-search/src/hybrid-search.spec.ts",
+      "line": 451,
+      "description": "SqliteVectorBackend constructor called with raw better-sqlite3.Database instead of StoreAdapter. Constructor accesses adapter.capabilities.nativeVectors which throws TypeError: 'Cannot read properties of undefined (reading \"nativeVectors\")' because Database objects have no 'capabilities' property. This is the root cause of 15 test failures in hybrid-search.spec.ts.",
+      "fix_sketch": "Construct an SqliteAdapter wrapping the Database first, then pass the adapter: const adapter = createSqliteAdapter(db); const store = new SqliteVectorBackend(adapter);"
+    },
+    {
+      "severity": "critical",
+      "category": "correctness",
+      "file": "libs/data/search/hybrid-search/src/hybrid-search.spec.ts",
+      "line": 457,
+      "description": "SqliteGraphBackend constructor called with raw better-sqlite3.Database instead of StoreAdapter. The migrated GraphBackend interface requires a StoreAdapter; all GraphBackend methods (executeGet, executeAll, writeNode, etc.) delegate to the adapter, causing 'this.adapter.executeGet is not a function' errors at runtime.",
+      "fix_sketch": "Same pattern as createTestVecStore: const adapter = createSqliteAdapter(db); const store = new SqliteGraphBackend(adapter); Also add await store.applySchema(); since applySchema() is now async."
+    },
+    {
+      "severity": "critical",
+      "category": "correctness",
+      "file": "libs/data/search/hybrid-search/src/hybrid-search.spec.ts",
+      "lines": [475, 586, 611, 613, 693],
+      "description": "graph.writeNode() returns Promise<number> (GraphBackend is now fully async) but all calls in tests lack 'await'. The return value (a Promise) is passed directly to vec.upsert() as the node id, causing 'SQLite3 can only bind numbers, strings, bigints, buffers, and null' because [object Promise] cannot be bound to an INTEGER column.",
+      "fix_sketch": "Add 'await' to all graph.writeNode() calls: const id = await graph.writeNode(content, meta);"
+    },
+    {
+      "severity": "critical",
+      "category": "correctness",
+      "file": "libs/data/vectors/vector-store/src/vector-store.spec.ts",
+      "line": 324,
+      "description": "createGraphBackend(db) passes a raw better-sqlite3.Database but the factory now expects StoreAdapter. GraphBackend methods fail because the raw Database lacks executeGet/executeAll/executeRun etc. The comment on line 323 says 'Phase 1: graph-store not yet migrated to StoreAdapter — pass unwrapped db' — this comment is stale; the migration is complete.",
+      "fix_sketch": "Replace db parameter with the StoreAdapter: graph = createGraphBackend(adapter); where adapter is the StoreAdapter created in makeTmpDb()."
+    },
+    {
+      "severity": "critical",
+      "category": "correctness",
+      "file": "libs/data/vectors/vector-store/src/vector-store.spec.ts",
+      "lines": [326, 330],
+      "description": "graph.writeNode() now returns Promise<number> but is called without 'await'. The return value (a Promise) is used as the node id for vec.upsert(), causing 'SQLite3 can only bind numbers, strings, bigints, buffers, and null' errors. This is the root cause of 6 test failures.",
+      "fix_sketch": "Add 'await' to both writeNode calls (lines 326 and 330), and make the containing callback async."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/vectors/vector-store/src/index.ts",
+      "lines": [143, 200, 359],
+      "description": "Three unsafe 'as SqliteAdapter' casts that bypass the StoreAdapter abstraction. The constructor (line 200) and openVectorStore (line 359) and BruteForceBackend.search (line 143) all cast the StoreAdapter to SqliteAdapter and call unwrap() to get the raw better-sqlite3 handle. If a TursoAdapter is passed, unwrap() returns the wrong type (@tursodatabase/database.Database) and all subsequent queries crash. This makes VectorBackend non-portable — it is inherently synchronous and cannot support Turso/libsql without either making the interface async or maintaining the sync-only coupling.",
+      "fix_sketch": "The VectorBackend interface must be made async (Promise-returning) to support Turso. StoreAdapter methods are all async. Alternatively, pass the raw better-sqlite3.Database directly instead of StoreAdapter to be honest about the coupling. The current design accepts StoreAdapter, immediately unwraps, and then ignores it — this is deceptive."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "libs/data/vectors/vector-store/src/index.ts",
+      "line": 197,
+      "description": "Logic bug: adapter.capabilities.nativeVectors || true always evaluates to true. When nativeVectors is false, false || true = true, unconditionally overriding the adapter's advertised capability. The intent appears to be 'default to true if not set' but the || operator makes it a blanket override.",
+      "fix_sketch": "Change to: vecEnabled: adapter.capabilities.nativeVectors ?? true (nullish coalescing) to preserve a false value while defaulting to true when the property is absent."
+    },
+    {
+      "severity": "high",
+      "category": "test-coverage",
+      "file": "libs/data/vectors/vector-store/src/vector-store.spec.ts",
+      "line": 33,
+      "description": "Missing await on adapter.close() in cleanup. adapter.close() returns Promise<void> (StoreAdapter interface is fully async). The temp directory is deleted before the close completes. SqliteAdapterImpl's close is effectively synchronous under the hood, so this works by accident, but it would fail with TursoAdapter whose close is truly async.",
+      "fix_sketch": "Make cleanup async: const cleanup = async () => { try { await adapter.close(); } catch { /* ignore */ } fs.rmSync(dir, { ... }); };"
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/search/hybrid-search/src/hybrid-search.spec.ts",
+      "lines": [458, 690],
+      "description": "store.applySchema() is now async (returns Promise<void>) but called without 'await'. The test at line 689-690 instantiates SqliteGraphBackend directly (also with a raw Database instead of StoreAdapter) and calls applySchema() without await. Schema may not be fully applied before subsequent operations.",
+      "fix_sketch": "Add 'await' to all applySchema() calls and ensure the containing functions are async."
+    },
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/search/hybrid-search/src/hybrid-search.spec.ts",
+      "line": 711,
+      "description": "genericGraph.getNode(r.id) returns Promise<NodeRecord | null> but the test calls it without await. The test assertion on the returned object (expecting kind, tags, metadata) will fail because it receives a Promise object instead of a NodeRecord.",
+      "fix_sketch": "Add 'await': const stored = await genericGraph.getNode(id);"
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "file": "libs/data/vectors/vector-store/src/index.ts",
+      "line": 125,
+      "description": "SimilarityBackend.search accepts 'adapter: StoreAdapter' but the only consumer (BruteForceBackend) immediately casts it to SqliteAdapter and calls unwrap(). The adapter parameter is an interface leak — it serves only as a handle to extract the raw better-sqlite3 database. This should either accept the raw handle directly or eliminate the cast by constructing BruteForceBackend with the db handle.",
+      "fix_sketch": "Pass the better-sqlite3.Database handle to BruteForceBackend's constructor instead of passing StoreAdapter through the method call, or make SimilarityBackend.search use 'db: import('better-sqlite3').Database'."
+    },
+    {
+      "severity": "info",
+      "category": "invariant",
+      "file": "libs/data/vectors/vector-store/src/index.ts",
+      "lines": [110, 164],
+      "description": "Architectural limitation: BruteForceBackend JOINs against the 'node' table (line 164) which assumes the graph-store's table lives in the same SQLite database as the vector tables. This is by design (documented in tests lines 318-322) but means the filtered-KNN pushdown can never work with TursoAdapter (where the node table would be on a remote database).",
+      "fix_sketch": "No immediate fix required — documented design constraint. If cross-adapter filtered-KNN is needed, the SimilarityBackend interface would need to accept pre-resolved IDs from a GraphBackend query."
+    }
+  ],
+  "summary": {
+    "critical": 5,
+    "high": 3,
+    "medium": 2,
+    "low": 1,
+    "info": 1
+  },
+  "backlog_entries": [
+    "BL-TURSO-001 — VectorBackend interface is synchronous; cannot support TursoAdapter without making it async",
+    "BL-TURSO-002 — Tests for vector-store and hybrid-search not updated for StoreAdapter migration (21 test failures)"
+  ]
+}
