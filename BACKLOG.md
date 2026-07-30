@@ -20,7 +20,7 @@ node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.
 
 | Priority | Open items |
 |---|---|
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325 |
 | **MEDIUM** | BL-99, BL-104, BL-105, BL-312, BL-228, BL-259, BL-296, BL-306, BL-307, BL-308, BL-274, BL-282, BL-285, BL-291, BL-300, BL-315, BL-317 |
 
 ## Audit
@@ -972,3 +972,25 @@ These three symptom groups may share one root cause (an in-flight adapter/handle
 **Severity:** HIGH — blocks a clean `npx nx test memory-server` run (the mandated pre-merge gate) independent of any single feature branch; 8/147 tests red as of this filing.
 
 Citations: [wip/turso-live-metrics, backend-developer, claude, embed-backfill-reentrancy-fix, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/enrich-reentrancy.spec.ts, 2: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (git diff --name-only confirms sole touched file), 3: extensions/bundles/sox-memory-bundle/members/memory-server/recall-sqlite.test.ts:61-66, 4: libs/memory-core/src/write.ts:285, 5: libs/memory-core/src/db.ts:325-332, 6: extensions/bundles/sox-memory-bundle/members/memory-server/src/memory-tools.spec.ts:193-195, 7: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:1114-1118 and extensions/bundles/sox-memory-bundle/members/memory-server/src/permission-guard.spec.ts:343-345]
+
+---
+
+### BL-325 — `memory-core` (not `memory-server`): 18 spec files never `await` the now-async `openDb()`/`WriteQueue.forPath()`, crashing with `TypeError: adapter.executeGet is not a function` / `queue.enqueue is not a function` — **Open (HIGH)** (2026-07-30)
+
+**Found while:** implementing persisted structured logging/tracing for memory-server (BL-320, this session), running `npx nx test memory-core --skip-nx-cache` to verify the new instrumentation didn't regress anything.[1] **Confirmed NOT caused by that work**: `git diff --stat -- libs/memory-core/src/db.ts` shows zero uncommitted diff (another agent's concurrent "restore lost Turso wiring" commit `2ad196f` already folded in the telemetry wrapper), and `git log --follow -p -- libs/memory-core/src/db.ts` shows `openDb()`'s signature changed from `export function openDb(dbPath): Database.Database` to `export async function openDb(dbPath): Promise<StoreAdapter>` as part of the StoreAdapter migration itself (commit history around `65171ad`/`83cd0b0`) — i.e. long before this session's edits.[2] Same root cause as `WriteQueue.forPath`, which is `static async forPath(...): Promise<WriteQueue>` and likewise never awaited by these same specs.[3]
+
+**Distinct from BL-324**: BL-324 catalogs 8 failures in the **`memory-server`** package (`recall-sqlite.test.ts`, `async-embed.spec.ts`, `memory-tools.spec.ts`, `permission-guard.spec.ts`). This item is the same root cause (the StoreAdapter migration's sync→async signature change) but manifesting across **18 spec files in the `memory-core` package itself** — a much larger blast radius that pre-dates and is independent of BL-324's filing. Also distinct from BL-323 (the sqlite-vec `default`-export destructure bug one step earlier in `openDb`) — BL-325 fires even when BL-323 is fixed, because the test files never even `await` the Promise `openDb()`/`forPath()` return in the first place, so they hold a bare `Promise<StoreAdapter>`/`Promise<WriteQueue>` and call methods that don't exist on a Promise.
+
+**Affected files** (each does `const db = openDb(...)` or `const q = WriteQueue.forPath(...)` without `await`, then calls `.executeGet`/`.enqueue`/`.walBytes`/etc. on the Promise):
+`backup.spec.ts`, `compaction.spec.ts`, `concurrency-harness.spec.ts`, `db.spec.ts`, `embed-pipeline-metrics.spec.ts`, `embed-provenance.spec.ts`, `errors.spec.ts`, `export.spec.ts`, `invalidate.spec.ts`, `outbox-queue.spec.ts`, `quota.spec.ts`, `recall.spec.ts`, `reembed.spec.ts`, `update.spec.ts`, `write-pipeline.spec.ts`, `write-queue-backpressure.spec.ts`, `write-queue.spec.ts`, `write.spec.ts` (the last three mix both patterns — some call sites in the same file DO await correctly, e.g. `write.spec.ts` has both `await openDb(...)` and bare `openDb(...)` sites, so it partially passes).[4]
+
+**Representative symptoms observed directly:**
+- `write-queue.spec.ts`: `TypeError: queue.enqueue is not a function`, `TypeError: queue.walBytes is not a function`, `TypeError: queue.walCheckpoint is not a function` — 26/40 tests failed in this file alone.[5]
+- `embed-pipeline-metrics.spec.ts`: `TypeError: Cannot read properties of undefined (reading 'load')` (compounds with BL-323) then `TypeError: Cannot read properties of undefined (reading 'cleanup')` in `afterEach` once `ctx` never resolved — 12/16 tests failed.[6]
+- `embed-provenance.spec.ts` / `write-pipeline.spec.ts`: `TypeError: adapter.executeGet is not a function` inside `memoryWritePhaseA`, and `TypeError: tx.executeGet is not a function` inside `applyEmbedding` — same shape as BL-324's symptom group 1, but in memory-core's own specs rather than memory-server's.[7]
+
+**Fix sketch:** mechanical, file-by-file: add `await` at every `openDb(...)`/`WriteQueue.forPath(...)` call site inside these 18 files (including `beforeEach`/helper functions returning a typed object whose declared type must also change from `Database.Database`/sync to the async `Promise`-resolved type). Given the scale (18 files) this deserves its own dedicated pass with a red→green re-run of the full `memory-core` suite — not a drive-by fix bundled into an unrelated feature commit, per this repo's own review discipline.
+
+**Severity:** HIGH — blocks a clean `npx nx test memory-core --skip-nx-cache` run (the mandated pre-merge gate for this package) independent of any single feature branch; well over 200 individual test cases red as of this filing, across both this item and BL-323/BL-324's overlapping symptoms.
+
+Citations: [wip/turso-live-metrics, logging, claude, BL-320-persisted-logging-tracing, 1: libs/memory-core/src/telemetry.spec.ts, 2: libs/memory-core/src/db.ts (git log --follow -p shows the sync→async signature change predates this session), 3: libs/memory-core/src/write-queue.ts:353, 4: libs/memory-core/src/write-queue.spec.ts, libs/memory-core/src/write-pipeline.spec.ts, libs/memory-core/src/embed-provenance.spec.ts, libs/memory-core/src/embed-pipeline-metrics.spec.ts, libs/memory-core/src/write.spec.ts (grep for `= openDb(` / `= WriteQueue.forPath(` without a preceding `await` across these files), 5: libs/memory-core/src/write-queue.spec.ts:54,82,103,131,206,241,275,286,314, 6: libs/memory-core/src/embed-pipeline-metrics.spec.ts:74,118,129, 7: libs/memory-core/src/embed-provenance.spec.ts:70,84 and libs/memory-core/src/write-pipeline.spec.ts:62,132]
