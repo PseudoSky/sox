@@ -82,7 +82,6 @@ import {
 } from '@adhd/sox-memory-core';
 import type { PendingEmbed, PhaseAOutcome, WriteError, WriteResult } from '@adhd/sox-memory-core';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import type Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -867,18 +866,25 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         // and the 5k+ embed backlog is never healed or enriched.
         const adapter = await getDb(resolvedPath);
         openedPaths.add(resolvedPath);
-        const rawDb = adapter.unwrap() as Database.Database;
+
+        // BUG A fix: these were unconditional raw better-sqlite3 `.prepare()`
+        // calls via `adapter.unwrap()`. On Turso, `unwrap()` returns the
+        // `@tursodatabase/database` handle — not a better-sqlite3 Database —
+        // whose query methods are async, so the synchronous `.prepare().get()`
+        // API throws/misbehaves. Route every read through the async
+        // StoreAdapter surface (`executeGet`), which is correct for both
+        // sqlite and turso.
 
         // Queue depth (pending enrichments)
-        const qRow = rawDb
-          .prepare<[], { q: number }>('SELECT COUNT(*) AS q FROM organizer_queue WHERE done_at IS NULL')
-          .get();
+        const qRow = await adapter.executeGet<{ q: number }>(
+          'SELECT COUNT(*) AS q FROM organizer_queue WHERE done_at IS NULL',
+        );
         const queueDepth = qRow?.q ?? 0;
 
         // Enrichment watermark (latest enrich_ver)
-        const eRow = rawDb
-          .prepare<[], { ev: string | null }>('SELECT MAX(enrich_ver) AS ev FROM node WHERE enrich_ver IS NOT NULL')
-          .get();
+        const eRow = await adapter.executeGet<{ ev: string | null }>(
+          'SELECT MAX(enrich_ver) AS ev FROM node WHERE enrich_ver IS NOT NULL',
+        );
         const enrichmentWatermark = eRow?.ev ?? null;
 
         // Queue-drain SLO (BL-172 follow-on): expose stall-detection timestamps +
@@ -886,14 +892,12 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         // NOTE: enrichment_watermark above is MAX(enrich_ver) over nodes — the
         // SYNCHRONOUS write-path enrichment stamps it; it does NOT prove the
         // async consumer is alive. These fields do.
-        const oldRow = rawDb
-          .prepare<[], { o: string | null }>(
-            'SELECT MIN(enqueued) AS o FROM organizer_queue WHERE done_at IS NULL',
-          )
-          .get();
-        const doneRow = rawDb
-          .prepare<[], { d: string | null }>('SELECT MAX(done_at) AS d FROM organizer_queue')
-          .get();
+        const oldRow = await adapter.executeGet<{ o: string | null }>(
+          'SELECT MIN(enqueued) AS o FROM organizer_queue WHERE done_at IS NULL',
+        );
+        const doneRow = await adapter.executeGet<{ d: string | null }>(
+          'SELECT MAX(done_at) AS d FROM organizer_queue',
+        );
         const queueOldestPendingAt = oldRow?.o ?? null;
         const queueLastDoneAt = doneRow?.d ?? null;
 
@@ -1023,7 +1027,13 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
   if (denied) return denied;
 
   const adapter = await getDb(dbPath);
-  const rawDb = (adapter as any).unwrap() as Database.Database;
+  // BUG A fix: this used to unconditionally unwrap() to a raw better-sqlite3
+  // handle for every tool call — broken on Turso, whose unwrap() returns an
+  // async `@tursodatabase/database` handle instead. Every call site below now
+  // goes through the async StoreAdapter surface (adapter.executeGet/
+  // executeAll/executeRun), which is correct for both backends. See BL-324/
+  // team-lead's "BUG A" report for the full live-reproduction trace
+  // (memory_recall listing threw "rows is not iterable" on Turso).
   openedPaths.add(dbPath);
 
   switch (name) {
@@ -1335,22 +1345,26 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           : 'n.t_invalid IS NULL';
         const validityParams = asOf ? [asOf, asOf] : [];
 
-          const rows = rawDb
-          .prepare<unknown[], {
-            rowid: number; uid: string; content: string | null; importance: number;
-            t_valid: string | null; agent_id: string | null; content_hash: string | null;
-            summary: string | null; topic: string | null; tags: string | null;
-            project_path: string | null; t_invalid: string | null; t_created: string;
-          }>(
-            `SELECT n.rowid, n.uid, n.content, n.importance, n.t_valid, n.agent_id,
-                    n.content_hash, n.summary, n.topic, n.tags, n.project_path,
-                    n.t_invalid, n.t_created
-             FROM node n
-             WHERE n.kind = 'episode' AND ${validitySql}${agentSql}${filterSql}
-             ORDER BY n.importance DESC, n.t_created DESC
-             LIMIT ?`,
-          )
-          .all(...validityParams, ...agentParams, ...filterParams, limit);
+        // BUG A fix: was a synchronous rawDb.prepare().all() call — on Turso,
+        // unwrap() returns an async handle whose query methods return
+        // Promises, so `rows` bound to an unawaited Promise and the `for`
+        // loop below threw "rows is not iterable". Route through the async
+        // StoreAdapter surface (correct for both sqlite and turso).
+        const { rows } = await adapter.executeAll<{
+          rowid: number; uid: string; content: string | null; importance: number;
+          t_valid: string | null; agent_id: string | null; content_hash: string | null;
+          summary: string | null; topic: string | null; tags: string | null;
+          project_path: string | null; t_invalid: string | null; t_created: string;
+        }>(
+          `SELECT n.rowid, n.uid, n.content, n.importance, n.t_valid, n.agent_id,
+                  n.content_hash, n.summary, n.topic, n.tags, n.project_path,
+                  n.t_invalid, n.t_created
+           FROM node n
+           WHERE n.kind = 'episode' AND ${validitySql}${agentSql}${filterSql}
+           ORDER BY n.importance DESC, n.t_created DESC
+           LIMIT ?`,
+          [...validityParams, ...agentParams, ...filterParams, limit],
+        );
 
         // BL-241: `token_budget` was accepted into the schema and silently ignored on
         // this branch (a plain SQL `LIMIT` by row count), while the query path
@@ -1436,15 +1450,15 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
 
       // Augment each result with v1 enrichment fields
       const enrichedResults = await Promise.all(recallResult.results.map(async (r) => {
-        // Fetch enrichment columns for this uid
-        const nodeRow = rawDb
-          .prepare<[string], {
-            rowid: number; summary: string | null; topic: string | null;
-            tags: string | null; project_path: string | null; t_invalid: string | null;
-          }>(
-            `SELECT rowid, summary, topic, tags, project_path, t_invalid FROM node WHERE uid = ? LIMIT 1`,
-          )
-          .get(r.uid);
+        // Fetch enrichment columns for this uid. BUG A fix: was a synchronous
+        // rawDb.prepare().get() call — async StoreAdapter surface instead.
+        const nodeRow = await adapter.executeGet<{
+          rowid: number; summary: string | null; topic: string | null;
+          tags: string | null; project_path: string | null; t_invalid: string | null;
+        }>(
+          `SELECT rowid, summary, topic, tags, project_path, t_invalid FROM node WHERE uid = ? LIMIT 1`,
+          [r.uid],
+        );
 
         return {
           ...r,
@@ -1465,12 +1479,12 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       if (filters) {
         const { sql: filterSql, params: filterParams } = buildFiltersClause(filters);
         if (filterSql) {
-          // Collect the uids that pass the SQL filter
-          const uidsRaw = rawDb
-            .prepare<unknown[], { uid: string }>(
-              `SELECT n.uid FROM node n WHERE n.uid IN (${enrichedResults.map(() => '?').join(',')})${filterSql}`,
-            )
-            .all(...enrichedResults.map((r) => r.uid), ...filterParams);
+          // Collect the uids that pass the SQL filter. BUG A fix: was a
+          // synchronous rawDb.prepare().all() call.
+          const { rows: uidsRaw } = await adapter.executeAll<{ uid: string }>(
+            `SELECT n.uid FROM node n WHERE n.uid IN (${enrichedResults.map(() => '?').join(',')})${filterSql}`,
+            [...enrichedResults.map((r) => r.uid), ...filterParams],
+          );
           const passingUids = new Set(uidsRaw.map((r) => r.uid));
           filteredResults = enrichedResults.filter((r) => passingUids.has(r.uid));
         }
@@ -1533,29 +1547,29 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       if (communityUidArg) {
         commUid = communityUidArg;
       } else {
-        const viaMemberOf = rawDb
-          .prepare<[number, string], { uid: string }>(
-            `SELECT n2.uid FROM node n1
-             JOIN edge e ON e.src = n1.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
-             JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.level = ? AND n2.t_invalid IS NULL
-               AND (json_extract(n2.meta, '$.cluster_scope.kind') IS NULL
-                    OR json_extract(n2.meta, '$.cluster_scope.kind') = 'global')
-             WHERE n1.uid = ? AND n1.t_invalid IS NULL
-             LIMIT 1`,
-          )
-          .get(level, entityUid!);
+        // BUG A fix: was a synchronous rawDb.prepare().get() call.
+        const viaMemberOf = await adapter.executeGet<{ uid: string }>(
+          `SELECT n2.uid FROM node n1
+           JOIN edge e ON e.src = n1.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+           JOIN node n2 ON n2.rowid = e.dst AND n2.kind = 'community' AND n2.level = ? AND n2.t_invalid IS NULL
+             AND (json_extract(n2.meta, '$.cluster_scope.kind') IS NULL
+                  OR json_extract(n2.meta, '$.cluster_scope.kind') = 'global')
+           WHERE n1.uid = ? AND n1.t_invalid IS NULL
+           LIMIT 1`,
+          [level, entityUid!],
+        );
         if (!viaMemberOf) {
           return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'E_NOT_FOUND', entity_uid: entityUid }) }] };
         }
         commUid = viaMemberOf.uid;
       }
 
-      const commRow = rawDb
-        .prepare<[string], { rowid: number; uid: string; name: string | null; meta: string | null; t_created: string }>(
-          `SELECT rowid, uid, name, meta, t_created FROM node
-           WHERE uid = ? AND kind = 'community' AND t_invalid IS NULL`,
-        )
-        .get(commUid);
+      // BUG A fix: was a synchronous rawDb.prepare().get() call.
+      const commRow = await adapter.executeGet<{ rowid: number; uid: string; name: string | null; meta: string | null; t_created: string }>(
+        `SELECT rowid, uid, name, meta, t_created FROM node
+         WHERE uid = ? AND kind = 'community' AND t_invalid IS NULL`,
+        [commUid],
+      );
       if (!commRow) {
         return {
           isError: true,
@@ -1573,16 +1587,16 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         } catch { /* malformed */ }
       }
 
-      const members = rawDb
-        .prepare<[number], { uid: string; name: string | null; summary: string | null; topic: string | null; importance: number; t_created: string; project_path: string | null; tags: string | null }>(
-          `SELECT n.uid, n.name, n.summary, n.topic, n.importance, n.t_created, n.project_path, n.tags
-           FROM edge e
-           JOIN node n ON n.rowid = e.src
-           WHERE e.dst = ? AND e.rel = 'MEMBER_OF'
-             AND e.t_invalid IS NULL AND n.t_invalid IS NULL
-           ORDER BY n.importance DESC`,
-        )
-        .all(commRow.rowid);
+      // BUG A fix: was a synchronous rawDb.prepare().all() call.
+      const { rows: members } = await adapter.executeAll<{ uid: string; name: string | null; summary: string | null; topic: string | null; importance: number; t_created: string; project_path: string | null; tags: string | null }>(
+        `SELECT n.uid, n.name, n.summary, n.topic, n.importance, n.t_created, n.project_path, n.tags
+         FROM edge e
+         JOIN node n ON n.rowid = e.src
+         WHERE e.dst = ? AND e.rel = 'MEMBER_OF'
+           AND e.t_invalid IS NULL AND n.t_invalid IS NULL
+         ORDER BY n.importance DESC`,
+        [commRow.rowid],
+      );
       if (memberCount === 0) memberCount = members.length;
 
       return {
