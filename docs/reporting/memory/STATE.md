@@ -102,25 +102,18 @@ succeeds (BL-235), and that has already taken this server down once.
 
 ---
 
-## Deploy procedure (learned the hard way — BL-372)
+## Deploy procedure
 
-`launchctl kickstart -k` restarts the **proxy only**. The backend survives as an orphan
-(`PPID 1`) and keeps serving the old bundle, while every check reads green. The full sequence:
+**Canonical: [`docs/spec/service-lifecycle.md` §9.4a](../../spec/service-lifecycle.md) —
+`[inv:deploy-verified]`.** Do not restate it here or anywhere else; that is the one copy.
 
-```
-1. snapshot db + WAL + dist/           # BL-235, BL-330
-2. npx nx build memory-server
-3. npx nx run registry:sync-index      # else smoke fails on CHECKSUM MISMATCH
-4. launchctl kickstart -k gui/$(id -u)/com.sox.user.memory-server
-5. kill -TERM <backend-pid>            # ← REQUIRED. kickstart alone does not deploy.
-6. verify memory_ping reports the NEW artifact hash   # ← the only real proof
-7. verify behaviour (fts_match, recall provenance)
-```
-
-**Step 6 is not optional.** Steps 2–4 all succeeded on the first attempt while the old code kept
-running.
-
----
+Two things it exists to stop, both of which fired on 2026-07-31:
+- `launchctl kickstart -k` restarts the **proxy only**; the backend survives as a `PPID 1` orphan
+  still serving the old bundle while every check reads green. `kill -TERM <backend-pid>` is
+  required, and the **artifact hash** is the only proof (BL-372).
+- `soxe service enable` rebuilds the unit env **from your shell** and silently drops what it does
+  not find — it dropped both live emergency brakes while printing success. Export what you intend
+  to keep, and diff the plist (BL-375).
 
 ## Traps that cost real time (don't rediscover these)
 
