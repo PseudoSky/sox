@@ -230,9 +230,7 @@ describe('E_DEDUP and client_request_id replay are identical pre/post split', ()
     expect(replayOut.result.episode_uid).toBe(firstOut.result.episode_uid);
     expect(replayOut.pending).toBeNull(); // the original write owns the vector
 
-    const count = ctx.db
-      .prepare<[], { c: number }>("SELECT COUNT(*) AS c FROM node WHERE kind='episode'")
-      .get()!;
+    const count = await ctx.db.executeGet<{ c: number }>("SELECT COUNT(*) AS c FROM node WHERE kind='episode'")!;
     expect(count.c).toBe(1);
   });
 });
@@ -311,16 +309,10 @@ describe('deferred E8 near-dup runs in Phase B', () => {
 
     const newerRowid = rowidFor(ctx.db, newerOut.result.episode_uid);
     const olderRowid = rowidFor(ctx.db, olderUid);
-    const edge = ctx.db
-      .prepare<[number, number], { rowid: number }>(
-        `SELECT rowid FROM edge WHERE src = ? AND dst = ? AND rel = 'SAME_AS' AND t_expired IS NULL`,
-      )
-      .get(newerRowid, olderRowid);
+    const edge = await ctx.db.executeGet<{ rowid: number }>(`SELECT rowid FROM edge WHERE src = ? AND dst = ? AND rel = 'SAME_AS' AND t_expired IS NULL`, [newerRowid, olderRowid]);
     expect(edge).toBeDefined();
 
-    const olderNode = ctx.db
-      .prepare<[string], { t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?')
-      .get(olderUid)!;
+    const olderNode = await ctx.db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [olderUid])!;
     expect(olderNode.t_invalid).not.toBeNull(); // cosine >= 0.95 → invalidated
   });
 });
@@ -358,9 +350,7 @@ describe('applyEmbedding — node lifecycle between phases', () => {
     const vec = await embed(out.pending!.text);
     expect(applyEmbedding(ctx.db, out.pending!, vec).status).toBe('applied');
     expect(applyEmbedding(ctx.db, out.pending!, vec).status).toBe('exists');
-    const rows = ctx.db
-      .prepare<[number], { c: number }>('SELECT COUNT(*) AS c FROM vec_node WHERE node_id = ?')
-      .get(out.pending!.rowid)!;
+    const rows = await ctx.db.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM vec_node WHERE node_id = ?', [out.pending!.rowid])!;
     expect(rows.c).toBe(1);
   });
 });

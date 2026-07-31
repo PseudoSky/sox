@@ -153,38 +153,30 @@ afterEach(async () => {
 // ── 1. Migration idempotency ──────────────────────────────────────────────────
 
 describe('BL-88 migration idempotency — embed_model column on node table', () => {
-  it('embed_model column is present on a fresh store (created by openDb)', () => {
-    const cols = ctx.db
-      .prepare<[], { name: string }>('PRAGMA table_info(node)')
-      .all()
+  it('embed_model column is present on a fresh store (created by openDb)', async () => {
+    const cols = (await ctx.db.executeAll<{ name: string }>('PRAGMA table_info(node)')).rows
       .map((c) => c.name);
     expect(cols).toContain('embed_model');
   });
 
-  it('migrateAddColumn is idempotent when column already exists', () => {
+  it('migrateAddColumn is idempotent when column already exists', async () => {
     // Second call should not throw — col already present.
     expect(() => migrateAddColumn(ctx.db, 'node', 'embed_model', 'TEXT')).not.toThrow();
     // Still present and the schema is intact.
-    const cols = ctx.db
-      .prepare<[], { name: string }>('PRAGMA table_info(node)')
-      .all()
+    const cols = (await ctx.db.executeAll<{ name: string }>('PRAGMA table_info(node)')).rows
       .map((c) => c.name);
     expect(cols).toContain('embed_model');
   });
 
-  it('existing NULL rows are not backfilled when the migration runs', () => {
+  it('existing NULL rows are not backfilled when the migration runs', async () => {
     // Insert a raw node with no embed_model (simulates a pre-BL-88 row).
-    ctx.db.prepare(
-      `INSERT INTO node (uid, kind, content, content_hash, t_created)
-       VALUES ('pre-bl88', 'episode', 'old content', 'hash1', datetime('now'))`,
-    ).run();
+    await ctx.db.executeRun(`INSERT INTO node (uid, kind, content, content_hash, t_created)
+       VALUES ('pre-bl88', 'episode', 'old content', 'hash1', datetime('now'))`);
 
     // Simulate the migration running again on the same store.
     migrateAddColumn(ctx.db, 'node', 'embed_model', 'TEXT');
 
-    const row = ctx.db
-      .prepare<[], { embed_model: string | null }>(`SELECT embed_model FROM node WHERE uid = 'pre-bl88'`)
-      .get();
+    const row = await ctx.db.executeGet<{ embed_model: string | null }>(`SELECT embed_model FROM node WHERE uid = 'pre-bl88'`);
     expect(row?.embed_model).toBeNull(); // NULL is honest — not backfilled.
   });
 });
@@ -221,7 +213,7 @@ describe('BL-88 stamp on write path — applyEmbedding stamps embed_model', () =
     // Phase A commits the node.
     const a = await phaseA(ctx.db, 'bi-temporal stamp test');
     // Invalidate the node between phases.
-    ctx.db.prepare(`UPDATE node SET t_invalid = datetime('now') WHERE uid = ?`).run(a.result.episode_uid);
+    await ctx.db.executeRun(`UPDATE node SET t_invalid = datetime('now') WHERE uid = ?`, [a.result.episode_uid]);
 
     // Apply the vector — should still stamp embed_model (the row is kept bi-temporally).
     const vec = await embed(a.pending!.text);
@@ -440,11 +432,7 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
     expect(result.healed).toBe(2);
 
     // 3 remain with old model (next tick picks them up).
-    const remaining = ctx.db
-      .prepare<[string], { cnt: number }>(
-        `SELECT COUNT(*) AS cnt FROM node WHERE embed_model = ? AND t_invalid IS NULL`,
-      )
-      .get('old-model-v0');
+    const remaining = await ctx.db.executeGet<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM node WHERE embed_model = ? AND t_invalid IS NULL`, ['old-model-v0']);
     expect(remaining?.cnt).toBe(3);
   });
 
