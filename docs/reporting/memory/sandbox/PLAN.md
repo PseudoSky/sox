@@ -2,7 +2,8 @@
 
 > Companion to [`README.md`](./README.md) (the spec). This file is the **ordered build plan**,
 > including every fix that must land *before* a run can be trusted.
-> **Status:** not started. **Owner decision required at P0.4 before G4 can exist.**
+> **Status:** P0 dispatched 2026-07-31. Owner decisions on clustering (BL-326 → BL-349/BL-350),
+> adapter self-repair (BL-352) and tracing (BL-351) are **recorded and closed** — see P0.4, P0.7, P1.0.
 
 ---
 
@@ -32,7 +33,9 @@ us a green dashboard.
 | Per-span timings (`write_to_vector_ms`, `vec_insert_duration_ms`, embed throughput, drain rate) | **packages** → `memory_ping` | BL-319 |
 | Capability + contention + FTS health + EP facts | **packages** → `memory_ping`/`memory_stats` | BL-334 |
 | Lock/queue wait-vs-work accounting | **packages** | BL-322, BL-345 |
-| Integrity detection + repair | **packages** | BL-335/336/337/347/338/341 |
+| Integrity detection + repair | **packages** | BL-352, BL-335/336/337/347/338/341 |
+| Tracing/metrics substrate (spans, wait-vs-work, status export) | **packages** | BL-351 |
+| Pipeline stage isolation (embedding never blocked or dropped) | **packages** | BL-348, BL-349 |
 | Row-level resilience in aggregates | **packages** | BL-343 |
 | Gate ladder, fail-fast sequencing | harness | — |
 | Quiesce protocol | harness | — |
@@ -74,27 +77,31 @@ Every `openDb()` on the sqlite adapter throws.
 unattributable — "is this Turso or is this us?" is exactly the question that consumed this
 migration. A cross-backend run is worth far more than a Turso-only run.
 
-### P0.4 — BL-326: clustering is inert — **OWNER DECISION REQUIRED** · **HIGH**
-`cluster.ts:437-441` short-circuits unconditionally. `incrementalOnly: true` returns empty
-regardless of how many valid vectors exist, and a full pass runs only when an explicit
-`organizer_queue` "enrich" row is pending — which `memory_curate {op:'recluster'}` merely
-*enqueues*, never runs inline.
+### P0.4 — BL-348: enrichment/clustering can block and LOSE an embedding · **CRITICAL**
+*(supersedes the "owner decision required" that stood here — BL-326 is now decided; see below.)*
 
-**Net: the only clustering path an ordinary `memory_write` reaches is the dead stub.**
+The write pipeline has no stage isolation. Embedding, topic enrichment, edge drawing and
+clustering share one path, so a downstream failure can discard a **successfully computed
+embedding**, and a slow stage blocks the pipeline behind it.
 
-**This invalidates the ladder as specced.** G3's "clustering triggered and terminated cleanly"
-would pass *vacuously* — the stub returns empty instantly, and a gate that green-lights a dead
-code path is worse than no gate. G4's "clusters form via the ordinary write path" is red **by
-design, today**, and no amount of corpus tuning changes that.
+**Owner directive, verbatim:** *"the execution of clustering should never block an embedding
+from being written. Failing clustering should never drop an embedding. Embedding vector loss is
+a critical failure."*
 
-BL-326 states this needs an owner decision — it is a design gap, not a typo. The options:
+**Why it blocks:** G2 and G3 assert that vectors persist — G3 specifically under concurrency,
+with enrichment live. Against a pipeline where an unrelated stage can roll back a vector, a
+red is unattributable and a **green is not trustworthy either**, because it only says the
+downstream stages happened not to fail on this run. Embedding+vector persist must be a
+committed stage before any persistence assertion means anything.
 
-- **(a)** Implement the local-neighborhood incremental check (the existing `// TODO: D1.3`).
-- **(b)** Run full passes automatically on a cadence/threshold.
-- **(c)** Neither — accept that clustering requires explicit curation, and G4 asserts the
-  *curated* path only, with the scorecard permanently marking automatic clustering `grey`.
+**Decision recorded (BL-326 → BL-349, BL-350).** Clustering becomes a **backgrounded
+write-triggered association** — enqueued, not awaited; idempotent and coalescing; failure-
+isolated from the embedding commit. The unresolved algorithmic tail (clusters are not
+constant-time splits and do not self-reorganize — splits, merges, drift, orphaning) is filed
+as **BL-350** for research and is explicitly *not* solved by BL-349.
 
-**This is the one thing in the plan I cannot decide for you.** Everything else is engineering.
+**Effect on the ladder:** G4 becomes buildable once BL-349 lands. Until then it stays specified
+and unbuilt, with automatic clustering marked `grey` — never a corpus-attributed red.
 
 ### P0.5 — BL-328: cluster threshold 0.82 may be mis-calibrated for natural prose · **MEDIUM**
 Already filed, and it directly determines §3.2's corpus question. The hand-written corpus
@@ -113,12 +120,34 @@ we file what that limitation means. Do not guess this.
 typecheck, with a known-broken async contract, reproduces the exact conditions that let the
 frozen-`{skip}` bug hide two never-executing cross-backend tests behind a green board.
 
-### P0.7 — BL-347: rebuild the live FTS index · **HIGH**
-Verified fix, 0.26 s, snapshot already taken
-(`~/.memory/memory.db.20260731-132556.pre-fts-rebuild`).
+### P0.7 — BL-352: adapters must verify and self-heal what they generate · **HIGH**
+*(replaces "rebuild the live FTS index" — the manual fix was proposed, verified, and **rejected
+by the owner**.)*
 
-**Fold into the quiesce window** — daemon down, no concurrent writer, snapshot in hand. It is
-the correct moment and costs nothing extra.
+**Owner directive, verbatim:** *"the store adapter migration strategy was designed and built,
+so if the tables are not 100% accurate and resolved when that auto migrator runs that is a
+product defect that should not be manually corrected. … the adapters should be verifying their
+store and migrating any missing data + generating missing indexes etc."*
+
+**The live store stays broken until the adapter fixes it itself.** Hand-repairing it would
+destroy the only reproduction we have of the real defect and leave the store one crash away
+from an identical, equally silent outage.
+
+**The mechanism, now understood:** `applySchema()` reconciles by **existence**, never
+**integrity**. `CREATE INDEX IF NOT EXISTS idx_fts_node` **no-ops** on an index that exists
+with an empty Tantivy directory, the version gate is already satisfied, and the adapter
+concludes the store is fully migrated (BL-302: `targetVersion` hard-coded to `1`, no
+`migrations[]`). The same shape produced BL-335 (nine unpopulated secondary indexes) and BL-336
+(duplicate `_adapter_meta` PKs). **Existence is not integrity, and no `IF NOT EXISTS` DDL can
+ever detect a present-but-empty derived structure.**
+
+**Why it blocks:** the harness opens a fresh store every attempt and trusts the adapter to
+produce a correct one. If the adapter cannot verify its own output, "the schema is right" is an
+assumption at the base of every gate above it.
+
+**Note carried into implementation:** every integrity probe needs a negative control. The
+obvious FTS probe — counting Tantivy backing-table rows — reads **0 both when FTS is dead and
+when it works**. It detects nothing.
 
 ---
 
@@ -126,6 +155,35 @@ the correct moment and costs nothing extra.
 
 These are §6.2 and §6.4 of the spec, and they are **already filed**. The harness reads them; it
 does not implement them.
+
+### P1.0 — BL-351: the shared tracing/metrics package · **HIGH** · *build first in P1*
+
+**Owner directive, verbatim:** *"All of these operations need independent tracability & metrics
+at their sox package level."* / *"We should architect the tracing package so that we are
+reusing and implementing the metrics + logging + function level tracing correctly."*
+
+BL-319 and BL-334 are *fields*. This is the *substrate* they are reported through, and it does
+not exist. Today BL-320's telemetry is **memory-core's alone** — `embedding-provider`,
+`store-adapter`, `graph-store` and `host-runtime` have no equivalent — and its four env
+controls are **silently scrubbed by the six duplicated allowlists** (BL-344), so the tracing we
+do have cannot be switched on where it matters.
+
+Two symptoms that make the case: `time_to_vector_ms` exists and has **0 samples**, because heal
+bypasses write-path instrumentation (BL-319); and BL-331's 18x slowdown is *still* unexplained
+because stage-level attribution is impossible.
+
+Requires: shared structured logging, function/stage spans on a propagated trace-id (extend
+BL-320's AsyncLocalStorage), counters/gauges/histograms, and uniform export **into the status
+surface** rather than into a log a human must grep. The **wait-vs-work split** must be a
+first-class primitive, not a per-consumer convention.
+
+Per the DRY directive: query memory for prior internal tracing work and prior tool research
+before any live search; if none, search current OpenTelemetry-compatible Node options and log
+the evaluation with tags and the decision. Check the bundled-extension externals policy
+(BL-307/BL-309) before adopting a dependency.
+
+**Build this before P1.1/P1.2** — those are its first two consumers, and implementing them
+first would produce exactly the per-consumer conventions this item exists to prevent.
 
 ### P1.1 — BL-319: computed throughput + timing fields · **HIGH**
 Already enumerates almost exactly the spec's span set: `embed_throughput_per_sec`,
