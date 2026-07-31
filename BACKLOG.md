@@ -18,12 +18,12 @@ Regenerate with:
 node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.md","utf8").split("\n")){const m=l.match(/^###\s*(?:BL|TQ)-\d+\s*—\s*(.*)$/);if(!m)continue;const k=[...m[1].matchAll(/\*\*([^*]+)\*\*/g)].pop();if(k&&/^(open|reopened|blocked)/i.test(k[1]))o++;}console.log("open:",o)'
 ```
 
-Regenerated 2026-07-31 (BL-355 filed): **74 open**, 1 closed-in-place.
+Regenerated 2026-07-31 (BL-356 filed): **76 open**, 1 closed-in-place.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-343, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-354 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-343, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-354, BL-356 |
 | **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350 |
 | **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355 |
 | **UNSET** | BL-163 (heading marker carries no priority — needs one) |
@@ -1066,13 +1066,13 @@ Citations: [wip/turso-live-metrics, cluster-proof, claude, turso-go-live, 1: lib
 
 Also measured, and load-bearing for any future calibration: in a general 288-row stratified sample across 67 topics, **intra-topic cosine (0.5971) is LOWER than inter-topic (0.6125)**. `topic` is per-write enrichment, not a semantic partition — it is not valid clustering ground truth on an arbitrary sample.
 
-**Fix sketch (revised):** raise the nominal default to **0.85–0.87** so the guard rarely has to fire (0.87 is the value the guard already discovers unaided: 128 clusters, 0.943 purity, 20.7% largest). Do not lower it. The permanent fix is not a constant at all — see **BL-354**.
+**Fix sketch (revised):** raise the nominal default to **0.85–0.87** so the guard rarely has to fire (0.87 is the value the guard already discovers unaided: 128 clusters, 0.943 purity, 20.7% largest). Do not lower it. The permanent fix is not a constant at all — see **BL-356**.
 
 **Acceptance (red→green, must name BL-328):** a calibration test that asserts, at the shipped default, both (a) coverage > 0 and 100% community purity on a curated multi-topic cohort, AND (b) **non-degeneracy at scale** — `largest_cluster_size / total <= 0.5` on a corpus of ≥1000 real vectors *before* the degenerate guard runs. Criterion (a) alone is what let 0.65 look correct.
 
 **Severity:** MEDIUM — quality ceiling, not an outage.
 
-**Related:** BL-354 (a fixed τ is not calibratable at all), BL-350, BL-349, BL-327.
+**Related:** BL-356 (a fixed τ is not calibratable at all), BL-350, BL-349, BL-327.
 
 Citations: [wip/turso-live-metrics, performance-engineer, claude, sandbox P0.5, 1: extensions/bundles/sox-memory-bundle/members/memory-server/clustering-e2e.test.ts:124-141,351-374, 2: libs/memory-core/src/cluster.ts:172-183,918-920, 3: libs/data/analysis/analysis/src/index.ts:143-180, 4: docs/reporting/memory/sandbox/cluster-calibration.md]
 
@@ -1596,7 +1596,7 @@ Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-351, 1: `ls -
 
 ---
 
-### BL-354 — Library builds compile `__tests__/*.test.ts`: one test-file type error takes down the build and every downstream consumer — **Open (HIGH)** (2026-07-31)
+### BL-357 — Library builds compile `__tests__/*.test.ts`: one test-file type error takes down the build and every downstream consumer — **Open (HIGH)** (2026-07-31)
 
 **Driver.** `store-adapter`'s `build` target failed to compile — not on library code, but on a **test file**:
 
@@ -1622,9 +1622,11 @@ Because `memory-core:test` depends on `store-adapter:build`, a type error in a *
 
 **Fix sketch:** exclude both conventions from every `tsconfig.lib.json` (`src/**/*.spec.ts`, `src/**/*.test.ts`, `src/__tests__/**`); audit every package for the same gap; standardise on one test-file convention and lint for it. Test type errors then surface in `typecheck-tests` (BL-340) where they belong, without taking a build down.
 
-**Acceptance (red→green, must name BL-354):** introduce a deliberate type error in a `__tests__/*.test.ts` file and assert `nx build <pkg>` still SUCCEEDS while `nx run <pkg>:typecheck-tests` FAILS. Today the first fails.
+**Acceptance (red→green, must name BL-357):** introduce a deliberate type error in a `__tests__/*.test.ts` file and assert `nx build <pkg>` still SUCCEEDS while `nx run <pkg>:typecheck-tests` FAILS. Today the first fails.
 
 **Severity:** HIGH — a red test in one package silently becomes a build outage in every downstream package. It cost a concurrent agent its ability to measure at all.
+
+**Numbering note:** originally filed as BL-354 in commit `83b0483`; renumbered to BL-357 on discovery that `p1-tracing-research` had filed a different BL-354 (`WriteQueue` queue-wait) minutes earlier in `0e9026b`. Second such collision today (see BL-346). References to "BL-354" in `83b0483`'s commit message mean this item.
 
 **Related:** BL-340 (tests never typechecked — the inverse), BL-235 (destructive builds; note `atomic-tsc` correctly left the existing `dist/` intact here, which is the behaviour BL-235 wants everywhere).
 
@@ -1845,3 +1847,35 @@ Citations: [wip/turso-live-metrics, team-lead, claude (mitigate-reads), turso-go
 **Severity:** HIGH — second load-bearing degradation of the live system in 24h, same root cause, different trigger.
 
 Citations: [wip/turso-live-metrics, team-lead+mitigate-reads, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (scheduleNextEnrichTick / periodicEnrichDisabled), 2: live outage observation 12:27-12:42 2026-07-31, 3: BL-339, 4: BL-331, 5: docs/ideas/themes-2-4-architecture.md Gap 2]
+
+---
+
+### BL-356 — A fixed global cosine threshold is not calibratable: single-linkage chaining makes the correct τ a function of corpus size — **Open (HIGH)** (2026-07-31)
+
+**Driver.** Measured 2026-07-31 (sandbox P0.5, BL-328). Clustering resolves a hard-coded constant, `resolveDefaultThreshold() → 0.82`,[1] and hands it to DBSCAN with `epsilon = 1 − τ` and **`minPts = minClusterSize = 2`**,[2][3] which is single-linkage in all but name. A threshold fixes the *edge probability* between any two vectors; with a fixed probability, **mean node degree grows linearly with N**, and above degree ≈1 the graph percolates into one giant component. So the τ that clusters a corpus correctly at N=200 collapses it at N=1200 — on identical content.
+
+**Measured, not projected.** Sub-sampling the live store's own 1616 production `vec_node` vectors at increasing N, fixed τ, deterministic spacing:[4]
+
+| N | largest-cluster ratio @ τ=0.82 | @ τ=0.87 |
+|---|---|---|
+| 200 | 0.0850 | 0.0300 |
+| 400 | 0.2225 | 0.0275 |
+| 800 | 0.4587 | 0.0475 |
+| 1200 | **0.5950** | 0.1850 |
+| 1616 | **0.6838** | 0.2073 |
+
+Measured edge probability projected to full store size (`vec_node` covers 1616 of 4841 eligible episodes today, so density roughly triples as embed coverage completes): mean degree at 4841 is 32.6 at τ=0.82, 12.7 at 0.87, and **5.9 even at τ=0.95** — every candidate threshold above the percolation point. (Random-graph approximation; the real degree distribution is heterogeneous, so treat the exact figures as a trend bound. The direction is measured, not modelled.)
+
+**Consequence for the two mitigations already in the code.**
+1. **The degenerate guard is doing the calibration, silently.** `cluster.ts:465-484` retries at `τ + 0.05` while `max_cluster/total > 0.5`, max 3 times. On the live store it fires once and lands on 0.87 — meaning **the production threshold is not 0.82; it is an undocumented corpus-dependent number that no test asserts and no status surface reports.**
+2. **The guard can exhaust and accept a still-degenerate result.** Measured on a 24-row real cohort starting at τ=0.65: after 3 retries it stops at 0.80 with `largest_ratio = 0.625 > 0.5` and returns it anyway, because the loop breaks unconditionally at `attempts === 3`.[3] A backstop that silently gives up is worse than one that fails loudly.
+
+**Fix sketch.** Stop shipping a cosine constant. Options, in preference order: (a) target a **mean-degree / edge budget** and solve for τ per pass — density-aware by construction; (b) target a cluster-size distribution (reject any partition whose largest cluster exceeds a stated fraction) and binary-search τ, replacing the 3-retry ladder with a real search; (c) drop `minPts = 2` — single-linkage chaining is the mechanism, and a higher `minPts` or a non-chaining algorithm removes it directly. In every case the **effective** threshold and the resulting size distribution must be reported through the status surface (BL-334), never left implicit.
+
+**Acceptance (red→green, must name BL-356):** a test that clusters ≥1000 real vectors and asserts `largest_cluster_size / total <= 0.5` **without relying on the degenerate guard**, plus a second assertion that the same configuration stays non-degenerate at 2× that corpus size. Against today's code the first fails at τ=0.82 (0.684) and the guard-exhaustion case is reproducible directly.
+
+**Severity:** HIGH — it is the reason clustering quality cannot be fixed by tuning, and it will silently re-break after any tuning as the store grows. This is the threshold-side instance of BL-350's "clusters do not self-reorganize."
+
+**Related:** BL-328 (the calibration measurement), BL-350 (same problem from the maintenance side), BL-349, BL-327, BL-334 (the effective threshold must be reportable).
+
+Citations: [wip/turso-live-metrics, performance-engineer, claude, sandbox P0.5, 1: libs/memory-core/src/cluster.ts:918-920, 2: libs/memory-core/src/cluster.ts:172-183, 3: libs/memory-core/src/cluster.ts:465-484, 4: libs/data/analysis/analysis/src/index.ts:143-180, 5: docs/reporting/memory/sandbox/cluster-calibration.md]
