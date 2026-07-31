@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 90.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 91.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -2014,6 +2014,24 @@ The ordinary `-shm` (also stale, 15:20) was **not** sufficient on its own — re
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live store.open.error across pids 46080/47203 2026-07-31, 2: direct driver open before/after moving ~/.memory/memory.db-tshm, 3: preserved at ~/.adhd/sox-ecosystem/memory/prerestart-20260731-174637/stale-tshm-jul30]
 
+
+**FIXED IN SOURCE 2026-07-31 (database-administrator, commit `8fe0571`). Stays OPEN until deployed.**
+
+Reproduced exactly from the preserved artifacts (`prerestart-20260731-174637/memory.db` + `stale-tshm-jul30` + `stale-wal-empty`): `failed to open database …: I/O error: short read on WAL frame at offset 383192: expected 4096 bytes, got 0`. Moving the `-tshm` aside opens it immediately with 9478 nodes.
+
+**All three sub-defects addressed, in `TursoAdapterImpl.connect()` — not in a post-open probe, because `connect()` itself is what fails, so nothing downstream ever runs:**
+1. **Self-recovery.** On a WAL-frame open failure the sidecar is moved aside and the open retried once. It is **renamed, never deleted** — the stale file is the only forensic record of why the store would not open, and preserving it is what made this item diagnosable. Recovery acts **only when the WAL is absent or 0 bytes**; a non-empty WAL may be legitimately described by the sidecar, so that case is declined and reported rather than guessed at.
+2. **The diagnostic names the right file.** `describeStaleWalIndexFailure()` names `<db>-tshm` explicitly, explains that it is derived state Turso rebuilds, and preserves the original driver text as primary evidence.
+3. **Distinct telemetry.** Emits through the integrity report sink as `[BL-373] stale WAL-index sidecar blocked the open …` / `… store opened after reconciling …`, so it is no longer indistinguishable from any other `store.open.error`.
+
+**Committable repro derived** (the live artifact is 43 MB and cannot be a fixture): seed ≥900 rows, capture the `-tshm`, `PRAGMA wal_checkpoint(TRUNCATE)`, close, restore the captured sidecar. Measured — 300 and 600 rows do **not** reproduce, 900 and 1200 do. The seed must use the **raw driver**: going through the adapter writes `_adapter_meta` after the checkpoint and puts fresh frames back into the WAL, defeating the fixture.
+
+**Red→green (names BL-373):** with the recovery disabled the test fails with the live signature (`short read on WAL frame at offset 2447312`); with it, the store opens and all 1200 rows are intact. The test's precondition calls `expect.fail()` — not `skip` — if a future driver stops exhibiting the defect, so it can never pass vacuously (BL-167).
+
+**Still open beyond the adapter fix:** BL-330's orphaned-sidecar maintenance guard should cover stray `*-tshm` alongside `*-wal`; `~/.memory/` still holds debris from earlier migrations.
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, BL-373, 4: libs/data/store/store-adapter/src/integrity.ts (isStaleWalIndexError, recoverStaleWalIndex, describeStaleWalIndexFailure), 5: libs/data/store/store-adapter/src/turso-adapter.ts (connect recovery path), 6: libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts (BL-373 describe), 7: reproduction against ~/.adhd/sox-ecosystem/memory/prerestart-20260731-174637/ 2026-07-31]
+
 ---
 
 ### BL-374 — Post-repair reverification reports DAMAGED on a store whose repairs demonstrably succeeded — **Open (HIGH)** (2026-07-31)
@@ -2054,6 +2072,38 @@ Note a **prior, distinct cause of the same symptom was already fixed** in `0d2d6
 **Related:** BL-352 (the engine), BL-334 (the surface), BL-360 (unconditional false positive — same "trains operators to ignore it" outcome), BL-347.
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live memory_ping integrity block 2026-07-31T22:50:11Z, 2: direct fts_match/_adapter_meta ground-truth probe immediately after, 3: memory_recall returning provenance:["fts"] with non-zero bm25, 4: commit 0d2d629 (the earlier, distinct cause)]
+
+
+**ROOT-CAUSED AND FIXED IN SOURCE 2026-07-31 (database-administrator, commit `8fe0571`). Stays OPEN until deployed — the live service still runs the old bundle, so the false alarm is still firing.**
+
+**It was not reverify, and it was not a benign-message class. The probe itself manufactured the miss.** `pickSentinelToken` matched `/[A-Za-z][A-Za-z]{5,19}/`, which caps at 20 characters and therefore **silently truncates any longer letter run**. Live row 9478 contains `sharedFastembedProcess` (22 letters); the probe extracted **`sharedFastembedProce`**, a 20-character fragment that is not a term in any tokenizer. `fts_match` correctly returned nothing, and the row was reported unindexed on a perfectly healthy index — **deterministically**, which is exactly why the repair could not clear it.
+
+Read back from the store's own persisted verdict (`_adapter_meta.last_integrity`, the durable record added for BL-334), the failing pass says:
+```
+verify.depth: deep | PRE damaged: fts_index_live/idx_fts_node
+repair.ok: false | actions: idx_fts_node=true(361.5ms)
+POST damaged: 1/3 sentinel rows (rowid 9478) … NOT matchable
+```
+and rowid 9478 (`t_created` 2026-07-31T20:19:53Z, three hours before the pass) **is matchable now** with an ordinary token — confirming the index was never the problem.
+
+**Quantified on the live store, 400 consecutive rows against a known-good index:**
+
+| probe | false misses |
+|---|---|
+| truncating single token (shipped) | **29 / 400 = 7.3 %** |
+| whole-word, up to 3 candidates (fix) | **0 / 400** |
+
+At three sampled rows per pass that is roughly a **1-in-5 chance of a spurious `DAMAGED` on every open** — matching the observed behaviour.
+
+**Fix — structural, not another filter:**
+1. Tokens must be **complete letter runs** (`(?<![A-Za-z])[A-Za-z]{6,20}(?![A-Za-z])`), so a 22-letter identifier is not a candidate rather than being chopped into a non-word.
+2. A row counts as indexed if **any** of up to three of its own tokens round-trips. One token is not enough evidence to condemn an index — tokenizers legitimately drop or re-split individual terms.
+
+**The general invariant is asserted, per this item's acceptance:** a test damages both artifacts, repairs through the normal path, and asserts `repair.ok === true`, `reverified.damaged === []`, `overall === 'repaired'`, `healthy === true` — cross-checked against direct `fts_match` and duplicate-key queries **in the same test**, so it cannot pass on a summariser that merely agrees with itself.
+
+**Red→green (names BL-374):** three tests fail with the truncating picker restored, pass with the fix. Verified on the live store copy: **0 spurious verdicts across 20 consecutive passes**, fast and deep both clean (21/22 findings, 0 damaged, 0 unknown).
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, BL-374, 5: libs/data/store/store-adapter/src/integrity.ts (pickSentinelTokens, probeFtsIndexes), 6: libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts (BL-374 describe), 7: `_adapter_meta.last_integrity` read from a copy of `~/.memory/memory.db` 2026-07-31, 8: 400-row false-miss measurement against the live index]
 
 ---
 
@@ -2691,3 +2741,23 @@ TypeError: episodes is not iterable
 **Related:** BL-325 (this is 30 of its remaining failures, but a distinct root cause — production defect, not spec drift), BL-323 (a different blind-import assumption in the same file family).
 
 Citations: [wip/turso-live-metrics, p0-test-infra, claude, sandbox P0.6, 1: libs/memory-core/src/export.ts:295, libs/memory-core/src/reembed.ts:250, 2: `npx nx test memory-core --skip-nx-cache` 2026-07-31 — 21x "episodes is not iterable" from export.spec, 3: libs/data/store/store-adapter/src/turso-adapter.ts:262 (TursoAdapterImpl.executeGet in the same run's traces), 4: libs/memory-core/src/db.ts:371-373 and :894-896 (the capability-guarded form), 5: libs/memory-core/src/export.ts:98,164,184,302,319,339-341]
+
+---
+
+### BL-379 — Post-repair reverification silently skips the WAL-identity probe — **Open (LOW)** (2026-07-31)
+
+**Driver.** `repairStoreIntegrity()` re-verifies with `verifyStoreIntegrity(adapter, { depth: report.depth })` and does **not** forward `walBaseline`.[1] `probeWalIdentity()` returns `null` without a baseline,[2] so `wal_identity` contributes no finding to any reverification — it is silently absent rather than reported as unverified.
+
+**Consequence.** A WAL unlinked *during* a repair pass (the repair does real work — an FTS rebuild took 982 ms on the live store) is not detected by the reverification that immediately follows. The close-path check still catches it (BL-330), so this is a coverage gap rather than a data-loss path, and no false verdict results.
+
+**Why it is worth filing rather than quietly patching:** it is the same shape as BL-374 and BL-368 — an instrument that appears wired and reports nothing — and the fix has a design question attached: reverify should either forward the baseline or explicitly record `wal_identity` as `unknown`, and "silently omitted" must not remain an option.
+
+**Fix sketch:** forward `walBaseline` through `RepairOptions`, or have `verifyStoreIntegrity` emit an explicit `unknown` finding when a requested probe cannot run for want of an input.
+
+**Acceptance (red→green, must name BL-379):** unlink the WAL between the damage and the repair, and assert the post-repair report contains a `wal_identity` finding rather than omitting it.
+
+**Severity:** LOW — no incorrect verdict and no data loss; a probe that quietly does not run.
+
+**Related:** BL-330 (the probe), BL-352 (the engine), BL-374 (same "wired but silent" family).
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, BL-374 follow-on, 1: libs/data/store/store-adapter/src/integrity.ts (repairStoreIntegrity reverify call), 2: libs/data/store/store-adapter/src/integrity.ts (probeWalIdentity early return on a null baseline)]
