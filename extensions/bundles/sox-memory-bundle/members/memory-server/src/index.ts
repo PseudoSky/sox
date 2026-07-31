@@ -2173,7 +2173,7 @@ export async function runPeriodicEnrichPassGuarded(): Promise<void> {
  * disconnect — the server exits cleanly on stdin close.
  */
 /**
- * (BL-339 / BL-344) Emergency brake for the periodic enrich tick.
+ * (BL-339 / BL-346) Emergency brake for the periodic enrich tick.
  *
  * STOPGAP, NOT A FIX. On 2026-07-31 the live store was read-unavailable for
  * 15+ minutes with ZERO client load: the process stayed alive, burned CPU in
@@ -2184,7 +2184,7 @@ export async function runPeriodicEnrichPassGuarded(): Promise<void> {
  *
  * The real defect is that ANY in-process background work starves every
  * foreground read: there is no concurrency model, no yield point, and no
- * admission control (see BL-331/BL-334/BL-339 and the Gap-2 resource-governance
+ * admission control (see BL-331/BL-334/BL-339/BL-345 and the Gap-2 resource-governance
  * design in docs/ideas/themes-2-4-architecture.md). Adding a per-job disable
  * flag is whack-a-mole across every background job that exists or ever will —
  * it is here only so the service can stay READABLE until governance lands.
@@ -2200,7 +2200,7 @@ function scheduleNextEnrichTick(): void {
   if (periodicEnrichDisabled()) {
     process.stderr.write(
       '[memory-server] periodic enrich DISABLED via SOX_DISABLE_PERIODIC_ENRICH=1 ' +
-      '(BL-344 stopgap — enrichment/clustering will not run)\n',
+      '(BL-346 stopgap — enrichment/clustering will not run)\n',
     );
     return;
   }
