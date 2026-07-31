@@ -317,6 +317,11 @@ export class ProcessSupervisor {
         'SOX_EMBED_BACKEND',
         'SOX_EMBED_CACHE_DIR',
         'XDG_CACHE_HOME',
+        // BL-339: negative-control seam (libs/memory-core/src/embed-pipeline.ts
+        // healDisabled()) forwarded through the enforced-policy in-process
+        // supervisor path for parity with the os-unit allowlist in
+        // apps/sox/src/main.ts buildOsUnitEnv.
+        'SOX_DISABLE_EMBED_HEAL',
       ]);
       const baseEnv: Record<string, string> = {};
       for (const [k, v] of Object.entries(process.env)) {
