@@ -10,8 +10,11 @@
  * migrator concludes the store is fully migrated. Observed in production, all
  * on generated data the adapter itself owns:
  *
- * - `idx_fts_node` present with an empty Tantivy directory — keyword search
- *   returned zero rows for every query for over a day, silently (BL-347).
+ * - `idx_fts_node` present and well-formed in `sqlite_master` but not matching
+ *   its own rows — keyword search returned zero rows for every query for over
+ *   a day, silently (BL-347). (That item calls this "an empty Tantivy
+ *   directory"; the description is wrong — see `probeFtsIndexes` — but the
+ *   damage is real and was measured on the live store.)
  * - Nine secondary indexes on `node` unpopulated after a bulk insert; nothing
  *   detected or repaired it (BL-335).
  * - Duplicate `_adapter_meta` PRIMARY KEY rows, which are schema-impossible
