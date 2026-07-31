@@ -28,7 +28,24 @@ export const ADAPTER_META_KEYS = Object.freeze({
 const META_TABLE = '_adapter_meta';
 const CREATE_META_TABLE = `CREATE TABLE IF NOT EXISTS ${META_TABLE} (key TEXT PRIMARY KEY, value TEXT NOT NULL)`;
 const SELECT_ALL_META = `SELECT key, value FROM ${META_TABLE}`;
-const STAMP_SQL = `INSERT OR IGNORE INTO ${META_TABLE}(key, value) VALUES (?, ?)`;
+/**
+ * (BL-336) UPSERT, not `INSERT OR IGNORE`.
+ *
+ * `INSERT OR IGNORE` relies on the PRIMARY KEY index to notice the conflict.
+ * When that index is inconsistent — which is exactly what a bulk insert or a
+ * crash leaves behind (BL-335) — the conflict goes unseen and the insert
+ * lands, producing DUPLICATE PRIMARY KEY rows. The live store carries six rows
+ * under three keys for precisely this reason: the second stamp at 17:46 landed
+ * while the unique index was damaged. `ON CONFLICT DO UPDATE` also makes a
+ * re-stamp refresh `adapter_version` instead of silently keeping a stale one.
+ *
+ * `created_at` is stamped with `DO NOTHING` — the FIRST stamp is the
+ * meaningful one there, so it must not be overwritten on every open.
+ */
+const STAMP_SQL = `INSERT INTO ${META_TABLE}(key, value) VALUES (?, ?)
+  ON CONFLICT(key) DO UPDATE SET value = excluded.value`;
+const STAMP_ONCE_SQL = `INSERT INTO ${META_TABLE}(key, value) VALUES (?, ?)
+  ON CONFLICT(key) DO NOTHING`;
 
 // ── ensureAdapterMetaTable ────────────────────────────────────────────────────
 
@@ -45,8 +62,9 @@ export async function ensureAdapterMetaTable(adapter: StoreAdapter): Promise<voi
 /**
  * Stamp the store's adapter type and package version into `_adapter_meta`.
  *
- * Uses `BEGIN IMMEDIATE` to safely serialise the stamp across processes,
- * and `INSERT OR IGNORE` for idempotency — the first writer wins.
+ * Uses `BEGIN IMMEDIATE` to safely serialise the stamp across processes, and
+ * `ON CONFLICT` upserts so a re-stamp updates in place rather than duplicating
+ * a PRIMARY KEY (BL-336 — see {@link STAMP_SQL}).
  *
  * Silently no-ops when the adapter is opened read-only (the stamp is a
  * "first writer" marker, not a read requirement).
@@ -61,8 +79,49 @@ export async function stampAdapterMeta(
   await adapter.transaction(async (tx) => {
     await tx.executeRun(STAMP_SQL, [ADAPTER_META_KEYS.ADAPTER_TYPE, type]);
     await tx.executeRun(STAMP_SQL, [ADAPTER_META_KEYS.ADAPTER_VERSION, PKG_VERSION]);
-    await tx.executeRun(STAMP_SQL, [ADAPTER_META_KEYS.CREATED_AT, new Date().toISOString()]);
+    await tx.executeRun(STAMP_ONCE_SQL, [ADAPTER_META_KEYS.CREATED_AT, new Date().toISOString()]);
   }, { mode: 'immediate' });
+}
+
+// ── Clean-shutdown marker (BL-338 crash-recovery flag) ────────────────────────
+
+/** `_adapter_meta` key holding `'1'` when the last session closed cleanly. */
+export const CLEAN_SHUTDOWN_KEY = 'clean_shutdown';
+
+/**
+ * Read-and-clear the clean-shutdown marker.
+ *
+ * Returns `true` when the PREVIOUS session did not record a clean close — the
+ * store came back from a crash, a kill, or a power loss, which is exactly the
+ * population that arrives with index damage nothing detects (BL-338). Callers
+ * escalate verification depth on `true`.
+ *
+ * Always leaves the marker set to "unclean" for the duration of this session;
+ * {@link markCleanShutdown} sets it back on an orderly close.
+ */
+export async function consumeUncleanShutdownFlag(adapter: StoreAdapter): Promise<boolean> {
+  if (adapter.config.readonly === true) return false;
+  try {
+    const row = await adapter.executeGet<{ value: string }>(
+      `SELECT value FROM ${META_TABLE} WHERE key = ?`,
+      [CLEAN_SHUTDOWN_KEY],
+    );
+    const unclean = row !== null && row.value !== '1';
+    await adapter.executeRun(STAMP_SQL, [CLEAN_SHUTDOWN_KEY, '0']);
+    return unclean;
+  } catch {
+    return false;
+  }
+}
+
+/** Record that this session is closing in an orderly fashion. */
+export async function markCleanShutdown(adapter: StoreAdapter): Promise<void> {
+  if (adapter.config.readonly === true) return;
+  try {
+    await adapter.executeRun(STAMP_SQL, [CLEAN_SHUTDOWN_KEY, '1']);
+  } catch {
+    // Non-fatal — a missing marker only escalates the next open's verify depth.
+  }
 }
 
 // ── readAdapterMeta ───────────────────────────────────────────────────────────

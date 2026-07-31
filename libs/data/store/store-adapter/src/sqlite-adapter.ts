@@ -1,5 +1,12 @@
 import DatabaseConstructor from 'better-sqlite3';
-import { ensureAdapterMetaTable, stampAdapterMeta } from './adapter-meta.js';
+import {
+  consumeUncleanShutdownFlag,
+  ensureAdapterMetaTable,
+  markCleanShutdown,
+  stampAdapterMeta,
+} from './adapter-meta.js';
+import { captureWalIdentity, emitIntegrityReport, runOpenTimeIntegrity } from './integrity.js';
+import type { WalIdentity } from './integrity.js';
 import type {
   SqliteAdapter,
   AdapterTransaction,
@@ -97,6 +104,9 @@ export class SqliteAdapterImpl implements SqliteAdapter {
   private cache: StatementCache;
   private closed = false;
 
+  /** (BL-330) WAL identity captured at `init()`. See TursoAdapterImpl. */
+  _walBaseline: WalIdentity | null = null;
+
   constructor(dbPath: string, opts?: { readonly?: boolean });
   constructor(db: Sqlite3Database);
   constructor(dbOrPath: string | Sqlite3Database, opts?: { readonly?: boolean }) {
@@ -130,19 +140,30 @@ export class SqliteAdapterImpl implements SqliteAdapter {
   }
 
   /**
-   * Initialise the adapter — stamps adapter metadata into the store.
+   * Initialise the adapter — stamps adapter metadata, then verifies and
+   * repairs the generated artifacts in the store (BL-352).
    *
-   * Safe to call multiple times; idempotent via `INSERT OR REPLACE`.
+   * Safe to call multiple times; the stamp upserts and every probe is
+   * read-only until it finds damage.
    * Skip for read-only connections.
    */
   async init(): Promise<void> {
     if (this.config.readonly) return;
+    let uncleanShutdown = false;
     try {
       await ensureAdapterMetaTable(this);
       await stampAdapterMeta(this, 'sqlite');
+      uncleanShutdown = await consumeUncleanShutdownFlag(this);
     } catch {
       // Non-fatal — stamping is a convenience marker, not a correctness requirement
     }
+
+    this._walBaseline = captureWalIdentity(this.config.dbPath);
+    await runOpenTimeIntegrity(this, {
+      uncleanShutdown,
+      walBaseline: this._walBaseline,
+      onReport: (event, detail) => emitIntegrityReport(this.config.dbPath, event, detail),
+    });
   }
 
   unwrap(): import('better-sqlite3').Database {
@@ -248,6 +269,9 @@ export class SqliteAdapterImpl implements SqliteAdapter {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    if (!this.config.readonly && this.ownDb) {
+      await markCleanShutdown(this);
+    }
     this.cache.clear();
     if (this.ownDb) {
       this.db.close();

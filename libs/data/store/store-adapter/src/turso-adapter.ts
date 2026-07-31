@@ -1,4 +1,16 @@
-import { ensureAdapterMetaTable, stampAdapterMeta } from './adapter-meta.js';
+import {
+  consumeUncleanShutdownFlag,
+  ensureAdapterMetaTable,
+  markCleanShutdown,
+  stampAdapterMeta,
+} from './adapter-meta.js';
+import {
+  captureWalIdentity,
+  emitIntegrityReport,
+  runOpenTimeIntegrity,
+  verifyStoreIntegrity,
+} from './integrity.js';
+import type { WalIdentity } from './integrity.js';
 import type {
   TursoAdapter,
   AdapterTransaction,
@@ -55,6 +67,13 @@ export class TursoAdapterImpl implements TursoAdapter {
     pragma: Function;
   };
   private closed = false;
+
+  /** (BL-330) WAL identity as it stood when this connection opened. Compared
+   *  again at close: if the `-wal` path has vanished or now resolves to a
+   *  different inode, every write since the last checkpoint is about to be
+   *  discarded silently and we must checkpoint and say so. Internal — set by
+   *  `connect()`. */
+  _walBaseline: WalIdentity | null = null;
 
   /**
    * (BL-321) `this.db` is ONE shared connection handle — @tursodatabase/database
@@ -211,12 +230,25 @@ export class TursoAdapterImpl implements TursoAdapter {
 
     // Stamp adapter metadata (non-fatal)
     if (!opts.readonly) {
+      let uncleanShutdown = false;
       try {
         await ensureAdapterMetaTable(instance);
         await stampAdapterMeta(instance, 'turso');
+        uncleanShutdown = await consumeUncleanShutdownFlag(instance);
       } catch {
         // Non-fatal
       }
+
+      // (BL-352) Verify — and repair — the artifacts this adapter generates.
+      // `CREATE INDEX IF NOT EXISTS` cannot see a structure that exists but is
+      // empty, so schema reconciliation alone leaves damage permanent and
+      // invisible. See integrity.ts for the probes and their negative controls.
+      instance._walBaseline = captureWalIdentity(config.dbPath ?? config.url);
+      await runOpenTimeIntegrity(instance, {
+        uncleanShutdown,
+        walBaseline: instance._walBaseline,
+        onReport: (event, detail) => emitIntegrityReport(config.dbPath ?? config.url, event, detail),
+      });
     }
 
     return instance;
@@ -345,9 +377,56 @@ export class TursoAdapterImpl implements TursoAdapter {
     return results;
   }
 
+  /**
+   * (BL-330) Close, but never silently.
+   *
+   * Reproduced 2026-07-31 against `@tursodatabase/database@0.7.1`: with the
+   * `-wal` file unlinked mid-session, `close()` returned **with no error** and
+   * the reopened store had lost not merely rows but the table itself
+   * (`no such table: t`) — every write since the last checkpoint, gone. The
+   * control run with the WAL intact retained 140/140.
+   *
+   * `PRAGMA wal_checkpoint(PASSIVE)` copies the orphaned WAL's pages into the
+   * still-linked main database file through the fd we already hold, and
+   * recovers the data in full (measured: 140/140 vs total loss). So the close
+   * path checkpoints first and reports loudly, rather than refusing — refusing
+   * would strand the data in an inode nothing can reach.
+   */
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+
+    if (!this.config.readonly) {
+      try {
+        const report = await verifyStoreIntegrity(this, {
+          only: ['wal_identity'],
+          walBaseline: this._walBaseline,
+        });
+        for (const finding of report.damaged) {
+          emitIntegrityReport(this.config.dbPath ?? this.config.url, 'damaged', finding.detail);
+          try {
+            await this.executeAll('PRAGMA wal_checkpoint(PASSIVE)');
+            emitIntegrityReport(
+              this.config.dbPath ?? this.config.url,
+              'repaired',
+              'checkpointed the orphaned WAL into the main database file before close',
+            );
+          } catch (err) {
+            emitIntegrityReport(
+              this.config.dbPath ?? this.config.url,
+              'repair_failed',
+              `checkpoint of the orphaned WAL failed — data since the last checkpoint is being lost: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        }
+        if (report.damaged.length === 0) await markCleanShutdown(this);
+      } catch {
+        // A verification failure must never block a close.
+      }
+    }
+
     await this.db.close();
   }
 }

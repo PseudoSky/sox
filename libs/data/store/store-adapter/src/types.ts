@@ -213,6 +213,18 @@ export interface StoreAdapter {
   executeMany(stmts: { sql: string; args?: unknown[] }[]): Promise<RunResult[]>;
 
   // Lifecycle
+
+  /**
+   * Post-construction initialisation: stamps `_adapter_meta`, then verifies
+   * and repairs the artifacts the adapter generates (BL-352 — see
+   * `integrity.ts`). `createStoreAdapter()` calls it; direct constructor
+   * users must call it themselves or the store opens unverified.
+   *
+   * Optional because an adapter wrapping a caller-owned handle (e.g.
+   * `createSqliteAdapter(db)`) may have nothing to initialise.
+   */
+  init?(): Promise<void>;
+
   close(): Promise<void>;
 
   // Introspection
@@ -227,6 +239,11 @@ export interface StoreAdapter {
 
 export interface SqliteAdapter extends StoreAdapter {
   readonly config: Readonly<AdapterConfig & { type: 'sqlite' }>;
+  /** Always present on this adapter — stamps meta, then verifies and repairs
+   *  the store's generated artifacts (BL-352). TursoAdapter does the
+   *  equivalent inside `connect()`, which is why the base declaration is
+   *  optional. */
+  init(): Promise<void>;
   /** Escape hatch — returns the raw better-sqlite3.Database handle. Calling this breaks portability. */
   unwrap(): import('better-sqlite3').Database;
 }
