@@ -81,7 +81,7 @@ adapter repaired itself, which was the owner's explicit requirement.
 | Keyword search (FTS) | ✅ working |
 | Vector recall | ⚠️ coverage ~36%, backlog 3,246 |
 | `memory_stats` | ❌ throws — `malformed JSON` (BL-342) |
-| Integrity surface | ✅ in `memory_ping`; ⚠️ false-alarms DAMAGED (BL-374) |
+| Integrity surface | ✅ in `memory_ping`; false-alarm + stale-`-tshm` fixes landed in `8fe0571`, **not yet deployed** (BL-374, BL-373) |
 | Embed heal | 🛑 OFF — `SOX_DISABLE_EMBED_HEAL=1` (BL-339) |
 | Periodic enrich / clustering | 🛑 OFF — `SOX_DISABLE_PERIODIC_ENRICH=1` (BL-346) |
 | Scheduling | ✅ priority 20 (`ProcessType: Standard`) — 18.9x faster embeds (BL-331) |
@@ -120,7 +120,13 @@ Two things it exists to stop, both of which fired on 2026-07-31:
 - **`grep` is a shell function** and silently returns nothing on a file with a raw NUL byte. Use
   `/usr/bin/grep` when proving something is *absent*. (BL-371, now guarded.)
 - **A stale `-tshm`** makes the store unopenable with an error naming the *wrong* file
-  (`short read on WAL frame` while the WAL is 0 bytes). Move it aside. (BL-373.)
+  (`short read on WAL frame` while the WAL is 0 bytes). Move it aside. The adapter now does this
+  itself at open — renaming, never deleting, and only when the WAL is empty. (BL-373, fixed in
+  `8fe0571`, pending deploy.)
+- **A sentinel token must be a WHOLE word.** The FTS probe capped tokens at 20 letters and
+  truncated longer ones, so any row containing e.g. `sharedFastembedProcess` reported as unindexed
+  on a healthy index — **7.3% of live rows**, ~1-in-5 spurious `DAMAGED` per open. Never truncate a
+  term you are about to search for. (BL-374, fixed in `8fe0571`, pending deploy.)
 - **Classify processes by spawn method, not by store path.** launchd-spawned vs terminal-spawned
   is the axis; the store is not the variable. (BL-331.)
 - **`duration_ms` is wall-clock** and accrues during system sleep — every p90/p99/max from the
