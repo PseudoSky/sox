@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 90.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 91.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,12 +23,12 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31 (BL-365 resolved → CHANGELOG): **90 open**.
+Regenerated 2026-07-31: **91 open**.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-372, BL-373, BL-374, BL-375, BL-377, BL-380, BL-381 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-367, BL-372, BL-373, BL-374, BL-375, BL-377, BL-380, BL-381, BL-382 |
 | **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378 |
 | **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363, BL-379 |
 | **UNSET** | BL-163 |
@@ -2221,6 +2221,40 @@ This is the fourth distinct instance today of *the same underlying failure*: a s
 **Related:** BL-377 (export/re-embed, same class, fixed), BL-380 (six unchecked casts), BL-364 (inverted constructor), BL-353 (the telemetry nobody read), BL-334 (surface it), BL-327 (supersession/communities depend on this path).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/memory-core/src/neardup.ts:46, 2: live store.error pid 69947 trace 01KYX8E2SSD7HG94DZ62M3FP7Y at 2026-07-31T23:34:01Z, 3: docs/observability/README.md event catalog (`embed_pipeline.neardup.error` ×10), 4: libs/data/store/store-adapter (VectorDialect, the abstraction being bypassed)]
+
+---
+
+### BL-382 — Writes do not wake the drain: work waits up to 5 minutes for a timer that was sized for a 6.9s embed — **Open (HIGH)** (2026-07-31)
+
+**Driver.** `scheduleNextEnrichTick()` is invoked in exactly two places — once at module load (`index.ts:2279`) and once in the pass's own `.finally()` (`:2274`). **There is no write-triggered path.** A write that needs embedding waits for a 5-minute timer (`PERIODIC_ENRICH_INTERVAL_MS`), then competes for the per-tick heal budget.
+
+**The interval was sized for a defect that no longer exists.** At the pre-BL-331 rate of ~6.9s per embed, batching on a 5-minute cadence was reasonable — per-write processing could never have kept up. At the post-fix rate of **451ms p50** the design is inverted: the queue idles for minutes while work waits, then bursts.
+
+**Measured live, 2026-07-31, with both brakes lifted:**
+
+| time | vectors | note |
+|---|---|---|
+| 23:34 | 1685 → 2105 | first pass: **420 embeds**, then stops on the tick budget |
+| 23:38 – 23:46 | **2105, flat** | backend at **0.3% CPU** with **3,199 items pending** |
+| 23:46 | 2157 | next tick fires |
+
+So the machine sat effectively idle for five minutes with thousands of items queued and ~19x the throughput now available. Sustained drain is **~1.4/s averaged over the cycle** against an in-burst **~1.7/s** — the gap is pure scheduling latency, not work.
+
+**Second-order effect on latency, not just throughput:** a freshly written episode is unsearchable by vector until the next tick. Worst case is the full interval plus queue position. Nothing reports this delay, so it is indistinguishable from an embedding that failed.
+
+**Fix sketch — wake, do not poll:**
+1. A write enqueues **and wakes** the drain. Debounced and coalescing: N rapid writes must not schedule N passes (the BL-154 re-entrancy lesson and the BL-346 stampede both apply).
+2. Keep the periodic tick as a **floor**, not the only trigger — it still catches work enqueued by paths that do not wake it, and it is the recovery path after a restart.
+3. **This is not per-write clustering.** Association is BL-349 and maintenance is BL-350; both are separate and neither is solved by waking the queue. Scope this to the drain only.
+4. Re-derive the interval and the per-tick budget from the *current* embed cost rather than inheriting numbers chosen when an embed took 6.9s. Both are now unjustified constants.
+
+**Acceptance (red→green, must name BL-382):** write an episode to an idle store and assert its vector is present in well under the tick interval; assert N rapid writes produce one coalesced pass, not N. Must fail today, where the vector appears only after the next timer fires.
+
+**Severity:** HIGH — not a correctness bug, but it wastes the entire BL-331 performance recovery on scheduling latency and leaves fresh writes unsearchable for minutes with no signal.
+
+**Related:** BL-331 (the fix that inverted the tradeoff), BL-378 (the brakes gating this same tick), BL-349/BL-350 (clustering — explicitly *not* in scope), BL-345 (any background job starves foreground reads — the wake must respect that), BL-154 (re-entrancy: never enqueue from inside a task on the same queue).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:2265-2279 (the only two scheduleNextEnrichTick call sites), 2: :1928 (PERIODIC_ENRICH_INTERVAL_MS), 3: live vector-coverage samples 23:34-23:46Z with both brakes off, 4: BL-331 (451ms p50 post-fix)]
 
 ---
 
