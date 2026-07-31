@@ -10,9 +10,30 @@
 
 **Recommendation in one line:** adopt the **OpenTelemetry API facade** (`@opentelemetry/api`, zero
 dependencies) in every library, keep the **SDK** (`sdk-trace-base` + `sdk-metrics` +
-`context-async-hooks`) confined to the composition root, and export through a **pull-only
-`MetricReader` driven by `memory_ping`** — no collector, no daemon, no background timer. Wrap it in
-`@adhd/sox-telemetry`, which is the only module allowed to import `@opentelemetry/*`.
+`context-async-hooks`) confined to the composition root, write everything to disk through the
+**existing BL-320 JSONL sink behind a standard `SpanExporter`/`SpanProcessor` interface**, and
+additionally expose a **pull-only `MetricReader` driven by `memory_ping`** as a *view* over the same
+instruments — no collector, no daemon, no background timer. Wrap it in `@adhd/sox-telemetry`, which
+is the only module allowed to import `@opentelemetry/*`.
+
+> **Revision 2 (2026-07-31)** — re-scored against the owner's new HARD requirement that *events must
+> be written to disk* (BL-351, commit `1190335`) and against `docs/observability/README.md` /
+> BL-353 (commit `d024da6`). The requirement **does not change the pick**, but it changes the
+> weighting decisively and produced three findings that were not in revision 1:
+>
+> 1. **OpenTelemetry JS ships no durable local sink at all.** Its only non-network exporters are
+>    `ConsoleSpanExporter`/`ConsoleMetricExporter`, and I measured `ConsoleSpanExporter` writing
+>    **778 bytes to stdout** — the exact MCP-fatal behaviour. Every other exporter is OTLP
+>    over http/grpc/proto to a running collector. **The disk sink must be ours.** This converts
+>    "keep the JSONL sink" from a preference into the only available answer (§3.10).
+> 2. **An OTel span never reaches disk if the operation hangs.** Measured: 2 spans started, **1
+>    exported** — the hung one never exported, because spans emit on `end()`. This would have
+>    destroyed the single most important property of the existing sink. Resolved by writing the
+>    start record from `SpanProcessor.onStart`, inside the standard's own extension point (§5.6).
+> 3. **The 17 MB/day is 97.3% test processes, not the live service.** Measured over the real logs:
+>    **0.57 MB of 21.43 MB (2.7%)** comes from live-service pids. The durability requirement is
+>    therefore *cheap* for the population that matters, and `role`-based routing solves volume and
+>    BL-353's population-mixing with one mechanism (§3.11).
 
 ---
 
@@ -324,6 +345,144 @@ The pull-only reader in §3.3 returns a plain object tree
 directly into the `memory_ping` response next to the existing `write_queue` and `embed_pipeline`
 blocks (`memory-server/src/index.ts:956-963`). **No log grepping, no exporter, no collector.**
 
+### 3.10 HARD — events must be durably written to disk
+
+**This is the constraint that most sharply separates the candidates, and OpenTelemetry does worse
+on it than its reputation suggests.**
+
+Enumerating every exporter OTel JS actually publishes: `exporter-trace-otlp-http`,
+`-otlp-grpc`, `-otlp-proto`, the matching `exporter-metrics-*` and `exporter-logs-*`,
+`exporter-zipkin`, `exporter-prometheus`, and `ConsoleSpanExporter` / `ConsoleMetricExporter`.
+Every one of them is either **a network call to a running collector** or **a write to stdout**.
+There is **no official file exporter** — `npm view otlp-file-exporter` is a 404, and an npm search
+for one returns only the internal `otlp-exporter-base`.
+
+And the one non-network option is disqualified outright. Measured:
+
+```
+### ConsoleSpanExporter stdout bytes (0 = safe, >0 = FATAL for MCP)
+778
+```
+
+**`ConsoleSpanExporter` writes to stdout.** In an MCP stdio server that is not a debug
+inconvenience, it is protocol corruption. So the *only* local sink OpenTelemetry ships is the one
+we can never use.
+
+**Consequence for the recommendation, stated plainly:** the disk sink is not something we adopt —
+it is something we already have and must keep. This is not "we prefer our own"; it is "the standard
+does not offer one." The existing `RotatingJsonlWriter` (`telemetry.ts:109-262`) is the sink, and
+OTel's `SpanExporter` interface is the seam it plugs into.
+
+Prototyped end to end (~40 lines) — a `JsonlSpanExporter` writing real spans to a real file:
+
+```jsonc
+{"ts":"2026-07-31T19:44:39.665Z","event":"store.exec","level":"info",
+ "trace_id":"8471a5d8f1e8583fb807339be59e6158","span_id":"c71327351ccd007c",
+ "parent_span_id":"021ae1656a44294e","pid":67959,"scope":"store-adapter",
+ "duration_ms":3.730666,"sox.role":"live-service","sox.package":"store-adapter"}
+```
+
+Note the shape: the **same five always-present fields** as today's records (`ts`, `level`, `event`,
+`trace_id`, `pid` — `docs/observability/README.md` §3), plus `span_id`/`parent_span_id`/`scope`/
+`duration_ms` and the `sox.*` attributes. **The existing event catalog and the analysis scripts in
+`~/.adhd/sox-ecosystem/memory/log-analysis/` keep working.** Measured at **310 bytes per span
+record** with four attributes.
+
+Re-scored against this constraint: `dd-trace` **fails** (durable local sink is not a first-class
+path; data goes to an Agent). `prom-client` **fails** (scrape-only; nothing is persisted, and a
+crashed process takes its counters with it — precisely the "the process that crashed is the one
+holding the evidence" failure). A **collector/backend daemon fails hardest of all** — it was
+already rejected in §4, and this requirement independently disqualifies it. `pino` *passes* on
+durability (it is a file logger) but still fails on stdout-by-default and has no metrics.
+
+### 3.11 Volume and retention — measured, and much cheaper than the headline
+
+BL-351 records ~17 MB on the incident day from a single package and asks for a retention policy for
+six. I analysed the actual log files rather than extrapolating the headline, and the headline is
+misleading in a way that matters.
+
+```
+files: 2   total events: 82541
+live pids: 16   all pids: 814
+events from LIVE pids: 2729 (3.3%)
+bytes  from LIVE pids: 0.57 MB of 21.43 MB (2.7%)
+mean bytes/event: 272
+```
+
+**97.3% of the volume is test and CI processes, not the live service.** 814 distinct pids wrote to
+that file; 16 of them were the thing we actually want forensics on. The live service produced
+**0.57 MB across two days — roughly 0.3 MB/day.**
+
+Projection for the six-package build-out, using the measured 310 bytes/span:
+
+| Population | events/day | bytes/rec | MB/day | 7-day retention |
+|---|---|---|---|---|
+| live service, memory-core today | ~1,365 | 272 | **0.37** | 2.6 MB |
+| live service, 6 packages w/ stage spans (5x, conservative) | ~6,800 | 310 | **2.1** | **~15 MB** |
+| test/CI, unchanged | ~40,000 | 272 | ~10.4 | ~73 MB |
+
+**The durability requirement is essentially free for the population that matters.** 15 MB for a
+week of full-fidelity live-service traces is not a constraint worth engineering around, and the
+existing defaults (`SOX_MEMORY_LOG_MAX_BYTES` 20 MB, `MAX_FILES` 7 → 140 MB ceiling per component)
+already bound it with three orders of magnitude of headroom.
+
+**The retention policy therefore routes by `role` rather than by volume** — the same BL-353 `role`
+attribute, doing double duty:
+
+| role | sink | level | retention |
+|---|---|---|---|
+| `live-service` | `memory-<date>.jsonl` | `info` | 7 files / 20 MB each (unchanged) |
+| `test` | `memory-test-<date>.jsonl` | `warn` | 2 files / 5 MB each |
+| `cli`, `harness` | own component file | `info` | 3 files / 10 MB each |
+
+This solves three filed problems with one mechanism: the volume concern here, BL-353's
+population-mixing (the two populations land in **different files**, so nobody has to infer pids
+from store paths ever again), and the "combined mean describes neither population" analysis defect.
+
+**Back-pressure and disk-full.** The existing writer is already correct here and the behaviour must
+be preserved verbatim: writes are fire-and-forget into a `WriteStream`, the whole path is wrapped in
+try/catch, and a failed open leaves `_stream = null` so records are **silently dropped rather than
+throwing or blocking** (`telemetry.ts:132-156`, `:202-206`). Telemetry must never be able to take
+the server down or slow the hot path — a dropped log line is always the correct trade. What is
+missing today, and what this design adds, is that the **drop must be counted** and surfaced:
+`sox.telemetry.records_dropped` in the status surface, so a silently-degraded sink is visible rather
+than being mistaken for an idle system. That is the same failure shape as BL-319 and BL-347.
+
+**A note on 814 pids appending to one file**, since it looks alarming: `O_APPEND` writes below
+`PIPE_BUF` (4096 bytes on macOS/Linux) are atomic on POSIX, and the measured mean record is 272
+bytes, so lines cannot interleave. The existing design is safe. The problem was never corruption —
+it was that nothing distinguished the writers, which `role` now fixes.
+
+### 3.12 The `embed.* trace_id: null` gap — and whether OTel actually fixes it
+
+`docs/observability/README.md` §3.1 documents that `embed.start`/`embed.finish` emit
+`trace_id: null`, because the embed path runs outside the `AsyncLocalStorage` context established
+at `WriteQueue.enqueue`. Measured in the live log: **535 `embed.start` / 520 `embed.finish` records
+from live pids with no trace id** — every embed on the incident day is uncorrelatable to the write
+that requested it. That is why BL-331's analysis had to reason about *median gaps between
+consecutive embeds* instead of simply reading a trace.
+
+**Honest assessment: adopting OTel does not fix this by itself.** It is not a defect in the
+propagation mechanism — `AsyncLocalStorage` and OTel's `AsyncLocalStorageContextManager` are the
+same primitive, and swapping one for the other changes nothing. The context is lost because the
+embed is **dispatched across a boundary the context does not survive** (a queue hand-off, a worker,
+a later tick), and *every* in-process context mechanism loses it there.
+
+What OTel does give is the **standard, tested way to carry it across explicitly** —
+`propagation.inject()` / `extract()` over a carrier object — instead of the ad-hoc
+`PendingEmbed.traceId` field the write path already threads by hand. The wrapper's job is to make
+the boundary crossing the *only* way to dispatch:
+
+```ts
+// The only exported way to hand work to another context. Carries the trace by construction.
+export function dispatch<T>(stage: StageId, run: (ctx: SoxContext) => Promise<T>): Dispatchable<T>;
+```
+
+**This is a fair point against over-claiming for OTel**, and worth stating because §3.4 already
+showed the opposite risk: OTel's context propagation is *easy to silently mis-wire*. It is better
+than what we have only because the wrapper forces the explicit hand-off; the library alone would
+reproduce the same `null`.
+
 ### 3.8 Node 24 / TypeScript strict / pnpm / nx
 
 All prototypes ran on **Node v24.11.1**. `engines` for the recommended packages are
@@ -331,8 +490,14 @@ All prototypes ran on **Node v24.11.1**. `engines` for the recommended packages 
 
 ### 3.9 Scorecard
 
-| | otel api+sdk (recommended) | otel `sdk-node` | dd-trace | pino | prom-client | diagnostics_channel only |
+Weighted per the owner's direction: **durable disk sink** and **reachable-by-default** are
+disqualifiers, not preferences.
+
+| | otel api+sdk **+ our JSONL sink** (recommended) | otel `sdk-node` | dd-trace | pino | prom-client | diagnostics_channel only |
 |---|---|---|---|---|---|---|
+| **durable disk sink** | **PASS** — but *only* because the sink is ours; OTel ships none (§3.10) | **FAIL** (OTLP/console only) | **FAIL** (Agent sink) | PASS (file logger) | **FAIL** (scrape-only, crash loses all) | PASS (ours) |
+| **reachable by default** (BL-353) | **PASS** (pull reader → `memory_ping`) | no | **FAIL** (vendor UI) | **FAIL** (file only) | HTTP only | **FAIL** (nothing aggregates) |
+| **hang visible on disk** | **PASS** *via `onStart`* (§5.6) — plain OTel **FAILS**, measured | FAIL | FAIL | manual | n/a | manual |
 | stdout-safe | **PASS** (verified 0 bytes) | PASS but huge surface | unverified, agent-coupled | **FAIL by default** (fd 1) | PASS | PASS |
 | esbuild CJS, no natives | **PASS** (0 `.node`, 0 externals) | **FAIL** (grpc) | **FAIL** (`import-in-the-middle`) | risk (`thread-stream` workers) | PASS | PASS |
 | no background job (BL-345) | **PASS** (0 active handles) | **FAIL** (periodic reader default) | **FAIL** (agent flush loop) | risk | FAIL (scrape server) | PASS |
@@ -387,9 +552,23 @@ saves only 41% of an already-negligible cost. What genuinely must be bounded is 
 (memory), not span creation — so the recommendation retains a bounded ring of recent/slow/errored
 spans rather than sampling at creation. Sampling would discard exactly the slow outlier you needed.
 
-**Replacing `telemetry.ts`.** It solves the hang-visibility problem (log START before awaiting) that
-no general library solves for us, and it is battle-tested against the real incident that produced it.
-It gets promoted, not deleted.
+**Replacing `telemetry.ts`.** Now settled on measured grounds rather than sentiment (§5.6): OTel
+ships **no durable local sink at all**, and a hung operation **never exports a span** (2 started, 1
+exported). Replacing the JSONL writer would trade a working disk sink for stdout — the one thing
+that breaks an MCP server — and would silently drop exactly the hangs the module exists to catch.
+It gets promoted and wrapped, not deleted. What we adopt OpenTelemetry *for* is the half
+`telemetry.ts` never attempted: aggregation, percentiles, and a standard context/span model.
+
+**`ConsoleSpanExporter` / `ConsoleMetricExporter`, in any configuration.** Measured writing **778
+bytes to stdout**. In an MCP stdio server this is protocol corruption, not noisy output. Banned by
+lint (§5.4), and worth naming here because it is the exporter every OpenTelemetry tutorial starts
+with — the default path into this library is the one path that breaks our servers.
+
+**`BatchSpanProcessor`.** The standard-issue processor, and it fails twice: it flushes on a timer
+(BL-345's in-process background job) and it buffers, so a crash loses the buffered window —
+precisely the "the process that crashed is the one holding the evidence" failure the disk
+requirement exists to prevent. `SimpleSpanProcessor` writing straight through to the append-only
+JSONL sink is both cheaper here and strictly more durable.
 
 **Replacing `LatencyRing` with an OTel histogram.** See §3.5 — it feeds admission control, which
 needs a rolling window that a cumulative histogram cannot express.
@@ -556,6 +735,72 @@ bound and a lead, not a verdict**. The `role` attribute from §5.1 is what makes
 runners exiting mid-op are exactly the population that inflates it, and with `role` they can be
 excluded rather than guessed at.
 
+### 5.6 The existing JSONL sink — verdict: **WRAP**, and here is the argument
+
+The brief asks for this plainly, so: **keep the sink, wrap it in OTel's `SpanExporter` /
+`SpanProcessor` interfaces, replace nothing.** Not because replacing what works is distasteful, but
+because on the specific merits the standard tool loses on two of them and does not compete on a
+third.
+
+| Property of `telemetry.ts` | Does the OTel SDK give it? |
+|---|---|
+| Durable local disk sink | **No.** OTel ships none (§3.10). The only non-network exporter writes 778 bytes to stdout. |
+| START logged before the operation is awaited | **No.** Spans emit on `end()`. Measured: 2 started, **1 exported** — the hung one never reached disk. |
+| Never throws, never blocks the caller | Partially. `BatchSpanProcessor` buffers and flushes on a timer — the BL-345 failure mode. |
+| Never logs content | Ours by policy; OTel is neutral (attributes are whatever you pass). |
+| Env read per-call, not cached | No — SDK config is read at construction. |
+| SQL text captured on error, `this` preserved | Ours (`instrumentAdapter` Proxy). No OTel equivalent without an instrumentation package. |
+| **Metrics aggregation, percentiles, throughput** | **Yes — and we have none.** This is the half worth adopting for. |
+
+The honest summary: **the sink is not the part that is missing; the aggregation is.** The JSONL
+writer does its job well and the standard has nothing to replace it with. What the repo has never
+had is anything that *computes* over those events — `docs/observability/README.md` §5.3 shows that
+even the wait-vs-work split is *already reconstructible from the events on disk* by joining
+`writequeue.enqueue` to `writequeue.task.start` on `trace_id` + `label`, and nobody has ever
+computed it. That is the gap: not collection, **aggregation and reach**.
+
+**Preserving the hang guarantee inside the standard's own extension point.** The obvious
+implementation — a `SpanExporter` — only sees finished spans, so it cannot see a hang. But
+`SpanProcessor.onStart` fires *before* the span body runs, and my prototype confirms it fires for
+hung spans too (`onStart` 2, exported 1). So the start record is written from `onStart`, not
+bolted on beside the span machinery:
+
+```ts
+class JsonlSpanProcessor implements SpanProcessor {
+  onStart(span, _ctx) { writer.write(record(`${span.name}.start`, span)); }   // ← hang-visible
+  onEnd(span)         { writer.write(record(`${span.name}.finish`, span)); } // ← + duration_ms
+}
+```
+
+This is what "wrap, don't replace" earns: the guarantee survives, it lives at a standard seam
+rather than in parallel to one, and `starts − (finishes + errors)` — BL-353's highest-value query
+and the thing that surfaced `store.open` at 61% unaccounted — keeps working, now automatically
+computed into `memory_ping` instead of waiting two days for someone to write a script.
+
+The **record format is unchanged**: same five always-present fields, so
+`docs/observability/README.md`'s catalog stays valid and the scripts in
+`~/.adhd/sox-ecosystem/memory/log-analysis/` keep running against the new stream.
+
+### 5.7 Designing against BL-353 — "on disk and correct" is proven insufficient
+
+BL-353's finding is that 75,000 events sat on disk for two days, correct and unread, while people
+ran blind investigations against the exact defects the log had already recorded. A design that ends
+at "the data is durable" has already failed by that standard. Three mechanisms, in order of how
+much they rely on a human:
+
+1. **Derived metrics are computed in-process and appear in `memory_ping` unconditionally** — no
+   script, no file path, no knowledge that the log exists. The pull reader (§3.3) makes this cost
+   0.635 ms on the call that asked. This is the primary mechanism; everything else is secondary.
+2. **The self-check reports its own gaps** (§5.3): declared-but-unsampled paths, unaccounted
+   start/finish deltas, and dropped-record counts. The system says what it does not know, rather
+   than presenting silence as health.
+3. **A committed analysis target**, not a script in a home directory. The scripts that produced
+   BL-353's findings currently live in `~/.adhd/sox-ecosystem/memory/log-analysis/` — outside the
+   repo, un-versioned, and invisible to anyone who did not read that backlog item. They belong in
+   the repo behind an nx target so the deep offline analysis is reproducible and discoverable.
+
+The ordering matters and is the whole lesson: **(1) is the fix; (3) alone is what we already had.**
+
 ### 5.4 Lint enforcement (the mis-integration guard rails)
 
 Four rules, all mechanical:
@@ -617,13 +862,15 @@ every step rather than at the end.
 | # | Step | Proves |
 |---|---|---|
 | 0 | BL-344: single allowlist + deny-list | controls survive to a spawned service |
-| 1 | Create `libs/observability/sox-telemetry`; **move** `telemetry.ts` + `latency-stats.ts` in; re-export from `memory-core` for compatibility | no behaviour change; existing specs stay green |
+| 1 | Create `libs/observability/sox-telemetry`; **move** `telemetry.ts` + `latency-stats.ts` in; re-export from `memory-core` for compatibility | no behaviour change; existing specs stay green; existing JSONL records byte-identical |
+| 1b | `JsonlSpanProcessor` (start on `onStart`, finish on `onEnd`) over the existing `RotatingJsonlWriter`; `role`-routed sink + retention (§3.11) | **hang still visible on disk** (span started, never ended → `.start` record present); live and test populations land in different files |
 | 2 | Add `@opentelemetry/api` dep + `initTelemetry` (required `role`) + pull reader + `withContendedStage` + `declareStages` | unit tests: wait/work pair emitted; no active handles after init; no unlabelled-`role` record reachable |
 | 3 | Wire `initTelemetry` at the memory-server composition root; add `telemetry` block (incl. `self_check`) to `memory_ping` | **BL-351 acceptance #3**: every metric reachable from a tool call. **BL-353 acceptance**: start/finish accounting reachable without reading a file |
 | 4 | `store-adapter`: replace bespoke instrumentation with `instrumentBoundary` | **BL-351 acceptance #1**: memory-core + store-adapter spans join on one trace-id |
 | 5 | `memory-core` `write-queue.ts`: `withContendedStage('write_queue', …)` at `:615` | **BL-351 acceptance #2**: `write_queue_wait` reported for a real write |
 | 6 | `memory-core` `embed-pipeline.ts`: `embed` + `vector_write` on **both** `write` and `heal` paths | **BL-319 closed**: `paths_with_zero_samples` empty |
-| 7 | `embedding-provider`: `instrumentBoundary` + `embed_enqueue_wait` | BL-331's 18x becomes stage-attributable |
+| 6b | Explicit context hand-off at the embed dispatch boundary (§3.12) | **`embed.*` records stop emitting `trace_id: null`** — 535 live embeds on the incident day were uncorrelatable |
+| 7 | `embedding-provider`: `instrumentBoundary` + `embed_enqueue_wait` | BL-331's residual (*where inside embed compute*) becomes stage-attributable |
 | 8 | `graph-store`, `host-runtime` (supervisor spawn/verify stages) | six packages, one substrate |
 | 9 | Lint rules (§5.4) + `telemetrySelfCheck` CI gate | the guard rails become permanent |
 
@@ -653,13 +900,31 @@ log-START-before-await contract and additionally opens a span. `instrumentAdapte
 Discovered during this research (per the disclosure directive; deduped by symbol/path against
 existing entries):
 
-- **BL-354** — `WriteQueue` never measures queue wait time. `enqueue` pushes without a timestamp
-  (`write-queue.ts:615`); `_recordLatencySample` (`:657`) records execution only. `estimated_wait_ms`
-  is a *prediction* from work latency, not an observation. Sub-item of BL-351/BL-322; filed
-  separately because it is the single concrete missing measurement Theme 2 depends on.
+- **BL-358** — `WriteQueue` never *computes* queue wait time. `enqueue` pushes without a timestamp
+  (`write-queue.ts:615`); `_recordLatencySample` (`:657`) records execution only. Refined after
+  reading `docs/observability/README.md` §5.3: the raw events **are** on disk and wait **is**
+  reconstructible by joining `writequeue.enqueue` → `writequeue.task.start` on `trace_id` + `label`
+  — nothing has ever computed it, and no in-process instrument or status field reports it.
+  `estimated_wait_ms` is a *prediction* from work latency, reported in the `E_BUSY` payload as if it
+  were an observation, and never compared against the reconstructible truth. (Renumbered from
+  BL-354 → BL-356 → BL-358 — see below.)
 - **BL-355** — `tools/bundle-extension.cjs` does not minify. `memory-server/dist/index.js` is
   2,418,414 bytes unminified. Not a defect, but it makes every future dependency's footprint 2.7x
   its minified cost. LOW.
+
+**Numbering collisions, resolved by yielding twice — worth recording as a process finding.** `BL-354`
+was assigned twice by concurrent agents: my queue-wait item (commit `0e9026b`, first) and *"Library
+builds compile `__tests__/*.test.ts`"* (commit `83b0483`). I renumbered **mine** to BL-356 rather
+than edit another agent's item out from under them — and BL-356 was then claimed concurrently too,
+by *"A fixed global cosine threshold is not calibratable"* (`BACKLOG.md:1866`, which is what the
+BL-328 cross-references at `:1069`/`:1075` were pointing at). Mine is now **BL-358**, and
+`grep -o '^### BL-[0-9]*' | sort -n | uniq -d` returns empty.
+
+**Root cause, and it will recur:** BL ids are allocated by reading the current max from a shared
+file, which is a read-then-write race with no reservation step. Three agents filing within the same
+hour produced two collisions. Worth a lightweight fix (a reservation line, or id = max+1 verified at
+commit time by a pre-commit hook), otherwise the next collision lands silently on an item someone
+has already cited elsewhere — which is exactly what happened to the BL-328 cross-reference.
 
 Checked for duplicates by symbol (`_recordLatencySample`, `estimated_wait_ms`), path
 (`write-queue.ts`, `bundle-extension.cjs`) and string (`write_queue_wait`, `minify`) across
@@ -687,8 +952,11 @@ Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-351 / docs/re
 14: libs/host-runtime/src/runtime-cli.ts:542 (allowlist copy 4),
 15: tools/bundle-extension.cjs:11-22, 66-73, 174-228 (externals + sidecar policy; no minify),
 16: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:956-963 (status surface assembly),
-16a: BACKLOG.md:1457-1500 (BL-353 — role field, start/finish accounting, BL-331 partial answer),
-16b: docs/observability/README.md (event catalog, written under BL-353),
+16a: BACKLOG.md:1515-1557 (BL-353 — role field, start/finish accounting, BL-331 partial answer),
+16b: docs/observability/README.md §2 (design guarantees), §3.1 (embed trace_id null gap), §5.2 (start/finish accounting), §5.3 (wait reconstructible by hand from enqueue→task.start),
+16c: BACKLOG.md BL-351 owner requirement (commit 1190335 — events must be written to disk),
+16d: live logs ~/.adhd/sox-ecosystem/memory/logs/memory-core-2026-07-{30,31}.jsonl — 82,541 events, 814 pids, 16 live pids, 2,729 live events (3.3%), 0.57 MB of 21.43 MB (2.7%), mean 272 bytes/event (read-only analysis 2026-07-31),
+16e: libs/memory-core/src/telemetry.ts:109-262 (RotatingJsonlWriter), :132-156 + :202-206 (drop-never-throw on sink failure),
 17: live memory_ping 2026-07-31 (embed_duration_ms.mean 7910 ms, embed_throughput_per_sec 0.0167, throughput_writes_per_sec 0),
 18: npm registry 2026-07-31 — @opentelemetry/api 1.9.1 / sdk-trace-base 2.10.0 / sdk-metrics 2.10.0 / context-async-hooks 2.10.0 / sdk-node 0.221.0 / dd-trace 6.8.0 / pino 10.3.1 / prom-client 15.1.3 / hdr-histogram-js 3.0.1,
 19: local prototype /Users/nix/.claude/jobs/1557bcef/tmp/otel-probe — bundle sizes, stdout byte counts, ns/op benchmarks, collect() latency, getActiveResourcesInfo, cross-package trace join, exponential-histogram percentile error,
