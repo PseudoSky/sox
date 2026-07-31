@@ -115,6 +115,29 @@ Two things it exists to stop, both of which fired on 2026-07-31:
   not find — it dropped both live emergency brakes while printing success. Export what you intend
   to keep, and diff the plist (BL-375).
 
+## ⚠ BL-367 — cross-backend recall parity: leaning CORRECTNESS problem, not proven
+
+**The biggest open unknown in the project.** `recall-parity.test.ts` compared `RecallResult.uid`
+across two independent stores, but `memoryWrite` mints a fresh `ulid()` per episode — overlap was
+**0 by construction**. The test could never have passed, so **cross-backend recall parity has never
+actually been tested.** Corrected to compare on content, the first honest measurement is
+**0.52 against a 0.80 bar**.
+
+**Harness artifact is ruled out** (2026-07-31): corpus identical (same `EPISODES` array to both
+stores), queries identical, embeddings deterministic and identical (`DeterministicTestProvider` +
+`SOX_SYNC_EMBED=1`), both backends return results, and the test skips any query where either side
+is empty with `queriesRan > 0` passing. So it is not differing corpora, not embedding
+non-determinism, not one-side-empty.
+
+**What remains is genuine retrieval/ranking divergence — but it is NOT proven.** Recall fuses
+vector + BM25 + temporal and **the arms were never isolated.** Leading suspect is the FTS/BM25 arm
+(the Turso FTS dialect differs; cf. BL-347). **That isolation is the experiment to run.**
+
+**The 0.80 bar was never validated** — it was written alongside the uid comparison, so its author
+never observed the test pass. It is aspirational, not empirical. **This must not be reframed as
+threshold tuning:** 52% agreement on the top 5 for identical input is poor on its face regardless
+of where the bar sits. Do not lower the bar to fit the measurement.
+
 ## ⚠ Do not gate on a memory-core failure COUNT
 
 Measured 2026-07-31: three runs of the **same** configuration returned **109, 95, 91** failures.
