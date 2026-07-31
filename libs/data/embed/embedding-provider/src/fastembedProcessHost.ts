@@ -58,7 +58,118 @@
  */
 
 import * as fs from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { EmbeddingModel, ExecutionProvider } from 'fastembed';
+
+// ── BL-331: cross-process CoreML/ANE contention advisory lock ──────────────
+//
+// Root cause of BL-331 (production embed ~25-50x slower than a clean-room
+// harness on the same machine): two orphaned one-shot debug scripts had each
+// forked their OWN `fastembedProcessHost.js` (via `sharedFastembedProcess.ts`'s
+// `getSharedFastembedProcess()`, but from a DIFFERENT `dist/` copy than the
+// real server's, so it's a distinct Node module singleton and thus a distinct
+// OS process) and never exited — each holding an idle CoreML
+// `InferenceSession` for hours.
+//
+// ⚠️ MEASUREMENT CORRECTION (2026-07-31): an earlier revision of this comment
+// claimed those orphans held "~900MB" each. That was wrong by more than an
+// order of magnitude. Measured at kill time via `ps -eo pid,ppid,rss`:
+// orphan hosts 32MB each, their parent scripts 28MB each, and the LIVE server's
+// host 46MB. Reaping both freed ~120MB, not ~1.8GB — and did NOT change embed
+// latency. So cross-process ANE contention is NOT an established cause of
+// BL-331; treat it as UNPROVEN.
+//
+// What IS measured: the real server's embed calls take 8-20s wall-clock for
+// tiny (<600 char) inputs at only ~34% CPU (NOT compute-bound — waiting), while
+// the identical model/EP in a clean-room single-process harness measured ~0.4s.
+// Note the clean-room number was taken on a quiet machine and the production
+// number under load average 18-25 on 10 cores, so the ratio itself is partly
+// load-confounded — record ambient load with any future comparison.
+//
+// The leading UNTESTED hypothesis is EP graph partitioning: CoreML cannot
+// execute bge-base's 30522x768 `word_embeddings` tensor (see the
+// `IsInputSupported` warning logged at every startup), so onnxruntime splits the
+// graph and every inference pays a CPU/ANE boundary crossing. A CoreML-vs-CPU
+// A/B would settle it; it has not been run. See BL-331.
+//
+// This lock remains useful regardless: nothing in this process logs the
+// existence of sibling fastembed hosts, and that blindness cost an afternoon
+// of `ps`/`vm_stat` archaeology.
+//
+// This lock is advisory-only — it never blocks or refuses to load the model
+// (a legitimate second store/project running its own memory-server on the
+// same machine is a real, supported scenario, not a bug). It exists purely
+// so a FUTURE occurrence of this contention class is a loud, immediately
+// greppable stderr line at model-load time instead of a silent 25-50x
+// slowdown that takes an agent an afternoon of `ps`/`vm_stat` archaeology to
+// diagnose.
+/** Resolved fresh on every call (not a module-level constant) so tests can
+ *  point it at an isolated temp path via SOX_FASTEMBED_LOCK_PATH without
+ *  needing `vi.resetModules()`. */
+function resolveFastembedLockPath(): string {
+  return process.env['SOX_FASTEMBED_LOCK_PATH'] ?? join(tmpdir(), 'sox-fastembed-host.lock');
+}
+
+interface FastembedLockInfo {
+  pid: number;
+  startedAt: string;
+}
+
+/** True if a process with this pid is alive (best-effort; ESRCH => dead). */
+export function isPidAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check for (and then claim) the advisory single-host lock. Logs a loud,
+ * greppable warning to stderr — naming the conflicting pid — if another LIVE
+ * process already holds it. Always overwrites the lock with our own pid
+ * afterward (last writer wins; this is advisory, not exclusive).
+ */
+export function checkAndClaimFastembedLock(): void {
+  const lockPath = resolveFastembedLockPath();
+  try {
+    if (fs.existsSync(lockPath)) {
+      const raw = fs.readFileSync(lockPath, 'utf8');
+      const prev = JSON.parse(raw) as Partial<FastembedLockInfo>;
+      if (
+        typeof prev.pid === 'number' &&
+        prev.pid !== process.pid &&
+        isPidAlive(prev.pid)
+      ) {
+        console.error(
+          `[fastembed] WARNING (BL-331): another fastembed host process (pid ${prev.pid}, ` +
+            `started ${prev.startedAt ?? 'unknown'}) is ALREADY RUNNING on this machine. ` +
+            `Concurrent onnxruntime-node CoreML/ANE execution across separate OS processes has ` +
+            `been observed to cause severe (25-50x) embed latency due to Neural Engine/hardware ` +
+            `queue contention, even though each process's own CPU usage looks low (it is waiting, ` +
+            `not computing). If pid ${prev.pid} is a leaked/orphaned process (check with ` +
+            `\`ps -p ${prev.pid}\`), terminate it. Lock file: ${lockPath}`,
+        );
+      }
+    }
+  } catch (err) {
+    // Never let a malformed/unreadable lock file block real startup — this
+    // is a pure observability aid, not a correctness mechanism.
+    console.error(
+      `[fastembed] BL-331 lock check failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  try {
+    const info: FastembedLockInfo = { pid: process.pid, startedAt: new Date().toISOString() };
+    fs.writeFileSync(lockPath, JSON.stringify(info));
+  } catch {
+    // Non-fatal: if /tmp isn't writable for some reason, just skip claiming.
+  }
+}
 
 // ── Type definitions ──────────────────────────────────────────────────────────
 
@@ -126,6 +237,11 @@ async function loadModel(model: string, cacheDir: string): Promise<{ dim: number
     const info = models.find((m) => m.model === model);
     return { dim: info?.dim ?? 0, execution_provider: 'cpu' };
   }
+
+  // BL-331: advisory contention check, once, right before the real (expensive,
+  // ANE-contending) model load — see the lock helpers above for the full
+  // root-cause writeup.
+  checkAndClaimFastembedLock();
 
   const { FlagEmbedding, EmbeddingModel: EM } = await import('fastembed');
   const fastModel = MODEL_MAP[model] ?? model;
