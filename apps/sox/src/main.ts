@@ -4632,6 +4632,11 @@ function buildOsUnitEnv(extId: string, root: string): Record<string, string> {
   const allowedKeys = new Set([
     'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
     'SOX_EMBED_BACKEND', 'SOX_EMBED_CACHE_DIR', 'XDG_CACHE_HOME',
+    // BL-339: negative-control seam (libs/memory-core/src/embed-pipeline.ts
+    // healDisabled()) forwarded so the supported `soxe service enable`
+    // regeneration path can carry it into the launchd unit — never hand-edit
+    // the generated plist to inject env.
+    'SOX_DISABLE_EMBED_HEAL',
   ]);
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
@@ -8065,6 +8070,14 @@ Flags:
     const allowedKeys2 = new Set([
       'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
       'SOX_EMBED_BACKEND', 'SOX_EMBED_CACHE_DIR', 'XDG_CACHE_HOME',
+      // BL-339: this is the SERVE path — it builds serveEnv, which becomes
+      // backendEnv (see ~line 8185) for the proxy-spawned backend. Patching
+      // buildOsUnitEnv() alone is NOT sufficient: that only populates the
+      // launchd unit, and the proxy re-scrubs here before spawning the child.
+      // Symptom when this is missed: the var IS present in the .plist but
+      // absent from `ps eww <backend-pid>`, and the setting silently does
+      // nothing. Verified 2026-07-31.
+      'SOX_DISABLE_EMBED_HEAL',
     ]);
     const baseEnv2: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
@@ -8713,6 +8726,12 @@ Examples:
     const allowedKeys = new Set([
       'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
       'SOX_EMBED_BACKEND', 'SOX_EMBED_CACHE_DIR', 'XDG_CACHE_HOME',
+      // BL-339: kept in sync with the serve path above and buildOsUnitEnv().
+      // NOTE: this is the THIRD copy of this allowlist in this file (see also
+      // ~4632 and ~8070), plus further copies in host-runtime. Adding a tunable
+      // requires remembering every one of them — see the filed defect
+      // recommending `SOX_*` forwarded by default with a deny-list instead.
+      'SOX_DISABLE_EMBED_HEAL',
     ]);
     const baseEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
