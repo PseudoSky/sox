@@ -1440,7 +1440,7 @@ Citations: [wip/turso-live-metrics, team-lead, claude (mitigate-reads), turso-go
 
 ---
 
-### BL-344 — SECOND TEMPORARY MITIGATION: `SOX_DISABLE_PERIODIC_ENRICH` — enrichment/clustering is OFF and must be re-enabled — **Open (HIGH)** (2026-07-31)
+### BL-346 — SECOND TEMPORARY MITIGATION: `SOX_DISABLE_PERIODIC_ENRICH` — enrichment/clustering is OFF and must be re-enabled — **Open (HIGH)** (2026-07-31)
 
 **Filed so a second deliberate degradation cannot become permanent by neglect. Read together with BL-339.**
 
@@ -1459,7 +1459,7 @@ Citations: [wip/turso-live-metrics, team-lead, claude (mitigate-reads), turso-go
 2. Verified with BOTH brakes released: reads responsive in single-digit seconds while enrichment AND the embed backfill run.
 3. The per-job disable flags should then be REMOVED, not left as permanent API — they are scaffolding, not design.
 
-**Acceptance (red→green, must name BL-344):** with enrichment enabled and a real backlog, assert `memory_ping`/`memory_topics` stay responsive throughout a full tick. That test failing today is the entire reason both mitigations exist.
+**Acceptance (red→green, must name BL-346):** with enrichment enabled and a real backlog, assert `memory_ping`/`memory_topics` stay responsive throughout a full tick. That test failing today is the entire reason both mitigations exist.
 
 **Severity:** HIGH — second load-bearing degradation of the live system in 24h, same root cause, different trigger.
 
