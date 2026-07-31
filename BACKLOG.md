@@ -1006,7 +1006,9 @@ if (!isFullPass) return { clusters: [], full_pass: false, unclustered_count: epi
 ```
 `incrementalOnly: true` returns empty regardless of how many valid vectors exist. `runEnrichPassOnDb` (`extensions/.../memory-server/src/index.ts:2024`) calls `runBatchEnrich({ incrementalCluster: !fullPass })`, and `fullPass` is true only when an explicit `organizer_queue` "enrich" row is pending — which `memory_curate {op:'recluster'}` merely ENQUEUES (`curate.ts` `enqueueEnrichFull`), never runs inline. **Net: the only clustering path an ordinary `memory_write` ever reaches is the dead stub.** Proven at both the pure `clusterStore()` level and the production wrapper by `clustering-e2e.test.ts` (commit `3e0742f`), 18/18 green across sqlite AND turso.
 
-**Fix sketch:** implement the `// TODO: local neighborhood check per D1.3`, or make full passes run automatically on a cadence/threshold. Needs an owner decision — this is a design gap, not a typo.
+**✅ OWNER DECISION (2026-07-31) — resolved as a design, tracked for implementation in BL-349.** Neither of the originally-offered options was taken. The chosen strategy is **write-triggered cluster association executed in the background** — not a periodic full pass, not an inline call — with hard isolation from the embedding path: *"the execution of clustering should never block an embedding from being written. Failing clustering should never drop an embedding."* That isolation is a prerequisite, filed separately as **BL-348** (CRITICAL). The unresolved algorithmic tail — clusters are not constant-time splits and do not self-reorganize — is **BL-350** (research).
+
+**Fix sketch:** implement per BL-349 (background trigger) on top of BL-348 (committed-stage boundary). The original options — the `// TODO: local neighborhood check per D1.3`, or automatic full passes on a cadence — remain relevant to BL-350's research, not to the near-term mechanism.
 
 **Acceptance (red→green, must name BL-326):** a test that writes N clusterable episodes, runs ONLY the ordinary write/enrich path (no explicit recluster row), and asserts `total_clustered > 0`. Must fail today.
 
@@ -1275,18 +1277,153 @@ against `node` = 9420 rows.[1] The index is present and well-formed in `sqlite_m
 
 **Blast radius:** every keyword/BM25 recall path degrades to whatever fallback exists, silently. Combined with vector coverage frozen at ~36% (BL-339/346), the live store has been serving recall with **both** retrieval strategies impaired and reporting healthy throughout.
 
-**Fix sketch:**
-1. Rebuild the live index (0.26 s, snapshot first).
-2. Add an FTS health probe to the store's self-check: `fts_match` on a sentinel token that is known to exist, asserted non-zero — never a backing-row count.
-3. Fold the rebuild into BL-337's repair helper so crash recovery cannot skip it again.
+**⛔ OWNER DIRECTIVE (2026-07-31) — DO NOT MANUALLY REBUILD THIS INDEX.** A manual `DROP`+`CREATE` was proposed, verified, and **rejected**, verbatim: *"This is very much the exact reason that the store adapter migration strategy was designed and built, so if the tables are not 100% accurate and resolved when that auto migrator runs that is a product defect that should not be manually corrected. This is also on generated data so it seems somewhat wild that isn't already handled. So no, I don't approve manually dropping the index because the adapters should be verifying their store and migrating any missing data + generating missing indexes etc."*
 
-**Acceptance (red→green, must name BL-347):** a test that builds a Turso store with rows + `idx_fts_node`, empties the backing directory to simulate the post-repair state, asserts `fts_match` returns 0 while `LIKE` returns >0 (**red**), then runs the repair helper and asserts `fts_match` returns >0 (**green**). A second assertion must prove the health probe *detects* the empty state — a probe that passes in the red condition is the BL-167 failure mode repeating.
+The live store therefore **stays broken until the adapter fixes it itself.** Hand-repairing it would destroy the only reproduction we have of the real defect and leave the store one crash away from an identical, equally silent outage.
+
+**The real defect — why the migrator cannot currently catch this.** `applySchema()` issues `CREATE INDEX IF NOT EXISTS idx_fts_node ...`. The index **does** exist — it is its Tantivy directory that is empty. `IF NOT EXISTS` therefore **no-ops**, the version gate is already satisfied, and the adapter concludes the store is fully migrated while a generated artifact it owns is empty.[5] This is BL-302's missing migration executor (`targetVersion` hard-coded to `1`, no `migrations[]`, DDL-only reconciliation) meeting BL-335's "nothing detects or repairs it." **Existence is not integrity.** No `IF NOT EXISTS` DDL can ever detect a present-but-empty derived structure.
+
+**Fix (reframed per the directive) — the adapter must verify and self-heal what it generates:**
+1. **Verification on open** — the adapter validates its own generated artifacts, not merely their presence: FTS index *matches*, secondary indexes *populated* (BL-335), vectors *consistent*. Existence checks are insufficient by construction.
+2. **Repair as migration** — a detected-empty derived artifact is rebuilt through the migration path (BL-302's executor), transactionally, logged, and reported — never by hand, never by an operator.
+3. **Report it** — the outcome surfaces in status (BL-334) so a degraded store cannot present as healthy, which it did here for at least a day.
+4. Probe FTS via `fts_match` on a sentinel token — **never** a backing-row count (see the second defect above).
+
+**Acceptance (red→green, must name BL-347):** build a Turso store with rows + `idx_fts_node`, empty the backing directory, **re-open it through the normal adapter path** and assert the adapter **detects and repairs** it unprompted — `fts_match` returns 0 before open (**red**) and >0 after (**green**), with no manual DDL anywhere in the test. Re-running `applySchema()` alone must be shown **not** to fix it, proving the `IF NOT EXISTS` no-op is the mechanism. A further assertion must prove the health probe *fails* in the damaged state — a probe that passes there is the BL-167 failure mode repeating.
 
 **Severity:** HIGH — silent, total loss of keyword retrieval on the live store, undetected for at least a day, on the system every agent depends on for recall.
 
-**Related:** BL-337 (the blocked repair that caused this), BL-335 (the crash index damage), BL-334 (status surface must report this — and its proposed FTS field is unobtainable as specified), BL-329 (the same index blocks better-sqlite3), BL-338 (crash recovery must be automatic).
+**Related:** **BL-302 (the missing migration executor — this is the mechanism)**, BL-337 (the blocked repair that caused this), BL-335 (the crash index damage), BL-334 (status surface must report this — and its proposed FTS field is unobtainable as specified), BL-329 (the same index blocks better-sqlite3), BL-338 (crash recovery must be automatic), BL-352 (adapter self-verification, the item this fix now lands in).
 
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `~/.memory/memory.db` fts_match/LIKE/sqlite_master probe 2026-07-31, 2: clean-room A/B backfill-vs-incremental probe 2026-07-31, 3: offline-copy DROP+CREATE rebuild probe 2026-07-31, 4: libs/data/store/store-adapter/src/fts-dialect.ts:187-257]
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `~/.memory/memory.db` fts_match/LIKE/sqlite_master probe 2026-07-31, 2: clean-room A/B backfill-vs-incremental probe 2026-07-31, 3: offline-copy DROP+CREATE rebuild probe 2026-07-31, 4: libs/data/store/store-adapter/src/fts-dialect.ts:187-257, 5: BL-302 (`applySchema` DDL-only reconciliation, `CREATE INDEX IF NOT EXISTS` no-op on a present-but-empty index), 6: owner directive 2026-07-31 rejecting manual repair]
+
+---
+
+### BL-348 — Enrichment/clustering can block and lose an embedding: the write pipeline has no stage isolation — **Open (CRITICAL)** (2026-07-31)
+
+**Owner directive, verbatim (2026-07-31):** *"Embedding and other enrichment should really never block each other — they are independent features enabled by different components. Generating an embedding and writing it should be an isolatable operation from topic enrichment and edge drawing. … the execution of clustering should never block an embedding from being written. Failing clustering should never drop an embedding. Embedding vector loss is a critical failure."*
+
+**Driver:** embedding, topic enrichment, edge drawing, and clustering currently share one enrich/write path with no isolation boundary between them. Three distinct failure modes follow, and we have observed all three:
+
+1. **Blocking** — a clustering pass monopolizes the loop and starves everything behind it. BL-345 established that **any** in-process background job starves foreground reads, not merely embed heal; BL-346's live hang (`enrich.tick.start` with no `.finish`) is this shape.
+2. **Loss** — a failure in a *downstream* stage can abort the unit of work that carried a *successfully computed* embedding. An embedding costs real ANE/CPU time and is the single most expensive artifact in the pipeline; discarding one because an unrelated stage threw is unacceptable.
+3. **Attribution** — with the stages fused, a slow or failing pipeline cannot be attributed to a component, which is exactly why BL-331's 18x slowdown remains unexplained.
+
+**Requirement.** Embedding generation and vector persistence form a **committed stage**. Once a vector is computed it is durably written before any enrichment stage runs, and no subsequent stage failure can roll it back, skip it, or delay it. Enrichment, topic assignment, edge drawing and clustering each become independently schedulable, independently failable, independently retryable stages downstream of that commit.
+
+**Explicitly: vector loss is a CRITICAL-severity failure class, not an error to be logged and moved past.**
+
+**Fix sketch:** split the write path into committed stages with an explicit boundary after vector persist. Downstream stages consume from a durable queue (`organizer_queue` already exists) rather than executing inline within the write. Each stage carries its own failure isolation, retry policy, and metrics (BL-351). Pairs with BL-349 (clustering as a backgrounded trigger) and BL-345 (foreground/background lanes).
+
+**Acceptance (red→green, must name BL-348):** a test that writes an episode with a clustering/enrichment stage forced to throw, and asserts the embedding is **still durably present in `vec_node`** after the failure. Must fail today. A second test asserts a deliberately slow enrichment stage does **not** increase `write_to_vector_ms` for concurrent writes — proving the blocking boundary is real and not merely nominal.
+
+**Severity:** CRITICAL — the failure mode is silent loss of the most expensive artifact in the system, on a store where vector coverage is already frozen at ~36%.
+
+**Related:** BL-345 (background jobs starve foreground), BL-346/BL-339 (both live mitigations exist because of this), BL-326/BL-349 (clustering trigger), BL-331 (unattributable slowness), BL-351 (per-stage metrics), BL-330 (durability of the committed write).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner directive 2026-07-31, 2: BL-345, 3: BL-346 (live enrich.tick hang), 4: libs/memory-core/src/enrich-batch.ts, 5: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (runEnrichPassOnDb / runPeriodicEnrichPassGuarded)]
+
+---
+
+### BL-349 — Clustering must run as a backgrounded post-write trigger, never inline — **Open (HIGH)** (2026-07-31)
+
+**Owner decision on BL-326 (2026-07-31), verbatim:** *"shouldn't this be a backgrounded insert trigger? … For now I'm okay with doing the write triggered cluster association but the execution of clustering should never block an embedding from being written."*
+
+**Resolves the BL-326 design gap** — clustering is currently unreachable from any ordinary write (the incremental path is a dead stub; full passes run only off an explicit `organizer_queue` row). The chosen strategy is **write-triggered cluster association executed in the background**, not a periodic full pass and not an inline call.
+
+**Constraints, all load-bearing:**
+- The trigger is **enqueued** by the write; the write does not await it (BL-348's committed-stage boundary).
+- Clustering failure or slowness has **zero effect** on embedding persistence.
+- The trigger is idempotent and coalescing — N rapid writes must not queue N full passes.
+- It carries its own traceability and metrics as a distinct stage (BL-351).
+
+**Not settled by this decision:** how cluster *membership* is maintained as the corpus grows. See BL-350 — the owner explicitly flagged that clusters are not constant-time splits and do not self-reorganize, and that the long-term strategy needs research. This item is the near-term mechanism; BL-350 is the algorithm.
+
+**Acceptance (red→green, must name BL-349):** write N clusterable episodes through the ordinary path only (no explicit recluster row, no manual pass) and assert `total_clustered > 0` — the BL-326 acceptance. Additionally assert the write's `write_to_vector_ms` is unaffected by clustering work, and that a thrown clustering error leaves the vectors intact.
+
+**Severity:** HIGH — clustering is inert in production; paired with BL-327 it fully explains the live `cluster_count: 139 / total_clustered: 0 / coverage: 0`.
+
+**Related:** BL-326 (the gap this decides), BL-348 (the isolation it depends on), BL-350 (the unresolved algorithm), BL-328 (threshold calibration), BL-327 (orphaned communities).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner decision 2026-07-31, 2: BL-326, 3: libs/memory-core/src/cluster.ts:437-441]
+
+---
+
+### BL-350 — RESEARCH: cluster maintenance is not a constant-time split and does not self-reorganize — **Open (MEDIUM, research)** (2026-07-31)
+
+**Owner framing, verbatim (2026-07-31):** *"your idea is great to produce constant time insert clustering agreed, but it silently ignores that the clusters are not constant time splits and self reorganizing - I'm thinking that strategy could be researched."*
+
+**The problem this names.** Any incremental/write-triggered association (BL-349) answers *"which existing cluster does this new episode join?"* It does **not** answer what happens when the corpus shifts underneath the clusters:
+- A cluster grows until it should **split** into two coherent sub-topics — an O(1) insert never triggers that.
+- Two clusters drift **together** and should **merge**.
+- Deleting or invalidating episodes leaves clusters **stale or orphaned** (BL-327 is the observed instance).
+- Incremental association **drifts** from what a full pass over the same corpus would produce, and nothing measures the divergence.
+
+The consequence of ignoring it is not an error — it is a slowly degrading cluster quality that never surfaces as a failure. That is the same silent-degradation class as BL-347.
+
+**Research scope:** survey incremental/streaming clustering with maintenance (split/merge criteria, drift detection, periodic-reconciliation hybrids); define a measurable **drift metric** between incremental state and a full-pass ground truth; recommend a maintenance cadence or trigger. Per the DRY directive, query memory for prior internal work and prior tool research before any live search; log the evaluation with topic + language tags and the final decision.
+
+**Acceptance:** a written recommendation with a measurable drift metric and a maintenance trigger, plus a harness that can compute incremental-vs-full-pass divergence on a real corpus. No code change is in scope for this item.
+
+**Severity:** MEDIUM — not blocking go-live, but BL-349 ships a strategy with a known unaddressed tail, and this is that tail. Filing it is what keeps it from becoming folklore.
+
+**Related:** BL-349 (the near-term mechanism), BL-328 (threshold calibration), BL-327 (orphaned communities), BL-326.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner framing 2026-07-31, 2: BL-349, 3: BL-327]
+
+---
+
+### BL-351 — No per-package tracing/metrics architecture: every component reimplements or omits observability — **Open (HIGH)** (2026-07-31)
+
+**Owner directive, verbatim (2026-07-31):** *"All of these operations need independent tracability & metrics at their sox package level."* and *"We should architect the tracing package so that we are reusing and implementing the metrics + logging + function level tracing correctly."*
+
+**Driver.** Observability is currently ad hoc and per-consumer, and the gaps are load-bearing:
+- BL-320's telemetry lives in `memory-core/src/telemetry.ts` — useful, but **memory-core's**, not a shared capability. `embedding-provider`, `store-adapter`, `graph-store`, `host-runtime` have no equivalent.
+- Its four env controls (`SOX_MEMORY_LOG_LEVEL` / `_DISABLE` / `_DIR` / `_MAX_BYTES`) are **silently scrubbed** by six duplicated allowlists (BL-344), so the tracing that exists cannot be turned on where it matters.
+- `time_to_vector_ms` exists and has **0 samples** because the heal path bypasses write-path instrumentation (BL-319) — an instrument wired to one code path is indistinguishable from no instrument.
+- BL-334 documents nine questions during go-live that required host archaeology, several of which produced **wrong** answers that had to be walked back.
+- Stage-level attribution is impossible today, which is why BL-331's 18x slowdown is still unexplained.
+
+**Requirement.** A shared tracing/metrics package every sox data package depends on, providing: structured logging, function/stage-level spans with a propagated trace-id (extending BL-320's AsyncLocalStorage), counters/gauges/histograms, and a **uniform export into the status surface** (BL-334) rather than into a log a human must grep. Each package instruments **its own** operations and owns those metrics — embedding, vector persist, enrichment, clustering, edge drawing each independently traceable end to end (BL-348).
+
+Critically, the **wait-vs-work split** (`write_queue_wait`, `embed_enqueue_wait`) must be a first-class primitive, not a per-consumer convention — it is the measurement Theme 2's resource governance is blocked on, and the one thing no current instrument reports.
+
+**Per the DRY directive:** before authoring, query memory for prior internal tracing work and prior tool research; if absent, run a live search for current OpenTelemetry-compatible Node tracing options and log the evaluation with tags + the final decision. Do not hand-roll what a standard covers, and do not adopt a heavyweight dependency into bundled extensions without checking the externals policy (BL-307/BL-309).
+
+**Acceptance (must name BL-351):** two different packages emit spans that join on one trace-id through the shared API; the wait-vs-work split is reported for a real write; every emitted metric is reachable from the status surface without reading a log file; and the env controls survive the allowlists (BL-344) — verified on a real spawned service, not in-process.
+
+**Severity:** HIGH — this is the enabling gap beneath BL-319, BL-322, BL-331, BL-334 and BL-345. Each is individually blocked on measurement that does not exist.
+
+**Related:** BL-320 (the memory-core-only precedent to generalize), BL-319, BL-322, BL-331, BL-334, BL-344 (controls scrubbed), BL-345, BL-348 (per-stage attribution), and `docs/reporting/memory/sandbox/PLAN.md` §P1.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner directive 2026-07-31, 2: libs/memory-core/src/telemetry.ts, 3: BL-344 (allowlist scrubbing of SOX_MEMORY_LOG_*), 4: BL-319 (time_to_vector_ms 0 samples), 5: BL-334 (nine archaeology questions)]
+
+---
+
+### BL-352 — Store adapters do not verify or self-heal the artifacts they generate; "exists" is treated as "correct" — **Open (HIGH)** (2026-07-31)
+
+**Owner directive, verbatim (2026-07-31):** *"the store adapter migration strategy was designed and built, so if the tables are not 100% accurate and resolved when that auto migrator runs that is a product defect that should not be manually corrected. This is also on generated data so it seems somewhat wild that isn't already handled. … the adapters should be verifying their store and migrating any missing data + generating missing indexes etc."*
+
+**Driver.** The adapter's migration path reconciles by **existence**, never by **integrity**. `applySchema()` issues `CREATE TABLE/INDEX IF NOT EXISTS` and stamps a version; `targetVersion` is hard-coded to `1` with no `migrations[]` (BL-302). Consequence, observed in production: a structure that **exists but is empty or unpopulated** is invisible to the migrator forever, because `IF NOT EXISTS` no-ops on it.
+
+Confirmed instances, all on **generated/derived data the adapter owns**:
+- `idx_fts_node` present with an **empty Tantivy directory** — keyword search returned zero rows for every query for at least a day, silently (BL-347).
+- Nine secondary indexes on `node` **unpopulated** after bulk insert; `PRAGMA integrity_check` reported 100+ issues and nothing detected or repaired it (BL-335).
+- Duplicate `_adapter_meta` PRIMARY KEY rows — schema-impossible, and they block `REINDEX` (BL-336).
+
+**The general defect:** the adapter generates derived artifacts (indexes, FTS directories, vectors) but has **no verification pass over its own output** and **no repair path**, so damage from a crash, a bulk insert, or a partial repair is permanent and undetectable through the normal open path.
+
+**Requirement.** Adapter open performs a verification pass over generated artifacts — presence *and* integrity — and repairs what it owns through the migration executor (BL-302), transactionally, reporting the outcome into status (BL-334). No operator, no manual DDL. Verification must be cheap enough to run on every open, or explicitly staged (fast checks always, deep checks on a cadence or on a crash-recovery flag) — that tradeoff is part of the work.
+
+**Note on probe design:** integrity probes must be validated against the damaged state. The obvious FTS probe — counting rows in the Tantivy backing table — reads **0 both when FTS is dead and when it works** (BL-347), so it detects nothing. Every probe added here requires a negative control proving it fails on damage.
+
+**Acceptance (red→green, must name BL-352):** damage a generated artifact (empty the FTS directory; blank a secondary index), re-open through the **normal adapter path**, and assert detection and repair with no manual DDL in the test. Prove `applySchema()` alone does **not** fix it — that no-op is the mechanism. Each probe carries a negative control.
+
+**Severity:** HIGH — this is the shared root of BL-347/335/336 and the reason a damaged store presents as healthy. It is also the item the owner has designated as the correct home for the live FTS repair, in place of manual intervention.
+
+**Related:** BL-302 (the migration executor this needs), BL-347 (live instance, manual fix rejected), BL-335, BL-336, BL-337 (repair helper), BL-338 (recovery must be automatic), BL-341 (integrity-check message cap), BL-334 (report it).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner directive 2026-07-31, 2: BL-302 (applySchema DDL-only reconciliation), 3: BL-347, 4: BL-335, 5: BL-336]
 
 ---
 
