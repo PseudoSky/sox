@@ -1668,7 +1668,9 @@ The owner's observation that prompted this: *"I've been requesting logs for a wh
 | `embed` | 1898 | 1838 | 20 | 40 |
 | `writequeue.task` | 22275 | 22134 | 140 | 1 |
 
-The write queue accounts for essentially all its work; `store.open` and `write.phaseA` do not, by a wide margin. Some share is processes killed mid-operation (test runners exiting) and this method cannot distinguish that — **an upper bound and a lead, not a verdict.** It needs a real answer, because 61% of store opens never completing is either a large instrumentation lie or a large resource leak, and both matter.[1]
+The write queue accounts for essentially all its work; `store.open` and `write.phaseA` do not, by a wide margin. Some share is processes killed mid-operation (test runners exiting) and this method cannot distinguish that — **an upper bound and a lead, not a verdict.**
+
+**⚠ These figures are further distorted by BL-365 (found 2026-07-31, after this item was filed).** The sink buffers in userspace and loses everything unflushed on a hard kill — measured, **0 of 10,000 records survived SIGKILL**. So an operation whose `.start` was still buffered when its process died is counted as **"never started"** rather than "never finished", which biases the unaccounted percentages **in an unknown direction**. The 61% / 71% figures cannot be trusted quantitatively until BL-365 lands; the *shape* of the finding (write-queue accounts for its work, `store.open` and `write.phaseA` do not) is still the lead worth chasing. It needs a real answer, because 61% of store opens never completing is either a large instrumentation lie or a large resource leak, and both matter.[1]
 
 **Third finding — the log is a single stream shared by the live server and every test process on the machine**, with no field distinguishing them; they must be separated by inferring which pids touch the live store path. Analysed together the populations are meaningless in both directions: the combined embed mean of 69476 ms describes neither the 297 ms test median nor the 6936 ms live median.[1] A `role`/`env` field on every record would remove the inference.
 
@@ -1682,7 +1684,7 @@ The write queue accounts for essentially all its work; `store.open` and `write.p
 
 **Severity:** HIGH — this is the observability gap *behind* the observability gap. We paid the full write cost of telemetry (17 MB/day, hot-path instrumentation, a whole module) and took none of the value, while running blind investigations against the same defects the log had already recorded.
 
-**Related:** BL-351 (the substrate that must not repeat this), BL-334 (surfacing), BL-319 (metrics), BL-331 (answered by this data), BL-323, BL-342, BL-348, BL-300/301, BL-344 (controls scrubbed, so the live service cannot be tuned).
+**Related:** BL-365 (the sink is not crash-durable — biases this item's own numbers), BL-351 (the substrate that must not repeat this), BL-334 (surfacing), BL-319 (metrics), BL-331 (answered by this data), BL-323, BL-342, BL-348, BL-300/301, BL-344 (controls scrubbed, so the live service cannot be tuned).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: ~/.adhd/sox-ecosystem/memory/log-analysis/{analyze-events.py,analyze-live-vs-test.py} run against ~/.adhd/sox-ecosystem/memory/logs/memory-core-2026-07-{30,31}.jsonl, 2: libs/memory-core/src/telemetry.ts, 3: docs/observability/README.md]
 

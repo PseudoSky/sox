@@ -169,6 +169,13 @@ not, by a wide margin. Some fraction is processes killed mid-operation (test run
 which this method cannot distinguish — **so treat these as an upper bound and a lead, not a
 verdict.** Filed as **BL-353**.
 
+> **⚠ The percentages above are additionally biased by BL-365 and must not be quoted as
+> measurements.** The sink buffers in userspace: measured, **0 of 10,000 records survived a
+> `SIGKILL`**. An operation whose `.start` was still buffered when its process died is therefore
+> counted as *"never started"* rather than *"never finished"* — skewing the unaccounted share in
+> an **unknown direction**. The technique is sound and the shape of the result stands; the numbers
+> are provisional until BL-365 lands.
+
 ### 5.3 Contention: `queue_depth` and the wait-vs-work gap
 
 `writequeue.enqueue` and `writequeue.task.start` both carry `queue_depth`. The gap between an
@@ -257,6 +264,7 @@ rotation cap in particular cannot be tuned where the volume actually accumulates
 | **`time_to_vector_ms` exists with 0 samples** — heal path bypasses write-path instrumentation | BL-319 |
 | **wait-vs-work not a first-class primitive** — must be reconstructed by hand | BL-351, BL-322, BL-345 |
 | **Nothing reads these logs** — no alerting, no periodic analysis, no surfacing; two days of data went unexamined | BL-353 |
+| **The sink is not crash-durable** — buffered in userspace; 0 of 10,000 records survived SIGKILL. The host lost power mid-backfill on 2026-07-30, so the pre-crash window is simply gone | BL-365 |
 | **`store.open`/`write.phaseA` start-finish accounting gaps** | BL-353 |
 
 ---
