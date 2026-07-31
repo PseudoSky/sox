@@ -168,6 +168,33 @@ time was sleep, versus 1.1% for the ≤30 s population.
 inflated by an unknown amount.** Medians are largely unaffected. Subtract sleep intervals before
 quoting a tail number.
 
+> ### ⏱ Effective-date boundary — records written from **2026-07-31 ~18:40 local** carry the answer
+>
+> BL-369 is **fixed as of that timestamp**, and the fix is *not* retroactive. Which side of the
+> boundary a record falls on decides how you read it:
+>
+> | Records | How to read a tail number |
+> |---|---|
+> | **Before** the boundary | `duration_ms` silently includes suspension. Reconstruct it by hand — intersect each window with `pmset -g log` (`~/.adhd/sox-ecosystem/memory/log-analysis/bl331-sleep-overlap.py`). Every published p90/p99/max stays inflated; **they do not become correct retroactively.** |
+> | **After** the boundary | `duration_ms` is still the raw elapsed time, but a record that overlapped a suspension now also carries **`suspended_ms`** and/or **`blocked_ms`**. Drop or subtract those samples explicitly. |
+>
+> The counters are **omitted entirely when zero**, so their *presence* is the signal — do not read
+> an absent `suspended_ms` as "not yet instrumented" for a post-boundary record; it means the
+> process ran continuously.
+>
+> **`blocked_ms` is a second, distinct finding, not a variant of the first.** The ledger separates
+> *system suspend* (no CPU consumed across the gap) from *event-loop block* (CPU consumed). A span
+> carrying `blocked_ms` was not asleep — something synchronous starved the loop, which is a real
+> defect worth chasing on its own.
+>
+> **Do not "fix" this by changing the clock.** Measured on Node v24.11.1 darwin/arm64:
+> `performance.now()` and `process.hrtime.bigint()` agree to **0.002 ms** — the same `uv_hrtime()`
+> clock — and **both include system sleep** (`embed.start`→`embed.finish` wall gap vs reported
+> duration: median ratio **1.000** over 28 long ops, including the 3-hour span that was 95%
+> asleep). `Date.now()` and `process.uptime()` too. There is no drop-in sleep-excluding clock in
+> JS on macOS, which is why the fix is a ledger rather than a one-line swap. See
+> `libs/memory-core/src/suspension.ts`.
+
 #### (c) Roughly half the "test" population is not inference at all
 
 **899 of 1755 test-process embeds completed in under 10 ms, with nothing between 10 and 100 ms.**
