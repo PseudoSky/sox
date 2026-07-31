@@ -720,6 +720,53 @@ follows the new artifact.
 - `soxe doctor` MUST surface orphaned/duplicate OS units and units whose artifact no longer matches the
   installed checksum (stale unit detection).
 
+### 9.4a Deploying a code change — `[inv:deploy-verified]` (BL-372, BL-375)
+
+> **`[inv:deploy-verified]`** — A deploy is complete only when the **running process** is verified to
+> be executing the new artifact. Neither a successful build, nor `launchctl kickstart` exiting 0, nor
+> a unit reporting `loaded: yes` is evidence that any code changed.
+
+**This is the canonical deploy procedure. Do not restate it elsewhere** — link here.
+
+**The failure it exists to prevent, observed twice on 2026-07-31.** The front-shim service-proxy
+(§9.5) deliberately keeps the backend alive across proxy restarts for zero-downtime. A consequence
+never accounted for: **restarting the unit restarts the proxy, and the backend survives as a
+`PPID 1` orphan still executing the previous bundle.** The build succeeded, `kickstart` exited 0,
+the service showed as running, and the deployed code did not change. Every check an operator would
+plausibly run was green. It recurred on the second deploy that day even with the first documented.
+
+```
+1. snapshot the store (.db AND -wal together — a .db alone is stale, BL-330)
+2. snapshot dist/            # nx build deletes it BEFORE knowing the rebuild succeeds (BL-235)
+3. snapshot the unit plist   # regeneration silently drops env, see below
+4. npx nx build <project>
+5. npx nx run registry:sync-index        # else the smoke gate fails on CHECKSUM MISMATCH
+6. launchctl kickstart -k gui/$(id -u)/<label>
+7. kill -TERM <backend-pid>              # REQUIRED — step 6 alone does not deploy
+8. VERIFY: the running instance reports the NEW artifact hash, and pids changed
+9. VERIFY: behaviour, not just liveness
+```
+
+**Step 8 is the invariant.** `memory_ping` already returns the running `artifact` hash, so comparing
+it against the on-disk bundle checksum makes a silent no-op deploy self-evident in one call. Verify
+by **pid and artifact**, never by plist contents — the plist was correct in both incidents while the
+running process was not.
+
+**`[inv:env-preserved-on-regenerate]` (BL-375).** `soxe service enable` rebuilds the unit's
+`EnvironmentVariables` from the **invoking shell** (`buildOsUnitEnv`). It does not read the previous
+unit, does not diff, and does not warn. Regenerating a unit to change one unrelated key silently
+dropped two live emergency brakes while printing success; it was caught only by diffing the
+regenerated plist against a snapshot. **Until this is fixed: export every variable you intend to
+keep, and diff the plist afterwards.** A success message is evidence of nothing.
+
+**Gap:** there is no verb that performs this correctly. `sox service` has `enable|disable|status|list`
+and no `restart`, so the reap step has no home and lives in prose that must be remembered. The fix is
+a `sox service restart` that records the pids, kickstarts, reaps survivors by identity
+(`reapByIdentity`/`killAndVerify` already exist in `libs/host-runtime/src/reaper.ts`), waits for the
+new backend, and **exits non-zero if the pids did not change** — the same `[inv:list-never-lies]`
+discipline applied to deploys. Tracked as BL-372.
+
+
 ---
 
 ## 9.5 Zero-downtime upgrades without forced MCP reconnects — the M3↔M4 bridge (front-shim service-proxy)
@@ -981,6 +1028,8 @@ In the style of the CLAUDE.md constraint catalogs: each concrete failure, its de
 - `[inv:reversible-injection]` (ADR-0004) extends to OS units — uninstall reverses the owned `os-unit` entry (§9.4).
 - `[inv:crash-loop-cap]` — bounded restarts; give up + report after N-in-window (§11.3).
 - `[contract:signal]` — services drain+exit on SIGTERM within `stop_timeout_ms`, propagating to workers (§8.1).
+- `[inv:deploy-verified]` — a deploy is complete only when the RUNNING process is verified to execute the new artifact; build success / `kickstart` exit 0 / `loaded: yes` are not evidence (§9.4a).
+- `[inv:env-preserved-on-regenerate]` — regenerating a unit must not silently drop environment it previously carried (§9.4a, BL-375).
 - `[inv:no-illegal-transition]` — only the §6 state edges are legal.
 
 ### 13.2 Rules agents MUST follow when modifying supervisor/service code
