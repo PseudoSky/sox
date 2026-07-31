@@ -642,7 +642,7 @@ describe('memoryUpdate — FTS reflects content change (fts_node_au trigger)', (
         project_path: '/test/project',
       });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      const nodeRow = await await db.executeGet<{ rowid: number }>(`SELECT rowid FROM node WHERE uid = ?`, [uid])!;
+      const nodeRow = await db.executeGet<{ rowid: number }>(`SELECT rowid FROM node WHERE uid = ?`, [uid])!;
 
       // 'zorbflux' should be indexed before the update.
       const ftsBeforeRows = (await db.executeAll<{ rowid: number }>(`SELECT rowid FROM fts_node WHERE fts_node MATCH ?`, ['zorbflux'])).rows;

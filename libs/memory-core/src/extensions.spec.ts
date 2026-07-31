@@ -384,7 +384,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       const uid = await seedEpisode(await db, { content: 'unique drop me' });
 
       // Verify the node exists before deletion
-      const before = await await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [uid]) as { c: number };
+      const before = await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [uid]) as { c: number };
       expect(before.c).toBe(1);
 
       const result = await memoryCurate(await db, { op: 'drop-episodes', uids: [uid] });
@@ -396,7 +396,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       });
 
       // Verify the node is gone
-      const after = await await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [uid]) as { c: number };
+      const after = await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [uid]) as { c: number };
       expect(after.c).toBe(0);
       db.close();
     } finally {
@@ -416,9 +416,9 @@ describe('memoryCurate drop-episodes (B2)', () => {
       const rowidB = rowidForUid(await db, uidB);
 
       // Insert a vec_node row for uidA
-      await await db.executeRun('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)', [rowidA, JSON.stringify(new Array(768).fill(0.1))]);
+      await db.executeRun('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)', [rowidA, JSON.stringify(new Array(768).fill(0.1))]);
       // Insert a MENTIONS edge from uidA to uidB (entity relationship)
-      await await db.executeRun("INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'RELATES_TO', 'user_asserted', ?)", [rowidA, rowidB, new Date().toISOString()]);
+      await db.executeRun("INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'RELATES_TO', 'user_asserted', ?)", [rowidA, rowidB, new Date().toISOString()]);
 
       const result = await memoryCurate(await db, { op: 'drop-episodes', uids: [uidA] });
 
@@ -428,9 +428,9 @@ describe('memoryCurate drop-episodes (B2)', () => {
       expect(result.cascaded.edges).toBe(1);
 
       // Verify uidA is gone, uidB still exists
-      const nodeA = await await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [uidA]) as { c: number };
+      const nodeA = await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [uidA]) as { c: number };
       expect(nodeA.c).toBe(0);
-      const nodeB = await await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [uidB]) as { c: number };
+      const nodeB = await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [uidB]) as { c: number };
       expect(nodeB.c).toBe(1);
       db.close();
     } finally {
@@ -445,7 +445,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       const liveUid = await seedEpisode(await db, { content: 'live one' });
       const invalidatedUid = await seedEpisode(await db, { content: 'invalidated one' });
       // Invalidate the second one
-      await await db.executeRun('UPDATE node SET t_invalid = ? WHERE uid = ?', [new Date().toISOString(), invalidatedUid]);
+      await db.executeRun('UPDATE node SET t_invalid = ? WHERE uid = ?', [new Date().toISOString(), invalidatedUid]);
       const fakeUid = 'nonexistent-uid-0000';
 
       const result = await memoryCurate(await db, {
@@ -460,10 +460,10 @@ describe('memoryCurate drop-episodes (B2)', () => {
       expect(result.cascaded.edges).toBe(0);
 
       // liveUid is gone
-      const liveCheck = await await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [liveUid]) as { c: number };
+      const liveCheck = await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [liveUid]) as { c: number };
       expect(liveCheck.c).toBe(0);
       // invalidatedUid still exists (was already t_invalid, not live)
-      const invCheck = await await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [invalidatedUid]) as { c: number };
+      const invCheck = await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [invalidatedUid]) as { c: number };
       expect(invCheck.c).toBe(1);
       db.close();
     } finally {
