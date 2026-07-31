@@ -1173,3 +1173,102 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: apps/so
 **Severity:** HIGH — this is the meta-defect behind today's incident. A 12-hour investigation was spent rediscovering facts the server already knew, and several intermediate conclusions were wrong *specifically because* the status surface was silent (the "locking is back" false alarm, the "13 hours of at-risk writes" over-alarm, the "25x slower" figure taken without recording ambient load). Related: BL-319 (missing computed throughput fields — same root cause, narrower scope), BL-322, BL-330, BL-331, BL-332.
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (memory_ping response shape), 2: libs/data/embed/embedding-provider/src/fastembedProcessHost.ts:210 (hardcoded darwin EP order), 3: libs/data/store/store-adapter/src/turso-adapter.ts (capability flags, none surfaced), 4: libs/memory-core/src/telemetry.ts (BL-320 events already computed but not aggregated into status)]
+
+---
+
+### BL-335 — Restoring/bulk-inserting rows leaves secondary indexes unpopulated; nothing detects or repairs it — **Open (HIGH)** (2026-07-31)
+
+**Driver:** after the 2026-07-30 go-live restore inserted 846 nodes via the Turso driver, `PRAGMA integrity_check` reported **100+ issues** (the check's own message cap — actual count higher): rows missing from **9 secondary indexes** on `node` (`ix_node_importance`, `ix_node_validity`, `ix_node_session`, `ix_node_agent`, `ix_node_hash`, `ix_node_kind`, `ix_node_enrich_ver`, `ix_node_project`, `ix_node_topic`), plus `ix_edge_*`, `idx_vec_node_embedding`, `sqlite_autoindex_memory_scope_1`, and `__turso_internal_fts_dir_idx_fts_node_key`.
+
+The affected rowids begin at **exactly 8552** — the first restored node (the store held 8551 before the restore). So the rows are physically present and readable, but partially **invisible to any query that uses those indexes**. Zero data corruption; purely index entries.
+
+**Why this is serious beyond the one incident:** nothing in the system detects this. `PRAGMA integrity_check` is never run after a restore, on startup, or on any schedule. The store served queries in this state for hours across a restart and a machine crash, and it was found only because a human asked for a manual check. Any bulk-insert path (restore, migration, import) can silently produce it.
+
+**Also observed:** the damage set changed between passes as indexes were repaired, because `integrity_check` truncates at 100 messages — so a single check UNDERSTATES the problem and cannot be used as a simple pass/fail without iterating.
+
+**Fix sketch:**
+1. Run `PRAGMA integrity_check` automatically after any bulk-insert/restore/migration path and fail loudly (this repo already has the precedent — `backupStore()` does an integrity check).
+2. Add a startup integrity probe with a bounded cost, surfaced in status (see BL-334).
+3. Provide a supported repair entry point (a `soxe memory repair`-style command) so this is never hand-rolled again.
+4. Investigate WHY driver-level inserts skip index maintenance — that is the real defect; everything above is mitigation.
+
+**Acceptance (red→green, must name BL-335):** bulk-insert N rows through the same path the restore used, assert `integrity_check` is clean afterward (iterating past the 100-message cap).
+
+**Severity:** HIGH — silent partial query invisibility, undetected indefinitely.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: ~/.adhd/sox-ecosystem/memory/corrections-20260730/dbrepair/restore.mjs, 2: live PRAGMA integrity_check output 2026-07-31, 3: libs/memory-core/src/backup.ts (existing integrity-check precedent)]
+
+---
+
+### BL-336 — `_adapter_meta` accumulates DUPLICATE PRIMARY KEY rows, which is schema-impossible and blocks REINDEX — **Open (HIGH)** (2026-07-31)
+
+**Driver:** `CREATE TABLE _adapter_meta ("key" TEXT PRIMARY KEY, value TEXT NOT NULL)` — yet the live store contains six rows with three duplicated keys:
+```
+rowid 1  adapter_type    turso
+rowid 2  adapter_version 0.1.0
+rowid 3  created_at      2026-07-30T01:33:19.613Z
+rowid 4  adapter_type    turso        <- duplicate PK
+rowid 5  adapter_version 1.3.0        <- duplicate PK
+rowid 6  created_at      2026-07-30T17:46:26.025Z   <- duplicate PK
+```
+The first set was stamped by the pre-go-live server at 01:33; the second by the restarted server at 17:46. **A duplicate PRIMARY KEY should be impossible** — the second stamp landed while the unique index was in the inconsistent state described in BL-335, so the constraint was not enforced.
+
+Consequence: `REINDEX _adapter_meta` now fails permanently with `UNIQUE constraint failed: _adapter_meta...`, because the rebuilt index cannot represent the duplicates. The table is stuck dirty until the duplicates are removed, and `integrity_check` can never come back clean.
+
+**Two distinct defects here:**
+1. The stamping path (`libs/data/store/store-adapter/src/adapter-meta.ts`) inserts without an upsert guard, so a re-stamp duplicates rather than updating. It should be `INSERT ... ON CONFLICT(key) DO UPDATE`.
+2. Constraint enforcement was bypassed. That is the more alarming one and needs its own investigation — if a UNIQUE/PK constraint can silently not apply on this engine while an index is inconsistent, other tables are exposed too.
+
+**Fix sketch:** make the stamp an upsert; add a dedupe/repair step; investigate the constraint bypass. Recommended dedupe semantics: keep the CURRENT `adapter_type`/`adapter_version` but the EARLIEST `created_at` (first stamp is the meaningful one).
+
+**Acceptance (red→green, must name BL-336):** stamp adapter meta twice against the same store, assert exactly one row per key.
+
+**Severity:** HIGH — a violated PRIMARY KEY constraint on a live store, and it permanently blocks integrity repair of that table.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/data/store/store-adapter/src/adapter-meta.ts, 2: live `select rowid,* from _adapter_meta` output 2026-07-31]
+
+---
+
+### BL-337 — `REINDEX <table>` is impossible on any table carrying a Tantivy FTS index — **Open (MEDIUM)** (2026-07-31)
+
+**Driver:** the standard whole-table repair is unavailable on `node`, the most important table in the store:
+```
+REINDEX node -> Parse error: REINDEX is not supported for custom index methods without a backing btree
+```
+because `idx_fts_node` (Turso's native FTS index, added 2026-07-30) is a custom index method. The workaround is to enumerate every btree index on the table and `REINDEX` each by name individually, explicitly skipping `idx_fts_node` — which is what had to be done by hand during this incident.
+
+This compounds BL-335: the damage is bulk-insert-induced, and the obvious repair is blocked precisely on the table that matters most. It also means any future runbook or repair tool cannot simply call `REINDEX <table>`.
+
+**Related, same family:** BL-329 (a Turso FTS index permanently blocks all better-sqlite3 fallbacks). Adding the FTS index has now broken two separate maintenance paths; both were discovered only by hitting them in production.
+
+**Fix sketch:** ship a repair helper that enumerates btree indexes and reindexes them individually, skipping custom-method indexes, and separately rebuilds the FTS index via its own DDL. Document the constraint next to the FTS dialect.
+
+**Acceptance (red→green, must name BL-337):** a repair routine that returns a table with a Tantivy index to a clean `integrity_check`.
+
+**Severity:** MEDIUM — a workaround exists, but it is non-obvious and must not be rediscovered by hand each time.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `REINDEX node` failure 2026-07-31, 2: libs/data/store/store-adapter/src/fts-dialect.ts, 3: BL-329]
+
+---
+
+### BL-338 — A machine crash must not be able to damage the store, and recovery must be automatic — **Open (HIGH)** (2026-07-31)
+
+**Driver:** the host lost power / crashed on 2026-07-30 evening while the memory-server was live and mid-backfill. Outcome, verified afterward:
+- **Data survived intact** — nodes 9397, episodes 4410, edges 47022 all exactly as restored; vectors had progressed 1356 → 1619. No content loss. Turso's WAL did its job.
+- **BUT** the store came back with index damage requiring manual repair (BL-335/336/337), and **nothing detected it**. launchd restarted the service, the server opened the store, reported healthy, and served queries in a damaged state.
+
+**The owner's requirement, recorded verbatim as the bar for this item:** *"In the production grade version — none of this is manual & none of the crash data loss should be possible."*
+
+**What "production grade" means here, concretely:**
+1. **Automatic integrity verification on startup**, with results surfaced in status (BL-334) rather than requiring a human to run `PRAGMA integrity_check` by hand.
+2. **Automatic repair** of index-level damage — which is losslessly repairable by definition, since the rows are intact — instead of hand-run `REINDEX` loops.
+3. **Crash-safety verification as a test, not an assumption:** kill -9 the server mid-write and assert the store comes back clean and complete. This has never been tested.
+4. No manual step anywhere in detect → diagnose → repair. Every repair performed by hand during this incident (individual REINDEX per index, `_adapter_meta` dedupe) should be a supported, tested code path.
+
+**Related prior evidence that crash-safety is NOT currently guaranteed:** BL-330 proved that with an unlinked WAL a graceful close silently discards committed data (90 of 140 rows, no error) — i.e. there is at least one known state in which shutdown loses data outright. Crash-safety cannot be claimed while that is reachable.
+
+**Acceptance (red→green, must name BL-338):** a crash-recovery test — SIGKILL the server under sustained write load, restart, assert (a) zero lost committed writes, (b) `integrity_check` clean or auto-repaired to clean, (c) the damage and repair both visible in status/logs without human investigation.
+
+**Severity:** HIGH — this is the umbrella requirement behind BL-330/335/336/337. Today's incident was survivable only because a human was watching.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live PRAGMA integrity_check after unplanned host crash 2026-07-31, 2: BL-330, 3: BL-335, 4: BL-336, 5: BL-337]
