@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 89.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 90.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,14 +23,14 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31 (BL-369, BL-370 resolved → CHANGELOG): **89 open**, 1 closed-in-place.
+Regenerated 2026-07-31: **90 open**.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-372, BL-373, BL-374, BL-375, BL-377 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-372, BL-373, BL-374, BL-375, BL-377, BL-380 |
 | **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378 |
-| **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363 |
+| **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363, BL-379 |
 | **UNSET** | BL-163 |
 
 ## Audit
@@ -2174,6 +2174,43 @@ It also makes the brakes coarser than advertised. BL-346's own comment concedes 
 **Related:** BL-339, BL-346 (the two brakes), BL-345 (any in-process background job starves foreground reads — the reason they exist), BL-334 (report what is actually running), BL-376 / BL-347 (same family: a no-op indistinguishable from success).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:2086,2130,2204,2265-2274, 2: live vector-coverage samples 23:25:49–23:27:19Z with the heal brake lifted and the enrich brake retained]
+
+---
+
+### BL-380 — `(adapter as SqliteAdapter).unwrap()` is an unchecked cast through the storage abstraction, and it is still live in two packages — **Open (HIGH)** (2026-07-31)
+
+**Driver.** BL-377 fixed two call sites that cast a `StoreAdapter` to `SqliteAdapter` and called `unwrap()` to reach the raw `better-sqlite3` handle. **The pattern was never audited, and it is still present in six more production sites:**
+
+| file | sites | form |
+|---|---|---|
+| `libs/data/vectors/vector-store/src/index.ts` | **143, 200, 359** | `(adapter as SqliteAdapter).unwrap()` |
+| `extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts` | **180, 218, 322** | `(adapter as any).unwrap()` — casts through `any`, so even the assertion is gone |
+
+**Why the cast is the defect, not the symptom.** `as` is an *assertion*: it silences the compiler without checking anything. On sqlite the handle's `.prepare().all()` is **synchronous and returns an array**; on Turso it is **async and returns a Promise**. So the cast compiles, the call succeeds, and the result is a Promise that the caller iterates as if it were rows — `TypeError: episodes is not iterable`, at runtime, on the **default backend**. The type system was capable of catching this and was explicitly told not to.
+
+**Turso is the default.** Every one of these paths is therefore suspect on the backend the system actually runs, exactly as BL-377 proved for export and re-embed — which had been broken since the migration while everyone read the failures as test debt.
+
+**Strong candidate root cause for BL-364.** `SqliteVectorBackend` crashes with `Cannot read properties of undefined (reading 'nativeVectors')`, taking out **15 `hybrid-search` integration tests** — that package's entire real FTS5+vector coverage, red for four days behind green-looking sweeps. `vector-store/src/index.ts` holds three of these casts. **Verify before assuming**, but the shapes match.
+
+**The architectural question, which is the real one:** *why does a caller need the raw handle at all?* `StoreAdapter` exists precisely so callers do not know or care which engine is underneath. Every `unwrap()` is either (a) a **capability gap** — the adapter does not expose something a legitimate caller needs, which is a missing method, or (b) a caller **reaching around** the abstraction for convenience. Both are fixable; neither is fixed by a cast. BL-377's fix took route (b) → converted to `executeAll`/`executeGet`/`executeRun` and the cast disappeared.
+
+**Legitimate uses that must NOT be swept up in a blanket change:**
+- `db.ts:373,896` — loading the `sqlite-vec` extension, correctly **gated on `adapter.capabilities`**. The codebase already knew the pattern; the broken sites simply skipped the guard.
+- `backup.ts:171,202` — explicitly `createSqliteAdapter(...)`, i.e. deliberately sqlite-only. **But this raises its own open question, flagged by BL-377 and still unanswered: can a Turso store be backed up at all?**
+- `migration.ts:272,587` — sqlite-side of a migration; engine-specific by nature.
+
+**Fix sketch:**
+1. Audit all six sites. For each, decide **capability gap** or **reaching around**, and say which in the commit.
+2. Convert reach-arounds to the async adapter API (BL-377's pattern). For genuine capability gaps, **add the method to `StoreAdapter`** rather than widening the cast.
+3. Make `unwrap()` impossible to misuse: require a capability check, or return a discriminated union the caller must narrow. **A lint rule banning `as SqliteAdapter` and `(x as any).unwrap()` outside the adapter package** is the cheap structural guard — the codebase already demonstrates the correct gated form, so the rule encodes existing practice.
+
+**Acceptance (red→green, must name BL-380):** exercise each converted path against a **Turso** store and assert it works; the guard must reject a newly-introduced unguarded cast. Must fail today for the `vector-store` and `memory-cli` sites.
+
+**Severity:** HIGH — six unchecked casts on the default backend, one of which is the likely cause of 15 permanently-red integration tests. The class already shipped one silent production breakage (BL-377) that went undetected for weeks because its failures were misread as test debt.
+
+**Related:** BL-377 (the first two sites, fixed), BL-364 (15 hybrid-search tests — likely the same cause), BL-291 (typed native-open errors across SQLite-backed packages), BL-340 (specs were never typechecked, which is how this class hides).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: repo-wide audit of `as SqliteAdapter` / `.unwrap()` excluding specs, 2026-07-31, 2: libs/data/vectors/vector-store/src/index.ts:143,200,359, 3: extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts:180,218,322, 4: BL-377, 5: libs/memory-core/src/db.ts:373 (the correctly-gated form)]
 
 ---
 
