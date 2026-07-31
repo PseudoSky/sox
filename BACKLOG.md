@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 91.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 92.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,13 +23,13 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31: **91 open**.
+Regenerated 2026-07-31: **92 open**.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
 | **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-367, BL-372, BL-373, BL-374, BL-375, BL-377, BL-380, BL-381, BL-382 |
-| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378 |
+| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378, BL-383 |
 | **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363, BL-379 |
 | **UNSET** | BL-163 |
 
@@ -2825,3 +2825,48 @@ Citations: [wip/turso-live-metrics, p0-test-infra, claude, sandbox P0.6, 1: libs
 **Related:** BL-330 (the probe), BL-352 (the engine), BL-374 (same "wired but silent" family).
 
 Citations: [wip/turso-live-metrics, database-administrator, claude, BL-374 follow-on, 1: libs/data/store/store-adapter/src/integrity.ts (repairStoreIntegrity reverify call), 2: libs/data/store/store-adapter/src/integrity.ts (probeWalIdentity early return on a null baseline)]
+
+### BL-383 — `autolink` persists the entity stoplist to a `memory_scope.meta` column that exists in no schema, and swallows the failure on every pass — **Open (MEDIUM)** (2026-07-31)
+
+**Driver.** `libs/memory-core/src/autolink.ts:58-67` computes an entity stoplist, then tries to persist it:
+
+```ts
+const scopeRow = await adapter.executeGet<{ meta: string | null }>(`SELECT meta FROM memory_scope LIMIT 1`);
+...
+await adapter.executeRun(`UPDATE memory_scope SET meta = ?`, [JSON.stringify(scopeMeta)]);
+} catch {
+  // memory_scope.meta column may not exist in older stores
+}
+```
+
+**`memory_scope` has no `meta` column, and never has.** The table is declared once, in `libs/memory-core/src/schema.ts:33-40`, with exactly six columns — `scope`, `scope_id`, `embed_model`, `embed_dim`, `schema_ver`, `created_at`. There is no `ALTER TABLE memory_scope` anywhere in `libs/`, `apps/` or `extensions/`. So the comment's premise is inverted: the column is missing not from *older* stores but from **every** store, and the write has failed 100% of the time since it was introduced.
+
+**Observed live.** `store.error` on the running backend (pid 69947), twice in one 20-minute window:
+
+```
+{"event":"store.error","method":"executeGet","sql":"SELECT meta FROM memory_scope LIMIT 1",
+ "adapter_type":"turso","error":"prepare failed: Parse error: no such column: meta"}
+```
+at `2026-07-31T23:40:39.558Z` and `2026-07-31T23:51:55.206Z` — once per enrich pass.
+
+**The stoplist has zero readers.** `entity_stoplist` appears exactly once in the repo: the write at `autolink.ts:63`. Nothing reads it back. So the pass computes the stoplist, fails to store it, and recomputes it from scratch next time — the persistence was never load-bearing, which is why a permanently-failing write produced no visible symptom.
+
+Two distinct defects, and the second is the one that matters:
+
+1. **Dead persistence.** Either add the column and a reader that uses the cached stoplist, or delete the write. Today's code is the worst of both — cost with no benefit.
+2. **A bare `catch {}` on a store write.** Same mechanism as BL-381's swallowed `neardup.error` and the bare catch that hid the embed-backfill stampede for five weeks: an error that is caught, uncommented in any status surface, and contradicted by its own explanatory comment. The `store.error` telemetry *did* fire — nobody read it (BL-353).
+
+**Fix sketch:**
+1. Delete the `meta` read/write and the stoplist persistence entirely (recommended — no reader exists, and recomputation is already the actual behaviour), **or** add `meta TEXT` to `MEMORY_ONLY_DDL` with a migration and a reader that consumes it.
+2. If any catch survives, it must log with a reason and be reachable by a status field — never a bare `catch {}` (BL-334).
+3. Grep for the same shape: a `catch {}` whose comment asserts a schema condition that no DDL supports.
+
+**Acceptance (red→green, must name BL-383):** run an autolink pass against a fresh store and assert **zero** `store.error` events are emitted. Must fail today with `no such column: meta`.
+
+**Severity:** MEDIUM — no data loss and no wrong answer, but a write that has never once succeeded, guarded by a comment that misstates why, emitting a store-level error on every enrich pass.
+
+**Related:** BL-381 (swallowed near-dup failure, same class), BL-353 (telemetry nobody read), BL-334 (surface caught failures), BL-301/BL-302 (schema single source of truth + no migration runner — why a column can be referenced that no DDL declares).
+
+Citations: [wip/turso-live-metrics, queue-perf, claude, BL-382 investigation, 1: libs/memory-core/src/autolink.ts:58-67, 2: libs/memory-core/src/schema.ts:33-40 (six columns, no `meta`), 3: live store.error pid 69947 at 2026-07-31T23:40:39.558Z and 23:51:55.206Z, 4: repo-wide `entity_stoplist` search — one hit, the write itself]
+
+---
