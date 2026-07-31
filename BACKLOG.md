@@ -1120,6 +1120,21 @@ Citations: [wip/turso-live-metrics, team-lead+cluster-proof, claude, turso-go-li
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: ~/.adhd/sox-ecosystem/memory/corrections-20260730/turso-concurrency/wal-unlink-test.mjs, 2: ~/.adhd/sox-ecosystem/memory/corrections-20260730/turso-concurrency/wal-autockpt-test2.mjs]
 
+
+**UPDATE 2026-07-31 (database-administrator) — reproduced, and the loss is WORSE than recorded. Fixed in the adapter.**
+
+Re-run against `@tursodatabase/database@0.7.1`: create a table, commit 140 rows, unlink the `-wal`, keep writing, `close()`. The close returned **with no error**, and the reopened store did not merely lose rows — **the table itself was gone** (`Parse error: no such table: t`). Total loss of everything since the last checkpoint, not "90 of 140". The control run with the WAL in place retained 140/140.
+
+**A recovery path exists and is cheap:** `PRAGMA wal_checkpoint(PASSIVE)` issued after the unlink copies the orphaned WAL's pages into the still-linked main database file through the fd already held — **140/140 recovered**. `TRUNCATE` also recovers. This is better than the "sustained write pressure drains it (93.7%)" workaround recorded above, and it is what shipped.
+
+**Shipped** (commit `fa786a2`): `captureWalIdentity()` snapshots the WAL's dev+inode at open; `TursoAdapterImpl.close()` re-checks it, and on a vanished or replaced inode emits a loud `store.integrity.damaged` event and checkpoints before closing rather than refusing (refusing would strand the data in an inode nothing can reach). Red→green test naming BL-330 in `integrity-selfheal.test.ts` — verified failing with the close-path guard removed (reopen threw `no such table: t`) and passing with it restored.
+
+**Not yet done, so this item stays open:** sub-finding (a), the documented consistent-snapshot procedure for a live Turso store, and sub-finding (b), the maintenance guard against confusing orphaned `*-wal` debris for a live WAL. `~/.memory/` still holds `memory-turso.db-wal` and `memory-turso-live.db-wal`.
+
+**Note on the citations above:** the two preserved experiment files (`wal-unlink-test.mjs`, `wal-autockpt-test2.mjs`) **do not exist** at the cited path — `~/.adhd/sox-ecosystem/memory/corrections-20260730/turso-concurrency/` contains only `exp.mjs`, `exp2.mjs`, `exp3.mjs`, `count-vecnode.mjs`. The evidence above is a fresh reproduction, not a re-read of those.
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.1, 3: WAL unlink/control/checkpoint reproduction 2026-07-31, 4: libs/data/store/store-adapter/src/turso-adapter.ts (close path), 5: libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts]
+
 ---
 
 ### BL-331 — Embed pipeline is now CORRECT but ~18x too slow in production — **Open (HIGH)** (2026-07-30)
@@ -1270,6 +1285,19 @@ Consequence: `REINDEX _adapter_meta` now fails permanently with `UNIQUE constrai
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/data/store/store-adapter/src/adapter-meta.ts, 2: live `select rowid,* from _adapter_meta` output 2026-07-31]
 
+
+**UPDATE 2026-07-31 (database-administrator) — both defects addressed; the recommended dedupe does not work as written.**
+
+**`DELETE` cannot remove the duplicates.** Measured on a copy of the live store: `DELETE FROM _adapter_meta WHERE rowid NOT IN (SELECT MIN(rowid) …)` fails with `Corrupt database: IdxDelete: no matching index entry found for key [Text("adapter_type"), Integer(4)] while seeking` — the rows have no index entry to remove, so the delete cannot complete. `REINDEX _adapter_meta` fails first with `UNIQUE constraint failed`. **The only repair that works is a table rebuild**: read the rows ordered by rowid, keep the first per key, create a replacement table, drop and rename. Measured 7.4 ms, after which `_adapter_meta` is clean under `integrity_check`.
+
+**The obvious detection query is ALSO blind.** `SELECT key, COUNT(*) FROM _adapter_meta GROUP BY key HAVING COUNT(*) > 1` is planned as `SCAN _adapter_meta USING COVERING INDEX sqlite_autoindex__adapter_meta_1` — through the very index whose inconsistency let the duplicates in — and returns **one row per key on a table visibly holding six rows under three keys**. Detection must read `SELECT key FROM _adapter_meta ORDER BY rowid` (table btree) and count in JS.
+
+**Shipped** (commit `fa786a2`): `stampAdapterMeta` is now `INSERT … ON CONFLICT(key) DO UPDATE` (`created_at` uses `DO NOTHING`, so the first stamp survives); `probeAdapterMetaUnique` + the rebuild repair run on every adapter open. Two red→green tests naming BL-336.
+
+**Defect 2 (constraint enforcement was bypassed) remains OPEN and un-investigated** — that a UNIQUE/PK constraint can silently not apply while its index is inconsistent exposes every other table, and nothing here proves otherwise.
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 3: DELETE/REINDEX/rebuild probes against a copy of `~/.memory/memory.db` 2026-07-31, 4: libs/data/store/store-adapter/src/adapter-meta.ts, 5: libs/data/store/store-adapter/src/integrity.ts (probeAdapterMetaUnique, repairAdapterMeta)]
+
 ---
 
 ### BL-337 — `REINDEX <table>` is impossible on any table carrying a Tantivy FTS index — **Open (MEDIUM)** (2026-07-31)
@@ -1291,6 +1319,13 @@ This compounds BL-335: the damage is bulk-insert-induced, and the obvious repair
 **Severity:** MEDIUM — a workaround exists, but it is non-obvious and must not be rediscovered by hand each time.
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `REINDEX node` failure 2026-07-31, 2: libs/data/store/store-adapter/src/fts-dialect.ts, 3: BL-329]
+
+
+**UPDATE 2026-07-31 (database-administrator) — the repair helper this item asks for now ships.** `repairStoreIntegrity()` enumerates btree indexes from `sqlite_master`, skips every custom-method index (`USING …`) and `__turso_internal_*`/`sqlite_*` object, and issues `REINDEX "<index-name>"` individually; the FTS index is rebuilt separately via `DROP INDEX` + the dialect's own `createIndexDDL` — the step whose omission caused BL-347. `REINDEX <table>` is never issued.
+
+**The stated acceptance ("returns a table with a Tantivy index to a clean `integrity_check`") is UNACHIEVABLE as written** and must be amended — see the new item on Turso's unconditional `integrity_check` false positive for `__turso_internal_fts_dir_*_key`. A clean `integrity_check` on such a table is not a reachable state; the assertion has to be "clean after filtering that message."
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 4: libs/data/store/store-adapter/src/integrity.ts (repairStoreIntegrity, probeBtreeIndexes), 5: integrity_check on a freshly built healthy Turso FTS store 2026-07-31]
 
 ---
 
@@ -1337,6 +1372,17 @@ The live store therefore **stays broken until the adapter fixes it itself.** Han
 **Related:** **BL-302 (the missing migration executor — this is the mechanism)**, BL-337 (the blocked repair that caused this), BL-335 (the crash index damage), BL-334 (status surface must report this — and its proposed FTS field is unobtainable as specified), BL-329 (the same index blocks better-sqlite3), BL-338 (crash recovery must be automatic), BL-352 (adapter self-verification, the item this fix now lands in).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `~/.memory/memory.db` fts_match/LIKE/sqlite_master probe 2026-07-31, 2: clean-room A/B backfill-vs-incremental probe 2026-07-31, 3: offline-copy DROP+CREATE rebuild probe 2026-07-31, 4: libs/data/store/store-adapter/src/fts-dialect.ts:187-257, 5: BL-302 (`applySchema` DDL-only reconciliation, `CREATE INDEX IF NOT EXISTS` no-op on a present-but-empty index), 6: owner directive 2026-07-31 rejecting manual repair]
+
+
+**UPDATE 2026-07-31 (database-administrator, BL-352 implementation) — the "EMPTY Tantivy directory" framing in this item's title and driver is FACTUALLY WRONG and must not be relied on.** `SELECT COUNT(*) FROM __turso_internal_fts_dir_idx_fts_node` reads **0 rows / 0 bytes in every state measured**: on the damaged live store, on a *repaired* copy of it whose `fts_match` returns 1148 hits, and on a freshly built 200-row store whose `fts_match` returns 200/200.[7] It reads 0 through better-sqlite3 as well as through Turso.[7] The Tantivy content does not live in that table in `@tursodatabase/database@0.7.1`. The index is damaged — the *description* of how is not established, and "the directory is empty" should be struck.
+
+**A "does FTS match anything at all" probe is ALSO unsound on this damage.** Measured on the live copy: `fts_match('the')` returns **3** while `fts_match('memory')` returns 0 against 1074 `LIKE` hits.[7] The rows written after the index was orphaned ARE indexed, so an any-match probe reports healthy on a store where keyword search is dead for 99.9% of the corpus. The only sound probe is a **rowid-targeted sentinel round-trip**: take a token from a specific row's own indexed text and assert THAT row comes back. Sampling the rowid extremes matters — rowid 1 was unmatchable while rowid 9424 matched.[7]
+
+**Detection and repair now ship in the adapter** (`libs/data/store/store-adapter/src/integrity.ts`, commit `fa786a2`), with a red→green test naming BL-347. Verified against a copy of the real damaged live store: opening through `createTursoAdapter()` detected `2/3 sentinel rows … NOT matchable` and repaired it unprompted in 256 ms — `memory` 0 → 1148, `turso` 0 → 136, `backlog` 0 → 84, and rowid 1 matchable again.[8]
+
+**This item stays OPEN because the live store is still damaged.** The fix is in `store-adapter`'s source and `dist`, but the running memory-server is a *bundled* artifact that has not been rebuilt (the live service is up and a rebuild is destructive per BL-235). The live store is auto-repaired on the first open after memory-server is rebuilt and restarted — not before.
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 7: backing-directory row-count probes across damaged/repaired/fresh stores 2026-07-31 (Turso and better-sqlite3), 8: `createTursoAdapter()` open against a copy of `~/.memory/memory.db` 2026-07-31, 9: libs/data/store/store-adapter/src/integrity.ts, 10: libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts]
 
 ---
 
@@ -1746,6 +1792,19 @@ Citations: [wip/turso-live-metrics, qa-expert, theme-1-verification-harness, 1: 
 **Severity:** MEDIUM — doesn't cause data loss by itself, but produces a misleadingly-bounded damage report exactly when someone is relying on `backup.ts` to characterize how bad a corrupted store is before deciding on a repair strategy.
 
 Citations: [wip/turso-live-metrics, qa-expert, theme-1-verification-harness, 1: docs/ideas/theme-1-verification-harness.md §C.5, 2: BL-335 (BACKLOG.md), 3: libs/memory-core/src/backup.ts:59-60, libs/memory-core/src/backup.ts:196-197]
+
+
+**UPDATE 2026-07-31 (database-administrator) — Turso DOES implement `integrity_check`, and it lies in a specific, permanent way.**
+
+Measured on a copy of the live 43 MB store: `PRAGMA integrity_check` runs in **299 ms** and returns real, actionable findings (`row 4 missing from index sqlite_autoindex__adapter_meta_1`, …); `PRAGMA quick_check` runs in 79 ms with a subset. So the "Turso equivalent unverified" question is answered: it exists and it works.
+
+**But it emits `wrong # of entries in index __turso_internal_fts_dir_<idx>_key` unconditionally on any store carrying a Turso FTS index — including a freshly created one whose `fts_match` returns 200/200.** Any repair loop or health gate that treats `integrity_check` as pass/fail on such a store reports damage forever and will never converge. Filed separately; the filter now lives in `integrity.ts`'s `isKnownFalsePositive()`.
+
+**Second correction:** page-accounting messages (`Page N: never used`, `Page N referenced multiple times`) are **not** index damage — they are free-space leakage, typically left behind by a `DROP`, and no `REINDEX` addresses them. A repair loop that groups them with index findings will spin. The shipped probe classifies them under a distinct `page_accounting` object, marks them non-repairable, and names `VACUUM` as the (offline) remedy. The live copy carries 45 such pages.
+
+The 100-message cap is handled: the shipped probe flags `capped` when it sees ≥100 messages and says so in the finding text rather than reporting the count as a total.
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 3: integrity_check/quick_check timing and output against a copy of `~/.memory/memory.db` 2026-07-31, 4: integrity_check against a freshly built 200-row Turso FTS store 2026-07-31, 5: libs/data/store/store-adapter/src/integrity.ts (probeIntegrityCheck, isKnownFalsePositive)]
 
 ---
 
