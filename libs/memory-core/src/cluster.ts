@@ -689,7 +689,8 @@ export async function clusterStats(adapter: StoreAdapter): Promise<ClusterStats>
   const communityMetas = hasMeta
     ? (await adapter.executeAll<{ meta: string | null }>(
           `SELECT meta FROM node WHERE kind = 'community' AND t_invalid IS NULL AND meta IS NOT NULL
-           AND (json_extract(meta, '$.cluster_scope.kind') IS NULL
+           AND (NOT json_valid(meta)
+                OR json_extract(meta, '$.cluster_scope.kind') IS NULL
                 OR json_extract(meta, '$.cluster_scope.kind') = 'global')`,
         )).rows
     : [];
@@ -715,7 +716,8 @@ export async function clusterStats(adapter: StoreAdapter): Promise<ClusterStats>
   const communityRows = hasMeta
     ? (await adapter.executeAll<{ meta: string | null }>(
           `SELECT meta FROM node WHERE kind = 'community' AND t_invalid IS NULL AND meta IS NOT NULL
-           AND (json_extract(meta, '$.cluster_scope.kind') IS NULL
+           AND (NOT json_valid(meta)
+                OR json_extract(meta, '$.cluster_scope.kind') IS NULL
                 OR json_extract(meta, '$.cluster_scope.kind') = 'global')`,
         )).rows
     : [];
