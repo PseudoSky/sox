@@ -16,14 +16,25 @@
 ## Current position
 
 ```
-→ S4  Fix ProcessType:Background   ← BLOCKED, needs owner approval
+→ S5  Re-enable SOX_DISABLE_EMBED_HEAL (BL-339)   ← unblocked; S4 shipped
 ```
 
-**The one decision outstanding:** `ProcessType: Background` is hardcoded on every sox launchd
-unit (`os-unit.ts:458-459`), forcing the live service to scheduling priority 4 instead of 31 —
-efficiency cores only, measured **18x** slower (~470 ms → ~8400 ms). It gates re-enabling both
-emergency brakes. Changing it affects **every** sox service, which is why it has not been done
-unilaterally.
+**S4 is done.** `ProcessType` is no longer hardcoded — it is resolved by unit kind
+(`resolveProcessType()`), with a `processType` spec field a manifest can declare as
+`lifecycle.process_type`. Tick units keep `Background`; everything else gets `Standard`.
+Deployed and **verified by PID**: proxy/backend/fastembed-host are now `91239 / 91785 / 91786`,
+all at **pri 20** (was 4). Live embed p50 **6422 ms → 333 ms**; length-matched in the dominant
+300–600-char band, **6412 ms → 339 ms = 18.9x**, against a predicted ~18x.
+
+> ⚠️ **`Adaptive` would have silently re-introduced the defect.** launchd.plist(5) promotes an
+> Adaptive job out of Background based on activity over **XPC connections**; sox services speak
+> UDS and TCP and never open one, so it would have stayed in the Background class. `Standard` is
+> documented as "equivalent to no ProcessType being set" — the neutral class. Do not "improve"
+> this to Adaptive later.
+
+**BL-331 stays open** on its other two defects (BL-369 wall-clock durations, BL-322 head-of-line
+blocking) and on the throughput benchmark, which must run **under the service's actual scheduling
+policy** — one run at terminal priority would have passed throughout the entire incident.
 
 ---
 
@@ -35,8 +46,8 @@ unilaterally.
 | S1 | Recover lost `db.ts` Turso wiring | **done** | `2ad196f` — 208 lines recovered from sourcemaps |
 | S2 | Adapter self-verify + repair (BL-352/330) | **done** | `fa786a2` — probes + repair, 279/279 |
 | S3 | Deploy it; live store self-heals (BL-347) | **done** | verified below |
-| **S4** | **Fix `ProcessType: Background` (BL-331)** | **→ blocked** | **owner approval — see above** |
-| S5 | Re-enable `SOX_DISABLE_EMBED_HEAL` (BL-339) | pending | needs S4 |
+| S4 | Fix `ProcessType: Background` (BL-331) | **done** | pri 4 → 20 by PID; p50 6422 ms → 333 ms (18.9x length-matched) |
+| **S5** | **Re-enable `SOX_DISABLE_EMBED_HEAL` (BL-339)** | **→ unblocked** | S4 done. ⚠️ set BOTH brake vars when regenerating the unit — BL-375 |
 | S6 | Re-enable `SOX_DISABLE_PERIODIC_ENRICH` (BL-346) | pending | needs S4, S5 |
 | S7 | Drain embed backlog to full vector coverage | pending | needs S5; backlog 3,246, coverage ~36% |
 | S8 | Clustering actually runs (BL-349/BL-326) | pending | needs S6, S7; τ unresolved (BL-356) |
@@ -73,7 +84,7 @@ adapter repaired itself, which was the owner's explicit requirement.
 | Integrity surface | ✅ in `memory_ping`; ⚠️ false-alarms DAMAGED (BL-374) |
 | Embed heal | 🛑 OFF — `SOX_DISABLE_EMBED_HEAL=1` (BL-339) |
 | Periodic enrich / clustering | 🛑 OFF — `SOX_DISABLE_PERIODIC_ENRICH=1` (BL-346) |
-| Scheduling | 🛑 priority 4 (background), 18x throttle (BL-331) |
+| Scheduling | ✅ priority 20 (`ProcessType: Standard`) — 18.9x faster embeds (BL-331) |
 
 ---
 
@@ -125,6 +136,12 @@ running.
   ~423 ms. (BL-331.)
 - **BL ids collide** — allocate with `max(existing)+1` programmatically, never by eye. Three
   collisions in one afternoon. (BL-359.)
+- **`soxe service enable` rebuilds unit env from YOUR SHELL** and silently drops anything it does
+  not find there. It dropped both emergency brakes while reporting success. Always export the
+  brakes when regenerating, and **diff the plist against a snapshot afterwards**. (BL-375.)
+- **`ProcessType` must not be "improved" to `Adaptive`** — Adaptive promotes out of Background on
+  XPC activity, which sox services never generate. It would look like a fix and change nothing.
+  (BL-331.)
 
 ---
 
@@ -139,6 +156,13 @@ git diff --cached --name-only            # must be EMPTY before you stage
 
 The last one matters in a shared checkout: a pre-populated index sweeps another agent's
 in-flight work into your commit. It has happened.
+
+**When the index is NOT empty** (another agent is mid-work), do not wait and do not reset —
+commit by pathspec, which takes only your files and leaves their index untouched:
+
+```
+git commit -F <(...) -- path/one path/two     # partial commit; staged files stay staged
+```
 
 ---
 
