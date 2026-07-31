@@ -101,29 +101,42 @@ async function writeEpisodes(adapter: StoreAdapter): Promise<string[]> {
   return uids;
 }
 
+/**
+ * Compare two backends' recall results by CONTENT, not by uid.
+ *
+ * The original version of this function compared `r.uid` sets. `memoryWrite`
+ * mints a fresh `ulid()` for every episode (`write.ts:301`), so two independent
+ * stores writing the same corpus never share a single uid — the overlap was
+ * structurally always 0 and this test could not have passed under any behaviour
+ * of either backend. It was never noticed because the test also carried the
+ * frozen-`{ skip }` bug and had never once executed.
+ *
+ * Content is the identity that actually crosses the store boundary, so that is
+ * what parity has to be measured on.
+ */
 function compareResults(a: RecallResult[], b: RecallResult[]): {
   overlapRatio: number;
   rankSimilarity: number;
 } {
-  const aUids = a.map((r) => r.uid);
-  const bUids = b.map((r) => r.uid);
-  const aSet = new Set(aUids);
-  const bSet = new Set(bUids);
+  const aKeys = a.map((r) => r.content);
+  const bKeys = b.map((r) => r.content);
+  const aSet = new Set(aKeys);
+  const bSet = new Set(bKeys);
   const intersection = new Set([...aSet].filter((x) => bSet.has(x)));
 
   const maxLen = Math.max(aSet.size, bSet.size);
   const overlapRatio = maxLen === 0 ? 0 : intersection.size / maxLen;
 
   let rankMatches = 0;
-  for (let i = 0; i < aUids.length; i++) {
-    const uid = aUids[i];
-    if (uid === undefined) continue;
-    const bIdx = bUids.indexOf(uid);
+  for (let i = 0; i < aKeys.length; i++) {
+    const key = aKeys[i];
+    if (key === undefined) continue;
+    const bIdx = bKeys.indexOf(key);
     if (bIdx !== -1 && Math.abs(i - bIdx) <= 1) {
       rankMatches++;
     }
   }
-  const denom = Math.min(aUids.length, intersection.size || 1);
+  const denom = Math.min(aKeys.length, intersection.size || 1);
   const rankSimilarity = denom === 0 ? 0 : rankMatches / denom;
 
   return { overlapRatio, rankSimilarity };
