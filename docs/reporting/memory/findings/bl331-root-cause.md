@@ -236,3 +236,96 @@ done
 - Two leaked fastembed hosts from my earlier probes (pids 3203/25482 and children) could not be
   cleaned up — process termination is not permitted in this session. They were idle at 0.0% CPU.
   They should be reaped; see §6.
+
+---
+
+## 10. Defect 1 — fixed, deployed, and verified live (2026-07-31)
+
+### The change
+
+`ProcessType` is resolved by unit kind instead of being hardcoded
+(`libs/host-runtime/src/os-unit.ts`, `resolveProcessType()`), via a `processType` spec field a
+manifest may declare as `lifecycle.process_type`:
+
+- periodic tick units (`startIntervalSec`) → **`Background`** — correct; they are launchd.plist(5)'s
+  "work not directly requested by the user".
+- everything else → **`Standard`** — documented as "equivalent to no ProcessType being set".
+
+Unknown manifest values coerce to `undefined` and fall through to the derived default, so an
+unrecognised string can never reach the plist. systemd parity emits `Nice=10` for `Background`
+only; the other classes emit nothing, so no existing systemd unit's content hash churns.
+
+### ⚠ Why not `Adaptive` — the trap in the obvious fix
+
+`Adaptive` looks like the right middle ground and was the initially proposed default. It is wrong
+here. launchd.plist(5): *"Adaptive jobs move between the Background and Interactive
+classifications based on activity over XPC connections."* **sox services speak UDS and TCP and
+never open an XPC connection**, so there would be no promotion signal — an Adaptive unit would sit
+in the Background class and reproduce this defect exactly, while the plist read as if it had been
+fixed. `Interactive` was also rejected as a default: the man page reserves it for jobs that cannot
+be made Adaptive, and it lifts resource limits entirely. A manifest can still opt into either.
+
+### Red→green
+
+`libs/host-runtime/src/os-unit.spec.ts`, verified failing before the fix (**4 failed / 52 passed**)
+and passing after (**56/56**; whole project 254/254, lint clean): a service manifest must not render
+`Background`, a tick unit must, an explicit `process_type` wins, an unknown value is never emitted,
+and systemd `Nice` parity holds.
+
+### Deployment — verified by PID, not by plist
+
+The BL-372 trap fired exactly as documented: the regenerated unit loaded and reported
+`loaded: yes`, while **the old backend survived as a `PPID 1` orphan still serving at pri 4**. It
+took an explicit `kill -TERM` to actually deploy.
+
+| | before | after |
+|---|---|---|
+| proxy | 48792 · pri **4** | 91239 · pri **20** |
+| backend | 48826 · pri **4** | 91785 · pri **20** |
+| fastembed host | 48827 · pri **4** | 91786 · pri **20** |
+
+The fastembed child inherits the class — which is where the inference actually runs, and the whole
+point of the fix.
+
+### Live before/after
+
+Both populations are launchd-spawned against the same store, same code, same machine; the only
+difference is the scheduling class. AFTER samples come from `memory_recall` **query** embeds, so
+this measurement wrote nothing to the live store.
+
+| | n | min | p50 | p90 |
+|---|---|---|---|---|
+| BEFORE — pri 4, `Background` | 453 | 3785 ms | **6422 ms** | 12158 ms |
+| AFTER — pri 20, `Standard` | 11 | 319 ms | **333 ms** | 343 ms |
+
+Length-matched, so the ratio cannot be an artifact of query text being shorter than write content:
+
+| text_len | BEFORE n | BEFORE p50 | AFTER n | AFTER p50 | ratio |
+|---|---|---|---|---|---|
+| 0–100 | 11 | 10528 ms | 8 | 331 ms | 31.8x |
+| 300–600 | 328 | 6412 ms | 3 | 339 ms | **18.9x** |
+
+**18.9x in the dominant band, against a predicted ~18x.** The AFTER distribution is tight
+(319–383 ms across all 11 samples, with no length sensitivity) and lands on the independently
+established ~423 ms real-inference reference (§4), so the small AFTER n is not load-bearing — but
+it *is* small (n=3 in the matched band), and it is stated rather than smoothed over. The >30 s
+BEFORE tail was excluded as the §2 sleep artifact.
+
+### What this does not fix
+
+Defects 2 (§2, BL-369) and 3 (§3, BL-322) are untouched. Head-of-line blocking still multiplies
+latency by in-flight depth — now from a ~0.33 s base rather than a ~6 s one, which is exactly why
+it is the next thing worth fixing. The throughput benchmark BL-331's acceptance calls for is still
+owed, and it **must run under the service's actual scheduling policy**: a benchmark at terminal
+priority would have passed throughout this entire incident.
+
+### Found while deploying — BL-375
+
+`soxe service enable` rebuilds the unit's `EnvironmentVariables` from the **invoking shell** and
+silently dropped `SOX_DISABLE_EMBED_HEAL=1` and `SOX_DISABLE_PERIODIC_ENRICH=1` — **both live
+emergency brakes** — while reporting success. Caught only by diffing the regenerated plist against
+a pre-deploy snapshot. Without that step the next backend spawn would have re-enabled embed heal
+and periodic enrich against a 3,246-item backlog, reproducing the BL-346 outage.
+
+Snapshots taken before the change: `~/.adhd/sox-ecosystem/memory/bl331-predeploy-20260731-180139/`
+(host-runtime `dist/`, both plists).
