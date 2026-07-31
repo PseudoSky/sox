@@ -853,19 +853,40 @@ export async function probeIntegrityCheck(adapter: StoreAdapter): Promise<Integr
     .map((v) => v.trim())
     .filter((v) => v.length > 0 && v !== 'ok' && !v.startsWith('*** in database'));
 
-  const real = messages.filter((m) => !isKnownFalsePositive(m));
+  const notFalsePositive = messages.filter((m) => !isKnownFalsePositive(m));
+  // Page-accounting messages (`Page N: never used`, `Page N referenced multiple
+  // times`) are NOT integrity damage: they are allocated-but-unreachable pages,
+  // i.e. reclaimable free space, and a `DROP INDEX` — including the one our own
+  // FTS repair performs — routinely leaves them behind. The only remedy is an
+  // offline `VACUUM`.
+  //
+  // They must not enter the damage set. Measured on the live copy: after a
+  // SUCCESSFUL repair of both real defects, 45 leaked pages kept the store
+  // reporting `damaged` with `reverified: damaged` and `repair.ok: false`
+  // forever, because nothing can repair them at open. A health verdict that can
+  // never return to ok after a correct repair trains operators to ignore it —
+  // the same way BL-360's unconditional Tantivy message would.
+  const leakedPages = notFalsePositive.filter((m) => /^Page\s+\d+/i.test(m));
+  const real = notFalsePositive.filter((m) => !/^Page\s+\d+/i.test(m));
   const capped = messages.length >= 100;
+  const pageNote =
+    leakedPages.length === 0
+      ? ''
+      : ` ${leakedPages.length} allocated-but-unreachable page(s) were seen and are NOT counted as ` +
+        `damage — that is reclaimable free space, recovered by an offline VACUUM.`;
 
   if (real.length === 0) {
+    const filtered = messages.length - real.length - leakedPages.length;
     return [
       {
         probe: 'pragma_integrity_check',
         object: 'main',
         status: 'ok',
         detail:
-          messages.length === 0
+          (messages.length === 0
             ? 'integrity_check clean.'
-            : `integrity_check clean after filtering ${messages.length} known Turso FTS false positive(s).`,
+            : `integrity_check clean after filtering ${filtered} known Turso FTS false positive(s).`) +
+          pageNote,
         repairable: false,
         backlog: 'BL-341',
         probeValidated: true,
@@ -874,17 +895,10 @@ export async function probeIntegrityCheck(adapter: StoreAdapter): Promise<Integr
   }
 
   // Group by the index name each message blames, so repair is targeted.
-  // Page-accounting messages (`Page N: never used`, `Page N referenced
-  // multiple times`) name no index and are NOT index damage — orphaned pages
-  // are what a `DROP INDEX` leaves behind, and the only remedy is a `VACUUM`,
-  // which is far too expensive and too disruptive to run unprompted on an
-  // open. They are reported under a dedicated object so nobody mistakes 45
-  // leaked pages for 45 corrupt index entries, and so a repair loop cannot
-  // spin on something it has no action for.
   const byObject = new Map<string, string[]>();
   for (const m of real) {
     const nameMatch = /index\s+"?([A-Za-z0-9_]+)"?/i.exec(m);
-    const obj = nameMatch ? (nameMatch[1] as string) : /^Page\s+\d+/i.test(m) ? 'page_accounting' : 'main';
+    const obj = nameMatch ? (nameMatch[1] as string) : 'main';
     const list = byObject.get(obj) ?? [];
     list.push(m);
     byObject.set(obj, list);
@@ -895,14 +909,11 @@ export async function probeIntegrityCheck(adapter: StoreAdapter): Promise<Integr
     object,
     status: 'damaged' as const,
     detail:
-      object === 'page_accounting'
-        ? `${msgs.length} page(s) are allocated but unreachable — free-space leakage, ` +
-          `typically left by a DROP. No data is at risk; reclaim with an offline VACUUM. ` +
-          `${msgs.slice(0, 3).join('; ')}${msgs.length > 3 ? ' …' : ''}`
-        : `integrity_check reported ${msgs.length} issue(s) against "${object}"` +
-          (capped ? ' (output hit the 100-message cap — the true count is higher)' : '') +
-          `: ${msgs.slice(0, 3).join('; ')}${msgs.length > 3 ? ' …' : ''}`,
-    repairable: !isInternalObject(object) && object !== 'main' && object !== 'page_accounting',
+      `integrity_check reported ${msgs.length} issue(s) against "${object}"` +
+      (capped ? ' (output hit the 100-message cap — the true count is higher)' : '') +
+      `: ${msgs.slice(0, 3).join('; ')}${msgs.length > 3 ? ' …' : ''}` +
+      pageNote,
+    repairable: !isInternalObject(object) && object !== 'main',
     backlog: 'BL-341',
     probeValidated: true,
   }));
@@ -1193,7 +1204,7 @@ export function emitIntegrityReport(
 const lastReports = new WeakMap<object, VerifyAndRepairResult>();
 
 /**
- * Path-keyed mirror of {@link lastReports} (BL-367).
+ * Path-keyed mirror of {@link lastReports} (BL-368).
  *
  * Object identity is NOT a usable key across package boundaries here. The
  * result is recorded by the adapter against `this`, but `memory-core`'s
@@ -1285,113 +1296,65 @@ export function getLastIntegrityResult(adapter: StoreAdapter): VerifyAndRepairRe
  */
 export const INTEGRITY_META_KEY = 'last_integrity';
 
-/** A finding, flattened for the status surface. */
-export interface IntegrityStatusFinding {
-  probe: IntegrityProbe;
-  object: string;
-  status: IntegrityStatus;
-  detail: string;
-  backlog: string;
+/** Envelope written to `_adapter_meta`. Versioned so a future shape change can
+ *  be detected and treated as "unreadable" (→ `unknown`) rather than
+ *  misinterpreted. */
+interface PersistedIntegrity {
+  v: 1;
+  run_at_ms: number;
+  result: VerifyAndRepairResult;
 }
 
-export interface IntegrityStatusSummary {
-  /**
-   * `ok` — a pass ran and found nothing damaged.
-   * `damaged` — a pass ran and found damage (or repair failed).
-   * `unknown` — **no pass has ever run, or it could not be read.**
-   *
-   * `unknown` is NOT healthy and must never be rendered as such. A store that
-   * has never been verified is exactly the state BL-347 shipped in: the service
-   * reported fine for a day while keyword search was dead.
-   */
-  verified: IntegrityStatus;
-  /** ISO timestamp of the pass, or `null` when none has run. */
-  checked_at: string | null;
-  depth: VerifyDepth | null;
-  duration_ms: number | null;
-  /** Damaged and unverifiable findings, in full. Healthy ones are counted only. */
-  findings: IntegrityStatusFinding[];
-  ok_count: number;
-  damaged_count: number;
-  unknown_count: number;
-  /** Repairs attempted during that pass. Empty when nothing needed repairing. */
-  repaired: { object: string; action: string; ok: boolean; error?: string }[];
-  /** `true`/`false` when a repair ran, `null` when none was needed. */
-  repair_ok: boolean | null;
+/** Details are the bulk of the payload; bound them so a pathological error
+ *  message cannot bloat the metadata row. */
+const MAX_PERSISTED_DETAIL = 400;
+
+function trimFinding(f: IntegrityFinding): IntegrityFinding {
+  if (f.detail.length <= MAX_PERSISTED_DETAIL) return f;
+  return { ...f, detail: f.detail.slice(0, MAX_PERSISTED_DETAIL) + '…' };
 }
 
-/** The shape returned when nothing has ever verified this store. */
-export function unknownIntegrityStatus(): IntegrityStatusSummary {
+function trimReport(r: IntegrityReport): IntegrityReport {
   return {
-    verified: 'unknown',
-    checked_at: null,
-    depth: null,
-    duration_ms: null,
-    findings: [],
-    ok_count: 0,
-    damaged_count: 0,
-    unknown_count: 0,
-    repaired: [],
-    repair_ok: null,
-  };
-}
-
-const MAX_STATUS_FINDINGS = 12;
-const MAX_STATUS_DETAIL = 240;
-
-/** Flatten a pass into the compact, persistable status shape. */
-export function summarizeIntegrityResult(
-  result: VerifyAndRepairResult,
-  checkedAt: Date = new Date(),
-): IntegrityStatusSummary {
-  const { verify, repair } = result;
-  // Prefer the POST-repair verification when one ran: reporting the pre-repair
-  // damage as current state would show a healed store as broken.
-  const effective = repair?.verified ?? verify;
-  const notable = [...effective.damaged, ...effective.unknown].slice(0, MAX_STATUS_FINDINGS);
-
-  return {
-    verified: effective.damaged.length > 0 ? 'damaged' : 'ok',
-    checked_at: checkedAt.toISOString(),
-    depth: effective.depth,
-    duration_ms: effective.durationMs,
-    findings: notable.map((f) => ({
-      probe: f.probe,
-      object: f.object,
-      status: f.status,
-      detail: f.detail.length > MAX_STATUS_DETAIL ? f.detail.slice(0, MAX_STATUS_DETAIL) + '…' : f.detail,
-      backlog: f.backlog,
-    })),
-    ok_count: effective.findings.filter((f) => f.status === 'ok').length,
-    damaged_count: effective.damaged.length,
-    unknown_count: effective.unknown.length,
-    repaired: (repair?.actions ?? []).map((a) => {
-      const entry: { object: string; action: string; ok: boolean; error?: string } = {
-        object: a.object,
-        action: a.action,
-        ok: a.ok,
-      };
-      if (a.error !== undefined) entry.error = a.error;
-      return entry;
-    }),
-    repair_ok: repair === null || repair === undefined ? null : repair.ok,
+    ...r,
+    findings: r.findings.map(trimFinding),
+    damaged: r.damaged.map(trimFinding),
+    unknown: r.unknown.map(trimFinding),
   };
 }
 
 /**
- * Persist the pass into `_adapter_meta`. Best-effort: a status write must never
- * fail an open, and a read-only handle must never attempt it.
+ * Persist a pass into `_adapter_meta`. Best-effort: a status write must never
+ * fail an open, and a read-only handle must never attempt one.
+ *
+ * The FULL result is stored, not a digest, so the reporting layer
+ * (`integrity-status.ts`) can apply its own rules — in particular the
+ * per-probe `probeValidated` flags, which are what stop an unvalidated `ok`
+ * from being rendered as health. A digest computed here would decide that
+ * question in the wrong place.
  */
-export async function persistIntegrityStatus(
+export async function persistIntegrityResult(
   adapter: StoreAdapter,
-  summary: IntegrityStatusSummary,
+  result: VerifyAndRepairResult,
+  runAtMs: number = Date.now(),
 ): Promise<void> {
   if (adapter.config.readonly === true) return;
+  const payload: PersistedIntegrity = {
+    v: 1,
+    run_at_ms: runAtMs,
+    result: {
+      verify: trimReport(result.verify),
+      repair:
+        result.repair === null
+          ? null
+          : { ...result.repair, verified: result.repair.verified === null ? null : trimReport(result.repair.verified) },
+    },
+  };
   try {
     await adapter.executeRun(
       `INSERT INTO _adapter_meta(key, value) VALUES (?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-      [INTEGRITY_META_KEY, JSON.stringify(summary)],
+      [INTEGRITY_META_KEY, JSON.stringify(payload)],
     );
   } catch {
     // Non-fatal — the in-memory registries still hold this process's view.
@@ -1401,24 +1364,27 @@ export async function persistIntegrityStatus(
 /**
  * Read the durable integrity verdict for the store behind `adapter`.
  *
- * Returns {@link unknownIntegrityStatus} when no pass has ever been recorded,
- * when the row cannot be read, or when it cannot be parsed — never a healthy
- * verdict inferred from absence.
+ * Returns `null` when no pass has ever been recorded, when the row cannot be
+ * read, or when it cannot be parsed. `null` means **unverified**, and
+ * `summarizeIntegrityForStatus` renders it as `unknown` — never as health
+ * inferred from absence.
  */
-export async function readIntegrityStatus(adapter: StoreAdapter): Promise<IntegrityStatusSummary> {
+export async function readIntegrityResult(
+  adapter: StoreAdapter,
+): Promise<{ result: VerifyAndRepairResult; runAtMs: number } | null> {
   try {
     const row = await adapter.executeGet<{ value: string }>(
       `SELECT value FROM _adapter_meta WHERE key = ?`,
       [INTEGRITY_META_KEY],
     );
-    if (row === null) return unknownIntegrityStatus();
-    const parsed = JSON.parse(row.value) as IntegrityStatusSummary;
-    if (typeof parsed !== 'object' || parsed === null || typeof parsed.verified !== 'string') {
-      return unknownIntegrityStatus();
-    }
-    return parsed;
+    if (row === null) return null;
+    const parsed = JSON.parse(row.value) as PersistedIntegrity;
+    if (parsed === null || typeof parsed !== 'object' || parsed.v !== 1) return null;
+    if (parsed.result === null || typeof parsed.result !== 'object') return null;
+    if (parsed.result.verify === null || typeof parsed.result.verify !== 'object') return null;
+    return { result: parsed.result, runAtMs: parsed.run_at_ms };
   } catch {
-    return unknownIntegrityStatus();
+    return null;
   }
 }
 
@@ -1488,15 +1454,15 @@ export async function runOpenTimeIntegrity(
     if (opts.onReport) verifyOpts.onReport = opts.onReport;
     const result = await verifyAndRepair(adapter, verifyOpts);
     recordIntegrityResult(adapter, result);
-    await persistIntegrityStatus(adapter, summarizeIntegrityResult(result));
+    await persistIntegrityResult(adapter, result);
     return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     opts.onReport?.('repair_failed', `integrity pass aborted: ${message}`);
     // An aborted pass is `unknown`, never `ok`. Recording it as a finding
-    // rather than an empty report is what stops `summarizeIntegrityResult`
-    // from flattening "we could not check" into "nothing was wrong" — which is
-    // the exact inference that let a dead FTS index read as healthy for a day.
+    // rather than an empty report is what stops the reporting layer from
+    // flattening "we could not check" into "nothing was wrong" — which is the
+    // exact inference that let a dead FTS index read as healthy for a day.
     const aborted: IntegrityFinding = {
       probe: 'pragma_integrity_check',
       object: 'main',
@@ -1518,9 +1484,7 @@ export async function runOpenTimeIntegrity(
       repair: null,
     };
     recordIntegrityResult(adapter, failed);
-    const summary = summarizeIntegrityResult(failed);
-    summary.verified = 'unknown';
-    await persistIntegrityStatus(adapter, summary);
+    await persistIntegrityResult(adapter, failed);
     return failed;
   }
 }
