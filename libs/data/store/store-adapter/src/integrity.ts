@@ -1192,17 +1192,246 @@ export function emitIntegrityReport(
 
 const lastReports = new WeakMap<object, VerifyAndRepairResult>();
 
+/**
+ * Path-keyed mirror of {@link lastReports} (BL-367).
+ *
+ * Object identity is NOT a usable key across package boundaries here. The
+ * result is recorded by the adapter against `this`, but `memory-core`'s
+ * `openDb()` hands consumers `instrumentAdapter(adapter)` — a `Proxy`
+ * (`libs/memory-core/src/db.ts:305`). A `Proxy` is a distinct identity, so
+ * `WeakMap.get(proxy)` misses an entry set with the target and
+ * `getLastIntegrityResult` returns `null` **forever** for every caller that
+ * went through `openDb` — i.e. every real consumer, including `memory_ping`.
+ * Verified: lookup by target FOUND, lookup by proxy `null`.
+ *
+ * That failure is silent and reads as "no pass has run", which is precisely the
+ * BL-319 shape — an instrument wired to one path and invisible from the path
+ * that reads it. Keying by `config.dbPath` as well fixes it structurally,
+ * because `config` reads through the proxy unchanged. Same keying strategy as
+ * `WriteQueue.metricsForPath`.
+ *
+ * Unbounded growth is not a concern: entries are one-per-store-path, and a
+ * process opens a handful of stores at most.
+ */
+const lastReportsByPath = new Map<string, VerifyAndRepairResult>();
+
+/** Wall-clock of the last pass per store path. `VerifyAndRepairResult` carries
+ *  only a duration, and "how stale is this verdict?" is a question the status
+ *  surface must be able to answer — a clean report from six hours ago is not
+ *  the same claim as a clean report from this open. */
+const lastReportAtByPath = new Map<string, number>();
+
 /** Record the result of an integrity pass so a status surface can report it. */
 export function recordIntegrityResult(adapter: StoreAdapter, result: VerifyAndRepairResult): void {
   lastReports.set(adapter as unknown as object, result);
+  const dbPath = adapter.config.dbPath;
+  if (dbPath !== undefined && dbPath !== '') {
+    lastReportsByPath.set(dbPath, result);
+    lastReportAtByPath.set(dbPath, Date.now());
+  }
+}
+
+/** Epoch ms of the last integrity pass for a store path, or `null`. */
+export function getLastIntegrityRunAt(dbPath: string | undefined): number | null {
+  if (dbPath === undefined || dbPath === '') return null;
+  return lastReportAtByPath.get(dbPath) ?? null;
 }
 
 /**
  * The most recent integrity pass for this adapter, or `null` if none has run.
  * `memory_ping`/`memory_stats` read this instead of re-probing (BL-334).
+ *
+ * Falls back to the path-keyed registry so a **proxied** adapter (the normal
+ * case — see {@link lastReportsByPath}) resolves correctly. Callers do not have
+ * to know whether they hold the real instance or a wrapper.
  */
 export function getLastIntegrityResult(adapter: StoreAdapter): VerifyAndRepairResult | null {
-  return lastReports.get(adapter as unknown as object) ?? null;
+  const direct = lastReports.get(adapter as unknown as object);
+  if (direct !== undefined) return direct;
+  const dbPath = adapter.config.dbPath;
+  if (dbPath !== undefined && dbPath !== '') return lastReportsByPath.get(dbPath) ?? null;
+  return null;
+}
+
+// ── Durable integrity status (BL-334) ────────────────────────────────────────
+
+/**
+ * `_adapter_meta` key holding the last integrity pass, as JSON.
+ *
+ * **The registries above are process-local and are NOT a sound home for status
+ * data.** Two independent mechanisms make them invisible to a reader, both
+ * measured on 2026-07-31:
+ *
+ * 1. **Proxy identity.** `memory-core`'s `openDb()` returns
+ *    `instrumentAdapter(adapter)` — a `Proxy` (`libs/memory-core/src/db.ts:305`).
+ *    `WeakMap.get(proxy)` misses an entry set against the target. Path keying
+ *    fixes this one.
+ * 2. **Two module instances.** `memory-core` compiles to CommonJS and reaches
+ *    this package through `require('@adhd/sox-store-adapter')`
+ *    (`libs/memory-core/dist/db.js:319`, the transpilation of its dynamic
+ *    `import`), while an ESM consumer gets it through the ESM loader. Those are
+ *    **separate instantiations with separate module-level `Map`s** — so an
+ *    adapter opened via `openDb` records into one copy and `memory_ping` reads
+ *    an empty other copy. Verified: a record written through `openDb` was
+ *    invisible to a reader that imported the package directly, for both the
+ *    WeakMap and the path-keyed Map. Path keying does NOT fix this one.
+ *
+ * A status field that silently reads "never ran" forever is the BL-319 failure
+ * shape — an instrument wired to a path nobody reads. So the verdict is
+ * persisted **into the store it describes**, which is immune to both mechanisms
+ * (it is plain SQL through whatever handle the caller holds), survives a
+ * process restart, and lets an operator ask "when was this last checked?" and
+ * get a real answer rather than "some time since this process started".
+ */
+export const INTEGRITY_META_KEY = 'last_integrity';
+
+/** A finding, flattened for the status surface. */
+export interface IntegrityStatusFinding {
+  probe: IntegrityProbe;
+  object: string;
+  status: IntegrityStatus;
+  detail: string;
+  backlog: string;
+}
+
+export interface IntegrityStatusSummary {
+  /**
+   * `ok` — a pass ran and found nothing damaged.
+   * `damaged` — a pass ran and found damage (or repair failed).
+   * `unknown` — **no pass has ever run, or it could not be read.**
+   *
+   * `unknown` is NOT healthy and must never be rendered as such. A store that
+   * has never been verified is exactly the state BL-347 shipped in: the service
+   * reported fine for a day while keyword search was dead.
+   */
+  verified: IntegrityStatus;
+  /** ISO timestamp of the pass, or `null` when none has run. */
+  checked_at: string | null;
+  depth: VerifyDepth | null;
+  duration_ms: number | null;
+  /** Damaged and unverifiable findings, in full. Healthy ones are counted only. */
+  findings: IntegrityStatusFinding[];
+  ok_count: number;
+  damaged_count: number;
+  unknown_count: number;
+  /** Repairs attempted during that pass. Empty when nothing needed repairing. */
+  repaired: { object: string; action: string; ok: boolean; error?: string }[];
+  /** `true`/`false` when a repair ran, `null` when none was needed. */
+  repair_ok: boolean | null;
+}
+
+/** The shape returned when nothing has ever verified this store. */
+export function unknownIntegrityStatus(): IntegrityStatusSummary {
+  return {
+    verified: 'unknown',
+    checked_at: null,
+    depth: null,
+    duration_ms: null,
+    findings: [],
+    ok_count: 0,
+    damaged_count: 0,
+    unknown_count: 0,
+    repaired: [],
+    repair_ok: null,
+  };
+}
+
+const MAX_STATUS_FINDINGS = 12;
+const MAX_STATUS_DETAIL = 240;
+
+/** Flatten a pass into the compact, persistable status shape. */
+export function summarizeIntegrityResult(
+  result: VerifyAndRepairResult,
+  checkedAt: Date = new Date(),
+): IntegrityStatusSummary {
+  const { verify, repair } = result;
+  // Prefer the POST-repair verification when one ran: reporting the pre-repair
+  // damage as current state would show a healed store as broken.
+  const effective = repair?.verified ?? verify;
+  const notable = [...effective.damaged, ...effective.unknown].slice(0, MAX_STATUS_FINDINGS);
+
+  return {
+    verified: effective.damaged.length > 0 ? 'damaged' : 'ok',
+    checked_at: checkedAt.toISOString(),
+    depth: effective.depth,
+    duration_ms: effective.durationMs,
+    findings: notable.map((f) => ({
+      probe: f.probe,
+      object: f.object,
+      status: f.status,
+      detail: f.detail.length > MAX_STATUS_DETAIL ? f.detail.slice(0, MAX_STATUS_DETAIL) + '…' : f.detail,
+      backlog: f.backlog,
+    })),
+    ok_count: effective.findings.filter((f) => f.status === 'ok').length,
+    damaged_count: effective.damaged.length,
+    unknown_count: effective.unknown.length,
+    repaired: (repair?.actions ?? []).map((a) => {
+      const entry: { object: string; action: string; ok: boolean; error?: string } = {
+        object: a.object,
+        action: a.action,
+        ok: a.ok,
+      };
+      if (a.error !== undefined) entry.error = a.error;
+      return entry;
+    }),
+    repair_ok: repair === null || repair === undefined ? null : repair.ok,
+  };
+}
+
+/**
+ * Persist the pass into `_adapter_meta`. Best-effort: a status write must never
+ * fail an open, and a read-only handle must never attempt it.
+ */
+export async function persistIntegrityStatus(
+  adapter: StoreAdapter,
+  summary: IntegrityStatusSummary,
+): Promise<void> {
+  if (adapter.config.readonly === true) return;
+  try {
+    await adapter.executeRun(
+      `INSERT INTO _adapter_meta(key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [INTEGRITY_META_KEY, JSON.stringify(summary)],
+    );
+  } catch {
+    // Non-fatal — the in-memory registries still hold this process's view.
+  }
+}
+
+/**
+ * Read the durable integrity verdict for the store behind `adapter`.
+ *
+ * Returns {@link unknownIntegrityStatus} when no pass has ever been recorded,
+ * when the row cannot be read, or when it cannot be parsed — never a healthy
+ * verdict inferred from absence.
+ */
+export async function readIntegrityStatus(adapter: StoreAdapter): Promise<IntegrityStatusSummary> {
+  try {
+    const row = await adapter.executeGet<{ value: string }>(
+      `SELECT value FROM _adapter_meta WHERE key = ?`,
+      [INTEGRITY_META_KEY],
+    );
+    if (row === null) return unknownIntegrityStatus();
+    const parsed = JSON.parse(row.value) as IntegrityStatusSummary;
+    if (typeof parsed !== 'object' || parsed === null || typeof parsed.verified !== 'string') {
+      return unknownIntegrityStatus();
+    }
+    return parsed;
+  } catch {
+    return unknownIntegrityStatus();
+  }
+}
+
+/** The most recent integrity pass for a store path, or `null`. For callers that
+ *  hold a path but no adapter handle. */
+export function getLastIntegrityResultForPath(dbPath: string): VerifyAndRepairResult | null {
+  return lastReportsByPath.get(dbPath) ?? null;
+}
+
+/** Test-only: drop the path-keyed registry so cases start from "never ran". */
+export function _resetIntegrityRegistryForTest(): void {
+  lastReportsByPath.clear();
+  lastReportAtByPath.clear();
 }
 
 // ── Open-time policy ─────────────────────────────────────────────────────────
@@ -1259,22 +1488,39 @@ export async function runOpenTimeIntegrity(
     if (opts.onReport) verifyOpts.onReport = opts.onReport;
     const result = await verifyAndRepair(adapter, verifyOpts);
     recordIntegrityResult(adapter, result);
+    await persistIntegrityStatus(adapter, summarizeIntegrityResult(result));
     return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     opts.onReport?.('repair_failed', `integrity pass aborted: ${message}`);
+    // An aborted pass is `unknown`, never `ok`. Recording it as a finding
+    // rather than an empty report is what stops `summarizeIntegrityResult`
+    // from flattening "we could not check" into "nothing was wrong" — which is
+    // the exact inference that let a dead FTS index read as healthy for a day.
+    const aborted: IntegrityFinding = {
+      probe: 'pragma_integrity_check',
+      object: 'main',
+      status: 'unknown',
+      detail: `Integrity pass aborted before completing: ${message}`,
+      repairable: false,
+      backlog: 'BL-352',
+      probeValidated: false,
+    };
     const failed: VerifyAndRepairResult = {
       verify: {
         ok: false,
         depth,
         durationMs: 0,
-        findings: [],
+        findings: [aborted],
         damaged: [],
-        unknown: [],
+        unknown: [aborted],
       },
       repair: null,
     };
     recordIntegrityResult(adapter, failed);
+    const summary = summarizeIntegrityResult(failed);
+    summary.verified = 'unknown';
+    await persistIntegrityStatus(adapter, summary);
     return failed;
   }
 }
