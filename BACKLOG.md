@@ -1618,6 +1618,17 @@ Because `memory-core:test` depends on `store-adapter:build`, a type error in a *
 
 **Blast radius:** every consumer of a package whose `tsconfig.lib.json` uses a `*.spec.ts`-only exclude. This must be audited repo-wide — the same two-convention split is likely present elsewhere, and it converts an ordinary red test into a cross-package build outage.
 
+**Repo-wide audit COMPLETE (2026-07-31, `p0-test-infra`).** All 21 `tsconfig.lib.json` files outside worktrees were parsed and their `exclude` arrays compared. **Exactly 3 of 21 are affected** — all three under `libs/data/`, all three excluding `src/**/*.spec.ts` and nothing else:[4]
+
+| Package | `exclude` | Affected |
+|---|---|---|
+| `libs/data/store/store-adapter` | `['src/**/*.spec.ts']` | **yes** — the outage package |
+| `libs/data/store/blob-store` | `['src/**/*.spec.ts']` | **yes** |
+| `libs/data/verify/claim-verification` | `['src/**/*.spec.ts']` | **yes** |
+| the other 18 | include `src/**/*.test.ts` | no |
+
+So this is a localised drift, not a repo-wide convention failure — the 18 correct configs are the norm and these 3 are the outliers, which is why it went unnoticed for so long: only a package that *both* omits the pattern *and* has a `.test.ts` file under `src/` can ever trip it, and until `integrity-selfheal.test.ts` was written with a type error, none had.
+
 **Related but distinct from BL-340.** BL-340 is *tests are never typechecked*; this is *tests are typechecked as if they were library code*. Same family — no deliberate boundary between test and lib type-checking — opposite failure. Fixing one does not fix the other, and BL-340's new `typecheck-tests` target is the correct home for test type errors, precisely so `build` stops being it.
 
 **Fix sketch:** exclude both conventions from every `tsconfig.lib.json` (`src/**/*.spec.ts`, `src/**/*.test.ts`, `src/__tests__/**`); audit every package for the same gap; standardise on one test-file convention and lint for it. Test type errors then surface in `typecheck-tests` (BL-340) where they belong, without taking a build down.
@@ -1630,7 +1641,7 @@ Because `memory-core:test` depends on `store-adapter:build`, a type error in a *
 
 **Related:** BL-340 (tests never typechecked — the inverse), BL-235 (destructive builds; note `atomic-tsc` correctly left the existing `dist/` intact here, which is the behaviour BL-235 wants everywhere).
 
-Citations: [wip/turso-live-metrics, team-lead + p0-test-infra, claude, turso-go-live, 1: live `npx nx test memory-core` failure 2026-07-31, 2: libs/data/store/store-adapter/tsconfig.lib.json:10-11, 3: libs/data/store/store-adapter/src/sqlite-adapter.ts:150 (`init()` exists on the class but is not declared on the interface `createSqliteAdapter()` returns)]
+Citations: [wip/turso-live-metrics, team-lead + p0-test-infra, claude, turso-go-live, 1: live `npx nx test memory-core` failure 2026-07-31, 2: libs/data/store/store-adapter/tsconfig.lib.json:10-11, 3: libs/data/store/store-adapter/src/sqlite-adapter.ts:150 (`init()` exists on the class but is not declared on the interface `createSqliteAdapter()` returns), 4: libs/data/store/blob-store/tsconfig.lib.json, libs/data/verify/claim-verification/tsconfig.lib.json, and the 18 correct configs (libs/{tokenguard-core,install-engine,host-runtime,service-proxy,source-provider,manifest,mcp-runtime,authoring,host-registry,registry,memory-core}/tsconfig.lib.json + libs/data/{analysis/analysis,embed/embedding-provider,ingest/ingest,graph/graph-store,vectors/vector-store,search/hybrid-search,queue/task-queue}/tsconfig.lib.json)]
 
 ---
 
