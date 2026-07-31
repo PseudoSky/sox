@@ -1288,13 +1288,18 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live PR
 2. Resource governance exists so background enrichment can never again starve foreground reads — a throttle, concurrency cap, or priority separation. **Today the ONLY control is this binary on/off env var; that absence is the actual architectural defect** (see BL-334 and the Gap-2 analysis).
 3. Read availability verified under sustained backfill load: `ping`/`recall`/`topics` all responsive WHILE the heal pass runs.
 
-**Until then:** the backlog does not drain. Any measurement of vector coverage or recall quality must state that the backfill is disabled.
+**⚠️ UPDATE 2026-07-31 (same day): the mitigation was measured insufficient, twice, for two different reasons — do not treat this item as "handled" by the env var alone.**
+- First: setting `SOX_DISABLE_EMBED_HEAL` on the launchd unit had **zero effect** on the live symptom for an extended window, because the var never reached the backend process at all — a six-copy duplicated env-scrub allowlist across two packages silently dropped it with no warning. Filed separately as **BL-344** (the general defect; also verifies several other shipped tunables are equally non-functional in production today).
+- Second: once the var WAS confirmed reaching the backend (`SOX_DISABLE_EMBED_HEAL=1` verified via `ps eww` against the live pid) and the heal pass was genuinely off, reads **still hung** — this time because the periodic batch-enrichment/clustering tick (BL-162) starves reads through the identical mechanism, independent of the embed backfill. Filed separately as **BL-345**, which generalizes re-enable criterion #2 above from "inferred architectural gap" to "measured live-system defect, and it is not specific to the embed backfill."
+- **Practical consequence:** re-enable criterion #2 cannot be satisfied by disabling background jobs one at a time as they're discovered (BL-345 explains why). This item stays open pending BL-345's resource-governance fix, not merely pending BL-331.
+
+**Until then:** the backlog does not drain. Any measurement of vector coverage or recall quality must state that the backfill is disabled. Any claim that "reads are restored" for this store must be verified end-to-end against the live process (`ps eww <pid> | grep SOX_DISABLE`, then a real tool call with raw output) — verifying the generated `.plist` or launchd unit config is NOT sufficient and produced a false green during this same incident (see BL-344).
 
 **Acceptance (red→green, must name BL-339):** with the heal pass ENABLED and a full backlog, assert `memory_ping` and `memory_topics` respond within a sane budget (single-digit seconds) throughout. That test failing today is the whole reason this mitigation exists.
 
 **Severity:** HIGH — an intentional, load-bearing degradation of the live system. Must not become permanent by neglect.
 
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (SOX_DISABLE_EMBED_HEAL), 2: libs/memory-core/src/embed-pipeline.ts (heal pass + time budget), 3: BL-331, 4: BL-334]
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (SOX_DISABLE_EMBED_HEAL), 2: libs/memory-core/src/embed-pipeline.ts (heal pass + time budget), 3: BL-331, 4: BL-334, 5: BL-344, 6: BL-345]
 
 ---
 
@@ -1379,3 +1384,56 @@ This is the same architectural failure the current Theme-2 work targets, in a ne
 **Severity:** HIGH — 1 bad row out of 9397 (0.01%) produced a total tool outage.
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/memory-core/src/stats.ts, 2: live `memory_stats` failure 2026-07-31, 3: BL-342, 4: BL-334]
+
+---
+
+### BL-344 — Five (now six) duplicated env-scrub allowlists silently drop every `SOX_*` tunable not on the list, with no warning — **Open (HIGH)** (2026-07-31)
+
+**Driver:** the live memory-server was read-unavailable, `SOX_DISABLE_EMBED_HEAL` was set on the launchd unit to mitigate it (BL-339), and the mitigation had **zero effect** — reads stayed down. Root cause, found and independently re-found by two agents debugging the same incident in parallel: the var never reached the backend process. `apps/sox/src/main.ts` builds the backend's env through a scrub allowlist that admits only `PATH/HOME/USER/LOGNAME/LANG/LC_ALL/LC_CTYPE/TZ`, plus anything matching `NODE_*` or `SOX_EMBED_*` by prefix. `SOX_DISABLE_EMBED_HEAL` matches neither the fixed list nor either prefix, so it was silently dropped — no log line, no warning, `ps eww <backend-pid>` simply didn't have it. The var *was* present in the generated `.plist`, which is exactly why the first fix attempt produced a false green: verifying the plist is not verifying the running process.
+
+**The allowlist is not one copy, it is six, across two packages, and nobody — including two agents independently investigating this exact incident — found all of them on the first pass:**
+1. `apps/sox/src/main.ts:4632` — `buildOsUnitEnv()`, populates the generated launchd unit.
+2. `apps/sox/src/main.ts:8071` — the `soxe serve` path; builds `serveEnv`/`backendEnv` for the proxy-spawned backend child. **This is the one that actually gates the live symptom** — patching #1 alone looks like it worked (var present in the unit) but does nothing (proxy re-scrubs before spawning the backend).
+3. `apps/sox/src/main.ts:8728` — `cmdExec`, a third independent copy in the same file.
+4. `libs/host-runtime/src/supervisor.ts:308` — the in-process `ProcessSupervisor` enforced-policy spawn path (a separate package entirely).
+5. `libs/host-runtime/src/runtime-cli.ts:545` — a sixth copy, found last, still missing `SOX_DISABLE_EMBED_HEAL` as of this filing. Not yet confirmed live/dead code — needs a check before assuming it's in any real request path, but it exists and has the identical bug shape.
+
+**Verified (by reading every reader, not by trusting a prior list) that these documented, shipped tunables are ALSO silently dropped in production today** — none appear in any of the six allowlists:
+- `SOX_ENRICH_STALL_THRESHOLD_MS` (`extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:1888`)
+- `SOX_RECALL_EMBED_TIMEOUT_MS` (`libs/memory-core/src/recall.ts:82`) — the recall read-path guard shipped 2026-07-30
+- `SOX_MEMORY_LOG_LEVEL` / `SOX_MEMORY_LOG_DISABLE` / `SOX_MEMORY_LOG_DIR` / `SOX_MEMORY_LOG_MAX_BYTES` (`libs/memory-core/src/telemetry.ts:60,65,78,88`) — the BL-320 telemetry controls shipped 2026-07-30
+
+Both of the tunables shipped the day before this filing were non-functional in the deployed configuration on their first outing, and nothing reported it. The pattern also nearly repeated live during this incident: a *second* env flag (`SOX_DISABLE_PERIODIC_ENRICH`, introduced to address the BL-339-adjacent finding below) had to be manually added to three of the six copies while this item was being filed — the maintenance trap caught its own fix in real time.
+
+**Why this is worse than a normal missing-config bug:** every failure mode here is silent. Setting an unrecognized `SOX_*` var produces no error, no log line, no indication anywhere that it was dropped — the operator's mental model ("I set the env var, it should be in effect") is simply wrong, with the system offering no signal to correct it. This is exactly the false-green failure mode BL-334/Theme-2 exists to eliminate, just in the config-propagation path instead of the health-check path.
+
+**Recommended fix — a convention change, not another allowlist entry:** forward all `SOX_*`-prefixed vars by default (matching the existing `SOX_EMBED_*`/`NODE_*` prefix precedent already in the code), with an explicit deny-list for the genuinely unsafe ones (if any exist — audit needed). Additionally: log every dropped var that starts with `SOX_` but isn't forwarded, at spawn time, so a future silent-drop is a startup log line instead of a multi-hour live-debugging incident. An allowlist that every new tunable must remember to join, with six copies to remember, has now caught two tunables on their first shipment and nearly caught a third mid-incident — it will keep doing this indefinitely under the current architecture.
+
+**Acceptance (red→green, must name BL-344):** (1) set a novel `SOX_*` var not on any current allowlist, spawn the backend via each of the six paths, and assert the var IS present in `ps eww <pid>` for all of them (or is logged as explicitly denied, for a deny-listed var) — today this fails silently for 5/6 confirmed, 6th unconfirmed. (2) assert a `SOX_*` var that gets dropped produces a log line naming it, at spawn time — today there is none.
+
+**Severity:** HIGH — has already caused one live, extended read-availability incident (BL-339's mitigation appearing to work while doing nothing), cost significant debugging time from two agents in parallel, and structurally guarantees recurrence for the next new `SOX_*` tunable.
+
+Citations: [wip/turso-live-metrics, team-lead + claude (mitigate-reads), turso-go-live, 1: apps/sox/src/main.ts:4632-4645 (buildOsUnitEnv), 2: apps/sox/src/main.ts:8071-8090 (serve path serveEnv/backendEnv), 3: apps/sox/src/main.ts:8728-8745 (cmdExec), 4: libs/host-runtime/src/supervisor.ts:308-330, 5: libs/host-runtime/src/runtime-cli.ts:545-561, 6: libs/memory-core/src/recall.ts:82, 7: libs/memory-core/src/telemetry.ts:60,65,78,88, 8: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:1888, 9: BL-339, 10: BL-334]
+
+---
+
+### BL-345 — BL-339's mitigation does not achieve its stated goal: ANY in-process background job starves foreground reads identically, not just the embed backfill — **Open (HIGH)** (2026-07-31)
+
+**Driver:** BL-339 disabled the embed-heal backfill (`SOX_DISABLE_EMBED_HEAL=1`) on the theory that it was the specific cause of read unavailability. Live measurement after that mitigation was correctly deployed proved the theory too narrow: with the heal pass CONFIRMED disabled (`SOX_DISABLE_EMBED_HEAL=1` verified present in the running backend's actual env via `ps eww`), CPU at 17.8% (not compute-saturated), and machine load at 8.78 (not the elevated multi-agent load seen earlier in this same incident — ruled out as a confound), `memory_ping` still hung for 40s+, and the backend log showed `[memory-server] enrich.tick.start tick_seq=1` with no matching `.finish` — the periodic incremental-clustering/batch-enrichment tick (BL-162, in-process, synchronous better-sqlite3/turso calls) was starving reads through the exact same mechanism, independent of the embed backfill.
+
+This was corroborated independently: `memory_ping` observed hanging past 180s with zero concurrent load from any test, pid alive throughout (not crashed), CPU oscillating 2-53% in bursts, WAL bytes static (ruling out fresh-write volume as the driver) — consistent with a single long-running synchronous CPU-bound pass with no yield point, matching the enrich-tick theory.
+
+**The generalization matters more than either specific symptom:** this is not "the embed backfill is heavy" (BL-331) or "the enrichment tick is heavy" — it is that **the memory-server has no concurrency model protecting the foreground request path from ANY in-process background work.** Node's single-threaded event loop means any synchronous, non-yielding pass (embed backfill, clustering, or the next background job someone adds) blocks every read and write handler for its full duration. `SOX_DISABLE_EMBED_HEAL` silenced one instance of this; the underlying defect immediately resurfaced through a different code path with the exact same operator-facing symptom.
+
+**Consequently, adding more `SOX_DISABLE_*` flags is whack-a-mole, not a fix** — it treats each background job as the problem instead of treating "no resource governance over background CPU work" as the problem. This confirms BL-339's own re-enable criterion #2 ("resource governance exists so background enrichment can never again starve foreground reads") as measured fact, not inference, and BL-339 must not be closed by finding and disabling background job #2, #3, etc. one at a time.
+
+**What production-grade requires (not exhaustive, for scoping):**
+- A time-budgeted/yieldable execution model for in-process background passes (chunk the work, yield to the event loop between chunks, or move to a worker thread/child process — see the existing recommendation in the BL-322 investigation notes).
+- A concurrency/priority mechanism so foreground request handlers are never blocked behind an arbitrary-length background pass, regardless of which background job is running.
+- Observability that names which background pass is currently blocking (the `enrich.tick.start`/`.finish` pairing that surfaced this finding is a good start — it should be a standing health-surface field per BL-334, not something read only by grepping logs mid-incident).
+
+**Acceptance (red→green, must name BL-345):** with `SOX_DISABLE_EMBED_HEAL=1` set and the periodic enrichment tick running against a realistic backlog, assert `memory_ping`/`memory_topics` remain responsive (single-digit seconds) throughout a full tick — today this fails, which is the direct evidence for this item.
+
+**Severity:** HIGH — invalidates the completeness of BL-339's mitigation, confirms Gap-2 resource governance as a measured (not inferred) live-system defect, and blocks BL-339's own re-enable criteria from ever being satisfiable by point-fixing individual background jobs.
+
+Citations: [wip/turso-live-metrics, team-lead, claude (mitigate-reads), turso-go-live, 1: live backend log `enrich.tick.start tick_seq=1` with no `.finish`, pid 73540, 2026-07-31, 2: live `ps eww <pid>` confirming SOX_DISABLE_EMBED_HEAL=1 present, 3: live CPU/load measurement (17.8% CPU, load 8.78) during the hang, 4: independent 180s-hang reproduction with zero concurrent test load, pid CPU 2-53% bursting, WAL bytes static, 5: BL-339, 6: BL-334 Gap-2, 7: BL-322 (CPU-bound clustering pass analysis), 8: BL-331]
