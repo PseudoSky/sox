@@ -29,6 +29,7 @@
  * Phase-A enqueue settles, or from the top-level test body).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -62,41 +63,50 @@ import {
 import { DeterministicTestProvider } from './embed-test-provider.js';
 import { embed, vecToJson } from './embed.js';
 
+/**
+ * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
+ * These specs' own verification reads use raw SQL against the sqlite backend,
+ * so unwrap once here rather than rewriting every assertion.
+ */
+function raw(a: StoreAdapter): Database.Database {
+  return a.unwrap() as Database.Database;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function tmpDb(): { dir: string; dbPath: string; db: Database.Database; cleanup: () => void } {
+function tmpDb(): { dir: string; dbPath: string; db: StoreAdapter; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bl88-'));
   const dbPath = path.join(dir, 'm.db');
-  const db = openDb(dbPath);
+  const db = await openDb(dbPath);
   return {
     dir,
     dbPath,
     db,
     cleanup: () => {
-      try { if (db.open) db.close(); } catch { /* already closed */ }
+      try { if (raw(db).open) db.close(); } catch { /* already closed */ }
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
 }
 
 /** Phase A helper — asserts no error */
-function phaseA(db: Database.Database, content: string): PhaseAOutcome {
+function phaseA(db: StoreAdapter, content: string): PhaseAOutcome {
   const r = memoryWritePhaseA(db, { content, project_path: '/test/project' });
   expect('code' in r).toBe(false);
-  return r as PhaseAOutcome;
+  return await r as PhaseAOutcome;
 }
 
 /** Read the embed_model column for a node uid */
-function readEmbedModel(db: Database.Database, uid: string): string | null {
-  const row = db
+function readEmbedModel(db: StoreAdapter, uid: string): string | null {
+  const row = raw(db)
     .prepare<[string], { embed_model: string | null }>(`SELECT embed_model FROM node WHERE uid = ?`)
     .get(uid);
   return row?.embed_model ?? null;
 }
 
 /** Insert a raw episode with no vec_node row (the crashed-Phase-B shape) */
-function insertOrphan(db: Database.Database, uid: string, content: string): void {
-  db.prepare(
+function insertOrphan(db: StoreAdapter, uid: string, content: string): void {
+  raw(db).prepare(
     `INSERT INTO node (uid, kind, content, content_hash, t_created, t_valid)
      VALUES (?, 'episode', ?, ?, datetime('now'), datetime('now'))`,
   ).run(uid, content, `hash-${uid}`);
@@ -104,19 +114,19 @@ function insertOrphan(db: Database.Database, uid: string, content: string): void
 
 /** Insert a raw episode WITH a vec_node row and a given embed_model stamp */
 function insertEmbeddedWith(
-  db: Database.Database,
+  db: StoreAdapter,
   uid: string,
   content: string,
   modelStamp: string | null,
 ): number {
-  const info = db.prepare(
+  const info = raw(db).prepare(
     `INSERT INTO node (uid, kind, content, content_hash, t_created, t_valid, embed_model)
      VALUES (?, 'episode', ?, ?, datetime('now'), datetime('now'), ?)`,
   ).run(uid, content, `hash-${uid}`, modelStamp);
   const rowid = info.lastInsertRowid as number;
   // Insert a dummy vec_node row with correct dims
   const zeroes = new Float32Array(768).fill(0);
-  db.prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(
+  raw(db).prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(
     rowid,
     vecToJson(zeroes),
   );
@@ -192,7 +202,7 @@ describe('BL-88 migration idempotency — embed_model column on node table', () 
 
 describe('BL-88 stamp on write path — applyEmbedding stamps embed_model', () => {
   it('async pipeline (schedulePendingEmbeds) stamps embed_model on the applied node', async () => {
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     const a = phaseA(ctx.db, 'write path stamping test content');
 
     // Before Phase B — embed_model is NULL (Phase A never touches it).
@@ -224,7 +234,7 @@ describe('BL-88 stamp on write path — applyEmbedding stamps embed_model', () =
 
     // Apply the vector — should still stamp embed_model (the row is kept bi-temporally).
     const vec = await embed(a.pending!.text);
-    const applyResult = applyEmbedding(ctx.db, a.pending!, vec);
+    const applyResult = await applyEmbedding(ctx.db, a.pending!, vec);
     expect(applyResult.status).toBe('applied');
 
     const stamp = readEmbedModel(ctx.db, a.result.episode_uid);
@@ -234,7 +244,7 @@ describe('BL-88 stamp on write path — applyEmbedding stamps embed_model', () =
   it('applyEmbedding does NOT stamp when the rowid is gone (status: gone)', async () => {
     const vec = await embed('some content');
     const bogusPending = { uid: 'no-such-uid', rowid: 99_999, text: 'some content' };
-    const result = applyEmbedding(ctx.db, bogusPending, vec);
+    const result = await applyEmbedding(ctx.db, bogusPending, vec);
     expect(result.status).toBe('gone');
     // No row to check — just ensure no error thrown.
   });
@@ -249,7 +259,7 @@ describe('BL-88 stamp on write path — applyEmbedding stamps embed_model', () =
     expect(firstStamp).toBe(getActiveEmbedModel());
 
     // Second apply — status 'exists'; the stamp is unchanged.
-    const secondResult = applyEmbedding(ctx.db, a.pending!, vec);
+    const secondResult = await applyEmbedding(ctx.db, a.pending!, vec);
     expect(secondResult.status).toBe('exists');
     const secondStamp = readEmbedModel(ctx.db, a.result.episode_uid);
     // The first stamp survives; no corruption.
@@ -306,7 +316,7 @@ describe('BL-88 stamp on heal path — healMissingVectors stamps embed_model', (
     // Before heal — embed_model is NULL.
     expect(readEmbedModel(ctx.db, uid)).toBeNull();
 
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     const healResult = await healMissingVectors(ctx.db, wq);
     expect(healResult.healed).toBe(1);
 
@@ -375,7 +385,7 @@ describe('BL-88 stats — embed_provenance field in memoryGetStats', () => {
 describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
   it('returns disabled:true when SOX_HEAL_STALE_VECTORS is not set', async () => {
     delete process.env['SOX_HEAL_STALE_VECTORS'];
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     const result = await healStaleVectors(ctx.db, wq);
     expect(result.disabled).toBe(true);
     expect(result.scanned).toBe(0);
@@ -383,7 +393,7 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
 
   it('returns disabled:true when SOX_HEAL_STALE_VECTORS=0', async () => {
     process.env['SOX_HEAL_STALE_VECTORS'] = '0';
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     const result = await healStaleVectors(ctx.db, wq);
     expect(result.disabled).toBe(true);
   });
@@ -398,7 +408,7 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
     // Insert a node with the current model (must NOT be re-embedded).
     insertEmbeddedWith(ctx.db, 'current-node', 'current node content', activeModel);
 
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     const result = await healStaleVectors(ctx.db, wq);
     expect(result.disabled).toBe(false);
     expect(result.scanned).toBe(1); // only the stale node
@@ -420,7 +430,7 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
     // Raw orphan — no embed_model, no vec row.
     insertOrphan(ctx.db, 'null-model-orphan', 'no model stamp');
 
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     const result = await healStaleVectors(ctx.db, wq);
     expect(result.scanned).toBe(0); // NULL-model rows excluded from the query
     expect(result.healed).toBe(0);
@@ -433,7 +443,7 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
       insertEmbeddedWith(ctx.db, `stale-bounded-${i}`, `stale content ${i}`, 'old-model-v0');
     }
 
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     const result = await healStaleVectors(ctx.db, wq, { limit: 2 });
     expect(result.scanned).toBe(2);
     expect(result.healed).toBe(2);
@@ -452,7 +462,7 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
     const activeModel = getActiveEmbedModel();
     insertEmbeddedWith(ctx.db, 'stamp-after-heal', 'verify stamp content', 'stale-model-xyz');
 
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     const result = await healStaleVectors(ctx.db, wq);
     expect(result.healed).toBe(1);
 

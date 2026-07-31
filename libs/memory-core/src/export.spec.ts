@@ -41,7 +41,7 @@ describe('exportMarkdown — basic', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       const w1 = await memoryWrite(db, {
         content: 'The sky is blue and vast.',
@@ -90,7 +90,7 @@ describe('exportMarkdown — basic', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       await memoryWrite(db, {
         content: 'Event sourcing is a pattern for durable state.',
@@ -126,7 +126,7 @@ describe('exportMarkdown — INDEX.md', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       await memoryWrite(db, { content: 'First memory.', tags: ['alpha'], project_path: '/test/project' });
       await memoryWrite(db, { content: 'Second memory.', tags: ['beta'], project_path: '/test/project' });
@@ -153,7 +153,7 @@ describe('exportMarkdown — INDEX.md', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       await memoryWrite(db, { content: 'Low importance.', tags: ['topic-x'], importance: 1.0, project_path: '/test/project' });
       await memoryWrite(db, { content: 'High importance.', tags: ['topic-x'], importance: 9.0, project_path: '/test/project' });
@@ -191,7 +191,7 @@ describe('exportMarkdown — idempotency', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       const w = await memoryWrite(db, { content: 'Idempotent memory.', tags: ['idempotency'], project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
@@ -226,7 +226,7 @@ describe('exportMarkdown — pruning', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       // Write two episodes
       const w1 = await memoryWrite(db, { content: 'Ephemeral memory.', tags: ['prune-test'], project_path: '/test/project' });
@@ -246,7 +246,7 @@ describe('exportMarkdown — pruning', () => {
       expect(beforeFiles).toContain(`${uid2}.md`);
 
       // Invalidate the first episode
-      db.prepare('UPDATE node SET t_invalid = ? WHERE uid = ?').run(
+      raw(db).prepare('UPDATE node SET t_invalid = ? WHERE uid = ?').run(
         new Date().toISOString(),
         uid1,
       );
@@ -271,7 +271,7 @@ describe('exportMarkdown — pruning', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       const w = await memoryWrite(db, { content: '[topic-a] Original content.', topic: 'topic-a', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
@@ -281,7 +281,7 @@ describe('exportMarkdown — pruning', () => {
 
       // P5: re-categorise by updating the structured node.topic column (the authoritative field).
       // Content is also updated for consistency, but topic derivation now reads node.topic first.
-      db.prepare('UPDATE node SET topic = ?, content = ? WHERE uid = ?').run(
+      raw(db).prepare('UPDATE node SET topic = ?, content = ? WHERE uid = ?').run(
         'topic-b',
         '[topic-b] Original content.',
         uid,
@@ -308,7 +308,7 @@ describe('exportMarkdown — disabled', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       await memoryWrite(db, { content: 'This should not be exported.', tags: ['test'], project_path: '/test/project' });
 
@@ -336,7 +336,7 @@ describe('exportMarkdown — topic derivation', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       const w = await memoryWrite(db, { content: 'No tags here.', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
@@ -359,7 +359,7 @@ describe('exportMarkdown — topic derivation', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       const w = await memoryWrite(db, {
         content: '[agent-graph-memory] Bi-temporal edges for fact supersession.',
@@ -387,7 +387,7 @@ describe('exportMarkdown — topic derivation', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       const w = await memoryWrite(db, { content: 'Community-grouped memory.', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
@@ -395,15 +395,15 @@ describe('exportMarkdown — topic derivation', () => {
       // Manually insert a community node and MEMBER_OF edge
       const now = new Date().toISOString();
       const commUid = `community-test-${Date.now()}`;
-      const commRow = db.prepare<unknown[], { rowid: number }>(
+      const commRow = raw(db).prepare<unknown[], { rowid: number }>(
         `INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'community', ?, ?, ?) RETURNING rowid`,
       ).get(commUid, 'Machine Learning', now, now) as { rowid: number };
 
-      const epRow = db.prepare<[string], { rowid: number }>(
+      const epRow = raw(db).prepare<[string], { rowid: number }>(
         `SELECT rowid FROM node WHERE uid = ?`,
       ).get(uid) as { rowid: number };
 
-      db.prepare(
+      raw(db).prepare(
         `INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'MEMBER_OF', 'extracted', ?)`,
       ).run(epRow.rowid, commRow.rowid, now);
 
@@ -427,7 +427,7 @@ describe('exportMarkdown — topic derivation', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       const w = await memoryWrite(db, {
         content: 'Rust memory safety model.',
@@ -461,7 +461,7 @@ describe('exportMarkdown — topic derivation', () => {
       fs.mkdirSync(path.join(exportDir, 'principles'), { recursive: true });
       fs.writeFileSync(path.join(exportDir, 'principles', 'my-principle.md'), '# Principle\n', 'utf8');
 
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
       await memoryWrite(db, { content: 'A memory alongside principles.', tags: ['test'], project_path: '/test/project' });
 
       exportMarkdown(db, { dir: exportDir, enabled: true });
@@ -485,7 +485,7 @@ describe('exportMarkdown — P5 structured topic precedence', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       // Explicit topic='structured-topic' + content has [prefix-topic] — structured wins.
       const w = await memoryWrite(db, {
@@ -514,7 +514,7 @@ describe('exportMarkdown — P5 structured topic precedence', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       // Write without explicit topic — prefix gets stored in node.topic by enrichOnWrite,
       // then NULL it out to simulate a legacy store where node.topic wasn't populated.
@@ -525,7 +525,7 @@ describe('exportMarkdown — P5 structured topic precedence', () => {
       const uid = (w as { episode_uid: string }).episode_uid;
 
       // Force node.topic to null to prove the fallback path in export.ts still works.
-      db.prepare('UPDATE node SET topic = NULL WHERE uid = ?').run(uid);
+      raw(db).prepare('UPDATE node SET topic = NULL WHERE uid = ?').run(uid);
 
       exportMarkdown(db, { dir: exportDir, enabled: true });
 
@@ -545,7 +545,7 @@ describe('exportMarkdown — P5 structured topic precedence', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       // Write with an explicit topic and tags — structured topic must win, not entity name.
       const w = await memoryWrite(db, {
@@ -580,7 +580,7 @@ describe('exportMarkdown — P5 entity names in frontmatter (BL-22)', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       // Write with tags — these become entity nodes with MENTIONS edges.
       const w = await memoryWrite(db, {
@@ -626,7 +626,7 @@ describe('exportMarkdown — P5 entity names in frontmatter (BL-22)', () => {
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       const w = await memoryWrite(db, {
         content: 'Null-named entity test.',
@@ -638,15 +638,15 @@ describe('exportMarkdown — P5 entity names in frontmatter (BL-22)', () => {
       // Insert an entity with null name and a MENTIONS edge to the episode.
       const now = new Date().toISOString();
       const nullEntityUid = `entity-null-${Date.now()}`;
-      const entityRow = db.prepare<unknown[], { rowid: number }>(
+      const entityRow = raw(db).prepare<unknown[], { rowid: number }>(
         `INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'entity', NULL, ?, ?) RETURNING rowid`,
       ).get(nullEntityUid, now, now) as { rowid: number };
 
-      const epRow = db.prepare<[string], { rowid: number }>(
+      const epRow = raw(db).prepare<[string], { rowid: number }>(
         `SELECT rowid FROM node WHERE uid = ?`,
       ).get(uid) as { rowid: number };
 
-      db.prepare(
+      raw(db).prepare(
         `INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'MENTIONS', 'user_asserted', ?)`,
       ).run(epRow.rowid, entityRow.rowid, now);
 
@@ -674,7 +674,7 @@ describe('exportMarkdown — P5 structured provenance fields in frontmatter', ()
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       const w = await memoryWrite(db, {
         content: 'JWT tokens expire after one hour for security reasons.',
@@ -703,7 +703,7 @@ describe('exportMarkdown — P5 structured provenance fields in frontmatter', ()
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       const w = await memoryWrite(db, {
         content: 'Nx build caching reduces CI time significantly.',
@@ -732,7 +732,7 @@ describe('exportMarkdown — P5 structured provenance fields in frontmatter', ()
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       const w = await memoryWrite(db, {
         content: 'SQLite WAL mode enables concurrent reads.',
@@ -764,7 +764,7 @@ describe('exportMarkdown — P5 structured provenance fields in frontmatter', ()
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
 
     try {
-      const db = openDb(path.join(dbDir, 'test.db'));
+      const db = await openDb(path.join(dbDir, 'test.db'));
 
       await memoryWrite(db, {
         content: 'Idempotency with structured fields.',

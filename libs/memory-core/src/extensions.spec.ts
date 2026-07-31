@@ -5,6 +5,7 @@
  * Tests that each function returns the expected shape without throwing.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -22,6 +23,15 @@ import { memoryListProjects } from './projects.js';
 import { memoryCurate } from './curate.js';
 import { memoryGetStats } from './stats.js';
 
+/**
+ * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
+ * These specs' own verification reads use raw SQL against the sqlite backend,
+ * so unwrap once here rather than rewriting every assertion.
+ */
+function raw(a: StoreAdapter): Database.Database {
+  return a.unwrap() as Database.Database;
+}
+
 // Mock embed to avoid real ONNX model download (these tests assert extension function shapes, not embedding quality)
 
 function tmpDir(): { dir: string; cleanup: () => void } {
@@ -29,12 +39,12 @@ function tmpDir(): { dir: string; cleanup: () => void } {
   return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
-function createDb(dbPath: string): Database.Database {
-  return openDb(dbPath);
+function createDb(dbPath: string): StoreAdapter {
+  return await openDb(dbPath);
 }
 
 function seedEpisode(
-  db: Database.Database,
+  db: StoreAdapter,
   overrides: Record<string, unknown> = {},
 ): string {
   const uid = `ep-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -43,30 +53,30 @@ function seedEpisode(
   const topic = (overrides['topic'] as string) ?? 'test-topic';
   const projectPath = (overrides['project_path'] as string) ?? '/test/project';
   const tags = (overrides['tags'] as string[]) ?? ['test', 'example'];
-  db.prepare(
+  raw(db).prepare(
     `INSERT INTO node (uid, kind, content, topic, project_path, tags, t_created, t_valid)
      VALUES (?, 'episode', ?, ?, ?, ?, ?, ?)`,
   ).run(uid, content, topic, projectPath, JSON.stringify(tags), now, now);
   return uid;
 }
 
-function seedEntity(db: Database.Database, name: string): string {
+function seedEntity(db: StoreAdapter, name: string): string {
   const uid = `entity-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  db.prepare(
+  raw(db).prepare(
     `INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'entity', ?, ?, ?)`,
   ).run(uid, name, new Date().toISOString(), new Date().toISOString());
   return uid;
 }
 
-function seedEdge(db: Database.Database, srcRowid: number, dstRowid: number, rel: string): void {
-  db.prepare(
+function seedEdge(db: StoreAdapter, srcRowid: number, dstRowid: number, rel: string): void {
+  raw(db).prepare(
     `INSERT INTO edge (src, dst, rel, origin, t_created)
      VALUES (?, ?, ?, 'user_asserted', ?)`,
   ).run(srcRowid, dstRowid, rel, new Date().toISOString());
 }
 
-function rowidForUid(db: Database.Database, uid: string): number {
-  return (db.prepare(`SELECT rowid FROM node WHERE uid = ?`).get(uid) as { rowid: number }).rowid;
+function rowidForUid(db: StoreAdapter, uid: string): number {
+  return (raw(db).prepare(`SELECT rowid FROM node WHERE uid = ?`).get(uid) as { rowid: number }).rowid;
 }
 
 // ── memoryLinkNode ─────────────────────────────────────────────────────────
@@ -263,7 +273,7 @@ describe('memoryListTopics (B3)', () => {
       await seedEpisode(db, { topic: 'alpha' });
       await seedEpisode(db, { topic: 'beta' });
 
-      const result = memoryListTopics(db, {});
+      const result = await memoryListTopics(db, {});
 
       expect(result.total).toBe(2);
       const alpha = result.topics.find((t) => t.topic === 'alpha');
@@ -288,7 +298,7 @@ describe('memoryListProjects (B3)', () => {
       await seedEpisode(db, { project_path: '/project/a' });
       await seedEpisode(db, { project_path: '/project/b' });
 
-      const result = memoryListProjects(db, {});
+      const result = await memoryListProjects(db, {});
 
       expect(result.total).toBe(2);
       const a = result.projects.find((p) => p.project_path === '/project/a');
@@ -380,7 +390,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       const uid = await seedEpisode(db, { content: 'unique drop me' });
 
       // Verify the node exists before deletion
-      const before = db.prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uid) as { c: number };
+      const before = raw(db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uid) as { c: number };
       expect(before.c).toBe(1);
 
       const result = await memoryCurate(db, { op: 'drop-episodes', uids: [uid] });
@@ -392,7 +402,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       });
 
       // Verify the node is gone
-      const after = db.prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uid) as { c: number };
+      const after = raw(db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uid) as { c: number };
       expect(after.c).toBe(0);
       db.close();
     } finally {
@@ -412,9 +422,9 @@ describe('memoryCurate drop-episodes (B2)', () => {
       const rowidB = rowidForUid(db, uidB);
 
       // Insert a vec_node row for uidA
-      db.prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(rowidA, JSON.stringify(new Array(768).fill(0.1)));
+      raw(db).prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(rowidA, JSON.stringify(new Array(768).fill(0.1)));
       // Insert a MENTIONS edge from uidA to uidB (entity relationship)
-      db.prepare("INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'RELATES_TO', 'user_asserted', ?)").run(rowidA, rowidB, new Date().toISOString());
+      raw(db).prepare("INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'RELATES_TO', 'user_asserted', ?)").run(rowidA, rowidB, new Date().toISOString());
 
       const result = await memoryCurate(db, { op: 'drop-episodes', uids: [uidA] });
 
@@ -424,9 +434,9 @@ describe('memoryCurate drop-episodes (B2)', () => {
       expect(result.cascaded.edges).toBe(1);
 
       // Verify uidA is gone, uidB still exists
-      const nodeA = db.prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uidA) as { c: number };
+      const nodeA = raw(db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uidA) as { c: number };
       expect(nodeA.c).toBe(0);
-      const nodeB = db.prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uidB) as { c: number };
+      const nodeB = raw(db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uidB) as { c: number };
       expect(nodeB.c).toBe(1);
       db.close();
     } finally {
@@ -441,7 +451,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       const liveUid = await seedEpisode(db, { content: 'live one' });
       const invalidatedUid = await seedEpisode(db, { content: 'invalidated one' });
       // Invalidate the second one
-      db.prepare('UPDATE node SET t_invalid = ? WHERE uid = ?').run(new Date().toISOString(), invalidatedUid);
+      raw(db).prepare('UPDATE node SET t_invalid = ? WHERE uid = ?').run(new Date().toISOString(), invalidatedUid);
       const fakeUid = 'nonexistent-uid-0000';
 
       const result = await memoryCurate(db, {
@@ -456,10 +466,10 @@ describe('memoryCurate drop-episodes (B2)', () => {
       expect(result.cascaded.edges).toBe(0);
 
       // liveUid is gone
-      const liveCheck = db.prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(liveUid) as { c: number };
+      const liveCheck = raw(db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(liveUid) as { c: number };
       expect(liveCheck.c).toBe(0);
       // invalidatedUid still exists (was already t_invalid, not live)
-      const invCheck = db.prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(invalidatedUid) as { c: number };
+      const invCheck = raw(db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(invalidatedUid) as { c: number };
       expect(invCheck.c).toBe(1);
       db.close();
     } finally {

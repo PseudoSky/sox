@@ -77,7 +77,7 @@ function freshDbInsideAllowlist(): { db: Database.Database; dbPath: string; dir:
   fs.mkdirSync(testDir, { recursive: true });
   memoryDirsCreated.push(testDir);
   const dbPath = path.join(testDir, 'test.db');
-  const db = openDb(dbPath);
+  const db = await openDb(dbPath);
   return { db, dbPath, dir: testDir };
 }
 
@@ -136,7 +136,7 @@ describe('backupStore — allowlist enforcement', () => {
     const dir = makeTempDir();
     tmpDirs.push(dir);
     const srcPath = path.join(dir, 'outside.db');
-    const db = openDb(srcPath);
+    const db = await openDb(srcPath);
     db.close();
 
     const destPath = destPathInsideAllowlist('-outside-src');

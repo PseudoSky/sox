@@ -80,7 +80,7 @@ describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
 
     // maxSize=5: queue can hold 5 waiting items; the 6th+ enqueue is rejected
     const MAX_SIZE = 5;
-    const queue = WriteQueue.forPath(dbPath, MAX_SIZE);
+    const queue = await WriteQueue.forPath(dbPath, MAX_SIZE);
 
     try {
       // Seed the counter table
@@ -170,9 +170,9 @@ describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
       // ── Assertion 3: no lost or duplicated committed writes ────────────
       // Open a fresh read-only connection to inspect committed state
       const { openDbReadOnly } = await import('../db.js');
-      const roDb = openDbReadOnly(dbPath);
+      const roDb = await openDbReadOnly(dbPath);
 
-      const rows = roDb
+      const rows = raw(roDb)
         .prepare<[], { seq_num: number }>('SELECT seq_num FROM overflow_test ORDER BY seq_num')
         .all();
 
@@ -233,7 +233,7 @@ describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
     const { dbPath, cleanup } = tmpChaosDir();
 
     // NC: no effective size limit
-    const queue = WriteQueue.forPath(dbPath, Number.MAX_SAFE_INTEGER);
+    const queue = await WriteQueue.forPath(dbPath, Number.MAX_SAFE_INTEGER);
 
     try {
       await queue.enqueue('setup', async (tx) => {
@@ -287,7 +287,7 @@ describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
   it('queue recovers and accepts new items after overflow', async () => {
     const { dbPath, cleanup } = tmpChaosDir();
     const MAX_SIZE = 3;
-    const queue = WriteQueue.forPath(dbPath, MAX_SIZE);
+    const queue = await WriteQueue.forPath(dbPath, MAX_SIZE);
 
     try {
       await queue.enqueue('setup', async (tx) => {

@@ -78,7 +78,7 @@ describe('WP-6 concurrency harness (BL-134)', () => {
    * ×3 headroom budget derived from the observed mean write time (BL-232).
    */
   it('GREEN: zero lock errors under 8 concurrent writers (queue active)', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     const N = 8;
     const OPS_PER_WRITER = 50;
 
@@ -270,7 +270,7 @@ describe('WP-6 concurrency harness (BL-134)', () => {
   it('overflow: E_BUSY from queue full under concurrency', async () => {
     const SMALL_MAX = 2;
     const CONCURRENT = 8;
-    const queue = WriteQueue.forPath(dbPath, SMALL_MAX);
+    const queue = await WriteQueue.forPath(dbPath, SMALL_MAX);
 
     // Do a slow operation (1s) to fill the single slot
     queue.enqueue('slow-pin', () => new Promise<string>((r) => setTimeout(r, 500)));

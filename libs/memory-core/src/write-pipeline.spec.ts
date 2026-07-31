@@ -12,6 +12,7 @@
  * SEAM-LEVEL call count, not a wall clock).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -38,6 +39,15 @@ import { WriteQueue } from './write-queue.js';
 import { _setEmbedProviderForTest, embed } from './embed.js';
 import { DeterministicTestProvider } from './embed-test-provider.js';
 
+/**
+ * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
+ * These specs' own verification reads use raw SQL against the sqlite backend,
+ * so unwrap once here rather than rewriting every assertion.
+ */
+function raw(a: StoreAdapter): Database.Database {
+  return a.unwrap() as Database.Database;
+}
+
 // ── Seam-level instrumented providers ─────────────────────────────────────────
 
 /** Deterministic provider that counts embedSingle calls (the R1-style guard). */
@@ -56,27 +66,27 @@ class FailingProvider extends DeterministicTestProvider {
   }
 }
 
-function tmpDb(): { dir: string; dbPath: string; db: Database.Database; cleanup: () => void } {
+function tmpDb(): { dir: string; dbPath: string; db: StoreAdapter; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'write-pipeline-'));
   const dbPath = path.join(dir, 'p.db');
-  const db = openDb(dbPath);
+  const db = await openDb(dbPath);
   return {
     dir,
     dbPath,
     db,
     cleanup: () => {
-      try { if (db.open) db.close(); } catch { /* closed */ }
+      try { if (raw(db).open) db.close(); } catch { /* closed */ }
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
 }
 
-function vecRowFor(db: Database.Database, rowid: number): unknown {
-  return db.prepare('SELECT node_id FROM vec_node WHERE node_id = ?').get(rowid);
+function vecRowFor(db: StoreAdapter, rowid: number): unknown {
+  return raw(db).prepare('SELECT node_id FROM vec_node WHERE node_id = ?').get(rowid);
 }
 
-function rowidFor(db: Database.Database, uid: string): number {
-  const r = db.prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?').get(uid);
+function rowidFor(db: StoreAdapter, uid: string): number {
+  const r = raw(db).prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?').get(uid);
   expect(r).toBeDefined();
   return r!.rowid;
 }
@@ -106,7 +116,7 @@ describe('Phase A holds the queue slot with ZERO embed calls (seam-level proof)'
     const counter = new CountingProvider();
     _setEmbedProviderForTest(counter);
 
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     const outcome = await wq.enqueue('memory_write', (qdb) =>
       memoryWritePhaseA(qdb, { content: 'Phase A must not run ONNX inference on the slot.', project_path: '/test/project' }),
     );
@@ -152,7 +162,7 @@ describe('fresh Phase-A write is BM25-recallable before its vector exists', () =
       project_path: '/test/project',
     });
     expect('code' in b).toBe(false);
-    const bOut = b as PhaseAOutcome;
+    const bOut = await b as PhaseAOutcome;
     expect(vecRowFor(ctx.db, bOut.pending!.rowid)).toBeUndefined();
 
     // Recall with B's tokens: B must be found via BM25 despite the missing vector.
@@ -187,26 +197,26 @@ describe('fresh Phase-A write is BM25-recallable before its vector exists', () =
 // ── Dedup + idempotency semantics pinned across the split ─────────────────────
 
 describe('E_DEDUP and client_request_id replay are identical pre/post split', () => {
-  it('Phase A of duplicate content returns E_DEDUP with existing_uid — even before the vector lands', () => {
+  it('Phase A of duplicate content returns E_DEDUP with existing_uid — even before the vector lands', async () => {
     const first = memoryWritePhaseA(ctx.db, { content: 'Dedup is content-hash based, not vector based.', project_path: '/test/project' });
     expect('code' in first).toBe(false);
-    const firstUid = (first as PhaseAOutcome).result.episode_uid;
+    const firstUid = (await first as PhaseAOutcome).result.episode_uid;
 
     // Duplicate (same content after trim+lowercase) while the first still has NO vec row.
     const second = memoryWritePhaseA(ctx.db, { content: '  DEDUP IS CONTENT-HASH BASED, NOT VECTOR BASED.  ', project_path: '/test/project' });
     expect('code' in second).toBe(true);
-    expect((second as { code: string }).code).toBe('E_DEDUP');
-    expect((second as { existing_uid: string }).existing_uid).toBe(firstUid);
+    expect((await second as { code: string }).code).toBe('E_DEDUP');
+    expect((await second as { existing_uid: string }).existing_uid).toBe(firstUid);
   });
 
-  it('client_request_id replay returns the original uid, creates no node, schedules no embed', () => {
+  it('client_request_id replay returns the original uid, creates no node, schedules no embed', async () => {
     const first = memoryWritePhaseA(ctx.db, {
       content: 'Idempotent write via request ledger.',
       client_request_id: 'req-pipeline-1',
       project_path: '/test/project',
     });
     expect('code' in first).toBe(false);
-    const firstOut = first as PhaseAOutcome;
+    const firstOut = await first as PhaseAOutcome;
     expect(firstOut.pending).not.toBeNull();
 
     const replay = memoryWritePhaseA(ctx.db, {
@@ -215,7 +225,7 @@ describe('E_DEDUP and client_request_id replay are identical pre/post split', ()
       project_path: '/test/project',
     });
     expect('code' in replay).toBe(false);
-    const replayOut = replay as PhaseAOutcome;
+    const replayOut = await replay as PhaseAOutcome;
     expect(replayOut.result.replayed).toBe(true);
     expect(replayOut.result.episode_uid).toBe(firstOut.result.episode_uid);
     expect(replayOut.pending).toBeNull(); // the original write owns the vector
@@ -231,7 +241,7 @@ describe('E_DEDUP and client_request_id replay are identical pre/post split', ()
 
 describe('memoryWriteBatchPhaseA — one sync queue task, pipelined Phase B', () => {
   it('per-item E_DEDUP semantics hold; pendings collected only for inserted items; single queue entry', async () => {
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     WriteQueue.resetAllEnqueueCounts();
 
     const items = [
@@ -289,12 +299,12 @@ describe('deferred E8 near-dup runs in Phase B', () => {
       project_path: '/test/project',
     });
     expect('code' in newer).toBe(false);
-    const newerOut = newer as PhaseAOutcome;
+    const newerOut = await newer as PhaseAOutcome;
     expect(newerOut.result.enrichment?.near_dup).toBeNull(); // deferred — documented semantics
 
     // Phase B: near-dup detected and applied.
     const vec = await embed(newerOut.pending!.text);
-    const applied = applyEmbedding(ctx.db, newerOut.pending!, vec);
+    const applied = await applyEmbedding(ctx.db, newerOut.pending!, vec);
     expect(applied.status).toBe('applied');
     expect(applied.near_dup).not.toBeNull();
     expect(applied.near_dup!.existing_uid).toBe(olderUid);
@@ -321,13 +331,13 @@ describe('applyEmbedding — node lifecycle between phases', () => {
   it('node invalidated between phases: vector still lands (bi-temporal), near-dup pass skipped', async () => {
     const a = memoryWritePhaseA(ctx.db, { content: 'ephemeral fact invalidated before its embedding lands', project_path: '/test/project' });
     expect('code' in a).toBe(false);
-    const out = a as PhaseAOutcome;
+    const out = await a as PhaseAOutcome;
 
     const inv = memoryInvalidate(ctx.db, { claim_uid: out.result.episode_uid, reason: 'superseded mid-flight' });
     expect('ok' in inv && inv.ok).toBe(true);
 
     const vec = await embed(out.pending!.text);
-    const applied = applyEmbedding(ctx.db, out.pending!, vec);
+    const applied = await applyEmbedding(ctx.db, out.pending!, vec);
     expect(applied.status).toBe('applied');
     expect(applied.near_dup).toBeNull(); // dead nodes never drive near-dup invalidation
     expect(vecRowFor(ctx.db, out.pending!.rowid)).toBeDefined();
@@ -337,14 +347,14 @@ describe('applyEmbedding — node lifecycle between phases', () => {
 
   it('rowid/uid mismatch (node gone) → status gone, nothing written', async () => {
     const vec = await embed('whatever');
-    const applied = applyEmbedding(ctx.db, { uid: 'no-such-uid', rowid: 99_999, text: 'whatever' }, vec);
+    const applied = await applyEmbedding(ctx.db, { uid: 'no-such-uid', rowid: 99_999, text: 'whatever' }, vec);
     expect(applied.status).toBe('gone');
     expect(vecRowFor(ctx.db, 99_999)).toBeUndefined();
   });
 
   it('double apply (pipeline/heal race) → second returns exists, no duplicate vec row', async () => {
     const a = memoryWritePhaseA(ctx.db, { content: 'raced by the heal pass', project_path: '/test/project' });
-    const out = a as PhaseAOutcome;
+    const out = await a as PhaseAOutcome;
     const vec = await embed(out.pending!.text);
     expect(applyEmbedding(ctx.db, out.pending!, vec).status).toBe('applied');
     expect(applyEmbedding(ctx.db, out.pending!, vec).status).toBe('exists');
@@ -359,7 +369,7 @@ describe('applyEmbedding — node lifecycle between phases', () => {
 
 describe('Phase-B crash recovery: embedBacklogStats + healMissingVectors', () => {
   it('killed Phase B leaves a detected backlog; the heal drains it to zero (N→0)', async () => {
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
 
     // Simulate the crash: Phase B's embed always throws.
     _setEmbedProviderForTest(new FailingProvider());
@@ -367,7 +377,7 @@ describe('Phase-B crash recovery: embedBacklogStats + healMissingVectors', () =>
 
     const a = memoryWritePhaseA(ctx.db, { content: 'first orphan awaiting its embedding vector', project_path: '/test/project' });
     const b = memoryWritePhaseA(ctx.db, { content: 'second orphan from a different write entirely', project_path: '/test/project' });
-    const pendings = [(a as PhaseAOutcome).pending!, (b as PhaseAOutcome).pending!];
+    const pendings = [(await a as PhaseAOutcome).pending!, (await b as PhaseAOutcome).pending!];
 
     const sched = await schedulePendingEmbeds(wq, pendings, { logSink: (l) => logLines.push(l) });
     expect(sched.failed).toBe(2);
@@ -376,7 +386,7 @@ describe('Phase-B crash recovery: embedBacklogStats + healMissingVectors', () =>
     expect(logLines.filter((l) => l.includes('Phase-B FAILURE'))).toHaveLength(2);
 
     // The backlog is DETECTED, with an age signal for the stall verdict.
-    const backlog = embedBacklogStats(ctx.db);
+    const backlog = await embedBacklogStats(ctx.db);
     expect(backlog.count).toBe(2);
     expect(backlog.oldest_created_at).not.toBeNull();
 
@@ -394,10 +404,10 @@ describe('Phase-B crash recovery: embedBacklogStats + healMissingVectors', () =>
   // is the load-bearing recovery path, not incidentally-redundant machinery.
   // Skipped per repo NC convention; the body is real and runnable.
   it.skip('NC: with SOX_DISABLE_EMBED_HEAL=1 the orphan stays orphaned', async () => {
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     _setEmbedProviderForTest(new FailingProvider());
     const a = memoryWritePhaseA(ctx.db, { content: 'orphan that nobody heals', project_path: '/test/project' });
-    await schedulePendingEmbeds(wq, [(a as PhaseAOutcome).pending!], { logSink: () => {} });
+    await schedulePendingEmbeds(wq, [(await a as PhaseAOutcome).pending!], { logSink: () => {} });
     expect(embedBacklogStats(ctx.db).count).toBe(1);
 
     _setEmbedProviderForTest(new DeterministicTestProvider());

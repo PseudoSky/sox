@@ -88,7 +88,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
   // ── 1. Deadline rejection with a DERIVED retry hint ─────────────────────────
 
   it('rejects with E_BUSY(deadline) when estimated wait exceeds the budget; retry_after_ms is derived', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     queue._setDeadlineBudgetForTest(20_000);
     const logs: string[] = [];
     queue._setLogSinkForTest((l) => logs.push(l));
@@ -147,7 +147,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
   });
 
   it('retry_after_ms scales with the estimate — a different latency profile yields a different hint', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     queue._setDeadlineBudgetForTest(20_000);
     queue._setLogSinkForTest(() => { /* silence */ });
 
@@ -172,7 +172,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
   // ── 2. Cold start admits ─────────────────────────────────────────────────────
 
   it('cold start (zero latency samples) never deadline-rejects, even with a tiny budget', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     queue._setDeadlineBudgetForTest(1); // absurdly tight — but no samples → no estimate
     queue._setLogSinkForTest(() => { /* silence */ });
 
@@ -194,7 +194,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
 
   it('SOX_WRITEQ_NO_DEADLINE=1 disables time-based rejection only; size cap still enforces', async () => {
     process.env['SOX_WRITEQ_NO_DEADLINE'] = '1';
-    const queue = WriteQueue.forPath(dbPath, 3);
+    const queue = await WriteQueue.forPath(dbPath, 3);
     queue._setDeadlineBudgetForTest(100);
     const logs: string[] = [];
     queue._setLogSinkForTest((l) => logs.push(l));
@@ -231,7 +231,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
   });
 
   it('size cap enforces independently while the deadline guard is active but cold', async () => {
-    const queue = WriteQueue.forPath(dbPath, 2);
+    const queue = await WriteQueue.forPath(dbPath, 2);
     queue._setLogSinkForTest(() => { /* silence */ });
 
     const { gate, release } = makeGate();
@@ -254,7 +254,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
   // ── 4. Rejections never lose/duplicate committed work (real DB) ─────────────
 
   it('deadline rejections never lose or duplicate committed writes', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     queue._setDeadlineBudgetForTest(20_000);
     queue._setLogSinkForTest(() => { /* silence */ });
     for (let i = 0; i < 5; i++) queue._recordLatencySample(5000);
@@ -296,8 +296,8 @@ describe('WriteQueue — time-based backpressure + observability', () => {
     expect(rejectedSeqs).toEqual([3, 4, 5, 6, 7, 8, 9, 10]);
 
     const { openDbReadOnly } = await import('./db.js');
-    const roDb = openDbReadOnly(dbPath);
-    const rows = roDb
+    const roDb = await openDbReadOnly(dbPath);
+    const rows = raw(roDb)
       .prepare<[], { seq_num: number }>('SELECT seq_num FROM bp_commit_test ORDER BY seq_num')
       .all();
     roDb.close();
@@ -311,7 +311,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
 
   it('saturation warn/clear logs exactly once per transition (hysteresis)', async () => {
     // maxSize=8 → enter at ceil(0.75×8)=6, clear at floor(0.4×8)=3.
-    const queue = WriteQueue.forPath(dbPath, 8);
+    const queue = await WriteQueue.forPath(dbPath, 8);
     const logs: string[] = [];
     queue._setLogSinkForTest((l) => logs.push(l));
 
@@ -343,7 +343,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
   // ── 6. Slow-task detection ───────────────────────────────────────────────────
 
   it('logs a slow task once when latency exceeds the floor AND 3× the rolling average', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     queue._setSlowTaskMinMsForTest(10); // avoid a real 1s sleep in the spec
     const logs: string[] = [];
     queue._setLogSinkForTest((l) => logs.push(l));
@@ -368,7 +368,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
   // ── 7. Metrics snapshot: shape, math, purity ────────────────────────────────
 
   it('getMetrics() reports rolling percentiles, counters, and budget — and is pure', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     queue._setDeadlineBudgetForTest(20_000);
     queue._setLogSinkForTest(() => { /* silence */ });
 
@@ -407,7 +407,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
   });
 
   it('metricsForPath returns the snapshot for a known store and null for an unknown one', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     await queue.enqueue('touch', () => 'ok');
 
     const viaPath = WriteQueue.metricsForPath(dbPath);
@@ -425,8 +425,8 @@ describe('WriteQueue — time-based backpressure + observability', () => {
   // exactly like a write — removing it would under-estimate wait and re-open
   // the 2026-07-04 hang class).
 
-  it('write_latency_ms reports ONLY write-kind samples; apply_latency_ms reports apply-kind; the estimator blends both', () => {
-    const queue = WriteQueue.forPath(dbPath);
+  it('write_latency_ms reports ONLY write-kind samples; apply_latency_ms reports apply-kind; the estimator blends both', async () => {
+    const queue = await WriteQueue.forPath(dbPath);
 
     // Seam-seeded distributions (BL-161 — no sleeps): 4×100ms writes, 4×5ms applies.
     for (let i = 0; i < 4; i++) queue._recordLatencySample(100, 'write');
@@ -440,7 +440,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
   });
 
   it('completed tasks split the counters by kind; tasks_completed keeps the all-kind semantic', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     queue._setLogSinkForTest(() => { /* silence */ });
 
     await queue.enqueue('w1', () => 1);
@@ -454,7 +454,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
   });
 
   it('a queue full of apply-kind tasks still deadline-rejects a new WRITE — occupancy accounting is kind-blind', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     queue._setDeadlineBudgetForTest(20_000);
     queue._setLogSinkForTest(() => { /* silence */ });
 
@@ -497,17 +497,17 @@ describe('WriteQueue — time-based backpressure + observability', () => {
 
   it('SOX_WRITEQ_DEADLINE_MS overrides the default budget; invalid values fall back', async () => {
     process.env['SOX_WRITEQ_DEADLINE_MS'] = '12345';
-    const q1 = WriteQueue.forPath(dbPath);
+    const q1 = await WriteQueue.forPath(dbPath);
     expect(q1.deadlineBudgetMs).toBe(12_345);
     await WriteQueue.clearInstances();
 
     process.env['SOX_WRITEQ_DEADLINE_MS'] = 'not-a-number';
-    const q2 = WriteQueue.forPath(dbPath);
+    const q2 = await WriteQueue.forPath(dbPath);
     expect(q2.deadlineBudgetMs).toBe(20_000);
     await WriteQueue.clearInstances();
 
     delete process.env['SOX_WRITEQ_DEADLINE_MS'];
-    const q3 = WriteQueue.forPath(dbPath);
+    const q3 = await WriteQueue.forPath(dbPath);
     expect(q3.deadlineBudgetMs).toBe(20_000);
   });
 
@@ -527,7 +527,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
    */
   it.skip('[NC] with the deadline guard disabled, the same scenario does NOT reject', async () => {
     process.env['SOX_WRITEQ_NO_DEADLINE'] = '1';
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     queue._setDeadlineBudgetForTest(20_000);
     queue._setLogSinkForTest(() => { /* silence */ });
     for (let i = 0; i < 5; i++) queue._recordLatencySample(5000);
