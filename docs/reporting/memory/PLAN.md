@@ -70,12 +70,22 @@ snapshot procedure.
 harness would ingest a real row and take its own scorecard offline. Row-level resilience is the
 real fix; skipping the shape would be hiding from it.
 
-### P0.3 — BL-323: `sqlite-vec` load destructures a non-existent `default` export · **HIGH**
-Every `openDb()` on the sqlite adapter throws.
+### P0.3 — ~~BL-323: `sqlite-vec` destructure~~ · **CLOSED 2026-07-31 — and its own text was misleading**
 
-**Why it blocks:** it kills the **sqlite control arm**. Without a control, every Turso result is
-unattributable — "is this Turso or is this us?" is exactly the question that consumed this
-migration. A cross-backend run is worth far more than a Turso-only run.
+BL-323 is **fixed and closed** (verified by *reintroducing* the bug, not by inspection: with the
+`default` destructure restored the spec fails 2/3 with the original `TypeError`; restored, it
+passes). It has been moved to `CHANGELOG.md`.
+
+**It was listed here as a P0 blocker on the strength of its own overstated text**, which claimed it
+was *"very likely the dominant contributor to the ~266/267 pre-existing memory-core test
+failures."* **Measured, it is 16 tests** — suite failures moved 178 (bug present) → 162 (bug
+absent). The remaining 162 were never BL-323 and will not collapse now that it is fixed.
+
+Recorded rather than deleted, because the failure mode generalises: **an item's own severity claim
+is not evidence.** This one shaped a plan for two days. The same caution applies to BL-342, whose
+stated root cause (`tags = ''`) was also measured wrong — it is `enrich_ver = ''` — and would have
+sent an agent to normalise the wrong column, watch a clean sweep, and report success while
+`memory_stats` stayed dead.
 
 ### P0.4 — BL-348: enrichment/clustering can block and LOSE an embedding · **CRITICAL**
 *(supersedes the "owner decision required" that stood here — BL-326 is now decided; see below.)*
