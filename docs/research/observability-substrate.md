@@ -529,7 +529,7 @@ This is the third distinct problem `role` solves, which is a good sign it is the
 | **Logs** (`log.*`) | JSONL, `writeSync` | **nothing** | last ~1–5 ms |
 | **Span starts** (`onStart`) | JSONL, written before the body runs | **nothing** — a hung span's `.start` is already durable | last ~1–5 ms |
 | **Span finishes** (`onEnd`) | JSONL, `SimpleSpanProcessor` straight through | **nothing** | last ~1–5 ms |
-| **Metrics** | recomputable from the span stream + periodic snapshot (§5.8) | at most the deltas since the last snapshot — **and those are recoverable by replaying the spans** | same |
+| **Metrics** | recomputable from the span stream + periodic snapshot (§5.8) | at most the deltas since the last snapshot — **and those are recoverable by replaying the spans**, bounded by log retention (§5.8) | same |
 | *(rejected)* `BatchSpanProcessor` | in-memory batch on a timer | **the entire batch window** | — |
 
 The last row is why `BatchSpanProcessor` is banned in §5.4 and not merely discouraged: it converts a
@@ -908,6 +908,32 @@ for everything, and the exceptions are exactly what needs independent persistenc
 
 So snapshot frequency governs how much *non-recomputable* state is at risk, which is a much smaller
 quantity than "all metrics."
+
+**Bound on the replay claim — retention, not durability.** Replay can only reach as far back as the
+oldest retained file. `_pruneOldFiles` unlinks the oldest beyond `SOX_MEMORY_LOG_MAX_FILES`
+(default 7) on every size-triggered rotation (`telemetry.ts:236-261`). So **recent** histograms
+replay perfectly, but **lifetime cumulative counters** cannot be reconstructed once the window
+holding their early history is pruned. Two consequences the implementation must not miss:
+
+1. The snapshot line is therefore **not purely a cache** — past the retention horizon it is the only
+   durable record of cumulative state. It needs its own retention (a separate `metrics-snapshot`
+   component file, or last-N snapshots preserved), otherwise checkpoints are pruned alongside the
+   events they were meant to outlive and the "recomputable by replay" property quietly becomes
+   false at exactly the ages where it was the whole point.
+2. Any status field derived from a cumulative counter must be labelled with its window
+   ("since process start" vs "since oldest retained record"), or it becomes another plausible
+   unfalsifiable number — the BL-334 pattern.
+
+**Footgun this design would otherwise introduce — prefix collision in the pruner.** `_pruneOldFiles`
+selects files with `f.startsWith(`${component}-`)`. Role routing works by varying the component
+(`memory-core-live`, `memory-core-test`), and per-role pruning is then clean *provided every writer
+uses a role-qualified component*. But a process still using the **legacy** component `memory-core`
+prunes on the prefix `memory-core-`, which **also matches `memory-core-live-2026-07-31.jsonl`** — so
+one un-migrated writer can delete the live-service forensic logs it knows nothing about. Mitigation
+is trivial and must be explicit: use a separator that cannot collide (`memory-core.live`), or anchor
+the filter with the full `<component>-<ISO-date>` shape rather than a bare prefix. Verified by
+inspection of the filter logic, not observed in production — it cannot occur until role routing
+lands, which is exactly why it belongs in this document rather than in the backlog.
 
 **The four options, costed against the zero-handle property** (`getActiveResourcesInfo() → []`,
 which I do not want to give up either):
