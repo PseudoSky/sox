@@ -1103,7 +1103,20 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: ~/.adhd
 2. Per-item overhead in the heal loop (`embed-pipeline.ts` `healMissingVectors`) versus the harness's tight batch.
 3. The per-tick time budget (`SOX_EMBED_HEAL_TIME_BUDGET_MS`) leaving the worker idle between passes.
 
-**Fix sketch:** instrument the gap using the BL-320 JSONL trace (`embed.start`/`embed.finish` durations vs wall-clock between them) to separate queue-wait from compute; then address whichever dominates.
+**✅ MEASURED 2026-07-31 (BL-353) — the fix sketch below was finally executed; results reframe this item.**
+
+Splitting the BL-320 JSONL by whether a pid touches the live store (same code, same machine, same day):
+
+| population | n | p50 | p90 | max |
+|---|---|---|---|---|
+| test processes | 250 | **297 ms** | 315 ms | 1070 ms |
+| live-store processes | 80 | **6936 ms** | **91186 ms** | **10953175 ms (3 h)** |
+
+21 of 80 live embeds exceeded 30 s; 2 exceeded 5 minutes. **So this is ~23x on the median PLUS a catastrophic tail — not a uniform 18x slowdown.** The tail is the more alarming half and was invisible in every aggregate reported to date.
+
+**It is neither queue-wait nor the DB write:** median gap from an embed finishing to the next starting is **9 ms**, and `writequeue.task` p50 is **0 ms** (mean 28–50 ms). The time is inside embed compute, in the live process specifically. Since the code is identical, the cause is contextual — long-lived process state, EP/ANE contention, or memory pressure — and that is the next thing to isolate. Note `embed.*` events carry `trace_id: null`, so embeds cannot yet be correlated to their originating write (BL-351).
+
+**Fix sketch:** ~~instrument the gap using the BL-320 JSONL trace~~ — **done, see above.** Remaining: isolate why identical code is 23x slower in the live process, and separately treat the >30 s tail (21/80) as its own defect rather than an average.
 
 **Acceptance (red→green, must name BL-331):** a benchmark asserting production heal throughput is within a defined factor of the clean-room baseline.
 
@@ -1438,6 +1451,50 @@ Confirmed instances, all on **generated/derived data the adapter owns**:
 **Related:** BL-302 (the migration executor this needs), BL-347 (live instance, manual fix rejected), BL-335, BL-336, BL-337 (repair helper), BL-338 (recovery must be automatic), BL-341 (integrity-check message cap), BL-334 (report it).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner directive 2026-07-31, 2: BL-302 (applySchema DDL-only reconciliation), 3: BL-347, 4: BL-335, 5: BL-336]
+
+---
+
+### BL-353 — Telemetry is written to disk and never read: 75k events, two days, zero analysis — **Open (HIGH)** (2026-07-31)
+
+**Driver.** BL-320's structured JSONL telemetry has been writing since 2026-07-30 — **17.2 MB / 66887 events** on day one, **2.1 MB / 8500** by 14:24 on day two. Until 2026-07-31 **nothing in the repo referenced it, no analysis had ever been run against it, and no backlog item cited its contents.** No documentation existed describing the format, the event catalog, or how to read it (now written: `docs/observability/README.md`).
+
+The owner's observation that prompted this: *"I've been requesting logs for a while but clearly there's just missing documentation of what we've built."*
+
+**The cost of not reading them.** A single analysis pass, run once against data already two days old, immediately produced findings that had been open and blocking:
+
+- **BL-331's central open question — answered.** Its own fix sketch proposed *"instrument the gap using the BL-320 JSONL trace (`embed.start`/`embed.finish` durations vs wall-clock between them) to separate queue-wait from compute."* Nobody ran it. The data says: median gap between an embed finishing and the next starting is **9 ms**, and `writequeue.task` p50 is **0 ms** — so it is **neither** queue-wait **nor** the DB write. The time is inside embed compute.[1]
+- **Same code, same machine, same day**, split by whether the pid touches the live store: test-process embeds p50 **297 ms** (p90 315, max 1070); live-store embeds p50 **6936 ms**, p90 **91186 ms**, max **10953175 ms (3 hours)**, with 21 of 80 exceeding 30 s.[1] BL-331's "~18x too slow" is confirmed as **~23x on the median plus a catastrophic tail** — a materially different defect than a uniform slowdown.
+- **BL-323 confirmed firing at volume in production** — `store.open.error: Cannot read properties of undefined (reading 'load')`, 200 occurrences.[1]
+- **BL-342 confirmed live** — `step failed: Parse error: malformed JSON`.[1]
+- **Schema drift confirmed live** (BL-300/301) — `no such column: meta`, `no such column: k`, `no such table: main.fts_node`.[1]
+- **`embed_pipeline.phaseB.error: wq.enqueue is not a function`, 73 occurrences** — a plain TypeError on the vector-persist path: embedding computed, then fails to be written. This is the BL-348 loss scenario, observed. Scope on the live path still to be confirmed.[1]
+
+**Second finding — start/finish accounting gaps.** The always-log-the-start guarantee makes hangs countable as `starts − (finishes + errors)`:
+
+| Operation | start | finish | error | unaccounted |
+|---|---|---|---|---|
+| `store.open` | 7514 | 1406 | 1549 | **4559 (61%)** |
+| `write.phaseA` | 3910 | 1058 | 82 | **2770 (71%)** |
+| `embed` | 1898 | 1838 | 20 | 40 |
+| `writequeue.task` | 22275 | 22134 | 140 | 1 |
+
+The write queue accounts for essentially all its work; `store.open` and `write.phaseA` do not, by a wide margin. Some share is processes killed mid-operation (test runners exiting) and this method cannot distinguish that — **an upper bound and a lead, not a verdict.** It needs a real answer, because 61% of store opens never completing is either a large instrumentation lie or a large resource leak, and both matter.[1]
+
+**Third finding — the log is a single stream shared by the live server and every test process on the machine**, with no field distinguishing them; they must be separated by inferring which pids touch the live store path. Analysed together the populations are meaningless in both directions: the combined embed mean of 69476 ms describes neither the 297 ms test median nor the 6936 ms live median.[1] A `role`/`env` field on every record would remove the inference.
+
+**Fix sketch:**
+1. Tag records with the emitting role (live service / test / CLI) so populations never need to be inferred (see third finding).
+2. Periodic automated analysis with the derived metrics surfaced through the status surface (BL-334) rather than requiring a human to run a script — an operator must not have to know this file exists.
+3. Alert on the countable conditions: error-rate spikes, start-without-finish ratios, embed p95 regressions.
+4. Keep `docs/observability/README.md` current as the event catalog changes.
+
+**Acceptance (must name BL-353):** the start/finish accounting and per-population embed percentiles are derivable from a committed script **and** reachable from `memory_ping` without reading a file by hand; a regression in either surfaces without a human initiating the query.
+
+**Severity:** HIGH — this is the observability gap *behind* the observability gap. We paid the full write cost of telemetry (17 MB/day, hot-path instrumentation, a whole module) and took none of the value, while running blind investigations against the same defects the log had already recorded.
+
+**Related:** BL-351 (the substrate that must not repeat this), BL-334 (surfacing), BL-319 (metrics), BL-331 (answered by this data), BL-323, BL-342, BL-348, BL-300/301, BL-344 (controls scrubbed, so the live service cannot be tuned).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: ~/.adhd/sox-ecosystem/memory/log-analysis/{analyze-events.py,analyze-live-vs-test.py} run against ~/.adhd/sox-ecosystem/memory/logs/memory-core-2026-07-{30,31}.jsonl, 2: libs/memory-core/src/telemetry.ts, 3: docs/observability/README.md]
 
 ---
 
