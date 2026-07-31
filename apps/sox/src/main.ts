@@ -4637,6 +4637,7 @@ function buildOsUnitEnv(extId: string, root: string): Record<string, string> {
     // regeneration path can carry it into the launchd unit — never hand-edit
     // the generated plist to inject env.
     'SOX_DISABLE_EMBED_HEAL',
+      'SOX_DISABLE_PERIODIC_ENRICH',
   ]);
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
@@ -8078,6 +8079,7 @@ Flags:
       // absent from `ps eww <backend-pid>`, and the setting silently does
       // nothing. Verified 2026-07-31.
       'SOX_DISABLE_EMBED_HEAL',
+      'SOX_DISABLE_PERIODIC_ENRICH',
     ]);
     const baseEnv2: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
@@ -8732,6 +8734,7 @@ Examples:
       // requires remembering every one of them — see the filed defect
       // recommending `SOX_*` forwarded by default with a deny-list instead.
       'SOX_DISABLE_EMBED_HEAL',
+      'SOX_DISABLE_PERIODIC_ENRICH',
     ]);
     const baseEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {

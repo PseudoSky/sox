@@ -1437,3 +1437,30 @@ This was corroborated independently: `memory_ping` observed hanging past 180s wi
 **Severity:** HIGH — invalidates the completeness of BL-339's mitigation, confirms Gap-2 resource governance as a measured (not inferred) live-system defect, and blocks BL-339's own re-enable criteria from ever being satisfiable by point-fixing individual background jobs.
 
 Citations: [wip/turso-live-metrics, team-lead, claude (mitigate-reads), turso-go-live, 1: live backend log `enrich.tick.start tick_seq=1` with no `.finish`, pid 73540, 2026-07-31, 2: live `ps eww <pid>` confirming SOX_DISABLE_EMBED_HEAL=1 present, 3: live CPU/load measurement (17.8% CPU, load 8.78) during the hang, 4: independent 180s-hang reproduction with zero concurrent test load, pid CPU 2-53% bursting, WAL bytes static, 5: BL-339, 6: BL-334 Gap-2, 7: BL-322 (CPU-bound clustering pass analysis), 8: BL-331]
+
+---
+
+### BL-344 — SECOND TEMPORARY MITIGATION: `SOX_DISABLE_PERIODIC_ENRICH` — enrichment/clustering is OFF and must be re-enabled — **Open (HIGH)** (2026-07-31)
+
+**Filed so a second deliberate degradation cannot become permanent by neglect. Read together with BL-339.**
+
+**What happened:** BL-339 disabled the embed backfill to restore read availability. It worked for as long as it took a *different* background job to run. On 2026-07-31 the live store was read-unavailable for **15+ minutes with ZERO client load** — process alive, holding its UDS socket, CPU oscillating 2-53% in bursts, WAL bytes static (no new writes landing, so not fresh write volume), and **not one request answered**. `SOX_DISABLE_EMBED_HEAL=1` was confirmed present in that process's env (`ps eww -p 73540`), so the embed backfill was NOT the cause. The backend log showed `enrich.tick.start tick_seq=1` with no matching `.finish`.
+
+**The conclusion that matters:** disabling one background job simply handed the starvation to the next one. This was never "the embed backfill is heavy" — **any in-process background work starves every foreground read.** There is no concurrency model, no yield point, no admission control. CPU was 17.8% and machine load was 8.78 at the time of one measurement, so it is neither compute-bound nor host-contention: the event loop is simply not yielding.
+
+**This moves Gap 2 (resource governance) from INFERRED to MEASURED**, and invalidates the fix shape we were heading toward. Adding a `SOX_DISABLE_*` flag per background job is whack-a-mole across every job that exists or ever will.
+
+**What was done:** added `periodicEnrichDisabled()` (mirroring the existing `healDisabled()` pattern) gating `scheduleNextEnrichTick()` in `memory-server/src/index.ts`, plus the env key in all three `apps/sox/src/main.ts` allowlists. Service restarted with BOTH brakes. Verified: reads stable and fast across the 5-minute tick boundary (ping 0s, topics 1s, recall 0s, recall+query 7s at T+90s; CPU 2.0%).
+
+**Cost, stated plainly:** enrichment and clustering NEVER RUN. No new communities, no importance updates, no `relates_to` edges, and no clustering (already inert per BL-326/327 regardless). Combined with BL-339, the store is now **read/write only** — vector coverage frozen at ~36%, enrichment frozen entirely. Availability over completeness, deliberately.
+
+**Re-enable criteria — same as BL-339 plus:**
+1. Resource governance exists (Gap 2): background work bounded, yielding, and unable to starve foreground reads regardless of which job it is.
+2. Verified with BOTH brakes released: reads responsive in single-digit seconds while enrichment AND the embed backfill run.
+3. The per-job disable flags should then be REMOVED, not left as permanent API — they are scaffolding, not design.
+
+**Acceptance (red→green, must name BL-344):** with enrichment enabled and a real backlog, assert `memory_ping`/`memory_topics` stay responsive throughout a full tick. That test failing today is the entire reason both mitigations exist.
+
+**Severity:** HIGH — second load-bearing degradation of the live system in 24h, same root cause, different trigger.
+
+Citations: [wip/turso-live-metrics, team-lead+mitigate-reads, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (scheduleNextEnrichTick / periodicEnrichDisabled), 2: live outage observation 12:27-12:42 2026-07-31, 3: BL-339, 4: BL-331, 5: docs/ideas/themes-2-4-architecture.md Gap 2]
