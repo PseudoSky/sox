@@ -23,7 +23,7 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31 (BL-368 filed): **84 open**, 1 closed-in-place.
+Regenerated 2026-07-31 (BL-369, BL-370 filed): **86 open**, 1 closed-in-place.
 
 | Priority | Open items |
 |---|---|

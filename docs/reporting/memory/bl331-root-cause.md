@@ -176,7 +176,7 @@ which independently matches the clean-room figure (~2.1–2.8/s) and my own BL-3
 3. **Bound or parallelize the shared fastembed child** (BL-322 item 1). At minimum, report
    in-flight depth so head-of-line blocking is visible in `memory_ping` instead of having to be
    reconstructed from a log.
-4. **Fix the IPC-channel leak** (§6) before it corrupts another investigation.
+4. **Fix the IPC-channel leak** (§6, BL-370) before it corrupts another investigation.
 
 ---
 
@@ -201,7 +201,7 @@ minutes** after writing their final output, each holding a loaded-model fastembe
 (pid N) is ALREADY RUNNING` message has been read as evidence of real ANE contention. At least
 one instance was self-inflicted: during this session the warning named **pid 25484 — a leaked
 process from my own earlier probe**, idle at 0.0% CPU. The contention narrative has been partly
-confirming itself off orphans this defect creates. Filed as **BL-368**.
+confirming itself off orphans this defect creates. Filed as **BL-370**.
 
 ---
 
