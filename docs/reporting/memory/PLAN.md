@@ -1,6 +1,6 @@
 # Sandbox Harness — Implementation Plan
 
-> Companion to [`README.md`](./README.md) (the spec). This file is the **ordered build plan**,
+> Companion to [`sandbox/README.md`](./sandbox/README.md) (the spec). This file is the **ordered build plan**,
 > including every fix that must land *before* a run can be trusted.
 > **Status:** P0 dispatched 2026-07-31. Owner decisions on clustering (BL-326 → BL-349/BL-350),
 > adapter self-repair (BL-352) and tracing (BL-351) are **recorded and closed** — see P0.4, P0.7, P1.0.

@@ -4,14 +4,14 @@
 > **Owner:** memory / turso-go-live.
 > **Purpose:** prove, from a blank database upward, that every memory feature actually works —
 > with per-step timing, fail-fast gating, and a durable report per attempt.
-> **Build order:** see [`PLAN.md`](./PLAN.md) — the harness is built *last*, after the
+> **Build order:** see [`PLAN.md`](../PLAN.md) — the harness is built *last*, after the
 > instrumentation it consumes ships in the packages.
 
 **The sandbox is not a product. It is a thin runner.** Every metric it reports and every health
 verdict it renders must be a shipped capability of the packages, surfaced through the real
 status surface (`memory_ping` / `memory_stats`). The harness orchestrates, asserts, and writes
 reports — it does not own instrumentation. If a measurement only exists when the harness runs,
-it is in the wrong place. See [`PLAN.md` §0](./PLAN.md) for the ownership split.
+it is in the wrong place. See [`PLAN.md` §0](../PLAN.md) for the ownership split.
 
 ---
 
@@ -302,7 +302,7 @@ evidence Theme 2 (resource governance) needs, and the only one that speaks to sc
 > `vec_insert_duration_ms`, `embed_throughput_per_sec`, `backlog_drain_rate`); §6.4 and the
 > capability/health fields are BL-334; the wait-vs-work split is BL-322/BL-345. The harness
 > *consumes* them via the real status surface and correlates them on `trace_id`. An operator
-> hitting `memory_ping` at 3am gets the same facts. See [`PLAN.md` §P1](./PLAN.md).
+> hitting `memory_ping` at 3am gets the same facts. See [`PLAN.md` §P1](../PLAN.md).
 
 ### 6.1 Timeline log
 

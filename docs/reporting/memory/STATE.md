@@ -4,8 +4,10 @@
 > whenever a state changes. Anyone (or any agent) picking this up cold should read only this file
 > plus the linked ones.
 >
-> Companion docs: [`PLAN.md`](./PLAN.md) (build order) · [`README.md`](./README.md) (sandbox spec)
-> · `../../../observability/README.md` (how to read the logs) · `BACKLOG.md` (all items)
+> **Entry point:** [`README.md`](./README.md) — read that first if you are new here.
+>
+> Companion docs: [`PLAN.md`](./PLAN.md) (build order) · [`sandbox/README.md`](./sandbox/README.md) (sandbox spec)
+> · [`../../observability/README.md`](../../observability/README.md) (how to read the logs) · `BACKLOG.md` (all items)
 
 **Last updated:** 2026-07-31 18:00 local · **Branch:** `wip/turso-live-metrics`
 
