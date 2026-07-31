@@ -4,6 +4,45 @@
 
 ## [Unreleased] — BL-344, BL-343, BL-323: one env-scrub policy; memory_stats survives malformed rows; sqlite-vec load verified fixed
 
+### BL-369 (HIGH) — a sleeping laptop is no longer recorded as compute time
+
+Every `duration_ms` in the telemetry charged system sleep and event-loop blocking to the operation as if it were work. Measured on the live store: of the 35130 s spanned by embeds longer than 30 s, **31175 s (88.7%) was system sleep**. The famous "3-hour embed" is **503 s of awake time** on a laptop that slept for 2 h 54 m. Against the ≤30 s population it was 1.1% — so the distortion landed precisely on the tail, which is where p90/p99 are read.
+
+**The obvious fix does not work, and this item originally proposed it.** Measured rather than assumed:
+
+```
+performance.now() vs process.hrtime.bigint()   -> agree to 0.002 ms  (SAME clock)
+embed.start/embed.finish wall gap vs duration  -> median ratio 1.000 (n=28 long ops)
+                                                  incl. the 3-hour span that was 95% asleep
+control, n=3532 short ops                      -> ratio 1.000
+```
+
+`Date.now()`, `performance.now()`, `hrtime.bigint()` and `process.uptime()` **all include sleep on macOS**. There is no drop-in sleep-excluding clock in JS, so swapping one for another would have shipped, closed the item, and changed nothing.
+
+What shipped is a **suspension ledger** — one process-global `unref()`'d heartbeat; a late tick means the process did not run, and a `process.cpuUsage()` delta over the same gap tells you why:
+
+```
+~zero CPU consumed  ->  SYSTEM SUSPEND    (sleep / SIGSTOP / VM pause)
+ CPU consumed       ->  EVENT-LOOP BLOCK  (synchronous work starving the loop)
+```
+
+Records **annotate, never subtract**: `duration_ms` stays raw and reconcilable against the record's own `ts`, with `suspended_ms` / `blocked_ms` alongside — omitted entirely when zero, so their presence is itself the signal and the common case costs no log bytes.
+
+Wired at the **logging boundary**, not at the ~12 call sites, so every emitter present and future is correct by construction. The event-loop-block half is BL-351's event-loop-lag measurement for free.
+
+Historical data is **not** retroactively corrected; `docs/observability/README.md` carries the effective-date boundary.
+
+### BL-370 (HIGH) — a process that embeds once can now exit
+
+`fork()` with `'ipc'` creates a **separate** libuv handle for the channel, and `ChildProcess.unref()` does not release it. The shared embed host's `ensureProcess()` called `unref()` twice with a comment promising the parent could exit — it never could. Two probe processes were found still running **40+ minutes** after writing their final output, each holding a resident ONNX model.
+
+```
+c.unref()                  -> parent hangs forever
+c.unref(); c.channel?.unref()  -> parent exits cleanly
+```
+
+Not cosmetic. The orphans this created produced the `[fastembed] WARNING … another fastembed host process (pid N) is ALREADY RUNNING … severe (25-50x) embed latency due to Neural Engine contention` message that was cited across sessions as evidence of real cross-process ANE contention — at least one such warning named an orphan **this defect created**, idle at 0% CPU. The defect manufactured its own corroboration. **Cross-process ANE contention remains unproven**; the measured cause of the live slowdown was scheduling QoS (BL-331).
+
 ### BL-344 (HIGH) — one env-scrub policy, not five copies; and a dropped tunable is no longer silent
 
 Under `policy.enforced`, the child environment was scrubbed to a hand-maintained allowlist that existed as **five independent copies** across two packages. Every new tunable had to join all five. None ever did — and they had measurably drifted:

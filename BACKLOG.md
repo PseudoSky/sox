@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 91.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 89.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,12 +23,12 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31 (BL-344 resolved → CHANGELOG): **90 open**.
+Regenerated 2026-07-31 (BL-369, BL-370 resolved → CHANGELOG): **89 open**, 1 closed-in-place.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-369, BL-370, BL-372, BL-373, BL-374, BL-375, BL-377 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-372, BL-373, BL-374, BL-375, BL-377 |
 | **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378 |
 | **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363 |
 | **UNSET** | BL-163 |
@@ -2618,61 +2618,40 @@ Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-334, 1: libs/
 
 ---
 
-### BL-370 — Any process that embeds once NEVER EXITS: the fork IPC channel is never unref'd — **Open (HIGH)** (2026-07-31)
 
-**Driver.** `sharedFastembedProcess.ts` forks the shared embed host with an IPC channel and calls `c.unref()` twice, with a comment stating the exact intent: *"so a real process can exit when its own work is done instead of hanging on this child forever."*[1] **The intent is not achieved.** `fork()` with `'ipc'` in `stdio` creates a **separate channel handle**; `ChildProcess.unref()` does not unref it, so the parent's event loop stays alive forever.
+**✅ RESOLVED 2026-07-31.** Fix is `c.channel?.unref()` alongside the existing unrefs in `ensureProcess()`.
 
-**Red→green, isolated from the package** (fork a child with ipc, `unref()`, end the script):[2]
-```
-arm: unref() only  (the shipped pattern)  -> exit=124  (never exited)
-arm: unref() + c.channel?.unref()         -> exit=0    (exited cleanly)
-```
+**Red→green naming BL-370**, both arms measured in one harness that forks exactly as `ensureProcess()` does and reports whether the parent exits: **without the fix → hung; with it → exited.** Plus a guard asserting the shipped source carries the call. embedding-provider 28/28, lint clean.
 
-**Observed in the wild, not theorised:** two probe processes (pids 3203, 25482) were still alive **40+ minutes** after writing their final output, each holding a loaded-model fastembed child. Every CLI invocation, test runner, or script that embeds even once leaks a process pair carrying a resident ONNX model.
+**Two harness traps are documented in the spec because each produced a wrong answer first** — recorded so the next person does not rediscover them:
+1. The forked grandchild **inherits the parent's stdout**. If those are `spawnSync` pipes, `spawnSync` waits for pipe EOF as well as process exit, and the surviving grandchild holds the pipe open — so **both** arms report "hung" regardless of the fix. `stdio: 'ignore'` is load-bearing.
+2. Vitest's default **5 s per-test budget** kills the deliberately-hanging arm, and the failure reads like a product defect rather than a harness limit. That arm needs an explicit timeout.
 
-**Why this is HIGH and not cosmetic — it has been corrupting diagnosis.** The `[fastembed] WARNING … another fastembed host process (pid N) is ALREADY RUNNING … severe (25-50x) embed latency due to Neural Engine/hardware queue contention` message has been read across several sessions as evidence of real ANE contention. At least one instance was **self-inflicted**: during the BL-331 investigation the warning named **pid 25484 — a leaked process from this same session's earlier probe, idle at 0.0% CPU**. The defect manufactures the orphans whose warning is then cited as the cause. Any contention claim resting on that warning must be re-examined; BL-331's actual median cause turned out to be scheduling QoS, not contention.
+**Not closed as cosmetic.** The orphans this created produced the "another fastembed host process is ALREADY RUNNING … Neural Engine contention" warning that was cited across sessions as evidence of real cross-process ANE contention — at least one such warning named an orphan this defect created, idle at 0% CPU. **Cross-process ANE contention remains unproven**; the measured cause of the live slowdown was scheduling QoS (BL-331).
 
-**Fix sketch:** `c.channel?.unref()` alongside the existing `c.unref()` calls, and/or expose an explicit `dispose()` on `SharedFastembedProcessClient` that `kill()`s the child. Check `sharedOnnxWorker.ts` for the same pattern — it is cited in the comment as the precedent this code was copied from.
-
-**Acceptance (red→green, must name BL-370):** a test that spawns a process which performs one `embedSingle()` and asserts the process **exits on its own** within a bounded time. It fails today (times out) and passes with the channel unref'd.
-
-**Severity:** HIGH — unbounded process/memory leak on every embedding consumer, and it actively falsifies the contention signal the team has been diagnosing against.
-
-**Related:** BL-331 (§6 of the root-cause report), BL-322 (contention), BL-345.
-
-Citations: [wip/turso-live-metrics, performance-engineer, claude, BL-331 investigation, 1: libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts:72-118 (fork, `c.unref()` at :78 and :112), 2: /Users/nix/.claude/jobs/1557bcef/tmp/ipc-unref-test.mjs, 3: docs/reporting/memory/bl331-root-cause.md §6]
-
+Citations: [wip/turso-live-metrics, performance-engineer, claude, BL-370, 4: libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts (ensureProcess), 5: libs/data/embed/embedding-provider/src/sharedFastembedProcess-leak.spec.ts]
 ---
 
-### BL-369 — Telemetry `duration_ms` is wall-clock, so a sleeping laptop is recorded as compute time — **Open (HIGH)** (2026-07-31)
 
-**Driver.** Every duration in the BL-320 telemetry is derived from wall clock, so an operation that spans a macOS sleep accrues the sleep as though it were work. This is not hypothetical — it produced the single most alarming number in the whole Turso incident.
+**✅ RESOLVED 2026-07-31 — but the fix sketch above was WRONG and is corrected here.** I filed it; the symptom was right and the remedy was not. Measured, not reasoned:
 
-Intersecting each long live embed window with the sleep intervals from `pmset -g log`:[1]
+1. **No `duration_ms` emitter ever used `Date.now()`.** They all already use `performance.now()` — `telemetry.ts` (`withTimedEvent`), `embed.ts`, `write.ts` ×5, `write-queue.ts` ×6, `db.ts` ×2.
+2. **`performance.now()` and `process.hrtime.bigint()` are the SAME clock.** Measured on Node v24.11.1 darwin/arm64: they agree to **0.002 ms** over a 250 ms interval. Both are `uv_hrtime()`. The proposed swap is a literal no-op — it would have shipped, closed the item, and changed nothing.
+3. **That clock INCLUDES system sleep on this platform.** Decisive test against data already on disk: pair each `embed.start` with its `embed.finish` and compare the true wall gap (from the two `ts` fields) against the reported `duration_ms` — **n=28 long ops, median ratio 1.000**, including the 3-hour span that was 95% asleep (10953310 ms wall vs 10953175 ms reported). Control: **n=3532 short ops, ratio 1.000**.[5]
 
-| window (UTC) | pid | `duration_ms` | **asleep** | % asleep | actual awake |
-|---|---|---|---|---|---|
-| 07-31 00:15→03:18 | 23182 | **10953.2 s** | 10450.0 s | **95.4%** | **503.2 s** |
-| 07-31 03:35→06:21 | 23182 | 9968.5 s | 9438.6 s | 94.7% | 530.0 s |
-| 07-30 17:55→19:12 | 23182 | 4648.1 s | 4052.0 s | 87.2% | 596.1 s |
-| 07-30 20:59→21:52 | 23182 | 3154.0 s | 3143.0 s | **99.7%** | **11.0 s** |
+Note the published record disagrees with this machine: libuv#2891 states macOS `uv_hrtime` uses `mach_absolute_time`/`CLOCK_UPTIME_RAW`, which *excludes* sleep. On Node 24 it demonstrably does not. **`Date.now()`, `performance.now()`, `hrtime.bigint()` and `process.uptime()` all include sleep — there is no drop-in sleep-excluding clock in JS on macOS.**
 
-Across the whole >30 s embed tail: **35130 s wall, 31175 s (88.7%) system sleep.** For the ≤30 s population it is **1.1%** — so the distortion is concentrated exactly in the tail, where it does the most damage to a percentile.
+**What shipped instead — a suspension ledger** (`libs/memory-core/src/suspension.ts`):[6] one process-global heartbeat; a late tick means the process did not run, and a `process.cpuUsage()` delta over the same gap discriminates **SYSTEM SUSPEND** (~no CPU) from **EVENT-LOOP BLOCK** (CPU burnt). Both are recorded — they are different defects, and the second is BL-351 §6.4's event-loop-lag measurement for free.
 
-**The cost already paid.** "A 3-hour embed" was recorded in BL-331 and in `docs/observability/README.md` §6 as a catastrophic hang requiring its own investigation. It is **503 seconds of awake time on a laptop that slept for 2 h 54 m mid-operation.** Every `p90`/`p99`/`max` published from this telemetry is inflated by an unknown amount of laptop sleep.
+**Records annotate, never subtract.** `duration_ms` stays raw and reconcilable against the record's own `ts`; `suspended_ms` / `blocked_ms` are added alongside and omitted entirely when zero, so their presence is itself the signal and the common case costs no log bytes. A subtracted duration would be neither wall nor compute and could no longer be checked against the timestamps.
 
-**Fix sketch:** measure durations with `process.hrtime.bigint()` (monotonic, excludes suspend) and emit that as `duration_ms`. Optionally keep the wall-clock delta as a *separate* field so sleep-spanning becomes **visible** rather than silently attributed to compute — a large `wall_ms − mono_ms` gap is itself a useful signal that an operation was suspended. This is a prerequisite for **BL-351**: every span that design defines inherits the same exposure, and the wait-vs-work split is meaningless if "wait" silently includes system suspend.
+**Wired at the logging boundary** (`emit()`), not at the ~12 call sites, so every emitter present and future is correct by construction — a call-site convention is precisely what left BL-344's allowlist duplicated six times. The heartbeat auto-starts from `emit()` and its timer is `unref()`'d; a real process that starts tracking is proven to exit on its own (BL-370's failure shape).
 
-**Note for whoever re-derives this:** do **not** pair a pmset `Sleep` line with the next line whose first token is `Wake`. pmset emits a **`Wake Requests`** line ~2 s after every `Sleep`, which truncates every interval to seconds and reports the machine as essentially never asleep (0.1 h instead of 11.31 h). It briefly produced a false refutation of this very item. pmset states the sleep duration on the `Sleep` line itself (`... 598 secs`) — use that.
+**Red→green naming BL-369:** 13 tests, **verified 6 failing with the mechanism disabled and 13/13 with it restored.** memory-core suite measured before and after: **162 failed / 299 passed → 162 failed / 312 passed** — identical failures, +13 passing, nothing broken. (Those 162 are p0-test-infra's in-flight BL-325 work, verified by measuring at HEAD with my change removed rather than asserted.)
 
-**Acceptance (red→green, must name BL-369):** a test that measures a span across an injected clock jump (or a stubbed monotonic/wall pair) and asserts the reported `duration_ms` tracks the **monotonic** delta, not the wall delta. Fails today.
+**Historical data is NOT retroactively corrected** — every percentile already published from the existing JSONL stays inflated. `docs/observability/README.md` records the effective-date boundary.
 
-**Severity:** HIGH — it does not slow anything down, but it silently corrupts every latency percentile the team is now making go/no-go decisions from, and it already sent one investigation after a phantom 3-hour hang.
-
-**Related:** BL-331 (defect 2), BL-351 (the substrate that must not inherit this), BL-353, BL-319.
-
-Citations: [wip/turso-live-metrics, performance-engineer, claude, BL-331 investigation, 1: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-sleep-overlap.py, 2: libs/memory-core/src/telemetry.ts, 3: docs/reporting/memory/bl331-root-cause.md §2, 4: docs/observability/README.md §6]
-
+Citations: [wip/turso-live-metrics, performance-engineer, claude, BL-369, 5: ~/.adhd/sox-ecosystem/memory/log-analysis/bl369-clock-truth.py, 6: libs/memory-core/src/suspension.ts + suspension.spec.ts, 7: libs/memory-core/src/telemetry.ts (emit/annotateSuspension)]
 ---
 
 ### BL-375 — `service enable` rebuilds unit env from the INVOKING SHELL, silently dropping any tunable it does not happen to have — **Open (HIGH)** (2026-07-31)
