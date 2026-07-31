@@ -310,8 +310,8 @@ describe('computeImportance', () => {
 // ── detectNearDup ─────────────────────────────────────────────────────────────
 
 describe('detectNearDup', () => {
-  it('returns null when store is empty', () => {
-    const { db, cleanup } = makeTmpDb();
+  it('returns null when store is empty', async () => {
+    const { db, cleanup } = await makeTmpDb();
     try {
       process.env['SOX_EMBED_BACKEND'] = 'real'; // use real threshold
       const emb = seedEmbedding(1);
@@ -325,7 +325,7 @@ describe('detectNearDup', () => {
   });
 
   it('returns null for clearly distinct embeddings', async () => {
-    const { db, cleanup } = makeTmpDb();
+    const { db, cleanup } = await makeTmpDb();
     try {
       process.env['SOX_EMBED_BACKEND'] = 'real';
       const emb1 = seedEmbedding(1);
@@ -343,8 +343,8 @@ describe('detectNearDup', () => {
     }
   });
 
-  it('detects near-duplicate above threshold (real backend)', () => {
-    const { db, cleanup } = makeTmpDb();
+  it('detects near-duplicate above threshold (real backend)', async () => {
+    const { db, cleanup } = await makeTmpDb();
     try {
       process.env['SOX_EMBED_BACKEND'] = 'real';
       const emb1 = seedEmbedding(42);
@@ -369,8 +369,8 @@ describe('enrichOnWrite', () => {
   let db: Database.Database;
   let cleanup: () => void;
 
-  beforeEach(() => {
-    const t = makeTmpDb();
+  beforeEach(async () => {
+    const t = await makeTmpDb();
     db = t.db;
     cleanup = t.cleanup;
     process.env['SOX_EMBED_BACKEND'] = 'auto';
@@ -383,8 +383,8 @@ describe('enrichOnWrite', () => {
 
   it('produces identical output for the same inputs (reproducibility)', async () => {
     // Use two separate DBs to compare results with identical state
-    const t1 = makeTmpDb();
-    const t2 = makeTmpDb();
+    const t1 = await makeTmpDb();
+    const t2 = await makeTmpDb();
     try {
       process.env['SOX_EMBED_BACKEND'] = 'auto';
       const content = '[testing] Enrichment should be deterministic for the same inputs.';
@@ -529,7 +529,7 @@ describe('enrichOnWrite', () => {
 
 describe('clusterStore', () => {
   it('returns empty clusters for < 2 episodes', async () => {
-    const { db, cleanup } = makeTmpDb();
+    const { db, cleanup } = await makeTmpDb();
     try {
       const emb = seedEmbedding(1);
       insertEpisode(db, 'ep1', 'A'.repeat(100), emb);
@@ -539,7 +539,7 @@ describe('clusterStore', () => {
   });
 
   it('is deterministic: same DB → same clusters and UIDs across two passes', async () => {
-    const { db, cleanup } = makeTmpDb();
+    const { db, cleanup } = await makeTmpDb();
     try {
       // Insert episodes in two groups with close embeddings
       const emb1 = seedEmbedding(10);
@@ -565,7 +565,7 @@ describe('clusterStore', () => {
   });
 
   it('suppresses singletons (D1.6)', async () => {
-    const { db, cleanup } = makeTmpDb();
+    const { db, cleanup } = await makeTmpDb();
     try {
       // 3 orthogonal episodes — no cluster possible at high threshold
       insertEpisode(db, 'ep1', 'A'.repeat(60), seedEmbedding(1));
@@ -581,7 +581,7 @@ describe('clusterStore', () => {
   });
 
   it('excludes episodes with content < 50 chars (D5.1)', async () => {
-    const { db, cleanup } = makeTmpDb();
+    const { db, cleanup } = await makeTmpDb();
     try {
       const emb1 = seedEmbedding(1);
       const emb2 = nearDupEmbedding(emb1, 0.001);
@@ -598,7 +598,7 @@ describe('clusterStore', () => {
 
 describe('clusterStats', () => {
   it('returns zero stats on empty store', async () => {
-    const { db, cleanup } = makeTmpDb();
+    const { db, cleanup } = await makeTmpDb();
     try {
       const stats = await clusterStats(db);
       expect(stats.cluster_count).toBe(0);
@@ -608,7 +608,7 @@ describe('clusterStats', () => {
   });
 
   it('has consistent structure', async () => {
-    const { db, cleanup } = makeTmpDb();
+    const { db, cleanup } = await makeTmpDb();
     try {
       const stats = await clusterStats(db);
       expect(typeof stats.cluster_count).toBe('number');
@@ -626,7 +626,7 @@ describe('clusterStats', () => {
 
 describe('buildAutoLinks', () => {
   it('inserts no edges when < 2 episodes', async () => {
-    const { db, cleanup } = makeTmpDb();
+    const { db, cleanup } = await makeTmpDb();
     try {
       const result = await buildAutoLinks(db);
       expect(result.edges_inserted).toBe(0);
@@ -634,7 +634,7 @@ describe('buildAutoLinks', () => {
   });
 
   it('is idempotent: running twice on same DB inserts same count', async () => {
-    const { db, cleanup } = makeTmpDb();
+    const { db, cleanup } = await makeTmpDb();
     try {
       // Insert 4 episodes: e1 and e2 share JWT+OAuth. e3 and e4 only share JWT.
       // With 4 episodes: JWT appears in e1,e2,e3,e4 (4/4 = 100% → stoplist).
@@ -685,7 +685,7 @@ describe('buildAutoLinks', () => {
 
 describe('clusterStore — P3 clustering guarantees', () => {
   it('community UID = sha256(sorted member rowids).slice(0,32)', async () => {
-    const { db, cleanup } = makeTmpDb();
+    const { db, cleanup } = await makeTmpDb();
     try {
       // Two very similar episodes
       const emb1 = seedEmbedding(20);
@@ -709,7 +709,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
   });
 
   it('community UID is stable across re-runs with same members', async () => {
-    const { db, cleanup } = makeTmpDb();
+    const { db, cleanup } = await makeTmpDb();
     try {
       const emb1 = seedEmbedding(30);
       const emb2 = nearDupEmbedding(emb1, 0.02);
@@ -733,7 +733,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
   });
 
   it('degenerate guard: skips writes when all episodes cluster into one (threshold too low)', async () => {
-    const { db, cleanup } = makeTmpDb();
+    const { db, cleanup } = await makeTmpDb();
     try {
       // All embeddings very similar (same seed) — all will cluster at low threshold
       const base = seedEmbedding(50);
@@ -752,7 +752,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
   });
 
   it('member_rowids are sorted ascending in every cluster', async () => {
-    const { db, cleanup } = makeTmpDb();
+    const { db, cleanup } = await makeTmpDb();
     try {
       const emb1 = seedEmbedding(60);
       const emb2 = nearDupEmbedding(emb1, 0.02);
@@ -770,7 +770,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
   });
 
   it('label is derived from centroid-nearest episode (D1.4)', async () => {
-    const { db, cleanup } = makeTmpDb();
+    const { db, cleanup } = await makeTmpDb();
     try {
       const emb1 = seedEmbedding(70);
       const emb2 = nearDupEmbedding(emb1, 0.02);
@@ -787,7 +787,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
   });
 
   it('community nodes and MEMBER_OF edges are persisted to DB', async () => {
-    const { db, cleanup } = makeTmpDb();
+    const { db, cleanup } = await makeTmpDb();
     try {
       const emb1 = seedEmbedding(80);
       const emb2 = nearDupEmbedding(emb1, 0.02);
@@ -818,7 +818,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
 
 describe('runBatchEnrich', () => {
   it('returns expected shape on empty store', async () => {
-    const { db, adapter, cleanup } = makeTmpDb();
+    const { db, adapter, cleanup } = await makeTmpDb();
     try {
       const result = await runBatchEnrich(adapter);
       expect(typeof result.communities_upserted).toBe('number');
@@ -832,7 +832,7 @@ describe('runBatchEnrich', () => {
   });
 
   it('stamps legacy nodes on first pass', async () => {
-    const { db, adapter, cleanup } = makeTmpDb();
+    const { db, adapter, cleanup } = await makeTmpDb();
     try {
       const now = new Date().toISOString();
       db.prepare(
@@ -854,8 +854,8 @@ describe('runBatchEnrich', () => {
   });
 
   it('is deterministic: same DB → same batch result counts', async () => {
-    const t1 = makeTmpDb();
-    const t2 = makeTmpDb();
+    const t1 = await makeTmpDb();
+    const t2 = await makeTmpDb();
     try {
       process.env['SOX_EMBED_BACKEND'] = 'auto';
       const now = new Date().toISOString();
@@ -881,7 +881,7 @@ describe('runBatchEnrich', () => {
 
   // BL-45: incrementalCluster option skips full O(n²) pass
   it('incrementalCluster:true skips the full cluster pass (no communities written)', async () => {
-    const { db, adapter, cleanup } = makeTmpDb();
+    const { db, adapter, cleanup } = await makeTmpDb();
     try {
       process.env['SOX_EMBED_BACKEND'] = 'auto';
       const now = new Date().toISOString();
@@ -911,8 +911,8 @@ describe('runBatchEnrich', () => {
 
   // BL-45: importanceChunkSize splits the transaction but produces same results
   it('importanceChunkSize:1 produces same importance updates as default (chunked tx)', async () => {
-    const t1 = makeTmpDb();
-    const t2 = makeTmpDb();
+    const t1 = await makeTmpDb();
+    const t2 = await makeTmpDb();
     try {
       process.env['SOX_EMBED_BACKEND'] = 'auto';
       const now = new Date().toISOString();

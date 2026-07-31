@@ -74,7 +74,7 @@ async function freshDb(): Promise<{ db: StoreAdapter; dbPath: string }> {
 
 describe('runCompactionPass', () => {
   it('runs optimize + ANALYZE and checkpoints when no recent WriteQueue checkpoint', async () => {
-    const { db, dbPath } = freshDb();
+    const { db, dbPath } = await freshDb();
     // Ensure no WriteQueue instance exists (so lastCheckpointAtForPath returns 0).
     expect(WriteQueue.lastCheckpointAtForPath(dbPath)).toBe(0);
 
@@ -95,7 +95,7 @@ describe('runCompactionPass', () => {
   });
 
   it('skips WAL checkpoint when WriteQueue checkpointed very recently', async () => {
-    const { db, dbPath } = freshDb();
+    const { db, dbPath } = await freshDb();
 
     // Simulate a very recent WriteQueue checkpoint by creating a queue instance
     // and forcing a checkpoint on it.
@@ -121,7 +121,7 @@ describe('runCompactionPass', () => {
   });
 
   it('runs checkpoint when WriteQueue checkpoint was long ago (beyond idle window)', async () => {
-    const { db, dbPath } = freshDb();
+    const { db, dbPath } = await freshDb();
 
     // Create a WQ, do a checkpoint, but backdate its lastCheckpointAt so the
     // compaction tick treats it as stale.
@@ -140,7 +140,7 @@ describe('runCompactionPass', () => {
   });
 
   it('sets optimized=false when runOptimize=false', async () => {
-    const { db } = freshDb();
+    const { db } = await freshDb();
     const result = await runCompactionPass(db, { runOptimize: false });
     expect(result.optimized).toBe(false);
     expect(result.analyzed).toBe(true);
@@ -150,7 +150,7 @@ describe('runCompactionPass', () => {
 
   it('captures errors in result and never throws', async () => {
     // Pass a closed DB to trigger a "database is closed" error from SQLite.
-    const { db } = freshDb();
+    const { db } = await freshDb();
     db.close();
 
     // Should not throw — error is captured in result.error.
@@ -162,9 +162,9 @@ describe('runCompactionPass', () => {
 });
 
 describe('startCompactionTick', () => {
-  it('returns a stop function that cancels the tick', () => {
+  it('returns a stop function that cancels the tick', async () => {
     vi.useFakeTimers();
-    const { db } = freshDb();
+    const { db } = await freshDb();
     const logs: string[] = [];
     const intervalMs = 1000;
 

@@ -84,7 +84,7 @@ async function freshDb(): Promise<{ db: import('better-sqlite3').Database; dbPat
 
 describe('checkStoreQuota', () => {
   it('returns ok with soft_exceeded=false when DB is small', async () => {
-    const { db } = freshDb();
+    const { db } = await freshDb();
     // A freshly opened DB with minimal content is well under any reasonable quota.
     const result = checkStoreQuota(db, {
       softBytes: DEFAULT_SOFT_BYTES,
@@ -99,7 +99,7 @@ describe('checkStoreQuota', () => {
   });
 
   it('returns ok with soft_exceeded=true and fires warning when size > soft', async () => {
-    const { db } = freshDb();
+    const { db } = await freshDb();
     const warnings: string[] = [];
 
     // Set a tiny soft threshold (1 byte) so even an empty DB triggers it.
@@ -119,7 +119,7 @@ describe('checkStoreQuota', () => {
   });
 
   it('returns E_IO refusal when size > hard threshold', async () => {
-    const { db } = freshDb();
+    const { db } = await freshDb();
 
     // Hard threshold of 1 byte — any real DB exceeds it.
     const result = checkStoreQuota(db, {
@@ -142,7 +142,7 @@ describe('checkStoreQuota', () => {
   });
 
   it('hard refusal shape matches CONTRACTS §B exactly', async () => {
-    const { db } = freshDb();
+    const { db } = await freshDb();
     const result = checkStoreQuota(db, { softBytes: 0, hardBytes: 1 });
     expect(isQuotaRefusal(await result)).toBe(true);
     // Validate the full §B shape.
@@ -158,7 +158,7 @@ describe('checkStoreQuota', () => {
   });
 
   it('SOX_DISABLE_QUOTA_HARD=1 bypasses the hard check', async () => {
-    const { db } = freshDb();
+    const { db } = await freshDb();
     process.env['SOX_DISABLE_QUOTA_HARD'] = '1';
 
     // Hard threshold of 1 byte — would normally refuse, but flag disables it.
@@ -237,7 +237,7 @@ describe('NC: negative control for hard quota', () => {
     async () => {
       // Set disable flag.
       process.env['SOX_DISABLE_QUOTA_HARD'] = '1';
-      const { db } = freshDb();
+      const { db } = await freshDb();
 
       // With hardBytes=1 and flag set, check returns ok (guard bypassed).
       const result = checkStoreQuota(db, { softBytes: 0, hardBytes: 1 });
