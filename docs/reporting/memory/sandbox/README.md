@@ -439,9 +439,15 @@ Recorded rather than guessed. Each is resolved by measurement during implementat
    synchronously, which is ideal for G2 determinism but collapses `embed_enqueue_wait` — the
    very span Theme 2 needs. Likely answer: G2 synchronous, G3+ asynchronous, both stated in
    the report. To be confirmed, not assumed.
-2. **Real-content clustering cohort.** Can a stratified sample of real rows reach the
-   intra-group cosine the synthetic corpus achieves (mean 0.8174), or does G4 have to keep the
-   hand-written corpus? Measure candidate cohorts before committing.
+2. ~~**Real-content clustering cohort.**~~ **ANSWERED 2026-07-31 — yes, viable.** See
+   [`cluster-calibration.md`](./cluster-calibration.md). A *stratified* sample does **not** work
+   (intra-topic cosine 0.5971 is *lower* than inter-topic 0.6125 — `topic` is enrichment, not a
+   semantic partition), but a cohort of **three real topics selected for distinctness** clusters
+   at the production default into 5 communities, 23/24 covered, 100% purity, zero cross-group
+   contamination — outperforming the synthetic corpus at the same τ. §3.2's "marginal at τ=0.82"
+   framing is superseded: τ=0.82 is mis-calibrated *upward* (68.4% of the live store in one
+   cluster), and τ=0.65 is catastrophic on real content (97.8% in one cluster). Assert purity and
+   dominance, not "one community per group" — no corpus satisfies that, synthetic included.
 3. **Periodic enrich is on a 5-minute interval.** Waiting it out per gate is unacceptable for
    fast feedback. Needs a test-visible trigger (`runEnrichPassOnDb` is already exported and
    used by `clustering-e2e.test.ts`) — but then the harness is not testing the *scheduler*.

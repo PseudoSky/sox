@@ -103,14 +103,30 @@ as **BL-350** for research and is explicitly *not* solved by BL-349.
 **Effect on the ladder:** G4 becomes buildable once BL-349 lands. Until then it stays specified
 and unbuilt, with automatic clustering marked `grey` — never a corpus-attributed red.
 
-### P0.5 — BL-328: cluster threshold 0.82 may be mis-calibrated for natural prose · **MEDIUM**
-Already filed, and it directly determines §3.2's corpus question. The hand-written corpus
-measures intra-group mean **0.8174 / min 0.7572** — marginal at τ=0.82 *with content engineered
-to cluster*. Naturally-worded real rows will likely fall below it.
+### P0.5 — BL-328: cluster threshold calibration · **MEASURED 2026-07-31 — see [`cluster-calibration.md`](./cluster-calibration.md)**
 
-**Resolve by measurement, before G4 is built:** compute intra/inter-group cosine over candidate
-real-content cohorts. Either a real cohort clears the bar, or G4 keeps the synthetic corpus and
-we file what that limitation means. Do not guess this.
+**Done. The suspicion recorded here was backwards, and the corpus question is answered yes.**
+
+- **A real-content G4 cohort is viable.** Three *selected-for-distinctness* real topics × 8, drawn
+  from the live store, cluster at the production default into 5 communities, 23/24 covered,
+  **100% purity, zero cross-group contamination** — better than the synthetic corpus at the same
+  τ. Real intra-group means (0.8144 / 0.8495) are *higher* than the hand-written corpus (0.8087);
+  naturally-worded rows do not fall below the bar.
+- **τ=0.82 is mis-calibrated upward, not downward.** On the live store's own 1616 production
+  vectors it puts **68.4%** of the corpus in one cluster. τ=0.65 — the value
+  `clustering-e2e.test.ts` calls "measured-safe" — puts **97.8%** in one cluster at purity 0.410.
+  It is safe on that fixture and nowhere else.
+- **BL-328's two driver claims were false** and are corrected in the item.
+- **τ cannot be a constant at all** (new, **BL-356**): `minPts = 2` makes this single-linkage, so a
+  fixed τ fixes edge probability and mean degree grows linearly with N. Largest-cluster ratio at
+  τ=0.82 goes 0.085 → 0.684 as N goes 200 → 1616 on identical content. The degenerate guard is
+  what production actually runs on, and it can exhaust its 3 retries and accept a degenerate
+  partition anyway.
+
+**Constraints this puts on G4 when it is built:** select topics for distinctness (an arbitrary
+topic-labelled sample has inter-similarity ≥ intra-similarity — `topic` is enrichment, not a
+semantic partition); assert *purity + dominance*, never "one community per group" (no corpus,
+synthetic included, satisfies that at the default); and pin the cohort uids.
 
 ### P0.6 — Test-infrastructure integrity · BL-340, BL-325, BL-324
 `typecheck-tests` target does not exist; 18 `memory-core` specs never `await` the now-async
