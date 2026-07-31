@@ -1207,7 +1207,12 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
                 'episode_uid' in r ? r.episode_uid : r.code === 'E_DEDUP' ? r.existing_uid : null;
               if (chunkUid) chunkUids.push(chunkUid);
             }
-            linkChunksToParent(writeDb, parentUid, chunkUids);
+            // BL-324: this MUST be awaited. Un-awaited, the edge inserts escape
+            // the queue slot, race the next writer on the same file, and lose
+            // all but the first edge to SQLITE_BUSY — surfacing as an unhandled
+            // rejection rather than a failed write. The sibling call site below
+            // (async-embed path) already awaits it.
+            await linkChunksToParent(writeDb, parentUid, chunkUids);
             return {
               content: [{
                 type: 'text',
