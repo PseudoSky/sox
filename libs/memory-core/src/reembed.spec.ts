@@ -22,6 +22,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -68,6 +69,16 @@ import { reembedStore } from './reembed.js';
 import { openDb } from './db.js';
 import { _resetEmbedSingleton, vecToJson } from './embed.js';
 
+/**
+ * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
+ * These specs' own verification reads use raw SQL against the sqlite backend,
+ * so unwrap once here rather than rewriting every assertion.
+ */
+function raw(a: StoreAdapter): Database.Database {
+  return a.unwrap() as Database.Database;
+}
+
+
 // ── Test lifecycle ────────────────────────────────────────────────────────────
 
 let tmpDirs: string[] = [];
@@ -81,7 +92,7 @@ afterEach(() => {
   tmpDirs = [];
 });
 
-function freshDb(): { db: Database.Database; dbPath: string } {
+async function freshDb(): Promise<{ db: Database.Database; dbPath: string }> {
   const dir = makeTempDir();
   tmpDirs.push(dir);
   const dbPath = path.join(dir, 'test.db');

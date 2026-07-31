@@ -66,7 +66,7 @@ class FailingProvider extends DeterministicTestProvider {
   }
 }
 
-function tmpDb(): { dir: string; dbPath: string; db: StoreAdapter; cleanup: () => void } {
+async function tmpDb(): Promise<{ dir: string; dbPath: string; db: StoreAdapter; cleanup: () => void }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'write-pipeline-'));
   const dbPath = path.join(dir, 'p.db');
   const db = await openDb(dbPath);
@@ -91,10 +91,10 @@ function rowidFor(db: StoreAdapter, uid: string): number {
   return r!.rowid;
 }
 
-let ctx: ReturnType<typeof tmpDb>;
+let ctx: Awaited<ReturnType<typeof tmpDb>>;
 
 beforeEach(async () => {
-  ctx = tmpDb();
+  ctx = await tmpDb();
   await WriteQueue.clearInstances();
   WriteQueue.setBypass(false);
 });

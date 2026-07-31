@@ -13,6 +13,16 @@ import { memoryWrite, memoryWriteBatch, requestLedgerPrune } from './write.js';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { WriteQueue } from './write-queue.js';
 
+/**
+ * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
+ * These specs' own verification reads use raw SQL against the sqlite backend,
+ * so unwrap once here rather than rewriting every assertion.
+ */
+function raw(a: StoreAdapter): Database.Database {
+  return a.unwrap() as Database.Database;
+}
+
+
 // Mock embed to avoid real ONNX model download (these tests assert DB persistence, not embedding quality)
 
 function tmpDir(): { dir: string; cleanup: () => void } {
@@ -791,7 +801,7 @@ describe('client_request_id idempotency — WP-4 (BL-129)', () => {
 });
 
 describe('openDb — P1 enrichment column migrations (D3.1)', () => {
-  it('a fresh store has all canonical columns', () => {
+  it('a fresh store has all canonical columns', async () => {
     const { dir, cleanup } = tmpDir();
     try {
       const db = await openDb(path.join(dir, 'fresh.db'));
@@ -810,7 +820,7 @@ describe('openDb — P1 enrichment column migrations (D3.1)', () => {
     } finally { cleanup(); }
   });
 
-  it('adds memory-specific columns to a pre-existing store that lacks them (idempotent)', () => {
+  it('adds memory-specific columns to a pre-existing store that lacks them (idempotent)', async () => {
     const { dir, cleanup } = tmpDir();
     try {
       const dbPath = path.join(dir, 'old-p1.db');
@@ -852,7 +862,7 @@ describe('openDb — P1 enrichment column migrations (D3.1)', () => {
     } finally { cleanup(); }
   });
 
-  it('partial pre-existing columns are migrated safely (some missing, some present)', () => {
+  it('partial pre-existing columns are migrated safely (some missing, some present)', async () => {
     const { dir, cleanup } = tmpDir();
     try {
       const dbPath = path.join(dir, 'partial.db');
@@ -887,7 +897,7 @@ describe('openDb — P1 enrichment column migrations (D3.1)', () => {
 });
 
 describe('openDb — memory-specific column migration', () => {
-  it('a fresh store has embed_model', () => {
+  it('a fresh store has embed_model', async () => {
     const { dir, cleanup } = tmpDir();
     try {
       const db = await openDb(path.join(dir, 'fresh.db'));
@@ -900,7 +910,7 @@ describe('openDb — memory-specific column migration', () => {
     }
   });
 
-  it('adds embed_model to a pre-existing store that lacks it (idempotent migration)', () => {
+  it('adds embed_model to a pre-existing store that lacks it (idempotent migration)', async () => {
     const { dir, cleanup } = tmpDir();
     try {
       const dbPath = path.join(dir, 'old.db');

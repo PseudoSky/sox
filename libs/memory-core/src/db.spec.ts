@@ -17,12 +17,24 @@
  * regardless of whether the caller pre-expanded.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import type Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { openDb, openDbReadOnly, expandDbPath, stampStoreMeta, verifyStoreMeta, EStoreMismatch, STORE_META_KEYS } from './db.js';
 import { _resetEmbedSingleton, _setEmbedProviderForTest, EMBED_DIM, getActiveEmbedModel } from './embed.js';
 import { DeterministicTestProvider } from './embed-test-provider.js';
+
+/**
+ * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
+ * These specs' own verification reads use raw SQL against the sqlite backend,
+ * so unwrap once here rather than rewriting every assertion.
+ */
+function raw(a: StoreAdapter): Database.Database {
+  return a.unwrap() as Database.Database;
+}
+
 
 // Embedding is provided by the deterministic test provider installed in vitest.setup.ts —
 // no reset needed here (these tests assert DB mechanics, not embedding quality).

@@ -71,7 +71,7 @@ afterEach(async () => {
  * Create a temp DB inside ~/.memory/sox-backup-test-<rnd>/ so the allowlist
  * check passes. Returns the db path; the dir is registered for cleanup.
  */
-function freshDbInsideAllowlist(): { db: Database.Database; dbPath: string; dir: string } {
+async function freshDbInsideAllowlist(): Promise<{ db: Database.Database; dbPath: string; dir: string }> {
   const memRoot = os.homedir();
   const testDir = path.join(memRoot, '.memory', `sox-backup-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   fs.mkdirSync(testDir, { recursive: true });
