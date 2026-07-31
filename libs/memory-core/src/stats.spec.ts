@@ -40,12 +40,10 @@ async function createDb(dbPath: string): Promise<StoreAdapter> {
   return await openDb(dbPath);
 }
 
-function seedEpisode(db: StoreAdapter, content: string): string {
+async function seedEpisode(db: StoreAdapter, content: string): Promise<string> {
   const uid = `ep-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const now = new Date().toISOString();
-  raw(db).prepare(
-    `INSERT INTO node (uid, kind, content, t_created, t_valid) VALUES (?, 'episode', ?, ?, ?)`,
-  ).run(uid, content, now, now);
+  await db.executeRun(`INSERT INTO node (uid, kind, content, t_created, t_valid) VALUES (?, 'episode', ?, ?, ?)`, [uid, content, now, now]);
   return uid;
 }
 

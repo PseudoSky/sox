@@ -59,12 +59,8 @@ afterAll(async () => {
 // Buffer references from virtual tables are new instances on each read but
 // have identical bytes — we need content equality, not reference equality.
 
-function getVecHex(db: StoreAdapter, rowid: number): string | null {
-  const row = raw(db)
-    .prepare<[number], { embedding: Buffer | null }>(
-      `SELECT embedding FROM vec_node WHERE node_id = CAST(? AS INTEGER)`,
-    )
-    .get(rowid);
+async function getVecHex(db: StoreAdapter, rowid: number): Promise<string | null> {
+  const row = await db.executeGet<{ embedding: Buffer | null }>(`SELECT embedding FROM vec_node WHERE node_id = CAST(? AS INTEGER)`, [rowid]);
   if (!row?.embedding) return null;
   return Buffer.from(row.embedding).toString('hex');
 }
@@ -88,14 +84,10 @@ interface NodeRow {
   project_path: string | null;
 }
 
-function getNode(db: StoreAdapter, uid: string): NodeRow | undefined {
-  return raw(db)
-    .prepare<[string], NodeRow>(
-      `SELECT rowid, uid, content, summary, name, topic, tags, importance, meta,
+async function getNode(db: StoreAdapter, uid: string): Promise<NodeRow | undefined> {
+  return await db.executeGet<NodeRow>(`SELECT rowid, uid, content, summary, name, topic, tags, importance, meta,
               t_created, t_updated, t_occurred, t_valid, project_path
-       FROM node WHERE uid = ?`,
-    )
-    .get(uid);
+       FROM node WHERE uid = ?`, [uid]);
 }
 
 // ── deepMerge unit tests ─────────────────────────────────────────────────────
@@ -162,10 +154,7 @@ describe('memoryUpdate — E_NOT_FOUND', () => {
     try {
       const wr = await memoryWrite(db, { content: 'will be invalidated', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      raw(db).prepare(`UPDATE node SET t_invalid = ? WHERE uid = ?`).run(
-        new Date().toISOString(),
-        uid,
-      );
+      await db.executeRun(`UPDATE node SET t_invalid = ? WHERE uid = ?`, [new Date().toISOString(), uid]);
       const result = await memoryUpdate(db, { uid, content: 'should fail' });
       expect(result).toMatchObject({ code: 'E_NOT_FOUND' });
     } finally {
@@ -214,7 +203,7 @@ describe('memoryUpdate — individual field updates', () => {
     try {
       const wr = await memoryWrite(db, { content: 'original content', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      const nodeBefore = getNode(db, uid)!;
+      const nodeBefore = await getNode(db, uid)!;
 
       const result = await memoryUpdate(db, { uid, content: 'updated content' });
       expect('uid' in result).toBe(true);
@@ -223,7 +212,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('content');
       expect(ok.reembedded).toBe(true);
 
-      const nodeAfter = getNode(db, uid)!;
+      const nodeAfter = await getNode(db, uid)!;
       expect(nodeAfter.content).toBe('updated content');
 
       // t_created is immutable
@@ -246,7 +235,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('summary');
       expect(ok.reembedded).toBe(true);
 
-      const node = getNode(db, uid)!;
+      const node = await getNode(db, uid)!;
       expect(node.summary).toBe('new summary');
     } finally {
       cleanup(db, dir);
@@ -264,7 +253,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('name');
       expect(ok.reembedded).toBe(false);
 
-      const node = getNode(db, uid)!;
+      const node = await getNode(db, uid)!;
       expect(node.name).toBe('new name');
     } finally {
       cleanup(db, dir);
@@ -282,7 +271,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('topic');
       expect(ok.reembedded).toBe(false);
 
-      const node = getNode(db, uid)!;
+      const node = await getNode(db, uid)!;
       expect(node.topic).toBe('javascript');
     } finally {
       cleanup(db, dir);
@@ -307,7 +296,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('project_path');
       expect(ok.reembedded).toBe(false);
 
-      const node = getNode(db, uid)!;
+      const node = await getNode(db, uid)!;
       expect(node.project_path).toBe('/Users/nix/Documents/professional/qusececure');
     } finally {
       cleanup(db, dir);
@@ -325,7 +314,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('tags');
       expect(ok.reembedded).toBe(false);
 
-      const node = getNode(db, uid)!;
+      const node = await getNode(db, uid)!;
       expect(JSON.parse(node.tags!)).toEqual(['c', 'd', 'e']);
     } finally {
       cleanup(db, dir);
@@ -343,7 +332,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('importance');
       expect(ok.reembedded).toBe(false);
 
-      const node = getNode(db, uid)!;
+      const node = await getNode(db, uid)!;
       expect(node.importance).toBe(8);
     } finally {
       cleanup(db, dir);
@@ -368,7 +357,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('t_valid');
       expect(ok.reembedded).toBe(false);
 
-      const node = getNode(db, uid)!;
+      const node = await getNode(db, uid)!;
       expect(node.t_occurred).toBe(newOccurred);
       expect(node.t_valid).toBe(newValid);
     } finally {
@@ -424,7 +413,7 @@ describe('memoryUpdate — BL-221: project_path is correctable in place', () => 
       expect(ok.updated_fields).toEqual(['project_path']);
       expect(ok.reembedded).toBe(false); // project_path is not part of the embed text
 
-      const node = getNode(db, uid)!;
+      const node = await getNode(db, uid)!;
       expect(node.project_path).toBe(correctProjectPath);
       expect(node.content).toBe(content); // content untouched — uid/content identity preserved
     } finally {
@@ -460,7 +449,7 @@ describe('memoryUpdate — t_created immutable, t_updated set', () => {
     try {
       const wr = await memoryWrite(db, { content: 'time anchor test', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      const nodeBefore = getNode(db, uid)!;
+      const nodeBefore = await getNode(db, uid)!;
       // t_updated is now set by enrichOnWrite → graph.touch() so it's no longer null
       expect(nodeBefore.t_updated).toEqual(expect.any(String));
 
@@ -469,7 +458,7 @@ describe('memoryUpdate — t_created immutable, t_updated set', () => {
       expect('uid' in result).toBe(true);
       const after = Date.now();
 
-      const nodeAfter = getNode(db, uid)!;
+      const nodeAfter = await getNode(db, uid)!;
       // t_created must not change
       expect(nodeAfter.t_created).toBe(nodeBefore.t_created);
       // t_updated must be set and within the call window
@@ -497,7 +486,7 @@ describe('memoryUpdate — metadata merging', () => {
       const uid = (wr as { episode_uid: string }).episode_uid;
 
       // Verify initial meta
-      const nodeBefore = getNode(db, uid)!;
+      const nodeBefore = await getNode(db, uid)!;
       const metaBefore = JSON.parse(nodeBefore.meta!) as Record<string, unknown>;
       expect(metaBefore).toMatchObject({ a: { x: 1 }, list: [1, 2, 3], stable: 'keep' });
 
@@ -511,7 +500,7 @@ describe('memoryUpdate — metadata merging', () => {
       expect(ok.updated_fields).toContain('meta');
       expect(ok.reembedded).toBe(false);
 
-      const nodeAfter = getNode(db, uid)!;
+      const nodeAfter = await getNode(db, uid)!;
       const metaAfter = JSON.parse(nodeAfter.meta!) as Record<string, unknown>;
 
       // Nested object merged: a.x preserved, a.y added
@@ -542,7 +531,7 @@ describe('memoryUpdate — metadata merging', () => {
       });
       expect('uid' in result).toBe(true);
 
-      const nodeAfter = getNode(db, uid)!;
+      const nodeAfter = await getNode(db, uid)!;
       const metaAfter = JSON.parse(nodeAfter.meta!) as Record<string, unknown>;
       expect(metaAfter).toEqual({ brand_new: 42 });
       expect('old_key' in metaAfter).toBe(false);
@@ -557,7 +546,7 @@ describe('memoryUpdate — metadata merging', () => {
     try {
       const wr = await memoryWrite(db, { content: 'embed stability test', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      const nodeBefore = getNode(db, uid)!;
+      const nodeBefore = await getNode(db, uid)!;
       const vecBefore = getVecHex(db, nodeBefore.rowid);
       expect(vecBefore).not.toBeNull();
 
@@ -585,7 +574,7 @@ describe('memoryUpdate — re-embed on content change', () => {
     try {
       const wr = await memoryWrite(db, { content: 'first version of the content', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      const nodeBefore = getNode(db, uid)!;
+      const nodeBefore = await getNode(db, uid)!;
       const vecBefore = getVecHex(db, nodeBefore.rowid);
       expect(vecBefore).not.toBeNull();
 
@@ -613,7 +602,7 @@ describe('memoryUpdate — re-embed on content change', () => {
     try {
       const wr = await memoryWrite(db, { content: 'stable content for vector test', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      const nodeBefore = getNode(db, uid)!;
+      const nodeBefore = await getNode(db, uid)!;
       const vecBefore = getVecHex(db, nodeBefore.rowid);
 
       await memoryUpdate(db, { uid, topic: 'new-topic' });
@@ -653,16 +642,10 @@ describe('memoryUpdate — FTS reflects content change (fts_node_au trigger)', (
         project_path: '/test/project',
       });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      const nodeRow = await raw(db)
-        .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ?`)
-        .get(uid)!;
+      const nodeRow = await await db.executeGet<{ rowid: number }>(`SELECT rowid FROM node WHERE uid = ?`, [uid])!;
 
       // 'zorbflux' should be indexed before the update.
-      const ftsBeforeRows = raw(db)
-        .prepare<[string], { rowid: number }>(
-          `SELECT rowid FROM fts_node WHERE fts_node MATCH ?`,
-        )
-        .all('zorbflux');
+      const ftsBeforeRows = (await db.executeAll<{ rowid: number }>(`SELECT rowid FROM fts_node WHERE fts_node MATCH ?`, ['zorbflux'])).rows;
       expect(ftsBeforeRows.map((r) => r.rowid)).toContain(nodeRow.rowid);
 
       // Update content + summary together — replace the unique term with a new one.
@@ -673,20 +656,12 @@ describe('memoryUpdate — FTS reflects content change (fts_node_au trigger)', (
       });
 
       // 'quaxbeam' should now be indexed.
-      const ftsAfterRows = raw(db)
-        .prepare<[string], { rowid: number }>(
-          `SELECT rowid FROM fts_node WHERE fts_node MATCH ?`,
-        )
-        .all('quaxbeam');
+      const ftsAfterRows = (await db.executeAll<{ rowid: number }>(`SELECT rowid FROM fts_node WHERE fts_node MATCH ?`, ['quaxbeam'])).rows;
       expect(ftsAfterRows.map((r) => r.rowid)).toContain(nodeRow.rowid);
 
       // 'zorbflux' should no longer be indexed for this episode — it appeared only in
       // content (and summary), both of which were updated to remove it.
-      const ftsRemovedRows = raw(db)
-        .prepare<[string], { rowid: number }>(
-          `SELECT rowid FROM fts_node WHERE fts_node MATCH ?`,
-        )
-        .all('zorbflux');
+      const ftsRemovedRows = (await db.executeAll<{ rowid: number }>(`SELECT rowid FROM fts_node WHERE fts_node MATCH ?`, ['zorbflux'])).rows;
       expect(ftsRemovedRows.map((r) => r.rowid)).not.toContain(nodeRow.rowid);
     } finally {
       cleanup(db, dir);
@@ -702,7 +677,7 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
     try {
       const w = await memoryWrite(db, { content: 'original text for phase-a', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
-      const rowid = (raw(db).prepare('SELECT rowid FROM node WHERE uid = ?').get(uid) as { rowid: number }).rowid;
+      const rowid = (await db.executeGet('SELECT rowid FROM node WHERE uid = ?', [uid]) as { rowid: number }).rowid;
       expect(getVecHex(db, rowid)).not.toBeNull(); // sync composition embedded it
 
       const a = await memoryUpdatePhaseA(db, { uid, content: 'replaced text for phase-a' });
@@ -710,7 +685,7 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
       if ('code' in a) return;
 
       // Columns committed, FTS-visible, stale vector GONE (heal-eligible).
-      const row = raw(db).prepare('SELECT content FROM node WHERE uid = ?').get(uid) as { content: string };
+      const row = await db.executeGet('SELECT content FROM node WHERE uid = ?', [uid]) as { content: string };
       expect(row.content).toBe('replaced text for phase-a');
       expect(getVecHex(db, rowid)).toBeNull();
 
@@ -736,7 +711,7 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
     try {
       const w = await memoryWrite(db, { content: 'stable text', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
-      const rowid = (raw(db).prepare('SELECT rowid FROM node WHERE uid = ?').get(uid) as { rowid: number }).rowid;
+      const rowid = (await db.executeGet('SELECT rowid FROM node WHERE uid = ?', [uid]) as { rowid: number }).rowid;
       const before = getVecHex(db, rowid);
 
       const a = await memoryUpdatePhaseA(db, { uid, metadata: { reviewed: true } });

@@ -41,15 +41,11 @@ function tmpDir(): { dir: string; cleanup: () => void } {
 }
 
 /** Insert a well-formed episode. */
-function seedGood(db: StoreAdapter, content: string): void {
+async function seedGood(db: StoreAdapter, content: string): Promise<void> {
   const uid = `ok-${Math.random().toString(36).slice(2)}`;
   const now = new Date().toISOString();
-  raw(db)
-    .prepare(
-      `INSERT INTO node (uid, kind, content, tags, topic, summary, project_path, enrich_ver, t_created, t_valid)
-       VALUES (?, 'episode', ?, ?, 'a-topic', 'a summary', '/p', ?, ?, ?)`,
-    )
-    .run(uid, content, JSON.stringify(['x']), JSON.stringify({ pass: 'v1' }), now, now);
+  await db.executeRun(`INSERT INTO node (uid, kind, content, tags, topic, summary, project_path, enrich_ver, t_created, t_valid)
+       VALUES (?, 'episode', ?, ?, 'a-topic', 'a summary', '/p', ?, ?, ?)`, [uid, content, JSON.stringify(['x']), JSON.stringify({ pass: 'v1' }), now, now]);
 }
 
 /**
@@ -57,15 +53,11 @@ function seedGood(db: StoreAdapter, content: string): void {
  * BL-342's restore produced. `''` is not valid JSON, so any json_extract /
  * json_each touching it aborts the statement.
  */
-function seedMalformed(db: StoreAdapter, column: 'tags' | 'enrich_ver' | 'meta'): void {
+async function seedMalformed(db: StoreAdapter, column: 'tags' | 'enrich_ver' | 'meta'): Promise<void> {
   const uid = `bad-${column}-${Math.random().toString(36).slice(2)}`;
   const now = new Date().toISOString();
-  raw(db)
-    .prepare(
-      `INSERT INTO node (uid, kind, content, ${column}, t_created, t_valid)
-       VALUES (?, 'episode', 'malformed row fixture', '', ?, ?)`,
-    )
-    .run(uid, now, now);
+  await db.executeRun(`INSERT INTO node (uid, kind, content, ${column}, t_created, t_valid)
+       VALUES (?, 'episode', 'malformed row fixture', '', ?, ?)`, [uid, now, now]);
 }
 
 let savedBackend: string | undefined;

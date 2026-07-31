@@ -60,8 +60,8 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
     return (r as { episode_uid: string }).episode_uid;
   }
 
-  function rowidFor(uid: string): number {
-    const row = raw(db).prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?').get(uid);
+  async function rowidFor(uid: string): Promise<number> {
+    const row = await db.executeGet<{ rowid: number }>('SELECT rowid FROM node WHERE uid = ?', [uid]);
     if (!row) throw new Error(`no node for uid ${uid}`);
     return row.rowid;
   }
@@ -83,11 +83,7 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
     const claimRowid = rowidFor(claimUid);
     const replacementRowid = rowidFor(replacementUid);
 
-    const edge = raw(db)
-      .prepare<[number, number], { rel: string; src: number; dst: number }>(
-        `SELECT rel, src, dst FROM edge WHERE rel = 'SUPERSEDES' AND src = ? AND dst = ?`,
-      )
-      .get(replacementRowid, claimRowid);
+    const edge = await db.executeGet<{ rel: string; src: number; dst: number }>(`SELECT rel, src, dst FROM edge WHERE rel = 'SUPERSEDES' AND src = ? AND dst = ?`, [replacementRowid, claimRowid]);
 
     expect(edge).toBeDefined();
     expect(edge!.rel).toBe('SUPERSEDES');
@@ -95,9 +91,7 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
     expect(edge!.dst).toBe(claimRowid);
 
     // Claim itself is invalidated (bi-temporal, never deleted — R5).
-    const claimRow = raw(db)
-      .prepare<[string], { t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?')
-      .get(claimUid)!;
+    const claimRow = await db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [claimUid])!;
     expect(claimRow.t_invalid).not.toBeNull();
   });
 
@@ -116,15 +110,11 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
     // Behaviour change from the pre-fix no-op: the claim must NOT be
     // invalidated either — the whole call fails atomically rather than
     // silently invalidating the claim while dropping the requested edge.
-    const claimRow = raw(db)
-      .prepare<[string], { t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?')
-      .get(claimUid)!;
+    const claimRow = await db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [claimUid])!;
     expect(claimRow.t_invalid).toBeNull();
 
     // No SUPERSEDES edge of any kind was written.
-    const edgeCount = raw(db)
-      .prepare<[], { cnt: number }>(`SELECT COUNT(*) as cnt FROM edge WHERE rel = 'SUPERSEDES'`)
-      .get()!;
+    const edgeCount = await db.executeGet<{ cnt: number }>(`SELECT COUNT(*) as cnt FROM edge WHERE rel = 'SUPERSEDES'`)!;
     expect(edgeCount.cnt).toBe(0);
   });
 
@@ -148,14 +138,10 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
     expect('code' in result).toBe(true);
     expect((await result as { code: string }).code).toBe('E_REPLACEMENT_NOT_FOUND');
 
-    const claimRow = raw(db)
-      .prepare<[string], { t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?')
-      .get(claimUid)!;
+    const claimRow = await db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [claimUid])!;
     expect(claimRow.t_invalid).toBeNull();
 
-    const edgeCount = raw(db)
-      .prepare<[], { cnt: number }>(`SELECT COUNT(*) as cnt FROM edge WHERE rel = 'SUPERSEDES'`)
-      .get()!;
+    const edgeCount = await db.executeGet<{ cnt: number }>(`SELECT COUNT(*) as cnt FROM edge WHERE rel = 'SUPERSEDES'`)!;
     expect(edgeCount.cnt).toBe(0);
   });
 
@@ -175,9 +161,7 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
     const ok = await result as { ok: true; supersedes_edge_uid?: string };
     expect(ok.supersedes_edge_uid).toBeUndefined();
 
-    const claimRow = raw(db)
-      .prepare<[string], { t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?')
-      .get(claimUid)!;
+    const claimRow = await db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [claimUid])!;
     expect(claimRow.t_invalid).not.toBeNull();
   });
 });
