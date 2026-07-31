@@ -248,8 +248,17 @@ describe('[process-boundary.1] policy-env injected into child env when enforced'
 
 describe('[process-boundary.2] child env scrubbed when enforced', () => {
   it('a sentinel var set in process.env is absent from the child env', async () => {
-    const sentinel = 'SOX_C6_TEST_SENTINEL_' + Date.now().toString(36);
-    // Inject sentinel into the parent process env.
+    // BL-344: this sentinel used to be `SOX_C6_TEST_SENTINEL_*`. `SOX_*` is now
+    // a DELIBERATELY forwarded namespace — operator tunables
+    // (`SOX_MEMORY_LOG_*`, `SOX_DISABLE_*`, …) were being silently dropped,
+    // which broke two shipped tunables on their first outing and made a live
+    // emergency brake a no-op.
+    //
+    // The invariant this test exists for is unchanged and still asserted: an
+    // ARBITRARY parent variable must not leak into an enforced child. Only the
+    // choice of sentinel moved, to a name outside the forwarded namespace.
+    // The security-critical half is asserted immediately below.
+    const sentinel = 'C6_TEST_SENTINEL_' + Date.now().toString(36);
     process.env[sentinel] = 'should-not-leak';
 
     try {
@@ -260,6 +269,50 @@ describe('[process-boundary.2] child env scrubbed when enforced', () => {
       expect(env[sentinel]).toBeUndefined();
     } finally {
       delete process.env[sentinel];
+    }
+  });
+
+  it('BL-344: an inherited SOX_PERM_* is REFUSED — forwarding SOX_* must not widen the sandbox', async () => {
+    // The one genuinely unsafe case. `SOX_PERM_*` is the compiled permission
+    // policy; if a child inherited it from the ambient environment, anyone able
+    // to set an env var before the spawn could widen or disable enforcement.
+    // Before BL-344 this was blocked incidentally (it simply was not on the
+    // allowlist). Under a `SOX_*` prefix rule that protection has to be
+    // explicit, so it is now a deny-list entry — and this is its regression test.
+    process.env['SOX_PERM_ENFORCE'] = '0';
+    process.env['SOX_PERM_FS_WRITE'] = '["/**"]';
+
+    try {
+      const sup = makeEnforcedSupervisor();
+      await sup.start();
+
+      const env = spawnCalls[0]!.opts.env as Record<string, string>;
+      // The authoritative values come from policy.toEnv(), applied after the
+      // scrub — so enforcement stays ON and the inherited widening is gone.
+      expect(env['SOX_PERM_ENFORCE']).toBe('1');
+      expect(env['SOX_PERM_FS_WRITE']).not.toBe('["/**"]');
+    } finally {
+      delete process.env['SOX_PERM_ENFORCE'];
+      delete process.env['SOX_PERM_FS_WRITE'];
+    }
+  });
+
+  it('BL-344: an operator SOX_* tunable DOES reach the enforced child', async () => {
+    // The defect itself: this was silently dropped, with no warning anywhere,
+    // and the operator's mental model ("I set the env var") was simply wrong.
+    const tunable = 'SOX_MEMORY_LOG_LEVEL';
+    const prev = process.env[tunable];
+    process.env[tunable] = 'debug';
+
+    try {
+      const sup = makeEnforcedSupervisor();
+      await sup.start();
+
+      const env = spawnCalls[0]!.opts.env as Record<string, string>;
+      expect(env[tunable]).toBe('debug');
+    } finally {
+      if (prev === undefined) delete process.env[tunable];
+      else process.env[tunable] = prev;
     }
   });
 

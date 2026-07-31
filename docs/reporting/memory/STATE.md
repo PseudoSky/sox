@@ -51,7 +51,7 @@ policy** — one run at terminal priority would have passed throughout the entir
 | S6 | Re-enable `SOX_DISABLE_PERIODIC_ENRICH` (BL-346) | pending | needs S4, S5 |
 | S7 | Drain embed backlog to full vector coverage | pending | needs S5; backlog 3,246, coverage ~36% |
 | S8 | Clustering actually runs (BL-349/BL-326) | pending | needs S6, S7; τ unresolved (BL-356) |
-| S9 | Tracing substrate (BL-351) | pending | **blocked on BL-344** (6 env allowlists) |
+| S9 | Tracing substrate (BL-351) | pending | **unblocked** — BL-344 shipped (one `env-policy.ts`, was 5 copies); design in `docs/research/observability-substrate.md` |
 | S10 | Sandbox harness (P0–P4 in `PLAN.md`) | pending | needs S9 for real instrumentation |
 
 ---

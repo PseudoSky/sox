@@ -42,6 +42,18 @@ export type {
 export { compilePolicy, compilePolicyFromEnv } from './policy.js';
 export type { Policy } from './policy.js';
 
+// ─── Env scrub policy (BL-344 — the ONE definition; formerly five copies) ─────
+export {
+  scrubEnv,
+  scrubEnvReported,
+  isDeniedEnvKey,
+  formatDeniedEnvWarning,
+  ENV_BASE_ALLOW,
+  ENV_ALLOW_PREFIXES,
+  ENV_DENY_PREFIXES,
+} from './env-policy.js';
+export type { ScrubbedEnv } from './env-policy.js';
+
 // ─── Audit log (inproc-policy SOFT enforcement) ───────────────────────────────
 export { auditAccess, getAuditLog, clearAuditLog, makeInprocHandle } from './audit-log.js';
 export type { AuditEntry, AuditDecision, ExtensionType, AccessDomain, InprocPolicyHandle } from './audit-log.js';

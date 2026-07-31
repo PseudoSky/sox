@@ -26,6 +26,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { CrashLoopGuard } from './crash-loop.js';
+import { scrubEnvReported } from './env-policy.js';
 import type { LogManager } from './log-manager.js';
 import { compilePolicy, type Policy } from './policy.js';
 
@@ -298,37 +299,16 @@ export class ProcessSupervisor {
     let spawnCwd: string | undefined;
 
     if (this._policy.enforced) {
-      // Minimal base env allowlist — conservative; covers Node.js native module
-      // loading (NODE_OPTIONS, NODE_PATH, NODE_MODULE), locale (LANG, LC_ALL, TZ),
-      // and shell fundamentals (PATH, HOME, USER, LOGNAME).
-      // Footgun note: scrubbing NODE_OPTIONS breaks native add-ons (e.g.
-      // better-sqlite3 native loader); we keep all NODE_* vars to avoid that.
-      // BL-52: SOX_EMBED_* and XDG_CACHE_HOME are forwarded so the embed backend
-      // resolves to real BGE (ONNX) instead of silently falling back to hash.
-      const allowedKeys = new Set([
-        'PATH',
-        'HOME',
-        'USER',
-        'LOGNAME',
-        'LANG',
-        'LC_ALL',
-        'LC_CTYPE',
-        'TZ',
-        'SOX_EMBED_BACKEND',
-        'SOX_EMBED_CACHE_DIR',
-        'XDG_CACHE_HOME',
-        // BL-339: negative-control seam (libs/memory-core/src/embed-pipeline.ts
-        // healDisabled()) forwarded through the enforced-policy in-process
-        // supervisor path for parity with the os-unit allowlist in
-        // apps/sox/src/main.ts buildOsUnitEnv.
-        'SOX_DISABLE_EMBED_HEAL',
-      ]);
-      const baseEnv: Record<string, string> = {};
-      for (const [k, v] of Object.entries(process.env)) {
-        if (v !== undefined && (allowedKeys.has(k) || k.startsWith('NODE_') || k.startsWith('SOX_EMBED_'))) {
-          baseEnv[k] = v;
-        }
-      }
+      // BL-344: the env scrub is defined ONCE, in env-policy.ts. This copy was
+      // one of five and had drifted — it carried `SOX_DISABLE_EMBED_HEAL` but
+      // NOT `SOX_DISABLE_PERIODIC_ENRICH`, so one live emergency brake reached
+      // a process spawned through here and the other did not.
+      //
+      // Behaviour retained by that module: NODE_* stays forwarded (scrubbing
+      // NODE_OPTIONS/NODE_PATH breaks native addon loading, e.g. better-sqlite3),
+      // and XDG_CACHE_HOME + SOX_EMBED_* stay forwarded so the embed backend
+      // resolves real BGE instead of silently degrading (BL-52).
+      const baseEnv = scrubEnvReported('supervisor');
       // Extension-declared env overrides go on top of the scrubbed base.
       // Policy env ([def:policy-env]) goes last so it cannot be shadowed.
       spawnEnv = { ...baseEnv, ...this._env, ...this._policy.toEnv() };

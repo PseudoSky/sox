@@ -71,6 +71,11 @@ import {
   unloadThenReap,
   // BL-185: interval-schedule detection for SCHEDULED status rendering.
   isScheduledOsUnitContent,
+  // BL-344: the ONE env-scrub definition. This file previously carried three
+  // independent copies of it (~4632, ~8071, ~8728) which had drifted from each
+  // other and from host-runtime's two, so a tunable reached some spawn paths
+  // and not others — silently.
+  scrubEnvReported,
   type DataScope,
   type OsSupervisor,
   type OsUnitPlatform,
@@ -4629,22 +4634,11 @@ function resolveOsUnitDir(flags: Record<string, string>, platform: OsUnitPlatfor
  * env the in-supervisor path would. [Never widen this silently — §13.2.5.]
  */
 function buildOsUnitEnv(extId: string, root: string): Record<string, string> {
-  const allowedKeys = new Set([
-    'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
-    'SOX_EMBED_BACKEND', 'SOX_EMBED_CACHE_DIR', 'XDG_CACHE_HOME',
-    // BL-339: negative-control seam (libs/memory-core/src/embed-pipeline.ts
-    // healDisabled()) forwarded so the supported `soxe service enable`
-    // regeneration path can carry it into the launchd unit — never hand-edit
-    // the generated plist to inject env.
-    'SOX_DISABLE_EMBED_HEAL',
-      'SOX_DISABLE_PERIODIC_ENRICH',
-  ]);
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && (allowedKeys.has(k) || k.startsWith('NODE_') || k.startsWith('SOX_EMBED_'))) {
-      env[k] = v;
-    }
-  }
+  // BL-344: was a hand-maintained allowlist; every new tunable had to be added
+  // here AND in four other copies, and none ever were. `SOX_*` now forwards by
+  // default (minus the host-authoritative `SOX_PERM_*`/`SOX_CONFIG_*`), so a
+  // brake or a log control reaches the generated unit without an edit here.
+  const env = scrubEnvReported('os-unit');
   Object.assign(env, buildExtConfigEnv(extId, root));
   return env;
 }
@@ -8068,25 +8062,16 @@ Flags:
     // to real BGE (ONNX) instead of silently falling back to hash embedding when the
     // served process inherits a scrubbed env. Also forward SOX_SERVE_LOG so the
     // child's own diagnostics path is consistent if a sub-server is spawned.
-    const allowedKeys2 = new Set([
-      'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
-      'SOX_EMBED_BACKEND', 'SOX_EMBED_CACHE_DIR', 'XDG_CACHE_HOME',
-      // BL-339: this is the SERVE path — it builds serveEnv, which becomes
-      // backendEnv (see ~line 8185) for the proxy-spawned backend. Patching
-      // buildOsUnitEnv() alone is NOT sufficient: that only populates the
-      // launchd unit, and the proxy re-scrubs here before spawning the child.
-      // Symptom when this is missed: the var IS present in the .plist but
-      // absent from `ps eww <backend-pid>`, and the setting silently does
-      // nothing. Verified 2026-07-31.
-      'SOX_DISABLE_EMBED_HEAL',
-      'SOX_DISABLE_PERIODIC_ENRICH',
-    ]);
-    const baseEnv2: Record<string, string> = {};
-    for (const [k, v] of Object.entries(process.env)) {
-      if (v !== undefined && (allowedKeys2.has(k) || k.startsWith('NODE_') || k.startsWith('SOX_EMBED_'))) {
-        baseEnv2[k] = v;
-      }
-    }
+    // BL-344/BL-339: this is the SERVE path — it builds serveEnv, which becomes
+    // backendEnv for the proxy-spawned backend. It is the copy that actually
+    // gates the live symptom: patching the os-unit builder alone looks like it
+    // worked (var present in the .plist) but does nothing, because the proxy
+    // re-scrubs here before spawning the child. The observed signature was the
+    // var present in the plist and absent from `ps eww <backend-pid>`.
+    //
+    // ⚠️ stderr, never stdout — this path serves MCP over stdio, where stdout
+    // is the JSON-RPC channel. `scrubEnvReported` writes to stderr by default.
+    const baseEnv2 = scrubEnvReported('serve backend');
     serveEnv = { ...baseEnv2, ...configEnv2, ...policy2.toEnv() };
   } else {
     serveEnv = { ...process.env, ...configEnv2 };
@@ -8725,23 +8710,11 @@ Examples:
   if (policy.enforced) {
     // BL-52: forward SOX_EMBED_* and XDG_CACHE_HOME so the embed backend resolves
     // to real BGE (ONNX) instead of silently falling back to hash embedding.
-    const allowedKeys = new Set([
-      'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
-      'SOX_EMBED_BACKEND', 'SOX_EMBED_CACHE_DIR', 'XDG_CACHE_HOME',
-      // BL-339: kept in sync with the serve path above and buildOsUnitEnv().
-      // NOTE: this is the THIRD copy of this allowlist in this file (see also
-      // ~4632 and ~8070), plus further copies in host-runtime. Adding a tunable
-      // requires remembering every one of them — see the filed defect
-      // recommending `SOX_*` forwarded by default with a deny-list instead.
-      'SOX_DISABLE_EMBED_HEAL',
-      'SOX_DISABLE_PERIODIC_ENRICH',
-    ]);
-    const baseEnv: Record<string, string> = {};
-    for (const [k, v] of Object.entries(process.env)) {
-      if (v !== undefined && (allowedKeys.has(k) || k.startsWith('NODE_') || k.startsWith('SOX_EMBED_'))) {
-        baseEnv[k] = v;
-      }
-    }
+    // BL-344: this was the THIRD copy of the allowlist in this file, and its own
+    // comment recorded the defect ("Adding a tunable requires remembering every
+    // one of them"). That is now structurally impossible — there is one
+    // definition, in host-runtime's env-policy.ts.
+    const baseEnv = scrubEnvReported('exec');
     execEnv = { ...baseEnv, ...extConfigEnv, ...policy.toEnv() };
   } else {
     execEnv = { ...process.env, ...extConfigEnv };

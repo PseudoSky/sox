@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 91.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 90.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,7 +23,7 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31: **91 open**.
+Regenerated 2026-07-31 (BL-344 resolved → CHANGELOG): **90 open**.
 
 | Priority | Open items |
 |---|---|
@@ -2286,36 +2286,6 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `m
 **New consequence worth recording:** `memory_stats` now carries the BL-334 integrity block, so this one malformed row makes the **store-health verdict unreachable** through that tool on the live store — not merely the coverage percentages. `memory_ping` is unaffected and remains the working path for the integrity verdict. This raises the practical cost of BL-342/BL-343: row-level resilience is now load-bearing for a health surface, not just for statistics.
 
 Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 4: handleToolCall('memory_stats') stack trace against a copy of `~/.memory/memory.db` 2026-07-31, 5: libs/memory-core/src/stats.ts:120]
-
----
-
-### BL-344 — Five (now six) duplicated env-scrub allowlists silently drop every `SOX_*` tunable not on the list, with no warning — **Open (HIGH)** (2026-07-31)
-
-**Driver:** the live memory-server was read-unavailable, `SOX_DISABLE_EMBED_HEAL` was set on the launchd unit to mitigate it (BL-339), and the mitigation had **zero effect** — reads stayed down. Root cause, found and independently re-found by two agents debugging the same incident in parallel: the var never reached the backend process. `apps/sox/src/main.ts` builds the backend's env through a scrub allowlist that admits only `PATH/HOME/USER/LOGNAME/LANG/LC_ALL/LC_CTYPE/TZ`, plus anything matching `NODE_*` or `SOX_EMBED_*` by prefix. `SOX_DISABLE_EMBED_HEAL` matches neither the fixed list nor either prefix, so it was silently dropped — no log line, no warning, `ps eww <backend-pid>` simply didn't have it. The var *was* present in the generated `.plist`, which is exactly why the first fix attempt produced a false green: verifying the plist is not verifying the running process.
-
-**The allowlist is not one copy, it is six, across two packages, and nobody — including two agents independently investigating this exact incident — found all of them on the first pass:**
-1. `apps/sox/src/main.ts:4632` — `buildOsUnitEnv()`, populates the generated launchd unit.
-2. `apps/sox/src/main.ts:8071` — the `soxe serve` path; builds `serveEnv`/`backendEnv` for the proxy-spawned backend child. **This is the one that actually gates the live symptom** — patching #1 alone looks like it worked (var present in the unit) but does nothing (proxy re-scrubs before spawning the backend).
-3. `apps/sox/src/main.ts:8728` — `cmdExec`, a third independent copy in the same file.
-4. `libs/host-runtime/src/supervisor.ts:308` — the in-process `ProcessSupervisor` enforced-policy spawn path (a separate package entirely).
-5. `libs/host-runtime/src/runtime-cli.ts:545` — a sixth copy, found last, still missing `SOX_DISABLE_EMBED_HEAL` as of this filing. Not yet confirmed live/dead code — needs a check before assuming it's in any real request path, but it exists and has the identical bug shape.
-
-**Verified (by reading every reader, not by trusting a prior list) that these documented, shipped tunables are ALSO silently dropped in production today** — none appear in any of the six allowlists:
-- `SOX_ENRICH_STALL_THRESHOLD_MS` (`extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:1888`)
-- `SOX_RECALL_EMBED_TIMEOUT_MS` (`libs/memory-core/src/recall.ts:82`) — the recall read-path guard shipped 2026-07-30
-- `SOX_MEMORY_LOG_LEVEL` / `SOX_MEMORY_LOG_DISABLE` / `SOX_MEMORY_LOG_DIR` / `SOX_MEMORY_LOG_MAX_BYTES` (`libs/memory-core/src/telemetry.ts:60,65,78,88`) — the BL-320 telemetry controls shipped 2026-07-30
-
-Both of the tunables shipped the day before this filing were non-functional in the deployed configuration on their first outing, and nothing reported it. The pattern also nearly repeated live during this incident: a *second* env flag (`SOX_DISABLE_PERIODIC_ENRICH`, introduced to address the BL-339-adjacent finding below) had to be manually added to three of the six copies while this item was being filed — the maintenance trap caught its own fix in real time.
-
-**Why this is worse than a normal missing-config bug:** every failure mode here is silent. Setting an unrecognized `SOX_*` var produces no error, no log line, no indication anywhere that it was dropped — the operator's mental model ("I set the env var, it should be in effect") is simply wrong, with the system offering no signal to correct it. This is exactly the false-green failure mode BL-334/Theme-2 exists to eliminate, just in the config-propagation path instead of the health-check path.
-
-**Recommended fix — a convention change, not another allowlist entry:** forward all `SOX_*`-prefixed vars by default (matching the existing `SOX_EMBED_*`/`NODE_*` prefix precedent already in the code), with an explicit deny-list for the genuinely unsafe ones (if any exist — audit needed). Additionally: log every dropped var that starts with `SOX_` but isn't forwarded, at spawn time, so a future silent-drop is a startup log line instead of a multi-hour live-debugging incident. An allowlist that every new tunable must remember to join, with six copies to remember, has now caught two tunables on their first shipment and nearly caught a third mid-incident — it will keep doing this indefinitely under the current architecture.
-
-**Acceptance (red→green, must name BL-344):** (1) set a novel `SOX_*` var not on any current allowlist, spawn the backend via each of the six paths, and assert the var IS present in `ps eww <pid>` for all of them (or is logged as explicitly denied, for a deny-listed var) — today this fails silently for 5/6 confirmed, 6th unconfirmed. (2) assert a `SOX_*` var that gets dropped produces a log line naming it, at spawn time — today there is none.
-
-**Severity:** HIGH — has already caused one live, extended read-availability incident (BL-339's mitigation appearing to work while doing nothing), cost significant debugging time from two agents in parallel, and structurally guarantees recurrence for the next new `SOX_*` tunable.
-
-Citations: [wip/turso-live-metrics, team-lead + claude (mitigate-reads), turso-go-live, 1: apps/sox/src/main.ts:4632-4645 (buildOsUnitEnv), 2: apps/sox/src/main.ts:8071-8090 (serve path serveEnv/backendEnv), 3: apps/sox/src/main.ts:8728-8745 (cmdExec), 4: libs/host-runtime/src/supervisor.ts:308-330, 5: libs/host-runtime/src/runtime-cli.ts:545-561, 6: libs/memory-core/src/recall.ts:82, 7: libs/memory-core/src/telemetry.ts:60,65,78,88, 8: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:1888, 9: BL-339, 10: BL-334]
 
 ---
 
