@@ -1388,7 +1388,15 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner f
 
 Critically, the **wait-vs-work split** (`write_queue_wait`, `embed_enqueue_wait`) must be a first-class primitive, not a per-consumer convention — it is the measurement Theme 2's resource governance is blocked on, and the one thing no current instrument reports.
 
-**Per the DRY directive:** before authoring, query memory for prior internal tracing work and prior tool research; if absent, run a live search for current OpenTelemetry-compatible Node tracing options and log the evaluation with tags + the final decision. Do not hand-roll what a standard covers, and do not adopt a heavyweight dependency into bundled extensions without checking the externals policy (BL-307/BL-309).
+**⛔ OWNER DIRECTIVE (2026-07-31) — ADOPT, DO NOT AUTHOR.** Verbatim: *"I do not want to rewrite distributed tracing / metric aggregation from scratch for obvious reasons so we should find tools that handle 99% of the lift but put our wrapper and semantics around them so we're eliminating the risk of incorrectly integrating those tools."*
+
+The deliverable is therefore **a researched tool selection plus a thin wrapper/semantic layer**, never a bespoke tracing implementation. The wrapper's purpose is to make correct usage the default and mis-integration structurally hard — every layer it adds must be justified by a specific failure it prevents, not by abstraction for its own sake.
+
+**Priority:** this item **blocks most of the sandbox project's reporting** (`docs/reporting/memory/sandbox/`), placing it on the critical path. Research dispatched 2026-07-31.
+
+**Hard constraint that disqualifies candidates outright:** MCP stdio servers use **stdout as the JSON-RPC protocol channel**. Any library that writes to stdout — even once, even at init — corrupts the protocol and breaks the server. Telemetry must go to stderr, a file, or a socket, and this must be *verified* per candidate rather than assumed.
+
+**Per the DRY directive:** before authoring, query memory for prior internal tracing work and prior tool research; if absent, run a live search for current Node tracing/metrics options and log the evaluation with tags + the final decision. Do not hand-roll what a standard covers, and do not adopt a heavyweight dependency into bundled extensions without checking the externals policy (BL-307/BL-309) — bundled extensions are self-contained CJS built by esbuild, so native addons need an explicit externals story or the candidate is out.
 
 **Acceptance (must name BL-351):** two different packages emit spans that join on one trace-id through the shared API; the wait-vs-work split is reported for a real write; every emitted metric is reachable from the status surface without reading a log file; and the env controls survive the allowlists (BL-344) — verified on a real spawned service, not in-process.
 
