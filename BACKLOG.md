@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 86.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 89.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,12 +23,12 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31 (BL-371 latest; **BL-354 does not exist** — renumbered to BL-358, see BL-359): **86 open**, closed-in-place counted separately.
+Regenerated 2026-07-31 (BL-374 latest; **BL-354 does not exist** — renumbered to BL-358, see BL-359): **89 open**.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-343, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-369, BL-370 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-343, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-369, BL-370, BL-372, BL-373, BL-374 |
 | **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362 |
 | **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363 |
 | **UNSET** | BL-163 |
@@ -1951,6 +1951,108 @@ A repo-wide scan confirmed `integrity.ts` was the **only** affected file. `nx ru
 **Related:** BL-347 (probe indistinguishable from healthy), BL-319 (instrument wired to one of two paths), BL-352 (the engine this file implements).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/data/store/store-adapter/src/integrity.ts:445, 2: measured `grep` vs `/usr/bin/grep` divergence 2026-07-31, 3: p0-adapter-integrity + p1-tracing-research reports 2026-07-31]
+
+---
+
+### BL-372 — Restarting the service does NOT deploy new code: the backend survives as an orphan and keeps serving the old bundle — **Open (HIGH)** (2026-07-31)
+
+**Driver.** A verified, correct deploy silently did nothing. Sequence, all measured on the live host:
+
+1. `npx nx build memory-server` — succeeded, new bundle written (artifact `6a0c13cda152`).
+2. `launchctl kickstart -k gui/$(id -u)/com.sox.user.memory-server` — exit 0.
+3. `pgrep` afterwards: proxy is a **new pid (43302)**, but backend **7721** and its fastembed child **7724** are the **same pids as before**, started five hours earlier.
+4. `ps -o ppid` on 7721: **PPID 1** — reparented to init, an orphan of the pre-restart proxy.
+5. `pgrep -P 43302`: **no children.** The new proxy had spawned nothing.
+6. `memory_ping` reported `instance.pid: 7721`, artifact `288f38cc10ce` (**the old bundle**), and **no `store.integrity` field** — proving the old code was still serving.
+
+**So the unit restarted, reported success, and the running code did not change.** Every check an operator would plausibly run — build succeeded, `kickstart` exit 0, service shows as running — was green while the deploy had not happened.
+
+**Root cause is not yet pinned** and must not be guessed: the front-shim service-proxy (Slice 1.5) deliberately keeps the backend alive across proxy restarts for zero-downtime, so this may be *designed* behaviour whose consequence for code deploys was never considered — or it may be a genuine orphan-reaper failure (`[inv:singleton]`, `[inv:unload-then-reap]`). Either way, **there is no documented deploy procedure that actually deploys.**
+
+**What worked:** `kill -TERM <backend-pid>`, after which the proxy respawned the backend on the new bundle. That is the missing step, and it is nowhere in the runbook.
+
+**Fix sketch:** either `kickstart` must reap the backend (verified-stop, per the lifecycle spec), or a `sox service deploy`/`--reload-backend` verb must exist that does, and the runbook must state that a bundle change requires it. **The status surface must also report the running artifact hash against the on-disk one** — `memory_ping` already returns `artifact`, so a mismatch is trivially detectable and would have made this self-evident.
+
+**Acceptance (red→green, must name BL-372):** rebuild with a detectable change, restart via the documented procedure, assert the running instance reports the NEW artifact hash. Must fail against today's procedure.
+
+**Severity:** HIGH — silent no-op deploys. Any fix shipped this way was never actually live, and everyone involved would reasonably believe it was.
+
+**Related:** BL-332 (`soxe list` reports a running service as INACTIVE — same family: lifecycle surfaces that do not reflect reality), `docs/spec/service-lifecycle.md`, BL-334.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live pgrep/ps/pgrep -P + memory_ping artifact comparison 2026-07-31, 2: ~/Library/LaunchAgents/com.sox.user.memory-server.plist]
+
+---
+
+### BL-373 — A stale `-tshm` makes the store permanently unopenable, with a diagnostic that points at the wrong file — **Open (HIGH)** (2026-07-31)
+
+**Driver.** After restarting the backend, every store open failed, in a tight retry loop, with:
+
+```
+failed to open database /Users/nix/.memory/memory.db:
+  I/O error: short read on WAL frame at offset 383192: expected 4096 bytes, got 0
+```
+
+At that moment `memory.db-wal` was **0 bytes** and the database had been cleanly checkpointed. The error names a WAL frame that cannot exist in an empty WAL.
+
+**Root cause: `memory.db-tshm`** — Turso's own WAL index sidecar, 86016 bytes, **stale from the previous day (Jul 30 18:04)**. It recorded frame metadata for a WAL that no longer had content. Moving it aside made the store open immediately and correctly (9478 nodes). Confirmed by direct driver open before and after, outside the service.
+
+The ordinary `-shm` (also stale, 15:20) was **not** sufficient on its own — removing it alone left the failure unchanged. It is specifically the Turso `-tshm` that must be reconciled.
+
+**Three distinct defects here, worth separating:**
+1. **No self-recovery.** A stale sidecar is trivially reconcilable — it is a derived index — yet the store is permanently unopenable and the backend crash-loops. Nothing detects or clears it. This is BL-352's thesis (verify and repair what we generate) applied to a file BL-352 does not currently cover.
+2. **The diagnostic points at the wrong artifact.** It names `memory.db` and a WAL offset. Nothing mentions `-tshm`. Recovery required knowing Turso keeps a second index sidecar and guessing it was stale — nothing in the error, the logs, or any doc says so.
+3. **It is invisible in the telemetry as anything but a repeated error.** `store.open.error` fired identically for three separate pids with no escalation and no distinct signal — indistinguishable from any other open failure.
+
+**Fix sketch:** detect a `-tshm`/`-shm` that disagrees with the WAL at open, and reconcile it (remove and let it rebuild) rather than failing; name the actual offending file in the error; add it to the BL-352 integrity probes and to BL-330's orphaned-sidecar maintenance guard, which already covers stray `*-wal` files and should cover `*-tshm` too.
+
+**Acceptance (red→green, must name BL-373):** seed a store with a stale `-tshm` and an empty WAL, open it through the normal adapter path, and assert it opens successfully (or fails with an error naming `-tshm`). Must fail today.
+
+**Severity:** HIGH — total, unrecoverable-without-expert-knowledge outage of the store, triggered by an ordinary restart, on a defect the system generates itself.
+
+**Related:** BL-330 (unlinked WAL / orphaned sidecars — same family, adjacent file), BL-352 (verify and self-heal generated artifacts), BL-372 (the restart that exposed it).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live store.open.error across pids 46080/47203 2026-07-31, 2: direct driver open before/after moving ~/.memory/memory.db-tshm, 3: preserved at ~/.adhd/sox-ecosystem/memory/prerestart-20260731-174637/stale-tshm-jul30]
+
+---
+
+### BL-374 — Post-repair reverification reports DAMAGED on a store whose repairs demonstrably succeeded — **Open (HIGH)** (2026-07-31)
+
+**Driver.** On the first live open after the integrity engine shipped, `memory_ping` reported:
+
+```
+integrity_headline : store integrity DAMAGED — 2 artifact(s)
+overall            : damaged        healthy: false
+repair.attempted   : true           repair.ok: false      reverified: damaged
+actions            : _adapter_meta rebuilt (8.5ms)            ok: true
+                     idx_fts_node dropped and rebuilt (982.6ms) ok: true
+```
+
+**Both repair actions individually report `ok: true`, and ground truth confirms both genuinely worked.** Measured directly against the live store immediately afterwards:
+
+| check | before | after |
+|---|---|---|
+| `fts_match('memory')` | 0 | **1156** (LIKE 1081) |
+| `fts_match('turso')` | 0 | **138** (LIKE 139) |
+| `fts_match('backlog')` | 0 | **84** (LIKE 83) |
+| `_adapter_meta` duplicate keys | 3 keys ×2 | **none** (5 rows total) |
+
+`memory_recall` independently confirms it — results now carry `"provenance":["fts"]` with non-zero BM25 contributions, where BM25 was previously 0.
+
+**So the store is healthy and the status surface says it is damaged.**
+
+**Why this is HIGH and not cosmetic.** This is precisely the failure the engine's own author warned about while fixing an earlier instance of it: *"A verdict that can never return to ok after a correct repair trains operators to ignore it."* An always-damaged verdict is worse than no verdict — it is a permanent false alarm on the one surface built to make silent damage visible, and it will be tuned out exactly like BL-360's unconditional message.
+
+Note a **prior, distinct cause of the same symptom was already fixed** in `0d2d629` (page-accounting `Page N: never used` messages counted as damage after a `DROP INDEX`). This is therefore **the second cause of an identical symptom**, and the acceptance below must cover the general property, not this instance.
+
+**Fix sketch:** find why reverify disagrees with ground truth — likely another benign-message class, or reverify reading state cached from the pre-repair pass rather than re-querying. Then assert the general invariant: **after a repair whose actions all report `ok: true`, reverification must agree with a direct ground-truth probe.**
+
+**Acceptance (red→green, must name BL-374):** damage both artifacts, open through the normal adapter path with repair enabled, and assert `repair.ok === true`, `reverified === "ok"`, `overall === "repaired"`, `healthy === true` — cross-checked against direct `fts_match` and duplicate-key queries in the same test. Must fail today.
+
+**Severity:** HIGH — the status surface reports a false alarm it cannot clear, on the exact signal built to stop silent damage going unnoticed.
+
+**Related:** BL-352 (the engine), BL-334 (the surface), BL-360 (unconditional false positive — same "trains operators to ignore it" outcome), BL-347.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live memory_ping integrity block 2026-07-31T22:50:11Z, 2: direct fts_match/_adapter_meta ground-truth probe immediately after, 3: memory_recall returning provenance:["fts"] with non-zero bm25, 4: commit 0d2d629 (the earlier, distinct cause)]
 
 ---
 
