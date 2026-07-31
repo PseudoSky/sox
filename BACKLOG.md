@@ -1041,17 +1041,40 @@ Citations: [wip/turso-live-metrics, cluster-proof, claude, turso-go-live, 1: lib
 
 ---
 
-### BL-328 — Default cluster threshold 0.82 appears mis-calibrated for naturally-worded prose — **Open (MEDIUM)** (2026-07-30)
+### BL-328 — Cluster threshold 0.82 is mis-calibrated — but UPWARD, not downward — **Open (MEDIUM)** (2026-07-30, re-measured 2026-07-31)
 
-**Driver:** measured with the real `bge-base-en-v1.5` model (no mocks), intra-group cosine similarity for topically-related but differently-worded episodes is **0.67–0.70**. At the production default of 0.82 a 24-episode / 3-topic corpus produced **zero** clusters. At an empirically-justified 0.65 the same corpus produced `cluster_count=3`, `coverage=1.0`, `largest=8`, `mean_intra_sim=0.809`, `mean_inter_sim=0.504`, **100% purity, zero cross-contamination**. Identical on both backends (turso `mean_intra_sim` 0.8087392163 vs sqlite 0.8087392161 — float noise only).
+**MEASURED 2026-07-31 (P0.5). The original driver below was wrong on both of its factual claims, and the error runs in the opposite direction from the one suspected.** Full report with distributions, sweeps and reproduction: [`docs/reporting/memory/sandbox/cluster-calibration.md`](docs/reporting/memory/sandbox/cluster-calibration.md). Probes: `~/.adhd/sox-ecosystem/memory/bl328-*.mjs`.
 
-Suggests 0.82 is calibrated for near-duplicate content, not topical relatedness. If so, clustering under-performs across the board **even after BL-326 and BL-327 are fixed**.
+**Corrections to the original driver.**
+- *"intra-group cosine … is 0.67–0.70"* — **false for the corpus cited.** Real `bge-base-en-v1.5` measurement over `clustering-e2e.test.ts`'s own corpus: intra 0.7321–0.9013, mean **0.8087**; per-group means 0.8174 / 0.7947 / 0.8141. This reproduces that file's own documented header numbers to 4 decimals.[1]
+- *"At 0.82 a 24-episode / 3-topic corpus produced **zero** clusters"* — **not reproducible.** The live test's own step-3.5 probe reports `clusters_at_default: 4, total_clustered_at_default: 21`, confirmed independently by a standalone probe against the production `cluster()` primitive.[1][2]
 
-**Fix sketch:** re-derive the default from a real corpus; consider making it adaptive or per-lens. Do NOT change it blind — pair any change with a purity/coverage measurement, since a lower threshold trades purity for coverage.
+**What is actually wrong: 0.82 is too LOW at production scale.** Swept over the live store's own 1616 production `vec_node` vectors (read from a copy; no re-embedding):[3]
 
-**Acceptance (red→green, must name BL-328):** a calibration test asserting a realistic multi-topic corpus clusters with both coverage > 0 and 100% purity at the shipped default.
+| τ | clusters | coverage | largest ratio | topic purity |
+|---|---|---|---|---|
+| 0.65 | 2 | 1.000 | **0.978** | 0.410 |
+| 0.80 | 48 | 0.868 | **0.733** | 0.809 |
+| **0.82** | 55 | 0.837 | **0.684** | 0.864 |
+| 0.85 | 94 | 0.761 | 0.368 | 0.939 |
+| **0.87** | 128 | 0.651 | 0.207 | 0.943 |
+| 0.90 | 157 | 0.447 | 0.022 | 0.968 |
+
+τ=0.82 is **degenerate** on the real store — 68% of the corpus in one cluster. The degenerate guard (`cluster.ts:465-484`) is the only thing preventing that: it retries once and lands on 0.87. **τ=0.65 — the value `clustering-e2e.test.ts` calls "measured-safe" — puts 97.8% of the real store in a single cluster at purity 0.410.** It is safe on that fixture and nowhere else, and must not be proposed as a production default.
+
+**Why the original inference failed.** The synthetic fixture is the only corpus with a clean separation window (inter max 0.5652 < intra min 0.7321). Real content has a much higher *floor* — inter-group mean 0.6384 (distinct topics) / 0.6803 (adjacent) vs 0.4742 synthetic — while its intra-group means are *higher* than the fixture's (0.8144 / 0.8495 vs 0.8087). Real prose does not fall below the bar; it raises the floor.
+
+Also measured, and load-bearing for any future calibration: in a general 288-row stratified sample across 67 topics, **intra-topic cosine (0.5971) is LOWER than inter-topic (0.6125)**. `topic` is per-write enrichment, not a semantic partition — it is not valid clustering ground truth on an arbitrary sample.
+
+**Fix sketch (revised):** raise the nominal default to **0.85–0.87** so the guard rarely has to fire (0.87 is the value the guard already discovers unaided: 128 clusters, 0.943 purity, 20.7% largest). Do not lower it. The permanent fix is not a constant at all — see **BL-354**.
+
+**Acceptance (red→green, must name BL-328):** a calibration test that asserts, at the shipped default, both (a) coverage > 0 and 100% community purity on a curated multi-topic cohort, AND (b) **non-degeneracy at scale** — `largest_cluster_size / total <= 0.5` on a corpus of ≥1000 real vectors *before* the degenerate guard runs. Criterion (a) alone is what let 0.65 look correct.
 
 **Severity:** MEDIUM — quality ceiling, not an outage.
+
+**Related:** BL-354 (a fixed τ is not calibratable at all), BL-350, BL-349, BL-327.
+
+Citations: [wip/turso-live-metrics, performance-engineer, claude, sandbox P0.5, 1: extensions/bundles/sox-memory-bundle/members/memory-server/clustering-e2e.test.ts:124-141,351-374, 2: libs/memory-core/src/cluster.ts:172-183,918-920, 3: libs/data/analysis/analysis/src/index.ts:143-180, 4: docs/reporting/memory/sandbox/cluster-calibration.md]
 
 Citations: [wip/turso-live-metrics, cluster-proof, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/clustering-e2e.test.ts]
 
@@ -1570,6 +1593,42 @@ Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-351, 1: libs/
 **Related:** BL-351 (the decision that surfaced it), BL-307/BL-309 (externals policy), `docs/standards/extension-bundling.md`.
 
 Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-351, 1: `ls -l extensions/bundles/sox-memory-bundle/members/memory-server/dist/index.js` 2026-07-31, 2: prototype /Users/nix/.claude/jobs/1557bcef/tmp/otel-probe (esbuild 0.25.0, same entry, with and without --minify), 3: tools/bundle-extension.cjs (no minify flag)]
+
+---
+
+### BL-354 — Library builds compile `__tests__/*.test.ts`: one test-file type error takes down the build and every downstream consumer — **Open (HIGH)** (2026-07-31)
+
+**Driver.** `store-adapter`'s `build` target failed to compile — not on library code, but on a **test file**:
+
+```
+libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts:345:17 - error TS2339:
+  Property 'init' does not exist on type 'SqliteAdapter'.
+NX  Running target test for project memory-core and 7 tasks it depends on failed
+Failed tasks: - store-adapter:build
+```
+
+Because `memory-core:test` depends on `store-adapter:build`, a type error in a **store-adapter test file** made `npx nx test memory-core` unrunnable for a different agent working in a different package.[1] Work was blocked on a file the blocked party had no reason to read.
+
+**Root cause — two test-file naming conventions, one exclude.** `libs/data/store/store-adapter/tsconfig.lib.json`:
+```json
+"include": ["src/**/*.ts"],
+"exclude": ["src/**/*.spec.ts"]
+```
+`*.spec.ts` is excluded; **`__tests__/**/*.test.ts` is not**. Any test written with the `.test.ts` convention is therefore compiled *into the library build*, and its type errors are build errors with the full downstream blast radius.[2] This is not new — `src/__tests__/turso-fts-index-method.test.ts` already existed under the same convention; the configuration has simply never been exercised by a test file that failed to typecheck.
+
+**Blast radius:** every consumer of a package whose `tsconfig.lib.json` uses a `*.spec.ts`-only exclude. This must be audited repo-wide — the same two-convention split is likely present elsewhere, and it converts an ordinary red test into a cross-package build outage.
+
+**Related but distinct from BL-340.** BL-340 is *tests are never typechecked*; this is *tests are typechecked as if they were library code*. Same family — no deliberate boundary between test and lib type-checking — opposite failure. Fixing one does not fix the other, and BL-340's new `typecheck-tests` target is the correct home for test type errors, precisely so `build` stops being it.
+
+**Fix sketch:** exclude both conventions from every `tsconfig.lib.json` (`src/**/*.spec.ts`, `src/**/*.test.ts`, `src/__tests__/**`); audit every package for the same gap; standardise on one test-file convention and lint for it. Test type errors then surface in `typecheck-tests` (BL-340) where they belong, without taking a build down.
+
+**Acceptance (red→green, must name BL-354):** introduce a deliberate type error in a `__tests__/*.test.ts` file and assert `nx build <pkg>` still SUCCEEDS while `nx run <pkg>:typecheck-tests` FAILS. Today the first fails.
+
+**Severity:** HIGH — a red test in one package silently becomes a build outage in every downstream package. It cost a concurrent agent its ability to measure at all.
+
+**Related:** BL-340 (tests never typechecked — the inverse), BL-235 (destructive builds; note `atomic-tsc` correctly left the existing `dist/` intact here, which is the behaviour BL-235 wants everywhere).
+
+Citations: [wip/turso-live-metrics, team-lead + p0-test-infra, claude, turso-go-live, 1: live `npx nx test memory-core` failure 2026-07-31, 2: libs/data/store/store-adapter/tsconfig.lib.json:10-11, 3: libs/data/store/store-adapter/src/sqlite-adapter.ts:150 (`init()` exists on the class but is not declared on the interface `createSqliteAdapter()` returns)]
 
 ---
 
