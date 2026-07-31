@@ -58,8 +58,16 @@ declares as `lifecycle.process_type`: **tick units → `Background`**, **everyth
 | | before | after |
 |---|---|---|
 | `embed_duration_ms` p50 | 6898 ms | **451 ms** |
-| backfill rate | — | **~1.7/s**, 1685 → 2105 vectors (17.8% → 22.2%) in 4 min |
+| backfill | — | 1685 → 2105 vectors (17.8% → 22.2%) on the first tick |
+| sustained rate | — | **~1.4/s over the full cycle** |
 | failures | — | 0 of 50 |
+
+> **The drain is bursty, not continuous — do not project completion from the in-tick rate.** The
+> first tick drained hard and then **paused on the per-tick heal time budget**
+> (`SOX_EMBED_HEAL_TIME_BUDGET_MS`). The in-burst rate is materially higher than the ~1.4/s
+> sustained figure, and quoting the burst would badly under-estimate time-to-full-coverage.
+> This is the same shape as BL-331's original framing error: an instantaneous number generalised
+> into a steady-state claim.
 
 This **supersedes the thin n=11 sample** the original verification rested on (which was flagged as
 thin at the time). The earlier length-matched figure was **18.9x** in the dominant 300–600-char
@@ -118,7 +126,30 @@ bimodal low population is a deterministic/hash provider, not an ONNX forward pas
 excluded from any baseline. **The honest real-inference reference is ~423 ms (n=856)** — which
 independently matches the clean-room figure (~2.1–2.8/s) and the BL-328 measurement (2.25–2.60/s).
 
-### 2.5 Probe scripts (all read-only; they refuse any path under `~/.memory`)
+### 2.5 Prove your change is clean; never assert it
+
+`memory-core` showed **162 failing tests and a broken build** while I was working in it. The
+tempting move is to call that pre-existing and move on. **Measure it instead** — it takes two
+minutes and it is the difference between a claim and a fact:
+
+1. Back up your edits, remove them (`git restore --source=HEAD -- <file>`, move new files aside).
+2. Run the suite. Record the numbers. → **162 failed / 299 passed**
+3. Restore your edits. Run again. → **162 failed / 312 passed**
+4. Identical failures, **+13 passing** ⇒ your change is neutral and adds only green.
+
+Same for the build break: `export.ts` had **62 insertions / 65 deletions uncommitted in the
+working tree** — another agent's in-flight BL-325 async conversion, and not even at HEAD. That is
+an attribution *proven by `git diff --stat HEAD`*, not a guess.
+
+Two corollaries worth keeping:
+
+- **A failed `nx build` does not necessarily destroy the artifact.** `atomic-tsc` stages to
+  `dist.staging-*` and only commits on success, so BL-235's "diagnostic build is destructive"
+  warning does not apply to those targets. Verify rather than assuming either way.
+- The repo constraint *"never claim a bug is pre-existing"* is not asking you to fix everything
+  you find — it is asking you not to **assert** provenance you have not measured.
+
+### 2.6 Probe scripts (all read-only; they refuse any path under `~/.memory`)
 
 `~/.adhd/sox-ecosystem/memory/log-analysis/`
 
@@ -305,8 +336,9 @@ The sharpest form of the defect: the function's own comment says *"never hand-ed
 plist to inject env"* — so **the only sanctioned path is the one that loses data.** Any design that
 leaves that true has not closed it.
 
-**Agreed fix direction** (needs an owner decision): service tunables should be a property of the
-**installation**, in scope config, with the env forward demoted to an **override**.
+**Fix direction — APPROVED by the owner, and queued ahead of any further S5/S6 work:** service
+tunables become a property of the **installation** (scope config), with the ambient-env forward
+demoted to an explicit **override**.
 
 **Until then, anyone regenerating the unit must `export` the tunables they intend to keep and diff
 the plist afterwards.** Snapshot: `~/.adhd/sox-ecosystem/memory/bl331-predeploy-20260731-180139/`.
@@ -316,7 +348,7 @@ the plist afterwards.** Snapshot: `~/.adhd/sox-ecosystem/memory/bl331-predeploy-
 ## 7. State at handoff
 
 - **Live service healthy**, backend + fastembed child at **pri 20**, both brakes **off** (team-lead,
-  measuring the drain — see §1.1). Backfill draining at ~1.7/s with 0 failures.
+  measuring the drain — see §1.1). Backfill draining in bursts, ~1.4/s sustained, 0 failures.
 - **BL-331** open on defects 2/3 and the still-owed throughput benchmark (§2.3 — it must run under
   the service's real scheduling policy).
 - **BL-369, BL-370** resolved, moved to CHANGELOG, removed from BACKLOG.
@@ -330,6 +362,4 @@ the plist afterwards.** Snapshot: `~/.adhd/sox-ecosystem/memory/bl331-predeploy-
   of only those paths and leaves other staged entries untouched.
 - **BL ids collide** — allocate `max(existing)+1` programmatically. Three collisions in one
   afternoon; one of mine had to be renumbered post-hoc.
-- **Never assume a failure is someone else's.** `memory-core` showed 162 failures and a broken
-  build while I worked. I verified by measuring at HEAD with my change removed: **162 before, 162
-  after, +13 passing** — genuinely another agent's in-flight BL-325 work, *proven, not asserted*.
+- **Never assume a failure is someone else's** — see §2.5, which is method, not anecdote.
