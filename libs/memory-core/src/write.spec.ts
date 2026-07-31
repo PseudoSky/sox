@@ -412,7 +412,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
 describe('memoryWriteBatch — WP-3 (BL-125)', () => {
   let cleanupDb: () => void;
   let dbPath: string;
-  let db: Database.Database;
+  let db: StoreAdapter;
 
   beforeEach(async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'batch-'));
@@ -426,7 +426,7 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
   });
 
   afterEach(async () => {
-    if (db && db.open) db.close();
+    if (db && raw(db).open) db.close();
     cleanupDb();
     await WriteQueue.clearInstances();
   });
@@ -475,7 +475,7 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
     expect(dup.details!.existing_uid).toBe(firstUid);
 
     // Verify total count in DB = 9 (not 10)
-    const count = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL").get()!;
+    const count = raw(db).prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL").get()!;
     expect(count.cnt).toBe(9);
   });
 
@@ -513,7 +513,7 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
     expect(queue._enqueueCount).toBe(1);
 
     // Verify both items were written
-    const count = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL").get()!;
+    const count = raw(db).prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL").get()!;
     expect(count.cnt).toBe(2);
   });
 
@@ -583,7 +583,7 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
 // single-item path (a non-empty project_path on THAT item => 'explicit').
 describe('memoryWriteBatch — project_path_source parity (BL-233)', () => {
   let cleanupDb: () => void;
-  let db: Database.Database;
+  let db: StoreAdapter;
 
   beforeEach(async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'batch-pps-'));
@@ -592,7 +592,7 @@ describe('memoryWriteBatch — project_path_source parity (BL-233)', () => {
   });
 
   afterEach(() => {
-    if (db && db.open) db.close();
+    if (db && raw(db).open) db.close();
     cleanupDb();
   });
 
