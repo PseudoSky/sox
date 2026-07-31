@@ -115,6 +115,23 @@ Two things it exists to stop, both of which fired on 2026-07-31:
   not find — it dropped both live emergency brakes while printing success. Export what you intend
   to keep, and diff the plist (BL-375).
 
+## ⚠ Do not gate on a memory-core failure COUNT
+
+Measured 2026-07-31: three runs of the **same** configuration returned **109, 95, 91** failures.
+The suites are flaky under concurrent DB access (`statement has been finalized`, `cannot start a
+transaction within a transaction`), so a count difference between two runs is noise, not signal.
+
+**Diff failing test NAMES instead** (`comm -13` on sorted name lists). That is what proved BL-365's
+red→green at whole-suite level: zero tests failed only *with* the change, four failed only
+*without* it — exactly the new durability tests.
+
+Consequence for the record: the progression reported through the day — **265 → 178 → 162 → 138** —
+contains noise. The direction is real and the **typecheck-error trend (941 → 112) is the steadier
+signal**, but no one should quote a count as progress, including the team lead, who did.
+
+If this is a property of BL-325's in-flight state it resolves itself; if it is genuine concurrency
+flakiness in the suites it is BL-202's territory and needs an owner.
+
 ## Traps that cost real time (don't rediscover these)
 
 - **`grep` is a shell function** and silently returns nothing on a file with a raw NUL byte. Use
