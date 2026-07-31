@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 90.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 91.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,13 +23,13 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31 (BL-375 filed; BL-374 previously latest; **BL-354 does not exist** — renumbered to BL-358, see BL-359): **90 open**.
+Regenerated 2026-07-31: **91 open**.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
 | **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-343, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-369, BL-370, BL-372, BL-373, BL-374, BL-375 |
-| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362 |
+| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362, BL-376 |
 | **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363 |
 | **UNSET** | BL-163 |
 
@@ -2083,6 +2083,37 @@ Note a **prior, distinct cause of the same symptom was already fixed** in `0d2d6
 **Related:** BL-352 (the engine), BL-334 (the surface), BL-360 (unconditional false positive — same "trains operators to ignore it" outcome), BL-347.
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live memory_ping integrity block 2026-07-31T22:50:11Z, 2: direct fts_match/_adapter_meta ground-truth probe immediately after, 3: memory_recall returning provenance:["fts"] with non-zero bm25, 4: commit 0d2d629 (the earlier, distinct cause)]
+
+---
+
+### BL-376 — One 180 s budget covers both a network download and a cached local load, so it can never detect a regression — **Open (MEDIUM)** (2026-07-31)
+
+**Driver.** `warmupTimeoutMs()` (`libs/data/embed/embedding-provider/src/index.ts:261-264`) defaults to **180 000 ms** and bounds two very different operations through one number — the outer `createFastembedProvider()` wrapper around `embedSingle('warmup')`, and the inner `FastembedProvider` worker-init `readyPromise` that bounds the actual ONNX model load.
+
+Measured model-init cost with the model **already cached** on disk (`~/.cache/sox/models/fast-bge-base-en-v1.5/model_optimized.onnx`):
+
+| scheduling class | model init |
+|---|---|
+| normal (pri 31/20) | **642 / 686 / 686 ms** |
+| background (pri 4) | **8176 / 12012 / 9447 ms** |
+
+So the steady-state cost is **~650 ms** and the budget is **277x** that.
+
+**The number is not obviously wrong for what it was written for.** Its own comment states it bounds *"a cold ONNX model download"* — a first-ever run pulling weights over the network, which is legitimately slow and legitimately hard to bound. The defect is that **one budget covers both that and a cached local load**, and the two differ by roughly three orders of magnitude.
+
+**The consequence is the part that matters: this instrument cannot fail informatively.** BL-331's 14x model-load regression (650 ms → ~10 s) sat comfortably inside the 180 s budget for the entire incident. It did not time out, did not warn, and produced no signal in status. It merely looked slow to a human, eventually, if anyone happened to be watching. **A budget that generous is indistinguishable from no budget at all** for any regression short of a total hang — the same failure family as BL-347 (a probe that reads 0 whether the index is dead or healthy) and BL-319 (`time_to_vector_ms` populated on one of two paths).
+
+**Why it survived:** the QoS defect lives in `os-unit.ts` and affects **launchd-spawned processes only**. Anyone developing the embedding provider ran it from a terminal at pri 31 and saw ~650 ms. There was no reason to suspect anything, and no gate that would have told them. This reinforces BL-331's acceptance note — **a benchmark must run under the service's actual scheduling policy**, or it passes throughout an incident and proves nothing.
+
+**Fix sketch:** split the budget by what is actually being bounded — a generous download budget on cache-miss, and a **tight** load budget (single-digit seconds) once the model is on disk. Emit the measured init duration into status (BL-334) rather than only failing at the boundary, so a 14x regression is visible as a number long before it is visible as a timeout. Cache-presence is already determinable at the call site.
+
+**Acceptance (red→green, must name BL-376):** with the model cached, artificially slow model init to ~10 s and assert the warmup path **reports** the regression (status field or warning), rather than silently succeeding inside the budget. Must fail today.
+
+**Severity:** MEDIUM — no outage on its own, but it is the reason a 14x live regression ran unnoticed, and the same blindness applies to any future one.
+
+**Related:** BL-331 (the regression it failed to catch), BL-334 (surface the measurement), BL-319 / BL-347 (same failure family — a signal indistinguishable from normal), BL-282 (three separate model cache dirs exist on this machine, which is its own hazard).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/data/embed/embedding-provider/src/index.ts:250-264, 2: BL-331 interleaved A/B model-init measurements 2026-07-31, 3: live `find ~/.cache -name model_optimized.onnx` confirming the model is cached locally]
 
 ---
 
