@@ -23,6 +23,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { compilePolicy } from './policy.js';
+import { scrubEnvReported } from './env-policy.js';
 import {
   getRuntimeFilePath,
   getRuntimeRecord,
@@ -539,28 +540,12 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
 
   let execEnv: NodeJS.ProcessEnv;
   if (policy.enforced) {
-    // Scrub child env to the same minimal allowlist as supervisor._spawn enforced path.
-    // BL-52: SOX_EMBED_* and XDG_CACHE_HOME are forwarded so the embed backend
-    // resolves to real BGE (ONNX) instead of silently falling back to hash.
-    const allowedKeys = new Set([
-      'PATH',
-      'HOME',
-      'USER',
-      'LOGNAME',
-      'LANG',
-      'LC_ALL',
-      'LC_CTYPE',
-      'TZ',
-      'SOX_EMBED_BACKEND',
-      'SOX_EMBED_CACHE_DIR',
-      'XDG_CACHE_HOME',
-    ]);
-    const baseEnv: Record<string, string> = {};
-    for (const [k, v] of Object.entries(process.env)) {
-      if (v !== undefined && (allowedKeys.has(k) || k.startsWith('NODE_') || k.startsWith('SOX_EMBED_'))) {
-        baseEnv[k] = v;
-      }
-    }
+    // BL-344: the env scrub is defined ONCE, in env-policy.ts. This copy was the
+    // most drifted of the five — it carried NEITHER emergency brake, so any
+    // process spawned through this path ignored both mitigations entirely.
+    // The comment above it claimed parity with supervisor._spawn; it did not
+    // have parity, which is exactly the failure mode of a duplicated allowlist.
+    const baseEnv = scrubEnvReported('runtime-cli exec');
     // policy.toEnv() injects the enforce flag + 4 policy JSON arrays ([def:policy-env]).
     execEnv = { ...baseEnv, ...extConfigEnv, ...policy.toEnv() };
   } else {

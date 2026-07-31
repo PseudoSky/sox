@@ -2,7 +2,52 @@
 
 ---
 
-## [Unreleased] — BL-343, BL-323: memory_stats survives malformed rows; sqlite-vec load verified fixed
+## [Unreleased] — BL-344, BL-343, BL-323: one env-scrub policy; memory_stats survives malformed rows; sqlite-vec load verified fixed
+
+### BL-344 (HIGH) — one env-scrub policy, not five copies; and a dropped tunable is no longer silent
+
+Under `policy.enforced`, the child environment was scrubbed to a hand-maintained allowlist that existed as **five independent copies** across two packages. Every new tunable had to join all five. None ever did — and they had measurably drifted:
+
+| copy | `SOX_DISABLE_EMBED_HEAL` | `SOX_DISABLE_PERIODIC_ENRICH` |
+|---|---|---|
+| `main.ts` `buildOsUnitEnv` | yes | yes |
+| `main.ts` serve | yes | yes |
+| `main.ts` `cmdExec` | yes | yes |
+| `supervisor.ts` | yes | **NO** |
+| `runtime-cli.ts` | **NO** | **NO** |
+
+The cost was live: `SOX_DISABLE_EMBED_HEAL` was set on the launchd unit to mitigate a read outage and had **zero effect**, because a different copy re-scrubbed it before the backend spawned — present in the `.plist`, absent from `ps eww <backend-pid>`, so verifying the plist gave a false green. `SOX_RECALL_EMBED_TIMEOUT_MS` and all four `SOX_MEMORY_LOG_*` controls shipped **non-functional in the deployed configuration on their first outing**, and nothing reported it.
+
+There is now **one** definition, `libs/host-runtime/src/env-policy.ts`, and `grep -rn allowedKeys` returns nothing outside it:
+
+```
+SOX_*   → forwarded, except the host-authoritative prefixes below
+NODE_*  → forwarded (scrubbing NODE_OPTIONS/NODE_PATH breaks native addons)
+base    → PATH HOME USER LOGNAME LANG LC_ALL LC_CTYPE TZ XDG_CACHE_HOME
+deny    → SOX_PERM_*, SOX_CONFIG_*   (injected by the host; never inherited)
+```
+
+**The deny-list is what keeps the prefix rule safe, and it is load-bearing.** `SOX_PERM_*` is the compiled permission policy; a child inheriting it would let anyone able to set an env var before the spawn widen or disable the sandbox. Before this change that was blocked only *incidentally* (it simply was not on the allowlist), so making the prefix rule broader required making the refusal explicit.
+
+Refusals are reported, never silent — the failure mode that let this survive:
+
+```
+[env-policy] serve backend: refused to forward 1 host-authoritative variable(s)
+from the ambient environment: SOX_PERM_ENFORCE. These are injected by the host
+and cannot be overridden by an inherited value.
+```
+
+Written to **stderr**, never stdout — several of these paths serve MCP over stdio, where stdout is the JSON-RPC channel.
+
+Red→green on a **real spawned child**, not a mock (`env-policy-spawn.spec.ts` — a `node` child writes its own `process.env` to a file, which the test reads back), because the plist-vs-process gap is exactly what made the original defect a false green. With the pre-BL-344 prefix policy restored: *"a NOVEL `SOX_*` tunable reaches the spawned child"* and *"the real shipped tunables that were silently dropped now arrive"* both **FAIL**; restored, 4/4 pass. Carries a negative control asserting an arbitrary non-`SOX_` var is still scrubbed, so the suite cannot pass against a plain passthrough.
+
+`supervisor-policy.spec.ts`'s `[process-boundary.2]` sentinel was `SOX_`-prefixed and encoded the old policy. Its invariant — an arbitrary parent var must not leak — is unchanged and still asserted; only the sentinel moved outside the forwarded namespace, and two tests were added asserting an inherited `SOX_PERM_*` cannot widen the child's sandbox and that a real tunable does arrive.
+
+`host-runtime` 273/273, `sox` typecheck + lint clean. (`libs/host-runtime/src/env-policy.ts`, `env-policy.spec.ts`, `env-policy-spawn.spec.ts`, `supervisor.ts`, `runtime-cli.ts`, `index.ts`, `apps/sox/src/main.ts`)
+
+**Not fixed by this, and still open: BL-375.** `soxe service enable` rebuilds the unit's env from the calling shell and silently drops allowlisted keys it does not find there. This change makes more variables *forwardable*; it does not stop that regeneration path from dropping them.
+
+---
 
 ### BL-343 (HIGH) — one malformed row no longer disables `memory_stats`
 
