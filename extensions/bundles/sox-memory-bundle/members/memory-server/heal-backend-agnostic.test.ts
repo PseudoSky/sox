@@ -21,7 +21,7 @@ import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -35,14 +35,31 @@ function makeTempDir() {
   };
 }
 
-async function tursoAvailable(): Promise<boolean> {
+// ── Turso availability — resolved SYNCHRONOUSLY at module load ─────────────
+//
+// This MUST NOT be resolved in an async `beforeAll`. Vitest evaluates the
+// `{ skip }` options object during the synchronous `describe()` collection
+// pass, BEFORE any hook runs — so a `let hasTurso = false` assigned in
+// `beforeAll` is read while still `false`, the options object is frozen with
+// `skip: true`, and the assigned value is never consulted again. This file used
+// to do exactly that, which means its Turso arm had ALWAYS statically skipped on
+// every run while reporting green. See the header of `turso-clean-room.test.ts`
+// for the full write-up.
+const TURSO_DRIVER_PATH = path.resolve(
+  __dirname,
+  '../../../../../node_modules/@tursodatabase/database/dist/promise.js',
+);
+
+/** Whether the Turso driver is present on disk. Synchronous by construction. */
+function tursoAvailable(): boolean {
   try {
-    await import('@tursodatabase/database');
-    return true;
+    return fs.existsSync(TURSO_DRIVER_PATH);
   } catch {
     return false;
   }
 }
+
+const HAS_TURSO = tursoAvailable();
 
 async function countMissingVectors(adapter: StoreAdapter): Promise<number> {
   const result = await adapter.executeGet<{ c: number }>(
@@ -58,12 +75,6 @@ async function countMissingVectors(adapter: StoreAdapter): Promise<number> {
 // ── Test suite ─────────────────────────────────────────────────────────────────
 
 describe('healMissingVectors — backend agnostic', () => {
-  let hasTurso = false;
-
-  beforeAll(async () => {
-    hasTurso = await tursoAvailable();
-  });
-
   beforeEach(() => {
     _resetEmbedSingleton();
     _setEmbedProviderForTest(new DeterministicTestProvider());
@@ -147,7 +158,7 @@ describe('healMissingVectors — backend agnostic', () => {
 
   it(
     'heals missing vectors on TursoAdapter',
-    { skip: !hasTurso },
+    { skip: !HAS_TURSO },
     async () => {
       const tmpDir = makeTempDir();
 
