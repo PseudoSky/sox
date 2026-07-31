@@ -4,6 +4,14 @@
 > **Owner:** memory / turso-go-live.
 > **Purpose:** prove, from a blank database upward, that every memory feature actually works —
 > with per-step timing, fail-fast gating, and a durable report per attempt.
+> **Build order:** see [`PLAN.md`](./PLAN.md) — the harness is built *last*, after the
+> instrumentation it consumes ships in the packages.
+
+**The sandbox is not a product. It is a thin runner.** Every metric it reports and every health
+verdict it renders must be a shipped capability of the packages, surfaced through the real
+status surface (`memory_ping` / `memory_stats`). The harness orchestrates, asserts, and writes
+reports — it does not own instrumentation. If a measurement only exists when the harness runs,
+it is in the wrong place. See [`PLAN.md` §0](./PLAN.md) for the ownership split.
 
 ---
 
@@ -118,13 +126,33 @@ will correctly produce **zero clusters**. That is the algorithm working, not a d
 
 Therefore the ladder separates two distinct questions:
 
-- **G3** (6 concurrent writes) proves **write / embed / vector / FTS concurrency**. It asserts
-  clustering *ran* and *terminated correctly*; it does **not** assert clusters *formed*.
+- **G3** (6 concurrent writes) proves **write / embed / vector / FTS concurrency**. It does
+  **not** assert clusters *formed*.
 - **G4** ingests a **semantically-grouped cohort** — the 24-episode 3-group corpus, or a
   stratified real-content equivalent with verified intra-group cosine — and asserts clusters
   actually form, with the group→community mapping checked.
 
 Conflating these is how you get a harness that fails on correct code.
+
+### 3.3 ⚠ G4 is blocked on an owner decision — BL-326
+
+`cluster.ts:437-441` short-circuits unconditionally: `incrementalOnly: true` returns empty
+regardless of how many valid vectors exist, and a full pass runs only when an explicit
+`organizer_queue` "enrich" row is pending — which `memory_curate {op:'recluster'}` merely
+*enqueues*, never runs inline. **The only clustering path an ordinary `memory_write` reaches is
+the dead stub.**
+
+Two consequences for this ladder, both of which override the naive reading above:
+
+- **G3 must not assert "clustering triggered and terminated cleanly."** Against the current
+  code that passes *vacuously* — the stub returns empty instantly. A gate that green-lights a
+  dead code path is worse than no gate. G3 asserts concurrency only.
+- **G4 cannot pass via the ordinary write path today**, and no corpus tuning changes that.
+
+BL-326 requires an owner decision (implement the incremental neighborhood check / run full
+passes on a cadence / accept that clustering is curation-only). Until it is made, G4 is
+specified but not buildable, and the scorecard marks automatic clustering `grey` — never
+`green`, and never a misleading `red` attributed to the corpus.
 
 ---
 
@@ -208,10 +236,12 @@ write-queue depth over time · txn wait / retry / busy counts · embed queue dep
 sampled throughout · WAL growth
 
 **All six land completely · zero lock/busy errors · zero lost or interleaved writes ·
-concurrency demonstrably real** (wall-clock materially below serial sum) · clustering triggered
-and terminated cleanly (**no assertion that clusters formed — see §3.2**).
+concurrency demonstrably real** (wall-clock materially below serial sum).
 
-### G4 — Clustering cohort
+**No clustering assertion at this gate** — see §3.2 and §3.3. Against current code any such
+assertion passes vacuously off a dead stub.
+
+### G4 — Clustering cohort · **blocked on BL-326 (§3.3)**
 The semantically-grouped corpus (§3.2).
 ↳ enrich-pass duration broken down by step · clusters formed · sizes · coverage ·
 `MEMBER_OF` edge count · group→community mapping · degenerate-guard retries
@@ -230,6 +260,13 @@ evidence Theme 2 (resource governance) needs, and the only one that speaks to sc
 ---
 
 ## 6. Instrumentation
+
+> **These spans and samples are emitted by the packages, not by the harness.** §6.2 is
+> substantially BL-319 (already filed, and already enumerating `write_to_vector_ms`,
+> `vec_insert_duration_ms`, `embed_throughput_per_sec`, `backlog_drain_rate`); §6.4 and the
+> capability/health fields are BL-334; the wait-vs-work split is BL-322/BL-345. The harness
+> *consumes* them via the real status surface and correlates them on `trace_id`. An operator
+> hitting `memory_ping` at 3am gets the same facts. See [`PLAN.md` §P1](./PLAN.md).
 
 ### 6.1 Timeline log
 
