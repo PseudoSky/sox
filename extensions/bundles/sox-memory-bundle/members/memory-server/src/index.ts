@@ -2172,7 +2172,38 @@ export async function runPeriodicEnrichPassGuarded(): Promise<void> {
  * unref() keeps the timer from holding the process open past MCP client
  * disconnect — the server exits cleanly on stdin close.
  */
+/**
+ * (BL-339 / BL-344) Emergency brake for the periodic enrich tick.
+ *
+ * STOPGAP, NOT A FIX. On 2026-07-31 the live store was read-unavailable for
+ * 15+ minutes with ZERO client load: the process stayed alive, burned CPU in
+ * 2-53% bursts, and answered not one request. `SOX_DISABLE_EMBED_HEAL=1` was
+ * confirmed active in that process, so the embed backfill was NOT the cause —
+ * this tick was. Disabling one background job simply handed the starvation to
+ * the next one.
+ *
+ * The real defect is that ANY in-process background work starves every
+ * foreground read: there is no concurrency model, no yield point, and no
+ * admission control (see BL-331/BL-334/BL-339 and the Gap-2 resource-governance
+ * design in docs/ideas/themes-2-4-architecture.md). Adding a per-job disable
+ * flag is whack-a-mole across every background job that exists or ever will —
+ * it is here only so the service can stay READABLE until governance lands.
+ *
+ * Setting this to '1' means enrichment/clustering never runs: no communities,
+ * no importance updates, no relates_to edges. Availability over completeness.
+ */
+function periodicEnrichDisabled(): boolean {
+  return process.env['SOX_DISABLE_PERIODIC_ENRICH'] === '1';
+}
+
 function scheduleNextEnrichTick(): void {
+  if (periodicEnrichDisabled()) {
+    process.stderr.write(
+      '[memory-server] periodic enrich DISABLED via SOX_DISABLE_PERIODIC_ENRICH=1 ' +
+      '(BL-344 stopgap — enrichment/clustering will not run)\n',
+    );
+    return;
+  }
   const timer = setTimeout(() => {
     void runPeriodicEnrichPassGuarded().finally(scheduleNextEnrichTick);
   }, PERIODIC_ENRICH_INTERVAL_MS);
