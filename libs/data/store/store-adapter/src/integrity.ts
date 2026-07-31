@@ -81,7 +81,7 @@
  * @module
  */
 
-import { statSync } from 'node:fs';
+import { renameSync, statSync } from 'node:fs';
 import { createFTSDialect } from './fts-dialect.js';
 import type { StoreAdapter } from './types.js';
 
@@ -173,6 +173,124 @@ export interface RepairOptions {
   /** Re-verify after repairing. Default true — a repair that is not verified
    *  is exactly the failure mode BL-347 shipped. */
   verify?: boolean;
+}
+
+// ── Stale WAL-index sidecar recovery (BL-373) ────────────────────────────────
+
+/**
+ * Turso keeps a second WAL-index sidecar, `<db>-tshm`, alongside SQLite's
+ * ordinary `-shm`. It is **derived state** — frame metadata for the current
+ * WAL — and Turso rebuilds it from scratch whenever it is absent.
+ *
+ * When it survives a restart while the WAL is truncated, every open fails and
+ * the backend crash-loops. Reproduced from the preserved live artifacts:
+ *
+ * ```
+ * failed to open database …/memory.db:
+ *   I/O error: short read on WAL frame at offset 383192: expected 4096 bytes, got 0
+ * ```
+ *
+ * with `memory.db-wal` at **0 bytes**. The message names the database and a
+ * WAL offset that cannot exist in an empty WAL, and never mentions `-tshm`;
+ * recovery required knowing Turso keeps a second sidecar and guessing it was
+ * stale. Removing the ordinary `-shm` alone does **not** help — verified.
+ *
+ * Moving the `-tshm` aside makes the store open immediately and correctly
+ * (9 478 nodes, verified before and after).
+ */
+export function isStaleWalIndexError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /short read on WAL frame|WAL frame at offset|wal[- ]?index/i.test(message);
+}
+
+export interface SidecarRecovery {
+  attempted: boolean;
+  /** Sidecars moved aside, with the path each was renamed to. */
+  movedAside: { from: string; to: string }[];
+  /** Why recovery was declined, when it was. */
+  declined: string | null;
+}
+
+/**
+ * Reconcile a stale WAL-index sidecar so the store can open.
+ *
+ * **Only acts when there is nothing to lose**: the `-wal` must be absent or
+ * zero bytes. A non-empty WAL may be legitimately described by the sidecar,
+ * and discarding it there could turn a recoverable store into a damaged one —
+ * so that case is declined and reported rather than guessed at.
+ *
+ * Sidecars are **renamed, never deleted**. The stale file is the only forensic
+ * record of why the store would not open, and this exact artifact is what made
+ * BL-373 diagnosable at all.
+ */
+export function recoverStaleWalIndex(dbPath: string | undefined): SidecarRecovery {
+  const result: SidecarRecovery = { attempted: false, movedAside: [], declined: null };
+  if (!dbPath) {
+    result.declined = 'no local database path';
+    return result;
+  }
+
+  const walPath = dbPath + '-wal';
+  let walBytes = -1;
+  try {
+    walBytes = statSync(walPath).size;
+  } catch {
+    walBytes = 0; // absent — nothing to lose either
+  }
+  if (walBytes > 0) {
+    result.declined =
+      `the WAL at ${walPath} holds ${walBytes} bytes, so the sidecar may legitimately describe it; ` +
+      `refusing to discard WAL-index state that could still be needed`;
+    return result;
+  }
+
+  result.attempted = true;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
+  for (const suffix of ['-tshm', '-shm']) {
+    const from = dbPath + suffix;
+    try {
+      statSync(from);
+    } catch {
+      continue; // not present
+    }
+    const to = `${from}.stale-${stamp}`;
+    try {
+      renameSync(from, to);
+      result.movedAside.push({ from, to });
+    } catch (err) {
+      result.declined = `could not move ${from} aside: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+  if (result.movedAside.length === 0 && result.declined === null) {
+    result.declined = 'no WAL-index sidecar was present to reconcile';
+  }
+  return result;
+}
+
+/**
+ * Rewrite a failed-open error so it names the artifact that actually has to be
+ * dealt with. The driver's own message points at the database and a WAL offset,
+ * which sent the first investigation to the wrong file entirely.
+ */
+export function describeStaleWalIndexFailure(
+  dbPath: string,
+  recovery: SidecarRecovery,
+  original: unknown,
+): Error {
+  const originalMessage = original instanceof Error ? original.message : String(original);
+  const detail = recovery.declined
+    ? `Recovery was not attempted: ${recovery.declined}.`
+    : `The stale sidecar(s) were moved aside (${recovery.movedAside
+        .map((m) => m.to)
+        .join(', ')}) and the open was retried, which also failed.`;
+  return new Error(
+    `Failed to open ${dbPath}, and the cause is very likely a STALE WAL-INDEX SIDECAR ` +
+      `(${dbPath}-tshm), not the database file the driver names. ` +
+      `Turso's -tshm holds frame metadata for the WAL; when it survives a restart whose WAL was ` +
+      `truncated, every open fails with a WAL-frame error against an empty WAL (BL-373). ` +
+      `${detail} If this persists, move ${dbPath}-tshm aside by hand and retry — it is derived ` +
+      `state and Turso rebuilds it. Original driver error: ${originalMessage}`,
+  );
 }
 
 // ── WAL identity (BL-330) ────────────────────────────────────────────────────
@@ -588,13 +706,49 @@ async function discoverFtsTargets(adapter: StoreAdapter): Promise<FtsTarget[]> {
   return targets;
 }
 
-/** Pick a token from `text` that a tokenizer will index as one term. */
+/**
+ * Candidate sentinel tokens from `text`, longest first, deduplicated.
+ *
+ * **(BL-374) A token must be a COMPLETE letter run, never a truncated prefix.**
+ * The first version of this matched `/[A-Za-z][A-Za-z]{5,19}/`, which caps at
+ * 20 characters and therefore *silently truncates* any longer run: the live
+ * store's row 9478 contains `sharedFastembedProcess`, and the probe extracted
+ * `sharedFastembedProce`. Tantivy indexes the whole token, so the fragment
+ * matched nothing and the row was reported as unindexed — on a perfectly
+ * healthy index, permanently, because the defect is deterministic rather than
+ * transient.
+ *
+ * Measured on 400 consecutive live rows against a known-good index: the
+ * truncating single-token probe reported **29 false misses (7.3%)**; with three
+ * whole-word candidates it reports **0**. At three sampled rows per pass that
+ * was roughly a one-in-five chance of a spurious `DAMAGED` verdict on every
+ * open — which is exactly what BL-374 observed in production.
+ *
+ * The lookarounds are the fix: a 22-letter identifier is simply not a
+ * candidate, rather than being chopped down to a 20-letter non-word.
+ */
+export function pickSentinelTokens(text: unknown, max = 3): string[] {
+  if (typeof text !== 'string') return [];
+  const words = text.match(/(?<![A-Za-z])[A-Za-z]{6,20}(?![A-Za-z])/g);
+  if (!words) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  // Longest first — least likely to be a stop word the tokenizer drops.
+  for (const w of [...words].sort((a, b) => b.length - a.length)) {
+    const key = w.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(w);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/** The single best sentinel token, or `null`. Thin wrapper over
+ *  {@link pickSentinelTokens} — kept because callers and tests read better
+ *  with it. */
 export function pickSentinelToken(text: unknown): string | null {
-  if (typeof text !== 'string') return null;
-  const words = text.match(/[A-Za-z][A-Za-z]{5,19}/g);
-  if (!words) return null;
-  // Longest word — least likely to be a stop word or to be truncated.
-  return words.reduce((a, b) => (b.length > a.length ? b : a));
+  return pickSentinelTokens(text, 1)[0] ?? null;
 }
 
 /**
@@ -672,9 +826,15 @@ export async function probeFtsIndexes(
       for (const row of r.rows) samples.push({ rowid: Number(row.rowid), text: row.t });
     }
 
+    // (BL-374) Several candidate tokens per row, not one. A row counts as
+    // indexed if ANY of its own tokens round-trips; only when EVERY candidate
+    // misses is the row genuinely unindexed. One token is not enough evidence
+    // to condemn an index — tokenizers legitimately drop or re-split
+    // individual terms, and a single unlucky pick produced a permanent false
+    // `DAMAGED` on the live store.
     const usable = samples
-      .map((s) => ({ rowid: s.rowid, token: pickSentinelToken(s.text) }))
-      .filter((s): s is { rowid: number; token: string } => s.token !== null);
+      .map((s) => ({ rowid: s.rowid, tokens: pickSentinelTokens(s.text, 3) }))
+      .filter((s) => s.tokens.length > 0);
 
     if (usable.length === 0) {
       findings.push({
@@ -691,21 +851,29 @@ export async function probeFtsIndexes(
 
     const misses: number[] = [];
     let probeErr: string | null = null;
-    for (const { rowid, token } of usable) {
-      const match = dialect.matchClause(target.columns, '?');
-      const sql =
-        dialect.supportsShadowTable
-          ? `SELECT COUNT(*) AS c FROM "${target.table}"
-               JOIN "${target.object}" ON "${target.object}".rowid = "${target.table}".rowid
-              WHERE "${target.table}".rowid = ? AND ${match.sql}`
-          : `SELECT COUNT(*) AS c FROM "${target.table}" WHERE rowid = ? AND ${match.sql}`;
-      try {
-        const r = await adapter.executeGet<{ c: number }>(sql, [rowid, token]);
-        if (!r || Number(r.c) === 0) misses.push(rowid);
-      } catch (err) {
-        probeErr = err instanceof Error ? err.message : String(err);
-        break;
+    const match = dialect.matchClause(target.columns, '?');
+    const sql =
+      dialect.supportsShadowTable
+        ? `SELECT COUNT(*) AS c FROM "${target.table}"
+             JOIN "${target.object}" ON "${target.object}".rowid = "${target.table}".rowid
+            WHERE "${target.table}".rowid = ? AND ${match.sql}`
+        : `SELECT COUNT(*) AS c FROM "${target.table}" WHERE rowid = ? AND ${match.sql}`;
+
+    outer: for (const { rowid, tokens } of usable) {
+      let matched = false;
+      for (const token of tokens) {
+        try {
+          const r = await adapter.executeGet<{ c: number }>(sql, [rowid, token]);
+          if (r && Number(r.c) > 0) {
+            matched = true;
+            break;
+          }
+        } catch (err) {
+          probeErr = err instanceof Error ? err.message : String(err);
+          break outer;
+        }
       }
+      if (!matched) misses.push(rowid);
     }
 
     if (probeErr !== null) {
@@ -725,8 +893,9 @@ export async function probeFtsIndexes(
         status: 'damaged',
         detail:
           `${misses.length}/${usable.length} sentinel rows (rowid ${misses.join(', ')}) are present in ` +
-          `"${target.table}" but NOT matchable through "${target.object}" using a token taken from ` +
-          `their own indexed text. Keyword search is silently returning incomplete results.`,
+          `"${target.table}" but NOT matchable through "${target.object}" using ANY of up to three ` +
+          `whole-word tokens taken from their own indexed text. Keyword search is silently ` +
+          `returning incomplete results.`,
         repairable: true,
         backlog: 'BL-347',
         probeValidated: true,

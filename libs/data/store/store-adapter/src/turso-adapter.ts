@@ -6,7 +6,10 @@ import {
 } from './adapter-meta.js';
 import {
   captureWalIdentity,
+  describeStaleWalIndexFailure,
   emitIntegrityReport,
+  isStaleWalIndexError,
+  recoverStaleWalIndex,
   runOpenTimeIntegrity,
   verifyStoreIntegrity,
 } from './integrity.js';
@@ -197,15 +200,57 @@ export class TursoAdapterImpl implements TursoAdapter {
 
     // Turso adapter supports both local file: and remote libsql:// URLs
     // When authToken is present, it's a remote connection
+    const openOnce = async (): Promise<any> => {
+      if (opts.authToken && !url.startsWith('file:')) {
+        // Remote connection via libsql:// — use connect()
+        return connect(url, { authToken: opts.authToken, ...dbOpts });
+      }
+      if (url.startsWith('file:') || !opts.authToken) {
+        // Local connection — use connect() for async
+        return connect(url, dbOpts);
+      }
+      return connect(url, { authToken: opts.authToken, ...dbOpts });
+    };
+
     let db: any;
-    if (opts.authToken && !url.startsWith('file:')) {
-      // Remote connection via libsql:// — use connect()
-      db = await connect(url, { authToken: opts.authToken, ...dbOpts });
-    } else if (url.startsWith('file:') || !opts.authToken) {
-      // Local connection — use connect() for async
-      db = await connect(url, dbOpts);
-    } else {
-      db = await connect(url, { authToken: opts.authToken, ...dbOpts });
+    try {
+      db = await openOnce();
+    } catch (err) {
+      // (BL-373) A stale `-tshm` — Turso's own WAL-index sidecar — makes the
+      // store PERMANENTLY unopenable after an ordinary restart, with a
+      // diagnostic that names the database and a WAL frame offset while the WAL
+      // is 0 bytes. The backend crash-loops and nothing recovers it. The
+      // sidecar is derived state that Turso rebuilds from scratch, so
+      // reconciling it is safe when the WAL has nothing to lose. This must live
+      // here rather than in a post-open probe: `connect()` itself is what
+      // fails, so nothing downstream ever runs.
+      if (!isStaleWalIndexError(err) || !opts.dbPath) throw err;
+
+      const recovery = recoverStaleWalIndex(opts.dbPath);
+      emitIntegrityReport(
+        opts.dbPath,
+        recovery.movedAside.length > 0 ? 'damaged' : 'repair_failed',
+        recovery.movedAside.length > 0
+          ? `[BL-373] stale WAL-index sidecar blocked the open; moved aside: ${recovery.movedAside
+              .map((m) => m.to)
+              .join(', ')}`
+          : `[BL-373] open failed with a WAL-frame error and the sidecar could NOT be reconciled: ${
+              recovery.declined ?? 'unknown reason'
+            }`,
+      );
+      if (recovery.movedAside.length === 0) {
+        throw describeStaleWalIndexFailure(opts.dbPath, recovery, err);
+      }
+      try {
+        db = await openOnce();
+      } catch (retryErr) {
+        throw describeStaleWalIndexFailure(opts.dbPath, recovery, retryErr);
+      }
+      emitIntegrityReport(
+        opts.dbPath,
+        'repaired',
+        `[BL-373] store opened after reconciling the stale WAL-index sidecar`,
+      );
     }
 
     const config = { type: 'turso' } as AdapterConfig & { type: 'turso' };

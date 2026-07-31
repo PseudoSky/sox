@@ -21,8 +21,8 @@
  *    detected and repaired with **no repair DDL anywhere in the test**.
  */
 import { describe, it, expect, beforeAll, afterEach } from 'vitest';
-import { mkdtempSync, statSync, unlinkSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdtempSync, statSync, unlinkSync, existsSync, copyFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Database as BetterSqlite3Database } from 'better-sqlite3';
 import { createSqliteAdapter, createStoreAdapter } from '../factory.js';
@@ -34,10 +34,15 @@ import {
   parsePartialPredicate,
   parseFtsColumns,
   pickSentinelToken,
+  pickSentinelTokens,
   isKnownFalsePositive,
   captureWalIdentity,
+  isStaleWalIndexError,
+  recoverStaleWalIndex,
+  describeStaleWalIndexFailure,
   resolveVerifyDepth,
 } from '../integrity.js';
+import { summarizeIntegrityForStatus, integrityHeadline } from '../integrity-status.js';
 import type { StoreAdapter } from '../types.js';
 
 const hasTurso = (() => {
@@ -132,6 +137,11 @@ function seedDuplicateAdapterMeta(adapter: StoreAdapter): void {
   raw
     .prepare(`UPDATE sqlite_master SET rootpage = ? WHERE name = 'sqlite_autoindex__adapter_meta_1'`)
     .run(scratch.rootpage);
+  // Hand the page over exclusively. Leaving the scratch objects in
+  // `sqlite_master` makes them share a rootpage with the detached autoindex,
+  // and the btree probe then legitimately fails to REINDEX a malformed index —
+  // fixture collateral that looks like an engine defect.
+  raw.prepare(`DELETE FROM sqlite_master WHERE name IN ('_meta_scratch', '_meta_scratch_ix')`).run();
   raw.pragma('writable_schema = RESET');
   raw.close();
 }
@@ -611,5 +621,257 @@ tursoDescribe('BL-352 — Turso probe soundness', () => {
 
     const report = await verifyStoreIntegrity(a, { depth: 'deep', only: ['pragma_integrity_check'] });
     expect(report.damaged, JSON.stringify(report.findings)).toEqual([]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BL-374 — after a repair whose actions all succeed, reverification must AGREE
+// with ground truth. A verdict that cannot return to ok after a correct repair
+// is a permanent false alarm on the one surface built to make silent damage
+// visible, and it gets tuned out exactly like BL-360's unconditional message.
+//
+// Root cause of the live instance: the sentinel token picker capped tokens at
+// 20 letters and therefore TRUNCATED longer ones. Live row 9478 contains
+// `sharedFastembedProcess` (22 letters); the probe extracted
+// `sharedFastembedProce`, which is not a term in any tokenizer, so a perfectly
+// healthy index reported that row as unindexed — deterministically, forever.
+// Measured on 400 consecutive live rows against a known-good index: 29 false
+// misses (7.3%) with the truncating picker, 0 with whole-word candidates.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('BL-374 — a healthy index is never reported damaged, and repair clears the verdict', () => {
+  const LONG_IDENT = 'sharedFastembedProcess'; // 22 letters — the live shape
+
+  it('never emits a truncated fragment of a long word as a sentinel token', () => {
+    const text = `the call site is ${LONG_IDENT} which unrefs the child twice`;
+    const tokens = pickSentinelTokens(text, 5);
+
+    // The exact live failure: a 20-char prefix of a 22-char word.
+    expect(tokens).not.toContain(LONG_IDENT.slice(0, 20));
+    // Every candidate must be a WHOLE word present in the text.
+    for (const t of tokens) {
+      expect(
+        new RegExp(`(?<![A-Za-z])${t}(?![A-Za-z])`).test(text),
+        `"${t}" is not a complete word in the source text`,
+      ).toBe(true);
+    }
+    expect(tokens.length).toBeGreaterThan(0);
+  });
+
+  it('reports a HEALTHY index as ok even when rows contain over-long identifiers', async () => {
+    const dbPath = tempPath('bl374-healthy');
+    const adapter = track(createSqliteAdapter({ dbPath }));
+    await adapter.exec(NODE_DDL);
+    await adapter.exec(FTS5_DDL);
+    // Every row's longest letter-run exceeds the old 20-char cap, so the old
+    // picker truncated on EVERY row and the probe went red on a healthy store.
+    for (let i = 0; i < 12; i++) {
+      await adapter.executeRun(
+        `INSERT INTO node (content, name, summary, topic) VALUES (?, ?, ?, ?)`,
+        [`row ${i}: ${LONG_IDENT} calls unref twice on the child handle`, `n${i}`, `s${i}`, 't'],
+      );
+    }
+    await adapter.exec(
+      `INSERT INTO fts_node(rowid, content, name, summary)
+         SELECT rowid, content, name, summary FROM node`,
+    );
+
+    // Ground truth: the index genuinely works.
+    const truth = await adapter.executeGet<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM fts_node WHERE fts_node MATCH ?`,
+      [LONG_IDENT],
+    );
+    expect(truth!.c, 'precondition: the index really does contain these rows').toBe(12);
+
+    const report = await verifyStoreIntegrity(adapter, { only: ['fts_index_live'] });
+    expect(
+      report.damaged,
+      'a healthy index must not be reported damaged: ' + JSON.stringify(report.findings, null, 2),
+    ).toEqual([]);
+    expect(report.findings.find((f) => f.object === 'fts_node')?.status).toBe('ok');
+  });
+
+  it('THE INVARIANT: repair whose actions all succeed leaves reverification agreeing with ground truth', async () => {
+    const dbPath = tempPath('bl374-invariant');
+    const build = track(createSqliteAdapter({ dbPath }));
+    await build.exec(NODE_DDL);
+    await build.exec(FTS5_DDL);
+    await build.init();
+    for (let i = 0; i < 15; i++) {
+      await build.executeRun(
+        `INSERT INTO node (content, name, summary, topic) VALUES (?, ?, ?, ?)`,
+        [`entry ${i}: ${LONG_IDENT} concerning quarterly hippopotamus logistics`, `n${i}`, `s${i}`, 't'],
+      );
+    }
+    await build.exec(
+      `INSERT INTO fts_node(rowid, content, name, summary)
+         SELECT rowid, content, name, summary FROM node`,
+    );
+
+    // Damage BOTH artifacts, as the live store was.
+    seedEmptyFts5Index(build, 'fts_node');
+    seedDuplicateAdapterMeta(build); // closes the raw handle
+    open.pop();
+    const dupes = track(createSqliteAdapter({ dbPath }));
+    await dupes.executeRun(`INSERT INTO _adapter_meta (key, value) VALUES (?, ?)`, [
+      'adapter_type',
+      'turso',
+    ]);
+
+    const before = await verifyStoreIntegrity(dupes);
+    expect(before.damaged.length, 'precondition: both artifacts must read damaged').toBeGreaterThanOrEqual(2);
+
+    const repair = await repairStoreIntegrity(dupes, before);
+
+    // Every action succeeded…
+    expect(repair.actions.length).toBeGreaterThan(0);
+    for (const a of repair.actions) expect(a.ok, `${a.object}: ${a.error ?? ''}`).toBe(true);
+
+    // …so reverification must agree, and the top-level verdict must clear.
+    expect(repair.verified, 'repair must be re-verified, never believed on its own').not.toBeNull();
+    expect(
+      repair.verified!.damaged,
+      'reverify disagreed with successful repairs: ' +
+        JSON.stringify(repair.verified!.damaged, null, 2),
+    ).toEqual([]);
+    expect(repair.ok).toBe(true);
+
+    // Cross-checked against DIRECT ground truth in this same test, so the
+    // assertion cannot pass on a summariser that merely agrees with itself.
+    const ftsTruth = await dupes.executeGet<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM fts_node WHERE fts_node MATCH ?`,
+      ['hippopotamus'],
+    );
+    expect(ftsTruth!.c, 'ground truth: FTS must really match every row again').toBe(15);
+    const metaTruth = await dupes.executeAll<{ key: string }>(
+      `SELECT key FROM _adapter_meta ORDER BY rowid`,
+    );
+    const counts = new Map<string, number>();
+    for (const r of metaTruth.rows) counts.set(r.key, (counts.get(r.key) ?? 0) + 1);
+    for (const [k, c] of counts) expect(c, `ground truth: duplicate key ${k}`).toBe(1);
+
+    // And the operator-facing verdict clears to `repaired` / healthy.
+    const view = summarizeIntegrityForStatus({ verify: before, repair }, Date.now());
+    expect(view.overall).toBe('repaired');
+    expect(view.healthy).toBe(true);
+    expect(integrityHeadline(view)).toMatch(/REPAIRED/);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BL-373 — a stale Turso WAL-index sidecar (`-tshm`) makes the store
+// permanently unopenable, and the driver's diagnostic names the wrong file.
+//
+// Reproduced from the preserved live artifacts: with a `-tshm` from the
+// previous day beside a 0-byte WAL, every open failed with
+// `I/O error: short read on WAL frame at offset 383192: expected 4096 bytes,
+// got 0` — a WAL frame that cannot exist in an empty WAL. The backend
+// crash-looped. Moving the `-tshm` aside made the store open immediately.
+// Removing the ordinary `-shm` alone did NOT help.
+// ═══════════════════════════════════════════════════════════════════════════
+
+tursoDescribe('BL-373 — a stale WAL-index sidecar is reconciled at open, not fatal', () => {
+  /** Build a real store, then fabricate the stale-sidecar state: a `-tshm`
+   *  describing WAL frames that no longer exist, beside an empty WAL. */
+  async function seedStaleTshm(dbPath: string): Promise<void> {
+    // Seeded with the RAW driver on purpose. Going through the adapter would
+    // write `_adapter_meta` (stamp + clean-shutdown marker) AFTER the
+    // checkpoint, putting fresh frames back into the WAL and defeating the
+    // fixture — the adapter's own behaviour must stay out of the seed.
+    const { connect } = (await import('@tursodatabase/database')) as {
+      connect: (p: string, o?: unknown) => Promise<{
+        exec: (sql: string) => Promise<void>;
+        run: (sql: string, ...a: unknown[]) => Promise<unknown>;
+        all: (sql: string) => Promise<unknown>;
+        close: () => Promise<void>;
+      }>;
+    };
+    const seed = await connect(dbPath, { experimental: ['index_method', 'multiprocess_wal'] });
+    await seed.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
+    // Enough frames that the captured sidecar describes WAL content the
+    // checkpoint then discards. Measured: 300 and 600 rows do NOT reproduce,
+    // 900 and 1200 do — the sidecar has to outlive frames that really existed.
+    for (let i = 0; i < 1200; i++) {
+      await seed.run('INSERT INTO t (v) VALUES (?)', 'v'.repeat(400) + i);
+    }
+    const tshm = dbPath + '-tshm';
+    expect(existsSync(tshm), 'precondition: Turso must have created a -tshm').toBe(true);
+    const captured = join(tmpDir, `captured-${Date.now()}.tshm`);
+    copyFileSync(tshm, captured);
+    // Checkpoint + close empties the WAL and clears the sidecar…
+    await seed.all('PRAGMA wal_checkpoint(TRUNCATE)');
+    await seed.close();
+    // …then put the OLD sidecar back beside the now-empty WAL. That is exactly
+    // the state the live store came back in after a restart.
+    copyFileSync(captured, tshm);
+  }
+
+  it('opens the store and moves the stale sidecar aside instead of crash-looping', async () => {
+    const dbPath = tempPath('bl373');
+    await seedStaleTshm(dbPath);
+
+    // NEGATIVE CONTROL: the raw driver must actually fail on this state,
+    // otherwise the recovery below proves nothing.
+    const { connect } = (await import('@tursodatabase/database')) as {
+      connect: (p: string, o?: unknown) => Promise<{ close: () => Promise<void> }>;
+    };
+    let rawError: string | null = null;
+    try {
+      const raw = await connect(dbPath, { experimental: ['index_method', 'multiprocess_wal'] });
+      await raw.close();
+    } catch (err) {
+      rawError = err instanceof Error ? err.message : String(err);
+    }
+    if (rawError === null) {
+      // The driver tolerated it — this build does not exhibit BL-373, so the
+      // recovery cannot be exercised. Fail loudly rather than pass vacuously.
+      expect.fail(
+        'precondition not met: the raw driver opened a store with a stale -tshm, ' +
+          'so this test cannot demonstrate the recovery. Re-derive the seed.',
+      );
+    }
+    expect(rawError).toMatch(/WAL frame|wal[- ]?index/i);
+
+    // The adapter must recover where the raw driver could not.
+    const adapter = track(await TursoAdapterImpl.connect({ dbPath }));
+    const rows = await adapter.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM t');
+    expect(rows!.c, 'every row must still be there — recovery must not lose data').toBe(1200);
+
+    // The stale sidecar is preserved for forensics, never deleted.
+    const asideFiles = readdirSync(dirname(dbPath)).filter(
+      (f) => f.startsWith(basename(dbPath) + '-tshm.stale-'),
+    );
+    expect(asideFiles.length, 'the stale -tshm must be renamed, not destroyed').toBeGreaterThan(0);
+  });
+
+  it('recovery is DECLINED when the WAL has content — never discard state that may be needed', () => {
+    const dbPath = join(tmpDir, `bl373-decline-${Date.now()}.db`);
+    writeFileSync(dbPath, '');
+    writeFileSync(dbPath + '-wal', 'x'.repeat(4096));
+    writeFileSync(dbPath + '-tshm', 'y'.repeat(32));
+
+    const recovery = recoverStaleWalIndex(dbPath);
+    expect(recovery.attempted).toBe(false);
+    expect(recovery.movedAside).toEqual([]);
+    expect(recovery.declined).toMatch(/holds 4096 bytes/);
+    expect(existsSync(dbPath + '-tshm'), 'the sidecar must be left untouched').toBe(true);
+  });
+
+  it('the error names -tshm, which the driver message never does', () => {
+    const original = new Error(
+      'failed to open database /x/memory.db: I/O error: short read on WAL frame at offset 383192: expected 4096 bytes, got 0',
+    );
+    expect(isStaleWalIndexError(original)).toBe(true);
+    expect(isStaleWalIndexError(new Error('no such table: node'))).toBe(false);
+
+    const described = describeStaleWalIndexFailure(
+      '/x/memory.db',
+      { attempted: false, movedAside: [], declined: 'the WAL holds 12 bytes' },
+      original,
+    );
+    expect(described.message).toContain('/x/memory.db-tshm');
+    expect(described.message).toMatch(/BL-373/);
+    // The original driver text must survive — it is still the primary evidence.
+    expect(described.message).toContain('short read on WAL frame');
   });
 });
