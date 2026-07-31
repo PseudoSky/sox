@@ -2252,3 +2252,34 @@ This is the second independent blind spot on the *same set of files* in one sess
 **Related:** BL-340 (specs never typechecked — the same blind spot, different tool), BL-357 (tests typechecked as library code — the inverse).
 
 Citations: [wip/turso-live-metrics, p0-test-infra, claude, sandbox P0.6, 1: tools/eslint-local/no-hook-assigned-skip.cjs, 2: extensions/bundles/sox-memory-bundle/members/memory-server/project.json (lint target), 3: commit 15ff307 (the frozen-{skip} fix), 4: commit 68f9437 (the guard + lint pattern)]
+
+---
+
+### BL-367 — `recall-parity.test.ts` compared UIDs across two independent stores, so it could never pass; with that corrected, sqlite↔turso recall overlap measures **0.52 against an 0.80 bar** — **Open (HIGH)** (2026-07-31)
+
+**Found while:** fixing the frozen-`{skip}` bug (commit `15ff307`) that had prevented this test from executing since it was written. The moment it actually ran, it failed — and the first failure was the test's own fault, not the product's.[1]
+
+**Defect 1 — the test could not pass under any behaviour of either backend (fixed here).** `compareResults` measured parity as the intersection of `RecallResult.uid` sets across a sqlite store and a turso store. But `memoryWrite` mints a fresh `ulid()` per episode (`libs/memory-core/src/write.ts:301`), so two independent stores writing the same 10-episode corpus share **zero** uids by construction.[2] Measured: `avgOverlap` = **0**, i.e. exactly the structural floor, not a backend signal. Corrected to compare on `content`, the identity that actually crosses the store boundary.
+
+This compounds the frozen-`{skip}` finding in the worst way. The conclusion "the Turso path has never been proven end-to-end" is stronger than first recorded: it is not merely that this test never ran — **it would not have proven anything had it run.** There has never been working cross-backend recall-parity coverage.
+
+**Defect 2 — a real divergence, now measurable and NOT fixed (this item).** With the comparison corrected, the same corpus and the same 5 queries produce:
+
+```
+AssertionError: expected 0.52 to be greater than or equal to 0.8
+  recall-parity.test.ts:230  expect(avgOverlap).toBeGreaterThanOrEqual(0.80)
+```
+
+**sqlite and turso return only ~52% overlapping results for identical input.** Both backends return results (the test's `queriesRan > 0` guard passes, and queries where either side returns nothing are skipped), so this is genuine ranking/retrieval divergence, not one backend being empty.
+
+**The threshold was deliberately NOT lowered.** 0.80 is the contract the test was written to assert. Relaxing it to 0.52 would convert a real defect into a green board — the precise failure mode this session exists to eliminate.
+
+**Not yet attributed.** Recall fuses vector + BM25 + temporal. The divergence could be the FTS/BM25 arm (cf. BL-347, live FTS index dead), the vector arm, or score fusion differing across dialects. Attribution needs a per-arm breakdown — run each arm in isolation across both backends before assuming which one diverges. Do not guess this.
+
+**Acceptance (red→green, must name BL-367):** `npx nx test memory-server` → `recall-parity.test.ts` passes at the unmodified 0.80 threshold, with the per-arm attribution recorded in the fix.
+
+**Severity:** HIGH — cross-backend recall parity is the core correctness claim of the Turso migration, it has never actually been tested, and the first honest measurement of it is well below the stated bar.
+
+**Related:** BL-347 (live FTS index dead — a candidate cause), BL-324 (the memory-server failure set this now joins), BL-366/BL-340 (why nothing caught it).
+
+Citations: [wip/turso-live-metrics, p0-test-infra, claude, sandbox P0.6, 1: extensions/bundles/sox-memory-bundle/members/memory-server/recall-parity.test.ts:104-142 (compareResults, corrected), 2: libs/memory-core/src/write.ts:301 (`const uid = ulid()`), 3: `npx nx test memory-server --skip-nx-cache` 2026-07-31 — avgOverlap 0 before the comparison fix, 0.52 after, 4: commit 15ff307 (frozen-{skip} fix that made this test execute at all)]
