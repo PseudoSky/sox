@@ -1,0 +1,17 @@
+{
+  // BL-340 — spec-inclusive typecheck. See libs/memory-core/tsconfig.typecheck-tests.json
+  // for why `include` covers the whole source tree rather than only the spec glob.
+  // memory-server additionally keeps cross-backend tests at the package root
+  // (*.test.ts), so those are included explicitly.
+  "extends": "../../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "ignoreDeprecations": "6.0",
+    "noEmit": true,
+    "esModuleInterop": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "*.test.ts", "*.spec.ts"],
+  "exclude": ["node_modules", "dist"]
+}

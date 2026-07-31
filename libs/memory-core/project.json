@@ -56,6 +56,15 @@
       },
       "cache": true,
       "inputs": ["default", "^production"]
+    },
+    "typecheck-tests": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p libs/memory-core/tsconfig.typecheck-tests.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": ["default", "^production"]
     }
   }
 }

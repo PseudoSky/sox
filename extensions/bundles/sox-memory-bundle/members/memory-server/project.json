@@ -63,6 +63,18 @@
         "default",
         "^production"
       ]
+    },
+    "typecheck-tests": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.typecheck-tests.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
     }
   }
 }

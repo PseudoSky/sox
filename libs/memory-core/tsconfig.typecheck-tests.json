@@ -1,4 +1,17 @@
 {
+  // BL-340 — spec-inclusive typecheck. `tsconfig.typecheck.json` excludes
+  // *.spec.ts / *.test.ts, so specs were never typechecked and BL-325's 18-file
+  // await-drop shipped undetected.
+  //
+  // `include` deliberately covers src/**/*.ts, not just the spec glob: a spec
+  // cannot be typechecked without also checking the modules it imports. Keeping
+  // the target separate from `typecheck` is what preserves triage clarity —
+  // production-only breakage still fails `typecheck` first, and this target's
+  // marginal failures are the spec ones.
+  //
+  // module/moduleResolution differ from the lib config on purpose: vitest runs
+  // these files as ESM (the chaos specs use import.meta), which CommonJS/node10
+  // rejects with TS1343.
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "module": "ESNext",
