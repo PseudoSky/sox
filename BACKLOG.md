@@ -2208,6 +2208,8 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: extensi
 
 **Severity:** HIGH — six unchecked casts on the default backend, one of which is the likely cause of 15 permanently-red integration tests. The class already shipped one silent production breakage (BL-377) that went undetected for weeks because its failures were misread as test debt.
 
+**Numbering note:** committed in `dd7a37a` whose message says "BL-379" — that id was claimed concurrently by another agent between my read and my write. This item is **BL-380**; references to BL-379 in `dd7a37a`'s message mean this one. Fourth id collision today — see BL-359.
+
 **Related:** BL-377 (the first two sites, fixed), BL-364 (15 hybrid-search tests — likely the same cause), BL-291 (typed native-open errors across SQLite-backed packages), BL-340 (specs were never typechecked, which is how this class hides).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: repo-wide audit of `as SqliteAdapter` / `.unwrap()` excluding specs, 2026-07-31, 2: libs/data/vectors/vector-store/src/index.ts:143,200,359, 3: extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts:180,218,322, 4: BL-377, 5: libs/memory-core/src/db.ts:373 (the correctly-gated form)]
