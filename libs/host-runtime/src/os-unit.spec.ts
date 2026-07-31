@@ -713,3 +713,73 @@ describe('BL-185 — isScheduledOsUnit (file-based, additive)', () => {
     expect(isScheduledOsUnit(servicePath)).toBe(false);
   });
 });
+
+// ─── BL-331: ProcessType must be manifest-driven, not hardcoded Background ───────
+
+describe('BL-331 — launchd ProcessType is service-kind aware', () => {
+  const platform = new LaunchdPlatform();
+
+  // WHY THIS EXISTS: `ProcessType: Background` was emitted unconditionally for
+  // EVERY sox unit. launchd.plist(5): "Background jobs are generally processes
+  // that do work that was not directly requested by the user. The resource
+  // limits applied to Background jobs are intended to prevent them from
+  // disrupting the user experience." On Apple Silicon that means efficiency
+  // cores + I/O throttling. Measured on the live memory-server: scheduling
+  // priority 4 instead of 31, and an interleaved A/B put real ONNX embedding at
+  // ~470 ms (pri 31) vs ~8400 ms (pri 4) — an 18x throttle on a service whose
+  // whole job is answering interactive agent requests.
+
+  it('does NOT mark a long-lived service as Background (BL-331)', () => {
+    const plist = platform.render(makeSpec());
+    expect(plist).toContain('<key>ProcessType</key>');
+    expect(plist).not.toContain('<string>Background</string>');
+    expect(plist).toContain('<string>Standard</string>');
+  });
+
+  it('DOES mark a periodic tick unit as Background (BL-331)', () => {
+    // The doctor reconcile tick is exactly the "work not directly requested by
+    // the user" launchd.plist(5) describes — Background is correct here.
+    const plist = platform.render(makeSpec({ startIntervalSec: 300 }));
+    expect(plist).toContain('<key>StartInterval</key>');
+    expect(plist).toContain('<string>Background</string>');
+  });
+
+  it('honours an explicit manifest-declared process_type over the default (BL-331)', () => {
+    const mp = path.join(tmpDir, 'extension-interactive.json');
+    fs.writeFileSync(
+      mp,
+      JSON.stringify({
+        id: 'memory-daemon',
+        type: 'service',
+        lifecycle: { background: true, singleton: true, process_type: 'Interactive' },
+      }),
+    );
+    const spec = deriveOsUnitSpec({
+      id: 'memory-daemon', scope: 'user', manifestPath: mp, nodePath: '/n',
+      entrypoint: '/e.js', env: {}, workingDirectory: '/w', logDir,
+    });
+    expect(spec.processType).toBe('Interactive');
+    expect(platform.render(spec)).toContain('<string>Interactive</string>');
+  });
+
+  it('rejects a process_type the OS does not define, rather than emitting it (BL-331)', () => {
+    const mp = path.join(tmpDir, 'extension-bogus.json');
+    fs.writeFileSync(
+      mp,
+      JSON.stringify({ id: 'x', type: 'service', lifecycle: { process_type: 'Turbo' } }),
+    );
+    const spec = deriveOsUnitSpec({
+      id: 'x', scope: 'user', manifestPath: mp, nodePath: '/n',
+      entrypoint: '/e.js', env: {}, workingDirectory: '/w', logDir,
+    });
+    // Unknown value falls back to the kind-derived default; it is never emitted.
+    expect(spec.processType).toBe('Standard');
+    expect(platform.render(spec)).not.toContain('Turbo');
+  });
+
+  it('systemd parity: only a Background unit is de-prioritised with Nice (BL-331)', () => {
+    const sysd = new SystemdPlatform();
+    expect(sysd.render(makeSpec())).not.toContain('Nice=');
+    expect(sysd.render(makeSpec({ startIntervalSec: 300 }))).toContain('Nice=10');
+  });
+});
