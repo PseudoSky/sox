@@ -258,10 +258,7 @@ describe('exportMarkdown — pruning', () => {
       expect(beforeFiles).toContain(`${uid2}.md`);
 
       // Invalidate the first episode
-      raw(db).prepare('UPDATE node SET t_invalid = ? WHERE uid = ?').run(
-        new Date().toISOString(),
-        uid1,
-      );
+      await db.executeRun('UPDATE node SET t_invalid = ? WHERE uid = ?', [new Date().toISOString(), uid1]);
 
       // Second export — pruned file should be gone
       await exportMarkdown(db, { dir: exportDir, enabled: true });
@@ -293,11 +290,7 @@ describe('exportMarkdown — pruning', () => {
 
       // P5: re-categorise by updating the structured node.topic column (the authoritative field).
       // Content is also updated for consistency, but topic derivation now reads node.topic first.
-      raw(db).prepare('UPDATE node SET topic = ?, content = ? WHERE uid = ?').run(
-        'topic-b',
-        '[topic-b] Original content.',
-        uid,
-      );
+      await db.executeRun('UPDATE node SET topic = ?, content = ? WHERE uid = ?', ['topic-b', '[topic-b] Original content.', uid]);
       await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       // The stale copy in the old topic must be pruned; the new topic must hold it.
@@ -407,17 +400,11 @@ describe('exportMarkdown — topic derivation', () => {
       // Manually insert a community node and MEMBER_OF edge
       const now = new Date().toISOString();
       const commUid = `community-test-${Date.now()}`;
-      const commRow = raw(db).prepare<unknown[], { rowid: number }>(
-        `INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'community', ?, ?, ?) RETURNING rowid`,
-      ).get(commUid, 'Machine Learning', now, now) as { rowid: number };
+      const commRow = await db.executeGet<{ rowid: number }>(`INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'community', ?, ?, ?) RETURNING rowid`, [commUid, 'Machine Learning', now, now]) as { rowid: number };
 
-      const epRow = raw(db).prepare<[string], { rowid: number }>(
-        `SELECT rowid FROM node WHERE uid = ?`,
-      ).get(uid) as { rowid: number };
+      const epRow = await db.executeGet<{ rowid: number }>(`SELECT rowid FROM node WHERE uid = ?`, [uid]) as { rowid: number };
 
-      raw(db).prepare(
-        `INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'MEMBER_OF', 'extracted', ?)`,
-      ).run(epRow.rowid, commRow.rowid, now);
+      await db.executeRun(`INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'MEMBER_OF', 'extracted', ?)`, [epRow.rowid, commRow.rowid, now]);
 
       await exportMarkdown(db, { dir: exportDir, enabled: true });
 
@@ -537,7 +524,7 @@ describe('exportMarkdown — P5 structured topic precedence', () => {
       const uid = (w as { episode_uid: string }).episode_uid;
 
       // Force node.topic to null to prove the fallback path in export.ts still works.
-      raw(db).prepare('UPDATE node SET topic = NULL WHERE uid = ?').run(uid);
+      await db.executeRun('UPDATE node SET topic = NULL WHERE uid = ?', [uid]);
 
       await exportMarkdown(db, { dir: exportDir, enabled: true });
 
@@ -650,17 +637,11 @@ describe('exportMarkdown — P5 entity names in frontmatter (BL-22)', () => {
       // Insert an entity with null name and a MENTIONS edge to the episode.
       const now = new Date().toISOString();
       const nullEntityUid = `entity-null-${Date.now()}`;
-      const entityRow = raw(db).prepare<unknown[], { rowid: number }>(
-        `INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'entity', NULL, ?, ?) RETURNING rowid`,
-      ).get(nullEntityUid, now, now) as { rowid: number };
+      const entityRow = await db.executeGet<{ rowid: number }>(`INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'entity', NULL, ?, ?) RETURNING rowid`, [nullEntityUid, now, now]) as { rowid: number };
 
-      const epRow = raw(db).prepare<[string], { rowid: number }>(
-        `SELECT rowid FROM node WHERE uid = ?`,
-      ).get(uid) as { rowid: number };
+      const epRow = await db.executeGet<{ rowid: number }>(`SELECT rowid FROM node WHERE uid = ?`, [uid]) as { rowid: number };
 
-      raw(db).prepare(
-        `INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'MENTIONS', 'user_asserted', ?)`,
-      ).run(epRow.rowid, entityRow.rowid, now);
+      await db.executeRun(`INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'MENTIONS', 'user_asserted', ?)`, [epRow.rowid, entityRow.rowid, now]);
 
       await exportMarkdown(db, { dir: exportDir, enabled: true });
 

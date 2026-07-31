@@ -102,10 +102,8 @@ async function freshDb(): Promise<{ db: StoreAdapter; dbPath: string }> {
   // stampStoreMeta — but memory_scope may be empty until initScope runs.)
   // Insert a row with an old model so there's something to migrate.
   try {
-    raw(db).prepare(
-      `INSERT OR IGNORE INTO memory_scope(scope, scope_id, embed_model, embed_dim, schema_ver, created_at)
-       VALUES ('project', 'test-scope-id', 'old-model-id', 768, 1, datetime('now'))`,
-    ).run();
+    await db.executeRun(`INSERT OR IGNORE INTO memory_scope(scope, scope_id, embed_model, embed_dim, schema_ver, created_at)
+       VALUES ('project', 'test-scope-id', 'old-model-id', 768, 1, datetime('now'))`);
   } catch {
     /* memory_scope may already have a row from stampStoreMeta */
   }
@@ -115,7 +113,7 @@ async function freshDb(): Promise<{ db: StoreAdapter; dbPath: string }> {
 async function freshDbCurrentModel(): Promise<{ db: StoreAdapter; dbPath: string }> {
   const { db, dbPath } = await freshDb();
   // Set embed_model to the target so the store is already current.
-  raw(db).prepare(`UPDATE memory_scope SET embed_model = ?, embed_dim = ?`).run(TARGET_MODEL, TARGET_DIM);
+  await db.executeRun(`UPDATE memory_scope SET embed_model = ?, embed_dim = ?`, [TARGET_MODEL, TARGET_DIM]);
   return { db, dbPath };
 }
 
@@ -126,43 +124,32 @@ async function freshDbCurrentModel(): Promise<{ db: StoreAdapter; dbPath: string
  * sentinel value) and a given per-record `embed_model` stamp (pass `null` to
  * simulate a pre-BL-88 row). Returns the node's rowid.
  */
-function insertEmbeddedNode(
+async function insertEmbeddedNode(
   db: StoreAdapter,
   uid: string,
   content: string,
   embedModel: string | null,
   fillValue: number,
-): number {
-  const info = raw(db)
-    .prepare(
-      `INSERT INTO node (uid, kind, content, t_created, t_valid, embed_model)
-       VALUES (?, 'episode', ?, datetime('now'), datetime('now'), ?)`,
-    )
-    .run(uid, content, embedModel);
+): Promise<number> {
+  const info = await db.executeRun(`INSERT INTO node (uid, kind, content, t_created, t_valid, embed_model)
+       VALUES (?, 'episode', ?, datetime('now'), datetime('now'), ?)`, [uid, content, embedModel]);
   const rowid = info.lastInsertRowid as number;
   const vec = new Float32Array(TARGET_DIM).fill(fillValue);
-  raw(db).prepare(`INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)`).run(
-    rowid,
-    vecToJson(vec),
-  );
+  await db.executeRun(`INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)`, [rowid, vecToJson(vec)]);
   return rowid;
 }
 
 /** Read back the raw vec_node embedding for a node rowid. */
-function readVecNodeEmbedding(db: StoreAdapter, rowid: number): Float32Array {
-  const row = raw(db)
-    .prepare<[number], { embedding: Buffer }>(`SELECT embedding FROM vec_node WHERE node_id = ?`)
-    .get(rowid);
+async function readVecNodeEmbedding(db: StoreAdapter, rowid: number): Promise<Float32Array> {
+  const row = await db.executeGet<{ embedding: Buffer }>(`SELECT embedding FROM vec_node WHERE node_id = ?`, [rowid]);
   if (!row) throw new Error(`no vec_node row for node ${rowid}`);
   const buf = row.embedding;
   return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
 }
 
 /** Read back the per-record embed_model column for a node rowid. */
-function readNodeEmbedModel(db: StoreAdapter, rowid: number): string | null {
-  const row = raw(db)
-    .prepare<[number], { embed_model: string | null }>(`SELECT embed_model FROM node WHERE rowid = ?`)
-    .get(rowid);
+async function readNodeEmbedModel(db: StoreAdapter, rowid: number): Promise<string | null> {
+  const row = await db.executeGet<{ embed_model: string | null }>(`SELECT embed_model FROM node WHERE rowid = ?`, [rowid]);
   return row?.embed_model ?? null;
 }
 
@@ -189,10 +176,8 @@ describe('reembedStore — dry-run', () => {
     const { db, dbPath } = await freshDb();
 
     // Insert a node so there's something to "migrate".
-    raw(db).prepare(
-      `INSERT INTO node(uid, kind, content, t_created)
-       VALUES ('node-1', 'episode', 'hello world', datetime('now'))`,
-    ).run();
+    await db.executeRun(`INSERT INTO node(uid, kind, content, t_created)
+       VALUES ('node-1', 'episode', 'hello world', datetime('now'))`);
     db.close();
 
     const logs: string[] = [];
@@ -255,10 +240,8 @@ describe('reembedStore — force re-embed', () => {
     const { db, dbPath } = await freshDbCurrentModel();
 
     // Insert a node so there's something to embed.
-    raw(db).prepare(
-      `INSERT INTO node(uid, kind, content, t_created)
-       VALUES ('node-2', 'episode', 'force re-embed test', datetime('now'))`,
-    ).run();
+    await db.executeRun(`INSERT INTO node(uid, kind, content, t_created)
+       VALUES ('node-2', 'episode', 'force re-embed test', datetime('now'))`);
     db.close();
 
     const logs: string[] = [];
@@ -307,7 +290,7 @@ describe('reembedStore — BL-92 mixed-model store (per-record embed_model)', ()
     // On a different, stale model — MUST be migrated.
     const staleRowid = insertEmbeddedNode(db, 'node-stale', 'stale model content', 'old-model-b', 0.99);
 
-    const beforeCurrentVec = Array.from(readVecNodeEmbedding(db, currentRowid));
+    const beforeCurrentVec = Array.from(readVecNodeEmbedding(db, await currentRowid));
     db.close();
 
     const logs: string[] = [];
@@ -331,15 +314,15 @@ describe('reembedStore — BL-92 mixed-model store (per-record embed_model)', ()
     const rawDb = await openDb(dbPath);
     try {
       // The stale record is migrated: new stamp + new (mock all-zero) vector.
-      expect(readNodeEmbedModel(rawDb, staleRowid)).toBe(TARGET_MODEL);
-      const afterStaleVec = Array.from(readVecNodeEmbedding(rawDb, staleRowid));
+      expect(readNodeEmbedModel(rawDb, await staleRowid)).toBe(TARGET_MODEL);
+      const afterStaleVec = Array.from(readVecNodeEmbedding(rawDb, await staleRowid));
       expect(afterStaleVec).toEqual(Array.from(new Float32Array(TARGET_DIM)));
 
       // The already-current record is untouched: same stamp, SAME vector bytes
       // (proves BL-92's over-migration failure mode is closed — no wasted
       // GPU/compute rewriting a vector that was already correct).
-      expect(readNodeEmbedModel(rawDb, currentRowid)).toBe(TARGET_MODEL);
-      const afterCurrentVec = Array.from(readVecNodeEmbedding(rawDb, currentRowid));
+      expect(readNodeEmbedModel(rawDb, await currentRowid)).toBe(TARGET_MODEL);
+      const afterCurrentVec = Array.from(readVecNodeEmbedding(rawDb, await currentRowid));
       expect(afterCurrentVec).toEqual(beforeCurrentVec);
       expect(afterCurrentVec[0]).toBeCloseTo(0.42, 5);
     } finally {
@@ -365,8 +348,8 @@ describe('reembedStore — BL-92 mixed-model store (per-record embed_model)', ()
     // extension, required to read back the vec_node virtual table's contents.
     const rawDb = await openDb(dbPath);
     try {
-      expect(readNodeEmbedModel(rawDb, rowidA)).toBe(TARGET_MODEL);
-      expect(readNodeEmbedModel(rawDb, rowidB)).toBe(TARGET_MODEL);
+      expect(readNodeEmbedModel(rawDb, await rowidA)).toBe(TARGET_MODEL);
+      expect(readNodeEmbedModel(rawDb, await rowidB)).toBe(TARGET_MODEL);
     } finally {
       rawDb.close();
     }
@@ -391,8 +374,8 @@ describe('reembedStore — BL-92 NULL embed_model handling', () => {
     // extension, required to read back the vec_node virtual table's contents.
     const rawDb = await openDb(dbPath);
     try {
-      expect(readNodeEmbedModel(rawDb, nullRowid)).toBe(TARGET_MODEL);
-      const afterVec = Array.from(readVecNodeEmbedding(rawDb, nullRowid));
+      expect(readNodeEmbedModel(rawDb, await nullRowid)).toBe(TARGET_MODEL);
+      const afterVec = Array.from(readVecNodeEmbedding(rawDb, await nullRowid));
       expect(afterVec).toEqual(Array.from(new Float32Array(TARGET_DIM)));
     } finally {
       rawDb.close();
@@ -414,7 +397,7 @@ describe('reembedStore — BL-92 NULL embed_model handling', () => {
     const rawDb = await openDb(dbPath);
     try {
       // The already-current row is confirmed untouched here too.
-      expect(readNodeEmbedModel(rawDb, currentRowid)).toBe(TARGET_MODEL);
+      expect(readNodeEmbedModel(rawDb, await currentRowid)).toBe(TARGET_MODEL);
     } finally {
       rawDb.close();
     }

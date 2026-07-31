@@ -97,39 +97,30 @@ async function phaseA(db: StoreAdapter, content: string): Promise<PhaseAOutcome>
 }
 
 /** Read the embed_model column for a node uid */
-function readEmbedModel(db: StoreAdapter, uid: string): string | null {
-  const row = raw(db)
-    .prepare<[string], { embed_model: string | null }>(`SELECT embed_model FROM node WHERE uid = ?`)
-    .get(uid);
+async function readEmbedModel(db: StoreAdapter, uid: string): Promise<string | null> {
+  const row = await db.executeGet<{ embed_model: string | null }>(`SELECT embed_model FROM node WHERE uid = ?`, [uid]);
   return row?.embed_model ?? null;
 }
 
 /** Insert a raw episode with no vec_node row (the crashed-Phase-B shape) */
-function insertOrphan(db: StoreAdapter, uid: string, content: string): void {
-  raw(db).prepare(
-    `INSERT INTO node (uid, kind, content, content_hash, t_created, t_valid)
-     VALUES (?, 'episode', ?, ?, datetime('now'), datetime('now'))`,
-  ).run(uid, content, `hash-${uid}`);
+async function insertOrphan(db: StoreAdapter, uid: string, content: string): Promise<void> {
+  await db.executeRun(`INSERT INTO node (uid, kind, content, content_hash, t_created, t_valid)
+     VALUES (?, 'episode', ?, ?, datetime('now'), datetime('now'))`, [uid, content, `hash-${uid}`]);
 }
 
 /** Insert a raw episode WITH a vec_node row and a given embed_model stamp */
-function insertEmbeddedWith(
+async function insertEmbeddedWith(
   db: StoreAdapter,
   uid: string,
   content: string,
   modelStamp: string | null,
-): number {
-  const info = raw(db).prepare(
-    `INSERT INTO node (uid, kind, content, content_hash, t_created, t_valid, embed_model)
-     VALUES (?, 'episode', ?, ?, datetime('now'), datetime('now'), ?)`,
-  ).run(uid, content, `hash-${uid}`, modelStamp);
+): Promise<number> {
+  const info = await db.executeRun(`INSERT INTO node (uid, kind, content, content_hash, t_created, t_valid, embed_model)
+     VALUES (?, 'episode', ?, ?, datetime('now'), datetime('now'), ?)`, [uid, content, `hash-${uid}`, modelStamp]);
   const rowid = info.lastInsertRowid as number;
   // Insert a dummy vec_node row with correct dims
   const zeroes = new Float32Array(768).fill(0);
-  raw(db).prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(
-    rowid,
-    vecToJson(zeroes),
-  );
+  await db.executeRun('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)', [rowid, vecToJson(zeroes)]);
   return rowid;
 }
 

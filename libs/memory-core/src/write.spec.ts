@@ -44,11 +44,7 @@ describe('memoryWrite — summary + metadata (BL-23)', () => {
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
 
-      const row = raw(db)
-        .prepare<[string], { summary: string | null; meta: string | null }>(
-          'SELECT summary, meta FROM node WHERE uid = ?',
-        )
-        .get(uid)!;
+      const row = await db.executeGet<{ summary: string | null; meta: string | null }>('SELECT summary, meta FROM node WHERE uid = ?', [uid])!;
 
       expect(row.summary).toBe('graph supersession');
       expect(JSON.parse(row.meta!)).toEqual({ url: 'x' });
@@ -66,11 +62,7 @@ describe('memoryWrite — summary + metadata (BL-23)', () => {
       // Content < 100 chars → extractiveSummary returns it as-is (still non-null).
       const r = await memoryWrite(db, { content: 'Plain content, no extras.', project_path: '/test/project' });
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = raw(db)
-        .prepare<[string], { summary: string | null; meta: string | null }>(
-          'SELECT summary, meta FROM node WHERE uid = ?',
-        )
-        .get(uid)!;
+      const row = await db.executeGet<{ summary: string | null; meta: string | null }>('SELECT summary, meta FROM node WHERE uid = ?', [uid])!;
       // P2 extractive summary fills this field (content < 100 chars → returns content as-is)
       expect(row.summary).not.toBeNull();
       expect(row.meta).toBeNull();
@@ -95,9 +87,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = raw(db)
-        .prepare<[string], { topic: string | null }>('SELECT topic FROM node WHERE uid = ?')
-        .get(uid)!;
+      const row = await db.executeGet<{ topic: string | null }>('SELECT topic FROM node WHERE uid = ?', [uid])!;
       expect(row.topic).toBe('typescript');
       db.close();
     } finally { cleanup(); }
@@ -113,9 +103,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = raw(db)
-        .prepare<[string], { topic: string | null }>('SELECT topic FROM node WHERE uid = ?')
-        .get(uid)!;
+      const row = await db.executeGet<{ topic: string | null }>('SELECT topic FROM node WHERE uid = ?', [uid])!;
       expect(row.topic).toBe('authentication');
       db.close();
     } finally { cleanup(); }
@@ -132,9 +120,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = raw(db)
-        .prepare<[string], { topic: string | null }>('SELECT topic FROM node WHERE uid = ?')
-        .get(uid)!;
+      const row = await db.executeGet<{ topic: string | null }>('SELECT topic FROM node WHERE uid = ?', [uid])!;
       expect(row.topic).toBe('new-topic');
       db.close();
     } finally { cleanup(); }
@@ -153,20 +139,14 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const uid = (r as { episode_uid: string }).episode_uid;
 
       // tags JSON column
-      const row = raw(db)
-        .prepare<[string], { tags: string | null }>('SELECT tags FROM node WHERE uid = ?')
-        .get(uid)!;
+      const row = await db.executeGet<{ tags: string | null }>('SELECT tags FROM node WHERE uid = ?', [uid])!;
       expect(JSON.parse(row.tags!)).toEqual(['JWT', 'OAuth']);
 
       // MENTIONS edges
-      const mentionCount = raw(db)
-        .prepare<[string], { cnt: number }>(
-          `SELECT COUNT(*) AS cnt FROM edge e
+      const mentionCount = await db.executeGet<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM edge e
            JOIN node src ON src.uid = ?
            JOIN node dst ON dst.kind = 'entity' AND dst.name IN ('JWT','OAuth')
-           WHERE e.src = src.rowid AND e.dst = dst.rowid AND e.rel = 'MENTIONS'`,
-        )
-        .get(uid)!;
+           WHERE e.src = src.rowid AND e.dst = dst.rowid AND e.rel = 'MENTIONS'`, [uid])!;
       expect(mentionCount.cnt).toBe(2);
       db.close();
     } finally { cleanup(); }
@@ -182,9 +162,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = raw(db)
-        .prepare<[string], { project_path: string | null }>('SELECT project_path FROM node WHERE uid = ?')
-        .get(uid)!;
+      const row = await db.executeGet<{ project_path: string | null }>('SELECT project_path FROM node WHERE uid = ?', [uid])!;
       expect(row.project_path).toBe('/Users/nix/dev/ai/sox-ecosystem');
       db.close();
     } finally { cleanup(); }
@@ -199,11 +177,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const r = await memoryWrite(db, { content: 'A plain episode with no enrichment fields.', project_path: '/test/project' });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = raw(db)
-        .prepare<[string], { topic: string | null; tags: string | null; project_path: string | null }>(
-          'SELECT topic, tags, project_path FROM node WHERE uid = ?',
-        )
-        .get(uid)!;
+      const row = await db.executeGet<{ topic: string | null; tags: string | null; project_path: string | null }>('SELECT topic, tags, project_path FROM node WHERE uid = ?', [uid])!;
       expect(row.topic).toBeNull();
       expect(row.tags).toBeNull();
       // project_path is the caller-supplied value
@@ -224,12 +198,8 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const uid = (r as { episode_uid: string }).episode_uid;
 
       // json_each filter: find episodes with tag 'graph'
-      const found = raw(db)
-        .prepare<[string, string], { uid: string }>(
-          `SELECT n.uid FROM node n, json_each(n.tags) t
-           WHERE t.value = ? AND n.uid = ? AND n.t_invalid IS NULL`,
-        )
-        .get('graph', uid);
+      const found = await db.executeGet<{ uid: string }>(`SELECT n.uid FROM node n, json_each(n.tags) t
+           WHERE t.value = ? AND n.uid = ? AND n.t_invalid IS NULL`, ['graph', uid]);
       expect(found?.uid).toBe(uid);
       db.close();
     } finally { cleanup(); }
@@ -274,14 +244,10 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       expect('episode_uid' in child).toBe(true);
       const childUid = (child as { episode_uid: string }).episode_uid;
 
-      const edge = raw(db)
-        .prepare<[string, string], { rel: string }>(
-          `SELECT e.rel FROM edge e
+      const edge = await db.executeGet<{ rel: string }>(`SELECT e.rel FROM edge e
            JOIN node src ON src.uid = ?
            JOIN node dst ON dst.uid = ?
-           WHERE e.src = src.rowid AND e.dst = dst.rowid AND e.rel = 'DERIVED_FROM'`,
-        )
-        .get(childUid, parentUid);
+           WHERE e.src = src.rowid AND e.dst = dst.rowid AND e.rel = 'DERIVED_FROM'`, [childUid, parentUid]);
       expect(edge?.rel).toBe('DERIVED_FROM');
       db.close();
     } finally { cleanup(); }
@@ -329,7 +295,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
       const db = await openDb(path.join(dir, 't.db'));
 
       // Count nodes before
-      const before = raw(db).prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
+      const before = await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'")!;
 
       // No project_path arg — this is now rejected
       const r = await memoryWrite(db, { content: 'BL-62 resolved: unqualified write rejected.' });
@@ -339,7 +305,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
       expect(result.message).toContain('project_path is required');
 
       // Count nodes after — should be unchanged (no node created)
-      const after = raw(db).prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
+      const after = await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'")!;
       expect(after.cnt).toBe(before.cnt);
 
       db.close();
@@ -369,11 +335,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
       expect(result.enrichment.project_path).toBe(trueWorkingDir);
       expect(result.enrichment.project_path_source).toBe('explicit');
 
-      const row = raw(db)
-        .prepare<[string], { project_path: string | null }>(
-          'SELECT project_path FROM node WHERE uid = ?',
-        )
-        .get(result.episode_uid)!;
+      const row = await db.executeGet<{ project_path: string | null }>('SELECT project_path FROM node WHERE uid = ?', [result.episode_uid])!;
       expect(row.project_path).toBe(trueWorkingDir);
       db.close();
     } finally {
@@ -388,7 +350,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
       const db = await openDb(path.join(dir, 't.db'));
 
       // Count nodes before
-      const before = raw(db).prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
+      const before = await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'")!;
 
       // Empty-string is treated as omitted → rejected
       const r = await memoryWrite(db, { content: 'BL-62 empty-string now rejected.', project_path: '' });
@@ -397,7 +359,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
       expect(result.code).toBe('E_MISSING_PROJECT_PATH');
 
       // Count nodes after — should be unchanged
-      const after = raw(db).prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
+      const after = await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'")!;
       expect(after.cnt).toBe(before.cnt);
 
       db.close();
@@ -475,7 +437,7 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
     expect(dup.details!.existing_uid).toBe(firstUid);
 
     // Verify total count in DB = 9 (not 10)
-    const count = raw(db).prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL").get()!;
+    const count = await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL")!;
     expect(count.cnt).toBe(9);
   });
 
@@ -513,7 +475,7 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
     expect(queue._enqueueCount).toBe(1);
 
     // Verify both items were written
-    const count = raw(db).prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL").get()!;
+    const count = await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL")!;
     expect(count.cnt).toBe(2);
   });
 
@@ -805,7 +767,7 @@ describe('openDb — P1 enrichment column migrations (D3.1)', () => {
     const { dir, cleanup } = tmpDir();
     try {
       const db = await openDb(path.join(dir, 'fresh.db'));
-      const cols = (raw(db).prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
+      const cols = ((await db.executeAll('PRAGMA table_info(node)')).rows as Array<{ name: string }>).map((c) => c.name);
       // Base graph-store columns
       expect(cols).toContain('topic');
       expect(cols).toContain('tags');
@@ -847,14 +809,14 @@ describe('openDb — P1 enrichment column migrations (D3.1)', () => {
       raw.close();
 
       const db = await openDb(dbPath);
-      const cols = (raw(db).prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
+      const cols = ((await db.executeAll('PRAGMA table_info(node)')).rows as Array<{ name: string }>).map((c) => c.name);
       expect(cols).toContain('enrich_ver');
       expect(cols).toContain('embed_model');
       db.close();
 
       // Idempotent: re-opening does not duplicate or error
       const db2 = await openDb(dbPath);
-      const cols2 = (raw(db2).prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
+      const cols2 = ((await db2.executeAll('PRAGMA table_info(node)')).rows as Array<{ name: string }>).map((c) => c.name);
       for (const col of ['enrich_ver', 'embed_model']) {
         expect(cols2.filter((c) => c === col)).toHaveLength(1);
       }
@@ -888,7 +850,7 @@ describe('openDb — P1 enrichment column migrations (D3.1)', () => {
 
       // Most columns already exist — openDb must add enrich_ver and embed_model without error
       const db = await openDb(dbPath);
-      const cols = (raw(db).prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
+      const cols = ((await db.executeAll('PRAGMA table_info(node)')).rows as Array<{ name: string }>).map((c) => c.name);
       expect(cols).toContain('enrich_ver');
       expect(cols).toContain('embed_model');
       db.close();
@@ -901,7 +863,7 @@ describe('openDb — memory-specific column migration', () => {
     const { dir, cleanup } = tmpDir();
     try {
       const db = await openDb(path.join(dir, 'fresh.db'));
-      const cols = (raw(db).prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
+      const cols = ((await db.executeAll('PRAGMA table_info(node)')).rows as Array<{ name: string }>).map((c) => c.name);
       expect(cols).toContain('embed_model');
       expect(cols).toContain('enrich_ver');
       db.close();
@@ -937,14 +899,14 @@ describe('openDb — memory-specific column migration', () => {
 
       // openDb must migrate in place.
       const db = await openDb(dbPath);
-      const cols = (raw(db).prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
+      const cols = ((await db.executeAll('PRAGMA table_info(node)')).rows as Array<{ name: string }>).map((c) => c.name);
       expect(cols).toContain('embed_model');
       expect(cols).toContain('enrich_ver');
       db.close();
 
       // Idempotent: re-opening doesn't error or duplicate.
       const db2 = await openDb(dbPath);
-      const cols2 = (raw(db2).prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
+      const cols2 = ((await db2.executeAll('PRAGMA table_info(node)')).rows as Array<{ name: string }>).map((c) => c.name);
       expect(cols2.filter((c) => c === 'embed_model')).toHaveLength(1);
       db2.close();
     } finally {

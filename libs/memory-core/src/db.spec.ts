@@ -119,9 +119,7 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     const dbPath = path.join(dir, 'stamp.db');
     const db = await openDb(dbPath);
 
-    const rows = raw(db).prepare<[], { key: string; value: string }>(
-      'SELECT key, value FROM sox_store_meta ORDER BY key',
-    ).all();
+    const rows = (await db.executeAll<{ key: string; value: string }>('SELECT key, value FROM sox_store_meta ORDER BY key')).rows;
     expect(rows).toHaveLength(4);
 
     const meta = new Map(rows.map((r) => [r.key, r.value]));
@@ -139,16 +137,12 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa5-'));
     const dbPath = path.join(dir, 'idempotent.db');
     const db1 = await openDb(dbPath);
-    const rows1 = raw(db1).prepare<[], { key: string; value: string }>(
-      'SELECT key, value FROM sox_store_meta ORDER BY key',
-    ).all();
+    const rows1 = (await db1.executeAll<{ key: string; value: string }>('SELECT key, value FROM sox_store_meta ORDER BY key')).rows;
     db1.close();
 
     // Re-open — INSERT OR IGNORE means no overwrite
     const db2 = await openDb(dbPath);
-    const rows2 = raw(db2).prepare<[], { key: string; value: string }>(
-      'SELECT key, value FROM sox_store_meta ORDER BY key',
-    ).all();
+    const rows2 = (await db2.executeAll<{ key: string; value: string }>('SELECT key, value FROM sox_store_meta ORDER BY key')).rows;
     db2.close();
 
     expect(rows2).toEqual(rows1);
@@ -173,8 +167,7 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     const db = await openDb(dbPath);
 
     // Manually corrupt the schema_version
-    raw(db).prepare('UPDATE sox_store_meta SET value = ? WHERE key = ?')
-      .run('99', STORE_META_KEYS.SCHEMA_VERSION);
+    await db.executeRun('UPDATE sox_store_meta SET value = ? WHERE key = ?', ['99', STORE_META_KEYS.SCHEMA_VERSION]);
 
     expect(() => verifyStoreMeta(db)).toThrow(EStoreMismatch);
     db.close();
@@ -187,8 +180,7 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     const db = await openDb(dbPath);
 
     // Corrupt the embed_dimensions
-    raw(db).prepare('UPDATE sox_store_meta SET value = ? WHERE key = ?')
-      .run('999', STORE_META_KEYS.EMBED_DIMENSIONS);
+    await db.executeRun('UPDATE sox_store_meta SET value = ? WHERE key = ?', ['999', STORE_META_KEYS.EMBED_DIMENSIONS]);
 
     expect(() => verifyStoreMeta(db)).toThrow(EStoreMismatch);
     db.close();
@@ -201,8 +193,7 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     const db = await openDb(dbPath);
 
     // Change to a different model string
-    raw(db).prepare('UPDATE sox_store_meta SET value = ? WHERE key = ?')
-      .run('some-other-model-v2', STORE_META_KEYS.EMBED_MODEL);
+    await db.executeRun('UPDATE sox_store_meta SET value = ? WHERE key = ?', ['some-other-model-v2', STORE_META_KEYS.EMBED_MODEL]);
 
     // This logs a warning but does NOT throw EStoreMismatch
     expect(() => verifyStoreMeta(db)).not.toThrow();
@@ -214,16 +205,12 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa5-'));
     const dbPath = path.join(dir, 'no-overwrite.db');
     const db1 = await openDb(dbPath);
-    const originalRows = raw(db1).prepare<[], { key: string; value: string }>(
-      'SELECT key, value FROM sox_store_meta ORDER BY key',
-    ).all();
+    const originalRows = (await db1.executeAll<{ key: string; value: string }>('SELECT key, value FROM sox_store_meta ORDER BY key')).rows;
     db1.close();
 
     // Re-open and ensure rows are unchanged
     const db2 = await openDb(dbPath);
-    const newRows = raw(db2).prepare<[], { key: string; value: string }>(
-      'SELECT key, value FROM sox_store_meta ORDER BY key',
-    ).all();
+    const newRows = (await db2.executeAll<{ key: string; value: string }>('SELECT key, value FROM sox_store_meta ORDER BY key')).rows;
     db2.close();
 
     expect(newRows).toEqual(originalRows);
@@ -243,9 +230,7 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     const dbPath = path.join(dir, 'bl252.db');
     const db = await openDb(dbPath);
 
-    const rows = raw(db).prepare<[], { key: string; value: string }>(
-      'SELECT key, value FROM sox_store_meta ORDER BY key',
-    ).all();
+    const rows = (await db.executeAll<{ key: string; value: string }>('SELECT key, value FROM sox_store_meta ORDER BY key')).rows;
     const meta = new Map(rows.map((r) => [r.key, r.value]));
     // Must NOT be 'bge-base-en-v1.5' (the unfalsifiable default) — should be 'unknown'
     expect(meta.get('embed_model')).toBe('unknown');

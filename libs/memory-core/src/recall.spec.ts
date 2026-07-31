@@ -184,12 +184,10 @@ describe('Parent-context expansion — session_id fallback', () => {
       const childUid = (childResult as { episode_uid: string }).episode_uid;
 
       // 3. Verify no DERIVED_FROM edge exists between child and parent.
-      const edgeRow = raw(db).prepare(
-        `SELECT e.rowid FROM edge e
+      const edgeRow = await db.executeGet(`SELECT e.rowid FROM edge e
          JOIN node n_src ON n_src.rowid = e.src
          JOIN node n_dst ON n_dst.rowid = e.dst
-         WHERE n_src.uid = ? AND n_dst.uid = ? AND e.rel = 'DERIVED_FROM' AND e.t_expired IS NULL`,
-      ).get(childUid, parentUid);
+         WHERE n_src.uid = ? AND n_dst.uid = ? AND e.rel = 'DERIVED_FROM' AND e.t_expired IS NULL`, [childUid, parentUid]);
       expect(edgeRow).toBeUndefined();
 
       // 4. Run recall with parent-context expansion.
@@ -358,7 +356,7 @@ describe('BL-167 — ScoreBreakdown invariant (normTotal === 0 degenerate case)'
       // number, smallest rrfScore) on the temporal channel. 10 days keeps the
       // recency multiplier (0.995^hours) comfortably away from fp underflow.
       const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
-      raw(db).prepare(`UPDATE node SET t_created = ? WHERE uid = ?`).run(tenDaysAgo, aUid);
+      await db.executeRun(`UPDATE node SET t_created = ? WHERE uid = ?`, [tenDaysAgo, aUid]);
 
       const response = await memoryRecall(db, 'project', {
         query: 'widget',

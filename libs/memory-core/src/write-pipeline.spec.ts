@@ -81,12 +81,12 @@ async function tmpDb(): Promise<{ dir: string; dbPath: string; db: StoreAdapter;
   };
 }
 
-function vecRowFor(db: StoreAdapter, rowid: number): unknown {
-  return raw(db).prepare('SELECT node_id FROM vec_node WHERE node_id = ?').get(rowid);
+async function vecRowFor(db: StoreAdapter, rowid: number): Promise<unknown> {
+  return await db.executeGet('SELECT node_id FROM vec_node WHERE node_id = ?', [rowid]);
 }
 
-function rowidFor(db: StoreAdapter, uid: string): number {
-  const r = raw(db).prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?').get(uid);
+async function rowidFor(db: StoreAdapter, uid: string): Promise<number> {
+  const r = await db.executeGet<{ rowid: number }>('SELECT rowid FROM node WHERE uid = ?', [uid]);
   expect(r).toBeDefined();
   return r!.rowid;
 }

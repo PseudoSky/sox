@@ -309,9 +309,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
 
     const { openDbReadOnly } = await import('./db.js');
     const roDb = await openDbReadOnly(dbPath);
-    const rows = raw(roDb)
-      .prepare<[], { seq_num: number }>('SELECT seq_num FROM bp_commit_test ORDER BY seq_num')
-      .all();
+    const rows = (await roDb.executeAll<{ seq_num: number }>('SELECT seq_num FROM bp_commit_test ORDER BY seq_num')).rows;
     roDb.close();
 
     const committed = rows.map((r) => r.seq_num);

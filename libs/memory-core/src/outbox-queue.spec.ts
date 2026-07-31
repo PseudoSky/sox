@@ -82,7 +82,7 @@ describe('enqueueIngest', () => {
 
   it('uses priority 2 for agent-less writes (null agent_id)', async () => {
     await enqueueIngest(db, 'uid-anon-1', null);
-    const row = await allRows()[0]!;
+    const row = await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await allRows()[0]!;
     expect(row.priority).toBe(2);
     expect(JSON.parse(row.payload)).toEqual({ uid: 'uid-anon-1', agent_id: null });
   });
@@ -124,10 +124,7 @@ describe('hasPendingFullEnrich', () => {
   it('is false for a full-pass row enqueued AFTER the snapshot (seq > maxSeq) — it drives the NEXT tick', async () => {
     const before = await enqueueEnrichFull(db, 'in-window');
     // complete the in-window row, then enqueue a fresh one past the snapshot
-    raw(db).prepare(`UPDATE organizer_queue SET done_at = ? WHERE seq = ?`).run(
-      new Date().toISOString(),
-      before,
-    );
+    await db.executeRun(`UPDATE organizer_queue SET done_at = ? WHERE seq = ?`, [new Date().toISOString(), before]);
     const after = await enqueueEnrichFull(db, 'post-snapshot');
     expect(after).toBeGreaterThan(await before);
     expect(await hasPendingFullEnrich(db, await before)).toBe(false);
@@ -135,20 +132,13 @@ describe('hasPendingFullEnrich', () => {
 
   it('ignores completed full-pass rows', async () => {
     const seq = await enqueueEnrichFull(db, 'r');
-    raw(db).prepare(`UPDATE organizer_queue SET done_at = ? WHERE seq = ?`).run(
-      new Date().toISOString(),
-      seq,
-    );
+    await db.executeRun(`UPDATE organizer_queue SET done_at = ? WHERE seq = ?`, [new Date().toISOString(), seq]);
     expect(await hasPendingFullEnrich(db, await seq)).toBe(false);
   });
 
   it('ignores ingest rows and non-full enrich rows', async () => {
     await enqueueIngest(db, 'uid-1', 'claude');
-    const incremental = raw(db)
-      .prepare(
-        `INSERT INTO organizer_queue (op, payload, priority, enqueued) VALUES ('enrich', '{}', 1, ?)`,
-      )
-      .run(new Date().toISOString());
+    const incremental = await db.executeRun(`INSERT INTO organizer_queue (op, payload, priority, enqueued) VALUES ('enrich', '{}', 1, ?)`, [new Date().toISOString()]);
     const maxSeq = Number(incremental.lastInsertRowid);
     expect(await hasPendingFullEnrich(db, maxSeq)).toBe(false);
   });

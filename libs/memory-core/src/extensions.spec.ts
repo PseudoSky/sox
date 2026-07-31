@@ -43,40 +43,34 @@ async function createDb(dbPath: string): Promise<StoreAdapter> {
   return await openDb(dbPath);
 }
 
-function seedEpisode(
+async function seedEpisode(
   db: StoreAdapter,
   overrides: Record<string, unknown> = {},
-): string {
+): Promise<string> {
   const uid = `ep-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const now = new Date().toISOString();
   const content = (overrides['content'] as string) ?? 'Test episode content for B2/B3 testing.';
   const topic = (overrides['topic'] as string) ?? 'test-topic';
   const projectPath = (overrides['project_path'] as string) ?? '/test/project';
   const tags = (overrides['tags'] as string[]) ?? ['test', 'example'];
-  raw(db).prepare(
-    `INSERT INTO node (uid, kind, content, topic, project_path, tags, t_created, t_valid)
-     VALUES (?, 'episode', ?, ?, ?, ?, ?, ?)`,
-  ).run(uid, content, topic, projectPath, JSON.stringify(tags), now, now);
+  await db.executeRun(`INSERT INTO node (uid, kind, content, topic, project_path, tags, t_created, t_valid)
+     VALUES (?, 'episode', ?, ?, ?, ?, ?, ?)`, [uid, content, topic, projectPath, JSON.stringify(tags), now, now]);
   return uid;
 }
 
-function seedEntity(db: StoreAdapter, name: string): string {
+async function seedEntity(db: StoreAdapter, name: string): Promise<string> {
   const uid = `entity-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  raw(db).prepare(
-    `INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'entity', ?, ?, ?)`,
-  ).run(uid, name, new Date().toISOString(), new Date().toISOString());
+  await db.executeRun(`INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'entity', ?, ?, ?)`, [uid, name, new Date().toISOString(), new Date().toISOString()]);
   return uid;
 }
 
-function seedEdge(db: StoreAdapter, srcRowid: number, dstRowid: number, rel: string): void {
-  raw(db).prepare(
-    `INSERT INTO edge (src, dst, rel, origin, t_created)
-     VALUES (?, ?, ?, 'user_asserted', ?)`,
-  ).run(srcRowid, dstRowid, rel, new Date().toISOString());
+async function seedEdge(db: StoreAdapter, srcRowid: number, dstRowid: number, rel: string): Promise<void> {
+  await db.executeRun(`INSERT INTO edge (src, dst, rel, origin, t_created)
+     VALUES (?, ?, ?, 'user_asserted', ?)`, [srcRowid, dstRowid, rel, new Date().toISOString()]);
 }
 
-function rowidForUid(db: StoreAdapter, uid: string): number {
-  return (raw(db).prepare(`SELECT rowid FROM node WHERE uid = ?`).get(uid) as { rowid: number }).rowid;
+async function rowidForUid(db: StoreAdapter, uid: string): Promise<number> {
+  return (await db.executeGet(`SELECT rowid FROM node WHERE uid = ?`, [uid]) as { rowid: number }).rowid;
 }
 
 // ── memoryLinkNode ─────────────────────────────────────────────────────────
@@ -133,7 +127,7 @@ describe('memoryGetRelated (B2)', () => {
       const db = await createDb(path.join(dir, 't.db'));
       const uidA = await seedEpisode(await db);
       const uidB = await seedEpisode(await db);
-      seedEdge(await db, rowidForUid(await db, uidA), rowidForUid(await db, uidB), 'RELATES_TO');
+      seedEdge(await db, await rowidForUid(await db, uidA), await rowidForUid(await db, uidB), 'RELATES_TO');
 
       const result = await memoryGetRelated(await db, { uid: uidA });
 
@@ -156,7 +150,7 @@ describe('memoryGetEntityEpisodes (B2)', () => {
       const db = await createDb(path.join(dir, 't.db'));
       const epUid = await seedEpisode(await db);
       const entityUid = seedEntity(await db, 'test-entity');
-      seedEdge(await db, rowidForUid(await db, epUid), rowidForUid(await db, entityUid), 'MENTIONS');
+      seedEdge(await db, await rowidForUid(await db, epUid), await rowidForUid(await db, await entityUid), 'MENTIONS');
 
       const result = await memoryGetEntityEpisodes(await db, { entity_uid: entityUid });
 
@@ -179,7 +173,7 @@ describe('memoryListEntities (B2)', () => {
       const db = await createDb(path.join(dir, 't.db'));
       const epUid = await seedEpisode(await db);
       const entityUid = seedEntity(await db, 'ranked-entity');
-      seedEdge(await db, rowidForUid(await db, epUid), rowidForUid(await db, entityUid), 'MENTIONS');
+      seedEdge(await db, await rowidForUid(await db, epUid), await rowidForUid(await db, await entityUid), 'MENTIONS');
 
       const result = await memoryListEntities(await db, {});
 
@@ -202,7 +196,7 @@ describe('memoryGetNearDuplicates (B2)', () => {
       const db = await createDb(path.join(dir, 't.db'));
       const uidA = await seedEpisode(await db);
       const uidB = await seedEpisode(await db);
-      seedEdge(await db, rowidForUid(await db, uidA), rowidForUid(await db, uidB), 'SAME_AS');
+      seedEdge(await db, await rowidForUid(await db, uidA), await rowidForUid(await db, uidB), 'SAME_AS');
 
       const result = await memoryGetNearDuplicates(await db, {});
 
@@ -390,7 +384,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       const uid = await seedEpisode(await db, { content: 'unique drop me' });
 
       // Verify the node exists before deletion
-      const before = raw(await db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uid) as { c: number };
+      const before = await await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [uid]) as { c: number };
       expect(before.c).toBe(1);
 
       const result = await memoryCurate(await db, { op: 'drop-episodes', uids: [uid] });
@@ -402,7 +396,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       });
 
       // Verify the node is gone
-      const after = raw(await db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uid) as { c: number };
+      const after = await await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [uid]) as { c: number };
       expect(after.c).toBe(0);
       db.close();
     } finally {
@@ -422,9 +416,9 @@ describe('memoryCurate drop-episodes (B2)', () => {
       const rowidB = rowidForUid(await db, uidB);
 
       // Insert a vec_node row for uidA
-      raw(await db).prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(rowidA, JSON.stringify(new Array(768).fill(0.1)));
+      await await db.executeRun('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)', [rowidA, JSON.stringify(new Array(768).fill(0.1))]);
       // Insert a MENTIONS edge from uidA to uidB (entity relationship)
-      raw(await db).prepare("INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'RELATES_TO', 'user_asserted', ?)").run(rowidA, rowidB, new Date().toISOString());
+      await await db.executeRun("INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'RELATES_TO', 'user_asserted', ?)", [rowidA, rowidB, new Date().toISOString()]);
 
       const result = await memoryCurate(await db, { op: 'drop-episodes', uids: [uidA] });
 
@@ -434,9 +428,9 @@ describe('memoryCurate drop-episodes (B2)', () => {
       expect(result.cascaded.edges).toBe(1);
 
       // Verify uidA is gone, uidB still exists
-      const nodeA = raw(await db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uidA) as { c: number };
+      const nodeA = await await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [uidA]) as { c: number };
       expect(nodeA.c).toBe(0);
-      const nodeB = raw(await db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uidB) as { c: number };
+      const nodeB = await await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [uidB]) as { c: number };
       expect(nodeB.c).toBe(1);
       db.close();
     } finally {
@@ -451,7 +445,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       const liveUid = await seedEpisode(await db, { content: 'live one' });
       const invalidatedUid = await seedEpisode(await db, { content: 'invalidated one' });
       // Invalidate the second one
-      raw(await db).prepare('UPDATE node SET t_invalid = ? WHERE uid = ?').run(new Date().toISOString(), invalidatedUid);
+      await await db.executeRun('UPDATE node SET t_invalid = ? WHERE uid = ?', [new Date().toISOString(), invalidatedUid]);
       const fakeUid = 'nonexistent-uid-0000';
 
       const result = await memoryCurate(await db, {
@@ -466,10 +460,10 @@ describe('memoryCurate drop-episodes (B2)', () => {
       expect(result.cascaded.edges).toBe(0);
 
       // liveUid is gone
-      const liveCheck = raw(await db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(liveUid) as { c: number };
+      const liveCheck = await await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [liveUid]) as { c: number };
       expect(liveCheck.c).toBe(0);
       // invalidatedUid still exists (was already t_invalid, not live)
-      const invCheck = raw(await db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(invalidatedUid) as { c: number };
+      const invCheck = await await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [invalidatedUid]) as { c: number };
       expect(invCheck.c).toBe(1);
       db.close();
     } finally {
