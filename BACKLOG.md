@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 83.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 84.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -1194,13 +1194,13 @@ Reproduced by an **interleaved** A/B (arms alternated round-by-round so the shar
 1. Make `ProcessType` a per-unit spec field (default `Adaptive`; `Background` is right for the doctor tick, wrong for a latency-sensitive server). **This is the change worth ~18x** and is the gate on re-enabling BL-339 / BL-346. Re-measure after; do not assume the full 18x lands.
 2. Move telemetry durations to `process.hrtime.bigint()` (**BL-369**).
 3. Bound/parallelize the shared fastembed child and report in-flight depth via `memory_ping` (**BL-322**).
-4. Fix the fork IPC-channel leak (**BL-368**) — it manufactures the orphans whose "another fastembed host is ALREADY RUNNING" warning has been cited as evidence of ANE contention.
+4. Fix the fork IPC-channel leak (**BL-370**) — it manufactures the orphans whose "another fastembed host is ALREADY RUNNING" warning has been cited as evidence of ANE contention.
 
 **Acceptance (red→green, must name BL-331):** a benchmark asserting production heal throughput is within a defined factor of the clean-room baseline **when run under the service's actual scheduling policy** — a benchmark run at terminal priority would have passed throughout this entire incident and proved nothing.
 
 **Severity:** HIGH — the store is functional but backfill takes hours and degrades read latency throughout.
 
-**Related:** BL-368, BL-369, BL-322 (head-of-line blocking), BL-339/BL-346 (the brakes this gates), BL-351, BL-353.
+**Related:** BL-370, BL-369, BL-322 (head-of-line blocking), BL-339/BL-346 (the brakes this gates), BL-351, BL-353.
 
 Citations: [wip/turso-live-metrics, performance-engineer, claude, turso-go-live, 1: libs/host-runtime/src/os-unit.ts:458-459, 2: ~/Library/LaunchAgents/com.sox.user.memory-server.plist + live `ps -o pri` on pids 7687/7721/7724, 3: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-qos-round.mjs, 4: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-inflight.py, 5: libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts, 6: docs/reporting/memory/bl331-root-cause.md]
 
@@ -2316,3 +2316,80 @@ AssertionError: expected 0.52 to be greater than or equal to 0.8
 **Related:** BL-347 (live FTS index dead — a candidate cause), BL-324 (the memory-server failure set this now joins), BL-366/BL-340 (why nothing caught it).
 
 Citations: [wip/turso-live-metrics, p0-test-infra, claude, sandbox P0.6, 1: extensions/bundles/sox-memory-bundle/members/memory-server/recall-parity.test.ts:104-142 (compareResults, corrected), 2: libs/memory-core/src/write.ts:301 (`const uid = ulid()`), 3: `npx nx test memory-server --skip-nx-cache` 2026-07-31 — avgOverlap 0 before the comparison fix, 0.52 after, 4: commit 15ff307 (frozen-{skip} fix that made this test execute at all)]
+
+---
+
+### BL-368 — Integrity verdict was unreachable from every real consumer: WeakMap keyed on an adapter instance callers never hold — **RESOLVED** (2026-07-31)
+
+**Found while wiring BL-334's status surface.** `recordIntegrityResult`/`getLastIntegrityResult` keyed the retained verdict in a `WeakMap` on the adapter instance.[1] No real consumer holds that instance: `memory-core`'s `openDb()` returns `instrumentAdapter(adapter)` — a **`Proxy`**[2] — and a `Proxy` is a distinct object identity, so the `WeakMap` lookup misses.
+
+**Measured**, using the exact shapes from both files: lookup by the real instance **FOUND**, lookup by the proxy **null**.[3] Every `memory_ping` caller would have read `null` — rendered as "no pass has run" — **forever, on a perfectly verified store.** The feature would have looked wired while reporting nothing, which is the BL-319 shape exactly: an instrument connected to one path and invisible from the path that reads it.
+
+A **second, independent** instance of the same class was found in parallel: memory-core reaches store-adapter through `require()` while an ESM consumer gets a second module instance with its own Maps — so even a correctly-keyed in-process registry is unreadable across that boundary.[4]
+
+**Fix (two layers, both landed):** (a) a path-keyed mirror keyed on `config.dbPath`, which reads through a proxy unchanged, so `getLastIntegrityResult` resolves for wrapped and unwrapped callers alike; (b) the authoritative fix — the verdict is **persisted into `_adapter_meta.last_integrity`** and read back from the store, surviving both the proxy and the module-instance split.[4]
+
+**Red→green (names BL-368):** `integrity-status.test.ts` records a result against an adapter, wraps it in a Proxy of the shape memory-core applies, and asserts the lookup resolves. Verified RED with the path fallback disabled — `AssertionError: expected null not to be null` — and green with it restored. Negative control: an unrelated path still resolves to `null` rather than to another store's report.
+
+**Severity:** HIGH at discovery — it silently nullified the entire BL-334 status wiring. Resolved before that wiring shipped.
+
+**Related:** BL-334 (the surface this feeds), BL-352 (the engine), BL-319 (same "wired to one path" shape), BL-347 (the outage a working surface would have caught).
+
+Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-334, 1: libs/data/store/store-adapter/src/integrity.ts (lastReports WeakMap, recordIntegrityResult/getLastIntegrityResult), 2: libs/memory-core/src/db.ts:305 (return instrumentAdapter(adapter, adapter.config.type)), 3: /Users/nix/.claude/jobs/1557bcef/tmp/proxykey.mjs + libs/data/store/store-adapter/src/__tests__/integrity-status.test.ts, 4: libs/data/store/store-adapter/src/integrity.ts persistIntegrityResult/readIntegrityResult + INTEGRITY_META_KEY (landed concurrently, commit 52f9c8c)]
+
+---
+
+### BL-370 — Any process that embeds once NEVER EXITS: the fork IPC channel is never unref'd — **Open (HIGH)** (2026-07-31)
+
+**Driver.** `sharedFastembedProcess.ts` forks the shared embed host with an IPC channel and calls `c.unref()` twice, with a comment stating the exact intent: *"so a real process can exit when its own work is done instead of hanging on this child forever."*[1] **The intent is not achieved.** `fork()` with `'ipc'` in `stdio` creates a **separate channel handle**; `ChildProcess.unref()` does not unref it, so the parent's event loop stays alive forever.
+
+**Red→green, isolated from the package** (fork a child with ipc, `unref()`, end the script):[2]
+```
+arm: unref() only  (the shipped pattern)  -> exit=124  (never exited)
+arm: unref() + c.channel?.unref()         -> exit=0    (exited cleanly)
+```
+
+**Observed in the wild, not theorised:** two probe processes (pids 3203, 25482) were still alive **40+ minutes** after writing their final output, each holding a loaded-model fastembed child. Every CLI invocation, test runner, or script that embeds even once leaks a process pair carrying a resident ONNX model.
+
+**Why this is HIGH and not cosmetic — it has been corrupting diagnosis.** The `[fastembed] WARNING … another fastembed host process (pid N) is ALREADY RUNNING … severe (25-50x) embed latency due to Neural Engine/hardware queue contention` message has been read across several sessions as evidence of real ANE contention. At least one instance was **self-inflicted**: during the BL-331 investigation the warning named **pid 25484 — a leaked process from this same session's earlier probe, idle at 0.0% CPU**. The defect manufactures the orphans whose warning is then cited as the cause. Any contention claim resting on that warning must be re-examined; BL-331's actual median cause turned out to be scheduling QoS, not contention.
+
+**Fix sketch:** `c.channel?.unref()` alongside the existing `c.unref()` calls, and/or expose an explicit `dispose()` on `SharedFastembedProcessClient` that `kill()`s the child. Check `sharedOnnxWorker.ts` for the same pattern — it is cited in the comment as the precedent this code was copied from.
+
+**Acceptance (red→green, must name BL-370):** a test that spawns a process which performs one `embedSingle()` and asserts the process **exits on its own** within a bounded time. It fails today (times out) and passes with the channel unref'd.
+
+**Severity:** HIGH — unbounded process/memory leak on every embedding consumer, and it actively falsifies the contention signal the team has been diagnosing against.
+
+**Related:** BL-331 (§6 of the root-cause report), BL-322 (contention), BL-345.
+
+Citations: [wip/turso-live-metrics, performance-engineer, claude, BL-331 investigation, 1: libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts:72-118 (fork, `c.unref()` at :78 and :112), 2: /Users/nix/.claude/jobs/1557bcef/tmp/ipc-unref-test.mjs, 3: docs/reporting/memory/bl331-root-cause.md §6]
+
+---
+
+### BL-369 — Telemetry `duration_ms` is wall-clock, so a sleeping laptop is recorded as compute time — **Open (HIGH)** (2026-07-31)
+
+**Driver.** Every duration in the BL-320 telemetry is derived from wall clock, so an operation that spans a macOS sleep accrues the sleep as though it were work. This is not hypothetical — it produced the single most alarming number in the whole Turso incident.
+
+Intersecting each long live embed window with the sleep intervals from `pmset -g log`:[1]
+
+| window (UTC) | pid | `duration_ms` | **asleep** | % asleep | actual awake |
+|---|---|---|---|---|---|
+| 07-31 00:15→03:18 | 23182 | **10953.2 s** | 10450.0 s | **95.4%** | **503.2 s** |
+| 07-31 03:35→06:21 | 23182 | 9968.5 s | 9438.6 s | 94.7% | 530.0 s |
+| 07-30 17:55→19:12 | 23182 | 4648.1 s | 4052.0 s | 87.2% | 596.1 s |
+| 07-30 20:59→21:52 | 23182 | 3154.0 s | 3143.0 s | **99.7%** | **11.0 s** |
+
+Across the whole >30 s embed tail: **35130 s wall, 31175 s (88.7%) system sleep.** For the ≤30 s population it is **1.1%** — so the distortion is concentrated exactly in the tail, where it does the most damage to a percentile.
+
+**The cost already paid.** "A 3-hour embed" was recorded in BL-331 and in `docs/observability/README.md` §6 as a catastrophic hang requiring its own investigation. It is **503 seconds of awake time on a laptop that slept for 2 h 54 m mid-operation.** Every `p90`/`p99`/`max` published from this telemetry is inflated by an unknown amount of laptop sleep.
+
+**Fix sketch:** measure durations with `process.hrtime.bigint()` (monotonic, excludes suspend) and emit that as `duration_ms`. Optionally keep the wall-clock delta as a *separate* field so sleep-spanning becomes **visible** rather than silently attributed to compute — a large `wall_ms − mono_ms` gap is itself a useful signal that an operation was suspended. This is a prerequisite for **BL-351**: every span that design defines inherits the same exposure, and the wait-vs-work split is meaningless if "wait" silently includes system suspend.
+
+**Note for whoever re-derives this:** do **not** pair a pmset `Sleep` line with the next line whose first token is `Wake`. pmset emits a **`Wake Requests`** line ~2 s after every `Sleep`, which truncates every interval to seconds and reports the machine as essentially never asleep (0.1 h instead of 11.31 h). It briefly produced a false refutation of this very item. pmset states the sleep duration on the `Sleep` line itself (`... 598 secs`) — use that.
+
+**Acceptance (red→green, must name BL-369):** a test that measures a span across an injected clock jump (or a stubbed monotonic/wall pair) and asserts the reported `duration_ms` tracks the **monotonic** delta, not the wall delta. Fails today.
+
+**Severity:** HIGH — it does not slow anything down, but it silently corrupts every latency percentile the team is now making go/no-go decisions from, and it already sent one investigation after a phantom 3-hour hang.
+
+**Related:** BL-331 (defect 2), BL-351 (the substrate that must not inherit this), BL-353, BL-319.
+
+Citations: [wip/turso-live-metrics, performance-engineer, claude, BL-331 investigation, 1: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-sleep-overlap.py, 2: libs/memory-core/src/telemetry.ts, 3: docs/reporting/memory/bl331-root-cause.md §2, 4: docs/observability/README.md §6]
