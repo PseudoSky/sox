@@ -5,6 +5,12 @@
 
 ## Routing
 
+**Memory-subsystem work → [`docs/reporting/memory/README.md`](./docs/reporting/memory/README.md).**
+That is the single entry point: program state, work order, findings, and the traps that have each
+cost hours. Start at its `STATE.md`. Do not create a parallel doc tree for memory work — findings
+go in `findings/`, state in `STATE.md`, defects in `BACKLOG.md`, nowhere else.
+
+
 For codebase navigation, see [`docs/routing/ROUTER.md`](./docs/routing/ROUTER.md) (intent→scope mapping) and
 [`docs/routing/INDEX.md`](./docs/routing/INDEX.md) (project listing). For `data/*` package guidance, see
 [`libs/data/CLAUDE.md`](./libs/data/CLAUDE.md).

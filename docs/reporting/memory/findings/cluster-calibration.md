@@ -1,7 +1,7 @@
 # Cluster threshold calibration — BL-328, measured
 
-> **Status:** measurement complete, 2026-07-31. Resolves P0.5 of [`PLAN.md`](./PLAN.md) and
-> §3.2 / open question 2 of [`README.md`](./README.md).
+> **Status:** measurement complete, 2026-07-31. Resolves P0.5 of [`PLAN.md`](../PLAN.md) and
+> §3.2 / open question 2 of [`README.md`](../sandbox/README.md).
 > **Method:** real `bge-base-en-v1.5` embeddings and the production clustering primitive
 > throughout. No `DeterministicTestProvider`, no inference, no estimates.
 > **Probe scripts (reproducible):** `~/.adhd/sox-ecosystem/memory/bl328-*.mjs`
