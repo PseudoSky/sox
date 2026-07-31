@@ -2,7 +2,30 @@
 
 ---
 
-## [Unreleased] — BL-344, BL-343, BL-323: one env-scrub policy; memory_stats survives malformed rows; sqlite-vec load verified fixed
+## [Unreleased] — BL-365, BL-344, BL-343, BL-323: crash-durable telemetry; one env-scrub policy; memory_stats survives malformed rows; sqlite-vec load verified fixed
+
+### BL-365 (HIGH) — telemetry now survives a hard crash; it did not before
+
+The BL-320 JSONL sink *looked* durable — it writes to disk continuously and 21 MB of it existed on the live box. It was not. `RotatingJsonlWriter.write()` used a fire-and-forget `createWriteStream`, which buffers in userspace:
+
+| sink | records written | survived `SIGKILL` |
+|---|---|---|
+| `createWriteStream` + `write()` — **before** | 100 / 1,000 / 10,000 | **0 / 0 / 0** |
+| `fs.writeSync(fd, …)` — **now** | 100 / 1,000 / 10,000 | 100 / 1,000 / 10,000 |
+
+Realistic exposure was the current synchronous burst plus roughly the last 1–5 ms (measured: kill at +0/+1 ms → 1,024 of 5,000 survived; +5 ms → all 5,000). A *hang* lost nothing, because the process stays alive and the stream drains. What lost data was `SIGKILL`, a panic, or a power cut — **exactly the window the log exists to describe.** The host lost power mid-backfill on 2026-07-30 (BL-338), so the pre-crash window of the one incident we most needed to analyse is simply gone.
+
+The writer now holds the fd directly and writes synchronously. **Durable is the default**; `SOX_MEMORY_LOG_SYNC=0` opts back into buffering for high-volume/low-forensic-value populations (test and CI processes measured at 97.3% of log volume and ~0% of forensic value). That opt-out is only reachable at all because BL-344 shipped first — before it, the variable would have been silently scrubbed.
+
+Cost, measured over 50,000 records: **3,254 ns/record vs 1,043 ns — +2.2 µs**, about 15 ms of CPU per day at the projected live rate; a 100-record burst blocks the event loop for 0.33 ms. The never-throws/never-breaks-the-caller contract is unchanged: a failed `writeSync` drops the record rather than propagating.
+
+Red→green (`telemetry-crash-durability.spec.ts`), on a **real child that SIGKILLs itself** — no exit handlers, no flush — because a test that wrote and read back in-process passes against the broken implementation, which is why this survived unnoticed. With the pre-BL-365 default restored, 4 tests fail; restored, 6/6 pass. Two controls make the result meaningful: a **negative control** asserting `SOX_MEMORY_LOG_SYNC=0` still loses records (otherwise the greens might just be the OS flushing fast), and a **graceful-exit control** asserting both modes lose nothing on a clean exit, isolating the defect to hard kills.
+
+**Side effect worth knowing:** this also unbiases BL-353's start/finish accounting. An operation whose `.start` was still buffered when the process died was counted as *never started* rather than *never finished*, skewing the 61%/71% unaccounted figures in an unknown direction.
+
+Verified not to regress the suite by diffing failing test **names** (not counts — these suites are flaky under concurrent DB access) between the two configurations: **zero** tests fail only with the change, and the four that fail only without it are the new durability tests. The 91 remaining `memory-core` failures are identical in both configurations and belong to BL-325/BL-324. (`libs/memory-core/src/telemetry.ts`, `telemetry-crash-durability.spec.ts`)
+
+---
 
 ### BL-369 (HIGH) — a sleeping laptop is no longer recorded as compute time
 
@@ -84,7 +107,9 @@ Red→green on a **real spawned child**, not a mock (`env-policy-spawn.spec.ts` 
 
 `host-runtime` 273/273, `sox` typecheck + lint clean. (`libs/host-runtime/src/env-policy.ts`, `env-policy.spec.ts`, `env-policy-spawn.spec.ts`, `supervisor.ts`, `runtime-cli.ts`, `index.ts`, `apps/sox/src/main.ts`)
 
-**Not fixed by this, and still open: BL-375.** `soxe service enable` rebuilds the unit's env from the calling shell and silently drops allowlisted keys it does not find there. This change makes more variables *forwardable*; it does not stop that regeneration path from dropping them.
+**Read alongside BL-378, which is the other half of the same operator-facing failure.** The drift table above shows `supervisor.ts` carried `SOX_DISABLE_EMBED_HEAL` but not `SOX_DISABLE_PERIODIC_ENRICH`, and `runtime-cli.ts` carried neither — so which brake took effect depended on which spawn path a process came through. BL-378 then establishes that the two brakes were never independent to begin with: `healMissingVectors` has exactly one production call site, inside the enrich tick, so `SOX_DISABLE_PERIODIC_ENRICH` **subsumes** `SOX_DISABLE_EMBED_HEAL` and clearing the latter alone does nothing. Together: an operator setting the brakes had no reliable way to know **which background work was actually stopped, in which process** — neither flag's documented behaviour was accurate, and the copies disagreed about which even propagated. This change fixes the propagation half only; BL-378 is the semantics half.
+
+**Not fixed by this, and still open: BL-375.** `soxe service enable` rebuilds the unit's env from the calling shell and silently drops allowlisted keys it does not find there. This change makes more variables *forwardable*; it does not stop that regeneration path from dropping them — and it **enlarges BL-375's blast radius**, which is worth stating plainly rather than leaving for someone to discover. Before this change the regeneration path could silently drop the handful of allowlisted names; after it, every forwardable `SOX_*` tunable is droppable by the same path, while still printing success. BL-375 was raised to HIGH on that basis.
 
 ---
 
