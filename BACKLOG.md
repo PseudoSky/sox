@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 84.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 86.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -1269,6 +1269,25 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: apps/so
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (memory_ping response shape), 2: libs/data/embed/embedding-provider/src/fastembedProcessHost.ts:210 (hardcoded darwin EP order), 3: libs/data/store/store-adapter/src/turso-adapter.ts (capability flags, none surfaced), 4: libs/memory-core/src/telemetry.ts (BL-320 events already computed but not aggregated into status)]
 
+
+**UPDATE 2026-07-31 (database-administrator) — the INTEGRITY half of this item has shipped** (commit `0d2d629`). The capability/contention/EP fields remain open.
+
+`memory_ping.store.integrity` and the same block on `memory_stats` now report per-probe status, the damaged artifacts with their BL ids, the repairs performed, when the pass ran, its tier and duration, plus a one-line `store.integrity_headline`.
+
+**Health is earned, never inferred.** `healthy: true` requires a pass that ran, completed, found no damage, AND whose every probe demonstrably exercised its artifact. No pass, an aborted pass, an unvalidated probe, or `SOX_STORE_VERIFY=off` each render `unknown` — and `unknown` is explicitly not healthy. `repaired` is a distinct verdict from `ok`: the store is correct *now* but did not open correct, which is what an operator needs to see when the same damage recurs every restart. There is deliberately no code path that infers health from a missing report or an empty findings array — that inference is exactly what let BL-347 run for a day.
+
+**This item's own FTS proposal was unimplementable and has been replaced.** "index present + document count + last-built" cannot be built: the Tantivy backing-table count reads 0 in every state (BL-347 update), so `populated`/`doc count` do not exist as readable quantities. The shipped field derives from a rowid-targeted `fts_match` round-trip instead.
+
+**Do not read the verdict from the in-process registry.** It is unreachable from `memory_ping` for two independent measured reasons (BL-368): `getDb` returns a Proxy, and memory-core reaches store-adapter via `require()` while an ESM consumer gets a second module instance with its own Maps. The verdict is persisted to `_adapter_meta.last_integrity` and read back from the store.
+
+**Verified end-to-end through `handleToolCall` against a copy of the real damaged live store** (the live store itself untouched):
+- `SOX_STORE_REPAIR=off` → `store integrity DAMAGED — 2 artifact(s)`, `healthy: false`, naming `[BL-347] idx_fts_node` ("2/3 sentinel rows … NOT matchable") and `[BL-336] _adapter_meta`.
+- default → `store integrity REPAIRED at open`, `healthy: true`, `repair.ok: true`, `reverified: ok`, and `fts_match('memory')` 0 → 1148 against 1074 `LIKE` hits.
+
+**Still open here:** capabilities, contention accounting, EP facts, and the BL-319 timing fields. Also note `memory_stats` **still throws on the live store** (BL-342), so its new integrity block is unreachable there until that lands.
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 4: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (memory_ping store block, memory_stats), 5: libs/data/store/store-adapter/src/integrity-status.ts, 6: libs/data/store/store-adapter/src/__tests__/integrity-status.test.ts, 7: handleToolCall('memory_ping') against a copy of `~/.memory/memory.db` 2026-07-31]
+
 ---
 
 ### BL-335 — Restoring/bulk-inserting rows leaves secondary indexes unpopulated; nothing detects or repairs it — **Open (HIGH)** (2026-07-31)
@@ -1673,7 +1692,7 @@ Ground truth before → after: `fts_match('memory')` **0 → 1148** (LIKE 1074),
 **⚠️ The live store is NOT yet auto-repaired.** The fix is in `store-adapter`'s source and `dist`, but the running memory-server is a **bundled** artifact that has not been rebuilt (the live service is up; a rebuild is destructive per BL-235). The live store self-heals on the first open after memory-server is rebuilt and restarted — not before.
 
 **Remaining, why this stays open:**
-1. **Report into status (BL-334).** `getLastIntegrityResult(adapter)` exists and retains the last pass, but nothing in `memory_ping`/`memory_stats` reads it yet. A damaged store still presents as healthy to an operator.
+1. ~~**Report into status (BL-334).**~~ **DONE 2026-07-31** (commit `0d2d629`) — `memory_ping.store.integrity` + `memory_stats` now report the verdict, read from `_adapter_meta.last_integrity` rather than the in-process registry (which is unreadable from there, BL-368). A damaged store can no longer present as healthy. Note the reporting layer also caught a defect in this engine: page-accounting messages (`Page N: never used`) are reclaimable free space, not damage, and counting them kept the live copy at `reverified: damaged` forever after a fully successful repair — fixed in the same commit.
 2. **Route through the migration executor (BL-302).** Repairs currently run as direct adapter operations, not as versioned migrations. BL-302's executor does not exist.
 3. **No committable Turso FTS damage fixture** — the Turso side of the FTS negative control exists only against the live copy. Filed separately.
 4. **Vectors are not verified.** `vec_node` consistency (row present, correct byte length, no orphans) is named in this item's requirement and is not probed.
@@ -2006,6 +2025,13 @@ rowid 9284 falls inside the restored range (the 2026-07-30 restore inserted rowi
 **Severity:** HIGH — a single malformed row of 9397 disables an entire tool on the live store. Related: BL-335 (the same restore also left secondary indexes unpopulated), BL-343.
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `memory_stats` error 2026-07-31, 2: live `json_valid(tags)=0` query output, 3: ~/.adhd/sox-ecosystem/memory/corrections-20260730/dbrepair/restore.mjs]
+
+
+**RECONFIRMED LIVE 2026-07-31 (database-administrator).** Still reproducing on a fresh copy of `~/.memory/memory.db`: `handleToolCall('memory_stats')` throws `step failed: Parse error: malformed JSON` from `libs/memory-core/src/stats.ts:120` via `TursoAdapterImpl.executeGet`. Unfixed.
+
+**New consequence worth recording:** `memory_stats` now carries the BL-334 integrity block, so this one malformed row makes the **store-health verdict unreachable** through that tool on the live store — not merely the coverage percentages. `memory_ping` is unaffected and remains the working path for the integrity verdict. This raises the practical cost of BL-342/BL-343: row-level resilience is now load-bearing for a health surface, not just for statistics.
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 4: handleToolCall('memory_stats') stack trace against a copy of `~/.memory/memory.db` 2026-07-31, 5: libs/memory-core/src/stats.ts:120]
 
 ---
 
