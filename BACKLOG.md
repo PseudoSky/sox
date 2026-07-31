@@ -1272,3 +1272,26 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `R
 **Severity:** HIGH — this is the umbrella requirement behind BL-330/335/336/337. Today's incident was survivable only because a human was watching.
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live PRAGMA integrity_check after unplanned host crash 2026-07-31, 2: BL-330, 3: BL-335, 4: BL-336, 5: BL-337]
+
+---
+
+### BL-339 — TEMPORARY MITIGATION IN EFFECT: `SOX_DISABLE_EMBED_HEAL` is set on the live memory-server and MUST be re-enabled — **Open (HIGH)** (2026-07-31)
+
+**This item exists to guarantee a deliberate mitigation is not silently forgotten.**
+
+**What was done and why:** on 2026-07-31 the live memory-server became effectively read-unavailable — `memory_ping`, `memory_recall` (both paths) and even `memory_topics` (a trivial SQL query) all failed at a 35s timeout, while `memory_write` still succeeded. The embed backfill (~2842 episodes remaining, running at ~0.13 embeds/sec) was monopolizing the process and starving every foreground read. `SOX_DISABLE_EMBED_HEAL` was set to restore read availability, which the store owner explicitly requires ("we need memory service at least partially available for recall, write, ping").
+
+**Cost of the mitigation, stated plainly:** the embed backfill is STOPPED. Vector coverage is frozen at ~1619 of ~4461 episodes (~36%). Semantic recall quality is degraded for every unvectored episode — recall still works, but falls back to BM25/temporal for them. This is a deliberate availability-over-completeness trade, not a fix.
+
+**Re-enable criteria — ALL must hold:**
+1. BL-331 resolved: embed throughput restored to something near the ~2.1-2.8/sec clean-room baseline (the CoreML-vs-CPU execution-provider A/B is the leading candidate — the ONNX graph is EP-partitioned because CoreML cannot execute the 30522x768 `word_embeddings` tensor, so every inference pays a CPU/ANE boundary crossing).
+2. Resource governance exists so background enrichment can never again starve foreground reads — a throttle, concurrency cap, or priority separation. **Today the ONLY control is this binary on/off env var; that absence is the actual architectural defect** (see BL-334 and the Gap-2 analysis).
+3. Read availability verified under sustained backfill load: `ping`/`recall`/`topics` all responsive WHILE the heal pass runs.
+
+**Until then:** the backlog does not drain. Any measurement of vector coverage or recall quality must state that the backfill is disabled.
+
+**Acceptance (red→green, must name BL-339):** with the heal pass ENABLED and a full backlog, assert `memory_ping` and `memory_topics` respond within a sane budget (single-digit seconds) throughout. That test failing today is the whole reason this mitigation exists.
+
+**Severity:** HIGH — an intentional, load-bearing degradation of the live system. Must not become permanent by neglect.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (SOX_DISABLE_EMBED_HEAL), 2: libs/memory-core/src/embed-pipeline.ts (heal pass + time budget), 3: BL-331, 4: BL-334]
