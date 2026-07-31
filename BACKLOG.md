@@ -928,7 +928,27 @@ The `time_to_vector_ms` metric exists but has 0 samples because all recent embed
 3. What's the actual queuing model between MCP request arrival, backend processing, and enrich tick?
 4. Is the 97% CPU from ONNX inference (expected) or from a deadlock/livelock between the enrich pass and MCP handler?
 
+**✅ QUESTION 1 ANSWERED 2026-07-31 (BL-331 investigation) — yes, measurably.** Reconstructing in-flight concurrency per pid from `embed.start`/`embed.finish` in the BL-320 telemetry, with system-sleep time subtracted (BL-369), awake embed duration is **monotone in the number of requests outstanding on the same shared child**:[1]
+
+| in-flight on the shared child | n | awake p50 |
+|---|---|---|
+| 1 | 619 | **6.0 s** |
+| 2 | 10 | 53.7 s |
+| 5 | 2 | 61.6 s |
+| 6 | 2 | 91.2 s |
+| 7 | 3 | **149.8 s** |
+
+Per-pid: pid 73540 reached `max_in_flight = 7` with awake p50 **131 s**; every pid that stayed at in-flight 1 sat at **6–8 s**. This is the whole of BL-331's 30–160 s tail. *Stated limit:* 7 × 6 s = 42 s but observed is 149.8 s — **~3.5x beyond strict serialization**, and that residual is not yet attributed.
+
+**Two corrections this forces on the framing above.** (a) The 97% CPU / MCP-timeout symptom has a confirmed contributor that is neither Turso nor a deadlock: the live service runs at **background QoS** (`ProcessType: Background`, hardcoded at `os-unit.ts:458-459`), making every unit of inference ~18x slower and therefore holding the serial queue ~18x longer — see BL-331. (b) The `[fastembed] WARNING … another fastembed host process is ALREADY RUNNING` message, repeatedly cited as evidence of cross-process ANE contention, has been partly self-inflicted by the process leak in **BL-370**; cross-process ANE contention remains **unproven**.
+
+**Still open here:** questions 2–4, the read-only embed queue, and whether bounding/parallelizing the child is the right fix versus simply not saturating it. At minimum, **in-flight depth must be reported through `memory_ping`** — today it can only be reconstructed by hand from a log.
+
 **Severity:** HIGH — agents getting timeouts is a production reliability issue that undermines the entire memory system. The root cause might be a single-threaded bottleneck, not a Turso limitation.
+
+**Related:** BL-331 (root cause of the per-unit cost), BL-369, BL-370, BL-345, BL-351.
+
+Citations: [wip/turso-live-metrics, performance-engineer, claude, BL-331 investigation, 1: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-inflight.py, 2: libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts, 3: docs/reporting/memory/bl331-root-cause.md §3]
 
 ---
 
