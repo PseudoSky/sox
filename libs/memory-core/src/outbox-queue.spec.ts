@@ -56,18 +56,21 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function allRows(): QueueRow[] {
-  return raw(db)
-    .prepare<[], QueueRow>(
-      `SELECT seq, op, payload, priority, enqueued, done_at FROM organizer_queue ORDER BY seq`,
-    )
-    .all();
+// BL-377 class: `raw(db).prepare(...).all()` is only synchronous on the sqlite
+// backend. These specs run on the DEFAULT Turso adapter, where the unwrapped
+// handle's .all() returns a Promise — so this read must go through the
+// backend-agnostic adapter API, not a raw handle.
+async function allRows(): Promise<QueueRow[]> {
+  const { rows } = await db.executeAll<QueueRow>(
+    `SELECT seq, op, payload, priority, enqueued, done_at FROM organizer_queue ORDER BY seq`,
+  );
+  return rows;
 }
 
 describe('enqueueIngest', () => {
-  it('inserts an open ingest row with uid + agent_id payload at priority 1 for agent writes', () => {
-    enqueueIngest(db, 'uid-agent-1', 'claude');
-    const rows = allRows();
+  it('inserts an open ingest row with uid + agent_id payload at priority 1 for agent writes', async () => {
+    await enqueueIngest(db, 'uid-agent-1', 'claude');
+    const rows = await allRows();
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
     expect(row.op).toBe('ingest');
@@ -77,18 +80,18 @@ describe('enqueueIngest', () => {
     expect(JSON.parse(row.payload)).toEqual({ uid: 'uid-agent-1', agent_id: 'claude' });
   });
 
-  it('uses priority 2 for agent-less writes (null agent_id)', () => {
-    enqueueIngest(db, 'uid-anon-1', null);
-    const row = allRows()[0]!;
+  it('uses priority 2 for agent-less writes (null agent_id)', async () => {
+    await enqueueIngest(db, 'uid-anon-1', null);
+    const row = await allRows()[0]!;
     expect(row.priority).toBe(2);
     expect(JSON.parse(row.payload)).toEqual({ uid: 'uid-anon-1', agent_id: null });
   });
 });
 
 describe('enqueueEnrichFull', () => {
-  it('inserts an open full-pass enrich trigger and returns its seq', () => {
-    const seq = enqueueEnrichFull(db, 'recluster requested');
-    const rows = allRows();
+  it('inserts an open full-pass enrich trigger and returns its seq', async () => {
+    const seq = await enqueueEnrichFull(db, 'recluster requested');
+    const rows = await allRows();
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
     expect(row.seq).toBe(seq);
@@ -99,54 +102,54 @@ describe('enqueueEnrichFull', () => {
   });
 
   it('returns monotonically increasing seqs across calls', async () => {
-    const a = enqueueEnrichFull(db, 'first');
-    const b = enqueueEnrichFull(db, 'second');
+    const a = await enqueueEnrichFull(db, 'first');
+    const b = await enqueueEnrichFull(db, 'second');
     expect(b).toBeGreaterThan(await a);
   });
 });
 
 describe('hasPendingFullEnrich', () => {
-  it('is false when maxSeq <= 0 (empty snapshot window)', () => {
-    enqueueEnrichFull(db, 'r');
-    expect(hasPendingFullEnrich(db, 0)).toBe(false);
-    expect(hasPendingFullEnrich(db, -5)).toBe(false);
+  it('is false when maxSeq <= 0 (empty snapshot window)', async () => {
+    await enqueueEnrichFull(db, 'r');
+    expect(await hasPendingFullEnrich(db, 0)).toBe(false);
+    expect(await hasPendingFullEnrich(db, -5)).toBe(false);
   });
 
   it('is true for an open full-pass row inside the snapshot window', async () => {
-    const seq = enqueueEnrichFull(db, 'r');
-    expect(hasPendingFullEnrich(db, await seq)).toBe(true);
-    expect(hasPendingFullEnrich(db, await seq + 100)).toBe(true);
+    const seq = await enqueueEnrichFull(db, 'r');
+    expect(await hasPendingFullEnrich(db, await seq)).toBe(true);
+    expect(await hasPendingFullEnrich(db, await seq + 100)).toBe(true);
   });
 
   it('is false for a full-pass row enqueued AFTER the snapshot (seq > maxSeq) — it drives the NEXT tick', async () => {
-    const before = enqueueEnrichFull(db, 'in-window');
+    const before = await enqueueEnrichFull(db, 'in-window');
     // complete the in-window row, then enqueue a fresh one past the snapshot
     raw(db).prepare(`UPDATE organizer_queue SET done_at = ? WHERE seq = ?`).run(
       new Date().toISOString(),
       before,
     );
-    const after = enqueueEnrichFull(db, 'post-snapshot');
+    const after = await enqueueEnrichFull(db, 'post-snapshot');
     expect(after).toBeGreaterThan(await before);
-    expect(hasPendingFullEnrich(db, await before)).toBe(false);
+    expect(await hasPendingFullEnrich(db, await before)).toBe(false);
   });
 
   it('ignores completed full-pass rows', async () => {
-    const seq = enqueueEnrichFull(db, 'r');
+    const seq = await enqueueEnrichFull(db, 'r');
     raw(db).prepare(`UPDATE organizer_queue SET done_at = ? WHERE seq = ?`).run(
       new Date().toISOString(),
       seq,
     );
-    expect(hasPendingFullEnrich(db, await seq)).toBe(false);
+    expect(await hasPendingFullEnrich(db, await seq)).toBe(false);
   });
 
-  it('ignores ingest rows and non-full enrich rows', () => {
-    enqueueIngest(db, 'uid-1', 'claude');
+  it('ignores ingest rows and non-full enrich rows', async () => {
+    await enqueueIngest(db, 'uid-1', 'claude');
     const incremental = raw(db)
       .prepare(
         `INSERT INTO organizer_queue (op, payload, priority, enqueued) VALUES ('enrich', '{}', 1, ?)`,
       )
       .run(new Date().toISOString());
     const maxSeq = Number(incremental.lastInsertRowid);
-    expect(hasPendingFullEnrich(db, maxSeq)).toBe(false);
+    expect(await hasPendingFullEnrich(db, maxSeq)).toBe(false);
   });
 });
