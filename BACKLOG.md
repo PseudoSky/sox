@@ -1331,3 +1331,51 @@ Citations: [wip/turso-live-metrics, qa-expert, theme-1-verification-harness, 1: 
 **Severity:** MEDIUM — doesn't cause data loss by itself, but produces a misleadingly-bounded damage report exactly when someone is relying on `backup.ts` to characterize how bad a corrupted store is before deciding on a repair strategy.
 
 Citations: [wip/turso-live-metrics, qa-expert, theme-1-verification-harness, 1: docs/ideas/theme-1-verification-harness.md §C.5, 2: BL-335 (BACKLOG.md), 3: libs/memory-core/src/backup.ts:59-60, libs/memory-core/src/backup.ts:196-197]
+
+---
+
+### BL-342 — Restore wrote `tags = ''` (invalid JSON) instead of NULL, breaking `memory_stats` entirely — **Open (HIGH)** (2026-07-31)
+
+**Driver:** `memory_stats` fails outright on the live store:
+```
+Tool error: Error: step failed: Parse error: malformed JSON
+```
+Cause: exactly ONE row has an empty-string `tags` value, which `json_valid()` rejects:
+```sql
+select rowid,uid,substr(tags,1,60) from node where tags is not null and json_valid(tags)=0;
+-- [{"rowid":9284,"uid":"01KYN82P706CP6ANBWK2QGKYP7","v":""}]   (count: 1)
+```
+rowid 9284 falls inside the restored range (the 2026-07-30 restore inserted rowids 8552-9397), so the restore path wrote `''` where the column expects valid JSON, NULL, or `'[]'`.
+
+**Two distinct defects, both worth fixing:**
+1. **The restore/insert path does not normalise `tags`.** An empty string is neither NULL nor valid JSON. Any bulk-insert path (restore, migrate, import) must normalise or reject it. Note the restore scripts are preserved at `~/.adhd/sox-ecosystem/memory/corrections-20260730/dbrepair/` — `restore.mjs` is where this originated.
+2. **No schema-level guard.** A `CHECK (tags IS NULL OR json_valid(tags))` constraint would have made this impossible to insert. Worth evaluating for `tags` and any other JSON-typed column.
+
+**Immediate remediation:** set the offending row's `tags` to NULL (or `'[]'`), then re-verify `memory_stats`. Blocked at time of filing — the write was declined by the permission classifier and is awaiting the store owner's decision.
+
+**Acceptance (red→green, must name BL-342):** run the restore path against a fixture whose source has empty-string tags, assert every inserted row satisfies `json_valid(tags)` or is NULL, and assert `memory_stats` succeeds afterward.
+
+**Severity:** HIGH — a single malformed row of 9397 disables an entire tool on the live store. Related: BL-335 (the same restore also left secondary indexes unpopulated), BL-343.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `memory_stats` error 2026-07-31, 2: live `json_valid(tags)=0` query output, 3: ~/.adhd/sox-ecosystem/memory/corrections-20260730/dbrepair/restore.mjs]
+
+---
+
+### BL-343 — One malformed row disables an entire tool: no row-level resilience in aggregate queries — **Open (HIGH)** (2026-07-31)
+
+**Driver:** `memory_stats` aggregates over all 9397 nodes. A single row with invalid JSON in `tags` (BL-342, rowid 9284) causes the whole call to fail with `Parse error: malformed JSON` — **no partial result, no indication of which row, no degraded mode.** From the caller's perspective the tool is simply dead, with an error that names neither the column nor the row.
+
+This is the same architectural failure the current Theme-2 work targets, in a new place: the system cannot distinguish "one row is bad" from "everything is broken", and it reports the latter.
+
+**What production-grade looks like here:**
+- Aggregate/stats queries should be resilient to individual malformed rows — skip and count them, or use a JSON-safe accessor, rather than aborting.
+- The error must identify the offending row and column. Diagnosing this took a bespoke `json_valid()` sweep; the error message alone was useless.
+- A malformed-row count belongs in the health surface (BL-334) as a first-class integrity signal — this is exactly the class of silent corruption that self-verification is supposed to catch.
+
+**Audit scope:** this is unlikely to be limited to `tags` in `stats.ts`. Any query using `json_extract`/`json_each`/`json_valid` over a whole table has the same fragility. Sweep for them.
+
+**Acceptance (red→green, must name BL-343):** insert one row with malformed JSON, assert `memory_stats` still returns a result, reports the malformed count, and names the offending rowid.
+
+**Severity:** HIGH — 1 bad row out of 9397 (0.01%) produced a total tool outage.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/memory-core/src/stats.ts, 2: live `memory_stats` failure 2026-07-31, 3: BL-342, 4: BL-334]
