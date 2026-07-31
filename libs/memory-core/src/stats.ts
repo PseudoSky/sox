@@ -38,6 +38,22 @@ export interface EmbedProvenanceStats {
   active_model: string;
 }
 
+/**
+ * (BL-343) Rows whose JSON columns do not parse, and which were therefore
+ * excluded from the JSON-dependent aggregates above.
+ *
+ * This field is the load-bearing half of the BL-343 fix. Making the aggregates
+ * skip a malformed row without reporting it would trade a loud failure for a
+ * quietly wrong number, which is strictly worse — the counts would silently
+ * understate and nothing would ever say so.
+ */
+export interface MalformedRowStats {
+  /** Distinct live episodes with at least one unparseable JSON column. */
+  count: number;
+  /** Which columns were affected, e.g. `['enrich_ver']`. Empty when count is 0. */
+  columns: string[];
+}
+
 export interface StatsResult {
   tools: string[];
   enrich_version: string;
@@ -65,6 +81,8 @@ export interface StatsResult {
   last_checkpoint_at: string | null;
   /** (BL-88) Per-record embedding provenance counts. */
   embed_provenance: EmbedProvenanceStats;
+  /** (BL-343) Rows excluded from the JSON-dependent aggregates because they do not parse. */
+  malformed_rows: MalformedRowStats;
 }
 
 export async function memoryGetStats(
@@ -104,24 +122,40 @@ export async function memoryGetStats(
     ppParams.length > 0 ? ppParams : undefined,
   );
 
-  // with_community: episodes with a MEMBER_OF edge to a live GLOBAL community
+  // ── BL-343: row-level resilience ────────────────────────────────────────────
+  // Every json_extract() below is gated on json_valid(). Without the gate a
+  // SINGLE row whose JSON column holds an unparseable value — `''`, the exact
+  // shape BL-342's restore wrote — aborts the whole statement with
+  // "Parse error: malformed JSON" and takes the entire tool offline.
+  //
+  // Gating alone is not the fix; the skipped rows must also be counted and
+  // reported, or the aggregates just get quietly wrong. See malformedRows below.
+
+  // with_community: episodes with a MEMBER_OF edge to a live GLOBAL community.
+  // A community whose meta does not parse has no readable scope, so it is
+  // treated exactly like one with no scope recorded: global.
   const withCommunityRow = await adapter.executeGet<{ cnt: number }>(
     `SELECT COUNT(DISTINCT n.rowid) AS cnt
      FROM node n
      JOIN edge e ON e.src = n.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
      JOIN node c ON c.rowid = e.dst AND c.kind = 'community' AND c.t_invalid IS NULL
-       AND (json_extract(c.meta, '$.cluster_scope.kind') IS NULL
+       AND (c.meta IS NULL
+            OR NOT json_valid(c.meta)
+            OR json_extract(c.meta, '$.cluster_scope.kind') IS NULL
             OR json_extract(c.meta, '$.cluster_scope.kind') = 'global')
      WHERE n.kind = 'episode' AND n.t_invalid IS NULL ${ppFilter.replace('AND project_path', 'AND n.project_path')}`,
     ppParams.length > 0 ? ppParams : undefined,
   );
 
-  // Legacy: enrich_ver IS NULL or note = "legacy"
+  // Legacy: enrich_ver IS NULL or note = "legacy".
+  // An unparseable enrich_ver is NOT counted as legacy — we cannot read its
+  // note, and guessing would silently inflate the count. It is reported via
+  // malformed_rows instead.
   const legacyRow = await adapter.executeGet<{ cnt: number }>(
     `SELECT COUNT(*) AS cnt FROM node
      WHERE kind = 'episode' AND t_invalid IS NULL
        AND (enrich_ver IS NULL
-         OR json_extract(enrich_ver, '$.note') = 'legacy')
+         OR (json_valid(enrich_ver) AND json_extract(enrich_ver, '$.note') = 'legacy'))
      ${ppFilter}`,
     ppParams.length > 0 ? ppParams : undefined,
   );
@@ -130,10 +164,43 @@ export async function memoryGetStats(
   const staleRow = await adapter.executeGet<{ cnt: number }>(
     `SELECT COUNT(*) AS cnt FROM node
      WHERE kind = 'episode' AND t_invalid IS NULL AND enrich_ver IS NOT NULL
+       AND json_valid(enrich_ver)
        AND json_extract(enrich_ver, '$.pass') != ?
      ${ppFilter}`,
     [ENRICH_VERSION, ...ppParams],
   );
+
+  // The report half of BL-343. Counted per column so an operator can see WHICH
+  // column is corrupt (the live store's is `enrich_ver`, not `tags` — BL-342
+  // named the wrong column), and as distinct rows so `count` is not inflated by
+  // a row that is malformed in two columns at once.
+  const malformedRow = await adapter.executeGet<{
+    bad_tags: number;
+    bad_enrich_ver: number;
+    bad_meta: number;
+    bad_total: number;
+  }>(
+    `SELECT
+       SUM(CASE WHEN tags       IS NOT NULL AND NOT json_valid(tags)       THEN 1 ELSE 0 END) AS bad_tags,
+       SUM(CASE WHEN enrich_ver IS NOT NULL AND NOT json_valid(enrich_ver) THEN 1 ELSE 0 END) AS bad_enrich_ver,
+       SUM(CASE WHEN meta       IS NOT NULL AND NOT json_valid(meta)       THEN 1 ELSE 0 END) AS bad_meta,
+       SUM(CASE WHEN (tags       IS NOT NULL AND NOT json_valid(tags))
+                  OR (enrich_ver IS NOT NULL AND NOT json_valid(enrich_ver))
+                  OR (meta       IS NOT NULL AND NOT json_valid(meta))
+                THEN 1 ELSE 0 END) AS bad_total
+     FROM node
+     WHERE kind = 'episode' AND t_invalid IS NULL ${ppFilter}`,
+    ppParams.length > 0 ? ppParams : undefined,
+  );
+
+  const malformedColumns: string[] = [];
+  if ((malformedRow?.bad_tags ?? 0) > 0) malformedColumns.push('tags');
+  if ((malformedRow?.bad_enrich_ver ?? 0) > 0) malformedColumns.push('enrich_ver');
+  if ((malformedRow?.bad_meta ?? 0) > 0) malformedColumns.push('meta');
+  const malformedRows: MalformedRowStats = {
+    count: malformedRow?.bad_total ?? 0,
+    columns: malformedColumns,
+  };
 
   const qStats = await clusterStats(adapter);
 
@@ -226,5 +293,6 @@ export async function memoryGetStats(
     wal_bytes: walBytes,
     last_checkpoint_at: lastCheckpointAt,
     embed_provenance: embedProvenance,
+    malformed_rows: malformedRows,
   };
 }
