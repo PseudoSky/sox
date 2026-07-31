@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 89.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 90.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,12 +23,12 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31 (BL-374 latest; **BL-354 does not exist** — renumbered to BL-358, see BL-359): **89 open**.
+Regenerated 2026-07-31 (BL-375 filed; BL-374 previously latest; **BL-354 does not exist** — renumbered to BL-358, see BL-359): **90 open**.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-343, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-369, BL-370, BL-372, BL-373, BL-374 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-343, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-369, BL-370, BL-372, BL-373, BL-374, BL-375 |
 | **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362 |
 | **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363 |
 | **UNSET** | BL-163 |
@@ -1211,18 +1211,48 @@ Reproduced by an **interleaved** A/B (arms alternated round-by-round so the shar
 **Baseline correction that any future comparison must apply:** **899 of 1755 "test" embeds completed in <10 ms**, with *nothing* between 10 and 100 ms. That population is a deterministic/hash provider, not an ONNX forward pass. The honest real-inference reference is **~423 ms** (n=856), which independently matches the clean-room ~2.1–2.8/s and the BL-328 measurement of 2.25–2.60/s.
 
 **Fix sketch (revised):**
-1. Make `ProcessType` a per-unit spec field (default `Adaptive`; `Background` is right for the doctor tick, wrong for a latency-sensitive server). **This is the change worth ~18x** and is the gate on re-enabling BL-339 / BL-346. Re-measure after; do not assume the full 18x lands.
-2. Move telemetry durations to `process.hrtime.bigint()` (**BL-369**).
-3. Bound/parallelize the shared fastembed child and report in-flight depth via `memory_ping` (**BL-322**).
-4. Fix the fork IPC-channel leak (**BL-370**) — it manufactures the orphans whose "another fastembed host is ALREADY RUNNING" warning has been cited as evidence of ANE contention.
+1. ~~Make `ProcessType` a per-unit spec field~~ — **SHIPPED, see below.** (Note the sketch originally proposed defaulting to `Adaptive`; that would have been wrong — see the implementation note.)
+2. Move telemetry durations to `process.hrtime.bigint()` (**BL-369**). *Still open.*
+3. Bound/parallelize the shared fastembed child and report in-flight depth via `memory_ping` (**BL-322**). *Still open.*
+4. Fix the fork IPC-channel leak (**BL-370**). *Still open.*
 
-**Acceptance (red→green, must name BL-331):** a benchmark asserting production heal throughput is within a defined factor of the clean-room baseline **when run under the service's actual scheduling policy** — a benchmark run at terminal priority would have passed throughout this entire incident and proved nothing.
+---
 
-**Severity:** HIGH — the store is functional but backfill takes hours and degrades read latency throughout.
+**✅ DEFECT 1 FIXED AND VERIFIED LIVE — 2026-07-31 (performance-engineer). Measured 18.9x, matching the prediction.**
+
+`ProcessType` is now resolved by unit kind via a `processType` spec field that a manifest may declare as `lifecycle.process_type` (`resolveProcessType()`): periodic tick units → `Background`; everything else → **`Standard`**.[7]
+
+**Implementation note — `Adaptive` would have re-introduced the defect silently.** The sketch above proposed it as the obvious middle ground. launchd.plist(5) is explicit that Adaptive promotes a job out of Background **based on activity over XPC connections**; sox services speak UDS and TCP and never open an XPC connection, so there is no promotion signal and an Adaptive unit would sit in the Background class. `Standard` is documented as "equivalent to no ProcessType being set" — the neutral class, and the correct default. Unknown manifest values coerce to undefined rather than reaching the plist.
+
+**Deployed and verified BY PID, not by plist contents** (the BL-372 trap): the regenerated unit loaded, but the old backend survived as a `PPID 1` orphan still serving at pri 4 until it was explicitly `kill -TERM`ed. After the full sequence, proxy/backend/fastembed-host are pids **91239 / 91785 / 91786, all at pri 20** (was 4) — and the fastembed child inherits the class, which is where the inference actually runs.
+
+**Live before/after**, both populations launchd-spawned against the same store and the same code, differing only in scheduling class. AFTER samples come from `memory_recall` **query** embeds (zero writes to the live store):[8]
+
+| | n | min | p50 | p90 |
+|---|---|---|---|---|
+| BEFORE — pri 4, `Background` | 453 | 3785 ms | **6422 ms** | 12158 ms |
+| AFTER — pri 20, `Standard` | 11 | 319 ms | **333 ms** | 343 ms |
+
+**Length-matched** (so the ratio cannot be an artifact of query text being shorter than write content):
+
+| text_len | BEFORE n | BEFORE p50 | AFTER n | AFTER p50 | ratio |
+|---|---|---|---|---|---|
+| 0–100 | 11 | 10528 ms | 8 | 331 ms | 31.8x |
+| 300–600 | 328 | 6412 ms | 3 | 339 ms | **18.9x** |
+
+The 300–600 band is the honest headline: **18.9x**, against a predicted ~18x. The AFTER distribution is very tight (319–383 ms across all 11 samples, no length sensitivity) and lands on the independently-established ~423 ms real-inference reference, so the small AFTER n is not load-bearing — but it **is** small, and the >30 s BEFORE tail was excluded as the BL-369 sleep artifact.
+
+**What this does NOT fix:** defects 2 and 3 above are untouched. Head-of-line blocking (BL-322) still multiplies latency by in-flight depth — now from a ~0.33 s base instead of a ~6 s one, which is precisely why it is worth fixing next.
+
+**Found while deploying this — filed as BL-375:** `soxe service enable` rebuilds the unit's `EnvironmentVariables` from the **invoking shell**, and silently dropped `SOX_DISABLE_EMBED_HEAL=1` and `SOX_DISABLE_PERIODIC_ENRICH=1` — **both live emergency brakes** — while reporting success. Caught only by diffing the regenerated plist against a snapshot.
+
+**Acceptance (red→green, must name BL-331):** ~~a benchmark asserting production heal throughput…~~ **partially met.** The unit-level red→green exists (`os-unit.spec.ts`, verified 4 failed → 56 passed): a service manifest must not render `Background`, a tick unit must, an explicit `process_type` wins, an unknown value is never emitted. **Still owed:** the throughput benchmark itself, which must run **under the service's actual scheduling policy** — a benchmark at terminal priority would have passed throughout this entire incident and proved nothing. That, plus defects 2 and 3, is why this item stays open.
+
+**Severity:** HIGH — downgraded in practice by the fix above, but the item remains open on defects 2 and 3 and the missing benchmark.
 
 **Related:** BL-370, BL-369, BL-322 (head-of-line blocking), BL-339/BL-346 (the brakes this gates), BL-351, BL-353.
 
-Citations: [wip/turso-live-metrics, performance-engineer, claude, turso-go-live, 1: libs/host-runtime/src/os-unit.ts:458-459, 2: ~/Library/LaunchAgents/com.sox.user.memory-server.plist + live `ps -o pri` on pids 7687/7721/7724, 3: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-qos-round.mjs, 4: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-inflight.py, 5: libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts, 6: docs/reporting/memory/bl331-root-cause.md]
+Citations: [wip/turso-live-metrics, performance-engineer, claude, turso-go-live, 1: libs/host-runtime/src/os-unit.ts:458-459 (pre-fix), 2: ~/Library/LaunchAgents/com.sox.user.memory-server.plist + live `ps -o pri` on pids 7687/7721/7724 (before) and 91239/91785/91786 (after), 3: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-qos-round.mjs, 4: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-inflight.py, 5: libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts, 6: docs/reporting/memory/findings/bl331-root-cause.md, 7: libs/host-runtime/src/os-unit.ts (resolveProcessType) + libs/host-runtime/src/os-unit.spec.ts (BL-331 red->green), 8: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-after.py, 9: launchd.plist(5) ProcessType semantics]
 
 ---
 
@@ -2577,3 +2607,37 @@ Across the whole >30 s embed tail: **35130 s wall, 31175 s (88.7%) system sleep.
 **Related:** BL-331 (defect 2), BL-351 (the substrate that must not inherit this), BL-353, BL-319.
 
 Citations: [wip/turso-live-metrics, performance-engineer, claude, BL-331 investigation, 1: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-sleep-overlap.py, 2: libs/memory-core/src/telemetry.ts, 3: docs/reporting/memory/bl331-root-cause.md §2, 4: docs/observability/README.md §6]
+
+---
+
+### BL-375 — `service enable` rebuilds unit env from the INVOKING SHELL, silently dropping any tunable it does not happen to have — **Open (HIGH)** (2026-07-31)
+
+**Driver — hit live while deploying BL-331, and it nearly turned both emergency brakes off on the running memory-server.**
+
+`buildOsUnitEnv()` composes the launchd unit's `EnvironmentVariables` by filtering **`process.env` of whatever shell ran `soxe service enable`** through an allowlist.[1] It does not read the previously-generated unit, does not diff against it, and does not warn about keys that were present before and are absent now. Consequence: **a service's configuration is only as durable as the ambient environment of whoever last regenerated its unit.**
+
+Observed: regenerating the memory-server unit to change one unrelated key (`ProcessType`) produced a plist that had silently lost
+
+```
+SOX_DISABLE_EMBED_HEAL=1
+SOX_DISABLE_PERIODIC_ENRICH=1
+```
+
+— **both live emergency brakes (BL-339, BL-346).** The command reported success (`updated … loaded: yes`) and said nothing. The only reason this was caught is that the deploy procedure diffs the regenerated plist against a snapshot; without that step the next backend spawn would have re-enabled embed heal and periodic enrich on a store with a 3,246-item backlog — reproducing the exact BL-346 outage the brakes exist to prevent.
+
+**Why the allowlist comment makes it worse, not better.** `buildOsUnitEnv` carries the note *"forwarded so the supported `soxe service enable` regeneration path can carry it into the launchd unit — never hand-edit the generated plist to inject env."*[1] The supported path is therefore the **only** sanctioned way to set these, and that same path drops them whenever the operator's shell does not re-supply them. Correct usage requires knowing, from memory, every tunable a unit was ever given.
+
+**This is the same failure shape as BL-372:** a step reports success, every surface reads green, and the thing you actually changed did not survive.
+
+**Fix sketch:**
+1. On regeneration, **read the existing unit's env and diff it.** Any allowlisted key present before and absent now must at minimum print a loud warning naming the key; preferably it is **carried forward** unless explicitly cleared (`--unset KEY`).
+2. Persist service tunables in the extension's scope config so they are a property of the installation rather than of a shell, and have `buildOsUnitEnv` read *that* — the env forward becomes an override, not the source of truth.
+3. `service enable` should print the env diff it is about to apply, the way it already prints the content hash.
+
+**Acceptance (red→green, must name BL-375):** generate a unit with `SOX_DISABLE_EMBED_HEAL=1` in the environment, regenerate it from an environment lacking that key, and assert the key is either preserved or the command fails/warns explicitly. Today it is silently dropped and the command reports success.
+
+**Severity:** HIGH — it silently discards live safety configuration on the supported path, with a success message, and it did so on the production service today.
+
+**Related:** BL-331 (found during its deploy), BL-339 / BL-346 (the brakes at risk), BL-372 (same green-but-not-deployed shape), BL-344 (the six duplicated env allowlists this rides on).
+
+Citations: [wip/turso-live-metrics, performance-engineer, claude, BL-331 deploy, 1: apps/sox/src/main.ts `buildOsUnitEnv()` ~4631-4650, 2: observed plist diff 2026-07-31 — `~/.adhd/sox-ecosystem/memory/bl331-predeploy-20260731-180139/plist.before` vs the regenerated unit, 3: libs/host-runtime/src/os-unit.ts (enableOsUnit rewrite path)]
