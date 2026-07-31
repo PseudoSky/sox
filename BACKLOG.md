@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 90.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 91.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,12 +23,12 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31: **90 open**.
+Regenerated 2026-07-31: **91 open**.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-372, BL-373, BL-374, BL-375, BL-377, BL-380 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-372, BL-373, BL-374, BL-375, BL-377, BL-380, BL-381 |
 | **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378 |
 | **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363, BL-379 |
 | **UNSET** | BL-163 |
@@ -2213,6 +2213,45 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: extensi
 **Related:** BL-377 (the first two sites, fixed), BL-364 (15 hybrid-search tests — likely the same cause), BL-291 (typed native-open errors across SQLite-backed packages), BL-340 (specs were never typechecked, which is how this class hides).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: repo-wide audit of `as SqliteAdapter` / `.unwrap()` excluding specs, 2026-07-31, 2: libs/data/vectors/vector-store/src/index.ts:143,200,359, 3: extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts:180,218,322, 4: BL-377, 5: libs/memory-core/src/db.ts:373 (the correctly-gated form)]
+
+---
+
+### BL-381 — Near-duplicate detection issues a sqlite-vec `vec0` KNN query against Turso and fails on every call — **Open (HIGH)** (2026-07-31)
+
+**Driver.** `libs/memory-core/src/neardup.ts:46` issues, unconditionally:
+
+```sql
+SELECT node_id, embedding
+  FROM vec_node
+ WHERE embedding MATCH ? AND k = ?
+```
+
+`MATCH ... AND k = ?` is **sqlite-vec `vec0` KNN syntax**. Turso stores vectors as a native `F32_BLOB` column with no `vec0` virtual table and no `k` pseudo-column, so the statement fails at prepare time:
+
+```
+prepare failed: Parse error: no such column: k     adapter_type: turso
+```
+
+**Observed live, on the default backend, today.** Three occurrences at 23:34:01 under a single trace-id (`01KYX8E2SSD7HG94DZ62M3FP7Y`) from the running memory-server (pid 69947) during the first enrich pass after the brakes were lifted. The event catalog in `docs/observability/README.md` already shows `embed_pipeline.neardup.error` firing 10 times historically — **the signal has been in the telemetry since the migration and nobody read it** (BL-353).
+
+**Why it went unnoticed: the enrich pass catches and continues.** `embed_pipeline.neardup.error` is logged and the pass proceeds, so near-duplicate detection has been **silently non-functional on Turso** while every surface reported healthy. No user-visible error, no status field, no failed write — just a feature that quietly does nothing. `memory_near_duplicates` and any supersession logic depending on it are affected.
+
+**Same class as BL-377 and BL-380: sqlite-only code reaching the default backend.** Unlike those two this is not a cast — it is a hardcoded SQL *dialect*. The codebase already has the correct abstraction for exactly this: `VectorDialect` in `@adhd/sox-store-adapter`, the sibling of the `FTSDialect` introduced for the same reason during the migration. `neardup.ts` bypasses it.
+
+This is the fourth distinct instance today of *the same underlying failure*: a sqlite-shaped assumption surviving the Turso migration because nothing typechecked or exercised it on the default backend (BL-377 export/re-embed, BL-380 six unchecked casts, BL-364's inverted constructor, and this). **The pattern is worth a systematic sweep, not four point fixes** — see the fix sketch.
+
+**Fix sketch:**
+1. Route the KNN query through `VectorDialect` so the Turso path emits its native distance syntax and the sqlite path keeps `vec0`. The dialect already exists; this is a missing call site, not new design.
+2. **Do not let it fail silently.** A caught-and-continued error on a feature path must surface in status (BL-334) or it is indistinguishable from "no duplicates found" — the same shape as BL-347, BL-376 and BL-378.
+3. **Sweep for remaining sqlite-only SQL** reaching the adapter — `vec0`/`MATCH`/`k =`/`fts5`/`rank` literals outside a dialect. That sweep is the systematic version of the four point fixes and is the actual deliverable.
+
+**Acceptance (red→green, must name BL-381):** call the near-duplicate path against a **Turso** store with known near-duplicate content and assert duplicates are returned. Must fail today with `no such column: k`. A second assertion must prove the failure is **reported** rather than swallowed.
+
+**Severity:** HIGH — a shipped feature has been silently non-functional on the default backend since the migration, and the error was in the telemetry the whole time.
+
+**Related:** BL-377 (export/re-embed, same class, fixed), BL-380 (six unchecked casts), BL-364 (inverted constructor), BL-353 (the telemetry nobody read), BL-334 (surface it), BL-327 (supersession/communities depend on this path).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/memory-core/src/neardup.ts:46, 2: live store.error pid 69947 trace 01KYX8E2SSD7HG94DZ62M3FP7Y at 2026-07-31T23:34:01Z, 3: docs/observability/README.md event catalog (`embed_pipeline.neardup.error` ×10), 4: libs/data/store/store-adapter (VectorDialect, the abstraction being bypassed)]
 
 ---
 
