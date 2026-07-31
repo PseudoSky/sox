@@ -82,7 +82,7 @@ describe('enqueueIngest', () => {
 
   it('uses priority 2 for agent-less writes (null agent_id)', async () => {
     await enqueueIngest(db, 'uid-anon-1', null);
-    const row = await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await await allRows()[0]!;
+    const row = (await allRows())[0]!;
     expect(row.priority).toBe(2);
     expect(JSON.parse(row.payload)).toEqual({ uid: 'uid-anon-1', agent_id: null });
   });
