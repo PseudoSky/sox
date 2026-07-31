@@ -62,8 +62,8 @@ describe('memoryRecall — real SQLite integration', () => {
     const raw = db.unwrap() as Database.Database;
 
     try {
-      const w1 = await memoryWrite(raw, { content: 'The sky is blue and vast.', project_path: '/test/project' });
-      const w2 = await memoryWrite(raw, { content: 'The ocean has deep trenches.', project_path: '/test/project' });
+      const w1 = await memoryWrite(db, { content: 'The sky is blue and vast.', project_path: '/test/project' });
+      const w2 = await memoryWrite(db, { content: 'The ocean has deep trenches.', project_path: '/test/project' });
 
       expect(w1).toHaveProperty('episode_uid');
       expect(w2).toHaveProperty('episode_uid');
@@ -90,7 +90,7 @@ describe('memoryRecall — real SQLite integration', () => {
 
     try {
       const before = new Date().toISOString();
-      await memoryWrite(raw, { content: 'Temporal recall test: first claim written.', project_path: '/test/project' });
+      await memoryWrite(db, { content: 'Temporal recall test: first claim written.', project_path: '/test/project' });
       const after = new Date().toISOString();
 
       // This is the exact branch that was broken: as_of triggers the aliased
@@ -124,7 +124,7 @@ describe('memoryRecall — real SQLite integration', () => {
 
     try {
       // Write old claim
-      const w1 = await memoryWrite(raw, { content: 'Old claim: the bridge is red.', project_path: '/test/project' });
+      const w1 = await memoryWrite(db, { content: 'Old claim: the bridge is red.', project_path: '/test/project' });
       expect(w1).toHaveProperty('episode_uid');
       const oldUid = (w1 as { episode_uid: string }).episode_uid;
 
@@ -139,7 +139,7 @@ describe('memoryRecall — real SQLite integration', () => {
       raw.prepare('UPDATE node SET t_invalid = ? WHERE uid = ?').run(invalidationTime, oldUid);
 
       // Write a new (replacement) claim
-      const w2 = await memoryWrite(raw, { content: 'New claim: the bridge is painted blue.', project_path: '/test/project' });
+      const w2 = await memoryWrite(db, { content: 'New claim: the bridge is painted blue.', project_path: '/test/project' });
       expect(w2).toHaveProperty('episode_uid');
 
       // Current recall: invalidated claim must NOT appear
@@ -202,9 +202,9 @@ describe('MCP bundle path — real embedding semantic proof', () => {
 
       try {
         // Write two semantically related claims and one unrelated claim
-        await memoryWrite(raw, { content: 'Neural networks learn representations from data.', project_path: '/test/project' });
-        await memoryWrite(raw, { content: 'Deep learning models train on large datasets.', project_path: '/test/project' });
-        await memoryWrite(raw, { content: 'The quarterly budget report is due on Friday.', project_path: '/test/project' });
+        await memoryWrite(db, { content: 'Neural networks learn representations from data.', project_path: '/test/project' });
+        await memoryWrite(db, { content: 'Deep learning models train on large datasets.', project_path: '/test/project' });
+        await memoryWrite(db, { content: 'The quarterly budget report is due on Friday.', project_path: '/test/project' });
 
         // Verify the active model is the real BGE model (not 'hash')
         const activeModel = getActiveEmbedModel();
@@ -253,11 +253,11 @@ describe('BL-162: in-process periodic batch enrichment', () => {
     const raw = db.unwrap() as Database.Database;
     try {
       // Write a couple of episodes so enrichment has something to process.
-      await memoryWrite(raw, { content: 'Fallback enrichment test: first episode content here.', project_path: '/test/project' });
-      await memoryWrite(raw, { content: 'Fallback enrichment test: second episode content here.', project_path: '/test/project' });
+      await memoryWrite(db, { content: 'Fallback enrichment test: first episode content here.', project_path: '/test/project' });
+      await memoryWrite(db, { content: 'Fallback enrichment test: second episode content here.', project_path: '/test/project' });
 
       // This is exactly what the in-process periodic enrichment loop calls.
-      const result = await runBatchEnrich(raw, { incrementalCluster: true });
+      const result = await runBatchEnrich(db, { incrementalCluster: true });
 
       // Must not throw; must return a valid result shape.
       expect(typeof result.importance_updated).toBe('number');
