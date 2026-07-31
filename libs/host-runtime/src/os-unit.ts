@@ -58,6 +58,74 @@ export function detectOsSupervisor(platform: NodeJS.Platform = process.platform)
 
 // ─── The platform-neutral unit spec (derived from the manifest, §9.2) ────────────
 
+/**
+ * launchd `ProcessType` (launchd.plist(5)). Governs CPU QoS, core affinity and
+ * I/O throttling — NOT just niceness.
+ *
+ * - `Background`  — "work that was not directly requested by the user"; the
+ *   heaviest throttle. On Apple Silicon this pins the job to efficiency cores.
+ * - `Standard`    — "equivalent to no ProcessType being set"; the neutral default.
+ * - `Adaptive`    — moves between Background and Interactive **based on activity
+ *   over XPC connections**.
+ * - `Interactive` — no resource limits, as an app; the man page says to use it
+ *   only when responsiveness depends on it and the job "cannot be made Adaptive".
+ */
+export type OsUnitProcessType = 'Interactive' | 'Adaptive' | 'Standard' | 'Background';
+
+const OS_UNIT_PROCESS_TYPES: readonly OsUnitProcessType[] = [
+  'Interactive',
+  'Adaptive',
+  'Standard',
+  'Background',
+];
+
+/**
+ * BL-331: resolve the scheduling class for a unit.
+ *
+ * This was hardcoded to `Background` for EVERY unit. Measured consequence on the
+ * live memory-server: scheduling priority 4 instead of 31, and an interleaved A/B
+ * (`taskpolicy -b`, which reproduces the same pri 4) put real ONNX embedding at
+ * ~470 ms unthrottled vs ~8400 ms throttled — an **18x** penalty on a service
+ * whose entire job is answering interactive agent requests. Model load was hit
+ * too (~686 ms vs ~8-12 s), confirming it is a general CPU throttle rather than
+ * anything embed-specific.
+ *
+ * Default choice, deliberately:
+ *
+ * - A **periodic tick** unit (`startIntervalSec`) gets `Background`. It is
+ *   literally launchd.plist(5)'s "work that was not directly requested by the
+ *   user", and throttling it is the point.
+ * - Everything else gets **`Standard`** — "equivalent to no ProcessType being
+ *   set", i.e. the neutral scheduling class with no background penalty.
+ *
+ * Explicitly NOT `Adaptive`, despite it looking like the obvious middle ground:
+ * launchd.plist(5) says Adaptive promotes a job out of Background **based on
+ * activity over XPC connections**. sox services talk UDS and TCP and never open
+ * an XPC connection, so there is no promotion signal — an Adaptive sox unit would
+ * sit in the Background class and reintroduce this exact defect, silently.
+ *
+ * Explicitly NOT `Interactive` by default either: the man page reserves it for
+ * jobs whose responsiveness genuinely cannot be expressed otherwise, and it lifts
+ * resource limits entirely. A manifest may still opt into it via
+ * `lifecycle.process_type` when a service earns it.
+ */
+export function resolveProcessType(spec: {
+  processType?: OsUnitProcessType | undefined;
+  startIntervalSec?: number | undefined;
+}): OsUnitProcessType {
+  if (spec.processType !== undefined) return spec.processType;
+  return spec.startIntervalSec !== undefined && spec.startIntervalSec > 0
+    ? 'Background'
+    : 'Standard';
+}
+
+/** Narrow an untrusted manifest value; unknown strings are ignored, never emitted. */
+function coerceProcessType(raw: unknown): OsUnitProcessType | undefined {
+  return typeof raw === 'string' && (OS_UNIT_PROCESS_TYPES as readonly string[]).includes(raw)
+    ? (raw as OsUnitProcessType)
+    : undefined;
+}
+
 export interface OsUnitSpec {
   /** Extension id. */
   id: string;
@@ -98,6 +166,14 @@ export interface OsUnitSpec {
    * Absent for ordinary long-lived services (no periodic relaunch).
    */
   startIntervalSec?: number | undefined;
+  /**
+   * BL-331: scheduling class for the unit. Declared by the manifest as
+   * `lifecycle.process_type`; when absent, `resolveProcessType()` derives it
+   * from the unit kind (tick ⇒ Background, everything else ⇒ Standard).
+   * Never hardcode this — see `resolveProcessType` for why the old
+   * unconditional `Background` cost an 18x throttle on the live service.
+   */
+  processType?: OsUnitProcessType | undefined;
   /** Durable stdout log path (ADR-0004 run/logs/). */
   stdoutPath: string;
   /** Durable stderr log path (ADR-0004 run/logs/). */
@@ -178,9 +254,34 @@ export function deriveOsUnitSpec(opts: {
   socketPath?: string | undefined;
   /** Slice 4: periodic-relaunch interval in seconds (see OsUnitSpec.startIntervalSec). */
   startIntervalSec?: number | undefined;
+  /**
+   * BL-331: explicit scheduling class, overriding both the manifest's
+   * `lifecycle.process_type` and the kind-derived default.
+   */
+  processType?: OsUnitProcessType | undefined;
 }): OsUnitSpec {
   const label = osUnitLabel(opts.scope, opts.id);
   const logDate = opts.logDate ?? new Date().toISOString().slice(0, 10);
+
+  // BL-331: the manifest may declare a scheduling class. Read it regardless of
+  // which activation branch runs below — activation posture and scheduling class
+  // are orthogonal, and an `always-on` service must still be able to say it is
+  // not background work.
+  let manifestLifecycle: {
+    background?: boolean;
+    singleton?: boolean;
+    process_type?: unknown;
+  } = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(opts.manifestPath, 'utf8')) as {
+      lifecycle?: typeof manifestLifecycle;
+    };
+    manifestLifecycle = parsed.lifecycle ?? {};
+  } catch {
+    manifestLifecycle = {};
+  }
+  const processType =
+    opts.processType ?? coerceProcessType(manifestLifecycle.process_type);
 
   // SA-1: activation_posture takes precedence.
   // When absent, fall back to manifest lifecycle (backward compat).
@@ -193,14 +294,8 @@ export function deriveOsUnitSpec(opts: {
     runAtLoad = false;
     keepAlive = false;
   } else {
-    // Legacy: read from manifest lifecycle block.
-    let manifest: { lifecycle?: { background?: boolean; singleton?: boolean } } = {};
-    try {
-      manifest = JSON.parse(fs.readFileSync(opts.manifestPath, 'utf8'));
-    } catch { manifest = {}; }
-    const lc = manifest.lifecycle ?? {};
-    runAtLoad = lc.background !== false;
-    keepAlive = lc.singleton === true;
+    runAtLoad = manifestLifecycle.background !== false;
+    keepAlive = manifestLifecycle.singleton === true;
   }
 
   return {
@@ -226,6 +321,13 @@ export function deriveOsUnitSpec(opts: {
     ...(opts.startIntervalSec !== undefined && opts.startIntervalSec > 0
       ? { startIntervalSec: Math.floor(opts.startIntervalSec) }
       : {}),
+    // BL-331: resolve eagerly so the spec carries the decision and the renderers
+    // stay dumb. An unknown manifest value coerces to undefined above and falls
+    // through to the kind-derived default rather than reaching the plist.
+    processType: resolveProcessType({
+      processType,
+      startIntervalSec: opts.startIntervalSec,
+    }),
   };
 }
 
@@ -455,8 +557,12 @@ export class LaunchdPlatform implements OsUnitPlatform {
       `  <string>${xmlEscape(spec.stdoutPath)}</string>`,
       '  <key>StandardErrorPath</key>',
       `  <string>${xmlEscape(spec.stderrPath)}</string>`,
+      // BL-331: NOT hardcoded. `Background` throttles CPU, core affinity and I/O
+      // (launchd.plist(5)); on Apple Silicon it pins the job to efficiency cores,
+      // which cost the live memory-server an 18x embed slowdown. See
+      // `resolveProcessType` for the default policy and why `Adaptive` is wrong here.
       '  <key>ProcessType</key>',
-      '  <string>Background</string>',
+      `  <string>${resolveProcessType(spec)}</string>`,
       '</dict>',
       '</plist>',
       '',
@@ -566,6 +672,12 @@ export class SystemdPlatform implements OsUnitPlatform {
       envLines,
       `Restart=${spec.keepAlive ? 'on-failure' : 'no'}`,
       `RestartSec=${spec.throttleIntervalSec}`,
+      // BL-331 parity: systemd has no ProcessType, so only the de-prioritised
+      // class is expressed, as `Nice`. Standard/Adaptive/Interactive emit
+      // nothing — systemd's default is already the unthrottled class, and
+      // emitting `Nice=0` would churn the content hash of every existing unit
+      // for no behavioural change.
+      ...(resolveProcessType(spec) === 'Background' ? ['Nice=10'] : []),
       'StartLimitIntervalSec=60',
       'StartLimitBurst=5',
       `StandardOutput=append:${spec.stdoutPath}`,
