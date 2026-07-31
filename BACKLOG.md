@@ -2238,7 +2238,11 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/me
 | 23:38 – 23:46 | **2105, flat** | backend at **0.3% CPU** with **3,199 items pending** |
 | 23:46 | 2157 | next tick fires |
 
-So the machine sat effectively idle for five minutes with thousands of items queued and ~19x the throughput now available. Sustained drain is **~1.4/s averaged over the cycle** against an in-burst **~1.7/s** — the gap is pure scheduling latency, not work.
+So the machine sat effectively idle for five minutes with thousands of items queued and ~19x the throughput now available. **Sustained end-to-end drain, measured over 25.8 minutes with both brakes off: 0.45/s** (+701 vectors, 1685 → 2386). In-burst is ~1.7/s. **The idle gaps dominate by roughly 4x** — the machine spends most of the window doing nothing while thousands of items wait.
+
+Three different rates were quoted during this investigation before the honest one was measured — 1.7/s (in-burst), 1.4/s (estimated over one cycle), and finally **0.45/s (actual, over 25.8 min)**. Only the last is a throughput figure; the first two are instantaneous rates generalised into steady-state claims. **That is the same error as BL-331's original "18x" framing**, repeated within hours of documenting it. Any future rate claim here must state its measurement window.
+
+At 0.45/s the remaining ~3,199-item embed backlog takes **~2 hours**. At the in-burst rate it would be ~30 minutes. The difference is entirely scheduling latency.
 
 **Second-order effect on latency, not just throughput:** a freshly written episode is unsearchable by vector until the next tick. Worst case is the full interval plus queue position. Nothing reports this delay, so it is indistinguishable from an embedding that failed.
 
