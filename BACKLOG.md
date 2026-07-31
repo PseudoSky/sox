@@ -18,10 +18,15 @@ Regenerate with:
 node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.md","utf8").split("\n")){const m=l.match(/^###\s*(?:BL|TQ)-\d+\s*—\s*(.*)$/);if(!m)continue;const k=[...m[1].matchAll(/\*\*([^*]+)\*\*/g)].pop();if(k&&/^(open|reopened|blocked)/i.test(k[1]))o++;}console.log("open:",o)'
 ```
 
+Regenerated 2026-07-31 (BL-355 filed): **74 open**, 1 closed-in-place.
+
 | Priority | Open items |
 |---|---|
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325 |
-| **MEDIUM** | BL-99, BL-104, BL-105, BL-312, BL-228, BL-259, BL-296, BL-306, BL-307, BL-308, BL-274, BL-282, BL-285, BL-291, BL-300, BL-315, BL-317 |
+| **CRITICAL** | BL-348 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-343, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-354 |
+| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350 |
+| **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355 |
+| **UNSET** | BL-163 (heading marker carries no priority — needs one) |
 
 ## Audit
 
@@ -1421,7 +1426,37 @@ The deliverable is therefore **a researched tool selection plus a thin wrapper/s
 
 **Severity:** HIGH — this is the enabling gap beneath BL-319, BL-322, BL-331, BL-334 and BL-345. Each is individually blocked on measurement that does not exist.
 
-**Related:** BL-320 (the memory-core-only precedent to generalize), BL-319, BL-322, BL-331, BL-334, BL-344 (controls scrubbed), BL-345, BL-348 (per-stage attribution), and `docs/reporting/memory/sandbox/PLAN.md` §P1.
+**Related:** BL-320 (the memory-core-only precedent to generalize), BL-319, BL-322, BL-331, BL-334, BL-344 (controls scrubbed), BL-345, BL-348 (per-stage attribution), BL-353 (role field + start/finish accounting, folded into the design), BL-354 (the concrete missing wait measurement), and `docs/reporting/memory/sandbox/PLAN.md` §P1.
+
+---
+
+#### RESEARCH COMPLETE (2026-07-31) — recommendation in [`docs/research/observability-substrate.md`](./docs/research/observability-substrate.md)
+
+**Memory-first, per the DRY directive:** `memory_recall` found **no prior internal tracing work and no prior tool research** — top hits scored 0.0056 and were off-topic. Vector recall functioned; keyword/FTS returned zero-to-one rows, consistent with BL-347. A live search was therefore required and performed; the evaluation is logged to memory.[6]
+
+**Recommendation:** adopt the **OpenTelemetry API facade** (`@opentelemetry/api` 1.9.1, Apache-2.0, **zero runtime dependencies**) in every library; confine the **SDK** (`sdk-trace-base` + `sdk-metrics` + `context-async-hooks`, all 2.10.0) to the composition root; export through a **pull-only `MetricReader` driven by `memory_ping`**. **No collector, no daemon, no background timer.** Wrapped in `@adhd/sox-telemetry`, the only module permitted to import `@opentelemetry/*` (lint-enforced).
+
+**Hard constraints verified by local prototype, not by marketing claim:**[7]
+- **stdout:** bundled the full recommended set to CJS and executed it with stdout redirected — **0 occurrences of `process.stdout`, 0 bytes written at runtime.** The entire stdout hazard surface reduces to three opt-in exports (`DiagConsoleLogger`, `ConsoleMetricExporter`, `ConsoleSpanExporter`), which a lint rule bans outright. `pino` **fails** this by default (writes to fd 1).
+- **Bundling:** **0 `.node` references, 0 externals required.** 573,358 bytes unminified CJS (+23.7% on the 2,418,414-byte `memory-server/dist/index.js`); the API facade alone is 52,962 bytes (+2.2%).
+- **BL-345 (no background work):** the pull-only reader reports **`process.getActiveResourcesInfo()` → `[]`** — zero timers, zero handles. `collect()` costs **0.635 ms** for 3 instruments × 10,000 samples, run synchronously inside the `memory_ping` that asked for it. The *default* OTel configuration (`PeriodicExportingMetricReader`) would have failed this — which is why `@opentelemetry/sdk-node` is rejected.
+- **Overhead, measured at 500k iterations:** span with **no SDK registered 96 ns**; SDK sampled-on **859 ns**; `histogram.record` **42 ns** (attribute-count-independent). Against a live `embed_duration_ms.mean` of **7,910 ms**, a span is **1.1 × 10⁻⁵ %**. Note: a *sampled-off* span still costs **508 ns** — turning the sampler down is not how you turn the cost off; only "no SDK registered" is genuinely cheap, which the facade-only library architecture gives us for free in tests and the CLI.
+
+**Acceptance criterion #1 already demonstrated in prototype:** two tracers with different scope names, separated by an `await`, with no parent passed across the call, joined on **one trace-id**. The same prototype demonstrates the failure mode the wrapper exists to prevent — **without `AsyncLocalStorageContextManager` registered, traces silently shatter into separate roots**: no error, no warning, spans still emitted. That single forgettable line is the strongest argument for the wrapper, and `initTelemetry()` makes it unreachable to get wrong.
+
+**How the design defeats the BL-319 class of mistake structurally:** stages are a **closed union declared once per package**, naming *both* code paths up front (`embed: { paths: ['write','heal'] }`), so an undeclared stage is a **compile error** and a second differently-named metric for the sibling path cannot be invented at a call site. `telemetrySelfCheck()` — exposed through `memory_stats` — reports **which declared paths have produced zero samples**, turning BL-319's invisible defect (`0` is indistinguishable from idle) into a named machine-readable finding. Plus `instrumentBoundary`, generalising the existing `instrumentAdapter` Proxy so methods written later are instrumented by construction.
+
+**wait-vs-work:** made first-class by exposing **no API that can record work without wait** — `withContendedStage(stage, admit, work)` emits `sox.stage.wait_ms` and `sox.stage.work_ms` as a pair or not at all.
+
+**Rejected:** `@opentelemetry/sdk-node` (~30 deps incl. gRPC; default periodic reader is the BL-345 failure mode), `auto-instrumentations-node` (`require-in-the-middle` monkey-patching is incompatible with a self-contained esbuild bundle; auto-instrumenting `fs` on a SQLite hot path is an unbounded bet), `dd-trace` 6.8.0 (same bundling objection via `import-in-the-middle`; vendor sink; data never reaches `memory_ping`), `pino` (stdout default; `thread-stream` workers; we would have to reimplement `withTimedEvent`'s log-START-before-await contract on top of it anyway), `prom-client` (HTTP scrape model we have no consumer for; does not declare Node 24), and **a collector/backend daemon** — argued explicitly rather than defaulted away from: it answers the wrong question at the wrong time for a 3am `memory_ping` operator, reintroduces the background batch timer, and adds a second source of truth that can disagree with the status surface, which is precisely BL-334's walked-back-wrong-answers pattern. The design keeps OTLP-shaped data so an **opt-in, off-by-default** `SOX_TRACE_OTLP_ENDPOINT` remains available for a deliberate debugging session.
+
+**Also found:** SDK 2.x **removed the `View` and `ExplicitBucketHistogramAggregation` classes** — `new ExplicitBucketHistogramAggregation(...)` throws `TypeError: not a constructor` on 2.10.0. Any pre-2.0 tutorial or model recall produces code that does not run, which is a concrete demonstration of why the live-search directive exists.
+
+**Prerequisite, blocking:** BL-344. Read directly, the allowlist is duplicated in at least four places — `libs/host-runtime/src/supervisor.ts:308-325`, `apps/sox/src/main.ts:4632-4642`, `apps/sox/src/main.ts:8728-8738`, `libs/host-runtime/src/runtime-cli.ts:542` — and the source itself admits it at `main.ts:8731-8735`. Naming our vars `SOX_TRACE_*` and adding one `startsWith` clause would work, **but would be the fifth instance of the bug rather than a fix.**
+
+Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-351, 6: memory_recall 2026-07-31 (zero on-topic results, both queries), 7: prototype /Users/nix/.claude/jobs/1557bcef/tmp/otel-probe on Node v24.11.1 darwin arm64 — bundle sizes, stdout byte counts, ns/op benchmarks, collect() latency, getActiveResourcesInfo, cross-package trace join, exponential-histogram percentile error (p50 512 vs true 500, p99 1024 vs true 990), 8: npm registry 2026-07-31 (versions/licences/deps/publish dates), 9: docs/research/observability-substrate.md]
+
+---
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner directive 2026-07-31, 2: libs/memory-core/src/telemetry.ts, 3: BL-344 (allowlist scrubbing of SOX_MEMORY_LOG_*), 4: BL-319 (time_to_vector_ms 0 samples), 5: BL-334 (nine archaeology questions), 6: live `ls -la ~/.adhd/sox-ecosystem/memory/logs/` 2026-07-31 14:24 (17.2MB + 2.1MB JSONL), 7: owner requirement 2026-07-31]
 
@@ -1495,6 +1530,46 @@ The write queue accounts for essentially all its work; `store.open` and `write.p
 **Related:** BL-351 (the substrate that must not repeat this), BL-334 (surfacing), BL-319 (metrics), BL-331 (answered by this data), BL-323, BL-342, BL-348, BL-300/301, BL-344 (controls scrubbed, so the live service cannot be tuned).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: ~/.adhd/sox-ecosystem/memory/log-analysis/{analyze-events.py,analyze-live-vs-test.py} run against ~/.adhd/sox-ecosystem/memory/logs/memory-core-2026-07-{30,31}.jsonl, 2: libs/memory-core/src/telemetry.ts, 3: docs/observability/README.md]
+
+---
+
+### BL-354 — `WriteQueue` never measures queue wait time; `estimated_wait_ms` is a prediction reported as if it were an observation — **Open (HIGH)** (2026-07-31)
+
+**Driver.** BL-351 requires the wait-vs-work split as a first-class primitive and names `write_queue_wait` as the measurement Theme 2's resource governance is blocked on. Reading the code, the reason nothing reports it is concrete and small: **the queue never records when an item was enqueued.**
+
+`enqueue()` pushes `{ label, kind, operation, resolve, reject, traceId }` — **no timestamp**.[1] `_recordLatencySample(latencyMs, kind)` is called from `_processNext` with *execution* latency only, and feeds both the reporting rings and the admission-control estimator.[2] Every latency number the status surface reports for the write queue (`write_latency_ms`, `apply_latency_ms`, `recent_avg_task_latency_ms`) is therefore **work time exclusively**. The time an item spends sitting in the queue behind other work — the entire quantity of interest under contention — is never observed by anything.
+
+**The subtler defect.** `estimated_wait_ms` **is** reported, in the `E_BUSY(deadline)` rejection payload and its `details` block, and it reads like a measurement.[3] It is not: it is `(queue.length + in_flight + 1) × recentMean(work_latency)` — a *prediction* derived from work latency, computed only on the admission path, and **never compared against what actually happened**. Under a load where work latency and wait latency diverge (exactly the BL-345 starvation regime), the estimator is wrong in an unknown direction and nothing in the system can tell. This is the BL-334 pattern — a plausible number nobody can falsify.
+
+**Requirement.** Stamp the enqueue instant on the queue item; on dequeue, record `wait_ms = dequeued_at − enqueued_at` alongside the existing work sample, as a *paired* emission (BL-351 §5.2 — there must be no API that records one without the other). Report both through the status surface. Additionally record estimator error (`estimated_wait_ms` vs observed `wait_ms`) so the admission-control heuristic becomes falsifiable.
+
+**Note — do not replace `LatencyRing` with the OTel histogram here.** The admission-control estimator depends on `recentMean(RECENT_AVG_WINDOW)`, a *rolling window*; OTel histograms are cumulative and cannot express it. The histogram is for reporting, the ring is a control input. Swapping them would silently change admission behaviour.[4]
+
+**Acceptance (red→green, must name BL-354):** enqueue N tasks against a queue with a deliberately slow head-of-line task; assert the reported `write_queue.wait_ms` for the trailing tasks is non-zero and >> their `work_ms`. Must fail today (no such field exists). A second assertion: with an idle queue, `wait_ms ≈ 0` while `work_ms > 0` — proving the two are actually distinguished and not the same clock reported twice.
+
+**Severity:** HIGH — this is the single concrete missing measurement behind BL-351's wait-vs-work requirement and BL-322/BL-345's resource governance. Two emergency brakes are currently ON in production because of contention nothing measures.
+
+**Related:** BL-351 (the substrate; this is its first real consumer), BL-322, BL-345 (the contention this would quantify), BL-319, BL-334 (unfalsifiable numbers in the status surface), BL-353.
+
+Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-351, 1: libs/memory-core/src/write-queue.ts:615 (queue.push — no enqueue timestamp), 2: libs/memory-core/src/write-queue.ts:657-664 (_recordLatencySample — execution latency only), 3: libs/memory-core/src/write-queue.ts:576-612 (admission control estimator + E_BUSY details), 4: libs/memory-core/src/latency-stats.ts:99-113 (recentMean — rolling window), 5: docs/research/observability-substrate.md §3.5, §3.6]
+
+---
+
+### BL-355 — `tools/bundle-extension.cjs` does not minify; every dependency costs ~2.7x its minified footprint — **Open (LOW)** (2026-07-31)
+
+**Observation.** `tools/bundle-extension.cjs` passes no `--minify` to esbuild (grep for `minify` in the file returns nothing). Consequence, measured: `extensions/bundles/sox-memory-bundle/members/memory-server/dist/index.js` is **2,418,414 bytes**.[1] In a side-by-side test of the same entry, esbuild 0.25.0 produced **573,358 bytes** unminified vs **209,001 bytes** minified — a **2.7x** ratio.[2]
+
+**Why it is worth filing rather than ignoring.** It is not a defect and nothing is broken. But it sets the price of every future dependency at ~2.7x its real cost, and that price is now being paid on a live decision: BL-351's recommended OpenTelemetry set is +573 KB unminified (+23.7%) where minified it would be +209 KB (+8.6%). Enabling minification would recover more from the *existing* bundle than the new dependency adds.
+
+**Caveats that must be checked before flipping it**, not after: `--enable-source-maps` is already passed to the spawned entrypoint (`apps/sox/src/main.ts` exec path), so minification without `--sourcemap` would degrade stack traces from the exact production surface we debug against; and the registry checksums in `registry/index.json` change on every artifact, so this requires `npx nx run registry:sync-index` and a smoke-test pass in the same change.
+
+**Acceptance:** either minification is enabled with source maps and the smoke test passes with regenerated checksums, or a note is added to `docs/standards/extension-bundling.md` recording the deliberate decision not to and why.
+
+**Severity:** LOW — no functional impact.
+
+**Related:** BL-351 (the decision that surfaced it), BL-307/BL-309 (externals policy), `docs/standards/extension-bundling.md`.
+
+Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-351, 1: `ls -l extensions/bundles/sox-memory-bundle/members/memory-server/dist/index.js` 2026-07-31, 2: prototype /Users/nix/.claude/jobs/1557bcef/tmp/otel-probe (esbuild 0.25.0, same entry, with and without --minify), 3: tools/bundle-extension.cjs (no minify flag)]
 
 ---
 
