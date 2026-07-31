@@ -56,7 +56,7 @@ else. Earlier work scattered these across `docs/ideas/`, `docs/research/` and tw
 
 ---
 
-## The five traps that have each cost hours
+## The traps that have each cost hours
 
 Recorded here because none are inferable from the code, and each was rediscovered at least once.
 
@@ -72,3 +72,14 @@ Recorded here because none are inferable from the code, and each was rediscovere
   the axis that matters; the store is not the variable. (BL-331.)
 - **`duration_ms` is wall-clock** and accrues during system sleep, so every p90/p99/max from the
   telemetry is inflated by an unknown amount. Medians are fine. (BL-369.)
+- **⚠️ `soxe service enable` rebuilds the unit's env from YOUR SHELL** and silently drops any
+  allowlisted key it does not find there — while printing success. It dropped **both live emergency
+  brakes** (`SOX_DISABLE_EMBED_HEAL`, `SOX_DISABLE_PERIODIC_ENRICH`) on 2026-07-31, caught only by
+  diffing the regenerated plist against a snapshot. **Export the brakes you intend to keep, and diff
+  the plist afterwards.** (BL-375.) This is the highest-consequence trap on the list right now:
+  losing the brakes re-enables embed heal and periodic enrich against a 3,246-item backlog and
+  reproduces the BL-346 outage.
+- **Do not "improve" the launchd `ProcessType` to `Adaptive`.** It looks like the safe middle ground
+  and is a silent no-op: launchd.plist(5) promotes an Adaptive job out of `Background` based on
+  activity over **XPC connections**, and sox services speak UDS/TCP and never open one. The correct
+  value for a service is `Standard`; `Background` is correct only for periodic tick units. (BL-331.)
