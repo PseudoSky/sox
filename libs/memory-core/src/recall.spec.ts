@@ -25,7 +25,7 @@ afterAll(async () => {
 
 // ── DB helpers ────────────────────────────────────────────────────────────────
 
-function tmpDb(): { db: StoreAdapter; dir: string } {
+async function tmpDb(): Promise<{ db: StoreAdapter; dir: string }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-'));
   const db = await openDb(path.join(dir, 'test.db'));
   return { db, dir };

@@ -72,7 +72,7 @@ afterEach(async () => {
   tmpDirs = [];
 });
 
-function freshDb(): { db: import('better-sqlite3').Database; dbPath: string } {
+async function freshDb(): Promise<{ db: import('better-sqlite3').Database; dbPath: string }> {
   const dir = makeTempDir();
   tmpDirs.push(dir);
   const dbPath = path.join(dir, 'test.db');

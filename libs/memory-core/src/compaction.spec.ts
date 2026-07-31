@@ -62,7 +62,7 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-function freshDb(): { db: StoreAdapter; dbPath: string } {
+async function freshDb(): Promise<{ db: StoreAdapter; dbPath: string }> {
   const dir = makeTempDir();
   tmpDirs.push(dir);
   const dbPath = path.join(dir, 'test.db');

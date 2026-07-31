@@ -39,7 +39,7 @@ function tmpDir(): { dir: string; cleanup: () => void } {
   return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
-function createDb(dbPath: string): StoreAdapter {
+async function createDb(dbPath: string): Promise<StoreAdapter> {
   return await openDb(dbPath);
 }
 
@@ -85,11 +85,11 @@ describe('memoryLinkNode (B2)', () => {
   it('creates an edge between two existing nodes', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
-      const uidA = await seedEpisode(db);
-      const uidB = await seedEpisode(db);
+      const db = await createDb(path.join(dir, 't.db'));
+      const uidA = await seedEpisode(await db);
+      const uidB = await seedEpisode(await db);
 
-      const result = await memoryLinkNode(db, {
+      const result = await memoryLinkNode(await db, {
         src_uid: uidA,
         dst_uid: uidB,
         rel: 'RELATES_TO',
@@ -106,11 +106,11 @@ describe('memoryLinkNode (B2)', () => {
   it('returns error for unknown rel', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
-      const uidA = await seedEpisode(db);
-      const uidB = await seedEpisode(db);
+      const db = await createDb(path.join(dir, 't.db'));
+      const uidA = await seedEpisode(await db);
+      const uidB = await seedEpisode(await db);
 
-      const result = await memoryLinkNode(db, {
+      const result = await memoryLinkNode(await db, {
         src_uid: uidA,
         dst_uid: uidB,
         rel: 'INVALID_REL',
@@ -130,12 +130,12 @@ describe('memoryGetRelated (B2)', () => {
   it('returns related episodes via edges', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
-      const uidA = await seedEpisode(db);
-      const uidB = await seedEpisode(db);
-      seedEdge(db, rowidForUid(db, uidA), rowidForUid(db, uidB), 'RELATES_TO');
+      const db = await createDb(path.join(dir, 't.db'));
+      const uidA = await seedEpisode(await db);
+      const uidB = await seedEpisode(await db);
+      seedEdge(await db, rowidForUid(await db, uidA), rowidForUid(await db, uidB), 'RELATES_TO');
 
-      const result = await memoryGetRelated(db, { uid: uidA });
+      const result = await memoryGetRelated(await db, { uid: uidA });
 
       expect(result.source_uid).toBe(uidA);
       expect(result.edges.length).toBeGreaterThanOrEqual(1);
@@ -153,12 +153,12 @@ describe('memoryGetEntityEpisodes (B2)', () => {
   it('returns episodes mentioning an entity', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
-      const epUid = await seedEpisode(db);
-      const entityUid = seedEntity(db, 'test-entity');
-      seedEdge(db, rowidForUid(db, epUid), rowidForUid(db, entityUid), 'MENTIONS');
+      const db = await createDb(path.join(dir, 't.db'));
+      const epUid = await seedEpisode(await db);
+      const entityUid = seedEntity(await db, 'test-entity');
+      seedEdge(await db, rowidForUid(await db, epUid), rowidForUid(await db, entityUid), 'MENTIONS');
 
-      const result = await memoryGetEntityEpisodes(db, { entity_uid: entityUid });
+      const result = await memoryGetEntityEpisodes(await db, { entity_uid: entityUid });
 
       expect(result.entity?.uid).toBe(entityUid);
       expect(result.episodes?.length).toBeGreaterThanOrEqual(1);
@@ -176,12 +176,12 @@ describe('memoryListEntities (B2)', () => {
   it('lists entities ranked by mention count', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
-      const epUid = await seedEpisode(db);
-      const entityUid = seedEntity(db, 'ranked-entity');
-      seedEdge(db, rowidForUid(db, epUid), rowidForUid(db, entityUid), 'MENTIONS');
+      const db = await createDb(path.join(dir, 't.db'));
+      const epUid = await seedEpisode(await db);
+      const entityUid = seedEntity(await db, 'ranked-entity');
+      seedEdge(await db, rowidForUid(await db, epUid), rowidForUid(await db, entityUid), 'MENTIONS');
 
-      const result = await memoryListEntities(db, {});
+      const result = await memoryListEntities(await db, {});
 
       expect(result.entities.length).toBeGreaterThanOrEqual(1);
       expect(result.entities[0]!.name).toBe('ranked-entity');
@@ -199,12 +199,12 @@ describe('memoryGetNearDuplicates (B2)', () => {
   it('lists SAME_AS edge pairs', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
-      const uidA = await seedEpisode(db);
-      const uidB = await seedEpisode(db);
-      seedEdge(db, rowidForUid(db, uidA), rowidForUid(db, uidB), 'SAME_AS');
+      const db = await createDb(path.join(dir, 't.db'));
+      const uidA = await seedEpisode(await db);
+      const uidB = await seedEpisode(await db);
+      seedEdge(await db, rowidForUid(await db, uidA), rowidForUid(await db, uidB), 'SAME_AS');
 
-      const result = await memoryGetNearDuplicates(db, {});
+      const result = await memoryGetNearDuplicates(await db, {});
 
       expect(result.pairs.length).toBeGreaterThanOrEqual(1);
       expect(result.pairs[0]!.uid_a).toBe(uidA);
@@ -222,10 +222,10 @@ describe('memoryGetSupersessionChain (B2)', () => {
   it('returns chain with canonical uid', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
-      const uidA = await seedEpisode(db);
+      const db = await createDb(path.join(dir, 't.db'));
+      const uidA = await seedEpisode(await db);
 
-      const result = await memoryGetSupersessionChain(db, { uid: uidA });
+      const result = await memoryGetSupersessionChain(await db, { uid: uidA });
 
       expect(result.canonical_uid).toBe(uidA);
       expect(result.chain.length).toBeGreaterThanOrEqual(1);
@@ -243,17 +243,17 @@ describe('memoryGetSessionState / memorySaveSessionState (B2)', () => {
   it('round-trips session state', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
+      const db = await createDb(path.join(dir, 't.db'));
       const sessionId = 'test-session-1';
       const state = { foo: 'bar', count: 42 };
 
-      const saveResult = await memorySaveSessionState(db, {
+      const saveResult = await memorySaveSessionState(await db, {
         session_id: sessionId,
         state,
       });
       expect(saveResult.ok).toBe(true);
 
-      const getResult = await memoryGetSessionState(db, { session_id: sessionId });
+      const getResult = await memoryGetSessionState(await db, { session_id: sessionId });
       expect(getResult.state).toEqual(state);
       db.close();
     } finally {
@@ -268,12 +268,12 @@ describe('memoryListTopics (B3)', () => {
   it('lists topics with episode counts', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
-      await seedEpisode(db, { topic: 'alpha' });
-      await seedEpisode(db, { topic: 'alpha' });
-      await seedEpisode(db, { topic: 'beta' });
+      const db = await createDb(path.join(dir, 't.db'));
+      await seedEpisode(await db, { topic: 'alpha' });
+      await seedEpisode(await db, { topic: 'alpha' });
+      await seedEpisode(await db, { topic: 'beta' });
 
-      const result = await memoryListTopics(db, {});
+      const result = await memoryListTopics(await db, {});
 
       expect(result.total).toBe(2);
       const alpha = result.topics.find((t) => t.topic === 'alpha');
@@ -293,12 +293,12 @@ describe('memoryListProjects (B3)', () => {
   it('lists projects with episode counts', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
-      await seedEpisode(db, { project_path: '/project/a' });
-      await seedEpisode(db, { project_path: '/project/a' });
-      await seedEpisode(db, { project_path: '/project/b' });
+      const db = await createDb(path.join(dir, 't.db'));
+      await seedEpisode(await db, { project_path: '/project/a' });
+      await seedEpisode(await db, { project_path: '/project/a' });
+      await seedEpisode(await db, { project_path: '/project/b' });
 
-      const result = await memoryListProjects(db, {});
+      const result = await memoryListProjects(await db, {});
 
       expect(result.total).toBe(2);
       const a = result.projects.find((p) => p.project_path === '/project/a');
@@ -316,10 +316,10 @@ describe('memoryCurate retag (B3)', () => {
   it('adds tags additively', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
-      const epUid = await seedEpisode(db, { tags: ['existing'] });
+      const db = await createDb(path.join(dir, 't.db'));
+      const epUid = await seedEpisode(await db, { tags: ['existing'] });
 
-      const result = await memoryCurate(db, {
+      const result = await memoryCurate(await db, {
         op: 'retag',
         uid: epUid,
         tags: ['new-tag'],
@@ -338,10 +338,10 @@ describe('memoryCurate set_topic (B3)', () => {
   it('updates topic', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
-      const epUid = await seedEpisode(db, { topic: 'old' });
+      const db = await createDb(path.join(dir, 't.db'));
+      const epUid = await seedEpisode(await db, { topic: 'old' });
 
-      const result = await memoryCurate(db, {
+      const result = await memoryCurate(await db, {
         op: 'set_topic',
         uid: epUid,
         topic: 'new-topic',
@@ -363,11 +363,11 @@ describe('memoryGetStats (B3)', () => {
   it('returns stats with coverage counts', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
-      await seedEpisode(db, { topic: 't1' });
-      await seedEpisode(db, { topic: 't2' });
+      const db = await createDb(path.join(dir, 't.db'));
+      await seedEpisode(await db, { topic: 't1' });
+      await seedEpisode(await db, { topic: 't2' });
 
-      const result = await memoryGetStats(db, {}, ['memory_ping', 'memory_write']);
+      const result = await memoryGetStats(await db, {}, ['memory_ping', 'memory_write']);
 
       expect(result.total_episodes).toBeGreaterThanOrEqual(2);
       expect(result.with_topic).toBeGreaterThanOrEqual(2);
@@ -386,14 +386,14 @@ describe('memoryCurate drop-episodes (B2)', () => {
   it('hard-deletes a single live episode', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
-      const uid = await seedEpisode(db, { content: 'unique drop me' });
+      const db = await createDb(path.join(dir, 't.db'));
+      const uid = await seedEpisode(await db, { content: 'unique drop me' });
 
       // Verify the node exists before deletion
-      const before = raw(db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uid) as { c: number };
+      const before = raw(await db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uid) as { c: number };
       expect(before.c).toBe(1);
 
-      const result = await memoryCurate(db, { op: 'drop-episodes', uids: [uid] });
+      const result = await memoryCurate(await db, { op: 'drop-episodes', uids: [uid] });
 
       expect(result).toEqual({
         op: 'drop-episodes',
@@ -402,7 +402,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       });
 
       // Verify the node is gone
-      const after = raw(db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uid) as { c: number };
+      const after = raw(await db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uid) as { c: number };
       expect(after.c).toBe(0);
       db.close();
     } finally {
@@ -413,20 +413,20 @@ describe('memoryCurate drop-episodes (B2)', () => {
   it('cascades to vec_node and edge rows', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
+      const db = await createDb(path.join(dir, 't.db'));
 
       // Seed two episodes and an edge between them
-      const uidA = await seedEpisode(db, { content: 'ep A' });
-      const uidB = await seedEpisode(db, { content: 'ep B' });
-      const rowidA = rowidForUid(db, uidA);
-      const rowidB = rowidForUid(db, uidB);
+      const uidA = await seedEpisode(await db, { content: 'ep A' });
+      const uidB = await seedEpisode(await db, { content: 'ep B' });
+      const rowidA = rowidForUid(await db, uidA);
+      const rowidB = rowidForUid(await db, uidB);
 
       // Insert a vec_node row for uidA
-      raw(db).prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(rowidA, JSON.stringify(new Array(768).fill(0.1)));
+      raw(await db).prepare('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)').run(rowidA, JSON.stringify(new Array(768).fill(0.1)));
       // Insert a MENTIONS edge from uidA to uidB (entity relationship)
-      raw(db).prepare("INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'RELATES_TO', 'user_asserted', ?)").run(rowidA, rowidB, new Date().toISOString());
+      raw(await db).prepare("INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'RELATES_TO', 'user_asserted', ?)").run(rowidA, rowidB, new Date().toISOString());
 
-      const result = await memoryCurate(db, { op: 'drop-episodes', uids: [uidA] });
+      const result = await memoryCurate(await db, { op: 'drop-episodes', uids: [uidA] });
 
       expect(result.op).toBe('drop-episodes');
       expect(result.deleted).toBe(1);
@@ -434,9 +434,9 @@ describe('memoryCurate drop-episodes (B2)', () => {
       expect(result.cascaded.edges).toBe(1);
 
       // Verify uidA is gone, uidB still exists
-      const nodeA = raw(db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uidA) as { c: number };
+      const nodeA = raw(await db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uidA) as { c: number };
       expect(nodeA.c).toBe(0);
-      const nodeB = raw(db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uidB) as { c: number };
+      const nodeB = raw(await db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(uidB) as { c: number };
       expect(nodeB.c).toBe(1);
       db.close();
     } finally {
@@ -447,14 +447,14 @@ describe('memoryCurate drop-episodes (B2)', () => {
   it('silently skips non-existent and invalidated UIDs', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
-      const liveUid = await seedEpisode(db, { content: 'live one' });
-      const invalidatedUid = await seedEpisode(db, { content: 'invalidated one' });
+      const db = await createDb(path.join(dir, 't.db'));
+      const liveUid = await seedEpisode(await db, { content: 'live one' });
+      const invalidatedUid = await seedEpisode(await db, { content: 'invalidated one' });
       // Invalidate the second one
-      raw(db).prepare('UPDATE node SET t_invalid = ? WHERE uid = ?').run(new Date().toISOString(), invalidatedUid);
+      raw(await db).prepare('UPDATE node SET t_invalid = ? WHERE uid = ?').run(new Date().toISOString(), invalidatedUid);
       const fakeUid = 'nonexistent-uid-0000';
 
-      const result = await memoryCurate(db, {
+      const result = await memoryCurate(await db, {
         op: 'drop-episodes',
         uids: [fakeUid, invalidatedUid, liveUid],
       });
@@ -466,10 +466,10 @@ describe('memoryCurate drop-episodes (B2)', () => {
       expect(result.cascaded.edges).toBe(0);
 
       // liveUid is gone
-      const liveCheck = raw(db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(liveUid) as { c: number };
+      const liveCheck = raw(await db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(liveUid) as { c: number };
       expect(liveCheck.c).toBe(0);
       // invalidatedUid still exists (was already t_invalid, not live)
-      const invCheck = raw(db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(invalidatedUid) as { c: number };
+      const invCheck = raw(await db).prepare('SELECT COUNT(*) AS c FROM node WHERE uid = ?').get(invalidatedUid) as { c: number };
       expect(invCheck.c).toBe(1);
       db.close();
     } finally {
@@ -480,9 +480,9 @@ describe('memoryCurate drop-episodes (B2)', () => {
   it('returns zero counts when no UIDs match', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
+      const db = await createDb(path.join(dir, 't.db'));
 
-      const result = await memoryCurate(db, {
+      const result = await memoryCurate(await db, {
         op: 'drop-episodes',
         uids: ['nonexistent-uid'],
       });
@@ -500,9 +500,9 @@ describe('memoryCurate drop-episodes (B2)', () => {
   it('returns E_MISSING error when uids is empty or missing', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = createDb(path.join(dir, 't.db'));
+      const db = await createDb(path.join(dir, 't.db'));
 
-      const result = await memoryCurate(db, { op: 'drop-episodes', uids: [] });
+      const result = await memoryCurate(await db, { op: 'drop-episodes', uids: [] });
 
       expect(result).toHaveProperty('code', 'E_MISSING');
       db.close();

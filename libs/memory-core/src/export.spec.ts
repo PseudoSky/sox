@@ -10,6 +10,8 @@
  *   6. Topic derivation: community > entity > general fallback.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import type Database from 'better-sqlite3';
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -18,6 +20,16 @@ import { openDb } from './db.js';
 import { memoryWrite } from './write.js';
 import { exportMarkdown } from './export.js';
 import type { ExportOpts } from './export.js';
+
+/**
+ * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
+ * These specs' own verification reads use raw SQL against the sqlite backend,
+ * so unwrap once here rather than rewriting every assertion.
+ */
+function raw(a: StoreAdapter): Database.Database {
+  return a.unwrap() as Database.Database;
+}
+
 
 // Mock embed to avoid real ONNX model download (these tests assert export mechanics, not embedding quality)
 

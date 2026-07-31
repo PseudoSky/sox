@@ -324,7 +324,7 @@ describe('detectNearDup', () => {
     }
   });
 
-  it('returns null for clearly distinct embeddings', () => {
+  it('returns null for clearly distinct embeddings', async () => {
     const { db, cleanup } = makeTmpDb();
     try {
       process.env['SOX_EMBED_BACKEND'] = 'real';
@@ -381,7 +381,7 @@ describe('enrichOnWrite', () => {
     cleanup();
   });
 
-  it('produces identical output for the same inputs (reproducibility)', () => {
+  it('produces identical output for the same inputs (reproducibility)', async () => {
     // Use two separate DBs to compare results with identical state
     const t1 = makeTmpDb();
     const t2 = makeTmpDb();
@@ -528,7 +528,7 @@ describe('enrichOnWrite', () => {
 // ── clusterStore ──────────────────────────────────────────────────────────────
 
 describe('clusterStore', () => {
-  it('returns empty clusters for < 2 episodes', () => {
+  it('returns empty clusters for < 2 episodes', async () => {
     const { db, cleanup } = makeTmpDb();
     try {
       const emb = seedEmbedding(1);
@@ -538,7 +538,7 @@ describe('clusterStore', () => {
     } finally { cleanup(); }
   });
 
-  it('is deterministic: same DB → same clusters and UIDs across two passes', () => {
+  it('is deterministic: same DB → same clusters and UIDs across two passes', async () => {
     const { db, cleanup } = makeTmpDb();
     try {
       // Insert episodes in two groups with close embeddings
@@ -564,7 +564,7 @@ describe('clusterStore', () => {
     } finally { cleanup(); }
   });
 
-  it('suppresses singletons (D1.6)', () => {
+  it('suppresses singletons (D1.6)', async () => {
     const { db, cleanup } = makeTmpDb();
     try {
       // 3 orthogonal episodes — no cluster possible at high threshold
@@ -580,7 +580,7 @@ describe('clusterStore', () => {
     } finally { cleanup(); }
   });
 
-  it('excludes episodes with content < 50 chars (D5.1)', () => {
+  it('excludes episodes with content < 50 chars (D5.1)', async () => {
     const { db, cleanup } = makeTmpDb();
     try {
       const emb1 = seedEmbedding(1);
@@ -597,7 +597,7 @@ describe('clusterStore', () => {
 // ── clusterStats ──────────────────────────────────────────────────────────────
 
 describe('clusterStats', () => {
-  it('returns zero stats on empty store', () => {
+  it('returns zero stats on empty store', async () => {
     const { db, cleanup } = makeTmpDb();
     try {
       const stats = await clusterStats(db);
@@ -607,7 +607,7 @@ describe('clusterStats', () => {
     } finally { cleanup(); }
   });
 
-  it('has consistent structure', () => {
+  it('has consistent structure', async () => {
     const { db, cleanup } = makeTmpDb();
     try {
       const stats = await clusterStats(db);
@@ -625,7 +625,7 @@ describe('clusterStats', () => {
 // ── buildAutoLinks ────────────────────────────────────────────────────────────
 
 describe('buildAutoLinks', () => {
-  it('inserts no edges when < 2 episodes', () => {
+  it('inserts no edges when < 2 episodes', async () => {
     const { db, cleanup } = makeTmpDb();
     try {
       const result = await buildAutoLinks(db);
@@ -633,7 +633,7 @@ describe('buildAutoLinks', () => {
     } finally { cleanup(); }
   });
 
-  it('is idempotent: running twice on same DB inserts same count', () => {
+  it('is idempotent: running twice on same DB inserts same count', async () => {
     const { db, cleanup } = makeTmpDb();
     try {
       // Insert 4 episodes: e1 and e2 share JWT+OAuth. e3 and e4 only share JWT.
@@ -684,7 +684,7 @@ describe('buildAutoLinks', () => {
 // ── P3: clusterStore — deeper tests ──────────────────────────────────────────
 
 describe('clusterStore — P3 clustering guarantees', () => {
-  it('community UID = sha256(sorted member rowids).slice(0,32)', () => {
+  it('community UID = sha256(sorted member rowids).slice(0,32)', async () => {
     const { db, cleanup } = makeTmpDb();
     try {
       // Two very similar episodes
@@ -708,7 +708,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
     } finally { cleanup(); }
   });
 
-  it('community UID is stable across re-runs with same members', () => {
+  it('community UID is stable across re-runs with same members', async () => {
     const { db, cleanup } = makeTmpDb();
     try {
       const emb1 = seedEmbedding(30);
@@ -732,7 +732,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
     } finally { cleanup(); }
   });
 
-  it('degenerate guard: skips writes when all episodes cluster into one (threshold too low)', () => {
+  it('degenerate guard: skips writes when all episodes cluster into one (threshold too low)', async () => {
     const { db, cleanup } = makeTmpDb();
     try {
       // All embeddings very similar (same seed) — all will cluster at low threshold
@@ -751,7 +751,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
     } finally { cleanup(); }
   });
 
-  it('member_rowids are sorted ascending in every cluster', () => {
+  it('member_rowids are sorted ascending in every cluster', async () => {
     const { db, cleanup } = makeTmpDb();
     try {
       const emb1 = seedEmbedding(60);
@@ -769,7 +769,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
     } finally { cleanup(); }
   });
 
-  it('label is derived from centroid-nearest episode (D1.4)', () => {
+  it('label is derived from centroid-nearest episode (D1.4)', async () => {
     const { db, cleanup } = makeTmpDb();
     try {
       const emb1 = seedEmbedding(70);
@@ -786,7 +786,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
     } finally { cleanup(); }
   });
 
-  it('community nodes and MEMBER_OF edges are persisted to DB', () => {
+  it('community nodes and MEMBER_OF edges are persisted to DB', async () => {
     const { db, cleanup } = makeTmpDb();
     try {
       const emb1 = seedEmbedding(80);

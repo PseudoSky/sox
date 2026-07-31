@@ -36,7 +36,7 @@ function tmpDir(): { dir: string; cleanup: () => void } {
   return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
-function createDb(dbPath: string): StoreAdapter {
+async function createDb(dbPath: string): Promise<StoreAdapter> {
   return await openDb(dbPath);
 }
 
@@ -64,10 +64,10 @@ describe('memoryGetStats (BL-250)', () => {
     try {
       savedBackend = process.env['SOX_EMBED_BACKEND'];
       process.env['SOX_EMBED_BACKEND'] = 'auto';
-      const db = createDb(path.join(dir, 't.db'));
-      seedEpisode(db, 'BL-250 regression fixture episode.');
+      const db = await createDb(path.join(dir, 't.db'));
+      seedEpisode(await db, 'BL-250 regression fixture episode.');
 
-      const result = await memoryGetStats(db, {}, ['memory_ping', 'memory_stats']);
+      const result = await memoryGetStats(await db, {}, ['memory_ping', 'memory_stats']);
 
       expect(Object.prototype.hasOwnProperty.call(result, 'embed_on_hash_fallback')).toBe(false);
       expect(result.embed_backend_configured).toBe('auto');
@@ -82,12 +82,12 @@ describe('memoryGetStats (BL-250)', () => {
     try {
       savedBackend = process.env['SOX_EMBED_BACKEND'];
       process.env['SOX_EMBED_BACKEND'] = 'hash';
-      const db = createDb(path.join(dir, 't.db'));
-      seedEpisode(db, 'BL-250 regression fixture episode.');
+      const db = await createDb(path.join(dir, 't.db'));
+      seedEpisode(await db, 'BL-250 regression fixture episode.');
 
       // Pre-fix: memoryGetStats read process.env directly and would have happily
       // returned `embed_backend_configured: "hash"` here instead of throwing.
-      await expect(memoryGetStats(db, {}, ['memory_ping'])).rejects.toThrow(
+      await expect(memoryGetStats(await db, {}, ['memory_ping'])).rejects.toThrow(
         /Invalid SOX_EMBED_BACKEND.*"hash"/,
       );
       db.close();

@@ -74,7 +74,7 @@ function raw(a: StoreAdapter): Database.Database {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function tmpDb(): { dir: string; dbPath: string; db: StoreAdapter; cleanup: () => void } {
+async function tmpDb(): Promise<{ dir: string; dbPath: string; db: StoreAdapter; cleanup: () => void }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bl88-'));
   const dbPath = path.join(dir, 'm.db');
   const db = await openDb(dbPath);
@@ -90,7 +90,7 @@ function tmpDb(): { dir: string; dbPath: string; db: StoreAdapter; cleanup: () =
 }
 
 /** Phase A helper — asserts no error */
-function phaseA(db: StoreAdapter, content: string): PhaseAOutcome {
+async function phaseA(db: StoreAdapter, content: string): Promise<PhaseAOutcome> {
   const r = memoryWritePhaseA(db, { content, project_path: '/test/project' });
   expect('code' in r).toBe(false);
   return await r as PhaseAOutcome;
@@ -133,11 +133,11 @@ function insertEmbeddedWith(
   return rowid;
 }
 
-let ctx: ReturnType<typeof tmpDb>;
+let ctx: Awaited<ReturnType<typeof tmpDb>>;
 let origStaleEnv: string | undefined;
 
 beforeEach(async () => {
-  ctx = tmpDb();
+  ctx = await tmpDb();
   await WriteQueue.clearInstances();
   WriteQueue.setBypass(false);
   _resetEmbedPipelineMetricsForTest();
@@ -203,7 +203,7 @@ describe('BL-88 migration idempotency — embed_model column on node table', () 
 describe('BL-88 stamp on write path — applyEmbedding stamps embed_model', () => {
   it('async pipeline (schedulePendingEmbeds) stamps embed_model on the applied node', async () => {
     const wq = await WriteQueue.forPath(ctx.dbPath);
-    const a = phaseA(ctx.db, 'write path stamping test content');
+    const a = await phaseA(ctx.db, 'write path stamping test content');
 
     // Before Phase B — embed_model is NULL (Phase A never touches it).
     const beforeApply = readEmbedModel(ctx.db, a.result.episode_uid);
@@ -228,7 +228,7 @@ describe('BL-88 stamp on write path — applyEmbedding stamps embed_model', () =
 
   it('applyEmbedding stamps embed_model even when node is already invalidated (bi-temporal)', async () => {
     // Phase A commits the node.
-    const a = phaseA(ctx.db, 'bi-temporal stamp test');
+    const a = await phaseA(ctx.db, 'bi-temporal stamp test');
     // Invalidate the node between phases.
     ctx.db.prepare(`UPDATE node SET t_invalid = datetime('now') WHERE uid = ?`).run(a.result.episode_uid);
 
@@ -250,7 +250,7 @@ describe('BL-88 stamp on write path — applyEmbedding stamps embed_model', () =
   });
 
   it('applyEmbedding does NOT re-stamp when vec already exists (status: exists)', async () => {
-    const a = phaseA(ctx.db, 'exists check content');
+    const a = await phaseA(ctx.db, 'exists check content');
     const vec = await embed(a.pending!.text);
     // First apply — stamps.
     applyEmbedding(ctx.db, a.pending!, vec);

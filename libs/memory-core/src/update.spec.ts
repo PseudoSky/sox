@@ -39,7 +39,7 @@ function raw(a: StoreAdapter): Database.Database {
 
 // ── Test DB helpers ───────────────────────────────────────────────────────────
 
-function tmpDb(): { db: StoreAdapter; dir: string } {
+async function tmpDb(): Promise<{ db: StoreAdapter; dir: string }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memupdate-'));
   const db = await openDb(path.join(dir, 'test.db'));
   return { db, dir };
@@ -653,7 +653,7 @@ describe('memoryUpdate — FTS reflects content change (fts_node_au trigger)', (
         project_path: '/test/project',
       });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      const nodeRow = raw(db)
+      const nodeRow = await raw(db)
         .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ?`)
         .get(uid)!;
 
