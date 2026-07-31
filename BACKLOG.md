@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 90.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 91.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,13 +23,13 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31: **90 open**. (BL-323 and BL-343 resolved 2026-07-31 — see CHANGELOG.md; BL-377 filed 2026-07-31.)
+Regenerated 2026-07-31: **91 open**.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-369, BL-370, BL-372, BL-373, BL-374, BL-375 |
-| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362, BL-376 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-369, BL-370, BL-372, BL-373, BL-374, BL-375, BL-377 |
+| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378 |
 | **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363 |
 | **UNSET** | BL-163 |
 
@@ -2085,6 +2085,45 @@ So the steady-state cost is **~650 ms** and the budget is **277x** that.
 **Related:** BL-331 (the regression it failed to catch), BL-334 (surface the measurement), BL-319 / BL-347 (same failure family — a signal indistinguishable from normal), BL-282 (three separate model cache dirs exist on this machine, which is its own hazard).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/data/embed/embedding-provider/src/index.ts:250-264, 2: BL-331 interleaved A/B model-init measurements 2026-07-31, 3: live `find ~/.cache -name model_optimized.onnx` confirming the model is cached locally]
+
+---
+
+### BL-378 — The two emergency brakes are not independent: `SOX_DISABLE_PERIODIC_ENRICH` silently subsumes `SOX_DISABLE_EMBED_HEAL` — **Open (MEDIUM)** (2026-07-31)
+
+**Driver.** Both brakes were documented and operated as independent switches — BL-339 (`SOX_DISABLE_EMBED_HEAL`) and BL-346 (`SOX_DISABLE_PERIODIC_ENRICH`). They are not. The call chain is strictly nested:
+
+```
+scheduleNextEnrichTick()          index.ts:2265  ← returns EARLY if SOX_DISABLE_PERIODIC_ENRICH=1
+  └─ runPeriodicEnrichPassGuarded()      :2204
+       └─ runEnrichPassOnDb()            :2130
+            └─ healMissingVectors()      :2086   ← the ONLY production caller
+```
+
+`healMissingVectors` has **no other production call site**. So with `SOX_DISABLE_PERIODIC_ENRICH=1` set, clearing `SOX_DISABLE_EMBED_HEAL` **does nothing at all** — the tick that would have called heal never fires.
+
+**Measured, on the live service.** After lifting the embed-heal brake alone and redeploying (verified: brake absent from the running process, pri 20, correct parenting), vector coverage was sampled three times over 90 s:
+
+```
+23:25:49  nodes 9488  vectors 1685  17.8%
+23:26:34  nodes 9488  vectors 1685  17.8%
+23:27:19  nodes 9488  vectors 1685  17.8%
+```
+
+Flat. Zero drain. The operator-visible state was "embed heal is enabled" and the actual state was "nothing can run."
+
+**Why this matters beyond the inconvenience.** Restoring a degraded service is exactly when an operator reasons about brakes, and this pair reasons **wrongly**: lifting the brake you believe is blocking backfill produces no error, no warning, and no change — indistinguishable from "backfill is enabled but there is nothing to do." Recovery time is spent looking in the wrong place. Same failure family as BL-347 and BL-376: **an action whose no-op is indistinguishable from success.**
+
+It also makes the brakes coarser than advertised. BL-346's own comment concedes the design problem — *"a flag is whack-a-mole across every background job that exists or ever will"* — and this is that prediction arriving: the flags do not partition the background work they claim to.
+
+**Fix sketch:** either (a) give `healMissingVectors` a scheduling path independent of the enrich tick so the brakes genuinely separate, or (b) collapse them into one honest switch and delete the illusion of independence. Whichever is chosen, **the status surface must report which background jobs are actually running** (BL-334) rather than leaving an operator to infer it from env vars — that is the real fix, and the flags are the stopgap BL-346 already admits they are. Supersedes both brakes if BL-345's resource-governance lane lands.
+
+**Acceptance (red→green, must name BL-378):** with `SOX_DISABLE_PERIODIC_ENRICH=1` and `SOX_DISABLE_EMBED_HEAL` unset, assert either that heal runs, or that the service **reports** heal as disabled-by-dependency. Silently doing nothing must fail the test.
+
+**Severity:** MEDIUM — no data loss, but it costs recovery time at precisely the wrong moment, and it means neither brake's documented behaviour is accurate.
+
+**Related:** BL-339, BL-346 (the two brakes), BL-345 (any in-process background job starves foreground reads — the reason they exist), BL-334 (report what is actually running), BL-376 / BL-347 (same family: a no-op indistinguishable from success).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:2086,2130,2204,2265-2274, 2: live vector-coverage samples 23:25:49–23:27:19Z with the heal brake lifted and the enrich brake retained]
 
 ---
 
