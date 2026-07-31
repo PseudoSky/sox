@@ -129,22 +129,61 @@ are the ones that really fire). Counts are 2026-07-30 + 07-31 combined.
 
 ## 5. How to actually read these
 
-### 5.1 ⚠ Separate live-store processes from test processes FIRST
+### 5.1 ⚠ Classify by SPAWN METHOD, not by store — and correct three biases first
 
 **The log is a single stream shared by the live server and every test/CI process on the
-machine.** Mixing them produces numbers that are meaningless in both directions — this is not
-hypothetical, it is exactly what made the naive first pass wrong.
+machine**, with no field distinguishing them. Analysing them together is meaningless: the
+combined embed mean of 69476 ms describes neither population. Adding a `role` field is BL-351.
 
-Classify by whether a pid ever touches the live store path:
+Until then, three corrections must be applied **before** any number from this log is quoted.
+Each one produced a wrong published conclusion first.
+
+#### (a) The axis is launchd-spawned vs terminal-spawned — NOT live-store vs test-store
+
+> **This section originally instructed you to classify by whether a pid touches the live store
+> path. That was the wrong axis and the conclusion drawn from it was wrong.** Corrected here per
+> BL-331's root cause rather than silently rewritten, because the wrong method was published and
+> acted on.
+
+`os-unit.ts:458-459` emits `ProcessType: Background` **unconditionally on every sox launchd
+unit**, so the live backend and its fastembed child run at scheduling **priority 4** while a
+terminal-launched process runs at **31** — on Apple Silicon, efficiency cores only. Measured by
+an interleaved A/B: **~470 ms vs ~8400 ms (18x)**, and 14x on model load. It is a general CPU
+throttle, not an embed defect.
+
+The decisive evidence: **ten terminal-launched pids touching the SAME live store sit at awake
+p50 0.3–0.9 s.** The store is not the variable. Classify by spawn method.
+
+**Consequence for any benchmark:** a perf test run from a terminal would have passed throughout
+this entire incident and proved nothing. Benchmarks must run under the service's actual
+scheduling policy.
+
+#### (b) `duration_ms` is wall-clock and accrues while the machine sleeps — BL-369
+
+Checked against `pmset -g log`: the six multi-thousand-second "embeds" were **87–99.7% system
+sleep**. The 3-hour embed is **503 s of awake time**. Across the whole >30 s tail, 88.7% of wall
+time was sleep, versus 1.1% for the ≤30 s population.
+
+**So every p90/p99/max in this document, and in any analysis derived from this telemetry, is
+inflated by an unknown amount.** Medians are largely unaffected. Subtract sleep intervals before
+quoting a tail number.
+
+#### (c) Roughly half the "test" population is not inference at all
+
+**899 of 1755 test-process embeds completed in under 10 ms, with nothing between 10 and 100 ms.**
+That is a deterministic/hash provider, not the real model, and it must be excluded. The honest
+reference figure is **~423 ms (n=856)**, which agrees with both the clean-room harness and the
+BL-328 calibration run.
+
+#### Putting it together
 
 ```python
-live = {o['pid'] for o in rows
-        if '/Users/nix/.memory/memory.db' in str(o.get('store','')) + str(o.get('db_path',''))}
+# Correct classification: how was the process spawned?
+# (No field records this yet — BL-351. Until then, check the process ancestry
+#  or the absence of a controlling terminal; the store path tells you nothing.)
+# Then: exclude sub-10ms records as non-inference, and subtract sleep from
+# any tail figure before quoting it.
 ```
-
-On 2026-07-31 that separated **6 live pids** from **100 test pids** — and the two populations
-had embed p50s of **6936 ms** and **297 ms** respectively. Reported together, the mean was
-69476 ms, which describes neither.
 
 ### 5.2 Find hangs: count `.start` without a matching `.finish`/`.error`
 
@@ -206,12 +245,13 @@ start/finish accounting above. Start there rather than from scratch.
 Run once, on data that had been sitting on disk for two days. Every item below is measured, not
 inferred.
 
-1. **BL-331 ("embed pipeline ~18x too slow in production") is confirmed and quantified — but
-   its framing was wrong.** Same code, same machine, same day: test-process embeds ran at p50
-   **297 ms** (p90 315, max 1070 → ~4.5/s); live-store embeds ran at p50 **6936 ms**, p90
-   **91186 ms**, max **10953175 ms (3 hours)**. 21 of 80 live embeds exceeded 30 s.
-   So it is **~23x on the median plus a catastrophic tail**, not a uniform slowdown — and the
-   difference is not the code, it is something about the live process context.
+1. **BL-331 confirmed and quantified — and my framing here was itself wrong, twice.** The
+   original reading ("live-store vs test-process, ~23x plus a tail") was superseded by BL-331's
+   root cause: the axis is **launchd vs terminal** (§5.1a), the tail is largely **sleep in a
+   wall-clock timer** (§5.1b), and half the test baseline was **not real inference** (§5.1c).
+   The durable result is: **~470 ms → ~8400 ms, an 18x general CPU throttle from
+   `ProcessType: Background`**, plus head-of-line blocking on the shared fastembed child for the
+   residual 30–160 s tail. Read §5.1 before quoting any figure from this section.
 2. **It is not queue-wait and not the DB write.** Median gap between an embed finishing and the
    next starting: **9 ms**. `writequeue.task` p50: **0 ms**, mean 28–50 ms. The time is inside
    embed compute. This directly answers BL-331's open "separate queue-wait from compute"
