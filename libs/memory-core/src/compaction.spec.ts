@@ -15,6 +15,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -24,6 +25,15 @@ import { openDb } from './db.js';
 import { WriteQueue } from './write-queue.js';
 import { runCompactionPass, startCompactionTick, DEFAULT_COMPACTION_INTERVAL_MS } from './compaction.js';
 import { _resetEmbedSingleton } from './embed.js';
+
+/**
+ * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
+ * These specs' own verification reads use raw SQL against the sqlite backend,
+ * so unwrap once here rather than rewriting every assertion.
+ */
+function raw(a: StoreAdapter): Database.Database {
+  return a.unwrap() as Database.Database;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -52,24 +62,24 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-function freshDb(): { db: Database.Database; dbPath: string } {
+function freshDb(): { db: StoreAdapter; dbPath: string } {
   const dir = makeTempDir();
   tmpDirs.push(dir);
   const dbPath = path.join(dir, 'test.db');
-  const db = openDb(dbPath);
+  const db = await openDb(dbPath);
   return { db, dbPath };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('runCompactionPass', () => {
-  it('runs optimize + ANALYZE and checkpoints when no recent WriteQueue checkpoint', () => {
+  it('runs optimize + ANALYZE and checkpoints when no recent WriteQueue checkpoint', async () => {
     const { db, dbPath } = freshDb();
     // Ensure no WriteQueue instance exists (so lastCheckpointAtForPath returns 0).
     expect(WriteQueue.lastCheckpointAtForPath(dbPath)).toBe(0);
 
     const logs: string[] = [];
-    const result = runCompactionPass(db, {
+    const result = await runCompactionPass(db, {
       runOptimize: true,
       log: (...args) => logs.push(args.join(' ')),
     });
@@ -96,7 +106,7 @@ describe('runCompactionPass', () => {
     expect(WriteQueue.lastCheckpointAtForPath(dbPath)).toBeGreaterThan(0);
 
     const logs: string[] = [];
-    const result = runCompactionPass(db, {
+    const result = await runCompactionPass(db, {
       log: (...args) => logs.push(args.join(' ')),
     });
 
@@ -122,29 +132,29 @@ describe('runCompactionPass', () => {
     (wq as unknown as { _lastCheckpointAt: number })._lastCheckpointAt =
       Date.now() - WriteQueue.CHECKPOINT_IDLE_MS - 1000;
 
-    const result = runCompactionPass(db, {});
+    const result = await runCompactionPass(db, {});
     expect(result.error).toBeNull();
     expect(result.checkpointed).toBe(true);
 
     db.close();
   });
 
-  it('sets optimized=false when runOptimize=false', () => {
+  it('sets optimized=false when runOptimize=false', async () => {
     const { db } = freshDb();
-    const result = runCompactionPass(db, { runOptimize: false });
+    const result = await runCompactionPass(db, { runOptimize: false });
     expect(result.optimized).toBe(false);
     expect(result.analyzed).toBe(true);
     expect(result.error).toBeNull();
     db.close();
   });
 
-  it('captures errors in result and never throws', () => {
+  it('captures errors in result and never throws', async () => {
     // Pass a closed DB to trigger a "database is closed" error from SQLite.
     const { db } = freshDb();
     db.close();
 
     // Should not throw — error is captured in result.error.
-    const result = runCompactionPass(db, {});
+    const result = await runCompactionPass(db, {});
     expect(result.error).not.toBeNull();
     expect(typeof result.error).toBe('string');
     expect(result.error!.length).toBeGreaterThan(0);

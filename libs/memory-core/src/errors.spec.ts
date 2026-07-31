@@ -47,7 +47,7 @@ describe('Storage error taxonomy — CONTRACTS §B (WP-2)', () => {
    * wrapped-error path AND the success path on the same queue instance.
    */
   it('forced-lock → E_BUSY (wrapped); unlock → success', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     const blocker = new Database(dbPath);
     let blockerClosed = false;
 
@@ -114,7 +114,7 @@ describe('Storage error taxonomy — CONTRACTS §B (WP-2)', () => {
     const { dir: otherDir, cleanup: otherCleanup } = tmpDir();
     try {
       const otherDb = path.join(otherDir, 'other.db');
-      const queue = WriteQueue.forPath(otherDb);
+      const queue = await WriteQueue.forPath(otherDb);
 
       const val = await queue.enqueue('free-write', async (tx) => {
         await tx.executeRun(

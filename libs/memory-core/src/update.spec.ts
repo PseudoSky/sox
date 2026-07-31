@@ -16,6 +16,7 @@
  *  EmbedBackend = 'auto' | 'real', libs/memory-core/src/embed.ts:43. [BL-250])
  */
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -26,16 +27,25 @@ import { memoryWrite } from './write.js';
 import { memoryUpdate, memoryUpdatePhaseA, deepMerge } from './update.js';
 import { _shutdownEmbedWorker } from './embed.js';
 
+/**
+ * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
+ * These specs' own verification reads use raw SQL against the sqlite backend,
+ * so unwrap once here rather than rewriting every assertion.
+ */
+function raw(a: StoreAdapter): Database.Database {
+  return a.unwrap() as Database.Database;
+}
+
 
 // ── Test DB helpers ───────────────────────────────────────────────────────────
 
-function tmpDb(): { db: Database.Database; dir: string } {
+function tmpDb(): { db: StoreAdapter; dir: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memupdate-'));
-  const db = openDb(path.join(dir, 'test.db'));
+  const db = await openDb(path.join(dir, 'test.db'));
   return { db, dir };
 }
 
-function cleanup(db: Database.Database, dir: string): void {
+function cleanup(db: StoreAdapter, dir: string): void {
   try { db.close(); } catch { /* ignore */ }
   fs.rmSync(dir, { recursive: true, force: true });
 }
@@ -49,8 +59,8 @@ afterAll(async () => {
 // Buffer references from virtual tables are new instances on each read but
 // have identical bytes — we need content equality, not reference equality.
 
-function getVecHex(db: Database.Database, rowid: number): string | null {
-  const row = db
+function getVecHex(db: StoreAdapter, rowid: number): string | null {
+  const row = raw(db)
     .prepare<[number], { embedding: Buffer | null }>(
       `SELECT embedding FROM vec_node WHERE node_id = CAST(? AS INTEGER)`,
     )
@@ -78,8 +88,8 @@ interface NodeRow {
   project_path: string | null;
 }
 
-function getNode(db: Database.Database, uid: string): NodeRow | undefined {
-  return db
+function getNode(db: StoreAdapter, uid: string): NodeRow | undefined {
+  return raw(db)
     .prepare<[string], NodeRow>(
       `SELECT rowid, uid, content, summary, name, topic, tags, importance, meta,
               t_created, t_updated, t_occurred, t_valid, project_path
@@ -152,7 +162,7 @@ describe('memoryUpdate — E_NOT_FOUND', () => {
     try {
       const wr = await memoryWrite(db, { content: 'will be invalidated', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      db.prepare(`UPDATE node SET t_invalid = ? WHERE uid = ?`).run(
+      raw(db).prepare(`UPDATE node SET t_invalid = ? WHERE uid = ?`).run(
         new Date().toISOString(),
         uid,
       );
@@ -643,12 +653,12 @@ describe('memoryUpdate — FTS reflects content change (fts_node_au trigger)', (
         project_path: '/test/project',
       });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      const nodeRow = db
+      const nodeRow = raw(db)
         .prepare<[string], { rowid: number }>(`SELECT rowid FROM node WHERE uid = ?`)
         .get(uid)!;
 
       // 'zorbflux' should be indexed before the update.
-      const ftsBeforeRows = db
+      const ftsBeforeRows = raw(db)
         .prepare<[string], { rowid: number }>(
           `SELECT rowid FROM fts_node WHERE fts_node MATCH ?`,
         )
@@ -663,7 +673,7 @@ describe('memoryUpdate — FTS reflects content change (fts_node_au trigger)', (
       });
 
       // 'quaxbeam' should now be indexed.
-      const ftsAfterRows = db
+      const ftsAfterRows = raw(db)
         .prepare<[string], { rowid: number }>(
           `SELECT rowid FROM fts_node WHERE fts_node MATCH ?`,
         )
@@ -672,7 +682,7 @@ describe('memoryUpdate — FTS reflects content change (fts_node_au trigger)', (
 
       // 'zorbflux' should no longer be indexed for this episode — it appeared only in
       // content (and summary), both of which were updated to remove it.
-      const ftsRemovedRows = db
+      const ftsRemovedRows = raw(db)
         .prepare<[string], { rowid: number }>(
           `SELECT rowid FROM fts_node WHERE fts_node MATCH ?`,
         )
@@ -692,15 +702,15 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
     try {
       const w = await memoryWrite(db, { content: 'original text for phase-a', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
-      const rowid = (db.prepare('SELECT rowid FROM node WHERE uid = ?').get(uid) as { rowid: number }).rowid;
+      const rowid = (raw(db).prepare('SELECT rowid FROM node WHERE uid = ?').get(uid) as { rowid: number }).rowid;
       expect(getVecHex(db, rowid)).not.toBeNull(); // sync composition embedded it
 
-      const a = memoryUpdatePhaseA(db, { uid, content: 'replaced text for phase-a' });
+      const a = await memoryUpdatePhaseA(db, { uid, content: 'replaced text for phase-a' });
       expect('code' in a).toBe(false);
       if ('code' in a) return;
 
       // Columns committed, FTS-visible, stale vector GONE (heal-eligible).
-      const row = db.prepare('SELECT content FROM node WHERE uid = ?').get(uid) as { content: string };
+      const row = raw(db).prepare('SELECT content FROM node WHERE uid = ?').get(uid) as { content: string };
       expect(row.content).toBe('replaced text for phase-a');
       expect(getVecHex(db, rowid)).toBeNull();
 
@@ -726,10 +736,10 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
     try {
       const w = await memoryWrite(db, { content: 'stable text', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
-      const rowid = (db.prepare('SELECT rowid FROM node WHERE uid = ?').get(uid) as { rowid: number }).rowid;
+      const rowid = (raw(db).prepare('SELECT rowid FROM node WHERE uid = ?').get(uid) as { rowid: number }).rowid;
       const before = getVecHex(db, rowid);
 
-      const a = memoryUpdatePhaseA(db, { uid, metadata: { reviewed: true } });
+      const a = await memoryUpdatePhaseA(db, { uid, metadata: { reviewed: true } });
       expect('code' in a).toBe(false);
       if ('code' in a) return;
       expect(a.pending).toBeNull();
@@ -746,7 +756,7 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
       const w = await memoryWrite(db, { content: 'content stays', summary: 'old summary', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
 
-      const a = memoryUpdatePhaseA(db, { uid, summary: 'new summary' });
+      const a = await memoryUpdatePhaseA(db, { uid, summary: 'new summary' });
       expect('code' in a).toBe(false);
       if ('code' in a) return;
       expect(a.pending).not.toBeNull();

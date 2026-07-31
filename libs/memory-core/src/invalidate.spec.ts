@@ -16,6 +16,7 @@
  *      (it is no longer a LIVE node, same as nonexistent).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -24,6 +25,15 @@ import { openDb } from './db.js';
 import { memoryWrite } from './write.js';
 import { memoryInvalidate } from './write.js';
 
+/**
+ * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
+ * These specs' own verification reads use raw SQL against the sqlite backend,
+ * so unwrap once here rather than rewriting every assertion.
+ */
+function raw(a: StoreAdapter): Database.Database {
+  return a.unwrap() as Database.Database;
+}
+
 function tmpDir(): { dir: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'meminvalidate-'));
   return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
@@ -31,16 +41,16 @@ function tmpDir(): { dir: string; cleanup: () => void } {
 
 describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
   let cleanupDb: () => void;
-  let db: Database.Database;
+  let db: StoreAdapter;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     const { dir, cleanup } = tmpDir();
     cleanupDb = cleanup;
-    db = openDb(path.join(dir, 't.db'));
+    db = await openDb(path.join(dir, 't.db'));
   });
 
   afterEach(() => {
-    if (db && db.open) db.close();
+    if (db && raw(db).open) db.close();
     cleanupDb();
   });
 
@@ -51,7 +61,7 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
   }
 
   function rowidFor(uid: string): number {
-    const row = db.prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?').get(uid);
+    const row = raw(db).prepare<[string], { rowid: number }>('SELECT rowid FROM node WHERE uid = ?').get(uid);
     if (!row) throw new Error(`no node for uid ${uid}`);
     return row.rowid;
   }
@@ -67,13 +77,13 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
     });
 
     expect('ok' in result && result.ok).toBe(true);
-    const ok = result as { ok: true; supersedes_edge_uid?: string };
+    const ok = await result as { ok: true; supersedes_edge_uid?: string };
     expect(ok.supersedes_edge_uid).toBeDefined();
 
     const claimRowid = rowidFor(claimUid);
     const replacementRowid = rowidFor(replacementUid);
 
-    const edge = db
+    const edge = raw(db)
       .prepare<[number, number], { rel: string; src: number; dst: number }>(
         `SELECT rel, src, dst FROM edge WHERE rel = 'SUPERSEDES' AND src = ? AND dst = ?`,
       )
@@ -85,7 +95,7 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
     expect(edge!.dst).toBe(claimRowid);
 
     // Claim itself is invalidated (bi-temporal, never deleted — R5).
-    const claimRow = db
+    const claimRow = raw(db)
       .prepare<[string], { t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?')
       .get(claimUid)!;
     expect(claimRow.t_invalid).not.toBeNull();
@@ -101,18 +111,18 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
     });
 
     expect('code' in result).toBe(true);
-    expect((result as { code: string }).code).toBe('E_REPLACEMENT_NOT_FOUND');
+    expect((await result as { code: string }).code).toBe('E_REPLACEMENT_NOT_FOUND');
 
     // Behaviour change from the pre-fix no-op: the claim must NOT be
     // invalidated either — the whole call fails atomically rather than
     // silently invalidating the claim while dropping the requested edge.
-    const claimRow = db
+    const claimRow = raw(db)
       .prepare<[string], { t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?')
       .get(claimUid)!;
     expect(claimRow.t_invalid).toBeNull();
 
     // No SUPERSEDES edge of any kind was written.
-    const edgeCount = db
+    const edgeCount = raw(db)
       .prepare<[], { cnt: number }>(`SELECT COUNT(*) as cnt FROM edge WHERE rel = 'SUPERSEDES'`)
       .get()!;
     expect(edgeCount.cnt).toBe(0);
@@ -136,36 +146,36 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
     });
 
     expect('code' in result).toBe(true);
-    expect((result as { code: string }).code).toBe('E_REPLACEMENT_NOT_FOUND');
+    expect((await result as { code: string }).code).toBe('E_REPLACEMENT_NOT_FOUND');
 
-    const claimRow = db
+    const claimRow = raw(db)
       .prepare<[string], { t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?')
       .get(claimUid)!;
     expect(claimRow.t_invalid).toBeNull();
 
-    const edgeCount = db
+    const edgeCount = raw(db)
       .prepare<[], { cnt: number }>(`SELECT COUNT(*) as cnt FROM edge WHERE rel = 'SUPERSEDES'`)
       .get()!;
     expect(edgeCount.cnt).toBe(0);
   });
 
-  it('negative control: claim_uid not found returns E_NOT_FOUND (pre-existing behaviour, unchanged)', () => {
+  it('negative control: claim_uid not found returns E_NOT_FOUND (pre-existing behaviour, unchanged)', async () => {
     const result = memoryInvalidate(db, {
       claim_uid: 'nonexistent-claim-uid',
       reason: 'n/a',
     });
     expect('code' in result).toBe(true);
-    expect((result as { code: string }).code).toBe('E_NOT_FOUND');
+    expect((await result as { code: string }).code).toBe('E_NOT_FOUND');
   });
 
   it('invalidate without replacement_uid still succeeds with no SUPERSEDES edge (unchanged happy path)', async () => {
     const claimUid = await writeEpisode('Standalone claim, no supersession.');
     const result = memoryInvalidate(db, { claim_uid: claimUid, reason: 'no longer needed' });
     expect('ok' in result && result.ok).toBe(true);
-    const ok = result as { ok: true; supersedes_edge_uid?: string };
+    const ok = await result as { ok: true; supersedes_edge_uid?: string };
     expect(ok.supersedes_edge_uid).toBeUndefined();
 
-    const claimRow = db
+    const claimRow = raw(db)
       .prepare<[string], { t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?')
       .get(claimUid)!;
     expect(claimRow.t_invalid).not.toBeNull();

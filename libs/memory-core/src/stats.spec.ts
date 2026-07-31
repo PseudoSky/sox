@@ -14,6 +14,7 @@
  *      value now throws instead of being silently reported.
  */
 import { describe, it, expect, afterEach } from 'vitest';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -21,19 +22,28 @@ import Database from 'better-sqlite3';
 import { openDb } from './db.js';
 import { memoryGetStats } from './stats.js';
 
+/**
+ * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
+ * These specs' own verification reads use raw SQL against the sqlite backend,
+ * so unwrap once here rather than rewriting every assertion.
+ */
+function raw(a: StoreAdapter): Database.Database {
+  return a.unwrap() as Database.Database;
+}
+
 function tmpDir(): { dir: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stats-spec-'));
   return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
-function createDb(dbPath: string): Database.Database {
-  return openDb(dbPath);
+function createDb(dbPath: string): StoreAdapter {
+  return await openDb(dbPath);
 }
 
-function seedEpisode(db: Database.Database, content: string): string {
+function seedEpisode(db: StoreAdapter, content: string): string {
   const uid = `ep-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const now = new Date().toISOString();
-  db.prepare(
+  raw(db).prepare(
     `INSERT INTO node (uid, kind, content, t_created, t_valid) VALUES (?, 'episode', ?, ?, ?)`,
   ).run(uid, content, now, now);
   return uid;

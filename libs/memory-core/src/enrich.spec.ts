@@ -332,7 +332,7 @@ describe('detectNearDup', () => {
       const emb2 = seedEmbedding(999); // very different seed → different direction
       insertEpisode(db, 'ep1', 'A'.repeat(100), emb1);
       const rowid2 = insertEpisode(db, 'ep2', 'B'.repeat(100), emb2);
-      const result = detectNearDup(db, rowid2, emb2, 0.95);
+      const result = await detectNearDup(db, rowid2, emb2, 0.95);
       // Should be null because distinct seeds produce orthogonal vectors
       if (result !== null) {
         expect(result.cosine_sim).toBeLessThan(0.95);
@@ -393,14 +393,14 @@ describe('enrichOnWrite', () => {
       const rowid1 = insertEpisode(t1.db, 'ep1', content, emb);
       const rowid2 = insertEpisode(t2.db, 'ep1', content, emb);
 
-      const result1 = enrichOnWrite(t1.db, {
+      const result1 = await enrichOnWrite(t1.db, {
         uid: 'ep1', rowid: rowid1, content, summary: undefined,
         tags: ['test', 'determinism'], topic: undefined,
         metadata: undefined, project_path: '/project/a',
         derived_from_uid: undefined, embedding: emb, importance: undefined,
       });
 
-      const result2 = enrichOnWrite(t2.db, {
+      const result2 = await enrichOnWrite(t2.db, {
         uid: 'ep1', rowid: rowid2, content, summary: undefined,
         tags: ['test', 'determinism'], topic: undefined,
         metadata: undefined, project_path: '/project/a',
@@ -421,11 +421,11 @@ describe('enrichOnWrite', () => {
     }
   });
 
-  it('parses [<topic>] prefix from content', () => {
+  it('parses [<topic>] prefix from content', async () => {
     const content = '[machine-learning] Neural networks are function approximators.';
     const emb = seedEmbedding(2);
     const rowid = insertEpisode(db, 'ep1', content, emb);
-    const result = enrichOnWrite(db, {
+    const result = await enrichOnWrite(db, {
       uid: 'ep1', rowid, content, summary: undefined, tags: [],
       topic: undefined, metadata: undefined, project_path: '/p',
       derived_from_uid: undefined, embedding: emb, importance: undefined,
@@ -433,11 +433,11 @@ describe('enrichOnWrite', () => {
     expect(result.topic).toBe('machine-learning');
   });
 
-  it('explicit topic overrides prefix', () => {
+  it('explicit topic overrides prefix', async () => {
     const content = '[old-topic] Some content here that is long enough to process.';
     const emb = seedEmbedding(3);
     const rowid = insertEpisode(db, 'ep1', content, emb);
-    const result = enrichOnWrite(db, {
+    const result = await enrichOnWrite(db, {
       uid: 'ep1', rowid, content, summary: undefined, tags: [],
       topic: 'new-topic', metadata: undefined, project_path: '/p',
       derived_from_uid: undefined, embedding: emb, importance: undefined,
@@ -445,11 +445,11 @@ describe('enrichOnWrite', () => {
     expect(result.topic).toBe('new-topic');
   });
 
-  it('caller-supplied summary bypasses extractive fallback', () => {
+  it('caller-supplied summary bypasses extractive fallback', async () => {
     const content = 'A very long piece of content. It has many sentences. Each one adds detail. The fourth sentence is here.';
     const emb = seedEmbedding(4);
     const rowid = insertEpisode(db, 'ep1', content, emb);
-    const result = enrichOnWrite(db, {
+    const result = await enrichOnWrite(db, {
       uid: 'ep1', rowid, content, summary: 'My custom summary.',
       tags: [], topic: undefined, metadata: undefined, project_path: '/p',
       derived_from_uid: undefined, embedding: emb, importance: undefined,
@@ -457,11 +457,11 @@ describe('enrichOnWrite', () => {
     expect(result.summary).toBe('My custom summary.');
   });
 
-  it('extractive summary runs when no caller summary supplied', () => {
+  it('extractive summary runs when no caller summary supplied', async () => {
     const content = 'TypeScript is a typed superset of JavaScript. It compiles to plain JavaScript. Many frameworks support TypeScript.';
     const emb = seedEmbedding(5);
     const rowid = insertEpisode(db, 'ep1', content, emb);
-    const result = enrichOnWrite(db, {
+    const result = await enrichOnWrite(db, {
       uid: 'ep1', rowid, content, summary: undefined,
       tags: [], topic: undefined, metadata: undefined, project_path: '/p',
       derived_from_uid: undefined, embedding: emb, importance: undefined,
@@ -486,7 +486,7 @@ describe('enrichOnWrite', () => {
     expect(typeof parsed.ts).toBe('string');
   });
 
-  it('inserts a SAME_AS edge for a near-duplicate write without throwing (regression: edge column count)', () => {
+  it('inserts a SAME_AS edge for a near-duplicate write without throwing (regression: edge column count)', async () => {
     // Real-backend threshold (0.95) with no shared-MENTIONS hash guard — so identical
     // embeddings reliably trigger the SAME_AS insert path. No model load: embeddings are
     // passed explicitly. afterEach clears the env.
@@ -508,7 +508,7 @@ describe('enrichOnWrite', () => {
     const emb2 = emb1; // identical vector → cosine 1.0 ≥ 0.98 hash threshold, guarantees near-dup fires
     const content2 = 'The deployment pipeline runs lint, build and then tests in order.';
     const rowid2 = insertEpisode(db, 'dup2', content2, emb2);
-    const result2 = enrichOnWrite(db, {
+    const result2 = await enrichOnWrite(db, {
       uid: 'dup2', rowid: rowid2, content: content2, summary: undefined, tags: [],
       topic: undefined, metadata: undefined, project_path: '/p',
       derived_from_uid: undefined, embedding: emb2, importance: undefined,
@@ -533,7 +533,7 @@ describe('clusterStore', () => {
     try {
       const emb = seedEmbedding(1);
       insertEpisode(db, 'ep1', 'A'.repeat(100), emb);
-      const result = clusterStore(db, { threshold: 0.70 });
+      const result = await clusterStore(db, { threshold: 0.70 });
       expect(result.clusters).toEqual([]);
     } finally { cleanup(); }
   });
@@ -551,11 +551,11 @@ describe('clusterStore', () => {
       insertEpisode(db, 'ep3', 'C'.repeat(60), emb3);
 
       // Run clustering twice
-      const r1 = clusterStore(db, { threshold: 0.70 });
+      const r1 = await clusterStore(db, { threshold: 0.70 });
       // Reset communities for second run
       db.exec(`UPDATE node SET t_invalid = datetime('now') WHERE kind = 'community'`);
       db.exec(`UPDATE edge SET t_invalid = datetime('now') WHERE rel = 'MEMBER_OF'`);
-      const r2 = clusterStore(db, { threshold: 0.70 });
+      const r2 = await clusterStore(db, { threshold: 0.70 });
 
       // Community UIDs must match (same member rowids → same hash)
       const uids1 = r1.clusters.map((c) => c.community_uid).sort();
@@ -572,7 +572,7 @@ describe('clusterStore', () => {
       insertEpisode(db, 'ep2', 'B'.repeat(60), seedEmbedding(999));
       insertEpisode(db, 'ep3', 'C'.repeat(60), seedEmbedding(9999));
 
-      const result = clusterStore(db, { threshold: 0.99 }); // very high → no pairs above threshold
+      const result = await clusterStore(db, { threshold: 0.99 }); // very high → no pairs above threshold
       // All should be unclustered (singletons suppressed)
       for (const cluster of result.clusters) {
         expect(cluster.member_rowids.length).toBeGreaterThanOrEqual(2);
@@ -588,7 +588,7 @@ describe('clusterStore', () => {
       // Both have content < 50 chars — should not be clustered
       insertEpisode(db, 'ep1', 'Short.', emb1);
       insertEpisode(db, 'ep2', 'Also short.', emb2);
-      const result = clusterStore(db, { threshold: 0.50 });
+      const result = await clusterStore(db, { threshold: 0.50 });
       expect(result.clusters).toEqual([]);
     } finally { cleanup(); }
   });
@@ -600,7 +600,7 @@ describe('clusterStats', () => {
   it('returns zero stats on empty store', () => {
     const { db, cleanup } = makeTmpDb();
     try {
-      const stats = clusterStats(db);
+      const stats = await clusterStats(db);
       expect(stats.cluster_count).toBe(0);
       expect(stats.total_clustered).toBe(0);
       expect(stats.coverage).toBe(0);
@@ -610,7 +610,7 @@ describe('clusterStats', () => {
   it('has consistent structure', () => {
     const { db, cleanup } = makeTmpDb();
     try {
-      const stats = clusterStats(db);
+      const stats = await clusterStats(db);
       expect(typeof stats.cluster_count).toBe('number');
       expect(typeof stats.total_clustered).toBe('number');
       expect(typeof stats.total_unclustered).toBe('number');
@@ -628,7 +628,7 @@ describe('buildAutoLinks', () => {
   it('inserts no edges when < 2 episodes', () => {
     const { db, cleanup } = makeTmpDb();
     try {
-      const result = buildAutoLinks(db);
+      const result = await buildAutoLinks(db);
       expect(result.edges_inserted).toBe(0);
     } finally { cleanup(); }
   });
@@ -672,10 +672,10 @@ describe('buildAutoLinks', () => {
       }
 
       // Pass custom threshold 0.40 so entities at 33% are not stoplist
-      const result1 = buildAutoLinks(db, 0.40);
+      const result1 = await buildAutoLinks(db, 0.40);
       expect(result1.edges_inserted).toBe(1); // ep1 ↔ ep2 share 2 entities
 
-      const result2 = buildAutoLinks(db, 0.40);
+      const result2 = await buildAutoLinks(db, 0.40);
       expect(result2.edges_inserted).toBe(0); // idempotent: edge already exists
     } finally { cleanup(); }
   });
@@ -693,7 +693,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
       const r1 = insertEpisode(db, 'ep1', 'A'.repeat(60), emb1);
       const r2 = insertEpisode(db, 'ep2', 'B'.repeat(60), emb2);
 
-      const result = clusterStore(db, { threshold: 0.50 });
+      const result = await clusterStore(db, { threshold: 0.50 });
       if (result.clusters.length === 1) {
         const cluster = result.clusters[0]!;
         // Verify UID formula: sha256(sorted rowids joined by comma).slice(0,32)
@@ -716,7 +716,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
       insertEpisode(db, 'ep1', 'A'.repeat(60), emb1);
       insertEpisode(db, 'ep2', 'B'.repeat(60), emb2);
 
-      const r1 = clusterStore(db, { threshold: 0.50 });
+      const r1 = await clusterStore(db, { threshold: 0.50 });
       if (r1.clusters.length === 0) return; // not enough similarity — skip
 
       const uid1 = r1.clusters.map((c) => c.community_uid).sort().join(',');
@@ -725,7 +725,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
       db.exec(`UPDATE node SET t_invalid = datetime('now') WHERE kind = 'community'`);
       db.exec(`UPDATE edge SET t_invalid = datetime('now') WHERE rel = 'MEMBER_OF'`);
 
-      const r2 = clusterStore(db, { threshold: 0.50 });
+      const r2 = await clusterStore(db, { threshold: 0.50 });
       const uid2 = r2.clusters.map((c) => c.community_uid).sort().join(',');
 
       expect(uid1).toBe(uid2);
@@ -744,7 +744,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
 
       // Threshold so low it might cause degenerate clustering
       // The guard should either raise threshold or return empty clusters
-      const result = clusterStore(db, { threshold: 0.01 });
+      const result = await clusterStore(db, { threshold: 0.01 });
       // Either the guard raised the threshold and clusters are formed,
       // or it bailed out returning empty — either is valid
       expect(Array.isArray(result.clusters)).toBe(true);
@@ -761,7 +761,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
       insertEpisode(db, 'ep2', 'B'.repeat(60), emb2);
       insertEpisode(db, 'ep3', 'C'.repeat(60), emb3);
 
-      const result = clusterStore(db, { threshold: 0.50 });
+      const result = await clusterStore(db, { threshold: 0.50 });
       for (const cluster of result.clusters) {
         const sorted = [...cluster.member_rowids].sort((a, b) => a - b);
         expect(cluster.member_rowids).toEqual(sorted);
@@ -777,7 +777,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
       insertEpisode(db, 'ep1', 'A'.repeat(60), emb1, { topic: 'my-topic' });
       insertEpisode(db, 'ep2', 'B'.repeat(60), emb2);
 
-      const result = clusterStore(db, { threshold: 0.50 });
+      const result = await clusterStore(db, { threshold: 0.50 });
       if (result.clusters.length === 1) {
         // Label should come from one of the episodes (preferring topic field)
         expect(typeof result.clusters[0]!.label).toBe('string');
@@ -794,7 +794,7 @@ describe('clusterStore — P3 clustering guarantees', () => {
       insertEpisode(db, 'ep1', 'A'.repeat(60), emb1);
       insertEpisode(db, 'ep2', 'B'.repeat(60), emb2);
 
-      const result = clusterStore(db, { threshold: 0.50 });
+      const result = await clusterStore(db, { threshold: 0.50 });
       if (result.clusters.length === 0) return; // not enough similarity
 
       const communityCount = db

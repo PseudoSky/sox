@@ -85,13 +85,13 @@ function freshDb(): { db: Database.Database; dbPath: string } {
   const dir = makeTempDir();
   tmpDirs.push(dir);
   const dbPath = path.join(dir, 'test.db');
-  const db = openDb(dbPath);
+  const db = await openDb(dbPath);
   // Seed memory_scope so idempotency checks work.
   // (openDb creates the schema including memory_scope via initScope called by
   // stampStoreMeta — but memory_scope may be empty until initScope runs.)
   // Insert a row with an old model so there's something to migrate.
   try {
-    db.prepare(
+    raw(db).prepare(
       `INSERT OR IGNORE INTO memory_scope(scope, scope_id, embed_model, embed_dim, schema_ver, created_at)
        VALUES ('project', 'test-scope-id', 'old-model-id', 768, 1, datetime('now'))`,
     ).run();
@@ -314,7 +314,7 @@ describe('reembedStore — BL-92 mixed-model store (per-record embed_model)', ()
 
     // NOTE: use openDb (not a bare `new Database`) — it loads the sqlite-vec
     // extension, required to read back the vec_node virtual table's contents.
-    const rawDb = openDb(dbPath);
+    const rawDb = await openDb(dbPath);
     try {
       // The stale record is migrated: new stamp + new (mock all-zero) vector.
       expect(readNodeEmbedModel(rawDb, staleRowid)).toBe(TARGET_MODEL);
@@ -349,7 +349,7 @@ describe('reembedStore — BL-92 mixed-model store (per-record embed_model)', ()
 
     // NOTE: use openDb (not a bare `new Database`) — it loads the sqlite-vec
     // extension, required to read back the vec_node virtual table's contents.
-    const rawDb = openDb(dbPath);
+    const rawDb = await openDb(dbPath);
     try {
       expect(readNodeEmbedModel(rawDb, rowidA)).toBe(TARGET_MODEL);
       expect(readNodeEmbedModel(rawDb, rowidB)).toBe(TARGET_MODEL);
@@ -375,7 +375,7 @@ describe('reembedStore — BL-92 NULL embed_model handling', () => {
 
     // NOTE: use openDb (not a bare `new Database`) — it loads the sqlite-vec
     // extension, required to read back the vec_node virtual table's contents.
-    const rawDb = openDb(dbPath);
+    const rawDb = await openDb(dbPath);
     try {
       expect(readNodeEmbedModel(rawDb, nullRowid)).toBe(TARGET_MODEL);
       const afterVec = Array.from(readVecNodeEmbedding(rawDb, nullRowid));
@@ -397,7 +397,7 @@ describe('reembedStore — BL-92 NULL embed_model handling', () => {
 
     // NOTE: use openDb (not a bare `new Database`) — it loads the sqlite-vec
     // extension, required to read back the vec_node virtual table's contents.
-    const rawDb = openDb(dbPath);
+    const rawDb = await openDb(dbPath);
     try {
       // The already-current row is confirmed untouched here too.
       expect(readNodeEmbedModel(rawDb, currentRowid)).toBe(TARGET_MODEL);

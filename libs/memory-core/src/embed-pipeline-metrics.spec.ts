@@ -134,7 +134,7 @@ afterEach(async () => {
 
 describe('time_to_vector_ms — recorded on the async path from the monotonic Phase-A stamp', () => {
   it('Phase A stamps startedAtMs; a pipeline apply records one sample bounded below by the stamp age', async () => {
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     const a = await phaseA(ctx.adapter, 'time to vector headline metric sample one');
 
     // The stamp is minted by Phase A itself (performance.now-based).
@@ -169,7 +169,7 @@ describe('time_to_vector_ms — recorded on the async path from the monotonic Ph
   });
 
   it('a stamped pending whose apply resolves "exists" records NO time_to_vector sample', async () => {
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     const a = await phaseA(ctx.adapter, 'vector already landed via a racing path');
 
     // Land the vector first (direct apply via transaction — the heal/pipeline race shape).
@@ -193,7 +193,7 @@ describe('time_to_vector_ms — recorded on the async path from the monotonic Ph
 
 describe('heal path — never pollutes time_to_vector; wall-clock heal_lag_ms instead', () => {
   it('healed orphans record heals_applied + heal_lag_ms (≥ known t_created age), zero time_to_vector samples', async () => {
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     // Crash orphan created 60s ago (wall clock) — no in-process stamp exists.
     const old = new Date(Date.now() - 60_000).toISOString();
     await insertOrphanEpisode(ctx.adapter, 'crash orphan with unique zeppelin tokens', old);
@@ -220,7 +220,7 @@ describe('heal path — never pollutes time_to_vector; wall-clock heal_lag_ms in
 
 describe('monotonic counters — each outcome branch drives exactly its counter', () => {
   it('gone: a pending whose rowid no longer matches counts applies_gone', async () => {
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     const bogus: PendingEmbed = {
       uid: 'no-such-uid',
       rowid: 99_999,
@@ -236,7 +236,7 @@ describe('monotonic counters — each outcome branch drives exactly its counter'
   });
 
   it('failed: an embed failure counts embeds_failed (pipeline) / heals_failed (heal) — disjoint', async () => {
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     _setEmbedProviderForTest(new FailingProvider());
 
     const a = await phaseA(ctx.adapter, 'first doomed pipeline embed');
@@ -262,7 +262,7 @@ describe('per-store keying (mirrors WriteQueue.metricsForPath) + snapshot purity
   it('two stores keep independent metrics; unknown stores return null', async () => {
     const other = await tmpDb();
     try {
-      const wqA = WriteQueue.forPath(ctx.dbPath);
+      const wqA = await WriteQueue.forPath(ctx.dbPath);
       const a = await phaseA(ctx.adapter, 'store A episode about lighthouse optics');
       await schedulePendingEmbeds(wqA, [a.pending!]);
 
@@ -271,7 +271,7 @@ describe('per-store keying (mirrors WriteQueue.metricsForPath) + snapshot purity
       expect(getEmbedPipelineMetrics(ctx.dbPath)!.counters.applies_applied).toBe(1);
       expect(getEmbedPipelineMetrics(other.dbPath)).toBeNull();
 
-      const wqB = WriteQueue.forPath(other.dbPath);
+      const wqB = await WriteQueue.forPath(other.dbPath);
       const b = await memoryWritePhaseA(other.adapter, { content: 'store B episode about tidal harmonics', project_path: '/test/project' });
       await schedulePendingEmbeds(wqB, [(b as PhaseAOutcome).pending!]);
 
@@ -285,7 +285,7 @@ describe('per-store keying (mirrors WriteQueue.metricsForPath) + snapshot purity
   });
 
   it('getEmbedPipelineMetrics is pure — repeated snapshots are identical and mutation-safe', async () => {
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     const a = await phaseA(ctx.adapter, 'purity check episode content');
     await schedulePendingEmbeds(wq, [a.pending!]);
 
@@ -305,7 +305,7 @@ describe('per-store keying (mirrors WriteQueue.metricsForPath) + snapshot purity
 
 describe('pipeline applies are apply-kind queue tasks (write_latency_ms stays honest)', () => {
   it('a pipeline apply increments apply_tasks_completed, not write_tasks_completed', async () => {
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     // Phase A through the queue (write-kind), Phase B apply (apply-kind).
     const outcome = await wq.enqueue('memory_write', async (qdb) => {
       return memoryWritePhaseA(qdb, { content: 'kind separation end to end proof', project_path: '/test/project' });
@@ -323,7 +323,7 @@ describe('pipeline applies are apply-kind queue tasks (write_latency_ms stays ho
 
 describe('embed_throughput_per_sec — rolling 60s window', () => {
   it('records throughput from pipeline completions', async () => {
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     const a = await phaseA(ctx.adapter, 'throughput sample one');
     await schedulePendingEmbeds(wq, [a.pending!]);
 
@@ -334,7 +334,7 @@ describe('embed_throughput_per_sec — rolling 60s window', () => {
   });
 
   it('heal path also feeds the throughput metric', async () => {
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     await insertOrphanEpisode(ctx.adapter, 'heal throughput test item', new Date().toISOString());
     const heal = await healMissingVectors(ctx.adapter, wq);
     expect(heal.healed).toBe(1);
@@ -348,7 +348,7 @@ describe('embed_throughput_per_sec — rolling 60s window', () => {
 
 describe('heal_time_budget_exceeded — per-tick time budget', () => {
   it('defaults to false on a clean heal pass (no items or items healed fully)', async () => {
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     const heal = await healMissingVectors(ctx.adapter, wq);
     expect(heal.time_budget_exceeded).toBe(false);
 
@@ -357,7 +357,7 @@ describe('heal_time_budget_exceeded — per-tick time budget', () => {
   });
 
   it('is false after a heal pass that fully heals all scanned items', async () => {
-    const wq = WriteQueue.forPath(ctx.dbPath);
+    const wq = await WriteQueue.forPath(ctx.dbPath);
     await insertOrphanEpisode(ctx.adapter, 'single budget-respecting orphan', new Date().toISOString());
     const heal = await healMissingVectors(ctx.adapter, wq);
     expect(heal.healed).toBe(1);

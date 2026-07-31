@@ -24,7 +24,7 @@ describe('memoryWrite — summary + metadata (BL-23)', () => {
   it('persists client-supplied summary and metadata', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = openDb(path.join(dir, 't.db'));
+      const db = await openDb(path.join(dir, 't.db'));
       const r = await memoryWrite(db, {
         content: 'Bi-temporal edges supersede facts.',
         summary: 'graph supersession',
@@ -34,7 +34,7 @@ describe('memoryWrite — summary + metadata (BL-23)', () => {
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
 
-      const row = db
+      const row = raw(db)
         .prepare<[string], { summary: string | null; meta: string | null }>(
           'SELECT summary, meta FROM node WHERE uid = ?',
         )
@@ -51,12 +51,12 @@ describe('memoryWrite — summary + metadata (BL-23)', () => {
   it('leaves meta null when not supplied; summary is set by extractive fallback (no regression)', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = openDb(path.join(dir, 't.db'));
+      const db = await openDb(path.join(dir, 't.db'));
       // P2: enrichOnWrite runs extractiveSummary when no caller summary is supplied.
       // Content < 100 chars → extractiveSummary returns it as-is (still non-null).
       const r = await memoryWrite(db, { content: 'Plain content, no extras.', project_path: '/test/project' });
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = db
+      const row = raw(db)
         .prepare<[string], { summary: string | null; meta: string | null }>(
           'SELECT summary, meta FROM node WHERE uid = ?',
         )
@@ -77,7 +77,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
   it('persists caller-supplied topic', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = openDb(path.join(dir, 't.db'));
+      const db = await openDb(path.join(dir, 't.db'));
       const r = await memoryWrite(db, {
         content: 'TypeScript strict mode improves type safety.',
         topic: 'typescript',
@@ -85,7 +85,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = db
+      const row = raw(db)
         .prepare<[string], { topic: string | null }>('SELECT topic FROM node WHERE uid = ?')
         .get(uid)!;
       expect(row.topic).toBe('typescript');
@@ -96,14 +96,14 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
   it('parses [<topic>] prefix from content when no explicit topic supplied', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = openDb(path.join(dir, 't.db'));
+      const db = await openDb(path.join(dir, 't.db'));
       const r = await memoryWrite(db, {
         content: '[authentication] JWT tokens expire after 1 hour.',
         project_path: '/test/project',
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = db
+      const row = raw(db)
         .prepare<[string], { topic: string | null }>('SELECT topic FROM node WHERE uid = ?')
         .get(uid)!;
       expect(row.topic).toBe('authentication');
@@ -114,7 +114,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
   it('explicit topic param overrides [<topic>] prefix', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = openDb(path.join(dir, 't.db'));
+      const db = await openDb(path.join(dir, 't.db'));
       const r = await memoryWrite(db, {
         content: '[old-topic] Some content here.',
         topic: 'new-topic',
@@ -122,7 +122,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = db
+      const row = raw(db)
         .prepare<[string], { topic: string | null }>('SELECT topic FROM node WHERE uid = ?')
         .get(uid)!;
       expect(row.topic).toBe('new-topic');
@@ -133,7 +133,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
   it('persists tags as JSON column AND creates MENTIONS entity edges', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = openDb(path.join(dir, 't.db'));
+      const db = await openDb(path.join(dir, 't.db'));
       const r = await memoryWrite(db, {
         content: 'Discussing JWT and OAuth flows.',
         tags: ['JWT', 'OAuth'],
@@ -143,13 +143,13 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const uid = (r as { episode_uid: string }).episode_uid;
 
       // tags JSON column
-      const row = db
+      const row = raw(db)
         .prepare<[string], { tags: string | null }>('SELECT tags FROM node WHERE uid = ?')
         .get(uid)!;
       expect(JSON.parse(row.tags!)).toEqual(['JWT', 'OAuth']);
 
       // MENTIONS edges
-      const mentionCount = db
+      const mentionCount = raw(db)
         .prepare<[string], { cnt: number }>(
           `SELECT COUNT(*) AS cnt FROM edge e
            JOIN node src ON src.uid = ?
@@ -165,14 +165,14 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
   it('persists caller-supplied project_path', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = openDb(path.join(dir, 't.db'));
+      const db = await openDb(path.join(dir, 't.db'));
       const r = await memoryWrite(db, {
         content: 'Nx monorepo task caching speeds up CI.',
         project_path: '/Users/nix/dev/ai/sox-ecosystem',
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = db
+      const row = raw(db)
         .prepare<[string], { project_path: string | null }>('SELECT project_path FROM node WHERE uid = ?')
         .get(uid)!;
       expect(row.project_path).toBe('/Users/nix/dev/ai/sox-ecosystem');
@@ -183,13 +183,13 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
   it('leaves topic/tags null when not supplied; project_path is caller-supplied', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = openDb(path.join(dir, 't.db'));
+      const db = await openDb(path.join(dir, 't.db'));
       // BL-62: project_path is now required (caller-supplied, not auto-detected).
       // topic and tags remain null when not supplied (no prefix, no tags param).
       const r = await memoryWrite(db, { content: 'A plain episode with no enrichment fields.', project_path: '/test/project' });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = db
+      const row = raw(db)
         .prepare<[string], { topic: string | null; tags: string | null; project_path: string | null }>(
           'SELECT topic, tags, project_path FROM node WHERE uid = ?',
         )
@@ -205,7 +205,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
   it('tags are queryable via json_extract / json_each', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = openDb(path.join(dir, 't.db'));
+      const db = await openDb(path.join(dir, 't.db'));
       const r = await memoryWrite(db, {
         content: 'Memory graph stores semantic knowledge.',
         tags: ['memory', 'graph'],
@@ -214,7 +214,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const uid = (r as { episode_uid: string }).episode_uid;
 
       // json_each filter: find episodes with tag 'graph'
-      const found = db
+      const found = raw(db)
         .prepare<[string, string], { uid: string }>(
           `SELECT n.uid FROM node n, json_each(n.tags) t
            WHERE t.value = ? AND n.uid = ? AND n.t_invalid IS NULL`,
@@ -228,7 +228,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
   it('enrichment field in WriteResult matches persisted values', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = openDb(path.join(dir, 't.db'));
+      const db = await openDb(path.join(dir, 't.db'));
       const r = await memoryWrite(db, {
         content: '[security] Validate all inputs at the API boundary.',
         topic: 'security',
@@ -251,7 +251,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
   it('derived_from_uid creates a DERIVED_FROM edge', async () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = openDb(path.join(dir, 't.db'));
+      const db = await openDb(path.join(dir, 't.db'));
       const parent = await memoryWrite(db, { content: 'Parent episode with important context.', project_path: '/test/project' });
       expect('episode_uid' in parent).toBe(true);
       const parentUid = (parent as { episode_uid: string }).episode_uid;
@@ -264,7 +264,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       expect('episode_uid' in child).toBe(true);
       const childUid = (child as { episode_uid: string }).episode_uid;
 
-      const edge = db
+      const edge = raw(db)
         .prepare<[string, string], { rel: string }>(
           `SELECT e.rel FROM edge e
            JOIN node src ON src.uid = ?
@@ -316,10 +316,10 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
     const { dir, cleanup } = tmpDir();
     try {
       process.env['SOX_CONFIG_PROJECT_PATH'] = '/Users/nix/dev/ai/agent-source';
-      const db = openDb(path.join(dir, 't.db'));
+      const db = await openDb(path.join(dir, 't.db'));
 
       // Count nodes before
-      const before = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
+      const before = raw(db).prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
 
       // No project_path arg — this is now rejected
       const r = await memoryWrite(db, { content: 'BL-62 resolved: unqualified write rejected.' });
@@ -329,7 +329,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
       expect(result.message).toContain('project_path is required');
 
       // Count nodes after — should be unchanged (no node created)
-      const after = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
+      const after = raw(db).prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
       expect(after.cnt).toBe(before.cnt);
 
       db.close();
@@ -344,7 +344,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
       process.env['SOX_CONFIG_PROJECT_PATH'] = '/Users/nix/dev/ai/agent-source';
       const trueWorkingDir = '/Users/nix/Documents/professional/qusececure';
 
-      const db = openDb(path.join(dir, 't.db'));
+      const db = await openDb(path.join(dir, 't.db'));
       // Caller knows its own real cwd and passes it explicitly.
       const r = await memoryWrite(db, {
         content: 'BL-62 resolved: qualified write with explicit project_path.',
@@ -359,7 +359,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
       expect(result.enrichment.project_path).toBe(trueWorkingDir);
       expect(result.enrichment.project_path_source).toBe('explicit');
 
-      const row = db
+      const row = raw(db)
         .prepare<[string], { project_path: string | null }>(
           'SELECT project_path FROM node WHERE uid = ?',
         )
@@ -375,10 +375,10 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
     const { dir, cleanup } = tmpDir();
     try {
       process.env['SOX_CONFIG_PROJECT_PATH'] = '/Users/nix/dev/ai/agent-source';
-      const db = openDb(path.join(dir, 't.db'));
+      const db = await openDb(path.join(dir, 't.db'));
 
       // Count nodes before
-      const before = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
+      const before = raw(db).prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
 
       // Empty-string is treated as omitted → rejected
       const r = await memoryWrite(db, { content: 'BL-62 empty-string now rejected.', project_path: '' });
@@ -387,7 +387,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
       expect(result.code).toBe('E_MISSING_PROJECT_PATH');
 
       // Count nodes after — should be unchanged
-      const after = db.prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
+      const after = raw(db).prepare<[], { cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'").get()!;
       expect(after.cnt).toBe(before.cnt);
 
       db.close();
@@ -408,7 +408,7 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'batch-'));
     cleanupDb = () => fs.rmSync(dir, { recursive: true, force: true });
     dbPath = path.join(dir, 'batch.db');
-    db = openDb(dbPath);
+    db = await openDb(dbPath);
     // Reset queue instrumentation
     await WriteQueue.clearInstances();
     WriteQueue.setBypass(false);
@@ -475,7 +475,7 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
    */
   it('batch routes as a single queue entry (not N items)', async () => {
     WriteQueue.clearInstances();
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     // The batch function itself doesn't enqueue — the test wraps it in a queue
     // entry to simulate what the MCP handler does.
     // We reset the count before the batch, then verify count remains 0
@@ -575,10 +575,10 @@ describe('memoryWriteBatch — project_path_source parity (BL-233)', () => {
   let cleanupDb: () => void;
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'batch-pps-'));
     cleanupDb = () => fs.rmSync(dir, { recursive: true, force: true });
-    db = openDb(path.join(dir, 'batch-pps.db'));
+    db = await openDb(path.join(dir, 'batch-pps.db'));
   });
 
   afterEach(() => {
@@ -794,8 +794,8 @@ describe('openDb — P1 enrichment column migrations (D3.1)', () => {
   it('a fresh store has all canonical columns', () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = openDb(path.join(dir, 'fresh.db'));
-      const cols = (db.prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
+      const db = await openDb(path.join(dir, 'fresh.db'));
+      const cols = (raw(db).prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
       // Base graph-store columns
       expect(cols).toContain('topic');
       expect(cols).toContain('tags');
@@ -836,15 +836,15 @@ describe('openDb — P1 enrichment column migrations (D3.1)', () => {
       );
       raw.close();
 
-      const db = openDb(dbPath);
-      const cols = (db.prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
+      const db = await openDb(dbPath);
+      const cols = (raw(db).prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
       expect(cols).toContain('enrich_ver');
       expect(cols).toContain('embed_model');
       db.close();
 
       // Idempotent: re-opening does not duplicate or error
-      const db2 = openDb(dbPath);
-      const cols2 = (db2.prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
+      const db2 = await openDb(dbPath);
+      const cols2 = (raw(db2).prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
       for (const col of ['enrich_ver', 'embed_model']) {
         expect(cols2.filter((c) => c === col)).toHaveLength(1);
       }
@@ -877,8 +877,8 @@ describe('openDb — P1 enrichment column migrations (D3.1)', () => {
       raw.close();
 
       // Most columns already exist — openDb must add enrich_ver and embed_model without error
-      const db = openDb(dbPath);
-      const cols = (db.prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
+      const db = await openDb(dbPath);
+      const cols = (raw(db).prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
       expect(cols).toContain('enrich_ver');
       expect(cols).toContain('embed_model');
       db.close();
@@ -890,8 +890,8 @@ describe('openDb — memory-specific column migration', () => {
   it('a fresh store has embed_model', () => {
     const { dir, cleanup } = tmpDir();
     try {
-      const db = openDb(path.join(dir, 'fresh.db'));
-      const cols = (db.prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
+      const db = await openDb(path.join(dir, 'fresh.db'));
+      const cols = (raw(db).prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
       expect(cols).toContain('embed_model');
       expect(cols).toContain('enrich_ver');
       db.close();
@@ -926,15 +926,15 @@ describe('openDb — memory-specific column migration', () => {
       raw.close();
 
       // openDb must migrate in place.
-      const db = openDb(dbPath);
-      const cols = (db.prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
+      const db = await openDb(dbPath);
+      const cols = (raw(db).prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
       expect(cols).toContain('embed_model');
       expect(cols).toContain('enrich_ver');
       db.close();
 
       // Idempotent: re-opening doesn't error or duplicate.
-      const db2 = openDb(dbPath);
-      const cols2 = (db2.prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
+      const db2 = await openDb(dbPath);
+      const cols2 = (raw(db2).prepare('PRAGMA table_info(node)').all() as Array<{ name: string }>).map((c) => c.name);
       expect(cols2.filter((c) => c === 'embed_model')).toHaveLength(1);
       db2.close();
     } finally {

@@ -47,7 +47,7 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
    * matches enqueue order: [0, 1, 2, ..., 19].
    */
   it('proves FIFO ordering under concurrency (queue active)', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     const order: number[] = [];
 
     for (let i = 0; i < 20; i++) {
@@ -75,7 +75,7 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
    */
   it('negative control: queue bypass scrambles ordering (test goes red)', async () => {
     WriteQueue.setBypass(true);
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     const order: number[] = [];
 
     for (let i = 0; i < 20; i++) {
@@ -97,7 +97,7 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
    * Overflow guard: queue with maxSize=1 rejects the second concurrent enqueue.
    */
   it('rejects with E_BUSY when queue is full', async () => {
-    const queue = WriteQueue.forPath(path.join(path.dirname(dbPath), 'busy.db'), 1);
+    const queue = await WriteQueue.forPath(path.join(path.dirname(dbPath), 'busy.db'), 1);
 
     // Enqueue one long-running operation to fill the queue
     const slowPromise = queue.enqueue('slow', () => {
@@ -122,7 +122,7 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
    * Parallel write count: 20 concurrent enqueues all complete.
    */
   it('20 parallel operations all complete successfully', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     let completed = 0;
 
     const promises: Promise<unknown>[] = [];
@@ -146,16 +146,16 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
    * Singleton: two calls to forPath() with the same path return the same queue.
    * Bypass mode creates independent queues (negative control invariant).
    */
-  it('singleton: same path returns same instance (bypass=false)', () => {
-    const a = WriteQueue.forPath(dbPath);
-    const b = WriteQueue.forPath(dbPath);
+  it('singleton: same path returns same instance (bypass=false)', async () => {
+    const a = await WriteQueue.forPath(dbPath);
+    const b = await WriteQueue.forPath(dbPath);
     expect(a).toBe(b);
   });
 
-  it('bypass mode creates independent instances', () => {
+  it('bypass mode creates independent instances', async () => {
     WriteQueue.setBypass(true);
-    const a = WriteQueue.forPath(dbPath);
-    const b = WriteQueue.forPath(dbPath);
+    const a = await WriteQueue.forPath(dbPath);
+    const b = await WriteQueue.forPath(dbPath);
     expect(a).not.toBe(b);
     WriteQueue.setBypass(false);
   });
@@ -200,7 +200,7 @@ describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
    * We verify it grows with our writes, then shrinks after checkpoint.
    */
   it('idle checkpoint shrinks WAL file after queue drains', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
 
     // Capture baseline WAL size (from schema creation)
     const walBaseline = queue.walBytes();
@@ -235,7 +235,7 @@ describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
    *   3. After new work drains → new timer is scheduled
    */
   it('checkpoint timer lifecycle: pending after drain, cancelled and re-scheduled by new work', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
 
     // Do a quick write and let the queue drain
     await queue.enqueue('create-table', async (tx) => {
@@ -270,7 +270,7 @@ describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
    * already has a non-zero WAL. This test verifies walBytes can detect it.
    */
   it('walBytes returns non-zero for an active WAL database', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     // The DB writes schema PRAGMAs to the WAL on open, so walBytes > 0
     expect(queue.walBytes()).toBeGreaterThan(0);
   });
@@ -280,7 +280,7 @@ describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
    * returns -1 (nothing left to checkpoint). lastCheckpointAt advances.
    */
   it('walCheckpoint is idempotent returns frame count then -1', async () => {
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
 
     // Write some data
     await queue.enqueue('write-data', async (tx) => {
@@ -310,7 +310,7 @@ describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
   it('lastCheckpointAtForPath: unknown path returns 0, known path >0 after checkpoint', async () => {
     expect(WriteQueue.lastCheckpointAtForPath('/nonexistent/path.db')).toBe(0);
 
-    const queue = WriteQueue.forPath(dbPath);
+    const queue = await WriteQueue.forPath(dbPath);
     await queue.walCheckpoint();
     expect(WriteQueue.lastCheckpointAtForPath(dbPath)).toBeGreaterThan(0);
   });

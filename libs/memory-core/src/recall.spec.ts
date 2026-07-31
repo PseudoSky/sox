@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -8,6 +9,15 @@ import { memoryWrite } from './write.js';
 import { memoryRecall, ExpansionOverflowError } from './recall.js';
 import { _shutdownEmbedWorker } from './embed.js';
 
+/**
+ * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
+ * These specs' own verification reads use raw SQL against the sqlite backend,
+ * so unwrap once here rather than rewriting every assertion.
+ */
+function raw(a: StoreAdapter): Database.Database {
+  return a.unwrap() as Database.Database;
+}
+
 
 afterAll(async () => {
   await _shutdownEmbedWorker();
@@ -15,13 +25,13 @@ afterAll(async () => {
 
 // ── DB helpers ────────────────────────────────────────────────────────────────
 
-function tmpDb(): { db: Database.Database; dir: string } {
+function tmpDb(): { db: StoreAdapter; dir: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-'));
-  const db = openDb(path.join(dir, 'test.db'));
+  const db = await openDb(path.join(dir, 'test.db'));
   return { db, dir };
 }
 
-function cleanup(db: Database.Database, dir: string): void {
+function cleanup(db: StoreAdapter, dir: string): void {
   try { db.close(); } catch { /* ignore */ }
   fs.rmSync(dir, { recursive: true, force: true });
 }
@@ -174,7 +184,7 @@ describe('Parent-context expansion — session_id fallback', () => {
       const childUid = (childResult as { episode_uid: string }).episode_uid;
 
       // 3. Verify no DERIVED_FROM edge exists between child and parent.
-      const edgeRow = db.prepare(
+      const edgeRow = raw(db).prepare(
         `SELECT e.rowid FROM edge e
          JOIN node n_src ON n_src.rowid = e.src
          JOIN node n_dst ON n_dst.rowid = e.dst
@@ -348,7 +358,7 @@ describe('BL-167 — ScoreBreakdown invariant (normTotal === 0 degenerate case)'
       // number, smallest rrfScore) on the temporal channel. 10 days keeps the
       // recency multiplier (0.995^hours) comfortably away from fp underflow.
       const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
-      db.prepare(`UPDATE node SET t_created = ? WHERE uid = ?`).run(tenDaysAgo, aUid);
+      raw(db).prepare(`UPDATE node SET t_created = ? WHERE uid = ?`).run(tenDaysAgo, aUid);
 
       const response = await memoryRecall(db, 'project', {
         query: 'widget',

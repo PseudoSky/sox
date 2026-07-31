@@ -13,6 +13,8 @@
  * CHECK constraint and the absence of any dead-letter columns.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import type Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -23,6 +25,15 @@ import {
   enqueueEnrichFull,
   hasPendingFullEnrich,
 } from './outbox-queue.js';
+
+/**
+ * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
+ * These specs' own verification reads use raw SQL against the sqlite backend,
+ * so unwrap once here rather than rewriting every assertion.
+ */
+function raw(a: StoreAdapter): Database.Database {
+  return a.unwrap() as Database.Database;
+}
 
 interface QueueRow {
   seq: number;
@@ -36,9 +47,9 @@ interface QueueRow {
 let dir: string;
 let db: DatabaseType;
 
-beforeEach(() => {
+beforeEach(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oq-'));
-  db = openDb(path.join(dir, 'test.db'));
+  db = await openDb(path.join(dir, 'test.db'));
 });
 
 afterEach(() => {
@@ -88,10 +99,10 @@ describe('enqueueEnrichFull', () => {
     expect(JSON.parse(row.payload)).toEqual({ full: true, reason: 'recluster requested' });
   });
 
-  it('returns monotonically increasing seqs across calls', () => {
+  it('returns monotonically increasing seqs across calls', async () => {
     const a = enqueueEnrichFull(db, 'first');
     const b = enqueueEnrichFull(db, 'second');
-    expect(b).toBeGreaterThan(a);
+    expect(b).toBeGreaterThan(await a);
   });
 });
 
@@ -102,13 +113,13 @@ describe('hasPendingFullEnrich', () => {
     expect(hasPendingFullEnrich(db, -5)).toBe(false);
   });
 
-  it('is true for an open full-pass row inside the snapshot window', () => {
+  it('is true for an open full-pass row inside the snapshot window', async () => {
     const seq = enqueueEnrichFull(db, 'r');
     expect(hasPendingFullEnrich(db, seq)).toBe(true);
-    expect(hasPendingFullEnrich(db, seq + 100)).toBe(true);
+    expect(hasPendingFullEnrich(db, await seq + 100)).toBe(true);
   });
 
-  it('is false for a full-pass row enqueued AFTER the snapshot (seq > maxSeq) — it drives the NEXT tick', () => {
+  it('is false for a full-pass row enqueued AFTER the snapshot (seq > maxSeq) — it drives the NEXT tick', async () => {
     const before = enqueueEnrichFull(db, 'in-window');
     // complete the in-window row, then enqueue a fresh one past the snapshot
     db.prepare(`UPDATE organizer_queue SET done_at = ? WHERE seq = ?`).run(
@@ -116,7 +127,7 @@ describe('hasPendingFullEnrich', () => {
       before,
     );
     const after = enqueueEnrichFull(db, 'post-snapshot');
-    expect(after).toBeGreaterThan(before);
+    expect(after).toBeGreaterThan(await before);
     expect(hasPendingFullEnrich(db, before)).toBe(false);
   });
 
