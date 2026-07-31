@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 91.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 89.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,12 +23,12 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31: **91 open**.
+Regenerated 2026-07-31: **89 open**. (BL-323 and BL-343 resolved 2026-07-31 — see CHANGELOG.md.)
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-343, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-369, BL-370, BL-372, BL-373, BL-374, BL-375 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-369, BL-370, BL-372, BL-373, BL-374, BL-375 |
 | **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362, BL-376 |
 | **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363 |
 | **UNSET** | BL-163 |
@@ -952,35 +952,6 @@ Citations: [wip/turso-live-metrics, performance-engineer, claude, BL-331 investi
 
 ---
 
-### BL-323 — `db.ts` sqlite-vec load destructures a non-existent `default` export — every `openDb()` on the sqlite adapter throws `Cannot read properties of undefined (reading 'load')` — **Open (HIGH)** (2026-07-30)
-
-**Found while:** writing recall-live-incident regression tests for the `memory_recall` timeout/FTS-dialect fixes (wip/turso-live-metrics).[1] Not caused by that work — reproduces on `main`-derived `db.ts` as of this commit regardless of the recall.ts changes.
-
-**Root cause.** `libs/memory-core/src/db.ts:328` does:
-```ts
-const { default: sqliteVec } = await import('sqlite-vec');
-sqliteVec.load(rawDb);
-```
-but the installed `sqlite-vec@0.1.9` CJS module (`node_modules/.pnpm/sqlite-vec@0.1.9/node_modules/sqlite-vec/index.cjs`) exposes `load`/`getLoadablePath` as named exports with **no `default` export at all** — confirmed directly: `node -e "import('sqlite-vec').then(m=>console.log(Object.keys(m), typeof m.default))"` prints `[ 'getLoadablePath', 'load' ] undefined`.[2] So `sqliteVec` is always `undefined`, and every call into this branch throws `TypeError: Cannot read properties of undefined (reading 'load')`.[3]
-
-**Impact.** This branch runs for every adapter `!adapter.capabilities.nativeVectors` — i.e. every `SqliteAdapter` open (the `STORE_ADAPTER=sqlite` test/dev path). `openDb()` on sqlite therefore throws on essentially every call right now, which is why `embed-pipeline-metrics.spec.ts`'s `beforeEach` (which forces `STORE_ADAPTER=sqlite` and calls `openDb`) fails at `ctx.cleanup()` with `ctx` undefined — the `beforeEach` never got past `tmpDb()`.[4] This is very likely the dominant contributor to the ~266/267 pre-existing memory-core test failures reported alongside BL-319, independent of the previously-documented `openDb()`-without-`await` test debt.
-
-**Fix sketch:** use the named export directly instead of destructuring a `default` that doesn't exist:
-```ts
-const sqliteVecModule = await import('sqlite-vec');
-const load = sqliteVecModule.load ?? (sqliteVecModule as unknown as { default: typeof sqliteVecModule }).default?.load;
-load(rawDb);
-```
-or simply `const { load } = await import('sqlite-vec'); load(rawDb);`. Verify with a red→green: the `embed-pipeline-metrics.spec.ts` and `recall-live-incident.spec.ts` `beforeEach` hooks (both call `openDb` with `STORE_ADAPTER=sqlite`) should go from throwing `TypeError: ... reading 'load'` to succeeding.
-
-**Owner note:** `db.ts` is currently owned by another in-flight agent (repairing the Turso wiring regression) per branch coordination on `wip/turso-live-metrics` — this item documents the sqlite-path defect discovered during that work; do not let it get lost as "someone else's problem" once that repair lands, since the destructure bug is orthogonal to the Turso-wiring regression and needs its own fix/verification.
-
-**Severity:** HIGH — blocks essentially all `memory-core` unit tests that open a real sqlite-backed `StoreAdapter`, and would equally break any production code path that opens a fresh sqlite store needing the vec0 extension loaded (fresh installs, `STORE_ADAPTER=sqlite` fallback deployments).
-
-Citations: [wip/turso-live-metrics, backend-developer, claude, recall-live-incident-fix, 1: libs/memory-core/src/embed-pipeline-metrics.spec.ts:60-129, 2: libs/memory-core/src/db.ts:328-330, 3: libs/memory-core/src/db.ts:325-331, 4: libs/memory-core/src/embed-pipeline-metrics.spec.ts:112-129]
-
----
-
 ### BL-324 — `memory-server` full suite: 8 reproducible failures in `write.ts`/`db.ts`/`recall.ts` paths, unrelated to the embed-backfill reentrancy fix — **Open (HIGH)** (2026-07-30)
 
 **Found while:** verifying the embed-backfill self-stampede reentrancy-guard fix (`runPeriodicEnrichPassGuarded`, `extensions/.../memory-server/src/index.ts`) on `wip/turso-live-metrics`.[1] Confirmed NOT caused by that fix: `git diff --name-only` shows the fix touches only `index.ts`; every failure below originates in `write.ts`, `db.ts`, or `recall.ts` (all under concurrent, uncommitted edit by another agent restoring the Turso wiring at the time this was filed) and reproduces identically in an isolated single-file `vitest run` with zero other spec files loaded.[2]
@@ -1792,7 +1763,7 @@ The write queue accounts for essentially all its work; `store.open` and `write.p
 
 **Severity:** HIGH — this is the observability gap *behind* the observability gap. We paid the full write cost of telemetry (17 MB/day, hot-path instrumentation, a whole module) and took none of the value, while running blind investigations against the same defects the log had already recorded.
 
-**Related:** BL-365 (the sink is not crash-durable — biases this item's own numbers), BL-351 (the substrate that must not repeat this), BL-334 (surfacing), BL-319 (metrics), BL-331 (answered by this data), BL-323, BL-342, BL-348, BL-300/301, BL-344 (controls scrubbed, so the live service cannot be tuned).
+**Related:** BL-365 (the sink is not crash-durable — biases this item's own numbers), BL-351 (the substrate that must not repeat this), BL-334 (surfacing), BL-319 (metrics), BL-331 (answered by this data), BL-342, BL-348, BL-300/301, BL-344 (controls scrubbed, so the live service cannot be tuned).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: ~/.adhd/sox-ecosystem/memory/log-analysis/{analyze-events.py,analyze-live-vs-test.py} run against ~/.adhd/sox-ecosystem/memory/logs/memory-core-2026-07-{30,31}.jsonl, 2: libs/memory-core/src/telemetry.ts, 3: docs/observability/README.md]
 
@@ -2220,7 +2191,32 @@ Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7
 
 ---
 
-### BL-342 — Restore wrote `tags = ''` (invalid JSON) instead of NULL, breaking `memory_stats` entirely — **Open (HIGH)** (2026-07-31)
+### BL-342 — Restore wrote empty-string JSON columns instead of NULL; the column that actually breaks `memory_stats` is `enrich_ver`, not `tags` — **Open (HIGH)** (2026-07-31)
+
+> **⚠️ ROOT CAUSE CORRECTED 2026-07-31 (`p0-test-infra`) — read this before repairing anything.**
+> This item's original title and body assert that `tags = ''` breaks `memory_stats`. **It does not.**
+> Measured with a per-column fixture (`libs/memory-core/src/stats-bl343-row-resilience.spec.ts`):
+> a store containing a `tags = ''` row returns stats normally, because `with_tags` only tests
+> `tags IS NOT NULL` (`stats.ts:98`) and never parses the value. A store containing an
+> `enrich_ver = ''` row fails with the **verbatim live error**:
+> ```
+> Error: step failed: Parse error: malformed JSON
+>   ❯ memoryGetStats libs/memory-core/src/stats.ts:120:21
+> ```
+> `stats.ts:120` is the `legacy_episodes` query — `json_extract(enrich_ver, '$.note')`. That is the
+> reported line in every trace of this defect, including the 2026-07-31 reconfirmation below.
+> **Repairing only `tags` on the live store would leave `memory_stats` dead while appearing to fix
+> it.** Any repair must normalise every JSON-typed column — at minimum `enrich_ver`, `tags`, `meta`.
+> The live `json_valid(tags)=0` sweep quoted below is real, but it found a *different* bad row than
+> the one taking the tool down; a `json_valid(enrich_ver)=0` sweep was never run.
+>
+> The tool-outage half is now fixed independently (BL-343, resolved — `memory_stats` no longer dies
+> on any malformed row, and reports `malformed_rows: { count, columns, sample_rowids }`). **Run
+> `memory_stats` on the live store and read `malformed_rows` to get the real column list and rowids
+> before repairing** — that field exists precisely so this no longer needs a bespoke sweep.
+> This item remains open for the two defects below: the restore path not normalising, and the
+> absent schema guard. Per the owner directive, the data repair belongs in the adapter's
+> verify-and-repair path (BL-352), never a manual write to `~/.memory/*`.
 
 **Driver:** `memory_stats` fails outright on the live store:
 ```
@@ -2241,7 +2237,7 @@ rowid 9284 falls inside the restored range (the 2026-07-30 restore inserted rowi
 
 **Acceptance (red→green, must name BL-342):** run the restore path against a fixture whose source has empty-string tags, assert every inserted row satisfies `json_valid(tags)` or is NULL, and assert `memory_stats` succeeds afterward.
 
-**Severity:** HIGH — a single malformed row of 9397 disables an entire tool on the live store. Related: BL-335 (the same restore also left secondary indexes unpopulated), BL-343.
+**Severity:** HIGH — a single malformed row of 9397 disables an entire tool on the live store. Related: BL-335 (the same restore also left secondary indexes unpopulated).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `memory_stats` error 2026-07-31, 2: live `json_valid(tags)=0` query output, 3: ~/.adhd/sox-ecosystem/memory/corrections-20260730/dbrepair/restore.mjs]
 
@@ -2251,27 +2247,6 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `m
 **New consequence worth recording:** `memory_stats` now carries the BL-334 integrity block, so this one malformed row makes the **store-health verdict unreachable** through that tool on the live store — not merely the coverage percentages. `memory_ping` is unaffected and remains the working path for the integrity verdict. This raises the practical cost of BL-342/BL-343: row-level resilience is now load-bearing for a health surface, not just for statistics.
 
 Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 4: handleToolCall('memory_stats') stack trace against a copy of `~/.memory/memory.db` 2026-07-31, 5: libs/memory-core/src/stats.ts:120]
-
----
-
-### BL-343 — One malformed row disables an entire tool: no row-level resilience in aggregate queries — **Open (HIGH)** (2026-07-31)
-
-**Driver:** `memory_stats` aggregates over all 9397 nodes. A single row with invalid JSON in `tags` (BL-342, rowid 9284) causes the whole call to fail with `Parse error: malformed JSON` — **no partial result, no indication of which row, no degraded mode.** From the caller's perspective the tool is simply dead, with an error that names neither the column nor the row.
-
-This is the same architectural failure the current Theme-2 work targets, in a new place: the system cannot distinguish "one row is bad" from "everything is broken", and it reports the latter.
-
-**What production-grade looks like here:**
-- Aggregate/stats queries should be resilient to individual malformed rows — skip and count them, or use a JSON-safe accessor, rather than aborting.
-- The error must identify the offending row and column. Diagnosing this took a bespoke `json_valid()` sweep; the error message alone was useless.
-- A malformed-row count belongs in the health surface (BL-334) as a first-class integrity signal — this is exactly the class of silent corruption that self-verification is supposed to catch.
-
-**Audit scope:** this is unlikely to be limited to `tags` in `stats.ts`. Any query using `json_extract`/`json_each`/`json_valid` over a whole table has the same fragility. Sweep for them.
-
-**Acceptance (red→green, must name BL-343):** insert one row with malformed JSON, assert `memory_stats` still returns a result, reports the malformed count, and names the offending rowid.
-
-**Severity:** HIGH — 1 bad row out of 9397 (0.01%) produced a total tool outage.
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/memory-core/src/stats.ts, 2: live `memory_stats` failure 2026-07-31, 3: BL-342, 4: BL-334]
 
 ---
 

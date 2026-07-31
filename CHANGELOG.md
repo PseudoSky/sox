@@ -2,6 +2,40 @@
 
 ---
 
+## [Unreleased] — BL-343, BL-323: memory_stats survives malformed rows; sqlite-vec load verified fixed
+
+### BL-343 (HIGH) — one malformed row no longer disables `memory_stats`
+
+`memory_stats` ran `json_extract()` across every episode with no row-level resilience, so a single row whose JSON column held an unparseable value aborted the statement and took the entire tool offline:
+
+```
+memory_stats → Tool error: Error: step failed: Parse error: malformed JSON
+```
+
+Every `json_extract` is now gated on `json_valid()`, in `stats.ts` and in the `clusterStats` read path `memoryGetStats` calls (`cluster.ts:692`, `:719` — same shape, same fatality). Gating alone would trade a loud failure for a quietly wrong number, so the skipped rows are also reported through a new required field:
+
+```jsonc
+"malformed_rows": { "count": 1, "columns": ["enrich_ver"], "sample_rowids": [9284] }
+```
+
+Per-column so an operator can see which column is corrupt; counted as distinct rows so a row malformed in two columns is not double-counted; `sample_rowids` (capped at 10) because diagnosing BL-342 required a bespoke `json_valid()` sweep — the raw error named neither row nor column.
+
+**This corrected BL-342's stated root cause.** BL-342 asserts `tags = ''` breaks `memory_stats`. Measured with a per-column fixture: it does not — `with_tags` only tests `tags IS NOT NULL` and never parses. The column that actually kills the tool is `enrich_ver`, at exactly the reported `stats.ts:120` (the `legacy_episodes` query). Repairing only `tags` on the live store would have left `memory_stats` dead while appearing to fix it.
+
+Red→green (`npx nx test memory-core --skip-nx-cache`): `stats-bl343-row-resilience.spec.ts` 3 failed → 3 passed, the `enrich_ver` case failing with the verbatim live error at `stats.ts:120`. Includes a negative control asserting a clean store reports `count: 0`, so the counter cannot be a constant. (`libs/memory-core/src/stats.ts`, `cluster.ts`, `stats-bl343-row-resilience.spec.ts`)
+
+### BL-323 (HIGH) — sqlite-vec `default`-export destructure: verified already fixed, closed
+
+`db.ts` destructured `{ default: sqliteVec }` from `sqlite-vec`, which exports `load`/`getLoadablePath` as named exports and has no `default` — so `sqliteVec` was always `undefined` and every `openDb()` on the sqlite adapter threw `Cannot read properties of undefined (reading 'load')`.
+
+The code fix had already landed (`db.ts:372`, `:895` use `const { load: loadSqliteVec } = await import('sqlite-vec')`) and `db-bl323-sqlite-vec-export.spec.ts` covers it, but the item was still marked `Open (HIGH)` and was listed as a P0 blocker in the sandbox plan on the grounds that it "kills the sqlite control arm" — a second wave of agents was about to be dispatched partly to fix it.
+
+Verified by reintroducing the bug rather than by inspection: with the `default` destructure restored, `db-bl323-sqlite-vec-export.spec.ts` fails 2/3 with the original `TypeError: Cannot read properties of undefined (reading 'load')` at `db.ts:372`; restored, it passes.
+
+**Measured correction to the item's own text.** BL-323 claimed it was "very likely the dominant contributor to the ~266/267 pre-existing memory-core test failures." It is not: total suite failures moved 178 (bug present) → 162 (bug absent). BL-323 accounts for **16** tests.
+
+---
+
 ## [Unreleased] — BL-287: exported `"./package.json"` passthrough across all 9 `@adhd/sox-*` data packages
 
 ### BL-287 (LOW) — `"./package.json"` now accessible via exports map on all 9 `@adhd/sox-*` packages
