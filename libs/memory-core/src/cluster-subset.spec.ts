@@ -53,6 +53,13 @@ CREATE TABLE IF NOT EXISTS edge (
   weight REAL DEFAULT 1.0, origin TEXT, confidence REAL,
   t_created TEXT NOT NULL, t_expired TEXT, t_valid TEXT, t_invalid TEXT, meta TEXT
 );
+-- The canonical graph-store schema declares this (graph-store/src/index.ts:76),
+-- and materializeClusters' MEMBER_OF upsert depends on it:
+--   ON CONFLICT(src, dst, rel) DO UPDATE ...
+-- Without it every persist path in this file dies with
+--   "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint".
+-- A hand-built fixture schema has to carry the constraints the code relies on.
+CREATE UNIQUE INDEX IF NOT EXISTS ix_edge_unique ON edge(src, dst, rel);
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_node USING vec0(node_id INTEGER PRIMARY KEY, embedding FLOAT[768]);
 `;
 
