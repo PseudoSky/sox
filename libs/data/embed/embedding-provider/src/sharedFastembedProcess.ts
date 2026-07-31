@@ -111,6 +111,23 @@ export class SharedFastembedProcessClient {
       // done instead of hanging on this child forever.
       c.unref();
 
+      // BL-370: `ChildProcess.unref()` is NOT sufficient here, and for two
+      // years the comment above described an outcome this code did not achieve.
+      // `fork()` with `'ipc'` in `stdio` creates a SEPARATE libuv handle for the
+      // IPC channel, and unref-ing the ChildProcess does not unref that channel.
+      // The result: every process that embedded even once stayed alive forever.
+      // Observed in the wild — two probe processes still running 40+ minutes
+      // after writing their final output, each holding a resident ONNX model.
+      //
+      // That leak was not merely wasteful, it CORRUPTED DIAGNOSIS: the
+      // "[fastembed] WARNING … another fastembed host process (pid N) is ALREADY
+      // RUNNING … severe (25-50x) embed latency due to Neural Engine contention"
+      // message was repeatedly cited as evidence of real ANE contention, and at
+      // least one such warning named a leaked orphan this very defect created,
+      // idle at 0% CPU. Cross-process ANE contention remains unproven; the
+      // measured cause of the live slowdown was scheduling QoS (BL-331).
+      c.channel?.unref();
+
       this.child = c;
       resolveStart(c);
     });
