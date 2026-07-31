@@ -57,16 +57,24 @@
  *
  * ── Cost tiers (the tradeoff BL-352 asks to be made explicitly) ─────────────
  *
- * Measured on a COPY of the live 43 MB store (9 428 nodes, 47 038 edges,
- * 19 probeable indexes), 2026-07-31, median of three:
+ * Measured on a COPY of the live store, 2026-07-31, **from a terminal-spawned
+ * process** — state the spawn context, because it is the axis that matters
+ * (BL-331): until 18:05 that day the launchd service ran at `ProcessType:
+ * Background`, scheduling priority 4, where the same work was ~19x slower.
+ * These numbers were never subject to that, so they describe the *service's*
+ * cost only now that it runs at priority 20. Re-measure after any scheduling
+ * change rather than trusting the table.
  *
- * | Probe                   | Cost     |
- * |-------------------------|----------|
- * | `adapter_meta_unique`   | < 0.5 ms |
- * | `fts_index_live`        | 9.3 ms   |
- * | `btree_index_populated` | 78.5 ms  |
- * | **`fast` total**        | **91 ms**|
- * | **`deep` total**        | **392 ms** (adds `PRAGMA integrity_check`) |
+ * | Probe                   | 43 MB / 9 428 nodes | 69 MB / 9 488 nodes |
+ * |-------------------------|---------------------|---------------------|
+ * | `adapter_meta_unique`   | < 0.5 ms            | < 0.5 ms            |
+ * | `fts_index_live`        | 9.3 ms              | 9.8 ms              |
+ * | `btree_index_populated` | 78.5 ms             | 84 ms               |
+ * | **`fast` total**        | **91 ms**           | **96 ms**           |
+ * | **`deep` total**        | **392 ms**          | **424 ms**          |
+ *
+ * `deep` adds `PRAGMA integrity_check`. Note it tracks database SIZE, not row
+ * count — 60 more rows but 26 MB more file cost ~30 ms.
  *
  * `fast` runs on **every open**. 91 ms is a fraction of the store open it is
  * part of, and it detects every one of the four production defects above —
