@@ -2244,13 +2244,37 @@ Three different rates were quoted during this investigation before the honest on
 
 At 0.45/s the remaining ~3,199-item embed backlog takes **~2 hours**. At the in-burst rate it would be ~30 minutes. The difference is entirely scheduling latency.
 
-**Second-order effect on latency, not just throughput:** a freshly written episode is unsearchable by vector until the next tick. Worst case is the full interval plus queue position. Nothing reports this delay, so it is indistinguishable from an embedding that failed.
+**A fresh write is NOT affected — measured.** `schedulePendingEmbeds()` is called fire-and-forget immediately after the Phase-A queue task returns (`index.ts:1302` write, `:1369` write_batch, `:1772` update), so a healthy write already wakes its *own* embed. The three live writes on pid 69947 reached a durable vector in **0.70 s / 0.99 s / 1.31 s** (Phase-A finish 23:34:00.364/.393/.421 → `embed_pipeline.apply.finish` 23:34:01.064/.383/.726). What has no wake is the **backlog drain** (`healMissingVectors`) — items whose Phase B failed or whose process died between phases. The trigger this needs is therefore *drain-incomplete*, not *on-write*; the on-write hook matters only as the Phase-B-failure path.
+
+**Two mechanisms, measured on pid 69947 over 1209 s / n=701 embeds** (contended — 9 agents active — so the ratios are the result, not the absolutes):
+
+| | |
+|---|---|
+| embed p50 / p90 / p99 / max | 580 / 1157 / 2082 / 2948 ms |
+| embed wall time | 482 s (**39.9%** of span) |
+| idle gaps > 5 s | 467 s (**38.6%** of span) |
+| throughput over span | **0.58/s** |
+| throughput while embedding | **1.45/s** — a **2.5x** loss to scheduling idle |
+
+The gaps decompose exactly, with no residual:
+
+```
+23:34:24.010 → 23:38:24.088   heal ran 240.1 s → "TIME BUDGET EXCEEDED (417 healed, 83 remaining of 500)"
+23:38:24     → 23:45:49       GAP 445.0 s  =  145 s runBatchEnrich + backlog COUNTs  +  300 s PERIODIC_ENRICH_INTERVAL_MS
+23:45:49.116 → 23:49:51.149   heal ran 242.0 s → budget again (281 healed, 219 remaining)
+23:49:51     → 23:53:01       GAP 190.2 s (same shape)
+```
+
+`enrich.tick.finish tick_seq=1 duration_ms=385133`, `backlog 3246 → 2829`.
+
+So the timer is only half of it. **The drain is also hostage to clustering: to embed 417 vectors it must pay ~145 s of `runBatchEnrich` inside the same tick.** Decoupling the two is the larger win and stays inside this item's "drain only" scope — it *removes* clustering from the drain's path rather than touching BL-349/BL-350.
 
 **Fix sketch — wake, do not poll:**
-1. A write enqueues **and wakes** the drain. Debounced and coalescing: N rapid writes must not schedule N passes (the BL-154 re-entrancy lesson and the BL-346 stampede both apply).
+1. The drain reschedules on **backlog remaining**, and a Phase-B failure wakes it. Debounced and coalescing: N rapid writes must not schedule N passes (the BL-154 re-entrancy lesson and the BL-346 stampede both apply).
 2. Keep the periodic tick as a **floor**, not the only trigger — it still catches work enqueued by paths that do not wake it, and it is the recovery path after a restart.
 3. **This is not per-write clustering.** Association is BL-349 and maintenance is BL-350; both are separate and neither is solved by waking the queue. Scope this to the drain only.
-4. Re-derive the interval and the per-tick budget from the *current* embed cost rather than inheriting numbers chosen when an embed took 6.9s. Both are now unjustified constants.
+4. Re-derive the interval and the per-tick budget from the *current* embed cost rather than inheriting numbers chosen when an embed took 6.9s. Both are now unjustified constants. Measured p50 580 ms / mean 688 ms (contended) gives: heal batch `limit` 500 -> **64** (a 500-row window is ~290 s of work, so it *always* truncates and the truncated scan is wasted), `SOX_EMBED_HEAL_TIME_BUDGET_MS` 240 s -> **30 s** (its only job was avoiding tick overlap, which a self-chaining drain with a hard in-flight guard makes impossible by construction), and a drain floor of **30 s** reached only when the backlog is zero. `PERIODIC_ENRICH_INTERVAL_MS` stays 300 s as the *enrich* floor.
+5. **Do not regress foreground reads (BL-345).** Measured now, with the heal at 99.9% CPU: live `memory_recall` over HTTP is **425 ms p50 (n=8, sigma ~5 ms, zero timeouts)**. Reads survive today because the heal's `await embed()` yields the loop every ~580 ms; the real starvation source is `runBatchEnrich`'s synchronous SQL, which item 1's decoupling removes from the drain's path. Re-run the identical probe against the change and require no regression.
 
 **Acceptance (red→green, must name BL-382):** write an episode to an idle store and assert its vector is present in well under the tick interval; assert N rapid writes produce one coalesced pass, not N. Must fail today, where the vector appears only after the next timer fires.
 
