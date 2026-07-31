@@ -23,14 +23,14 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31 (BL-359 filed; BL-354 no longer exists — renumbered to BL-358 after an id collision, see BL-359): **77 open**, 1 closed-in-place.
+Regenerated 2026-07-31 (BL-365 latest; **BL-354 does not exist** — renumbered to BL-358 after an id collision, see BL-359): **83 open**, 1 closed-in-place.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-343, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358 |
-| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359 |
-| **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-343, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365 |
+| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362 |
+| **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363 |
 | **UNSET** | BL-163 (heading marker carries no priority — needs one) |
 
 ## Audit
