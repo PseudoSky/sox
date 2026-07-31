@@ -2224,3 +2224,31 @@ Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7
 **Severity:** LOW — harmless in itself.
 
 Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 1: `SELECT type,name FROM sqlite_master` against a copy of `~/.memory/memory.db` 2026-07-31]
+
+---
+
+### BL-366 — `memory-server`'s `lint` target never covered its root-level `*.test.ts` files, so no lint rule could ever have caught the frozen-`{skip}` bug there — **RESOLVED** (2026-07-31)
+
+**Found while:** adding the `sox/no-hook-assigned-skip` ESLint guard for the frozen-`{skip}` trap (BL-340's sibling; the trap that made `recall-parity.test.ts` and `heal-backend-agnostic.test.ts` skip on every run since they were written).[1]
+
+**Driver:** `memory-server`'s `lint` target declared exactly one pattern:
+```json
+"lintFilePatterns": ["extensions/.../memory-server/src/**/*.ts"]
+```
+But four cross-backend tests live at the **package root**, not under `src/`: `recall-parity.test.ts`, `heal-backend-agnostic.test.ts`, `clustering-e2e.test.ts`, `recall-sqlite.test.ts`, `turso-clean-room.test.ts`.[2] None of them were linted by any target, in any project. `npx nx lint memory-server` reported success while never opening the files.
+
+This is the second independent blind spot on the *same set of files* in one session — BL-340 established that specs are never **typechecked**; this establishes that memory-server's root tests were never **linted** either. Both blind spots covered exactly the two tests whose purpose was to prove the Turso path, which is a large part of why that path shipped unverified.
+
+**Verified by construction, not by inspection:** the new guard flags the pre-fix files at `15ff307^` at `recall-parity.test.ts:139` and `heal-backend-agnostic.test.ts:150` — the exact two lines fixed in `15ff307`. Under the old `lintFilePatterns` those files were never passed to ESLint, so the rule could have existed for a year and still not fired.
+
+**Fix (shipped, `68f9437`):** added `extensions/.../memory-server/*.test.ts` to `lintFilePatterns`. `npx nx lint memory-server --skip-nx-cache` → `Successfully ran target lint for project memory-server`.
+
+**Red→green naming BL-366:** with the root pattern removed, `npx eslint` is never invoked on `recall-parity.test.ts` and the reintroduced frozen-`{skip}` pattern lints clean; with the pattern restored, `sox/no-hook-assigned-skip` reports it. Demonstrated above against the real pre-fix files.
+
+**Follow-up (NOT fixed here, deliberately):** the same audit should be run for every project — any `lintFilePatterns` narrower than the project root can hide files this way. Only `memory-server` was checked, because it is the only project known to keep tests outside `src/`. Filed as the residual scope of this item; do not close that audit on the strength of this one fix.
+
+**Severity:** MEDIUM — no runtime impact, but it silently voids every lint guarantee for the files where the guarantees mattered most.
+
+**Related:** BL-340 (specs never typechecked — the same blind spot, different tool), BL-357 (tests typechecked as library code — the inverse).
+
+Citations: [wip/turso-live-metrics, p0-test-infra, claude, sandbox P0.6, 1: tools/eslint-local/no-hook-assigned-skip.cjs, 2: extensions/bundles/sox-memory-bundle/members/memory-server/project.json (lint target), 3: commit 15ff307 (the frozen-{skip} fix), 4: commit 68f9437 (the guard + lint pattern)]
