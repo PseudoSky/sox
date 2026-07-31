@@ -52,6 +52,13 @@ export interface MalformedRowStats {
   count: number;
   /** Which columns were affected, e.g. `['enrich_ver']`. Empty when count is 0. */
   columns: string[];
+  /**
+   * Up to 10 offending rowids, so an operator can go straight to the rows.
+   * Diagnosing BL-342 required a bespoke `json_valid()` sweep because the raw
+   * error named neither the row nor the column; this exists so that never
+   * happens again. Capped — `count` is the authoritative total.
+   */
+  sample_rowids: number[];
 }
 
 export interface StatsResult {
@@ -197,9 +204,27 @@ export async function memoryGetStats(
   if ((malformedRow?.bad_tags ?? 0) > 0) malformedColumns.push('tags');
   if ((malformedRow?.bad_enrich_ver ?? 0) > 0) malformedColumns.push('enrich_ver');
   if ((malformedRow?.bad_meta ?? 0) > 0) malformedColumns.push('meta');
+
+  const malformedCount = malformedRow?.bad_total ?? 0;
+  let malformedSample: number[] = [];
+  if (malformedCount > 0) {
+    const sampleRows = await adapter.executeAll<{ rowid: number }>(
+      `SELECT rowid FROM node
+       WHERE kind = 'episode' AND t_invalid IS NULL
+         AND ((tags       IS NOT NULL AND NOT json_valid(tags))
+           OR (enrich_ver IS NOT NULL AND NOT json_valid(enrich_ver))
+           OR (meta       IS NOT NULL AND NOT json_valid(meta)))
+         ${ppFilter}
+       LIMIT 10`,
+      ppParams.length > 0 ? ppParams : undefined,
+    );
+    malformedSample = sampleRows.rows.map((r) => r.rowid);
+  }
+
   const malformedRows: MalformedRowStats = {
-    count: malformedRow?.bad_total ?? 0,
+    count: malformedCount,
     columns: malformedColumns,
+    sample_rowids: malformedSample,
   };
 
   const qStats = await clusterStats(adapter);
