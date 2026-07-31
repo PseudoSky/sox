@@ -112,8 +112,8 @@ async function freshDb(): Promise<{ db: Database.Database; dbPath: string }> {
   return { db, dbPath };
 }
 
-function freshDbCurrentModel(): { db: Database.Database; dbPath: string } {
-  const { db, dbPath } = freshDb();
+async function freshDbCurrentModel(): Promise<{ db: Database.Database; dbPath: string }> {
+  const { db, dbPath } = await freshDb();
   // Set embed_model to the target so the store is already current.
   db.prepare(`UPDATE memory_scope SET embed_model = ?, embed_dim = ?`).run(TARGET_MODEL, TARGET_DIM);
   return { db, dbPath };
@@ -183,7 +183,7 @@ function vectorTableExists(db: Database.Database, modelId: string): boolean {
 
 describe('reembedStore — dry-run', () => {
   it('performs no writes and creates no vec_* table', async () => {
-    const { db, dbPath } = freshDb();
+    const { db, dbPath } = await freshDb();
 
     // Insert a node so there's something to "migrate".
     db.prepare(
@@ -229,7 +229,7 @@ describe('reembedStore — dry-run', () => {
 
 describe('reembedStore — same-model idempotency', () => {
   it('reports alreadyCurrent=true and skips migration when no force', async () => {
-    const { db, dbPath } = freshDbCurrentModel();
+    const { db, dbPath } = await freshDbCurrentModel();
     db.close();
 
     const logs: string[] = [];
@@ -249,7 +249,7 @@ describe('reembedStore — same-model idempotency', () => {
 
 describe('reembedStore — force re-embed', () => {
   it('runs migration even when all scopes are already on target model', async () => {
-    const { db, dbPath } = freshDbCurrentModel();
+    const { db, dbPath } = await freshDbCurrentModel();
 
     // Insert a node so there's something to embed.
     db.prepare(
@@ -280,7 +280,7 @@ describe('reembedStore — force re-embed', () => {
 
 describe('reembedStore — model resolution', () => {
   it('resolves to the canonical model id bge-base-en-v1.5', async () => {
-    const { db, dbPath } = freshDbCurrentModel();
+    const { db, dbPath } = await freshDbCurrentModel();
     db.close();
 
     const result = await reembedStore(dbPath, {
@@ -297,7 +297,7 @@ describe('reembedStore — model resolution', () => {
 
 describe('reembedStore — BL-92 mixed-model store (per-record embed_model)', () => {
   it('targeting a stale model leaves an already-current record byte-for-byte untouched (no --force)', async () => {
-    const { db, dbPath } = freshDb();
+    const { db, dbPath } = await freshDb();
 
     // Already on the target model — must NOT be touched by a non-force run.
     const currentRowid = insertEmbeddedNode(db, 'node-current', 'already current content', TARGET_MODEL, 0.42);
@@ -345,7 +345,7 @@ describe('reembedStore — BL-92 mixed-model store (per-record embed_model)', ()
   });
 
   it('a store with TWO distinct stale models migrates BOTH groups in one non-force pass', async () => {
-    const { db, dbPath } = freshDb();
+    const { db, dbPath } = await freshDb();
     const rowidA = insertEmbeddedNode(db, 'node-a', 'model a content', 'old-model-a', 0.11);
     const rowidB = insertEmbeddedNode(db, 'node-b', 'model b content', 'old-model-b', 0.22);
     db.close();
@@ -374,7 +374,7 @@ describe('reembedStore — BL-92 mixed-model store (per-record embed_model)', ()
 
 describe('reembedStore — BL-92 NULL embed_model handling', () => {
   it('migrates a NULL-embed_model row by default (NULL = unknown provenance, must re-embed)', async () => {
-    const { db, dbPath } = freshDb();
+    const { db, dbPath } = await freshDb();
     const nullRowid = insertEmbeddedNode(db, 'node-null', 'pre-bl88 legacy content', null, 0.77);
     db.close();
 
@@ -397,7 +397,7 @@ describe('reembedStore — BL-92 NULL embed_model handling', () => {
   });
 
   it('a store with ONLY current-model + NULL rows is NOT reported alreadyCurrent (NULL forces a real pass)', async () => {
-    const { db, dbPath } = freshDb();
+    const { db, dbPath } = await freshDb();
     const currentRowid = insertEmbeddedNode(db, 'node-current', 'current content', TARGET_MODEL, 0.5);
     insertEmbeddedNode(db, 'node-null', 'legacy content', null, 0.6);
     db.close();
@@ -418,7 +418,7 @@ describe('reembedStore — BL-92 NULL embed_model handling', () => {
   });
 
   it('a store with ONLY current-model rows (no NULL, no stale) IS reported alreadyCurrent', async () => {
-    const { db, dbPath } = freshDb();
+    const { db, dbPath } = await freshDb();
     insertEmbeddedNode(db, 'node-current-1', 'current content 1', TARGET_MODEL, 0.5);
     insertEmbeddedNode(db, 'node-current-2', 'current content 2', TARGET_MODEL, 0.6);
     db.close();

@@ -84,7 +84,7 @@ describe('LateChunkingConfig', () => {
 // non-application with a machine-readable reason.
 describe('memoryRecall — BL-117 late chunking honesty', () => {
   it('reports lateChunkingApplied=false with a skip reason when requested (not silently true)', async () => {
-    const { db, dir } = tmpDb();
+    const { db, dir } = await tmpDb();
     try {
       await memoryWrite(db, { content: 'a document about distributed systems and consensus', project_path: '/test/project' });
 
@@ -105,7 +105,7 @@ describe('memoryRecall — BL-117 late chunking honesty', () => {
   });
 
   it('reports lateChunkingApplied=false with a skip reason even on the empty-corpus path', async () => {
-    const { db, dir } = tmpDb();
+    const { db, dir } = await tmpDb();
     try {
       // No writes at all — allRowids.size === 0, exercising the early-return branch.
       const response = await memoryRecall(db, 'project', {
@@ -126,7 +126,7 @@ describe('memoryRecall — BL-117 late chunking honesty', () => {
   });
 
   it('does NOT set lateChunkingSkipReason when late chunking was not requested', async () => {
-    const { db, dir } = tmpDb();
+    const { db, dir } = await tmpDb();
     try {
       await memoryWrite(db, { content: 'a document with no late chunking request', project_path: '/test/project' });
 
@@ -140,7 +140,7 @@ describe('memoryRecall — BL-117 late chunking honesty', () => {
   });
 
   it('does NOT set lateChunkingSkipReason when enabled is explicitly false', async () => {
-    const { db, dir } = tmpDb();
+    const { db, dir } = await tmpDb();
     try {
       await memoryWrite(db, { content: 'a document with late chunking explicitly disabled', project_path: '/test/project' });
 
@@ -161,7 +161,7 @@ describe('memoryRecall — BL-117 late chunking honesty', () => {
 
 describe('Parent-context expansion — session_id fallback', () => {
   it('expands child node via session_id when no DERIVED_FROM edge exists', async () => {
-    const { db, dir } = tmpDb();
+    const { db, dir } = await tmpDb();
     try {
       // 1. Create a parent node
       const parentResult = await memoryWrite(db, {
@@ -234,7 +234,7 @@ describe('score_breakdown — channel sum invariant (HF-3)', () => {
    * value within tolerance for every result returned by memoryRecall.
    */
   it('breakdown.vec + breakdown.bm25 + breakdown.temporal === score for all results', async () => {
-    const { db, dir } = tmpDb();
+    const { db, dir } = await tmpDb();
     try {
       // Seed multiple episodes so there are real ranked candidates.
       await memoryWrite(db, { content: 'neural networks and deep learning architecture', name: 'nn-deep', project_path: '/test/project' });
@@ -275,7 +275,7 @@ describe('score_breakdown — channel sum invariant (HF-3)', () => {
   });
 
   it('score_breakdown total equals score for graph-expanded results', async () => {
-    const { db, dir } = tmpDb();
+    const { db, dir } = await tmpDb();
     try {
       await memoryWrite(db, { content: 'primary document about quantum computing', name: 'quantum-primary', project_path: '/test/project' });
       await memoryWrite(db, { content: 'related quantum entanglement details', name: 'quantum-related', project_path: '/test/project' });
@@ -346,7 +346,7 @@ describe('BL-167 — ScoreBreakdown invariant (normTotal === 0 degenerate case)'
    * still satisfy vec + bm25 + temporal === total for node A.
    */
   it('channel sum equals total even when min-max normalisation collapses every channel to 0', async () => {
-    const { db, dir } = tmpDb();
+    const { db, dir } = await tmpDb();
     try {
       const bResult = await memoryWrite(db, { content: 'widget alpha assembly', name: 'node-b', importance: 5, project_path: '/test/project' });
       const cResult = await memoryWrite(db, { content: 'widget beta assembly', name: 'node-c', importance: 5, project_path: '/test/project' });
@@ -421,7 +421,7 @@ describe('score_breakdown — cross-query comparability (HF-3)', () => {
    *   2. The top result from each query is not orders-of-magnitude different.
    */
   it('top scores from dissimilar queries are on comparable scale', async () => {
-    const { db, dir } = tmpDb();
+    const { db, dir } = await tmpDb();
     try {
       // Write episodes relevant to Query A (generic topic)
       await memoryWrite(db, { content: 'python programming language features and syntax', name: 'py-1', project_path: '/test/project' });
@@ -484,7 +484,7 @@ describe('score_breakdown — cross-query comparability (HF-3)', () => {
   });
 
   it('score_breakdown fields have correct TypeScript shape', async () => {
-    const { db, dir } = tmpDb();
+    const { db, dir } = await tmpDb();
     try {
       await memoryWrite(db, { content: 'test episode for shape verification', project_path: '/test/project' });
       const response = await memoryRecall(db, 'project', { query: 'test episode' });

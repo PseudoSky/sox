@@ -119,7 +119,7 @@ describe('isPathInMemoryAllowlist', () => {
 
 describe('backupStore — allowlist enforcement', () => {
   it('returns E_ALLOWLIST when destination is outside ~/.memory/**', async () => {
-    const { db, dbPath } = freshDbInsideAllowlist();
+    const { db, dbPath } = await freshDbInsideAllowlist();
     const badDest = path.join(os.tmpdir(), 'evil-backup.db');
 
     const result = await backupStore(dbPath, badDest, { log: () => undefined });
@@ -159,7 +159,7 @@ describe('backupStore — allowlist enforcement', () => {
   });
 
   it('returns E_IO when destination already exists', async () => {
-    const { db, dbPath } = freshDbInsideAllowlist();
+    const { db, dbPath } = await freshDbInsideAllowlist();
     const dest = destPathInsideAllowlist('-exists');
     // Pre-create the destination.
     fs.writeFileSync(dest, 'existing');
@@ -177,7 +177,7 @@ describe('backupStore — allowlist enforcement', () => {
 
 describe('backupStore — successful backup', () => {
   it('produces an openable, integrity-clean copy of the source DB', async () => {
-    const { db, dbPath } = freshDbInsideAllowlist();
+    const { db, dbPath } = await freshDbInsideAllowlist();
     // Insert some real data.
     db.prepare(`INSERT INTO node (uid, kind, content, t_created, t_valid)
                 VALUES ('test-uid-1', 'episode', 'hello world', datetime('now'), datetime('now'))`).run();
@@ -214,7 +214,7 @@ describe('backupStore — successful backup', () => {
      * We use direct SQLite transactions (no embed) to avoid ONNX warmup overhead,
      * keeping the test fast and deterministic.
      */
-    const { db, dbPath } = freshDbInsideAllowlist();
+    const { db, dbPath } = await freshDbInsideAllowlist();
     db.close();
 
     const dest = destPathInsideAllowlist('-under-load');
