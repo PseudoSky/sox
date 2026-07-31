@@ -23,7 +23,7 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31 (BL-365 latest; **BL-354 does not exist** — renumbered to BL-358 after an id collision, see BL-359): **83 open**, 1 closed-in-place.
+Regenerated 2026-07-31 (BL-368 filed): **84 open**, 1 closed-in-place.
 
 | Priority | Open items |
 |---|---|
@@ -1163,13 +1163,46 @@ Splitting the BL-320 JSONL by whether a pid touches the live store (same code, s
 
 **It is neither queue-wait nor the DB write:** median gap from an embed finishing to the next starting is **9 ms**, and `writequeue.task` p50 is **0 ms** (mean 28–50 ms). The time is inside embed compute, in the live process specifically. Since the code is identical, the cause is contextual — long-lived process state, EP/ANE contention, or memory pressure — and that is the next thing to isolate. Note `embed.*` events carry `trace_id: null`, so embeds cannot yet be correlated to their originating write (BL-351).
 
-**Fix sketch:** ~~instrument the gap using the BL-320 JSONL trace~~ — **done, see above.** Remaining: isolate why identical code is 23x slower in the live process, and separately treat the >30 s tail (21/80) as its own defect rather than an average.
+**✅ ROOT-CAUSED 2026-07-31 (performance-engineer). Full evidence: [`docs/reporting/memory/bl331-root-cause.md`](docs/reporting/memory/bl331-root-cause.md). Probes: `~/.adhd/sox-ecosystem/memory/log-analysis/bl331-*.{py,mjs}`.**
 
-**Acceptance (red→green, must name BL-331):** a benchmark asserting production heal throughput is within a defined factor of the clean-room baseline.
+**This item is THREE defects that an average had blended into one "18x slowdown."**
+
+**(1) The median shift is macOS background QoS — and it is a one-line product defect.**
+`os-unit.ts:458-459` emits `<key>ProcessType</key><string>Background</string>` **unconditionally, for every sox launchd unit** — no conditional, no spec field.[1] The live backend and its fastembed child therefore run at scheduling **priority 4**; a terminal-launched process runs at **31**.[2] On Apple Silicon that confines CPU-bound ONNX inference to efficiency cores.
+
+Reproduced by an **interleaved** A/B (arms alternated round-by-round so the shared machine's load hits both equally; `taskpolicy -b` verified to produce the same pri 4):[3]
+
+| round | normal (pri 31) p50 | background (pri 4) p50 | model init normal | model init background |
+|---|---|---|---|---|
+| 1 | 417 ms | 8174 ms | 642 ms | 8176 ms |
+| 2 | 568 ms | 9097 ms | 686 ms | 12012 ms |
+| 3 | 435 ms | 7990 ms | 686 ms | 9447 ms |
+
+**~470 ms → ~8400 ms = 18x**, and 14x on model load — so it is a general CPU throttle, not embed-specific. The live server's own figure agrees: p50 **6.0 s** awake at in-flight 1 (n=619).
+
+**The "live vs test" framing was itself wrong.** Ten *terminal-launched* pids that touch the **same live store** sit at awake p50 **0.3–0.9 s** (pids 32380, 58252, 31280, 30385, 34188, 38845, 41373, 49850, 58453, 33499). The split that matters is **launchd-spawned vs terminal-spawned**, not live-store vs test-store.
+
+**(2) The multi-hour "embeds" are a wall-clock instrumentation artifact, not hangs.** `duration_ms` is wall-clock, so it accrues while the machine sleeps. Intersected with `pmset -g log`: the six multi-thousand-second events were **87.2 / 88.3 / 99.7 / 95.4 / 94.7 / 77.9 % system sleep**. The 3-hour embed is **503 s of awake time**. Across the whole >30 s tail: 35130 s wall, **31175 s (88.7%) asleep**; against the ≤30 s population, only **1.1%**. Filed as **BL-369**.
+
+**(3) The remaining 30–160 s tail is head-of-line blocking in the single shared fastembed child** — this item's own candidate cause 1, and BL-322 fix-sketch item 1, finally measured. Awake duration is monotone in in-flight concurrency on the same child: **1→6.0 s, 2→53.7 s, 5→61.6 s, 6→91.2 s, 7→149.8 s**.[4] *Stated limit:* 7×6 s = 42 s but observed p50 is 149.8 s — **~3.5x more than strict serialization predicts**; the residual amplification is NOT yet attributed. Do not report the tail as fully explained.
+
+**Ruled out, with numbers:** text length (within pid 23182 duration is flat across 100→1000 chars with a **5451 ms floor in every bucket** — a floor, not a slope); process age (stable p50 over 763 min, and the A/B reproduced it in a *fresh* process); store size/content (the A/B process opened **no store at all**); sleep as the cause of the median (1.1%); foreground contention as the cause of the tail (zero concurrent non-live events).
+
+**Baseline correction that any future comparison must apply:** **899 of 1755 "test" embeds completed in <10 ms**, with *nothing* between 10 and 100 ms. That population is a deterministic/hash provider, not an ONNX forward pass. The honest real-inference reference is **~423 ms** (n=856), which independently matches the clean-room ~2.1–2.8/s and the BL-328 measurement of 2.25–2.60/s.
+
+**Fix sketch (revised):**
+1. Make `ProcessType` a per-unit spec field (default `Adaptive`; `Background` is right for the doctor tick, wrong for a latency-sensitive server). **This is the change worth ~18x** and is the gate on re-enabling BL-339 / BL-346. Re-measure after; do not assume the full 18x lands.
+2. Move telemetry durations to `process.hrtime.bigint()` (**BL-369**).
+3. Bound/parallelize the shared fastembed child and report in-flight depth via `memory_ping` (**BL-322**).
+4. Fix the fork IPC-channel leak (**BL-368**) — it manufactures the orphans whose "another fastembed host is ALREADY RUNNING" warning has been cited as evidence of ANE contention.
+
+**Acceptance (red→green, must name BL-331):** a benchmark asserting production heal throughput is within a defined factor of the clean-room baseline **when run under the service's actual scheduling policy** — a benchmark run at terminal priority would have passed throughout this entire incident and proved nothing.
 
 **Severity:** HIGH — the store is functional but backfill takes hours and degrades read latency throughout.
 
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live memory_ping counters 2026-07-30, 2: extensions/bundles/sox-memory-bundle/members/memory-server/turso-clean-room.test.ts, 3: libs/memory-core/src/embed-pipeline.ts]
+**Related:** BL-368, BL-369, BL-322 (head-of-line blocking), BL-339/BL-346 (the brakes this gates), BL-351, BL-353.
+
+Citations: [wip/turso-live-metrics, performance-engineer, claude, turso-go-live, 1: libs/host-runtime/src/os-unit.ts:458-459, 2: ~/Library/LaunchAgents/com.sox.user.memory-server.plist + live `ps -o pri` on pids 7687/7721/7724, 3: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-qos-round.mjs, 4: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-inflight.py, 5: libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts, 6: docs/reporting/memory/bl331-root-cause.md]
 
 ---
 
@@ -2255,7 +2288,7 @@ Citations: [wip/turso-live-metrics, p0-test-infra, claude, sandbox P0.6, 1: tool
 
 ---
 
-### BL-367 — `recall-parity.test.ts` compared UIDs across two independent stores, so it could never pass; with that corrected, sqlite↔turso recall overlap measures **0.52 against an 0.80 bar** — **Open (HIGH)** (2026-07-31)
+### BL-367 — `recall-parity.test.ts` compared UIDs across two independent stores, so it could never pass; with that corrected, sqlite↔turso recall overlap measures 0.52 against an 0.80 bar — **Open (HIGH)** (2026-07-31)
 
 **Found while:** fixing the frozen-`{skip}` bug (commit `15ff307`) that had prevented this test from executing since it was written. The moment it actually ran, it failed — and the first failure was the test's own fault, not the product's.[1]
 
