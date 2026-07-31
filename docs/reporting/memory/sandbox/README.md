@@ -54,7 +54,10 @@ clustering forms, recall returns, concurrency is safe, throughput is real.
   sqlite+vec0 store. A fresh db never triggers it.
 - **Lifecycle.** launchd → proxy → backend, and the six `policy.enforced` env-allowlist
   copies. A sandbox runs with a full environment; the scrubbing stays untested.
-- **Scale.** 9420 nodes and a 44 MB WAL do not behave like a 200-row sample.
+- **Scale.** 9420 nodes and a 44 MB WAL do not behave like a 200-row sample. Measured instance:
+  single-linkage clustering's largest-cluster ratio at τ=0.82 goes 0.085 → 0.684 as N goes
+  200 → 1616 on identical content, so a small cohort looks healthy at a threshold that collapses
+  the full store (§3.2, BL-356). **A green G4 is not threshold validation.**
 
 Phase 2 (§9) closes the first two with a **damage-replay** harness. Until it lands, a green
 scorecard here means *"the code is correct,"* never *"production is healthy."* Do not let a
@@ -111,28 +114,61 @@ include known-dangerous content:
 - Very short content (< 20 chars) — degenerate embedding geometry.
 - Near-duplicate pairs — exercises `memory_near_duplicates` and supersession.
 
-### 3.2 Clustering needs a purpose-built cohort — this corrects the naive ladder
+### 3.2 Clustering cohorts must be *selected*, not sampled — measured, BL-328
 
-**Clustering cannot be validated on 7 arbitrary nodes, and a run that expects it to will
-report a false red.**
+> **This section previously argued that τ=0.82 was marginally too HIGH for real prose and that a
+> real-content cohort might not clear it. That reasoning was wrong in direction and has been
+> replaced with measurements (BL-328, `cluster-calibration.md`).** Retained as a correction
+> because the original claim was cited while planning G4.
 
-Clustering is cosine-threshold connected-components at **τ = 0.82** with
-**`minClusterSize: 2`**. The existing `clustering-e2e.test.ts` corpus — three hand-written,
-deliberately tight semantic groups of 8 — measures **intra-group mean cosine 0.8174, min
-0.7572**. That is *marginal at τ = 0.82 with content engineered to cluster.*
+Clustering is cosine-threshold connected-components at **τ = 0.82**, `minClusterSize: 2`.
 
-Seven rows sampled from a general-purpose memory store will be semantically scattered and
-will correctly produce **zero clusters**. That is the algorithm working, not a defect.
+**A real-content G4 cohort is viable, and outperforms the synthetic fixture.** Three real topics
+selected for distinctness × 8 episodes, drawn from the live store, cluster at the production
+default into 5 communities, **23/24 covered, 100% purity, zero cross-group contamination** —
+better than the hand-written corpus at the same τ (4 communities, 21/24, one group splits and
+drops 2). G4 does not need the fixture.
 
-Therefore the ladder separates two distinct questions:
+**Real content does not cluster worse than synthetic.** Real intra-group means 0.8144 / 0.8495 vs
+0.8087 synthetic. What differs is the *floor*: inter-group 0.64–0.68 for real content vs 0.47 for
+the fixture. Less headroom, not less signal.
 
-- **G3** (6 concurrent writes) proves **write / embed / vector / FTS concurrency**. It does
-  **not** assert clusters *formed*.
-- **G4** ingests a **semantically-grouped cohort** — the 24-episode 3-group corpus, or a
-  stratified real-content equivalent with verified intra-group cosine — and asserts clusters
-  actually form, with the group→community mapping checked.
+**τ = 0.82 is mis-calibrated UPWARD, not downward.** On the live store's own 1616 production
+vectors it puts **68.4% of the corpus into a single cluster**. τ=0.65 — the value
+`clustering-e2e.test.ts` calls "measured-safe" — puts **97.8%** in one cluster at 0.410 purity.
+τ=0.87 is the healthy value (128 clusters, 65% coverage, 0.943 purity, 20.7% largest), and it is
+exactly what the degenerate guard escalates to on its own — so **production's effective threshold
+is already not 0.82, and that is undocumented**.
 
-Conflating these is how you get a harness that fails on correct code.
+#### ⚠ You cannot calibrate τ on a small sample — this constrains the harness directly
+
+`minPts = 2` makes this **single-linkage**, so a fixed τ fixes edge *probability* and mean degree
+grows linearly with N. Largest-cluster ratio at τ=0.82 on identical content:
+
+| N | 200 | 400 | 800 | 1200 | 1616 |
+|---|---|---|---|---|---|
+| largest-cluster ratio | 0.085 | 0.222 | 0.459 | 0.595 | **0.684** |
+
+**A sparse sample systematically underestimates chaining.** A 24-episode G4 cohort will look
+healthy at a τ that collapses the full store. So G4 proves *the clustering path executes and
+produces correct groupings* — it says **nothing** about whether τ is right at production scale,
+and a green G4 must never be read as threshold validation. That is a scale question (§1), and
+BL-356 is the item.
+
+#### Two constraints for whoever builds G4
+
+- **Topics must be *selected* for distinctness, never sampled.** In a 288-row stratified sample
+  across 67 topics, intra-topic cosine (0.5971) is **lower** than inter-topic (0.6125). `topic` is
+  per-write enrichment, not a semantic partition — **it is not valid ground truth.**
+- **Assert purity and dominance, never "one community per group."** No corpus satisfies
+  one-community-per-group at the default, the synthetic fixture included.
+
+#### The ladder split still stands
+
+- **G3** (6 concurrent writes) proves write / embed / vector / FTS concurrency. It does **not**
+  assert clusters formed — 6 rows is far below where chaining or grouping means anything.
+- **G4** ingests the selected-distinct cohort and asserts clusters form, with purity and dominance
+  checked.
 
 ### 3.3 ⚠ G4 is blocked on an owner decision — BL-326
 
