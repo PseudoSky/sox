@@ -9,4 +9,5 @@ export * from './vector-dialect.js';
 export * from './fts-dialect.js';
 export * from './adapter-meta.js';
 export * from './integrity.js';
+export * from './integrity-status.js';
 export * from './migration.js';

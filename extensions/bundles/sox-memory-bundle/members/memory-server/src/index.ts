@@ -83,6 +83,17 @@ import {
 } from '@adhd/sox-memory-core';
 import type { PendingEmbed, PhaseAOutcome, WriteError, WriteResult } from '@adhd/sox-memory-core';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
+// BL-334: the adapter verifies and repairs its own generated artifacts at open
+// (BL-352). Until this wiring, NOTHING read the retained result — so a store
+// with a dead FTS index presented as healthy, which is exactly how BL-347 ran
+// for a day unnoticed. `resolveVerifyDepth` is reused rather than re-reading
+// SOX_STORE_VERIFY here, so "disabled" cannot drift between the two.
+import {
+  readIntegrityResult,
+  resolveVerifyDepth,
+  summarizeIntegrityForStatus,
+  integrityHeadline,
+} from '@adhd/sox-store-adapter';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -932,12 +943,44 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         // BL-174: report the real WP-5 checkpoint time (0 = never/no queue → null).
         const lastCheckpointMs = WriteQueue.lastCheckpointAtForPath(resolvedPath);
 
+        // BL-334/BL-352: the adapter's own verify+repair verdict for this store.
+        //
+        // Read, never re-probed — re-running the probes inside a status call
+        // would make `memory_ping` cost 91ms (fast) or 392ms (deep) and would
+        // report a DIFFERENT store state than the one the server is actually
+        // running on. The open-time result is the operative fact.
+        //
+        // `healthy` here is earned, not assumed: no pass, an aborted pass, a
+        // probe that could not be validated, or verification switched off all
+        // render as `unknown` — never as ok. See integrity-status.ts.
+        //
+        // The verdict is read from the STORE (`_adapter_meta.last_integrity`),
+        // not from store-adapter's in-process registry. That registry is
+        // unreadable from here for two independent, measured reasons: `getDb`
+        // hands back a Proxy (so a WeakMap keyed on the adapter misses), and
+        // memory-core reaches store-adapter through `require()` while this file
+        // may reach it through the ESM loader — two module instances, two
+        // separate Maps. Either one silently yields "never ran" forever, which
+        // is precisely the false-healthy this field exists to prevent.
+        const persisted = await readIntegrityResult(adapter);
+        const integrityView = summarizeIntegrityForStatus(
+          persisted?.result ?? null,
+          persisted?.runAtMs ?? null,
+          resolveVerifyDepth(false) === 'off',
+        );
+
         storeBlock = {
           name: storeName,
           path: resolvedPath,
           adapter_type: adapter.config.type,
           fingerprint: `sha256:${sha256Fingerprint}`,
           wal_bytes: walBytes,
+          // BL-334: store integrity. `integrity.healthy === false` means the
+          // store is damaged OR unverified — both are actionable, and neither
+          // may be read as "fine". `integrity_headline` is the one-line form so
+          // the verdict is legible without expanding the block.
+          integrity: integrityView,
+          integrity_headline: integrityHeadline(integrityView),
           last_checkpoint_at: lastCheckpointMs > 0 ? new Date(lastCheckpointMs).toISOString() : null,
           enrichment_watermark: enrichmentWatermark,
           queue_depth: queueDepth,
@@ -1818,8 +1861,26 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
 
     case 'memory_stats': {
       const result = await memoryGetStats(adapter, args, TOOL_NAMES);
+      // BL-334: `memory_stats` is the health/coverage read and is what a CI gate
+      // calls. Coverage percentages computed over a store whose indexes are
+      // damaged are not merely incomplete, they are misleading — so the
+      // integrity verdict travels WITH them rather than only on memory_ping.
+      // Additive (HF-3): never rename or remove existing stats fields.
+      // Read from `_adapter_meta`, not the in-process registry — see the
+      // memory_ping call site for why that registry cannot be read from here.
+      const persistedStats = await readIntegrityResult(adapter);
+      const integrityView = summarizeIntegrityForStatus(
+        persistedStats?.result ?? null,
+        persistedStats?.runAtMs ?? null,
+        resolveVerifyDepth(false) === 'off',
+      );
+      const withIntegrity = {
+        ...result,
+        integrity: integrityView,
+        integrity_headline: integrityHeadline(integrityView),
+      };
       return {
-        content: [{ type: 'text', text: JSON.stringify(result) }],
+        content: [{ type: 'text', text: JSON.stringify(withIntegrity) }],
       };
     }
 
