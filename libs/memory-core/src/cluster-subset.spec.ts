@@ -19,7 +19,8 @@ import * as path from 'node:path';
 import * as sqliteVec from 'sqlite-vec';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { clusterStats, clusterStore, clusterSubset, dropSubsetLens, listSubsetLenses } from './index.js';
+import { clusterStats, clusterStore, clusterSubset, dropSubsetLens, listSubsetLenses, wrapRawDbAsAdapter } from './index.js';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 /**
  * Minimal DDL matching the canonical graph-store schema columns that indexes
@@ -56,6 +57,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_node USING vec0(node_id INTEGER PRIMARY K
 `;
 
 let db: Database.Database;
+/**
+ * BL-325: the cluster API takes a StoreAdapter, not a raw better-sqlite3 handle.
+ * This spec builds its own minimal schema on a raw handle (it is testing the
+ * clustering algorithm, not openDb), so it wraps that handle through the
+ * sanctioned seam rather than going via openDb.
+ */
+let adapter: StoreAdapter;
 let cleanup: () => void;
 
 beforeEach(() => {
@@ -64,6 +72,7 @@ beforeEach(() => {
   db = new Database(dbPath);
   sqliteVec.load(db);
   db.exec(MINIMAL_DDL);
+  adapter = wrapRawDbAsAdapter(db);
   cleanup = () => {
     db.close();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -136,7 +145,7 @@ function liveMemberOfCount(): number {
 describe('clusterSubset — filtered selection', () => {
   it('clusters only the episodes matching the restrict predicate', async () => {
     seedTwoGroups();
-    const res = await clusterSubset(db, { restrict: tagRestrict('skill:A'), filter: { tags: ['skill:A'] } });
+    const res = await clusterSubset(adapter, { restrict: tagRestrict('skill:A'), filter: { tags: ['skill:A'] } });
     expect(res.candidate_count).toBe(2);
     expect(res.clusters).toHaveLength(1);
     expect(res.clusters[0]!.member_rowids).toHaveLength(2);
@@ -144,7 +153,7 @@ describe('clusterSubset — filtered selection', () => {
 
   it('read mode (persist:false, the default) writes nothing', async () => {
     seedTwoGroups();
-    const res = await clusterSubset(db, { restrict: tagRestrict('skill:A'), filter: { tags: ['skill:A'] } });
+    const res = await clusterSubset(adapter, { restrict: tagRestrict('skill:A'), filter: { tags: ['skill:A'] } });
     expect(res.persisted).toBe(false);
     expect(liveCommunities()).toHaveLength(0);
     expect(liveMemberOfCount()).toBe(0);
@@ -152,8 +161,8 @@ describe('clusterSubset — filtered selection', () => {
 
   it('is deterministic on the same DB state (stable provenance hash + uids)', async () => {
     seedTwoGroups();
-    const a = await clusterSubset(db, { restrict: tagRestrict('skill:A'), filter: { tags: ['skill:A'] } });
-    const b = await clusterSubset(db, { restrict: tagRestrict('skill:A'), filter: { tags: ['skill:A'] } });
+    const a = await clusterSubset(adapter, { restrict: tagRestrict('skill:A'), filter: { tags: ['skill:A'] } });
+    const b = await clusterSubset(adapter, { restrict: tagRestrict('skill:A'), filter: { tags: ['skill:A'] } });
     expect(a.provenance_hash).toBe(b.provenance_hash);
     expect(a.clusters[0]!.community_uid).toBe(b.clusters[0]!.community_uid);
   });
@@ -163,13 +172,13 @@ describe('clusterSubset — scoped persist coexists with the global partition', 
   it('persisting a subset does NOT invalidate global communities', async () => {
     seedTwoGroups();
     // Global pass: two communities (A-group, B-group).
-    const global = await clusterStore(db);
+    const global = await clusterStore(adapter);
     expect(global.clusters.length).toBe(2);
     const globalUids = new Set(liveCommunities().map((c) => c.uid));
     expect(globalUids.size).toBe(2);
 
     // Subset pass over skill:A, persisted.
-    const sub = await clusterSubset(db, {
+    const sub = await clusterSubset(adapter, {
       restrict: tagRestrict('skill:A'),
       filter: { tags: ['skill:A'] },
       persist: true,
@@ -191,8 +200,8 @@ describe('clusterSubset — scoped persist coexists with the global partition', 
 
   it('subset community UID is salted → never collides with a same-membership global community', async () => {
     seedTwoGroups();
-    const global = await clusterStore(db);
-    const sub = await clusterSubset(db, {
+    const global = await clusterStore(adapter);
+    const sub = await clusterSubset(adapter, {
       restrict: tagRestrict('skill:A'),
       filter: { tags: ['skill:A'] },
       persist: true,
@@ -207,10 +216,10 @@ describe('clusterSubset — scoped persist coexists with the global partition', 
 
   it('re-persisting the same filter is idempotent (replaces only its own slice)', () => {
     seedTwoGroups();
-    clusterStore(db); // 2 global communities
-    clusterSubset(db, { restrict: tagRestrict('skill:A'), filter: { tags: ['skill:A'] }, persist: true });
+    clusterStore(adapter); // 2 global communities
+    clusterSubset(adapter, { restrict: tagRestrict('skill:A'), filter: { tags: ['skill:A'] }, persist: true });
     const afterFirst = liveCommunities().length;
-    clusterSubset(db, { restrict: tagRestrict('skill:A'), filter: { tags: ['skill:A'] }, persist: true });
+    clusterSubset(adapter, { restrict: tagRestrict('skill:A'), filter: { tags: ['skill:A'] }, persist: true });
     const afterSecond = liveCommunities().length;
     // Same count: the second run invalidated the first subset community and rewrote it.
     expect(afterSecond).toBe(afterFirst);
@@ -223,10 +232,10 @@ describe('clusterSubset — scoped persist coexists with the global partition', 
 
   it('a later global re-cluster leaves subset communities intact', () => {
     seedTwoGroups();
-    clusterStore(db);
-    clusterSubset(db, { restrict: tagRestrict('skill:A'), filter: { tags: ['skill:A'] }, persist: true });
+    clusterStore(adapter);
+    clusterSubset(adapter, { restrict: tagRestrict('skill:A'), filter: { tags: ['skill:A'] }, persist: true });
     // Re-run the global pass; subset community must survive.
-    clusterStore(db);
+    clusterStore(adapter);
     const subsetCommunities = liveCommunities().filter(
       (c) => c.meta && JSON.parse(c.meta).cluster_scope?.kind === 'subset',
     );
@@ -244,30 +253,30 @@ describe('read-path scope isolation (fix ①)', () => {
   it('clusterStats cluster_count reflects only global communities after subset persist', async () => {
     seedTwoGroups();
     // One global pass → 2 global communities.
-    clusterStore(db);
-    const beforeStats = await clusterStats(db);
+    clusterStore(adapter);
+    const beforeStats = await clusterStats(adapter);
     expect(beforeStats.cluster_count).toBe(2);
 
     // Persist a subset lens for skill:A → now 3 total communities in DB.
-    clusterSubset(db, { filter: { tags: ['skill:A'] }, persist: true });
+    clusterSubset(adapter, { filter: { tags: ['skill:A'] }, persist: true });
     const allLive = liveCommunities();
     expect(allLive).toHaveLength(3); // 2 global + 1 subset
 
     // clusterStats must still report 2 — only the global partition.
-    const afterStats = await clusterStats(db);
+    const afterStats = await clusterStats(adapter);
     expect(afterStats.cluster_count).toBe(2);
   });
 
   it('clusterStats coverage is scoped to global partition only', () => {
     seedTwoGroups();
-    clusterStore(db);
-    const beforeCoverage = clusterStats(db).coverage;
+    clusterStore(adapter);
+    const beforeCoverage = clusterStats(adapter).coverage;
 
     // Persist a subset over skill:A — the 2 skill:A episodes now have an
     // additional MEMBER_OF edge to the subset community.  Global coverage must
     // remain unchanged (skill:B episodes unclustered = same ratio as before).
-    clusterSubset(db, { filter: { tags: ['skill:A'] }, persist: true });
-    const afterCoverage = clusterStats(db).coverage;
+    clusterSubset(adapter, { filter: { tags: ['skill:A'] }, persist: true });
+    const afterCoverage = clusterStats(adapter).coverage;
 
     // Coverage is a fraction of episodes in GLOBAL communities — must not change.
     expect(afterCoverage).toBeCloseTo(beforeCoverage, 6);
@@ -281,13 +290,13 @@ describe('read-path scope isolation (fix ①)', () => {
     insertEpisode('lesson d-one about something', groupVec(1, 0.01), ['skill:D']);
     insertEpisode('lesson d-two about something', groupVec(1, 0.02), ['skill:D']);
 
-    clusterStore(db);
-    const globalLargest = clusterStats(db).largest_cluster_size;
+    clusterStore(adapter);
+    const globalLargest = clusterStats(adapter).largest_cluster_size;
 
     // Persist a subset that merges C+D into one "community" — but that's a subset
     // community and must NOT inflate largest_cluster_size in global stats.
-    clusterSubset(db, { filter: { tags: ['skill:C', 'skill:D'] }, persist: true });
-    const afterLargest = clusterStats(db).largest_cluster_size;
+    clusterSubset(adapter, { filter: { tags: ['skill:C', 'skill:D'] }, persist: true });
+    const afterLargest = clusterStats(adapter).largest_cluster_size;
     expect(afterLargest).toBe(globalLargest);
   });
 });
@@ -299,7 +308,7 @@ describe('clusterSubset callable via structured filter alone (fix ④)', () => {
   it('accepts MemoryFilter without a raw restrict clause', async () => {
     seedTwoGroups();
     // Pass filter only — no restrict. Engine builds the SQL clause internally.
-    const res = await clusterSubset(db, { filter: { tags: ['skill:A'] } });
+    const res = await clusterSubset(adapter, { filter: { tags: ['skill:A'] } });
     expect(res.candidate_count).toBe(2);
     expect(res.clusters).toHaveLength(1);
     expect(res.persisted).toBe(false);
@@ -307,8 +316,8 @@ describe('clusterSubset callable via structured filter alone (fix ④)', () => {
 
   it('filter + persist writes a scoped community without restrict', async () => {
     seedTwoGroups();
-    clusterStore(db); // 2 global
-    const res = await clusterSubset(db, { filter: { tags: ['skill:A'] }, persist: true });
+    clusterStore(adapter); // 2 global
+    const res = await clusterSubset(adapter, { filter: { tags: ['skill:A'] }, persist: true });
     expect(res.persisted).toBe(true);
     // Global partition still has 2; 1 subset added.
     expect(liveCommunities()).toHaveLength(3);
@@ -317,7 +326,7 @@ describe('clusterSubset callable via structured filter alone (fix ④)', () => {
   it('MemoryFilter tags_match_all selects the intersection', async () => {
     seedTwoGroups();
     // Episodes tagged with BOTH 'kind:lesson' AND 'skill:A' = 2.
-    const res = await clusterSubset(db, {
+    const res = await clusterSubset(adapter, {
       filter: { tags: ['kind:lesson', 'skill:A'], tags_match_all: true },
     });
     expect(res.candidate_count).toBe(2);
@@ -325,15 +334,15 @@ describe('clusterSubset callable via structured filter alone (fix ④)', () => {
 
   it('MemoryFilter with no matching episodes returns empty clusters', async () => {
     seedTwoGroups();
-    const res = await clusterSubset(db, { filter: { tags: ['no-such-tag'] } });
+    const res = await clusterSubset(adapter, { filter: { tags: ['no-such-tag'] } });
     expect(res.candidate_count).toBe(0);
     expect(res.clusters).toHaveLength(0);
   });
 
   it('provenance hash is stable for the same MemoryFilter', async () => {
     seedTwoGroups();
-    const a = await clusterSubset(db, { filter: { tags: ['skill:A'] } });
-    const b = await clusterSubset(db, { filter: { tags: ['skill:A'] } });
+    const a = await clusterSubset(adapter, { filter: { tags: ['skill:A'] } });
+    const b = await clusterSubset(adapter, { filter: { tags: ['skill:A'] } });
     expect(a.provenance_hash).toBe(b.provenance_hash);
   });
 });
@@ -345,7 +354,7 @@ describe('dropSubsetLens + listSubsetLenses (BL-26)', () => {
     seedTwoGroups();
 
     // 1. Persist global partition (2 communities: A-group, B-group).
-    const global = await clusterStore(db);
+    const global = await clusterStore(adapter);
     expect(global.clusters).toHaveLength(2);
     const globalUids = new Set(
       liveCommunities()
@@ -355,12 +364,12 @@ describe('dropSubsetLens + listSubsetLenses (BL-26)', () => {
     expect(globalUids.size).toBe(2);
 
     // 2. Persist subset lens for skill:A.
-    const subA = await clusterSubset(db, { filter: { tags: ['skill:A'] }, persist: true });
+    const subA = await clusterSubset(adapter, { filter: { tags: ['skill:A'] }, persist: true });
     expect(subA.persisted).toBe(true);
     const hashA = subA.provenance_hash;
 
     // 3. Persist a second subset lens for skill:B.
-    const subB = await clusterSubset(db, { filter: { tags: ['skill:B'] }, persist: true });
+    const subB = await clusterSubset(adapter, { filter: { tags: ['skill:B'] }, persist: true });
     expect(subB.persisted).toBe(true);
     const hashB = subB.provenance_hash;
     expect(hashA).not.toBe(hashB); // distinct lenses
@@ -370,12 +379,12 @@ describe('dropSubsetLens + listSubsetLenses (BL-26)', () => {
     expect(before).toHaveLength(4);
 
     // 5. list_lenses sees exactly 2 subset lenses.
-    const lenses = await listSubsetLenses(db);
+    const lenses = await listSubsetLenses(adapter);
     expect(lenses).toHaveLength(2);
     expect(lenses.map((l) => l.provenance_hash).sort()).toEqual([hashA, hashB].sort());
 
     // 6. Drop lens A.
-    const result = await dropSubsetLens(db, hashA);
+    const result = await dropSubsetLens(adapter, hashA);
     expect(result.communities_dropped).toBe(1);
     expect(result.edges_dropped).toBeGreaterThanOrEqual(2); // 2 skill:A episodes
 
@@ -396,15 +405,15 @@ describe('dropSubsetLens + listSubsetLenses (BL-26)', () => {
     expect(JSON.parse(subsetAfter[0]!.meta!).cluster_scope.hash).toBe(hashB);
 
     // list_lenses now shows only B.
-    const lensesAfter = await listSubsetLenses(db);
+    const lensesAfter = await listSubsetLenses(adapter);
     expect(lensesAfter).toHaveLength(1);
     expect(lensesAfter[0]!.provenance_hash).toBe(hashB);
   });
 
   it('dropSubsetLens is a no-op on a non-existent hash (idempotent)', async () => {
     seedTwoGroups();
-    clusterStore(db);
-    const result = await dropSubsetLens(db, 'deadbeef00000000');
+    clusterStore(adapter);
+    const result = await dropSubsetLens(adapter, 'deadbeef00000000');
     expect(result.communities_dropped).toBe(0);
     expect(result.edges_dropped).toBe(0);
     // Global communities untouched.
@@ -413,21 +422,21 @@ describe('dropSubsetLens + listSubsetLenses (BL-26)', () => {
 
   it('dropSubsetLens is idempotent when called twice with the same hash', async () => {
     seedTwoGroups();
-    clusterStore(db);
-    const sub = await clusterSubset(db, { filter: { tags: ['skill:A'] }, persist: true });
+    clusterStore(adapter);
+    const sub = await clusterSubset(adapter, { filter: { tags: ['skill:A'] }, persist: true });
     const hash = sub.provenance_hash;
 
-    const first = await dropSubsetLens(db, hash);
+    const first = await dropSubsetLens(adapter, hash);
     expect(first.communities_dropped).toBe(1);
 
-    const second = await dropSubsetLens(db, hash);
+    const second = await dropSubsetLens(adapter, hash);
     expect(second.communities_dropped).toBe(0); // already gone
   });
 
   it('listSubsetLenses returns empty when no subset lenses are persisted', async () => {
     seedTwoGroups();
-    clusterStore(db);
-    const lenses = await listSubsetLenses(db);
+    clusterStore(adapter);
+    const lenses = await listSubsetLenses(adapter);
     expect(lenses).toHaveLength(0);
   });
 
@@ -440,12 +449,12 @@ describe('dropSubsetLens + listSubsetLenses (BL-26)', () => {
     insertEpisode('lesson y-one about embedding model drift on reindex operation', groupVec(3, 0.01), ['skill:X']);
     insertEpisode('lesson y-two about embedding model drift on reindex operation', groupVec(3, 0.02), ['skill:X']);
 
-    clusterStore(db);
+    clusterStore(adapter);
     // Persist a lens over skill:X — 5 episodes in 2 groups → 2 communities.
-    const sub = await clusterSubset(db, { filter: { tags: ['skill:X'] }, persist: true });
+    const sub = await clusterSubset(adapter, { filter: { tags: ['skill:X'] }, persist: true });
     expect(sub.clusters.length).toBeGreaterThan(0);
 
-    const lenses = await listSubsetLenses(db);
+    const lenses = await listSubsetLenses(adapter);
     // Exactly one lens entry regardless of how many communities it contains.
     expect(lenses).toHaveLength(1);
     expect(lenses[0]!.provenance_hash).toBe(sub.provenance_hash);
