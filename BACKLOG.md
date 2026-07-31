@@ -1251,6 +1251,45 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `R
 
 ---
 
+### BL-347 — Keyword search is silently dead on the live store: `idx_fts_node` exists with an EMPTY Tantivy directory — **Open (HIGH)** (2026-07-31)
+
+**Driver:** on the live store, `fts_match` returns **zero rows for every term**, with no error, while the same terms match plainly via `LIKE`:
+
+| term | `fts_match("content","name","summary", ?)` | `content LIKE '%term%'` |
+|---|---|---|
+| `turso` | **0** | 137 |
+| `memory` | **0** | 1074 |
+| `server` | **0** | 628 |
+| `backlog` | **0** | 83 |
+
+against `node` = 9420 rows.[1] The index is present and well-formed in `sqlite_master`:
+`CREATE INDEX IF NOT EXISTS idx_fts_node ON "node" USING fts ("content","name","summary") WITH (weights = ...)`.[1] Its backing directory `__turso_internal_fts_dir_idx_fts_node` holds **0 rows / 0 bytes**.[1] The index is a shell.
+
+**This is not a Turso design limitation — clean-room A/B disproves that.**[2] On a fresh db, `CREATE INDEX ... USING fts` over an already-populated table **does** backfill (50/50 rows matched), and rows inserted *after* the index exists **are** indexed incrementally (60/60). Both directions work. The live store's index is therefore broken *state*, not broken *behavior* — which is why no error is ever raised.
+
+**Root cause — this is the delayed detonation of BL-337.** `REINDEX node` is impossible on a table carrying a Tantivy index, so during the 2026-07-30 crash repair every btree index was rebuilt individually **explicitly skipping `idx_fts_node`**. It was the one index the manual repair could not touch, and nothing rebuilt it afterward. BL-337 recorded the blocked repair path; this item records the damage that path left behind.
+
+**Fix is verified and cheap.** On an offline copy of the live store: `DROP INDEX idx_fts_node` + recreate via the dialect DDL completes in **0.26 s** and restores matching — `memory` 0 → **1148**, `turso` 0 → **136** (slightly above the `LIKE` counts, as expected: FTS also searches `name`/`summary` and tokenizes).[3]
+
+**Second defect found while probing, do not lose it:** after a *successful* rebuild that demonstrably returns matches, `SELECT COUNT(*) FROM __turso_internal_fts_dir_idx_fts_node` **still reports 0**.[3] The backing-table row count is therefore **not a valid health signal** — it reads 0 both when FTS is dead and when FTS is working. Any status surface that checks FTS health by counting backing rows will report a false alarm forever. **The only sound probe is an actual `fts_match` against a known-present token.** This directly constrains BL-334's proposed "FTS index present + populated + doc count" status field — `populated` and `doc count` as specified are not obtainable this way.
+
+**Blast radius:** every keyword/BM25 recall path degrades to whatever fallback exists, silently. Combined with vector coverage frozen at ~36% (BL-339/346), the live store has been serving recall with **both** retrieval strategies impaired and reporting healthy throughout.
+
+**Fix sketch:**
+1. Rebuild the live index (0.26 s, snapshot first).
+2. Add an FTS health probe to the store's self-check: `fts_match` on a sentinel token that is known to exist, asserted non-zero — never a backing-row count.
+3. Fold the rebuild into BL-337's repair helper so crash recovery cannot skip it again.
+
+**Acceptance (red→green, must name BL-347):** a test that builds a Turso store with rows + `idx_fts_node`, empties the backing directory to simulate the post-repair state, asserts `fts_match` returns 0 while `LIKE` returns >0 (**red**), then runs the repair helper and asserts `fts_match` returns >0 (**green**). A second assertion must prove the health probe *detects* the empty state — a probe that passes in the red condition is the BL-167 failure mode repeating.
+
+**Severity:** HIGH — silent, total loss of keyword retrieval on the live store, undetected for at least a day, on the system every agent depends on for recall.
+
+**Related:** BL-337 (the blocked repair that caused this), BL-335 (the crash index damage), BL-334 (status surface must report this — and its proposed FTS field is unobtainable as specified), BL-329 (the same index blocks better-sqlite3), BL-338 (crash recovery must be automatic).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `~/.memory/memory.db` fts_match/LIKE/sqlite_master probe 2026-07-31, 2: clean-room A/B backfill-vs-incremental probe 2026-07-31, 3: offline-copy DROP+CREATE rebuild probe 2026-07-31, 4: libs/data/store/store-adapter/src/fts-dialect.ts:187-257]
+
+---
+
 ### BL-338 — A machine crash must not be able to damage the store, and recovery must be automatic — **Open (HIGH)** (2026-07-31)
 
 **Driver:** the host lost power / crashed on 2026-07-30 evening while the memory-server was live and mid-backfill. Outcome, verified afterward:
