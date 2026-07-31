@@ -115,6 +115,10 @@ describe('BL-343 — memory_stats survives malformed JSON rows', () => {
         expect(result.total_episodes).toBe(2);
         expect(result.malformed_rows.count).toBeGreaterThan(0);
         expect(result.malformed_rows.columns).toContain('enrich_ver');
+        // BL-343's acceptance requires naming the offending row, not just
+        // counting it — diagnosing BL-342 needed a bespoke json_valid() sweep
+        // precisely because the error named neither row nor column.
+        expect(result.malformed_rows.sample_rowids.length).toBeGreaterThan(0);
       } finally {
         db.close();
       }
@@ -137,6 +141,7 @@ describe('BL-343 — memory_stats survives malformed JSON rows', () => {
         expect(result.total_episodes).toBe(1);
         expect(result.malformed_rows.count).toBe(0);
         expect(result.malformed_rows.columns).toEqual([]);
+        expect(result.malformed_rows.sample_rowids).toEqual([]);
       } finally {
         db.close();
       }
