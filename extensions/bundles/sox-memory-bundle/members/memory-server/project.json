@@ -48,7 +48,8 @@
       "executor": "@nx/eslint:lint",
       "options": {
         "lintFilePatterns": [
-          "extensions/bundles/sox-memory-bundle/members/memory-server/src/**/*.ts"
+          "extensions/bundles/sox-memory-bundle/members/memory-server/src/**/*.ts",
+          "extensions/bundles/sox-memory-bundle/members/memory-server/*.test.ts"
         ]
       }
     },

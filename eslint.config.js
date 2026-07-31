@@ -1,6 +1,19 @@
 // @ts-check
 import nxPlugin from '@nx/eslint-plugin';
 import tsParser from '@typescript-eslint/parser';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+/**
+ * Local rules. `no-hook-assigned-skip` exists because two dedicated
+ * cross-backend tests statically skipped on every run for their entire lifetime
+ * while reporting green — see the rule's header.
+ */
+const soxRules = {
+  rules: {
+    'no-hook-assigned-skip': require('./tools/eslint-local/no-hook-assigned-skip.cjs'),
+  },
+};
 
 export default [
   // Ignore build outputs and tooling dirs
@@ -63,6 +76,18 @@ export default [
           ],
         },
       ],
+    },
+  },
+  // Test files: guard against the frozen-`{ skip }` trap (see the rule header).
+  {
+    files: ['**/*.spec.ts', '**/*.test.ts'],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: { ecmaVersion: 2022, sourceType: 'module' },
+    },
+    plugins: { sox: soxRules },
+    rules: {
+      'sox/no-hook-assigned-skip': 'error',
     },
   },
 ];
