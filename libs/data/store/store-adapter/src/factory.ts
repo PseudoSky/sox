@@ -84,8 +84,8 @@ export async function createStoreAdapter(
 
   // ── Init (stamp adapter metadata) ─────────────────────────────────────────
 
-  if (typeof (adapter as any).init === 'function') {
-    await (adapter as any).init();
+  if (typeof adapter.init === 'function') {
+    await adapter.init();
   }
 
   return adapter;

@@ -8,4 +8,5 @@ export * from './factory.js';
 export * from './vector-dialect.js';
 export * from './fts-dialect.js';
 export * from './adapter-meta.js';
+export * from './integrity.js';
 export * from './migration.js';
