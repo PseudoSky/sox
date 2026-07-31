@@ -1576,6 +1576,65 @@ Confirmed instances, all on **generated/derived data the adapter owns**:
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner directive 2026-07-31, 2: BL-302 (applySchema DDL-only reconciliation), 3: BL-347, 4: BL-335, 5: BL-336]
 
+
+**UPDATE 2026-07-31 (database-administrator) — the verification/repair surface has SHIPPED (commit `fa786a2`); this item stays OPEN for the tail listed at the end.**
+
+**What ships.** `libs/data/store/store-adapter/src/integrity.ts` interrogates the CONTENT of every artifact the adapter generates, discovered by introspecting `sqlite_master` — no schema knowledge from any consumer, so it works on the live store without memory-core declaring anything:
+
+| Probe | Detects | Repair |
+|---|---|---|
+| `wal_identity` | WAL unlinked/replaced under a live connection (BL-330) | `wal_checkpoint(PASSIVE)` + loud report |
+| `adapter_meta_unique` | duplicate PK rows (BL-336) | table rebuild, earliest row per key |
+| `btree_index_populated` | index exists but is unpopulated (BL-335) | `REINDEX "<name>"` individually (BL-337) |
+| `fts_index_live` | FTS index exists but does not match its own rows (BL-347) | `DROP INDEX` + dialect `createIndexDDL` |
+| `pragma_integrity_check` (deep) | everything else, cap-aware (BL-341) | `REINDEX` by named object |
+
+Wired into `TursoAdapterImpl.connect()` and `SqliteAdapterImpl.init()`, so it runs on the normal open path. `StoreAdapter.init()` is now a declared interface member instead of an `as any` call in the factory.
+
+**Cost tradeoff, measured on a copy of the live 43 MB store (9 428 nodes, 47 038 edges, 19 probeable indexes), median of three:**
+
+| | cost |
+|---|---|
+| `adapter_meta_unique` | < 0.5 ms |
+| `fts_index_live` | 9.3 ms |
+| `btree_index_populated` | 78.5 ms |
+| **fast total (every open)** | **91 ms** |
+| **deep total** | **392 ms** |
+
+`fast` runs on every open — it is a fraction of the store open it sits inside and it catches all four production defects. `deep` adds `PRAGMA integrity_check` and runs when the previous session did not record a clean shutdown (a new `_adapter_meta` `clean_shutdown` marker, the BL-338 crash-recovery flag), or on request. Controls: `SOX_STORE_VERIFY=off|fast|deep`, `SOX_STORE_REPAIR=off`.
+
+**Three probe-design traps were measured and are defended against structurally, not by convention.** Each would have produced a green probe on a damaged store — the BL-167 failure mode:
+1. **The Tantivy backing-table row count reads 0 in every state** — damaged, repaired, and freshly built. It detects nothing. See the BL-347 update.
+2. **Turso silently ignores `INDEXED BY` on a PARTIAL index** — `SELECT COUNT(*) FROM t INDEXED BY ix_part` plans as a bare `SCAN t` (real SQLite raises "no query solution"), so the count matches the table trivially and every partial index reports healthy. **8 of the live store's 20 indexes are partial.** The probe now appends the index's own predicate and requires `EXPLAIN QUERY PLAN` to name the index; when it does not, the finding is `unknown`, never `ok`.
+3. **A bare `COUNT(*)` baseline is itself corrupted by the damage it is meant to detect.** SQLite optimises `SELECT COUNT(*) FROM t` by scanning the smallest index — the unpopulated one — so the first version of the probe reported `fully populated (0/0)` on a table holding 40 rows. Baselines now count through the table btree (`ORDER BY rowid`). `INDEXED BY` alone also does not force a full scan through an index on either engine; the probe orders by the leading indexed column so both planners choose `SCAN … USING COVERING INDEX`.
+
+**Red→green evidence.** `src/__tests__/integrity-selfheal.test.ts`, 17 tests, all naming their BL-IDs. Verified failing then passing, not asserted:
+- With the three probes stubbed to return no findings, **7 tests fail** (detection, repair, auto-heal-on-open, and the two Turso soundness guards); restored, all pass. Full suite 257/257.
+- With the `close()` WAL guard removed, the BL-330 test fails with `Parse error: no such table: t` on reopen — total silent loss; restored, 140/140 retained.
+- Each test asserts the healthy negative control first, then the damage, then that **re-running the schema DDL does not fix it**, then repair. The `IF NOT EXISTS` no-op is asserted, not assumed.
+- A dedicated test pins that the naive "does FTS match anything at all" probe is GREEN on the damage shape where the sentinel probe is red.
+
+**Acceptance against the REAL live damage.** A copy of `~/.memory/memory.db` (the live store was not touched) opened through `createTursoAdapter()`:
+```
+[damaged] [BL-336] _adapter_meta: Duplicate PRIMARY KEY rows: adapter_type×2, adapter_version×2, created_at×2
+[damaged] [BL-347] idx_fts_node: 2/3 sentinel rows (rowid 1, 7961) are present in "node" but NOT matchable
+[repaired] _adapter_meta: rebuilt keeping the earliest row per key (2.5ms)
+[repaired] idx_fts_node: dropped and rebuilt FTS index (256ms)
+open took 461.6ms · post-repair damaged: 0
+```
+Ground truth before → after: `fts_match('memory')` **0 → 1148** (LIKE 1074), `turso` **0 → 136** (LIKE 137), `backlog` **0 → 84** (LIKE 83); the oldest row (rowid 1) matchable again; `_adapter_meta` 6 rows → 3.
+
+**⚠️ The live store is NOT yet auto-repaired.** The fix is in `store-adapter`'s source and `dist`, but the running memory-server is a **bundled** artifact that has not been rebuilt (the live service is up; a rebuild is destructive per BL-235). The live store self-heals on the first open after memory-server is rebuilt and restarted — not before.
+
+**Remaining, why this stays open:**
+1. **Report into status (BL-334).** `getLastIntegrityResult(adapter)` exists and retains the last pass, but nothing in `memory_ping`/`memory_stats` reads it yet. A damaged store still presents as healthy to an operator.
+2. **Route through the migration executor (BL-302).** Repairs currently run as direct adapter operations, not as versioned migrations. BL-302's executor does not exist.
+3. **No committable Turso FTS damage fixture** — the Turso side of the FTS negative control exists only against the live copy. Filed separately.
+4. **Vectors are not verified.** `vec_node` consistency (row present, correct byte length, no orphans) is named in this item's requirement and is not probed.
+5. **Deep verification is not on a cadence** — only on unclean shutdown or on request.
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 6: libs/data/store/store-adapter/src/integrity.ts, 7: libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts, 8: libs/data/store/store-adapter/src/turso-adapter.ts, 9: libs/data/store/store-adapter/src/sqlite-adapter.ts, 10: libs/data/store/store-adapter/src/adapter-meta.ts, 11: `createTursoAdapter()` acceptance run against a copy of `~/.memory/memory.db` 2026-07-31, 12: probe-trap measurements (partial-index INDEXED BY, COUNT(*) baseline, Tantivy backing count) 2026-07-31]
+
 ---
 
 ### BL-353 — Telemetry is written to disk and never read: 75k events, two days, zero analysis — **Open (HIGH)** (2026-07-31)
@@ -1999,3 +2058,121 @@ Measured edge probability projected to full store size (`vec_node` covers 1616 o
 **Related:** BL-328 (the calibration measurement), BL-350 (same problem from the maintenance side), BL-349, BL-327, BL-334 (the effective threshold must be reportable).
 
 Citations: [wip/turso-live-metrics, performance-engineer, claude, sandbox P0.5, 1: libs/memory-core/src/cluster.ts:918-920, 2: libs/memory-core/src/cluster.ts:172-183, 3: libs/memory-core/src/cluster.ts:465-484, 4: libs/data/analysis/analysis/src/index.ts:143-180, 5: docs/reporting/memory/sandbox/cluster-calibration.md]
+
+---
+
+### BL-359 — `SqliteVectorBackend` crashes on a raw `better-sqlite3` handle; 15 `hybrid-search` tests are red — **Open (HIGH)** (2026-07-31)
+
+**Driver:** `npx nx test hybrid-search` fails 15/82 with `TypeError: Cannot read properties of undefined (reading 'nativeVectors')` at `vector-store/src/index.ts:197`, reached from `hybrid-search.spec.ts:451`'s `new SqliteVectorBackend(db)`.[1][2]
+
+The constructor was converted to take a `StoreAdapter` during the store-adapter migration (`83cd0b0`, 2026-07-27) and now reads `adapter.capabilities.nativeVectors` — but the callers still pass a raw `better-sqlite3` `Database` handle, on which `.capabilities` is `undefined`.[3] There is no type error because the spec's local `Database.Database` type flows into an `any`-ish parameter position.
+
+Note the expression itself is also suspect: `adapter.capabilities.nativeVectors || true` is unconditionally `true`, so reading the capability at all is pointless — the crash is the only effect it has.[3]
+
+**Blast radius:** every `SqliteSearchBackend` integration test in the package, including the BL-294 vector-channel-isolation suite and the BL-295 `kind:"generic"` end-to-end test. The whole real-FTS5+vector integration surface of `hybrid-search` has been unexercised since 2026-07-27.
+
+**Fix sketch:** either accept both shapes (wrap a raw handle via `createSqliteAdapter(db)`) or require a `StoreAdapter` and update the callers. Given the `|| true`, deleting the capability read is also viable. Update the spec's helper either way.
+
+**Acceptance (red→green, must name BL-359):** `npx nx test hybrid-search` at 82/82, with the 15 currently-failing integration tests executing (not skipped).
+
+**Severity:** HIGH — 15 red tests hiding the package's only real integration coverage, and it survived four days of green-looking sweeps because the failures are inside one project's suite.
+
+**Related:** BL-357 (library builds compiling test files), BL-324/BL-325 (the same class of post-migration spec drift in memory-core).
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 1: libs/data/search/hybrid-search/src/hybrid-search.spec.ts:449-464, 2: libs/data/vectors/vector-store/src/index.ts:195-200, 3: commit 83cd0b0 (`feat: full store-adapter migration`), 4: `npx nx test hybrid-search` output 2026-07-31]
+
+---
+
+### BL-360 — Turso's `PRAGMA integrity_check` reports a PERMANENT false positive on every store with an FTS index — **Open (MEDIUM)** (2026-07-31)
+
+**Driver:** `PRAGMA integrity_check` on a **freshly created, fully working** Turso FTS store emits:
+```
+wrong # of entries in index __turso_internal_fts_dir_idx_fts_node_key
+```
+Measured on a 200-row store built from scratch whose `fts_match` returned **200/200** immediately before and after the check, and again after a close/reopen cycle.[1] It also persists on a store whose FTS index has just been dropped and successfully rebuilt.[2] The message is unconditional, not a signal.
+
+**Why it matters beyond cosmetics:** it makes `integrity_check` unusable as a pass/fail gate on the only backend that ships. Any of the following, as currently specified, would loop or report damage forever on a healthy store:
+- BL-335's acceptance — *"assert `integrity_check` is clean afterward"*.
+- BL-337's acceptance — *"a repair routine that returns a table with a Tantivy index to a clean `integrity_check`"*.
+- BL-341's repair loop, and BL-334's proposed health field.
+- `backup.ts`'s post-`VACUUM INTO` integrity check, if it is ever pointed at a Turso store carrying the FTS index.
+
+**Mitigated, not fixed:** `integrity.ts`'s `isKnownFalsePositive()` filters exactly this message shape and nothing else, with a test that fails if Turso stops emitting it.[3] That is a suppression against a driver bug, not a fix.
+
+**Fix sketch:** report upstream to `@tursodatabase/database` with the reproduction; pin the driver version the suppression is valid for; re-test on upgrade. Amend the acceptance criteria of BL-335/BL-337/BL-341 to "clean after filtering the known false positive."
+
+**Acceptance (red→green, must name BL-360):** on a driver version where it is fixed, the guard test flips and the filter is removed.
+
+**Severity:** MEDIUM — no data risk, but it silently invalidates the acceptance criteria of three open HIGH items and would make an automatic repair loop non-convergent.
+
+**Related:** BL-341, BL-335, BL-337, BL-352, BL-347.
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 1: integrity_check against a freshly built 200-row Turso FTS store, before and after reopen, 2026-07-31, 2: integrity_check after a successful DROP+CREATE rebuild on a copy of `~/.memory/memory.db` 2026-07-31, 3: libs/data/store/store-adapter/src/integrity.ts (`isKnownFalsePositive`) + integrity-selfheal.test.ts]
+
+---
+
+### BL-361 — Turso PANICS and aborts the process when opening a store whose FTS index row has no backing directory table — **Open (MEDIUM)** (2026-07-31)
+
+**Driver:** while building a damage fixture, an `idx_fts_node` row was reinstated into `sqlite_master` (via `writable_schema`) without its `__turso_internal_fts_dir_idx_fts_node` table. The next `connect()` did not throw a catchable error — it **panicked in Rust and killed the Node process**:
+```
+thread '<unnamed>' panicked at core/vdbe/execute.rs:13189:51:
+internal error: entered unreachable code: invalid transaction state for
+SetCookie: TransactionState::Read, should be write
+```
+[1]
+
+**Why it matters:** this is an unrecoverable, uncatchable failure mode reachable from a partially-damaged store — precisely the population BL-338 says must recover automatically. No adapter-level verification can help, because the process dies inside `connect()` before any code runs. A store in this state cannot be opened, diagnosed, or repaired by anything in-process; recovery would need an out-of-process pre-flight or a `better-sqlite3` (`writable_schema=ON`) rescue path.
+
+Whether a crash can produce this state naturally is **unknown** — it was produced deliberately. That question is the load-bearing one and is not answered here.
+
+**Fix sketch:** report upstream (a `panic!` on malformed schema should be an error). Locally: consider a cheap out-of-process schema sanity pre-flight before the first `connect()` on a store flagged as unclean, or a `better-sqlite3` rescue path that can repair `sqlite_master` when Turso cannot open the file at all.
+
+**Acceptance (red→green, must name BL-361):** a store in this state either opens with a catchable error, or is repaired by a pre-flight before `connect()` is attempted.
+
+**Severity:** MEDIUM — deliberate to produce, catastrophic if reachable naturally. Reclassify to HIGH the moment a natural path is found.
+
+**Related:** BL-338 (recovery must be automatic), BL-352, BL-329.
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 1: reinstated-fts-index-row fixture attempt against @tursodatabase/database@0.7.1, 2026-07-31]
+
+---
+
+### BL-362 — No committable Turso FTS damage fixture: the BL-347 negative control exists only against the live store — **Open (MEDIUM)** (2026-07-31)
+
+**Driver:** BL-352's shipped FTS probe has a red→green negative control on **SQLite FTS5** (damaged deterministically via the fts5 `'delete-all'` command) and a verified detection+repair run against a **copy of the real damaged live store**. It has **no committable fixture that reproduces the damage on Turso**, so CI proves the Turso probe passes on a healthy index but never that it fails on a damaged one — the precise gap BL-167 warns about.
+
+Four recipes were tried and all failed, and the failures are worth keeping:
+1. **Delete the Tantivy directory rows.** Turso refuses: `table __turso_internal_fts_dir_idx_fts_node may not be modified`. Via `better-sqlite3` the delete succeeds but affects nothing — the table holds 0 rows in every state (see the BL-347 update).
+2. **Repoint the directory table's rootpage at an empty btree** (`writable_schema`). FTS kept working — the content is not read through that table.
+3. **Insert rows through a connection without `experimental:['index_method']`.** Blocked loudly: the INSERT itself throws `index method is an experimental feature`. So this is *not* how the live damage happened.
+4. **Reinstate the index's `sqlite_master` row without its directory table.** Panics the driver and aborts the process — filed as BL-361.
+
+**Useful by-product:** `better-sqlite3` **can** open a Turso-FTS store if `PRAGMA writable_schema = ON` is set — a plain open fails with `malformed database schema (__turso_internal_fts_dir_idx_fts_node_key) - near "USING": syntax error`, but with the flag it reads and writes `sqlite_master` normally. That is an escape hatch BL-329 currently says does not exist, and it is how every fixture above was attempted.
+
+**Consequence, stated plainly:** the mechanism that actually killed the live index is still **unknown**. BL-347 blames the crash repair skipping `idx_fts_node`, but that explains why it was never *rebuilt*, not why it went empty in the first place — and recipe 3 rules out the most plausible candidate.
+
+**Fix sketch:** find the real mechanism (a torn WAL over the index? a `VACUUM`? the go-live restore path in `~/.adhd/sox-ecosystem/memory/corrections-20260730/dbrepair/restore.mjs`?) and seed *that*. Failing that, ship a small anonymised damaged fixture derived from the live store.
+
+**Acceptance (red→green, must name BL-362):** a committed test that damages a Turso FTS index in-repo and shows the sentinel probe red, then green after adapter repair.
+
+**Severity:** MEDIUM — the probe is verified against real damage today, but nothing stops a future refactor from silently un-verifying the Turso path.
+
+**Related:** BL-347, BL-352, BL-361, BL-329, BL-338.
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 1: four damage-recipe attempts against @tursodatabase/database@0.7.1 2026-07-31, 2: better-sqlite3 `writable_schema=ON` open of a Turso-FTS store 2026-07-31, 3: libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts]
+
+---
+
+### BL-363 — Stray `doesnt_exist_yet` table in the live store — **Open (LOW)** (2026-07-31)
+
+**Driver:** `sqlite_master` on the live `~/.memory/memory.db` lists a user table named **`doesnt_exist_yet`** alongside the 12 real tables.[1] It is not in any schema DDL in the repo — almost certainly a probe artifact left by a test or a diagnostic session that ran `CREATE TABLE doesnt_exist_yet` against the production store.
+
+**Why it is worth a line:** it is direct evidence that something wrote arbitrary DDL to the live store, and any schema-completeness or drift check that enumerates tables will have to explain it. It also counts against BL-352's premise that everything in the store is adapter-generated.
+
+**Fix sketch:** identify what created it (grep the repo and the BL-320 telemetry for the name) before dropping it — the provenance is more valuable than the cleanup. Do not drop it while the live store is an incident reproduction.
+
+**Acceptance:** provenance identified and recorded; table removed as part of a supported maintenance path, not by hand.
+
+**Severity:** LOW — harmless in itself.
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 1: `SELECT type,name FROM sqlite_master` against a copy of `~/.memory/memory.db` 2026-07-31]
