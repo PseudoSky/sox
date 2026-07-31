@@ -26,8 +26,7 @@
  * Never touches other paths (e.g. `<dir>/principles/`).
  */
 
-import type { StoreAdapter, SqliteAdapter } from '@adhd/sox-store-adapter';
-import type Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -95,12 +94,12 @@ function nowIso(): string {
  *   4. first entity it MENTIONS (resolved to entity name, not uid — BL-22).
  *   5. "general".
  */
-function deriveTopicName(
-  db: Database.Database,
+async function deriveTopicName(
+  adapter: StoreAdapter,
   episodeRowid: number,
   content: string | null,
   structuredTopic: string | null,
-): { name: string; slug: string } {
+): Promise<{ name: string; slug: string }> {
   // First preference: structured node.topic column — set by enrichOnWrite, authoritative.
   if (structuredTopic && structuredTopic.trim()) {
     const name = structuredTopic.trim();
@@ -115,16 +114,15 @@ function deriveTopicName(
   }
 
   // Third preference: community this episode is a member of
-  const communityEdge = db
-    .prepare<[number], { name: string | null; uid: string }>(
-      `SELECT n.name, n.uid
-       FROM edge e
-       JOIN node n ON n.rowid = e.dst
-       WHERE e.src = ? AND e.rel = 'MEMBER_OF' AND n.kind = 'community'
-         AND e.t_expired IS NULL AND n.t_invalid IS NULL
-       LIMIT 1`,
-    )
-    .get(episodeRowid);
+  const communityEdge = await adapter.executeGet<{ name: string | null; uid: string }>(
+    `SELECT n.name, n.uid
+     FROM edge e
+     JOIN node n ON n.rowid = e.dst
+     WHERE e.src = ? AND e.rel = 'MEMBER_OF' AND n.kind = 'community'
+       AND e.t_expired IS NULL AND n.t_invalid IS NULL
+     LIMIT 1`,
+    [episodeRowid],
+  );
 
   if (communityEdge) {
     const name = communityEdge.name ?? 'general';
@@ -132,17 +130,16 @@ function deriveTopicName(
   }
 
   // Fourth preference: first entity this episode MENTIONS, resolved to entity.name (BL-22).
-  const mentionEdge = db
-    .prepare<[number], { name: string | null; uid: string }>(
-      `SELECT n.name, n.uid
-       FROM edge e
-       JOIN node n ON n.rowid = e.dst
-       WHERE e.src = ? AND e.rel = 'MENTIONS' AND n.kind = 'entity'
-         AND e.t_expired IS NULL AND n.t_invalid IS NULL
-       ORDER BY e.rowid ASC
-       LIMIT 1`,
-    )
-    .get(episodeRowid);
+  const mentionEdge = await adapter.executeGet<{ name: string | null; uid: string }>(
+    `SELECT n.name, n.uid
+     FROM edge e
+     JOIN node n ON n.rowid = e.dst
+     WHERE e.src = ? AND e.rel = 'MENTIONS' AND n.kind = 'entity'
+       AND e.t_expired IS NULL AND n.t_invalid IS NULL
+     ORDER BY e.rowid ASC
+     LIMIT 1`,
+    [episodeRowid],
+  );
 
   if (mentionEdge) {
     // Always use entity.name (not uid); if name is somehow null, fall through.
@@ -160,40 +157,38 @@ function deriveTopicName(
  * Resolves entity nodes to their `name` field (BL-22: never render raw uids).
  * Entities without a name are skipped; uid is never surfaced to the user.
  */
-function collectMentionedEntities(
-  db: Database.Database,
+async function collectMentionedEntities(
+  adapter: StoreAdapter,
   episodeRowid: number,
-): string[] {
-  return db
-    .prepare<[number], { name: string | null }>(
-      `SELECT n.name
-       FROM edge e
-       JOIN node n ON n.rowid = e.dst
-       WHERE e.src = ? AND e.rel = 'MENTIONS' AND n.kind = 'entity'
-         AND e.t_expired IS NULL AND n.t_invalid IS NULL
-       ORDER BY e.rowid ASC`,
-    )
-    .all(episodeRowid)
-    .flatMap((r) => (r.name && r.name.trim() ? [r.name.trim()] : []));
+): Promise<string[]> {
+  const { rows } = await adapter.executeAll<{ name: string | null }>(
+    `SELECT n.name
+     FROM edge e
+     JOIN node n ON n.rowid = e.dst
+     WHERE e.src = ? AND e.rel = 'MENTIONS' AND n.kind = 'entity'
+       AND e.t_expired IS NULL AND n.t_invalid IS NULL
+     ORDER BY e.rowid ASC`,
+    [episodeRowid],
+  );
+  return rows.flatMap((r) => (r.name && r.name.trim() ? [r.name.trim()] : []));
 }
 
 /**
  * Collect uids of nodes this episode is DERIVED_FROM or SUPERSEDES.
  */
-function collectRelatedUids(
-  db: Database.Database,
+async function collectRelatedUids(
+  adapter: StoreAdapter,
   episodeRowid: number,
   rel: 'DERIVED_FROM' | 'SUPERSEDES',
-): string[] {
-  return db
-    .prepare<[number, string], { uid: string }>(
-      `SELECT n.uid
-       FROM edge e
-       JOIN node n ON n.rowid = e.dst
-       WHERE e.src = ? AND e.rel = ? AND e.t_expired IS NULL AND n.t_invalid IS NULL`,
-    )
-    .all(episodeRowid, rel)
-    .map((r) => r.uid);
+): Promise<string[]> {
+  const { rows } = await adapter.executeAll<{ uid: string }>(
+    `SELECT n.uid
+     FROM edge e
+     JOIN node n ON n.rowid = e.dst
+     WHERE e.src = ? AND e.rel = ? AND e.t_expired IS NULL AND n.t_invalid IS NULL`,
+    [episodeRowid, rel],
+  );
+  return rows.map((r) => r.uid);
 }
 
 /**
@@ -286,28 +281,28 @@ function renderEpisodeMarkdown(
  * Returns { nodesWritten, topics, dir }.
  * When opts.enabled is false, returns zeros without touching the filesystem.
  */
-export function exportMarkdown(adapter: StoreAdapter, opts: ExportOpts): ExportResult {
+export async function exportMarkdown(adapter: StoreAdapter, opts: ExportOpts): Promise<ExportResult> {
   if (!opts.enabled) {
     return { nodesWritten: 0, topics: 0, dir: opts.dir };
   }
 
-  // Unwrap the raw better-sqlite3 handle for the existing sync query logic.
-  const db = (adapter as SqliteAdapter).unwrap();
-
+  // BL-377: this used to be `(adapter as SqliteAdapter).unwrap()`. That cast is
+  // asserted, never checked — and on the DEFAULT Turso backend the unwrapped
+  // handle's .prepare().all() is async, so every read below silently became a
+  // Promise ("TypeError: episodes is not iterable"). Everything now goes through
+  // the backend-agnostic StoreAdapter API.
   const { dir } = opts;
   const topicsRoot = path.join(dir, 'topics');
 
   // ── Fetch live episodes ───────────────────────────────────────────────────
   // P5: include structured enrichment columns (topic, tags, project_path, summary).
-  const episodes = db
-    .prepare<[], EpisodeRow>(
-      `SELECT rowid, uid, content, name, summary, topic, tags, project_path,
-              source, importance, t_created, agent_id, session_id
-       FROM node
-       WHERE kind = 'episode' AND t_invalid IS NULL
-       ORDER BY t_created ASC`,
-    )
-    .all();
+  const { rows: episodes } = await adapter.executeAll<EpisodeRow>(
+    `SELECT rowid, uid, content, name, summary, topic, tags, project_path,
+            source, importance, t_created, agent_id, session_id
+     FROM node
+     WHERE kind = 'episode' AND t_invalid IS NULL
+     ORDER BY t_created ASC`,
+  );
 
   // ── Build topic → episodes mapping ────────────────────────────────────────
   // Maps slug → { name, episodes: EpisodeRow[] }
@@ -316,7 +311,7 @@ export function exportMarkdown(adapter: StoreAdapter, opts: ExportOpts): ExportR
 
   for (const ep of episodes) {
     // P5: pass structured topic column as the first-priority argument.
-    const { name: topicName, slug } = deriveTopicName(db, ep.rowid, ep.content, ep.topic);
+    const { name: topicName, slug } = await deriveTopicName(adapter, ep.rowid, ep.content, ep.topic);
     if (!topicMap.has(slug)) {
       topicMap.set(slug, { name: topicName, episodes: [] });
     }
@@ -336,9 +331,9 @@ export function exportMarkdown(adapter: StoreAdapter, opts: ExportOpts): ExportR
 
   for (const ep of episodes) {
     const slug = episodeTopicSlug.get(ep.uid)!;
-    const entities = collectMentionedEntities(db, ep.rowid);
-    const derivedFrom = collectRelatedUids(db, ep.rowid, 'DERIVED_FROM');
-    const supersedes = collectRelatedUids(db, ep.rowid, 'SUPERSEDES');
+    const entities = await collectMentionedEntities(adapter, ep.rowid);
+    const derivedFrom = await collectRelatedUids(adapter, ep.rowid, 'DERIVED_FROM');
+    const supersedes = await collectRelatedUids(adapter, ep.rowid, 'SUPERSEDES');
 
     const content = renderEpisodeMarkdown(ep, entities, derivedFrom, supersedes);
     const destPath = path.join(topicsRoot, slug, `${ep.uid}.md`);

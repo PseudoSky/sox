@@ -68,7 +68,7 @@ import * as path from 'node:path';
 import { createEmbeddingProvider } from '@adhd/sox-embedding-provider';
 import { EMBED_DIM, vecToJson, vecToBuffer } from './embed.js';
 import { openDb, expandDbPath } from './db.js';
-import type { SqliteAdapter, StoreAdapter } from '@adhd/sox-store-adapter';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -246,8 +246,11 @@ async function _reembedStore(
   }
 
   // ── Open DB (memory-core: schema + sqlite-vec) ──────────────────────────────
+  // BL-377: this used to be `(adapter as SqliteAdapter).unwrap()`. The cast is
+  // asserted, never checked — and on the DEFAULT Turso backend the unwrapped
+  // handle's query API is async, so these reads silently returned Promises.
+  // Everything below goes through the backend-agnostic StoreAdapter API.
   const adapter = await openDb(resolvedDbPath);
-  const db = (adapter as SqliteAdapter).unwrap();
 
   try {
     // ── BL-92: per-record candidate discovery + idempotency check ────────────
@@ -330,12 +333,11 @@ async function _reembedStore(
     let targets = force ? candidates : nonTarget;
     if (limit > 0) targets = targets.slice(0, limit);
 
-    const getText = (id: number): string | null => {
-      const row = db
-        .prepare<[number], { content: string | null; name: string | null }>(
-          `SELECT content, name FROM node WHERE rowid = ?`,
-        )
-        .get(id);
+    const getText = async (id: number): Promise<string | null> => {
+      const row = await adapter.executeGet<{ content: string | null; name: string | null }>(
+        `SELECT content, name FROM node WHERE rowid = ?`,
+        [id],
+      );
       if (!row) return null;
       return [row.content, row.name].filter(Boolean).join(' ') || null;
     };
@@ -408,7 +410,7 @@ async function _reembedStore(
     };
 
     for (const t of targets) {
-      const text = getText(t.rowid);
+      const text = await getText(t.rowid);
       if (!text) {
         result.skipped++;
         continue;
@@ -423,9 +425,9 @@ async function _reembedStore(
     // Update memory_scope as a courtesy/backward-compat fallback tag ONLY —
     // never read by this function to decide what to migrate (see file-top note).
     if (result.migrated > 0 || force) {
-      db.prepare(`UPDATE memory_scope SET embed_model = ?, embed_dim = ?`).run(
-        targetModelId,
-        targetDim,
+      await adapter.executeRun(
+        `UPDATE memory_scope SET embed_model = ?, embed_dim = ?`,
+        [targetModelId, targetDim],
       );
       log(`[reembedStore] memory_scope.embed_model -> '${targetModelId}' (fallback tag only)`);
     }
@@ -452,6 +454,6 @@ async function _reembedStore(
       sourceModelGroups,
     };
   } finally {
-    db.close();
+    await adapter.close();
   }
 }
