@@ -92,7 +92,7 @@ afterEach(() => {
   tmpDirs = [];
 });
 
-async function freshDb(): Promise<{ db: Database.Database; dbPath: string }> {
+async function freshDb(): Promise<{ db: StoreAdapter; dbPath: string }> {
   const dir = makeTempDir();
   tmpDirs.push(dir);
   const dbPath = path.join(dir, 'test.db');
@@ -112,10 +112,10 @@ async function freshDb(): Promise<{ db: Database.Database; dbPath: string }> {
   return { db, dbPath };
 }
 
-async function freshDbCurrentModel(): Promise<{ db: Database.Database; dbPath: string }> {
+async function freshDbCurrentModel(): Promise<{ db: StoreAdapter; dbPath: string }> {
   const { db, dbPath } = await freshDb();
   // Set embed_model to the target so the store is already current.
-  db.prepare(`UPDATE memory_scope SET embed_model = ?, embed_dim = ?`).run(TARGET_MODEL, TARGET_DIM);
+  raw(db).prepare(`UPDATE memory_scope SET embed_model = ?, embed_dim = ?`).run(TARGET_MODEL, TARGET_DIM);
   return { db, dbPath };
 }
 
@@ -127,13 +127,13 @@ async function freshDbCurrentModel(): Promise<{ db: Database.Database; dbPath: s
  * simulate a pre-BL-88 row). Returns the node's rowid.
  */
 function insertEmbeddedNode(
-  db: Database.Database,
+  db: StoreAdapter,
   uid: string,
   content: string,
   embedModel: string | null,
   fillValue: number,
 ): number {
-  const info = db
+  const info = raw(db)
     .prepare(
       `INSERT INTO node (uid, kind, content, t_created, t_valid, embed_model)
        VALUES (?, 'episode', ?, datetime('now'), datetime('now'), ?)`,
@@ -141,7 +141,7 @@ function insertEmbeddedNode(
     .run(uid, content, embedModel);
   const rowid = info.lastInsertRowid as number;
   const vec = new Float32Array(TARGET_DIM).fill(fillValue);
-  db.prepare(`INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)`).run(
+  raw(db).prepare(`INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)`).run(
     rowid,
     vecToJson(vec),
   );
@@ -149,8 +149,8 @@ function insertEmbeddedNode(
 }
 
 /** Read back the raw vec_node embedding for a node rowid. */
-function readVecNodeEmbedding(db: Database.Database, rowid: number): Float32Array {
-  const row = db
+function readVecNodeEmbedding(db: StoreAdapter, rowid: number): Float32Array {
+  const row = raw(db)
     .prepare<[number], { embedding: Buffer }>(`SELECT embedding FROM vec_node WHERE node_id = ?`)
     .get(rowid);
   if (!row) throw new Error(`no vec_node row for node ${rowid}`);
@@ -159,8 +159,8 @@ function readVecNodeEmbedding(db: Database.Database, rowid: number): Float32Arra
 }
 
 /** Read back the per-record embed_model column for a node rowid. */
-function readNodeEmbedModel(db: Database.Database, rowid: number): string | null {
-  const row = db
+function readNodeEmbedModel(db: StoreAdapter, rowid: number): string | null {
+  const row = raw(db)
     .prepare<[number], { embed_model: string | null }>(`SELECT embed_model FROM node WHERE rowid = ?`)
     .get(rowid);
   return row?.embed_model ?? null;
@@ -168,6 +168,9 @@ function readNodeEmbedModel(db: Database.Database, rowid: number): string | null
 
 // ── Helper: check whether a vec0 table exists ─────────────────────────────────
 
+// Takes a genuinely raw handle: its only caller opens the .db file directly, in
+// readonly mode, specifically to verify what reembedStore did or did not create
+// on disk. That is the one place a raw handle is the point rather than a leak.
 function vectorTableExists(db: Database.Database, modelId: string): boolean {
   const sanitized = modelId.replace(/[^a-zA-Z0-9_]/g, '_').replace(/^_+|_+$/g, '') || 'default';
   const tableName = `vec_${sanitized}`;
@@ -186,7 +189,7 @@ describe('reembedStore — dry-run', () => {
     const { db, dbPath } = await freshDb();
 
     // Insert a node so there's something to "migrate".
-    db.prepare(
+    raw(db).prepare(
       `INSERT INTO node(uid, kind, content, t_created)
        VALUES ('node-1', 'episode', 'hello world', datetime('now'))`,
     ).run();
@@ -252,7 +255,7 @@ describe('reembedStore — force re-embed', () => {
     const { db, dbPath } = await freshDbCurrentModel();
 
     // Insert a node so there's something to embed.
-    db.prepare(
+    raw(db).prepare(
       `INSERT INTO node(uid, kind, content, t_created)
        VALUES ('node-2', 'episode', 'force re-embed test', datetime('now'))`,
     ).run();
