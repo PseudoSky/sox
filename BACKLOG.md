@@ -18,13 +18,18 @@ Regenerate with:
 node -e 'const fs=require("fs");let o=0;for(const l of fs.readFileSync("BACKLOG.md","utf8").split("\n")){const m=l.match(/^###\s*(?:BL|TQ)-\d+\s*—\s*(.*)$/);if(!m)continue;const k=[...m[1].matchAll(/\*\*([^*]+)\*\*/g)].pop();if(k&&/^(open|reopened|blocked)/i.test(k[1]))o++;}console.log("open:",o)'
 ```
 
-Regenerated 2026-07-31 (BL-356 filed): **76 open**, 1 closed-in-place.
+Check for duplicate ids (must print nothing) — see BL-359:
+```
+grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
+```
+
+Regenerated 2026-07-31 (BL-359 filed; BL-354 no longer exists — renumbered to BL-358 after an id collision, see BL-359): **77 open**, 1 closed-in-place.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-343, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-354, BL-356, BL-357, BL-358 |
-| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-343, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358 |
+| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359 |
 | **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355 |
 | **UNSET** | BL-163 (heading marker carries no priority — needs one) |
 
@@ -1076,7 +1081,6 @@ Also measured, and load-bearing for any future calibration: in a general 288-row
 
 Citations: [wip/turso-live-metrics, performance-engineer, claude, sandbox P0.5, 1: extensions/bundles/sox-memory-bundle/members/memory-server/clustering-e2e.test.ts:124-141,351-374, 2: libs/memory-core/src/cluster.ts:172-183,918-920, 3: libs/data/analysis/analysis/src/index.ts:143-180, 4: docs/reporting/memory/sandbox/cluster-calibration.md]
 
-Citations: [wip/turso-live-metrics, cluster-proof, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/clustering-e2e.test.ts]
 
 ---
 
@@ -1699,11 +1703,41 @@ So this is a localised drift, not a repo-wide convention failure — the 18 corr
 
 **Severity:** HIGH — a red test in one package silently becomes a build outage in every downstream package. It cost a concurrent agent its ability to measure at all.
 
-**Numbering note:** originally filed as BL-354 in commit `83b0483`; renumbered to BL-357 on discovery that `p1-tracing-research` had filed a different BL-354 (`WriteQueue` queue-wait) minutes earlier in `0e9026b`. Second such collision today (see BL-346). References to "BL-354" in `83b0483`'s commit message mean this item.
+**Numbering note:** originally filed as BL-354 in commit `83b0483`; renumbered to BL-357 after `p1-tracing-research` filed a different BL-354 in `0e9026b` minutes earlier. That item has since moved again — to BL-356, then BL-358 — as two further agents claimed the same ids. **There is no BL-354 any more.** References to "BL-354" in `83b0483`'s commit message mean this item. See BL-359 for the allocation race that caused all of it.
 
 **Related:** BL-340 (tests never typechecked — the inverse), BL-235 (destructive builds; note `atomic-tsc` correctly left the existing `dist/` intact here, which is the behaviour BL-235 wants everywhere).
 
 Citations: [wip/turso-live-metrics, team-lead + p0-test-infra, claude, turso-go-live, 1: live `npx nx test memory-core` failure 2026-07-31, 2: libs/data/store/store-adapter/tsconfig.lib.json:10-11, 3: libs/data/store/store-adapter/src/sqlite-adapter.ts:150 (`init()` exists on the class but is not declared on the interface `createSqliteAdapter()` returns), 4: libs/data/store/blob-store/tsconfig.lib.json, libs/data/verify/claim-verification/tsconfig.lib.json, and the 18 correct configs (libs/{tokenguard-core,install-engine,host-runtime,service-proxy,source-provider,manifest,mcp-runtime,authoring,host-registry,registry,memory-core}/tsconfig.lib.json + libs/data/{analysis/analysis,embed/embedding-provider,ingest/ingest,graph/graph-store,vectors/vector-store,search/hybrid-search,queue/task-queue}/tsconfig.lib.json)]
+
+---
+
+### BL-359 — BL ids are allocated by a read-then-write race: three agents, two collisions, one dangling cross-reference — **Open (MEDIUM, process)** (2026-07-31)
+
+**Driver.** A new backlog id is chosen by reading the current maximum `### BL-<n>` from a shared file and adding one. There is no reservation and no uniqueness check, so any two agents who read before either writes will pick the **same id**. On 2026-07-31, three agents filing within roughly an hour produced **two collisions**:
+
+- **BL-344** — filed by `mitigate-reads`, then independently by the team lead minutes later. Resolved by renumbering the second to BL-346.
+- **BL-354** — filed by `p1-tracing-research` (`0e9026b`), then independently by the team lead (`83b0483`). The lead's renumbered to BL-357; the researcher's then had to move *again* — to BL-356, which was **also** concurrently claimed by `p0-cluster-calibration` — and finally to **BL-358**. One id, four agents, three renumbers. **There is no BL-354 any longer.**
+
+**Why this is worse than untidy.** An id is a citation target the moment it is written. `BL-328`'s "Related" line cited "BL-354 (a fixed τ is not calibratable at all)" — correct when written, and silently pointing at a *different item* once the renumbering settled.[1] Cross-references, commit messages, code comments and agent handoffs all capture ids by value; renumbering cannot chase them. Every collision therefore risks a permanently wrong reference in a document whose entire purpose is to be authoritative, and this one produced exactly that. Commit messages are immutable, so `83b0483`'s body will name BL-354 forever.
+
+**Detection is trivial and was not in place:**
+```
+grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d      # must print nothing
+```
+Verified empty as of this filing. The check has been added to the status-header block next to the regenerate command, but a documented command is not a guard — nothing runs it.
+
+**Fix sketch (ranked):**
+1. **Pre-commit hook** rejecting any commit that leaves duplicate `### BL-<n>` headings, and rejecting a reference to an id that has no heading. Cheap, catches both failure modes at the only moment that matters, requires no coordination between agents.
+2. **Reservation** — an allocator (a `BL-NEXT:` line bumped atomically, or a tiny script that appends a placeholder heading in one write) so the id is claimed before the item body is written.
+3. Longer term this disappears into the backlog MCP tool, where ids are server-allocated — the markdown→tool import is already authorized and deferred. Note it does **not** disappear on its own: until the import happens, every agent-heavy session reproduces this.
+
+**Acceptance (red→green, must name BL-359):** a hook or CI check that fails on a BACKLOG.md containing two identical `### BL-<n>` headings, and passes once deduplicated. Must be demonstrated failing.
+
+**Severity:** MEDIUM — no runtime impact, but it corrupts the reference integrity of the project's own record, and it recurs on every parallel-agent session. It has already produced one wrong cross-reference and three renumbers in a single day.
+
+**Related:** BL-346 (first collision), BL-357 (second), BL-358 (the thrice-renumbered item), BL-224/BL-225 (status-header and marker integrity — same family: the backlog's own metadata not being trustworthy).
+
+Citations: [wip/turso-live-metrics, team-lead + p1-tracing-research, claude, turso-go-live, 1: BACKLOG.md BL-328 "Related" line (since corrected to BL-356), 2: commits 0e9026b / 83b0483 / 79c2c4f / be8a526, 3: BACKLOG.md status-header regenerate block]
 
 ---
 
