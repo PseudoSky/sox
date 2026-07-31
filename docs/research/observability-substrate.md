@@ -752,6 +752,7 @@ Emitted, always paired, always with the same attribute set:
 |---|---|---|
 | `sox.stage.wait_ms` | exponential histogram | `sox.package`, `sox.stage`, `sox.phase="wait"` |
 | `sox.stage.work_ms` | exponential histogram | `sox.package`, `sox.stage`, `sox.phase="work"` |
+| `sox.stage.suspended_ms` | exponential histogram | `sox.package`, `sox.stage` — system-suspend overlap (BL-369, §5.9); raw durations stay raw |
 | `sox.stage.count` | counter | `sox.package`, `sox.stage`, `sox.outcome` |
 
 A consumer cannot record work-only, because there is no function that does that. That is what
@@ -959,6 +960,69 @@ The snapshot is a single JSONL line (`event: "metrics.snapshot"`) into the same 
 inherits the `role` routing, rotation, retention, and `writeSync` durability of everything else —
 no second persistence mechanism, no second format, no second thing to remember.
 
+### 5.9 Durations are wall-clock and include system sleep — annotate, never subtract (BL-369)
+
+**A correction to an assumption this design would otherwise have baked in**, raised by
+`p0-cluster-calibration` and verified here rather than taken on trust.
+
+Every duration in the existing telemetry is wall-clock and **accrues while the machine is
+asleep**, so the p90/p99/max in that log are inflated by an unknown amount — 88.7% of the >30 s
+embed tail was the laptop asleep. The obvious reach for `process.hrtime.bigint()` **does not fix
+it**:
+
+```
+performance.now delta ms: 249.1535
+hrtime.bigint  delta ms: 249.1697
+difference ms           : 0.0161   => same underlying clock
+```
+
+Measured locally on Node v24.11.1 / darwin arm64. They are the same `uv_hrtime()` source, and it
+includes suspend; swapping one for the other is a no-op. (The libuv issue describing macOS
+`uv_hrtime` as sleep-excluding does not match observed Node 24 behaviour — the measurement wins.)
+**There is no drop-in sleep-excluding clock in JS on macOS.**
+
+**Convention the substrate adopts** — a process-global suspension ledger, one `.unref()`'d
+heartbeat, gaps larger than the interval discriminated by a `process.cpuUsage()` delta over the
+same window (≈0 CPU ⇒ system suspend; CPU consumed ⇒ event-loop block, a different defect and also
+worth emitting). Spans then emit **`duration_ms` (raw, unchanged) plus `suspended_ms`**.
+
+**Annotate, never silently subtract.** A subtracted duration is neither wall-clock nor compute and
+cannot be reconciled against the record's own `ts` fields. Emitting both keeps `duration_ms`
+meaning what it has always meant and makes the artifact *visible* rather than merely absent —
+percentiles can then honestly exclude `suspended_ms > 0` samples, and the exclusion is auditable.
+This is the same principle as §5.3's self-check: the system reports what it does not know.
+
+**This does not cost the zero-handle property (§3.3).** Measured:
+
+```
+after setInterval : ["Timeout"]
+after .unref()    : []          <- getActiveResourcesInfo()
+```
+
+An `.unref()`'d interval is **invisible to `getActiveResourcesInfo()` and does not hold the event
+loop open** — the process still exits normally. So the BL-345 property survives intact. To state it
+precisely rather than sloganistically: the property that matters is *no background work that
+starves the foreground*, and a 1 Hz heartbeat costs `process.cpuUsage()` 403 ns + a delta 563 ns +
+`performance.now()` 76 ns ≈ **104 ms of CPU per day**. That is not literally zero work; it is
+negligible work, and the honest claim is the second one.
+
+**Bonus, and it removes a planned component:** the event-loop-block half of the same discriminator
+*is* the event-loop-lag measurement. One heartbeat serves both — do not add a second sampler.
+
+**Ownership:** the ledger is being built in `memory-core` as a self-contained module with no
+memory-core coupling, and is adopted into `@adhd/sox-telemetry` at step 1 of §6 alongside
+`telemetry.ts` and `latency-stats.ts`. It is a substrate primitive and belongs in the package
+eventually; it does not need to start there, and blocking its author on this package would be the
+wrong trade. **What must not happen is two conventions.**
+
+⚠️ **`withContendedStage`/`withSpan` must consult the ledger.** If the wrapper records a duration
+without it, every percentile the substrate ever emits inherits BL-369 — and correcting it later
+changes the meaning of a metric consumers already depend on.
+
+**Related handle trap (BL-370):** `fork()` with `'ipc'` creates a **separate channel handle** that
+`ChildProcess.unref()` does not release, so a process that forks once never exits. If the substrate
+ever forks or spawns, `child.channel?.unref()` is the missing call.
+
 ### 5.4 Lint enforcement (the mis-integration guard rails)
 
 Four rules, all mechanical:
@@ -1020,7 +1084,7 @@ every step rather than at the end.
 | # | Step | Proves |
 |---|---|---|
 | 0 | BL-344: single allowlist + deny-list | controls survive to a spawned service |
-| 1 | Create `libs/observability/sox-telemetry`; **move** `telemetry.ts` + `latency-stats.ts` in; re-export from `memory-core` for compatibility | no behaviour change; existing specs stay green; existing JSONL records byte-identical |
+| 1 | Create `libs/observability/sox-telemetry`; **move** `telemetry.ts` + `latency-stats.ts` + the BL-369 suspension ledger in; re-export from `memory-core` for compatibility | no behaviour change; existing specs stay green; existing JSONL records byte-identical |
 | 1a | **BL-365**: `writeSync` for the `live-service` role in `RotatingJsonlWriter` | red→green: N records + `SIGKILL` → **N survive** (today: 0) |
 | 1b | `JsonlSpanProcessor` (start on `onStart`, finish on `onEnd`) over the existing `RotatingJsonlWriter`; `role`-routed sink + retention (§3.11) | **hang still visible on disk** (span started, never ended → `.start` record present); live and test populations land in different files |
 | 1c | Metric snapshot: activity trigger (N records) + on graceful shutdown + on the `memory_ping` pull (§5.8) | `getActiveResourcesInfo()` still `[]`; a snapshot line is on disk after N records with no tool call made |
