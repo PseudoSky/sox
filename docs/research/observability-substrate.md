@@ -34,6 +34,23 @@ is the only module allowed to import `@opentelemetry/*`.
 >    **0.57 MB of 21.43 MB (2.7%)** comes from live-service pids. The durability requirement is
 >    therefore *cheap* for the population that matters, and `role`-based routing solves volume and
 >    BL-353's population-mixing with one mechanism (§3.11).
+>
+> **Revision 3 (2026-07-31)** — extends durability to **spans and metrics**, which rev 2 left
+> half-done (spans were specified twice and inconsistently; metrics were pull-only and never
+> persisted). New §3.13 and §5.8. The finding that dominates this revision is a **live defect in the
+> sink we already ship**:
+>
+> - **`RotatingJsonlWriter` loses buffered records on a hard crash.** Measured: 10,000 records
+>   written, `SIGKILL`, **0 survived**. It uses fire-and-forget `createWriteStream`. Realistic
+>   exposure is the current synchronous burst plus ~1–5 ms, but that is exactly the window a crash
+>   makes interesting. Fix costs **+2.2 µs/record** (`writeSync`) ≈ **15 ms of CPU per day** at the
+>   projected live rate. Filed as **BL-365**.
+> - Spans: **every** span is written to the JSONL sink (`.start` on `onStart`, `.finish` on
+>   `onEnd`). The in-memory ring is demoted to an *index over the disk stream* — eviction is not
+>   data loss, because the span was already written.
+> - Metrics: **activity-triggered snapshots (every N records), not a timer** — this keeps the
+>   `getActiveResourcesInfo() → []` zero-handle property intact at ~4.4 ms/day. Full costing of all
+>   four options in §5.8.
 
 ---
 
@@ -453,6 +470,72 @@ than being mistaken for an idle system. That is the same failure shape as BL-319
 bytes, so lines cannot interleave. The existing design is safe. The problem was never corruption —
 it was that nothing distinguished the writers, which `role` now fixes.
 
+### 3.13 Crash-window analysis — what survives SIGKILL, per signal
+
+The disk requirement's real acceptance test is *"what is lost if the process dies without a graceful
+shutdown?"* I measured it rather than reasoned about it, and **the headline finding is a live defect
+in the sink we already ship.**
+
+**The existing `RotatingJsonlWriter` loses buffered records on a hard crash.** It uses
+`fs.createWriteStream` + fire-and-forget `stream.write()` (`telemetry.ts:148-150`), which buffers in
+userspace. Child process writes N records then `SIGKILL`s itself:
+
+| sink | records written | survived SIGKILL | lost |
+|---|---|---|---|
+| `createWriteStream` + `write()` (**today**) | 100 / 1,000 / 10,000 | **0 / 0 / 0** | **100%** |
+| `fs.writeSync(fd, …)` | 100 / 1,000 / 10,000 | 100 / 1,000 / 10,000 | **0** |
+
+That is the worst case — the kill lands in the same synchronous tick, so nothing has flushed. The
+**realistic** exposure is smaller, and I measured that too (5,000 records, then kill after D ms):
+
+| kill at | survived |
+|---|---|
+| +0 ms | 1,024 |
+| +1 ms | 1,024 |
+| +5 ms | 5,000 |
+| +50 ms | 5,000 |
+
+**So the honest characterisation: the loss window is everything written in the same synchronous
+burst as the crash, plus roughly the last 1–5 ms.** A *hang* loses nothing (the process is alive and
+the stream drains). A `SIGKILL`, a panic, or the 2026-07-30 power loss loses the final few
+milliseconds — which is precisely the window in which the interesting thing happened.
+
+**Cost of closing it**, measured over 50,000 records:
+
+| | ns/record | vs stream |
+|---|---|---|
+| `stream.write()` | 1,043 | — |
+| `fs.writeSync()` | 3,254 | **+2.2 µs** |
+
+At the projected six-package live rate (~6,800 records/day, §3.11) the total extra cost is **~15 ms
+of CPU per day.** The objection to `writeSync` is not throughput, it is that it blocks the event
+loop per call — but at 3.25 µs, a 100-record burst blocks for 0.33 ms, which is far below anything
+this system will notice.
+
+**Recommendation — route the sink by `role`, the same mechanism as §3.11:**
+
+| role | sink strategy | rationale |
+|---|---|---|
+| `live-service` | **`fs.writeSync`** | Low volume (~0.3 MB/day today), highest forensic value. Zero crash loss. |
+| `test`, `harness` | buffered `createWriteStream` (unchanged) | 97.3% of volume, near-zero forensic value; a lost test record costs nothing. |
+| `cli` | buffered | Short-lived, graceful exit. |
+
+This is the third distinct problem `role` solves, which is a good sign it is the right primitive.
+
+**Per-signal crash-window table — the acceptance test, stated plainly:**
+
+| Signal | Persisted how | Lost on SIGKILL (live-service) | Lost on SIGKILL (test role) |
+|---|---|---|---|
+| **Logs** (`log.*`) | JSONL, `writeSync` | **nothing** | last ~1–5 ms |
+| **Span starts** (`onStart`) | JSONL, written before the body runs | **nothing** — a hung span's `.start` is already durable | last ~1–5 ms |
+| **Span finishes** (`onEnd`) | JSONL, `SimpleSpanProcessor` straight through | **nothing** | last ~1–5 ms |
+| **Metrics** | recomputable from the span stream + periodic snapshot (§5.8) | at most the deltas since the last snapshot — **and those are recoverable by replaying the spans** | same |
+| *(rejected)* `BatchSpanProcessor` | in-memory batch on a timer | **the entire batch window** | — |
+
+The last row is why `BatchSpanProcessor` is banned in §5.4 and not merely discouraged: it converts a
+5 ms crash window into a full flush-interval window (5,000 ms by default), on the signal that
+matters most.
+
 ### 3.12 The `embed.* trace_id: null` gap — and whether OTel actually fixes it
 
 `docs/observability/README.md` §3.1 documents that `embed.start`/`embed.finish` emit
@@ -549,8 +632,11 @@ a collector: when a human has decided to go looking, not continuously.
 for this workload specifically**, on measured grounds: at the observed span rate (writes near zero
 per second, embeds at 0.0167/s), 859 ns/span is unmeasurable, and per §3.3 turning the sampler off
 saves only 41% of an already-negligible cost. What genuinely must be bounded is **span retention**
-(memory), not span creation — so the recommendation retains a bounded ring of recent/slow/errored
+(memory), not span creation — so the recommendation writes **every** span to the durable JSONL sink
+on `onEnd` (§3.13) and retains only a bounded in-memory *index* of recent/slow/errored
 spans rather than sampling at creation. Sampling would discard exactly the slow outlier you needed.
+**The ring is an index over the disk stream, never the system of record** — an evicted entry has
+already been written to JSONL, so eviction is not data loss (§3.13).
 
 **Replacing `telemetry.ts`.** Now settled on measured grounds rather than sentiment (§5.6): OTel
 ships **no durable local sink at all**, and a hung operation **never exports a span** (2 started, 1
@@ -801,6 +887,52 @@ much they rely on a human:
 
 The ordering matters and is the whole lesson: **(1) is the fix; (3) alone is what we already had.**
 
+### 5.8 Metric persistence — keeping the zero-handle property while still writing to disk
+
+Pull-only is right for the *status surface*, but on its own it fails the disk requirement twice: if
+nobody calls `memory_ping`, the data is never observed at all, and a crash takes the accumulated
+state with it. Something must also cause a durable snapshot.
+
+**First, the reframing that makes this much cheaper than it looks.** Metrics here are *derived*, not
+primary. `sox.stage.work_ms` is a histogram over span durations, and **every span is already
+durably on disk** (§3.13). So for the dominant case the metric is **recomputable by replaying the
+JSONL stream** — the span record is the system of record, the histogram is a cache. That is not true
+for everything, and the exceptions are exactly what needs independent persistence:
+
+| Metric kind | Recomputable from spans? |
+|---|---|
+| stage `wait_ms` / `work_ms` histograms | **Yes** — derived from span pairs |
+| `sox.stage.count` by outcome | **Yes** — `starts − (finishes + errors)` |
+| `records_dropped`, sink failures | **No** — no span exists; the sink was failing |
+| gauges (queue depth, backlog) | **No** — instantaneous, not an event |
+
+So snapshot frequency governs how much *non-recomputable* state is at risk, which is a much smaller
+quantity than "all metrics."
+
+**The four options, costed against the zero-handle property** (`getActiveResourcesInfo() → []`,
+which I do not want to give up either):
+
+| Option | New handles | Cost | Staleness | Verdict |
+|---|---|---|---|---|
+| **A. Snapshot on the `memory_ping` pull** | **0** | 0.635 ms, on a call already happening | = observation frequency; **zero if nobody asks** | **Adopt** — but insufficient alone, and its failure mode is the BL-353 one |
+| **B. Piggyback an existing scheduled tick** | **0** | ~0.6 ms per tick | tick interval | **Reject as primary** — the only such tick is the periodic enrich pass, which is *currently disabled by an emergency brake* (`SOX_DISABLE_PERIODIC_ENRICH`). Persistence that stops when an unrelated subsystem is braked is worse than none, because it fails silently. |
+| **C. Activity-triggered: snapshot every N records or M bytes** | **0** | 0.635 ms per trigger; at N=1,000 and 6,800 records/day that is **7 snapshots/day ≈ 4.4 ms/day** | bounded by *work done*, not wall-clock | **Adopt as primary** |
+| **D. Opt-in interval timer** | **1** | timer + 0.635 ms | fixed | **Off by default.** Available as `SOX_TRACE_SNAPSHOT_MS` for a deliberate debugging session. |
+
+**Recommendation: C as primary, A opportunistically, plus a snapshot on graceful shutdown, D
+opt-in.** The reasoning for C over B and D: an activity trigger has **no timer, so the zero-handle
+property survives intact**, and its staleness is proportional to work done rather than to wall-clock
+— if the process is idle, nothing has changed and there is nothing to lose. It also degrades in the
+right direction: the busier the system (i.e. the more interesting the window), the more often it
+snapshots.
+
+Option A alone is rejected for a reason worth naming: **"the data is written when somebody looks"
+is the BL-353 failure with extra steps.** Nobody looked for two days.
+
+The snapshot is a single JSONL line (`event: "metrics.snapshot"`) into the same durable sink, so it
+inherits the `role` routing, rotation, retention, and `writeSync` durability of everything else —
+no second persistence mechanism, no second format, no second thing to remember.
+
 ### 5.4 Lint enforcement (the mis-integration guard rails)
 
 Four rules, all mechanical:
@@ -863,7 +995,9 @@ every step rather than at the end.
 |---|---|---|
 | 0 | BL-344: single allowlist + deny-list | controls survive to a spawned service |
 | 1 | Create `libs/observability/sox-telemetry`; **move** `telemetry.ts` + `latency-stats.ts` in; re-export from `memory-core` for compatibility | no behaviour change; existing specs stay green; existing JSONL records byte-identical |
+| 1a | **BL-365**: `writeSync` for the `live-service` role in `RotatingJsonlWriter` | red→green: N records + `SIGKILL` → **N survive** (today: 0) |
 | 1b | `JsonlSpanProcessor` (start on `onStart`, finish on `onEnd`) over the existing `RotatingJsonlWriter`; `role`-routed sink + retention (§3.11) | **hang still visible on disk** (span started, never ended → `.start` record present); live and test populations land in different files |
+| 1c | Metric snapshot: activity trigger (N records) + on graceful shutdown + on the `memory_ping` pull (§5.8) | `getActiveResourcesInfo()` still `[]`; a snapshot line is on disk after N records with no tool call made |
 | 2 | Add `@opentelemetry/api` dep + `initTelemetry` (required `role`) + pull reader + `withContendedStage` + `declareStages` | unit tests: wait/work pair emitted; no active handles after init; no unlabelled-`role` record reachable |
 | 3 | Wire `initTelemetry` at the memory-server composition root; add `telemetry` block (incl. `self_check`) to `memory_ping` | **BL-351 acceptance #3**: every metric reachable from a tool call. **BL-353 acceptance**: start/finish accounting reachable without reading a file |
 | 4 | `store-adapter`: replace bespoke instrumentation with `instrumentBoundary` | **BL-351 acceptance #1**: memory-core + store-adapter spans join on one trace-id |
@@ -908,6 +1042,7 @@ existing entries):
   `estimated_wait_ms` is a *prediction* from work latency, reported in the `E_BUSY` payload as if it
   were an observation, and never compared against the reconstructible truth. (Renumbered from
   BL-354 → BL-356 → BL-358 — see below.)
+- **BL-365** — the telemetry JSONL sink loses **all** buffered records on a hard crash (`createWriteStream` fire-and-forget, `telemetry.ts:132-156`). Measured: 10,000 written, `SIGKILL`, **0 survived**; realistic window is the current synchronous burst plus ~1–5 ms. Fix is `writeSync` for the `live-service` role at +2.2 µs/record ≈ 15 ms CPU/day. HIGH — it makes the disk requirement nominally satisfied but actually false, and is unfalsifiable from the outside because you can only read the log from a process that did not crash.
 - **BL-355** — `tools/bundle-extension.cjs` does not minify. `memory-server/dist/index.js` is
   2,418,414 bytes unminified. Not a defect, but it makes every future dependency's footprint 2.7x
   its minified cost. LOW.
@@ -919,6 +1054,11 @@ than edit another agent's item out from under them — and BL-356 was then claim
 by *"A fixed global cosine threshold is not calibratable"* (`BACKLOG.md:1866`, which is what the
 BL-328 cross-references at `:1069`/`:1075` were pointing at). Mine is now **BL-358**, and
 `grep -o '^### BL-[0-9]*' | sort -n | uniq -d` returns empty.
+
+A **third** collision then occurred while filing the crash-durability defect: my BL-359 landed on
+an item about — precisely — BL id collisions. Reassigned to **BL-365** by computing
+`max(existing)+1` programmatically rather than reading the max by eye, which is the mechanical form
+of the fix below.
 
 **Root cause, and it will recur:** BL ids are allocated by reading the current max from a shared
 file, which is a read-then-write race with no reservation step. Three agents filing within the same

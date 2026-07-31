@@ -1539,6 +1539,13 @@ The deliverable is therefore **a researched tool selection plus a thin wrapper/s
 
 **On the `embed.* trace_id: null` gap (README §3.1) — honest assessment: adopting OTel does not fix it by itself.** 535 live `embed.start` records on the incident day carry no trace id. `AsyncLocalStorage` and OTel's `AsyncLocalStorageContextManager` are the same primitive; the context is lost because the embed crosses a dispatch boundary no in-process mechanism survives. What OTel adds is the standard, tested explicit carrier (`propagation.inject`/`extract`) instead of the hand-threaded `PendingEmbed.traceId`. It is better only because the wrapper forces the hand-off — the library alone reproduces the same `null`.
 
+**REV 3 — span + metric durability (the disk requirement was only half-met).** Rev 2 persisted logs but left spans specified inconsistently and metrics pull-only, i.e. never written. Closed, and it surfaced a live defect:
+
+- **The existing sink is not crash-durable — filed as BL-365.** `RotatingJsonlWriter` uses fire-and-forget `createWriteStream`. **Measured: 10,000 records written, SIGKILL, 0 survived.** Realistic exposure is the current synchronous burst plus ~1–5 ms (measured: kill at +0/+1 ms → 1,024 of 5,000 survived; +5 ms → all 5,000). A *hang* loses nothing; a `SIGKILL`/panic/power-cut loses exactly the pre-crash window the log exists for — and the host lost power mid-backfill on 2026-07-30 (BL-338). Fix: `fs.writeSync` for the `live-service` role, measured at **+2.2 µs/record (3,254 vs 1,043 ns) ≈ 15 ms CPU/day** at the projected rate; keep the buffered path for the `test` role, which is 97.3% of volume and near-zero forensic value. **This is the third distinct problem the `role` attribute solves.**
+- **Spans: all of them go to disk** — `.start` from `onStart` (hang-visible), `.finish` from `onEnd`, via `SimpleSpanProcessor` straight through. The in-memory ring is demoted to an **index over the disk stream**, so eviction is not data loss. `BatchSpanProcessor` stays banned: it converts a ~5 ms crash window into a full flush-interval window (5,000 ms default) on the signal that matters most.
+- **Metrics: activity-triggered snapshots, not a timer.** Reframing that makes this cheap — metrics here are *derived*, and since every span is durably on disk the stage histograms and `starts − (finishes + errors)` counts are **recomputable by replaying the JSONL**. Only non-span-backed state (dropped-record counters, gauges) needs independent persistence. Four options costed against the `getActiveResourcesInfo() → []` zero-handle property: (A) snapshot on the `memory_ping` pull — 0 handles, free, but *"written when somebody looks"* is the BL-353 failure with extra steps; (B) piggyback an existing tick — **rejected**, the only candidate is the periodic enrich pass, which is *currently disabled by an emergency brake*, so persistence would stop silently when an unrelated subsystem is braked; (C) **every N records — 0 handles, ~7 snapshots/day ≈ 4.4 ms/day, staleness bounded by work done rather than wall-clock, and it degrades in the right direction (busier ⇒ more frequent)**; (D) interval timer — 1 handle, **off by default**, opt-in via `SOX_TRACE_SNAPSHOT_MS`. **Adopt C as primary, A opportunistically, plus graceful-shutdown, D opt-in.** The snapshot is one JSONL line into the same sink, inheriting role routing, rotation, retention and durability — no second mechanism.
+- **Crash-window acceptance table** (live-service role, after the BL-365 fix): logs **nothing lost**; span starts **nothing lost** — a hung span's `.start` is already durable; span finishes **nothing lost**; metrics at most the deltas since the last snapshot, **and those are recoverable by replaying the spans**.
+
 **Also found:** SDK 2.x **removed the `View` and `ExplicitBucketHistogramAggregation` classes** — `new ExplicitBucketHistogramAggregation(...)` throws `TypeError: not a constructor` on 2.10.0. Any pre-2.0 tutorial or model recall produces code that does not run, which is a concrete demonstration of why the live-search directive exists.
 
 **Prerequisite, blocking:** BL-344. Read directly, the allowlist is duplicated in at least four places — `libs/host-runtime/src/supervisor.ts:308-325`, `apps/sox/src/main.ts:4632-4642`, `apps/sox/src/main.ts:8728-8738`, `libs/host-runtime/src/runtime-cli.ts:542` — and the source itself admits it at `main.ts:8731-8735`. Naming our vars `SOX_TRACE_*` and adding one `startsWith` clause would work, **but would be the fifth instance of the bug rather than a fix.**
@@ -1700,6 +1707,37 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: ~/.adhd
 **Related:** BL-351 (the substrate; this is its first real consumer), BL-322, BL-345 (the contention this would quantify), BL-319, BL-334 (unfalsifiable numbers in the status surface), BL-353.
 
 Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-351, 1: libs/memory-core/src/write-queue.ts:615 (queue.push — no enqueue timestamp), 2: libs/memory-core/src/write-queue.ts:657-664 (_recordLatencySample — execution latency only), 3: libs/memory-core/src/write-queue.ts:576-612 (admission control estimator + E_BUSY details), 4: libs/memory-core/src/latency-stats.ts:99-113 (recentMean — rolling window), 5: docs/research/observability-substrate.md §3.5, §3.6]
+
+---
+
+### BL-365 — Telemetry JSONL sink loses ALL buffered records on a hard crash: the durable log is not durable in the one window that matters — **Open (HIGH)** (2026-07-31)
+
+**Driver.** The owner's BL-351 requirement is that logging, tracing and metric events be **written to disk**, on the rationale that *the process holding in-memory evidence is the one that crashes*. The existing BL-320 sink appears to satisfy this — it writes JSONL to disk continuously and 21 MB of it exists right now. **It does not.**
+
+`RotatingJsonlWriter.write()` calls `this._stream.write(buf)` on an `fs.createWriteStream`[1] — fire-and-forget, buffered in userspace, never flushed synchronously. On a hard crash the buffer is gone.
+
+**Measured** (child process writes N records, then `process.kill(pid,'SIGKILL')` — no exit handlers, no flush):
+
+| sink | records written | survived SIGKILL |
+|---|---|---|
+| `createWriteStream` + `write()` — **today** | 100 / 1,000 / 10,000 | **0 / 0 / 0** |
+| `fs.writeSync(fd, …)` | 100 / 1,000 / 10,000 | 100 / 1,000 / 10,000 |
+
+That is the worst case (kill in the same synchronous tick). The **realistic** exposure, measured by delaying the kill: +0 ms → 1,024 of 5,000 survived; +1 ms → 1,024; **+5 ms → all 5,000**. So the true loss window is *everything written in the same synchronous burst as the crash, plus roughly the last 1–5 ms*.[2]
+
+**Why that window is exactly the wrong one to lose.** A *hang* loses nothing — the process is alive and the stream drains. What loses data is `SIGKILL`, a panic, or a power cut — and the host lost power on 2026-07-30 while the memory-server was live and mid-backfill (BL-338). The records describing the moments before a crash are the entire reason the log exists, and those are precisely the records not on disk. This also silently weakens BL-353's start/finish accounting: an operation whose `.start` was still buffered when the process died is counted as *never started* rather than *never finished*, which biases the unaccounted totals in an unknown direction.
+
+**Fix sketch.** Use `fs.writeSync(fd, …)` for the `live-service` role; keep the buffered stream for `test`/`cli`. Measured cost: **3,254 ns/record vs 1,043 ns/record — +2.2 µs**, which at the projected six-package live rate (~6,800 records/day) is **~15 ms of CPU per day**.[3] The event-loop-blocking objection does not survive the numbers: a 100-record burst blocks for 0.33 ms. Routing by role means the 97.3% of volume that is test traffic (BL-353) keeps the cheap buffered path, where a lost record costs nothing.
+
+Preserve the existing never-throws/never-blocks contract exactly — `writeSync` goes inside the same try/catch, and a failure still drops the record rather than propagating.[4]
+
+**Acceptance (red→green, must name BL-365):** spawn a child that writes N telemetry records and `SIGKILL`s itself with no graceful shutdown; assert **N records are on disk**. Must fail today with **0**. Negative control: assert the `test` role still uses the buffered path (so the fix is genuinely role-scoped and not a blanket slowdown).
+
+**Severity:** HIGH — it makes the disk-durability requirement nominally-satisfied-but-actually-false, which is the same "exists is treated as correct" shape as BL-352, and it is unfalsifiable from the outside: the log looks healthy precisely because you can only read it from a process that did not crash.
+
+**Related:** BL-351 (the disk requirement), BL-320 (the sink), BL-353 (start/finish accounting biased by the loss), BL-338 (the power-loss crash this would have lost evidence for), BL-352 (same existence-vs-correctness pattern).
+
+Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-351, 1: libs/memory-core/src/telemetry.ts:132-156 (write → createWriteStream, fire-and-forget), 2: prototype /Users/nix/.claude/jobs/1557bcef/tmp/otel-probe/{crashtest.js,flushwindow.js} — SIGKILL survival + exposure-window measurements, Node v24.11.1 darwin arm64, 3: same prototype — 50,000-record cost benchmark (stream 1043 ns/rec, writeSync 3254 ns/rec), 4: libs/memory-core/src/telemetry.ts:202-206 (drop-never-throw on sink failure), 5: docs/research/observability-substrate.md §3.13]
 
 ---
 
