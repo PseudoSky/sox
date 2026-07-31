@@ -91,6 +91,37 @@ function resolveMaxBytes(): number {
   return Number.isFinite(n) && n > 0 ? n : 20_000_000;
 }
 
+/**
+ * BL-365: are log writes synchronous (durable) or buffered (fast)?
+ *
+ * DEFAULT: durable. The owner's requirement is that telemetry be **written to
+ * disk**, on the rationale that the process holding in-memory evidence is the
+ * one that crashes. The previous implementation used a fire-and-forget
+ * `createWriteStream`, and measurement showed **0 of 10,000 records surviving
+ * SIGKILL** — the log looked healthy precisely because it could only be read
+ * from a process that had not crashed.
+ *
+ * The realistic exposure was the current synchronous burst plus roughly the
+ * last 1-5 ms. A *hang* lost nothing; a SIGKILL, panic, or power cut lost
+ * exactly the pre-crash window the log exists for — and the host lost power
+ * mid-backfill on 2026-07-30 (BL-338), so that window is simply gone for the
+ * one incident we most needed to analyse.
+ *
+ * Cost, measured over 50,000 records: 3,254 ns/record synchronous vs 1,043
+ * ns/record buffered — **+2.2µs**. At the projected live rate that is ~15 ms of
+ * CPU per day, and a 100-record burst blocks the event loop for 0.33 ms.
+ * Durability is the correct default at that price.
+ *
+ * `SOX_MEMORY_LOG_SYNC=0` opts back into buffered writes for a
+ * high-volume/low-forensic-value population (test and CI processes, which were
+ * measured at 97.3% of total log volume and ~0% of forensic value). Set it
+ * deliberately; it trades away crash evidence.
+ */
+function durableWrites(): boolean {
+  const raw = (process.env['SOX_MEMORY_LOG_SYNC'] ?? '').toLowerCase();
+  return !(raw === '0' || raw === 'false' || raw === 'off');
+}
+
 function resolveMaxFiles(): number {
   const raw = process.env['SOX_MEMORY_LOG_MAX_FILES'];
   const n = raw ? parseInt(raw, 10) : NaN;
@@ -108,21 +139,32 @@ function todayDateString(): string {
 // ── Rotating JSONL writer ───────────────────────────────────────────────────────
 
 class RotatingJsonlWriter {
+  /** Durable mode: the fd is written with `fs.writeSync`, no userspace buffer. */
+  private _fd: number | null = null;
+  /** Buffered mode: fire-and-forget stream (the pre-BL-365 behaviour). */
   private _stream: fs.WriteStream | null = null;
+  private _durableMode = true;
   private _currentPath = '';
   private _currentDate = '';
   private _currentDir = '';
   private _currentComponent = '';
   private _bytesWritten = 0;
 
+  /** Is a sink currently open in either mode? */
+  private _isOpen(): boolean {
+    return this._fd !== null || this._stream !== null;
+  }
+
   /** Full path of the file currently being written (empty if never opened). */
   currentPath(): string {
     return this._currentPath;
   }
 
-  /** Test-only: resolve once every write queued so far has been flushed by the
-   *  underlying stream. Writes are ordered/FIFO, so an empty marker chunk's
-   *  callback firing means everything queued before it has been flushed too. */
+  /** Test-only: resolve once every write queued so far has reached the file.
+   *  In durable mode every write is already on disk when `write()` returns, so
+   *  this is a no-op; in buffered mode it flushes the stream (writes are
+   *  ordered/FIFO, so an empty marker chunk's callback firing means everything
+   *  queued before it has been flushed too). */
   flush(): Promise<void> {
     if (this._stream === null) return Promise.resolve();
     return new Promise((resolve) => {
@@ -134,20 +176,38 @@ class RotatingJsonlWriter {
     const dir = resolveLogDir();
     const component = resolveComponent();
     const today = todayDateString();
+    const durable = durableWrites();
 
-    // Re-open if the target dir/component/date changed (env flip, or daily rotation).
+    // Re-open if the target dir/component/date changed (env flip, or daily
+    // rotation), or if the durability mode was flipped underneath us.
     if (
-      this._stream === null ||
+      !this._isOpen() ||
+      durable !== this._durableMode ||
       dir !== this._currentDir ||
       component !== this._currentComponent ||
       today !== this._currentDate
     ) {
-      this._reopen(dir, component, today);
+      this._reopen(dir, component, today, durable);
     }
-    if (this._stream === null) return; // open failed — drop silently, never throw
+    if (!this._isOpen()) return; // open failed — drop silently, never throw
 
     const buf = Buffer.from(line, 'utf8');
-    this._stream.write(buf);
+    if (this._fd !== null) {
+      // BL-365: synchronous write. `createWriteStream(...).write()` buffers in
+      // userspace and loses EVERYTHING on a hard kill — measured 0 of 10,000
+      // records surviving SIGKILL. This costs ~2.2µs/record more (3,254ns vs
+      // 1,043ns) and is the difference between having and not having the
+      // records that describe the moments before a crash.
+      try {
+        fs.writeSync(this._fd, buf);
+      } catch {
+        // Disk full / fd revoked / EINTR storm — drop the record. A logging
+        // fault must never break or slow the caller (unchanged contract).
+        return;
+      }
+    } else if (this._stream !== null) {
+      this._stream.write(buf);
+    }
     this._bytesWritten += buf.length;
 
     const maxBytes = resolveMaxBytes();
@@ -156,16 +216,23 @@ class RotatingJsonlWriter {
     }
   }
 
-  /** Close the current stream (test cleanup / graceful shutdown). */
+  /** Close the active sink (test cleanup / graceful shutdown). */
   close(): void {
     if (this._stream !== null) {
       try {
-        this._stream.end();
+        this._stream.end(); // owns the fd; closes it
       } catch {
         /* ignore */
       }
       this._stream = null;
+    } else if (this._fd !== null) {
+      try {
+        fs.closeSync(this._fd);
+      } catch {
+        /* ignore */
+      }
     }
+    this._fd = null;
     this._currentPath = '';
     this._currentDate = '';
     this._currentDir = '';
@@ -173,8 +240,9 @@ class RotatingJsonlWriter {
     this._bytesWritten = 0;
   }
 
-  private _reopen(dir: string, component: string, date: string): void {
+  private _reopen(dir: string, component: string, date: string, durable: boolean): void {
     this.close();
+    this._durableMode = durable;
     try {
       fs.mkdirSync(dir, { recursive: true });
       const filePath = path.join(dir, `${component}-${date}.jsonl`);
@@ -187,10 +255,16 @@ class RotatingJsonlWriter {
       // `fs.renameSync` on a file that doesn't exist yet, silently no-op via the
       // catch below, and the "rotated" file would never be created at all.
       const fd = fs.openSync(filePath, 'a');
-      this._stream = fs.createWriteStream(filePath, { fd });
-      this._stream.on('error', () => {
-        /* never throw from a logging failure — best-effort only */
-      });
+      if (durable) {
+        // BL-365: hold the fd directly and write it synchronously. No stream, so
+        // no userspace buffer, so nothing to lose on SIGKILL.
+        this._fd = fd;
+      } else {
+        this._stream = fs.createWriteStream(filePath, { fd });
+        this._stream.on('error', () => {
+          /* never throw from a logging failure — best-effort only */
+        });
+      }
       this._currentPath = filePath;
       this._currentDir = dir;
       this._currentComponent = component;
@@ -202,8 +276,9 @@ class RotatingJsonlWriter {
       }
     } catch {
       // Directory unwritable / disk full / etc. — logging must never break the
-      // caller, so we simply have no active stream until the next write() retries.
+      // caller, so we simply have no active sink until the next write() retries.
       this._stream = null;
+      this._fd = null;
     }
   }
 
@@ -214,24 +289,26 @@ class RotatingJsonlWriter {
   private _rotationSeq = 0;
 
   private _rotateSizeExceeded(): void {
-    if (this._stream === null) return;
+    if (!this._isOpen()) return;
     const oldPath = this._currentPath;
     const epoch = Date.now();
     const seq = this._rotationSeq++;
     const rotatedPath = oldPath.replace(/\.jsonl$/, `.${epoch}-${seq}.jsonl`);
     try {
-      this._stream.end();
+      if (this._stream !== null) this._stream.end();
+      else if (this._fd !== null) fs.closeSync(this._fd);
     } catch {
       /* ignore */
     }
     this._stream = null;
+    this._fd = null;
     try {
       fs.renameSync(oldPath, rotatedPath);
     } catch {
       /* ignore — worst case we keep appending past the cap once */
     }
     this._pruneOldFiles();
-    this._reopen(this._currentDir, this._currentComponent, this._currentDate);
+    this._reopen(this._currentDir, this._currentComponent, this._currentDate, this._durableMode);
   }
 
   private _pruneOldFiles(): void {

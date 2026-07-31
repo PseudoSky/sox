@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 91.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 90.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,7 +23,7 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31: **91 open**.
+Regenerated 2026-07-31 (BL-365 resolved → CHANGELOG): **90 open**.
 
 | Priority | Open items |
 |---|---|
@@ -1788,37 +1788,6 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: ~/.adhd
 **Related:** BL-351 (the substrate; this is its first real consumer), BL-322, BL-345 (the contention this would quantify), BL-319, BL-334 (unfalsifiable numbers in the status surface), BL-353.
 
 Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-351, 1: libs/memory-core/src/write-queue.ts:615 (queue.push — no enqueue timestamp), 2: libs/memory-core/src/write-queue.ts:657-664 (_recordLatencySample — execution latency only), 3: libs/memory-core/src/write-queue.ts:576-612 (admission control estimator + E_BUSY details), 4: libs/memory-core/src/latency-stats.ts:99-113 (recentMean — rolling window), 5: docs/research/observability-substrate.md §3.5, §3.6]
-
----
-
-### BL-365 — Telemetry JSONL sink loses ALL buffered records on a hard crash: the durable log is not durable in the one window that matters — **Open (HIGH)** (2026-07-31)
-
-**Driver.** The owner's BL-351 requirement is that logging, tracing and metric events be **written to disk**, on the rationale that *the process holding in-memory evidence is the one that crashes*. The existing BL-320 sink appears to satisfy this — it writes JSONL to disk continuously and 21 MB of it exists right now. **It does not.**
-
-`RotatingJsonlWriter.write()` calls `this._stream.write(buf)` on an `fs.createWriteStream`[1] — fire-and-forget, buffered in userspace, never flushed synchronously. On a hard crash the buffer is gone.
-
-**Measured** (child process writes N records, then `process.kill(pid,'SIGKILL')` — no exit handlers, no flush):
-
-| sink | records written | survived SIGKILL |
-|---|---|---|
-| `createWriteStream` + `write()` — **today** | 100 / 1,000 / 10,000 | **0 / 0 / 0** |
-| `fs.writeSync(fd, …)` | 100 / 1,000 / 10,000 | 100 / 1,000 / 10,000 |
-
-That is the worst case (kill in the same synchronous tick). The **realistic** exposure, measured by delaying the kill: +0 ms → 1,024 of 5,000 survived; +1 ms → 1,024; **+5 ms → all 5,000**. So the true loss window is *everything written in the same synchronous burst as the crash, plus roughly the last 1–5 ms*.[2]
-
-**Why that window is exactly the wrong one to lose.** A *hang* loses nothing — the process is alive and the stream drains. What loses data is `SIGKILL`, a panic, or a power cut — and the host lost power on 2026-07-30 while the memory-server was live and mid-backfill (BL-338). The records describing the moments before a crash are the entire reason the log exists, and those are precisely the records not on disk. This also silently weakens BL-353's start/finish accounting: an operation whose `.start` was still buffered when the process died is counted as *never started* rather than *never finished*, which biases the unaccounted totals in an unknown direction.
-
-**Fix sketch.** Use `fs.writeSync(fd, …)` for the `live-service` role; keep the buffered stream for `test`/`cli`. Measured cost: **3,254 ns/record vs 1,043 ns/record — +2.2 µs**, which at the projected six-package live rate (~6,800 records/day) is **~15 ms of CPU per day**.[3] The event-loop-blocking objection does not survive the numbers: a 100-record burst blocks for 0.33 ms. Routing by role means the 97.3% of volume that is test traffic (BL-353) keeps the cheap buffered path, where a lost record costs nothing.
-
-Preserve the existing never-throws/never-blocks contract exactly — `writeSync` goes inside the same try/catch, and a failure still drops the record rather than propagating.[4]
-
-**Acceptance (red→green, must name BL-365):** spawn a child that writes N telemetry records and `SIGKILL`s itself with no graceful shutdown; assert **N records are on disk**. Must fail today with **0**. Negative control: assert the `test` role still uses the buffered path (so the fix is genuinely role-scoped and not a blanket slowdown).
-
-**Severity:** HIGH — it makes the disk-durability requirement nominally-satisfied-but-actually-false, which is the same "exists is treated as correct" shape as BL-352, and it is unfalsifiable from the outside: the log looks healthy precisely because you can only read it from a process that did not crash.
-
-**Related:** BL-351 (the disk requirement), BL-320 (the sink), BL-353 (start/finish accounting biased by the loss), BL-338 (the power-loss crash this would have lost evidence for), BL-352 (same existence-vs-correctness pattern).
-
-Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-351, 1: libs/memory-core/src/telemetry.ts:132-156 (write → createWriteStream, fire-and-forget), 2: prototype /Users/nix/.claude/jobs/1557bcef/tmp/otel-probe/{crashtest.js,flushwindow.js} — SIGKILL survival + exposure-window measurements, Node v24.11.1 darwin arm64, 3: same prototype — 50,000-record cost benchmark (stream 1043 ns/rec, writeSync 3254 ns/rec), 4: libs/memory-core/src/telemetry.ts:202-206 (drop-never-throw on sink failure), 5: docs/research/observability-substrate.md §3.13]
 
 ---
 
