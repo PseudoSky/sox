@@ -66,7 +66,7 @@ describe('exportMarkdown — basic', () => {
 
       const uid1 = (w1 as { episode_uid: string }).episode_uid;
 
-      const result = exportMarkdown(db, { dir: exportDir, enabled: true });
+      const result = await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       expect(result.nodesWritten).toBe(1);
       expect(result.topics).toBeGreaterThanOrEqual(1);
@@ -110,7 +110,7 @@ describe('exportMarkdown — basic', () => {
         project_path: '/test/project',
       });
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const topicsDir = path.join(exportDir, 'topics');
       const slugDirs = fs.readdirSync(topicsDir);
@@ -143,7 +143,7 @@ describe('exportMarkdown — INDEX.md', () => {
       await memoryWrite(db, { content: 'First memory.', tags: ['alpha'], project_path: '/test/project' });
       await memoryWrite(db, { content: 'Second memory.', tags: ['beta'], project_path: '/test/project' });
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const indexPath = path.join(exportDir, 'INDEX.md');
       expect(fs.existsSync(indexPath)).toBe(true);
@@ -170,7 +170,7 @@ describe('exportMarkdown — INDEX.md', () => {
       await memoryWrite(db, { content: 'Low importance.', tags: ['topic-x'], importance: 1.0, project_path: '/test/project' });
       await memoryWrite(db, { content: 'High importance.', tags: ['topic-x'], importance: 9.0, project_path: '/test/project' });
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const topicsDir = path.join(exportDir, 'topics');
       const slugDirs = fs.readdirSync(topicsDir);
@@ -208,8 +208,8 @@ describe('exportMarkdown — idempotency', () => {
       const w = await memoryWrite(db, { content: 'Idempotent memory.', tags: ['idempotency'], project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
-      const r2 = exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
+      const r2 = await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       expect(r2.nodesWritten).toBe(1);
       expect(r2.topics).toBe(1);
@@ -248,7 +248,7 @@ describe('exportMarkdown — pruning', () => {
       const uid2 = (w2 as { episode_uid: string }).episode_uid;
 
       // First export — both files exist
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const topicsDir = path.join(exportDir, 'topics');
       const slugDirs = fs.readdirSync(topicsDir);
@@ -264,7 +264,7 @@ describe('exportMarkdown — pruning', () => {
       );
 
       // Second export — pruned file should be gone
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const afterFiles = fs.readdirSync(path.join(topicsDir, slugDirs[0]!))
         .filter((f) => f.endsWith('.md') && f !== 'INDEX.md');
@@ -288,7 +288,7 @@ describe('exportMarkdown — pruning', () => {
       const w = await memoryWrite(db, { content: '[topic-a] Original content.', topic: 'topic-a', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
       expect(fs.existsSync(path.join(exportDir, 'topics', 'topic-a', `${uid}.md`))).toBe(true);
 
       // P5: re-categorise by updating the structured node.topic column (the authoritative field).
@@ -298,7 +298,7 @@ describe('exportMarkdown — pruning', () => {
         '[topic-b] Original content.',
         uid,
       );
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       // The stale copy in the old topic must be pruned; the new topic must hold it.
       expect(fs.existsSync(path.join(exportDir, 'topics', 'topic-a', `${uid}.md`))).toBe(false);
@@ -324,7 +324,7 @@ describe('exportMarkdown — disabled', () => {
 
       await memoryWrite(db, { content: 'This should not be exported.', tags: ['test'], project_path: '/test/project' });
 
-      const result = exportMarkdown(db, { dir: exportDir, enabled: false });
+      const result = await exportMarkdown(db, { dir: exportDir, enabled: false });
 
       expect(result.nodesWritten).toBe(0);
       expect(result.topics).toBe(0);
@@ -353,7 +353,7 @@ describe('exportMarkdown — topic derivation', () => {
       const w = await memoryWrite(db, { content: 'No tags here.', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const generalDir = path.join(exportDir, 'topics', 'general');
       expect(fs.existsSync(generalDir)).toBe(true);
@@ -379,7 +379,7 @@ describe('exportMarkdown — topic derivation', () => {
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       // The bracketed prefix wins over the "general" fallback.
       expect(
@@ -419,7 +419,7 @@ describe('exportMarkdown — topic derivation', () => {
         `INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'MEMBER_OF', 'extracted', ?)`,
       ).run(epRow.rowid, commRow.rowid, now);
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const topicsDir = path.join(exportDir, 'topics');
       const slugDirs = fs.readdirSync(topicsDir);
@@ -448,7 +448,7 @@ describe('exportMarkdown — topic derivation', () => {
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const topicsDir = path.join(exportDir, 'topics');
       const slugDirs = fs.readdirSync(topicsDir);
@@ -476,7 +476,7 @@ describe('exportMarkdown — topic derivation', () => {
       const db = await openDb(path.join(dbDir, 'test.db'));
       await memoryWrite(db, { content: 'A memory alongside principles.', tags: ['test'], project_path: '/test/project' });
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       // Principles folder must still exist and be untouched
       expect(fs.existsSync(path.join(exportDir, 'principles', 'my-principle.md'))).toBe(true);
@@ -507,7 +507,7 @@ describe('exportMarkdown — P5 structured topic precedence', () => {
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const topicsDir = path.join(exportDir, 'topics');
       // Must land in structured-topic slug, not prefix-topic slug.
@@ -539,7 +539,7 @@ describe('exportMarkdown — P5 structured topic precedence', () => {
       // Force node.topic to null to prove the fallback path in export.ts still works.
       raw(db).prepare('UPDATE node SET topic = NULL WHERE uid = ?').run(uid);
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const topicsDir = path.join(exportDir, 'topics');
       // With node.topic=null, the [<topic>] prefix must be used as fallback.
@@ -568,7 +568,7 @@ describe('exportMarkdown — P5 structured topic precedence', () => {
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const topicsDir = path.join(exportDir, 'topics');
       // Must use structured-topic slug, not entity slug.
@@ -602,7 +602,7 @@ describe('exportMarkdown — P5 entity names in frontmatter (BL-22)', () => {
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const topicsDir = path.join(exportDir, 'topics');
       const slugDirs = fs.readdirSync(topicsDir);
@@ -662,7 +662,7 @@ describe('exportMarkdown — P5 entity names in frontmatter (BL-22)', () => {
         `INSERT INTO edge (src, dst, rel, origin, t_created) VALUES (?, ?, 'MENTIONS', 'user_asserted', ?)`,
       ).run(epRow.rowid, entityRow.rowid, now);
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const episodePath = path.join(exportDir, 'topics', 'test-topic', `${uid}.md`);
       expect(fs.existsSync(episodePath)).toBe(true);
@@ -696,7 +696,7 @@ describe('exportMarkdown — P5 structured provenance fields in frontmatter', ()
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const episodePath = path.join(exportDir, 'topics', 'security', `${uid}.md`);
       expect(fs.existsSync(episodePath)).toBe(true);
@@ -724,7 +724,7 @@ describe('exportMarkdown — P5 structured provenance fields in frontmatter', ()
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const episodePath = path.join(exportDir, 'topics', 'ci', `${uid}.md`);
       expect(fs.existsSync(episodePath)).toBe(true);
@@ -754,7 +754,7 @@ describe('exportMarkdown — P5 structured provenance fields in frontmatter', ()
       });
       const uid = (w as { episode_uid: string }).episode_uid;
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       const episodePath = path.join(exportDir, 'topics', 'database', `${uid}.md`);
       expect(fs.existsSync(episodePath)).toBe(true);
@@ -786,7 +786,7 @@ describe('exportMarkdown — P5 structured provenance fields in frontmatter', ()
         project_path: '/projects/test',
       });
 
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       // Collect all file contents from first export
       const topicsDir = path.join(exportDir, 'topics');
@@ -803,7 +803,7 @@ describe('exportMarkdown — P5 structured provenance fields in frontmatter', ()
 
       // Second run — must produce identical content for all episode files.
       // (Timestamps in INDEX.md may differ by sub-second; only check episode files)
-      exportMarkdown(db, { dir: exportDir, enabled: true });
+      await exportMarkdown(db, { dir: exportDir, enabled: true });
 
       for (const [p, originalContent] of firstContents) {
         if (p.endsWith('INDEX.md')) continue; // INDEX.md has a generation timestamp

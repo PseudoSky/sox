@@ -177,7 +177,7 @@ async function tryAutoExport(db_path: string, exportDir: string, throttleSecs: n
 
     const adapter = await memCoreOpenDb(db_path);
     try {
-      const result = memCoreExportMarkdown(adapter, { dir: exportDir, enabled: true });
+      const result = await memCoreExportMarkdown(adapter, { dir: exportDir, enabled: true });
       _lastExportMs = Date.now();
       console.log(
         `[memory-flush] auto-export complete: ${result.nodesWritten} nodes written, ` +

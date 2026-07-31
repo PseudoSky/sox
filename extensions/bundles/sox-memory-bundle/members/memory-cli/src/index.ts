@@ -395,7 +395,7 @@ async function cmdExport(scope: ScopeKind, basePath: string, dirFlag: string, db
 
   const adapter = await openDb(dbPath);
   try {
-    const result = exportMarkdown(adapter, { dir: exportDir, enabled });
+    const result = await exportMarkdown(adapter, { dir: exportDir, enabled });
     console.log(`exported ${result.nodesWritten} nodes across ${result.topics} topics → ${result.dir}`);
   } finally {
     await adapter.close();
