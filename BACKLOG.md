@@ -1254,7 +1254,7 @@ The affected rowids begin at **exactly 8552** — the first restored node (the s
 3. Provide a supported repair entry point (a `soxe memory repair`-style command) so this is never hand-rolled again.
 4. Investigate WHY driver-level inserts skip index maintenance — that is the real defect; everything above is mitigation.
 
-**Acceptance (red→green, must name BL-335):** bulk-insert N rows through the same path the restore used, assert `integrity_check` is clean afterward (iterating past the 100-message cap).
+**Acceptance (red→green, must name BL-335) — AMENDED 2026-07-31 per BL-360:** bulk-insert N rows through the same path the restore used, then assert `integrity_check` is clean **after filtering Turso's unconditional `wrong # of entries in index __turso_internal_fts_dir_*_key` message**, iterating past the 100-message cap. A literally-clean `integrity_check` is **not a reachable state** on a Turso store carrying a Tantivy index — BL-360 measured that message emitted against a freshly built, fully working index (200/200 `fts_match` hits alongside it). The original wording asked for something no correct implementation can satisfy.
 
 **Severity:** HIGH — silent partial query invisibility, undetected indefinitely.
 
@@ -1856,7 +1856,9 @@ Citations: [wip/turso-live-metrics, team-lead + p1-tracing-research, claude, tur
 
 **Related prior evidence that crash-safety is NOT currently guaranteed:** BL-330 proved that with an unlinked WAL a graceful close silently discards committed data (90 of 140 rows, no error) — i.e. there is at least one known state in which shutdown loses data outright. Crash-safety cannot be claimed while that is reachable.
 
-**Acceptance (red→green, must name BL-338):** a crash-recovery test — SIGKILL the server under sustained write load, restart, assert (a) zero lost committed writes, (b) `integrity_check` clean or auto-repaired to clean, (c) the damage and repair both visible in status/logs without human investigation.
+**Acceptance (red→green, must name BL-338):** a crash-recovery test — SIGKILL the server under sustained write load, restart, assert (a) zero lost committed writes, (b) `integrity_check` clean or auto-repaired to clean **after filtering BL-360's unconditional Tantivy false positive** (a literally-clean result is unreachable on this backend), (c) the damage and repair both visible in status/logs without human investigation.
+
+**Note on (c) — BL-365 constrains what this test can even observe.** The telemetry sink buffers in userspace and loses everything unflushed on SIGKILL (measured: 0 of 10,000 records survived). So a crash-recovery test that asserts on log evidence is asserting against a sink that drops precisely the pre-crash window. **BL-365 must land before this acceptance is meaningful** — otherwise (c) passes or fails for reasons unrelated to crash recovery. This is not hypothetical: the host lost power mid-backfill on 2026-07-30 and that window is simply gone.
 
 **Severity:** HIGH — this is the umbrella requirement behind BL-330/335/336/337. Today's incident was survivable only because a human was watching.
 
