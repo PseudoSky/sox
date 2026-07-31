@@ -23,15 +23,15 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31 (BL-369, BL-370 filed): **86 open**, 1 closed-in-place.
+Regenerated 2026-07-31 (BL-371 latest; **BL-354 does not exist** — renumbered to BL-358, see BL-359): **86 open**, closed-in-place counted separately.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-343, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-323, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-343, BL-344, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-365, BL-367, BL-369, BL-370 |
 | **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362 |
 | **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363 |
-| **UNSET** | BL-163 (heading marker carries no priority — needs one) |
+| **UNSET** | BL-163 |
 
 ## Audit
 
@@ -1915,6 +1915,42 @@ Verified empty as of this filing. The check has been added to the status-header 
 **Related:** BL-346 (first collision), BL-357 (second), BL-358 (the thrice-renumbered item), BL-224/BL-225 (status-header and marker integrity — same family: the backlog's own metadata not being trustworthy).
 
 Citations: [wip/turso-live-metrics, team-lead + p1-tracing-research, claude, turso-go-live, 1: BACKLOG.md BL-328 "Related" line (since corrected to BL-356), 2: commits 0e9026b / 83b0483 / 79c2c4f / be8a526, 3: BACKLOG.md status-header regenerate block]
+
+---
+
+### BL-371 — A literal NUL byte in `integrity.ts` made `grep` silently return NOTHING for the whole file — **RESOLVED (HIGH)** (2026-07-31)
+
+**Driver.** `libs/data/store/store-adapter/src/integrity.ts:445` contained a **raw NUL byte** in a string literal (`ix.tbl_name + '<0x00>' + predicate`) rather than the `'\0'` escape. `grep` applies binary-content detection, and this shell's `grep` wrapper suppresses the *"Binary file matches"* notice entirely — so a search of that file returned **no output and exit status 0**, indistinguishable from "the symbol is not there."
+
+Measured before the fix:
+```
+/usr/bin/grep -c 'tbl_name' integrity.ts   →  8
+grep -c 'tbl_name' integrity.ts            →  (nothing)
+```
+
+**Why this is HIGH despite being a one-character bug.** It produces **silent false negatives in the primary tool agents use to establish that code does or does not exist.** An agent that greps this file and finds nothing concludes the symbol is absent and acts on it. `p1-tracing-research` hit exactly this twice — got `NOT FOUND` for a symbol that was demonstrably present — and reported that **one of its earlier "nothing uncommitted" status claims to the team lead was made through that broken path.** So the defect did not merely waste time; it put an unreliable claim into a coordination channel, and neither party could have detected it.
+
+This is the same family as BL-347 (a probe that reads 0 both when the artifact is dead and when it works) and BL-319 (`time_to_vector_ms` populated on one of two paths): **a signal whose failure mode is indistinguishable from a legitimate negative result.**
+
+**Fix.** Replaced the raw byte with the `'\0'` escape. The runtime value is **byte-identical** — `'\0'` in a TypeScript string literal *is* a NUL character, so the key separator's behaviour is unchanged; only the on-disk encoding differs. Verified: `grep -c 'tbl_name'` now returns 8, no NUL bytes remain in the file, and `nx run-many -t typecheck,lint -p store-adapter` passes.
+
+**Acceptance (red→green, must name BL-371) — SATISFIED.** `tools/check-no-nul-bytes.mjs` scans every source file under `libs/`, `extensions/`, `apps/`, `tools/`, `docs/`, `scripts/` and fails on any raw `0x00`, reporting `file:line`. Demonstrated in **both** directions, run not asserted:
+
+```
+GREEN  check-no-nul-bytes: OK — 984 source files, no raw NUL bytes.
+RED    (byte reintroduced) libs/data/store/store-adapter/src/integrity.ts:445   exit=1
+GREEN  (fix restored)      OK — 984 source files                                exit=0
+```
+
+A repo-wide scan confirmed `integrity.ts` was the **only** affected file. `nx run-many -t typecheck,lint -p store-adapter` passes with the fix in place.
+
+**Follow-up worth considering separately:** agents in this checkout use a `grep` that is a **shell function from the Claude Code shell snapshot**, not `/usr/bin/grep`. Any negative grep result from that function is only as trustworthy as its handling of the file's encoding. Agents validating an absence claim on a file they have not read should prefer `/usr/bin/grep` or an explicit `-a`.
+
+**Severity:** HIGH — silent false negatives in the tool used to establish absence, on a file central to the integrity engine, which already put one incorrect status claim into an agent coordination channel.
+
+**Related:** BL-347 (probe indistinguishable from healthy), BL-319 (instrument wired to one of two paths), BL-352 (the engine this file implements).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/data/store/store-adapter/src/integrity.ts:445, 2: measured `grep` vs `/usr/bin/grep` divergence 2026-07-31, 3: p0-adapter-integrity + p1-tracing-research reports 2026-07-31]
 
 ---
 

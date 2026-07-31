@@ -442,7 +442,7 @@ export async function probeBtreeIndexes(adapter: StoreAdapter): Promise<Integrit
     }
 
     const predicate = parsePartialPredicate(ix.sql);
-    const key = ix.tbl_name + ' ' + (predicate ?? '');
+    const key = ix.tbl_name + '\0' + (predicate ?? '');
     if (!baseCounts.has(key)) {
       baseCounts.set(key, await tableCount(adapter, ix.tbl_name, predicate ?? undefined));
     }
