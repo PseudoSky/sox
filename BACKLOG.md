@@ -1394,6 +1394,12 @@ The deliverable is therefore **a researched tool selection plus a thin wrapper/s
 
 **Priority:** this item **blocks most of the sandbox project's reporting** (`docs/reporting/memory/sandbox/`), placing it on the critical path. Research dispatched 2026-07-31.
 
+**⛔ OWNER REQUIREMENT (2026-07-31) — EVENTS MUST BE WRITTEN TO DISK.** Logging, tracing and metric events are **persisted to disk**, not held in memory, not exposed only through a live scrape endpoint, and not dependent on a collector process being up. Disk is the system of record; the status surface (BL-334) is a *view* over it. Rationale: every forensic question during the 2026-07-30 go-live was answered — or lost — based on what had been durably written. An in-memory ring buffer or a scrape-only exporter loses exactly the window that matters, because the process that crashed is the one holding the evidence.
+
+**Existing precedent to build on, not replace.** BL-320 already writes JSONL to `~/.adhd/sox-ecosystem/memory/logs/` (`libs/memory-core/src/telemetry.ts:12,78`), and it is live right now — `memory-core-2026-07-30.jsonl` is **17.2 MB** (incident day) and `memory-core-2026-07-31.jsonl` reached **2.1 MB by 14:24**.[6] Two consequences for the design:
+- **Volume is a real constraint, and rotation/retention is load-bearing, not a nicety.** ~17 MB/day from a *single* package; BL-351 extends instrumentation to six or more. `SOX_MEMORY_LOG_MAX_BYTES` exists for this — and is one of the four controls silently scrubbed by the allowlists (BL-344), so today the cap cannot be set where it matters.
+- The chosen tool must support a **file/disk exporter as a first-class path**, not as an afterthought or a debug mode. A candidate that only exports over OTLP to a running collector fails this requirement unless it also ships a durable local sink.
+
 **Hard constraint that disqualifies candidates outright:** MCP stdio servers use **stdout as the JSON-RPC protocol channel**. Any library that writes to stdout — even once, even at init — corrupts the protocol and breaks the server. Telemetry must go to stderr, a file, or a socket, and this must be *verified* per candidate rather than assumed.
 
 **Per the DRY directive:** before authoring, query memory for prior internal tracing work and prior tool research; if absent, run a live search for current Node tracing/metrics options and log the evaluation with tags + the final decision. Do not hand-roll what a standard covers, and do not adopt a heavyweight dependency into bundled extensions without checking the externals policy (BL-307/BL-309) — bundled extensions are self-contained CJS built by esbuild, so native addons need an explicit externals story or the candidate is out.
@@ -1404,7 +1410,7 @@ The deliverable is therefore **a researched tool selection plus a thin wrapper/s
 
 **Related:** BL-320 (the memory-core-only precedent to generalize), BL-319, BL-322, BL-331, BL-334, BL-344 (controls scrubbed), BL-345, BL-348 (per-stage attribution), and `docs/reporting/memory/sandbox/PLAN.md` §P1.
 
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner directive 2026-07-31, 2: libs/memory-core/src/telemetry.ts, 3: BL-344 (allowlist scrubbing of SOX_MEMORY_LOG_*), 4: BL-319 (time_to_vector_ms 0 samples), 5: BL-334 (nine archaeology questions)]
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner directive 2026-07-31, 2: libs/memory-core/src/telemetry.ts, 3: BL-344 (allowlist scrubbing of SOX_MEMORY_LOG_*), 4: BL-319 (time_to_vector_ms 0 samples), 5: BL-334 (nine archaeology questions), 6: live `ls -la ~/.adhd/sox-ecosystem/memory/logs/` 2026-07-31 14:24 (17.2MB + 2.1MB JSONL), 7: owner requirement 2026-07-31]
 
 ---
 
