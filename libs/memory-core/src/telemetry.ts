@@ -47,6 +47,7 @@ import * as os from 'node:os';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { performance } from 'node:perf_hooks';
 import { monotonicFactory } from 'ulid';
+import { startSuspensionTracking, suspensionBetween } from './suspension.js';
 
 const ulid = monotonicFactory();
 
@@ -323,10 +324,44 @@ export interface LogFields {
   [key: string]: unknown;
 }
 
-function emit(level: LogLevel, event: string, fields?: LogFields): void {
+/**
+ * BL-369: annotate any record carrying a `duration_ms` with how much of that
+ * window the process was not actually running.
+ *
+ * Done HERE, at the logging boundary, rather than at each call site. There are
+ * a dozen inline `duration_ms` emitters (`embed.ts`, `write.ts`, `write-queue.ts`
+ * ×6, `db.ts` ×2, `withTimedEvent`) and a call-site fix would have to be
+ * repeated by every future one — the same "remembered convention" failure that
+ * left BL-320's telemetry unread and BL-344's allowlist duplicated six times.
+ * Annotating at the boundary makes every emitter, present and future, correct
+ * by construction.
+ *
+ * `duration_ms` itself is NEVER modified: it stays raw and reconcilable against
+ * the record's own `ts`. See `suspension.ts` for why annotating beats
+ * subtracting, and for the measurements showing no clock swap can fix this.
+ */
+function annotateSuspension(fields?: LogFields): LogFields | undefined {
+  const d = fields?.['duration_ms'];
+  if (typeof d !== 'number' || !Number.isFinite(d) || d <= 0) return fields;
+  const end = Date.now();
+  const extra = suspensionBetween(end - d, end);
+  if (extra.suspended_ms === 0 && extra.blocked_ms === 0) return fields;
+  return {
+    ...fields,
+    ...(extra.suspended_ms > 0 ? { suspended_ms: extra.suspended_ms } : {}),
+    ...(extra.blocked_ms > 0 ? { blocked_ms: extra.blocked_ms } : {}),
+  };
+}
+
+function emit(level: LogLevel, event: string, rawFields?: LogFields): void {
   try {
     if (isDisabled()) return;
     if (LEVEL_ORDER[level] < LEVEL_ORDER[resolveLevel()]) return;
+    // Cheap and idempotent; guarantees the ledger is running wherever telemetry
+    // is, without every consumer having to remember to start it. The timer is
+    // unref()'d, so this can never hold a process open (BL-370's failure shape).
+    startSuspensionTracking();
+    const fields = annotateSuspension(rawFields);
     const traceId = (fields && typeof fields['trace_id'] === 'string' ? (fields['trace_id'] as string) : undefined) ?? currentTraceId() ?? null;
     const record: Record<string, unknown> = {
       ts: new Date().toISOString(),
