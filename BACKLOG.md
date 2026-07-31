@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 89.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 90.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,7 +23,7 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31: **89 open**. (BL-323 and BL-343 resolved 2026-07-31 — see CHANGELOG.md.)
+Regenerated 2026-07-31: **90 open**. (BL-323 and BL-343 resolved 2026-07-31 — see CHANGELOG.md; BL-377 filed 2026-07-31.)
 
 | Priority | Open items |
 |---|---|
@@ -2647,3 +2647,38 @@ SOX_DISABLE_PERIODIC_ENRICH=1
 **Related:** BL-331 (found during its deploy), BL-339 / BL-346 (the brakes at risk), BL-372 (same green-but-not-deployed shape), BL-344 (the six duplicated env allowlists this rides on).
 
 Citations: [wip/turso-live-metrics, performance-engineer, claude, BL-331 deploy, 1: apps/sox/src/main.ts `buildOsUnitEnv()` ~4631-4650, 2: observed plist diff 2026-07-31 — `~/.adhd/sox-ecosystem/memory/bl331-predeploy-20260731-180139/plist.before` vs the regenerated unit, 3: libs/host-runtime/src/os-unit.ts (enableOsUnit rewrite path)]
+
+---
+
+### BL-377 — `export.ts` and `reembed.ts` blind-cast the adapter to `SqliteAdapter` and unwrap it, so both are broken on the DEFAULT Turso backend — **Open (HIGH)** (2026-07-31)
+
+**Found while:** driving BL-325's remaining `memory-core` failures to ground. 30 of the 162 remaining red tests (21 in `export.spec.ts`, 9 in `reembed.spec.ts`) come from this single defect, and none of them are test drift — the specs are correct and the production code is wrong.[1]
+
+**Driver.** Both files do an unguarded cast-and-unwrap:
+```ts
+const db = (adapter as SqliteAdapter).unwrap();   // export.ts:295, reembed.ts:250
+```
+`unwrap()` returns whatever native handle the adapter wraps. On `SqliteAdapter` that is a better-sqlite3 `Database`, whose `.prepare(...).all()` is **synchronous and returns an array**. On `TursoAdapter` it is a `@tursodatabase/database` handle, whose equivalent is **asynchronous and returns a Promise**. The cast is a lie the compiler cannot catch — it is asserted, not checked.
+
+Observed consequence, verbatim:
+```
+TypeError: episodes is not iterable
+  ❯ export.ts:317   for (const ep of episodes)      // episodes is a Promise
+```
+21 occurrences from `export.spec.ts`, 9 more of the same class from `reembed.spec.ts`.[2]
+
+**Why this is worse than a test failure: Turso is the DEFAULT.** These specs set no `STORE_ADAPTER`, and they resolve to `TursoAdapterImpl` — confirmed directly from the stack traces in this same run (`TursoAdapterImpl.executeGet`, `libs/data/store/store-adapter/src/turso-adapter.ts:262`).[3] So the export and re-embed paths are broken on the backend the system actually runs, and have been since the Turso migration.
+
+**Contrast with the two correct sites.** `db.ts:373` and `db.ts:896` perform the same unwrap but are **capability-guarded** — `if (!adapter.capabilities.nativeVectors)` — so they only ever run on the sqlite branch. That guard is exactly what `export.ts`/`reembed.ts` are missing, and it demonstrates the codebase already knows the correct pattern.[4] `backup.ts:171`/`:202` are a third, different case: they explicitly `createSqliteAdapter(...)`, i.e. deliberately sqlite-only rather than accidentally so — that is a separate question (whether Turso stores can be backed up at all) and is NOT this item.
+
+**The generalisable defect:** `unwrap()` returns `unknown` on the base `StoreAdapter` interface precisely so callers cannot assume a backend, and both of these callers defeat that with a cast. Any `as SqliteAdapter` outside a `capabilities` guard is a latent backend assumption.
+
+**Fix sketch:** convert both call paths to the async `StoreAdapter` API (`executeAll`/`executeGet`/`executeRun`) rather than a raw handle. In `export.ts` that means making the four sync helpers async (`deriveTopicName` :98, `collectMentionedEntities` :164, `collectRelatedUids` :184, and the main episode query :302) and awaiting them at :319/:339/:340/:341. `reembed.ts` has a single raw use at :250. Where a raw handle is genuinely required, gate it on `adapter.capabilities` and fail loudly on the unsupported backend instead of casting.
+
+**Acceptance (red→green, must name BL-377):** `npx nx test memory-core` — `export.spec.ts` and `reembed.spec.ts` pass with **no** `STORE_ADAPTER` set (i.e. against the default Turso backend), and continue to pass with `STORE_ADAPTER=sqlite`. Both arms are required; passing only under sqlite is the bug.
+
+**Severity:** HIGH — two production paths are non-functional on the default backend, and the failure mode is a `TypeError` on a Promise rather than a clean unsupported-backend error.
+
+**Related:** BL-325 (this is 30 of its remaining failures, but a distinct root cause — production defect, not spec drift), BL-323 (a different blind-import assumption in the same file family).
+
+Citations: [wip/turso-live-metrics, p0-test-infra, claude, sandbox P0.6, 1: libs/memory-core/src/export.ts:295, libs/memory-core/src/reembed.ts:250, 2: `npx nx test memory-core --skip-nx-cache` 2026-07-31 — 21x "episodes is not iterable" from export.spec, 3: libs/data/store/store-adapter/src/turso-adapter.ts:262 (TursoAdapterImpl.executeGet in the same run's traces), 4: libs/memory-core/src/db.ts:371-373 and :894-896 (the capability-guarded form), 5: libs/memory-core/src/export.ts:98,164,184,302,319,339-341]
