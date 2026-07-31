@@ -1295,3 +1295,39 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live PR
 **Severity:** HIGH — an intentional, load-bearing degradation of the live system. Must not become permanent by neglect.
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (SOX_DISABLE_EMBED_HEAL), 2: libs/memory-core/src/embed-pipeline.ts (heal pass + time budget), 3: BL-331, 4: BL-334]
+
+---
+
+### BL-340 — no `typecheck-tests` nx target exists; specs are never typechecked, which is why BL-325's 18-file `await`-drop shipped undetected — **Open (HIGH)** (2026-07-31)
+
+**Found while:** researching Theme 1 (verification harness design, `docs/ideas/theme-1-verification-harness.md`), tracing why BL-325's missing-`await` pattern across 18 memory-core spec files was never caught before it produced 265 red tests.[1]
+
+**Driver:** both `tsconfig.lib.json` and the newer `tsconfig.typecheck.json` at repo root exclude `*.spec.ts`/`*.test.ts` — confirmed by inspection of both files.[2] CLAUDE.md's own `⛔ AGENT CONSTRAINT — BUILD VIA NX TARGETS` section already states "typecheck is not optional, and build does not imply it," documenting that until 2026-07-10 no project had a `typecheck` target at all and `memory-server` shipped 15 real TypeScript errors with a green sweep (BL-248). That fix added `typecheck` targets for production code, but never extended coverage to spec files — so the exact same class of defect (a signature change TypeScript would reject at compile time) can still ship silently through any spec file, and did: `openDb()`/`WriteQueue.forPath()` became `async` (StoreAdapter migration, commit history around `65171ad`/`83cd0b0`), 18 spec files kept calling them without `await`, and nothing caught it until the specs actually ran and threw `TypeError: X is not a function` at runtime (BL-325). A `typecheck-tests` target running `tsc --noEmit` against `**/*.spec.ts`/`**/*.test.ts` would have reported this as ~150+ compile errors with exact file:line:column, before a single test executed.
+
+**Impact:** every spec file in every project is exempt from typechecking. This is not hypothetical — it already produced BL-325's full blast radius once, and nothing prevents an equivalent signature-drift bug from recurring in any other spec file tomorrow, silently, until someone happens to run the affected suite.
+
+**Fix sketch:** add a separate `typecheck-tests` nx target per project (kept distinct from the existing `typecheck` target so a spec-only failure doesn't get conflated with a production-code typecheck failure in CI triage) that includes `**/*.spec.ts`/`**/*.test.ts` and runs `tsc --noEmit` with the same `strict`/`noUnusedLocals`/`exactOptionalPropertyTypes` settings as the lib tsconfig. Add it to the whole-repo gate: `nx run-many -t build,lint,test,typecheck,typecheck-tests`.
+
+**Acceptance (red→green, must name BL-340):** with BL-325 still unfixed, `npx nx run-many -t typecheck-tests` must fail with compile errors pointing at the un-awaited `openDb`/`WriteQueue.forPath` call sites; once BL-325 is fixed, the same command must pass clean.
+
+**Severity:** HIGH — this is the structural gap that let BL-325 (200+ red tests) go undetected; without this target, an equivalent regression in any other spec file recurs silently.
+
+Citations: [wip/turso-live-metrics, qa-expert, theme-1-verification-harness, 1: BL-325 (libs/memory-core/src/*.spec.ts, 18 files), 2: tsconfig.typecheck.json, tsconfig.base.json, tsconfig.lib.json]
+
+---
+
+### BL-341 — `backup.ts`'s post-`VACUUM INTO` integrity check doesn't handle `PRAGMA integrity_check`'s 100-message cap, and Turso's equivalent check (if any) is unverified — **Open (MEDIUM)** (2026-07-31)
+
+**Found while:** researching Theme 1 (verification harness design), designing the integrity-assertion requirement for a crash-recovery/bulk-operation harness (`docs/ideas/theme-1-verification-harness.md` §C.5).[1]
+
+**Driver:** `PRAGMA integrity_check` caps its result set at 100 messages — SQLite's own documented behavior, and already observed directly in this repo's incident history: BL-335 notes "`integrity_check` truncates at 100 messages — so a single check UNDERSTATES the problem and cannot be used as a simple pass/fail without iterating," and the 2026-07-30 go-live restore in fact reported "100+ issues (the check's own message cap — actual count higher)."[2] `libs/memory-core/src/backup.ts` runs its own `integrityCheck` after `VACUUM INTO` (the value assigned at `backup.ts:197`, type declared at `backup.ts:60`) but does not appear to loop past the cap or otherwise detect/flag a capped result — so a backup taken from a store with >100 integrity violations would report the same capped message set as one with exactly 100, silently understating backup-time damage. This is the same failure class BL-335 already named for the restore path; `backup.ts`'s own check is a separate code path (backup creation, not restore) that needs the identical fix.
+
+**Also unresolved:** whether Turso/libsql exposes any integrity-check equivalent to sqlite's `PRAGMA integrity_check` at all is currently unverified — needs a spike. If no equivalent exists, the cross-backend contract suite (Theme 1 §C.2/§C.5) cannot assert integrity symmetrically across both backends without building a bespoke Turso-side check first.
+
+**Fix sketch:** (1) in `backup.ts`, detect a result set of exactly 100 rows from `PRAGMA integrity_check` and either re-run in chunked/targeted mode or explicitly flag the result as "capped, additional damage may exist" rather than reporting it as a bounded count. (2) Spike Turso/libsql's available pragmas/APIs for an integrity-check equivalent; document findings even if the answer is "none exists" so the harness design in Theme 1 can plan around it.
+
+**Acceptance (red→green, must name BL-341):** a test that VACUUM INTO-backs-up a store seeded with >100 independent integrity violations and asserts the backup's reported `integrityCheck` result is explicitly flagged as capped/incomplete, not silently reported as "100 issues" (which reads as a bounded, understatable number today).
+
+**Severity:** MEDIUM — doesn't cause data loss by itself, but produces a misleadingly-bounded damage report exactly when someone is relying on `backup.ts` to characterize how bad a corrupted store is before deciding on a repair strategy.
+
+Citations: [wip/turso-live-metrics, qa-expert, theme-1-verification-harness, 1: docs/ideas/theme-1-verification-harness.md §C.5, 2: BL-335 (BACKLOG.md), 3: libs/memory-core/src/backup.ts:59-60, libs/memory-core/src/backup.ts:196-197]
