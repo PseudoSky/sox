@@ -20,7 +20,7 @@
 | **BL-368** integrity result unreachable via proxy | **SHIPPED** | folded into the above |
 | **BL-351** tracing substrate | **researched, NOT implemented** | [`../../../research/observability-substrate.md`](../../../research/observability-substrate.md) |
 | **BL-375** `service enable` drops env | **approved, NOT started** | design in §6 below |
-| **BL-369** suspension ledger | `p0-cluster-calibration` building it | §7 — **field names unagreed** |
+| **BL-369** suspension ledger | `p0-cluster-calibration` building it | §7 — **field names DECIDED**, see §7 |
 
 > ⚠️ **Correction to a possibly-stale instruction.** You may have been told BL-365 is
 > "approved and not started." **It is shipped** — `b43e7ba`, removed from BACKLOG, written to
@@ -305,7 +305,7 @@ blast radius grew after BL-344. Credit for the argument is `p0-cluster-calibrati
 
 ---
 
-## 7. Coordination — BL-369 suspension ledger (OPEN: field names unagreed)
+## 7. Coordination — BL-369 suspension ledger (field names DECIDED)
 
 `p0-cluster-calibration` is building a suspension ledger in `memory-core`, **self-contained and
 designed for extraction** into the tracing package. Adopt it; do not build a second one.
@@ -360,22 +360,35 @@ That is negligible, and "negligible" is the defensible claim — "zero" was not.
 **Bonus already banked:** the event-loop-block half of the discriminator *is* the event-loop-lag
 measurement. The separate lag sampler was removed from the design — **one heartbeat, not two.**
 
-### OPEN — agree these before either side commits
+### DECIDED — these are settled, build against them
 
-Proposed to `p0-cluster-calibration`, **no ack yet**. Their existing names win any tie; adapting
-is cheaper than making them refactor.
+Decided by team-lead 2026-07-31. Not a negotiation; both sides build against this.
 
 | field | unit | semantics |
 |---|---|---|
-| `duration_ms` | ms | unchanged meaning — wall-clock, includes suspend, never adjusted |
-| `suspended_ms` | ms | overlap with known suspension intervals; **always present, `0` not omitted** |
-| `blocked_ms` | ms | overlap with event-loop-block intervals; kept **separate** — different defect, different owner |
+| `duration_ms` | ms | unchanged meaning — wall-clock, includes suspend, **never adjusted** |
+| `suspended_ms` | ms | overlap with known suspension intervals; **always present, `0` never omitted** |
+| `blocked_ms` | ms | overlap with event-loop-block intervals; kept **separate** — one is the machine, one is us, different owners |
 
-Absent fields are indistinguishable from "not instrumented" (the BL-319 shape), hence
-always-present-as-`0`. Two open questions: the **clock domain** of the ledger's interval endpoints
-(must match the span domain or overlap arithmetic silently skews), and the **heartbeat
-interval/slack**, which sets the resolution floor and should be readable at runtime so the
-substrate can report it rather than implying infinite precision.
+All three are `_ms` doubles, so `duration_ms - suspended_ms - blocked_ms` is arithmetic a consumer
+can do without a unit conversion.
+
+**Always-present-as-`0` is the load-bearing part.** An absent field is indistinguishable from "not
+instrumented" — and that exact shape has now bitten this project **four times in one day**:
+`time_to_vector_ms` existing with zero samples (BL-319), BL-347's FTS probe reading 0 whether the
+index was dead or healthy, BL-376's warmup budget, and BL-378's brakes. A `0` is a positive claim
+that the instrument looked and found nothing; an absent field is silence, and silence has been
+wrong every time.
+
+⚠️ **Implementation note that must land in the same commit:** switching to always-emit changes the
+record shape, so `docs/observability/README.md`'s boundary note needs updating alongside it — that
+document is the event catalog people read before quoting a measurement, and a stale shape there is
+how the next person mis-parses the log.
+
+Two questions still open at handoff, both for whoever implements the ledger: the **clock domain**
+of the ledger's interval endpoints (must match the span domain, or overlap arithmetic silently
+skews), and the **heartbeat interval/slack**, which sets the resolution floor and should be
+readable at runtime so the substrate reports the floor rather than implying infinite precision.
 
 **Related trap (BL-370):** `fork()` with `'ipc'` creates a separate channel handle that
 `ChildProcess.unref()` does not release, so a process that forks once never exits.
@@ -394,12 +407,34 @@ substrate can report it rather than implying infinite precision.
   ```
   cp -R libs/<p>/dist $SNAP && npx nx build <p> || (rm -rf libs/<p>/dist && cp -R $SNAP libs/<p>/dist)
   ```
-- **`memory-core` test counts are unstable.** The suite reported 109 / 95 / 91 failures across
-  identical runs — flaky under concurrent DB access (`statement has been finalized`, `cannot start
-  a transaction within a transaction`). **Diff failing test *names*, never counts.** Method that
-  works: capture `FAIL` lines to a file with and without your change, `comm -13`. Anything gating
-  on a failure count will produce false signals in both directions until BL-325 settles. The ~91
-  baseline failures belong to **BL-325/BL-324**, not to telemetry.
+- **⚠️ `memory-core` test counts are UNSTABLE — do not gate on them, and do not report them as
+  progress.** The suite returned **109, then 95, then 91** failures across re-runs of the *same*
+  configuration. The instability signature is concurrent DB access: `statement has been
+  finalized`, `cannot start a transaction within a transaction`, `SQLITE_ERROR`.
+
+  **This is broader than any one item.** Failure counts have been quoted as progress through the
+  day — 265 → 178 → 162 → 138 — and if the metric moves by ±14 between identical runs then some of
+  that movement is noise. It does **not** invalidate the direction of travel, and the typecheck-error
+  trend (941 → 112) is a much steadier signal because it is deterministic. But **no one should gate
+  on a failure count, and no one should report one as evidence of progress.**
+
+  **Use this method instead — it is reliable and cheap:**
+  ```sh
+  # with your change
+  npx nx test <proj> --skip-nx-cache 2>&1 | grep -E "^ FAIL" | sed 's/^ FAIL  //' | sort > after.txt
+  # with the change reverted (git show HEAD:<path> > <path>, rebuild)
+  ... > before.txt
+  comm -13 before.txt after.txt   # fails ONLY with your change  -> yours
+  comm -23 before.txt after.txt   # fails ONLY without it        -> your red->green
+  ```
+  Applied to BL-365 this gave **zero** tests failing only with the change and **four** failing only
+  without it (the new durability tests) — a clean answer that the raw counts could not have given.
+
+  **Ownership is unresolved and someone should take it.** If the flakiness is a property of
+  BL-325's in-flight state it will resolve itself as that lands. If it is genuine concurrency
+  flakiness in the suites, it is **BL-202**'s territory and needs an owner. Determining which is a
+  prerequisite for trusting any count again. The ~91 baseline failures belong to
+  **BL-325/BL-324**, not to telemetry.
 - **`telemetry.ts` appears in most DB stack traces** at the `instrumentAdapter` Proxy
   (~lines 527/574) because it wraps every adapter call. **It is not the cause** — check the actual
   error string before attributing.
@@ -418,7 +453,41 @@ substrate can report it rather than implying infinite precision.
 
 ---
 
-## 9. Method notes — the two things worth copying
+## 9. The highest-yield question: **"can this test fail?"**
+
+Promoted out of a footnote because it is not a note about one bug — it is the single most
+transferable finding of the day, and it has now caught **four** distinct defects.
+
+> **A test that writes and reads back in-process passes against the broken implementation — which
+> is exactly why the defect survived unnoticed.**
+
+That is BL-365's shape, and it generalises. Four instances, all found within a day:
+
+| defect | the test that could not fail |
+|---|---|
+| frozen `{skip}` | Vitest froze `{skip}` at collection time, so two cross-backend tests **never executed** — and were green |
+| **BL-347** | the obvious FTS probe counted Tantivy backing-table rows, which read **0 whether FTS was dead or healthy** |
+| **BL-367** | recall-parity compared `uid`s across two independent stores, which mint fresh ULIDs — **zero overlap by construction** |
+| **BL-365** | telemetry written and read back **in the same process** — a graceful exit flushes, so the buffered sink passes |
+
+**Ask it of every test you write: what implementation change would make this go red?** If the
+answer is "none", or "only a change nobody would make", the test is decorative and worse than
+nothing — it manufactures confidence. This is BL-167's lesson recurring in four new costumes.
+
+### Controls are what make a green informative
+
+BL-365's suite has two, and **both were necessary**:
+
+- **Negative control** — assert `SOX_MEMORY_LOG_SYNC=0` *still loses* records. Without it, the
+  passes might merely be the OS flushing fast on this machine, and every green would be
+  uninformative about durability.
+- **Graceful-exit control** — assert both modes lose nothing on a clean exit. This is what
+  isolates the defect *precisely to hard kills* rather than to writing generally.
+
+A green with no control is an assertion about an unknown. Every probe added under BL-352 carries a
+negative control for the same reason; treat it as the standing bar, not as extra credit.
+
+## 10. Method notes — the two things worth copying
 
 Recorded because they changed outcomes, not as process commentary.
 
