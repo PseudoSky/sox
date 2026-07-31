@@ -1408,7 +1408,9 @@ The consequence of ignoring it is not an error — it is a slowly degrading clus
 
 **Severity:** MEDIUM — not blocking go-live, but BL-349 ships a strategy with a known unaddressed tail, and this is that tail. Filing it is what keeps it from becoming folklore.
 
-**Related:** BL-349 (the near-term mechanism), BL-328 (threshold calibration), BL-327 (orphaned communities), BL-326.
+**⚡ BL-356 is the measured proof this item is real, not speculative (2026-07-31).** `minPts=2` makes the algorithm **single-linkage**, so a fixed τ fixes edge *probability* and mean degree grows linearly with N. On identical content, largest-cluster ratio at τ=0.82: N=200 → 0.085, 400 → 0.222, 800 → 0.459, 1200 → 0.595, 1616 → **0.684**. Projected mean degree at the full store (4841) is 32.6 @ τ=0.82 and still 5.9 @ τ=0.95. **A fixed global threshold is therefore not calibratable at all** — the correct τ is a function of corpus size, which is precisely the "clusters are not constant-time splits and do not self-reorganize" tail this item was filed to research. Any maintenance strategy that assumes a stable τ is already disproven.
+
+**Related:** BL-356 (the measured scaling proof — read it first), BL-349 (the near-term mechanism), BL-328 (threshold calibration), BL-327 (orphaned communities), BL-326.
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner framing 2026-07-31, 2: BL-349, 3: BL-327]
 
