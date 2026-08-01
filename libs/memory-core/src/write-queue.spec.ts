@@ -20,6 +20,7 @@ function tmpDir(): { dir: string; cleanup: () => void } {
 describe('WriteQueue — ordering and serialisation (WP-1)', () => {
   let cleanup: () => void;
   let dbPath: string;
+  let priorAdapterEnv: string | undefined;
 
   beforeEach(async () => {
     const t = tmpDir();
@@ -27,11 +28,23 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
     dbPath = path.join(t.dir, 'test.db');
     await WriteQueue.clearInstances();
     WriteQueue.setBypass(false);
+    // This suite proves the queue's OWN serialisation (FIFO order, size cap,
+    // WAL checkpoint on the local file) — all of which is WriteQueue._noop =
+    // false behaviour, gated on an adapter reporting needsWriteSerialization:
+    // true (sqlite/better-sqlite3). The factory default is now
+    // STORE_ADAPTER=turso (needsWriteSerialization: false), which would flip
+    // the queue into noop/bypass mode and make every assertion here vacuous —
+    // pin sqlite explicitly, same convention as every other adapter-sensitive
+    // spec (see backup.spec.ts, fts-query-parity.spec.ts).
+    priorAdapterEnv = process.env['STORE_ADAPTER'];
+    process.env['STORE_ADAPTER'] = 'sqlite';
   });
 
   afterEach(async () => {
     await WriteQueue.clearInstances();
     cleanup();
+    if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+    else process.env['STORE_ADAPTER'] = priorAdapterEnv;
   });
 
   /**
@@ -174,6 +187,7 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
 describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
   let cleanup: () => void;
   let dbPath: string;
+  let priorAdapterEnv: string | undefined;
 
   beforeEach(async () => {
     const t = tmpDir();
@@ -181,11 +195,23 @@ describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
     dbPath = path.join(t.dir, 'test.db');
     await WriteQueue.clearInstances();
     WriteQueue.setBypass(false);
+    // This suite proves the queue's OWN serialisation (FIFO order, size cap,
+    // WAL checkpoint on the local file) — all of which is WriteQueue._noop =
+    // false behaviour, gated on an adapter reporting needsWriteSerialization:
+    // true (sqlite/better-sqlite3). The factory default is now
+    // STORE_ADAPTER=turso (needsWriteSerialization: false), which would flip
+    // the queue into noop/bypass mode and make every assertion here vacuous —
+    // pin sqlite explicitly, same convention as every other adapter-sensitive
+    // spec (see backup.spec.ts, fts-query-parity.spec.ts).
+    priorAdapterEnv = process.env['STORE_ADAPTER'];
+    process.env['STORE_ADAPTER'] = 'sqlite';
   });
 
   afterEach(async () => {
     await WriteQueue.clearInstances();
     cleanup();
+    if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+    else process.env['STORE_ADAPTER'] = priorAdapterEnv;
   });
 
   /**
