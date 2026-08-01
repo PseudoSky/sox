@@ -563,10 +563,13 @@ rewritten, only unblocked.
 **Closes:** BL-391
 **Files:** `libs/memory-core/src/db.ts` (`openDbReadOnly`, ~:886), `libs/memory-core/src/recall.ts` (`getFederationConnection` ~:1208, `recallFromOpenDb` ~:1226-1237), + a new spec.
 **requires:** none
-**tier:** opus, ~70k tokens / ~25 turns — step 1 is an open determination; a prior probe crashed settling it
+**tier:** sonnet, ~70k tokens / ~25 turns — step 1 is an open determination; a prior probe crashed settling it — DEMOTED from opus (owner constraint: no more opus agents). Compensated by pre-specifying the determination as a concrete experiment rather than an open question
 **orientation:** ~65k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~25k cited source + ~4k backlog bodies. **This is fixed cost and does not shrink with the size of the change.**
 **budget:** ~25 turns / ~127k tokens = 65k orientation + 25 x ~2.5k per turn. Guidance ceiling ~180k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
 **Produces:** **first, a determination** — whether `memoryRecall` catches the FTS throw internally (BM25 silently lost for every Turso store) or not (every Turso store contributes zero results). Record it before editing; it decides both severity and fix. Then the fix, plus a logging change so `recallFromOpenDb`'s bare catch can never again make a whole store vanish silently.
+> **TIER COMPENSATION.** This was opus because step 1 was an open determination. It is now a **specified experiment**, which a sonnet agent can execute:
+> write a unit test that forces `fts_match` to throw on a read-only Turso connection and calls `memoryRecall` directly. If it returns results minus the BM25 channel, the answer is *"catches internally — BM25 silently lost"*. If it throws, the answer is *"does not catch — `recallFromOpenDb`'s bare catch makes the whole store contribute zero"*. **Record which, then stop and report before writing the fix** — the answer changes the fix. Do not try to settle this by probing the live server; a prior attempt crashed spawning the embed provider.
+
 **acceptance:** four steps, and step 1 is a determination that must be recorded before any edit.
 1. **Determine, do not guess**, whether `memoryRecall` catches the FTS throw internally. The two outcomes differ enormously and both are silent: if it catches → federated recall silently loses BM25 for every Turso store and returns plausible vector+temporal results; if it does not → `recallFromOpenDb`'s bare `catch { return [] }` makes **every Turso store contribute zero results**, indistinguishable from "no matches". A prior probe crashed spawning the embed provider; use a seam or a direct unit test instead. **Record which it is before changing anything — it decides the severity and the fix.**
 2. Then fix: stop opening federation connections read-only where that disables FTS (keep `query_only`, which is the actual write guard), or expose the constraint as an adapter capability so callers stop assuming read-only is free.
@@ -683,6 +686,24 @@ fleet spend.**
 
 # Task packets
 
+> **⛔ STANDING CONSTRAINT (owner, 2026-08-01): NO OPUS AGENTS.** Every remaining packet is sonnet or
+> haiku. Five packets that were opus for real reasons have been **demoted with a compensation**, not
+> merely re-labelled — dropping a tier without changing the packet just moves the failure. Each now
+> carries a `TIER COMPENSATION` note stating what makes it tractable:
+>
+> | packet | was opus because | compensation |
+> |---|---|---|
+> | PKT-41 | step 1 was an open determination | the determination is now a **specified experiment** — run this test, record the answer, stop |
+> | PKT-12 | a migration mechanism must be designed | **scope cut to BL-301 only**; BL-302 explicitly deferred to its own research packet |
+> | PKT-29 | the clustering strategy was unknown | **PKT-28 resolved it** — implement its written recommendation |
+> | PKT-36 | root cause unknown | **split into 2 phases**; phase 1 (statement logging) is mechanical and has standalone value |
+> | PKT-37 | BL-393's trigger unidentified | **split into 2 phases**; phase 1 (BL-390 dirty-tree refusal) is mechanical |
+>
+> The pattern: an opus-shaped packet becomes a sonnet packet by **pre-specifying the judgement**
+> (turn an open question into a named experiment), **cutting scope** to the tractable half, or
+> **splitting into ordered phases with a mandatory stop between them**. Re-labelling alone is how a
+> haiku fleet produced nothing earlier today.
+
 > **ESTIMATION BASIS — third revision, and the first fitted to real data (2026-08-01).**
 > **TURNS is the reliable unit; tokens are derived.** PKT-28 estimated ~30 turns and took ~30 tool
 > calls — accurate. Its *token* figure was guessed wrong twice in opposite directions: 30k, then
@@ -773,6 +794,7 @@ completion, don't just assume no build ran.
 **requires:** none
 **sequencing:** **Does not wait on PKT-02** per the owner's explicit exception — it is CRITICAL and loses data today.
 **tier:** opus, ~80k tokens / ~30 turns — target named (separate execution contexts) but BL-154 re-entrancy makes it genuinely delicate
+**tier-note:** **IN FLIGHT** — dispatched before the no-opus constraint. Allowed to finish; not to be re-dispatched at this tier.
 **orientation:** ~96k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~56k cited source + ~4k backlog bodies. **This is fixed cost and does not shrink with the size of the change.**
 **budget:** ~30 turns / ~171k tokens = 96k orientation + 30 x ~2.5k per turn. Guidance ceiling ~240k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
 **Produces:** a committed-stage boundary with **separate execution contexts** for embedding vs enrichment/clustering, replacing the process-wide `_bgSlot` mutex. Consumed by PKT-29, which schedules clustering behind it. Output must state explicitly whether `_bgSlot` is deleted or retained for a narrower purpose — PKT-29 needs to know which.
@@ -785,6 +807,7 @@ completion, don't just assume no build ran.
 **Files:** new package (per the research doc's recommendation — likely `libs/observability/tracing-core` or similar; the doc names the exact target), `libs/memory-core/src/telemetry.ts` (migrate off, don't duplicate), env-policy wiring (`libs/*/src/env-policy.ts`, now single-sourced per BL-344 — confirm before editing, do not reintroduce a 2nd copy).
 **requires:** none
 **tier:** opus, ~85k tokens / ~35 turns — high turn count, low reasoning-per-turn — the 76KB design already exists; this is implementation of a written spec
+**tier-note:** **COMPLETE** — dispatched before the no-opus constraint. Do not re-dispatch at this tier.
 **orientation:** ~46k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~6k cited source + ~4k backlog bodies. **This is fixed cost and does not shrink with the size of the change.**
 **budget:** ~35 turns / ~133k tokens = 46k orientation + 35 x ~2.5k per turn. Guidance ceiling ~190k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
 **Produces:** the tracing/metrics substrate as a consumable package surface: a span/metric emitter with **stable event names and units**, a durable sink, and a documented API that PKT-24/25/26/27/44 import instead of hand-rolling. **This is the interface contract for five downstream packets — publish it (names, units, cardinality limits) before they start, or they will each invent their own and the substrate will have failed at its one job.** Design is already written: `docs/research/observability-substrate.md`.
@@ -884,9 +907,12 @@ completion, don't just assume no build ran.
 **Files:** `libs/data/graph/graph-store/src/index.ts` (`applySchema`, `GRAPH_DDL`), `libs/memory-core/src/schema.ts`, new migration runner module (table-rebuild helper: `PRAGMA foreign_keys=OFF; CREATE TABLE new; INSERT...SELECT; DROP; RENAME; recreate indexes; foreign_keys=ON`, transactional).
 **requires:** none
 **sequencing:** — schedule early since PKT-11 exports from the same file (`graph-store/src/index.ts`) and should land first (smaller, no schema shape change) to avoid a rebase.
-**tier:** opus, ~65k tokens / ~25 turns — a migration mechanism genuinely does not exist yet
+**tier:** sonnet, ~65k tokens / ~25 turns — a migration mechanism genuinely does not exist yet — DEMOTED from opus (owner constraint). SCOPE REDUCED to make it tractable — see the compensation note
 **orientation:** ~51k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~11k cited source + ~4k backlog bodies. **This is fixed cost and does not shrink with the size of the change.**
 **budget:** ~25 turns / ~113k tokens = 51k orientation + 25 x ~2.5k per turn. Guidance ceiling ~160k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
+> **TIER COMPENSATION — SCOPE CUT.** This was opus because a migration mechanism does not exist and designing one is real work. **Do only BL-301 in this packet: unify the two drifted `node`/`edge` schema definitions into one source, with `graph-store` owning it.** That is mechanical and testable.
+> **BL-302 (a real `_schema_version` migration mechanism) is explicitly OUT of this packet** — it needs a design pass and should be re-filed as its own research packet when someone has the budget. Do not attempt both; attempting the mechanism is what made this opus.
+
 **acceptance:** two tests. BL-302, must name it: create a v1 DB with a row, register a v2 migration that alters a CHECK via table-rebuild, reopen, assert the pre-existing row survived AND a formerly-illegal value now inserts; a negative control against the current stub must fail. BL-301, must name it: `createGraphBackend(memoryCoreDb).writeEdge(..., rel:'DEPENDS_ON')` throws today, passes after unification; `PRAGMA table_info(node)` identical across both packages' freshly-applied schemas post-fix.
 
 ### PKT-13 — BL-378: emergency brakes are not independent
@@ -1061,6 +1087,7 @@ completion, don't just assume no build ran.
 **requires:** none
 **sequencing:** **Blocks PKT-29 and PKT-31.**
 **tier:** opus, ~90k tokens / ~30 turns — real research: tau must be MEASURED across >=2 corpus sizes, not chosen
+**tier-note:** **COMPLETE** — dispatched before the no-opus constraint. Do not re-dispatch at this tier.
 **orientation:** ~40k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~0k cited source + ~4k backlog bodies. **This is fixed cost and does not shrink with the size of the change.**
 **budget:** ~30 turns / ~115k tokens = 40k orientation + 30 x ~2.5k per turn. Guidance ceiling ~170k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
 **Produces:** **a written decision, not code**: whether a fixed global cosine τ is viable at all, and if not, the replacement strategy (corpus-size-adaptive τ, a different linkage, or bounded cluster size). Must state a recommendation *and* its measurement basis across ≥2 corpus sizes. PKT-29/PKT-30/PKT-31 are blocked on this artifact; **if the answer is 'fixed τ is not viable', PKT-30 (re-calibrate the threshold) becomes invalid and must be re-scoped rather than executed.**
@@ -1072,10 +1099,13 @@ completion, don't just assume no build ran.
 **Files:** `libs/memory-core/src/cluster.ts` (the dead-stub short-circuit at :437-441), `libs/memory-core/src/curate.ts` (`organizer_queue` trigger wiring), `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (write-path trigger point — must build on the PKT-01 committed-stage boundary).
 **requires:** PKT-01, PKT-28
 **sequencing:** — the near-term mechanism must not contradict it). **Serialize on `cluster.ts` after PKT-01, before PKT-30/PKT-33.**
-**tier:** opus, ~55k tokens / ~20 turns — re-scoped: after PKT-28 this is implementation, not design
+**tier:** sonnet, ~55k tokens / ~20 turns — re-scoped: after PKT-28 this is implementation, not design — DEMOTED from opus — PKT-28 delivered the strategy, so this is now implementation against a written spec
 **orientation:** ~87k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~47k cited source + ~4k backlog bodies. **This is fixed cost and does not shrink with the size of the change.**
 **budget:** ~20 turns / ~137k tokens = 87k orientation + 20 x ~2.5k per turn. Guidance ceiling ~200k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
 **Produces:** write-triggered background clustering that runs behind PKT-01's boundary. Consumed by PKT-30 (threshold work lands on the same function area). Output must name the trigger point and the backpressure rule.
+> **TIER COMPENSATION.** This was opus while the clustering strategy was unknown. **PKT-28 has since resolved it**: read `docs/reporting/memory/findings/pkt28-clustering-strategy.md` — it specifies target-mean-degree calibration, `minPts=2`, and the reconciliation triggers. You are implementing a written recommendation, not choosing an approach.
+> ⚠️ **A fixed global τ is not viable at any value** (measured at true full corpus N=4867: τ=0.82 → 0.759 largest-cluster ratio, 0.85 → 0.514, only 0.87 holds). Do not reintroduce a constant.
+
 **acceptance:** BL-326/BL-349's shared bar, must name both: write N clusterable episodes through the ordinary write/enrich path only (no explicit recluster row, no manual pass), assert `total_clustered > 0` — must fail today. Additionally assert the write's `write_to_vector_ms` is unaffected by clustering work, and a thrown clustering error leaves vectors intact (this half restates PKT-01's second acceptance in the clustering-specific path — do not skip re-proving it here, the boundary must hold for the real trigger, not just the isolated test harness).
 
 ### PKT-30 — BL-328: implement PKT-28's calibration function (NOT "pick a corrected constant" — see below)
@@ -1169,10 +1199,14 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 **Files:** `libs/data/store/store-adapter/src/*` (wherever `store.error` is emitted — add statement/fingerprint logging), then the actual query/migration fix once the hypothesis is confirmed (likely `libs/memory-core/src/curate.ts` or `graph-store`'s `getEdges`, per the item's own lead — `getEdges` selects `e.meta AS e_meta` at :1130).
 **requires:** PKT-35
 **sequencing:** — confirm or rule out before duplicating investigation effort).
-**tier:** opus, ~55k tokens / ~20 turns — cause unknown; needs statement logging before it is even observable
+**tier:** sonnet, ~55k tokens / ~20 turns — cause unknown; needs statement logging before it is even observable — DEMOTED from opus — split into two ordered phases; stop and report after phase 1
 **orientation:** ~44k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~4k cited source + ~4k backlog bodies. **This is fixed cost and does not shrink with the size of the change.**
 **budget:** ~20 turns / ~94k tokens = 44k orientation + 20 x ~2.5k per turn. Guidance ceiling ~140k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
 **Produces:** statement-level (or fingerprint) logging on `store.error` **first** — the current line records the driver's message but not the SQL, which is why BL-399 is undiagnosable — then the root cause and fix. A written finding of 'live schema drift' vs 'query defect' vs 'Turso misreporting' is a required output even if the fix is trivial.
+> **TIER COMPENSATION — TWO PHASES, STOP BETWEEN THEM.**
+> **Phase 1 (mechanical, do this alone first):** make `store.error` log the failing statement (or a stable fingerprint) alongside the driver message. Today it logs only the message, which is the entire reason BL-399 is undiagnosable. Commit this, then **stop and report** — it has standalone value and makes phase 2 cheap.
+> **Phase 2 (only if phase 1 leaves budget):** with the statement now visible, determine which of the three candidates holds — live schema drift, a join/alias that drops `meta`, or Turso misreporting. **Do not assume drift**; this backend already produced one misleading diagnostic today (BL-385's `database disk image is malformed` on a healthy store).
+
 **acceptance:** a test naming BL-399: the identified failing query no longer throws `no such column: meta` against a copy of the live store's actual schema, AND `store.error` for any future prepare-failure of this shape logs the statement — assert both, since the swallow itself (not just the root cause) is named as part of the fix.
 
 ---
@@ -1185,10 +1219,14 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 **Files:** `tools/bundle-extension.cjs`, the `registry:sync-index` nx target implementation (locate under `tools/` or a dedicated nx executor), `libs/host-runtime/src/supervisor.ts` (respawn logic — read-only investigation first for BL-393's trigger).
 **requires:** none
 **sequencing:** **This packet must NOT run `nx build` on any shipped extension as part of its own testing** — reproduce the dirty-tree scenario against a disposable scratch package, never the live `memory-server` bundle. Flag to the human orchestrator before any test step that would build a real extension.
-**tier:** opus, ~70k tokens / ~25 turns — BL-393's trigger is unidentified — reproduction IS the work
+**tier:** sonnet, ~70k tokens / ~25 turns — BL-393's trigger is unidentified — reproduction IS the work — DEMOTED from opus — split into two ordered phases; BL-390 alone is mechanical
 **orientation:** ~52k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~12k cited source + ~4k backlog bodies. **This is fixed cost and does not shrink with the size of the change.**
 **budget:** ~25 turns / ~114k tokens = 52k orientation + 25 x ~2.5k per turn. Guidance ceiling ~160k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
 **Produces:** the identified **trigger** for BL-393 (a controlled rebuild did NOT reproduce it — the backend survived on the old unlinked inode), plus the `sync-index` dirty-tree refusal and a build-provenance stamp. If the trigger cannot be identified, that finding is the output and the fix must be scoped to detection rather than prevention.
+> **TIER COMPENSATION — TWO PHASES, STOP BETWEEN THEM.**
+> **Phase 1 (mechanical, do this alone first):** BL-390 — make `registry:sync-index` refuse a dirty tree for the projects whose artifacts it hashes (a `--allow-dirty` escape hatch is fine; silence is not), and stamp each registry entry with the commit sha it was built from. Commit, then **stop and report**.
+> **Phase 2 (only if phase 1 leaves budget):** BL-393 — the trigger is UNIDENTIFIED and a controlled rebuild did not reproduce it (the backend survived on the old unlinked inode). Reproduction is the work, and it may fail. **"I could not reproduce it, here is what I ruled out" is an accepted outcome** — say so rather than shipping a fix aimed at a mechanism you have not confirmed.
+
 **acceptance:** BL-390, must name it: `registry:sync-index` run against a deliberately dirty tree (scratch package, not a live extension) either refuses or stamps the entry as provisional with a commit sha field that can be verified against `git log`. BL-393, must name it: once the actual trigger is identified (not assumed), a test reproducing that exact trigger and asserting the backend does NOT silently respawn onto an unreviewed bundle — or, if full prevention isn't feasible, that the respawn is loudly logged and reflected in `soxe service status` rather than invisible.
 
 ### PKT-38 — BL-375: `service enable` rebuilds unit env from the invoking shell, silently dropping tunables
