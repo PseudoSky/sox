@@ -78,6 +78,14 @@ CREATE TABLE IF NOT EXISTS edge (
   weight REAL DEFAULT 1.0, origin TEXT, confidence REAL,
   t_created TEXT NOT NULL, t_expired TEXT, t_valid TEXT, t_invalid TEXT, meta TEXT
 );
+-- Must mirror graph-store's canonical ix_edge_unique: materializeClusters()
+-- (cluster.ts) upserts MEMBER_OF edges via
+-- "ON CONFLICT(src, dst, rel) DO UPDATE ..." — SQLite requires a UNIQUE
+-- index/constraint on exactly those columns for that clause to resolve, or it
+-- fails at prepare() time with "ON CONFLICT clause does not match any
+-- PRIMARY KEY or UNIQUE constraint". This DDL is a hand-maintained replica of
+-- the graph-store schema (see MINIMAL_DDL comment above) and had drifted.
+CREATE UNIQUE INDEX IF NOT EXISTS ix_edge_unique ON edge(src, dst, rel);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_node USING vec0(node_id INTEGER PRIMARY KEY, embedding FLOAT[768]);
 `;
