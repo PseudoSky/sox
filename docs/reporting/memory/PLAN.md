@@ -347,3 +347,149 @@ darkening a tool. Real throughput and contention metrics in `memory_ping`. Worki
 Automatic integrity detection and repair. Clustering resolved one way or the other.
 
 The harness is what proves they work. It is not what makes them valuable.
+
+---
+
+# Coverage reconciliation — 2026-08-01
+
+Everything below was written after measuring this plan against `BACKLOG.md` and finding **51 of 80
+open items named nowhere in it**. The sections below give every one of them a home or an explicit
+exclusion. Sequencing here is deliberately *provisional* — see [Task packets](#task-packets) — but
+coverage is not: an item that appears in neither the sections below nor the exclusion list is a bug
+in this document.
+
+## P0.8 — BL-342: the malformed row was never repaired · **HIGH** · *P0, still open*
+
+`memory_stats` on production reports `malformed_rows: {count: 1, columns: ["tags"], sample_rowids: [9284]}`.
+BL-343 made the tool *survive* it (tested), which masked that the data was never fixed. Needs a
+migration that finds `tags = ''` (invalid JSON, not NULL) and repairs it, plus a probe so a future
+restore cannot reintroduce it silently. **Do not treat BL-343's green test as coverage of this.**
+
+## P1.4 — BL-353: telemetry is written and never read · **HIGH**
+
+122 MB across 8 JSONL files, ~75k events, zero analysis. This is P1.0's absence seen from the other
+side: the data exists, the *semantics and aggregation* do not. Ships with P1.0 or it will not ship.
+
+## P1.5 — BL-358 + BL-319 remainder: queue wait time and vec-insert isolation · **HIGH / partial**
+
+`WriteQueue.estimated_wait_ms` is a prediction reported as a measurement — it never computes actual
+wait. BL-319 still lacks `vec_insert_duration_ms`, the field that separates SQL time from inference
+time. Both are prerequisites for ever answering "is a slow apply the database or the model?"
+
+## P2.3 — Storage-boundary completion · BL-380, BL-388, BL-389, BL-396, BL-397 · **MEDIUM**
+
+The `sox/no-storage-backend-leak` rule (see *Standing architectural rule*) now enumerates this class
+mechanically — these are the remaining known violations, and the rule keeps the list closed.
+
+- **BL-380** `vector-store` ×3. **Blast radius measured 2026-08-01 and it is trivial**: two spec
+  files import the package at value level, everything else is a type-only re-export, and
+  `agent-source` — cited for a day as the reason not to touch it — is not a package in this repo.
+  ⚠️ `index.ts:196`'s `vecEnabled: … || true` is dead code whose deletion turns 15 tests green while
+  fixing nothing.
+- **BL-389** `LanceDbVectorBackend` takes a raw `better-sqlite3` handle in its constructor.
+- **BL-388** `tools/baseline-capture` ×2. **BL-397** `memory-flush` (prod + spec; both its lint and
+  typecheck are red). **BL-396** `memory-server/src/index.ts` static ESM import from CJS.
+- On completion, **remove the `warn`-only exemption for `libs/data/vectors/vector-store` from
+  `eslint.config.js`** — it exists only to keep the repo-wide gate honest while these are open.
+
+## P2.4 — Turso engine constraints and their consequences · **HIGH/MEDIUM**
+
+Not bugs in our code — properties of the engine that our code must stop being surprised by.
+
+- **BL-391** (HIGH) a read-only Turso connection **cannot run `fts_match`**, so federated recall's
+  BM25 arm is dead. Compounded by `recallFromOpenDb`'s bare `catch { return [] }`, which makes a
+  whole store vanish indistinguishably from "no matches". Undetermined and must not be guessed:
+  whether `memoryRecall` catches internally (BM25 silently lost) or not (store contributes zero).
+- **BL-329** (HIGH) a Turso FTS index permanently blocks every better-sqlite3 fallback path.
+- **BL-361** Turso PANICS and aborts the process on an FTS index row with no backing directory.
+- **BL-360** permanent `PRAGMA integrity_check` false positive — already filtered, keep it named so
+  the filter is never mistaken for a bug.
+- **BL-362** no committable Turso FTS damage fixture, so BL-347's negative control cannot be re-run.
+
+## P2.5 — Concurrency and admission control · **HIGH**
+
+- **BL-394** on Turso, `_noop = true` bypasses the size cap and deadline guard, **not just
+  serialization**, while `memory_ping` reports `queue_max_size`, `deadline_budget_ms` and
+  `deadline_guard_enabled` as if they were active. ⛔ **This is NOT a licence to serialize Turso
+  writes** — four agents have now misread this area. Hoist admission control above the bypass;
+  leave FIFO behind it.
+- Unexplained, do not fold in: write-queue counters read 0 after real writes despite the bypass
+  calling `_trackCompletion()`. If `memory_ping` reads a different instance, every number in that
+  block is suspect.
+- **BL-274** there is still no concurrency stress test for parallel read/write against the server —
+  and none that exercises the Turso `_noop` path at all.
+
+## P2.6 — Deploy and artifact integrity · **HIGH**
+
+- **BL-390** `registry:sync-index` blesses an artifact built from an uncommitted tree that no commit
+  reproduces. Happened **twice in 90 minutes** to two rule-following agents; the procedure is
+  unsound under concurrency, not the agents.
+- **BL-393** the proxy respawns the backend onto whatever bundle is staged. Observed once; the
+  trigger is **narrower than first filed and still unidentified** — a controlled rebuild did not
+  reproduce it (the process survived on the old unlinked inode). Identify the killer before fixing.
+- **BL-375** `service enable` rebuilds unit env from the invoking shell, silently dropping tunables.
+
+## P2.7 — Clustering · **HIGH** · *gated on research, not on effort*
+
+Live state: **139 communities, ZERO members** (`total_clustered: 0`, `coverage: 0`) against 4,889
+episodes. Every community-dependent feature is inert.
+
+**BL-356 and BL-350 are unresolved design questions and must land first.** BL-356 says a fixed
+global cosine threshold is *not calibratable* — single-linkage chaining makes correct τ a function
+of corpus size. If that conclusion holds, **BL-326 and BL-328 change shape entirely**, so scheduling
+them as ordinary tasks is a mistake.
+
+Then: **BL-326** (incremental path is a dead stub — no ordinary write can ever cluster),
+**BL-349** (must be a backgrounded post-write trigger), **BL-328** (τ mis-calibrated *upward*),
+**BL-327** (communities orphaned by `memory_invalidate` are never GC'd).
+
+## P2.8 — Data-quality defects with no home · **MEDIUM**
+
+**BL-318** ghost episodes with `content: null`. **BL-317** nothing prevents a repeat of the
+2026-06-26..29 mass topic-mislabelling. **BL-383** `autolink` writes the stoplist to a
+`memory_scope.meta` column that does not exist on every backend. **BL-301** the two duplicated
+`node`/`edge` schemas have already drifted. **BL-400** four spec files carry hand-maintained DDL
+replicas — this already caused six false test failures and sent a wrong root cause across two
+handoffs. **BL-392** vec-arm KNN ties have no cross-backend order. **BL-379** post-repair
+reverification skips the WAL-identity probe. **BL-215** no operator surface for `healStaleVectors`.
+
+## P2.9 — Process defects that cost real time · **HIGH/MEDIUM**
+
+- **BL-225** status markers record intent, not verified outcome. **Both directions**: this session
+  found 12 items marked Open that were already fixed, alongside the original four marked RESOLVED
+  while broken. The rule needs to bite on closure *and* on staleness.
+- **BL-359** BL ids are allocated by a read-then-write race — **six collisions on 2026-08-01**, one
+  of them the team lead's, from computing the max off `BACKLOG.md` while an id lived only in
+  `CHANGELOG.md`. Allocate from both files, or move allocation somewhere atomic.
+- **BL-378** the two emergency brakes are not independent. **BL-312** the 2026-07-18 CPU/hang
+  incident was never root-caused. **BL-376** one 180 s budget covers both a network download and a
+  cached load. **BL-259** `smoke-test.mjs` leaves project-scoped launchd units bootstrapped.
+
+## P3 / P4 — **DEFERRED** (2026-08-01)
+
+**The sandbox harness and its runs are deferred, not cancelled.** The reason is this plan's own
+criterion: *"a run before these measures a lie."* P0 is not clear — BL-348 (CRITICAL) and BL-342
+are open — so a clean-slate ingestion run would produce a feature scorecard that certifies a
+pipeline whose isolation and data-repair guarantees do not hold. The scorecard would be confidently
+wrong, which is worse than absent.
+
+Also deferred for a second, independent reason: the harness's *measurements* are only as good as the
+instrumentation, and **P1.0 (BL-351) is unbuilt**. A run today would be measured by hand-rolled
+throwaway probes — exactly what produced several wrong numbers on 2026-08-01 (three different suite
+failure counts, four different drain rates).
+
+**Resume when:** P0.4 (BL-348), P0.2/P0.8 (BL-342), and P1.0 (BL-351) are done. Nothing else blocks it.
+`docs/reporting/memory/sandbox/README.md` stays as the specification; it is correct and should not be
+rewritten, only unblocked.
+
+## Explicitly OUT OF SCOPE for this plan
+
+These are open, real, and belong to other subsystems. Listed so that "not in the plan" is a decision
+rather than an oversight:
+
+- **Dispatch-optimizer / plan hygiene** — BL-99, BL-103, BL-104, BL-105, BL-228, BL-258, BL-261, BL-296, BL-298
+- **Packaging, native ABI, bundling** — BL-282, BL-284, BL-285, BL-288, BL-291, BL-292, BL-305, BL-306, BL-308, BL-314, BL-333, BL-355
+- **Product surface** — BL-315 (`memory-server` has no REST API)
+- **OS service integration** — BL-163 (SMAppService login-items registration; already BLOCKED on its own dependency)
+- **Embedding-provider internals** — BL-283 (shared `RequestResponseChannel<T>` base for the ONNX/fastembed worker clients)
+
