@@ -5,13 +5,20 @@ import {
   markCleanShutdown,
   stampAdapterMeta,
 } from './adapter-meta.js';
-import { captureWalIdentity, emitIntegrityReport, runOpenTimeIntegrity } from './integrity.js';
+import {
+  captureWalIdentity,
+  emitIntegrityReport,
+  runOpenTimeIntegrity,
+  verifyStoreIntegrity,
+} from './integrity.js';
 import type { WalIdentity } from './integrity.js';
 import type {
   SqliteAdapter,
   AdapterTransaction,
   AdapterConfig,
   AdapterCapabilities,
+  AdapterBackupOptions,
+  AdapterBackupResult,
   RunResult,
   AllResult,
   TransactionOptions,
@@ -168,6 +175,38 @@ export class SqliteAdapterImpl implements SqliteAdapter {
 
   unwrap(): import('better-sqlite3').Database {
     return this.db;
+  }
+
+  /**
+   * (BL-385) VACUUM INTO — owns its own sqlite-vec load so vec0 shadow tables
+   * (e.g. `vec_node`) copy correctly. Runs directly on `this.db`; a connection
+   * opened with `{ readonly: true }` (better-sqlite3's native OPEN_READONLY,
+   * not `PRAGMA query_only`) still permits `VACUUM INTO` because it only
+   * writes to `destPath`, never to the source file.
+   */
+  async backupTo(destPath: string, opts: AdapterBackupOptions = {}): Promise<AdapterBackupResult> {
+    const sqliteVec = await import('sqlite-vec');
+    sqliteVec.load(this.db);
+    this.db.exec('PRAGMA busy_timeout = 3000;');
+    this.db.exec(`VACUUM INTO '${destPath.replace(/'/g, "''")}'`);
+
+    let integrityCheck = 'ok';
+    if (!opts.skipIntegrityCheck) {
+      const backupAdapter = new SqliteAdapterImpl(destPath, { readonly: true });
+      try {
+        sqliteVec.load(backupAdapter.unwrap());
+        const report = await verifyStoreIntegrity(backupAdapter, {
+          depth: 'deep',
+          only: ['pragma_integrity_check'],
+        });
+        integrityCheck = report.ok
+          ? 'ok'
+          : report.damaged.map((f) => `${f.object}: ${f.detail}`).join('; ');
+      } finally {
+        await backupAdapter.close();
+      }
+    }
+    return { destPath, integrityCheck };
   }
 
   async executeGet<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<T | null> {

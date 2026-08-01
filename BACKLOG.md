@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 94.** (BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 93.** (BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,7 +23,7 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-08-01: **94 open**.
+Regenerated 2026-08-01: **93 open**.
 
 | Priority | Open items |
 |---|---|
@@ -2166,33 +2166,6 @@ Proved on the **Turso backend** (the default; `STORE_ADAPTER` unset in the test 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: repo-wide audit of `as SqliteAdapter` / `.unwrap()` excluding specs, 2026-07-31, 2: libs/data/vectors/vector-store/src/index.ts:143,200,359, 3: extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts:180,218,322, 4: BL-377, 5: libs/memory-core/src/db.ts:373 (the correctly-gated form)]
 
 ---
-
-### BL-385 — `backupStore()` hardcodes the sqlite driver, so backup is dead on the default backend — **Open (CRITICAL)** (2026-07-31, re-measured 2026-08-01)
-
-**Turso backs up fine. The item's original claim — that `VACUUM INTO` fails and a Turso store "cannot be backed up at all" — is wrong, and the correction matters because it changes the fix from "build a capability" to "call the right driver."** The original measurement replayed `backup.ts`'s statement sequence *through better-sqlite3* against a Turso file. What it measured was **better-sqlite3 failing to parse Turso's FTS index DDL** (`CREATE INDEX ... USING fts (...)` → `malformed database schema (__turso_internal_fts_dir_idx_fts_node_key) - near "USING"`), not a missing Turso capability. `database disk image is malformed` was the sqlite driver's verdict on a healthy Turso store.
-
-**Measured 2026-08-01 with the Turso driver, against a copy of the live store** (`.db` + `-wal` copied together per BL-330; `~/.memory` never written to), using **exactly the experimental flags the adapter already sets in production** (`index_method`, `multiprocess_wal` — `turso-adapter.ts:183-190`):[1]
-
-| | source | `VACUUM INTO` output |
-|---|---|---|
-| nodes / vec_node / edge | 9502 / 4936 / 47320 | **identical** |
-| `fts_match("content","name","summary",'memory')` | 1158 | **1158** |
-| `PRAGMA integrity_check` | `Page N: never used` ×100, plus the known Turso FTS false positive | **only** the known FTS false positive |
-| size | 97.3 MB | **78.7 MB** — 19 MB of free space reclaimed |
-
-So `VACUUM INTO` on Turso produces a **complete, FTS-functional, integrity-equivalent** backup and reclaims the free pages, today, with no new flags. The `vacuum` experimental flag is **not required** for `VACUUM INTO` — it succeeds with and without it.[2]
-
-**The actual defect** is `libs/memory-core/src/backup.ts:169-217`, which never consults the store's backend: it constructs `createSqliteAdapter({ dbPath, readonly: true }) as SqliteAdapter`, `unwrap()`s to a raw better-sqlite3 handle, `sqliteVec.load()`s it, and runs `VACUUM INTO`.[3] On the default (turso) backend the open itself fails, `backupStore()` returns `E_IO`, and **no destination file is produced**. This is the same violation as BL-381 and BL-384 — a module outside `store-adapter` naming a backend — and it is precisely what the storage-boundary lint rule exists to catch.
-
-Two things still make this CRITICAL rather than cosmetic:
-1. **The failure text reads as data corruption.** During an incident `database disk image is malformed` sends an operator chasing a corrupt store that is in fact healthy. This box has already lost power mid-backfill once (BL-338). The diagnosis above cost real time precisely because the message was believed.
-2. **Two `backup.spec.ts` failures were being attributed to spec drift and are actually this.** Third instance of a production defect hiding inside "test debt" (BL-377 was 30 of 162; BL-364 sat red four days). **A failure count is an upper bound on test debt, never a measure of it.**
-
-**Fix:** give `StoreAdapter` a backup surface and let each adapter own the operation — turso runs `VACUUM INTO` on its own connection with its own flags, sqlite keeps the `sqliteVec.load()` + `VACUUM INTO` path. Making the existing cast *conditional* is NOT the fix and someone will try it; the point is that `backup.ts` must stop knowing what a backend is.
-
-**⚠ Operational constraint discovered while measuring, do not lose it:** plain in-place `VACUUM` fails with **`Parse error: VACUUM is incompatible with experimental multiprocess WAL`**.[4] The integrity probe's own advice — "100 allocated-but-unreachable page(s) ... recovered by an offline VACUUM" — therefore requires opening **without** `multiprocess_wal`. `VACUUM INTO` has no such restriction, which makes copy-then-swap the better reclaim path anyway, since it is also the backup path.
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/data/store/store-adapter/src/turso-adapter.ts:183-190 (the production flag set) exercised against a copy of ~/.memory/memory.db, 2: (live probe — VACUUM INTO succeeded both with and without the `vacuum` experiment, 78.7 MB destination in each case), 3: libs/memory-core/src/backup.ts:169-217, 4: (live probe — in-place VACUUM with index_method+multiprocess_wal+vacuum)]
 
 ### BL-338 — A machine crash must not be able to damage the store, and recovery must be automatic — **Open (HIGH)** (2026-07-31)
 

@@ -19,6 +19,8 @@ import type {
   AdapterTransaction,
   AdapterConfig,
   AdapterCapabilities,
+  AdapterBackupOptions,
+  AdapterBackupResult,
   RunResult,
   AllResult,
   TransactionOptions,
@@ -301,6 +303,52 @@ export class TursoAdapterImpl implements TursoAdapter {
 
   unwrap(): import('@tursodatabase/database').Database {
     return this.db as import('@tursodatabase/database').Database;
+  }
+
+  /**
+   * (BL-385) VACUUM INTO, run directly on this adapter's existing connection
+   * with whatever experimental flags it was opened with (`index_method`,
+   * optionally `multiprocess_wal` — see `connect()` above, the same flags
+   * production already sets). Measured 2026-08-01 against a copy of the live
+   * store: identical nodes/vec_node/edge counts, identical fts_match hit
+   * count, and 19 MB reclaimed — with no new flags required.
+   *
+   * IMPORTANT: plain in-place `VACUUM` (no INTO) fails on this connection
+   * with `Parse error: VACUUM is incompatible with experimental multiprocess
+   * WAL`. `VACUUM INTO` has no such restriction — do not "simplify" this to
+   * a plain VACUUM.
+   */
+  async backupTo(destPath: string, opts: AdapterBackupOptions = {}): Promise<AdapterBackupResult> {
+    await this.db.exec(`VACUUM INTO '${destPath.replace(/'/g, "''")}'`);
+
+    let integrityCheck = 'ok';
+    if (!opts.skipIntegrityCheck) {
+      // Reopen the backup with the SAME experimental flags as the source —
+      // `index_method` is required to even read the FTS index the copy
+      // carries. verifyStoreIntegrity's pragma_integrity_check probe already
+      // filters the known permanent Turso FTS false positive
+      // (`isKnownFalsePositive`), so a clean copy reports 'ok' here.
+      const backupConnectOpts: Parameters<typeof TursoAdapterImpl.connect>[0] = {
+        dbPath: destPath,
+        readonly: true,
+      };
+      if (this.config.experimental !== undefined) {
+        backupConnectOpts.experimental = this.config.experimental;
+      }
+      const backupAdapter = await TursoAdapterImpl.connect(backupConnectOpts);
+      try {
+        const report = await verifyStoreIntegrity(backupAdapter, {
+          depth: 'deep',
+          only: ['pragma_integrity_check'],
+        });
+        integrityCheck = report.ok
+          ? 'ok'
+          : report.damaged.map((f) => `${f.object}: ${f.detail}`).join('; ');
+      } finally {
+        await backupAdapter.close();
+      }
+    }
+    return { destPath, integrityCheck };
   }
 
   async executeGet<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<T | null> {
