@@ -31,6 +31,20 @@ function tmpDir(): { dir: string; cleanup: () => void } {
   return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
+// This whole file is sqlite-only — see the `raw()` helper above, which unwraps
+// to a better-sqlite3 handle for verification reads. The factory default is
+// now STORE_ADAPTER=turso; pin sqlite explicitly for every test in the file,
+// same convention as every other adapter-sensitive spec.
+let priorAdapterEnv: string | undefined;
+beforeEach(() => {
+  priorAdapterEnv = process.env['STORE_ADAPTER'];
+  process.env['STORE_ADAPTER'] = 'sqlite';
+});
+afterEach(() => {
+  if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+  else process.env['STORE_ADAPTER'] = priorAdapterEnv;
+});
+
 describe('memoryWrite — summary + metadata (BL-23)', () => {
   it('persists client-supplied summary and metadata', async () => {
     const { dir, cleanup } = tmpDir();

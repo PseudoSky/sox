@@ -208,7 +208,14 @@ export async function enrichOnWrite(
 
   if (resolvedTopic !== null) { touchUpdates.push('topic = ?'); touchParams.push(resolvedTopic); }
   if (resolvedSummary !== null) { touchUpdates.push('summary = ?'); touchParams.push(resolvedSummary); }
-  touchUpdates.push('tags = ?'); touchParams.push(JSON.stringify(resolvedTags));
+  // BL-325: this direct-SQL block replaced GraphBackend.touch() (commit
+  // 65171ad, TursoAdapter go-live) and dropped its
+  // `tags.length > 0 ? JSON.stringify(tags) : null` guard — regressing every
+  // untagged write from NULL to the literal string '[]'. Restore it: an empty
+  // tags array means "no tags", which the schema and every reader
+  // (memory_recall's tags filter, etc.) represent as NULL, not '[]'.
+  touchUpdates.push('tags = ?');
+  touchParams.push(resolvedTags.length > 0 ? JSON.stringify(resolvedTags) : null);
   touchUpdates.push('importance = ?'); touchParams.push(initialImportance);
 
   if (touchUpdates.length > 0) {
