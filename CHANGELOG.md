@@ -2,6 +2,72 @@
 
 ---
 
+## [Unreleased] — BL-385: `backupStore()` now works on the default (Turso) backend — adapters own their own VACUUM INTO
+
+### BL-385 (CRITICAL) — `backupStore()` hardcoded the sqlite driver, so backup was dead on the default backend
+
+`libs/memory-core/src/backup.ts` constructed `createSqliteAdapter({ dbPath, readonly: true }) as SqliteAdapter`,
+`.unwrap()`ed it to a raw better-sqlite3 handle, `sqliteVec.load()`ed it, and ran `VACUUM INTO` — never
+consulting the store's actual backend. On the default (Turso) backend the open itself failed:
+
+```
+VACUUM INTO failed: malformed database schema (__turso_internal_fts_dir_idx_fts_node_key) - near "USING": syntax error
+```
+
+`backupStore()` returned `E_IO` and **no destination file was produced**. The message read as data
+corruption — `malformed database schema` — when the source store was perfectly healthy; it was
+better-sqlite3 failing to parse Turso's own `CREATE INDEX ... USING fts (...)` DDL, the same class of
+misdiagnosis this box had already cost real time to (BL-338).
+
+(A prior version of this item claimed Turso `VACUUM INTO` itself was broken — re-measured 2026-08-01
+and that claim was wrong. `VACUUM INTO` against a real Turso store, using the exact experimental flags
+production already sets, produces a complete, FTS-functional, integrity-equivalent copy and reclaims
+free space. The defect was always `backup.ts` hardcoding a driver, never a missing Turso capability.)
+
+**Fix:** `StoreAdapter` gained a `backupTo(destPath, opts?)` surface
+(`libs/data/store/store-adapter/src/types.ts`). Each adapter owns the mechanics of its own backup:
+
+- `SqliteAdapterImpl.backupTo` loads sqlite-vec and runs `VACUUM INTO` on its own connection so vec0
+  shadow tables copy correctly.
+- `TursoAdapterImpl.backupTo` runs `VACUUM INTO` directly on the existing connection's experimental
+  flags (`index_method`, optionally `multiprocess_wal`) — `VACUUM INTO` has no restriction against
+  `multiprocess_wal`, unlike plain in-place `VACUUM` (`Parse error: VACUUM is incompatible with
+  experimental multiprocess WAL` — recorded as a code comment so the next reclaim/repair path doesn't
+  reach for a plain `VACUUM` and break).
+
+`backup.ts` now opens the source via `createStoreAdapter()` (sqlite or turso, whichever the store
+actually is) and calls `adapter.backupTo()` — it no longer imports `sqlite-vec`, casts to
+`SqliteAdapter`, or calls `.unwrap()`. Post-backup integrity verification reuses
+`verifyStoreIntegrity()`'s `pragma_integrity_check` probe (already filters the known permanent Turso
+FTS false positive), and a failure now names the backend: `Backup integrity check failed on turso
+backend: …` / `Backup failed on turso backend: …` — so an operator no longer chases corruption on a
+healthy store because a different driver misread it.
+
+Red→green watched, Turso specifically (the default backend). With the pre-fix `backup.ts`:
+
+```
+FAIL backupStore — BL-385 Turso backend > produces a destination file that exists, is non-empty,
+     and reopens on Turso with matching row counts and working FTS
+AssertionError: expected true to be false // Object.is equality
+- false
++ true
+```
+
+reproducing the exact failure: `backupStore()` returned `{ code: 'E_IO', message: 'VACUUM INTO failed:
+malformed database schema (__turso_internal_fts_dir_idx_fts_node_key) - near "USING": syntax error' }`
+and produced no destination file at all. With the fix restored: `19 passed (19)` in `backup.spec.ts`,
+including the new BL-385 case, which asserts both (a) the destination file exists and is non-empty and
+(b) it is *usable* — reopened on the real Turso backend with row counts matching the source and
+`fts_match` still returning hits. Two pre-existing `backup.spec.ts` failures that had been attributed to
+spec drift (they opened the backup file directly via better-sqlite3, which cannot read a Turso store's
+FTS/vec0 artifacts) were confirmed to be this same defect: once `backupStore()` could reach the Turso
+adapter at all, those two tests failed on the driver mismatch, not on backup correctness. Fixed by
+pinning them to the SQLite backend they were actually written for (`STORE_ADAPTER=sqlite`), since Turso
+now has its own dedicated coverage. (`libs/memory-core/src/{backup,backup.spec}.ts`,
+`libs/data/store/store-adapter/src/{types,sqlite-adapter,turso-adapter}.ts`)
+
+---
+
 ## [Unreleased] — BL-384: `memory_search_entities` now uses real FTS on every backend instead of silently degrading to a LIKE scan
 
 ### BL-384 (HIGH) — `memory_search_entities` issued raw SQLite FTS5 shadow-table SQL and silently degraded to a `LIKE` scan on Turso

@@ -2,10 +2,16 @@
  * backup.ts — VACUUM INTO backup (HF-4, BL-133).
  *
  * `backupStore(dbPath, destPath)`:
- *   Opens the source DB in read-only WAL mode and runs `VACUUM INTO <destPath>`.
- *   VACUUM INTO creates a fully compacted, single-file copy with no WAL/shm
- *   sidecar — the result is always in rollback journal mode and consistent even
- *   when taken under concurrent write load (SQLite serialises it at the page level).
+ *   Opens the source DB via the store's OWN backend (`createStoreAdapter` —
+ *   sqlite or turso, whichever `STORE_ADAPTER`/the store's config says) and
+ *   delegates the actual `VACUUM INTO <destPath>` to that adapter's
+ *   `backupTo()` (BL-385). This module never hardcodes a driver, casts to a
+ *   narrowed adapter type, or `unwrap()`s a raw handle — each adapter owns
+ *   the mechanics of vacuuming itself (sqlite-vec loading for SqliteAdapter,
+ *   experimental-flag handling for TursoAdapter). VACUUM INTO creates a
+ *   fully compacted, single-file copy with no WAL/shm sidecar — the result
+ *   is always in rollback journal mode and consistent even when taken under
+ *   concurrent write load (SQLite serialises it at the page level).
  *
  * Path allowlist:
  *   destPath must be inside `~/.memory/**`. This is the same allowlist enforced
@@ -13,9 +19,12 @@
  *   with E_ALLOWLIST before any file is created.
  *
  * Integrity verification:
- *   After the VACUUM INTO, the backup is opened and `PRAGMA integrity_check` is
- *   run. Any non-"ok" result causes the backup file to be deleted and an E_IO
- *   error is returned.
+ *   After the VACUUM INTO, the adapter re-opens the backup and runs its own
+ *   integrity probe (`verifyStoreIntegrity`'s `pragma_integrity_check`, which
+ *   already filters the known permanent Turso FTS false positive). Any
+ *   non-"ok" result causes the backup file to be deleted and an E_IO error is
+ *   returned, naming the backend so an operator does not chase corruption
+ *   that isn't there (BL-385).
  *
  * Follow-up (noted, NOT wired here):
  *   A `memory_backup` MCP tool is a natural follow-up. Wiring it in memory-server
@@ -23,14 +32,13 @@
  *   memory-cli only). See BL-FOLLOW-backup-mcp-tool in discovered notes.
  */
 
-import * as sqliteVec from 'sqlite-vec';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { StorageError } from './errors.js';
 import { expandDbPath } from './db.js';
-import type { SqliteAdapter } from '@adhd/sox-store-adapter';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -161,80 +169,62 @@ export async function backupStore(
     };
   }
 
-  // Open source with WAL mode via SqliteAdapter.
-  // Note: VACUUM INTO cannot run on a connection with PRAGMA query_only = ON.
-  // We open with { readonly: true } to prevent schema mutations but do NOT set
-  // query_only, which allows VACUUM INTO to proceed (it writes only to the dest file).
-  let srcRawDb: ReturnType<(SqliteAdapter)['unwrap']> | null = null;
+  // Open the source via the store's OWN backend (BL-385) — sqlite or turso,
+  // never hardcoded — and let that adapter own the VACUUM INTO mechanics.
+  // readonly:true prevents schema mutations but does NOT block VACUUM INTO,
+  // which only writes to destPath, never to the source file.
+  let srcAdapter: StoreAdapter | null = null;
+  let backend = (process.env.STORE_ADAPTER || 'turso').toLowerCase();
   try {
-    const { createSqliteAdapter } = await import('@adhd/sox-store-adapter');
-    const srcAdapter = createSqliteAdapter({ dbPath: resolvedSrc, readonly: true }) as SqliteAdapter;
-    srcRawDb = srcAdapter.unwrap();
-    sqliteVec.load(srcRawDb);
-    srcRawDb.exec('PRAGMA journal_mode = WAL;');
-    srcRawDb.exec('PRAGMA busy_timeout = 3000;');
-    // Do NOT set PRAGMA query_only — VACUUM INTO requires it to be off.
+    const { createStoreAdapter } = await import('@adhd/sox-store-adapter');
+    srcAdapter = await createStoreAdapter({ dbPath: resolvedSrc, readonly: true });
+    backend = srcAdapter.config.type;
 
-    // VACUUM INTO — creates a compact, fully written copy with no WAL sidecar.
-    // SQLite holds a shared lock on all pages during the vacuum, making the copy
-    // consistent even when taken concurrently with WAL writers on the source.
-    log(`[backup] running VACUUM INTO...`);
-    srcRawDb.exec(`VACUUM INTO '${resolvedDst.replace(/'/g, "''")}'`);
+    if (typeof srcAdapter.backupTo !== 'function') {
+      return {
+        code: 'E_IO',
+        message: `Backup failed on ${backend} backend: this adapter does not implement backupTo()`,
+        retryable: false,
+      };
+    }
+
+    log(`[backup] running VACUUM INTO via ${backend} adapter...`);
+    const result = await srcAdapter.backupTo(resolvedDst, { skipIntegrityCheck });
     log(`[backup] VACUUM INTO complete`);
+
+    if (!skipIntegrityCheck && result.integrityCheck !== 'ok') {
+      // Integrity failed — delete the corrupt backup and return E_IO, naming
+      // the backend so an operator does not chase corruption on a healthy
+      // store just because a different driver misread it (BL-385).
+      try { fs.unlinkSync(resolvedDst); } catch { /* ignore */ }
+      return {
+        code: 'E_IO',
+        message: `Backup integrity check failed on ${backend} backend: ${result.integrityCheck}. Backup file deleted.`,
+        retryable: false,
+        details: { integrity_check: result.integrityCheck, backend },
+      };
+    }
+    log(`[backup] integrity_check: ${result.integrityCheck}`);
+
+    const completedAt = new Date().toISOString();
+    return {
+      sourcePath: resolvedSrc,
+      destPath: resolvedDst,
+      startedAt,
+      completedAt,
+      integrityCheck: result.integrityCheck,
+    };
   } catch (err) {
     // Clean up a partial dest file if it was created.
     try { if (fs.existsSync(resolvedDst)) fs.unlinkSync(resolvedDst); } catch { /* ignore */ }
     return {
       code: 'E_IO',
-      message: `VACUUM INTO failed: ${err instanceof Error ? err.message : String(err)}`,
+      message: `Backup failed on ${backend} backend: ${err instanceof Error ? err.message : String(err)}`,
       retryable: false,
     };
   } finally {
-    try { srcRawDb?.close(); } catch { /* ignore */ }
+    try { await srcAdapter?.close(); } catch { /* ignore */ }
   }
-
-  // Verify the backup with PRAGMA integrity_check.
-  let integrityCheck = 'ok';
-  if (!skipIntegrityCheck) {
-    let backupRawDb: ReturnType<(SqliteAdapter)['unwrap']> | null = null;
-    try {
-      const { createSqliteAdapter } = await import('@adhd/sox-store-adapter');
-      const backupAdapter = createSqliteAdapter({ dbPath: resolvedDst, readonly: true }) as SqliteAdapter;
-      backupRawDb = backupAdapter.unwrap();
-      sqliteVec.load(backupRawDb);
-      const rows = backupRawDb
-        .prepare<[], { integrity_check: string }>('PRAGMA integrity_check')
-        .all();
-      // integrity_check returns one row per issue; a clean DB returns exactly 'ok'.
-      const issues = rows.map((r) => r.integrity_check).filter((s) => s !== 'ok');
-      integrityCheck = issues.length === 0 ? 'ok' : issues.join('; ');
-    } catch (err) {
-      integrityCheck = `ERROR: ${err instanceof Error ? err.message : String(err)}`;
-    } finally {
-      try { backupRawDb?.close(); } catch { /* ignore */ }
-    }
-
-    if (integrityCheck !== 'ok') {
-      // Integrity failed — delete the corrupt backup and return E_IO.
-      try { fs.unlinkSync(resolvedDst); } catch { /* ignore */ }
-      return {
-        code: 'E_IO',
-        message: `Backup integrity check failed: ${integrityCheck}. Backup file deleted.`,
-        retryable: false,
-        details: { integrity_check: integrityCheck },
-      };
-    }
-    log(`[backup] integrity_check: ok`);
-  }
-
-  const completedAt = new Date().toISOString();
-  return {
-    sourcePath: resolvedSrc,
-    destPath: resolvedDst,
-    startedAt,
-    completedAt,
-    integrityCheck,
-  };
 }
 
 /**

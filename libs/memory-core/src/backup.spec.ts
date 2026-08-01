@@ -10,6 +10,13 @@
  *   6. Destination already exists → E_IO (no overwrite).
  *   7. isPathInMemoryAllowlist correctly identifies in/out-of-allowlist paths.
  *   8. isBackupStoreError utility correctly identifies errors vs results.
+ *   9. BL-385: backupStore() on a TURSO-backed store (the default backend)
+ *      produces a destination file that (a) exists and is non-empty, and
+ *      (b) is USABLE — reopens on the real Turso backend with matching row
+ *      counts and working FTS. Assertion (b) is the one that matters: a file
+ *      that exists but is unopenable would still pass (a). Pre-fix,
+ *      backupStore() hardcoded `createSqliteAdapter` + `.unwrap()`, so the
+ *      Turso open failed and no destination file was produced at all.
  *
  * Backup-under-load test (#2):
  *   A concurrent batch of writes (via memoryWrite) runs in parallel with the
@@ -24,6 +31,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { openDb } from './db.js';
 import { WriteQueue } from './write-queue.js';
 import {
@@ -31,7 +39,6 @@ import {
   backupStore,
   isBackupStoreError,
   isPathInMemoryAllowlist,
-  memoryAllowlistRoot,
 } from './backup.js';
 import { _resetEmbedSingleton } from './embed.js';
 
@@ -71,7 +78,7 @@ afterEach(async () => {
  * Create a temp DB inside ~/.memory/sox-backup-test-<rnd>/ so the allowlist
  * check passes. Returns the db path; the dir is registered for cleanup.
  */
-async function freshDbInsideAllowlist(): Promise<{ db: Database.Database; dbPath: string; dir: string }> {
+async function freshDbInsideAllowlist(): Promise<{ db: StoreAdapter; dbPath: string; dir: string }> {
   const memRoot = os.homedir();
   const testDir = path.join(memRoot, '.memory', `sox-backup-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   fs.mkdirSync(testDir, { recursive: true });
@@ -129,7 +136,7 @@ describe('backupStore — allowlist enforcement', () => {
     // No file should have been created.
     expect(fs.existsSync(badDest)).toBe(false);
 
-    db.close();
+    await db.close();
   });
 
   it('returns E_ALLOWLIST when source is outside ~/.memory/**', async () => {
@@ -137,7 +144,7 @@ describe('backupStore — allowlist enforcement', () => {
     tmpDirs.push(dir);
     const srcPath = path.join(dir, 'outside.db');
     const db = await openDb(srcPath);
-    db.close();
+    await db.close();
 
     const destPath = destPathInsideAllowlist('-outside-src');
     const result = await backupStore(srcPath, destPath, { log: () => undefined });
@@ -171,17 +178,31 @@ describe('backupStore — allowlist enforcement', () => {
     // Original dest content untouched.
     expect(fs.readFileSync(dest, 'utf8')).toBe('existing');
 
-    db.close();
+    await db.close();
   });
 });
 
 describe('backupStore — successful backup', () => {
+  // These two tests write to and read the backup file directly through
+  // better-sqlite3 (real WAL writer / raw PRAGMA integrity_check), which is
+  // only valid against a SQLite-backed store — force that backend explicitly
+  // rather than relying on whatever STORE_ADAPTER defaults to. The Turso
+  // backend gets its own dedicated coverage below (BL-385).
+  const priorAdapterEnv = process.env['STORE_ADAPTER'];
+  beforeEach(() => {
+    process.env['STORE_ADAPTER'] = 'sqlite';
+  });
+  afterEach(() => {
+    if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+    else process.env['STORE_ADAPTER'] = priorAdapterEnv;
+  });
+
   it('produces an openable, integrity-clean copy of the source DB', async () => {
     const { db, dbPath } = await freshDbInsideAllowlist();
     // Insert some real data.
-    db.prepare(`INSERT INTO node (uid, kind, content, t_created, t_valid)
-                VALUES ('test-uid-1', 'episode', 'hello world', datetime('now'), datetime('now'))`).run();
-    db.close();
+    await db.executeRun(`INSERT INTO node (uid, kind, content, t_created, t_valid)
+                VALUES ('test-uid-1', 'episode', 'hello world', datetime('now'), datetime('now'))`);
+    await db.close();
 
     const dest = destPathInsideAllowlist('-clean');
     const result = await backupStore(dbPath, dest, { log: () => undefined });
@@ -215,7 +236,7 @@ describe('backupStore — successful backup', () => {
      * keeping the test fast and deterministic.
      */
     const { db, dbPath } = await freshDbInsideAllowlist();
-    db.close();
+    await db.close();
 
     const dest = destPathInsideAllowlist('-under-load');
 
@@ -276,6 +297,99 @@ describe('backupStore — successful backup', () => {
       await WriteQueue.clearInstances();
     }
   }, 60_000); // 60s timeout — allows for sqlite-vec load time under load
+});
+
+// ── BL-385 ────────────────────────────────────────────────────────────────────
+
+describe('backupStore — BL-385 Turso backend', () => {
+  let dir: string | undefined;
+  const priorAdapterEnv = process.env['STORE_ADAPTER'];
+
+  afterEach(() => {
+    if (dir) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+    dir = undefined;
+    if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+    else process.env['STORE_ADAPTER'] = priorAdapterEnv;
+  });
+
+  it(
+    'produces a destination file that exists, is non-empty, and reopens on Turso ' +
+      'with matching row counts and working FTS',
+    async () => {
+      process.env['STORE_ADAPTER'] = 'turso';
+
+      const testDir = path.join(
+        os.homedir(),
+        '.memory',
+        `sox-backup-test-bl385-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      );
+      fs.mkdirSync(testDir, { recursive: true });
+      dir = testDir;
+      const dbPath = path.join(testDir, 'm.db');
+
+      const adapter = await openDb(dbPath);
+      expect(adapter.config.type).toBe('turso');
+
+      const NODES = [
+        { uid: 'bl385-1', content: 'The application server experienced high CPU load during peak hours.' },
+        { uid: 'bl385-2', content: 'Distributed systems require careful consideration of CAP theorem tradeoffs.' },
+        { uid: 'bl385-3', content: 'The new API gateway improved throughput by 40 percent across all services.' },
+      ];
+      for (const n of NODES) {
+        await adapter.executeRun(
+          `INSERT INTO node (uid, kind, content, content_hash, t_created, t_valid)
+           VALUES (?, 'episode', ?, ?, datetime('now'), datetime('now'))`,
+          [n.uid, n.content, `hash-${n.uid}`],
+        );
+      }
+      const srcCount = await adapter.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM node');
+      await adapter.close();
+
+      const dest = path.join(testDir, 'backup-bl385.db');
+      const result = await backupStore(dbPath, dest, { log: () => undefined });
+
+      expect(isBackupStoreError(result)).toBe(false);
+      const ok = result as import('./backup.js').BackupStoreResult;
+      expect(ok.integrityCheck).toBe('ok');
+
+      // (a) The destination file exists and is non-empty.
+      expect(fs.existsSync(dest)).toBe(true);
+      expect(fs.statSync(dest).size).toBeGreaterThan(0);
+
+      // (b) The destination is USABLE — reopen it on the real Turso backend
+      // (never better-sqlite3; a Turso store's FTS/vec0 artifacts are not
+      // readable through that driver — see BL-385's root-cause writeup) and
+      // confirm row counts match the source and FTS still returns hits.
+      //
+      // Reopened WITHOUT readonly: a readonly Turso connection cannot run
+      // fts_match at all (`Error: Resource is read-only` — a genuine, verified,
+      // pre-existing Turso engine limitation, reproduced independent of this
+      // backup path). Row-count verification does not need this and would
+      // pass equally under readonly; using one connection for both keeps the
+      // test honest about what actually works on a reopened backup.
+      const { createStoreAdapter, createFTSDialect } = await import('@adhd/sox-store-adapter');
+      const backupAdapter = await createStoreAdapter({ dbPath: dest });
+      try {
+        expect(backupAdapter.config.type).toBe('turso');
+        const bakCount = await backupAdapter.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM node');
+        expect(bakCount?.c).toBe(srcCount?.c);
+        expect(bakCount?.c).toBeGreaterThanOrEqual(NODES.length);
+
+        const ftsDialect = createFTSDialect('turso');
+        const { sql: matchSql } = ftsDialect.matchClause(['content', 'name', 'summary'], '?');
+        const hits = await backupAdapter.executeAll<{ uid: string }>(
+          `SELECT uid FROM node WHERE ${matchSql}`,
+          ['CPU load'],
+        );
+        expect(hits.rows.map((r) => r.uid)).toContain('bl385-1');
+      } finally {
+        await backupAdapter.close();
+      }
+    },
+    30_000,
+  );
 });
 
 describe('isBackupStoreError', () => {

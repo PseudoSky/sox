@@ -143,6 +143,52 @@ export interface FTSDialect {
   matchClause(columns: string[], queryParam: string): { sql: string };
   /** ORDER BY clause for BM25 scoring. Returns a SQL expression for ranking. */
   scoreClause(columns: string[], queryParam: string): string;
+
+  /**
+   * Build the bound MATCH-query text (the value ultimately bound to
+   * `matchClause`'s `queryParam` placeholder) from a whitespace-tokenised
+   * query.
+   *
+   * BL-367: the two engines have DIFFERENT implicit boolean defaults for a
+   * bareword query string. SQLite FTS5 ANDs bareword tokens together
+   * (`fox riverbank` requires BOTH terms present) while Turso's Tantivy
+   * `fts_match` matches on ANY token present (effectively OR). A naive
+   * space-joined query therefore returns dramatically fewer — often zero —
+   * results on SQLite than the identical query on Turso for any multi-term
+   * query where not every token co-occurs in one document (empirically
+   * measured: 4/5 test queries returned ZERO SQLite FTS matches while Turso
+   * returned real hits for the same corpus — see
+   * `recall-parity-arm-attribution.test.ts`).
+   *
+   * Both dialects now build an explicit `"tok1" OR "tok2" OR ...` query
+   * string so the boolean semantics are identical (and independent of
+   * either engine's implicit default) — matching recall's intent of a
+   * forgiving, any-term-contributes text-search signal, not exact-phrase
+   * matching. Tokens are individually double-quoted (FTS5 phrase-query
+   * syntax, which also disables prefix/column-filter special characters)
+   * with embedded quotes escaped by doubling.
+   */
+  buildMatchQuery(tokens: string[]): string;
+}
+
+// ── Backup (BL-385) ──────────────────────────────────────────────────────────
+
+export interface AdapterBackupOptions {
+  /**
+   * Skip the post-backup integrity verification of the destination.
+   * NOT recommended for production — only for test scenarios.
+   * Default: false.
+   */
+  skipIntegrityCheck?: boolean;
+}
+
+export interface AdapterBackupResult {
+  /** Absolute destination path written. */
+  destPath: string;
+  /** Result of the post-backup integrity check: 'ok' on success, otherwise a
+   *  semicolon-joined description of the finding(s). 'ok' (unverified) when
+   *  `skipIntegrityCheck` was set. */
+  integrityCheck: string;
 }
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -233,6 +279,25 @@ export interface StoreAdapter {
 
   /** Escape hatch — returns the raw driver handle. Calling this breaks portability. */
   unwrap(): unknown;
+
+  /**
+   * (BL-385) Create a compacted, consistent, single-file copy of this store
+   * at `destPath` via `VACUUM INTO` — the adapter owns the operation so
+   * callers (e.g. `memory-core`'s `backup.ts`) never have to know or guess
+   * what backend they are talking to. Each implementation runs `VACUUM INTO`
+   * on its own connection with whatever flags that backend requires:
+   *  - `SqliteAdapter`: loads sqlite-vec before vacuuming so vec0 shadow
+   *    tables copy correctly.
+   *  - `TursoAdapter`: runs directly on the existing connection's
+   *    experimental flags (`index_method`, optionally `multiprocess_wal`) —
+   *    `VACUUM INTO` has no restriction against `multiprocess_wal`, unlike
+   *    in-place `VACUUM` (`Parse error: VACUUM is incompatible with
+   *    experimental multiprocess WAL`).
+   * `destPath` must not already exist; implementations must fail rather than
+   * silently overwrite. Optional — `MockAdapter` (tests) does not implement
+   * it.
+   */
+  backupTo?(destPath: string, opts?: AdapterBackupOptions): Promise<AdapterBackupResult>;
 }
 
 // ── Narrowed sub-types ─────────────────────────────────────────────────────
