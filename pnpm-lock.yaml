@@ -367,6 +367,9 @@ importers:
       '@adhd/sox-store-adapter':
         specifier: workspace:*
         version: link:../data/store/store-adapter
+      '@adhd/sox-telemetry':
+        specifier: workspace:*
+        version: link:../observability/sox-telemetry
       better-sqlite3:
         specifier: ^12.10.0
         version: 12.10.0
