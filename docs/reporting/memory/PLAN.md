@@ -756,6 +756,32 @@ fleet spend.**
 > **Practical consequence: stop rationing worker tier and worker budget. Ration ORCHESTRATION** —
 > fewer, larger, better-specified dispatches, and less re-verification churn in the parent.
 >
+> ### Two calibration facts worth more than the numbers
+>
+> **1. Agent self-reports of their own consumption are systematically low by ~2.2–2.5x.**
+>
+> | agent | self-reported | measured | |
+> |---|---|---|---|
+> | pkt28 | "~30 tool calls" | **67** | 2.2x under |
+> | pkt01 | "roughly 45–50" | **126** | 2.5x under |
+>
+> The third revision of this section was built on pkt28's self-report and was therefore wrong by the
+> same factor. **Measure the transcript** (`scratch-claude-metadata stats --file
+> ~/.claude/projects/<proj>/<session>/subagents/agent-a<name>-*.jsonl`); never calibrate on what an
+> agent says it spent. This is not a criticism of the agents — an agent has no reliable view of its
+> own turn count, and asking for one invites a guess.
+>
+> **2. Confound-chasing cost MORE than the implementation.** PKT-01's own summary: its slow-stage
+> test appeared to show the isolation fix not working; ~10 turns of debug instrumentation later the
+> cause was an unrelated latent race in `WriteQueue.forPath()` (now BL-402). **The detour exceeded
+> the cost of the actual fix**, which was 2 new files plus edits to 4.
+>
+> Planning consequence: a packet's cost is **not** dominated by its diff size. It is dominated by
+> orientation (fixed, ~27% of fleet spend) plus however many pre-existing latent defects the change
+> happens to walk into. The second term is unpredictable by construction — you cannot enumerate the
+> bugs you have not found yet — which is the real argument for treating budgets as guidance and for
+> filing confounds (as PKT-01 did) rather than absorbing them silently into a packet's cost.
+>
 > **Superseded reasoning, kept so it is not re-derived:**
 > **TURNS is the reliable unit; tokens are derived.** PKT-28 estimated ~30 turns and took ~30 tool
 > calls — accurate. Its *token* figure was guessed wrong twice in opposite directions: 30k, then
