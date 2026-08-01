@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 94.** (BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 95.** (BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -2944,4 +2944,42 @@ The proxy never restarted. Only the backend rotated, which is why nothing in the
 **Severity: CRITICAL.** Any agent running an ordinary `nx build memory-server` — which this repo's own AGENT SEQUENCE *mandates* after touching extension code — can silently swap the live memory server onto an unreviewed, unreproducible bundle built from a dirty concurrent tree, with every health surface reporting green. Related: BL-235 (destructive builds — the trigger), BL-372 (the inverse defect), BL-390 (unreproducible artifacts — the precondition), §9.5 front-shim service-proxy (the mechanism).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `memory_ping` before/after — artifact 6d1b2abc1c12 pid 32640 -> artifact 90c7bb000580 pid 3040, proxy pid 32395 unchanged; 2: mtime of extensions/bundles/sox-memory-bundle/members/memory-server/dist/index.js (13:26:15) vs backend started_at 2026-08-01T18:25:56.931Z, and shasum of that dist = 1ca473c09c9f != the running 90c7bb000580]
+
+---
+
+### BL-394 — bypassing write serialization on Turso also bypasses admission control, while `memory_ping` reports the guards as enabled — **Open (HIGH)** (2026-08-01)
+
+**⛔ READ THIS FIRST — THIS IS NOT A REQUEST TO SERIALIZE TURSO WRITES.** Three separate agents have already misread this area and tried to flip `needsWriteSerialization` / `concurrentTransactions` on the Turso adapter (2026-07-30). **Do not.** Turso handling concurrent writes natively is a deliberate, owner-mandated improvement and must not be reverted. The defect below is narrower and orthogonal: bypassing *serialization* also silently bypasses *admission control*.
+
+**Found while:** reviewing the BL-325 spec conversion. That agent found 24 of 37 memory-core test failures shared one cause — specs not pinning `STORE_ADAPTER=sqlite`, so they got the branch default (`STORE_ADAPTER || 'turso'`, `factory.ts:24`) and `WriteQueue._noop` silently became `true`, making the queue's own behaviour vacuous under test. Correct fix for the tests. But **Turso is the production default**, so the same branch is taken on the live store — and the consequence is broader than that agent framed it.
+
+**What the bypass actually skips, verified in source.** `WriteQueue._create` sets `_noop = true` when `!adapter.capabilities.needsWriteSerialization` (`write-queue.ts:371-373`).[1] `enqueue` then returns early through the bypass block at `write-queue.ts:502-540`, which executes the operation immediately and returns **before reaching either admission check** that the queued path performs:[2]
+
+| guard | queued path | Turso (bypass) |
+|---|---|---|
+| size cap → `E_BUSY`, `rejections_busy_size++` | `if (this.queue.length >= this._maxSize)` | **not reached** |
+| deadline guard → `rejections_busy_deadline` | `if (!deadlineGuardDisabled())` … `estimatedWaitMs > this._deadlineBudgetMs` | **not reached** |
+| serialization | FIFO through one slot | **not reached — CORRECT AND INTENDED** |
+
+Only the third is deliberate. The first two are backpressure/admission concerns that have nothing to do with whether the engine can handle concurrent I/O, and they were lost by being implemented on the far side of the same early return.
+
+**The status surface says the opposite.** Live `memory_ping` on the production store reports:[3]
+
+```json
+"write_queue": { "queue_max_size": 100, "deadline_budget_ms": 20000,
+                 "deadline_guard_enabled": true, "saturated": false,
+                 "counters": { "rejections_busy_size": 0, "rejections_busy_deadline": 0 } }
+```
+
+Every one of those reads as "admission control is configured and active." None of it is in effect. `rejections_busy_*` sitting at 0 is not evidence of a healthy queue — it is evidence the code that increments them is unreachable. This is the BL-334 meta-defect again: the surface reports configuration rather than reality.
+
+**Consequence:** there is no bound on concurrent in-flight writes on the default backend and no deadline-based shedding, so a burst is absorbed as unbounded concurrency against the store and unbounded memory in the process, with no `E_BUSY` ever returned to a caller and no counter moving to show it happened. Turso's native concurrency makes this survivable in the normal case, which is exactly why it has gone unnoticed.
+
+**Also unexplained, do not assume it is the same thing:** after two real `memory_write` calls post-deploy, live `write_queue.counters` read `tasks_completed: 0, write_tasks_completed: 0, apply_tasks_completed: 0` while `throughput_writes_per_sec` was non-zero.[3] The bypass path *does* call `_trackCompletion()` (`write-queue.ts:511`), so those counters should have moved. Either `memory_ping` reads a different `WriteQueue` instance than the writes used, or `_trackCompletion` does not update these fields. **Determine which before fixing anything** — if `memory_ping` reports a different instance than the one doing the work, every number in that block is suspect and that is a larger problem than this item.
+
+**Fix sketch:** hoist the size cap and deadline guard **above** the `_bypass || _noop` early return so they apply on every path, leaving only FIFO serialization behind the capability check. Admission control and execution ordering are separate concerns and must stop sharing a branch. Then make the reported fields honest: either the guards genuinely apply (preferred) or `memory_ping` must report them as inactive rather than printing their configured values. A regression test must assert that a Turso-backed queue **still rejects with `E_BUSY` at `maxSize`** — that assertion is what pins the two concerns apart permanently.
+
+**Severity:** HIGH — a documented safety mechanism is inert on the default backend and the health surface affirmatively reports it as active. Not CRITICAL because Turso's native concurrency means normal operation is unaffected and no data loss is implied. Related: BL-334 (status surface reports configuration, not reality), BL-154 (why serialization exists at all — re-entrancy, NOT throughput), BL-387 (same shape: a published number that no rule consumes).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/memory-core/src/write-queue.ts:365-375, 2: libs/memory-core/src/write-queue.ts:495-600 (bypass block vs the size-cap and deadline-guard checks on the queued path), 3: live memory_ping on artifact 6d1b2abc1c12 / pid 32640 after two real memory_write calls]
 
