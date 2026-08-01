@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 93.** (BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 94.** (BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -2908,3 +2908,40 @@ embeddings, and the composite parity contract this session exists to protect alr
 **Related:** BL-367 (the divergence this was found while attributing; fixed independently of this item).
 
 Citations: [wip/turso-live-metrics, main, claude, BL-367 attribution, 1: libs/data/store/store-adapter/src/vector-dialect.ts (SqliteVecDialect.createTableDDL — vectorColumnType(dim) returns `FLOAT[${dim}]`, no distance_metric clause), 2: libs/data/store/store-adapter/src/vector-dialect.ts (TursoVectorDialect.distanceExpr — `vector_distance_cos(...)`), 3: libs/memory-core/src/recall.ts (memoryRecall §2a — `vectorDialect.topKQuery('vec_node', 'embedding', queryVec, knnLimit, 'cosine')`), 4: extensions/bundles/sox-memory-bundle/members/memory-server/recall-parity-arm-attribution.test.ts (debug dump captured during BL-367 attribution, 2026-08-01 — 9/10 sqlite rows tied at d=1.4142, 9/10 turso rows tied at d=1.0000, for query "fox riverbank wildlife outdoors"), 5: libs/memory-core/src/recall.ts (memoryRecall §2a — `vecRows = [...vecRows].sort((a, b) => a.distance - b.distance || a.node_id - b.node_id)`), 6: `npx nx test memory-server --skip-nx-cache` 2026-08-01 — 184/184 passed, recall-parity.test.ts green at unmodified 0.80 threshold, per-arm attribution: vec=0.52 fts=1.00 temporal=1.00]
+
+---
+
+### BL-393 — an incidental `nx build` silently REDEPLOYS the live service: the proxy respawns the backend onto whatever bundle exists at that instant — **Open (CRITICAL)** (2026-08-01)
+
+**This is the exact inverse of BL-372 and it happened on the same day.** BL-372: an explicit, deliberate `launchctl kickstart` restart does NOT deploy, because the backend survives as an orphan on the old bundle. BL-393: a build nobody intended as a deploy DOES deploy, because the backend dies and the front-shim proxy silently respawns it against the new `dist/`. **The deploy path and the "definitely not a deploy" path have swapped behaviours.** An operator has no reliable mental model in either direction.
+
+**Observed live, unprompted, on the production memory-server** (nobody ran a deploy; every agent that day explicitly disclaimed touching the live unit):[1]
+
+| | before | after |
+|---|---|---|
+| running artifact | `6d1b2abc1c12` (deployed + verified at 17:33 per `[inv:deploy-verified]`) | **`90c7bb000580`** |
+| backend pid | 32640 | **3040**, started 18:25:56Z |
+| proxy pid | 32395 | **32395 — unchanged** |
+
+The proxy never restarted. Only the backend rotated, which is why nothing in the service surface reported a deploy: `soxe service status` reconciles the *unit*, and the unit was never touched.
+
+**Timeline, from file mtimes and the backend's own `started_at`:**[2]
+```
+13:25:56  backend dies, proxy respawns it -> loads the bundle present at that instant
+13:26:15  `nx build memory-server` finishes writing the new dist   (19s LATER)
+```
+`tools/bundle-extension.cjs` stages atomically, so the respawned process did load a *complete* bundle — just not the one anyone chose. The trigger is BL-235's `rm -rf dist` prelude: the build deleted the file the live backend was executing.
+
+**The running artifact now exists nowhere.** `90c7bb000580` is not on disk (`1ca473c09c9f`), not in `registry/index.json` (`1ca473c09c9f`), and corresponds to no commit — it was a transient bundle from one of the session's several concurrent rebuilds. **The live memory server is currently executing code that cannot be reproduced, inspected, or rolled back to.** This is BL-390's unreproducibility warning arriving as a live incident rather than a hypothetical.
+
+**Why every health check stayed green.** `memory_ping` reports `ok`, integrity `overall: ok` with all five probes validated, backlog 0. Liveness and store integrity are genuinely fine — the store was never at risk. What is compromised is *provenance*: nothing in any surface answers "is the running code the code we shipped?" `[inv:deploy-verified]` compares running-vs-on-disk, and would have flagged this — but it only runs when a human deliberately deploys, and this was not a deploy.
+
+**Fix sketch, three independent parts:**
+1. **The build must not be able to redeploy.** Either build to a staging path and swap only on an explicit deploy, or have the proxy refuse to respawn a backend whose bundle hash differs from the one it was started with, escalating instead of silently rolling forward. Silent roll-forward is the defect; a loud refusal is correct.
+2. **The proxy must report backend identity.** A backend rotation that changes the artifact hash is a deploy event and must be logged and surfaced in `memory_ping`/`service status` — right now the *only* way to notice is to have recorded the previous hash by hand, which is how this was caught.
+3. **`sox service restart` (BL-372) should be the sole path that changes running code**, and should record the deployed hash so drift from it is detectable after the fact.
+
+**Severity: CRITICAL.** Any agent running an ordinary `nx build memory-server` — which this repo's own AGENT SEQUENCE *mandates* after touching extension code — can silently swap the live memory server onto an unreviewed, unreproducible bundle built from a dirty concurrent tree, with every health surface reporting green. Related: BL-235 (destructive builds — the trigger), BL-372 (the inverse defect), BL-390 (unreproducible artifacts — the precondition), §9.5 front-shim service-proxy (the mechanism).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `memory_ping` before/after — artifact 6d1b2abc1c12 pid 32640 -> artifact 90c7bb000580 pid 3040, proxy pid 32395 unchanged; 2: mtime of extensions/bundles/sox-memory-bundle/members/memory-server/dist/index.js (13:26:15) vs backend started_at 2026-08-01T18:25:56.931Z, and shasum of that dist = 1ca473c09c9f != the running 90c7bb000580]
+
