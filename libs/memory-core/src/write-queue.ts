@@ -224,6 +224,12 @@ const LOG_PREFIX = '[memory-core writeq]';
 export class WriteQueue {
   /** Singleton instances keyed by resolved (tilde-expanded) dbPath. */
   private static instances = new Map<string, WriteQueue>();
+  /** BL-402: in-flight `_create()` promises keyed by dbPath, so concurrent
+   *  first-callers for the SAME never-before-seen path all await the same
+   *  `openDb()` call instead of each independently paying the full open
+   *  sequence. Cleared once the promise settles (success or failure) so a
+   *  failed open doesn't permanently wedge the path. */
+  private static pending = new Map<string, Promise<WriteQueue>>();
   /** WP-1 negative control: when true, enqueue runs operations immediately (serialisation broken). */
   private static _bypass = !!process.env['SOX_DISABLE_WRITE_QUEUE'];
 
@@ -342,6 +348,7 @@ export class WriteQueue {
       try { await q.adapter.close(); } catch { /* already closed */ }
     }
     WriteQueue.instances.clear();
+    WriteQueue.pending.clear();
   }
 
   /**
@@ -349,17 +356,40 @@ export class WriteQueue {
    * The returned queue is a singleton — repeated calls return the same instance.
    * When `_bypass` is true, creates a new queue each time (no serialisation) so
    * the ordering negative control works.
+   *
+   * BL-402: the check (`instances.get`) and the set (`instances.set`) used to
+   * be separated by an `await` on `_create()` → `openDb()`, so two callers
+   * racing on the SAME never-before-seen `dbPath` both observed `undefined`
+   * before either had populated the map, and both independently paid the full
+   * `openDb()` sequence. Fixed by making the check-then-set atomic at the
+   * SYNCHRONOUS start of the call: the first caller stores the in-flight
+   * `_create()` PROMISE (not the resolved instance) in `pending` before any
+   * `await` happens, so every concurrent caller for that path — including the
+   * first one itself — awaits the exact same promise.
    */
-  static async forPath(dbPath: string, maxSize?: number): Promise<WriteQueue> {
+  static forPath(dbPath: string, maxSize?: number): Promise<WriteQueue> {
     if (WriteQueue._bypass) {
       return WriteQueue._create(dbPath, maxSize);
     }
-    let instance = WriteQueue.instances.get(dbPath);
-    if (!instance) {
-      instance = await WriteQueue._create(dbPath, maxSize);
-      WriteQueue.instances.set(dbPath, instance);
+    const instance = WriteQueue.instances.get(dbPath);
+    if (instance) return Promise.resolve(instance);
+
+    let p = WriteQueue.pending.get(dbPath);
+    if (!p) {
+      p = WriteQueue._create(dbPath, maxSize).then((created) => {
+        WriteQueue.instances.set(dbPath, created);
+        WriteQueue.pending.delete(dbPath);
+        return created;
+      });
+      p.catch(() => {
+        // A failed open must not permanently wedge this path — the next
+        // forPath() call gets a fresh attempt instead of a rejected promise
+        // cached forever.
+        WriteQueue.pending.delete(dbPath);
+      });
+      WriteQueue.pending.set(dbPath, p);
     }
-    return instance;
+    return p;
   }
 
   private static async _create(dbPath: string, maxSize?: number): Promise<WriteQueue> {
