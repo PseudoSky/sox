@@ -95,6 +95,13 @@ import {
   summarizeIntegrityForStatus,
   integrityHeadline,
 } from '@adhd/sox-store-adapter';
+// BL-401 gap 3: BL-351's stated acceptance requires every emitted metric be
+// reachable from the status surface WITHOUT reading a log file — the exact
+// BL-353 failure mode ("the data is written when somebody looks... nobody
+// looked for two days") the substrate's own design doc calls out as
+// insufficient on its own. `telemetrySelfCheck()` is a pure, zero-I/O,
+// in-memory read (§5.7) — safe to call on every memory_stats request.
+import { telemetrySelfCheck } from '@adhd/sox-telemetry';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -1885,8 +1892,22 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         integrity: integrityView,
         integrity_headline: integrityHeadline(integrityView),
       };
+      // BL-401 gap 3: expose the substrate's self-check the same way
+      // `integrity` above is exposed — additive, never overwrites an existing
+      // field, and best-effort (a telemetry read must never break the stats
+      // call a CI gate depends on). Pure in-memory read, zero I/O.
+      let telemetrySelfCheckResult: ReturnType<typeof telemetrySelfCheck> | null;
+      try {
+        telemetrySelfCheckResult = telemetrySelfCheck();
+      } catch {
+        telemetrySelfCheckResult = null;
+      }
+      const withTelemetry = {
+        ...withIntegrity,
+        telemetry_self_check: telemetrySelfCheckResult,
+      };
       return {
-        content: [{ type: 'text', text: JSON.stringify(withIntegrity) }],
+        content: [{ type: 'text', text: JSON.stringify(withTelemetry) }],
       };
     }
 
