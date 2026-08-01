@@ -23,7 +23,7 @@ import { readFileSync } from 'node:fs';
 
 const PLAN = 'docs/reporting/memory/PLAN.md';
 const BACKLOG = 'BACKLOG.md';
-const REQUIRED = ['requires', 'tier', 'Closes', 'Files', 'acceptance', 'budget'];
+const REQUIRED = ['requires', 'tier', 'Closes', 'Files', 'acceptance', 'budget', 'orientation'];
 
 const plan = readFileSync(PLAN, 'utf8');
 const backlog = readFileSync(BACKLOG, 'utf8');
@@ -47,6 +47,7 @@ for (const b of blocks) {
     acceptance: field('acceptance'),
     produces: field('Produces'),
     budget: field('budget'),
+    orientation: field('orientation'),
     body: b,
   });
 }
@@ -70,8 +71,18 @@ for (const [id, p] of packets) {
   }
   // A budget without a hard ceiling is a suggestion, and suggestions do not stop
   // an agent at 450k holding uncommitted work.
-  if (p.budget && !/HARD CEILING/.test(p.budget)) {
-    violations.push(`${id}: **budget:** must state a HARD CEILING, not a target`);
+  // A ceiling BELOW the measured orientation cost is a trap, not a budget: the
+  // first dispatch gave PKT-01 120k against a 93k orientation, leaving 27k for a
+  // CRITICAL architectural change, and every agent blew through immediately.
+  if (p.budget && p.orientation) {
+    const o = p.orientation.match(/~(\d+)k/);
+    const c = p.budget.match(/ceiling ~(\d+)k/);
+    if (o && c && Number(c[1]) <= Number(o[1])) {
+      violations.push(
+        `${id}: guidance ceiling ${c[1]}k is at or below its ${o[1]}k orientation cost — ` +
+          `that leaves nothing for the work itself.`,
+      );
+    }
   }
   if (p.tier && !/^(haiku|sonnet|opus)\b/.test(p.tier)) {
     violations.push(`${id}: tier must start with haiku|sonnet|opus, got "${p.tier}"`);
