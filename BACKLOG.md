@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 81.** (BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 80.** (BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,13 +23,13 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-08-01: **93 open**.
+Regenerated 2026-08-01: **80 open**.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348, BL-393 |
 | **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-342, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-373, BL-374, BL-375, BL-377, BL-380, BL-387, BL-390, BL-391, BL-394 |
-| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378, BL-383, BL-388, BL-389 |
+| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378, BL-383, BL-388, BL-389 |
 | **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363, BL-379, BL-392 |
 | **UNSET** | BL-163 |
 
@@ -958,6 +958,14 @@ Also measured, and load-bearing for any future calibration: in a general 288-row
 
 **Related:** BL-356 (a fixed τ is not calibratable at all), BL-350, BL-349, BL-327.
 
+**PKT-28 (2026-08-01) confirms this table at the true full corpus (4867 vectors, not a 1616
+sample) and finds it has already shifted:** τ=0.82 largest ratio is now 0.759 (was 0.684), and
+**0.85 has crossed into degenerate territory too (0.514)** — only 0.87 still holds (0.181). This is
+the reason the "fix sketch" above is superseded, not just supplemented: see
+`docs/reporting/memory/findings/pkt28-clustering-strategy.md` for the chosen replacement
+(target-mean-degree calibration, computed per pass, not a corrected constant) and its consequence
+for PKT-30 (re-scoped from "pick a value" to "implement the calibration function").
+
 Citations: [wip/turso-live-metrics, performance-engineer, claude, sandbox P0.5, 1: extensions/bundles/sox-memory-bundle/members/memory-server/clustering-e2e.test.ts:124-141,351-374, 2: libs/memory-core/src/cluster.ts:172-183,918-920, 3: libs/data/analysis/analysis/src/index.ts:143-180, 4: docs/reporting/memory/sandbox/cluster-calibration.md]
 
 
@@ -1153,32 +1161,6 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner d
 **Related:** BL-326 (the gap this decides), BL-348 (the isolation it depends on), BL-350 (the unresolved algorithm), BL-328 (threshold calibration), BL-327 (orphaned communities).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner decision 2026-07-31, 2: BL-326, 3: libs/memory-core/src/cluster.ts:437-441]
-
----
-
-### BL-350 — RESEARCH: cluster maintenance is not a constant-time split and does not self-reorganize — **Open (MEDIUM, research)** (2026-07-31)
-
-**Owner framing, verbatim (2026-07-31):** *"your idea is great to produce constant time insert clustering agreed, but it silently ignores that the clusters are not constant time splits and self reorganizing - I'm thinking that strategy could be researched."*
-
-**The problem this names.** Any incremental/write-triggered association (BL-349) answers *"which existing cluster does this new episode join?"* It does **not** answer what happens when the corpus shifts underneath the clusters:
-- A cluster grows until it should **split** into two coherent sub-topics — an O(1) insert never triggers that.
-- Two clusters drift **together** and should **merge**.
-- Deleting or invalidating episodes leaves clusters **stale or orphaned** (BL-327 is the observed instance).
-- Incremental association **drifts** from what a full pass over the same corpus would produce, and nothing measures the divergence.
-
-The consequence of ignoring it is not an error — it is a slowly degrading cluster quality that never surfaces as a failure. That is the same silent-degradation class as BL-347.
-
-**Research scope:** survey incremental/streaming clustering with maintenance (split/merge criteria, drift detection, periodic-reconciliation hybrids); define a measurable **drift metric** between incremental state and a full-pass ground truth; recommend a maintenance cadence or trigger. Per the DRY directive, query memory for prior internal work and prior tool research before any live search; log the evaluation with topic + language tags and the final decision.
-
-**Acceptance:** a written recommendation with a measurable drift metric and a maintenance trigger, plus a harness that can compute incremental-vs-full-pass divergence on a real corpus. No code change is in scope for this item.
-
-**Severity:** MEDIUM — not blocking go-live, but BL-349 ships a strategy with a known unaddressed tail, and this is that tail. Filing it is what keeps it from becoming folklore.
-
-**⚡ BL-356 is the measured proof this item is real, not speculative (2026-07-31).** `minPts=2` makes the algorithm **single-linkage**, so a fixed τ fixes edge *probability* and mean degree grows linearly with N. On identical content, largest-cluster ratio at τ=0.82: N=200 → 0.085, 400 → 0.222, 800 → 0.459, 1200 → 0.595, 1616 → **0.684**. Projected mean degree at the full store (4841) is 32.6 @ τ=0.82 and still 5.9 @ τ=0.95. **A fixed global threshold is therefore not calibratable at all** — the correct τ is a function of corpus size, which is precisely the "clusters are not constant-time splits and do not self-reorganize" tail this item was filed to research. Any maintenance strategy that assumes a stable τ is already disproven.
-
-**Related:** BL-356 (the measured scaling proof — read it first), BL-349 (the near-term mechanism), BL-328 (threshold calibration), BL-327 (orphaned communities), BL-326.
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner framing 2026-07-31, 2: BL-349, 3: BL-327]
 
 ---
 
@@ -1722,6 +1704,8 @@ Measured edge probability projected to full store size (`vec_node` covers 1616 o
 **Fix sketch.** Stop shipping a cosine constant. Options, in preference order: (a) target a **mean-degree / edge budget** and solve for τ per pass — density-aware by construction; (b) target a cluster-size distribution (reject any partition whose largest cluster exceeds a stated fraction) and binary-search τ, replacing the 3-retry ladder with a real search; (c) drop `minPts = 2` — single-linkage chaining is the mechanism, and a higher `minPts` or a non-chaining algorithm removes it directly. In every case the **effective** threshold and the resulting size distribution must be reported through the status surface (BL-334), never left implicit.
 
 **Acceptance (red→green, must name BL-356):** a test that clusters ≥1000 real vectors and asserts `largest_cluster_size / total <= 0.5` **without relying on the degenerate guard**, plus a second assertion that the same configuration stays non-degenerate at 2× that corpus size. Against today's code the first fails at τ=0.82 (0.684) and the guard-exhaustion case is reproducible directly.
+
+**✅ RESEARCH DECIDED (PKT-28, 2026-08-01) — option (a) chosen, option (c) directly ruled out by new measurement.** Against the **true full corpus** (4867 vectors, no longer a 1616-sample projection): raising `minPts` from 2 to **12** (6× default) at τ=0.82 only moves largest-cluster ratio from 0.7590 to 0.6365 — nowhere near the 0.5 bound, ruling out option (c) as a standalone fix. The τ sweep at the same true full corpus confirms the transition point BL-328 projected: 0.82/0.84/0.85 are all now degenerate (0.759/0.587/0.514 — note 0.85 crossed from safe to degenerate as the store grew since 2026-07-31), 0.87 is the first healthy value (0.181). **Chosen replacement: target-mean-degree calibration (option a)** — sample pairwise cosine cheaply at cluster time, solve for the smallest τ keeping projected mean degree ≤ a target (recommended 2.0), replacing the retry guard as the primary mechanism rather than a backstop. Full recommendation, drift metric, and maintenance cadence for BL-350 in `docs/reporting/memory/findings/pkt28-clustering-strategy.md`. **Not yet RESOLVED** — this item's own acceptance requires a code-level red→green test, which is PKT-30's scope, re-scoped by this decision from "pick a corrected constant" to "implement the calibration function." Leaving Open until PKT-30 lands and proves it.
 
 **Severity:** HIGH — it is the reason clustering quality cannot be fixed by tuning, and it will silently re-break after any tuning as the store grows. This is the threshold-side instance of BL-350's "clusters do not self-reorganize."
 
