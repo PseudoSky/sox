@@ -24,6 +24,7 @@ function tmpDir(): { dir: string; cleanup: () => void } {
 describe('Storage error taxonomy — CONTRACTS §B (WP-2)', () => {
   let cleanup: () => void;
   let dbPath: string;
+  let priorAdapterEnv: string | undefined;
 
   beforeEach(async () => {
     const t = tmpDir();
@@ -31,11 +32,21 @@ describe('Storage error taxonomy — CONTRACTS §B (WP-2)', () => {
     dbPath = path.join(t.dir, 'test.db');
     await WriteQueue.clearInstances();
     WriteQueue.setBypass(false);
+    // Forces a real file-lock contention via a second raw better-sqlite3
+    // connection (`new Database(dbPath)` below) — sqlite-only mechanism, and
+    // also needs WriteQueue._noop = false (the queue's own serialisation is
+    // not what's under test here, but the queue must still route the write
+    // through the same adapter type that the blocker locked). Pin sqlite
+    // explicitly; the factory default is now STORE_ADAPTER=turso.
+    priorAdapterEnv = process.env['STORE_ADAPTER'];
+    process.env['STORE_ADAPTER'] = 'sqlite';
   });
 
   afterEach(async () => {
     await WriteQueue.clearInstances();
     cleanup();
+    if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+    else process.env['STORE_ADAPTER'] = priorAdapterEnv;
   });
 
   /**

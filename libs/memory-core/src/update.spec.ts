@@ -15,7 +15,7 @@
  * (This comment previously claimed SOX_EMBED_BACKEND=hash. There is no hash backend:
  *  EmbedBackend = 'auto' | 'real', libs/memory-core/src/embed.ts:43. [BL-250])
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeEach, afterEach } from 'vitest';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 import * as fs from 'node:fs';
@@ -611,6 +611,22 @@ describe('memoryUpdate — re-embed on content change', () => {
 // ── FTS sync via trigger ──────────────────────────────────────────────────────
 
 describe('memoryUpdate — FTS reflects content change (fts_node_au trigger)', () => {
+  // This suite queries the sqlite-only `fts_node` shadow table (and the
+  // sqlite-only fts_node_au trigger) directly — Turso's FTS is Tantivy-backed
+  // (fts_match/fts_score, no fts_node table). The factory default is now
+  // STORE_ADAPTER=turso; pin sqlite explicitly for this describe block only
+  // (the rest of the file's assertions go through memoryUpdate/memoryWrite
+  // and are adapter-agnostic, so they intentionally exercise the default).
+  let priorAdapterEnv: string | undefined;
+  beforeEach(() => {
+    priorAdapterEnv = process.env['STORE_ADAPTER'];
+    process.env['STORE_ADAPTER'] = 'sqlite';
+  });
+  afterEach(() => {
+    if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+    else process.env['STORE_ADAPTER'] = priorAdapterEnv;
+  });
+
   /**
    * The fts_node_au trigger fires AFTER UPDATE ON node and re-indexes all three
    * FTS columns: content, name, summary. When only content changes, FTS still

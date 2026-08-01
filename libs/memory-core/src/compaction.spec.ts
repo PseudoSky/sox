@@ -164,15 +164,21 @@ describe('startCompactionTick', () => {
     // No tick yet (fake timers; interval not elapsed).
     expect(logs.some((l) => l.includes('ANALYZE'))).toBe(false);
 
-    // Advance time — one tick fires.
-    vi.advanceTimersByTime(intervalMs + 10);
-    // The tick runs synchronously in fake timer mode.
+    // Advance time — one tick fires. BL-325: startCompactionTick's setInterval
+    // callback fires `runCompactionPass` fire-and-forget, and every StoreAdapter
+    // call inside it is now async (Promise-based on both sqlite and turso —
+    // see write-pipeline.spec.ts's "fully synchronous" contract discussion).
+    // The sync `advanceTimersByTime` fires the interval callback but does not
+    // drain the microtasks the async body then queues (PRAGMA optimize, ANALYZE,
+    // the log() calls after each await) — use the async variant so those
+    // microtasks actually flush before the assertion runs.
+    await vi.advanceTimersByTimeAsync(intervalMs + 10);
     expect(logs.some((l) => l.includes('ANALYZE') || l.includes('optimize') || l.includes('checkpoint'))).toBe(true);
 
     // Stop; advance again — no new ticks.
     stop();
     const logsAfterStop = logs.length;
-    vi.advanceTimersByTime(intervalMs * 3);
+    await vi.advanceTimersByTimeAsync(intervalMs * 3);
     expect(logs.length).toBe(logsAfterStop);
 
     db.close();

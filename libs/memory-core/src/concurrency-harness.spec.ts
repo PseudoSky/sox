@@ -53,6 +53,7 @@ function evaluateLatencyBudget(latencies: readonly number[]): {
 describe('WP-6 concurrency harness (BL-134)', () => {
   let cleanup: () => void;
   let dbPath: string;
+  let priorAdapterEnv: string | undefined;
 
   beforeEach(async () => {
     const t = tmpDir();
@@ -60,11 +61,22 @@ describe('WP-6 concurrency harness (BL-134)', () => {
     dbPath = path.join(t.dir, 'stress.db');
     await WriteQueue.clearInstances();
     WriteQueue.setBypass(false);
+    // This harness proves WriteQueue's OWN serialisation prevents SQLite-level
+    // lock errors under concurrency (size cap, E_BUSY overflow) — the exact
+    // WriteQueue._noop = false behaviour gated on needsWriteSerialization:
+    // true. The factory default is now STORE_ADAPTER=turso
+    // (needsWriteSerialization: false → noop/bypass), which would make the
+    // queue-full assertions vacuous. Pin sqlite explicitly, same convention
+    // as every other adapter-sensitive spec.
+    priorAdapterEnv = process.env['STORE_ADAPTER'];
+    process.env['STORE_ADAPTER'] = 'sqlite';
   });
 
   afterEach(async () => {
     await WriteQueue.clearInstances();
     cleanup();
+    if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+    else process.env['STORE_ADAPTER'] = priorAdapterEnv;
   });
 
   /**
