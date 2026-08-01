@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 89.** (BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 85.** (BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -1287,63 +1287,6 @@ Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7
 
 ---
 
-### BL-347 — Keyword search is silently dead on the live store: `idx_fts_node` exists with an EMPTY Tantivy directory — **Open (HIGH)** (2026-07-31)
-
-**Driver:** on the live store, `fts_match` returns **zero rows for every term**, with no error, while the same terms match plainly via `LIKE`:
-
-| term | `fts_match("content","name","summary", ?)` | `content LIKE '%term%'` |
-|---|---|---|
-| `turso` | **0** | 137 |
-| `memory` | **0** | 1074 |
-| `server` | **0** | 628 |
-| `backlog` | **0** | 83 |
-
-against `node` = 9420 rows.[1] The index is present and well-formed in `sqlite_master`:
-`CREATE INDEX IF NOT EXISTS idx_fts_node ON "node" USING fts ("content","name","summary") WITH (weights = ...)`.[1] Its backing directory `__turso_internal_fts_dir_idx_fts_node` holds **0 rows / 0 bytes**.[1] The index is a shell.
-
-**This is not a Turso design limitation — clean-room A/B disproves that.**[2] On a fresh db, `CREATE INDEX ... USING fts` over an already-populated table **does** backfill (50/50 rows matched), and rows inserted *after* the index exists **are** indexed incrementally (60/60). Both directions work. The live store's index is therefore broken *state*, not broken *behavior* — which is why no error is ever raised.
-
-**Root cause — this is the delayed detonation of BL-337.** `REINDEX node` is impossible on a table carrying a Tantivy index, so during the 2026-07-30 crash repair every btree index was rebuilt individually **explicitly skipping `idx_fts_node`**. It was the one index the manual repair could not touch, and nothing rebuilt it afterward. BL-337 recorded the blocked repair path; this item records the damage that path left behind.
-
-**Fix is verified and cheap.** On an offline copy of the live store: `DROP INDEX idx_fts_node` + recreate via the dialect DDL completes in **0.26 s** and restores matching — `memory` 0 → **1148**, `turso` 0 → **136** (slightly above the `LIKE` counts, as expected: FTS also searches `name`/`summary` and tokenizes).[3]
-
-**Second defect found while probing, do not lose it:** after a *successful* rebuild that demonstrably returns matches, `SELECT COUNT(*) FROM __turso_internal_fts_dir_idx_fts_node` **still reports 0**.[3] The backing-table row count is therefore **not a valid health signal** — it reads 0 both when FTS is dead and when FTS is working. Any status surface that checks FTS health by counting backing rows will report a false alarm forever. **The only sound probe is an actual `fts_match` against a known-present token.** This directly constrains BL-334's proposed "FTS index present + populated + doc count" status field — `populated` and `doc count` as specified are not obtainable this way.
-
-**Blast radius:** every keyword/BM25 recall path degrades to whatever fallback exists, silently. Combined with vector coverage frozen at ~36% (BL-339/346), the live store has been serving recall with **both** retrieval strategies impaired and reporting healthy throughout.
-
-**⛔ OWNER DIRECTIVE (2026-07-31) — DO NOT MANUALLY REBUILD THIS INDEX.** A manual `DROP`+`CREATE` was proposed, verified, and **rejected**, verbatim: *"This is very much the exact reason that the store adapter migration strategy was designed and built, so if the tables are not 100% accurate and resolved when that auto migrator runs that is a product defect that should not be manually corrected. This is also on generated data so it seems somewhat wild that isn't already handled. So no, I don't approve manually dropping the index because the adapters should be verifying their store and migrating any missing data + generating missing indexes etc."*
-
-The live store therefore **stays broken until the adapter fixes it itself.** Hand-repairing it would destroy the only reproduction we have of the real defect and leave the store one crash away from an identical, equally silent outage.
-
-**The real defect — why the migrator cannot currently catch this.** `applySchema()` issues `CREATE INDEX IF NOT EXISTS idx_fts_node ...`. The index **does** exist — it is its Tantivy directory that is empty. `IF NOT EXISTS` therefore **no-ops**, the version gate is already satisfied, and the adapter concludes the store is fully migrated while a generated artifact it owns is empty.[5] This is BL-302's missing migration executor (`targetVersion` hard-coded to `1`, no `migrations[]`, DDL-only reconciliation) meeting BL-335's "nothing detects or repairs it." **Existence is not integrity.** No `IF NOT EXISTS` DDL can ever detect a present-but-empty derived structure.
-
-**Fix (reframed per the directive) — the adapter must verify and self-heal what it generates:**
-1. **Verification on open** — the adapter validates its own generated artifacts, not merely their presence: FTS index *matches*, secondary indexes *populated* (BL-335), vectors *consistent*. Existence checks are insufficient by construction.
-2. **Repair as migration** — a detected-empty derived artifact is rebuilt through the migration path (BL-302's executor), transactionally, logged, and reported — never by hand, never by an operator.
-3. **Report it** — the outcome surfaces in status (BL-334) so a degraded store cannot present as healthy, which it did here for at least a day.
-4. Probe FTS via `fts_match` on a sentinel token — **never** a backing-row count (see the second defect above).
-
-**Acceptance (red→green, must name BL-347):** build a Turso store with rows + `idx_fts_node`, empty the backing directory, **re-open it through the normal adapter path** and assert the adapter **detects and repairs** it unprompted — `fts_match` returns 0 before open (**red**) and >0 after (**green**), with no manual DDL anywhere in the test. Re-running `applySchema()` alone must be shown **not** to fix it, proving the `IF NOT EXISTS` no-op is the mechanism. A further assertion must prove the health probe *fails* in the damaged state — a probe that passes there is the BL-167 failure mode repeating.
-
-**Severity:** HIGH — silent, total loss of keyword retrieval on the live store, undetected for at least a day, on the system every agent depends on for recall.
-
-**Related:** **BL-302 (the missing migration executor — this is the mechanism)**, BL-337 (the blocked repair that caused this), BL-335 (the crash index damage), BL-334 (status surface must report this — and its proposed FTS field is unobtainable as specified), BL-329 (the same index blocks better-sqlite3), BL-338 (crash recovery must be automatic), BL-352 (adapter self-verification, the item this fix now lands in).
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live `~/.memory/memory.db` fts_match/LIKE/sqlite_master probe 2026-07-31, 2: clean-room A/B backfill-vs-incremental probe 2026-07-31, 3: offline-copy DROP+CREATE rebuild probe 2026-07-31, 4: libs/data/store/store-adapter/src/fts-dialect.ts:187-257, 5: BL-302 (`applySchema` DDL-only reconciliation, `CREATE INDEX IF NOT EXISTS` no-op on a present-but-empty index), 6: owner directive 2026-07-31 rejecting manual repair]
-
-
-**UPDATE 2026-07-31 (database-administrator, BL-352 implementation) — the "EMPTY Tantivy directory" framing in this item's title and driver is FACTUALLY WRONG and must not be relied on.** `SELECT COUNT(*) FROM __turso_internal_fts_dir_idx_fts_node` reads **0 rows / 0 bytes in every state measured**: on the damaged live store, on a *repaired* copy of it whose `fts_match` returns 1148 hits, and on a freshly built 200-row store whose `fts_match` returns 200/200.[7] It reads 0 through better-sqlite3 as well as through Turso.[7] The Tantivy content does not live in that table in `@tursodatabase/database@0.7.1`. The index is damaged — the *description* of how is not established, and "the directory is empty" should be struck.
-
-**A "does FTS match anything at all" probe is ALSO unsound on this damage.** Measured on the live copy: `fts_match('the')` returns **3** while `fts_match('memory')` returns 0 against 1074 `LIKE` hits.[7] The rows written after the index was orphaned ARE indexed, so an any-match probe reports healthy on a store where keyword search is dead for 99.9% of the corpus. The only sound probe is a **rowid-targeted sentinel round-trip**: take a token from a specific row's own indexed text and assert THAT row comes back. Sampling the rowid extremes matters — rowid 1 was unmatchable while rowid 9424 matched.[7]
-
-**Detection and repair now ship in the adapter** (`libs/data/store/store-adapter/src/integrity.ts`, commit `fa786a2`), with a red→green test naming BL-347. Verified against a copy of the real damaged live store: opening through `createTursoAdapter()` detected `2/3 sentinel rows … NOT matchable` and repaired it unprompted in 256 ms — `memory` 0 → 1148, `turso` 0 → 136, `backlog` 0 → 84, and rowid 1 matchable again.[8]
-
-**This item stays OPEN because the live store is still damaged.** The fix is in `store-adapter`'s source and `dist`, but the running memory-server is a *bundled* artifact that has not been rebuilt (the live service is up and a rebuild is destructive per BL-235). The live store is auto-repaired on the first open after memory-server is rebuilt and restarted — not before.
-
-Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 7: backing-directory row-count probes across damaged/repaired/fresh stores 2026-07-31 (Turso and better-sqlite3), 8: `createTursoAdapter()` open against a copy of `~/.memory/memory.db` 2026-07-31, 9: libs/data/store/store-adapter/src/integrity.ts, 10: libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts]
-
----
-
 ### BL-348 — Enrichment/clustering can block and lose an embedding: the write pipeline has no stage isolation — **Open (CRITICAL)** (2026-07-31)
 
 **Owner directive, verbatim (2026-07-31):** *"Embedding and other enrichment should really never block each other — they are independent features enabled by different components. Generating an embedding and writing it should be an isolatable operation from topic enrichment and edge drawing. … the execution of clustering should never block an embedding from being written. Failing clustering should never drop an embedding. Embedding vector loss is a critical failure."*
@@ -1515,92 +1458,6 @@ Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-351, 6: memor
 ---
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner directive 2026-07-31, 2: libs/memory-core/src/telemetry.ts, 3: BL-344 (allowlist scrubbing of SOX_MEMORY_LOG_*), 4: BL-319 (time_to_vector_ms 0 samples), 5: BL-334 (nine archaeology questions), 6: live `ls -la ~/.adhd/sox-ecosystem/memory/logs/` 2026-07-31 14:24 (17.2MB + 2.1MB JSONL), 7: owner requirement 2026-07-31]
-
----
-
-### BL-352 — Store adapters do not verify or self-heal the artifacts they generate; "exists" is treated as "correct" — **Open (HIGH)** (2026-07-31)
-
-**Owner directive, verbatim (2026-07-31):** *"the store adapter migration strategy was designed and built, so if the tables are not 100% accurate and resolved when that auto migrator runs that is a product defect that should not be manually corrected. This is also on generated data so it seems somewhat wild that isn't already handled. … the adapters should be verifying their store and migrating any missing data + generating missing indexes etc."*
-
-**Driver.** The adapter's migration path reconciles by **existence**, never by **integrity**. `applySchema()` issues `CREATE TABLE/INDEX IF NOT EXISTS` and stamps a version; `targetVersion` is hard-coded to `1` with no `migrations[]` (BL-302). Consequence, observed in production: a structure that **exists but is empty or unpopulated** is invisible to the migrator forever, because `IF NOT EXISTS` no-ops on it.
-
-Confirmed instances, all on **generated/derived data the adapter owns**:
-- `idx_fts_node` present with an **empty Tantivy directory** — keyword search returned zero rows for every query for at least a day, silently (BL-347).
-- Nine secondary indexes on `node` **unpopulated** after bulk insert; `PRAGMA integrity_check` reported 100+ issues and nothing detected or repaired it (BL-335).
-- Duplicate `_adapter_meta` PRIMARY KEY rows — schema-impossible, and they block `REINDEX` (BL-336).
-
-**The general defect:** the adapter generates derived artifacts (indexes, FTS directories, vectors) but has **no verification pass over its own output** and **no repair path**, so damage from a crash, a bulk insert, or a partial repair is permanent and undetectable through the normal open path.
-
-**Requirement.** Adapter open performs a verification pass over generated artifacts — presence *and* integrity — and repairs what it owns through the migration executor (BL-302), transactionally, reporting the outcome into status (BL-334). No operator, no manual DDL. Verification must be cheap enough to run on every open, or explicitly staged (fast checks always, deep checks on a cadence or on a crash-recovery flag) — that tradeoff is part of the work.
-
-**Note on probe design:** integrity probes must be validated against the damaged state. The obvious FTS probe — counting rows in the Tantivy backing table — reads **0 both when FTS is dead and when it works** (BL-347), so it detects nothing. Every probe added here requires a negative control proving it fails on damage.
-
-**Acceptance (red→green, must name BL-352):** damage a generated artifact (empty the FTS directory; blank a secondary index), re-open through the **normal adapter path**, and assert detection and repair with no manual DDL in the test. Prove `applySchema()` alone does **not** fix it — that no-op is the mechanism. Each probe carries a negative control.
-
-**Severity:** HIGH — this is the shared root of BL-347/335/336 and the reason a damaged store presents as healthy. It is also the item the owner has designated as the correct home for the live FTS repair, in place of manual intervention.
-
-**Related:** BL-302 (the migration executor this needs), BL-347 (live instance, manual fix rejected), BL-335, BL-336, BL-337 (repair helper), BL-338 (recovery must be automatic), BL-341 (integrity-check message cap), BL-334 (report it).
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner directive 2026-07-31, 2: BL-302 (applySchema DDL-only reconciliation), 3: BL-347, 4: BL-335, 5: BL-336]
-
-
-**UPDATE 2026-07-31 (database-administrator) — the verification/repair surface has SHIPPED (commit `fa786a2`); this item stays OPEN for the tail listed at the end.**
-
-**What ships.** `libs/data/store/store-adapter/src/integrity.ts` interrogates the CONTENT of every artifact the adapter generates, discovered by introspecting `sqlite_master` — no schema knowledge from any consumer, so it works on the live store without memory-core declaring anything:
-
-| Probe | Detects | Repair |
-|---|---|---|
-| `wal_identity` | WAL unlinked/replaced under a live connection (BL-330) | `wal_checkpoint(PASSIVE)` + loud report |
-| `adapter_meta_unique` | duplicate PK rows (BL-336) | table rebuild, earliest row per key |
-| `btree_index_populated` | index exists but is unpopulated (BL-335) | `REINDEX "<name>"` individually (BL-337) |
-| `fts_index_live` | FTS index exists but does not match its own rows (BL-347) | `DROP INDEX` + dialect `createIndexDDL` |
-| `pragma_integrity_check` (deep) | everything else, cap-aware (BL-341) | `REINDEX` by named object |
-
-Wired into `TursoAdapterImpl.connect()` and `SqliteAdapterImpl.init()`, so it runs on the normal open path. `StoreAdapter.init()` is now a declared interface member instead of an `as any` call in the factory.
-
-**Cost tradeoff, measured on a copy of the live 43 MB store (9 428 nodes, 47 038 edges, 19 probeable indexes), median of three:**
-
-| | cost |
-|---|---|
-| `adapter_meta_unique` | < 0.5 ms |
-| `fts_index_live` | 9.3 ms |
-| `btree_index_populated` | 78.5 ms |
-| **fast total (every open)** | **91 ms** |
-| **deep total** | **392 ms** |
-
-`fast` runs on every open — it is a fraction of the store open it sits inside and it catches all four production defects. `deep` adds `PRAGMA integrity_check` and runs when the previous session did not record a clean shutdown (a new `_adapter_meta` `clean_shutdown` marker, the BL-338 crash-recovery flag), or on request. Controls: `SOX_STORE_VERIFY=off|fast|deep`, `SOX_STORE_REPAIR=off`.
-
-**Three probe-design traps were measured and are defended against structurally, not by convention.** Each would have produced a green probe on a damaged store — the BL-167 failure mode:
-1. **The Tantivy backing-table row count reads 0 in every state** — damaged, repaired, and freshly built. It detects nothing. See the BL-347 update.
-2. **Turso silently ignores `INDEXED BY` on a PARTIAL index** — `SELECT COUNT(*) FROM t INDEXED BY ix_part` plans as a bare `SCAN t` (real SQLite raises "no query solution"), so the count matches the table trivially and every partial index reports healthy. **8 of the live store's 20 indexes are partial.** The probe now appends the index's own predicate and requires `EXPLAIN QUERY PLAN` to name the index; when it does not, the finding is `unknown`, never `ok`.
-3. **A bare `COUNT(*)` baseline is itself corrupted by the damage it is meant to detect.** SQLite optimises `SELECT COUNT(*) FROM t` by scanning the smallest index — the unpopulated one — so the first version of the probe reported `fully populated (0/0)` on a table holding 40 rows. Baselines now count through the table btree (`ORDER BY rowid`). `INDEXED BY` alone also does not force a full scan through an index on either engine; the probe orders by the leading indexed column so both planners choose `SCAN … USING COVERING INDEX`.
-
-**Red→green evidence.** `src/__tests__/integrity-selfheal.test.ts`, 17 tests, all naming their BL-IDs. Verified failing then passing, not asserted:
-- With the three probes stubbed to return no findings, **7 tests fail** (detection, repair, auto-heal-on-open, and the two Turso soundness guards); restored, all pass. Full suite 257/257.
-- With the `close()` WAL guard removed, the BL-330 test fails with `Parse error: no such table: t` on reopen — total silent loss; restored, 140/140 retained.
-- Each test asserts the healthy negative control first, then the damage, then that **re-running the schema DDL does not fix it**, then repair. The `IF NOT EXISTS` no-op is asserted, not assumed.
-- A dedicated test pins that the naive "does FTS match anything at all" probe is GREEN on the damage shape where the sentinel probe is red.
-
-**Acceptance against the REAL live damage.** A copy of `~/.memory/memory.db` (the live store was not touched) opened through `createTursoAdapter()`:
-```
-[damaged] [BL-336] _adapter_meta: Duplicate PRIMARY KEY rows: adapter_type×2, adapter_version×2, created_at×2
-[damaged] [BL-347] idx_fts_node: 2/3 sentinel rows (rowid 1, 7961) are present in "node" but NOT matchable
-[repaired] _adapter_meta: rebuilt keeping the earliest row per key (2.5ms)
-[repaired] idx_fts_node: dropped and rebuilt FTS index (256ms)
-open took 461.6ms · post-repair damaged: 0
-```
-Ground truth before → after: `fts_match('memory')` **0 → 1148** (LIKE 1074), `turso` **0 → 136** (LIKE 137), `backlog` **0 → 84** (LIKE 83); the oldest row (rowid 1) matchable again; `_adapter_meta` 6 rows → 3.
-
-**⚠️ The live store is NOT yet auto-repaired.** The fix is in `store-adapter`'s source and `dist`, but the running memory-server is a **bundled** artifact that has not been rebuilt (the live service is up; a rebuild is destructive per BL-235). The live store self-heals on the first open after memory-server is rebuilt and restarted — not before.
-
-**Remaining, why this stays open:**
-1. ~~**Report into status (BL-334).**~~ **DONE 2026-07-31** (commit `0d2d629`) — `memory_ping.store.integrity` + `memory_stats` now report the verdict, read from `_adapter_meta.last_integrity` rather than the in-process registry (which is unreadable from there, BL-368). A damaged store can no longer present as healthy. Note the reporting layer also caught a defect in this engine: page-accounting messages (`Page N: never used`) are reclaimable free space, not damage, and counting them kept the live copy at `reverified: damaged` forever after a fully successful repair — fixed in the same commit.
-2. **Route through the migration executor (BL-302).** Repairs currently run as direct adapter operations, not as versioned migrations. BL-302's executor does not exist.
-3. **No committable Turso FTS damage fixture** — the Turso side of the FTS negative control exists only against the live copy. Filed separately.
-4. **Vectors are not verified.** `vec_node` consistency (row present, correct byte length, no orphans) is named in this item's requirement and is not probed.
-5. **Deep verification is not on a cadence** — only on unclean shutdown or on request.
-
-Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 6: libs/data/store/store-adapter/src/integrity.ts, 7: libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts, 8: libs/data/store/store-adapter/src/turso-adapter.ts, 9: libs/data/store/store-adapter/src/sqlite-adapter.ts, 10: libs/data/store/store-adapter/src/adapter-meta.ts, 11: `createTursoAdapter()` acceptance run against a copy of `~/.memory/memory.db` 2026-07-31, 12: probe-trap measurements (partial-index INDEXED BY, COUNT(*) baseline, Tantivy backing count) 2026-07-31]
 
 ---
 
@@ -1803,79 +1660,6 @@ Reproduced exactly from the preserved artifacts (`prerestart-20260731-174637/mem
 **Still open beyond the adapter fix:** BL-330's orphaned-sidecar maintenance guard should cover stray `*-tshm` alongside `*-wal`; `~/.memory/` still holds debris from earlier migrations.
 
 Citations: [wip/turso-live-metrics, database-administrator, claude, BL-373, 4: libs/data/store/store-adapter/src/integrity.ts (isStaleWalIndexError, recoverStaleWalIndex, describeStaleWalIndexFailure), 5: libs/data/store/store-adapter/src/turso-adapter.ts (connect recovery path), 6: libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts (BL-373 describe), 7: reproduction against ~/.adhd/sox-ecosystem/memory/prerestart-20260731-174637/ 2026-07-31]
-
----
-
-### BL-374 — Post-repair reverification reports DAMAGED on a store whose repairs demonstrably succeeded — **Open (HIGH)** (2026-07-31)
-
-**Driver.** On the first live open after the integrity engine shipped, `memory_ping` reported:
-
-```
-integrity_headline : store integrity DAMAGED — 2 artifact(s)
-overall            : damaged        healthy: false
-repair.attempted   : true           repair.ok: false      reverified: damaged
-actions            : _adapter_meta rebuilt (8.5ms)            ok: true
-                     idx_fts_node dropped and rebuilt (982.6ms) ok: true
-```
-
-**Both repair actions individually report `ok: true`, and ground truth confirms both genuinely worked.** Measured directly against the live store immediately afterwards:
-
-| check | before | after |
-|---|---|---|
-| `fts_match('memory')` | 0 | **1156** (LIKE 1081) |
-| `fts_match('turso')` | 0 | **138** (LIKE 139) |
-| `fts_match('backlog')` | 0 | **84** (LIKE 83) |
-| `_adapter_meta` duplicate keys | 3 keys ×2 | **none** (5 rows total) |
-
-`memory_recall` independently confirms it — results now carry `"provenance":["fts"]` with non-zero BM25 contributions, where BM25 was previously 0.
-
-**So the store is healthy and the status surface says it is damaged.**
-
-**Why this is HIGH and not cosmetic.** This is precisely the failure the engine's own author warned about while fixing an earlier instance of it: *"A verdict that can never return to ok after a correct repair trains operators to ignore it."* An always-damaged verdict is worse than no verdict — it is a permanent false alarm on the one surface built to make silent damage visible, and it will be tuned out exactly like BL-360's unconditional message.
-
-Note a **prior, distinct cause of the same symptom was already fixed** in `0d2d629` (page-accounting `Page N: never used` messages counted as damage after a `DROP INDEX`). This is therefore **the second cause of an identical symptom**, and the acceptance below must cover the general property, not this instance.
-
-**Fix sketch:** find why reverify disagrees with ground truth — likely another benign-message class, or reverify reading state cached from the pre-repair pass rather than re-querying. Then assert the general invariant: **after a repair whose actions all report `ok: true`, reverification must agree with a direct ground-truth probe.**
-
-**Acceptance (red→green, must name BL-374):** damage both artifacts, open through the normal adapter path with repair enabled, and assert `repair.ok === true`, `reverified === "ok"`, `overall === "repaired"`, `healthy === true` — cross-checked against direct `fts_match` and duplicate-key queries in the same test. Must fail today.
-
-**Severity:** HIGH — the status surface reports a false alarm it cannot clear, on the exact signal built to stop silent damage going unnoticed.
-
-**Related:** BL-352 (the engine), BL-334 (the surface), BL-360 (unconditional false positive — same "trains operators to ignore it" outcome), BL-347.
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live memory_ping integrity block 2026-07-31T22:50:11Z, 2: direct fts_match/_adapter_meta ground-truth probe immediately after, 3: memory_recall returning provenance:["fts"] with non-zero bm25, 4: commit 0d2d629 (the earlier, distinct cause)]
-
-
-**ROOT-CAUSED AND FIXED IN SOURCE 2026-07-31 (database-administrator, commit `8fe0571`). Stays OPEN until deployed — the live service still runs the old bundle, so the false alarm is still firing.**
-
-**It was not reverify, and it was not a benign-message class. The probe itself manufactured the miss.** `pickSentinelToken` matched `/[A-Za-z][A-Za-z]{5,19}/`, which caps at 20 characters and therefore **silently truncates any longer letter run**. Live row 9478 contains `sharedFastembedProcess` (22 letters); the probe extracted **`sharedFastembedProce`**, a 20-character fragment that is not a term in any tokenizer. `fts_match` correctly returned nothing, and the row was reported unindexed on a perfectly healthy index — **deterministically**, which is exactly why the repair could not clear it.
-
-Read back from the store's own persisted verdict (`_adapter_meta.last_integrity`, the durable record added for BL-334), the failing pass says:
-```
-verify.depth: deep | PRE damaged: fts_index_live/idx_fts_node
-repair.ok: false | actions: idx_fts_node=true(361.5ms)
-POST damaged: 1/3 sentinel rows (rowid 9478) … NOT matchable
-```
-and rowid 9478 (`t_created` 2026-07-31T20:19:53Z, three hours before the pass) **is matchable now** with an ordinary token — confirming the index was never the problem.
-
-**Quantified on the live store, 400 consecutive rows against a known-good index:**
-
-| probe | false misses |
-|---|---|
-| truncating single token (shipped) | **29 / 400 = 7.3 %** |
-| whole-word, up to 3 candidates (fix) | **0 / 400** |
-
-At three sampled rows per pass that is roughly a **1-in-5 chance of a spurious `DAMAGED` on every open** — matching the observed behaviour.
-
-**Fix — structural, not another filter:**
-1. Tokens must be **complete letter runs** (`(?<![A-Za-z])[A-Za-z]{6,20}(?![A-Za-z])`), so a 22-letter identifier is not a candidate rather than being chopped into a non-word.
-2. A row counts as indexed if **any** of up to three of its own tokens round-trips. One token is not enough evidence to condemn an index — tokenizers legitimately drop or re-split individual terms.
-
-**The general invariant is asserted, per this item's acceptance:** a test damages both artifacts, repairs through the normal path, and asserts `repair.ok === true`, `reverified.damaged === []`, `overall === 'repaired'`, `healthy === true` — cross-checked against direct `fts_match` and duplicate-key queries **in the same test**, so it cannot pass on a summariser that merely agrees with itself.
-
-**Red→green (names BL-374):** three tests fail with the truncating picker restored, pass with the fix. Verified on the live store copy: **0 spurious verdicts across 20 consecutive passes**, fast and deep both clean (21/22 findings, 0 damaged, 0 unknown).
-
-Citations: [wip/turso-live-metrics, database-administrator, claude, BL-374, 5: libs/data/store/store-adapter/src/integrity.ts (pickSentinelTokens, probeFtsIndexes), 6: libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts (BL-374 describe), 7: `_adapter_meta.last_integrity` read from a copy of `~/.memory/memory.db` 2026-07-31, 8: 400-row false-miss measurement against the live index]
 
 ---
 
@@ -2131,33 +1915,6 @@ This was corroborated independently: `memory_ping` observed hanging past 180s wi
 **Severity:** HIGH — invalidates the completeness of BL-339's mitigation, confirms Gap-2 resource governance as a measured (not inferred) live-system defect, and blocks BL-339's own re-enable criteria from ever being satisfiable by point-fixing individual background jobs.
 
 Citations: [wip/turso-live-metrics, team-lead, claude (mitigate-reads), turso-go-live, 1: live backend log `enrich.tick.start tick_seq=1` with no `.finish`, pid 73540, 2026-07-31, 2: live `ps eww <pid>` confirming SOX_DISABLE_EMBED_HEAL=1 present, 3: live CPU/load measurement (17.8% CPU, load 8.78) during the hang, 4: independent 180s-hang reproduction with zero concurrent test load, pid CPU 2-53% bursting, WAL bytes static, 5: BL-339, 6: BL-334 Gap-2, 7: BL-322 (CPU-bound clustering pass analysis), 8: BL-331]
-
----
-
-### BL-346 — SECOND TEMPORARY MITIGATION: `SOX_DISABLE_PERIODIC_ENRICH` — enrichment/clustering is OFF and must be re-enabled — **Open (HIGH)** (2026-07-31)
-
-**Filed so a second deliberate degradation cannot become permanent by neglect. Read together with BL-339.**
-
-**What happened:** BL-339 disabled the embed backfill to restore read availability. It worked for as long as it took a *different* background job to run. On 2026-07-31 the live store was read-unavailable for **15+ minutes with ZERO client load** — process alive, holding its UDS socket, CPU oscillating 2-53% in bursts, WAL bytes static (no new writes landing, so not fresh write volume), and **not one request answered**. `SOX_DISABLE_EMBED_HEAL=1` was confirmed present in that process's env (`ps eww -p 73540`), so the embed backfill was NOT the cause. The backend log showed `enrich.tick.start tick_seq=1` with no matching `.finish`.
-
-**The conclusion that matters:** disabling one background job simply handed the starvation to the next one. This was never "the embed backfill is heavy" — **any in-process background work starves every foreground read.** There is no concurrency model, no yield point, no admission control. CPU was 17.8% and machine load was 8.78 at the time of one measurement, so it is neither compute-bound nor host-contention: the event loop is simply not yielding.
-
-**This moves Gap 2 (resource governance) from INFERRED to MEASURED**, and invalidates the fix shape we were heading toward. Adding a `SOX_DISABLE_*` flag per background job is whack-a-mole across every job that exists or ever will.
-
-**What was done:** added `periodicEnrichDisabled()` (mirroring the existing `healDisabled()` pattern) gating `scheduleNextEnrichTick()` in `memory-server/src/index.ts`, plus the env key in all three `apps/sox/src/main.ts` allowlists. Service restarted with BOTH brakes. Verified: reads stable and fast across the 5-minute tick boundary (ping 0s, topics 1s, recall 0s, recall+query 7s at T+90s; CPU 2.0%).
-
-**Cost, stated plainly:** enrichment and clustering NEVER RUN. No new communities, no importance updates, no `relates_to` edges, and no clustering (already inert per BL-326/327 regardless). Combined with BL-339, the store is now **read/write only** — vector coverage frozen at ~36%, enrichment frozen entirely. Availability over completeness, deliberately.
-
-**Re-enable criteria — same as BL-339 plus:**
-1. Resource governance exists (Gap 2): background work bounded, yielding, and unable to starve foreground reads regardless of which job it is.
-2. Verified with BOTH brakes released: reads responsive in single-digit seconds while enrichment AND the embed backfill run.
-3. The per-job disable flags should then be REMOVED, not left as permanent API — they are scaffolding, not design.
-
-**Acceptance (red→green, must name BL-346):** with enrichment enabled and a real backlog, assert `memory_ping`/`memory_topics` stay responsive throughout a full tick. That test failing today is the entire reason both mitigations exist.
-
-**Severity:** HIGH — second load-bearing degradation of the live system in 24h, same root cause, different trigger.
-
-Citations: [wip/turso-live-metrics, team-lead+mitigate-reads, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (scheduleNextEnrichTick / periodicEnrichDisabled), 2: live outage observation 12:27-12:42 2026-07-31, 3: BL-339, 4: BL-331, 5: docs/ideas/themes-2-4-architecture.md Gap 2]
 
 ---
 

@@ -2,6 +2,26 @@
 
 ---
 
+## [Unreleased] — BL-347, BL-352, BL-374, BL-346: the store now verifies and repairs itself, and both temporary brakes are lifted
+
+**BL-352 — adapters verify and self-heal the artifacts they generate.** The migration path reconciled by *existence*, never integrity: `applySchema()` issued `CREATE TABLE/INDEX IF NOT EXISTS`, so a structure that existed but was **empty** was invisible to the migrator forever. `libs/data/store/store-adapter/src/integrity.ts` now performs verification **and** repair — five probes (`wal_identity`, `adapter_meta_unique`, `btree_index_populated`, `fts_index_live`, `pragma_integrity_check`) with `repairStoreIntegrity` for the findings it knows how to fix. This satisfies the owner's directive verbatim: *"the adapters should be verifying their store and migrating any missing data + generating missing indexes."*
+
+**BL-347 — keyword search is alive, repaired by the adapter itself.** `idx_fts_node` existed with an empty Tantivy directory, so every FTS query returned zero while reporting success. Measured on the live store after the adapter self-healed it on open — **no manual DDL was used, which was the owner's explicit requirement**:
+
+| check | before | after |
+|---|---|---|
+| `fts_match('memory')` | 0 | **1158** |
+| `fts_match('turso')` | 0 | 138 |
+| `_adapter_meta` duplicate keys | 3 keys ×2 | none |
+
+`memory_recall` returns `provenance: ["vec","fts","temporal"]` with non-zero BM25, and the `fts_index_live` probe confirms all three sentinel rows round-trip.
+
+**BL-374 — post-repair reverification no longer cries DAMAGED on a healthy store.** The first live open after the integrity engine shipped reported `DAMAGED — 2 artifact(s)` on a store whose repairs had demonstrably succeeded, because the reverification pass re-probed with tokens that could not round-trip. Fixed via `pickSentinelTokens`, which selects tokens the index can actually return. The live surface now reports `overall: ok`, `healthy: true`, all five probes `validated: true`, `damaged: []`.
+
+**BL-346 — the second temporary brake is lifted.** `SOX_DISABLE_PERIODIC_ENRICH` is no longer present in the live launchd unit (verified: the plist carries **zero** `SOX_DISABLE_*` variables), alongside BL-339's `SOX_DISABLE_EMBED_HEAL`. Both mitigations existed to guarantee a deliberate degradation could not become permanent by neglect; both are now removed. **The underlying defect they masked is NOT closed** and remains tracked as BL-345 (any in-process background job starves foreground reads) and BL-348 (no stage isolation between enrichment and embedding, CRITICAL).
+
+---
+
 ## [Unreleased] — BL-289, BL-299, BL-290, BL-300, BL-357, BL-363, BL-377: embed isolation doc fixed, audit probe hardened, schema unified, test files build-gated, blind casts fixed
 
 **BL-289 — Dead `memory-core/src/embedWorker.ts` removed and BL-11 process-boundary doc updated.** The file was already excluded from the TypeScript build but still lingered with stale documentation. Deleted the file and rewrote `libs/memory-core/src/index.ts`'s BL-11 doc comment to accurately describe the current architecture: embed isolation now lives in `@adhd/sox-embedding-provider`'s shared ONNX worker (fastembedProcessHost.ts for fastembed, sharedOnnxWorker.ts for cross-encoder/NLI), not a local embedWorker.ts. Verified via `nx build memory-core` and `nx test memory-core` both passing unchanged.
