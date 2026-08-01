@@ -186,6 +186,9 @@ importers:
       '@adhd/sox-store-adapter':
         specifier: workspace:*
         version: link:../../../../../libs/data/store/store-adapter
+      '@adhd/sox-telemetry':
+        specifier: workspace:*
+        version: link:../../../../../libs/observability/sox-telemetry
 
   extensions/bundles/sox-memory-bundle/members/memory-usage: {}
 

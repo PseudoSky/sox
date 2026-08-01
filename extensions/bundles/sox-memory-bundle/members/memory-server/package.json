@@ -28,6 +28,7 @@
     "@adhd/sox-memory-core": "workspace:*",
     "@adhd/sox-store-adapter": "workspace:*",
     "@adhd/sox-mcp-runtime": "workspace:*",
-    "@adhd/sox-service-proxy": "workspace:*"
+    "@adhd/sox-service-proxy": "workspace:*",
+    "@adhd/sox-telemetry": "workspace:*"
   }
 }
