@@ -116,11 +116,13 @@ export default [
     // ── Pre-existing debt, deliberately NOT silenced ────────────────────────
     // `libs/data/vectors/vector-store` has 4 known violations that predate this
     // rule: index.ts 143/200/359 (BL-380) and lancedb.ts:3 (BL-389). They are
-    // real and tracked, and they are NOT fixed here because the `agent-source`
-    // blast radius of making those call sites async is still unmeasured — plus
-    // index.ts:196 (`vecEnabled: adapter.capabilities.nativeVectors || true`)
-    // is dead code whose deletion turns 15 tests green while fixing nothing,
-    // so this file needs a measured pass rather than a drive-by.
+    // real and tracked. Blast radius WAS measured (2026-08-01) and is trivial:
+    // two spec files import this package at value level; everything else is a
+    // type-only re-export, and `agent-source` — the consumer originally cited
+    // as the risk — is not a package in this repo. The remaining reason for
+    // care is narrow: index.ts:196 (`vecEnabled: adapter.capabilities
+    // .nativeVectors || true`) is dead code whose deletion turns 15 tests green
+    // while fixing nothing, so the fix needs attention, not avoidance.
     //
     // WARN, not off: leaving it at `error` makes `nx lint vector-store` — and
     // therefore the repo-wide `run-many -t build,lint,test,typecheck` gate —
