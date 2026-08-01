@@ -568,6 +568,32 @@ rewritten, only unblocked.
 **budget:** ~40 turns. Measured reality for comparable packets is **65-130 tool calls** and ~270-305k cache-created; **guidance only, not a stop.** Cost per packet measured at $2.71-$6.15 — do not truncate work to save tokens, the orchestration costs 30x more than you do.
 **acceptance:** a test naming BL-402 that races two `forPath()` calls for a fresh path and asserts `openDb` is invoked exactly once (spy/counter). Must fail against current code — the item's own evidence is that it currently opens twice.
 
+### PKT-47 — BL-404: wire the telemetry composition root — production currently writes every record into a null sink
+**Goal:** the live server runs the module-level fallback `{service:'unlabeled', role:'test', logSink:'none', sink:null}` because **nothing outside a spec ever calls `initTelemetry()`**. Every `log.*` emitted by the BL-401 gap 1/2 instrumentation goes to a no-op, and the live population is labelled `role:'test'` — defeating exactly the test/live separation BL-353 built that field for. Found by the reviewed redeploy (BL-401 gap 5), not by any of the four green suites, all of which construct their own sink.
+**Closes:** BL-404
+**Files:** memory-server's startup path in `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (call `initTelemetry` before any handler can emit), `libs/observability/sox-telemetry/src/runtime.ts` (`defaultRole()` at ~:60 — all three branches return `'test'`; the two env probes are dead), + spec.
+**requires:** none
+**sequencing:** **serialize with the other `index.ts` packets** (PKT-01, 09, 13, 19, 25, 32, 34, 45).
+**tier:** sonnet, ~45k tokens / ~20 turns — the diagnosis is already complete and cited; this is a wiring change plus a decision about whether the unlabeled fallback should be loud.
+**orientation:** ~40k unavoidable before any edit — the BL-404 body carries the full evidence, so read it and the two cited files rather than re-deriving. **Fixed cost; does not shrink with the size of the change.**
+**budget:** ~20 turns / ~90k tokens = 40k orientation + 20 x ~2.5k per turn. Guidance ceiling ~160k; **guidance, not a stop.** Measured reality for comparable packets is 65-130 tool calls — do not truncate the work to hit a number. Commit incrementally by explicit path. **You may sub-dispatch, but only to `general-purpose`/`haiku`/`claude`** — the specialist agent types do NOT have the `Agent` tool and cannot delegate at all.
+> **Decide and state one thing explicitly:** whether the no-composition-root fallback stays silent. It is currently a *well-formed-looking* state — `role:'test'`, no error, no warning — which is how it survived review and shipped. A one-shot stderr warning makes it self-reporting. **Never write to stdout**: that corrupts memory-server's MCP JSON-RPC channel, and `LogSink` deliberately does not offer it.
+**Produces:** a production server whose telemetry records actually reach disk, labelled `role:'live-service'` — making BL-401 gap 6 (metric persistence) meaningful for the first time, since there is now a sink to persist into.
+**acceptance:** a test naming BL-404 asserting the production entrypoint initialises with `role:'live-service'` and `logSink:'file'`; then **live** re-verification on the deployed backend that `memory_stats.telemetry_self_check.role === 'live-service'` and that records land on disk under the resolved log dir. The live half is not optional — the in-process half is precisely what passed while production was broken.
+
+### PKT-48 — BL-405: the backend ignores SIGTERM and is SIGKILLed on every restart
+**Goal:** `soxe service restart` reports, verbatim, `reaper: pid 18521 survived SIGTERM after 5000ms → SIGKILL`. `close()` — where the store re-verifies WAL identity and runs `wal_checkpoint(PASSIVE)`, the mechanism credited with recovering 140/140 records under BL-330 — never runs. Every ordinary restart therefore exercises crash recovery instead of clean shutdown, which also means the clean-shutdown path is nearly untested in the only environment that counts.
+**Closes:** BL-405
+**Files:** determined by the diagnosis below — expect `memory-server/src/index.ts` (signal handlers), the `_bgSlot` mutex, and/or the child-process lifecycle for the embed worker / enrich process host / fastembed host.
+**requires:** none
+**tier:** sonnet, ~80k tokens / ~30 turns — **step 1 is a genuine open determination**, pre-specified below as an experiment rather than left as a question.
+**orientation:** ~45k unavoidable before any edit — BL-405's body plus the signal/shutdown path. **Fixed cost.**
+**budget:** ~30 turns / ~120k tokens = 45k orientation + 30 x ~2.5k per turn. Guidance ceiling ~190k; **guidance, not a stop.** Commit incrementally by explicit path. If the diagnosis contradicts every candidate below, **say so and stop — that is a success outcome**, not a failure.
+> **DIAGNOSE BEFORE FIXING — do not guess, and do not just raise the grace period.** Spawn a backend, `kill -TERM` it, and measure *where* it blocks. Candidates in order: (a) no `SIGTERM` handler registered at all; (b) a handler blocked behind an in-flight embed/enrich pass holding `_bgSlot`; (c) a handler awaiting a drain with no deadline; (d) non-daemonised child processes keeping the event loop alive past the window. **(e) is also live:** 5s may simply be too short to checkpoint a 98MB store — if so the fix is a reasoned grace period *plus* a fast-path checkpoint, never a bigger magic number.
+> Note the store survived the observed SIGKILL intact (deep probes `overall: ok`, `damaged: []`). That is the BL-330 durability work absorbing the damage — it is **not** evidence that SIGKILL-on-restart is safe, and it is why this stayed invisible.
+**Produces:** a clean-shutdown path that actually executes in production, so BL-330's checkpoint stops being dead code on the restart path.
+**acceptance:** a test naming BL-405 that sends SIGTERM to a spawned backend and asserts it exits cleanly, well within grace, with the WAL checkpointed — plus a `soxe service restart` that completes **without** the reaper escalating. The escalation line is the observable: its absence is the pass condition.
+
 ### PKT-41 — BL-391: federated recall's BM25 arm is dead on Turso, and the failure is swallowed whole-store
 **Goal:** a read-only Turso connection cannot run `fts_match` (measured: `readonly:false` → 1158 hits; `readonly:true` → `step failed: Error: Resource is read-only`; plain `COUNT(*)` works identically on both). `openDbReadOnly` passes `readonly: true` unconditionally and its **only** production caller is `getFederationConnection` (`recall.ts:1208`) — so single-store recall is unaffected (live recall still returns `provenance: ["vec","fts","temporal"]`) but federated recall is not.
 **Closes:** BL-391
@@ -896,7 +922,7 @@ completion, don't just assume no build ran.
 **Files:** `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (`_bgSlot`/`_bgSlotHolder` mutex removal, ~:2312), `libs/memory-core/src/embed-pipeline.ts`, `libs/memory-core/src/curate.ts` (`organizer_queue` consumer), `libs/memory-core/src/cluster.ts` (entry point only — do not touch threshold logic, that's Wave D).
 **requires:** none
 **sequencing:** **Does not wait on PKT-02** per the owner's explicit exception — it is CRITICAL and loses data today.
-**tier:** opus, ~80k tokens / ~30 turns — target named (separate execution contexts) but BL-154 re-entrancy makes it genuinely delicate
+**tier:** sonnet, ~80k tokens / ~30 turns — **DONE.** Planned opus; measurement showed it actually ran on `claude-sonnet-5` (no `model:` override was ever passed) and closed a CRITICAL item successfully. Recorded as sonnet because that is what succeeded, not as an aspiration.
 **tier-note:** **IN FLIGHT** — dispatched before the no-opus constraint. Allowed to finish; not to be re-dispatched at this tier.
 **orientation:** ~96k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~56k cited source + ~4k backlog bodies. **This is fixed cost and does not shrink with the size of the change.**
 **budget:** ~30 turns / ~171k tokens = 96k orientation + 30 x ~2.5k per turn. Guidance ceiling ~240k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
@@ -909,7 +935,7 @@ completion, don't just assume no build ran.
 **Closes:** BL-351 (HIGH)
 **Files:** new package (per the research doc's recommendation — likely `libs/observability/tracing-core` or similar; the doc names the exact target), `libs/memory-core/src/telemetry.ts` (migrate off, don't duplicate), env-policy wiring (`libs/*/src/env-policy.ts`, now single-sourced per BL-344 — confirm before editing, do not reintroduce a 2nd copy).
 **requires:** none
-**tier:** opus, ~85k tokens / ~35 turns — high turn count, low reasoning-per-turn — the 76KB design already exists; this is implementation of a written spec
+**tier:** sonnet, ~85k tokens / ~35 turns — **DONE.** Planned opus; ran on `claude-sonnet-5` in fact. High turn count, low reasoning-per-turn — the 76KB design already existed; this was implementation of a written spec, which is exactly the shape that does not need a higher tier.
 **tier-note:** **COMPLETE** — dispatched before the no-opus constraint. Do not re-dispatch at this tier.
 **orientation:** ~46k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~6k cited source + ~4k backlog bodies. **This is fixed cost and does not shrink with the size of the change.**
 **budget:** ~35 turns / ~133k tokens = 46k orientation + 35 x ~2.5k per turn. Guidance ceiling ~190k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
@@ -1189,7 +1215,7 @@ completion, don't just assume no build ran.
 **Files:** none (research item — output is a written recommendation, per the item's own acceptance; may include a small standalone measurement script under `~/.adhd/sox-ecosystem/memory/` per the existing `bl328-*.mjs` convention, not committed to the repo).
 **requires:** none
 **sequencing:** **Blocks PKT-29 and PKT-31.**
-**tier:** opus, ~90k tokens / ~30 turns — real research: tau must be MEASURED across >=2 corpus sizes, not chosen
+**tier:** sonnet, ~90k tokens / ~30 turns — **DONE.** Planned opus; ran on `claude-sonnet-5` and delivered the measurement (fixed tau is not viable at N=4867: 0.82 -> 0.759, 0.85 -> 0.514; only 0.87 holds). Real research, completed at sonnet.
 **tier-note:** **COMPLETE** — dispatched before the no-opus constraint. Do not re-dispatch at this tier.
 **orientation:** ~40k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~0k cited source + ~4k backlog bodies. **This is fixed cost and does not shrink with the size of the change.**
 **budget:** ~30 turns / ~115k tokens = 40k orientation + 30 x ~2.5k per turn. Guidance ceiling ~170k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
@@ -1384,6 +1410,13 @@ Verified by diffing every packet's `Closes:` line against `grep -oE '^### BL-[0-
 | E | PKT-34 .. PKT-36 (3) | 2 (PKT-36 depends on PKT-35) | PKT-25 (PKT-34 only) |
 | F | PKT-37 .. PKT-40 (4) | 3 | PKT-16 (PKT-40 only) |
 
-**Total: 40 packets.** Tier distribution: **opus 10** (PKT-01, 02, 12, 21, 25, 26, 28, 29, 33, 36, 37, 40 — actually 12, see list), **sonnet 25**, **haiku 3** (PKT-09, PKT-20, PKT-22, PKT-23 — 4, see list). Exact counts: opus = {01,02,12,21,25,26,28,29,33,36,37,40} = 12; haiku = {09,20,22,23} = 4; sonnet = the remaining 24.
+**Total: 48 packets.** Tier distribution, derived from the `**tier:**` fields rather than hand-maintained: **sonnet 44**, **haiku 4** (PKT-09, 20, 22, 23), **opus 0**.
+
+> **No packet is opus.** Two independent reasons, both evidence rather than preference. First, the owner's standing constraint: *"No more opus agents."* Second — and this is the one that matters for estimation — **every agent dispatched in this program ran `claude-sonnet-5` regardless of what the packet said.** No `model:` override was ever passed, so the `Agent` tool used each agent type's default. The three packets that once read `opus` (PKT-01, 02, 28) were measured after the fact and had all run on sonnet; all three completed, including a CRITICAL architectural change and a research packet that produced a real measurement. The earlier tier argument in this document concerned a distinction that was never present in any dispatch. Tier is not the lever — task shape, prompt specificity, and budget realism are.
+
+Verify this block rather than trusting it:
+```
+node -e 'const t=require("fs").readFileSync("docs/reporting/memory/PLAN.md","utf8");const c={};let n=0;for(const b of t.split(/(?=^### PKT-)/m).filter(b=>b.startsWith("### PKT-"))){n++;const m=b.match(/^\*\*tier:\*\*\s*(\w+)/m);const k=m?m[1]:"?";c[k]=(c[k]||0)+1}console.log(n,c)'
+```
 
 **Maximum achievable parallel width at any single instant is 13**, in Wave A, before any dependency resolves — the largest wave, and the one carrying both hard constraints (PKT-01 CRITICAL, PKT-02 the substrate). Wall-clock-critical path runs through PKT-02 → PKT-25 → PKT-34 (Wave A→B→E) and independently through PKT-01 → PKT-28 → PKT-29 → PKT-30 (Wave A→C), whichever research (PKT-28) and substrate (PKT-02) finish later determines the program's overall floor.
