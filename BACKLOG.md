@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 92.** (BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 93.** (BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -2823,4 +2823,46 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/da
 **Severity:** HIGH — this is a supply-chain-shaped integrity gap in our own publish path, and it has already degraded the only reliable deploy check we have. Related: BL-235 (destructive builds), BL-372 (silent no-op deploys, the invariant this undermines), and the parallel-dispatch safety rules in `CLAUDE.md`.
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: registry/index.json (memory-server 1.3.0, checksum sha256:9f95d587edbf…), 2: git status at 13:05 showing uncommitted edits to libs/memory-core/src/{extensions,backup}.ts and libs/data/store/store-adapter/src/{types,sqlite-adapter,turso-adapter}.ts, 3: live memory_ping artifact 6d1b2abc1c12 / pid 32640 vs shasum of extensions/bundles/sox-memory-bundle/members/memory-server/dist/index.js = 9f95d587edbf]
+
+---
+
+### BL-391 — a read-only Turso connection cannot run `fts_match`, so federated recall's BM25 arm is dead on the default backend — and the failure is swallowed whole-store — **Open (HIGH)** (2026-08-01)
+
+**Found while:** verifying another agent's BL-385 report, which mentioned in passing that "readonly Turso connections can't run `fts_match`." That remark was correct and its blast radius was not followed up.
+
+**Measured directly against a copy of the live store** (`.db` + `-wal` copied together per BL-330), same experimental flags the adapter sets in production (`index_method`, `multiprocess_wal`):[1]
+
+| connection | `fts_match("content","name","summary",'memory')` | control: `SELECT COUNT(*) FROM node` |
+|---|---|---|
+| `readonly: false` | **1158** | 9502 |
+| `readonly: true` | **`step failed: Error: Resource is read-only`** | 9502 |
+
+Plain reads work identically on both. It is specifically the FTS query that a read-only Turso connection rejects — presumably because Turso's Tantivy index performs internal bookkeeping on query. There is no equivalent restriction on sqlite's FTS5.
+
+**The blast radius is `openDbReadOnly`, which passes `readonly: true` unconditionally** (`db.ts:886-890`).[2] Its **only production caller** is `getFederationConnection` (`recall.ts:1208`) — every other reference is a test or a re-export.[3] So single-store `memory_recall` is unaffected (the memory-server passes the read-write adapter from `getDb`, which is why live recall still returns `provenance: ["vec","fts","temporal"]` — verified post-deploy on artifact `6d1b2abc1c12`). **Federated recall is not.**
+
+**It cannot be noticed, because the failure is swallowed at whole-store granularity.** `recallFromOpenDb` (`recall.ts:1226-1237`) wraps the entire per-store pipeline in a bare catch:[4]
+
+```ts
+try {
+  const res = await memoryRecall(adapter, scope, params);
+  return res.results;
+} catch {
+  return [];
+}
+```
+
+A store that throws contributes `[]`, which is **indistinguishable from a store that legitimately has no matches**. No log line, no `provenance` gap, nothing in `memory_ping`.
+
+**One thing is NOT yet determined and must not be guessed:** whether `memoryRecall` internally catches the FTS throw (BL-273 wired exactly that kind of graceful degradation for the vector arm via `embedVecFailed`). The two outcomes differ a lot and both are silent:
+- if it catches internally → **federated recall silently loses BM25 for every Turso store**, returning vector+temporal-ranked results that look plausible;
+- if it does not → **every Turso store silently contributes zero results** to a federated recall.
+
+A probe attempting to settle this crashed while spawning the embed provider out-of-process; it needs a proper test, not a guess. Resolve this **before** choosing a fix, because it determines severity.
+
+**Fix sketch:** stop opening federation connections read-only on a backend where that disables FTS — either drop `readonly: true` for backends whose FTS requires a writable handle (keeping `query_only` as the actual write guard, which is already applied and is what protects the store), or expose the constraint as an adapter capability rather than having callers assume read-only is universally free. Independently, **`recallFromOpenDb`'s bare catch must log** — a whole store vanishing from a federated result is exactly the class of silent failure that BL-381 (dead near-dup), BL-384 (entity search silently a LIKE scan) and BL-385 (backup returning `E_IO`) all belong to, and the reason each survived for weeks.
+
+**Severity:** HIGH — a documented feature (cross-scope federated recall, design.md §2.7) is degraded or dead on the default backend, with no surface that reports it. Not CRITICAL only because single-store recall — the dominant path — is unaffected. Related: BL-384 (same silent-fallback shape in entity search), BL-367 (recall divergence; **NOT explained by this** — `recall-parity.test.ts` opens both stores with `openDb`, read-write, verified, so do not conflate them).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live probe against a copy of ~/.memory/memory.db via @tursodatabase/database with readonly true/false, 2: libs/memory-core/src/db.ts:886-890, 3: libs/memory-core/src/recall.ts:1208 (getFederationConnection) — sole production call site, 4: libs/memory-core/src/recall.ts:1226-1237]
 
