@@ -59,7 +59,6 @@ describe('memoryRecall — real SQLite integration', () => {
 
   it('writes two claims and recalls them without throwing', async () => {
     const db = await openDb(dbPath);
-    const raw = db.unwrap() as Database.Database;
 
     try {
       const w1 = await memoryWrite(db, { content: 'The sky is blue and vast.', project_path: '/test/project' });
@@ -86,7 +85,6 @@ describe('memoryRecall — real SQLite integration', () => {
 
   it('as_of point-in-time recall executes and returns results', async () => {
     const db = await openDb(dbPath);
-    const raw = db.unwrap() as Database.Database;
 
     try {
       const before = new Date().toISOString();
@@ -198,7 +196,6 @@ describe('MCP bundle path — real embedding semantic proof', () => {
     async () => {
 
       const db = await openDb(dbPath);
-      const raw = db.unwrap() as Database.Database;
 
       try {
         // Write two semantically related claims and one unrelated claim
@@ -250,7 +247,6 @@ describe('BL-162: in-process periodic batch enrichment', () => {
   it('runBatchEnrich with incrementalCluster:true succeeds in-process on a live DB', async () => {
     const { dbPath, cleanup } = makeTempDb();
     const db = await openDb(dbPath);
-    const raw = db.unwrap() as Database.Database;
     try {
       // Write a couple of episodes so enrichment has something to process.
       await memoryWrite(db, { content: 'Fallback enrichment test: first episode content here.', project_path: '/test/project' });

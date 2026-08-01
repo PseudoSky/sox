@@ -8,6 +8,13 @@
     "node_modules",
     "dist",
     "extensions/**/vitest.config.ts",
-    "extensions/**/*.spec.ts"
+    "extensions/**/*.spec.ts",
+    // `.test.ts` was omitted here while `.spec.ts` was excluded — an
+    // asymmetry, not a decision. Both are project-owned test files; memory-server
+    // has its own `typecheck` + `typecheck-tests` targets (BL-340) that compile
+    // them with the ESM settings vitest actually runs them under. This root
+    // catch-all was compiling only the `.test.ts` half as CommonJS, producing
+    // TS1541/TS1479 that say nothing about the code.
+    "extensions/**/*.test.ts"
   ]
 }
