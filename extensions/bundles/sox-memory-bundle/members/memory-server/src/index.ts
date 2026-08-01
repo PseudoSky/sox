@@ -69,7 +69,7 @@ import {
   memoryWriteBatchPhaseA,
   memoryWritePhaseA,
   resolveStoreOrDbPath,
-  runBatchEnrich,
+  runEnrichIsolated,
   schedulePendingEmbeds,
   setLeaseInstanceId,
   supersedesUidForRowid,
@@ -1973,6 +1973,11 @@ const drainIdleMs = () => envMs('SOX_EMBED_DRAIN_IDLE_MS', DEFAULT_DRAIN_IDLE_MS
 const drainFloorMs = () => envMs('SOX_EMBED_DRAIN_FLOOR_MS', DEFAULT_DRAIN_FLOOR_MS);
 const drainWakeDebounceMs = () => envMs('SOX_EMBED_DRAIN_WAKE_DEBOUNCE_MS', DEFAULT_DRAIN_WAKE_DEBOUNCE_MS);
 const drainBatchLimit = () => envMs('SOX_EMBED_DRAIN_BATCH', DEFAULT_DRAIN_BATCH);
+/** BL-348: hard wall-clock budget for the isolated cluster/enrich child
+ *  process. A hung child is SIGTERM'd (then SIGKILL'd) at this bound and the
+ *  tick moves on — never blocks the parent, never waits indefinitely. */
+const DEFAULT_ENRICH_ISOLATION_TIMEOUT_MS = 120_000;
+const enrichIsolationTimeoutMs = () => envMs('SOX_ENRICH_ISOLATION_TIMEOUT_MS', DEFAULT_ENRICH_ISOLATION_TIMEOUT_MS);
 
 // ── Queue-drain health SLO (BL-172 follow-on) ─────────────────────────────────
 //
@@ -2107,9 +2112,20 @@ export async function maxOpenEnrichTriggerSeq(adapter: StoreAdapter): Promise<nu
  *      heal embeds off-slot and applies through the WriteQueue as short tasks;
  *      this function is only ever called from an interval callback / test —
  *      never from inside a queue task (BL-154).
- *   2. BL-172 drain: snapshot the open trigger rows this pass will satisfy, run
- *      the pass, then complete them through the async StoreAdapter.
- *   3. BL-186: if a full-pass `enrich` row (memory_curate recluster) is pending
+ *   2. BL-348: clustering/importance/auto-link (`runBatchEnrich`) runs in an
+ *      ISOLATED CHILD PROCESS (`runEnrichIsolated`), never in-process. A throw,
+ *      hang, or crash inside it can never block this process's event loop and
+ *      can never touch a written vector — there is no shared connection, no
+ *      shared promise chain. `ok: false` is a normal, non-fatal outcome here:
+ *      it is logged and the tick moves on, exactly like a heal failure always
+ *      has. Do NOT re-inline `runBatchEnrich(adapter, ...)` on this path —
+ *      that is the exact defect BL-348 exists to remove (see
+ *      `enrich-process-host.ts` for why in-process execution is unsafe).
+ *   3. BL-172 drain: snapshot the open trigger rows this pass will satisfy, run
+ *      the pass, then complete them through the async StoreAdapter — ONLY on a
+ *      successful isolated pass; a failed pass must not falsely report
+ *      trigger rows as done.
+ *   4. BL-186: if a full-pass `enrich` row (memory_curate recluster) is pending
  *      INSIDE the snapshot window, the pass runs with incrementalCluster:false
  *      — the honest fulfilment of `{enqueued: true}`. A full-pass row enqueued
  *      after the snapshot stays open and drives the next tick.
@@ -2122,7 +2138,15 @@ export async function maxOpenEnrichTriggerSeq(adapter: StoreAdapter): Promise<nu
 export async function runEnrichPassOnDb(
   adapter: StoreAdapter,
   dbPath: string,
-): Promise<{ queue_completed: number; full_pass: boolean; healed: number; heal_failed: number }> {
+  opts: { acquireHealSlot?: boolean } = {},
+): Promise<{
+  queue_completed: number;
+  full_pass: boolean;
+  healed: number;
+  heal_failed: number;
+  cluster_ok: boolean;
+  cluster_error?: string;
+}> {
   // Logging follow-on (2026-07-30, from the embed-backfill-stampede incident):
   // a frozen backlog with embeds_completed climbing was the exact signature
   // of the bug, and it took six agents to diagnose because backlog_before/
@@ -2136,35 +2160,75 @@ export async function runEnrichPassOnDb(
   // 500 rows is ~290s of embedding at the measured 580ms p50, which is what made
   // a single enrich tick take 385s (240s of it heal, cut off by the time budget
   // with 83 rows of the window unprocessed).
-  const heal = await healMissingVectors(adapter, await WriteQueue.forPath(dbPath), {
-    limit: drainBatchLimit(),
-  });
+  //
+  // BL-348: this is now the ONLY thing the background slot guards on the
+  // enrich-tick side (narrowed from the whole tick, which used to also hold
+  // the slot across the entire in-process runBatchEnrich call). It still
+  // needs the slot because it runs the SAME `NOT EXISTS vec_node` scan the
+  // drain runs — two concurrent scans over that window is the BL-346
+  // stampede, unrelated to clustering isolation and not fixed by moving
+  // clustering off-process.
+  //
+  // `acquireHealSlot` defaults true (real production/guarded-tick behaviour).
+  // enrich-reentrancy.spec.ts passes false deliberately: that suite proves
+  // the REENTRANCY GUARD (`_enrichPassInFlight`) in isolation by calling the
+  // raw, unguarded `runPeriodicEnrichPass()` concurrently with itself — a
+  // DIFFERENT hazard than the cross-loop (drain vs enrich) exclusion this
+  // slot exists for, already covered by drain-wake.spec.ts. Taking the slot
+  // unconditionally here would make even the deliberately-unguarded raw path
+  // slot-exclusive, which defeats that suite's ability to reproduce the race
+  // it exists to prove.
+  const wq = await WriteQueue.forPath(dbPath);
+  const acquireHealSlot = opts.acquireHealSlot ?? true;
+  const heal = acquireHealSlot
+    ? await withBackgroundSlot('enrich-heal', () => healMissingVectors(adapter, wq, { limit: drainBatchLimit() }))
+    : await healMissingVectors(adapter, wq, { limit: drainBatchLimit() });
 
   const maxSeq = await maxOpenEnrichTriggerSeq(adapter);
   const fullPass = await hasPendingFullEnrich(adapter, maxSeq);
-  const result = await runBatchEnrich(adapter, { incrementalCluster: !fullPass });
-  const queueCompleted = await completeEnrichTriggerRows(adapter, maxSeq);
 
+  // BL-348: isolated child process — see runEnrichIsolated's own doc for why
+  // this never throws/rejects, even when the child crashes or times out.
+  const isolated = await runEnrichIsolated(dbPath, { incrementalCluster: !fullPass }, enrichIsolationTimeoutMs());
+
+  const queueCompleted = isolated.ok ? await completeEnrichTriggerRows(adapter, maxSeq) : 0;
   const backlogAfter = (await embedBacklogStats(adapter)).count;
-  console.error(
-    `[memory-server] periodic enrich (${dbPath}):` +
-    ` communities=${result.communities_upserted}` +
-    ` importance_updated=${result.importance_updated}` +
-    ` relates_to=${result.relates_to_edges}` +
-    ` queue_completed=${queueCompleted}` +
-    ` full_pass=${fullPass}` +
-    ` embed_healed=${heal.healed}` +
-    ` embed_heal_failed=${heal.failed}` +
-    ` backlog_before=${backlogBefore}` +
-    ` backlog_after=${backlogAfter}` +
-    ` backlog_delta=${backlogAfter - backlogBefore}` +
-    (heal.disabled ? ' embed_heal=DISABLED' : ''),
-  );
+
+  if (isolated.ok) {
+    const result = isolated.result;
+    console.error(
+      `[memory-server] periodic enrich (${dbPath}):` +
+      ` communities=${result.communities_upserted}` +
+      ` importance_updated=${result.importance_updated}` +
+      ` relates_to=${result.relates_to_edges}` +
+      ` queue_completed=${queueCompleted}` +
+      ` full_pass=${fullPass}` +
+      ` embed_healed=${heal.healed}` +
+      ` embed_heal_failed=${heal.failed}` +
+      ` backlog_before=${backlogBefore}` +
+      ` backlog_after=${backlogAfter}` +
+      ` backlog_delta=${backlogAfter - backlogBefore}` +
+      (heal.disabled ? ' embed_heal=DISABLED' : ''),
+    );
+  } else {
+    // BL-348: the entire point — a failed cluster pass is logged and moved
+    // past, never allowed to touch the embed backlog it shares this tick
+    // with. embed_healed/backlog above already ran and landed successfully
+    // BEFORE this isolated call, unaffected by its outcome.
+    console.error(
+      `[memory-server] periodic enrich (${dbPath}): cluster_pass FAILED (isolated, non-fatal): ` +
+      `${isolated.error} — embed_healed=${heal.healed} backlog_before=${backlogBefore} ` +
+      `backlog_after=${backlogAfter} (unaffected by cluster failure)`,
+    );
+  }
+
   return {
     queue_completed: queueCompleted,
     full_pass: fullPass,
     healed: heal.healed,
     heal_failed: heal.failed,
+    cluster_ok: isolated.ok,
+    ...(isolated.ok ? {} : { cluster_error: isolated.error }),
   };
 }
 
@@ -2176,13 +2240,13 @@ export async function runEnrichPassOnDb(
  * scan). Production code path is `runPeriodicEnrichPassGuarded()` below,
  * which never allows two calls in flight at once.
  */
-export async function runPeriodicEnrichPass(): Promise<void> {
+export async function runPeriodicEnrichPass(opts: { acquireHealSlot?: boolean } = {}): Promise<void> {
   if (openedPaths.size === 0) return;
 
   for (const dbPath of openedPaths) {
     try {
       const adapter = await getDb(dbPath);
-      await runEnrichPassOnDb(adapter, dbPath);
+      await runEnrichPassOnDb(adapter, dbPath, opts);
     } catch (err) {
       // Log to stderr only — never stdout (JSON-RPC channel).
       console.error(`[memory-server] periodic enrich error (${dbPath}):`, err);
@@ -2275,7 +2339,15 @@ export async function runPeriodicEnrichPassGuarded(): Promise<void> {
   const tickStartedAt = Date.now();
   console.error(`[memory-server] enrich.tick.start tick_seq=${tickSeq}`);
   try {
-    await withBackgroundSlot('enrich', () => runPeriodicEnrichPass());
+    // BL-348: NOT wrapped in withBackgroundSlot any more. The clustering work
+    // inside runPeriodicEnrichPass -> runEnrichPassOnDb now runs off-process
+    // (runEnrichIsolated) and must be able to run concurrently with the
+    // drain — that concurrency is the whole point of the isolation boundary.
+    // Only the heal step inside runEnrichPassOnDb (which touches the SAME
+    // vec_node scan the drain uses) still takes the slot, narrowly, for the
+    // BL-346 anti-stampede reason documented at withBackgroundSlot's
+    // definition below.
+    await runPeriodicEnrichPass();
     console.error(
       `[memory-server] enrich.tick.finish tick_seq=${tickSeq}` +
       ` duration_ms=${Date.now() - tickStartedAt}`,
@@ -2291,22 +2363,32 @@ export async function runPeriodicEnrichPassGuarded(): Promise<void> {
   }
 }
 
-// ── BL-382: the background slot ───────────────────────────────────────────────
+// ── BL-382 / BL-348: the background slot — NARROWED, retained for one purpose ─
 //
-// There are now TWO independently-scheduled background loops (the enrich tick
-// and the embed drain). They must never run at the same time: two concurrent
-// healMissingVectors scans over the same `NOT EXISTS vec_node ... LIMIT n`
-// window is precisely the BL-346 stampede, and runBatchEnrich's synchronous SQL
-// alongside anything else is BL-345.
+// RETAINED, NOT DELETED, but for a much narrower job than before. Before
+// BL-348 this mutex wrapped the ENTIRE enrich tick, including the in-process
+// `runBatchEnrich` clustering pass, which is exactly what made the drain and
+// clustering mutually exclusive by construction — the defect BL-348 closes.
+//
+// Clustering (`runBatchEnrich`) no longer touches this slot at all: it runs
+// in an isolated child process via `runEnrichIsolated` (enrich-isolation.ts),
+// entirely outside the enrich tick's slot-held critical section. It can now
+// run FULLY CONCURRENTLY with the drain — that concurrency is BL-348's point.
+//
+// What the slot still guards: the drain's `healMissingVectors` pass and the
+// enrich tick's own BACKSTOP `healMissingVectors` call (see `runEnrichPassOnDb`,
+// holder `'enrich-heal'`) both scan the SAME `NOT EXISTS vec_node ... LIMIT n`
+// window on the SAME in-process connection. Two concurrent scans over that
+// window is the BL-346 stampede — a real hazard, unrelated to clustering, and
+// not fixed by moving clustering off-process. That narrow exclusion is all
+// that remains behind this mutex.
 //
 // This is a MUTEX, not a guard: a caller waits for the slot rather than being
-// turned away. That is the whole point of the split — the drain no longer needs
-// its own 5-minute timer to stay out of the enrich pass's way, it just waits for
-// the slot, which is normally free.
+// turned away.
 //
 // The per-loop in-flight guards above/below are a DIFFERENT mechanism and both
 // are needed. The guard answers "is another copy of ME already running?" (skip);
-// the mutex answers "is any background work running?" (wait). Collapsing them
+// the mutex answers "is the OTHER heal scan running?" (wait). Collapsing them
 // into one would either let two enrich ticks queue up (re-creating the stampede
 // with extra steps) or make the drain skip work it should merely defer.
 let _bgSlot: Promise<void> = Promise.resolve();

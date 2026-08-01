@@ -2,6 +2,55 @@
 
 ---
 
+## [Unreleased] — BL-348: clustering/enrichment isolated into its own process — never blocks or drops a write's embedding
+
+**CRITICAL fix (PKT-01).** Owner directive, verbatim: *"the execution of clustering should never
+block an embedding from being written. Failing clustering should never drop an embedding. Embedding
+vector loss is a critical failure."*
+
+Before this change, `runBatchEnrich` (clustering, importance, auto-link) ran **in-process**, wrapped
+in the same `_bgSlot` mutex the embed drain uses — the drain and clustering were mutually exclusive
+by construction (BL-382 improved cadence but deliberately kept this), and `runBatchEnrich`'s
+synchronous `better-sqlite3` calls could starve the event loop for the entire pass (BL-345).
+
+```
+# Clustering now runs in an isolated child process, forked fresh per pass —
+# a thrown error, hang, or crash there can never touch a written vector or
+# block a concurrent write's own embed path.
+runEnrichIsolated(dbPath, opts, timeoutMs)
+  → { ok: true, result }              // success
+  → { ok: false, error: 'timeout' }   // hung — SIGTERM'd, then SIGKILL'd
+  → { ok: false, error: '<message>' } // thrown inside the child, reported, never crashes the parent
+```
+
+- `libs/memory-core/src/enrich-process-host.ts` — child-process entry (mirrors the proven
+  `fastembedProcessHost.ts` isolation pattern already used for ONNX inference).
+- `libs/memory-core/src/enrich-isolation.ts` — parent-side `runEnrichIsolated()`; never throws or
+  rejects, so a floating `void runPeriodicEnrichPassGuarded()` call can never see an unhandled
+  rejection.
+- `runEnrichPassOnDb` (`extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts`)
+  now reports `cluster_ok`/`cluster_error` instead of throwing — a failed pass is logged and the
+  tick moves on; the heal that already ran earlier in the same tick is unaffected.
+- `_bgSlot` **retained, narrowed** — clustering no longer touches it at all. It still excludes the
+  drain's heal scan from the enrich tick's own backstop heal scan (both touch the same
+  `NOT EXISTS vec_node` window — the BL-346 anti-stampede guard, unrelated to clustering).
+
+**Acceptance, red→green, both watched:** `bl348-stage-isolation.spec.ts`. (1) a forced clustering
+throw — RED (no seam existed to report failure without crashing the call) → GREEN (`cluster_ok:false`,
+embeddings written before AND after the failure durably present in `vec_node`). (2) a slow clustering
+stage concurrent with a write — RED (`write_to_vector_ms` measured 6729ms, fully blocked) → GREEN
+(<1000ms, isolated pass still running in the background). Full `memory-server` suite: 20 files / 187
+tests green; `typecheck`/`lint` clean.
+
+**Not yet live:** the child-process sidecar (`sox.sidecars` in `libs/memory-core/package.json`) has
+not been verified through a real `nx build memory-server` + `registry:sync-index` (that rebuild was
+out of scope for this fix — a diagnostic/deploy build is a destructive, separately-gated operation,
+BL-235/BL-393). The running server is unchanged by this change until that build+deploy happens.
+
+Citations: [wip/turso-live-metrics, packets, claude, PKT-01, 1: libs/memory-core/src/enrich-isolation.ts, 2: libs/memory-core/src/enrich-process-host.ts, 3: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (runEnrichPassOnDb/runPeriodicEnrichPass/withBackgroundSlot), 4: extensions/bundles/sox-memory-bundle/members/memory-server/src/bl348-stage-isolation.spec.ts, 5: extensions/bundles/sox-memory-bundle/members/memory-server/src/drain-wake.spec.ts, 6: extensions/bundles/sox-memory-bundle/members/memory-server/src/enrich-reentrancy.spec.ts]
+
+---
+
 ## [Unreleased] — BL-350: cluster maintenance strategy researched — drift metric, harness, split/merge/orphan criteria, cadence
 
 RESEARCH item (PKT-28). BL-349's write-triggered incremental clustering answers "which existing

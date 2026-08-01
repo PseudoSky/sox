@@ -245,7 +245,25 @@ describe('BL-382 / BL-154 — the wake cannot deadlock the write queue', () => {
     await waitFor(async () => (await backlogOf(dbPath)) === 0, 'chunked write reaches full vector coverage');
   });
 
-  it('the background slot is a mutex: the drain and the enrich tick never hold it at once', async () => {
+  // BL-348 NARROWED THIS TEST'S CLAIM — CHANGED DELIBERATELY, NOT QUIETLY.
+  //
+  // Before BL-348, this test's title was "the drain and the enrich tick never
+  // hold it at once", and it was true of the WHOLE enrich tick: the tick's
+  // in-process `runBatchEnrich` (clustering/importance/auto-link) ran wrapped
+  // in the SAME slot the drain uses, so a slow clustering pass fully excluded
+  // the drain (and vice versa) for the pass's entire duration — exactly the
+  // BL-348 defect (clustering could block an embedding from being written).
+  //
+  // Clustering now runs OFF-PROCESS (`runEnrichIsolated`, isolated child
+  // process) entirely outside this slot. Only the enrich tick's own BACKSTOP
+  // `healMissingVectors` call (holder `'enrich-heal'`) still touches the
+  // slot, because it and the drain's own heal both scan the same
+  // `NOT EXISTS vec_node` window — that narrow overlap is still the BL-346
+  // stampede risk this mutex exists to prevent, and is unrelated to
+  // clustering isolation. So the slot-exclusion property below is now scoped
+  // to heal-vs-heal only, and the test explicitly proves clustering does NOT
+  // participate in it.
+  it('the background slot excludes the two heal scans (drain vs enrich backstop) — narrowed by BL-348, clustering no longer holds it at all', async () => {
     const dbPath = tmpStorePath();
     await insertOrphanEpisode(dbPath, 'BL-382 slot-exclusion orphan');
     await handleToolCall('memory_ping', { db_path: dbPath });
@@ -257,17 +275,41 @@ describe('BL-382 / BL-154 — the wake cannot deadlock the write queue', () => {
     await waitFor(() => gated.calls >= 1, 'drain holds the slot');
     expect(backgroundSlotHolder()).toBe('drain');
 
-    // The enrich tick fires while the drain holds the slot. It must WAIT, not
-    // run concurrently — two overlapping healMissingVectors scans over the same
-    // window is the BL-346 stampede.
+    // The enrich tick fires while the drain holds the slot. Its OWN backstop
+    // heal step must WAIT for the same reason as before (BL-346) — but its
+    // clustering step (now isolated, off-process) is NOT gated by this slot
+    // at all, so the tick as a whole is no longer fully excluded the way it
+    // used to be.
     const enrich = runPeriodicEnrichPassGuarded();
     await new Promise<void>((r) => setTimeout(r, 5));
-    expect(backgroundSlotHolder()).toBe('drain'); // still the drain — enrich is queued
+    expect(backgroundSlotHolder()).toBe('drain'); // still the drain — enrich's heal step is queued behind it
 
     gated.release();
     _setEmbedProviderForTest(new DeterministicTestProvider());
     await drain;
     await enrich;
     expect(backgroundSlotHolder()).toBeNull();
+  });
+
+  it('BL-348: the isolated cluster pass never touches the background slot at all', async () => {
+    const dbPath = tmpStorePath();
+    await handleToolCall('memory_ping', { db_path: dbPath });
+
+    // No orphans inserted — the enrich tick's own backstop heal has nothing
+    // to do and settles almost instantly, leaving the tick's duration
+    // dominated by the isolated cluster pass (a real forked child process).
+    // Poll the slot holder throughout: it must NEVER be anything but null,
+    // 'drain', or 'enrich-heal' — in particular, never held for the
+    // clustering portion of the tick, which is the BL-348 claim.
+    const seenHolders = new Set<string | null>();
+    const poll = setInterval(() => seenHolders.add(backgroundSlotHolder()), 1);
+    try {
+      await runPeriodicEnrichPassGuarded();
+    } finally {
+      clearInterval(poll);
+    }
+    for (const holder of seenHolders) {
+      expect(holder === null || holder === 'drain' || holder === 'enrich-heal').toBe(true);
+    }
   });
 });

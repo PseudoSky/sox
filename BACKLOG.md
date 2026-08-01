@@ -1114,37 +1114,13 @@ Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7
 
 ---
 
-### BL-348 — Enrichment/clustering can block and lose an embedding: the write pipeline has no stage isolation — **Open (CRITICAL)** (2026-07-31)
-
-**Owner directive, verbatim (2026-07-31):** *"Embedding and other enrichment should really never block each other — they are independent features enabled by different components. Generating an embedding and writing it should be an isolatable operation from topic enrichment and edge drawing. … the execution of clustering should never block an embedding from being written. Failing clustering should never drop an embedding. Embedding vector loss is a critical failure."*
-
-**Driver:** embedding, topic enrichment, edge drawing, and clustering currently share one enrich/write path with no isolation boundary between them. Three distinct failure modes follow, and we have observed all three:
-
-1. **Blocking** — a clustering pass monopolizes the loop and starves everything behind it. BL-345 established that **any** in-process background job starves foreground reads, not merely embed heal; BL-346's live hang (`enrich.tick.start` with no `.finish`) is this shape.
-2. **Loss** — a failure in a *downstream* stage can abort the unit of work that carried a *successfully computed* embedding. An embedding costs real ANE/CPU time and is the single most expensive artifact in the pipeline; discarding one because an unrelated stage threw is unacceptable.
-3. **Attribution** — with the stages fused, a slow or failing pipeline cannot be attributed to a component, which is exactly why BL-331's 18x slowdown remains unexplained.
-
-**Requirement.** Embedding generation and vector persistence form a **committed stage**. Once a vector is computed it is durably written before any enrichment stage runs, and no subsequent stage failure can roll it back, skip it, or delay it. Enrichment, topic assignment, edge drawing and clustering each become independently schedulable, independently failable, independently retryable stages downstream of that commit.
-
-**Explicitly: vector loss is a CRITICAL-severity failure class, not an error to be logged and moved past.**
-
-**Fix sketch:** split the write path into committed stages with an explicit boundary after vector persist. Downstream stages consume from a durable queue (`organizer_queue` already exists) rather than executing inline within the write. Each stage carries its own failure isolation, retry policy, and metrics (BL-351). Pairs with BL-349 (clustering as a backgrounded trigger) and BL-345 (foreground/background lanes).
-
-**Acceptance (red→green, must name BL-348):** a test that writes an episode with a clustering/enrichment stage forced to throw, and asserts the embedding is **still durably present in `vec_node`** after the failure. Must fail today. A second test asserts a deliberately slow enrichment stage does **not** increase `write_to_vector_ms` for concurrent writes — proving the blocking boundary is real and not merely nominal.
-
-**Severity:** CRITICAL — the failure mode is silent loss of the most expensive artifact in the system, on a store where vector coverage is already frozen at ~36%.
-
-**Related:** BL-345 (background jobs starve foreground), BL-346/BL-339 (both live mitigations exist because of this), BL-326/BL-349 (clustering trigger), BL-331 (unattributable slowness), BL-351 (per-stage metrics), BL-330 (durability of the committed write).
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: owner directive 2026-07-31, 2: BL-345, 3: BL-346 (live enrich.tick hang), 4: libs/memory-core/src/enrich-batch.ts, 5: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (runEnrichPassOnDb / runPeriodicEnrichPassGuarded)]
-
----
-
 ### BL-349 — Clustering must run as a backgrounded post-write trigger, never inline — **Open (HIGH)** (2026-07-31)
 
 **Owner decision on BL-326 (2026-07-31), verbatim:** *"shouldn't this be a backgrounded insert trigger? … For now I'm okay with doing the write triggered cluster association but the execution of clustering should never block an embedding from being written."*
 
 **Resolves the BL-326 design gap** — clustering is currently unreachable from any ordinary write (the incremental path is a dead stub; full passes run only off an explicit `organizer_queue` row). The chosen strategy is **write-triggered cluster association executed in the background**, not a periodic full pass and not an inline call.
+
+**Unblocked (2026-08-01):** BL-348 shipped the isolation boundary this item builds on — `runEnrichIsolated` (`libs/memory-core/src/enrich-isolation.ts`) runs `runBatchEnrich` in an isolated child process, never in-process, never able to block or drop a write's embedding. `_bgSlot` (`extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts`) is retained but narrowed to heal-vs-heal exclusion only — clustering never touches it. Wire the write-triggered trigger (this item) behind that same boundary; do not reintroduce an in-process call.
 
 **Constraints, all load-bearing:**
 - The trigger is **enqueued** by the write; the write does not await it (BL-348's committed-stage boundary).
@@ -2429,3 +2405,44 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: `CREATE
 
 Citations: [wip/turso-live-metrics, main, claude, PKT-02, 1: libs/observability/sox-telemetry/{src/*.ts, src/index.spec.ts, project.json} — `npx nx typecheck,typecheck-tests,lint,test,build sox-telemetry` all green, 2026-08-01]
 
+
+---
+
+### BL-402 — `WriteQueue.forPath` check-then-set race: two concurrent first-callers for a never-before-seen dbPath each pay a full `openDb()` — **Open (MEDIUM)** (2026-08-01)
+
+**Found while:** proving BL-348's red arm (PKT-01) — a concurrent `runEnrichPassOnDb` + `memory_write` against a freshly created store measured **5+ real seconds** before either completed, which was initially (and wrongly) attributed to the new isolation boundary. Instrumented timing traced it instead to `WriteQueue.forPath()`.
+
+**Root cause:** `libs/memory-core/src/write-queue.ts:353-363`:
+```ts
+static async forPath(dbPath: string, maxSize?: number): Promise<WriteQueue> {
+  let instance = WriteQueue.instances.get(dbPath);
+  if (!instance) {
+    instance = await WriteQueue._create(dbPath, maxSize);   // openDb() — full migration/integrity sequence
+    WriteQueue.instances.set(dbPath, instance);
+  }
+  return instance;
+}
+```
+The check (`instances.get`) and the set (`instances.set`) are separated by an `await` (`_create` → `openDb`). Two callers racing on the SAME never-before-seen `dbPath` both observe `undefined` before either has set the Map entry, so **both** independently call `openDb(dbPath)` — each paying the full open sequence (sqlite-vec load, Turso-compat VACUUM check, WAL-index sidecar repair, migration checks; see `libs/memory-core/src/db.ts:288-380`) concurrently against the same file. Measured cost here: ~5.2s wall-clock for what should be a cached-instance return in the microsecond range on the second caller.
+
+**Impact:** narrow but real — only affects the FIRST-ever concurrent touch of a given `dbPath` in a process's lifetime (a live server's WriteQueue is normally already warm by the time concurrent work happens, which is why this has not been observed in production telemetry). Still a genuine race with no atomicity guard; a second real `StoreAdapter`/`WriteQueue` instance for the same file is wasted (never used again, GC'd) but the concurrent opens themselves could plausibly contend for OS-level file locks during the migration/repair sequence.
+
+**Fix sketch:** make the check-then-set atomic — store a `Promise<WriteQueue>` in the map (not the resolved instance) as the FIRST thing on the initial call, so concurrent callers all await the SAME in-flight promise instead of independently calling `_create`:
+```ts
+static forPath(dbPath: string, maxSize?: number): Promise<WriteQueue> {
+  let p = WriteQueue.pending.get(dbPath);
+  if (!p) {
+    p = WriteQueue._create(dbPath, maxSize);
+    WriteQueue.pending.set(dbPath, p);
+  }
+  return p;
+}
+```
+
+**Acceptance (must name BL-402):** a test that fires two concurrent `WriteQueue.forPath(dbPath)` calls against a never-before-opened path and asserts `openDb`/`_create` was invoked exactly once (spy/counter), not twice — must fail today.
+
+**Severity:** MEDIUM — real defect, narrow trigger window, not the cause of any currently-open CRITICAL item once correctly attributed.
+
+**Related:** BL-348 (whose red-arm proof surfaced this).
+
+Citations: [wip/turso-live-metrics, packets, claude, PKT-01, 1: libs/memory-core/src/write-queue.ts:353-375, 2: libs/memory-core/src/db.ts:288-380 (openDb/_openDbInner — the expensive sequence paid twice)]
