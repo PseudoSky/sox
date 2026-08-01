@@ -41,15 +41,29 @@
  * live operators can flip them without a process restart.
  */
 
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { AsyncLocalStorage } from 'node:async_hooks';
 import { performance } from 'node:perf_hooks';
-import { monotonicFactory } from 'ulid';
+import { DurableJsonlSink } from '@adhd/sox-telemetry';
+import {
+  newTraceId,
+  currentTraceId,
+  traceIdOrNew,
+  withTrace,
+  runWithNewTrace,
+} from '@adhd/sox-telemetry';
 import { startSuspensionTracking, suspensionBetween } from './suspension.js';
 
-const ulid = monotonicFactory();
+// BL-401: trace-id propagation is no longer a private AsyncLocalStorage
+// instance here — it is re-exported from `@adhd/sox-telemetry`'s `trace.ts`,
+// which is the ONE ALS instance for the whole process. Two independent ALS
+// instances (the old shape: one here, one in the substrate) cannot see each
+// other's context, which would silently break trace-id propagation exactly at
+// the memory-core / sox-telemetry package boundary — see trace.ts's own doc
+// comment. `newTraceId`/`currentTraceId`/`traceIdOrNew`/`withTrace`/
+// `runWithNewTrace` keep their exact prior signatures; every existing caller
+// in this codebase (write-queue.ts, write.ts, embed-pipeline.ts) is unchanged.
+export { newTraceId, currentTraceId, traceIdOrNew, withTrace, runWithNewTrace };
 
 // ── Levels ────────────────────────────────────────────────────────────────────
 
@@ -128,220 +142,58 @@ function resolveMaxFiles(): number {
   return Number.isFinite(n) && n > 0 ? n : 7;
 }
 
-function todayDateString(): string {
-  const d = new Date();
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(d.getUTCDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+// ── Durable JSONL sink (BL-401: migrated onto the shared substrate) ────────────
+//
+// This used to be a private `RotatingJsonlWriter` class — a near-duplicate of
+// `@adhd/sox-telemetry`'s `DurableJsonlSink` (BL-351 §5.6/§5.8), which was
+// itself generalized FROM this class. Now there is exactly one durable-JSONL
+// implementation in the repo; memory-core just composes it.
+//
+// ENV CONTRACT (the reason this isn't a one-line swap — see BL-401's fix
+// note): `DurableJsonlSink` takes its directory/component/rotation policy as
+// CONSTRUCTOR options rather than reading `process.env` itself — env
+// resolution belongs to the composition root, not the sink (by design, so
+// role-qualified callers don't need the sink to know about env at all). But
+// `telemetry-crash-durability.spec.ts` and `telemetry.spec.ts` are
+// load-bearing regression tests that rely on `SOX_MEMORY_LOG_*` being
+// re-read PER CALL — a test flips an env var mid-run without reconstructing
+// anything and expects the very next `log.*` call to honour it.
+//
+// The sink's own `reconfigure()` method exists for exactly this shape (see
+// its doc comment: "lets a caller re-resolve environment variables on every
+// call ... without constructing a new sink instance per write"). `getWriter()`
+// below re-resolves every env var on EVERY call (mirroring the old
+// `RotatingJsonlWriter.write()`'s per-write env read) and calls
+// `reconfigure()` before returning the singleton sink; the sink itself
+// detects drift against what it's currently opened for and reopens lazily on
+// the next `write()`. This preserves BL-365's crash-durability guarantee
+// unchanged — `durable` is resolved via the same `SOX_MEMORY_LOG_SYNC`
+// per-call read as before, just plumbed through `reconfigure()` instead of a
+// private field.
+function currentSinkOptions(): {
+  dir: string;
+  component: string;
+  maxBytes: number;
+  maxFiles: number;
+  durable: boolean;
+} {
+  return {
+    dir: resolveLogDir(),
+    component: resolveComponent(),
+    maxBytes: resolveMaxBytes(),
+    maxFiles: resolveMaxFiles(),
+    durable: durableWrites(),
+  };
 }
 
-// ── Rotating JSONL writer ───────────────────────────────────────────────────────
-
-class RotatingJsonlWriter {
-  /** Durable mode: the fd is written with `fs.writeSync`, no userspace buffer. */
-  private _fd: number | null = null;
-  /** Buffered mode: fire-and-forget stream (the pre-BL-365 behaviour). */
-  private _stream: fs.WriteStream | null = null;
-  private _durableMode = true;
-  private _currentPath = '';
-  private _currentDate = '';
-  private _currentDir = '';
-  private _currentComponent = '';
-  private _bytesWritten = 0;
-
-  /** Is a sink currently open in either mode? */
-  private _isOpen(): boolean {
-    return this._fd !== null || this._stream !== null;
+let _writer: DurableJsonlSink | null = null;
+function getWriter(): DurableJsonlSink {
+  const opts = currentSinkOptions();
+  if (_writer === null) {
+    _writer = new DurableJsonlSink(opts);
+  } else {
+    _writer.reconfigure(opts);
   }
-
-  /** Full path of the file currently being written (empty if never opened). */
-  currentPath(): string {
-    return this._currentPath;
-  }
-
-  /** Test-only: resolve once every write queued so far has reached the file.
-   *  In durable mode every write is already on disk when `write()` returns, so
-   *  this is a no-op; in buffered mode it flushes the stream (writes are
-   *  ordered/FIFO, so an empty marker chunk's callback firing means everything
-   *  queued before it has been flushed too). */
-  flush(): Promise<void> {
-    if (this._stream === null) return Promise.resolve();
-    return new Promise((resolve) => {
-      this._stream!.write('', () => resolve());
-    });
-  }
-
-  write(line: string): void {
-    const dir = resolveLogDir();
-    const component = resolveComponent();
-    const today = todayDateString();
-    const durable = durableWrites();
-
-    // Re-open if the target dir/component/date changed (env flip, or daily
-    // rotation), or if the durability mode was flipped underneath us.
-    if (
-      !this._isOpen() ||
-      durable !== this._durableMode ||
-      dir !== this._currentDir ||
-      component !== this._currentComponent ||
-      today !== this._currentDate
-    ) {
-      this._reopen(dir, component, today, durable);
-    }
-    if (!this._isOpen()) return; // open failed — drop silently, never throw
-
-    const buf = Buffer.from(line, 'utf8');
-    if (this._fd !== null) {
-      // BL-365: synchronous write. `createWriteStream(...).write()` buffers in
-      // userspace and loses EVERYTHING on a hard kill — measured 0 of 10,000
-      // records surviving SIGKILL. This costs ~2.2µs/record more (3,254ns vs
-      // 1,043ns) and is the difference between having and not having the
-      // records that describe the moments before a crash.
-      try {
-        fs.writeSync(this._fd, buf);
-      } catch {
-        // Disk full / fd revoked / EINTR storm — drop the record. A logging
-        // fault must never break or slow the caller (unchanged contract).
-        return;
-      }
-    } else if (this._stream !== null) {
-      this._stream.write(buf);
-    }
-    this._bytesWritten += buf.length;
-
-    const maxBytes = resolveMaxBytes();
-    if (this._bytesWritten >= maxBytes) {
-      this._rotateSizeExceeded();
-    }
-  }
-
-  /** Close the active sink (test cleanup / graceful shutdown). */
-  close(): void {
-    if (this._stream !== null) {
-      try {
-        this._stream.end(); // owns the fd; closes it
-      } catch {
-        /* ignore */
-      }
-      this._stream = null;
-    } else if (this._fd !== null) {
-      try {
-        fs.closeSync(this._fd);
-      } catch {
-        /* ignore */
-      }
-    }
-    this._fd = null;
-    this._currentPath = '';
-    this._currentDate = '';
-    this._currentDir = '';
-    this._currentComponent = '';
-    this._bytesWritten = 0;
-  }
-
-  private _reopen(dir: string, component: string, date: string, durable: boolean): void {
-    this.close();
-    this._durableMode = durable;
-    try {
-      fs.mkdirSync(dir, { recursive: true });
-      const filePath = path.join(dir, `${component}-${date}.jsonl`);
-      // Open the fd SYNCHRONOUSLY (once per rotation/day — not per line, so this
-      // is not a hot-path cost) and hand it to createWriteStream. This guarantees
-      // the file physically exists at `filePath` the instant _reopen returns —
-      // without it, `fs.createWriteStream(path, {flags:'a'})` opens the fd
-      // ASYNCHRONOUSLY, and a size-triggered rotation that fires before that
-      // open completes (plausible under a tight write burst) would call
-      // `fs.renameSync` on a file that doesn't exist yet, silently no-op via the
-      // catch below, and the "rotated" file would never be created at all.
-      const fd = fs.openSync(filePath, 'a');
-      if (durable) {
-        // BL-365: hold the fd directly and write it synchronously. No stream, so
-        // no userspace buffer, so nothing to lose on SIGKILL.
-        this._fd = fd;
-      } else {
-        this._stream = fs.createWriteStream(filePath, { fd });
-        this._stream.on('error', () => {
-          /* never throw from a logging failure — best-effort only */
-        });
-      }
-      this._currentPath = filePath;
-      this._currentDir = dir;
-      this._currentComponent = component;
-      this._currentDate = date;
-      try {
-        this._bytesWritten = fs.statSync(filePath).size;
-      } catch {
-        this._bytesWritten = 0;
-      }
-    } catch {
-      // Directory unwritable / disk full / etc. — logging must never break the
-      // caller, so we simply have no active sink until the next write() retries.
-      this._stream = null;
-      this._fd = null;
-    }
-  }
-
-  /** Monotonic tie-breaker so two rotations firing within the same millisecond
-   *  (plausible under a tight burst — this._rotateSizeExceeded runs entirely
-   *  synchronously) never collide on the same rotated filename and silently
-   *  clobber one another via renameSync. */
-  private _rotationSeq = 0;
-
-  private _rotateSizeExceeded(): void {
-    if (!this._isOpen()) return;
-    const oldPath = this._currentPath;
-    const epoch = Date.now();
-    const seq = this._rotationSeq++;
-    const rotatedPath = oldPath.replace(/\.jsonl$/, `.${epoch}-${seq}.jsonl`);
-    try {
-      if (this._stream !== null) this._stream.end();
-      else if (this._fd !== null) fs.closeSync(this._fd);
-    } catch {
-      /* ignore */
-    }
-    this._stream = null;
-    this._fd = null;
-    try {
-      fs.renameSync(oldPath, rotatedPath);
-    } catch {
-      /* ignore — worst case we keep appending past the cap once */
-    }
-    this._pruneOldFiles();
-    this._reopen(this._currentDir, this._currentComponent, this._currentDate, this._durableMode);
-  }
-
-  private _pruneOldFiles(): void {
-    const dir = this._currentDir;
-    const component = this._currentComponent;
-    if (!fs.existsSync(dir)) return;
-    let files: string[];
-    try {
-      files = fs
-        .readdirSync(dir)
-        .filter((f) => f.startsWith(`${component}-`) && f.endsWith('.jsonl'))
-        .map((f) => path.join(dir, f))
-        .sort(); // lexicographic — ISO dates + epoch suffixes sort correctly
-    } catch {
-      return;
-    }
-    const maxFiles = resolveMaxFiles();
-    while (files.length > maxFiles) {
-      const oldest = files.shift();
-      if (oldest) {
-        try {
-          fs.unlinkSync(oldest);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-  }
-}
-
-let _writer: RotatingJsonlWriter | null = null;
-function getWriter(): RotatingJsonlWriter {
-  _writer ??= new RotatingJsonlWriter();
   return _writer;
 }
 
@@ -361,38 +213,6 @@ export function currentLogFilePath(): string {
  *  fire-and-forget on the hot path; tests need a deterministic sync point). */
 export function _flushTelemetryForTest(): Promise<void> {
   return getWriter().flush();
-}
-
-// ── Trace-id propagation (AsyncLocalStorage) ────────────────────────────────────
-
-const traceStorage = new AsyncLocalStorage<string>();
-
-/** Mint a new correlation id (ulid — sortable, matches the rest of memory-core). */
-export function newTraceId(): string {
-  return ulid();
-}
-
-/** The trace id of the currently active context, if any. */
-export function currentTraceId(): string | undefined {
-  return traceStorage.getStore();
-}
-
-/** The active trace id, or a freshly minted one if no context is active. */
-export function traceIdOrNew(): string {
-  return currentTraceId() ?? newTraceId();
-}
-
-/** Run `fn` with `traceId` as the active correlation id for every nested
- *  `log.*` call and every `traceIdOrNew()`/`currentTraceId()` read made
- *  (synchronously or via any awaited async continuation) inside it. */
-export function withTrace<T>(traceId: string, fn: () => T): T {
-  return traceStorage.run(traceId, fn);
-}
-
-/** Convenience: run `fn` under a freshly minted trace id, handing the id to `fn`. */
-export function runWithNewTrace<T>(fn: (traceId: string) => T): T {
-  const id = newTraceId();
-  return traceStorage.run(id, () => fn(id));
 }
 
 // ── Core log record + emission ──────────────────────────────────────────────────
