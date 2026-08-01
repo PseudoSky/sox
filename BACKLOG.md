@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 95.** (BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 96.** (BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -3009,4 +3009,30 @@ That is **exactly BL-325's defect** — the sync→async StoreAdapter migration 
 **Severity:** MEDIUM — `memory-flush` is an export/backup utility, not the live read/write path, and no runtime failure is confirmed. But its typecheck has been red the entire time and nobody noticed, which is the BL-248 pattern: a gate that fails in a corner nobody reads is not a gate.
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: npx nx run-many -t lint,typecheck — memory-flush:lint and memory-flush:typecheck both failing, 2: extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.ts:20, 3: extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.spec.ts:55-60]
+
+---
+
+### BL-398 — BL-386's `weight`-as-cosine read reports a fabricated `cosine_sim: 1.0` for manually-merged pairs — **Open (MEDIUM)** (2026-08-01)
+
+**This is a defect in BL-386's fix, and the design decision was mine.** BL-386 correctly established that `applyNearDupResult` writes the cosine into `edge.weight` while `memoryNearDuplicates` read `edge.meta`, so every pair reported `cosine_sim: 0` and the `threshold` parameter returned an empty set. I directed the fix to read `weight` (with a `meta` fallback) rather than change the writer, because reading `weight` recovers the existing edges whereas rewriting the writer would have left all of them permanently unreadable. That reasoning still holds. What it missed is that **`applyNearDupResult` is not the only `SAME_AS` writer.**
+
+**Three writers, two column conventions:**[1]
+
+| writer | `origin` | writes `weight`? |
+|---|---|---|
+| `enrich.ts:108-115` — inferred near-dup | `inferred` | **yes** — the computed cosine |
+| `curate.ts:325-329` — `memory_curate merge_duplicates` | `user_asserted` | **no** |
+| `extensions.ts:344-348` | `user_asserted` | **no** |
+
+The schema declares `weight REAL DEFAULT 1.0`.[2] So a manually-merged pair carries `weight = 1.0` — a column default, not a measurement — and since BL-386 now reads `weight` as `cosine_sim`, **`memory_near_duplicates` reports `cosine_sim: 1.0` for every manual merge**: a claim of perfect semantic similarity that nothing ever computed.
+
+**The threshold parameter makes it worse, not better.** `1.0` passes every numeric threshold, so manually-merged pairs are not merely mislabelled — they sort to the **top** of any threshold-filtered result, displacing genuinely-similar inferred pairs. The failure is quiet and directional: a caller asking "show me the most similar duplicates" gets the ones whose similarity was never measured.
+
+**Verified live** on artifact `5e8e1fcc8625`: `memory_near_duplicates({threshold: 0.5})` returns 547 pairs including entries whose two content previews are plainly about different subjects while reporting `cosine_sim` at ~0.99.[3] (Not every high value is suspect — genuinely inferred pairs in the same technical domain legitimately score that high, and truncated 120-char previews understate real similarity. The point is that the output gives a caller **no way to tell the two apart**.)
+
+**Fix sketch:** gate the `weight` read on `origin === 'inferred'`. For `user_asserted` edges report `cosine_sim: null` — not `0`, which would recreate BL-386's original bug, and not `1.0`, which fabricates. Then make the threshold filter **exclude rows with a null similarity rather than treat them as 0**, and surface `origin` in the response so a caller can distinguish an inferred duplicate from an asserted merge. The regression test must assert that a `memory_curate merge_duplicates` pair does NOT report `1.0` and does NOT rank above a genuine 0.96 inferred pair — that ordering assertion is what pins the defect, since a value check alone would pass on any non-1.0 placeholder.
+
+**Severity:** MEDIUM — no data is corrupted and the inferred path (the common one) is now correct, which BL-386 genuinely fixed. But a fabricated similarity score that outranks measured ones is exactly the class of quiet wrongness this effort exists to remove. Related: BL-386 (the fix this refines), BL-334 (a surface reporting a value it did not compute).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/memory-core/src/{enrich.ts:108-115, curate.ts:325-329, extensions.ts:344-348}, 2: libs/data/graph/graph-store/src/index.ts:52 (`weight REAL DEFAULT 1.0`), 3: live memory_near_duplicates threshold=0.5 on artifact 5e8e1fcc8625 / pid 18521]
 
