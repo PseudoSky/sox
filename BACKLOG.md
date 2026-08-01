@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 92.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 93.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -949,6 +949,43 @@ Per-pid: pid 73540 reached `max_in_flight = 7` with awake p50 **131 s**; every p
 **Related:** BL-331 (root cause of the per-unit cost), BL-369, BL-370, BL-345, BL-351.
 
 Citations: [wip/turso-live-metrics, performance-engineer, claude, BL-331 investigation, 1: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-inflight.py, 2: libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts, 3: docs/reporting/memory/bl331-root-cause.md §3]
+
+---
+
+### BL-386 — `SAME_AS` cosine is written to `edge.weight` but read from `edge.meta`, so every near-duplicate pair reports `cosine_sim: 0` and the `threshold` parameter returns an empty set — **Open (HIGH)** (2026-08-01)
+
+**Found while:** verifying BL-381 end-to-end on the live store immediately after the 2026-08-01 deploy of artifact `6d1b2abc1c12`.[1] Two deliberately near-identical probe episodes produced no `SAME_AS` edge; chasing that (correctly, per the 0.95 threshold — measured cosine 0.9453) surfaced this instead.
+
+**Writer and reader disagree about which column holds the similarity.** `applyNearDupResult` inserts the cosine into the **`weight`** column and writes `meta` as a literal `NULL`:[2]
+
+```sql
+INSERT INTO edge (src, dst, rel, origin, weight, t_created, meta)
+SELECT ?, ?, 'SAME_AS', 'inferred', ?, ?, NULL
+```
+— bound as `[rowid, neighborRowid, nearDup.cosine_sim, now, ...]`, so `cosine_sim` lands in `weight`.
+
+`memoryNearDuplicates` reads it from edge **metadata**, and silently defaults to `0` when absent — which is always, because the writer never populates `meta`:[3]
+
+```ts
+let cosineSim = 0;
+if (e.metadata) {
+  const sim = (e.metadata as Record<string, unknown>)['cosine_sim'];
+  if (typeof sim === 'number') cosineSim = sim;
+}
+```
+
+**Two live consequences, both measured on `~/.memory/memory.db` (adapter `turso`, artifact `6d1b2abc1c12`):**
+
+1. **Every pair reports `cosine_sim: 0`.** `memory_near_duplicates` with no threshold returns `total: 138`, and all of them carry `"cosine_sim":0` — including pairs whose previews are plainly unrelated, so the number cannot be used to judge a pair either.[4]
+2. **The `threshold` parameter silently returns nothing.** Line 108 skips any pair with `cosineSim < cosineThreshold`; since every value is `0`, *any* numeric threshold excludes *every* pair. `memory_near_duplicates({threshold: 0.5})` returns `{"pairs":[],"total":0}` against the same 138 pairs.[5] The failure mode is an empty result, not an error — indistinguishable from "this store has no near-duplicates," which is exactly the shape of BL-381 and BL-384.
+
+**This is not BL-381.** BL-381 was the KNN *query* emitting vec0 syntax at Turso; that is fixed and verified — the same probe shows the dialect KNN returning 21 rows ranked correctly via `vector_distance_cos`, top neighbour 0.9453.[6] This defect is downstream of a *successful* detection: the pair is found, the edge is written, and the similarity is then lost in transit between writer and reader.
+
+**Fix sketch:** pick one column and make both sides use it. `weight` is the better home — it is a real typed column, it is what the writer already populates, and `meta` on this edge is `NULL` by construction. Change `memoryNearDuplicates` to read `e.weight`, keeping the `metadata` read as a fallback for any edge written by an older path. Do **not** "fix" the writer to populate `meta` instead: that leaves all 138 existing edges unreadable, whereas reading `weight` recovers them, since the value was there the whole time. A red→green must assert a non-zero `cosine_sim` on a freshly-detected pair AND that a `threshold` below that value returns the pair rather than an empty set — the second assertion is the one that would have caught this, and neither exists today.
+
+**Severity:** HIGH — `memory_near_duplicates` is one of the 20 published tools; its documented `threshold` parameter cannot return a non-empty result on any store, and its `cosine_sim` output field is a constant. Related: BL-381 (the KNN that feeds this, fixed), BL-384 (same silent-empty-result shape in entity search).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: (live probe, artifact 6d1b2abc1c12, pid 32640), 2: libs/memory-core/src/enrich.ts:108-115, 3: libs/memory-core/src/near-duplicates.ts:100-110, 4: (live `memory_near_duplicates` call, total 138, all cosine_sim 0), 5: (live `memory_near_duplicates` call with threshold 0.5 -> pairs [], total 0), 6: libs/memory-core/src/neardup.ts:45-127 exercised against a copy of the live store]
 
 ---
 
