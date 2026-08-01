@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 80.** (BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 79.** (BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,7 +23,7 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-08-01: **80 open**.
+Regenerated 2026-08-01: **79 open**.
 
 | Priority | Open items |
 |---|---|
@@ -2404,45 +2404,3 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: `CREATE
 **Related:** BL-351 (parent), BL-319, BL-334, BL-344, BL-365, BL-353.
 
 Citations: [wip/turso-live-metrics, main, claude, PKT-02, 1: libs/observability/sox-telemetry/{src/*.ts, src/index.spec.ts, project.json} — `npx nx typecheck,typecheck-tests,lint,test,build sox-telemetry` all green, 2026-08-01]
-
-
----
-
-### BL-402 — `WriteQueue.forPath` check-then-set race: two concurrent first-callers for a never-before-seen dbPath each pay a full `openDb()` — **Open (MEDIUM)** (2026-08-01)
-
-**Found while:** proving BL-348's red arm (PKT-01) — a concurrent `runEnrichPassOnDb` + `memory_write` against a freshly created store measured **5+ real seconds** before either completed, which was initially (and wrongly) attributed to the new isolation boundary. Instrumented timing traced it instead to `WriteQueue.forPath()`.
-
-**Root cause:** `libs/memory-core/src/write-queue.ts:353-363`:
-```ts
-static async forPath(dbPath: string, maxSize?: number): Promise<WriteQueue> {
-  let instance = WriteQueue.instances.get(dbPath);
-  if (!instance) {
-    instance = await WriteQueue._create(dbPath, maxSize);   // openDb() — full migration/integrity sequence
-    WriteQueue.instances.set(dbPath, instance);
-  }
-  return instance;
-}
-```
-The check (`instances.get`) and the set (`instances.set`) are separated by an `await` (`_create` → `openDb`). Two callers racing on the SAME never-before-seen `dbPath` both observe `undefined` before either has set the Map entry, so **both** independently call `openDb(dbPath)` — each paying the full open sequence (sqlite-vec load, Turso-compat VACUUM check, WAL-index sidecar repair, migration checks; see `libs/memory-core/src/db.ts:288-380`) concurrently against the same file. Measured cost here: ~5.2s wall-clock for what should be a cached-instance return in the microsecond range on the second caller.
-
-**Impact:** narrow but real — only affects the FIRST-ever concurrent touch of a given `dbPath` in a process's lifetime (a live server's WriteQueue is normally already warm by the time concurrent work happens, which is why this has not been observed in production telemetry). Still a genuine race with no atomicity guard; a second real `StoreAdapter`/`WriteQueue` instance for the same file is wasted (never used again, GC'd) but the concurrent opens themselves could plausibly contend for OS-level file locks during the migration/repair sequence.
-
-**Fix sketch:** make the check-then-set atomic — store a `Promise<WriteQueue>` in the map (not the resolved instance) as the FIRST thing on the initial call, so concurrent callers all await the SAME in-flight promise instead of independently calling `_create`:
-```ts
-static forPath(dbPath: string, maxSize?: number): Promise<WriteQueue> {
-  let p = WriteQueue.pending.get(dbPath);
-  if (!p) {
-    p = WriteQueue._create(dbPath, maxSize);
-    WriteQueue.pending.set(dbPath, p);
-  }
-  return p;
-}
-```
-
-**Acceptance (must name BL-402):** a test that fires two concurrent `WriteQueue.forPath(dbPath)` calls against a never-before-opened path and asserts `openDb`/`_create` was invoked exactly once (spy/counter), not twice — must fail today.
-
-**Severity:** MEDIUM — real defect, narrow trigger window, not the cause of any currently-open CRITICAL item once correctly attributed.
-
-**Related:** BL-348 (whose red-arm proof surfaced this).
-
-Citations: [wip/turso-live-metrics, packets, claude, PKT-01, 1: libs/memory-core/src/write-queue.ts:353-375, 2: libs/memory-core/src/db.ts:288-380 (openDb/_openDbInner — the expensive sequence paid twice)]
