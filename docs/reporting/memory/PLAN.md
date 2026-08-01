@@ -1063,8 +1063,18 @@ completion, don't just assume no build ran.
 **Produces:** write-triggered background clustering that runs behind PKT-01's boundary. Consumed by PKT-30 (threshold work lands on the same function area). Output must name the trigger point and the backpressure rule.
 **acceptance:** BL-326/BL-349's shared bar, must name both: write N clusterable episodes through the ordinary write/enrich path only (no explicit recluster row, no manual pass), assert `total_clustered > 0` — must fail today. Additionally assert the write's `write_to_vector_ms` is unaffected by clustering work, and a thrown clustering error leaves vectors intact (this half restates PKT-01's second acceptance in the clustering-specific path — do not skip re-proving it here, the boundary must hold for the real trigger, not just the isolated test harness).
 
-### PKT-30 — BL-328: re-calibrate the production threshold to the value PKT-28 actually recommends
-**Goal:** τ=0.82 is measured degenerate at production scale (68.4% in one cluster); implement whatever PKT-28 recommends (adaptive function, different algorithm, or a corrected constant) and remove the silent 3-retry degenerate-guard fallback that currently does the real calibration undocumented.
+### PKT-30 — BL-328: implement PKT-28's calibration function (NOT "pick a corrected constant" — see below)
+**⚠️ RE-SCOPED by PKT-28 (2026-08-01), per its own explicit instruction.** PKT-28's answer is
+"a fixed τ is not viable at all" (confirmed at the true full corpus, 4867 vectors: 0.85 has now
+crossed into degenerate too). The recommended replacement is **target-mean-degree calibration
+computed at cluster time**, not a corrected constant — so `resolveDefaultThreshold()` changes from
+a nullary function to one taking sampled data + target N. Read
+`docs/reporting/memory/findings/pkt28-clustering-strategy.md` §2 and §5 before starting; this
+packet's `Goal`/title below predate that decision and are stale on the word "value."
+**Goal:** τ=0.82 is measured degenerate at production scale (75.9% in one cluster at true full
+scale, 68.4% on the earlier 1616-sample); implement PKT-28's target-mean-degree calibration
+function and remove the silent 3-retry degenerate-guard fallback that currently does the real
+calibration undocumented (the guard becomes a pure safety net that should rarely fire).
 **Closes:** BL-328
 **Files:** `libs/memory-core/src/cluster.ts` (`resolveDefaultThreshold()`, the retry-at-+0.05 guard at :465-484).
 **requires:** PKT-28, PKT-29

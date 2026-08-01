@@ -2,6 +2,44 @@
 
 ---
 
+## [Unreleased] — BL-350: cluster maintenance strategy researched — drift metric, harness, split/merge/orphan criteria, cadence
+
+RESEARCH item (PKT-28). BL-349's write-triggered incremental clustering answers "which existing
+cluster does a new episode join" but not what happens as the corpus shifts underneath the
+clusters — split, merge, orphan, drift. This closes that research gap.
+
+**Drift metric:** fraction of live vectors whose incremental `MEMBER_OF` assignment disagrees with
+a fresh full pass over the same corpus. **Harness built and run**
+(`~/.adhd/sox-ecosystem/memory/pkt28-drift-harness.mjs`, read-only, refuses any path under
+`~/.memory`): against the true full production corpus (4867 vectors, no longer a 1616-vector
+sample) it reads **72.8% drift today** — 0 live `MEMBER_OF` assignments (both ends live) against
+3544 a full pass would make. That number is worst-case by construction: the incremental path is
+still a dead stub (BL-326), so every one of the store's 139 live community nodes has zero live
+members. The harness is correct and ready to become the ongoing signal once BL-326/BL-349 ship.
+
+**Split / merge / orphan criteria, and a maintenance cadence:**
+- **Split** a community when a filtered re-cluster of just its own members (the existing
+  `clusterSubset` primitive, already wired through `curate.ts`) at the current calibrated τ
+  produces more than one non-trivial sub-community.
+- **Merge** two communities when their centroid cosine similarity (already tracked in
+  `ClusterStats`) exceeds the current calibrated τ; merge by re-running a full pass over the
+  union rather than hand-splicing membership, so `community_uid` (sha256 of sorted member rowids)
+  stays reproducible.
+- **Orphan** a community whose live member count reaches zero — this is BL-327's already-scoped
+  trigger, folded into the same maintenance vocabulary rather than treated as an unrelated GC job.
+- **Reconciliation cadence:** run a periodic full pass on whichever fires first — corpus grown
+  ≥20% since the last full pass, drift metric (above) exceeds 15% on a cheap sample, or a 24h
+  wall-clock backstop for slow organic drift that neither trigger catches alone.
+
+Full recommendation, including the companion BL-356 threshold-viability decision it was paired
+with per the packet's scope: `docs/reporting/memory/findings/pkt28-clustering-strategy.md`.
+
+**Not closed by this:** no code ships from this item by its own acceptance ("No code change is in
+scope for this item"). The maintenance mechanism itself — split/merge/orphan/reconciliation as
+running code — is not yet scheduled as its own packet as of this writing.
+
+---
+
 ## [Unreleased] — BL-331: the embed pipeline is no longer 18x too slow
 
 The item's three "unverified candidate causes" were all wrong. The cause was **`ProcessType: Background`**
