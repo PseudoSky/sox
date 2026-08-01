@@ -13,6 +13,8 @@
 import type { StoreAdapter, AdapterTransaction } from '@adhd/sox-store-adapter';
 import * as crypto from 'node:crypto';
 import { embed, vecToJson, vecToBuffer } from './embed.js';
+import { ftsDialectFor } from './dialect.js';
+import { log as tlog } from './telemetry.js';
 
 // ── P4: Scope Promotion (design.md §2.5, docs/scope-promotion.md) ─────────────
 
@@ -1002,11 +1004,29 @@ export interface SearchEntitiesResult {
     kind: string;
     importance: number;
   }>;
+  /**
+   * BL-384: which path produced `entities` — `'fts'` for a real BM25/Tantivy
+   * ranked full-text match, `'like'` when the search degraded to a substring
+   * scan (FTS unsupported on this backend, or the FTS query matched nothing).
+   * A silent degrade-to-LIKE with no visible signal is exactly what hid this
+   * bug for a month on the Turso backend (BL-334: a degraded search must be
+   * visible, not just "results happened to come back").
+   */
+  search_mode: 'fts' | 'like';
 }
 
 /**
  * memory_search_entities — tool 3 (design.md §2.3).
  * Hybrid FTS + LIKE search for entity nodes. Zero LLM calls (R1).
+ *
+ * BL-384: FTS goes through `ftsDialectFor(adapter)` — never a raw
+ * `fts_node`/`MATCH` statement, and never a branch on `adapter.config.type`.
+ * `fts_node` is the SQLite FTS5 shadow table; `openDb()` drops it entirely on
+ * the Turso branch (BL-347 residue cleanup), so the old unconditional
+ * `FROM fts_node ... MATCH` statement could never resolve there — it always
+ * threw, was swallowed by a bare `catch`, and fell through to a LIKE
+ * substring scan ranked by importance instead of relevance. See
+ * `recall.ts`'s FTS block (~L519-566) for the pattern this mirrors.
  */
 export async function memorySearchEntities(
   adapter: StoreAdapter,
@@ -1014,7 +1034,7 @@ export async function memorySearchEntities(
 ): Promise<SearchEntitiesResult> {
   const { query, limit = 10 } = params;
 
-  if (!query?.trim()) return { entities: [] };
+  if (!query?.trim()) return { entities: [], search_mode: 'like' };
 
   const ftsQuery = query
     .replace(/['"*\-()\[\]]/g, ' ')
@@ -1033,20 +1053,54 @@ export async function memorySearchEntities(
   };
   type EntityRow = typeof entityRow;
   let entities: EntityRow[] = [];
+  let searchMode: 'fts' | 'like' = 'like';
 
   if (ftsQuery) {
-    try {
-      const ftsRows = (await adapter.executeAll<EntityRow>(
-        `SELECT n.uid, n.name, n.content, n.summary, n.kind, n.importance
-         FROM fts_node f
-         JOIN node n ON n.rowid = f.rowid
-         WHERE fts_node MATCH ? AND n.t_invalid IS NULL AND n.kind = 'entity'
-         ORDER BY f.rank LIMIT ?`,
-        [ftsQuery, limit],
-      )).rows;
-      entities.push(...ftsRows);
-    } catch {
-      /* fall through */
+    const ftsDialect = await ftsDialectFor(adapter);
+    if (ftsDialect.supported) {
+      try {
+        // Both branches ask the dialect for match/score SQL and bind the
+        // query text as a normal parameter (`?`) — never inlined as a string
+        // literal. The two differ only in table shape: SQLite FTS5 keeps a
+        // separate `fts_node` shadow table joined back to `node`; Turso's
+        // Tantivy index lives directly on `node` — decided via
+        // `ftsDialect.supportsShadowTable`, never `adapter.config.type`.
+        const { sql: matchSql } = ftsDialect.matchClause(['content', 'name', 'summary'], '?');
+        const scoreExpr = ftsDialect.scoreClause(['content', 'name', 'summary'], '?');
+        let ftsRows: EntityRow[];
+        if (ftsDialect.supportsShadowTable) {
+          ftsRows = (await adapter.executeAll<EntityRow>(
+            `SELECT n.uid, n.name, n.content, n.summary, n.kind, n.importance
+             FROM fts_node
+             JOIN node n ON n.rowid = fts_node.rowid
+             WHERE ${matchSql} AND n.t_invalid IS NULL AND n.kind = 'entity'
+             ORDER BY ${scoreExpr} LIMIT ?`,
+            [ftsQuery, limit],
+          )).rows;
+        } else {
+          ftsRows = (await adapter.executeAll<EntityRow>(
+            `SELECT uid, name, content, summary, kind, importance
+             FROM node
+             WHERE ${matchSql} AND t_invalid IS NULL AND kind = 'entity'
+             ORDER BY ${scoreExpr} LIMIT ?`,
+            [ftsQuery, ftsQuery, limit],
+          )).rows;
+        }
+        if (ftsRows.length > 0) {
+          entities.push(...ftsRows);
+          searchMode = 'fts';
+        }
+      } catch (err) {
+        // BL-384: a genuine FTS query failure must be visible, not a silent
+        // swallow. The prior bare `catch {}` here hid a permanently-broken
+        // statement on the Turso backend for a month — every entity search
+        // silently degraded to a LIKE substring scan, with zero signal
+        // anywhere that it had happened.
+        tlog.warn('search_entities.fts.error', {
+          dialect: ftsDialect.dialect,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 
@@ -1060,6 +1114,7 @@ export async function memorySearchEntities(
         [`%${query}%`, `%${query}%`, limit],
       )).rows;
       entities.push(...nameRows);
+      searchMode = 'like';
     } catch {
       /* ignore */
     }
@@ -1083,5 +1138,6 @@ export async function memorySearchEntities(
       kind: e.kind,
       importance: e.importance ?? 1.0,
     })),
+    search_mode: searchMode,
   };
 }
