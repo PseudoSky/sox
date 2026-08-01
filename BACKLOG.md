@@ -2864,3 +2864,21 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/me
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: ~/.adhd/sox-ecosystem/memory/logs/memory-core-2026-08-01.jsonl, event store.error at 19:34:52.213Z, artifact 5e8e1fcc8625 pid 18521, 2: libs/data/graph/graph-store/src/index.ts:55 and :141 (edge.meta declared), :855, :1130]
 
+---
+
+### BL-400 — four spec files carry hand-maintained `node`/`edge` DDL replicas that silently drift from the real schema — **Open (MEDIUM)** (2026-08-01)
+
+**Found while:** spot-checking the triage closure of BL-300 (*"`node`/`edge` table schema is duplicated across `graph-store` and `memory-core`"*). That closure is **correct for production** — the schema now lives only in `libs/data/graph/graph-store/src/index.ts`. What it does not cover is that the duplication survived in the test layer.[1]
+
+**Four spec files declare their own `CREATE TABLE node`/`edge`:** `backup.spec.ts`, `cluster-subset.spec.ts`, `enrich.spec.ts`, `write.spec.ts`. Each is a hand-written approximation of the real schema, and nothing checks any of them against it.
+
+**This is not a hypothetical.** It cost six test failures **today**. `enrich.spec.ts`'s `MINIMAL_DDL` was missing `CREATE UNIQUE INDEX ix_edge_unique ON edge(src, dst, rel)`, which `materializeClusters`' `ON CONFLICT(src, dst, rel)` MEMBER_OF upsert requires — so six tests failed against a schema the production code could never actually encounter.[2] The drift was proven by `cluster-subset.spec.ts` already carrying that same index **with a comment citing this exact cause**: one replica had been fixed, the other had not, and nothing propagated between them.
+
+**The failure mode is the expensive kind — it wastes debugging on a phantom.** Those six failures were attributed to "`clusterStore` `ON CONFLICT` drift" and carried that attribution across two separate agents' handoffs before anyone checked. A test failing because *the test's schema is wrong* looks exactly like a product defect, and it is triaged as one until someone diffs the DDL.
+
+**Fix sketch:** the specs should build their fixture from the **real** schema rather than a copy — export the DDL (or a `createSchema(adapter)` helper) from `graph-store` and have every spec call it, so there is one definition and drift is impossible by construction. If a genuinely minimal subset is wanted for speed, derive it programmatically from the real DDL rather than transcribing it. Failing that, a test asserting each replica is a subset of the real schema would at least make drift loud — but deriving beats checking.
+
+**Severity:** MEDIUM — no production defect follows from it (production has one schema), but it produces false red tests that read as product bugs, and it has already misdirected two agents' root-cause analysis in a single day. Related: BL-300 (production duplication, resolved), BL-367 (whose `enrich.spec.ts` failures were this).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: `CREATE TABLE node` present in libs/data/graph/graph-store/src/index.ts plus libs/memory-core/src/{backup,cluster-subset,enrich,write}.spec.ts, 2: CHANGELOG.md BL-367 entry — enrich.spec.ts MINIMAL_DDL missing ix_edge_unique, 6 tests]
+
