@@ -283,6 +283,9 @@ importers:
 
   libs/data/store/store-adapter:
     dependencies:
+      '@adhd/sox-telemetry':
+        specifier: workspace:*
+        version: link:../../../observability/sox-telemetry
       '@tursodatabase/database':
         specifier: ^0.7.1
         version: 0.7.1

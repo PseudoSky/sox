@@ -16,6 +16,7 @@
   },
   "files": ["dist"],
   "dependencies": {
+    "@adhd/sox-telemetry": "workspace:*",
     "better-sqlite3": "^12.10.0"
   },
   "peerDependencies": {
