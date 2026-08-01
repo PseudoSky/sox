@@ -36,6 +36,14 @@
  * GREEN (as shipped): both backends match by real FTS, excluding the decoy,
  *   and report `search_mode: 'fts'`.
  *
+ * Also covers BL-367 (filed by a sibling fix to recall.ts, same call-site
+ * shape here): SQLite FTS5 bareword queries AND their tokens (every token
+ * must be present); Turso's Tantivy `fts_match` ORs them. A naive
+ * space-joined multi-term query therefore returned zero SQLite FTS matches
+ * for queries where only some tokens were present in the document, while
+ * Turso still matched — routed through `ftsDialect.buildMatchQuery(tokens)`
+ * so both backends build the identical explicit `"tok1" OR "tok2"` form.
+ *
  * Gate: npx nx test memory-core --skip-nx-cache -- bl384-search-entities
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -113,6 +121,33 @@ describe('BL-384 — memory_search_entities goes through the FTSDialect on both 
 
       const uids = result.entities.map((e) => e.uid).sort();
       expect(uids).toEqual(['bl384-target']);
+      expect(result.search_mode).toBe('fts');
+    }, 60_000);
+
+    it(`BL-367: a multi-term query matches on ANY token, not ALL tokens (${backend})`, async () => {
+      dir = fsSync.mkdtempSync(path.join(os.tmpdir(), `bl384-bl367-${backend}-`));
+      const dbPath = path.join(dir, 'm.db');
+      process.env['STORE_ADAPTER'] = backend;
+
+      const adapter = await openDb(dbPath);
+
+      // Content contains only ONE of the two query tokens ("gizmo"); the
+      // other ("frobnicator") never appears anywhere in the store. A naive
+      // space-joined FTS query ANDs bareword tokens under SQLite FTS5 — that
+      // would require both tokens present and match nothing here. Turso's
+      // Tantivy `fts_match` already ORs tokens, so it would match even with
+      // the pre-BL-367 bug — the SQLite arm is what actually red/greens.
+      await seedEntity(
+        adapter,
+        'bl384-bl367-target',
+        'Calibration Tool',
+        'Uses a special gizmo for calibration.',
+        1,
+      );
+
+      const result = await memorySearchEntities(adapter, { query: 'gizmo frobnicator', limit: 10 });
+
+      expect(result.entities.map((e) => e.uid)).toEqual(['bl384-bl367-target']);
       expect(result.search_mode).toBe('fts');
     }, 60_000);
   }
