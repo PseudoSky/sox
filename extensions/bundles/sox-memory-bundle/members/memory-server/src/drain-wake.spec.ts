@@ -25,14 +25,17 @@
  *
  * RED→GREEN PROCEDURE ACTUALLY PERFORMED (BL-225 — not "would fail"):
  *   Neutering `wakeDrain()`'s body to an early `return` and re-running gave
- *   **4 failed / 1 passed**, with `waitFor(drain heals the orphan) timed out
+ *   **3 failed / 2 passed**, with `waitFor(drain heals the orphan) timed out
  *   after 500 iterations` and `waitFor(burst drains) timed out`. Restoring the
- *   body gave **5 passed**. Both arms were run, not reasoned about.
+ *   body gave **5 passed**. Both arms were run, not reasoned about — re-run
+ *   independently on 2026-08-01 against the deployed build, same counts.
  *
- *   Note which test does NOT change: the BL-154 >2000-char write passes in BOTH
- *   arms, by design — it is a safety assertion, not a wake assertion. It can
- *   only fail if the wake deadlocks the write queue, which is exactly the
- *   regression it exists to catch.
+ *   Note which two tests do NOT change, and why that is correct: the BL-154
+ *   >2000-char write and the background-slot mutex both pass in BOTH arms, by
+ *   design — they are safety assertions, not wake assertions. The first can
+ *   only fail if the wake deadlocks the write queue; the second drives
+ *   `runDrainPassGuarded()` directly and so never consults `wakeDrain` at all.
+ *   Exactly the three wake assertions move between arms.
  *
  * Gate: npx nx test memory-server --skip-nx-cache
  */
