@@ -236,6 +236,20 @@ and both backlog items). Medium on the `vector-store` async question — **I hav
 `agent-source`'s usage**, so the true blast radius of an async break is unmeasured. Verify that
 before committing to a direction.
 
+> **ANSWERED 2026-08-01 — measured, and the answer is "trivial".** `@adhd/sox-vector-store`'s
+> entire value-level consumer surface outside its own package is **two spec files**
+> (`analysis.spec.ts:23`, `hybrid-search.spec.ts:16`); `analysis/src/index.ts:6` and
+> `hybrid-search/src/index.ts:15` are **type-only** re-exports, which an async change does not
+> affect. **`agent-source` is not a package in this repository at all** — it appears only in
+> `docs/ideas/phase-2-agent-source.md`, an unbuilt phase-2 concept. There is no consumer to break.
+>
+> The hedge above was correct and correctly flagged: it said "I have not checked this, verify it."
+> What followed was not. It was restated downstream as *"`vector-store` is NOT ready to touch"* and
+> enforced as a prohibition for a full day, across five agents, plus a `warn`-only lint exemption —
+> without anyone running the one grep that settles it. **An unverified hedge must not harden into a
+> constraint as it is relayed.** If you are relaying someone else's caveat, either verify it or
+> carry its uncertainty forward verbatim.
+
 ---
 
 ## 6. State of the tree at handoff

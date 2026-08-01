@@ -122,9 +122,16 @@ correct code:**
    raw `better-sqlite3` imports outside the two permitted modules. See
    [`../PLAN.md`](../PLAN.md) § *Standing architectural rule*.
 
-**`vector-store` (BL-380 143/200/359) is NOT ready to touch.** The `agent-source` blast radius of
-an async break is **still unmeasured** — the agent explicitly declined to restate its predecessor's
-caveat as if it were its own finding, which was the right call. Measure it before choosing.
+**`vector-store` (BL-380 143/200/359) — blast radius MEASURED 2026-08-01: it is trivial.** Value-level
+consumers outside the package are **two spec files** (`analysis.spec.ts:23`, `hybrid-search.spec.ts:16`);
+`analysis/src/index.ts:6` and `hybrid-search/src/index.ts:15` are type-only re-exports. **`agent-source`
+does not exist in this repo** — only `docs/ideas/phase-2-agent-source.md`. Convert the three casts; the
+risk that held this back was never real.
+
+> This paragraph previously read *"NOT ready to touch — the `agent-source` blast radius is still
+> unmeasured."* That was a hedge from `adapter-integrity.md` ("I have not audited this, verify it")
+> relayed as a prohibition, and it held a published package hostage for a day. The grep that
+> disproved it takes seconds. Relay uncertainty as uncertainty, or resolve it.
 
 **⚠ Trap, confirmed still present:** `vector-store/src/index.ts:196` reads
 `vecEnabled: adapter.capabilities.nativeVectors || true` — unconditionally true. The only use of
