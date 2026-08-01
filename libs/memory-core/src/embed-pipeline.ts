@@ -65,9 +65,10 @@
 import { performance } from 'node:perf_hooks';
 import { embed, vecToJson, vecToBuffer, getActiveEmbedModel } from './embed.js';
 import { detectNearDup } from './neardup.js';
+import { vectorDialectFor } from './dialect.js';
 import type { NearDupResult } from './neardup.js';
 import { applyNearDupResult, NEARDUP_THRESHOLD } from './enrich.js';
-import type { StoreAdapter, AdapterTransaction } from '@adhd/sox-store-adapter';
+import type { StoreAdapter, AdapterTransaction, VectorDialect } from '@adhd/sox-store-adapter';
 import { LatencyRing, summarizeLatencies } from './latency-stats.js';
 import type { WriteQueue } from './write-queue.js';
 import { log as tlog, traceIdOrNew, withTrace } from './telemetry.js';
@@ -412,8 +413,8 @@ export async function applyEmbedding(
   tx: AdapterTransaction,
   pending: PendingEmbed,
   vec: Float32Array,
-  useBinaryFormat?: boolean,
-  useNativeVectors?: boolean,
+  useBinaryFormat: boolean,
+  vectorDialect: VectorDialect,
 ): Promise<EmbedApplyResult> {
   const row = await tx.executeGet<{ uid: string; t_invalid: string | null }>(
     'SELECT uid, t_invalid FROM node WHERE rowid = ?',
@@ -451,7 +452,7 @@ export async function applyEmbedding(
   let nearDup: NearDupResult | null = null;
   if (row.t_invalid === null) {
     try {
-      nearDup = await detectNearDup(tx, pending.rowid, vec, NEARDUP_THRESHOLD, useNativeVectors);
+      nearDup = await detectNearDup(tx, pending.rowid, vec, NEARDUP_THRESHOLD, vectorDialect);
     } catch (err) {
       // NOT a silent swallow (fixed 2026-07-30 — this bare `catch {}` was the
       // mechanism that hid the embed-backfill stampede for five weeks): this
@@ -519,11 +520,21 @@ export async function flushPendingEmbeds(): Promise<void> {
 export async function schedulePendingEmbeds(
   wq: WriteQueue,
   pendings: PendingEmbed[],
-  opts?: { logSink?: (line: string) => void; useBinaryFormat?: boolean; useNativeVectors?: boolean },
+  opts: {
+    logSink?: (line: string) => void;
+    useBinaryFormat?: boolean;
+    /**
+     * BL-381: REQUIRED, not optional. Three memory-server call sites supplied
+     * `useBinaryFormat` and silently dropped the old optional backend flag,
+     * which sent the vec0 KNN statement at Turso on every `memory_write`.
+     * Keeping this mandatory makes an omission a compile error.
+     */
+    vectorDialect: VectorDialect;
+  },
 ): Promise<SchedulePendingResult> {
-  const log = opts?.logSink ?? ((line: string) => console.error(line));
-  const useBinaryFormat = opts?.useBinaryFormat ?? false;
-  const useNativeVectors = opts?.useNativeVectors ?? false;
+  const log = opts.logSink ?? ((line: string) => console.error(line));
+  const useBinaryFormat = opts.useBinaryFormat ?? false;
+  const vectorDialect = opts.vectorDialect;
   const out: SchedulePendingResult = { applied: 0, exists: 0, gone: 0, failed: 0 };
   if (pendings.length === 0) return out;
   const metrics = stateFor(wq.storePath);
@@ -552,7 +563,7 @@ export async function schedulePendingEmbeds(
             `embed_apply:${p.uid}`,
             async (qdb) => {
               return qdb.transaction(async (tx) => {
-                return applyEmbedding(tx, p, vec, useBinaryFormat, useNativeVectors);
+                return applyEmbedding(tx, p, vec, useBinaryFormat, vectorDialect);
               }, { mode: 'immediate' });
             },
             'apply',
@@ -646,6 +657,7 @@ export async function healMissingVectors(
   metrics.healTimeBudgetExceeded = false;
 
   const useBinaryFormat = adapter.capabilities.nativeVectors;
+  const vectorDialect = await vectorDialectFor(adapter);
   const result = await adapter.executeAll<{ rowid: number; uid: string; content: string; t_created: string | null }>(
     `SELECT n.rowid, n.uid, n.content, n.t_created
      FROM node n
@@ -698,7 +710,7 @@ export async function healMissingVectors(
         `embed_heal:${pending.uid}`,
         async (qdb) => {
           return qdb.transaction(async (tx) => {
-            return applyEmbedding(tx, pending, vec, useBinaryFormat, adapter.capabilities.nativeVectors);
+            return applyEmbedding(tx, pending, vec, useBinaryFormat, vectorDialect);
           }, { mode: 'immediate' });
         },
         'apply',
@@ -802,6 +814,7 @@ export async function healStaleVectors(
   const log = opts?.logSink ?? ((line: string) => console.error(line));
   const metrics = stateFor(wq.storePath);
   const useBinaryFormat = adapter.capabilities.nativeVectors;
+  const vectorDialect = await vectorDialectFor(adapter);
 
   // BL-88: only target rows with a non-null embed_model that differs from the
   // currently active model. Rows with embed_model IS NULL are pre-provenance
@@ -846,7 +859,7 @@ export async function healStaleVectors(
         `embed_stale_apply:${pending.uid}`,
         async (qdb) => {
           return qdb.transaction(async (tx) => {
-            return applyEmbedding(tx, pending, vec, useBinaryFormat, adapter.capabilities.nativeVectors);
+            return applyEmbedding(tx, pending, vec, useBinaryFormat, vectorDialect);
           }, { mode: 'immediate' });
         },
         'apply',

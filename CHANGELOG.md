@@ -2,7 +2,35 @@
 
 ---
 
-## [Unreleased] — BL-365, BL-344, BL-343, BL-323: crash-durable telemetry; one env-scrub policy; memory_stats survives malformed rows; sqlite-vec load verified fixed
+## [Unreleased] — BL-381, BL-365, BL-344, BL-343, BL-323: near-dup detection restored on Turso; crash-durable telemetry; one env-scrub policy; memory_stats survives malformed rows; sqlite-vec load verified fixed
+
+### BL-381 (HIGH) — near-duplicate detection was dead on the default backend; it now runs on both
+
+`detectNearDup` issued sqlite-vec `vec0` KNN syntax verbatim — `WHERE embedding MATCH ? AND k = ?`. Turso's `vec_node` is an ordinary table with an `F32_BLOB` column: no `MATCH` operator on it, no `k` pseudo-column. Every call failed at prepare:
+
+```
+SqliteError: prepare failed: Parse error: no such column: k
+```
+
+Both call sites caught the throw and continued, so E8 near-duplicate detection had been **silently non-functional since the Turso migration** while `memory_ping`, `memory_stats` and the enrichment health verdict all read healthy. `memory_near_duplicates` and everything downstream of SAME_AS edges were affected.
+
+The KNN query now goes through `VectorDialect`, the abstraction that already existed for exactly this and was simply never called here:
+
+```ts
+const { sql, args } = vectorDialect.topKQuery('vec_node', 'embedding', queryVec, 21, 'cosine');
+```
+
+**The guard against a recurrence is the type, not a comment.** `neardup.ts` previously took `useNativeVectors?: boolean` — *optional*. Three `memory-server` call sites passed `useBinaryFormat` and dropped the flag entirely, which is precisely how the vec0 statement reached Turso on every `memory_write`. The dialect is now a **required** parameter on `detectNearDup`, `applyEmbedding` and `schedulePendingEmbeds`, so omitting it is a compile error. Resolving it is one call: `vectorDialectFor(adapter)` (new, `libs/memory-core/src/dialect.ts`, alongside `ftsDialectFor`).
+
+Cosine is still recomputed locally rather than read from the dialect's `distance` column — the two backends do not agree on a metric (vec0's default is L2, Turso's is whichever `vector_distance_*` was requested) and the E8 threshold is defined in cosine terms.
+
+**The failure is now reportable.** `enrich.ts` carried a bare `catch {}` commented "KNN query may fail on empty stores." It also hid a permanently-broken query for over a month, and "no duplicates found" is indistinguishable from "the feature is dead" in every surface we expose. It now logs `enrich.neardup.error` with the rowid and the driver's text. (`embed-pipeline.ts`'s twin was already fixed on 2026-07-30.)
+
+Red→green (`neardup-bl381-dialect.spec.ts`), run on both backends against real `openDb()` stores, each seeded with a near-duplicate pair **plus a clearly distinct third vector** so a pass returning "the only other row" cannot masquerade as a hit. With the literal SQL restored, the turso case fails with the exact production error above and sqlite still passes — which is the whole shape of the defect. Restored, 3/3 pass. A third assertion pins the vec0 statement as rejected by Turso, so the indirection cannot be quietly undone.
+
+`enrich.spec.ts` went 8 failures → 6 (A/B against `HEAD`; the remaining 6 are BL-325's `clusterStore` `ON CONFLICT` drift and are identical in both runs). `memory-core` typecheck/lint and `memory-server` typecheck/lint green. (`libs/memory-core/src/{neardup,dialect,enrich,embed-pipeline,write,update,index}.ts`, `memory-server/src/index.ts`)
+
+---
 
 ### BL-365 (HIGH) — telemetry now survives a hard crash; it did not before
 

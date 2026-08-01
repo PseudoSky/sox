@@ -18,8 +18,9 @@ import { extractiveSummary } from './extractive.js';
 import { computeImportance } from './importance.js';
 import type { EnrichmentProvenance } from './enrich-types.js';
 import type { NearDupResult } from './neardup.js';
-import type { AdapterTransaction } from '@adhd/sox-store-adapter';
+import type { AdapterTransaction, VectorDialect } from '@adhd/sox-store-adapter';
 import { ENRICH_VERSION } from './enrich-version.js';
+import { log as tlog } from './telemetry.js';
 
 export type { NearDupResult } from './neardup.js';
 
@@ -54,10 +55,11 @@ export interface EnrichOnWriteParams {
    */
   importance: number | undefined;
   /**
-   * When true (Turso native vectors), skip the vec0 MATCH-based near-dup check.
-   * Near-dup detection is an optimization, not correctness-critical.
+   * BL-381: the adapter's VectorDialect, used to build the E8 KNN query. Only
+   * consulted when `embedding` is present (the synchronous write path); the
+   * async two-phase path defers near-dup to `applyEmbedding`.
    */
-  useNativeVectors?: boolean;
+  vectorDialect?: VectorDialect;
 }
 
 export interface EnrichOnWriteResult {
@@ -174,11 +176,19 @@ export async function enrichOnWrite(
   // embedding is available (async two-phase write — 2026-07-04).
   const dupThreshold = getNearDupThreshold();
   let nearDup: NearDupResult | null = null;
-  if (p.embedding !== undefined) {
+  if (p.embedding !== undefined && p.vectorDialect !== undefined) {
     try {
-      nearDup = await detectNearDup(tx, p.rowid, p.embedding, dupThreshold, p.useNativeVectors);
-    } catch {
-      // KNN query may fail on empty stores — treat as no dup
+      nearDup = await detectNearDup(tx, p.rowid, p.embedding, dupThreshold, p.vectorDialect);
+    } catch (err) {
+      // BL-381: NOT a silent swallow. A KNN query can legitimately fail on an
+      // empty store, but for over a month this same bare `catch {}` also hid a
+      // permanently-broken query — `no such column: k`, every write, on the
+      // default backend — and "no duplicates found" is indistinguishable from
+      // "near-dup detection is dead" in every surface we expose. Log it.
+      tlog.warn('enrich.neardup.error', {
+        rowid: p.rowid,
+        error: err instanceof Error ? err.message : String(err),
+      });
       nearDup = null;
     }
   }

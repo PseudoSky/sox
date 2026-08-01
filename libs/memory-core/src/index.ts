@@ -198,6 +198,7 @@ export { ENRICH_VERSION } from './enrich-version.js';
 
 // ── Internal enrichment helpers (exported for tests) ──────────────────────────
 export { detectNearDup } from './neardup.js';
+export { vectorDialectFor, ftsDialectFor } from './dialect.js';
 export { computeImportance } from './importance.js';
 export { extractiveSummary } from './extractive.js';
 export { resolveProjectPath } from './provenance.js';

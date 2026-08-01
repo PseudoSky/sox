@@ -28,6 +28,7 @@
  */
 
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import { vectorDialectFor } from './dialect.js';
 import { performance } from 'node:perf_hooks';
 import { embed } from './embed.js';
 import { applyEmbedding, type PendingEmbed } from './embed-pipeline.js';
@@ -357,8 +358,9 @@ export async function memoryUpdate(
   const pending: PendingEmbed = phaseA.pending;
 
   const vec = await embed(pending.text);
+  const vectorDialect = await vectorDialectFor(adapter);
   await adapter.transaction(async (tx) =>
-    applyEmbedding(tx, pending, vec, adapter.capabilities.nativeVectors, adapter.capabilities.nativeVectors),
+    applyEmbedding(tx, pending, vec, adapter.capabilities.nativeVectors, vectorDialect),
   );
   return phaseA.result;
 }
