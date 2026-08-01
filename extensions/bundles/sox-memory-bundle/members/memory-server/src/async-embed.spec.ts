@@ -283,6 +283,10 @@ describe('memory_ping — embed_pipeline block (time_to_vector + counters + mirr
 
   it('fresh store: block present, backlog mirrored, metrics null (no Phase-B activity yet — honest)', async () => {
     const dbPath = tmpStorePath();
+    // BL-324 symptom group 2: this call was missing its `await`. memory_ping then
+    // ran before the store materialised (store: null), and the orphaned promise
+    // settled after afterEach() removed the tmpdir — surfacing as an unhandled
+    // SQLITE_READONLY_DBMOVED. Both symptoms, one missing keyword.
     await getDb(dbPath); // materialise the store, zero pipeline traffic
     const store = await pingStore(dbPath);
 

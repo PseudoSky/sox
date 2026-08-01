@@ -2,7 +2,27 @@
 
 ---
 
-## [Unreleased] — BL-381, BL-365, BL-344, BL-343, BL-323: near-dup detection restored on Turso; crash-durable telemetry; one env-scrub policy; memory_stats survives malformed rows; sqlite-vec load verified fixed
+## [Unreleased] — BL-381, BL-365, BL-324, BL-344, BL-343, BL-323: near-dup detection restored on Turso; crash-durable telemetry; one env-scrub policy; memory_stats survives malformed rows; sqlite-vec load verified fixed
+
+### BL-324 (HIGH) — the last two `memory-server` suite failures were one missing `await` and one stale assertion
+
+The item catalogued 8 reproducible failures and hypothesised they shared "an in-flight adapter/handle-lifecycle bug in the StoreAdapter migration." That was a lead, not evidence, and for the two that survived to today it was wrong in both cases.
+
+**Symptom group 2 — `SQLITE_READONLY_DBMOVED` on a brand-new tmp store.** The item traced it into `_openDbInner` → `adapter.pragmaSet` and asked "why does `pragmaSet` see a moved database on a brand-new tmp file?" The answer is that nothing in `openDb` was wrong. `async-embed.spec.ts` called `getDb(dbPath)` **without `await`**:
+
+```ts
+await getDb(dbPath); // materialise the store, zero pipeline traffic
+```
+
+One missing keyword produced both listed symptoms. `memory_ping` ran before the store materialised, so `body.store` was `null` and the assertion failed; the orphaned promise then settled *after* `afterEach()` removed the tmpdir, which is what SQLite reports as `SQLITE_READONLY_DBMOVED`. Vitest had been warning the whole time that the unhandled rejection "might cause false positive tests" — it was describing a real hazard, not boilerplate.
+
+**Symptom group 3 — `provider_call_count` is 1, expected 0.** Filed as a "cascading assertion failure downstream of group 2." It is independent, and the code was right. BL-254 (2026-07-23) repointed that counter at *local* embed calls, which are uncached — `embed.ts:249` increments unconditionally — so a query-path recall embeds the query exactly once. `recall.ts`'s own header already said so: *"The count is >0 on every query-path recall."* The test asserted `0` with the comment "zero LLM calls" and had been contradicting the documented contract of the code under test for over a week. The zero-**network** invariant it meant to protect is architectural — there is no remote API to call — and was never what this counter measured. `recall.ts:1028`'s inline `// must be 0` carried the same stale claim and would have re-taught it to the next reader; corrected.
+
+Causality was established by A/B, not asserted: both failures reproduce **identically** with `index.ts` swapped back to `e9aa0cb~1`, which exonerates the in-flight BL-382 drain-wake work that was resident in the tree.
+
+`memory-server`: **3 failed / 180 passed → 1 failed / 182 passed**, with the unhandled rejection gone. The remaining failure is BL-367 (cross-backend recall parity 0.52 against an 0.80 bar), which is its own open item. lint + typecheck green on `memory-server` and `memory-core`. (`memory-server/src/{async-embed,memory-tools}.spec.ts`, `libs/memory-core/src/recall.ts`)
+
+---
 
 ### BL-381 (HIGH) — near-duplicate detection was dead on the default backend; it now runs on both
 

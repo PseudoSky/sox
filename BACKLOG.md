@@ -4,9 +4,9 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
-## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
+## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 93.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 92.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -949,30 +949,6 @@ Per-pid: pid 73540 reached `max_in_flight = 7` with awake p50 **131 s**; every p
 **Related:** BL-331 (root cause of the per-unit cost), BL-369, BL-370, BL-345, BL-351.
 
 Citations: [wip/turso-live-metrics, performance-engineer, claude, BL-331 investigation, 1: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-inflight.py, 2: libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts, 3: docs/reporting/memory/bl331-root-cause.md §3]
-
----
-
-### BL-324 — `memory-server` full suite: 8 reproducible failures in `write.ts`/`db.ts`/`recall.ts` paths, unrelated to the embed-backfill reentrancy fix — **Open (HIGH)** (2026-07-30)
-
-**Found while:** verifying the embed-backfill self-stampede reentrancy-guard fix (`runPeriodicEnrichPassGuarded`, `extensions/.../memory-server/src/index.ts`) on `wip/turso-live-metrics`.[1] Confirmed NOT caused by that fix: `git diff --name-only` shows the fix touches only `index.ts`; every failure below originates in `write.ts`, `db.ts`, or `recall.ts` (all under concurrent, uncommitted edit by another agent restoring the Turso wiring at the time this was filed) and reproduces identically in an isolated single-file `vitest run` with zero other spec files loaded.[2]
-
-**Symptom group 1 — `TypeError: adapter.executeGet is not a function`, 5 failures, all in `recall-sqlite.test.ts`.**
-Every case does `const raw = (await openDb(dbPath)).unwrap(); await memoryWrite(raw, {...})` — i.e. the test passes the **raw better-sqlite3 handle** (`StoreAdapter.unwrap()`'s return value) directly into `memoryWrite`.[3] Current `memoryWritePhaseA` (`write.ts:285`) calls `adapter.executeGet(...)` on whatever it's handed, expecting an async `StoreAdapter`, not a raw `Database`.[4] This is a signature drift from the StoreAdapter migration (commit `65171ad`, "wip: TursoAdapter go-live ... StoreAdapter migration") that never updated this test's call sites — either the test needs to stop unwrapping before calling `memoryWrite`, or `memoryWrite` needs to accept/wrap a raw handle. Every one of the 5 `recall-sqlite.test.ts` cases fails identically.
-
-**Symptom group 2 — `SqliteError: attempt to write a readonly database` (`SQLITE_READONLY_DBMOVED`) inside `openDb`'s `pragmaSet` call.**
-`async-embed.spec.ts`'s very first `memory_ping` on a freshly-created tmp store throws this as an **unhandled rejection** from `_openDbInner` → `adapter.pragmaSet` (`db.ts:332`, i.e. the pragma-application loop right after the sqlite-vec load block).[5] Reproduces in complete isolation (`vitest run --run src/async-embed.spec.ts` alone, no other files loaded) — not a cross-file state-pollution artifact. Distinct from BL-323 (which is a `TypeError` at the sqlite-vec `default`-export destructure, one step earlier in the same function) — this fires *after* the vec-load succeeds, during pragma application, meaning something in the current `openDb`/`createStoreAdapter` path can hand back an adapter wrapping a handle SQLite considers to have moved/become readonly before pragmas are applied.
-
-**Symptom group 3 — cascading assertion failures downstream of group 2's silent partial failure:**
-- `memory-tools.spec.ts` "returns v1 enrichment fields on each result": `provider_call_count` is `1`, expected `0`.[6]
-- `permission-guard.spec.ts` "long content auto-chunks ... with DERIVED_FROM edges": edge count is `1`, expected `3`, PLUS an **unhandled** `SQLITE_BUSY` ("database is locked") rejection from `linkChunksToParent`'s `executeRun` racing a concurrent writer on the same file.[7]
-
-These three symptom groups may share one root cause (an in-flight adapter/handle-lifecycle bug in the StoreAdapter migration) or may be two-to-three independent regressions — needs isolated investigation once `db.ts`/`write.ts`/`recall.ts` settle from their current concurrent-edit state. Re-run the full `memory-server` suite after those land and re-triage before assuming any single fix closes all 8.
-
-**Fix sketch:** (1) fix `recall-sqlite.test.ts` call sites to pass the `StoreAdapter`, not `.unwrap()`'s raw handle, OR restore a raw-handle-compatible overload if that's still a supported call shape. (2) Trace why `pragmaSet` sees `SQLITE_READONLY_DBMOVED` on a brand-new tmp file — check for a raced `close()`/reopen or a WAL/journal file getting moved between adapter creation and pragma application. (3) Audit `linkChunksToParent` (`index.ts:1116`) for a missing await/serialization onto the WriteQueue that lets a concurrent chunk-link race the parent write and hit `SQLITE_BUSY` outside WAL's normal retry window.
-
-**Severity:** HIGH — blocks a clean `npx nx test memory-server` run (the mandated pre-merge gate) independent of any single feature branch; 8/147 tests red as of this filing.
-
-Citations: [wip/turso-live-metrics, backend-developer, claude, embed-backfill-reentrancy-fix, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/enrich-reentrancy.spec.ts, 2: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (git diff --name-only confirms sole touched file), 3: extensions/bundles/sox-memory-bundle/members/memory-server/recall-sqlite.test.ts:61-66, 4: libs/memory-core/src/write.ts:285, 5: libs/memory-core/src/db.ts:325-332, 6: extensions/bundles/sox-memory-bundle/members/memory-server/src/memory-tools.spec.ts:193-195, 7: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:1114-1118 and extensions/bundles/sox-memory-bundle/members/memory-server/src/permission-guard.spec.ts:343-345]
 
 ---
 
