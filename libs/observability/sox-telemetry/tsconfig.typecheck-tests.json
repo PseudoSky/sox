@@ -1,0 +1,16 @@
+{
+  // BL-340 — spec-inclusive typecheck (see memory-core's copy of this file for
+  // the full incident rationale: BL-325 shipped an 18-file await-drop because
+  // no target ever typechecked *.spec.ts).
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "ignoreDeprecations": "6.0",
+    "noEmit": true,
+    "esModuleInterop": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules"]
+}
