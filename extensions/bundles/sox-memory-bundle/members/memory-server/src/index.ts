@@ -73,6 +73,7 @@ import {
   schedulePendingEmbeds,
   setLeaseInstanceId,
   supersedesUidForRowid,
+  vectorDialectFor,
   syncEmbedEnabled,
   warmupEmbed,
   isSuperseded,
@@ -82,7 +83,7 @@ import {
   splitIntoChunksSentence,
 } from '@adhd/sox-memory-core';
 import type { PendingEmbed, PhaseAOutcome, WriteError, WriteResult } from '@adhd/sox-memory-core';
-import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import type { StoreAdapter, VectorDialect } from '@adhd/sox-store-adapter';
 // BL-334: the adapter verifies and repairs its own generated artifacts at open
 // (BL-352). Until this wiring, NOTHING read the retained result — so a store
 // with a dead FTS index presented as healthy, which is exactly how BL-347 ran
@@ -1299,7 +1300,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       });
       // Phase B: scheduled from OUTSIDE the queue task (BL-154 audit point).
       // Fire-and-forget: failures log to stderr and the periodic heal repairs.
-      if (outcome.pendings.length > 0) void schedulePendingEmbeds(wq, outcome.pendings, { useBinaryFormat: adapter.capabilities.nativeVectors });
+      schedulePhaseBAndWake(wq, outcome.pendings, { useBinaryFormat: adapter.capabilities.nativeVectors, vectorDialect: await vectorDialectFor(adapter) });
       return outcome.response;
     }
 
@@ -1366,7 +1367,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       const outcome = await wq.enqueue('memory_write_batch', (writeDb) =>
         memoryWriteBatchPhaseA(writeDb, batchItems),
       );
-      if (outcome.pendings.length > 0) void schedulePendingEmbeds(wq, outcome.pendings, { useBinaryFormat: adapter.capabilities.nativeVectors });
+      schedulePhaseBAndWake(wq, outcome.pendings, { useBinaryFormat: adapter.capabilities.nativeVectors, vectorDialect: await vectorDialectFor(adapter) });
       return {
         content: [{ type: 'text', text: JSON.stringify({ results: outcome.results }) }],
       };
@@ -1769,7 +1770,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           pending: a.pending,
         };
       });
-      if (updOutcome.pending) void schedulePendingEmbeds(wq, [updOutcome.pending], { useBinaryFormat: adapter.capabilities.nativeVectors });
+      schedulePhaseBAndWake(wq, updOutcome.pending ? [updOutcome.pending] : [], { useBinaryFormat: adapter.capabilities.nativeVectors, vectorDialect: await vectorDialectFor(adapter) });
       return updOutcome.response;
     }
 
@@ -1927,6 +1928,52 @@ const registeredTools = TOOLS.map((tool) =>
 
 const PERIODIC_ENRICH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes between passes
 
+// ── BL-382: drain constants, re-derived from the CURRENT embed cost ───────────
+//
+// The 5-minute interval and the 500-row heal window were both sized when an
+// embed cost ~6.9s (BL-331 defect 1: every sox launchd unit ran at ProcessType
+// Background / pri 4). At that price a 500-row window is ~57 minutes of work and
+// batching hard on a slow cadence was the only sane design. After the fix the
+// live p50 is 580ms (n=701, backend pid 69947, contended) and the design is
+// inverted — measured over that backend's 1209s life:
+//
+//   embed wall time  482s (39.9% of span)      throughput over span   0.58/s
+//   idle gaps >5s    467s (38.6% of span)      throughput in-embed    1.45/s
+//
+// i.e. 2.5x of the BL-331 recovery was being given back to scheduling idle. The
+// 445s gap decomposed with no residual: 145s of runBatchEnrich + the 300s timer.
+//
+// So the drain gets its own loop (below) rather than riding the enrich tick, and
+// these numbers follow from the measured cost rather than the old one:
+
+/** Re-arm delay after a pass that left work behind. Deliberately NOT zero: it
+ *  keeps the loop a chain of macrotasks instead of a spin, and leaves air for
+ *  foreground reads (BL-345 — measured at 425ms p50 under a 99.9%-CPU heal, the
+ *  number this must not regress). */
+const DEFAULT_DRAIN_IDLE_MS = 250;
+/** Re-arm delay after a pass that found nothing. Costs one indexed COUNT per
+ *  period. This is the floor BL-382 requires be kept: it catches work enqueued
+ *  by paths that do not wake, and it is the post-restart recovery path. */
+const DEFAULT_DRAIN_FLOOR_MS = 30_000;
+/** Debounce window for wakeDrain(). N rapid writes inside one window arm exactly
+ *  one pass — the coalescing requirement. */
+const DEFAULT_DRAIN_WAKE_DEBOUNCE_MS = 250;
+/** Rows per drain pass. Was 500, which at 580ms/embed is ~290s of work — so the
+ *  240s SOX_EMBED_HEAL_TIME_BUDGET_MS ALWAYS fired and the truncated remainder
+ *  of the scan was wasted (observed: "TIME BUDGET EXCEEDED (417 healed, 83
+ *  remaining of 500)" on two consecutive ticks). 64 rows is ~37s, comfortably
+ *  inside the budget, so a pass completes its window instead of being cut. */
+const DEFAULT_DRAIN_BATCH = 64;
+
+function envMs(key: string, fallback: number): number {
+  const n = Number(process.env[key]);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+const drainIdleMs = () => envMs('SOX_EMBED_DRAIN_IDLE_MS', DEFAULT_DRAIN_IDLE_MS);
+const drainFloorMs = () => envMs('SOX_EMBED_DRAIN_FLOOR_MS', DEFAULT_DRAIN_FLOOR_MS);
+const drainWakeDebounceMs = () => envMs('SOX_EMBED_DRAIN_WAKE_DEBOUNCE_MS', DEFAULT_DRAIN_WAKE_DEBOUNCE_MS);
+const drainBatchLimit = () => envMs('SOX_EMBED_DRAIN_BATCH', DEFAULT_DRAIN_BATCH);
+
 // ── Queue-drain health SLO (BL-172 follow-on) ─────────────────────────────────
 //
 // "HEALTHY" must require workload progress, not just RPC liveness: memory_ping
@@ -2083,7 +2130,15 @@ export async function runEnrichPassOnDb(
   // a single indexed COUNT(*) scan) — safe to call twice per pass.
   const backlogBefore = (await embedBacklogStats(adapter)).count;
 
-  const heal = await healMissingVectors(adapter, await WriteQueue.forPath(dbPath));
+  // BL-382: the heal here is now a BACKSTOP, not the drain. The dedicated drain
+  // loop below normally keeps the backlog at zero, so this scan usually returns
+  // nothing. It keeps the same bounded window as the drain — the old default of
+  // 500 rows is ~290s of embedding at the measured 580ms p50, which is what made
+  // a single enrich tick take 385s (240s of it heal, cut off by the time budget
+  // with 83 rows of the window unprocessed).
+  const heal = await healMissingVectors(adapter, await WriteQueue.forPath(dbPath), {
+    limit: drainBatchLimit(),
+  });
 
   const maxSeq = await maxOpenEnrichTriggerSeq(adapter);
   const fullPass = await hasPendingFullEnrich(adapter, maxSeq);
@@ -2203,6 +2258,11 @@ let _enrichTickSeq = 0;
  */
 export async function runPeriodicEnrichPassGuarded(): Promise<void> {
   const tickSeq = ++_enrichTickSeq;
+  // The slot is acquired AFTER the skip check, deliberately: a second concurrent
+  // enrich call must still be turned away as a skip rather than queue behind the
+  // first (that is the BL-346 anti-stampede contract, and enrich-reentrancy.spec
+  // asserts it). See withBackgroundSlot for why the two guards are different
+  // mechanisms rather than one.
   if (_enrichPassInFlight) {
     _enrichTicksSkipped++;
     console.error(
@@ -2215,7 +2275,7 @@ export async function runPeriodicEnrichPassGuarded(): Promise<void> {
   const tickStartedAt = Date.now();
   console.error(`[memory-server] enrich.tick.start tick_seq=${tickSeq}`);
   try {
-    await runPeriodicEnrichPass();
+    await withBackgroundSlot('enrich', () => runPeriodicEnrichPass());
     console.error(
       `[memory-server] enrich.tick.finish tick_seq=${tickSeq}` +
       ` duration_ms=${Date.now() - tickStartedAt}`,
@@ -2231,13 +2291,314 @@ export async function runPeriodicEnrichPassGuarded(): Promise<void> {
   }
 }
 
+// ── BL-382: the background slot ───────────────────────────────────────────────
+//
+// There are now TWO independently-scheduled background loops (the enrich tick
+// and the embed drain). They must never run at the same time: two concurrent
+// healMissingVectors scans over the same `NOT EXISTS vec_node ... LIMIT n`
+// window is precisely the BL-346 stampede, and runBatchEnrich's synchronous SQL
+// alongside anything else is BL-345.
+//
+// This is a MUTEX, not a guard: a caller waits for the slot rather than being
+// turned away. That is the whole point of the split — the drain no longer needs
+// its own 5-minute timer to stay out of the enrich pass's way, it just waits for
+// the slot, which is normally free.
+//
+// The per-loop in-flight guards above/below are a DIFFERENT mechanism and both
+// are needed. The guard answers "is another copy of ME already running?" (skip);
+// the mutex answers "is any background work running?" (wait). Collapsing them
+// into one would either let two enrich ticks queue up (re-creating the stampede
+// with extra steps) or make the drain skip work it should merely defer.
+let _bgSlot: Promise<void> = Promise.resolve();
+let _bgSlotHolder: string | null = null;
+
 /**
- * Self-rescheduling chain, NOT setInterval: the next tick is armed only once
- * the current guarded pass has fully settled, so a slow pass simply pushes
- * the next tick later instead of stacking a concurrent one on top of it.
- * unref() keeps the timer from holding the process open past MCP client
- * disconnect — the server exits cleanly on stdin close.
+ * Run `fn` with exclusive use of the background slot.
+ *
+ * ⚠️ NEVER call this from inside another background-slot body, and never from
+ * inside a WriteQueue task. Both are self-deadlocks — the inner call waits on a
+ * slot only the outer call can release. Nesting is detected and thrown rather
+ * than hung: a loud failure is worth far more than the silent forever-hang that
+ * BL-154 produced (`memory_write` of >2000 chars enqueued from inside a task
+ * already holding that same serial queue, and simply never returned).
  */
+async function withBackgroundSlot<T>(holder: string, fn: () => Promise<T>): Promise<T> {
+  const prev = _bgSlot;
+  let release!: () => void;
+  _bgSlot = new Promise<void>((r) => (release = r));
+  await prev;
+  if (_bgSlotHolder !== null) {
+    release();
+    throw new Error(
+      `[memory-server] BL-382 background-slot re-entrancy: "${holder}" acquired while ` +
+      `"${_bgSlotHolder}" still holds it. This is the BL-154 deadlock shape — never ` +
+      `acquire the slot from inside another slot body or a WriteQueue task.`,
+    );
+  }
+  _bgSlotHolder = holder;
+  try {
+    return await fn();
+  } finally {
+    _bgSlotHolder = null;
+    release();
+  }
+}
+
+/** Test seam: which loop currently holds the background slot, or null. */
+export function backgroundSlotHolder(): string | null {
+  return _bgSlotHolder;
+}
+
+// ── BL-382: the embed drain ───────────────────────────────────────────────────
+//
+// Split out of the enrich tick. Before this, draining one 500-row window meant
+// paying ~145s of runBatchEnrich in the same tick and then sleeping 300s —
+// measured on pid 69947 as a 445s gap between the last embed of one pass and the
+// first of the next, decomposing with no residual into those two terms.
+//
+// Now the drain reschedules on its OWN backlog: work remaining -> re-arm in
+// 250ms; backlog empty -> re-arm at the 30s floor. The floor is kept (BL-382
+// requirement 2) because it catches work enqueued by paths that never call
+// wakeDrain, and because it is the recovery path after a restart.
+
+let _drainInFlight = false;
+/** Set when a wake arrives while a pass is running: the pass re-arms
+ *  immediately on completion instead of dropping the signal. Without this a
+ *  write landing mid-pass would wait for the floor. */
+let _drainDirty = false;
+let _drainSeq = 0;
+let _drainWakeTimer: ReturnType<typeof setTimeout> | null = null;
+let _drainNextTimer: ReturnType<typeof setTimeout> | null = null;
+/** Consecutive passes that healed nothing while the backlog was non-empty.
+ *  Drives exponential backoff — without it, a window of permanently-failing
+ *  rows (e.g. the embed provider is down) would spin at the 250ms idle delay
+ *  forever, re-attempting the same rows and burning the machine. */
+let _drainNoProgress = 0;
+/** Latched when a pass reports the SOX_DISABLE_EMBED_HEAL brake: the chain
+ *  stops rather than waking every 30s to do nothing. Keyed off the RESULT, not
+ *  a second copy of the env check — BL-344's lesson about duplicated policy. */
+let _drainDisabled = false;
+let _drainWakesCoalesced = 0;
+/** Whether the last completed pass left work behind — drives the re-arm delay. */
+let _drainBacklogRemaining = false;
+
+/** Test/observability seam — how many wakes were folded into an existing pass
+ *  or an already-armed timer instead of scheduling their own. */
+export function getDrainWakesCoalesced(): number {
+  return _drainWakesCoalesced;
+}
+/** True while a drain pass is executing. Test seam. */
+export function isDrainPassInFlight(): boolean {
+  return _drainInFlight;
+}
+/** Monotonic count of drain passes actually STARTED — the coalescing assertion
+ *  reads this: N wakes must advance it by exactly 1, never by N. */
+export function getDrainPassCount(): number {
+  return _drainSeq;
+}
+
+/**
+ * One drain pass over every open store: heal missing vectors ONLY. No
+ * clustering, no importance, no queue-trigger completion — those belong to the
+ * enrich tick and coupling them to the drain is what BL-382 measured as 145s of
+ * dead time per drained window.
+ *
+ * Returns whether any store still has backlog, so the caller can decide the
+ * re-arm delay. Never throws.
+ */
+async function runDrainPass(): Promise<{ backlogRemaining: boolean; healed: number; disabled: boolean }> {
+  let backlogRemaining = false;
+  let healed = 0;
+  let disabled = false;
+  for (const dbPath of openedPaths) {
+    try {
+      const adapter = await getDb(dbPath);
+      const wq = await WriteQueue.forPath(dbPath);
+      const heal = await healMissingVectors(adapter, wq, { limit: drainBatchLimit() });
+      if (heal.disabled) {
+        disabled = true;
+        continue;
+      }
+      healed += heal.healed;
+      const after = await embedBacklogStats(adapter);
+      if (after.count > 0) backlogRemaining = true;
+      if (heal.scanned > 0) {
+        console.error(
+          `[memory-server] drain (${dbPath}):` +
+          ` scanned=${heal.scanned} healed=${heal.healed} exists=${heal.exists}` +
+          ` gone=${heal.gone} failed=${heal.failed} backlog_after=${after.count}` +
+          (heal.time_budget_exceeded ? ' time_budget_exceeded=true' : ''),
+        );
+      }
+    } catch (err) {
+      // stderr only — never stdout ([inv:no-stdout-diagnostics]).
+      console.error(`[memory-server] drain error (${dbPath}):`, err);
+    }
+  }
+  return { backlogRemaining, healed, disabled };
+}
+
+/**
+ * Reentrancy-guarded drain entrypoint. A concurrent call does NOT queue and is
+ * NOT dropped — it sets the dirty flag so the in-flight pass re-arms immediately
+ * on completion. Exported so tests can drive it without the timer.
+ */
+export async function runDrainPassGuarded(): Promise<void> {
+  if (_drainInFlight) {
+    _drainDirty = true;
+    _drainWakesCoalesced++;
+    return;
+  }
+  _drainInFlight = true;
+  const seq = ++_drainSeq;
+  const startedAt = Date.now();
+  try {
+    const r = await withBackgroundSlot('drain', () => runDrainPass());
+    if (r.disabled) {
+      _drainDisabled = true;
+      console.error(
+        '[memory-server] embed drain DISABLED via SOX_DISABLE_EMBED_HEAL=1 ' +
+        '(BL-339 stopgap — the embed backlog will not drain)',
+      );
+      return;
+    }
+    // Forward-progress accounting: backlog with zero healed means this window
+    // is stuck, not merely large.
+    if (r.backlogRemaining && r.healed === 0) _drainNoProgress++;
+    else _drainNoProgress = 0;
+    if (r.healed > 0) {
+      console.error(
+        `[memory-server] drain.finish seq=${seq} healed=${r.healed}` +
+        ` duration_ms=${Date.now() - startedAt} backlog_remaining=${r.backlogRemaining}`,
+      );
+    }
+    _drainBacklogRemaining = r.backlogRemaining;
+  } catch (err) {
+    console.error(
+      `[memory-server] drain.error seq=${seq} duration_ms=${Date.now() - startedAt}: ` +
+      `${err instanceof Error ? err.message : String(err)}`,
+    );
+    _drainNoProgress++;
+  } finally {
+    _drainInFlight = false;
+  }
+}
+
+/** Delay before the next drain pass: short while there is work, the floor when
+ *  there is not, backing off exponentially when passes stop making progress. */
+function nextDrainDelayMs(): number {
+  const floor = drainFloorMs();
+  if (!_drainBacklogRemaining && !_drainDirty) return floor;
+  if (_drainNoProgress > 0) {
+    return Math.min(floor, drainIdleMs() * 2 ** Math.min(_drainNoProgress, 10));
+  }
+  return drainIdleMs();
+}
+
+/**
+ * Self-rescheduling drain chain. Same shape as the enrich chain — a setTimeout
+ * armed only once the previous pass has fully settled, never a setInterval, so
+ * two passes can never stack.
+ */
+function scheduleNextDrain(): void {
+  if (_drainDisabled) return;
+  if (_drainNextTimer !== null) clearTimeout(_drainNextTimer);
+  const delay = nextDrainDelayMs();
+  _drainDirty = false;
+  _drainNextTimer = setTimeout(() => {
+    _drainNextTimer = null;
+    void runDrainPassGuarded().finally(scheduleNextDrain);
+  }, delay);
+  if (typeof _drainNextTimer.unref === 'function') _drainNextTimer.unref();
+}
+
+/**
+ * Wake the drain — debounced and coalescing (BL-382 requirement 1).
+ *
+ * ⚠️ BL-154 SAFETY. The deadlock shape BL-154 records is hold-and-wait on one
+ * serial queue: a task holding the WriteQueue slot calls `wq.enqueue` and waits
+ * for a slot only it can release. `memory_write` with >2000 chars hung forever
+ * that way. A naive "writes wake the queue" implementation walks straight into
+ * it, so the safety here rests on THREE independent properties, not one:
+ *
+ *   (a) Call site. Every caller sits AFTER `await wq.enqueue(...)` has resolved
+ *       — the same audit point that already licenses schedulePendingEmbeds.
+ *   (b) THIS FUNCTION NEVER RUNS WORK. It only arms a timer. Even if some future
+ *       caller invokes it from inside a queue task, the pass body runs on a
+ *       later macrotask, by which time that task's await chain has resumed and
+ *       released the slot. This is the load-bearing property: it makes safety
+ *       independent of every call site's discipline, which (a) alone cannot
+ *       promise. A call-site convention is exactly what let BL-344's allowlist
+ *       diverge across six copies.
+ *   (c) The guard never touches the queue. `_drainInFlight` short-circuits to a
+ *       flag; it neither awaits nor holds a WriteQueue slot, so it cannot be a
+ *       node in a wait cycle.
+ *
+ * Do NOT call this from inside applyEmbedding or any wq.enqueue callback. It
+ * would still be safe by (b), but it would also self-trigger from the drain's
+ * own applies — see the `backlogRemaining` rule that stops that loop.
+ */
+export function wakeDrain(reason: string): void {
+  if (_drainDisabled) return;
+  if (_drainInFlight) {
+    // Fold into the running pass's tail rather than arming a redundant timer.
+    _drainDirty = true;
+    _drainWakesCoalesced++;
+    return;
+  }
+  if (_drainWakeTimer !== null) {
+    // Already armed inside the debounce window — N rapid writes, one pass.
+    _drainWakesCoalesced++;
+    return;
+  }
+  _drainWakeTimer = setTimeout(() => {
+    _drainWakeTimer = null;
+    if (_drainNextTimer !== null) {
+      clearTimeout(_drainNextTimer);
+      _drainNextTimer = null;
+    }
+    void runDrainPassGuarded().finally(scheduleNextDrain);
+  }, drainWakeDebounceMs());
+  if (typeof _drainWakeTimer.unref === 'function') _drainWakeTimer.unref();
+  void reason;
+}
+
+/**
+ * BL-382: run Phase B for a write's pendings and wake the drain.
+ *
+ * Called at the audit point that is already OUTSIDE the WriteQueue slot — the
+ * Phase-A task has resolved by the time this is reachable, which is the same
+ * property that has always licensed the bare schedulePendingEmbeds call here.
+ *
+ * Two wakes, for two different reasons:
+ *   - unconditional, on the write itself — covers the crash-between-phases case,
+ *     which leaves a vectorless row that ONLY the drain will ever find. Cheap: a
+ *     pass over an empty backlog is one indexed COUNT.
+ *   - on Phase-B failure — the only write-side path that actually creates drain
+ *     work in a healthy process. schedulePendingEmbeds never throws; per-item
+ *     failures come back in `failed` and are otherwise left for the heal.
+ *
+ * Both are debounced and coalescing, so N rapid writes arm ONE pass (BL-382
+ * requirement 1), and neither can re-enter the write queue (see wakeDrain).
+ */
+function schedulePhaseBAndWake(
+  wq: WriteQueue,
+  pendings: PendingEmbed[],
+  opts: { useBinaryFormat: boolean; vectorDialect: VectorDialect },
+): void {
+  if (pendings.length === 0) return;
+  wakeDrain('write');
+  void schedulePendingEmbeds(wq, pendings, opts)
+    .then((r) => {
+      if (r.failed > 0) wakeDrain('phase-b-failure');
+    })
+    .catch(() => {
+      // schedulePendingEmbeds documents that it never throws; if that ever
+      // changes, the vectors are missing and the drain is exactly the repair.
+      wakeDrain('phase-b-throw');
+    });
+}
+
 /**
  * (BL-339 / BL-346) Emergency brake for the periodic enrich tick.
  *
@@ -2277,6 +2638,10 @@ function scheduleNextEnrichTick(): void {
 }
 
 scheduleNextEnrichTick();
+// BL-382: the drain's own chain. Independent of the enrich tick's interval —
+// they share only the background slot. The first pass is armed at the floor, so
+// a restart with a non-empty backlog starts draining within 30s rather than 5min.
+scheduleNextDrain();
 
 // ── Entrypoint dispatch: backend mode vs direct-stdio (spec §9.5) ─────────────
 //
