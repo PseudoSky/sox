@@ -23,7 +23,7 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-07-31: **92 open**.
+Regenerated 2026-08-01: **91 open**.
 
 | Priority | Open items |
 |---|---|
