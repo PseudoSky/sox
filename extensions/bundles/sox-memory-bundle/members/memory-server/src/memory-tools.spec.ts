@@ -192,7 +192,12 @@ describe('memory_recall with filters (C2.2)', () => {
     const results = out['results'] as JsonObj[];
     expect(Array.isArray(results)).toBe(true);
     expect(typeof out['provider_call_count']).toBe('number');
-    expect(out['provider_call_count']).toBe(0); // zero LLM calls
+    // BL-254 (2026-07-23) repointed this counter at LOCAL embed calls, which are
+    // uncached — a query-path recall embeds the query exactly once. It is NOT a
+    // remote-call counter; "zero LLM calls" means zero NETWORK calls, and that
+    // invariant is guaranteed by the provider architecture (no remote API exists
+    // to call), not by this number. See recall.ts header §1.
+    expect(out['provider_call_count']).toBe(1);
 
     if (results.length > 0) {
       const r = results[0]!;
