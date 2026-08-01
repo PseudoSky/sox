@@ -36,6 +36,7 @@ import {
 } from './embed-pipeline.js';
 import { memoryRecall } from './recall.js';
 import { WriteQueue } from './write-queue.js';
+import { vectorDialectFor } from './dialect.js';
 import { _setEmbedProviderForTest, embed } from './embed.js';
 import { DeterministicTestProvider } from './embed-test-provider.js';
 
@@ -129,13 +130,13 @@ describe('Phase A holds the queue slot with ZERO embed calls (seam-level proof)'
     expect(a.result.enrichment?.near_dup).toBeNull(); // deferred to Phase B
 
     // No vec row yet — Phase B has not run.
-    expect(vecRowFor(ctx.db, a.pending!.rowid)).toBeUndefined();
+    expect(await vecRowFor(ctx.db, a.pending!.rowid)).toBeNull();
 
     // Phase B: exactly one embed call, vec row lands via a short queue task.
-    const res = await schedulePendingEmbeds(wq, [a.pending!]);
+    const res = await schedulePendingEmbeds(wq, [a.pending!], { vectorDialect: await vectorDialectFor(ctx.db) });
     expect(res).toEqual({ applied: 1, exists: 0, gone: 0, failed: 0 });
     expect(counter.calls).toBe(1);
-    expect(vecRowFor(ctx.db, a.pending!.rowid)).toBeDefined();
+    expect(await vecRowFor(ctx.db, a.pending!.rowid)).toBeDefined();
   });
 
   it('memoryWritePhaseA is fully synchronous (returns a value, not a promise)', () => {
@@ -163,7 +164,7 @@ describe('fresh Phase-A write is BM25-recallable before its vector exists', () =
     });
     expect('code' in b).toBe(false);
     const bOut = await b as PhaseAOutcome;
-    expect(vecRowFor(ctx.db, bOut.pending!.rowid)).toBeUndefined();
+    expect(await vecRowFor(ctx.db, bOut.pending!.rowid)).toBeNull();
 
     // Recall with B's tokens: B must be found via BM25 despite the missing vector.
     const before = await memoryRecall(ctx.db, 'project', {
@@ -181,7 +182,7 @@ describe('fresh Phase-A write is BM25-recallable before its vector exists', () =
 
     // Phase B lands the vector — the vec channel now includes B.
     const vec = await embed(bOut.pending!.text);
-    expect(applyEmbedding(ctx.db, bOut.pending!, vec).status).toBe('applied');
+    expect((await applyEmbedding(ctx.db, bOut.pending!, vec, ctx.db.capabilities.nativeVectors, await vectorDialectFor(ctx.db))).status).toBe('applied');
 
     const after = await memoryRecall(ctx.db, 'project', {
       query: 'zanzibar cloves cardamom merchants',
@@ -203,10 +204,10 @@ describe('E_DEDUP and client_request_id replay are identical pre/post split', ()
     const firstUid = (await first as PhaseAOutcome).result.episode_uid;
 
     // Duplicate (same content after trim+lowercase) while the first still has NO vec row.
-    const second = memoryWritePhaseA(ctx.db, { content: '  DEDUP IS CONTENT-HASH BASED, NOT VECTOR BASED.  ', project_path: '/test/project' });
+    const second = await memoryWritePhaseA(ctx.db, { content: '  DEDUP IS CONTENT-HASH BASED, NOT VECTOR BASED.  ', project_path: '/test/project' });
     expect('code' in second).toBe(true);
-    expect((await second as { code: string }).code).toBe('E_DEDUP');
-    expect((await second as { existing_uid: string }).existing_uid).toBe(firstUid);
+    expect((second as { code: string }).code).toBe('E_DEDUP');
+    expect((second as { existing_uid: string }).existing_uid).toBe(firstUid);
   });
 
   it('client_request_id replay returns the original uid, creates no node, schedules no embed', async () => {
@@ -230,7 +231,7 @@ describe('E_DEDUP and client_request_id replay are identical pre/post split', ()
     expect(replayOut.result.episode_uid).toBe(firstOut.result.episode_uid);
     expect(replayOut.pending).toBeNull(); // the original write owns the vector
 
-    const count = await ctx.db.executeGet<{ c: number }>("SELECT COUNT(*) AS c FROM node WHERE kind='episode'")!;
+    const count = (await ctx.db.executeGet<{ c: number }>("SELECT COUNT(*) AS c FROM node WHERE kind='episode'"))!;
     expect(count.c).toBe(1);
   });
 });
@@ -268,13 +269,13 @@ describe('memoryWriteBatchPhaseA — one sync queue task, pipelined Phase B', ()
 
     // Exactly the two inserted episodes need Phase B.
     expect(outcome.pendings).toHaveLength(2);
-    expect(embedBacklogStats(ctx.db).count).toBe(2);
+    expect((await embedBacklogStats(ctx.db)).count).toBe(2);
 
     // Phase B pipelined off-slot: backlog drains to zero.
-    const sched = await schedulePendingEmbeds(wq, outcome.pendings);
+    const sched = await schedulePendingEmbeds(wq, outcome.pendings, { vectorDialect: await vectorDialectFor(ctx.db) });
     expect(sched.applied).toBe(2);
     expect(sched.failed).toBe(0);
-    expect(embedBacklogStats(ctx.db).count).toBe(0);
+    expect((await embedBacklogStats(ctx.db)).count).toBe(0);
   });
 });
 
@@ -292,27 +293,27 @@ describe('deferred E8 near-dup runs in Phase B', () => {
 
     // Phase A of a token-permuted duplicate: identical token multiset (cosine 1.0
     // under the feature-hash provider) but different bytes → passes content-hash dedup.
-    const newer = memoryWritePhaseA(ctx.db, {
+    const newer = await memoryWritePhaseA(ctx.db, {
       content: 'garnet quartz topaz obsidian feldspar mineral catalogue',
       project_path: '/test/project',
     });
     expect('code' in newer).toBe(false);
-    const newerOut = await newer as PhaseAOutcome;
+    const newerOut = newer as PhaseAOutcome;
     expect(newerOut.result.enrichment?.near_dup).toBeNull(); // deferred — documented semantics
 
     // Phase B: near-dup detected and applied.
     const vec = await embed(newerOut.pending!.text);
-    const applied = await applyEmbedding(ctx.db, newerOut.pending!, vec);
+    const applied = await applyEmbedding(ctx.db, newerOut.pending!, vec, ctx.db.capabilities.nativeVectors, await vectorDialectFor(ctx.db));
     expect(applied.status).toBe('applied');
     expect(applied.near_dup).not.toBeNull();
     expect(applied.near_dup!.existing_uid).toBe(olderUid);
 
-    const newerRowid = rowidFor(ctx.db, newerOut.result.episode_uid);
-    const olderRowid = rowidFor(ctx.db, olderUid);
+    const newerRowid = await rowidFor(ctx.db, newerOut.result.episode_uid);
+    const olderRowid = await rowidFor(ctx.db, olderUid);
     const edge = await ctx.db.executeGet<{ rowid: number }>(`SELECT rowid FROM edge WHERE src = ? AND dst = ? AND rel = 'SAME_AS' AND t_expired IS NULL`, [newerRowid, olderRowid]);
     expect(edge).toBeDefined();
 
-    const olderNode = await ctx.db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [olderUid])!;
+    const olderNode = (await ctx.db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [olderUid]))!;
     expect(olderNode.t_invalid).not.toBeNull(); // cosine >= 0.95 → invalidated
   });
 });
@@ -325,32 +326,33 @@ describe('applyEmbedding — node lifecycle between phases', () => {
     expect('code' in a).toBe(false);
     const out = await a as PhaseAOutcome;
 
-    const inv = memoryInvalidate(ctx.db, { claim_uid: out.result.episode_uid, reason: 'superseded mid-flight' });
+    const inv = await memoryInvalidate(ctx.db, { claim_uid: out.result.episode_uid, reason: 'superseded mid-flight' });
     expect('ok' in inv && inv.ok).toBe(true);
 
     const vec = await embed(out.pending!.text);
-    const applied = await applyEmbedding(ctx.db, out.pending!, vec);
+    const applied = await applyEmbedding(ctx.db, out.pending!, vec, ctx.db.capabilities.nativeVectors, await vectorDialectFor(ctx.db));
     expect(applied.status).toBe('applied');
     expect(applied.near_dup).toBeNull(); // dead nodes never drive near-dup invalidation
-    expect(vecRowFor(ctx.db, out.pending!.rowid)).toBeDefined();
+    expect(await vecRowFor(ctx.db, out.pending!.rowid)).toBeDefined();
     // Invalidated nodes are EXCLUDED from the backlog (they may never embed).
-    expect(embedBacklogStats(ctx.db).count).toBe(0);
+    expect((await embedBacklogStats(ctx.db)).count).toBe(0);
   });
 
   it('rowid/uid mismatch (node gone) → status gone, nothing written', async () => {
     const vec = await embed('whatever');
-    const applied = await applyEmbedding(ctx.db, { uid: 'no-such-uid', rowid: 99_999, text: 'whatever' }, vec);
+    const applied = await applyEmbedding(ctx.db, { uid: 'no-such-uid', rowid: 99_999, text: 'whatever' }, vec, ctx.db.capabilities.nativeVectors, await vectorDialectFor(ctx.db));
     expect(applied.status).toBe('gone');
-    expect(vecRowFor(ctx.db, 99_999)).toBeUndefined();
+    expect(await vecRowFor(ctx.db, 99_999)).toBeNull();
   });
 
   it('double apply (pipeline/heal race) → second returns exists, no duplicate vec row', async () => {
     const a = memoryWritePhaseA(ctx.db, { content: 'raced by the heal pass', project_path: '/test/project' });
     const out = await a as PhaseAOutcome;
     const vec = await embed(out.pending!.text);
-    expect(applyEmbedding(ctx.db, out.pending!, vec).status).toBe('applied');
-    expect(applyEmbedding(ctx.db, out.pending!, vec).status).toBe('exists');
-    const rows = await ctx.db.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM vec_node WHERE node_id = ?', [out.pending!.rowid])!;
+    const vectorDialect = await vectorDialectFor(ctx.db);
+    expect((await applyEmbedding(ctx.db, out.pending!, vec, ctx.db.capabilities.nativeVectors, vectorDialect)).status).toBe('applied');
+    expect((await applyEmbedding(ctx.db, out.pending!, vec, ctx.db.capabilities.nativeVectors, vectorDialect)).status).toBe('exists');
+    const rows = (await ctx.db.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM vec_node WHERE node_id = ?', [out.pending!.rowid]))!;
     expect(rows.c).toBe(1);
   });
 });
@@ -369,7 +371,7 @@ describe('Phase-B crash recovery: embedBacklogStats + healMissingVectors', () =>
     const b = memoryWritePhaseA(ctx.db, { content: 'second orphan from a different write entirely', project_path: '/test/project' });
     const pendings = [(await a as PhaseAOutcome).pending!, (await b as PhaseAOutcome).pending!];
 
-    const sched = await schedulePendingEmbeds(wq, pendings, { logSink: (l) => logLines.push(l) });
+    const sched = await schedulePendingEmbeds(wq, pendings, { logSink: (l) => logLines.push(l), vectorDialect: await vectorDialectFor(ctx.db) });
     expect(sched.failed).toBe(2);
     expect(sched.applied).toBe(0);
     // Stderr observability: every Phase-B failure logs.
@@ -386,7 +388,7 @@ describe('Phase-B crash recovery: embedBacklogStats + healMissingVectors', () =>
     expect(heal.scanned).toBe(2);
     expect(heal.healed).toBe(2);
     expect(heal.failed).toBe(0);
-    expect(embedBacklogStats(ctx.db).count).toBe(0); // N→0
+    expect((await embedBacklogStats(ctx.db)).count).toBe(0); // N→0
   });
 
   // NC (documented negative control, repo convention): with the heal disabled,
@@ -397,15 +399,15 @@ describe('Phase-B crash recovery: embedBacklogStats + healMissingVectors', () =>
     const wq = await WriteQueue.forPath(ctx.dbPath);
     _setEmbedProviderForTest(new FailingProvider());
     const a = memoryWritePhaseA(ctx.db, { content: 'orphan that nobody heals', project_path: '/test/project' });
-    await schedulePendingEmbeds(wq, [(await a as PhaseAOutcome).pending!], { logSink: () => {} });
-    expect(embedBacklogStats(ctx.db).count).toBe(1);
+    await schedulePendingEmbeds(wq, [(await a as PhaseAOutcome).pending!], { logSink: () => {}, vectorDialect: await vectorDialectFor(ctx.db) });
+    expect((await embedBacklogStats(ctx.db)).count).toBe(1);
 
     _setEmbedProviderForTest(new DeterministicTestProvider());
     process.env['SOX_DISABLE_EMBED_HEAL'] = '1';
     const heal = await healMissingVectors(ctx.db, wq);
     expect(heal.disabled).toBe(true);
     expect(heal.healed).toBe(0);
-    expect(embedBacklogStats(ctx.db).count).toBe(1); // still orphaned
+    expect((await embedBacklogStats(ctx.db)).count).toBe(1); // still orphaned
   });
 });
 
@@ -426,6 +428,6 @@ describe('SOX_SYNC_EMBED kill-switch', () => {
     expect('episode_uid' in r).toBe(true);
     const wr = r as { enrichment?: { near_dup: { existing_uid: string } | null } };
     expect(wr.enrichment?.near_dup).not.toBeNull(); // synchronous E8 — pre-split behaviour
-    expect(embedBacklogStats(ctx.db).count).toBe(0); // vector landed before returning
+    expect((await embedBacklogStats(ctx.db)).count).toBe(0); // vector landed before returning
   });
 });

@@ -19,10 +19,8 @@ const RUN_REAL_EMBED =
 
 import {
   embed,
-  getActiveEmbedModel,
   getConfiguredEmbedBackend,
   getEmbedHealth,
-  getLastEmbedError,
   warmupEmbed,
   EMBED_DIM,
   _resetEmbedSingleton,

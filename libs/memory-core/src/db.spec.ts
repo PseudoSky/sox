@@ -17,23 +17,13 @@
  * regardless of whether the caller pre-expanded.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import type Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { openDb, openDbReadOnly, expandDbPath, stampStoreMeta, verifyStoreMeta, EStoreMismatch, STORE_META_KEYS } from './db.js';
+import { openDb, openDbReadOnly, expandDbPath, verifyStoreMeta, EStoreMismatch, STORE_META_KEYS } from './db.js';
 import { _resetEmbedSingleton, _setEmbedProviderForTest, EMBED_DIM, getActiveEmbedModel } from './embed.js';
 import { DeterministicTestProvider } from './embed-test-provider.js';
 
-/**
- * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
- * These specs' own verification reads use raw SQL against the sqlite backend,
- * so unwrap once here rather than rewriting every assertion.
- */
-function raw(a: StoreAdapter): Database.Database {
-  return a.unwrap() as Database.Database;
-}
 
 
 // Embedding is provided by the deterministic test provider installed in vitest.setup.ts —
@@ -103,7 +93,7 @@ describe('openDb — BL-41 no literal ~ dir is created', () => {
 
   it('openDbReadOnly also expands ~ (opens the same expanded file)', async () => {
     // Create the file first via openDb, then re-open read-only with the tilde form.
-    openDb('~/.memory/ro.db').close();
+    (await openDb('~/.memory/ro.db')).close();
     const ro = await openDbReadOnly('~/.memory/ro.db');
     ro.close();
     expect(fs.existsSync(path.join(tmpHome, '.memory', 'ro.db'))).toBe(true);
@@ -156,7 +146,7 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     const db = await openDb(dbPath);
     // verifyStoreMeta is called inside stampStoreMeta inside openDb
     // It should not throw
-    expect(() => verifyStoreMeta(db)).not.toThrow();
+    await expect(verifyStoreMeta(db)).resolves.not.toThrow();
     db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
@@ -169,7 +159,7 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     // Manually corrupt the schema_version
     await db.executeRun('UPDATE sox_store_meta SET value = ? WHERE key = ?', ['99', STORE_META_KEYS.SCHEMA_VERSION]);
 
-    expect(() => verifyStoreMeta(db)).toThrow(EStoreMismatch);
+    await expect(verifyStoreMeta(db)).rejects.toThrow(EStoreMismatch);
     db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
@@ -182,7 +172,7 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     // Corrupt the embed_dimensions
     await db.executeRun('UPDATE sox_store_meta SET value = ? WHERE key = ?', ['999', STORE_META_KEYS.EMBED_DIMENSIONS]);
 
-    expect(() => verifyStoreMeta(db)).toThrow(EStoreMismatch);
+    await expect(verifyStoreMeta(db)).rejects.toThrow(EStoreMismatch);
     db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });

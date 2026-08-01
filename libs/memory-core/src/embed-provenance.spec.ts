@@ -33,8 +33,6 @@ import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type Database from 'better-sqlite3';
-import type { EmbedRole } from '@adhd/sox-embedding-provider';
 import {
   openDb,
   migrateAddColumn,
@@ -54,6 +52,7 @@ import {
   _resetEmbedPipelineMetricsForTest,
 } from './embed-pipeline.js';
 import { WriteQueue } from './write-queue.js';
+import { vectorDialectFor } from './dialect.js';
 import { memoryGetStats } from './stats.js';
 import {
   _setEmbedProviderForTest,
@@ -63,14 +62,6 @@ import {
 import { DeterministicTestProvider } from './embed-test-provider.js';
 import { embed, vecToJson } from './embed.js';
 
-/**
- * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
- * These specs' own verification reads use raw SQL against the sqlite backend,
- * so unwrap once here rather than rewriting every assertion.
- */
-function raw(a: StoreAdapter): Database.Database {
-  return a.unwrap() as Database.Database;
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -83,7 +74,7 @@ async function tmpDb(): Promise<{ dir: string; dbPath: string; db: StoreAdapter;
     dbPath,
     db,
     cleanup: () => {
-      try { if (raw(db).open) db.close(); } catch { /* already closed */ }
+      db.close().catch(() => { /* already closed */ });
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
@@ -189,14 +180,14 @@ describe('BL-88 stamp on write path — applyEmbedding stamps embed_model', () =
     const a = await phaseA(ctx.db, 'write path stamping test content');
 
     // Before Phase B — embed_model is NULL (Phase A never touches it).
-    const beforeApply = readEmbedModel(ctx.db, a.result.episode_uid);
+    const beforeApply = await readEmbedModel(ctx.db, a.result.episode_uid);
     expect(beforeApply).toBeNull();
 
-    const res = await schedulePendingEmbeds(wq, [a.pending!]);
+    const res = await schedulePendingEmbeds(wq, [a.pending!], { vectorDialect: await vectorDialectFor(ctx.db) });
     expect(res.applied).toBe(1);
 
     // After Phase B — embed_model is stamped with the active model.
-    const afterApply = readEmbedModel(ctx.db, a.result.episode_uid);
+    const afterApply = await readEmbedModel(ctx.db, a.result.episode_uid);
     expect(afterApply).toBe(getActiveEmbedModel());
   });
 
@@ -205,7 +196,7 @@ describe('BL-88 stamp on write path — applyEmbedding stamps embed_model', () =
     expect('code' in result).toBe(false);
     const uid = (result as { episode_uid: string }).episode_uid;
 
-    const stamp = readEmbedModel(ctx.db, uid);
+    const stamp = await readEmbedModel(ctx.db, uid);
     expect(stamp).toBe(getActiveEmbedModel());
   });
 
@@ -217,17 +208,17 @@ describe('BL-88 stamp on write path — applyEmbedding stamps embed_model', () =
 
     // Apply the vector — should still stamp embed_model (the row is kept bi-temporally).
     const vec = await embed(a.pending!.text);
-    const applyResult = await applyEmbedding(ctx.db, a.pending!, vec);
+    const applyResult = await applyEmbedding(ctx.db, a.pending!, vec, ctx.db.capabilities.nativeVectors, await vectorDialectFor(ctx.db));
     expect(applyResult.status).toBe('applied');
 
-    const stamp = readEmbedModel(ctx.db, a.result.episode_uid);
+    const stamp = await readEmbedModel(ctx.db, a.result.episode_uid);
     expect(stamp).toBe(getActiveEmbedModel());
   });
 
   it('applyEmbedding does NOT stamp when the rowid is gone (status: gone)', async () => {
     const vec = await embed('some content');
     const bogusPending = { uid: 'no-such-uid', rowid: 99_999, text: 'some content' };
-    const result = await applyEmbedding(ctx.db, bogusPending, vec);
+    const result = await applyEmbedding(ctx.db, bogusPending, vec, ctx.db.capabilities.nativeVectors, await vectorDialectFor(ctx.db));
     expect(result.status).toBe('gone');
     // No row to check — just ensure no error thrown.
   });
@@ -236,15 +227,15 @@ describe('BL-88 stamp on write path — applyEmbedding stamps embed_model', () =
     const a = await phaseA(ctx.db, 'exists check content');
     const vec = await embed(a.pending!.text);
     // First apply — stamps.
-    applyEmbedding(ctx.db, a.pending!, vec);
-    const firstStamp = readEmbedModel(ctx.db, a.result.episode_uid);
+    await applyEmbedding(ctx.db, a.pending!, vec, ctx.db.capabilities.nativeVectors, await vectorDialectFor(ctx.db));
+    const firstStamp = await readEmbedModel(ctx.db, a.result.episode_uid);
     // The stamp must be the active model (not null — the UPDATE ran).
     expect(firstStamp).toBe(getActiveEmbedModel());
 
     // Second apply — status 'exists'; the stamp is unchanged.
-    const secondResult = await applyEmbedding(ctx.db, a.pending!, vec);
+    const secondResult = await applyEmbedding(ctx.db, a.pending!, vec, ctx.db.capabilities.nativeVectors, await vectorDialectFor(ctx.db));
     expect(secondResult.status).toBe('exists');
-    const secondStamp = readEmbedModel(ctx.db, a.result.episode_uid);
+    const secondStamp = await readEmbedModel(ctx.db, a.result.episode_uid);
     // The first stamp survives; no corruption.
     expect(secondStamp).toBe(firstStamp);
   });
@@ -260,14 +251,14 @@ describe('BL-88 stamp on update path — memoryUpdate content change re-embeds a
     const uid = (writeResult as { episode_uid: string }).episode_uid;
 
     // Verify initial stamp.
-    expect(readEmbedModel(ctx.db, uid)).toBe(getActiveEmbedModel());
+    expect(await readEmbedModel(ctx.db, uid)).toBe(getActiveEmbedModel());
 
     // Now update the content (triggers re-embed via the sync path).
     const updateResult = await memoryUpdate(ctx.db, { uid, content: 'updated content different' });
     expect('code' in updateResult).toBe(false);
 
     // embed_model still stamped (same model; the stamp is re-written by applyEmbedding).
-    const stamp = readEmbedModel(ctx.db, uid);
+    const stamp = await readEmbedModel(ctx.db, uid);
     expect(stamp).toBe(getActiveEmbedModel());
     expect((updateResult as { reembedded: boolean }).reembedded).toBe(true);
   });
@@ -276,7 +267,7 @@ describe('BL-88 stamp on update path — memoryUpdate content change re-embeds a
     const writeResult = await memoryWrite(ctx.db, { content: 'content to keep', project_path: '/test/project' });
     expect('code' in writeResult).toBe(false);
     const uid = (writeResult as { episode_uid: string }).episode_uid;
-    const beforeStamp = readEmbedModel(ctx.db, uid);
+    const beforeStamp = await readEmbedModel(ctx.db, uid);
     // Before stamp should be the active model (set by memoryWrite's Phase B).
     expect(beforeStamp).toBe(getActiveEmbedModel());
 
@@ -286,7 +277,7 @@ describe('BL-88 stamp on update path — memoryUpdate content change re-embeds a
     expect((updateResult as { reembedded: boolean }).reembedded).toBe(false);
 
     // embed_model should be unchanged.
-    expect(readEmbedModel(ctx.db, uid)).toBe(beforeStamp);
+    expect(await readEmbedModel(ctx.db, uid)).toBe(beforeStamp);
   });
 });
 
@@ -295,16 +286,16 @@ describe('BL-88 stamp on update path — memoryUpdate content change re-embeds a
 describe('BL-88 stamp on heal path — healMissingVectors stamps embed_model', () => {
   it('healMissingVectors stamps embed_model on previously un-embedded orphan rows', async () => {
     const uid = 'orphan-heal-test';
-    insertOrphan(ctx.db, uid, 'orphan content for healing');
+    await insertOrphan(ctx.db, uid, 'orphan content for healing');
     // Before heal — embed_model is NULL.
-    expect(readEmbedModel(ctx.db, uid)).toBeNull();
+    expect(await readEmbedModel(ctx.db, uid)).toBeNull();
 
     const wq = await WriteQueue.forPath(ctx.dbPath);
     const healResult = await healMissingVectors(ctx.db, wq);
     expect(healResult.healed).toBe(1);
 
     // After heal — embed_model is stamped.
-    const stamp = readEmbedModel(ctx.db, uid);
+    const stamp = await readEmbedModel(ctx.db, uid);
     expect(stamp).toBe(getActiveEmbedModel());
   });
 });
@@ -318,7 +309,7 @@ describe('BL-88 stats — embed_provenance field in memoryGetStats', () => {
     await memoryWrite(ctx.db, { content: 'second stamped episode', project_path: '/test/project' });
 
     // Insert a raw orphan with no embed_model (unstamped).
-    insertOrphan(ctx.db, 'unstamped-1', 'pre-bl88 orphan content');
+    await insertOrphan(ctx.db, 'unstamped-1', 'pre-bl88 orphan content');
 
     const stats = await memoryGetStats(ctx.db, {}, []);
     expect(stats.embed_provenance).toBeDefined();
@@ -330,12 +321,12 @@ describe('BL-88 stats — embed_provenance field in memoryGetStats', () => {
   it('stale_vector_count counts live episodes with embed_model != active model', async () => {
     const activeModel = getActiveEmbedModel();
     // Insert one node with the active model (NOT stale).
-    insertEmbeddedWith(ctx.db, 'current-1', 'current model content', activeModel);
+    await insertEmbeddedWith(ctx.db, 'current-1', 'current model content', activeModel);
     // Insert two nodes with a stale model.
-    insertEmbeddedWith(ctx.db, 'stale-1', 'stale model content 1', 'old-model-v1');
-    insertEmbeddedWith(ctx.db, 'stale-2', 'stale model content 2', 'old-model-v2');
+    await insertEmbeddedWith(ctx.db, 'stale-1', 'stale model content 1', 'old-model-v1');
+    await insertEmbeddedWith(ctx.db, 'stale-2', 'stale model content 2', 'old-model-v2');
     // Insert one node with NULL embed_model (must NOT be counted as stale).
-    insertOrphan(ctx.db, 'null-model', 'no model stamp content');
+    await insertOrphan(ctx.db, 'null-model', 'no model stamp content');
 
     const stats = await memoryGetStats(ctx.db, {}, []);
     // 3 stamped (current-1, stale-1, stale-2); 1 unstamped (null-model).
@@ -385,11 +376,11 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
     process.env['SOX_HEAL_STALE_VECTORS'] = '1';
     const activeModel = getActiveEmbedModel();
     // Insert a node with a stale model stamp.
-    const staleRowid = insertEmbeddedWith(ctx.db, 'stale-node', 'stale node content for heal', 'old-model-v1');
+    const staleRowid = await insertEmbeddedWith(ctx.db, 'stale-node', 'stale node content for heal', 'old-model-v1');
     expect(staleRowid).toBeGreaterThan(0);
 
     // Insert a node with the current model (must NOT be re-embedded).
-    insertEmbeddedWith(ctx.db, 'current-node', 'current node content', activeModel);
+    await insertEmbeddedWith(ctx.db, 'current-node', 'current node content', activeModel);
 
     const wq = await WriteQueue.forPath(ctx.dbPath);
     const result = await healStaleVectors(ctx.db, wq);
@@ -400,18 +391,18 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
     expect(result.failed).toBe(0);
 
     // The stale node's embed_model is now the active model.
-    const stamp = readEmbedModel(ctx.db, 'stale-node');
+    const stamp = await readEmbedModel(ctx.db, 'stale-node');
     expect(stamp).toBe(activeModel);
 
     // The current node is untouched.
-    const currentStamp = readEmbedModel(ctx.db, 'current-node');
+    const currentStamp = await readEmbedModel(ctx.db, 'current-node');
     expect(currentStamp).toBe(activeModel);
   });
 
   it('does NOT touch NULL-model rows (pre-provenance rows are not stale)', async () => {
     process.env['SOX_HEAL_STALE_VECTORS'] = '1';
     // Raw orphan — no embed_model, no vec row.
-    insertOrphan(ctx.db, 'null-model-orphan', 'no model stamp');
+    await insertOrphan(ctx.db, 'null-model-orphan', 'no model stamp');
 
     const wq = await WriteQueue.forPath(ctx.dbPath);
     const result = await healStaleVectors(ctx.db, wq);
@@ -423,7 +414,7 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
     process.env['SOX_HEAL_STALE_VECTORS'] = '1';
     // Insert 5 stale nodes.
     for (let i = 0; i < 5; i++) {
-      insertEmbeddedWith(ctx.db, `stale-bounded-${i}`, `stale content ${i}`, 'old-model-v0');
+      await insertEmbeddedWith(ctx.db, `stale-bounded-${i}`, `stale content ${i}`, 'old-model-v0');
     }
 
     const wq = await WriteQueue.forPath(ctx.dbPath);
@@ -439,13 +430,13 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
   it('stamps the new model after re-embedding the stale row', async () => {
     process.env['SOX_HEAL_STALE_VECTORS'] = '1';
     const activeModel = getActiveEmbedModel();
-    insertEmbeddedWith(ctx.db, 'stamp-after-heal', 'verify stamp content', 'stale-model-xyz');
+    await insertEmbeddedWith(ctx.db, 'stamp-after-heal', 'verify stamp content', 'stale-model-xyz');
 
     const wq = await WriteQueue.forPath(ctx.dbPath);
     const result = await healStaleVectors(ctx.db, wq);
     expect(result.healed).toBe(1);
 
-    const stamp = readEmbedModel(ctx.db, 'stamp-after-heal');
+    const stamp = await readEmbedModel(ctx.db, 'stamp-after-heal');
     expect(stamp).toBe(activeModel);
   });
 });

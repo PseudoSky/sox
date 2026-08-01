@@ -4,12 +4,11 @@
  * One happy-path test per new function using a seeded in-memory database.
  * Tests that each function returns the expected shape without throwing.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import Database from 'better-sqlite3';
 import { openDb } from './db.js';
 import { memoryLinkNode } from './link.js';
 import { memoryGetRelated } from './related.js';
@@ -23,14 +22,6 @@ import { memoryListProjects } from './projects.js';
 import { memoryCurate } from './curate.js';
 import { memoryGetStats } from './stats.js';
 
-/**
- * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
- * These specs' own verification reads use raw SQL against the sqlite backend,
- * so unwrap once here rather than rewriting every assertion.
- */
-function raw(a: StoreAdapter): Database.Database {
-  return a.unwrap() as Database.Database;
-}
 
 // Mock embed to avoid real ONNX model download (these tests assert extension function shapes, not embedding quality)
 
@@ -127,7 +118,7 @@ describe('memoryGetRelated (B2)', () => {
       const db = await createDb(path.join(dir, 't.db'));
       const uidA = await seedEpisode(await db);
       const uidB = await seedEpisode(await db);
-      seedEdge(await db, await rowidForUid(await db, uidA), await rowidForUid(await db, uidB), 'RELATES_TO');
+      await seedEdge(await db, await rowidForUid(await db, uidA), await rowidForUid(await db, uidB), 'RELATES_TO');
 
       const result = await memoryGetRelated(await db, { uid: uidA });
 
@@ -149,8 +140,8 @@ describe('memoryGetEntityEpisodes (B2)', () => {
     try {
       const db = await createDb(path.join(dir, 't.db'));
       const epUid = await seedEpisode(await db);
-      const entityUid = seedEntity(await db, 'test-entity');
-      seedEdge(await db, await rowidForUid(await db, epUid), await rowidForUid(await db, await entityUid), 'MENTIONS');
+      const entityUid = await seedEntity(await db, 'test-entity');
+      await seedEdge(await db, await rowidForUid(await db, epUid), await rowidForUid(await db, entityUid), 'MENTIONS');
 
       const result = await memoryGetEntityEpisodes(await db, { entity_uid: entityUid });
 
@@ -173,7 +164,7 @@ describe('memoryListEntities (B2)', () => {
       const db = await createDb(path.join(dir, 't.db'));
       const epUid = await seedEpisode(await db);
       const entityUid = seedEntity(await db, 'ranked-entity');
-      seedEdge(await db, await rowidForUid(await db, epUid), await rowidForUid(await db, await entityUid), 'MENTIONS');
+      await seedEdge(await db, await rowidForUid(await db, epUid), await rowidForUid(await db, await entityUid), 'MENTIONS');
 
       const result = await memoryListEntities(await db, {});
 
@@ -196,7 +187,7 @@ describe('memoryGetNearDuplicates (B2)', () => {
       const db = await createDb(path.join(dir, 't.db'));
       const uidA = await seedEpisode(await db);
       const uidB = await seedEpisode(await db);
-      seedEdge(await db, await rowidForUid(await db, uidA), await rowidForUid(await db, uidB), 'SAME_AS');
+      await seedEdge(await db, await rowidForUid(await db, uidA), await rowidForUid(await db, uidB), 'SAME_AS');
 
       const result = await memoryGetNearDuplicates(await db, {});
 
@@ -412,8 +403,8 @@ describe('memoryCurate drop-episodes (B2)', () => {
       // Seed two episodes and an edge between them
       const uidA = await seedEpisode(await db, { content: 'ep A' });
       const uidB = await seedEpisode(await db, { content: 'ep B' });
-      const rowidA = rowidForUid(await db, uidA);
-      const rowidB = rowidForUid(await db, uidB);
+      const rowidA = await rowidForUid(await db, uidA);
+      const rowidB = await rowidForUid(await db, uidB);
 
       // Insert a vec_node row for uidA
       await db.executeRun('INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)', [rowidA, JSON.stringify(new Array(768).fill(0.1))]);
@@ -423,6 +414,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       const result = await memoryCurate(await db, { op: 'drop-episodes', uids: [uidA] });
 
       expect(result.op).toBe('drop-episodes');
+      if (result.op !== 'drop-episodes' || !('deleted' in result)) throw new Error('expected drop-episodes result');
       expect(result.deleted).toBe(1);
       expect(result.cascaded.vec_node).toBe(1);
       expect(result.cascaded.edges).toBe(1);
@@ -455,6 +447,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
 
       // Only the live one should be deleted
       expect(result.op).toBe('drop-episodes');
+      if (result.op !== 'drop-episodes' || !('deleted' in result)) throw new Error('expected drop-episodes result');
       expect(result.deleted).toBe(1);
       expect(result.cascaded.vec_node).toBe(0);
       expect(result.cascaded.edges).toBe(0);
@@ -482,6 +475,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       });
 
       expect(result.op).toBe('drop-episodes');
+      if (result.op !== 'drop-episodes' || !('deleted' in result)) throw new Error('expected drop-episodes result');
       expect(result.deleted).toBe(0);
       expect(result.cascaded.vec_node).toBe(0);
       expect(result.cascaded.edges).toBe(0);

@@ -69,14 +69,6 @@ import { reembedStore } from './reembed.js';
 import { openDb } from './db.js';
 import { _resetEmbedSingleton, vecToJson } from './embed.js';
 
-/**
- * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
- * These specs' own verification reads use raw SQL against the sqlite backend,
- * so unwrap once here rather than rewriting every assertion.
- */
-function raw(a: StoreAdapter): Database.Database {
-  return a.unwrap() as Database.Database;
-}
 
 
 // ── Test lifecycle ────────────────────────────────────────────────────────────
@@ -290,7 +282,7 @@ describe('reembedStore — BL-92 mixed-model store (per-record embed_model)', ()
     // On a different, stale model — MUST be migrated.
     const staleRowid = insertEmbeddedNode(db, 'node-stale', 'stale model content', 'old-model-b', 0.99);
 
-    const beforeCurrentVec = Array.from(readVecNodeEmbedding(db, await currentRowid));
+    const beforeCurrentVec = Array.from(await readVecNodeEmbedding(db, await currentRowid));
     db.close();
 
     const logs: string[] = [];
@@ -314,15 +306,15 @@ describe('reembedStore — BL-92 mixed-model store (per-record embed_model)', ()
     const rawDb = await openDb(dbPath);
     try {
       // The stale record is migrated: new stamp + new (mock all-zero) vector.
-      expect(readNodeEmbedModel(rawDb, await staleRowid)).toBe(TARGET_MODEL);
-      const afterStaleVec = Array.from(readVecNodeEmbedding(rawDb, await staleRowid));
+      expect(await readNodeEmbedModel(rawDb, await staleRowid)).toBe(TARGET_MODEL);
+      const afterStaleVec = Array.from(await readVecNodeEmbedding(rawDb, await staleRowid));
       expect(afterStaleVec).toEqual(Array.from(new Float32Array(TARGET_DIM)));
 
       // The already-current record is untouched: same stamp, SAME vector bytes
       // (proves BL-92's over-migration failure mode is closed — no wasted
       // GPU/compute rewriting a vector that was already correct).
-      expect(readNodeEmbedModel(rawDb, await currentRowid)).toBe(TARGET_MODEL);
-      const afterCurrentVec = Array.from(readVecNodeEmbedding(rawDb, await currentRowid));
+      expect(await readNodeEmbedModel(rawDb, await currentRowid)).toBe(TARGET_MODEL);
+      const afterCurrentVec = Array.from(await readVecNodeEmbedding(rawDb, await currentRowid));
       expect(afterCurrentVec).toEqual(beforeCurrentVec);
       expect(afterCurrentVec[0]).toBeCloseTo(0.42, 5);
     } finally {
@@ -348,8 +340,8 @@ describe('reembedStore — BL-92 mixed-model store (per-record embed_model)', ()
     // extension, required to read back the vec_node virtual table's contents.
     const rawDb = await openDb(dbPath);
     try {
-      expect(readNodeEmbedModel(rawDb, await rowidA)).toBe(TARGET_MODEL);
-      expect(readNodeEmbedModel(rawDb, await rowidB)).toBe(TARGET_MODEL);
+      expect(await readNodeEmbedModel(rawDb, await rowidA)).toBe(TARGET_MODEL);
+      expect(await readNodeEmbedModel(rawDb, await rowidB)).toBe(TARGET_MODEL);
     } finally {
       rawDb.close();
     }
@@ -374,8 +366,8 @@ describe('reembedStore — BL-92 NULL embed_model handling', () => {
     // extension, required to read back the vec_node virtual table's contents.
     const rawDb = await openDb(dbPath);
     try {
-      expect(readNodeEmbedModel(rawDb, await nullRowid)).toBe(TARGET_MODEL);
-      const afterVec = Array.from(readVecNodeEmbedding(rawDb, await nullRowid));
+      expect(await readNodeEmbedModel(rawDb, await nullRowid)).toBe(TARGET_MODEL);
+      const afterVec = Array.from(await readVecNodeEmbedding(rawDb, await nullRowid));
       expect(afterVec).toEqual(Array.from(new Float32Array(TARGET_DIM)));
     } finally {
       rawDb.close();
@@ -397,7 +389,7 @@ describe('reembedStore — BL-92 NULL embed_model handling', () => {
     const rawDb = await openDb(dbPath);
     try {
       // The already-current row is confirmed untouched here too.
-      expect(readNodeEmbedModel(rawDb, await currentRowid)).toBe(TARGET_MODEL);
+      expect(await readNodeEmbedModel(rawDb, await currentRowid)).toBe(TARGET_MODEL);
     } finally {
       rawDb.close();
     }

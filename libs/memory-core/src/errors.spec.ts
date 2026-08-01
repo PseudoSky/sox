@@ -69,6 +69,7 @@ describe('Storage error taxonomy — CONTRACTS §B (WP-2)', () => {
         );
 
       expect(locked.ok).toBe(false);
+      if (locked.ok) throw new Error('expected the locked write to fail with E_BUSY');
       expect(locked.error.code).toBe('E_BUSY');
       expect(locked.error.retryable).toBe(true);
       expect(locked.error.retry_after_ms).toBe(250);
@@ -104,6 +105,7 @@ describe('Storage error taxonomy — CONTRACTS §B (WP-2)', () => {
       );
 
     expect(unlocked.ok).toBe(true);
+    if (!unlocked.ok) throw new Error('expected the unlocked write to succeed');
     expect(unlocked.value).toBe('ok');
   });
 

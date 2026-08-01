@@ -19,21 +19,11 @@ import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import Database from 'better-sqlite3';
-import * as sqliteVec from 'sqlite-vec';
 import { openDb } from './db.js';
 import { WriteQueue } from './write-queue.js';
 import { runCompactionPass, startCompactionTick, DEFAULT_COMPACTION_INTERVAL_MS } from './compaction.js';
 import { _resetEmbedSingleton } from './embed.js';
 
-/**
- * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
- * These specs' own verification reads use raw SQL against the sqlite backend,
- * so unwrap once here rather than rewriting every assertion.
- */
-function raw(a: StoreAdapter): Database.Database {
-  return a.unwrap() as Database.Database;
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

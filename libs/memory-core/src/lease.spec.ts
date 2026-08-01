@@ -16,13 +16,11 @@ import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import Database from 'better-sqlite3';
 import {
   acquireWriteLease,
   releaseWriteLease,
   closeDbWithLease,
   EWriterBusy,
-  getActiveLease,
   getAllActiveLeases,
   isLeaseHeld,
   _resetAllLeasesForTest,
@@ -135,13 +133,19 @@ describe('independent paths', () => {
 // ── 4. closeDbWithLease ────────────────────────────────────────────────────────
 
 describe('closeDbWithLease', () => {
-  it('creates a real DB, checkpoints, closes, and releases lease', () => {
+  it('creates a real DB, checkpoints, closes, and releases lease', async () => {
     const dbPath = tmpDbPath('closelease.db');
-    const db = new Database(dbPath);
+    // Build the adapter from a path (not a caller-owned handle) so closeDbWithLease's
+    // close() actually owns and closes the underlying connection — an adapter built
+    // from a caller-supplied Database instance deliberately leaves it open (it doesn't
+    // own it), so this test's "really closed" assertion needs the owning constructor.
+    const { createSqliteAdapter } = await import('@adhd/sox-store-adapter');
+    const adapter = createSqliteAdapter({ dbPath });
+    const db = adapter.unwrap();
     db.exec('CREATE TABLE IF NOT EXISTS t (x INTEGER)');
     db.exec('INSERT INTO t VALUES (42)');
 
-    closeDbWithLease(db, dbPath);
+    await closeDbWithLease(adapter, dbPath);
 
     // DB should be closed
     expect(() => db.exec('SELECT 1')).toThrow();

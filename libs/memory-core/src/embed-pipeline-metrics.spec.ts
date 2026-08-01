@@ -46,6 +46,7 @@ import {
 } from './embed-pipeline.js';
 import type { PendingEmbed } from './embed-pipeline.js';
 import { WriteQueue } from './write-queue.js';
+import { vectorDialectFor } from './dialect.js';
 import { _setEmbedProviderForTest, embed } from './embed.js';
 import { DeterministicTestProvider } from './embed-test-provider.js';
 
@@ -143,7 +144,7 @@ describe('time_to_vector_ms — recorded on the async path from the monotonic Ph
     // Clock seam (no sleeps): backdate the stamp by 5s — the recorded sample
     // must be ≥ 5000ms, proving apply_time − startedAtMs is what lands.
     a.pending!.startedAtMs = performance.now() - 5000;
-    const res = await schedulePendingEmbeds(wq, [a.pending!]);
+    const res = await schedulePendingEmbeds(wq, [a.pending!], { vectorDialect: await vectorDialectFor(ctx.adapter) });
     expect(res.applied).toBe(1);
 
     const m = getEmbedPipelineMetrics(ctx.dbPath)!;
@@ -175,11 +176,11 @@ describe('time_to_vector_ms — recorded on the async path from the monotonic Ph
     // Land the vector first (direct apply via transaction — the heal/pipeline race shape).
     const vec = await embed(a.pending!.text);
     const applyResult = await ctx.adapter.transaction(async (tx) => {
-      return applyEmbedding(tx, a.pending!, vec);
+      return applyEmbedding(tx, a.pending!, vec, ctx.adapter.capabilities.nativeVectors, await vectorDialectFor(ctx.adapter));
     });
     expect(applyResult.status).toBe('applied');
 
-    const res = await schedulePendingEmbeds(wq, [a.pending!]);
+    const res = await schedulePendingEmbeds(wq, [a.pending!], { vectorDialect: await vectorDialectFor(ctx.adapter) });
     expect(res.exists).toBe(1);
 
     const m = getEmbedPipelineMetrics(ctx.dbPath)!;
@@ -227,7 +228,7 @@ describe('monotonic counters — each outcome branch drives exactly its counter'
       text: 'whatever',
       startedAtMs: performance.now(),
     };
-    const res = await schedulePendingEmbeds(wq, [bogus]);
+    const res = await schedulePendingEmbeds(wq, [bogus], { vectorDialect: await vectorDialectFor(ctx.adapter) });
     expect(res.gone).toBe(1);
 
     const m = getEmbedPipelineMetrics(ctx.dbPath)!;
@@ -240,7 +241,7 @@ describe('monotonic counters — each outcome branch drives exactly its counter'
     _setEmbedProviderForTest(new FailingProvider());
 
     const a = await phaseA(ctx.adapter, 'first doomed pipeline embed');
-    const sched = await schedulePendingEmbeds(wq, [a.pending!], { logSink: () => {} });
+    const sched = await schedulePendingEmbeds(wq, [a.pending!], { logSink: () => {}, vectorDialect: await vectorDialectFor(ctx.adapter) });
     expect(sched.failed).toBe(1);
 
     const heal = await healMissingVectors(ctx.adapter, wq, { logSink: () => {} });
@@ -264,7 +265,7 @@ describe('per-store keying (mirrors WriteQueue.metricsForPath) + snapshot purity
     try {
       const wqA = await WriteQueue.forPath(ctx.dbPath);
       const a = await phaseA(ctx.adapter, 'store A episode about lighthouse optics');
-      await schedulePendingEmbeds(wqA, [a.pending!]);
+      await schedulePendingEmbeds(wqA, [a.pending!], { vectorDialect: await vectorDialectFor(ctx.adapter) });
 
       // Store A has activity; store B has NONE — and stays null (honest:
       // no Phase-B activity for that store in this process).
@@ -273,7 +274,7 @@ describe('per-store keying (mirrors WriteQueue.metricsForPath) + snapshot purity
 
       const wqB = await WriteQueue.forPath(other.dbPath);
       const b = await memoryWritePhaseA(other.adapter, { content: 'store B episode about tidal harmonics', project_path: '/test/project' });
-      await schedulePendingEmbeds(wqB, [(b as PhaseAOutcome).pending!]);
+      await schedulePendingEmbeds(wqB, [(b as PhaseAOutcome).pending!], { vectorDialect: await vectorDialectFor(other.adapter) });
 
       const mA = getEmbedPipelineMetrics(ctx.dbPath)!;
       const mB = getEmbedPipelineMetrics(other.dbPath)!;
@@ -287,7 +288,7 @@ describe('per-store keying (mirrors WriteQueue.metricsForPath) + snapshot purity
   it('getEmbedPipelineMetrics is pure — repeated snapshots are identical and mutation-safe', async () => {
     const wq = await WriteQueue.forPath(ctx.dbPath);
     const a = await phaseA(ctx.adapter, 'purity check episode content');
-    await schedulePendingEmbeds(wq, [a.pending!]);
+    await schedulePendingEmbeds(wq, [a.pending!], { vectorDialect: await vectorDialectFor(ctx.adapter) });
 
     const m1 = getEmbedPipelineMetrics(ctx.dbPath)!;
     const m2 = getEmbedPipelineMetrics(ctx.dbPath)!;
@@ -310,7 +311,7 @@ describe('pipeline applies are apply-kind queue tasks (write_latency_ms stays ho
     const outcome = await wq.enqueue('memory_write', async (qdb) => {
       return memoryWritePhaseA(qdb, { content: 'kind separation end to end proof', project_path: '/test/project' });
     });
-    await schedulePendingEmbeds(wq, [(outcome as PhaseAOutcome).pending!]);
+    await schedulePendingEmbeds(wq, [(outcome as PhaseAOutcome).pending!], { vectorDialect: await vectorDialectFor(ctx.adapter) });
 
     const c = wq.getMetrics().counters;
     expect(c.write_tasks_completed).toBe(1);
@@ -325,7 +326,7 @@ describe('embed_throughput_per_sec — rolling 60s window', () => {
   it('records throughput from pipeline completions', async () => {
     const wq = await WriteQueue.forPath(ctx.dbPath);
     const a = await phaseA(ctx.adapter, 'throughput sample one');
-    await schedulePendingEmbeds(wq, [a.pending!]);
+    await schedulePendingEmbeds(wq, [a.pending!], { vectorDialect: await vectorDialectFor(ctx.adapter) });
 
     const m = getEmbedPipelineMetrics(ctx.dbPath)!;
     expect(m.embed_throughput_per_sec).toBeGreaterThan(0);

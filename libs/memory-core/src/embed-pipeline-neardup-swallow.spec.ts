@@ -37,10 +37,10 @@ import { openDb } from './db.js';
 import { memoryWritePhaseA } from './write.js';
 import type { PhaseAOutcome } from './write.js';
 import { applyEmbedding } from './embed-pipeline.js';
+import { vectorDialectFor } from './dialect.js';
 import { _setEmbedProviderForTest, embed } from './embed.js';
 import { DeterministicTestProvider } from './embed-test-provider.js';
 import {
-  log,
   currentLogFilePath,
   _resetTelemetryForTest,
   _flushTelemetryForTest,
@@ -136,7 +136,10 @@ describe('applyEmbedding — near-dup failures are no longer a silent swallow', 
     const pending = (r as PhaseAOutcome).pending!;
 
     const vec = await embed(pending.text);
-    const result = await ctx.adapter.transaction(async (tx) => applyEmbedding(tx, pending, vec));
+    const vectorDialect = await vectorDialectFor(ctx.adapter);
+    const result = await ctx.adapter.transaction(async (tx) =>
+      applyEmbedding(tx, pending, vec, ctx.adapter.capabilities.nativeVectors, vectorDialect),
+    );
 
     // The near-dup failure must NOT prevent the vector from landing — the
     // apply still succeeds; only near-dup detection degrades.

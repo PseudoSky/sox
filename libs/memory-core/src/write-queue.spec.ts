@@ -108,11 +108,12 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
     const secondResult = await queue
       .enqueue('overflow', () => 'should not run')
       .then(
-        (v) => ({ ok: true, value: v }),
-        (err) => ({ ok: false, error: err }),
+        (v): { ok: true; value: string } => ({ ok: true, value: v }),
+        (err): { ok: false; error: unknown } => ({ ok: false, error: err }),
       );
 
     expect(secondResult.ok).toBe(false);
+    if (secondResult.ok) throw new Error('expected the overflow enqueue to be rejected');
     expect((secondResult.error as { code: string }).code).toBe('E_BUSY');
 
     await slowPromise;
