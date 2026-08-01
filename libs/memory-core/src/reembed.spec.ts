@@ -74,14 +74,25 @@ import { _resetEmbedSingleton, vecToJson } from './embed.js';
 // ── Test lifecycle ────────────────────────────────────────────────────────────
 
 let tmpDirs: string[] = [];
+let priorAdapterEnv: string | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
   _resetEmbedSingleton();
+  // This suite reads/writes vec_node directly via raw SQL (insertEmbeddedNode,
+  // readVecNodeEmbedding) and inspects the on-disk sqlite_master for a
+  // vec_<model> virtual table (vectorTableExists) via a raw better-sqlite3
+  // handle — sqlite-vec (better-sqlite3) semantics, not Turso's. The factory
+  // default is now STORE_ADAPTER=turso; pin sqlite explicitly, same
+  // convention as every other adapter-sensitive spec.
+  priorAdapterEnv = process.env['STORE_ADAPTER'];
+  process.env['STORE_ADAPTER'] = 'sqlite';
 });
 afterEach(() => {
   _resetEmbedSingleton();
   for (const d of tmpDirs) removeTempDir(d);
   tmpDirs = [];
+  if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+  else process.env['STORE_ADAPTER'] = priorAdapterEnv;
 });
 
 async function freshDb(): Promise<{ db: StoreAdapter; dbPath: string }> {
