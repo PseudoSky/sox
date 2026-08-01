@@ -2,6 +2,36 @@
 
 ---
 
+## [Unreleased] — BL-340, BL-325, BL-395: memory-core specs typechecked and made runtime-green after the StoreAdapter async migration
+
+**BL-340 — a `typecheck-tests` gate now exists, and it is real.** `libs/memory-core/tsconfig.typecheck.json` (and every other project's) excluded `*.spec.ts`/`*.test.ts` — spec files were never typechecked, which is exactly how BL-325's 18-file missing-`await` regression shipped undetected until the suite actually ran. Added a `typecheck-tests` nx target per project, driving a dedicated `tsconfig.typecheck-tests.json` that `include`s `src/**/*.ts` (a spec can't be checked without also checking what it imports) with `module: ESNext` / `moduleResolution: bundler` (vitest runs specs as ESM; the chaos specs use `import.meta`, which the lib config's node10 resolution rejects). Kept separate from `typecheck` so a spec-only failure doesn't get conflated with a production-code failure in CI triage.
+
+```
+npx nx run memory-core:typecheck-tests   # tsc -p tsconfig.typecheck-tests.json --noEmit
+```
+
+Red→green watched directly, not taken on trust: appending `const __probe: number = "not a number";` to a spec file fails the target with `error TS2322`; removing it returns to green. (Caution for anyone re-measuring by hand: `tsc` emits ANSI color codes *between* `error` and `TS`, so `grep -cE "error TS"` silently returns 0 on a genuinely failing run — match `Found [0-9]+ error`, or just check the exit code.)
+
+**BL-325 — all 37 memory-core runtime failures fixed; two shared root causes, not one.**
+
+1. **Missing `STORE_ADAPTER=sqlite` pin (24 of 37 failures, 8 files).** `createStoreAdapter`'s factory default became `STORE_ADAPTER || 'turso'` as part of the TursoAdapter go-live. `write-queue.spec.ts`, `write-queue-backpressure.spec.ts`, `reembed.spec.ts`, `write.spec.ts`, `write-pipeline.spec.ts`, `errors.spec.ts`, `concurrency-harness.spec.ts`, `chaos/queue-overflow.chaos.spec.ts`, and one describe block in `update.spec.ts` never pinned an adapter, so they silently got Turso — whose `needsWriteSerialization: false` flips `WriteQueue._noop = true`, bypassing the queue's own serialization entirely. FIFO ordering, the size cap, the deadline guard, and the WAL-checkpoint timer all became vacuous no-ops under test, while the assertions kept reading as failures rather than "the thing under test never ran." Fixed by pinning `STORE_ADAPTER='sqlite'` in each affected suite's `beforeEach`/`afterEach`, matching the convention already used by ~10 other adapter-sensitive specs in the same package.
+2. **`enrich.spec.ts` (6 failures) — a genuine schema-drift defect, confirmed, not guessed.** Its hand-maintained `MINIMAL_DDL` schema replica was missing `CREATE UNIQUE INDEX ix_edge_unique ON edge(src, dst, rel)`, which `materializeClusters()`'s `INSERT ... ON CONFLICT(src, dst, rel) DO UPDATE` MEMBER_OF-edge upsert requires — SQLite rejects that clause at prepare time without a matching unique index. Confirmed (not assumed) by `cluster-subset.spec.ts` already carrying the identical index with a comment citing this exact cause; only `enrich.spec.ts`'s copy had drifted.
+
+**Two real product bugs found and fixed along the way (not test-only patches):**
+- `enrich.ts`'s `enrichOnWrite` — its direct-SQL rewrite (`65171ad`, TursoAdapter go-live) replaced `GraphBackend.touch()`, which wrote `tags.length > 0 ? JSON.stringify(tags) : null`. The rewrite dropped that length guard, so every untagged write got the literal string `'[]'` in `node.tags` instead of `NULL`. Restored the guard.
+- `compaction.spec.ts` — `startCompactionTick`'s `setInterval` callback fires `runCompactionPass` fire-and-forget, and every `StoreAdapter` call inside it is `async` now (on both backends). The test's sync `vi.advanceTimersByTime()` fired the interval but never drained the microtasks the async body then queued, so the log-line assertion raced an empty log. Switched to `vi.advanceTimersByTimeAsync()`.
+- `recall-live-incident.spec.ts` — the Turso FTS-dialect test asserted the raw, untokenized query string as the bound `fts_match` param. Stale relative to BL-367 (shipped earlier on this branch): `FTSDialect.buildMatchQuery` deliberately tokenizes into an explicit `"tok1" OR "tok2"` form for both dialects. Updated the assertion to match the documented, already-correct behavior.
+
+**BL-395 — `memoryWritePhaseA`'s "fully synchronous" contract, filed and resolved same-day.** The one remaining failure after the above: `write-pipeline.spec.ts` asserted `expect(memoryWritePhaseA(...)).not.toBeInstanceOf(Promise)`. Traced to commit `dbd874f` ("turso adapter compatibility"), which made `memoryWritePhaseA` `async function` for Turso's Promise-based `.get()`/`.run()`. Root cause runs deeper than that one commit: `SqliteAdapterImpl.transaction()` is *itself* `async` (`sqlite-adapter.ts:245`), so any function calling `adapter.transaction()` is unavoidably async on **both** backends under the current `StoreAdapter` interface — this cannot be reverted per-backend. Replaced the dead assertion with the invariant it was actually a proxy for: Phase A makes **zero calls to the embedding provider** while holding the WriteQueue slot (the entire basis of the two-phase write split), checked via the same `getProviderCallCount()` seam `recall.ts` already uses for its own zero-network-calls guard. Corrected `memoryWritePhaseA`'s docstring, which still claimed "no awaits." Fixing this also resolved a "database connection is not open" unhandled rejection in the *following* test — the old test's un-awaited `memoryWritePhaseA(...)` call left a dangling promise that fired after the next test's `afterEach` had already closed the DB.
+
+**Verified, on a clean tree, with 0 known failures:**
+```
+npx nx run-many -t lint,typecheck,test -p memory-core   # 43 test files, 491 passed, 8 skipped, 0 failed
+npx nx run memory-core:typecheck-tests                  # pass
+```
+
+---
+
 ## [Unreleased] — BL-367: cross-backend recall parity — attributed and fixed, not guessed at
 
 `recall-parity.test.ts` asserts sqlite and turso return ≥80% overlapping `memoryRecall` results for
