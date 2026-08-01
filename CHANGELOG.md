@@ -2,6 +2,56 @@
 
 ---
 
+## [Unreleased] — BL-372: `sox service restart` — a deploy verb that refuses to report success it hasn't verified
+
+### BL-372 (HIGH) — restarting the service did NOT deploy new code: the backend survived as an orphan and kept serving the old bundle
+
+`launchctl kickstart -k` restarts the front-shim service-proxy (§9.5), but the proxy deliberately
+keeps its backend alive across restarts for zero-downtime — so a bare kickstart left the backend
+running as a `PPID 1` orphan still executing the OLD bundle. Every check an operator would plausibly
+run was green (build succeeded, `kickstart` exit 0, unit reports `loaded: yes`) while the deployed
+code had not changed. Measured live twice on 2026-07-31; recovery required an undocumented manual
+`kill -TERM <backend-pid>`.
+
+**Fix:** a new `sox service restart <ext> [-s <scope>]` verb
+(`apps/sox/src/main.ts` `cmdServiceRestart`, `libs/host-runtime/src/os-unit.ts` `restartAndVerify`) —
+the `[inv:deploy-verified]` implementation of spec §9.4a:
+
+```
+sox service restart memory-server -s user
+# sox service restart: com.sox.user.memory-server
+#   before: main=7721
+#   kickstart: exit 0
+#   reaper: killed pid=7721 outcome=term
+#   after:  main=32640
+# sox service restart: 'com.sox.user.memory-server' deployed — pid(s) rotated ([7721] -> [32640])
+```
+
+1. snapshots every pid currently matching the extension's identity token (the entrypoint path —
+   this catches a proxy-mode backend even though the OS unit itself runs the front-shim, since the
+   backend always execs `entrypoint` directly),
+2. `kickstart`s the unit (new `OsUnitPlatform.kickstart`/`mainPid` — `launchctl kickstart -k` /
+   `systemctl restart`) — restarts the managed process **without touching the unit file** (no
+   `enable`, no env regeneration — BL-375's `[inv:env-preserved-on-regenerate]`),
+3. reaps any survivor still matching the token by identity (`reapByIdentity`/`killAndVerify`) — this
+   is what forces a zero-downtime backend to die, so the already-kickstarted proxy's live connection
+   notices the disconnect and respawns a NEW backend on the current bundle,
+4. polls (`--wait-ms`, default 15000) until a pid **not** in the pre-restart snapshot appears,
+5. **exits non-zero if no pid rotates** — a `kickstart` exit code of 0 and a unit reporting
+   `loaded: yes` are not deploy evidence; only a rotated pid is.
+
+`docs/spec/service-lifecycle.md` §9.4a's canonical deploy procedure now runs this verb instead of the
+`kickstart` + prose `kill -TERM` step it previously required an operator to remember.
+
+**Tests:** `libs/host-runtime/src/os-unit.spec.ts` — `restartAndVerify — BL-372 [inv:deploy-verified]`,
+5 cases exercising the injectable seams (no real process table, no real launchd/systemd): RED —
+survivor undead, RED — kickstart succeeds but nothing ever respawns (the exact BL-372 shape, before
+[7] === after [7]), RED — kickstart itself fails, GREEN — backend rotates to a new pid post-reap,
+GREEN — direct-mode (non-proxy) service rotates on the very first poll. Verified red→green by
+temporarily replacing `restartAndVerify` with a naive "trust the kickstart exit code" implementation
+(what the pre-fix procedure amounted to) — all 5 cases failed against it, including both RED cases
+reporting a false-positive `ok:true`, matching the incident exactly; reverted, all pass.
+
 ## [Unreleased] — BL-385: `backupStore()` now works on the default (Turso) backend — adapters own their own VACUUM INTO
 
 ### BL-385 (CRITICAL) — `backupStore()` hardcoded the sqlite driver, so backup was dead on the default backend

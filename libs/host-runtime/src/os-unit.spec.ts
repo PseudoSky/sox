@@ -34,11 +34,13 @@ import {
   osUnitLabelFor,
   readUnitMeta,
   resolveUnitNodePath,
+  restartAndVerify,
   unitContentHash,
   unloadThenReap,
   type OsExec,
   type OsExecResult,
   type OsUnitSpec,
+  type RestartMatch,
 } from './os-unit.js';
 import type { ReapResult } from './reaper.js';
 
@@ -781,5 +783,165 @@ describe('BL-331 — launchd ProcessType is service-kind aware', () => {
     const sysd = new SystemdPlatform();
     expect(sysd.render(makeSpec())).not.toContain('Nice=');
     expect(sysd.render(makeSpec({ startIntervalSec: 300 }))).toContain('Nice=10');
+  });
+});
+
+// ─── BL-372/§9.4a: [inv:deploy-verified] — restartAndVerify ─────────────────────
+//
+// A `kickstart -k` restarts the front-shim proxy, but the zero-downtime backend it
+// keeps alive across restarts (§9.5) can survive as a `PPID 1` orphan still
+// executing the OLD bundle — a kickstart exit code of 0 is NOT evidence of a
+// deploy. These tests drive `restartAndVerify` entirely through its injectable
+// seams (`exec`, `findMatches`, `reapFn`, `sleepFn`) — no real process table, no
+// real launchctl/systemctl — and prove BOTH arms of the invariant:
+//
+//   RED  — the backend survives the reap / never rotates → `ok:false`, non-zero.
+//   GREEN — a genuinely new pid appears for the token       → `ok:true`, zero.
+describe('restartAndVerify — BL-372 [inv:deploy-verified]', () => {
+  const platform = new LaunchdPlatform();
+  const label = 'com.sox.user.memory-server';
+  const token = '/store/memory-server/dist/index.js';
+
+  function fakeExec(kickstartCode = 0): OsExec {
+    return (_cmd, args) => ({
+      code: args.includes('kickstart') ? kickstartCode : 0,
+      stdout: '',
+      stderr: '',
+    });
+  }
+
+  it('RED — kickstart succeeds but the old backend survives the reap (undead): fails, does not report rotation', async () => {
+    // The backend (pid 111) never dies — killAndVerify's honest 'undead' outcome.
+    const findMatches = (): RestartMatch[] => [{ pid: 111 }];
+    const reapFn = async (tok: string): Promise<ReapResult> => ({
+      token: tok,
+      killed: [{ pid: 111, ppid: 1, orphaned: true, outcome: 'undead' }],
+    });
+
+    const result = await restartAndVerify({
+      label,
+      token,
+      platform,
+      exec: fakeExec(),
+      findMatches,
+      reapFn,
+      waitMs: 50,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.rotated).toBe(false);
+    expect(result.undead).toEqual([111]);
+    expect(result.reason).toMatch(/undead/);
+  });
+
+  it('RED — kickstart succeeds, reap clears the old survivor, but NOTHING new ever appears (no respawn): fails with [inv:deploy-verified] violated', async () => {
+    // This is the exact BL-372 no-op-deploy shape: same pid set before AND after —
+    // the unit "restarted" (kickstart exit 0) but the running process never changed.
+    const findMatches = (): RestartMatch[] => [{ pid: 222 }];
+    const reapFn = async (tok: string): Promise<ReapResult> => ({
+      token: tok,
+      killed: [{ pid: 222, ppid: 1, orphaned: true, outcome: 'already-dead' }],
+    });
+
+    const result = await restartAndVerify({
+      label,
+      token,
+      platform,
+      exec: fakeExec(),
+      findMatches,
+      reapFn,
+      waitMs: 50,
+      pollMs: 10,
+      sleepFn: async () => { /* instant — no real timers in the test */ },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.rotated).toBe(false);
+    expect(result.before).toEqual([222]);
+    expect(result.after).toEqual([222]); // same pid — nothing rotated
+    expect(result.reason).toMatch(/\[inv:deploy-verified\] violated/);
+  });
+
+  it('RED — kickstart itself fails: fails immediately, no reap attempted', async () => {
+    let reapCalled = false;
+    const findMatches = (): RestartMatch[] => [];
+    const reapFn = async (tok: string): Promise<ReapResult> => {
+      reapCalled = true;
+      return { token: tok, killed: [] };
+    };
+
+    const result = await restartAndVerify({
+      label,
+      token,
+      platform,
+      exec: fakeExec(1), // launchctl kickstart exits non-zero
+      findMatches,
+      reapFn,
+      waitMs: 50,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.kickstart.code).toBe(1);
+    expect(reapCalled).toBe(false);
+    expect(result.reason).toMatch(/kickstart FAILED/);
+  });
+
+  it('GREEN — the backend rotates to a genuinely new pid after the reap: succeeds, exit-code-mapped ok:true', async () => {
+    // Simulate the real recovery sequence: before=[333] (old bundle), reap kills
+    // it, and polling observes the respawned backend at a NEW pid (444, new bundle).
+    let pollCount = 0;
+    const findMatches = (): RestartMatch[] => {
+      pollCount += 1;
+      // First call is the "before" snapshot (old pid still there); every call
+      // after the reap sees the new pid.
+      return pollCount === 1 ? [{ pid: 333 }] : [{ pid: 444 }];
+    };
+    const reapFn = async (tok: string): Promise<ReapResult> => ({
+      token: tok,
+      killed: [{ pid: 333, ppid: 1, orphaned: true, outcome: 'term' }],
+    });
+
+    const result = await restartAndVerify({
+      label,
+      token,
+      platform,
+      exec: fakeExec(),
+      findMatches,
+      reapFn,
+      waitMs: 1000,
+      pollMs: 10,
+      sleepFn: async () => { /* instant */ },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.rotated).toBe(true);
+    expect(result.before).toEqual([333]);
+    expect(result.after).toEqual([444]);
+    expect(result.reason).toBeUndefined();
+  });
+
+  it('GREEN — a direct-mode service (no proxy split) rotates on the very first post-reap poll', async () => {
+    // For a plain `service` (not mcp-server proxy-mode), the OS unit IS the
+    // managed process — kickstart alone gives it a fresh pid immediately.
+    let calls = 0;
+    const findMatches = (): RestartMatch[] => {
+      calls += 1;
+      return calls === 1 ? [{ pid: 55 }] : [{ pid: 999 }];
+    };
+    const reapFn = async (tok: string): Promise<ReapResult> => ({ token: tok, killed: [] });
+
+    const result = await restartAndVerify({
+      label: 'com.sox.user.memory-daemon',
+      token: '/store/memory-daemon/dist/index.js',
+      platform,
+      exec: fakeExec(),
+      findMatches,
+      reapFn,
+      waitMs: 1000,
+      sleepFn: async () => { /* instant */ },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.after).toEqual([999]);
   });
 });

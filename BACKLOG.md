@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 93.** (BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 92.** (BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,12 +23,12 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-08-01: **93 open**.
+Regenerated 2026-08-01: **92 open**.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-367, BL-372, BL-373, BL-374, BL-375, BL-377, BL-380, BL-381, BL-382 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-367, BL-373, BL-374, BL-375, BL-377, BL-380, BL-381, BL-382 |
 | **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378, BL-383, BL-388, BL-389 |
 | **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363, BL-379 |
 | **UNSET** | BL-163 |
@@ -1897,35 +1897,6 @@ A repo-wide scan confirmed `integrity.ts` was the **only** affected file. `nx ru
 **Related:** BL-347 (probe indistinguishable from healthy), BL-319 (instrument wired to one of two paths), BL-352 (the engine this file implements).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/data/store/store-adapter/src/integrity.ts:445, 2: measured `grep` vs `/usr/bin/grep` divergence 2026-07-31, 3: p0-adapter-integrity + p1-tracing-research reports 2026-07-31]
-
----
-
-### BL-372 — Restarting the service does NOT deploy new code: the backend survives as an orphan and keeps serving the old bundle — **Open (HIGH)** (2026-07-31)
-
-**Driver.** A verified, correct deploy silently did nothing. Sequence, all measured on the live host:
-
-1. `npx nx build memory-server` — succeeded, new bundle written (artifact `6a0c13cda152`).
-2. `launchctl kickstart -k gui/$(id -u)/com.sox.user.memory-server` — exit 0.
-3. `pgrep` afterwards: proxy is a **new pid (43302)**, but backend **7721** and its fastembed child **7724** are the **same pids as before**, started five hours earlier.
-4. `ps -o ppid` on 7721: **PPID 1** — reparented to init, an orphan of the pre-restart proxy.
-5. `pgrep -P 43302`: **no children.** The new proxy had spawned nothing.
-6. `memory_ping` reported `instance.pid: 7721`, artifact `288f38cc10ce` (**the old bundle**), and **no `store.integrity` field** — proving the old code was still serving.
-
-**So the unit restarted, reported success, and the running code did not change.** Every check an operator would plausibly run — build succeeded, `kickstart` exit 0, service shows as running — was green while the deploy had not happened.
-
-**Root cause is not yet pinned** and must not be guessed: the front-shim service-proxy (Slice 1.5) deliberately keeps the backend alive across proxy restarts for zero-downtime, so this may be *designed* behaviour whose consequence for code deploys was never considered — or it may be a genuine orphan-reaper failure (`[inv:singleton]`, `[inv:unload-then-reap]`). Either way, **there is no documented deploy procedure that actually deploys.**
-
-**What worked:** `kill -TERM <backend-pid>`, after which the proxy respawned the backend on the new bundle. That is the missing step, and it is nowhere in the runbook.
-
-**Fix sketch:** either `kickstart` must reap the backend (verified-stop, per the lifecycle spec), or a `sox service deploy`/`--reload-backend` verb must exist that does, and the runbook must state that a bundle change requires it. **The status surface must also report the running artifact hash against the on-disk one** — `memory_ping` already returns `artifact`, so a mismatch is trivially detectable and would have made this self-evident.
-
-**Acceptance (red→green, must name BL-372):** rebuild with a detectable change, restart via the documented procedure, assert the running instance reports the NEW artifact hash. Must fail against today's procedure.
-
-**Severity:** HIGH — silent no-op deploys. Any fix shipped this way was never actually live, and everyone involved would reasonably believe it was.
-
-**Related:** BL-332 (`soxe list` reports a running service as INACTIVE — same family: lifecycle surfaces that do not reflect reality), `docs/spec/service-lifecycle.md`, BL-334.
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live pgrep/ps/pgrep -P + memory_ping artifact comparison 2026-07-31, 2: ~/Library/LaunchAgents/com.sox.user.memory-server.plist]
 
 ---
 
