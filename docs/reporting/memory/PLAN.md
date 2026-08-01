@@ -85,6 +85,11 @@ store can be backed up at all** — still unanswered.
 
 ## P0 — Blockers. A run before these measures a lie.
 
+> **⚠️ STALENESS (2026-08-01).** This plan names 25 of the 85 currently-open items; **53 open items
+> (62%) appear nowhere in it**, including everything filed on 08-01 (BL-387..BL-400). It also still
+> references 11 ids that are now closed. P0.6 and P0.7 are COMPLETE. Use `BACKLOG.md` as the queue;
+> use this plan for sequencing only the subset it names, and reconcile before planning from it.
+
 ### P0.1 — BL-330: unlinked WAL silently discards committed data · **HIGH**
 Proven: with the WAL unlinked, a graceful `close()` **silently discarded 90 of 140 committed
 rows and threw no error.** Also: `sqlite3 .backup` of a live Turso store silently omits WAL
@@ -173,7 +178,9 @@ topic-labelled sample has inter-similarity ≥ intra-similarity — `topic` is e
 semantic partition); assert *purity + dominance*, never "one community per group" (no corpus,
 synthetic included, satisfies that at the default); and pin the cohort uids.
 
-### P0.6 — Test-infrastructure integrity · BL-340, BL-325, BL-324
+### P0.6 — ~~Test-infrastructure integrity · BL-340, BL-325, BL-324~~ · **COMPLETE 2026-08-01**
+All three closed. `typecheck-tests` exists and provably reads spec files (red arm watched: injected
+`TS2322` in `errors.spec.ts`); `memory-core` is 491/491 with 0 failures; `memory-server` 184/184.
 `typecheck-tests` target does not exist; 18 `memory-core` specs never `await` the now-async
 `openDb()`; 8 reproducible `memory-server` failures.
 
@@ -181,7 +188,10 @@ synthetic included, satisfies that at the default); and pin the cohort uids.
 typecheck, with a known-broken async contract, reproduces the exact conditions that let the
 frozen-`{skip}` bug hide two never-executing cross-backend tests behind a green board.
 
-### P0.7 — BL-352: adapters must verify and self-heal what they generate · **HIGH**
+### P0.7 — ~~BL-352: adapters must verify and self-heal what they generate~~ · **COMPLETE 2026-08-01**
+`integrity.ts` implements five probes plus `repairStoreIntegrity`. Proven live: the FTS index
+self-healed on open, `fts_match('memory')` 0 → 1158, with no manual DDL. **Note P0.1 (BL-330) is
+NOT covered by this and remains open** — S2 in `STATE.md` previously conflated them.
 *(replaces "rebuild the live FTS index" — the manual fix was proposed, verified, and **rejected
 by the owner**.)*
 

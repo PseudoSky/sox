@@ -38,6 +38,24 @@ policy** — one run at terminal priority would have passed throughout the entir
 
 ---
 
+## ⚠️ The plan does not cover most of the backlog (measured 2026-08-01)
+
+Of **85 open items, 53 (62%) are named in neither `PLAN.md` nor this file.** They are real,
+cited defects with nowhere to be scheduled. The plan was written against the state of the world on
+2026-07-31 and has not absorbed anything found since — including all thirteen items filed on
+08-01 (BL-387 through BL-400).
+
+`PLAN.md` also still lists **11 BL ids that are no longer open**: BL-320, BL-323, BL-324, BL-325,
+BL-340, BL-343, BL-344, BL-347, BL-352, BL-377, BL-381. Two entire plan sections — **P0.6**
+(test-infrastructure integrity) and **P0.7** (adapter self-heal) — are complete, and P2.1's BL-347
+is done. A reader following the plan today would work on finished items and miss 62% of the real
+queue.
+
+**Do not treat `PLAN.md` as the work queue until it is reconciled.** `BACKLOG.md` is authoritative
+for what is open; the plan is authoritative only for *sequencing* the subset it names.
+
+---
+
 ## Deploy 2026-08-01 #2 — the first artifact of the day with establishable provenance
 
 `90c7bb000580` → **`5e8e1fcc8625`**, pid 3040 → **18521**, via `sox service restart` (BL-372's new
@@ -118,7 +136,8 @@ surfaced **BL-386**.
 |---|---|---|---|
 | S0 | Diagnose Turso migration failures | **done** | 90 backlog items filed, all cited |
 | S1 | Recover lost `db.ts` Turso wiring | **done** | `2ad196f` — 208 lines recovered from sourcemaps |
-| S2 | Adapter self-verify + repair (BL-352/330) | **done** | `fa786a2` — probes + repair, 279/279 |
+| S2 | Adapter self-verify + repair (BL-352) | **done** | `fa786a2` — probes + repair, 279/279; BL-352 closed 2026-08-01 (integrity.ts implements verify **and** `repairStoreIntegrity`) |
+| S2b | **Unlinked-WAL data loss (BL-330)** | **OPEN** | ⚠️ S2 previously bundled BL-330 with BL-352 and reported both done. They are different defects: BL-352 is "adapters must verify their artifacts"; BL-330 is "a graceful `close()` silently discarded 90 of 140 committed rows." The second is unfixed and is PLAN.md **P0.1** |
 | S3 | Deploy it; live store self-heals (BL-347) | **done** | verified below |
 | S4 | Fix `ProcessType: Background` (BL-331) | **done** | pri 4 → 20 by PID; p50 6422 ms → 333 ms (18.9x length-matched) |
 | S5 | Re-enable `SOX_DISABLE_EMBED_HEAL` (BL-339) | **done** | brake removed; 3,246 heals applied, 0 failed |
