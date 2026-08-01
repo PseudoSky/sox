@@ -2,7 +2,34 @@
 
 ---
 
-## [Unreleased] — BL-381, BL-365, BL-324, BL-344, BL-343, BL-323: near-dup detection restored on Turso; crash-durable telemetry; one env-scrub policy; memory_stats survives malformed rows; sqlite-vec load verified fixed
+## [Unreleased] — BL-382, BL-381, BL-365, BL-324, BL-344, BL-343, BL-323: near-dup detection restored on Turso; crash-durable telemetry; one env-scrub policy; memory_stats survives malformed rows; sqlite-vec load verified fixed
+
+### BL-382 (HIGH) — a write now wakes the embed drain instead of waiting on a five-minute timer
+
+`scheduleNextEnrichTick()` had exactly two call sites: module load and the pass's own `.finally()`. **Nothing else could start a pass.** The interval was sized for a defect that no longer exists — at the pre-BL-331 rate of ~6.9 s per embed, batching on a 5-minute cadence was reasonable; at the post-fix **451 ms p50** the design is inverted, and the queue idles for minutes while work waits.
+
+Measured live on backend pid 69947 (n=701 embeds over 1209 s, **contended** — nine agents on the box, so the ratios are the result and the absolutes are not a baseline):
+
+| | |
+|---|---|
+| embed wall time | 482 s (**39.9%** of span) |
+| idle gaps >5 s | 467 s (**38.6%** of span) |
+| throughput over the span | **0.58/s** |
+| throughput *while embedding* | **1.45/s** |
+
+The gaps decomposed with **no residual**: a 445 s gap is 145 s of `runBatchEnrich` plus the 300 s timer. That exposed the finding nobody had named — **to embed 417 vectors the drain must also pay ~145 s of clustering**, because the drain and the enrich pass were one tick. Splitting them is the largest single win and it *removes* clustering from the drain's path rather than touching BL-349/BL-350.
+
+Three changes, all in `memory-server/src/index.ts`: the drain and enrich pass are now independently scheduled loops sharing **one background-slot mutex** (preserving BL-346's anti-stampede property while decoupling the scheduling); the drain rearms adaptively on remaining backlog; and `wakeDrain(reason)` is debounced and coalescing — N rapid wakes start exactly one pass, and a wake arriving mid-pass sets a dirty flag so the pass re-arms rather than dropping the signal.
+
+**The BL-154 re-entrancy argument, which must not be weakened.** BL-154's deadlock shape is hold-and-wait on the same serial queue. The wake is safe by three independent properties, and all three are wanted: the call site sits outside the slot; **`wakeDrain()` never runs work synchronously** — it only arms a `setTimeout`, so the body runs on a later macrotask after the slot is freed; and the in-flight guard short-circuits to a flag without ever touching the queue. The second is load-bearing: it makes safety independent of call-site discipline, which the first alone cannot promise. A reviewer must not talk this down to the first property.
+
+Red→green watched, both arms, twice — by the implementing agent and again independently on 2026-08-01 against the deployed build. Neutering `wakeDrain()`'s body to an early `return` gives **3 failed / 2 passed**, failing with `waitFor(drain heals the orphan) timed out after 500 iterations` and `waitFor(burst drains) timed out`; restoring it gives **5 passed**. The two tests that do not move are correct not to: the BL-154 >2000-char auto-chunk write and the background-slot mutex are safety assertions that drive `runDrainPassGuarded()` directly and never consult `wakeDrain`.
+
+Constants are re-derived and env-overridable so a service where rebuilding is a whole procedure can be tuned at deploy time: heal time budget 240 s → **30 s**, heal batch limit 500 → **64** (at 580 ms/embed a 500-row window is 290 s of work — it *always* truncated, and truncation wastes the scan), drain floor **30 s** at backlog zero. `PERIODIC_ENRICH_INTERVAL_MS` stays 300 s as the *enrich* floor — no longer the drain's business.
+
+Deployed 2026-08-01 in artifact `6d1b2abc1c12`. Live post-deploy: a fresh write reaches a vector in **355 ms** end-to-end (Phase A 80 ms → embed 330 ms → apply 24 ms), `embeds_failed: 0`, backlog 0. (`memory-server/src/{index,drain-wake.spec}.ts`)
+
+---
 
 ### BL-324 (HIGH) — the last two `memory-server` suite failures were one missing `await` and one stale assertion
 

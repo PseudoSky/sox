@@ -38,6 +38,45 @@ policy** — one run at terminal priority would have passed throughout the entir
 
 ---
 
+## Deploy 2026-08-01 — `6a0c13cda152` → `6d1b2abc1c12`, verified by artifact and pid
+
+Six fixes shipped in one deploy: BL-373, BL-374, BL-365, BL-324, BL-381, BL-382 (+ `sox`/BL-344).
+
+**`[inv:deploy-verified]` earned its place — the documented failure reproduced live.** After
+`launchctl kickstart -k`, `pgrep` showed the proxy had rotated (67303 → 32395) while **backend 69947
+survived, still executing the previous bundle**. Only `kill -TERM 69947` actually deployed. Had the
+run stopped at kickstart, every check an operator would plausibly run would have been green and no
+code would have changed — for the third time.
+
+| check | before | after |
+|---|---|---|
+| artifact | `6a0c13cda152` | **`6d1b2abc1c12`** (matches the on-disk `dist/index.js` hash) |
+| proxy / backend / fastembed pids | 67303 / 69947 / 69948 | **32395 / 32640 / 32641** |
+| store fingerprint | `e352aaa3…` | `e352aaa3…` (unchanged — same store, no data movement) |
+| embed backlog | 0 | 0 |
+| integrity | ok | ok, all 5 probes `validated: true` |
+
+**Behaviour verified, not just liveness.** A fresh `memory_write` reached a vector in **355 ms**
+end-to-end — Phase A 80 ms → embed 330 ms → apply 24 ms — with `embeds_failed: 0`.
+
+**BL-381 verified by A/B on the live telemetry**, which is the only evidence that distinguishes
+"fixed" from "never ran":
+
+| build | `no such column: k` | `topKQuery` undefined |
+|---|---|---|
+| 2026-07-31 (old, 3,249 embeds) | **113** | 8 |
+| 2026-08-01 pre-deploy | 0 | **13** |
+| 2026-08-01 post-deploy | **0** | **0** |
+
+Absence of an error line alone would have proven nothing — the old build logged these too, so the
+comparison against the prior day is what carries the claim. A read-only probe against a **copy** of
+the live store (`.db` + `-wal` together, BL-330) then confirmed the KNN returns **21 real neighbours**
+ranked by `vector_distance_cos`, top match 0.9453 — below the 0.95 `SAME_AS` threshold, so the
+absence of an edge on the probe pair is the threshold working, not a defect. That probe is also what
+surfaced **BL-386**.
+
+---
+
 ## States
 
 | # | State | Status | Evidence / blocker |
@@ -47,10 +86,10 @@ policy** — one run at terminal priority would have passed throughout the entir
 | S2 | Adapter self-verify + repair (BL-352/330) | **done** | `fa786a2` — probes + repair, 279/279 |
 | S3 | Deploy it; live store self-heals (BL-347) | **done** | verified below |
 | S4 | Fix `ProcessType: Background` (BL-331) | **done** | pri 4 → 20 by PID; p50 6422 ms → 333 ms (18.9x length-matched) |
-| **S5** | **Re-enable `SOX_DISABLE_EMBED_HEAL` (BL-339)** | **→ unblocked** | S4 done. ⚠️ set BOTH brake vars when regenerating the unit — BL-375 |
-| S6 | Re-enable `SOX_DISABLE_PERIODIC_ENRICH` (BL-346) | pending | needs S4, S5 |
-| S7 | Drain embed backlog to full vector coverage | pending | needs S5; backlog 3,246, coverage ~36% |
-| S8 | Clustering actually runs (BL-349/BL-326) | pending | needs S6, S7; τ unresolved (BL-356) |
+| S5 | Re-enable `SOX_DISABLE_EMBED_HEAL` (BL-339) | **done** | brake removed; 3,246 heals applied, 0 failed |
+| S6 | Re-enable `SOX_DISABLE_PERIODIC_ENRICH` (BL-346) | **done** | brake removed; neither var is present in the live plist |
+| S7 | Drain embed backlog to full vector coverage | **done** | backlog 3,246 → **0**, 3,249 embeds, **0 failed**; see below |
+| **S8** | **Clustering actually runs (BL-349/BL-326)** | **→ unblocked** | S6, S7 done. τ still unresolved (BL-356) |
 | S9 | Tracing substrate (BL-351) | pending | **unblocked** — BL-344 shipped (one `env-policy.ts`, was 5 copies); design in `docs/research/observability-substrate.md` |
 | S10 | Sandbox harness (P0–P4 in `PLAN.md`) | pending | needs S9 for real instrumentation |
 
@@ -70,7 +109,7 @@ Ground truth, measured on the live store after the adapter repaired it on first 
 `memory_recall` returns `"provenance":["fts"]` with non-zero BM25. No manual DDL was used — the
 adapter repaired itself, which was the owner's explicit requirement.
 
-**Running:** artifact `6a0c13cda152`, backend pid 48826 (re-check; it changes on restart).
+**Running:** artifact `6d1b2abc1c12`, backend pid 32640 (re-check; it changes on restart).
 
 ---
 
@@ -79,12 +118,16 @@ adapter repaired itself, which was the owner's explicit requirement.
 | | |
 |---|---|
 | Keyword search (FTS) | ✅ working |
-| Vector recall | ⚠️ coverage ~36%, backlog 3,246 |
-| `memory_stats` | ❌ throws — `malformed JSON` (BL-342) |
-| Integrity surface | ✅ in `memory_ping`; false-alarm + stale-`-tshm` fixes landed in `8fe0571`, **not yet deployed** (BL-374, BL-373) |
-| Embed heal | 🛑 OFF — `SOX_DISABLE_EMBED_HEAL=1` (BL-339) |
-| Periodic enrich / clustering | 🛑 OFF — `SOX_DISABLE_PERIODIC_ENRICH=1` (BL-346) |
+| Vector recall | ✅ backlog **0**; 4,934 vectors / 9,496 nodes — the remainder are communities and other non-episode kinds, not a shortfall |
+| Near-duplicate detection | ✅ KNN live on Turso via `vector_distance_cos` (BL-381 verified); ⚠️ reported `cosine_sim` is always 0 and the `threshold` param returns an empty set (BL-386) |
+| Embed drain | ✅ write-triggered wake, no 5-min wait (BL-382); fresh write → vector in **355 ms** |
+| Integrity surface | ✅ in `memory_ping`, deployed; all 5 probes validated, `overall: ok` |
+| Telemetry | ✅ crash-durable (BL-365), writing to `~/.adhd/sox-ecosystem/memory/logs/` |
+| Embed heal | ✅ ON — brake removed; 3,246 heals, 0 failed |
+| Periodic enrich / clustering | ✅ ON — brake removed |
 | Scheduling | ✅ priority 20 (`ProcessType: Standard`) — 18.9x faster embeds (BL-331) |
+| Backup | ❌ **impossible on a Turso store** — `VACUUM INTO` fails, no destination file produced (BL-385, CRITICAL) |
+| Entity search | ⚠️ silently a substring scan since the migration (BL-384) |
 
 ---
 

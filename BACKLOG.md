@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 93.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 92.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -2266,68 +2266,6 @@ The root cause is the one named in the handoff: `better-sqlite3` cannot parse a 
 **Related:** BL-330 (consistent snapshot procedure, the open half), BL-341 (`backup.ts`'s integrity check, same file), BL-360 (Turso `integrity_check` false positive — the verification step is also unreliable on this backend), BL-380 (`as SqliteAdapter`, the cast this file uses twice), BL-338 (the power loss), BL-334 (surface it).
 
 Citations: [wip/turso-live-metrics, database-administrator, claude, adapter-boundary sweep, 1: libs/memory-core/src/backup.ts:169-192 and :199-217, 2: replay of backup.ts's exact statement sequence via better-sqlite3 against a copy of ~/.memory/memory.db + -wal, 2026-07-31, 3: docs/reporting/memory/handoff/adapter-integrity.md §4 (better-sqlite3 needs `writable_schema=ON` to open a Turso-FTS store), 4: libs/memory-core/src/backup.spec.ts:182 and :226 — both red with `malformed database schema (__turso_internal_fts_dir_idx_fts_node_key)`]
-
----
-
-### BL-382 — Writes do not wake the drain: work waits up to 5 minutes for a timer that was sized for a 6.9s embed — **Open (HIGH)** (2026-07-31)
-
-**Driver.** `scheduleNextEnrichTick()` is invoked in exactly two places — once at module load (`index.ts:2279`) and once in the pass's own `.finally()` (`:2274`). **There is no write-triggered path.** A write that needs embedding waits for a 5-minute timer (`PERIODIC_ENRICH_INTERVAL_MS`), then competes for the per-tick heal budget.
-
-**The interval was sized for a defect that no longer exists.** At the pre-BL-331 rate of ~6.9s per embed, batching on a 5-minute cadence was reasonable — per-write processing could never have kept up. At the post-fix rate of **451ms p50** the design is inverted: the queue idles for minutes while work waits, then bursts.
-
-**Measured live, 2026-07-31, with both brakes lifted:**
-
-| time | vectors | note |
-|---|---|---|
-| 23:34 | 1685 → 2105 | first pass: **420 embeds**, then stops on the tick budget |
-| 23:38 – 23:46 | **2105, flat** | backend at **0.3% CPU** with **3,199 items pending** |
-| 23:46 | 2157 | next tick fires |
-
-So the machine sat effectively idle for five minutes with thousands of items queued and ~19x the throughput now available. **Sustained end-to-end drain, measured over 25.8 minutes with both brakes off: 0.45/s** (+701 vectors, 1685 → 2386). In-burst is ~1.7/s. **The idle gaps dominate by roughly 4x** — the machine spends most of the window doing nothing while thousands of items wait.
-
-Three different rates were quoted during this investigation before the honest one was measured — 1.7/s (in-burst), 1.4/s (estimated over one cycle), and finally **0.45/s (actual, over 25.8 min)**. Only the last is a throughput figure; the first two are instantaneous rates generalised into steady-state claims. **That is the same error as BL-331's original "18x" framing**, repeated within hours of documenting it. Any future rate claim here must state its measurement window.
-
-At 0.45/s the remaining ~3,199-item embed backlog takes **~2 hours**. At the in-burst rate it would be ~30 minutes. The difference is entirely scheduling latency.
-
-**A fresh write is NOT affected — measured.** `schedulePendingEmbeds()` is called fire-and-forget immediately after the Phase-A queue task returns (`index.ts:1302` write, `:1369` write_batch, `:1772` update), so a healthy write already wakes its *own* embed. The three live writes on pid 69947 reached a durable vector in **0.70 s / 0.99 s / 1.31 s** (Phase-A finish 23:34:00.364/.393/.421 → `embed_pipeline.apply.finish` 23:34:01.064/.383/.726). What has no wake is the **backlog drain** (`healMissingVectors`) — items whose Phase B failed or whose process died between phases. The trigger this needs is therefore *drain-incomplete*, not *on-write*; the on-write hook matters only as the Phase-B-failure path.
-
-**Two mechanisms, measured on pid 69947 over 1209 s / n=701 embeds** (contended — 9 agents active — so the ratios are the result, not the absolutes):
-
-| | |
-|---|---|
-| embed p50 / p90 / p99 / max | 580 / 1157 / 2082 / 2948 ms |
-| embed wall time | 482 s (**39.9%** of span) |
-| idle gaps > 5 s | 467 s (**38.6%** of span) |
-| throughput over span | **0.58/s** |
-| throughput while embedding | **1.45/s** — a **2.5x** loss to scheduling idle |
-
-The gaps decompose exactly, with no residual:
-
-```
-23:34:24.010 → 23:38:24.088   heal ran 240.1 s → "TIME BUDGET EXCEEDED (417 healed, 83 remaining of 500)"
-23:38:24     → 23:45:49       GAP 445.0 s  =  145 s runBatchEnrich + backlog COUNTs  +  300 s PERIODIC_ENRICH_INTERVAL_MS
-23:45:49.116 → 23:49:51.149   heal ran 242.0 s → budget again (281 healed, 219 remaining)
-23:49:51     → 23:53:01       GAP 190.2 s (same shape)
-```
-
-`enrich.tick.finish tick_seq=1 duration_ms=385133`, `backlog 3246 → 2829`.
-
-So the timer is only half of it. **The drain is also hostage to clustering: to embed 417 vectors it must pay ~145 s of `runBatchEnrich` inside the same tick.** Decoupling the two is the larger win and stays inside this item's "drain only" scope — it *removes* clustering from the drain's path rather than touching BL-349/BL-350.
-
-**Fix sketch — wake, do not poll:**
-1. The drain reschedules on **backlog remaining**, and a Phase-B failure wakes it. Debounced and coalescing: N rapid writes must not schedule N passes (the BL-154 re-entrancy lesson and the BL-346 stampede both apply).
-2. Keep the periodic tick as a **floor**, not the only trigger — it still catches work enqueued by paths that do not wake it, and it is the recovery path after a restart.
-3. **This is not per-write clustering.** Association is BL-349 and maintenance is BL-350; both are separate and neither is solved by waking the queue. Scope this to the drain only.
-4. Re-derive the interval and the per-tick budget from the *current* embed cost rather than inheriting numbers chosen when an embed took 6.9s. Both are now unjustified constants. Measured p50 580 ms / mean 688 ms (contended) gives: heal batch `limit` 500 -> **64** (a 500-row window is ~290 s of work, so it *always* truncates and the truncated scan is wasted), `SOX_EMBED_HEAL_TIME_BUDGET_MS` 240 s -> **30 s** (its only job was avoiding tick overlap, which a self-chaining drain with a hard in-flight guard makes impossible by construction), and a drain floor of **30 s** reached only when the backlog is zero. `PERIODIC_ENRICH_INTERVAL_MS` stays 300 s as the *enrich* floor.
-5. **Do not regress foreground reads (BL-345).** Measured now, with the heal at 99.9% CPU: live `memory_recall` over HTTP is **425 ms p50 (n=8, sigma ~5 ms, zero timeouts)**. Reads survive today because the heal's `await embed()` yields the loop every ~580 ms; the real starvation source is `runBatchEnrich`'s synchronous SQL, which item 1's decoupling removes from the drain's path. Re-run the identical probe against the change and require no regression.
-
-**Acceptance (red→green, must name BL-382):** write an episode to an idle store and assert its vector is present in well under the tick interval; assert N rapid writes produce one coalesced pass, not N. Must fail today, where the vector appears only after the next timer fires.
-
-**Severity:** HIGH — not a correctness bug, but it wastes the entire BL-331 performance recovery on scheduling latency and leaves fresh writes unsearchable for minutes with no signal.
-
-**Related:** BL-331 (the fix that inverted the tradeoff), BL-378 (the brakes gating this same tick), BL-349/BL-350 (clustering — explicitly *not* in scope), BL-345 (any background job starves foreground reads — the wake must respect that), BL-154 (re-entrancy: never enqueue from inside a task on the same queue).
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:2265-2279 (the only two scheduleNextEnrichTick call sites), 2: :1928 (PERIODIC_ENRICH_INTERVAL_MS), 3: live vector-coverage samples 23:34-23:46Z with both brakes off, 4: BL-331 (451ms p50 post-fix)]
 
 ---
 
