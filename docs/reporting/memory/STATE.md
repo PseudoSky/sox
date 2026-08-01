@@ -38,6 +38,41 @@ policy** — one run at terminal priority would have passed throughout the entir
 
 ---
 
+## Deploy 2026-08-01 #2 — the first artifact of the day with establishable provenance
+
+`90c7bb000580` → **`5e8e1fcc8625`**, pid 3040 → **18521**, via `sox service restart` (BL-372's new
+verb, first real use). Built from a **clean tree at commit `4f963d2`**, and the running artifact now
+matches both the on-disk bundle and `registry/index.json`.
+
+That equality is the point. The previous running artifact `90c7bb000580` existed in **no file and no
+commit** — it was an intermediate bundle the proxy respawned onto when a build deleted the file the
+backend was executing (BL-393). Production had been running unreproducible code for roughly two hours.
+
+The new verb behaved exactly as specified, including the step that used to live in prose:
+```
+before: main=32395  matching-pids=[3040]
+kickstart: exit 0
+reaper: SIGTERM → pid 3040 (grace 5000ms)
+deployed — pid(s) rotated ([3040] -> [18521])     exit 0
+```
+
+**Correction to BL-393's scope, measured here:** the `nx build memory-server` in *this* deploy did
+**not** bounce the backend — pid 3040 survived it, continuing to execute the old unlinked inode. So
+"any build silently redeploys" is too strong; the build alone is necessary but not sufficient, and
+BL-393's trigger needs narrowing to whatever additionally killed the backend at 13:25:56.
+
+**Behaviour verified post-deploy, not just liveness:** a real write ran Phase A 88 ms → embed 332 ms
+→ apply 27 ms with zero embed failures; `memory_search_entities` returned `search_mode: "fts"`
+(BL-384 live); `memory_near_duplicates({threshold: 0.5})` returned real cosine values where the same
+call returned `{"pairs":[],"total":0}` this morning (BL-386 live). Integrity `ok`, all five probes
+validated, 9509 nodes, backlog 0.
+
+Two defects were found **by** this verification and filed rather than glossed: **BL-398** (the
+`weight`-as-cosine read fabricates `1.0` for manually-merged pairs, which then outrank measured ones)
+and **BL-399** (a live, swallowed `no such column: meta` on the graph tables).
+
+---
+
 ## Deploy 2026-08-01 — `6a0c13cda152` → `6d1b2abc1c12`, verified by artifact and pid
 
 Six fixes shipped in one deploy: BL-373, BL-374, BL-365, BL-324, BL-381, BL-382 (+ `sox`/BL-344).
@@ -109,7 +144,7 @@ Ground truth, measured on the live store after the adapter repaired it on first 
 `memory_recall` returns `"provenance":["fts"]` with non-zero BM25. No manual DDL was used — the
 adapter repaired itself, which was the owner's explicit requirement.
 
-**Running:** artifact `6d1b2abc1c12`, backend pid 32640 (re-check; it changes on restart).
+**Running:** artifact `5e8e1fcc8625`, backend pid 18521 (re-check; it changes on restart).
 
 ---
 
