@@ -155,7 +155,16 @@ describe('RED — unguarded runPeriodicEnrichPass() reproduces the stampede', ()
 
     // Fire tick #1 (unguarded) — it enters healMissingVectors, SELECTs the
     // orphan, and blocks INSIDE embedSingle on the gate.
-    const tick1 = runPeriodicEnrichPass();
+    //
+    // BL-348: `acquireHealSlot: false` — this test deliberately reproduces
+    // the RACE with no reentrancy protection of ANY kind (that's the whole
+    // point: proving `_enrichPassInFlight` is what fixes it, not something
+    // else). The background slot BL-382/BL-348 use for cross-loop (drain vs
+    // enrich) exclusion is a DIFFERENT mechanism, already covered by
+    // drain-wake.spec.ts; taking it here would make even this deliberately-
+    // unguarded call slot-exclusive and mask the exact race this test exists
+    // to prove.
+    const tick1 = runPeriodicEnrichPass({ acquireHealSlot: false });
 
     // Wait for tick #1 to actually reach the (gated) embed call before firing
     // tick #2 — deterministic on gated.calls, not a fixed number of ticks.
@@ -166,7 +175,7 @@ describe('RED — unguarded runPeriodicEnrichPass() reproduces the stampede', ()
     // when a pass overruns the 5-minute period) — its independent SELECT scan
     // ALSO sees the orphan as still missing (tick #1 hasn't applied yet) and
     // it too calls embedSingle for the SAME row.
-    const tick2 = runPeriodicEnrichPass();
+    const tick2 = runPeriodicEnrichPass({ acquireHealSlot: false });
     await waitFor(() => gated.calls >= 2, 'tick2 reaches embedSingle');
     expect(gated.calls).toBe(2); // THE BUG: duplicate embed work for one row
 

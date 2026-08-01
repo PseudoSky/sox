@@ -32,5 +32,10 @@
     "better-sqlite3": "^12.10.0",
     "fastembed": "^2.1.0",
     "sqlite-vec": "^0.1.9"
+  },
+  "sox": {
+    "sidecars": [
+      "src/enrich-process-host.ts"
+    ]
   }
 }

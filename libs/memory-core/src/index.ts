@@ -196,6 +196,11 @@ export type { BatchEnrichOptions, BatchEnrichResult } from './enrich-batch.js';
 export type { ImportanceWeights } from './importance.js';
 export { ENRICH_VERSION } from './enrich-version.js';
 
+// ── BL-348: committed-stage boundary — clustering/enrichment isolated from
+//    the embed path in its own child process (see enrich-isolation.ts). ──────
+export { runEnrichIsolated, _setEnrichHostForkResolverForTest } from './enrich-isolation.js';
+export type { EnrichIsolatedResult, EnrichIsolatedOk, EnrichIsolatedErr } from './enrich-isolation.js';
+
 // ── Internal enrichment helpers (exported for tests) ──────────────────────────
 export { detectNearDup } from './neardup.js';
 export { vectorDialectFor, ftsDialectFor } from './dialect.js';
