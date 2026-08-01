@@ -533,6 +533,43 @@ failure counts, four different drain rates).
 `docs/reporting/memory/sandbox/README.md` stays as the specification; it is correct and should not be
 rewritten, only unblocked.
 
+### PKT-41 — BL-391: federated recall's BM25 arm is dead on Turso, and the failure is swallowed whole-store
+**Goal:** a read-only Turso connection cannot run `fts_match` (measured: `readonly:false` → 1158 hits; `readonly:true` → `step failed: Error: Resource is read-only`; plain `COUNT(*)` works identically on both). `openDbReadOnly` passes `readonly: true` unconditionally and its **only** production caller is `getFederationConnection` (`recall.ts:1208`) — so single-store recall is unaffected (live recall still returns `provenance: ["vec","fts","temporal"]`) but federated recall is not.
+**Closes:** BL-391
+**Files:** `libs/memory-core/src/db.ts` (`openDbReadOnly`, ~:886), `libs/memory-core/src/recall.ts` (`getFederationConnection` ~:1208, `recallFromOpenDb` ~:1226-1237), + a new spec.
+**depends_on:** none.
+**tier:** opus, ~25k tokens — the first step is a determination, not an edit.
+**acceptance, and STEP 1 IS NOT OPTIONAL:**
+1. **Determine, do not guess**, whether `memoryRecall` catches the FTS throw internally. The two outcomes differ enormously and both are silent: if it catches → federated recall silently loses BM25 for every Turso store and returns plausible vector+temporal results; if it does not → `recallFromOpenDb`'s bare `catch { return [] }` makes **every Turso store contribute zero results**, indistinguishable from "no matches". A prior probe crashed spawning the embed provider; use a seam or a direct unit test instead. **Record which it is before changing anything — it decides the severity and the fix.**
+2. Then fix: stop opening federation connections read-only where that disables FTS (keep `query_only`, which is the actual write guard), or expose the constraint as an adapter capability so callers stop assuming read-only is free.
+3. `recallFromOpenDb`'s bare catch MUST log. A whole store vanishing from a federated result is the same silent-failure family as BL-381, BL-384, BL-385 and BL-399 — each survived weeks for exactly this reason.
+4. Red→green naming BL-391: a federated recall across a Turso store returns BM25-provenanced results; with the fix reverted, that store contributes nothing **and the log line proves it** (not merely an empty array).
+
+### PKT-42 — BL-318 + BL-317: ghost episodes, and no guard against a repeat mass-mislabelling
+**Goal:** BL-318 — the enrichment pipeline creates episodes with `content: null` / degenerate importance. BL-317 — nothing prevents a repeat of the 2026-06-26..29 mass topic-mislabelling; it is dormant, not fixed.
+**Closes:** BL-318, BL-317
+**Files:** `libs/memory-core/src/enrich.ts`, `libs/memory-core/src/write.ts`, + specs.
+**depends_on:** none.
+**tier:** sonnet, ~18k tokens
+**acceptance:** a test naming BL-318 asserting a write that would produce `content: null` is rejected or repaired at the boundary rather than persisted; a test naming BL-317 asserting the mislabelling shape is refused. Live cross-check: `memory_stats` currently reports `legacy_episodes: 2`, `stale_episodes: 2` — state whether these are the same rows.
+
+### PKT-43 — BL-362: no committable Turso FTS damage fixture
+**Goal:** BL-347's negative control exists only against the live store, so the single most expensive regression this migration produced cannot be re-tested in CI. Build a committable fixture that reproduces an `idx_fts_node` with an empty Tantivy directory.
+**Closes:** BL-362
+**Files:** `libs/data/store/store-adapter/src/__tests__/` fixtures + test.
+**depends_on:** none.
+**tier:** sonnet, ~15k tokens
+**acceptance:** the fixture makes `fts_index_live` report damaged, and the repair path returns it to healthy — both asserted, naming BL-362. ⚠️ Note BL-361: Turso **PANICS and aborts the process** on an FTS index row with no backing directory, so the fixture must produce empty-but-present, not absent, or it will kill the test runner.
+
+### PKT-44 — BL-312: the 2026-07-18 CPU/hang incident was never root-caused
+**Goal:** service was restored; cause was never found. 73%+ CPU with 50–90 s tool-call hangs. It is now plausible this was an instance of BL-345 (any in-process background job starves foreground reads) or BL-346's `enrich.tick.start` with no `.finish` — but that is a hypothesis, not a finding.
+**Closes:** BL-312
+**Files:** analysis only — `~/.adhd/sox-ecosystem/memory/logs/*.jsonl` and the item's cited evidence. No source change unless the cause is found.
+**depends_on:** **PKT-02 (BL-351)** — this is precisely the kind of question the telemetry substrate exists to answer, and attempting it with hand-rolled log parsing is what produced several wrong numbers on 08-01.
+**tier:** sonnet, ~15k tokens
+**acceptance:** either a root cause with evidence and a filed/linked defect, or an explicit written finding that the retained telemetry is insufficient to determine it — **which is a valid and useful outcome, and must be stated rather than left open indefinitely.**
+
+
 ## Explicitly OUT OF SCOPE for this plan
 
 These are open, real, and belong to other subsystems. Listed so that "not in the plan" is a decision
@@ -541,6 +578,11 @@ rather than an oversight:
 - **Dispatch-optimizer / plan hygiene** — BL-99, BL-103, BL-104, BL-105, BL-228, BL-258, BL-261, BL-296, BL-298
 - **Packaging, native ABI, bundling** — BL-282, BL-284, BL-285, BL-288, BL-291, BL-292, BL-305, BL-306, BL-308, BL-314, BL-333, BL-355
 - **Product surface** — BL-315 (`memory-server` has no REST API)
+- **Bundler / CI packaging** — BL-307 (`@lancedb/lancedb` missing from the bundler externals policy), BL-309 (no CI gate that every native dep in a bundled extension is `--external`)
+
+### Open, but deliberately NO packet
+
+- **BL-225** — *status markers record intent, not verified outcome.* This is a **standing discipline, not a fixable task**, and it is already the acceptance standard for every packet above ("a watched red→green naming the BL id — never *tests pass*"). It stays open permanently by design. This session demonstrated it bites in **both** directions: four items were once marked RESOLVED while broken, and twelve were found marked Open while already fixed. Writing a packet for it would be a category error; leaving it unlisted would read as an oversight.
 - **OS service integration** — BL-163 (SMAppService login-items registration; already BLOCKED on its own dependency)
 - **Embedding-provider internals** — BL-283 (shared `RequestResponseChannel<T>` base for the ONNX/fastembed worker clients)
 
