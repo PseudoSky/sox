@@ -23,7 +23,7 @@ import { readFileSync } from 'node:fs';
 
 const PLAN = 'docs/reporting/memory/PLAN.md';
 const BACKLOG = 'BACKLOG.md';
-const REQUIRED = ['requires', 'tier', 'Closes', 'Files', 'acceptance'];
+const REQUIRED = ['requires', 'tier', 'Closes', 'Files', 'acceptance', 'budget'];
 
 const plan = readFileSync(PLAN, 'utf8');
 const backlog = readFileSync(BACKLOG, 'utf8');
@@ -46,6 +46,7 @@ for (const b of blocks) {
     files: field('Files'),
     acceptance: field('acceptance'),
     produces: field('Produces'),
+    budget: field('budget'),
     body: b,
   });
 }
@@ -66,6 +67,11 @@ for (const [id, p] of packets) {
           `A parser reading this field will derive edges that do not exist.`,
       );
     }
+  }
+  // A budget without a hard ceiling is a suggestion, and suggestions do not stop
+  // an agent at 450k holding uncommitted work.
+  if (p.budget && !/HARD CEILING/.test(p.budget)) {
+    violations.push(`${id}: **budget:** must state a HARD CEILING, not a target`);
   }
   if (p.tier && !/^(haiku|sonnet|opus)\b/.test(p.tier)) {
     violations.push(`${id}: tier must start with haiku|sonnet|opus, got "${p.tier}"`);
