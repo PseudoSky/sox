@@ -29,6 +29,7 @@
     "@adhd/sox-hybrid-search": "workspace:*",
     "@adhd/sox-ingest": "workspace:*",
     "@adhd/sox-store-adapter": "workspace:*",
+    "@adhd/sox-telemetry": "workspace:*",
     "better-sqlite3": "^12.10.0",
     "fastembed": "^2.1.0",
     "sqlite-vec": "^0.1.9"
