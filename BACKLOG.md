@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 85.** (BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 81.** (BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -978,41 +978,6 @@ Citations: [wip/turso-live-metrics, team-lead+cluster-proof, claude, turso-go-li
 
 ---
 
-### BL-330 — Unlinked WAL: graceful close SILENTLY discards committed data — **Open (HIGH)** (2026-07-30)
-
-**Driver:** during the go-live the live store's `~/.memory/memory.db-wal` had **no directory entry** (`find ~/.memory -inum 243613830` returned nothing) while the backend held fd `19u` on it with 3,757,472 bytes. Proven consequence on a scratch DB with the same driver: with the WAL unlinked, a graceful `close()` **silently discarded 90 of 140 committed rows and threw no error**. Control with the WAL in place: 60/60 consistent.
-
-**Also proven:** sustained write pressure DOES drain an orphaned WAL through the still-open fd (93.7% recovered) — so a recovery path exists if detected before shutdown.
-
-**Two sub-findings, both independently costly:**
-- (a) `sqlite3 .backup` of a live Turso store **silently omits WAL contents** — its newest record was 13h stale while the live store held newer data. Every file-level snapshot taken during this incident lagged reality and repeatedly corrupted forensic conclusions. A consistent snapshot requires the server stopped.
-- (b) `~/.memory/` also holds orphaned `memory-turso.db-wal` and `memory-turso-live.db-wal` from earlier migrations, making "a cleanup mistakes a live WAL for debris" a plausible and repeatable cause.
-
-**Fix sketch:** detect an unlinked/missing WAL at open and refuse-or-recover loudly; document the correct Turso snapshot procedure (stop first, or use an in-process `VACUUM INTO`); add a maintenance guard so orphaned `*-wal` files can't be confused with live ones.
-
-**Acceptance (red→green, must name BL-330):** a test that unlinks the WAL, closes, and asserts either full data retention or a loud failure — never silent loss.
-
-**Severity:** HIGH — silent data loss with no error and no recoverable artifact. Experiments preserved at `~/.adhd/sox-ecosystem/memory/corrections-20260730/turso-concurrency/`.
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: ~/.adhd/sox-ecosystem/memory/corrections-20260730/turso-concurrency/wal-unlink-test.mjs, 2: ~/.adhd/sox-ecosystem/memory/corrections-20260730/turso-concurrency/wal-autockpt-test2.mjs]
-
-
-**UPDATE 2026-07-31 (database-administrator) — reproduced, and the loss is WORSE than recorded. Fixed in the adapter.**
-
-Re-run against `@tursodatabase/database@0.7.1`: create a table, commit 140 rows, unlink the `-wal`, keep writing, `close()`. The close returned **with no error**, and the reopened store did not merely lose rows — **the table itself was gone** (`Parse error: no such table: t`). Total loss of everything since the last checkpoint, not "90 of 140". The control run with the WAL in place retained 140/140.
-
-**A recovery path exists and is cheap:** `PRAGMA wal_checkpoint(PASSIVE)` issued after the unlink copies the orphaned WAL's pages into the still-linked main database file through the fd already held — **140/140 recovered**. `TRUNCATE` also recovers. This is better than the "sustained write pressure drains it (93.7%)" workaround recorded above, and it is what shipped.
-
-**Shipped** (commit `fa786a2`): `captureWalIdentity()` snapshots the WAL's dev+inode at open; `TursoAdapterImpl.close()` re-checks it, and on a vanished or replaced inode emits a loud `store.integrity.damaged` event and checkpoints before closing rather than refusing (refusing would strand the data in an inode nothing can reach). Red→green test naming BL-330 in `integrity-selfheal.test.ts` — verified failing with the close-path guard removed (reopen threw `no such table: t`) and passing with it restored.
-
-**Not yet done, so this item stays open:** sub-finding (a), the documented consistent-snapshot procedure for a live Turso store, and sub-finding (b), the maintenance guard against confusing orphaned `*-wal` debris for a live WAL. `~/.memory/` still holds `memory-turso.db-wal` and `memory-turso-live.db-wal`.
-
-**Note on the citations above:** the two preserved experiment files (`wal-unlink-test.mjs`, `wal-autockpt-test2.mjs`) **do not exist** at the cited path — `~/.adhd/sox-ecosystem/memory/corrections-20260730/turso-concurrency/` contains only `exp.mjs`, `exp2.mjs`, `exp3.mjs`, `count-vecnode.mjs`. The evidence above is a fresh reproduction, not a re-read of those.
-
-Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.1, 3: WAL unlink/control/checkpoint reproduction 2026-07-31, 4: libs/data/store/store-adapter/src/turso-adapter.ts (close path), 5: libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts]
-
----
-
 ### BL-331 — Embed pipeline is now CORRECT but ~18x too slow in production — **Open (HIGH)** (2026-07-30)
 
 **Driver:** after the enrich reentrancy fix (`9d4cf0a`) the pipeline wastes nothing — live counters `embeds_completed: 84, applies_applied: 84, applies_exists: 0, embeds_failed: 0, heals_failed: 0` (previously **6721 discarded vs 169 applied**, ~98% waste). But throughput is **`embed_throughput_per_sec: 0.133`** with **`embed_duration_ms` p50 = 7253ms**, against **~2.1–2.8 embeds/sec measured in a clean-room harness on the same machine with the same CoreML execution provider** (`turso-clean-room.test.ts`). That ~18x gap turns the remaining ~3151-item backlog into roughly 6.6 hours instead of ~20 minutes, and starves concurrent reads (recall degrades to BM25/temporal via the read-path timeout guard).
@@ -1140,6 +1105,14 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: apps/so
 
 ### BL-334 — `memory_ping`/`memory_stats` must report capability + contention facts directly instead of requiring host archaeology — **Open (HIGH)** (2026-07-30)
 
+> **PARTIALLY DELIVERED (verified 2026-08-01).** The *integrity* half of this item is done and
+> tested: `memory_ping`/`memory_stats` carry the integrity verdict, and store-adapter tests assert
+> *"BL-334 — unhealthy states never report healthy"*, *"the DURABLE verdict is what the status
+> surface actually reads"*, and *"real FTS damage renders as damaged in the status view"*.
+> **Still missing:** capability flags, execution-provider health, and contention facts — the
+> majority of the item, and the part that cost a 12-hour investigation. Do not close on the
+> integrity half.
+
 **Driver:** during the 2026-07-30 Turso go-live, essentially every question that mattered required manual out-of-band investigation on the host, because the status surface does not report it. Each of the following cost real time and, in several cases, produced a WRONG conclusion that had to be walked back:
 
 | Question that mattered | How it had to be answered | Should have been |
@@ -1189,72 +1162,6 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: extensi
 **Still open here:** capabilities, contention accounting, EP facts, and the BL-319 timing fields. Also note `memory_stats` **still throws on the live store** (BL-342), so its new integrity block is unreachable there until that lands.
 
 Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 4: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (memory_ping store block, memory_stats), 5: libs/data/store/store-adapter/src/integrity-status.ts, 6: libs/data/store/store-adapter/src/__tests__/integrity-status.test.ts, 7: handleToolCall('memory_ping') against a copy of `~/.memory/memory.db` 2026-07-31]
-
----
-
-### BL-335 — Restoring/bulk-inserting rows leaves secondary indexes unpopulated; nothing detects or repairs it — **Open (HIGH)** (2026-07-31)
-
-**Driver:** after the 2026-07-30 go-live restore inserted 846 nodes via the Turso driver, `PRAGMA integrity_check` reported **100+ issues** (the check's own message cap — actual count higher): rows missing from **9 secondary indexes** on `node` (`ix_node_importance`, `ix_node_validity`, `ix_node_session`, `ix_node_agent`, `ix_node_hash`, `ix_node_kind`, `ix_node_enrich_ver`, `ix_node_project`, `ix_node_topic`), plus `ix_edge_*`, `idx_vec_node_embedding`, `sqlite_autoindex_memory_scope_1`, and `__turso_internal_fts_dir_idx_fts_node_key`.
-
-The affected rowids begin at **exactly 8552** — the first restored node (the store held 8551 before the restore). So the rows are physically present and readable, but partially **invisible to any query that uses those indexes**. Zero data corruption; purely index entries.
-
-**Why this is serious beyond the one incident:** nothing in the system detects this. `PRAGMA integrity_check` is never run after a restore, on startup, or on any schedule. The store served queries in this state for hours across a restart and a machine crash, and it was found only because a human asked for a manual check. Any bulk-insert path (restore, migration, import) can silently produce it.
-
-**Also observed:** the damage set changed between passes as indexes were repaired, because `integrity_check` truncates at 100 messages — so a single check UNDERSTATES the problem and cannot be used as a simple pass/fail without iterating.
-
-**Fix sketch:**
-1. Run `PRAGMA integrity_check` automatically after any bulk-insert/restore/migration path and fail loudly (this repo already has the precedent — `backupStore()` does an integrity check).
-2. Add a startup integrity probe with a bounded cost, surfaced in status (see BL-334).
-3. Provide a supported repair entry point (a `soxe memory repair`-style command) so this is never hand-rolled again.
-4. Investigate WHY driver-level inserts skip index maintenance — that is the real defect; everything above is mitigation.
-
-**Acceptance (red→green, must name BL-335) — AMENDED 2026-07-31 per BL-360:** bulk-insert N rows through the same path the restore used, then assert `integrity_check` is clean **after filtering Turso's unconditional `wrong # of entries in index __turso_internal_fts_dir_*_key` message**, iterating past the 100-message cap. A literally-clean `integrity_check` is **not a reachable state** on a Turso store carrying a Tantivy index — BL-360 measured that message emitted against a freshly built, fully working index (200/200 `fts_match` hits alongside it). The original wording asked for something no correct implementation can satisfy.
-
-**Severity:** HIGH — silent partial query invisibility, undetected indefinitely.
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: ~/.adhd/sox-ecosystem/memory/corrections-20260730/dbrepair/restore.mjs, 2: live PRAGMA integrity_check output 2026-07-31, 3: libs/memory-core/src/backup.ts (existing integrity-check precedent)]
-
----
-
-### BL-336 — `_adapter_meta` accumulates DUPLICATE PRIMARY KEY rows, which is schema-impossible and blocks REINDEX — **Open (HIGH)** (2026-07-31)
-
-**Driver:** `CREATE TABLE _adapter_meta ("key" TEXT PRIMARY KEY, value TEXT NOT NULL)` — yet the live store contains six rows with three duplicated keys:
-```
-rowid 1  adapter_type    turso
-rowid 2  adapter_version 0.1.0
-rowid 3  created_at      2026-07-30T01:33:19.613Z
-rowid 4  adapter_type    turso        <- duplicate PK
-rowid 5  adapter_version 1.3.0        <- duplicate PK
-rowid 6  created_at      2026-07-30T17:46:26.025Z   <- duplicate PK
-```
-The first set was stamped by the pre-go-live server at 01:33; the second by the restarted server at 17:46. **A duplicate PRIMARY KEY should be impossible** — the second stamp landed while the unique index was in the inconsistent state described in BL-335, so the constraint was not enforced.
-
-Consequence: `REINDEX _adapter_meta` now fails permanently with `UNIQUE constraint failed: _adapter_meta...`, because the rebuilt index cannot represent the duplicates. The table is stuck dirty until the duplicates are removed, and `integrity_check` can never come back clean.
-
-**Two distinct defects here:**
-1. The stamping path (`libs/data/store/store-adapter/src/adapter-meta.ts`) inserts without an upsert guard, so a re-stamp duplicates rather than updating. It should be `INSERT ... ON CONFLICT(key) DO UPDATE`.
-2. Constraint enforcement was bypassed. That is the more alarming one and needs its own investigation — if a UNIQUE/PK constraint can silently not apply on this engine while an index is inconsistent, other tables are exposed too.
-
-**Fix sketch:** make the stamp an upsert; add a dedupe/repair step; investigate the constraint bypass. Recommended dedupe semantics: keep the CURRENT `adapter_type`/`adapter_version` but the EARLIEST `created_at` (first stamp is the meaningful one).
-
-**Acceptance (red→green, must name BL-336):** stamp adapter meta twice against the same store, assert exactly one row per key.
-
-**Severity:** HIGH — a violated PRIMARY KEY constraint on a live store, and it permanently blocks integrity repair of that table.
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/data/store/store-adapter/src/adapter-meta.ts, 2: live `select rowid,* from _adapter_meta` output 2026-07-31]
-
-
-**UPDATE 2026-07-31 (database-administrator) — both defects addressed; the recommended dedupe does not work as written.**
-
-**`DELETE` cannot remove the duplicates.** Measured on a copy of the live store: `DELETE FROM _adapter_meta WHERE rowid NOT IN (SELECT MIN(rowid) …)` fails with `Corrupt database: IdxDelete: no matching index entry found for key [Text("adapter_type"), Integer(4)] while seeking` — the rows have no index entry to remove, so the delete cannot complete. `REINDEX _adapter_meta` fails first with `UNIQUE constraint failed`. **The only repair that works is a table rebuild**: read the rows ordered by rowid, keep the first per key, create a replacement table, drop and rename. Measured 7.4 ms, after which `_adapter_meta` is clean under `integrity_check`.
-
-**The obvious detection query is ALSO blind.** `SELECT key, COUNT(*) FROM _adapter_meta GROUP BY key HAVING COUNT(*) > 1` is planned as `SCAN _adapter_meta USING COVERING INDEX sqlite_autoindex__adapter_meta_1` — through the very index whose inconsistency let the duplicates in — and returns **one row per key on a table visibly holding six rows under three keys**. Detection must read `SELECT key FROM _adapter_meta ORDER BY rowid` (table btree) and count in JS.
-
-**Shipped** (commit `fa786a2`): `stampAdapterMeta` is now `INSERT … ON CONFLICT(key) DO UPDATE` (`created_at` uses `DO NOTHING`, so the first stamp survives); `probeAdapterMetaUnique` + the rebuild repair run on every adapter open. Two red→green tests naming BL-336.
-
-**Defect 2 (constraint enforcement was bypassed) remains OPEN and un-investigated** — that a UNIQUE/PK constraint can silently not apply while its index is inconsistent exposes every other table, and nothing here proves otherwise.
-
-Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 3: DELETE/REINDEX/rebuild probes against a copy of `~/.memory/memory.db` 2026-07-31, 4: libs/data/store/store-adapter/src/adapter-meta.ts, 5: libs/data/store/store-adapter/src/integrity.ts (probeAdapterMetaUnique, repairAdapterMeta)]
 
 ---
 
@@ -1610,56 +1517,6 @@ A repo-wide scan confirmed `integrity.ts` was the **only** affected file. `nx ru
 **Related:** BL-347 (probe indistinguishable from healthy), BL-319 (instrument wired to one of two paths), BL-352 (the engine this file implements).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/data/store/store-adapter/src/integrity.ts:445, 2: measured `grep` vs `/usr/bin/grep` divergence 2026-07-31, 3: p0-adapter-integrity + p1-tracing-research reports 2026-07-31]
-
----
-
-### BL-373 — A stale `-tshm` makes the store permanently unopenable, with a diagnostic that points at the wrong file — **Open (HIGH)** (2026-07-31)
-
-**Driver.** After restarting the backend, every store open failed, in a tight retry loop, with:
-
-```
-failed to open database /Users/nix/.memory/memory.db:
-  I/O error: short read on WAL frame at offset 383192: expected 4096 bytes, got 0
-```
-
-At that moment `memory.db-wal` was **0 bytes** and the database had been cleanly checkpointed. The error names a WAL frame that cannot exist in an empty WAL.
-
-**Root cause: `memory.db-tshm`** — Turso's own WAL index sidecar, 86016 bytes, **stale from the previous day (Jul 30 18:04)**. It recorded frame metadata for a WAL that no longer had content. Moving it aside made the store open immediately and correctly (9478 nodes). Confirmed by direct driver open before and after, outside the service.
-
-The ordinary `-shm` (also stale, 15:20) was **not** sufficient on its own — removing it alone left the failure unchanged. It is specifically the Turso `-tshm` that must be reconciled.
-
-**Three distinct defects here, worth separating:**
-1. **No self-recovery.** A stale sidecar is trivially reconcilable — it is a derived index — yet the store is permanently unopenable and the backend crash-loops. Nothing detects or clears it. This is BL-352's thesis (verify and repair what we generate) applied to a file BL-352 does not currently cover.
-2. **The diagnostic points at the wrong artifact.** It names `memory.db` and a WAL offset. Nothing mentions `-tshm`. Recovery required knowing Turso keeps a second index sidecar and guessing it was stale — nothing in the error, the logs, or any doc says so.
-3. **It is invisible in the telemetry as anything but a repeated error.** `store.open.error` fired identically for three separate pids with no escalation and no distinct signal — indistinguishable from any other open failure.
-
-**Fix sketch:** detect a `-tshm`/`-shm` that disagrees with the WAL at open, and reconcile it (remove and let it rebuild) rather than failing; name the actual offending file in the error; add it to the BL-352 integrity probes and to BL-330's orphaned-sidecar maintenance guard, which already covers stray `*-wal` files and should cover `*-tshm` too.
-
-**Acceptance (red→green, must name BL-373):** seed a store with a stale `-tshm` and an empty WAL, open it through the normal adapter path, and assert it opens successfully (or fails with an error naming `-tshm`). Must fail today.
-
-**Severity:** HIGH — total, unrecoverable-without-expert-knowledge outage of the store, triggered by an ordinary restart, on a defect the system generates itself.
-
-**Related:** BL-330 (unlinked WAL / orphaned sidecars — same family, adjacent file), BL-352 (verify and self-heal generated artifacts), BL-372 (the restart that exposed it).
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: live store.open.error across pids 46080/47203 2026-07-31, 2: direct driver open before/after moving ~/.memory/memory.db-tshm, 3: preserved at ~/.adhd/sox-ecosystem/memory/prerestart-20260731-174637/stale-tshm-jul30]
-
-
-**FIXED IN SOURCE 2026-07-31 (database-administrator, commit `8fe0571`). Stays OPEN until deployed.**
-
-Reproduced exactly from the preserved artifacts (`prerestart-20260731-174637/memory.db` + `stale-tshm-jul30` + `stale-wal-empty`): `failed to open database …: I/O error: short read on WAL frame at offset 383192: expected 4096 bytes, got 0`. Moving the `-tshm` aside opens it immediately with 9478 nodes.
-
-**All three sub-defects addressed, in `TursoAdapterImpl.connect()` — not in a post-open probe, because `connect()` itself is what fails, so nothing downstream ever runs:**
-1. **Self-recovery.** On a WAL-frame open failure the sidecar is moved aside and the open retried once. It is **renamed, never deleted** — the stale file is the only forensic record of why the store would not open, and preserving it is what made this item diagnosable. Recovery acts **only when the WAL is absent or 0 bytes**; a non-empty WAL may be legitimately described by the sidecar, so that case is declined and reported rather than guessed at.
-2. **The diagnostic names the right file.** `describeStaleWalIndexFailure()` names `<db>-tshm` explicitly, explains that it is derived state Turso rebuilds, and preserves the original driver text as primary evidence.
-3. **Distinct telemetry.** Emits through the integrity report sink as `[BL-373] stale WAL-index sidecar blocked the open …` / `… store opened after reconciling …`, so it is no longer indistinguishable from any other `store.open.error`.
-
-**Committable repro derived** (the live artifact is 43 MB and cannot be a fixture): seed ≥900 rows, capture the `-tshm`, `PRAGMA wal_checkpoint(TRUNCATE)`, close, restore the captured sidecar. Measured — 300 and 600 rows do **not** reproduce, 900 and 1200 do. The seed must use the **raw driver**: going through the adapter writes `_adapter_meta` after the checkpoint and puts fresh frames back into the WAL, defeating the fixture.
-
-**Red→green (names BL-373):** with the recovery disabled the test fails with the live signature (`short read on WAL frame at offset 2447312`); with it, the store opens and all 1200 rows are intact. The test's precondition calls `expect.fail()` — not `skip` — if a future driver stops exhibiting the defect, so it can never pass vacuously (BL-167).
-
-**Still open beyond the adapter fix:** BL-330's orphaned-sidecar maintenance guard should cover stray `*-tshm` alongside `*-wal`; `~/.memory/` still holds debris from earlier migrations.
-
-Citations: [wip/turso-live-metrics, database-administrator, claude, BL-373, 4: libs/data/store/store-adapter/src/integrity.ts (isStaleWalIndexError, recoverStaleWalIndex, describeStaleWalIndexFailure), 5: libs/data/store/store-adapter/src/turso-adapter.ts (connect recovery path), 6: libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts (BL-373 describe), 7: reproduction against ~/.adhd/sox-ecosystem/memory/prerestart-20260731-174637/ 2026-07-31]
 
 ---
 
