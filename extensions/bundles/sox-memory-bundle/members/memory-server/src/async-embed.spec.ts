@@ -283,7 +283,7 @@ describe('memory_ping — embed_pipeline block (time_to_vector + counters + mirr
 
   it('fresh store: block present, backlog mirrored, metrics null (no Phase-B activity yet — honest)', async () => {
     const dbPath = tmpStorePath();
-    getDb(dbPath); // materialise the store, zero pipeline traffic
+    await getDb(dbPath); // materialise the store, zero pipeline traffic
     const store = await pingStore(dbPath);
 
     expect(store.embed_pipeline).toBeDefined();

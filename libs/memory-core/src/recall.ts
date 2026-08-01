@@ -1025,7 +1025,10 @@ export async function memoryRecall(
     evaluateLateChunking(params.lateChunking);
 
   const afterCount = getProviderCallCount();
-  const providerCallCount = afterCount - beforeCount; // must be 0
+  // BL-254: this is the count of LOCAL embed calls, normally 1 on the query path
+  // (one uncached ONNX inference to embed the query). It is NOT the zero-network
+  // invariant — see the header, §1.
+  const providerCallCount = afterCount - beforeCount;
 
   // BL-100: compute filter stats so callers can distinguish filtered-empty from
   // empty-corpus. This is an additive output field — does not change the tool contract.
