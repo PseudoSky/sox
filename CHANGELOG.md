@@ -2,6 +2,39 @@
 
 ---
 
+## [Unreleased] — BL-384: `memory_search_entities` now uses real FTS on every backend instead of silently degrading to a LIKE scan
+
+### BL-384 (HIGH) — `memory_search_entities` issued raw SQLite FTS5 shadow-table SQL and silently degraded to a `LIKE` scan on Turso
+
+`memorySearchEntities` (`libs/memory-core/src/extensions.ts`) queried the FTS5 shadow table directly and unconditionally:
+
+```sql
+SELECT n.uid, n.name, n.content, n.summary, n.kind, n.importance
+  FROM fts_node f
+  JOIN node n ON n.rowid = f.rowid
+ WHERE fts_node MATCH ? AND n.t_invalid IS NULL AND n.kind = 'entity'
+ ORDER BY f.rank LIMIT ?
+```
+
+`fts_node` is the SQLite FTS5 shadow table; `openDb()` DROPS it as migration residue on the Turso branch (BL-347), so this statement always threw `no such table: fts_node` there. A bare `catch { /* fall through */ }` swallowed the failure and fell through to a `name LIKE ? OR content LIKE ?` substring scan ordered by `importance DESC` — no error, no telemetry, no visible signal. Every entity search on the default (Turso) backend has been a substring scan ranked by importance instead of a BM25/Tantivy-ranked full-text match since the migration — the FTS twin of BL-381 (`recall.ts`, already fixed; `extensions.ts` was the missed call site).
+
+Fixed by routing through `ftsDialectFor(adapter)` (`libs/memory-core/src/dialect.ts`), branching on `ftsDialect.supportsShadowTable` — never `adapter.config.type` — mirroring `recall.ts`'s existing FTS block. A genuine FTS query failure (as opposed to "unsupported") is now logged via `tlog.warn('search_entities.fts.error', { dialect, error })` instead of being swallowed, and the response carries a new `search_mode: 'fts' | 'like'` field so a degraded search is visible to callers rather than indistinguishable from a healthy one (BL-334).
+
+Red→green watched, both backends. Seeded a target entity (content contains the query term as a real token, low importance) alongside a decoy (query term embedded only inside a longer unrelated token — e.g. "gizmo" inside "widgetgizmoid" — high importance). Real tokenized FTS excludes the decoy; a LIKE substring scan includes it. With the fix reverted:
+
+```
+FAIL … finds only the tokenized match, not the substring decoy … (turso)
+AssertionError: expected [ 'bl384-decoy', 'bl384-target' ] to deeply equal [ 'bl384-target' ]
+FAIL … finds only the tokenized match … (sqlite)
+AssertionError: expected undefined to be 'fts'
+FAIL … a genuine FTS query failure is logged, not silently swallowed
+AssertionError: expected undefined to be 'like'
+```
+
+Restoring the fix: `4 passed (4)` on both backends, including a dedicated case proving the pre-fix raw `fts_node`/`MATCH` statement is rejected outright by Turso, and a case proving a genuine (injected) FTS failure is reported via `tlog.warn` rather than silently swallowed. (`libs/memory-core/src/{extensions,bl384-search-entities-fts-dialect.spec}.ts`)
+
+---
+
 ## [Unreleased] — BL-386, BL-382, BL-381, BL-365, BL-324, BL-344, BL-343, BL-323: near-dup detection restored on Turso; cosine_sim and threshold now work; crash-durable telemetry; one env-scrub policy; memory_stats survives malformed rows; sqlite-vec load verified fixed
 
 ### BL-386 (HIGH) — `memory_near_duplicates` cosine_sim and threshold now work; both were dead on every store
