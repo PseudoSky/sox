@@ -756,6 +756,31 @@ fleet spend.**
 > **Practical consequence: stop rationing worker tier and worker budget. Ration ORCHESTRATION** —
 > fewer, larger, better-specified dispatches, and less re-verification churn in the parent.
 >
+> ### ⛔ THE TIER ARGUMENT WAS ABOUT A DISTINCTION THAT DID NOT EXIST
+>
+> Measured from the transcripts (`scratch-claude-metadata stats --file … -o json | jq .primary_model`):
+>
+> | agent | packet | turns | tool calls | cache-created | cost | **model** |
+> |---|---|---|---|---|---|---|
+> | pkt01 | BL-348 (CRITICAL) | 301 | 153 | 635k | $8.90 | **claude-sonnet-5** |
+> | pkt02 | BL-351 substrate | 155 | 80 | 265k | $3.20 | **claude-sonnet-5** |
+> | pkt28 | BL-356+350 research | 132 | 67 | 266k | $2.71 | **claude-sonnet-5** |
+> | bl402 | BL-402 | 94 | 49 | 72k | $1.05 | claude-sonnet-5 |
+>
+> **All of them ran on sonnet.** No `model` override was ever passed, so the agent-type defaults
+> applied. **The three packets argued to require opus — a CRITICAL architecture change, a
+> from-scratch telemetry substrate, and a research packet gating four others — were all completed by
+> sonnet, successfully**, with watched red→green arms in each case.
+>
+> Every tier judgement earlier in this document was therefore reasoning about a distinction that was
+> never present in the dispatches. **Do not tier packets by intuition about difficulty.** The
+> observed variance tracks the task and the prompt, not the model: research (67 tool calls) came in
+> *below* implementation (153), and in the earlier triage fleet six agents on the identical prompt
+> and tier produced between 0 and 5 closures.
+>
+> **Total for five agents that closed BL-348, BL-402, BL-356+350 and half of BL-351: $17.88** —
+> against a ~$366 orchestrator session.
+>
 > ### Two calibration facts worth more than the numbers
 >
 > **1. Agent self-reports of their own consumption are systematically low by ~2.2–2.5x.**
