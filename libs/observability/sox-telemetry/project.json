@@ -6,6 +6,7 @@
   "sourceRoot": "libs/observability/sox-telemetry/src",
   "tags": [
     "type:lib",
+    "area:shared",
     "platform:node"
   ],
   "targets": {
