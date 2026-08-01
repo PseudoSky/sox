@@ -177,14 +177,14 @@ async function cmdInit(scope: ScopeKind, basePath: string): Promise<void> {
 
   const isNew = !fs.existsSync(dbPath);
   const adapter = await openDb(dbPath);
-  const db = (adapter as any).unwrap() as import('better-sqlite3').Database;
 
-  const existing = db
-    .prepare('SELECT scope_id FROM memory_scope WHERE scope = ?')
-    .get(scope) as { scope_id: string } | undefined;
+  const existing = await adapter.executeGet<{ scope_id: string }>(
+    'SELECT scope_id FROM memory_scope WHERE scope = ?',
+    [scope],
+  );
 
   const scopeId = existing?.scope_id ?? crypto.randomUUID();
-  const meta = initScope(db, scope, scopeId);
+  const meta = await initScope(adapter, scope, scopeId);
 
   await adapter.close();
 
@@ -215,11 +215,11 @@ async function cmdStatus(basePath: string): Promise<void> {
   for (const dbPath of paths) {
     try {
       const adapter = await openDb(dbPath);
-      const db = (adapter as any).unwrap() as import('better-sqlite3').Database;
-      const meta = db.prepare('SELECT * FROM memory_scope').get() as
-        | { scope: string; embed_model: string; created_at: string }
-        | undefined;
-      const nodeCount = (db.prepare('SELECT COUNT(*) as c FROM node').get() as { c: number }).c;
+      const meta = await adapter.executeGet<{ scope: string; embed_model: string; created_at: string }>(
+        'SELECT * FROM memory_scope',
+      );
+      const nodeCountRow = await adapter.executeGet<{ c: number }>('SELECT COUNT(*) as c FROM node');
+      const nodeCount = nodeCountRow?.c ?? 0;
 
       // BL-95: surface the unregistered note
       const unreg = unregisteredStores.find((s) => s.path === dbPath);
@@ -319,12 +319,9 @@ async function cmdList(basePath: string): Promise<void> {
     const dbFile = path.basename(dbPath);
     try {
       const adapter = await openDb(dbPath);
-      const db = (adapter as any).unwrap() as import('better-sqlite3').Database;
-      const nodes = db
-        .prepare(
-          `SELECT uid, kind, content, t_created FROM node WHERE t_invalid IS NULL ORDER BY t_created DESC LIMIT 20`,
-        )
-        .all() as { uid: string; kind: string; content: string | null; t_created: string }[];
+      const { rows: nodes } = await adapter.executeAll<{ uid: string; kind: string; content: string | null; t_created: string }>(
+        `SELECT uid, kind, content, t_created FROM node WHERE t_invalid IS NULL ORDER BY t_created DESC LIMIT 20`,
+      );
       const unreg = unregisteredStores.find((s) => s.path === dbPath);
       const label = unreg ? `${dbFile} ${unreg.scope}` : dbFile;
       console.log(`\n=== ${label} (${nodes.length} recent) ===`);
