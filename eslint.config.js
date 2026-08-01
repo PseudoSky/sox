@@ -12,6 +12,7 @@ const require = createRequire(import.meta.url);
 const soxRules = {
   rules: {
     'no-hook-assigned-skip': require('./tools/eslint-local/no-hook-assigned-skip.cjs'),
+    'no-storage-backend-leak': require('./tools/eslint-local/no-storage-backend-leak.cjs'),
   },
 };
 
@@ -88,6 +89,27 @@ export default [
     plugins: { sox: soxRules },
     rules: {
       'sox/no-hook-assigned-skip': 'error',
+    },
+  },
+  // Storage boundary: only libs/data/store/store-adapter/** may name a backend
+  // (sqlite/turso). See docs/reporting/memory/PLAN.md "Standing architectural
+  // rule" and the rule's own header for the BL-377/BL-380/BL-381/BL-385 receipts.
+  // Test files are exempt — they legitimately pin/exercise a specific backend.
+  {
+    files: ['**/*.ts', '**/*.tsx'],
+    ignores: [
+      '**/*.spec.ts',
+      '**/*.test.ts',
+      '**/__tests__/**',
+      'libs/data/store/store-adapter/**',
+    ],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: { ecmaVersion: 2022, sourceType: 'module' },
+    },
+    plugins: { sox: soxRules },
+    rules: {
+      'sox/no-storage-backend-leak': 'error',
     },
   },
 ];
