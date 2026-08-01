@@ -2,6 +2,40 @@
 
 ---
 
+## [Unreleased] — BL-330, BL-335, BL-336, BL-373: the adapter detects and repairs its own store damage
+
+Four HIGH items closed after verification, not after a marker. Each has a regression test that
+names its BL id and asserts the repair; `nx test store-adapter` is **292/292**.
+
+**BL-330 — an unlinked WAL no longer silently discards committed data.** Reproduced 2026-07-31
+against `@tursodatabase/database@0.7.1`: with the `-wal` unlinked mid-session, `close()` returned
+**with no error** and the reopened store had lost not merely rows but the table itself
+(`no such table: t`). Control run with the WAL intact retained 140/140. `TursoAdapterImpl.close()`
+now re-verifies WAL identity against a baseline captured at open and, on damage, runs
+`PRAGMA wal_checkpoint(PASSIVE)` — which copies the orphaned WAL's pages into the still-linked
+main database through the fd already held, recovering the data in full (140/140). It reports at
+every stage rather than refusing: refusing would strand the data in an inode nothing can reach.
+Test: *"BL-330 — unlinked WAL is detected at close and recovered, never silent."*
+
+**BL-335 — unpopulated secondary indexes are detected and repaired.** A bulk insert or restore
+could leave a secondary index existing but empty, and `CREATE INDEX IF NOT EXISTS` no-ops on it
+forever. The `btree_index_populated` probe compares index cardinality against the base table and
+repairs the shortfall. Test: *"BL-335 / BL-352 — unpopulated secondary index is detected and repaired."*
+
+**BL-336 — `_adapter_meta` can no longer carry duplicate primary keys.** A schema-impossible state
+observed live (3 keys × 2 rows). The `adapter_meta_unique` probe detects it and the repair path
+rebuilds the table through `_adapter_meta_repair`, collapsing to one row per key. Test:
+*"BL-336 — `_adapter_meta` must hold exactly one row per key."*
+
+**BL-373 — a stale `-tshm` sidecar no longer makes a store permanently unopenable.** Turso's own
+WAL-index sidecar could survive a crash and make `connect()` fail forever, with a diagnostic naming
+a WAL frame offset while the WAL was 0 bytes — the backend crash-looped and nothing recovered it.
+Because `connect()` itself is what fails, the reconciliation had to live in the open path rather
+than a post-open probe: `isStaleWalIndexError` / `recoverStaleWalIndex` move the sidecar aside when
+the WAL has nothing to lose. Test: *"BL-373 — a stale WAL-index sidecar is reconciled at open, not fatal."*
+
+---
+
 ## [Unreleased] — BL-347, BL-352, BL-374, BL-346: the store now verifies and repairs itself, and both temporary brakes are lifted
 
 **BL-352 — adapters verify and self-heal the artifacts they generate.** The migration path reconciled by *existence*, never integrity: `applySchema()` issued `CREATE TABLE/INDEX IF NOT EXISTS`, so a structure that existed but was **empty** was invisible to the migrator forever. `libs/data/store/store-adapter/src/integrity.ts` now performs verification **and** repair — five probes (`wal_identity`, `adapter_meta_unique`, `btree_index_populated`, `fts_index_live`, `pragma_integrity_check`) with `repairStoreIntegrity` for the findings it knows how to fix. This satisfies the owner's directive verbatim: *"the adapters should be verifying their store and migrating any missing data + generating missing indexes."*

@@ -137,7 +137,7 @@ surfaced **BL-386**.
 | S0 | Diagnose Turso migration failures | **done** | 90 backlog items filed, all cited |
 | S1 | Recover lost `db.ts` Turso wiring | **done** | `2ad196f` — 208 lines recovered from sourcemaps |
 | S2 | Adapter self-verify + repair (BL-352) | **done** | `fa786a2` — probes + repair, 279/279; BL-352 closed 2026-08-01 (integrity.ts implements verify **and** `repairStoreIntegrity`) |
-| S2b | **Unlinked-WAL data loss (BL-330)** | **OPEN** | ⚠️ S2 previously bundled BL-330 with BL-352 and reported both done. They are different defects: BL-352 is "adapters must verify their artifacts"; BL-330 is "a graceful `close()` silently discarded 90 of 140 committed rows." The second is unfixed and is PLAN.md **P0.1** |
+| S2b | Unlinked-WAL data loss (BL-330) | **done** | Verified 2026-08-01: `TursoAdapterImpl.close()` re-checks WAL identity and `wal_checkpoint(PASSIVE)`s an orphaned WAL back into the main file — 140/140 recovered vs total loss. Test *"BL-330 — unlinked WAL is detected at close and recovered, never silent"*, store-adapter 292/292. **S2's original bundling was right; splitting it as OPEN was my error** — I trusted the backlog marker over the code, which is the exact inversion this program exists to stop |
 | S3 | Deploy it; live store self-heals (BL-347) | **done** | verified below |
 | S4 | Fix `ProcessType: Background` (BL-331) | **done** | pri 4 → 20 by PID; p50 6422 ms → 333 ms (18.9x length-matched) |
 | S5 | Re-enable `SOX_DISABLE_EMBED_HEAL` (BL-339) | **done** | brake removed; 3,246 heals applied, 0 failed |
