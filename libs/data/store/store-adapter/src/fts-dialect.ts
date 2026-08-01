@@ -158,6 +158,16 @@ export class SqliteFTS5Dialect implements FTSDialect {
   scoreClause(_columns: string[], _queryParam: string): string {
     return 'fts_node.rank';
   }
+
+  /**
+   * FTS5 bareword queries default to AND between tokens — build an explicit
+   * OR of quoted tokens instead, so multi-term queries behave like a
+   * "any term matches" text-search signal (matching Turso's default and
+   * recall's intent). See the BL-367 doc comment on `FTSDialect.buildMatchQuery`.
+   */
+  buildMatchQuery(tokens: string[]): string {
+    return tokens.map((t) => `"${t.replace(/"/g, '""')}"`).join(' OR ');
+  }
 }
 
 // ── TursoFTSDialect ───────────────────────────────────────────────────────────
@@ -255,6 +265,18 @@ export class TursoFTSDialect implements FTSDialect {
   scoreClause(columns: string[], queryParam: string): string {
     const colList = columns.map((c) => `"${c}"`).join(', ');
     return `fts_score(${colList}, ${queryParam})`;
+  }
+
+  /**
+   * Tantivy's `fts_match` already matches on any token present (effectively
+   * OR by default) — but building the SAME explicit `"tok1" OR "tok2"` form
+   * here anyway makes both dialects' boolean semantics identical and
+   * documented, rather than SQLite's explicit-OR being paired with an
+   * implicit, undocumented default on this side. See the BL-367 doc comment
+   * on `FTSDialect.buildMatchQuery`.
+   */
+  buildMatchQuery(tokens: string[]): string {
+    return tokens.map((t) => `"${t.replace(/"/g, '""')}"`).join(' OR ');
   }
 }
 

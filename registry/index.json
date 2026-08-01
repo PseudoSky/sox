@@ -56,7 +56,7 @@
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "checksum": "sha256:e7c57c617a49808ccfab50b7b7a0a1bc6a19b072e053edb4a7bea9dfcca2a28c",
+    "checksum": "sha256:d9861f5f041fde9cb7a085e3a9b0f08b2a52771b896f5208d8afa1a253cbdf96",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -70,7 +70,7 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-flush",
-    "checksum": "sha256:c5902f106c3ed7acbd0f47494036957147929d99f36c757e1a908a036c9a0654",
+    "checksum": "sha256:92623b9171a604f1109bb0e665f401b7aa0d606779c25629fd664b79be9a7d5e",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -84,7 +84,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:90c7bb000580f8d0a95ab259a75e289493028dbb912b71c668a5f495271931b4",
+    "checksum": "sha256:1ca473c09c9ff73827f4b5fd7aaa63c19cff720c004f43db875a93eab53e29b0",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },

@@ -501,6 +501,20 @@ export async function memoryRecall(
     const vecParams: unknown[] = [...dialectArgs, ...filterParams, knnLimit];
     const vecResult = await adapter.executeAll<{ node_id: number; distance: number }>(vecSql, vecParams);
     vecRows = vecResult.rows;
+    // BL-367: stable secondary sort on node_id to break EXACT distance ties
+    // deterministically. Exactly-tied distances are common, not an edge
+    // case — orthogonal candidates against a query vector routinely tie at
+    // the same value — and neither backend's own KNN ordering documents (or
+    // guarantees) what breaks a tie: vec0's internal search order and
+    // Turso's vector-index iteration order were measured to disagree on an
+    // identical corpus, which corrupted cross-backend rank parity (BL-367).
+    // vec0 KNN queries reject a compound `ORDER BY distance, <col>` clause
+    // (empirically: "Only a single 'ORDER BY distance' clause is allowed on
+    // vec0 KNN queries"), so this can't be pushed into SQL for that side —
+    // applying it here in JS, uniformly for both dialects, keeps the
+    // tiebreak identical everywhere instead of two mechanisms that could
+    // drift apart.
+    vecRows = [...vecRows].sort((a, b) => a.distance - b.distance || a.node_id - b.node_id);
   }
 
   // Build rowid → vec rank map
@@ -508,12 +522,25 @@ export async function memoryRecall(
   vecRows.forEach((r, i) => vecRanks.set(r.node_id, i + 1));
 
   // 2b. FTS BM25 search (text search)
-  const ftsQuery = query
+  const ftsTokens = query
     .replace(/['"*\-+]/g, ' ')
     .trim()
     .split(/\s+/)
-    .filter((t) => t.length > 1)
-    .join(' ');
+    .filter((t) => t.length > 1);
+
+  // BL-367: build the bound MATCH-query text via the dialect, NOT a bare
+  // space-join. SQLite FTS5 ANDs bareword tokens (all must be present);
+  // Turso's Tantivy `fts_match` matches on ANY token (effectively OR). A
+  // space-joined query therefore returned zero SQLite hits for most
+  // multi-term queries while Turso returned real matches for the same
+  // corpus — measured as the dominant cause of BL-367's cross-backend
+  // recall-parity failure (FTS-arm content overlap 0.10 avg vs an 0.80
+  // bar). `buildMatchQuery` makes both dialects build the identical
+  // explicit `"tok1" OR "tok2" OR ...` form, verified empirically to
+  // produce IDENTICAL result sets on both backends for the parity corpus
+  // (`recall-parity-arm-attribution.test.ts`). See the doc comment on
+  // `FTSDialect.buildMatchQuery` (store-adapter/src/types.ts).
+  const ftsQuery = ftsDialect.supported ? ftsDialect.buildMatchQuery(ftsTokens) : '';
 
   const ftsRowids = new Map<number, number>();
   if (ftsQuery && ftsDialect.supported) {

@@ -135,6 +135,15 @@ export class SqliteVecDialect implements VectorDialect {
     const vec = new Float32Array(queryVec);
     const vecJson = vecToJson(vec);
     const distanceOrder = metric === 'dot' ? 'DESC' : 'ASC';
+    // BL-367: exactly-tied distances (real, not hypothetical — orthogonal
+    // candidates against a query vector routinely tie exactly) resolve to
+    // vec0's own undocumented KNN iteration order, which was observed to
+    // differ from Turso's tie order on an identical corpus. vec0 KNN
+    // queries reject a compound `ORDER BY distance, <col>` (rejects with
+    // "Only a single 'ORDER BY distance' clause is allowed on vec0 KNN
+    // queries" — verified empirically), so the tiebreak CANNOT be pushed
+    // into this SQL. Callers (recall.ts) apply a stable secondary sort on
+    // `node_id` in JS after fetching instead — see its doc comment.
     return {
       sql: `SELECT v.node_id, v.distance FROM "${table}" v JOIN node n ON n.rowid = v.node_id WHERE v.${column} MATCH ? AND k = ? AND __PLACEHOLDER__ ORDER BY v.distance ${distanceOrder}`,
       args: [vecJson, k],
@@ -233,6 +242,12 @@ export class TursoVectorDialect implements VectorDialect {
     const distanceOrder = metric === 'dot' ? 'DESC' : 'ASC';
     const hexBlob = `X'${hex}'`;
 
+    // BL-367: unlike vec0, Turso's plain ORDER BY happily accepts a
+    // compound key, so the tiebreak COULD live here — but it is applied
+    // uniformly in JS by the caller instead (see SqliteVecDialect.topKQuery
+    // for why sqlite can't do it in SQL), so both dialects get identical
+    // tie-break behaviour from one place rather than two different
+    // mechanisms that could drift apart.
     return {
       sql: `SELECT v.node_id, ${distFn}(v.${column}, ${hexBlob}) AS distance FROM "${table}" v JOIN node n ON n.rowid = v.node_id WHERE __PLACEHOLDER__ ORDER BY distance ${distanceOrder}`,
       args: [],

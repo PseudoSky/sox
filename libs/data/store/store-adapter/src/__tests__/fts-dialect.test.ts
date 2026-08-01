@@ -112,6 +112,30 @@ describe('SqliteFTS5Dialect', () => {
     });
   });
 
+  // ── 1d.5 buildMatchQuery (BL-367) ────────────────────────────────────────
+
+  describe('buildMatchQuery', () => {
+    it('joins tokens with an explicit OR, quoting each — NOT a bareword space-join', () => {
+      // FTS5 bareword queries default to implicit AND; a naive space-join
+      // ("fox riverbank") requires every token present in the same row and
+      // returns zero matches unless they all co-occur. See the BL-367 doc
+      // comment on FTSDialect.buildMatchQuery.
+      expect(dialect.buildMatchQuery(['fox', 'riverbank'])).toBe('"fox" OR "riverbank"');
+    });
+
+    it('handles a single token', () => {
+      expect(dialect.buildMatchQuery(['fox'])).toBe('"fox"');
+    });
+
+    it('escapes embedded double quotes by doubling', () => {
+      expect(dialect.buildMatchQuery(['say "hi"'])).toBe('"say ""hi"""');
+    });
+
+    it('returns empty string for an empty token list', () => {
+      expect(dialect.buildMatchQuery([])).toBe('');
+    });
+  });
+
   // ── 1e. scoreClause ──────────────────────────────────────────────────────
 
   describe('scoreClause', () => {
@@ -260,6 +284,27 @@ describe('TursoFTSDialect', () => {
     it('handles single column', () => {
       const result = dialect.matchClause(['title'], ':q');
       expect(result.sql).toBe('fts_match("title", :q)');
+    });
+  });
+
+  // ── 2d.5 buildMatchQuery (BL-367) ────────────────────────────────────────
+
+  describe('buildMatchQuery', () => {
+    it('joins tokens with an explicit OR, quoting each — identical shape to SqliteFTS5Dialect', () => {
+      // Tantivy's fts_match already matches on any token by default, but this
+      // dialect builds the SAME explicit form as the sqlite side so both
+      // dialects' boolean semantics are documented and identical rather than
+      // one explicit + one implicit. See the BL-367 doc comment on
+      // FTSDialect.buildMatchQuery.
+      expect(dialect.buildMatchQuery(['fox', 'riverbank'])).toBe('"fox" OR "riverbank"');
+    });
+
+    it('escapes embedded double quotes by doubling', () => {
+      expect(dialect.buildMatchQuery(['say "hi"'])).toBe('"say ""hi"""');
+    });
+
+    it('returns empty string for an empty token list', () => {
+      expect(dialect.buildMatchQuery([])).toBe('');
     });
   });
 

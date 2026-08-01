@@ -2,6 +2,64 @@
 
 ---
 
+## [Unreleased] — BL-367: cross-backend recall parity — attributed and fixed, not guessed at
+
+`recall-parity.test.ts` asserts sqlite and turso return ≥80% overlapping `memoryRecall` results for
+identical writes/queries. The first honest run (after fixing the test's own uid-vs-content comparison
+bug) measured **0.52** — a real divergence, not the test's fault this time. Per BL-367's explicit
+"do not guess this" instruction, each of recall's three fused arms (vec KNN, FTS/BM25, temporal) was
+run in **isolation** against both backends on the same corpus before touching any code:
+
+```
+arm       | avg content-overlap (sqlite vs turso)
+----------|---------------------------------------
+vec       | 0.52   (real, but NOT the dominant cause — see BL-392)
+fts       | 0.10   (dominant cause — fixed here)
+temporal  | 1.00   (no divergence — backend-agnostic SQL)
+```
+
+**Root cause: the two FTS engines have opposite implicit boolean defaults.** SQLite FTS5 ANDs
+bareword tokens together (`fox riverbank` requires BOTH terms in one row); Turso's Tantivy
+`fts_match` matches on ANY token (effectively OR). `recall.ts`'s naive space-joined query text meant
+SQLite returned **zero** FTS matches for 4/5 parity-test queries while Turso returned real hits for
+the identical corpus — a defect invisible to single-backend tests (BL-347 flagged the Turso FTS index
+as "dead" from a different angle; this is that same query boundary manifesting the opposite way).
+
+**Fix:** `FTSDialect` gained a `buildMatchQuery(tokens)` method — both `SqliteFTS5Dialect` and
+`TursoFTSDialect` now build the identical explicit `"tok1" OR "tok2" OR ...` query text, instead of
+relying on either engine's implicit (and opposite) default:
+
+```ts
+ftsDialect.buildMatchQuery(['fox', 'riverbank']); // '"fox" OR "riverbank"' — same on both dialects
+```
+
+Verified empirically to produce byte-identical result sets on sqlite and turso for every parity-test
+query. `recall.ts` now calls it instead of a bare `.join(' ')`.
+
+A secondary, smaller divergence in the vec-KNN arm (0.52 avg overlap) was root-caused separately:
+sqlite (`vec0`, undeclared `distance_metric` ⇒ L2 default) and turso (explicit `vector_distance_cos`)
+compute mathematically **consistent** distances for the one non-degenerate pair in the test corpus —
+not a metric bug. The divergence is dominated by arbitrary tie-break order among candidates that are
+*exactly* tied (zero cosine similarity), a byproduct of the tiny synthetic corpus and coarse
+feature-hash test embeddings producing ties that real dense (BGE) embeddings essentially never
+produce. `recall.ts` now applies a stable secondary sort on `node_id` after fetching (vec0 KNN queries
+reject a compound `ORDER BY distance, <col>` in SQL, so this can't be pushed into the dialect query
+itself) — this makes ordering deterministic and reproducible, though it does not by itself guarantee
+cross-store agreement (rowid assignment is a property of each store's own history). The FTS fix alone
+was sufficient to bring the composite test from 0.52 to ≥0.80; the residual vec-arm tie-break
+fragility is real but out of scope for the parity bar and filed as BL-392.
+
+**Acceptance verified:** `npx nx test memory-server` → `recall-parity.test.ts` passes at the
+**unmodified 0.80 threshold** (not relaxed), stable across repeated runs (deterministic embeddings).
+Full suite: 184/184 passed. New permanent per-arm attribution coverage:
+`recall-parity-arm-attribution.test.ts`.
+
+Files: `libs/data/store/store-adapter/src/{types,fts-dialect,vector-dialect}.ts`,
+`libs/memory-core/src/recall.ts`,
+`extensions/bundles/sox-memory-bundle/members/memory-server/recall-parity-arm-attribution.test.ts` (new).
+
+---
+
 ## [Unreleased] — BL-372: `sox service restart` — a deploy verb that refuses to report success it hasn't verified
 
 ### BL-372 (HIGH) — restarting the service did NOT deploy new code: the backend survived as an orphan and kept serving the old bundle
