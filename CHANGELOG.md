@@ -2,6 +2,24 @@
 
 ---
 
+## [Unreleased] — BL-289, BL-299, BL-290, BL-300, BL-357, BL-363, BL-377: embed isolation doc fixed, audit probe hardened, schema unified, test files build-gated, blind casts fixed
+
+**BL-289 — Dead `memory-core/src/embedWorker.ts` removed and BL-11 process-boundary doc updated.** The file was already excluded from the TypeScript build but still lingered with stale documentation. Deleted the file and rewrote `libs/memory-core/src/index.ts`'s BL-11 doc comment to accurately describe the current architecture: embed isolation now lives in `@adhd/sox-embedding-provider`'s shared ONNX worker (fastembedProcessHost.ts for fastembed, sharedOnnxWorker.ts for cross-encoder/NLI), not a local embedWorker.ts. Verified via `nx build memory-core` and `nx test memory-core` both passing unchanged.
+
+**BL-299 — `memory-refactor` audit startup timing flakiness mitigated with retries.** The live MCP probe spawned by `audit_memrefactor.py` was timing out occasionally due to ONNX model warmup taking longer than the spawn window. Implemented automatic retry logic with a 30-second deadline and 5-second retry intervals, allowing the server to complete its initialization before the probe asserts. The probe now fails LOUD (never fabricates a pass) but can recover from transient startup delays.
+
+**BL-290 — `@adhd/sox-vector-store` phantom dependency resolved.** Same defect and resolution as BL-255: the unused workspace dependency was removed from `libs/memory-core/package.json` as part of the dependency audit pass.
+
+**BL-300 — Node/edge schema unified; no more duplication.** `memory-core` no longer maintains its own copy of `graph-store`'s `node` and `edge` table DDL. Both consumers import the canonical schema from `graph-store`, eliminating the drift risk documented in BL-301.
+
+**BL-357 — Test files excluded from library builds; two-convention split resolved.** `libs/data/store/store-adapter/tsconfig.lib.json` (and `blob-store`/`claim-verification`, the other two affected packages) now exclude both `src/**/*.spec.ts` and `src/**/*.test.ts` from the library build. A type error in a test file no longer cascades into a build failure for downstream consumers. Red→green verified: a deliberate type error in a `__tests__/*.test.ts` file now fails `typecheck-tests` (correct gate) rather than `build`.
+
+**BL-363 — Stray `doesnt_exist_yet` table removed from live store.** The probe table left by an earlier diagnostic session has been cleaned up. Provenance not definitively identified in this pass, but the table no longer exists in the production store.
+
+**BL-377 — Blind casts to `SqliteAdapter` fixed; both `export.ts` and `reembed.ts` use async `StoreAdapter` API.** Both files replaced their `(adapter as SqliteAdapter).unwrap()` pattern with calls to the backend-agnostic `executeAll`/`executeGet` methods. The blind cast would have returned a synchronous better-sqlite3 handle on the SQLite backend and a Promise-returning `@tursodatabase/database` handle on Turso (the default), causing `TypeError: episodes is not iterable`. Code paths are now backend-safe and testable on both Turso and SQLite without modification.
+
+---
+
 ## [Unreleased] — BL-255: unused sox-vector-store dependency removed from memory-core
 
 **BL-255 — `@adhd/sox-vector-store` removed from `memory-core` runtime dependencies.** After BL-92 rewired `reembed.ts` to migrate directly in `vec_node`, no file under `libs/memory-core/src/` imported the vector-store package. Removed the unused workspace dependency from `libs/memory-core/package.json` and reran `pnpm install` to update the lockfile, clearing a load-bearing transitive dependency that was paying zero benefit.

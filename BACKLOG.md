@@ -462,10 +462,6 @@ The bundler externals policy (`extension-bundling.md` §2) is a manual checklist
 
 Wiring the 8 DoD checks (BL-260) cleared the "not proven" fails and let gap-check advance to its behavioral-fidelity rule, which requires an `entrypoint:` sub-bullet on behavioral DoD clauses. `[dod.4]/[dod.5]/[dod.6]` in `docs/plan/memory-refactor/README.md` lack it (3 of the 9 residual fails). **Fix:** add an `entrypoint:` line under each naming the exact invocation.
 
-### BL-299 — `memory-refactor` audit live-MCP probe is startup-timing-flaky — **Open (LOW, robustness)** (2026-07-11)
-
-The `audit_memrefactor.py` live write→recall probes (`audit-final.2/.3`, `dod.4`) spawn an MCP stdio client; server startup/model warmup sometimes exceeds the spawn window, yielding a *blocked* (red) result. It fails LOUD (never fabricates a pass — the safe direction), but the orchestrator should expect occasional blocked results and retry. **Fix:** add a readiness handshake or longer warmup window before the probe asserts.
-
 ### BL-274 — no concurrency stress test for parallel writes + reads against memory server — **Open (MEDIUM)** (2026-07-11)
 
 Ad-hoc stress test proved parallel reads fine (8 concurrent, 1.7s, 0 timeouts). Untested:
@@ -612,51 +608,6 @@ with no `optionalDependencies` split. Confirmed via `git log --oneline -- libs/d
 
 ---
 
-### BL-289 — Delete dead `memory-core/src/embedWorker.ts` and fix stale BL-11 doc comment — **Open (LOW)** (2026-07-11)
-
-**Package:** `@adhd/sox-memory-core` (`libs/memory-core`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-DEADCODE-001)
-
-**Problem.** `libs/memory-core/src/embedWorker.ts` is dead code: excluded from the build and superseded by embedding-provider's shared ONNX worker host, but `index.ts`'s BL-11 process-boundary doc-comment still describes it as the active isolation mechanism, misleading anyone reading the package's top-level doc about how embed isolation actually works today.
-
-**Evidence.** `libs/memory-core/tsconfig.lib.json:15` — `"exclude": ["src/**/*.spec.ts", "src/**/*.test.ts", "src/embedWorker.ts", "node_modules"]` — the file is explicitly excluded from the `tsc` build. `libs/memory-core/src/index.ts:12-13` still reads: `"Use the embed worker thread — embed() in this library already routes through embedWorker.ts (worker_threads), keeping ONNX isolated from the main thread."` But `libs/memory-core/src/embed.ts:4-5` itself documents the real current state: `"This is a thin ping/stats adapter over @adhd/sox-embedding-provider. The old embed.ts + embedWorker.ts have been replaced by the canonical [shared ONNX worker host]."` and `embed.ts:17-18` imports `createEmbeddingProvider`/`EmbeddingProvider` from `@adhd/sox-embedding-provider`, not from a local `embedWorker.ts`.
-
-**Root cause.** When embed isolation was migrated to embedding-provider's shared ONNX worker host (BL-238/BL-171, tracked in embedding-provider's own history), `memory-core/src/embed.ts` was updated and correctly self-documents the migration, but the higher-level BL-11 doc-comment in `index.ts` (written earlier, describing the original in-package `embedWorker.ts` isolation) was never revisited.
-
-**Proposed design.**
-1. Delete `libs/memory-core/src/embedWorker.ts` (confirm zero remaining references first: `grep -rn "embedWorker" libs/memory-core/src/*.ts` — expect only the stale `index.ts:13` comment and the tsconfig exclude line, both being fixed/removed in this same change).
-2. Remove the `"src/embedWorker.ts"` entry from `libs/memory-core/tsconfig.lib.json:15`'s `exclude` array (no longer needed once the file is gone).
-3. Rewrite `index.ts:9-19`'s BL-11 doc block to describe the actual current mechanism: embed isolation now lives in `@adhd/sox-embedding-provider`'s shared ONNX worker (`getSharedOnnxWorker`/`SharedOnnxWorkerClient`, per `embed.ts:4-5`'s own comment), not a local `embedWorker.ts`. Point to `embed.ts` as the integration point.
-
-**Acceptance criteria.**
-- [ ] `libs/memory-core/src/embedWorker.ts` no longer exists in the tree.
-- [ ] `grep -n "embedWorker.ts" libs/memory-core/src/index.ts` returns zero matches.
-- [ ] `nx build memory-core` and `nx test memory-core` both pass unchanged (proves the file was truly unreferenced/dead — this is the regression check: if some consumer secretly needed it, the build breaks).
-
-**Effort / risk / blast radius.** S effort, low risk — file is confirmed excluded from the build already, so deleting it cannot regress the compiled output. Doc fix is pure clarity improvement for future readers/agents of `memory-core`.
-
----
-
-### BL-290 — Wire in or drop the phantom `@adhd/sox-vector-store` dependency of `memory-core` — **Open (LOW)** (2026-07-11)
-
-**Package:** `@adhd/sox-memory-core` (`libs/memory-core`)  **Origin:** adhd/agent-mcp-authoring integration audit (was SOX-PHANTOM-001)
-
-**Problem.** `@adhd/sox-vector-store` is declared as a `workspace:*` dependency in `memory-core/package.json` but is never actually imported anywhere in `src/` or `dist/` — it appears only in code comments.
-
-**Evidence.** `libs/memory-core/package.json:30` — `"@adhd/sox-vector-store": "workspace:*"`. `grep -rn "sox-vector-store" libs/memory-core/src/*.ts` matches only two comment lines: `reembed.ts:56` (`"generic multi-space \`vec_<model>\` side tables from \`@adhd/sox-vector-store\`,"`) and `reembed.ts:233` (similar comment). `grep -rln "sox-vector-store" libs/memory-core/dist/*.js` confirms only `dist/reembed.js` matches, and only in the transpiled-through comment text (same two lines) — no `require("@adhd/sox-vector-store")` exists anywhere in `dist/`.
-
-**Root cause.** `memory-core` manages vectors directly via `sqlite-vec` (`db.ts:198-201` loads `sqlite-vec` directly against its own `better-sqlite3` handle) rather than delegating to the standalone `@adhd/sox-vector-store` package's `SqliteVectorBackend`/`openVectorStore`. The dependency was likely added during an earlier design where `memory-core` was expected to delegate vector storage to `vector-store`, then the design changed to inline `sqlite-vec` usage, but the now-unnecessary `package.json` entry was never removed. `reembed.ts`'s comments suggest a *future* multi-space vector table design that would use `vector-store`'s generic `vec_<model>` tables — i.e., this may be a forward-looking placeholder, not pure leftover cruft.
-
-**Proposed design.**
-- Option A (recommended if the multi-space reembed design in `reembed.ts:56,233`'s comments is still planned): keep the dependency but file it as a tracked follow-up to actually wire it in when that design lands, and add a one-line note in `package.json` (or a `// TODO` next to the dependency) explaining why it's present-but-unused today, so a future auditor doesn't re-flag it as pure phantom cruft.
-- Option B (recommended if the multi-space design is not imminent): drop `"@adhd/sox-vector-store": "workspace:*"` from `memory-core/package.json` `dependencies` entirely. `memory-core` continues managing vectors directly via `sqlite-vec` as it does today; re-add the dependency if/when the `reembed.ts` multi-space design is actually implemented.
-- Recommendation: Option B — an unused dependency creates real audit/supply-chain noise (this exact finding exists because of it) and a `workspace:*` pin costs nothing to re-add later; "kept for a future design" is exactly the kind of speculative dependency this repo's "You always evaluate best of class 3rd party tools before authoring" / DRY discipline argues against carrying indefinitely.
-
-**Acceptance criteria.**
-- [ ] Either `@adhd/sox-vector-store` is removed from `memory-core/package.json` `dependencies`, or it has at least one real `import`/`require` in `src/` (not just a comment) wiring it into the multi-space reembed path.
-- [ ] A dependency-audit test/script (e.g. comparing `package.json` `dependencies` against actual `import`/`require` statements found by static grep across `src/`) flags this package if a declared dependency has zero non-comment usages — regression guard for future phantom deps across the monorepo, not just this one instance.
-
-**Effort / risk / blast radius.** S effort (single `package.json` edit, or documented TODO). Zero runtime risk either way — the dependency currently has no code path exercising it.
-
 ---
 
 ### BL-291 — Standardize a typed native-open error across all SQLite-backed data packages — **Open (MEDIUM)** (2026-07-11)
@@ -723,24 +674,6 @@ By contrast: `libs/data/store/blob-store/src/store.ts:112` — `this.db = new (a
 ## agent-mcp-authoring integration audit — structural gaps (schema duplication / migration / dead dep, 2026-07-11)
 
 Surfaced while evaluating whether the adhd registry should reuse `@adhd/sox-graph-store` directly (Option A) instead of reimplementing FTS5 (Option B). These are distinct from the BL-282..295 findings and each other. Origin: adhd/agent-mcp-authoring.
-
-### BL-300 — `node`/`edge` table schema is duplicated across `graph-store` and `memory-core` (no single source of truth) — **Open (MEDIUM)** (2026-07-11)
-
-**Package:** `@adhd/sox-graph-store` (`libs/data/graph/graph-store/src/index.ts` `GRAPH_DDL`) + `@adhd/sox-memory-core` (`libs/memory-core/src/schema.ts` `DDL`)  **Origin:** adhd/agent-mcp-authoring integration audit
-
-**Problem.** The `node` and `edge` tables are each defined **twice** — once in `graph-store`'s `GRAPH_DDL` and again, independently, in `memory-core`'s `schema.ts` `DDL`. There is no shared canonical schema module; the two are copy-pasted hand-maintained SQL strings that must be kept in lockstep by convention alone. `memory-core` also *consumes* `graph-store` at runtime (`createGraphBackend` is imported in `neardup.ts:12`, `enrich-batch.ts:17`, `entity-episodes.ts:11`, `cluster.ts:18`, `near-duplicates.ts:11`, `list-entities.ts:11`) — i.e. `graph-store` operates over the very `node`/`edge` tables that `memory-core`'s own DDL created — so the two definitions describe the *same physical tables* yet live in two packages.
-
-**Evidence.** `graph-store/src/index.ts:19` and `memory-core/src/schema.ts:46` both contain `kind TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session'))`, plus full parallel `CREATE TABLE node/edge` blocks. `graph-store`'s `applySchema()` (`dist/index.js:316`) runs `CREATE TABLE IF NOT EXISTS node (...)` — a no-op when `memory-core` already created `node`, which is exactly what happens when `memory-core` passes its own `db` handle into `createGraphBackend(db)`.
-
-**Root cause.** `graph-store` was extracted from `memory-core` (or vice-versa) by copying the DDL rather than depending on a shared schema package. Two owners, one physical table.
-
-**Proposed design.** Extract the canonical `node`/`edge`/index DDL into a single source of truth — either a tiny `@adhd/sox-graph-schema` (types package, zero runtime) that both import, or have `memory-core` import `GRAPH_DDL`/`FTS_DDL` from `@adhd/sox-graph-store` and delete its private copy. Recommend the latter (graph-store already owns the graph primitives; memory-core adds only its memory-specific tables — `memory_scope`, `sox_store_meta`, `organizer_queue`, `request_ledger`, `promotion_queue` — which stay in memory-core). This makes drift structurally impossible (BL-301) and gives migrations one place to live (BL-302).
-
-**Acceptance criteria.**
-- [ ] Exactly one `CREATE TABLE ... node (` and one `... edge (` definition exists in the repo (grep proves it); `memory-core` composes graph DDL + its own memory-only tables.
-- [ ] A test asserts `memory-core`'s applied `node` schema is byte-identical to `graph-store`'s (e.g. `PRAGMA table_info(node)` equality) so a future edit to one is forced through the shared source.
-
-**Effort / risk / blast radius.** M effort. Risk: low-medium (touches the live memory schema — must keep the applied SQL identical to today's memory-core `node` to avoid an accidental migration). Blast radius: memory-core, graph-store, analysis (also imports graph-store), hybrid-search.
 
 ### BL-301 — the two duplicated `node`/`edge` schemas have already DRIFTED (latent column/constraint mismatch) — **Open (HIGH)** (2026-07-11)
 
@@ -1757,55 +1690,6 @@ Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-351, 1: `ls -
 
 ---
 
-### BL-357 — Library builds compile `__tests__/*.test.ts`: one test-file type error takes down the build and every downstream consumer — **Open (HIGH)** (2026-07-31)
-
-**Driver.** `store-adapter`'s `build` target failed to compile — not on library code, but on a **test file**:
-
-```
-libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts:345:17 - error TS2339:
-  Property 'init' does not exist on type 'SqliteAdapter'.
-NX  Running target test for project memory-core and 7 tasks it depends on failed
-Failed tasks: - store-adapter:build
-```
-
-Because `memory-core:test` depends on `store-adapter:build`, a type error in a **store-adapter test file** made `npx nx test memory-core` unrunnable for a different agent working in a different package.[1] Work was blocked on a file the blocked party had no reason to read.
-
-**Root cause — two test-file naming conventions, one exclude.** `libs/data/store/store-adapter/tsconfig.lib.json`:
-```json
-"include": ["src/**/*.ts"],
-"exclude": ["src/**/*.spec.ts"]
-```
-`*.spec.ts` is excluded; **`__tests__/**/*.test.ts` is not**. Any test written with the `.test.ts` convention is therefore compiled *into the library build*, and its type errors are build errors with the full downstream blast radius.[2] This is not new — `src/__tests__/turso-fts-index-method.test.ts` already existed under the same convention; the configuration has simply never been exercised by a test file that failed to typecheck.
-
-**Blast radius:** every consumer of a package whose `tsconfig.lib.json` uses a `*.spec.ts`-only exclude. This must be audited repo-wide — the same two-convention split is likely present elsewhere, and it converts an ordinary red test into a cross-package build outage.
-
-**Repo-wide audit COMPLETE (2026-07-31, `p0-test-infra`).** All 21 `tsconfig.lib.json` files outside worktrees were parsed and their `exclude` arrays compared. **Exactly 3 of 21 are affected** — all three under `libs/data/`, all three excluding `src/**/*.spec.ts` and nothing else:[4]
-
-| Package | `exclude` | Affected |
-|---|---|---|
-| `libs/data/store/store-adapter` | `['src/**/*.spec.ts']` | **yes** — the outage package |
-| `libs/data/store/blob-store` | `['src/**/*.spec.ts']` | **yes** |
-| `libs/data/verify/claim-verification` | `['src/**/*.spec.ts']` | **yes** |
-| the other 18 | include `src/**/*.test.ts` | no |
-
-So this is a localised drift, not a repo-wide convention failure — the 18 correct configs are the norm and these 3 are the outliers, which is why it went unnoticed for so long: only a package that *both* omits the pattern *and* has a `.test.ts` file under `src/` can ever trip it, and until `integrity-selfheal.test.ts` was written with a type error, none had.
-
-**Related but distinct from BL-340.** BL-340 is *tests are never typechecked*; this is *tests are typechecked as if they were library code*. Same family — no deliberate boundary between test and lib type-checking — opposite failure. Fixing one does not fix the other, and BL-340's new `typecheck-tests` target is the correct home for test type errors, precisely so `build` stops being it.
-
-**Fix sketch:** exclude both conventions from every `tsconfig.lib.json` (`src/**/*.spec.ts`, `src/**/*.test.ts`, `src/__tests__/**`); audit every package for the same gap; standardise on one test-file convention and lint for it. Test type errors then surface in `typecheck-tests` (BL-340) where they belong, without taking a build down.
-
-**Acceptance (red→green, must name BL-357):** introduce a deliberate type error in a `__tests__/*.test.ts` file and assert `nx build <pkg>` still SUCCEEDS while `nx run <pkg>:typecheck-tests` FAILS. Today the first fails.
-
-**Severity:** HIGH — a red test in one package silently becomes a build outage in every downstream package. It cost a concurrent agent its ability to measure at all.
-
-**Numbering note:** originally filed as BL-354 in commit `83b0483`; renumbered to BL-357 after `p1-tracing-research` filed a different BL-354 in `0e9026b` minutes earlier. That item has since moved again — to BL-356, then BL-358 — as two further agents claimed the same ids. **There is no BL-354 any more.** References to "BL-354" in `83b0483`'s commit message mean this item. See BL-359 for the allocation race that caused all of it.
-
-**Related:** BL-340 (tests never typechecked — the inverse), BL-235 (destructive builds; note `atomic-tsc` correctly left the existing `dist/` intact here, which is the behaviour BL-235 wants everywhere).
-
-Citations: [wip/turso-live-metrics, team-lead + p0-test-infra, claude, turso-go-live, 1: live `npx nx test memory-core` failure 2026-07-31, 2: libs/data/store/store-adapter/tsconfig.lib.json:10-11, 3: libs/data/store/store-adapter/src/sqlite-adapter.ts:150 (`init()` exists on the class but is not declared on the interface `createSqliteAdapter()` returns), 4: libs/data/store/blob-store/tsconfig.lib.json, libs/data/verify/claim-verification/tsconfig.lib.json, and the 18 correct configs (libs/{tokenguard-core,install-engine,host-runtime,service-proxy,source-provider,manifest,mcp-runtime,authoring,host-registry,registry,memory-core}/tsconfig.lib.json + libs/data/{analysis/analysis,embed/embedding-provider,ingest/ingest,graph/graph-store,vectors/vector-store,search/hybrid-search,queue/task-queue}/tsconfig.lib.json)]
-
----
-
 ### BL-359 — BL ids are allocated by a read-then-write race: three agents, two collisions, one dangling cross-reference — **Open (MEDIUM, process)** (2026-07-31)
 
 **Driver.** A new backlog id is chosen by reading the current maximum `### BL-<n>` from a shared file and adding one. There is no reservation and no uniqueness check, so any two agents who read before either writes will pick the **same id**. On 2026-07-31, three agents filing within roughly an hour produced **two collisions**:
@@ -2408,22 +2292,6 @@ Four recipes were tried and all failed, and the failures are worth keeping:
 **Related:** BL-347, BL-352, BL-361, BL-329, BL-338.
 
 Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 1: four damage-recipe attempts against @tursodatabase/database@0.7.1 2026-07-31, 2: better-sqlite3 `writable_schema=ON` open of a Turso-FTS store 2026-07-31, 3: libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts]
-
----
-
-### BL-363 — Stray `doesnt_exist_yet` table in the live store — **Open (LOW)** (2026-07-31)
-
-**Driver:** `sqlite_master` on the live `~/.memory/memory.db` lists a user table named **`doesnt_exist_yet`** alongside the 12 real tables.[1] It is not in any schema DDL in the repo — almost certainly a probe artifact left by a test or a diagnostic session that ran `CREATE TABLE doesnt_exist_yet` against the production store.
-
-**Why it is worth a line:** it is direct evidence that something wrote arbitrary DDL to the live store, and any schema-completeness or drift check that enumerates tables will have to explain it. It also counts against BL-352's premise that everything in the store is adapter-generated.
-
-**Fix sketch:** identify what created it (grep the repo and the BL-320 telemetry for the name) before dropping it — the provenance is more valuable than the cleanup. Do not drop it while the live store is an incident reproduction.
-
-**Acceptance:** provenance identified and recorded; table removed as part of a supported maintenance path, not by hand.
-
-**Severity:** LOW — harmless in itself.
-
-Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 1: `SELECT type,name FROM sqlite_master` against a copy of `~/.memory/memory.db` 2026-07-31]
 
 ---
 
