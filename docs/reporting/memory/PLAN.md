@@ -538,7 +538,7 @@ rewritten, only unblocked.
 **Closes:** BL-391
 **Files:** `libs/memory-core/src/db.ts` (`openDbReadOnly`, ~:886), `libs/memory-core/src/recall.ts` (`getFederationConnection` ~:1208, `recallFromOpenDb` ~:1226-1237), + a new spec.
 **requires:** none
-**tier:** opus, ~25k tokens — the first step is a determination, not an edit.
+**tier:** opus, ~70k tokens / ~25 turns — step 1 is an open determination; a prior probe crashed settling it
 **Produces:** **first, a determination** — whether `memoryRecall` catches the FTS throw internally (BM25 silently lost for every Turso store) or not (every Turso store contributes zero results). Record it before editing; it decides both severity and fix. Then the fix, plus a logging change so `recallFromOpenDb`'s bare catch can never again make a whole store vanish silently.
 **acceptance:** four steps, and step 1 is a determination that must be recorded before any edit.
 1. **Determine, do not guess**, whether `memoryRecall` catches the FTS throw internally. The two outcomes differ enormously and both are silent: if it catches → federated recall silently loses BM25 for every Turso store and returns plausible vector+temporal results; if it does not → `recallFromOpenDb`'s bare `catch { return [] }` makes **every Turso store contribute zero results**, indistinguishable from "no matches". A prior probe crashed spawning the embed provider; use a seam or a direct unit test instead. **Record which it is before changing anything — it decides the severity and the fix.**
@@ -551,7 +551,7 @@ rewritten, only unblocked.
 **Closes:** BL-318, BL-317
 **Files:** `libs/memory-core/src/enrich.ts`, `libs/memory-core/src/write.ts`, + specs.
 **requires:** none
-**tier:** sonnet, ~18k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** a test naming BL-318 asserting a write that would produce `content: null` is rejected or repaired at the boundary rather than persisted; a test naming BL-317 asserting the mislabelling shape is refused. Live cross-check: `memory_stats` currently reports `legacy_episodes: 2`, `stale_episodes: 2` — state whether these are the same rows.
 
 ### PKT-43 — BL-362: no committable Turso FTS damage fixture
@@ -559,7 +559,7 @@ rewritten, only unblocked.
 **Closes:** BL-362
 **Files:** `libs/data/store/store-adapter/src/__tests__/` fixtures + test.
 **requires:** none
-**tier:** sonnet, ~15k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** the fixture makes `fts_index_live` report damaged, and the repair path returns it to healthy — both asserted, naming BL-362. ⚠️ Note BL-361: Turso **PANICS and aborts the process** on an FTS index row with no backing directory, so the fixture must produce empty-but-present, not absent, or it will kill the test runner.
 
 ### PKT-44 — BL-312: the 2026-07-18 CPU/hang incident was never root-caused
@@ -568,7 +568,7 @@ rewritten, only unblocked.
 **Files:** analysis only — `~/.adhd/sox-ecosystem/memory/logs/*.jsonl` and the item's cited evidence. No source change unless the cause is found.
 **requires:** PKT-02
 **sequencing:** — this is precisely the kind of question the telemetry substrate exists to answer, and attempting it with hand-rolled log parsing is what produced several wrong numbers on 08-01.
-**tier:** sonnet, ~15k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **Produces:** a root cause for the 2026-07-18 CPU/hang, **or** an explicit written finding that retained telemetry is insufficient to determine it. The second is an accepted terminal outcome — do not leave this open indefinitely pending a cause that the data cannot supply.
 **acceptance:** either a root cause with evidence and a filed/linked defect, or an explicit written finding that the retained telemetry is insufficient to determine it — **which is a valid and useful outcome, and must be stated rather than left open indefinitely.**
 
@@ -593,6 +593,26 @@ rather than an oversight:
 ---
 
 # Task packets
+
+> **ESTIMATION BASIS (revised 2026-08-01).** The first pass estimated from *today's observed
+> per-item cost*, which was dominated by **discovery**: five root causes were confidently stated and
+> wrong (BL-324 twice, BL-342, BL-381, BL-385's entire premise), each fix built throwaway
+> instruments, and every claim was re-verified. **These packets encode that work** — root cause
+> found, files named, fix sketch written, acceptance stated. Estimating implementation from
+> discovery cost double-counts the expensive part.
+>
+> Two corrections, in opposite directions:
+> - **Tiers came down.** Five packets were opus on *danger*, not difficulty — most clearly PKT-40,
+>   which is "hoist two checks above an early return" and was tiered high because four agents
+>   misread that area. Danger is handled by the ⛔ banner in the packet, not by the model.
+> - **Volumes went up.** A packet is read → edit → spec → watch red → restore green →
+>   lint/typecheck/test → backlog + changelog → commit. That is 12–16 turns and ~35–45k, not the
+>   8–25k first stated. Floors applied: sonnet 35k, haiku 20k.
+>
+> **Contingency, running the other way:** the fix sketches are *hypotheses, not verified designs*.
+> If ~20% discover their sketch is wrong mid-flight they revert to discovery cost. Carry **+25% on
+> the sonnet tier** and expect **2–3 packets to escalate back to opus**. Which ones is not
+> predictable — that is the nature of the bias.
 
 > Built 2026-08-01, against the coverage reconciliation above (80 open, verified against `BACKLOG.md`
 > headings, not the exclusion list — see method note at the bottom). **Two items were found
@@ -648,7 +668,7 @@ completion, don't just assume no build ran.
 **Files:** `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (`_bgSlot`/`_bgSlotHolder` mutex removal, ~:2312), `libs/memory-core/src/embed-pipeline.ts`, `libs/memory-core/src/curate.ts` (`organizer_queue` consumer), `libs/memory-core/src/cluster.ts` (entry point only — do not touch threshold logic, that's Wave D).
 **requires:** none
 **sequencing:** **Does not wait on PKT-02** per the owner's explicit exception — it is CRITICAL and loses data today.
-**tier:** opus, ~40k tokens (concurrency/isolation design, two required acceptance tests)
+**tier:** opus, ~80k tokens / ~30 turns — target named (separate execution contexts) but BL-154 re-entrancy makes it genuinely delicate
 **Produces:** a committed-stage boundary with **separate execution contexts** for embedding vs enrichment/clustering, replacing the process-wide `_bgSlot` mutex. Consumed by PKT-29, which schedules clustering behind it. Output must state explicitly whether `_bgSlot` is deleted or retained for a narrower purpose — PKT-29 needs to know which.
 **acceptance:** two tests, both named for BL-348: (1) write an episode with a clustering/enrichment stage forced to throw; assert the embedding is still durably present in `vec_node` after the failure — must fail today. (2) a deliberately slow enrichment stage does not increase `write_to_vector_ms` for concurrent writes — proves the blocking boundary is real, not nominal.
 **Note:** BL-349 (PKT-30) and BL-326 build on the isolation boundary this lands — do not start those until this merges.
@@ -658,7 +678,7 @@ completion, don't just assume no build ran.
 **Closes:** BL-351 (HIGH)
 **Files:** new package (per the research doc's recommendation — likely `libs/observability/tracing-core` or similar; the doc names the exact target), `libs/memory-core/src/telemetry.ts` (migrate off, don't duplicate), env-policy wiring (`libs/*/src/env-policy.ts`, now single-sourced per BL-344 — confirm before editing, do not reintroduce a 2nd copy).
 **requires:** none
-**tier:** opus, ~60k tokens (this is the biggest single packet; the research is done, the implementation is not — adopt the researched library, do not author tracing from scratch per the owner's explicit directive)
+**tier:** opus, ~85k tokens / ~35 turns — high turn count, low reasoning-per-turn — the 76KB design already exists; this is implementation of a written spec
 **Produces:** the tracing/metrics substrate as a consumable package surface: a span/metric emitter with **stable event names and units**, a durable sink, and a documented API that PKT-24/25/26/27/44 import instead of hand-rolling. **This is the interface contract for five downstream packets — publish it (names, units, cardinality limits) before they start, or they will each invent their own and the substrate will have failed at its one job.** Design is already written: `docs/research/observability-substrate.md`.
 **acceptance:** a test naming BL-351 that writes a span through the new package from two different consumer packages (e.g. `memory-core` and `store-adapter`) and asserts both appear correctly attributed on a shared trace-id in the exported status surface — proving it is a shared substrate, not per-consumer.
 
@@ -667,7 +687,7 @@ completion, don't just assume no build ran.
 **Closes:** BL-342, BL-387's P0.8 duplicate note (do not treat BL-343's green test as coverage — this packet is the repair BL-343 didn't do)
 **Files:** `libs/memory-core/src/stats.ts`, `libs/data/store/store-adapter/src/integrity.ts` (new probe), new migration file (find existing migration mechanism location — likely `libs/data/store/store-adapter/src/migration.ts`).
 **requires:** none
-**tier:** sonnet, ~15k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** against a copy of the live store (rowid 9284 shape), run the migration, assert `memory_stats` no longer reports `malformed_rows`, and a fresh probe test named for BL-342 fails on an unrepaired fixture and passes after.
 
 ### PKT-04 — BL-380 + BL-364: unchecked `unwrap()` casts in `vector-store`, and the crash they cause
@@ -676,7 +696,7 @@ completion, don't just assume no build ran.
 **Files:** `libs/data/vectors/vector-store/src/index.ts` (lines 143, 200, 359, and the dead `|| true` at :196 — delete it, it turns 15 tests green while fixing nothing per the measured blast radius), `libs/data/vectors/vector-store/hybrid-search.spec.ts` (helper only, not the assertions).
 **requires:** none
 **sequencing:** Blast radius already measured as trivial (2026-08-01): two spec files at value level, everything else type-only, `agent-source` is not a package in this repo.
-**tier:** sonnet, ~15k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** `npx nx test hybrid-search` at 82/82 with the 15 previously-red integration tests actually executing (not skipped) — name BL-364 in the test names already present.
 
 ### PKT-05 — BL-380 (memory-cli portion): `as any` casts through the storage boundary
@@ -685,14 +705,14 @@ completion, don't just assume no build ran.
 **Files:** `extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts` (lines 180, 218, 322).
 **requires:** none
 **sequencing:** Disjoint from PKT-04 (different package).
-**tier:** sonnet, ~10k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** a test naming BL-380 that runs each affected `memory-cli` command against a Turso-backed store (not the sqlite default) and asserts no raw-handle type error.
 
 ### PKT-06 — BL-388: `tools/baseline-capture` same-shape casts
 **Closes:** BL-388
 **Files:** `tools/baseline-capture/src/capture-enrichment-baseline.ts:109`, `tools/baseline-capture/src/capture-write-perf-baseline.ts:165`.
 **requires:** none
-**tier:** sonnet, ~8k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** run each entry point with no `STORE_ADAPTER` set (default Turso) and assert it completes without a raw-handle type error — must fail today, name BL-388.
 
 ### PKT-07 — BL-389: `LanceDbVectorBackend` constructor typed against raw `better-sqlite3`
@@ -700,14 +720,14 @@ completion, don't just assume no build ran.
 **Files:** `libs/data/vectors/vector-store/src/lancedb.ts`.
 **requires:** none
 **sequencing:** Same package as PKT-04 but a different file (`lancedb.ts` vs `index.ts`) — genuinely disjoint, no shared symbols.
-**tier:** sonnet, ~10k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** a test naming BL-389 constructing `LanceDbVectorBackend` from a `StoreAdapter` (not a raw handle) and exercising one query end to end.
 
 ### PKT-08 — BL-397: `memory-flush` reaches around StoreAdapter in prod and test
 **Closes:** BL-397
 **Files:** `extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.ts:20`, `.../memory-flush/src/index.spec.ts:55-60`.
 **requires:** none
-**tier:** sonnet, ~10k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** `nx lint memory-flush` and `nx typecheck memory-flush` both green (currently both red — this is the acceptance already, per the item's own two named failures).
 
 ### PKT-09 — BL-396: static ESM import from CJS in `memory-server/src/index.ts`
@@ -715,21 +735,21 @@ completion, don't just assume no build ran.
 **Files:** `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (lines 86, 97 only — the two named TS1541/TS1479 sites; convert to the dynamic-import pattern `dialect.ts` already documents and follows).
 **requires:** none
 **sequencing:** — land this one FIRST since it's the smallest and most mechanical, so nobody else has to rebase around it.
-**tier:** haiku, ~6k tokens (single file, two named line numbers, the correct pattern already exists in-repo at `dialect.ts` to copy)
+**tier:** haiku, ~20k tokens / ~8 turns
 **acceptance:** root `npx tsc --noEmit` (the whole-repo `sox-ecosystem:typecheck`) reports zero errors in `index.ts` — currently reports exactly TS1541 + TS1479 at the named lines.
 
 ### PKT-10 — BL-383: `autolink` writes to a `memory_scope.meta` column that exists on no backend
 **Closes:** BL-383
 **Files:** `libs/memory-core/src/autolink.ts` (lines 58-67 — either add the column via a real migration, or stop persisting the stoplist there and pick a column that exists; the swallowed `catch {}` must go regardless).
 **requires:** none
-**tier:** sonnet, ~12k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** a test naming BL-383 that runs `autolink` against a Turso store and asserts no `store.error` is logged for `memory_scope` — currently fires twice per 20-minute window on the live store.
 
 ### PKT-11 — BL-400: four spec files' hand-maintained schema replicas
 **Closes:** BL-400
 **Files:** `libs/data/graph/graph-store/src/index.ts` (export a `createSchema(adapter)` helper — no behavior change, just export what already exists), `libs/memory-core/src/{backup,cluster-subset,enrich,write}.spec.ts` (replace each hand-written DDL with a call to the exported helper).
 **requires:** none
-**tier:** sonnet, ~15k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** a test naming BL-400 asserting each of the four specs' fixture schema is byte-identical to `graph-store`'s real DDL (trivially true once they call the same helper); all four spec files still pass their existing assertions unchanged.
 
 ### PKT-12 — BL-301 + BL-302: unify the drifted `node`/`edge` schema, and build the migration runner that makes it shippable to the live store
@@ -738,7 +758,7 @@ completion, don't just assume no build ran.
 **Files:** `libs/data/graph/graph-store/src/index.ts` (`applySchema`, `GRAPH_DDL`), `libs/memory-core/src/schema.ts`, new migration runner module (table-rebuild helper: `PRAGMA foreign_keys=OFF; CREATE TABLE new; INSERT...SELECT; DROP; RENAME; recreate indexes; foreign_keys=ON`, transactional).
 **requires:** none
 **sequencing:** — schedule early since PKT-11 exports from the same file (`graph-store/src/index.ts`) and should land first (smaller, no schema shape change) to avoid a rebase.
-**tier:** opus, ~35k tokens (schema design judgement: decide the unified superset — memory-core needs `level`/`resume_state`, graph-store needs `topic`/`tags`/`namespace`/`project_path`, `edge.rel` CHECK must allow `PART_OF`/`DEPENDS_ON`)
+**tier:** opus, ~65k tokens / ~25 turns — a migration mechanism genuinely does not exist yet
 **acceptance:** two tests. BL-302, must name it: create a v1 DB with a row, register a v2 migration that alters a CHECK via table-rebuild, reopen, assert the pre-existing row survived AND a formerly-illegal value now inserts; a negative control against the current stub must fail. BL-301, must name it: `createGraphBackend(memoryCoreDb).writeEdge(..., rel:'DEPENDS_ON')` throws today, passes after unification; `PRAGMA table_info(node)` identical across both packages' freshly-applied schemas post-fix.
 
 ### PKT-13 — BL-378: emergency brakes are not independent
@@ -747,21 +767,21 @@ completion, don't just assume no build ran.
 **Files:** `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (the `scheduleNextEnrichTick` → `runPeriodicEnrichPassGuarded` → `runEnrichPassOnDb` → `healMissingVectors` chain, ~:2086-2265).
 **requires:** none
 **serialize_with:** PKT-09, PKT-01, PKT-30, PKT-32, PKT-34 — MUTUAL EXCLUSION on `memory-server/src/index.ts`, not a dependency. This packet needs no other packet's output and may start in wave 1; it must simply never edit that file concurrently with those. Run after PKT-09, before the rest. Check current state before editing — live hotspot.
-**tier:** sonnet, ~15k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** a test naming BL-378 asserting that with `SOX_DISABLE_PERIODIC_ENRICH=1` set and `SOX_DISABLE_EMBED_HEAL` unset, embed healing still runs — must fail today (measured live: 0 vector growth over 90s under exactly this combination).
 
 ### PKT-14 — BL-376: one warmup timeout budget covers a cold download and a cached load
 **Closes:** BL-376
 **Files:** `libs/data/embed/embedding-provider/src/index.ts` (`warmupTimeoutMs`, lines 261-264, and its two callers).
 **requires:** none
-**tier:** sonnet, ~10k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** a test naming BL-376 asserting a cache-hit warmup fails fast (single-digit-second budget) on an injected 15s+ delay, while a cache-miss warmup still tolerates the existing 180s budget — proving the two are actually split, not just renamed.
 
 ### PKT-15 — BL-259: `smoke-test.mjs` leaves launchd units bootstrapped, breaking the next run
 **Closes:** BL-259
 **Files:** `scripts/smoke-test.mjs`.
 **requires:** none
-**tier:** sonnet, ~10k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** run the smoke suite twice back to back (no manual `bootout` between runs); both runs report the same pass count — currently the second run fails `*-project-enable` with `Bootstrap failed: 5`.
 
 ### PKT-16 — BL-274: no concurrency stress test for parallel read/write through the proxy
@@ -769,7 +789,7 @@ completion, don't just assume no build ran.
 **Files:** new `tools/stress/proxy-concurrency.mjs`.
 **requires:** none
 **sequencing:** (Independent of BL-394/PKT-24 — this packet may incidentally reproduce BL-394's admission-control bypass, which is fine; do not fix it here, file confirmation as a comment on BL-394 and let PKT-24 fix it.)
-**tier:** sonnet, ~15k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **Produces:** a concurrency stress harness exercising parallel read/write against a **Turso-backed** server, including the `_noop` bypass path that no existing test covers. Consumed by PKT-40, which may reuse its reproduction rather than build one.
 **acceptance:** interleaved `memory_write` + `memory_recall` over UDS through the live proxy, assert no timeouts, no busy errors that shouldn't happen, read-your-writes holds under concurrency.
 
@@ -777,14 +797,14 @@ completion, don't just assume no build ran.
 **Closes:** BL-359
 **Files:** new `tools/allocate-bl-id.mjs` (reads max across both `BACKLOG.md` and `CHANGELOG.md`, atomically reserves via a placeholder heading in one write), pre-commit hook wiring (check existing hook location — likely `.git/hooks/pre-commit` or a package.json `husky`/`simple-git-hooks` entry — confirm before adding).
 **requires:** none
-**tier:** sonnet, ~12k tokens (the collision-detection command already exists and is documented — this packet makes it a gate, not documentation)
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** a pre-commit hook test naming BL-359 that stages a commit introducing a duplicate `### BL-<n>` heading and asserts the commit is rejected; a second commit with a unique id succeeds.
 
 ### PKT-18 — BL-215: operator surface for `healStaleVectors`
 **Closes:** BL-215
 **Files:** `libs/memory-core/src/curate.ts` (new `memory_curate` op `reheal_stale`), `extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts` (optional `soxe memory reembed` loop — do only if the curate op alone doesn't satisfy the acceptance cleanly).
 **requires:** none
-**tier:** sonnet, ~12k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** `memory_curate({op:'reheal_stale'})` runs one bounded pass against a store with model-swap-stale vectors and reports `{scanned, healed, remaining}` — never tick-wired, must be explicit per the item.
 
 ### PKT-19 — BL-329: better-sqlite3 open on a Turso-native store must fail loudly, not with an opaque schema-parse error
@@ -792,35 +812,35 @@ completion, don't just assume no build ran.
 **Files:** `libs/memory-core/src/db.ts` (guard at the better-sqlite3 open path — around `_openDbInner`, :646, and the two other fallback sites named in the item: :198, :259).
 **requires:** none
 **sequencing:** **Serialize after PKT-09/PKT-13 on `index.ts`** — wait, this touches `db.ts` not `index.ts`, genuinely disjoint from the index.ts cluster; no serialization needed against those.
-**tier:** sonnet, ~12k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** a test naming BL-329: create a Turso store with `idx_fts_node`, attempt a better-sqlite3 open, assert a clear diagnostic error (not `malformed database schema`).
 
 ### PKT-20 — BL-360: Turso `integrity_check` false-positive — report upstream, pin driver version
 **Closes:** BL-360
 **Files:** `libs/data/store/store-adapter/src/integrity.ts` (pin the driver version the existing `isKnownFalsePositive()` suppression is valid for), no upstream-report file needed in-repo but note the report was filed (external — do via WebSearch/issue tracker as part of this packet, not a separate step).
 **requires:** none
-**tier:** haiku, ~8k tokens (the suppression and its guard test already exist; this is pinning a version constant + writing the upstream report)
+**tier:** haiku, ~20k tokens / ~8 turns
 **acceptance:** the existing guard test (already documented as failing if Turso stops emitting the message) stays green; a version pin constant is added and asserted against the installed `@tursodatabase/database` version at test time.
 
 ### PKT-21 — BL-361: Turso panics and kills the process on a malformed FTS index row — needs an out-of-process pre-flight
 **Closes:** BL-361
 **Files:** new pre-flight module (likely in `libs/data/store/store-adapter/src/`) that runs a cheap out-of-process schema sanity check before the first `connect()` on a store flagged unclean; wire into `openDb`'s Turso branch.
 **requires:** none
-**tier:** opus, ~20k tokens (the crash happens inside a Rust panic before any JS code runs — the fix has to run in a *separate process* to be able to catch it at all, which is a real design decision, not a mechanical patch)
+**tier:** sonnet, ~40k tokens / ~14 turns — DEMOTED from opus: validate-before-open guard; failure mode fully characterised
 **acceptance:** a test naming BL-361: reproduce the panic-inducing store state (reinstate an `idx_fts_node` `sqlite_master` row without its directory table via `writable_schema`), assert the store either opens with a catchable error or is repaired by the pre-flight before `connect()` — must crash the test process today without the fix (run in a child process so the harness itself survives the panic).
 
 ### PKT-22 — BL-392: vec-arm KNN distance metric never declared on sqlite
 **Closes:** BL-392
 **Files:** `libs/data/store/store-adapter/src/{sqlite-vec-dialect,fts-dialect}.ts` — specifically `SqliteVecDialect.createTableDDL` (add `distance_metric=cosine` to the `vec0` DDL) and the `topKQuery` metric parameter (stop silently ignoring `metric='cosine'`).
 **requires:** none
-**tier:** haiku, ~8k tokens (single, precisely located DDL string change plus removing a no-op parameter path — the item's own text gives the exact fix)
+**tier:** haiku, ~20k tokens / ~8 turns
 **acceptance:** a test naming BL-392 asserting `SqliteVecDialect.createTableDDL` output contains `distance_metric=cosine`, and that `topKQuery` with `metric='cosine'` actually changes the computed distance (not just sort direction) versus the current default.
 
 ### PKT-23 — BL-379: post-repair reverification silently skips the WAL-identity probe
 **Closes:** BL-379
 **Files:** `libs/data/store/store-adapter/src/integrity.ts` (`repairStoreIntegrity`'s reverify call — forward `walBaseline` through `RepairOptions`, or have `verifyStoreIntegrity` emit an explicit `unknown` finding when a probe can't run).
 **requires:** none
-**tier:** haiku, ~8k tokens (one parameter forward, already precisely diagnosed in the item body — file:line given)
+**tier:** haiku, ~20k tokens / ~8 turns
 **acceptance:** a test naming BL-379: unlink the WAL between the damage and the repair, assert the post-repair report contains a `wal_identity` finding (not silent omission) — must fail today.
 
 ---
@@ -836,7 +856,7 @@ completion, don't just assume no build ran.
 **Closes:** BL-358, BL-319 (remainder — `embed_throughput_per_sec` and `time_to_vector_ms` already shipped, do not redo)
 **Files:** `libs/memory-core/src/write-queue.ts` (enqueue timestamp, paired wait/work emission — **do not** replace `LatencyRing` with an OTel histogram for the admission-control estimator, it needs the rolling-window `recentMean`, not a cumulative histogram), `libs/memory-core/src/embed-pipeline.ts` (vec_insert isolation), `libs/memory-core/src/latency-stats.ts`.
 **requires:** PKT-02
-**tier:** sonnet, ~20k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **Produces:** wait-vs-work stamping in the write queue: real queue wait time (replacing `estimated_wait_ms`, a prediction reported as a measurement) plus `vec_insert_duration_ms`. Read by PKT-26 for contention accounting — **PKT-26 reads, does not write, these primitives**, so the field names are the contract.
 **acceptance:** BL-358, must name it: enqueue N tasks against a queue with a deliberately slow head-of-line task, assert `write_queue.wait_ms` for trailing tasks is non-zero and >> their `work_ms` — must fail today (no such field exists); second assertion, idle queue → `wait_ms ≈ 0` while `work_ms > 0`. BL-319 remainder: `vec_insert_duration_ms` populated and measurably smaller than total embed+insert time on a real write.
 
@@ -846,7 +866,7 @@ completion, don't just assume no build ran.
 **Files:** `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (`memory_ping`/`memory_stats` response shape), `libs/data/embed/embedding-provider/src/*` (EP health, partition detection), `libs/data/store/store-adapter/src/turso-adapter.ts` (capability flags — read-only, these already exist as internal state per BL-322's note that `multiprocess_wal` is on by default; surface them).
 **requires:** PKT-02
 **sequencing:** **Serialize on `index.ts` after PKT-09/PKT-13/PKT-18(if it touches index.ts)/PKT-01** — this is deep in the hotspot file; land last among the Wave A/B index.ts packets.
-**tier:** opus, ~35k tokens (cross-package: touches embedding-provider, store-adapter, and memory-server; judgement in choosing what "EP health" actually measures)
+**tier:** sonnet, ~45k tokens / ~16 turns — DEMOTED from opus: surfacing fields once PKT-02 exists
 **Produces:** the remaining `memory_ping`/`memory_stats` fields: capability flags, execution-provider health, contention facts. Consumed by PKT-34 (integrity/coverage probe reads the same response shape). Output must state the final response schema so PKT-34 does not restructure it a second time.
 **acceptance:** a test naming BL-334 asserting `memory_ping` reports (at minimum) `active_execution_provider`, `partitioned: boolean`, `contending_pids: []`, `ambient_load` alongside a real latency metric, `multiprocess_wal_enabled: boolean`, `write_concurrency_supported: boolean` — all populated from live measurement, none hardcoded.
 
@@ -856,7 +876,7 @@ completion, don't just assume no build ran.
 **Files:** `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (background job scheduler — the enrich tick loop), `libs/memory-core/src/embed-pipeline.ts`.
 **requires:** PKT-02
 **sequencing:** , and reads (not writes) the wait-vs-work primitive PKT-24 lands — **safe to run in parallel with PKT-24** since PKT-24 touches `write-queue.ts`/`embed-pipeline.ts`(vec_insert only)/`latency-stats.ts` and this touches `index.ts`(scheduler)/`embed-pipeline.ts`(tick, disjoint section) — but coordinate the `embed-pipeline.ts` edit, both packets touch it. **Serialize PKT-24 before PKT-26 on that one file.**
-**tier:** opus, ~25k tokens (this is the item BL-345 says point-fixing individual background jobs does NOT solve — needs a general yieldable/time-budgeted execution model, real design work)
+**tier:** sonnet, ~40k tokens / ~14 turns — DEMOTED from opus: accounting on primitives PKT-24 provides
 **acceptance:** a test naming BL-345: with `SOX_DISABLE_EMBED_HEAL=1` set and the periodic enrichment tick running against a realistic backlog, assert `memory_ping`/`memory_topics` remain responsive (single-digit seconds) throughout a full tick — must fail today.
 
 ### PKT-27 — P1.4 (BL-353): telemetry is written and never read — build the analysis tooling
@@ -864,7 +884,7 @@ completion, don't just assume no build ran.
 **Closes:** BL-353
 **Files:** new `tools/telemetry-analyze/` (start/finish accounting per operation, the queue-wait/compute-time separation BL-353's own driver already demonstrates by hand), `docs/observability/README.md` (extend, don't rewrite — it already documents the format).
 **requires:** PKT-02, PKT-02
-**tier:** sonnet, ~20k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** a test naming BL-353 running the analysis tool against a fixture JSONL with a known start/finish/error distribution and asserting the reported "unaccounted" count matches the fixture's deliberately-planted hang.
 
 ---
@@ -882,7 +902,7 @@ completion, don't just assume no build ran.
 **Files:** none (research item — output is a written recommendation, per the item's own acceptance; may include a small standalone measurement script under `~/.adhd/sox-ecosystem/memory/` per the existing `bl328-*.mjs` convention, not committed to the repo).
 **requires:** none
 **sequencing:** **Blocks PKT-29 and PKT-31.**
-**tier:** opus, ~30k tokens (design research; the measurement data already exists in `docs/reporting/memory/sandbox/cluster-calibration.md` — this is synthesis + a recommendation, per the DRY directive check memory/prior research before any live search)
+**tier:** opus, ~90k tokens / ~30 turns — real research: tau must be MEASURED across >=2 corpus sizes, not chosen
 **Produces:** **a written decision, not code**: whether a fixed global cosine τ is viable at all, and if not, the replacement strategy (corpus-size-adaptive τ, a different linkage, or bounded cluster size). Must state a recommendation *and* its measurement basis across ≥2 corpus sizes. PKT-29/PKT-30/PKT-31 are blocked on this artifact; **if the answer is 'fixed τ is not viable', PKT-30 (re-calibrate the threshold) becomes invalid and must be re-scoped rather than executed.**
 **acceptance:** BL-350's own bar: a written recommendation with a measurable drift metric (incremental-vs-full-pass divergence, computable on a real corpus) and a maintenance trigger. BL-356 is satisfied by the recommendation resolving what a "calibrated" τ (or its replacement) means at production scale — no code acceptance, this is a decision record.
 
@@ -892,7 +912,7 @@ completion, don't just assume no build ran.
 **Files:** `libs/memory-core/src/cluster.ts` (the dead-stub short-circuit at :437-441), `libs/memory-core/src/curate.ts` (`organizer_queue` trigger wiring), `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (write-path trigger point — must build on the PKT-01 committed-stage boundary).
 **requires:** PKT-01, PKT-28
 **sequencing:** — the near-term mechanism must not contradict it). **Serialize on `cluster.ts` after PKT-01, before PKT-30/PKT-33.**
-**tier:** opus, ~25k tokens
+**tier:** opus, ~55k tokens / ~20 turns — re-scoped: after PKT-28 this is implementation, not design
 **Produces:** write-triggered background clustering that runs behind PKT-01's boundary. Consumed by PKT-30 (threshold work lands on the same function area). Output must name the trigger point and the backpressure rule.
 **acceptance:** BL-326/BL-349's shared bar, must name both: write N clusterable episodes through the ordinary write/enrich path only (no explicit recluster row, no manual pass), assert `total_clustered > 0` — must fail today. Additionally assert the write's `write_to_vector_ms` is unaffected by clustering work, and a thrown clustering error leaves vectors intact (this half restates PKT-01's second acceptance in the clustering-specific path — do not skip re-proving it here, the boundary must hold for the real trigger, not just the isolated test harness).
 
@@ -902,7 +922,7 @@ completion, don't just assume no build ran.
 **Files:** `libs/memory-core/src/cluster.ts` (`resolveDefaultThreshold()`, the retry-at-+0.05 guard at :465-484).
 **requires:** PKT-28, PKT-29
 **sequencing:** — land after).
-**tier:** sonnet, ~15k tokens (implementation only, the design decision comes from PKT-28)
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** a test naming BL-328 running the live-store-scale sweep methodology from `cluster-calibration.md` against the new threshold strategy and asserting largest-cluster ratio stays below the degenerate bound (whatever PKT-28 sets, e.g. <0.5) across the full measured N range (200→1616+), not just at one fixture size.
 
 ### PKT-31 — BL-327: garbage-collect communities orphaned by `memory_invalidate`
@@ -911,7 +931,7 @@ completion, don't just assume no build ran.
 **Files:** `libs/memory-core/src/invalidate.ts` (or wherever `memory_invalidate`'s implementation lives — confirm exact path before editing), `libs/memory-core/src/cluster.ts` (read-only reference to `materializeClusters`'s retirement logic at :274-296 — reuse it, don't duplicate).
 **requires:** none
 **sequencing:** — this does NOT need PKT-28's τ decision, it's orthogonal to threshold calibration. **But serialize on `cluster.ts` against PKT-29/PKT-30** since all three touch that file; land this one independently timed, whichever is ready first, just not concurrently.
-**tier:** sonnet, ~12k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** a test naming BL-327: invalidate every member of a community, assert the community node is no longer live, without running a full pass — must fail today.
 
 ---
@@ -923,7 +943,7 @@ completion, don't just assume no build ran.
 **Closes:** BL-337, BL-341
 **Files:** `libs/data/store/store-adapter/src/integrity.ts` (repair helper: enumerate + reindex btrees, rebuild FTS via DDL), `libs/memory-core/src/backup.ts` (lines 59-60, 196-197 — cap detection + explicit "capped, additional damage may exist" flag).
 **requires:** none
-**tier:** sonnet, ~18k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **Produces:** a unified repair helper covering the REINDEX workaround (BL-337) and the post-`VACUUM INTO` integrity path (BL-341), callable from the adapter. Consumed by PKT-33, whose acceptance asserts the **auto-repaired** half — so this must expose a programmatic entry point, not only a CLI path.
 **acceptance:** BL-337, must name it: a repair routine returns a table with a Tantivy index to a clean `integrity_check` (filtered for BL-360's known false positive per that item's own amendment). BL-341, must name it: VACUUM INTO-backup a store seeded with >100 independent integrity violations, assert the backup's reported result is explicitly flagged as capped/incomplete, not silently reported as a bounded "100 issues."
 
@@ -933,7 +953,7 @@ completion, don't just assume no build ran.
 **Files:** new `libs/data/store/store-adapter/crash-recovery.spec.ts` (or equivalent location — confirm test conventions), reads (does not modify) `libs/data/store/store-adapter/src/integrity.ts`'s repair path from PKT-32.
 **requires:** PKT-32
 **sequencing:** **Also depends on BL-365 already being shipped** (it is — telemetry is crash-durable per STATE.md; confirm before writing the test, since the item's own text says the test's log-evidence assertion is meaningless without it).
-**tier:** opus, ~25k tokens (SIGKILL-mid-write is genuinely tricky to make deterministic and non-flaky; needs real engineering judgement on how to force the kill at a specific pipeline stage)
+**tier:** sonnet, ~40k tokens / ~14 turns — DEMOTED from opus: it is a test, against a helper that will already exist
 **acceptance:** a test naming BL-338: SIGKILL the server under sustained write load, restart, assert (a) zero lost committed writes, (b) `integrity_check` clean or auto-repaired to clean after filtering BL-360's known false positive, (c) damage and repair both visible in status/logs without manual investigation.
 
 ---
@@ -946,7 +966,7 @@ completion, don't just assume no build ran.
 **Files:** `libs/data/store/store-adapter/src/integrity.ts` (new `embed_completeness` probe, or extend the `IntegrityProbe` union), `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (surface whether `SOX_DISABLE_EMBED_HEAL` is active in the same response).
 **requires:** PKT-25
 **sequencing:** — same surface, avoid two agents both restructuring `memory_ping`'s response shape independently). **Serialize on `index.ts` after PKT-25.**
-**tier:** sonnet, ~15k tokens (the fix shape is fully specified by the item's own three-layer breakdown)
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** a test naming BL-387: seed a store with a known embed backlog (e.g. 30% unvectorised), assert `memory_ping`'s `integrity.overall` is NOT `ok` (or a new field explicitly flags degraded semantic completeness) — must currently report `ok` regardless of backlog size.
 
 ### PKT-35 — BL-398: near-duplicate `weight`-as-cosine fabricates `1.0` for manually-merged pairs
@@ -955,7 +975,7 @@ completion, don't just assume no build ran.
 **Files:** `libs/memory-core/src/curate.ts` (or wherever `memoryNearDuplicates`'s weight-read lives — the item cites the read site but not an exact path; locate via the `e.weight`/`e.metadata` fallback described in BL-386's fix).
 **requires:** none
 **sequencing:** Independent of PKT-36 despite sharing a suspected call path — do not block on it, the fix here is narrow (gate on `origin === 'inferred'`).
-**tier:** sonnet, ~12k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **Produces:** a corrected `cosine_sim` read gated on `origin === 'inferred'`, with `user_asserted` edges reporting **null rather than 0 or 1.0**. Consumed by PKT-36 only as a confirm-or-rule-out signal on the shared query path.
 **acceptance:** a test naming BL-398: a `memory_curate merge_duplicates` pair must NOT report `cosine_sim: 1.0` and must NOT outrank a genuine 0.96 inferred pair — an ordering assertion, not just a value check (a value check alone would pass on any non-1.0 placeholder, per the item's own note). Report `cosine_sim: null` for `user_asserted` edges, not `0` (would recreate BL-386's original bug) and not `1.0` (fabricates).
 
@@ -965,7 +985,7 @@ completion, don't just assume no build ran.
 **Files:** `libs/data/store/store-adapter/src/*` (wherever `store.error` is emitted — add statement/fingerprint logging), then the actual query/migration fix once the hypothesis is confirmed (likely `libs/memory-core/src/curate.ts` or `graph-store`'s `getEdges`, per the item's own lead — `getEdges` selects `e.meta AS e_meta` at :1130).
 **requires:** PKT-35
 **sequencing:** — confirm or rule out before duplicating investigation effort).
-**tier:** opus, ~20k tokens (root-cause investigation with three live hypotheses and an explicit "do not assume (1)" warning — this needs judgement, not a mechanical patch)
+**tier:** opus, ~55k tokens / ~20 turns — cause unknown; needs statement logging before it is even observable
 **Produces:** statement-level (or fingerprint) logging on `store.error` **first** — the current line records the driver's message but not the SQL, which is why BL-399 is undiagnosable — then the root cause and fix. A written finding of 'live schema drift' vs 'query defect' vs 'Turso misreporting' is a required output even if the fix is trivial.
 **acceptance:** a test naming BL-399: the identified failing query no longer throws `no such column: meta` against a copy of the live store's actual schema, AND `store.error` for any future prepare-failure of this shape logs the statement — assert both, since the swallow itself (not just the root cause) is named as part of the fix.
 
@@ -979,7 +999,7 @@ completion, don't just assume no build ran.
 **Files:** `tools/bundle-extension.cjs`, the `registry:sync-index` nx target implementation (locate under `tools/` or a dedicated nx executor), `libs/host-runtime/src/supervisor.ts` (respawn logic — read-only investigation first for BL-393's trigger).
 **requires:** none
 **sequencing:** **This packet must NOT run `nx build` on any shipped extension as part of its own testing** — reproduce the dirty-tree scenario against a disposable scratch package, never the live `memory-server` bundle. Flag to the human orchestrator before any test step that would build a real extension.
-**tier:** opus, ~30k tokens (BL-393 in particular requires careful root-cause narrowing before any fix — the item explicitly says the trigger is narrower than first filed and a controlled rebuild did not reproduce it)
+**tier:** opus, ~70k tokens / ~25 turns — BL-393's trigger is unidentified — reproduction IS the work
 **Produces:** the identified **trigger** for BL-393 (a controlled rebuild did NOT reproduce it — the backend survived on the old unlinked inode), plus the `sync-index` dirty-tree refusal and a build-provenance stamp. If the trigger cannot be identified, that finding is the output and the fix must be scoped to detection rather than prevention.
 **acceptance:** BL-390, must name it: `registry:sync-index` run against a deliberately dirty tree (scratch package, not a live extension) either refuses or stamps the entry as provisional with a commit sha field that can be verified against `git log`. BL-393, must name it: once the actual trigger is identified (not assumed), a test reproducing that exact trigger and asserting the backend does NOT silently respawn onto an unreviewed bundle — or, if full prevention isn't feasible, that the respawn is loudly logged and reflected in `soxe service status` rather than invisible.
 
@@ -988,14 +1008,14 @@ completion, don't just assume no build ran.
 **Files:** `libs/host-runtime/src/os-unit.ts` (or wherever `buildOsUnitEnv` lives — confirm exact path), the `soxe service enable` command in `apps/sox/src/main.ts`.
 **requires:** none
 **sequencing:** Independent of PKT-37 (different subsystem — env composition, not build/deploy identity) but both touch host-runtime's service-lifecycle surface; no file overlap expected, verify before dispatching in parallel.
-**tier:** sonnet, ~18k tokens (fix shape specified: diff against the previously-generated unit, warn on a dropped key that was present before)
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** a test naming BL-375: regenerate a unit's env with a shell missing a previously-set tunable, assert the regeneration either preserves the missing key (diffed from the prior unit) or fails loudly/warns rather than silently dropping it and reporting success — must currently silently drop and report success.
 
 ### PKT-39 — BL-332: `soxe list` reports a running service as INACTIVE
 **Closes:** BL-332
 **Files:** `apps/sox/src/main.ts` (`cmdList` — route its status column through the same reality-verification `cmdStatus`/`service status` already uses; this is the exact BL-95 shape, fixed once already for a different command).
 **requires:** none
-**tier:** sonnet, ~10k tokens
+**tier:** sonnet, ~35k tokens / ~14 turns
 **acceptance:** a test naming BL-332: start a service, assert `soxe list` reports it RUNNING with the correct pid — currently reports INACTIVE with an empty pid column.
 
 ### PKT-40 — BL-394: Turso write-serialization bypass also skips admission control (size cap + deadline guard)
@@ -1005,7 +1025,7 @@ completion, don't just assume no build ran.
 **Files:** `libs/memory-core/src/write-queue.ts` (lines 371-373 the `_noop` gate, 502-540 the bypass block — hoist admission checks only, do not touch the serialization decision).
 **requires:** PKT-16
 **sequencing:** — check its output before writing a new one from scratch, don't duplicate).
-**tier:** opus, ~18k tokens (small diff, high blast-radius risk given three prior misreadings — the tier reflects the cost of getting it wrong, not the size of the fix)
+**tier:** sonnet, ~35k tokens / ~12 turns — DEMOTED from opus: hoist two checks above an early return. Was tiered on the fact that four agents misread this area — that is a CARE signal, handled by the banner, not a complexity signal
 **acceptance:** a test naming BL-394: with Turso's `_noop` bypass active, saturate the queue past `_maxSize`, assert `E_BUSY`/`rejections_busy_size` still fires — must fail today (not reached). Second assertion: `memory_ping`'s `write_queue.queue_max_size`/`deadline_budget_ms`/`deadline_guard_enabled` fields are proven live (not decorative) by the same test. **Explicitly assert concurrent Turso writes still complete without serialization** — a regression guard proving this packet did not reintroduce serialization.
 
 ---
