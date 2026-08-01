@@ -65,6 +65,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
   let dbPath: string;
   let savedNoDeadline: string | undefined;
   let savedDeadlineMs: string | undefined;
+  let priorAdapterEnv: string | undefined;
 
   beforeEach(async () => {
     const t = tmpDir();
@@ -76,6 +77,16 @@ describe('WriteQueue — time-based backpressure + observability', () => {
     savedDeadlineMs = process.env['SOX_WRITEQ_DEADLINE_MS'];
     delete process.env['SOX_WRITEQ_NO_DEADLINE'];
     delete process.env['SOX_WRITEQ_DEADLINE_MS'];
+    // This suite exercises the queue's OWN serialisation (FIFO ordering, size
+    // cap, deadline admission control, WAL checkpoint on the local file). All
+    // of that is WriteQueue._noop = false behaviour, which requires an adapter
+    // that reports needsWriteSerialization: true (sqlite/better-sqlite3).
+    // The factory default is STORE_ADAPTER=turso (needsWriteSerialization:
+    // false), which would flip the queue into noop/bypass mode and make every
+    // assertion here vacuous — pin sqlite explicitly, same convention as every
+    // other adapter-sensitive spec (see backup.spec.ts, fts-query-parity.spec.ts).
+    priorAdapterEnv = process.env['STORE_ADAPTER'];
+    process.env['STORE_ADAPTER'] = 'sqlite';
   });
 
   afterEach(async () => {
@@ -85,6 +96,8 @@ describe('WriteQueue — time-based backpressure + observability', () => {
     else process.env['SOX_WRITEQ_NO_DEADLINE'] = savedNoDeadline;
     if (savedDeadlineMs === undefined) delete process.env['SOX_WRITEQ_DEADLINE_MS'];
     else process.env['SOX_WRITEQ_DEADLINE_MS'] = savedDeadlineMs;
+    if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+    else process.env['STORE_ADAPTER'] = priorAdapterEnv;
   });
 
   // ── 1. Deadline rejection with a DERIVED retry hint ─────────────────────────
