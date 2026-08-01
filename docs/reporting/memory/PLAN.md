@@ -701,8 +701,21 @@ fleet spend.**
 >
 > The pattern: an opus-shaped packet becomes a sonnet packet by **pre-specifying the judgement**
 > (turn an open question into a named experiment), **cutting scope** to the tractable half, or
-> **splitting into ordered phases with a mandatory stop between them**. Re-labelling alone is how a
-> haiku fleet produced nothing earlier today.
+> **splitting into ordered phases with a mandatory stop between them**.
+>
+> **⚠️ HONEST CAVEAT — the compensations are a precaution, NOT a measured necessity.** An earlier
+> draft of this section claimed that re-labelling alone "is how a haiku fleet produced nothing
+> earlier today." **That claim was unsupported and is retracted.** There is no evidence any of these
+> packets would fail at sonnet; nobody has run the experiment. The one dataset cited actually argues
+> the opposite: in the 2026-08-01 triage fleet, six agents ran the **identical prompt at the identical
+> tier**, and `triage3` closed 5 items (594 turns / 304 tool calls / 474.7k context) while `triage6`
+> closed 0. That is enormous **variance within a tier**, not evidence of a tier ceiling — and the
+> likelier cause of the zeroes was a prompt that made inaction the safest response ("when uncertain,
+> leave it open" paired with a high evidentiary bar), which is a prompt defect, not a model one.
+>
+> Keep the compensations — smaller scope, pre-specified experiments, and phased stops are better
+> packet design regardless of tier. **But do not cite them as proof a tier was required, and if a
+> demoted packet succeeds unchanged, prefer that evidence over this reasoning.**
 
 > **ESTIMATION BASIS — third revision, and the first fitted to real data (2026-08-01).**
 > **TURNS is the reliable unit; tokens are derived.** PKT-28 estimated ~30 turns and took ~30 tool
