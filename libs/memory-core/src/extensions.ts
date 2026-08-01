@@ -1036,12 +1036,11 @@ export async function memorySearchEntities(
 
   if (!query?.trim()) return { entities: [], search_mode: 'like' };
 
-  const ftsQuery = query
+  const ftsTokens = query
     .replace(/['"*\-()\[\]]/g, ' ')
     .trim()
     .split(/\s+/)
-    .filter((t) => t.length > 1)
-    .join(' ');
+    .filter((t) => t.length > 1);
 
   const entityRow = {
     uid: '',
@@ -1055,9 +1054,18 @@ export async function memorySearchEntities(
   let entities: EntityRow[] = [];
   let searchMode: 'fts' | 'like' = 'like';
 
-  if (ftsQuery) {
+  if (ftsTokens.length > 0) {
     const ftsDialect = await ftsDialectFor(adapter);
-    if (ftsDialect.supported) {
+    // BL-367: build the bound MATCH-query text via the dialect, NOT a bare
+    // space-join. SQLite FTS5 ANDs bareword tokens (all must be present);
+    // Turso's Tantivy `fts_match` matches on ANY token (effectively OR). A
+    // space-joined query therefore silently returned far fewer/zero SQLite
+    // hits for multi-term queries than Turso for the same corpus.
+    // `buildMatchQuery` makes both dialects build the identical explicit
+    // `"tok1" OR "tok2" OR ...` form — see `recall.ts`'s FTS block and the
+    // doc comment on `FTSDialect.buildMatchQuery` (store-adapter/src/types.ts).
+    const ftsQuery = ftsDialect.supported ? ftsDialect.buildMatchQuery(ftsTokens) : '';
+    if (ftsQuery) {
       try {
         // Both branches ask the dialect for match/score SQL and bind the
         // query text as a normal parameter (`?`) — never inlined as a string
