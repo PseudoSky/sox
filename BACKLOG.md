@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 79.** (BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 81.** (BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-403 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,14 +23,14 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-08-01: **79 open**.
+Regenerated 2026-08-01: **81 open**.
 
 | Priority | Open items |
 |---|---|
-| **CRITICAL** | BL-348, BL-393 |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-342, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-373, BL-374, BL-375, BL-377, BL-380, BL-387, BL-390, BL-391, BL-394 |
-| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378, BL-383, BL-388, BL-389 |
-| **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363, BL-379, BL-392 |
+| **CRITICAL** | — |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-326, BL-327, BL-329, BL-334, BL-338, BL-342, BL-345, BL-349, BL-351, BL-353, BL-356, BL-358, BL-364, BL-375, BL-380, BL-387, BL-390, BL-391, BL-393, BL-394, BL-399, BL-401, BL-404, BL-405 |
+| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378, BL-383, BL-388, BL-389, BL-396, BL-397, BL-398, BL-400 |
+| **LOW** | BL-103, BL-202, BL-215, BL-258, BL-261, BL-283, BL-292, BL-298, BL-305, BL-309, BL-314, BL-355, BL-379, BL-392 |
 | **UNSET** | BL-163 |
 
 ## Audit
@@ -2382,7 +2382,7 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: `CREATE
 
 ---
 
-### BL-401 — `@adhd/sox-telemetry` interface is published but BL-351's acceptance is not met: no consumer migration, no status-surface wiring, no live-spawned verification — **Open (HIGH), gaps 1-3 closed 2026-08-01 (PKT-45), gaps 4-6 remain** (2026-08-01)
+### BL-401 — `@adhd/sox-telemetry` interface is published but BL-351's acceptance is not met: no consumer migration, no status-surface wiring, no live-spawned verification — **Open (HIGH), gaps 1-3 closed 2026-08-01 (PKT-45), gap 5 closed 2026-08-01 by the reviewed redeploy (found BL-404), gaps 4 and 6 remain** (2026-08-01)
 
 **Found while:** implementing PKT-02 (BL-351) under a hard token budget; this item is the explicit, deliberate scope cut recorded at the end of that pass rather than a silently dropped requirement.
 
@@ -2394,7 +2394,8 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: `CREATE
 2. **CLOSED — `@adhd/sox-store-adapter` is the second consumer.** `withRetry()` (`libs/data/store/store-adapter/src/retry.ts`) now emits `store_adapter.retry.attempt`/`store_adapter.retry.exhausted` via `@adhd/sox-telemetry`'s `log.*`, trace_id auto-injected from ambient context. Required tagging `sox-telemetry` `area:shared` (previously untagged) so `area:data` packages can depend on it under the existing `@nx/enforce-module-boundaries` config — adds a permitted edge, loosens nothing. 292/292 store-adapter tests green.[3]
 3. **CLOSED — `memory_stats` calls `telemetrySelfCheck()`.** Additive `telemetry_self_check` field next to `integrity`/`integrity_headline` (HF-3 convention), wrapped in try/catch (a telemetry read must never break the stats call a CI gate depends on). Wired the READ side only — memory-server's own hot paths don't call `declareStages`/`withContendedStage` yet, so `stages_declared` will read 0 until that follow-on lands; store-adapter's plain `log.*` calls (gap 2) are visible in the substrate's JSONL stream but not in THIS self-check aggregation, since `withRetry` doesn't declare stages. `typecheck`/`lint` green (plain tsc, not the bundled build — see gap 5 note); embed-health-surface.spec.ts (adjacent BL-250 surface) unaffected.[4]
 4. **STILL OPEN — the OpenTelemetry SDK itself is not wired.** `docs/research/observability-substrate.md` §5.1/§5.6/§5.8 specifies `BasicTracerProvider` + `AsyncLocalStorageContextManager`, a `JsonlSpanProcessor` implementing `SpanProcessor.onStart`/`onEnd`, and a pull-only `MeterReader` with an exponential-histogram view. What ships is the substrate's own span/metric model with the same names/units/durability guarantees, not a literal OTel `SpanExporter`/`SpanProcessor`. `@opentelemetry/api` remains declared-but-unused. Explicitly optional to BL-351's acceptance per PKT-45's own scoping — deliberately not attempted this pass to avoid packet creep.
-5. **STILL OPEN — no verification against a real spawned service.** Everything above (gaps 1-3) is proven in-process, in vitest. BL-351's acceptance explicitly requires the opposite, but memory-server's live backend (artifact `5e8e1fcc8625`, pid 18521) must NOT be rebuilt from a shared checkout with concurrent agents (BL-393 — a build can silently redeploy production). Gap 3's status-surface wiring is source-only and unverified live until a **deliberate, reviewed** build + redeploy, done as its own change with `[inv:deploy-verified]`, not a drive-by inside this packet.
+5. **CLOSED 2026-08-01 — verified against the real spawned service, and it found a HIGH defect the in-process tests structurally could not.** The deliberate, reviewed build + redeploy ran: store snapshotted (`.db` + `-wal` together, BL-330), `nx build memory-server`, `registry:sync-index`, `soxe service restart`. Backend rotated pid 18521 → **8820** on artifact **`4d2773bad484`**, confirmed three independent ways — on-disk `shasum` matches `memory_ping`'s content-addressed `artifact` sha256 exactly, the pid rotated, and gap 3's `telemetry_self_check` field is *present in the live `memory_stats` response*, which is only true of the new bundle. Store integrity `overall: ok` on deep probes after the restart, `damaged: []`.
+   **What it found:** the live value is `"role":"test"`, `stages_declared: 0`. Nothing in production ever calls `initTelemetry()`, so the server runs the module-level fallback `{service:'unlabeled', role:'test', logSink:'none', sink:null}` — **the durable sink is never constructed in production and every `log.*` from gaps 1 and 2 is emitted into a no-op.** Filed as **BL-404** (HIGH), together with the dead-branch `defaultRole()` that makes the state look intentional. This is the precise value of a live gate over a green vitest suite: gaps 1-3's tests all pass, and all of them construct their own sink.
 6. **STILL OPEN — metric persistence (§5.8) is not implemented.** `telemetrySelfCheck()` is a live in-memory view only (correctly labelled `"window": "since process start"`), but nothing snapshots it to the durable sink, so a crash loses everything the in-memory aggregate held.
 
 **Fix sketch for the remainder:** (5) is the natural next step once a deliberate memory-server build/redeploy is scheduled for other reasons — piggyback the live verification on it rather than forcing a redeploy just for this. (4) and (6) are, as originally scoped, the most defensibly deferrable — do them as their own reviewed passes.
@@ -2404,3 +2405,65 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: `CREATE
 **Related:** BL-351 (parent), BL-319, BL-334, BL-344, BL-365, BL-353, BL-393 (blocks gap 5).
 
 Citations: [wip/turso-live-metrics, main, claude, PKT-02, 1: libs/observability/sox-telemetry/{src/*.ts, src/index.spec.ts, project.json} — `npx nx typecheck,typecheck-tests,lint,test,build sox-telemetry` all green, 2026-08-01; wip/turso-live-metrics, packets, claude, PKT-45, 2: libs/memory-core/src/telemetry.ts (migration), libs/observability/sox-telemetry/src/sink.ts (`reconfigure()`), libs/memory-core/src/bl401-telemetry-substrate.spec.ts (cross-package trace-join + no-dup-writer acceptance, red→green hand-verified by reverting retry.ts and rebuilding), 3: libs/data/store/store-adapter/src/retry.ts, libs/observability/sox-telemetry/project.json (`area:shared` tag), 4: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (`memory_stats` handler), extensions/bundles/sox-memory-bundle/members/memory-server/src/bl401-telemetry-status-surface.spec.ts, 2026-08-01]
+
+---
+
+### BL-404 — nothing in production ever calls `initTelemetry()`: the live server runs `service:'unlabeled'`, `role:'test'`, `logSink:'none'` — the substrate persists nothing and is indistinguishable from test data — **Open (HIGH)** (2026-08-01)
+
+**Found while:** performing BL-401 gap 5 — the deliberate live-spawned verification, executed as part of the reviewed memory-server redeploy to artifact `4d2773bad484` (pid 8820). This is the finding gap 5 existed to produce, and it could not have been found in vitest.
+
+**Evidence, from the live server, not a test:** `memory_stats` on the freshly deployed backend returns
+`"telemetry_self_check":{"window":"since process start","role":"test","stages_declared":0,"stages_with_zero_samples":[],"paths_with_zero_samples":[],"stages":[]}`.[1]
+`role` is **`test`** on the production service. A repo-wide grep for `initTelemetry` finds callers in exactly one file — `libs/memory-core/src/bl401-telemetry-substrate.spec.ts` — and no production call site anywhere in `memory-server/src/` or `memory-core/src/`.[2]
+
+**Root cause:** `runtime.ts`'s module-level `_state` initialiser is the only thing that ever runs in production: `{ service: 'unlabeled', role: defaultRole(), logSink: 'none', sink: null }`.[3] Two consequences, both silent:
+
+1. **`logSink: 'none'` means the durable sink is never constructed** (`sink: null`). Every `log.*` call from memory-core AND the store-adapter retry instrumentation landed by BL-401 gap 2 is emitted into a no-op. The `DurableJsonlSink` writeSync/BL-365 crash-durability guarantee — proven 0-of-10,000 under SIGKILL — protects a sink that production never instantiates.
+2. **`role: 'test'` defeats BL-353 precisely.** That field's stated purpose, in its own doc comment, is to "separate the live-service population from test and harness populations sharing the same disk." The live population is currently labelled as the test population.
+
+**Second, independent defect in the same function — `defaultRole()` is dead code:**
+```ts
+function defaultRole(): Role {
+  if (process.env['NODE_ENV'] === 'test') return 'test';
+  if (process.env['VITEST_WORKER_ID'] !== undefined) return 'test';
+  return 'test';
+}
+```
+All three branches return `'test'`.[3] The two environment probes cannot affect the result. Whatever they were meant to discriminate, they do not — and their presence makes the function *read* as if it detects its environment, which is how a `role:'test'` in production survives review.
+
+**Fix:** wire the composition root. memory-server's startup must call `initTelemetry({ service: 'memory-server', role: 'live-service', logSink: 'file' })` before any handler can emit. Delete `defaultRole()`'s dead branches — either it genuinely detects a test environment or it is a constant; it must not pretend. Consider making the unlabeled fallback loud (a one-shot stderr warning) so "no composition root" is never again a silent, well-formed-looking state.
+
+**Acceptance (red→green, must name BL-404):** a test asserting the production entrypoint's telemetry init runs with `role: 'live-service'` and `logSink: 'file'`; plus live re-verification that `memory_stats.telemetry_self_check.role === 'live-service'` on the deployed backend, and that records actually land on disk under the resolved log dir.
+
+**Severity:** HIGH — every telemetry guarantee shipped under BL-351/BL-365/BL-401 is, in production, writing to a null sink. The instrumentation is real; its persistence is not.
+
+**Related:** BL-401 (gap 5 is closed by this finding; gap 6 metric persistence compounds it), BL-351, BL-353, BL-365, BL-334.
+
+Citations: [wip/turso-live-metrics, main, claude, BL-401 gap 5 / live deploy verification, 1: live `memory_stats` response from memory-server pid 8820 artifact sha256:4d2773bad484aa69, 2026-08-01T23:47:52Z, 2: repo-wide grep for `initTelemetry` across extensions/bundles/sox-memory-bundle/members/memory-server/src/ and libs/memory-core/src/ — spec-only, 3: libs/observability/sox-telemetry/src/runtime.ts:60-77]
+
+---
+
+### BL-405 — the memory-server backend ignores SIGTERM and is SIGKILLed on every single restart — the crash path is the normal path — **Open (HIGH)** (2026-08-01)
+
+**Found while:** the reviewed redeploy to artifact `4d2773bad484`. Not a stress test, not an induced fault — this is the ordinary, documented restart verb.
+
+**Evidence, verbatim from `node bin/soxe service restart memory-server -s user`:**
+```
+reaper: SIGTERM → pid 18521 (grace 5000ms)
+reaper: pid 18521 survived SIGTERM after 5000ms → SIGKILL
+```
+[1] The backend did not exit within the 5s grace window and was killed uncleanly.
+
+**Why this matters more than a slow shutdown:** `close()` is where the store re-verifies WAL identity and runs `wal_checkpoint(PASSIVE)` — the mechanism credited with recovering 140/140 records under BL-330. Under SIGKILL that path **never runs**. Every restart therefore exercises the crash-recovery path rather than the clean-shutdown path, and the clean-shutdown path is consequently almost never executed in production — meaning it is also nearly untested in the only environment that counts.
+
+The store survived *this* restart intact — deep integrity probes came back `overall: ok`, `damaged: []`, WAL identity stable, `integrity_check` clean.[2] That is the durability work doing its job, and it is exactly why this has stayed invisible. It is not evidence that SIGKILL-on-restart is safe; it is evidence that the recovery path is currently absorbing the damage.
+
+**Root cause: not yet established — do not guess it.** Candidates to check in order: no `SIGTERM` handler registered on the backend at all; a handler registered but blocked behind an in-flight embed/enrich pass holding the `_bgSlot` mutex; a handler that awaits a drain with no deadline; or non-daemonised child processes (embed worker, enrich process host, fastembed host) keeping the event loop alive past the grace window. The 5s grace may also simply be too short for a legitimate checkpoint of a 98MB store — in which case the fix is a longer, *reasoned* grace plus a fast-path checkpoint, not a bigger magic number.
+
+**Acceptance (red→green, must name BL-405):** send SIGTERM to a spawned backend and assert it exits cleanly, well within grace, with the WAL checkpointed — and that `soxe service restart` completes without the reaper escalating to SIGKILL. The reaper's escalation line is the observable: its absence is the pass condition.
+
+**Severity:** HIGH — the owner's standing bar is that in the production-grade version "none of the crash data loss should be possible." Routing every ordinary restart through SIGKILL makes crash-recovery a load-bearing part of normal operation.
+
+**Related:** BL-330 (the checkpoint-on-close this bypasses), BL-335..BL-338 (post-crash integrity damage), BL-348 (the isolated enrich process is a new candidate for holding the loop open), BL-393.
+
+Citations: [wip/turso-live-metrics, main, claude, live deploy verification, 1: `node bin/soxe service restart memory-server -s user` output, 2026-08-01T23:47Z — pid 18521 -> 8820, 2: live `memory_ping` integrity block from pid 8820, deep probes, 555.5ms, damaged: []]
