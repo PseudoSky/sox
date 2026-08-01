@@ -558,6 +558,16 @@ rewritten, only unblocked.
 **Produces:** BL-351 actually satisfied end-to-end: one JSONL sink (not two), spans from two different packages joining on one trace-id, and every emitted metric visible through the status surface on a **live-spawned** server — not only under test.
 **acceptance:** a test naming BL-401 asserting two different packages emit spans that join on a single trace-id, and that `memory-core` no longer contains a second `RotatingJsonlWriter`. Then a live check against a spawned server, since "works under vitest" was never the claim BL-351 made.
 
+### PKT-46 — BL-402: `WriteQueue.forPath()` check-then-set race opens the same store twice
+**Goal:** two concurrent first-callers for a never-before-seen `dbPath` both miss the instance cache and each call `openDb()`, paying the full migration + integrity sequence twice, concurrently. Found by PKT-01 while proving its red arm — it cost real debugging time there (measured **5.2s**, initially misattributed to the new isolation boundary before timing instrumentation traced it).
+**Closes:** BL-402
+**Files:** `libs/memory-core/src/write-queue.ts` (`forPath` / the instances map), + spec.
+**requires:** none
+**tier:** sonnet, ~35k tokens / ~40 turns
+**orientation:** ~52k unavoidable before any edit — 43k mandated docs + ~5k cited source + ~4k backlog bodies. **This is fixed cost and does not shrink with the size of the change.**
+**budget:** ~40 turns. Measured reality for comparable packets is **65-130 tool calls** and ~270-305k cache-created; **guidance only, not a stop.** Cost per packet measured at $2.71-$6.15 — do not truncate work to save tokens, the orchestration costs 30x more than you do.
+**acceptance:** a test naming BL-402 that races two `forPath()` calls for a fresh path and asserts `openDb` is invoked exactly once (spy/counter). Must fail against current code — the item's own evidence is that it currently opens twice.
+
 ### PKT-41 — BL-391: federated recall's BM25 arm is dead on Turso, and the failure is swallowed whole-store
 **Goal:** a read-only Turso connection cannot run `fts_match` (measured: `readonly:false` → 1158 hits; `readonly:true` → `step failed: Error: Resource is read-only`; plain `COUNT(*)` works identically on both). `openDbReadOnly` passes `readonly: true` unconditionally and its **only** production caller is `getFederationConnection` (`recall.ts:1208`) — so single-store recall is unaffected (live recall still returns `provenance: ["vec","fts","temporal"]`) but federated recall is not.
 **Closes:** BL-391
