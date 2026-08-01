@@ -2,6 +2,18 @@
 
 ---
 
+## [Unreleased] — BL-255: unused sox-vector-store dependency removed from memory-core
+
+**BL-255 — `@adhd/sox-vector-store` removed from `memory-core` runtime dependencies.** After BL-92 rewired `reembed.ts` to migrate directly in `vec_node`, no file under `libs/memory-core/src/` imported the vector-store package. Removed the unused workspace dependency from `libs/memory-core/package.json` and reran `pnpm install` to update the lockfile, clearing a load-bearing transitive dependency that was paying zero benefit.
+
+---
+
+## [Unreleased] — BL-339: temporary embed-heal mitigation lifted, backfill complete
+
+**BL-339 — `SOX_DISABLE_EMBED_HEAL` mitigation removed.** The temporary brake that suppressed embed backfill to restore read availability (set 2026-07-31 during BL-346 outage) is no longer present in the live launchd unit. The embed-heal backfill has completed with 3,246 heals applied and 0 failures. Vector coverage is restored. The mitigation's purpose — guaranteeing the defect is not silently forgotten — has been satisfied.
+
+---
+
 ## [Unreleased] — BL-340, BL-325, BL-395: memory-core specs typechecked and made runtime-green after the StoreAdapter async migration
 
 **BL-340 — a `typecheck-tests` gate now exists, and it is real.** `libs/memory-core/tsconfig.typecheck.json` (and every other project's) excluded `*.spec.ts`/`*.test.ts` — spec files were never typechecked, which is exactly how BL-325's 18-file missing-`await` regression shipped undetected until the suite actually ran. Added a `typecheck-tests` nx target per project, driving a dedicated `tsconfig.typecheck-tests.json` that `include`s `src/**/*.ts` (a spec can't be checked without also checking what it imports) with `module: ESNext` / `moduleResolution: bundler` (vitest runs specs as ESM; the chaos specs use `import.meta`, which the lib config's node10 resolution rejects). Kept separate from `typecheck` so a spec-only failure doesn't get conflated with a production-code failure in CI triage.

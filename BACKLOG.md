@@ -380,12 +380,6 @@ plan-orchestrator wave dispatch and token budgeting. They cannot be reviewed, bi
 **Fix:** commit them upstream. (External to sox-ecosystem; filed here because this repo's orchestration
 depends on them.)
 
-### BL-255 — `memory-core` declares `@adhd/sox-vector-store` as a runtime dep it no longer imports — **Open (LOW)** (2026-07-10)
-
-`libs/memory-core/package.json:30` — `"@adhd/sox-vector-store": "workspace:*"`. After BL-92 rewired `reembed.ts` to migrate directly in `vec_node`, no file under `libs/memory-core/src/` imports it (only two explanatory comments at `reembed.ts:56, 233` name it).
-
-**Fix:** remove the dependency. ⚠️ This drops a `workspace:*` edge — per ⛔ AGENT CONSTRAINT, run `pnpm install` and **commit the `pnpm-lock.yaml` diff in the same change** (incident BL-150). Do not hand-edit `node_modules`.
-
 ### BL-258 — `memory-refactor` plan is content-complete but its state machine reads 0/15 pending — **Open (LOW, plan-hygiene)** — CONFIRMED by the 2026-07-10 project-status full scan: verdict COMPLETE-BUT-STATE-STALE. All 10 work-state deliverables reality-present (p0-baseline, p1-layout, w2a/b/c, w2d-{ingest,analysis,hybrid-search}, w2e-domain-rewire, p4-routing — evidence: 6 data libs build + memory-core imports all six + memory-enrich dissolved as planned). Reconciliation is NOT a blind fast-forward: the 5 audit states are blocked on BL-260 (criteria↔check wiring) and a live-server reality proof for audit-final. Route: plan-builder fixes BL-260, then plan-orchestrator drives `state-transition.js --complete` per state with guards actually running
 
 `docs/plan/memory-refactor/state.json`: `current_state: p0-baseline`, `transition_log: []`, 1 in_progress + 14 pending. But every deliverable shipped: the six extracted data libs all build, and `memory-core` imports all six (the `w2e-domain-rewire` goal). The plan's work landed via the P1 substrate commits without the state machine ever being driven.
