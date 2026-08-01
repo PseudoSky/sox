@@ -96,14 +96,16 @@ let ctx: Awaited<ReturnType<typeof tmpDb>>;
 let priorAdapterEnv: string | undefined;
 
 beforeEach(async () => {
-  // This suite is sqlite-only (see the `raw()` helper above and the BL-325
-  // comment): it unwraps to a better-sqlite3 handle and pins Phase A's
-  // "fully synchronous, zero embed calls" contract, which only holds for the
-  // sync sqlite adapter — TursoAdapter's transaction path is inherently
-  // async, and its enqueue path also skips WriteQueue._enqueueCount
-  // bookkeeping (noop/bypass mode, needsWriteSerialization: false). The
-  // factory default is now STORE_ADAPTER=turso; pin sqlite explicitly, same
-  // convention as every other adapter-sensitive spec.
+  // This suite is sqlite-only — see the `raw()` helper above, which unwraps
+  // to a better-sqlite3 handle for verification reads, and the batch test's
+  // `wq._enqueueCount` assertion, which needs WriteQueue._noop = false
+  // (Turso's needsWriteSerialization: false puts the queue in noop/bypass
+  // mode and skips that bookkeeping entirely). NOT about synchrony: Phase A
+  // is `async` on BOTH backends (see BL-395 and the test comment below) —
+  // even SqliteAdapterImpl.transaction() itself is async
+  // (sqlite-adapter.ts:245). The factory default is now STORE_ADAPTER=turso;
+  // pin sqlite explicitly, same convention as every other adapter-sensitive
+  // spec.
   priorAdapterEnv = process.env['STORE_ADAPTER'];
   process.env['STORE_ADAPTER'] = 'sqlite';
   ctx = await tmpDb();
@@ -152,7 +154,7 @@ describe('Phase A holds the queue slot with ZERO embed calls (seam-level proof)'
     expect(await vecRowFor(ctx.db, a.pending!.rowid)).toBeDefined();
   });
 
-  // BL-325/BL-4xx: memoryWritePhaseA CANNOT be a synchronous function under the
+  // BL-325/BL-395: memoryWritePhaseA CANNOT be a synchronous function under the
   // current StoreAdapter interface — dbd874f ("turso adapter compatibility")
   // made it `async function` because the entity-tag insert needed
   // `await tx.executeGet()` for Turso, and even SqliteAdapterImpl.transaction()
@@ -160,7 +162,8 @@ describe('Phase A holds the queue slot with ZERO embed calls (seam-level proof)'
   // not just Turso. A prior version of this test asserted
   // `expect(r).not.toBeInstanceOf(Promise)`, which is now categorically false
   // and cannot be restored short of reverting the async adapter migration.
-  // See the filed backlog item for the full history.
+  // See BL-395 (CHANGELOG.md) for the full history, and its BL-154 cross-link
+  // note before touching WriteQueue re-entrancy logic.
   //
   // What actually matters — and is still true and load-bearing — is that
   // Phase A makes ZERO calls to the embedding provider while holding the
