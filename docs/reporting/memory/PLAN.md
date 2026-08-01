@@ -48,6 +48,41 @@ small, and it is deliberately the last thing built.
 
 ---
 
+## Standing architectural rule — the storage boundary
+
+**Owner directive (2026-07-31), verbatim:** *"None of the code outside store-adapter should be
+showing sqlite or turso other than in the adapter instantiation options."*
+
+**Adopted, with one refinement: `store-adapter` and `migration.ts` are the only modules permitted
+to name a backend.** Migration legitimately converts between engines, so it must know both. A rule
+with unstated exceptions gets ignored the first time someone hits a real one.
+
+Everything else goes through **capabilities** and **dialects** (`FTSDialect`, `VectorDialect` — both
+already exist). Backend choice is an *instantiation option*, nothing more.
+
+**Four independent violations were found in a single day, all silent, all on the default backend:**
+
+| item | violation | consequence |
+|---|---|---|
+| BL-377 | `(adapter as SqliteAdapter).unwrap()` | export + re-embed broken since the migration — read as test debt for weeks |
+| BL-380 | six more unchecked casts (`vector-store` ×3, `memory-cli` ×3 via `as any`) | open |
+| BL-364 | raw handle passed where a `StoreAdapter` is expected — the *inverse* | 15 hybrid-search tests red for 4 days |
+| BL-381 | hardcoded `vec0` SQL bypassing `VectorDialect` | near-duplicate detection dead on Turso, confirmed on 3/3 live writes |
+
+**The rule is not the fix — enforcement is.** All four passed review, typecheck and CI. A lint rule
+banning backend names, `as SqliteAdapter`/`as TursoAdapter`, `.unwrap()` and raw `better-sqlite3`
+imports outside the two permitted modules **encodes existing practice** (the codebase already
+demonstrates the correct capability-guarded form in `db.ts`) and would have caught every one.
+Tracked in BL-380.
+
+**Two apparent exceptions are really missing capabilities, and should be named as such rather than
+blessed:** `db.ts` loading `sqlite-vec`, and `backup.ts` doing `VACUUM INTO`. Both reach around the
+adapter because it exposes no equivalent. "Load an extension" and "make a consistent snapshot" are
+legitimate adapter operations. **`backup.ts` sidestepping this is why nobody knows whether a Turso
+store can be backed up at all** — still unanswered.
+
+---
+
 ## P0 — Blockers. A run before these measures a lie.
 
 ### P0.1 — BL-330: unlinked WAL silently discards committed data · **HIGH**
