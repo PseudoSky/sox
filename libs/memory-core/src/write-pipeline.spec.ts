@@ -37,7 +37,7 @@ import {
 import { memoryRecall } from './recall.js';
 import { WriteQueue } from './write-queue.js';
 import { vectorDialectFor } from './dialect.js';
-import { _setEmbedProviderForTest, embed } from './embed.js';
+import { _setEmbedProviderForTest, embed, getProviderCallCount } from './embed.js';
 import { DeterministicTestProvider } from './embed-test-provider.js';
 
 /**
@@ -93,8 +93,19 @@ async function rowidFor(db: StoreAdapter, uid: string): Promise<number> {
 }
 
 let ctx: Awaited<ReturnType<typeof tmpDb>>;
+let priorAdapterEnv: string | undefined;
 
 beforeEach(async () => {
+  // This suite is sqlite-only (see the `raw()` helper above and the BL-325
+  // comment): it unwraps to a better-sqlite3 handle and pins Phase A's
+  // "fully synchronous, zero embed calls" contract, which only holds for the
+  // sync sqlite adapter — TursoAdapter's transaction path is inherently
+  // async, and its enqueue path also skips WriteQueue._enqueueCount
+  // bookkeeping (noop/bypass mode, needsWriteSerialization: false). The
+  // factory default is now STORE_ADAPTER=turso; pin sqlite explicitly, same
+  // convention as every other adapter-sensitive spec.
+  priorAdapterEnv = process.env['STORE_ADAPTER'];
+  process.env['STORE_ADAPTER'] = 'sqlite';
   ctx = await tmpDb();
   await WriteQueue.clearInstances();
   WriteQueue.setBypass(false);
@@ -108,6 +119,8 @@ afterEach(async () => {
   _setEmbedProviderForTest(new DeterministicTestProvider());
   delete process.env['SOX_DISABLE_EMBED_HEAL'];
   delete process.env['SOX_SYNC_EMBED'];
+  if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+  else process.env['STORE_ADAPTER'] = priorAdapterEnv;
 });
 
 // ── Phase A: zero embed calls while holding the queue slot ────────────────────
@@ -139,9 +152,25 @@ describe('Phase A holds the queue slot with ZERO embed calls (seam-level proof)'
     expect(await vecRowFor(ctx.db, a.pending!.rowid)).toBeDefined();
   });
 
-  it('memoryWritePhaseA is fully synchronous (returns a value, not a promise)', () => {
-    const r = memoryWritePhaseA(ctx.db, { content: 'synchronous phase A return value', project_path: '/test/project' });
-    expect(r).not.toBeInstanceOf(Promise);
+  // BL-325/BL-4xx: memoryWritePhaseA CANNOT be a synchronous function under the
+  // current StoreAdapter interface — dbd874f ("turso adapter compatibility")
+  // made it `async function` because the entity-tag insert needed
+  // `await tx.executeGet()` for Turso, and even SqliteAdapterImpl.transaction()
+  // itself is `async` (sqlite-adapter.ts:245), so this holds on BOTH backends,
+  // not just Turso. A prior version of this test asserted
+  // `expect(r).not.toBeInstanceOf(Promise)`, which is now categorically false
+  // and cannot be restored short of reverting the async adapter migration.
+  // See the filed backlog item for the full history.
+  //
+  // What actually matters — and is still true and load-bearing — is that
+  // Phase A makes ZERO calls to the embedding provider while holding the
+  // WriteQueue slot (the entire point of the two-phase write split). That is
+  // the invariant this test now checks, via the same getProviderCallCount()
+  // seam recall.ts uses for its own zero-network-calls guard (R1).
+  it('memoryWritePhaseA makes zero embedding-provider calls (the invariant "synchronous" was a proxy for)', async () => {
+    const before = getProviderCallCount();
+    const r = await memoryWritePhaseA(ctx.db, { content: 'phase A must not call the embedding provider', project_path: '/test/project' });
+    expect(getProviderCallCount() - before).toBe(0);
     expect('code' in r).toBe(false);
   });
 });

@@ -154,11 +154,22 @@ export interface PhaseAOutcome {
 }
 
 /**
- * Phase A of the two-phase write: everything EXCEPT the embedding. Fully
- * synchronous (no ONNX, no awaits) — safe to run as a short serial-WriteQueue
- * task. Performs dedup, node insert, FTS (trigger), transactional outbox row,
+ * Phase A of the two-phase write: everything EXCEPT the embedding. Makes
+ * ZERO calls to the embedding provider (no ONNX) — safe to run as a short
+ * serial-WriteQueue task, which is the entire point of the two-phase split.
+ * Performs dedup, node insert, FTS (trigger), transactional outbox row,
  * tags/entities, idempotency ledger, DERIVED_FROM edges, and the non-embed
  * write-time enrichment (E1–E5, E10, E12).
+ *
+ * NOT wall-clock synchronous: this function is `async` and every StoreAdapter
+ * call inside it awaits (dbd874f, "turso adapter compatibility" — Turso's
+ * .get()/.run() are Promise-based, and even SqliteAdapterImpl.transaction()
+ * itself is async — sqlite-adapter.ts:245 — so this holds on both backends,
+ * not just Turso). It used to be a true synchronous function pre-StoreAdapter;
+ * that guarantee is gone by design and cannot be restored without reverting
+ * the async adapter migration. "No embed calls while holding the slot" is the
+ * invariant that matters and is what write-pipeline.spec.ts's seam-level test
+ * (getProviderCallCount()) actually proves.
  *
  * When `embedding` is supplied (SOX_SYNC_EMBED composition via `memoryWrite`),
  * the vec_node row is inserted inside the SAME transaction as the node and the
