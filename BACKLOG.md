@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 94.** (BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 95.** (BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -2973,4 +2973,40 @@ src/index.ts:97:8   TS1479  The current file is a CommonJS module whose imports 
 **Severity:** MEDIUM — no live defect is known to follow from it, the artifact builds and runs, and the two errors are the only thing standing between the repo and a clean root `typecheck`. It is filed rather than fixed because the correct fix touches the production entry point.
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: npx tsc --noEmit at repo root, extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:86 and :97, 2: libs/memory-core/src/dialect.ts:1-13]
+
+---
+
+### BL-397 — `memory-flush` reaches around StoreAdapter in both production and test code; its lint and typecheck are both red — **Open (MEDIUM)** (2026-08-01)
+
+**Found while:** getting the whole-repo gate green. `memory-flush` fails **two** targets, and the two failures are the same defect seen from opposite ends.[1]
+
+**`memory-flush:lint` — production.** `src/index.ts:20` imports the storage driver directly:
+
+```ts
+import Database from 'better-sqlite3';
+```
+
+Caught by `sox/no-storage-backend-leak`. This is the BL-377 / BL-380 / BL-385 shape: a module outside `store-adapter` naming a backend. On the default (Turso) backend a raw `better-sqlite3` handle is simply the wrong object.
+
+**`memory-flush:typecheck` — test.** `src/index.spec.ts:55-60` unwraps and passes the raw handle straight into a function that wants a `StoreAdapter`:
+
+```ts
+const adapter = await openDb(dbPath);
+const db = adapter.unwrap() as Database.Database;
+await memoryWrite(db, { ... });
+```
+```
+TS2345: Argument of type 'Database' is not assignable to parameter of type 'StoreAdapter'.
+  Type 'Database' is missing the following properties: executeGet, executeAll, executeRun, pragmaSet, and 5 more.
+```
+
+That is **exactly BL-325's defect** — the sync→async StoreAdapter migration leaving call sites holding a raw handle — surviving in `memory-flush` because BL-325's sweep was scoped to `memory-core`. Unlike memory-core before BL-340, `memory-flush`'s typecheck config already includes its specs, so it has been reporting this the whole time.
+
+**Not a duplicate.** BL-380 covers `vector-store` and `memory-cli`; BL-388 covers `tools/baseline-capture`; BL-325 covered `memory-core`'s specs. `memory-flush` is a fourth site and was in none of them — the storage-boundary audit that produced BL-380 missed it, which is the same gap that let BL-388 through.
+
+**Fix sketch:** the spec is the easy half — pass `adapter`, drop the unwrap and the cast (the surrounding function is already `async`), mirroring the `memory-cli` conversion in `bb6af3a`. For `src/index.ts:20`, establish whether the import is type-only (then it can go through `StoreAdapter`'s types) or a genuine value use (then it needs the adapter's async API). **`memory-flush` ships a bundled `dist` artifact**, so landing this means `nx build` + `registry:sync-index` + committing the regenerated checksums — and `nx build` in a shared checkout carries BL-390 (unreproducible checksums) and BL-393 (a build can silently redeploy a live service). Do it deliberately, not as a drive-by.
+
+**Severity:** MEDIUM — `memory-flush` is an export/backup utility, not the live read/write path, and no runtime failure is confirmed. But its typecheck has been red the entire time and nobody noticed, which is the BL-248 pattern: a gate that fails in a corner nobody reads is not a gate.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: npx nx run-many -t lint,typecheck — memory-flush:lint and memory-flush:typecheck both failing, 2: extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.ts:20, 3: extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.spec.ts:55-60]
 
