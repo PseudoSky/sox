@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 93.** (BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 94.** (BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -2942,4 +2942,35 @@ Every one of those reads as "admission control is configured and active." None o
 **Severity:** HIGH — a documented safety mechanism is inert on the default backend and the health surface affirmatively reports it as active. Not CRITICAL because Turso's native concurrency means normal operation is unaffected and no data loss is implied. Related: BL-334 (status surface reports configuration, not reality), BL-154 (why serialization exists at all — re-entrancy, NOT throughput), BL-387 (same shape: a published number that no rule consumes).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/memory-core/src/write-queue.ts:365-375, 2: libs/memory-core/src/write-queue.ts:495-600 (bypass block vs the size-cap and deadline-guard checks on the queued path), 3: live memory_ping on artifact 6d1b2abc1c12 / pid 32640 after two real memory_write calls]
+
+---
+
+### BL-396 — `memory-server/src/index.ts` statically imports the ESM store-adapter from a CommonJS module, against the convention `memory-core` documents and follows — **Open (MEDIUM)** (2026-08-01)
+
+**Found while:** getting the whole-repo gate green after the BL-325/BL-340 work. `npx tsc --noEmit` (the root `sox-ecosystem:typecheck`) reports two errors, both in production source:[1]
+
+```
+src/index.ts:86:50  TS1541  Type-only import of an ECMAScript module from a CommonJS module
+                            must have a 'resolution-mode' attribute.
+src/index.ts:97:8   TS1479  The current file is a CommonJS module whose imports will produce
+                            'require' calls; however, the referenced file is an ECMAScript
+                            module and cannot be imported with 'require'. Consider writing a
+                            dynamic 'import("@adhd/sox-store-adapter")' call instead.
+```
+
+**The correct pattern already exists in this repo and is documented.** `libs/memory-core/src/dialect.ts`'s header states it plainly:[2]
+
+> `@adhd/sox-store-adapter` is imported **dynamically**, matching every other value-level use of it in memory-core: memory-core compiles to CommonJS and a static import would pull the adapter's ESM graph into every CJS consumer.
+
+`memory-server/src/index.ts` does the opposite — a static type import at :86 and a static **value** import at :97.
+
+**Why it has not bitten yet, and why that is not reassurance.** esbuild resolves the graph at bundle time, so the shipped artifact works and the live server runs fine on it. `memory-server:typecheck` also passes, because that project's own tsconfig uses module settings under which this is legal. Only the root catch-all, which compiles it as CommonJS, disagrees. So this is latent rather than broken — but it is latent in exactly the way BL-248 described, where `memory-server` shipped 15 real TypeScript errors under a fully green sweep because the only config that would have caught them was not being run.
+
+**Deliberately NOT fixed in the same pass that found it.** The fix is small — give :86 a `resolution-mode` attribute and convert :97 to the dynamic `import()` memory-core uses — but `src/index.ts` is the live memory-server's entry point, so landing it means a rebuild and a redeploy of production. That is a change to make deliberately, with the artifact verified after (`[inv:deploy-verified]`), not as a tail-end cleanup. **Note also that a careless `nx build` here silently redeploys production — see BL-393.**
+
+**Fix sketch:** mirror `dialect.ts`. Convert the value import at :97 to `await import('@adhd/sox-store-adapter')` at its use site; either add `with { 'resolution-mode': 'import' }` to the type-only import at :86 or drop it in favour of importing the types through `@adhd/sox-memory-core`'s re-exports, which are already CJS-safe. Then re-run `npx tsc --noEmit` at the repo root and confirm zero, and redeploy via `sox service restart` (BL-372) rather than a bare build.
+
+**Severity:** MEDIUM — no live defect is known to follow from it, the artifact builds and runs, and the two errors are the only thing standing between the repo and a clean root `typecheck`. It is filed rather than fixed because the correct fix touches the production entry point.
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: npx tsc --noEmit at repo root, extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:86 and :97, 2: libs/memory-core/src/dialect.ts:1-13]
 
