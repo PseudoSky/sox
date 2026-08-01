@@ -86,6 +86,29 @@ describe('DurableJsonlSink — BL-365 crash-durability (writeSync, no buffering)
     expect(fs.existsSync(liveFile)).toBe(true);
     expect(fs.readFileSync(liveFile, 'utf8')).toContain('must-survive');
   });
+
+  it('reconfigure() takes effect on the NEXT write without constructing a new sink (per-call env-read migration path)', () => {
+    const dirA = tmpDir();
+    const dirB = tmpDir();
+    const sink = new DurableJsonlSink({ dir: dirA, component: 'reconf' });
+    sink.write('{"event":"in-a"}\n');
+    expect(sink.currentPath()).toContain(dirA);
+
+    // Simulate a caller re-resolving an env var (SOX_MEMORY_LOG_DIR-style)
+    // before every write, exactly memory-core's per-call contract.
+    sink.reconfigure({ dir: dirB, component: 'reconf' });
+    sink.write('{"event":"in-b"}\n');
+    expect(sink.currentPath()).toContain(dirB);
+    expect(fs.readFileSync(sink.currentPath(), 'utf8')).toContain('in-b');
+    // The first file is untouched, not overwritten or migrated.
+    const fileA = fs.readdirSync(dirA).find((f) => f.endsWith('.jsonl'));
+    expect(fileA).toBeDefined();
+    expect(fs.readFileSync(path.join(dirA, fileA!), 'utf8')).toContain('in-a');
+
+    sink.close();
+    fs.rmSync(dirA, { recursive: true, force: true });
+    fs.rmSync(dirB, { recursive: true, force: true });
+  });
 });
 
 describe('withTimedEvent — START is durable before the awaited call resolves (hang visibility)', () => {
