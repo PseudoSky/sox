@@ -68,17 +68,38 @@ export class DurableJsonlSink {
   private _currentDate = '';
   private _bytesWritten = 0;
   private _rotationSeq = 0;
-  private readonly _opts: Required<JsonlSinkOptions>;
+  private _opts: Required<JsonlSinkOptions>;
+  /** Snapshot of (dir, component, durable) the currently-open fd/stream was
+   *  opened against — compared on every `write()` so a `reconfigure()` call
+   *  (or a caller re-resolving env vars per call, memory-core's pattern)
+   *  takes effect on the next write without requiring an explicit reopen. */
+  private _openedFor: { dir: string; component: string; durable: boolean } | null = null;
 
   constructor(opts: JsonlSinkOptions) {
-    this._opts = {
+    this._opts = DurableJsonlSink._normalize(opts);
+    this._durableMode = this._opts.durable;
+  }
+
+  private static _normalize(opts: JsonlSinkOptions): Required<JsonlSinkOptions> {
+    return {
       dir: opts.dir,
       component: opts.component,
       maxBytes: opts.maxBytes ?? 20_000_000,
       maxFiles: opts.maxFiles ?? 7,
       durable: opts.durable ?? true,
     };
-    this._durableMode = this._opts.durable;
+  }
+
+  /**
+   * Update the sink's configuration in place. Does NOT force an immediate
+   * reopen — the next `write()` detects drift in (dir, component, durable)
+   * against what the currently-open fd/stream was opened for and reopens
+   * then. This is what lets a caller re-resolve environment variables on
+   * every call (memory-core's per-call `SOX_MEMORY_LOG_*` contract) without
+   * constructing a new sink instance per write.
+   */
+  reconfigure(opts: JsonlSinkOptions): void {
+    this._opts = DurableJsonlSink._normalize(opts);
   }
 
   currentPath(): string {
@@ -101,7 +122,14 @@ export class DurableJsonlSink {
 
   write(line: string): void {
     const today = todayDateString();
-    if (!this._isOpen() || today !== this._currentDate) {
+    const { dir, component, durable } = this._opts;
+    const drifted =
+      this._openedFor === null ||
+      this._openedFor.dir !== dir ||
+      this._openedFor.component !== component ||
+      this._openedFor.durable !== durable;
+    if (!this._isOpen() || today !== this._currentDate || drifted) {
+      this._durableMode = durable;
       this._reopen(today);
     }
     if (!this._isOpen()) return; // open failed — drop silently, never throw
@@ -142,11 +170,12 @@ export class DurableJsonlSink {
     this._currentPath = '';
     this._currentDate = '';
     this._bytesWritten = 0;
+    this._openedFor = null;
   }
 
   private _reopen(date: string): void {
     this.close();
-    const { dir, component } = this._opts;
+    const { dir, component, durable } = this._opts;
     try {
       fs.mkdirSync(dir, { recursive: true });
       const filePath = path.join(dir, `${component}-${date}.jsonl`);
@@ -165,6 +194,7 @@ export class DurableJsonlSink {
       }
       this._currentPath = filePath;
       this._currentDate = date;
+      this._openedFor = { dir, component, durable };
       try {
         this._bytesWritten = fs.statSync(filePath).size;
       } catch {
@@ -173,6 +203,7 @@ export class DurableJsonlSink {
     } catch {
       this._stream = null;
       this._fd = null;
+      this._openedFor = null;
     }
   }
 
