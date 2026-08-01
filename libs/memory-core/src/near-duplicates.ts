@@ -97,9 +97,14 @@ export async function memoryGetNearDuplicates(
       }
     }
 
-    // Extract cosine_sim from edge metadata
+    // Extract cosine_sim. The writer (applyNearDupResult, enrich.ts) binds
+    // nearDup.cosine_sim into the `weight` column, not `meta` (BL-386) — read
+    // that first. Fall back to metadata.cosine_sim for any edge written by an
+    // older path that did populate meta instead.
     let cosineSim = 0;
-    if (e.metadata) {
+    if (typeof e.weight === 'number') {
+      cosineSim = e.weight;
+    } else if (e.metadata) {
       const sim = (e.metadata as Record<string, unknown>)['cosine_sim'];
       if (typeof sim === 'number') cosineSim = sim;
     }

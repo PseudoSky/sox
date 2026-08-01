@@ -2,7 +2,42 @@
 
 ---
 
-## [Unreleased] — BL-382, BL-381, BL-365, BL-324, BL-344, BL-343, BL-323: near-dup detection restored on Turso; crash-durable telemetry; one env-scrub policy; memory_stats survives malformed rows; sqlite-vec load verified fixed
+## [Unreleased] — BL-386, BL-382, BL-381, BL-365, BL-324, BL-344, BL-343, BL-323: near-dup detection restored on Turso; cosine_sim and threshold now work; crash-durable telemetry; one env-scrub policy; memory_stats survives malformed rows; sqlite-vec load verified fixed
+
+### BL-386 (HIGH) — `memory_near_duplicates` cosine_sim and threshold now work; both were dead on every store
+
+`applyNearDupResult` writes the detected cosine into the `SAME_AS` edge's **`weight`** column and leaves `meta` `NULL`:
+
+```sql
+INSERT INTO edge (src, dst, rel, origin, weight, t_created, meta)
+SELECT ?, ?, 'SAME_AS', 'inferred', ?, ?, NULL
+```
+
+`memoryGetNearDuplicates` read the similarity from **`edge.metadata['cosine_sim']`** — a field the writer never populated — and defaulted to `0` when absent, which was always. Two live consequences on `~/.memory/memory.db` (138 `SAME_AS` pairs): every pair reported `cosine_sim: 0`, and `threshold` silently excluded every pair for any positive value (`memory_near_duplicates({threshold: 0.5})` returned `{"pairs":[],"total":0}` against those same 138 pairs) — indistinguishable from "no near-duplicates in this store."
+
+Fixed by reading `edge.weight` first, falling back to `edge.metadata.cosine_sim` for any edge written by an older path — this recovers all 138 existing edges instead of orphaning them, since the value was in `weight` the whole time:
+
+```ts
+let cosineSim = 0;
+if (typeof e.weight === 'number') {
+  cosineSim = e.weight;
+} else if (e.metadata) {
+  const sim = (e.metadata as Record<string, unknown>)['cosine_sim'];
+  if (typeof sim === 'number') cosineSim = sim;
+}
+```
+
+Red→green watched, both arms. With the fix reverted:
+
+```
+AssertionError: expected 0 to be greater than 0.95
+ ❯ near-duplicates-bl386-cosine.spec.ts:109:45
+    expect(unfiltered.pairs[0]!.cosine_sim).toBeGreaterThan(0.95);
+```
+
+Restoring the fix: `1 passed (1)` — a freshly-detected pair reports its real cosine_sim (>0.95), and `threshold: cosine_sim - 0.01` returns the pair rather than an empty set. (`libs/memory-core/src/{near-duplicates,near-duplicates-bl386-cosine.spec}.ts`)
+
+---
 
 ### BL-382 (HIGH) — a write now wakes the embed drain instead of waiting on a five-minute timer
 
