@@ -33,8 +33,15 @@ import {
   extractiveSummary,
   resolveProjectPath,
   runBatchEnrich,
+  vectorDialectFor,
   wrapRawDbAsAdapter,
 } from './index.js';
+
+// BL-381: near-dup KNN now takes the adapter's VectorDialect explicitly, so a
+// call site cannot silently issue one backend's syntax at the other. This suite
+// is pinned to sqlite (makeTmpDb → better-sqlite3); `vectorDialectFor` resolves
+// it through memory-core's own lazy accessor, because a static import of
+// store-adapter from here trips `@nx/enforce-module-boundaries`.
 
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -316,7 +323,7 @@ describe('detectNearDup', () => {
       process.env['SOX_EMBED_BACKEND'] = 'real'; // use real threshold
       const emb = seedEmbedding(1);
       const rowid = insertEpisode(db, 'ep1', 'A'.repeat(100), emb);
-      const result = detectNearDup(adapter, rowid, emb, 0.95);
+      const result = await detectNearDup(adapter, rowid, emb, 0.95, await vectorDialectFor(adapter));
       expect(result).toBeNull(); // only 1 node — no neighbours besides self
     } finally {
       delete process.env['SOX_EMBED_BACKEND'];
@@ -332,7 +339,7 @@ describe('detectNearDup', () => {
       const emb2 = seedEmbedding(999); // very different seed → different direction
       insertEpisode(db, 'ep1', 'A'.repeat(100), emb1);
       const rowid2 = insertEpisode(db, 'ep2', 'B'.repeat(100), emb2);
-      const result = await detectNearDup(adapter, rowid2, emb2, 0.95);
+      const result = await detectNearDup(adapter, rowid2, emb2, 0.95, await vectorDialectFor(adapter));
       // Should be null because distinct seeds produce orthogonal vectors
       if (result !== null) {
         expect(result.cosine_sim).toBeLessThan(0.95);
@@ -351,10 +358,10 @@ describe('detectNearDup', () => {
       const emb2 = nearDupEmbedding(emb1, 0.001); // very close
       insertEpisode(db, 'ep1', 'A'.repeat(100), emb1);
       const rowid2 = insertEpisode(db, 'ep2', 'B'.repeat(100), emb2);
-      const result = detectNearDup(adapter, rowid2, emb2, 0.95);
+      const result = await detectNearDup(adapter, rowid2, emb2, 0.95, await vectorDialectFor(adapter));
       // Near-dup may or may not be detected depending on exact cosine sim
       // Just verify the function doesn't throw and returns consistent results
-      const result2 = detectNearDup(adapter, rowid2, emb2, 0.95);
+      const result2 = await detectNearDup(adapter, rowid2, emb2, 0.95, await vectorDialectFor(adapter));
       expect(result).toEqual(result2); // deterministic
     } finally {
       delete process.env['SOX_EMBED_BACKEND'];
@@ -502,6 +509,7 @@ describe('enrichOnWrite', () => {
       uid: 'dup1', rowid: rowid1, content: content1, summary: undefined, tags: [],
       topic: undefined, metadata: undefined, project_path: '/p',
       derived_from_uid: undefined, embedding: emb1, importance: undefined,
+      vectorDialect: await vectorDialectFor(adapter),
     });
 
     // Second episode: a near-duplicate (embedding ~identical) in the SAME db — this is the
@@ -514,6 +522,7 @@ describe('enrichOnWrite', () => {
       uid: 'dup2', rowid: rowid2, content: content2, summary: undefined, tags: [],
       topic: undefined, metadata: undefined, project_path: '/p',
       derived_from_uid: undefined, embedding: emb2, importance: undefined,
+      vectorDialect: await vectorDialectFor(adapter),
     });
 
     // near-dup detected and the SAME_AS edge persisted (new episode → existing neighbour).

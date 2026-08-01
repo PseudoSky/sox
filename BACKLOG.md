@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-07-18 (regenerated mechanically; see BL-224)
 
-**Total open: 92.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 93.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -2185,42 +2185,74 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: repo-wi
 
 ---
 
-### BL-381 — Near-duplicate detection issues a sqlite-vec `vec0` KNN query against Turso and fails on every call — **Open (HIGH)** (2026-07-31)
+### BL-384 — `memory_search_entities` issues raw SQLite FTS5 shadow-table SQL and silently degrades to a `LIKE` scan on Turso — **Open (HIGH)** (2026-07-31)
 
-**Driver.** `libs/memory-core/src/neardup.ts:46` issues, unconditionally:
+**Driver.** `libs/memory-core/src/extensions.ts:1038-1046` queries the FTS5 shadow table directly, unconditionally, with no dialect and no capability guard:
 
 ```sql
-SELECT node_id, embedding
-  FROM vec_node
- WHERE embedding MATCH ? AND k = ?
+SELECT n.uid, n.name, n.content, n.summary, n.kind, n.importance
+  FROM fts_node f
+  JOIN node n ON n.rowid = f.rowid
+ WHERE fts_node MATCH ? AND n.t_invalid IS NULL AND n.kind = 'entity'
+ ORDER BY f.rank LIMIT ?
 ```
 
-`MATCH ... AND k = ?` is **sqlite-vec `vec0` KNN syntax**. Turso stores vectors as a native `F32_BLOB` column with no `vec0` virtual table and no `k` pseudo-column, so the statement fails at prepare time:
+`fts_node` is the **SQLite FTS5 shadow table**; `f.rank` is FTS5's built-in ranking column. Turso's Tantivy index lives directly on `node` and there is no `fts_node` table at all — `openDb()` on the turso branch explicitly *drops* it as migration residue (`db.ts` FTS5-residue cleanup, and BL-347). The statement therefore cannot resolve on the default backend.[1][2]
 
-```
-prepare failed: Parse error: no such column: k     adapter_type: turso
-```
+**Why nobody saw it.** The query sits in a bare `try { … } catch { /* fall through */ }`, and the `catch` falls into a `name LIKE ? OR content LIKE ?` scan ordered by `importance DESC`.[1] So the tool **returns results** — just substring matches ranked by importance instead of BM25-ranked full-text matches. There is no error, no telemetry event, no status field: the same silent-degradation shape as BL-381, BL-347, BL-376 and BL-378. Every entity search on the live store has been a `LIKE` scan since the migration.
 
-**Observed live, on the default backend, today.** Three occurrences at 23:34:01 under a single trace-id (`01KYX8E2SSD7HG94DZ62M3FP7Y`) from the running memory-server (pid 69947) during the first enrich pass after the brakes were lifted. The event catalog in `docs/observability/README.md` already shows `embed_pipeline.neardup.error` firing 10 times historically — **the signal has been in the telemetry since the migration and nobody read it** (BL-353).
-
-**Why it went unnoticed: the enrich pass catches and continues.** `embed_pipeline.neardup.error` is logged and the pass proceeds, so near-duplicate detection has been **silently non-functional on Turso** while every surface reported healthy. No user-visible error, no status field, no failed write — just a feature that quietly does nothing. `memory_near_duplicates` and any supersession logic depending on it are affected.
-
-**Same class as BL-377 and BL-380: sqlite-only code reaching the default backend.** Unlike those two this is not a cast — it is a hardcoded SQL *dialect*. The codebase already has the correct abstraction for exactly this: `VectorDialect` in `@adhd/sox-store-adapter`, the sibling of the `FTSDialect` introduced for the same reason during the migration. `neardup.ts` bypasses it.
-
-This is the fourth distinct instance today of *the same underlying failure*: a sqlite-shaped assumption surviving the Turso migration because nothing typechecked or exercised it on the default backend (BL-377 export/re-embed, BL-380 six unchecked casts, BL-364's inverted constructor, and this). **The pattern is worth a systematic sweep, not four point fixes** — see the fix sketch.
+**This is the FTS twin of BL-381.** `recall.ts` was already converted to ask `ftsDialect.matchClause()`/`scoreClause()` and branch on `ftsDialect.supportsShadowTable` — never on `adapter.config.type` — and carries a comment saying exactly that.[3] `extensions.ts` was missed. The abstraction exists; this is a missing call site.
 
 **Fix sketch:**
-1. Route the KNN query through `VectorDialect` so the Turso path emits its native distance syntax and the sqlite path keeps `vec0`. The dialect already exists; this is a missing call site, not new design.
-2. **Do not let it fail silently.** A caught-and-continued error on a feature path must surface in status (BL-334) or it is indistinguishable from "no duplicates found" — the same shape as BL-347, BL-376 and BL-378.
-3. **Sweep for remaining sqlite-only SQL** reaching the adapter — `vec0`/`MATCH`/`k =`/`fts5`/`rank` literals outside a dialect. That sweep is the systematic version of the four point fixes and is the actual deliverable.
+1. Route through `FTSDialect` exactly as `recall.ts:519-560` does, including the `supportsShadowTable` branch — Turso matches on `node` directly with no join.
+2. Guard on `ftsDialect.supported && adapter.capabilities.fts` and make the `LIKE` path an explicit, *reported* fallback rather than the destination of a swallowed exception. A degraded search must be visible (BL-334).
+3. `memory-core` now has `ftsDialectFor(adapter)` for exactly this (`libs/memory-core/src/dialect.ts`, added for BL-381).
 
-**Acceptance (red→green, must name BL-381):** call the near-duplicate path against a **Turso** store with known near-duplicate content and assert duplicates are returned. Must fail today with `no such column: k`. A second assertion must prove the failure is **reported** rather than swallowed.
+**Acceptance (red→green, must name BL-384):** seed an entity whose *name* does not contain the query term but whose *content* does, on a **Turso** store, and assert `memory_search_entities` returns it with FTS provenance. Must fail today (the `LIKE` fallback on `%query%` finds it only by substring, and ranks by importance rather than relevance). A second assertion must prove a genuine FTS failure is reported rather than swallowed.
 
-**Severity:** HIGH — a shipped feature has been silently non-functional on the default backend since the migration, and the error was in the telemetry the whole time.
+**Severity:** HIGH — a shipped tool has returned lower-quality results than advertised on the default backend since the migration, with no signal anywhere.
 
-**Related:** BL-377 (export/re-embed, same class, fixed), BL-380 (six unchecked casts), BL-364 (inverted constructor), BL-353 (the telemetry nobody read), BL-334 (surface it), BL-327 (supersession/communities depend on this path).
+**Related:** BL-381 (vector twin, resolved), BL-347 (FTS index damage, same silent shape), BL-376, BL-378, BL-334 (surface it), BL-380 (the same sweep).
 
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/memory-core/src/neardup.ts:46, 2: live store.error pid 69947 trace 01KYX8E2SSD7HG94DZ62M3FP7Y at 2026-07-31T23:34:01Z, 3: docs/observability/README.md event catalog (`embed_pipeline.neardup.error` ×10), 4: libs/data/store/store-adapter (VectorDialect, the abstraction being bypassed)]
+Citations: [wip/turso-live-metrics, database-administrator, claude, adapter-boundary sweep, 1: libs/memory-core/src/extensions.ts:1037-1065, 2: libs/memory-core/src/db.ts:528-590 (FTS5 residue cleanup drops `fts_node` on the turso branch), 3: libs/memory-core/src/recall.ts:519-560 (the correct dialect-driven pattern, with the "never `adapter.config.type`" comment at :528)]
+
+---
+
+### BL-385 — `backupStore()` cannot back up a Turso store at all: `VACUUM INTO` fails with `database disk image is malformed` — **Open (CRITICAL)** (2026-07-31)
+
+**Driver.** `libs/memory-core/src/backup.ts:169-192` is hardcoded to one backend. It calls `createSqliteAdapter({ dbPath, readonly: true }) as SqliteAdapter`, `unwrap()`s to a raw `better-sqlite3` handle, `sqliteVec.load()`s it, and runs `VACUUM INTO`.[1] It never consults `adapter.config.type`, `adapter.capabilities`, or the caller's adapter — it constructs its own sqlite one regardless of what backend the store actually uses.
+
+**Measured against a copy of the live store** (`~/.memory/memory.db`, 75 MB + WAL, copied together per BL-330; `~/.memory` never written to):[2]
+
+| step in `backup.ts`'s sequence | result |
+|---|---|
+| `new Database(path, {readonly:true})` | ok — better-sqlite3 opens lazily |
+| `sqliteVec.load(db)` | ok |
+| `PRAGMA journal_mode = WAL` | **FAILED** — `malformed database schema (__turso_internal_fts_dir_idx_fts_node_key) - near "USING": syntax error` |
+| `PRAGMA busy_timeout = 3000` | ok |
+| `VACUUM INTO '<dest>'` | **FAILED** — `database disk image is malformed`; **no destination file is created** |
+
+So `backupStore()` returns `{ code: 'E_IO', message: "VACUUM INTO failed: database disk image is malformed" }` and deletes the partial destination. **There is no working backup path for the production store, and there has not been one since the Turso migration.** This is not a latent risk — it is the state today.
+
+The root cause is the one named in the handoff: `better-sqlite3` cannot parse a Turso FTS store's `sqlite_master` without `PRAGMA writable_schema = ON` set *before* the first schema read.[3] `backup.ts` does not set it, and setting it would not make `VACUUM INTO` a correct backup of a Tantivy index anyway.
+
+**Why it was invisible.** `backup.spec.ts` runs against sqlite-built fixtures, so the suite exercised the only backend where the code works. Two of its tests are red today with exactly this error and were being attributed to spec drift.[4] Nothing in `memory_ping`, `memory_stats` or the integrity surface reports backup capability, so "can this store be backed up?" was never a question any surface answered.
+
+**This is a capability gap, not merely a leak.** `StoreAdapter` exposes no backup/snapshot surface, so `backup.ts` reaching around it is the only way the function could have been written. Blessing the reach-around is not the fix; the adapter needs to own this.
+
+**Fix sketch:**
+1. Add a `backup(destPath)` (or `snapshot`) member to `StoreAdapter`, with a `capabilities.backup` flag. `SqliteAdapterImpl` implements it with `VACUUM INTO`; `TursoAdapterImpl` implements it with whatever the driver actually supports — and if the driver supports nothing, the capability is `false` and `backupStore()` must **fail loudly and say so**, not fail with a corruption-shaped error.
+2. Until then, `backupStore()` must detect a non-sqlite store up front and return a distinct, honest error code (`E_UNSUPPORTED_BACKEND`) instead of `E_IO: database disk image is malformed`, which reads as data corruption and would send an operator down the wrong path during an incident.
+3. Determine and **document** the correct consistent-snapshot procedure for a Turso store — this is the still-open half of BL-330, and it cannot be closed while the programmatic path is dead.
+4. Surface backup capability in the status block (BL-334).
+
+**Acceptance (red→green, must name BL-385):** `backupStore()` against a **Turso** store produces either a verified-openable backup or an explicit unsupported-backend error — never `E_IO: database disk image is malformed`. Must fail today; the probe above is the red.
+
+**Severity:** CRITICAL — the production memory store has no working backup mechanism, the failure mode is indistinguishable from corruption, and the box already lost power mid-backfill once (BL-338).
+
+**Related:** BL-330 (consistent snapshot procedure, the open half), BL-341 (`backup.ts`'s integrity check, same file), BL-360 (Turso `integrity_check` false positive — the verification step is also unreliable on this backend), BL-380 (`as SqliteAdapter`, the cast this file uses twice), BL-338 (the power loss), BL-334 (surface it).
+
+Citations: [wip/turso-live-metrics, database-administrator, claude, adapter-boundary sweep, 1: libs/memory-core/src/backup.ts:169-192 and :199-217, 2: replay of backup.ts's exact statement sequence via better-sqlite3 against a copy of ~/.memory/memory.db + -wal, 2026-07-31, 3: docs/reporting/memory/handoff/adapter-integrity.md §4 (better-sqlite3 needs `writable_schema=ON` to open a Turso-FTS store), 4: libs/memory-core/src/backup.spec.ts:182 and :226 — both red with `malformed database schema (__turso_internal_fts_dir_idx_fts_node_key)`]
 
 ---
 

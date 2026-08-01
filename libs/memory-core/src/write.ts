@@ -49,6 +49,7 @@
 import { enrichOnWrite } from './enrich.js';
 import { enqueueIngest } from './outbox-queue.js';
 import { applyEmbedding } from './embed-pipeline.js';
+import { vectorDialectFor } from './dialect.js';
 import type { PendingEmbed } from './embed-pipeline.js';
 // S11 / BL-165: content-hash routed through ingest's hexSha256 (canonical ingestion layer).
 // Normalization (trim + toLowerCase) is applied here before the hash call to preserve
@@ -427,7 +428,7 @@ export async function memoryWritePhaseA(
       derived_from_uid,
       embedding, // undefined in async Phase A → E8 near-dup deferred to Phase B
       importance, // pass caller-supplied importance so enrichOnWrite respects it
-      useNativeVectors: adapter.capabilities.nativeVectors,
+      vectorDialect: await vectorDialectFor(adapter),
     }),
   );
 
@@ -499,8 +500,9 @@ export async function memoryWrite(
   const pending: PendingEmbed = phaseA.pending;
 
   const vec = await embed(pending.text);
+  const vectorDialect = await vectorDialectFor(adapter);
   const applied = await adapter.transaction(async (tx) =>
-    applyEmbedding(tx, pending, vec, adapter.capabilities.nativeVectors, adapter.capabilities.nativeVectors),
+    applyEmbedding(tx, pending, vec, adapter.capabilities.nativeVectors, vectorDialect),
   );
   if (applied.near_dup !== null && phaseA.result.enrichment) {
     phaseA.result.enrichment.near_dup = {
