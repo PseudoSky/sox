@@ -54,7 +54,27 @@ small, and it is deliberately the last thing built.
 showing sqlite or turso other than in the adapter instantiation options."*
 
 **Adopted, with one refinement: `store-adapter` and `migration.ts` are the only modules permitted
-to name a backend.** Migration legitimately converts between engines, so it must know both. A rule
+to name a backend.** *(Refined again 2026-08-01: `migration.ts` lives inside
+`libs/data/store/store-adapter/**`, so the permitted set is that one directory — there is no second
+exemption path to keep in sync.)*
+
+> **ENFORCEMENT — this rule is now mechanical, not advisory (2026-08-01).** `sox/no-storage-backend-leak`
+> (`tools/eslint-local/no-storage-backend-leak.cjs`) bans, outside that directory: `as SqliteAdapter` /
+> `as TursoAdapter`, `.unwrap()`, `'sqlite'`/`'turso'` used as a discriminator, and raw
+> `better-sqlite3`/`@tursodatabase/*` imports. Object-literal config (`{ type: 'sqlite' }`) is
+> explicitly allowed — that is the "instantiation option" the directive carves out.
+>
+> **Legitimate engine-behaviour branches are a named, cited allowlist inside the rule**, keyed on
+> *enclosing function + source text + occurrence count* — never line numbers. A line-numbered
+> allowlist fails **open**: an edit above a blessed line slides the exemption onto whatever moved
+> into that slot, waving through a real leak while the genuine exception starts erroring. The
+> content key fails **closed** — change the code and the exemption stops applying, so a rewritten
+> guard must be re-blessed deliberately.
+>
+> **The distinction the rule encodes, and which reviewers keep collapsing:** a *dialect leak* (what
+> SQL to emit) is banned; an *engine-behaviour branch* (how the engine behaves — no local WAL on a
+> remote store, Turso cannot DROP a `vec0` table) is legitimate. Conflating them makes the rule
+> noise, and noise gets disabled. Migration legitimately converts between engines, so it must know both. A rule
 with unstated exceptions gets ignored the first time someone hits a real one.
 
 Everything else goes through **capabilities** and **dialects** (`FTSDialect`, `VectorDialect` — both
@@ -128,6 +148,23 @@ sent an agent to normalise the wrong column, watch a clean sweep, and report suc
 `memory_stats` stayed dead.
 
 ### P0.4 — BL-348: enrichment/clustering can block and LOSE an embedding · **CRITICAL**
+
+> **TARGET ARCHITECTURE, MADE EXPLICIT 2026-08-01.** The thing to replace is a single process-wide
+> mutex: `_bgSlot` / `_bgSlotHolder` in `memory-server/src/index.ts` (~:2312). Every background job
+> acquires it, so the embed drain and the clustering pass are **mutually exclusive by construction**
+> — and `drain-wake.spec.ts` asserts exactly that (*"the background slot is a mutex: the drain and
+> the enrich tick never hold it at once"*).
+>
+> **BL-382 improved cadence, not isolation, and must not be mistaken for this item.** It split the
+> drain out of the enrich tick and added a wake, which removed the ~145 s of clustering the drain
+> was paying per pass. It deliberately **kept** the mutex, to preserve BL-346's anti-stampede
+> property. So the owner's directive — *"the execution of clustering should never block an embedding
+> from being written"* — is still unmet.
+>
+> The target is **separate execution contexts** (worker thread or child process) with an isolation
+> boundary, such that a clustering failure cannot drop or delay an embedding, and neither waits on
+> the other. Roughly half of BL-382's work is subsumed by doing this properly; the wake itself is
+> still needed for cadence.
 *(supersedes the "owner decision required" that stood here — BL-326 is now decided; see below.)*
 
 The write pipeline has no stage isolation. Embedding, topic enrichment, edge drawing and
@@ -223,6 +260,20 @@ when it works**. It detects nothing.
 ---
 
 ## P1 — Product telemetry. The measurements, in the packages.
+
+> **⚠️ SEQUENCING, REVISED 2026-08-01 — build P1.0 FIRST, before the rest of P0.**
+> The original P0→P1→P2 ordering was correct in principle and was **inverted in practice** on
+> 08-01, at measurable cost. With no shared measurement substrate, a full day of work was
+> instrumented by hand-rolled throwaway probes, and the numbers were wrong repeatedly: three agents
+> reported three different suite failure counts for the same suite (92 / 86 / ~19; actual **37**);
+> the drain rate was quoted four times before being measured honestly; a live SQL error (BL-399)
+> remains **undiagnosable** because `store.error` logs the driver's message but not the statement.
+> BL-353's 122 MB of unread telemetry is the same gap from the other side.
+>
+> P1.0's design **already exists** — `docs/research/observability-substrate.md`, 76 KB, 41 sections,
+> marked unblocked. It was never built. Everything downstream of it is cheaper *and more accurate*
+> once it is, which is why it now precedes the remaining P0 items rather than following them.
+> The exception is BL-348: it is CRITICAL and loses data, so it does not wait for instrumentation.
 
 These are §6.2 and §6.4 of the spec, and they are **already filed**. The harness reads them; it
 does not implement them.
