@@ -952,43 +952,6 @@ Citations: [wip/turso-live-metrics, performance-engineer, claude, BL-331 investi
 
 ---
 
-### BL-386 — `SAME_AS` cosine is written to `edge.weight` but read from `edge.meta`, so every near-duplicate pair reports `cosine_sim: 0` and the `threshold` parameter returns an empty set — **Open (HIGH)** (2026-08-01)
-
-**Found while:** verifying BL-381 end-to-end on the live store immediately after the 2026-08-01 deploy of artifact `6d1b2abc1c12`.[1] Two deliberately near-identical probe episodes produced no `SAME_AS` edge; chasing that (correctly, per the 0.95 threshold — measured cosine 0.9453) surfaced this instead.
-
-**Writer and reader disagree about which column holds the similarity.** `applyNearDupResult` inserts the cosine into the **`weight`** column and writes `meta` as a literal `NULL`:[2]
-
-```sql
-INSERT INTO edge (src, dst, rel, origin, weight, t_created, meta)
-SELECT ?, ?, 'SAME_AS', 'inferred', ?, ?, NULL
-```
-— bound as `[rowid, neighborRowid, nearDup.cosine_sim, now, ...]`, so `cosine_sim` lands in `weight`.
-
-`memoryNearDuplicates` reads it from edge **metadata**, and silently defaults to `0` when absent — which is always, because the writer never populates `meta`:[3]
-
-```ts
-let cosineSim = 0;
-if (e.metadata) {
-  const sim = (e.metadata as Record<string, unknown>)['cosine_sim'];
-  if (typeof sim === 'number') cosineSim = sim;
-}
-```
-
-**Two live consequences, both measured on `~/.memory/memory.db` (adapter `turso`, artifact `6d1b2abc1c12`):**
-
-1. **Every pair reports `cosine_sim: 0`.** `memory_near_duplicates` with no threshold returns `total: 138`, and all of them carry `"cosine_sim":0` — including pairs whose previews are plainly unrelated, so the number cannot be used to judge a pair either.[4]
-2. **The `threshold` parameter silently returns nothing.** Line 108 skips any pair with `cosineSim < cosineThreshold`; since every value is `0`, *any* numeric threshold excludes *every* pair. `memory_near_duplicates({threshold: 0.5})` returns `{"pairs":[],"total":0}` against the same 138 pairs.[5] The failure mode is an empty result, not an error — indistinguishable from "this store has no near-duplicates," which is exactly the shape of BL-381 and BL-384.
-
-**This is not BL-381.** BL-381 was the KNN *query* emitting vec0 syntax at Turso; that is fixed and verified — the same probe shows the dialect KNN returning 21 rows ranked correctly via `vector_distance_cos`, top neighbour 0.9453.[6] This defect is downstream of a *successful* detection: the pair is found, the edge is written, and the similarity is then lost in transit between writer and reader.
-
-**Fix sketch:** pick one column and make both sides use it. `weight` is the better home — it is a real typed column, it is what the writer already populates, and `meta` on this edge is `NULL` by construction. Change `memoryNearDuplicates` to read `e.weight`, keeping the `metadata` read as a fallback for any edge written by an older path. Do **not** "fix" the writer to populate `meta` instead: that leaves all 138 existing edges unreadable, whereas reading `weight` recovers them, since the value was there the whole time. A red→green must assert a non-zero `cosine_sim` on a freshly-detected pair AND that a `threshold` below that value returns the pair rather than an empty set — the second assertion is the one that would have caught this, and neither exists today.
-
-**Severity:** HIGH — `memory_near_duplicates` is one of the 20 published tools; its documented `threshold` parameter cannot return a non-empty result on any store, and its `cosine_sim` output field is a constant. Related: BL-381 (the KNN that feeds this, fixed), BL-384 (same silent-empty-result shape in entity search).
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: (live probe, artifact 6d1b2abc1c12, pid 32640), 2: libs/memory-core/src/enrich.ts:108-115, 3: libs/memory-core/src/near-duplicates.ts:100-110, 4: (live `memory_near_duplicates` call, total 138, all cosine_sim 0), 5: (live `memory_near_duplicates` call with threshold 0.5 -> pairs [], total 0), 6: libs/memory-core/src/neardup.ts:45-127 exercised against a copy of the live store]
-
----
-
 ### BL-325 — `memory-core` (not `memory-server`): 18 spec files never `await` the now-async `openDb()`/`WriteQueue.forPath()`, crashing with `TypeError: adapter.executeGet is not a function` / `queue.enqueue is not a function` — **Open (HIGH)** (2026-07-30)
 
 **Found while:** implementing persisted structured logging/tracing for memory-server (BL-320, this session), running `npx nx test memory-core --skip-nx-cache` to verify the new instrumentation didn't regress anything.[1] **Confirmed NOT caused by that work**: `git diff --stat -- libs/memory-core/src/db.ts` shows zero uncommitted diff (another agent's concurrent "restore lost Turso wiring" commit `2ad196f` already folded in the telemetry wrapper), and `git log --follow -p -- libs/memory-core/src/db.ts` shows `openDb()`'s signature changed from `export function openDb(dbPath): Database.Database` to `export async function openDb(dbPath): Promise<StoreAdapter>` as part of the StoreAdapter migration itself (commit history around `65171ad`/`83cd0b0`) — i.e. long before this session's edits.[2] Same root cause as `WriteQueue.forPath`, which is `static async forPath(...): Promise<WriteQueue>` and likewise never awaited by these same specs.[3]
@@ -2231,43 +2194,32 @@ Citations: [wip/turso-live-metrics, database-administrator, claude, adapter-boun
 
 ---
 
-### BL-385 — `backupStore()` cannot back up a Turso store at all: `VACUUM INTO` fails with `database disk image is malformed` — **Open (CRITICAL)** (2026-07-31)
+### BL-385 — `backupStore()` hardcodes the sqlite driver, so backup is dead on the default backend — **Open (CRITICAL)** (2026-07-31, re-measured 2026-08-01)
 
-**Driver.** `libs/memory-core/src/backup.ts:169-192` is hardcoded to one backend. It calls `createSqliteAdapter({ dbPath, readonly: true }) as SqliteAdapter`, `unwrap()`s to a raw `better-sqlite3` handle, `sqliteVec.load()`s it, and runs `VACUUM INTO`.[1] It never consults `adapter.config.type`, `adapter.capabilities`, or the caller's adapter — it constructs its own sqlite one regardless of what backend the store actually uses.
+**Turso backs up fine. The item's original claim — that `VACUUM INTO` fails and a Turso store "cannot be backed up at all" — is wrong, and the correction matters because it changes the fix from "build a capability" to "call the right driver."** The original measurement replayed `backup.ts`'s statement sequence *through better-sqlite3* against a Turso file. What it measured was **better-sqlite3 failing to parse Turso's FTS index DDL** (`CREATE INDEX ... USING fts (...)` → `malformed database schema (__turso_internal_fts_dir_idx_fts_node_key) - near "USING"`), not a missing Turso capability. `database disk image is malformed` was the sqlite driver's verdict on a healthy Turso store.
 
-**Measured against a copy of the live store** (`~/.memory/memory.db`, 75 MB + WAL, copied together per BL-330; `~/.memory` never written to):[2]
+**Measured 2026-08-01 with the Turso driver, against a copy of the live store** (`.db` + `-wal` copied together per BL-330; `~/.memory` never written to), using **exactly the experimental flags the adapter already sets in production** (`index_method`, `multiprocess_wal` — `turso-adapter.ts:183-190`):[1]
 
-| step in `backup.ts`'s sequence | result |
-|---|---|
-| `new Database(path, {readonly:true})` | ok — better-sqlite3 opens lazily |
-| `sqliteVec.load(db)` | ok |
-| `PRAGMA journal_mode = WAL` | **FAILED** — `malformed database schema (__turso_internal_fts_dir_idx_fts_node_key) - near "USING": syntax error` |
-| `PRAGMA busy_timeout = 3000` | ok |
-| `VACUUM INTO '<dest>'` | **FAILED** — `database disk image is malformed`; **no destination file is created** |
+| | source | `VACUUM INTO` output |
+|---|---|---|
+| nodes / vec_node / edge | 9502 / 4936 / 47320 | **identical** |
+| `fts_match("content","name","summary",'memory')` | 1158 | **1158** |
+| `PRAGMA integrity_check` | `Page N: never used` ×100, plus the known Turso FTS false positive | **only** the known FTS false positive |
+| size | 97.3 MB | **78.7 MB** — 19 MB of free space reclaimed |
 
-So `backupStore()` returns `{ code: 'E_IO', message: "VACUUM INTO failed: database disk image is malformed" }` and deletes the partial destination. **There is no working backup path for the production store, and there has not been one since the Turso migration.** This is not a latent risk — it is the state today.
+So `VACUUM INTO` on Turso produces a **complete, FTS-functional, integrity-equivalent** backup and reclaims the free pages, today, with no new flags. The `vacuum` experimental flag is **not required** for `VACUUM INTO` — it succeeds with and without it.[2]
 
-The root cause is the one named in the handoff: `better-sqlite3` cannot parse a Turso FTS store's `sqlite_master` without `PRAGMA writable_schema = ON` set *before* the first schema read.[3] `backup.ts` does not set it, and setting it would not make `VACUUM INTO` a correct backup of a Tantivy index anyway.
+**The actual defect** is `libs/memory-core/src/backup.ts:169-217`, which never consults the store's backend: it constructs `createSqliteAdapter({ dbPath, readonly: true }) as SqliteAdapter`, `unwrap()`s to a raw better-sqlite3 handle, `sqliteVec.load()`s it, and runs `VACUUM INTO`.[3] On the default (turso) backend the open itself fails, `backupStore()` returns `E_IO`, and **no destination file is produced**. This is the same violation as BL-381 and BL-384 — a module outside `store-adapter` naming a backend — and it is precisely what the storage-boundary lint rule exists to catch.
 
-**Why it was invisible.** `backup.spec.ts` runs against sqlite-built fixtures, so the suite exercised the only backend where the code works. Two of its tests are red today with exactly this error and were being attributed to spec drift.[4] Nothing in `memory_ping`, `memory_stats` or the integrity surface reports backup capability, so "can this store be backed up?" was never a question any surface answered.
+Two things still make this CRITICAL rather than cosmetic:
+1. **The failure text reads as data corruption.** During an incident `database disk image is malformed` sends an operator chasing a corrupt store that is in fact healthy. This box has already lost power mid-backfill once (BL-338). The diagnosis above cost real time precisely because the message was believed.
+2. **Two `backup.spec.ts` failures were being attributed to spec drift and are actually this.** Third instance of a production defect hiding inside "test debt" (BL-377 was 30 of 162; BL-364 sat red four days). **A failure count is an upper bound on test debt, never a measure of it.**
 
-**This is a capability gap, not merely a leak.** `StoreAdapter` exposes no backup/snapshot surface, so `backup.ts` reaching around it is the only way the function could have been written. Blessing the reach-around is not the fix; the adapter needs to own this.
+**Fix:** give `StoreAdapter` a backup surface and let each adapter own the operation — turso runs `VACUUM INTO` on its own connection with its own flags, sqlite keeps the `sqliteVec.load()` + `VACUUM INTO` path. Making the existing cast *conditional* is NOT the fix and someone will try it; the point is that `backup.ts` must stop knowing what a backend is.
 
-**Fix sketch:**
-1. Add a `backup(destPath)` (or `snapshot`) member to `StoreAdapter`, with a `capabilities.backup` flag. `SqliteAdapterImpl` implements it with `VACUUM INTO`; `TursoAdapterImpl` implements it with whatever the driver actually supports — and if the driver supports nothing, the capability is `false` and `backupStore()` must **fail loudly and say so**, not fail with a corruption-shaped error.
-2. Until then, `backupStore()` must detect a non-sqlite store up front and return a distinct, honest error code (`E_UNSUPPORTED_BACKEND`) instead of `E_IO: database disk image is malformed`, which reads as data corruption and would send an operator down the wrong path during an incident.
-3. Determine and **document** the correct consistent-snapshot procedure for a Turso store — this is the still-open half of BL-330, and it cannot be closed while the programmatic path is dead.
-4. Surface backup capability in the status block (BL-334).
+**⚠ Operational constraint discovered while measuring, do not lose it:** plain in-place `VACUUM` fails with **`Parse error: VACUUM is incompatible with experimental multiprocess WAL`**.[4] The integrity probe's own advice — "100 allocated-but-unreachable page(s) ... recovered by an offline VACUUM" — therefore requires opening **without** `multiprocess_wal`. `VACUUM INTO` has no such restriction, which makes copy-then-swap the better reclaim path anyway, since it is also the backup path.
 
-**Acceptance (red→green, must name BL-385):** `backupStore()` against a **Turso** store produces either a verified-openable backup or an explicit unsupported-backend error — never `E_IO: database disk image is malformed`. Must fail today; the probe above is the red.
-
-**Severity:** CRITICAL — the production memory store has no working backup mechanism, the failure mode is indistinguishable from corruption, and the box already lost power mid-backfill once (BL-338).
-
-**Related:** BL-330 (consistent snapshot procedure, the open half), BL-341 (`backup.ts`'s integrity check, same file), BL-360 (Turso `integrity_check` false positive — the verification step is also unreliable on this backend), BL-380 (`as SqliteAdapter`, the cast this file uses twice), BL-338 (the power loss), BL-334 (surface it).
-
-Citations: [wip/turso-live-metrics, database-administrator, claude, adapter-boundary sweep, 1: libs/memory-core/src/backup.ts:169-192 and :199-217, 2: replay of backup.ts's exact statement sequence via better-sqlite3 against a copy of ~/.memory/memory.db + -wal, 2026-07-31, 3: docs/reporting/memory/handoff/adapter-integrity.md §4 (better-sqlite3 needs `writable_schema=ON` to open a Turso-FTS store), 4: libs/memory-core/src/backup.spec.ts:182 and :226 — both red with `malformed database schema (__turso_internal_fts_dir_idx_fts_node_key)`]
-
----
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/data/store/store-adapter/src/turso-adapter.ts:183-190 (the production flag set) exercised against a copy of ~/.memory/memory.db, 2: (live probe — VACUUM INTO succeeded both with and without the `vacuum` experiment, 78.7 MB destination in each case), 3: libs/memory-core/src/backup.ts:169-217, 4: (live probe — in-place VACUUM with index_method+multiprocess_wal+vacuum)]
 
 ### BL-338 — A machine crash must not be able to damage the store, and recovery must be automatic — **Open (HIGH)** (2026-07-31)
 
