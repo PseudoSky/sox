@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 92.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 94.** (BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,13 +23,13 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-08-01: **91 open**.
+Regenerated 2026-08-01: **94 open**.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | BL-348 |
 | **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-324, BL-325, BL-326, BL-327, BL-329, BL-330, BL-331, BL-334, BL-335, BL-336, BL-338, BL-339, BL-340, BL-342, BL-345, BL-346, BL-347, BL-349, BL-351, BL-352, BL-353, BL-356, BL-357, BL-358, BL-364, BL-367, BL-372, BL-373, BL-374, BL-375, BL-377, BL-380, BL-381, BL-382 |
-| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378, BL-383 |
+| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-300, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-350, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378, BL-383, BL-388, BL-389 |
 | **LOW** | BL-103, BL-202, BL-215, BL-255, BL-258, BL-261, BL-283, BL-289, BL-290, BL-292, BL-298, BL-299, BL-305, BL-309, BL-314, BL-355, BL-363, BL-379 |
 | **UNSET** | BL-163 |
 
@@ -2167,39 +2167,6 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: repo-wi
 
 ---
 
-### BL-384 — `memory_search_entities` issues raw SQLite FTS5 shadow-table SQL and silently degrades to a `LIKE` scan on Turso — **Open (HIGH)** (2026-07-31)
-
-**Driver.** `libs/memory-core/src/extensions.ts:1038-1046` queries the FTS5 shadow table directly, unconditionally, with no dialect and no capability guard:
-
-```sql
-SELECT n.uid, n.name, n.content, n.summary, n.kind, n.importance
-  FROM fts_node f
-  JOIN node n ON n.rowid = f.rowid
- WHERE fts_node MATCH ? AND n.t_invalid IS NULL AND n.kind = 'entity'
- ORDER BY f.rank LIMIT ?
-```
-
-`fts_node` is the **SQLite FTS5 shadow table**; `f.rank` is FTS5's built-in ranking column. Turso's Tantivy index lives directly on `node` and there is no `fts_node` table at all — `openDb()` on the turso branch explicitly *drops* it as migration residue (`db.ts` FTS5-residue cleanup, and BL-347). The statement therefore cannot resolve on the default backend.[1][2]
-
-**Why nobody saw it.** The query sits in a bare `try { … } catch { /* fall through */ }`, and the `catch` falls into a `name LIKE ? OR content LIKE ?` scan ordered by `importance DESC`.[1] So the tool **returns results** — just substring matches ranked by importance instead of BM25-ranked full-text matches. There is no error, no telemetry event, no status field: the same silent-degradation shape as BL-381, BL-347, BL-376 and BL-378. Every entity search on the live store has been a `LIKE` scan since the migration.
-
-**This is the FTS twin of BL-381.** `recall.ts` was already converted to ask `ftsDialect.matchClause()`/`scoreClause()` and branch on `ftsDialect.supportsShadowTable` — never on `adapter.config.type` — and carries a comment saying exactly that.[3] `extensions.ts` was missed. The abstraction exists; this is a missing call site.
-
-**Fix sketch:**
-1. Route through `FTSDialect` exactly as `recall.ts:519-560` does, including the `supportsShadowTable` branch — Turso matches on `node` directly with no join.
-2. Guard on `ftsDialect.supported && adapter.capabilities.fts` and make the `LIKE` path an explicit, *reported* fallback rather than the destination of a swallowed exception. A degraded search must be visible (BL-334).
-3. `memory-core` now has `ftsDialectFor(adapter)` for exactly this (`libs/memory-core/src/dialect.ts`, added for BL-381).
-
-**Acceptance (red→green, must name BL-384):** seed an entity whose *name* does not contain the query term but whose *content* does, on a **Turso** store, and assert `memory_search_entities` returns it with FTS provenance. Must fail today (the `LIKE` fallback on `%query%` finds it only by substring, and ranks by importance rather than relevance). A second assertion must prove a genuine FTS failure is reported rather than swallowed.
-
-**Severity:** HIGH — a shipped tool has returned lower-quality results than advertised on the default backend since the migration, with no signal anywhere.
-
-**Related:** BL-381 (vector twin, resolved), BL-347 (FTS index damage, same silent shape), BL-376, BL-378, BL-334 (surface it), BL-380 (the same sweep).
-
-Citations: [wip/turso-live-metrics, database-administrator, claude, adapter-boundary sweep, 1: libs/memory-core/src/extensions.ts:1037-1065, 2: libs/memory-core/src/db.ts:528-590 (FTS5 residue cleanup drops `fts_node` on the turso branch), 3: libs/memory-core/src/recall.ts:519-560 (the correct dialect-driven pattern, with the "never `adapter.config.type`" comment at :528)]
-
----
-
 ### BL-385 — `backupStore()` hardcodes the sqlite driver, so backup is dead on the default backend — **Open (CRITICAL)** (2026-07-31, re-measured 2026-08-01)
 
 **Turso backs up fine. The item's original claim — that `VACUUM INTO` fails and a Turso store "cannot be backed up at all" — is wrong, and the correction matters because it changes the fix from "build a capability" to "call the right driver."** The original measurement replayed `backup.ts`'s statement sequence *through better-sqlite3* against a Turso file. What it measured was **better-sqlite3 failing to parse Turso's FTS index DDL** (`CREATE INDEX ... USING fts (...)` → `malformed database schema (__turso_internal_fts_dir_idx_fts_node_key) - near "USING"`), not a missing Turso capability. `database disk image is malformed` was the sqlite driver's verdict on a healthy Turso store.
@@ -2835,6 +2802,39 @@ Two distinct defects, and the second is the one that matters:
 Citations: [wip/turso-live-metrics, queue-perf, claude, BL-382 investigation, 1: libs/memory-core/src/autolink.ts:58-67, 2: libs/memory-core/src/schema.ts:33-40 (six columns, no `meta`), 3: live store.error pid 69947 at 2026-07-31T23:40:39.558Z and 23:51:55.206Z, 4: repo-wide `entity_stoplist` search — one hit, the write itself]
 
 ---
+
+---
+
+### BL-388 — `tools/baseline-capture` casts `StoreAdapter` to `SqliteAdapter` and `.unwrap()`s it, the exact BL-377/BL-380 shape, in two files the audit missed — **Open (MEDIUM)** (2026-08-01)
+
+**Driver.** Found while implementing the storage-boundary ESLint rule (`sox/no-storage-backend-leak`, `tools/eslint-local/no-storage-backend-leak.cjs`) for the standing architectural rule in `docs/reporting/memory/PLAN.md`. The rule flags every `(adapter as SqliteAdapter).unwrap()` outside `libs/data/store/store-adapter/**`, and it caught two unguarded sites BL-380's audit did not enumerate:
+
+- `tools/baseline-capture/src/capture-enrichment-baseline.ts:109` — `const rawDb = (adapter as SqliteAdapter).unwrap();` passed straight into `runBatchEnrich(rawDb, …)`.[1]
+- `tools/baseline-capture/src/capture-write-perf-baseline.ts:165` — same shape.[2]
+
+**Why this is the same defect, not a new one.** `unwrap()` returns a synchronous better-sqlite3 handle on `SqliteAdapter` and an async `@tursodatabase/database` handle on `TursoAdapter` — the default. Both call sites cast unconditionally with no capability guard, exactly the pattern BL-377 proved crashes on the default backend (`TypeError: episodes is not iterable`) and BL-380 catalogued for `vector-store`. These baseline-capture scripts have presumably never been run against a Turso store.
+
+**Fix sketch:** same as BL-377/BL-380 — convert to the async `StoreAdapter` API, or gate the raw-handle path on `adapter.capabilities.nativeVectors`/`fts5` the way `db.ts:373`/`:896` already do.
+
+**Acceptance (red→green, must name BL-388):** run each baseline-capture entry point with no `STORE_ADAPTER` set (default Turso) and assert it completes without a raw-handle type error; must fail today.
+
+Citations: [wip/turso-live-metrics, storage-boundary-lint, claude, storage-boundary lint task, 1: tools/baseline-capture/src/capture-enrichment-baseline.ts:109, 2: tools/baseline-capture/src/capture-write-perf-baseline.ts:165]
+
+---
+
+### BL-389 — `LanceDbVectorBackend` takes a raw `better-sqlite3` `Database.Database` in its constructor, outside the store-adapter boundary — **Open (MEDIUM)** (2026-08-01)
+
+**Driver.** Found by the same `sox/no-storage-backend-leak` lint pass as BL-388. `libs/data/vectors/vector-store/src/lancedb.ts:3` imports `type Database from 'better-sqlite3'` and `:62` declares `constructor(config: LanceDbVectorBackendConfig & { db: Database.Database })` — the backend's public API is typed directly against the sqlite driver, not `StoreAdapter`.[1]
+
+**Why it matters.** Every caller that constructs a `LanceDbVectorBackend` must already hold a raw better-sqlite3 handle, which means this backend cannot be wired up against a Turso-backed store at all without its own `unwrap()`-shaped workaround at the call site — the same shape as BL-380's `vector-store/src/index.ts` casts (open, same package), just pushed to the type signature instead of a runtime cast.
+
+**Not filed as a duplicate of BL-380** because BL-380 only enumerated `index.ts:143,200,359`; this is a fourth, distinct site in the same package (`lancedb.ts`) with a different shape (constructor parameter type, not a runtime `as`/`.unwrap()`).
+
+**Fix sketch:** either accept a `StoreAdapter` (or a capability-gated subset of it) in the constructor and route queries through `executeGet`/`executeAll`, or — if LanceDB genuinely needs synchronous direct SQL access LanceDB itself can't provide — make that a named, capability-gated `StoreAdapter` method rather than a raw driver type in a public constructor signature.
+
+**Severity:** MEDIUM — no live-store evidence of breakage (unlike BL-377/BL-385); this is a structural boundary violation and a latent Turso-compat gap, not a proven runtime failure yet.
+
+Citations: [wip/turso-live-metrics, storage-boundary-lint, claude, storage-boundary lint task, 1: libs/data/vectors/vector-store/src/lancedb.ts:3,62]
 
 ---
 
