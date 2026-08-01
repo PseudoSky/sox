@@ -2,6 +2,32 @@
 
 ---
 
+## [Unreleased] — BL-402: `WriteQueue.forPath()` no longer opens the same never-before-seen store twice
+
+Two concurrent first-callers for a never-before-seen `dbPath` both missed the singleton instance
+cache and each independently paid a full `openDb()` (sqlite-vec load, Turso-compat VACUUM check,
+WAL-index sidecar repair, migration checks) — concurrently, against the same file. Found by PKT-01
+while proving BL-348's red arm: measured **5.2s** wall-clock, initially (and wrongly) attributed to
+the new isolation boundary before timing instrumentation traced it to this race.
+
+**Root cause:** `forPath`'s check (`instances.get`) and set (`instances.set`) were separated by an
+`await` on `_create()` → `openDb()`. Two callers racing on the same path both observed `undefined`
+before either had populated the map.
+
+**Fix:** the check-then-set is now atomic. The first caller stores the in-flight `_create()`
+**promise** (not the resolved instance) in a new `pending` map synchronously, before any `await` —
+every concurrent caller for that path, including the first one, awaits the exact same promise. A
+failed open clears its `pending` entry so the path isn't permanently wedged.
+
+**Acceptance, red→green, watched:** `write-queue-race.spec.ts` — two concurrent `forPath()` calls
+against a never-before-opened path assert `openDb` was invoked exactly once. RED against the old
+code (`openDb` called 2 times) → GREEN against the fix (`openDb` called 1 time, both callers get
+the same instance).
+
+Files: `libs/memory-core/src/write-queue.ts`, `libs/memory-core/src/write-queue-race.spec.ts`.
+
+---
+
 ## [Unreleased] — BL-348: clustering/enrichment isolated into its own process — never blocks or drops a write's embedding
 
 **CRITICAL fix (PKT-01).** Owner directive, verbatim: *"the execution of clustering should never
