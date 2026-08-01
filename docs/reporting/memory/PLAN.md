@@ -717,7 +717,36 @@ fleet spend.**
 > packet design regardless of tier. **But do not cite them as proof a tier was required, and if a
 > demoted packet succeeds unchanged, prefer that evidence over this reasoning.**
 
-> **ESTIMATION BASIS — third revision, and the first fitted to real data (2026-08-01).**
+> **ESTIMATION BASIS — FOURTH revision, and the first fitted to MEASURED data (2026-08-01).**
+> Measured from the subagent transcripts (`~/.claude/projects/.../subagents/*.jsonl` via
+> `scratch-claude-metadata stats --file`), not self-reports:
+>
+> | packet | est. turns | **actual tool calls** | **cache-created** | **output** | **cost** |
+> |---|---|---|---|---|---|
+> | PKT-01 (impl) | ~30 | **126** — 4.2x under | 304k | 91.7k | **$6.15** |
+> | PKT-02 (impl) | ~35 | **80** — 2.3x under | 266k | 55.3k | **$3.20** |
+> | PKT-28 (research) | ~30 | **67** — 2.2x under | 266k | 43.6k | **$2.71** |
+>
+> **Every estimate was low by 2-4x, including the turn counts I had declared reliable.** The third
+> revision claimed "PKT-28 estimated ~30 turns and took ~30 — accurate, turns is the reliable unit."
+> That came from the **agent's own self-report**, which was wrong by 2.2x. The model was rebuilt on
+> an unverified number. Measure the transcript; do not take the report.
+>
+> **Working figures: 65-130 tool calls and ~270-305k cache-created per packet**, roughly independent
+> of tier. Research (PKT-28, 67) came in *below* implementation (PKT-01, 126) — **complexity tracks
+> the task, not the model tier.**
+>
+> ### ⚠️ The budgeting anxiety was aimed at the wrong target entirely
+>
+> **Three opus subagents cost $12.06 combined. This orchestrator session cost $366.19 — 30x more.**
+> Extrapolating all 42 remaining packets at PKT-01's worst case gives **~$258**, still well under one
+> orchestrator session. Every hard ceiling, tier demotion and token-shaving decision above was
+> optimising a rounding error while the actual spend sat in the coordinating session.
+>
+> **Practical consequence: stop rationing worker tier and worker budget. Ration ORCHESTRATION** —
+> fewer, larger, better-specified dispatches, and less re-verification churn in the parent.
+>
+> **Superseded reasoning, kept so it is not re-derived:**
 > **TURNS is the reliable unit; tokens are derived.** PKT-28 estimated ~30 turns and took ~30 tool
 > calls — accurate. Its *token* figure was guessed wrong twice in opposite directions: 30k, then
 > 4x'd to 360k, against a ~130k reality. Guessing tokens directly failed three times; the model
