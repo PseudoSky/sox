@@ -25,7 +25,7 @@ import { readFileSync, copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createSqliteAdapter } from '@adhd/sox-store-adapter';
-import type { StoreAdapter, SqliteAdapter } from '@adhd/sox-store-adapter';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { runBatchEnrich, openDb, type BatchEnrichOptions, type BatchEnrichResult } from '@adhd/sox-memory-core';
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -106,8 +106,7 @@ export async function runEnrichmentBaselinePass(
   adapter: StoreAdapter,
   batchEnrichOptions: BatchEnrichOptions = DEFAULT_BATCH_ENRICH_OPTIONS,
 ): Promise<{ batchEnrichResult: BatchEnrichResult; counts: EnrichmentPassCounts }> {
-  const rawDb = (adapter as SqliteAdapter).unwrap();
-  const batchEnrichResult = await runBatchEnrich(rawDb, batchEnrichOptions);
+  const batchEnrichResult = await runBatchEnrich(adapter, batchEnrichOptions);
 
   const nodeCountRow = await adapter.executeGet<{ cnt: number }>(
     'SELECT COUNT(*) AS cnt FROM node WHERE t_invalid IS NULL',

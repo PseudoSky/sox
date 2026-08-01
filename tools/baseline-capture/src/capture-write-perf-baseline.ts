@@ -20,7 +20,6 @@
 import { unlinkSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { openDb, memoryWrite, warmupEmbed } from '@adhd/sox-memory-core';
-import type { SqliteAdapter } from '@adhd/sox-store-adapter';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -162,7 +161,6 @@ export async function captureWritePerfBaseline(
   // ── Step 2: Create disposable DB ─────────────────────────────────────────────
   log('Step 2: Creating disposable DB...');
   const adapter = await openDb(tempDbPath);
-  const db = (adapter as SqliteAdapter).unwrap();
   log('  DB created.');
 
   // ── Step 3: Run N sequential writes, measuring each ──────────────────────────
@@ -172,7 +170,7 @@ export async function captureWritePerfBaseline(
   try {
     for (let i = 0; i < iterations; i++) {
       const start = performance.now();
-      await memoryWrite(db, {
+      await memoryWrite(adapter, {
         content: `Baseline write-perf test episode ${i}. This is a synthetic content payload for timing measurement. The quick brown fox jumps over the lazy dog.`,
         tags: ['baseline', 'write-perf', `test-${i % 10}`],
         source: 'import',
