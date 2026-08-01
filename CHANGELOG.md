@@ -2,6 +2,36 @@
 
 ---
 
+## [Unreleased] — BL-403: `baseline-capture` unwrapped its adapter back to a raw sqlite handle, breaking the build and guaranteeing a Turso runtime failure
+
+Discovered mid-deploy: `npx nx run registry:sync-index` failed on `baseline-capture:build` with two
+`TS2345`s — `Argument of type 'Database' is not assignable to parameter of type 'StoreAdapter'`.
+
+**Root cause:** both capture scripts opened a store correctly via `await openDb(path)` and then
+immediately threw the abstraction away — `const rawDb = (adapter as SqliteAdapter).unwrap()` — before
+calling `runBatchEnrich(rawDb, …)` / `memoryWrite(db, …)`. That unwrap was a leftover from when those
+APIs took a raw `better-sqlite3` handle; the StoreAdapter sync→async migration changed their
+signatures and left these two call sites behind. Same family as BL-325 (spec drift through the same
+migration), one directory over.
+
+Two independent defects in one line:
+1. **Build breakage**, invisible until now — `baseline-capture:build` was serving a cached green
+   result. The memory-core telemetry change (BL-401) invalidated that cache and the failure surfaced
+   immediately, on the first `sync-index` after it.
+2. **A storage-backend leak that could never have worked on Turso.** `as SqliteAdapter` is an
+   unchecked cast; against a `TursoAdapter` the `.unwrap()` would have returned a non-`Database`
+   object (or thrown), so baseline-capture was hard-wired to the sqlite backend the store layer
+   exists to abstract over. `capture-enrichment-baseline.ts`'s own doc comment already claimed the
+   function was "pure with respect to I/O beyond the supplied adapter" — the unwrap contradicted it.
+
+**Fix:** pass the `StoreAdapter` straight through. Both `.unwrap()` calls and both now-unused
+`SqliteAdapter` type imports deleted. `npx nx build baseline-capture` green.
+
+Files: `tools/baseline-capture/src/capture-enrichment-baseline.ts`,
+`tools/baseline-capture/src/capture-write-perf-baseline.ts`.
+
+---
+
 ## [Unreleased] — BL-402: `WriteQueue.forPath()` no longer opens the same never-before-seen store twice
 
 Two concurrent first-callers for a never-before-seen `dbPath` both missed the singleton instance
