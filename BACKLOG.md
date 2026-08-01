@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 91.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 92.** (BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -2835,3 +2835,27 @@ Two distinct defects, and the second is the one that matters:
 Citations: [wip/turso-live-metrics, queue-perf, claude, BL-382 investigation, 1: libs/memory-core/src/autolink.ts:58-67, 2: libs/memory-core/src/schema.ts:33-40 (six columns, no `meta`), 3: live store.error pid 69947 at 2026-07-31T23:40:39.558Z and 23:51:55.206Z, 4: repo-wide `entity_stoplist` search — one hit, the write itself]
 
 ---
+
+---
+
+### BL-387 — the integrity verdict is blind to semantic completeness: a store missing 34% of its vectors reports `overall: ok, healthy: true` — **Open (HIGH)** (2026-08-01)
+
+**Driver.** The repo owner asked why the store does not detect the bad state of missing embeddings and re-embed them. It **does** re-embed — `healMissingVectors` recovered all 3,246 on 2026-07-31 (`heals_applied: 3246`, `heals_failed: 0`). What it does not do is **notice**. For roughly 13 hours the live store was missing ~34% of its vectors while every health surface reported green.
+
+**The integrity probe set is entirely structural.** `IntegrityProbe` is a five-member union — `wal_identity`, `adapter_meta_unique`, `btree_index_populated`, `fts_index_live`, `pragma_integrity_check`.[1] Every one asks "is the *storage* well-formed?" None asks "is the *content* complete?" The string `embed` appears twice in the entire file, both in comments.[2] So a store whose episodes are 66% unvectorised — vector recall silently degraded to keyword-only — is indistinguishable from a perfect one at the verdict level.
+
+**The number was right there and fed nothing.** `memory_ping` has reported `store.embed_backlog` throughout; on 2026-07-31 it read **3,246** while the same response carried `integrity.overall: "ok"`, `healthy: true`, and all five probes `validated: true`.[3] The data was published and no rule consumed it. This is the BL-334 meta-defect in a new place: the server knew, and the surface did not say.
+
+**Three layers made it invisible, and a fix must address all three — the probe alone is not enough:**
+1. **No probe.** Nothing turns a backlog of 3,246 into a non-`ok` verdict (this item).
+2. **The recovery mechanism was braked with no surface saying so.** `SOX_DISABLE_EMBED_HEAL=1` suppressed the *only* thing that repairs this, and no health surface reported "automatic recovery is disabled." A brake that hides itself is worse than no brake (BL-339).
+3. **Even unbraked it was starved.** Pre-BL-382 the heal ran only on the 300 s enrich tick, under a 240 s budget with 500-row batches that **always** truncated (measured: 417 of 500, then 281 of 500), and had to pay ~145 s of clustering per pass. It idled 38.6% of a 1209 s span. Fixed by BL-382 — but a fast heal that nothing monitors is still unmonitored.
+
+**Fix sketch:** add a `vector_coverage` probe reporting live embeddable episodes vs `vec_node` rows, with a **backlog-age** trigger rather than a raw-count trigger — a count alarms spuriously during a legitimate bulk import, whereas "oldest pending item is older than N minutes" is the honest signal that recovery is not keeping up (`embed_backlog_oldest_at` is already published and already null-when-empty). It must degrade the top-level `overall`/`healthy` verdict, not merely add a field, or it reproduces exactly the defect above. Also surface whether `SOX_DISABLE_EMBED_HEAL` / `SOX_DISABLE_PERIODIC_ENRICH` are set, so a suppressed pipeline is visible in the same place the verdict is read.
+
+**Care required — do not make this an alarm that gets ignored:** the live store legitimately sits at 4,934 vectors / 9,496 nodes because communities and entities are not embeddable. The probe must compare against **embeddable episodes** (`kind='episode' AND t_invalid IS NULL AND content != ''`) — the same predicate `healMissingVectors` uses — not against total node count, or it reports a permanent false 52% and is disabled within a week.
+
+**Severity:** HIGH — the integrity surface is the thing operators trust to answer "is my store healthy?", and it answered yes for 13 hours while a third of the corpus was unsearchable by vector. Related: BL-334 (the status-surface meta-defect), BL-339 (the brake), BL-382 (the starved drain, fixed), BL-319 (missing computed throughput fields).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/data/store/store-adapter/src/integrity.ts:100-104, 2: libs/data/store/store-adapter/src/integrity.ts (grep -ci embed = 2, both comments), 3: (live memory_ping 2026-07-31, embed_backlog 3246 alongside integrity.overall ok / healthy true / 5 probes validated)]
+
