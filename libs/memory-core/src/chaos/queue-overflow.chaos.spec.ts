@@ -63,14 +63,27 @@ function isEBusy(err: unknown): err is QueueBusyError {
   );
 }
 
+let priorAdapterEnv: string | undefined;
+
 beforeEach(async () => {
   await WriteQueue.clearInstances();
   WriteQueue.setBypass(false);
+  // This chaos test proves the queue's OWN size-cap backpressure (E_BUSY
+  // shape, no lost/duplicated commits under flooding) — WriteQueue._noop =
+  // false behaviour, gated on needsWriteSerialization: true. The factory
+  // default is now STORE_ADAPTER=turso (needsWriteSerialization: false →
+  // noop/bypass), which would make "flooding past maxSize" never actually
+  // overflow. Pin sqlite explicitly, same convention as every other
+  // adapter-sensitive spec.
+  priorAdapterEnv = process.env['STORE_ADAPTER'];
+  process.env['STORE_ADAPTER'] = 'sqlite';
 });
 
 afterEach(async () => {
   await WriteQueue.clearInstances();
   _resetAllLeasesForTest();
+  if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+  else process.env['STORE_ADAPTER'] = priorAdapterEnv;
 });
 
 describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
