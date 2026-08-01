@@ -15,26 +15,17 @@
  * (This comment previously claimed SOX_EMBED_BACKEND=hash. There is no hash backend:
  *  EmbedBackend = 'auto' | 'real', libs/memory-core/src/embed.ts:43. [BL-250])
  */
-import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import Database from 'better-sqlite3';
 import { openDb } from './db.js';
 import { memoryWrite } from './write.js';
 import { memoryUpdate, memoryUpdatePhaseA, deepMerge } from './update.js';
 import { _shutdownEmbedWorker } from './embed.js';
 
-/**
- * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
- * These specs' own verification reads use raw SQL against the sqlite backend,
- * so unwrap once here rather than rewriting every assertion.
- */
-function raw(a: StoreAdapter): Database.Database {
-  return a.unwrap() as Database.Database;
-}
 
 
 // ── Test DB helpers ───────────────────────────────────────────────────────────
@@ -85,9 +76,10 @@ interface NodeRow {
 }
 
 async function getNode(db: StoreAdapter, uid: string): Promise<NodeRow | undefined> {
-  return await db.executeGet<NodeRow>(`SELECT rowid, uid, content, summary, name, topic, tags, importance, meta,
+  const row = await db.executeGet<NodeRow>(`SELECT rowid, uid, content, summary, name, topic, tags, importance, meta,
               t_created, t_updated, t_occurred, t_valid, project_path
        FROM node WHERE uid = ?`, [uid]);
+  return row ?? undefined;
 }
 
 // ── deepMerge unit tests ─────────────────────────────────────────────────────
@@ -203,7 +195,7 @@ describe('memoryUpdate — individual field updates', () => {
     try {
       const wr = await memoryWrite(db, { content: 'original content', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      const nodeBefore = await getNode(db, uid)!;
+      const nodeBefore = (await getNode(db, uid))!;
 
       const result = await memoryUpdate(db, { uid, content: 'updated content' });
       expect('uid' in result).toBe(true);
@@ -212,7 +204,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('content');
       expect(ok.reembedded).toBe(true);
 
-      const nodeAfter = await getNode(db, uid)!;
+      const nodeAfter = (await getNode(db, uid))!;
       expect(nodeAfter.content).toBe('updated content');
 
       // t_created is immutable
@@ -235,7 +227,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('summary');
       expect(ok.reembedded).toBe(true);
 
-      const node = await getNode(db, uid)!;
+      const node = (await getNode(db, uid))!;
       expect(node.summary).toBe('new summary');
     } finally {
       cleanup(db, dir);
@@ -253,7 +245,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('name');
       expect(ok.reembedded).toBe(false);
 
-      const node = await getNode(db, uid)!;
+      const node = (await getNode(db, uid))!;
       expect(node.name).toBe('new name');
     } finally {
       cleanup(db, dir);
@@ -271,7 +263,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('topic');
       expect(ok.reembedded).toBe(false);
 
-      const node = await getNode(db, uid)!;
+      const node = (await getNode(db, uid))!;
       expect(node.topic).toBe('javascript');
     } finally {
       cleanup(db, dir);
@@ -286,7 +278,7 @@ describe('memoryUpdate — individual field updates', () => {
         project_path: '/Users/nix/dev/ai/agent-source',
       });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      expect(getNode(db, uid)!.project_path).toBe('/Users/nix/dev/ai/agent-source');
+      expect((await getNode(db, uid))!.project_path).toBe('/Users/nix/dev/ai/agent-source');
 
       const result = await memoryUpdate(db, {
         uid,
@@ -296,7 +288,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('project_path');
       expect(ok.reembedded).toBe(false);
 
-      const node = await getNode(db, uid)!;
+      const node = (await getNode(db, uid))!;
       expect(node.project_path).toBe('/Users/nix/Documents/professional/qusececure');
     } finally {
       cleanup(db, dir);
@@ -314,7 +306,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('tags');
       expect(ok.reembedded).toBe(false);
 
-      const node = await getNode(db, uid)!;
+      const node = (await getNode(db, uid))!;
       expect(JSON.parse(node.tags!)).toEqual(['c', 'd', 'e']);
     } finally {
       cleanup(db, dir);
@@ -332,7 +324,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('importance');
       expect(ok.reembedded).toBe(false);
 
-      const node = await getNode(db, uid)!;
+      const node = (await getNode(db, uid))!;
       expect(node.importance).toBe(8);
     } finally {
       cleanup(db, dir);
@@ -357,7 +349,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(ok.updated_fields).toContain('t_valid');
       expect(ok.reembedded).toBe(false);
 
-      const node = await getNode(db, uid)!;
+      const node = (await getNode(db, uid))!;
       expect(node.t_occurred).toBe(newOccurred);
       expect(node.t_valid).toBe(newValid);
     } finally {
@@ -393,7 +385,7 @@ describe('memoryUpdate — BL-221: project_path is correctable in place', () => 
       const wr = await memoryWrite(db, { content, project_path: wrongProjectPath });
       expect('episode_uid' in wr).toBe(true);
       const uid = (wr as { episode_uid: string }).episode_uid;
-      expect(getNode(db, uid)!.project_path).toBe(wrongProjectPath);
+      expect((await getNode(db, uid))!.project_path).toBe(wrongProjectPath);
 
       // 2. Confirm the compounding sub-finding still holds (by design, NOT touched
       //    by this fix — the dedup key is intentionally content-only, per the
@@ -404,7 +396,7 @@ describe('memoryUpdate — BL-221: project_path is correctable in place', () => 
       expect('code' in rewrite && rewrite.code).toBe('E_DEDUP');
       expect((rewrite as { existing_uid: string }).existing_uid).toBe(uid);
       // The dedup-rejected rewrite must NOT have mutated project_path as a side effect.
-      expect(getNode(db, uid)!.project_path).toBe(wrongProjectPath);
+      expect((await getNode(db, uid))!.project_path).toBe(wrongProjectPath);
 
       // 3. GREEN: memory_update (option (a), BL-221) repairs the SAME row in place.
       const result = await memoryUpdate(db, { uid, project_path: correctProjectPath });
@@ -413,7 +405,7 @@ describe('memoryUpdate — BL-221: project_path is correctable in place', () => 
       expect(ok.updated_fields).toEqual(['project_path']);
       expect(ok.reembedded).toBe(false); // project_path is not part of the embed text
 
-      const node = await getNode(db, uid)!;
+      const node = (await getNode(db, uid))!;
       expect(node.project_path).toBe(correctProjectPath);
       expect(node.content).toBe(content); // content untouched — uid/content identity preserved
     } finally {
@@ -430,7 +422,7 @@ describe('memoryUpdate — BL-221: project_path is correctable in place', () => 
       });
       const uid = (wr as { episode_uid: string }).episode_uid;
 
-      const result = memoryUpdatePhaseA(db, {
+      const result = await memoryUpdatePhaseA(db, {
         uid,
         project_path: '/Users/nix/dev/ai/sox-ecosystem',
       });
@@ -449,7 +441,7 @@ describe('memoryUpdate — t_created immutable, t_updated set', () => {
     try {
       const wr = await memoryWrite(db, { content: 'time anchor test', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      const nodeBefore = await getNode(db, uid)!;
+      const nodeBefore = (await getNode(db, uid))!;
       // t_updated is now set by enrichOnWrite → graph.touch() so it's no longer null
       expect(nodeBefore.t_updated).toEqual(expect.any(String));
 
@@ -458,7 +450,7 @@ describe('memoryUpdate — t_created immutable, t_updated set', () => {
       expect('uid' in result).toBe(true);
       const after = Date.now();
 
-      const nodeAfter = await getNode(db, uid)!;
+      const nodeAfter = (await getNode(db, uid))!;
       // t_created must not change
       expect(nodeAfter.t_created).toBe(nodeBefore.t_created);
       // t_updated must be set and within the call window
@@ -486,7 +478,7 @@ describe('memoryUpdate — metadata merging', () => {
       const uid = (wr as { episode_uid: string }).episode_uid;
 
       // Verify initial meta
-      const nodeBefore = await getNode(db, uid)!;
+      const nodeBefore = (await getNode(db, uid))!;
       const metaBefore = JSON.parse(nodeBefore.meta!) as Record<string, unknown>;
       expect(metaBefore).toMatchObject({ a: { x: 1 }, list: [1, 2, 3], stable: 'keep' });
 
@@ -500,7 +492,7 @@ describe('memoryUpdate — metadata merging', () => {
       expect(ok.updated_fields).toContain('meta');
       expect(ok.reembedded).toBe(false);
 
-      const nodeAfter = await getNode(db, uid)!;
+      const nodeAfter = (await getNode(db, uid))!;
       const metaAfter = JSON.parse(nodeAfter.meta!) as Record<string, unknown>;
 
       // Nested object merged: a.x preserved, a.y added
@@ -531,7 +523,7 @@ describe('memoryUpdate — metadata merging', () => {
       });
       expect('uid' in result).toBe(true);
 
-      const nodeAfter = await getNode(db, uid)!;
+      const nodeAfter = (await getNode(db, uid))!;
       const metaAfter = JSON.parse(nodeAfter.meta!) as Record<string, unknown>;
       expect(metaAfter).toEqual({ brand_new: 42 });
       expect('old_key' in metaAfter).toBe(false);
@@ -546,8 +538,8 @@ describe('memoryUpdate — metadata merging', () => {
     try {
       const wr = await memoryWrite(db, { content: 'embed stability test', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      const nodeBefore = await getNode(db, uid)!;
-      const vecBefore = getVecHex(db, nodeBefore.rowid);
+      const nodeBefore = (await getNode(db, uid))!;
+      const vecBefore = await getVecHex(db, nodeBefore.rowid);
       expect(vecBefore).not.toBeNull();
 
       const result = await memoryUpdate(db, {
@@ -557,7 +549,7 @@ describe('memoryUpdate — metadata merging', () => {
       const ok = result as import('./update.js').UpdateResult;
       expect(ok.reembedded).toBe(false);
 
-      const vecAfter = getVecHex(db, nodeBefore.rowid);
+      const vecAfter = await getVecHex(db, nodeBefore.rowid);
       // Vector must be unchanged (same blob) for a metadata-only update.
       expect(vecAfter).toBe(vecBefore);
     } finally {
@@ -574,8 +566,8 @@ describe('memoryUpdate — re-embed on content change', () => {
     try {
       const wr = await memoryWrite(db, { content: 'first version of the content', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      const nodeBefore = await getNode(db, uid)!;
-      const vecBefore = getVecHex(db, nodeBefore.rowid);
+      const nodeBefore = (await getNode(db, uid))!;
+      const vecBefore = await getVecHex(db, nodeBefore.rowid);
       expect(vecBefore).not.toBeNull();
 
       // Update with a distinctly different content string (hash backend produces
@@ -588,7 +580,7 @@ describe('memoryUpdate — re-embed on content change', () => {
       expect(ok.reembedded).toBe(true);
       expect(ok.updated_fields).toContain('content');
 
-      const vecAfter = getVecHex(db, nodeBefore.rowid);
+      const vecAfter = await getVecHex(db, nodeBefore.rowid);
       // The blob must have changed (different content → different hash embedding).
       expect(vecAfter).not.toBeNull();
       expect(vecAfter).not.toBe(vecBefore);
@@ -602,12 +594,12 @@ describe('memoryUpdate — re-embed on content change', () => {
     try {
       const wr = await memoryWrite(db, { content: 'stable content for vector test', project_path: '/test/project' });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      const nodeBefore = await getNode(db, uid)!;
-      const vecBefore = getVecHex(db, nodeBefore.rowid);
+      const nodeBefore = (await getNode(db, uid))!;
+      const vecBefore = await getVecHex(db, nodeBefore.rowid);
 
       await memoryUpdate(db, { uid, topic: 'new-topic' });
 
-      const vecAfter = getVecHex(db, nodeBefore.rowid);
+      const vecAfter = await getVecHex(db, nodeBefore.rowid);
       // Vector must be identical for a topic-only update.
       expect(vecAfter).toBe(vecBefore);
     } finally {
@@ -642,7 +634,7 @@ describe('memoryUpdate — FTS reflects content change (fts_node_au trigger)', (
         project_path: '/test/project',
       });
       const uid = (wr as { episode_uid: string }).episode_uid;
-      const nodeRow = await db.executeGet<{ rowid: number }>(`SELECT rowid FROM node WHERE uid = ?`, [uid])!;
+      const nodeRow = (await db.executeGet<{ rowid: number }>(`SELECT rowid FROM node WHERE uid = ?`, [uid]))!;
 
       // 'zorbflux' should be indexed before the update.
       const ftsBeforeRows = (await db.executeAll<{ rowid: number }>(`SELECT rowid FROM fts_node WHERE fts_node MATCH ?`, ['zorbflux'])).rows;
@@ -678,7 +670,7 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
       const w = await memoryWrite(db, { content: 'original text for phase-a', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
       const rowid = (await db.executeGet('SELECT rowid FROM node WHERE uid = ?', [uid]) as { rowid: number }).rowid;
-      expect(getVecHex(db, rowid)).not.toBeNull(); // sync composition embedded it
+      expect(await getVecHex(db, rowid)).not.toBeNull(); // sync composition embedded it
 
       const a = await memoryUpdatePhaseA(db, { uid, content: 'replaced text for phase-a' });
       expect('code' in a).toBe(false);
@@ -687,7 +679,7 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
       // Columns committed, FTS-visible, stale vector GONE (heal-eligible).
       const row = await db.executeGet('SELECT content FROM node WHERE uid = ?', [uid]) as { content: string };
       expect(row.content).toBe('replaced text for phase-a');
-      expect(getVecHex(db, rowid)).toBeNull();
+      expect(await getVecHex(db, rowid)).toBeNull();
 
       // Pending carries the exact identity + text Phase B must apply.
       expect(a.pending).not.toBeNull();
@@ -700,7 +692,7 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
       // Phase B (applyEmbedding via the sync composition path) restores the vector.
       const done = await memoryUpdate(db, { uid, content: 'replaced text for phase-a v2' });
       expect('code' in done).toBe(false);
-      expect(getVecHex(db, rowid)).not.toBeNull();
+      expect(await getVecHex(db, rowid)).not.toBeNull();
     } finally {
       cleanup(db, dir);
     }
@@ -712,14 +704,14 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
       const w = await memoryWrite(db, { content: 'stable text', project_path: '/test/project' });
       const uid = (w as { episode_uid: string }).episode_uid;
       const rowid = (await db.executeGet('SELECT rowid FROM node WHERE uid = ?', [uid]) as { rowid: number }).rowid;
-      const before = getVecHex(db, rowid);
+      const before = await getVecHex(db, rowid);
 
       const a = await memoryUpdatePhaseA(db, { uid, metadata: { reviewed: true } });
       expect('code' in a).toBe(false);
       if ('code' in a) return;
       expect(a.pending).toBeNull();
       expect(a.result.reembedded).toBe(false);
-      expect(getVecHex(db, rowid)).toBe(before);
+      expect(await getVecHex(db, rowid)).toBe(before);
     } finally {
       cleanup(db, dir);
     }

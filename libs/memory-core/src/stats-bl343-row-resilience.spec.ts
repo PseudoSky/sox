@@ -22,7 +22,6 @@
  *      it converts a loud failure into a quiet wrong number, which is worse.
  *      `malformed_rows` must be non-zero and name the affected columns.
  */
-import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -31,9 +30,6 @@ import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { openDb } from './db.js';
 import { memoryGetStats } from './stats.js';
 
-function raw(a: StoreAdapter): Database.Database {
-  return a.unwrap() as Database.Database;
-}
 
 function tmpDir(): { dir: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bl343-'));

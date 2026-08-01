@@ -21,9 +21,8 @@
  *   Expected result: over-quota write returns WriteResult.episode_uid (not E_IO).
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import type Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -37,14 +36,6 @@ import {
 } from './quota.js';
 import { _resetEmbedSingleton } from './embed.js';
 
-/**
- * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
- * These specs' own verification reads use raw SQL against the sqlite backend,
- * so unwrap once here rather than rewriting every assertion.
- */
-function raw(a: StoreAdapter): Database.Database {
-  return a.unwrap() as Database.Database;
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -72,7 +63,7 @@ afterEach(async () => {
   tmpDirs = [];
 });
 
-async function freshDb(): Promise<{ db: import('better-sqlite3').Database; dbPath: string }> {
+async function freshDb(): Promise<{ db: StoreAdapter; dbPath: string }> {
   const dir = makeTempDir();
   tmpDirs.push(dir);
   const dbPath = path.join(dir, 'test.db');
@@ -95,7 +86,7 @@ describe('checkStoreQuota', () => {
     expect((await result as { ok: true }).ok).toBe(true);
     expect((await result as { soft_exceeded: boolean }).soft_exceeded).toBe(false);
 
-    db.close();
+    await db.close();
   });
 
   it('returns ok with soft_exceeded=true and fires warning when size > soft', async () => {
@@ -115,20 +106,20 @@ describe('checkStoreQuota', () => {
     expect(warnings.length).toBe(1);
     expect(warnings[0]).toContain('soft quota');
 
-    db.close();
+    await db.close();
   });
 
   it('returns E_IO refusal when size > hard threshold', async () => {
     const { db } = await freshDb();
 
     // Hard threshold of 1 byte — any real DB exceeds it.
-    const result = checkStoreQuota(db, {
+    const result = await checkStoreQuota(db, {
       softBytes: 0,
       hardBytes: 1,
     });
 
-    expect(isQuotaRefusal(await result)).toBe(true);
-    const refusal = await result as { code: string; message: string; retryable: boolean };
+    expect(isQuotaRefusal(result)).toBe(true);
+    const refusal = result as { code: string; message: string; retryable: boolean };
     expect(refusal.code).toBe('E_IO');
     expect(refusal.retryable).toBe(false);
     expect(refusal.message).toContain('hard limit');
@@ -138,13 +129,13 @@ describe('checkStoreQuota', () => {
     expect(typeof details!['quota_bytes']).toBe('number');
     expect(typeof details!['current_bytes']).toBe('number');
 
-    db.close();
+    await db.close();
   });
 
   it('hard refusal shape matches CONTRACTS §B exactly', async () => {
     const { db } = await freshDb();
-    const result = checkStoreQuota(db, { softBytes: 0, hardBytes: 1 });
-    expect(isQuotaRefusal(await result)).toBe(true);
+    const result = await checkStoreQuota(db, { softBytes: 0, hardBytes: 1 });
+    expect(isQuotaRefusal(result)).toBe(true);
     // Validate the full §B shape.
     expect(result).toMatchObject({
       code: 'E_IO',
@@ -152,9 +143,9 @@ describe('checkStoreQuota', () => {
       retryable: false,
     });
     // details is optional in §B but we always include it for quota refusals.
-    expect((await result as { details: unknown }).details).toBeDefined();
+    expect((result as { details: unknown }).details).toBeDefined();
 
-    db.close();
+    await db.close();
   });
 
   it('SOX_DISABLE_QUOTA_HARD=1 bypasses the hard check', async () => {
@@ -171,7 +162,7 @@ describe('checkStoreQuota', () => {
     // Since softBytes=0, soft is also exceeded → returns ok with soft_exceeded=true.
     expect(isQuotaRefusal(await result)).toBe(false);
 
-    db.close();
+    await db.close();
   });
 
   it('treats DB as size 0 when stat fails (non-existent path)', async () => {
@@ -190,7 +181,7 @@ describe('checkStoreQuota', () => {
     // Size 0 is NOT > hardBytes 1, so should be ok (but soft_exceeded since softBytes=0).
     expect(isQuotaRefusal(await result)).toBe(false);
 
-    try { db.close(); } catch { /* ignore — file deleted */ }
+    try { await db.close(); } catch { /* ignore — file deleted */ }
   });
 
   it('defaults are DEFAULT_SOFT_BYTES=512MiB and DEFAULT_HARD_BYTES=1GiB', () => {
@@ -245,7 +236,7 @@ describe('NC: negative control for hard quota', () => {
       // This assertion PASSES when guard is disabled (NC confirms guard effectiveness).
       expect(isQuotaRefusal(await result)).toBe(false);
 
-      db.close();
+      await db.close();
     },
   );
 });

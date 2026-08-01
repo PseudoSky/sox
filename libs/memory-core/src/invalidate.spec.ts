@@ -70,18 +70,18 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
     const claimUid = await writeEpisode('Old fact: the sky is green.');
     const replacementUid = await writeEpisode('Corrected fact: the sky is blue.');
 
-    const result = memoryInvalidate(db, {
+    const result = await memoryInvalidate(db, {
       claim_uid: claimUid,
       reason: 'corrected',
       replacement_uid: replacementUid,
     });
 
     expect('ok' in result && result.ok).toBe(true);
-    const ok = await result as { ok: true; supersedes_edge_uid?: string };
+    const ok = result as { ok: true; supersedes_edge_uid?: string };
     expect(ok.supersedes_edge_uid).toBeDefined();
 
-    const claimRowid = rowidFor(claimUid);
-    const replacementRowid = rowidFor(replacementUid);
+    const claimRowid = await rowidFor(claimUid);
+    const replacementRowid = await rowidFor(replacementUid);
 
     const edge = await db.executeGet<{ rel: string; src: number; dst: number }>(`SELECT rel, src, dst FROM edge WHERE rel = 'SUPERSEDES' AND src = ? AND dst = ?`, [replacementRowid, claimRowid]);
 
@@ -91,30 +91,30 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
     expect(edge!.dst).toBe(claimRowid);
 
     // Claim itself is invalidated (bi-temporal, never deleted — R5).
-    const claimRow = await db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [claimUid])!;
+    const claimRow = (await db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [claimUid]))!;
     expect(claimRow.t_invalid).not.toBeNull();
   });
 
   it('BL-247: a nonexistent replacement_uid raises E_REPLACEMENT_NOT_FOUND and does NOT invalidate the claim', async () => {
     const claimUid = await writeEpisode('Claim that should survive a bad replacement_uid.');
 
-    const result = memoryInvalidate(db, {
+    const result = await memoryInvalidate(db, {
       claim_uid: claimUid,
       reason: 'attempted supersession with bogus uid',
       replacement_uid: 'this-uid-does-not-exist-01ARZ3',
     });
 
     expect('code' in result).toBe(true);
-    expect((await result as { code: string }).code).toBe('E_REPLACEMENT_NOT_FOUND');
+    expect((result as { code: string }).code).toBe('E_REPLACEMENT_NOT_FOUND');
 
     // Behaviour change from the pre-fix no-op: the claim must NOT be
     // invalidated either — the whole call fails atomically rather than
     // silently invalidating the claim while dropping the requested edge.
-    const claimRow = await db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [claimUid])!;
+    const claimRow = (await db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [claimUid]))!;
     expect(claimRow.t_invalid).toBeNull();
 
     // No SUPERSEDES edge of any kind was written.
-    const edgeCount = await db.executeGet<{ cnt: number }>(`SELECT COUNT(*) as cnt FROM edge WHERE rel = 'SUPERSEDES'`)!;
+    const edgeCount = (await db.executeGet<{ cnt: number }>(`SELECT COUNT(*) as cnt FROM edge WHERE rel = 'SUPERSEDES'`))!;
     expect(edgeCount.cnt).toBe(0);
   });
 
@@ -123,45 +123,45 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
     const deadReplacementUid = await writeEpisode('This node will be invalidated before use as a replacement.');
 
     // Invalidate the would-be replacement first, with no replacement of its own.
-    const preInvalidate = memoryInvalidate(db, {
+    const preInvalidate = await memoryInvalidate(db, {
       claim_uid: deadReplacementUid,
       reason: 'pre-invalidated for BL-247 test setup',
     });
     expect('ok' in preInvalidate && preInvalidate.ok).toBe(true);
 
-    const result = memoryInvalidate(db, {
+    const result = await memoryInvalidate(db, {
       claim_uid: claimUid,
       reason: 'attempted supersession with an already-dead uid',
       replacement_uid: deadReplacementUid,
     });
 
     expect('code' in result).toBe(true);
-    expect((await result as { code: string }).code).toBe('E_REPLACEMENT_NOT_FOUND');
+    expect((result as { code: string }).code).toBe('E_REPLACEMENT_NOT_FOUND');
 
-    const claimRow = await db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [claimUid])!;
+    const claimRow = (await db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [claimUid]))!;
     expect(claimRow.t_invalid).toBeNull();
 
-    const edgeCount = await db.executeGet<{ cnt: number }>(`SELECT COUNT(*) as cnt FROM edge WHERE rel = 'SUPERSEDES'`)!;
+    const edgeCount = (await db.executeGet<{ cnt: number }>(`SELECT COUNT(*) as cnt FROM edge WHERE rel = 'SUPERSEDES'`))!;
     expect(edgeCount.cnt).toBe(0);
   });
 
   it('negative control: claim_uid not found returns E_NOT_FOUND (pre-existing behaviour, unchanged)', async () => {
-    const result = memoryInvalidate(db, {
+    const result = await memoryInvalidate(db, {
       claim_uid: 'nonexistent-claim-uid',
       reason: 'n/a',
     });
     expect('code' in result).toBe(true);
-    expect((await result as { code: string }).code).toBe('E_NOT_FOUND');
+    expect((result as { code: string }).code).toBe('E_NOT_FOUND');
   });
 
   it('invalidate without replacement_uid still succeeds with no SUPERSEDES edge (unchanged happy path)', async () => {
     const claimUid = await writeEpisode('Standalone claim, no supersession.');
-    const result = memoryInvalidate(db, { claim_uid: claimUid, reason: 'no longer needed' });
+    const result = await memoryInvalidate(db, { claim_uid: claimUid, reason: 'no longer needed' });
     expect('ok' in result && result.ok).toBe(true);
-    const ok = await result as { ok: true; supersedes_edge_uid?: string };
+    const ok = result as { ok: true; supersedes_edge_uid?: string };
     expect(ok.supersedes_edge_uid).toBeUndefined();
 
-    const claimRow = await db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [claimUid])!;
+    const claimRow = (await db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [claimUid]))!;
     expect(claimRow.t_invalid).not.toBeNull();
   });
 });

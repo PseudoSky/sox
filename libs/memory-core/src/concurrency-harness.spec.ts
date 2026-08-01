@@ -21,6 +21,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import Database from 'better-sqlite3';
+import { Worker } from 'node:worker_threads';
 import { WriteQueue } from './write-queue.js';
 
 function tmpDir(): { dir: string; cleanup: () => void } {
@@ -125,6 +126,7 @@ describe('WP-6 concurrency harness (BL-134)', () => {
 
     // Assert every operation completed
     const totalWrites = results.reduce((sum, r) => sum + r.writeCount, 0);
+    expect(totalWrites).toBe(N * OPS_PER_WRITER);
     const totalInDb = await queue.enqueue('count-green', async (tx) => {
       const row = await tx.executeGet<{ cnt: number }>(
         'SELECT COUNT(*) AS cnt FROM wp6_green',
@@ -273,15 +275,15 @@ describe('WP-6 concurrency harness (BL-134)', () => {
     const queue = await WriteQueue.forPath(dbPath, SMALL_MAX);
 
     // Do a slow operation (1s) to fill the single slot
-    queue.enqueue('slow-pin', () => new Promise<string>((r) => setTimeout(r, 500)));
+    queue.enqueue('slow-pin', () => new Promise<string>((r) => setTimeout(() => r('ok'), 500)));
 
     // Flood the queue while the slow operation is running
     const flood = Array.from({ length: CONCURRENT }, async (_, i) => {
       const r = await queue
         .enqueue(`flood-${i}`, () => 'ok')
         .then(
-          (v) => ({ ok: true, value: v }),
-          (err) => ({ ok: false, error: err }),
+          (v): { ok: true; value: string } => ({ ok: true, value: v }),
+          (err): { ok: false; error: unknown } => ({ ok: false, error: err }),
         );
       return r;
     });

@@ -112,7 +112,7 @@ describe('resolveStoreOrDbPath — SA-6 precedence and deprecation', () => {
     // Both given — store wins
     const result = resolveStoreOrDbPath('main', '~/some/other.db');
     expect(result).not.toHaveProperty('code');
-    const resolved = result as Exclude<ReturnType<typeof resolveStoreOrDbPath>, { code: string }>;
+    const resolved = result as Exclude<ReturnType<typeof resolveStoreOrDbPath>, { code: string } | null>;
     expect(resolved.name).toBe('main');
     expect(resolved.viaRegistry).toBe(true);
     expect(resolved.path).toContain('main.db');
@@ -123,7 +123,7 @@ describe('resolveStoreOrDbPath — SA-6 precedence and deprecation', () => {
     fs.writeFileSync(dbPath, 'data', 'utf8');
     const result = resolveStoreOrDbPath(undefined, dbPath);
     expect(result).not.toHaveProperty('code');
-    const resolved = result as Exclude<ReturnType<typeof resolveStoreOrDbPath>, { code: string }>;
+    const resolved = result as Exclude<ReturnType<typeof resolveStoreOrDbPath>, { code: string } | null>;
     expect(resolved.viaRegistry).toBe(false);
     expect(resolved.path).toBe(dbPath);
     expect(resolved.fingerprint).toMatch(/^4:/);

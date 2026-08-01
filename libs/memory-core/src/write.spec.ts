@@ -10,6 +10,7 @@ import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import { openDb } from './db.js';
 import { memoryWrite, memoryWriteBatch, requestLedgerPrune } from './write.js';
+import type { BatchItem } from './write.js';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { WriteQueue } from './write-queue.js';
 
@@ -44,7 +45,7 @@ describe('memoryWrite — summary + metadata (BL-23)', () => {
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
 
-      const row = await db.executeGet<{ summary: string | null; meta: string | null }>('SELECT summary, meta FROM node WHERE uid = ?', [uid])!;
+      const row = (await db.executeGet<{ summary: string | null; meta: string | null }>('SELECT summary, meta FROM node WHERE uid = ?', [uid]))!;
 
       expect(row.summary).toBe('graph supersession');
       expect(JSON.parse(row.meta!)).toEqual({ url: 'x' });
@@ -62,7 +63,7 @@ describe('memoryWrite — summary + metadata (BL-23)', () => {
       // Content < 100 chars → extractiveSummary returns it as-is (still non-null).
       const r = await memoryWrite(db, { content: 'Plain content, no extras.', project_path: '/test/project' });
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = await db.executeGet<{ summary: string | null; meta: string | null }>('SELECT summary, meta FROM node WHERE uid = ?', [uid])!;
+      const row = (await db.executeGet<{ summary: string | null; meta: string | null }>('SELECT summary, meta FROM node WHERE uid = ?', [uid]))!;
       // P2 extractive summary fills this field (content < 100 chars → returns content as-is)
       expect(row.summary).not.toBeNull();
       expect(row.meta).toBeNull();
@@ -87,7 +88,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = await db.executeGet<{ topic: string | null }>('SELECT topic FROM node WHERE uid = ?', [uid])!;
+      const row = (await db.executeGet<{ topic: string | null }>('SELECT topic FROM node WHERE uid = ?', [uid]))!;
       expect(row.topic).toBe('typescript');
       db.close();
     } finally { cleanup(); }
@@ -103,7 +104,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = await db.executeGet<{ topic: string | null }>('SELECT topic FROM node WHERE uid = ?', [uid])!;
+      const row = (await db.executeGet<{ topic: string | null }>('SELECT topic FROM node WHERE uid = ?', [uid]))!;
       expect(row.topic).toBe('authentication');
       db.close();
     } finally { cleanup(); }
@@ -120,7 +121,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = await db.executeGet<{ topic: string | null }>('SELECT topic FROM node WHERE uid = ?', [uid])!;
+      const row = (await db.executeGet<{ topic: string | null }>('SELECT topic FROM node WHERE uid = ?', [uid]))!;
       expect(row.topic).toBe('new-topic');
       db.close();
     } finally { cleanup(); }
@@ -139,14 +140,14 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const uid = (r as { episode_uid: string }).episode_uid;
 
       // tags JSON column
-      const row = await db.executeGet<{ tags: string | null }>('SELECT tags FROM node WHERE uid = ?', [uid])!;
+      const row = (await db.executeGet<{ tags: string | null }>('SELECT tags FROM node WHERE uid = ?', [uid]))!;
       expect(JSON.parse(row.tags!)).toEqual(['JWT', 'OAuth']);
 
       // MENTIONS edges
-      const mentionCount = await db.executeGet<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM edge e
+      const mentionCount = (await db.executeGet<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM edge e
            JOIN node src ON src.uid = ?
            JOIN node dst ON dst.kind = 'entity' AND dst.name IN ('JWT','OAuth')
-           WHERE e.src = src.rowid AND e.dst = dst.rowid AND e.rel = 'MENTIONS'`, [uid])!;
+           WHERE e.src = src.rowid AND e.dst = dst.rowid AND e.rel = 'MENTIONS'`, [uid]))!;
       expect(mentionCount.cnt).toBe(2);
       db.close();
     } finally { cleanup(); }
@@ -162,7 +163,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = await db.executeGet<{ project_path: string | null }>('SELECT project_path FROM node WHERE uid = ?', [uid])!;
+      const row = (await db.executeGet<{ project_path: string | null }>('SELECT project_path FROM node WHERE uid = ?', [uid]))!;
       expect(row.project_path).toBe('/Users/nix/dev/ai/sox-ecosystem');
       db.close();
     } finally { cleanup(); }
@@ -177,7 +178,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const r = await memoryWrite(db, { content: 'A plain episode with no enrichment fields.', project_path: '/test/project' });
       expect('episode_uid' in r).toBe(true);
       const uid = (r as { episode_uid: string }).episode_uid;
-      const row = await db.executeGet<{ topic: string | null; tags: string | null; project_path: string | null }>('SELECT topic, tags, project_path FROM node WHERE uid = ?', [uid])!;
+      const row = (await db.executeGet<{ topic: string | null; tags: string | null; project_path: string | null }>('SELECT topic, tags, project_path FROM node WHERE uid = ?', [uid]))!;
       expect(row.topic).toBeNull();
       expect(row.tags).toBeNull();
       // project_path is the caller-supplied value
@@ -295,17 +296,19 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
       const db = await openDb(path.join(dir, 't.db'));
 
       // Count nodes before
-      const before = await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'")!;
+      const before = (await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'"))!;
 
-      // No project_path arg — this is now rejected
-      const r = await memoryWrite(db, { content: 'BL-62 resolved: unqualified write rejected.' });
+      // No project_path arg — this is now rejected. WriteParams.project_path
+      // is required at the type level (BL-62); the omission itself is the
+      // thing under test, so the params literal is cast past that guard.
+      const r = await memoryWrite(db, { content: 'BL-62 resolved: unqualified write rejected.' } as Parameters<typeof memoryWrite>[1]);
       expect('episode_uid' in r).toBe(false);
       const result = r as { code: string; message: string };
       expect(result.code).toBe('E_MISSING_PROJECT_PATH');
       expect(result.message).toContain('project_path is required');
 
       // Count nodes after — should be unchanged (no node created)
-      const after = await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'")!;
+      const after = (await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'"))!;
       expect(after.cnt).toBe(before.cnt);
 
       db.close();
@@ -335,7 +338,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
       expect(result.enrichment.project_path).toBe(trueWorkingDir);
       expect(result.enrichment.project_path_source).toBe('explicit');
 
-      const row = await db.executeGet<{ project_path: string | null }>('SELECT project_path FROM node WHERE uid = ?', [result.episode_uid])!;
+      const row = (await db.executeGet<{ project_path: string | null }>('SELECT project_path FROM node WHERE uid = ?', [result.episode_uid]))!;
       expect(row.project_path).toBe(trueWorkingDir);
       db.close();
     } finally {
@@ -350,7 +353,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
       const db = await openDb(path.join(dir, 't.db'));
 
       // Count nodes before
-      const before = await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'")!;
+      const before = (await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'"))!;
 
       // Empty-string is treated as omitted → rejected
       const r = await memoryWrite(db, { content: 'BL-62 empty-string now rejected.', project_path: '' });
@@ -359,7 +362,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
       expect(result.code).toBe('E_MISSING_PROJECT_PATH');
 
       // Count nodes after — should be unchanged
-      const after = await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'")!;
+      const after = (await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'"))!;
       expect(after.cnt).toBe(before.cnt);
 
       db.close();
@@ -437,7 +440,7 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
     expect(dup.details!.existing_uid).toBe(firstUid);
 
     // Verify total count in DB = 9 (not 10)
-    const count = await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL")!;
+    const count = (await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL"))!;
     expect(count.cnt).toBe(9);
   });
 
@@ -475,7 +478,7 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
     expect(queue._enqueueCount).toBe(1);
 
     // Verify both items were written
-    const count = await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL")!;
+    const count = (await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode' AND t_invalid IS NULL"))!;
     expect(count.cnt).toBe(2);
   });
 
@@ -497,11 +500,11 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
     ]);
     expect(result.results).toHaveLength(2);
 
-    const first = result.results[0];
+    const first = result.results[0]!;
     expect(first.ok).toBe(false);
     expect((first as { code: string }).code).toBe('E_SCOPE_RO');
 
-    const second = result.results[1];
+    const second = result.results[1]!;
     expect(second.ok).toBe(true);
   });
 
@@ -559,29 +562,31 @@ describe('memoryWriteBatch — project_path_source parity (BL-233)', () => {
   });
 
   it('BL-233: per-item project_path_source is "explicit" when that item supplies project_path, items without project_path return E_MISSING_PROJECT_PATH', async () => {
+    // The middle item deliberately OMITS project_path — that omission is the
+    // thing under test, so the array is cast past BatchItem's required field.
     const items = [
       { content: 'Batch item with explicit project_path A.', project_path: '/projects/alpha' },
       { content: 'Batch item with NO project_path at all.' },
       { content: 'Batch item with explicit project_path B.', project_path: '/projects/beta' },
-    ];
+    ] as unknown as BatchItem[];
 
     const result = await memoryWriteBatch(db, items);
     expect(result.results).toHaveLength(3);
 
     // First item: explicit project_path → succeeds
-    const first = result.results[0];
+    const first = result.results[0]!;
     expect(first.ok).toBe(true);
     if (first.ok) {
       expect(first.project_path_source).toBe('explicit');
     }
 
     // Second item: no project_path → rejected with E_MISSING_PROJECT_PATH
-    const second = result.results[1];
+    const second = result.results[1]!;
     expect(second.ok).toBe(false);
     expect((second as { code: string }).code).toBe('E_MISSING_PROJECT_PATH');
 
     // Third item: explicit project_path → succeeds
-    const third = result.results[2];
+    const third = result.results[2]!;
     expect(third.ok).toBe(true);
     if (third.ok) {
       expect(third.project_path_source).toBe('explicit');
@@ -592,7 +597,7 @@ describe('memoryWriteBatch — project_path_source parity (BL-233)', () => {
     const result = await memoryWriteBatch(db, [
       { content: 'Batch item with empty-string project_path.', project_path: '' },
     ]);
-    const first = result.results[0];
+    const first = result.results[0]!;
     expect(first.ok).toBe(false);
     expect((first as { code: string }).code).toBe('E_MISSING_PROJECT_PATH');
   });

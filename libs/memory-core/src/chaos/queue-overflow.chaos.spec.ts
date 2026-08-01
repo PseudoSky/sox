@@ -121,7 +121,7 @@ describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
 
         // Classify without awaiting (to avoid blocking the loop)
         p.then(
-          (v) => outcomes.push({ i: seqNum, status: 'accepted' }),
+          () => outcomes.push({ i: seqNum, status: 'accepted' }),
           (e) => outcomes.push({ i: seqNum, status: 'rejected', err: e }),
         );
 
@@ -172,12 +172,12 @@ describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
       const { openDbReadOnly } = await import('../db.js');
       const roDb = await openDbReadOnly(dbPath);
 
-      const rows = raw(roDb)
-        .prepare<[], { seq_num: number }>('SELECT seq_num FROM overflow_test ORDER BY seq_num')
-        .all();
+      const { rows } = await roDb.executeAll<{ seq_num: number }>(
+        'SELECT seq_num FROM overflow_test ORDER BY seq_num',
+      );
 
       const committedSeqs = rows.map((r) => r.seq_num);
-      roDb.close();
+      await roDb.close();
 
       // No duplicates — each seq_num appears exactly once (UNIQUE constraint)
       const uniqueCommitted = new Set(committedSeqs);
@@ -191,8 +191,7 @@ describe('HF-1 Chaos: queue overflow → E_BUSY backpressure', () => {
 
       // ── Assertion 4: accepted + rejected accounts for all sent items ───
       // Each item was either accepted (committed) or rejected (E_BUSY).
-      // accepted = total - rejected
-      const acceptedCount = TOTAL_ITEMS - rejectedErrors.length + 1; // +1 for the anchor
+      expect(outcomes.length).toBe(TOTAL_ITEMS); // every enqueued item settled to accepted or rejected
       // Committed rows (excluding the anchor = seq 0) should match accepted items minus anchor
       // The exact split depends on scheduling; we just verify no orphaned rows
       const committedNonAnchor = committedSeqs.filter((s) => s > 0);

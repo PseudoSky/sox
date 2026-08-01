@@ -1,6 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -9,14 +8,6 @@ import { memoryWrite } from './write.js';
 import { memoryRecall, ExpansionOverflowError } from './recall.js';
 import { _shutdownEmbedWorker } from './embed.js';
 
-/**
- * BL-325: openDb() returns a StoreAdapter, not a raw better-sqlite3 handle.
- * These specs' own verification reads use raw SQL against the sqlite backend,
- * so unwrap once here rather than rewriting every assertion.
- */
-function raw(a: StoreAdapter): Database.Database {
-  return a.unwrap() as Database.Database;
-}
 
 
 afterAll(async () => {
@@ -188,7 +179,9 @@ describe('Parent-context expansion — session_id fallback', () => {
          JOIN node n_src ON n_src.rowid = e.src
          JOIN node n_dst ON n_dst.rowid = e.dst
          WHERE n_src.uid = ? AND n_dst.uid = ? AND e.rel = 'DERIVED_FROM' AND e.t_expired IS NULL`, [childUid, parentUid]);
-      expect(edgeRow).toBeUndefined();
+      // StoreAdapter.executeGet's "no row" sentinel is null, not undefined
+      // (better-sqlite3's raw .get() returned undefined pre-migration).
+      expect(edgeRow).toBeNull();
 
       // 4. Run recall with parent-context expansion.
       const response = await memoryRecall(db, 'project', {
@@ -211,11 +204,11 @@ describe('Parent-context expansion — session_id fallback', () => {
 
       // 7. Verify expansionSources has depth=0 (child) and depth=1 (parent).
       expect(childResultEntry!.expansionSources).toHaveLength(2);
-      expect(childResultEntry!.expansionSources[0].depth).toBe(0);
-      expect(childResultEntry!.expansionSources[0].chunk.uid).toBe(childUid);
-      expect(childResultEntry!.expansionSources[1].depth).toBe(1);
-      expect(childResultEntry!.expansionSources[1].chunk.uid).toBe(parentUid);
-      expect(childResultEntry!.expansionSources[1].chunk.content).toContain('machine learning');
+      expect(childResultEntry!.expansionSources[0]!.depth).toBe(0);
+      expect(childResultEntry!.expansionSources[0]!.chunk.uid).toBe(childUid);
+      expect(childResultEntry!.expansionSources[1]!.depth).toBe(1);
+      expect(childResultEntry!.expansionSources[1]!.chunk.uid).toBe(parentUid);
+      expect(childResultEntry!.expansionSources[1]!.chunk.content).toContain('machine learning');
     } finally {
       cleanup(db, dir);
     }

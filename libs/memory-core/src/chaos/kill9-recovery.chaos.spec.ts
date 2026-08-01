@@ -31,16 +31,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as cp from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 import { acquireWriteLease, releaseWriteLease, _resetAllLeasesForTest } from '../lease.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-// Resolved project root (5 levels up from src/chaos/)
-const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..');
-const MEMORY_CORE_DIR = path.resolve(__dirname, '..', '..');
 
 // Helper: create a fresh temp dir for a chaos store (NOT ~/.memory)
 function tmpChaosDir(): { dir: string; dbPath: string; cleanup: () => void } {
