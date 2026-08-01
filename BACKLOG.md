@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 81.** (BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 80.** (BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -811,6 +811,13 @@ Total: 13 ghost episodes from a session that wrote 8 real episodes (8 writes pro
 
 ### BL-319 — Database operation metrics are missing computed throughput fields — **Open (HIGH)** (2026-07-27)
 
+> **PARTIALLY DELIVERED (verified 2026-08-01).** Two of the three requested fields ship and are
+> tested (`embed-pipeline-metrics.spec.ts`): `embed_throughput_per_sec` (live: 2.38/s) and
+> `time_to_vector_ms` — the field this item called `write_to_vector_ms` (live p50: 355 ms).
+> **Still missing: `vec_insert_duration_ms`** — the vec_node INSERT time isolated from embed time,
+> which is the one that would say whether a slow apply is SQL or inference. Do not close on the
+> other two.
+
 **Driver:** TursoAdapter migration uncovered that `memory_ping` reports raw cumulative counters (`embeds_completed`, `embed_duration_ms`) but no computed throughput metrics. Missing:
 
 - `embed_throughput_per_sec` — rolling embeddings/second (from heal AND write-path Phase B)
@@ -975,101 +982,6 @@ The immediate trigger was fixed in commit `c3151f5` (the vec0 predicate no longe
 **Severity:** HIGH — architectural, survives the `c3151f5` fix.
 
 Citations: [wip/turso-live-metrics, team-lead+cluster-proof, claude, turso-go-live, 1: libs/memory-core/src/db.ts:198, 2: libs/memory-core/src/db.ts:259, 3: libs/memory-core/src/db.ts:646, 4: libs/data/store/store-adapter/src/fts-dialect.ts, 5: commit c3151f5]
-
----
-
-### BL-331 — Embed pipeline is now CORRECT but ~18x too slow in production — **Open (HIGH)** (2026-07-30)
-
-**Driver:** after the enrich reentrancy fix (`9d4cf0a`) the pipeline wastes nothing — live counters `embeds_completed: 84, applies_applied: 84, applies_exists: 0, embeds_failed: 0, heals_failed: 0` (previously **6721 discarded vs 169 applied**, ~98% waste). But throughput is **`embed_throughput_per_sec: 0.133`** with **`embed_duration_ms` p50 = 7253ms**, against **~2.1–2.8 embeds/sec measured in a clean-room harness on the same machine with the same CoreML execution provider** (`turso-clean-room.test.ts`). That ~18x gap turns the remaining ~3151-item backlog into roughly 6.6 hours instead of ~20 minutes, and starves concurrent reads (recall degrades to BM25/temporal via the read-path timeout guard).
-
-**Unverified candidate causes** — none confirmed:
-1. Head-of-line blocking on the single shared `fastembedProcessHost` child process (serial IPC queue), which is also BL-322's residual open question.
-2. Per-item overhead in the heal loop (`embed-pipeline.ts` `healMissingVectors`) versus the harness's tight batch.
-3. The per-tick time budget (`SOX_EMBED_HEAL_TIME_BUDGET_MS`) leaving the worker idle between passes.
-
-**✅ MEASURED 2026-07-31 (BL-353) — the fix sketch below was finally executed; results reframe this item.**
-
-Splitting the BL-320 JSONL by whether a pid touches the live store (same code, same machine, same day):
-
-| population | n | p50 | p90 | max |
-|---|---|---|---|---|
-| test processes | 250 | **297 ms** | 315 ms | 1070 ms |
-| live-store processes | 80 | **6936 ms** | **91186 ms** | **10953175 ms (3 h)** |
-
-21 of 80 live embeds exceeded 30 s; 2 exceeded 5 minutes. **So this is ~23x on the median PLUS a catastrophic tail — not a uniform 18x slowdown.** The tail is the more alarming half and was invisible in every aggregate reported to date.
-
-**It is neither queue-wait nor the DB write:** median gap from an embed finishing to the next starting is **9 ms**, and `writequeue.task` p50 is **0 ms** (mean 28–50 ms). The time is inside embed compute, in the live process specifically. Since the code is identical, the cause is contextual — long-lived process state, EP/ANE contention, or memory pressure — and that is the next thing to isolate. Note `embed.*` events carry `trace_id: null`, so embeds cannot yet be correlated to their originating write (BL-351).
-
-**✅ ROOT-CAUSED 2026-07-31 (performance-engineer). Full evidence: [`docs/reporting/memory/bl331-root-cause.md`](docs/reporting/memory/bl331-root-cause.md). Probes: `~/.adhd/sox-ecosystem/memory/log-analysis/bl331-*.{py,mjs}`.**
-
-**This item is THREE defects that an average had blended into one "18x slowdown."**
-
-**(1) The median shift is macOS background QoS — and it is a one-line product defect.**
-`os-unit.ts:458-459` emits `<key>ProcessType</key><string>Background</string>` **unconditionally, for every sox launchd unit** — no conditional, no spec field.[1] The live backend and its fastembed child therefore run at scheduling **priority 4**; a terminal-launched process runs at **31**.[2] On Apple Silicon that confines CPU-bound ONNX inference to efficiency cores.
-
-Reproduced by an **interleaved** A/B (arms alternated round-by-round so the shared machine's load hits both equally; `taskpolicy -b` verified to produce the same pri 4):[3]
-
-| round | normal (pri 31) p50 | background (pri 4) p50 | model init normal | model init background |
-|---|---|---|---|---|
-| 1 | 417 ms | 8174 ms | 642 ms | 8176 ms |
-| 2 | 568 ms | 9097 ms | 686 ms | 12012 ms |
-| 3 | 435 ms | 7990 ms | 686 ms | 9447 ms |
-
-**~470 ms → ~8400 ms = 18x**, and 14x on model load — so it is a general CPU throttle, not embed-specific. The live server's own figure agrees: p50 **6.0 s** awake at in-flight 1 (n=619).
-
-**The "live vs test" framing was itself wrong.** Ten *terminal-launched* pids that touch the **same live store** sit at awake p50 **0.3–0.9 s** (pids 32380, 58252, 31280, 30385, 34188, 38845, 41373, 49850, 58453, 33499). The split that matters is **launchd-spawned vs terminal-spawned**, not live-store vs test-store.
-
-**(2) The multi-hour "embeds" are a wall-clock instrumentation artifact, not hangs.** `duration_ms` is wall-clock, so it accrues while the machine sleeps. Intersected with `pmset -g log`: the six multi-thousand-second events were **87.2 / 88.3 / 99.7 / 95.4 / 94.7 / 77.9 % system sleep**. The 3-hour embed is **503 s of awake time**. Across the whole >30 s tail: 35130 s wall, **31175 s (88.7%) asleep**; against the ≤30 s population, only **1.1%**. Filed as **BL-369**.
-
-**(3) The remaining 30–160 s tail is head-of-line blocking in the single shared fastembed child** — this item's own candidate cause 1, and BL-322 fix-sketch item 1, finally measured. Awake duration is monotone in in-flight concurrency on the same child: **1→6.0 s, 2→53.7 s, 5→61.6 s, 6→91.2 s, 7→149.8 s**.[4] *Stated limit:* 7×6 s = 42 s but observed p50 is 149.8 s — **~3.5x more than strict serialization predicts**; the residual amplification is NOT yet attributed. Do not report the tail as fully explained.
-
-**Ruled out, with numbers:** text length (within pid 23182 duration is flat across 100→1000 chars with a **5451 ms floor in every bucket** — a floor, not a slope); process age (stable p50 over 763 min, and the A/B reproduced it in a *fresh* process); store size/content (the A/B process opened **no store at all**); sleep as the cause of the median (1.1%); foreground contention as the cause of the tail (zero concurrent non-live events).
-
-**Baseline correction that any future comparison must apply:** **899 of 1755 "test" embeds completed in <10 ms**, with *nothing* between 10 and 100 ms. That population is a deterministic/hash provider, not an ONNX forward pass. The honest real-inference reference is **~423 ms** (n=856), which independently matches the clean-room ~2.1–2.8/s and the BL-328 measurement of 2.25–2.60/s.
-
-**Fix sketch (revised):**
-1. ~~Make `ProcessType` a per-unit spec field~~ — **SHIPPED, see below.** (Note the sketch originally proposed defaulting to `Adaptive`; that would have been wrong — see the implementation note.)
-2. Move telemetry durations to `process.hrtime.bigint()` (**BL-369**). *Still open.*
-3. Bound/parallelize the shared fastembed child and report in-flight depth via `memory_ping` (**BL-322**). *Still open.*
-4. Fix the fork IPC-channel leak (**BL-370**). *Still open.*
-
----
-
-**✅ DEFECT 1 FIXED AND VERIFIED LIVE — 2026-07-31 (performance-engineer). Measured 18.9x, matching the prediction.**
-
-`ProcessType` is now resolved by unit kind via a `processType` spec field that a manifest may declare as `lifecycle.process_type` (`resolveProcessType()`): periodic tick units → `Background`; everything else → **`Standard`**.[7]
-
-**Implementation note — `Adaptive` would have re-introduced the defect silently.** The sketch above proposed it as the obvious middle ground. launchd.plist(5) is explicit that Adaptive promotes a job out of Background **based on activity over XPC connections**; sox services speak UDS and TCP and never open an XPC connection, so there is no promotion signal and an Adaptive unit would sit in the Background class. `Standard` is documented as "equivalent to no ProcessType being set" — the neutral class, and the correct default. Unknown manifest values coerce to undefined rather than reaching the plist.
-
-**Deployed and verified BY PID, not by plist contents** (the BL-372 trap): the regenerated unit loaded, but the old backend survived as a `PPID 1` orphan still serving at pri 4 until it was explicitly `kill -TERM`ed. After the full sequence, proxy/backend/fastembed-host are pids **91239 / 91785 / 91786, all at pri 20** (was 4) — and the fastembed child inherits the class, which is where the inference actually runs.
-
-**Live before/after**, both populations launchd-spawned against the same store and the same code, differing only in scheduling class. AFTER samples come from `memory_recall` **query** embeds (zero writes to the live store):[8]
-
-| | n | min | p50 | p90 |
-|---|---|---|---|---|
-| BEFORE — pri 4, `Background` | 453 | 3785 ms | **6422 ms** | 12158 ms |
-| AFTER — pri 20, `Standard` | 11 | 319 ms | **333 ms** | 343 ms |
-
-**Length-matched** (so the ratio cannot be an artifact of query text being shorter than write content):
-
-| text_len | BEFORE n | BEFORE p50 | AFTER n | AFTER p50 | ratio |
-|---|---|---|---|---|---|
-| 0–100 | 11 | 10528 ms | 8 | 331 ms | 31.8x |
-| 300–600 | 328 | 6412 ms | 3 | 339 ms | **18.9x** |
-
-The 300–600 band is the honest headline: **18.9x**, against a predicted ~18x. The AFTER distribution is very tight (319–383 ms across all 11 samples, no length sensitivity) and lands on the independently-established ~423 ms real-inference reference, so the small AFTER n is not load-bearing — but it **is** small, and the >30 s BEFORE tail was excluded as the BL-369 sleep artifact.
-
-**What this does NOT fix:** defects 2 and 3 above are untouched. Head-of-line blocking (BL-322) still multiplies latency by in-flight depth — now from a ~0.33 s base instead of a ~6 s one, which is precisely why it is worth fixing next.
-
-**Found while deploying this — filed as BL-375:** `soxe service enable` rebuilds the unit's `EnvironmentVariables` from the **invoking shell**, and silently dropped `SOX_DISABLE_EMBED_HEAL=1` and `SOX_DISABLE_PERIODIC_ENRICH=1` — **both live emergency brakes** — while reporting success. Caught only by diffing the regenerated plist against a snapshot.
-
-**Acceptance (red→green, must name BL-331):** ~~a benchmark asserting production heal throughput…~~ **partially met.** The unit-level red→green exists (`os-unit.spec.ts`, verified 4 failed → 56 passed): a service manifest must not render `Background`, a tick unit must, an explicit `process_type` wins, an unknown value is never emitted. **Still owed:** the throughput benchmark itself, which must run **under the service's actual scheduling policy** — a benchmark at terminal priority would have passed throughout this entire incident and proved nothing. That, plus defects 2 and 3, is why this item stays open.
-
-**Severity:** HIGH — downgraded in practice by the fix above, but the item remains open on defects 2 and 3 and the missing benchmark.
-
-**Related:** BL-370, BL-369, BL-322 (head-of-line blocking), BL-339/BL-346 (the brakes this gates), BL-351, BL-353.
-
-Citations: [wip/turso-live-metrics, performance-engineer, claude, turso-go-live, 1: libs/host-runtime/src/os-unit.ts:458-459 (pre-fix), 2: ~/Library/LaunchAgents/com.sox.user.memory-server.plist + live `ps -o pri` on pids 7687/7721/7724 (before) and 91239/91785/91786 (after), 3: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-qos-round.mjs, 4: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-inflight.py, 5: libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts, 6: docs/reporting/memory/findings/bl331-root-cause.md, 7: libs/host-runtime/src/os-unit.ts (resolveProcessType) + libs/host-runtime/src/os-unit.spec.ts (BL-331 red->green), 8: ~/.adhd/sox-ecosystem/memory/log-analysis/bl331-after.py, 9: launchd.plist(5) ProcessType semantics]
 
 ---
 
@@ -1694,6 +1606,12 @@ Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7
 ---
 
 ### BL-342 — Restore wrote empty-string JSON columns instead of NULL; the column that actually breaks `memory_stats` is `enrich_ver`, not `tags` — **Open (HIGH)** (2026-07-31)
+
+> **CONFIRMED STILL LIVE 2026-08-01.** `memory_stats` on the production store reports
+> `malformed_rows: {count: 1, columns: ["tags"], sample_rowids: [9284]}`. The *resilience* half is
+> fixed and tested as BL-343 (*"returns stats instead of throwing when a row has tags = '' (the
+> BL-342 shape)"*), so the tool no longer dies — but **the malformed data itself was never
+> repaired**, and no migration removes it. This is PLAN.md **P0.2**.
 
 > **⚠️ ROOT CAUSE CORRECTED 2026-07-31 (`p0-test-infra`) — read this before repairing anything.**
 > This item's original title and body assert that `tags = ''` breaks `memory_stats`. **It does not.**

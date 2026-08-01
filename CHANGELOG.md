@@ -2,6 +2,32 @@
 
 ---
 
+## [Unreleased] — BL-331: the embed pipeline is no longer 18x too slow
+
+The item's three "unverified candidate causes" were all wrong. The cause was **`ProcessType: Background`**
+hardcoded into every generated launchd unit (`os-unit.ts`), which pins a job to priority 4 and the
+efficiency cores on Apple Silicon. Fixed by making `ProcessType` service-kind aware — long-lived
+services get `Standard`, only periodic ticks get `Background` — with an explicit manifest override.
+
+Measured live, by PID, before and after: priority **4 → 20**; embed p50 **6422 ms → 333 ms**;
+length-matched in the dominant 300–600-char band **6412 ms → 339 ms = 18.9x**, against a predicted ~18x.
+
+> ⚠️ `Adaptive` would have silently re-introduced the defect. launchd promotes an Adaptive job out of
+> Background based on activity over **XPC connections**; sox services speak UDS and TCP and never open
+> one, so it would have stayed in the Background class. `Standard` is documented as "equivalent to no
+> ProcessType being set" — the neutral class. Do not "improve" this to Adaptive later.
+
+Tests name the id and assert both halves: *"does NOT mark a long-lived service as Background"*,
+*"DOES mark a periodic tick unit as Background"*, *"rejects a process_type the OS does not define"*,
+*"systemd parity: only a Background unit is de-prioritised with Nice"*, plus
+*"BL-331 — fastembed host cross-process contention lock"* for the orphaned-debug-script scenario that
+produced the original symptom.
+
+**Not closed by this:** head-of-line blocking on the single shared `fastembedProcessHost` child
+(candidate cause 1) remains open as **BL-322**.
+
+---
+
 ## [Unreleased] — BL-330, BL-335, BL-336, BL-373: the adapter detects and repairs its own store damage
 
 Four HIGH items closed after verification, not after a marker. Each has a regression test that
