@@ -1,0 +1,70 @@
+{
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "name": "sox-telemetry",
+  "projectType": "library",
+  "root": "libs/observability/sox-telemetry",
+  "sourceRoot": "libs/observability/sox-telemetry/src",
+  "tags": [
+    "type:lib",
+    "platform:node"
+  ],
+  "targets": {
+    "build": {
+      "executor": "@adhd/sox-nx:atomic-tsc",
+      "outputs": [
+        "{workspaceRoot}/libs/observability/sox-telemetry/dist"
+      ],
+      "options": {
+        "main": "libs/observability/sox-telemetry/src/index.ts",
+        "outputPath": "libs/observability/sox-telemetry/dist",
+        "tsConfig": "libs/observability/sox-telemetry/tsconfig.lib.json",
+        "assets": [],
+        "clean": true,
+        "rootDir": "libs/observability/sox-telemetry/src"
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.lib.json"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config libs/observability/sox-telemetry/vitest.config.ts",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": [
+          "libs/observability/sox-telemetry/**/*.ts"
+        ]
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p libs/observability/sox-telemetry/tsconfig.typecheck.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": ["default", "^production"]
+    },
+    "typecheck-tests": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p libs/observability/sox-telemetry/tsconfig.typecheck-tests.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": ["default", "^production"]
+    }
+  }
+}

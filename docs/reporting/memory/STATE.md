@@ -144,7 +144,7 @@ surfaced **BL-386**.
 | S6 | Re-enable `SOX_DISABLE_PERIODIC_ENRICH` (BL-346) | **done** | brake removed; neither var is present in the live plist |
 | S7 | Drain embed backlog to full vector coverage | **done** | backlog 3,246 → **0**, 3,249 embeds, **0 failed**; see below |
 | **S8** | **Clustering actually runs (BL-349/BL-326)** | **→ unblocked** | S6, S7 done. τ still unresolved (BL-356) |
-| S9 | Tracing substrate (BL-351) | pending | **unblocked** — BL-344 shipped (one `env-policy.ts`, was 5 copies); design in `docs/research/observability-substrate.md` |
+| S9 | Tracing substrate (BL-351) | **in progress** | `@adhd/sox-telemetry` published at `libs/observability/sox-telemetry` — `initTelemetry`, `declareStages`/`withContendedStage`, durable JSONL sink, `telemetrySelfCheck()`; 6/6 tests, typecheck/typecheck-tests/lint/test/build all green. **Not** yet: memory-core migration, a second consumer, `memory_ping` wiring, OTel SDK, live-spawned verification — tracked as BL-401, acceptance not met |
 | S10 | Sandbox harness (P0–P4 in `PLAN.md`) | pending | needs S9 for real instrumentation |
 
 ---
