@@ -60,6 +60,7 @@ import {
   // Slice 1 (docs/spec/service-lifecycle.md): cross-scope singleton.
   resolveStoreResource,
   resolveUnitNodePath,
+  restartAndVerify,
   restartOsUnit,
   singletonKey,
   socketDir,
@@ -4738,6 +4739,7 @@ async function cmdService(argvIn: string[], flags: Record<string, string>): Prom
 Usage:
   ${CLI} service enable  <ext> [-s <scope>]   Generate + load an OS unit (reboot persistence)
   ${CLI} service disable <ext> [-s <scope>]   Unload + remove the unit; reap any survivor
+  ${CLI} service restart <ext> [-s <scope>]   Deploy the on-disk bundle to the RUNNING process
   ${CLI} service status  <ext> [-s <scope>]   Show the unit state reconciled with sox
   ${CLI} service list                          All sox-owned OS units across scopes
 
@@ -4748,7 +4750,15 @@ Options:
   --supervisor <kind>     Force 'launchd' or 'systemd' (default: per-platform)
   --node-path <path>      Override the pinned node binary baked into the unit
   --allow-volatile-node   Proceed even if the pinned node is under nvm/asdf/volta
+  --wait-ms <ms>          restart: how long to wait for the pid to rotate (default 15000)
   --help                  Show this message
+
+'service restart' is BL-372 / spec §9.4a's [inv:deploy-verified]: it kickstarts the
+managed process WITHOUT rewriting the unit file (never touches env — see BL-375), then
+reaps any survivor by identity so a zero-downtime proxy-mode backend (§9.5) that
+kickstart alone leaves running the OLD bundle is forced to respawn on the NEW one.
+It exits non-zero if the pid did not actually rotate — a green kickstart exit code is
+NOT evidence of a deploy.
 
 OS units are GENERATED from the manifest; hand-editing them is unsupported.
 `);
@@ -4887,6 +4897,11 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
     process.exit(undead ? 1 : 0);
   }
 
+  if (sub === 'restart') {
+    await cmdServiceRestart(extId, scope, root, flags);
+    return;
+  }
+
   if (sub === 'status') {
     const ctx = resolveOsUnitContext(extId, scope, root, flags);
     const platform = ctx?.platform ?? getOsUnitPlatform(
@@ -4919,8 +4934,107 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
     process.exit(0);
   }
 
-  process.stderr.write(`${CLI} service: unknown subcommand '${sub}' (enable|disable|status|list)\n`);
+  process.stderr.write(`${CLI} service: unknown subcommand '${sub}' (enable|disable|restart|status|list)\n`);
   process.exit(1);
+}
+
+/**
+ * `soxe service restart <ext>` — BL-372 / docs/spec/service-lifecycle.md §9.4a
+ * `[inv:deploy-verified]`: deploy a rebuilt bundle to the RUNNING process.
+ *
+ * `launchctl kickstart -k` / `systemctl restart` alone is NOT a deploy for a
+ * proxy-mode (§9.5) mcp-server: the front-shim keeps its backend alive across
+ * proxy restarts for zero-downtime, so the backend survives a bare kickstart as
+ * a `PPID 1` orphan still executing the OLD bundle — measured twice on
+ * 2026-07-31. This verb:
+ *
+ *   1. snapshots the pids CURRENTLY matching the extension's identity token
+ *      (the entrypoint path — the front-shim runs `soxe serve`, but the
+ *      backend it spawns always execs `entrypoint` directly, so the token
+ *      catches the backend even in proxy mode; for a direct-mode service the
+ *      token IS the managed process itself).
+ *   2. kickstarts the unit — restarts the managed process WITHOUT touching the
+ *      unit file (no `enable`, no env regeneration — BL-375).
+ *   3. reaps any survivor matching that token by identity (`reapByIdentity` /
+ *      `killAndVerify`) — this is what forces a proxy-mode backend to die, which
+ *      makes the already-kickstarted proxy's live backend connection notice the
+ *      disconnect and respawn a NEW backend on the current bundle.
+ *   4. polls until a pid NOT in the pre-restart snapshot appears for that token.
+ *   5. exits NON-ZERO if no such pid appears within `--wait-ms` (default 15s) —
+ *      a kickstart that exited 0 and a unit that shows loaded are NOT evidence
+ *      the code changed; only a rotated pid is.
+ */
+async function cmdServiceRestart(
+  extId: string,
+  scope: string,
+  root: string,
+  flags: Record<string, string>,
+): Promise<void> {
+  const pathM = require('node:path') as typeof import('node:path');
+  const fsM = require('node:fs') as typeof import('node:fs');
+
+  const ctx = resolveOsUnitContext(extId, scope, root, flags);
+  if (!ctx) {
+    process.stderr.write(
+      `${CLI} service restart: '${extId}' not installed at scope '${scope}', or no entrypoint\n`,
+    );
+    process.exit(1);
+  }
+
+  const { platform, entrypoint } = ctx;
+  const label = ctx.spec.label;
+  const unitDir = resolveOsUnitDir(flags, platform);
+  const unitPath = pathM.join(unitDir, platform.unitFileName(label));
+
+  if (!fsM.existsSync(unitPath)) {
+    process.stderr.write(
+      `${CLI} service restart: no unit file for '${label}' at ${unitPath} — run \`${CLI} service enable ${extId}\` first\n`,
+    );
+    process.exit(1);
+  }
+  if (!platform.isLoaded(label, realOsExec)) {
+    process.stderr.write(
+      `${CLI} service restart: '${label}' is not loaded — run \`${CLI} service enable ${extId}\` first\n`,
+    );
+    process.exit(1);
+  }
+
+  const waitMsRaw = flags['wait-ms'] ?? process.env['SOX_SERVICE_RESTART_WAIT_MS'];
+  const waitMsParsed = waitMsRaw !== undefined ? Number(waitMsRaw) : NaN;
+  const waitMs = Number.isFinite(waitMsParsed) && waitMsParsed >= 0 ? waitMsParsed : 15000;
+
+  const token = identityToken(entrypoint);
+  const beforeMainPid = platform.mainPid(label, realOsExec);
+  process.stdout.write(`${CLI} service restart: ${label}\n  before: main=${beforeMainPid ?? '(none)'}\n`);
+
+  // [inv:deploy-verified] (BL-372, §9.4a) — kickstart, reap any survivor by
+  // identity, and refuse to report success unless a pid actually rotated.
+  const result = await restartAndVerify({
+    label,
+    token,
+    platform,
+    exec: realOsExec,
+    waitMs,
+    excludePids: [process.pid],
+    log: (m: string) => process.stdout.write(`  ${m}\n`),
+  });
+
+  const afterMainPid = platform.mainPid(label, realOsExec);
+  process.stdout.write(`  after:  main=${afterMainPid ?? '(none)'}\n`);
+
+  if (!result.ok) {
+    process.stderr.write(
+      `${CLI} service restart: FAILED — ${result.reason ?? 'deploy could not be verified'}. ` +
+      `See docs/spec/service-lifecycle.md §9.4a.\n`,
+    );
+    process.exit(1);
+  }
+
+  process.stdout.write(
+    `${CLI} service restart: '${label}' deployed — pid(s) rotated ` +
+    `([${result.before.join(', ') || '(none)'}] -> [${result.after.join(', ')}])\n`,
+  );
+  process.exit(0);
 }
 
 /**

@@ -41,6 +41,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {
+  findOrphansByIdentity,
   identityToken,
   reapByIdentity,
   type KillOutcome,
@@ -479,6 +480,22 @@ export interface OsUnitPlatform {
   unload(unitPath: string, label: string, exec: OsExec): OsExecResult;
   /** Query whether a unit is currently loaded. */
   isLoaded(label: string, exec: OsExec): boolean;
+  /**
+   * BL-372/§9.4a: restart the MANAGED PROCESS in place — kill+respawn it under
+   * the supervisor — WITHOUT touching the unit file on disk. This is deliberately
+   * NOT `unload()` + `load()`: those two rewrite/re-register the unit (and the
+   * `enable` caller derives its spec from the invoking shell's env, see BL-375 —
+   * `[inv:env-preserved-on-regenerate]`), so a `restart` that went through
+   * enable/disable would silently drop whatever env the unit was ORIGINALLY
+   * enabled with. `kickstart` never reads or writes the unit file.
+   */
+  kickstart(label: string, exec: OsExec): OsExecResult;
+  /**
+   * BL-372: the managed process's current PID, per the supervisor's own
+   * bookkeeping (not a `ps` scan) — used to detect whether a `kickstart` swapped
+   * the process for real ([inv:deploy-verified]). `undefined` when not running.
+   */
+  mainPid(label: string, exec: OsExec): number | undefined;
 }
 
 // ─── XML helpers (launchd plist) ─────────────────────────────────────────────────
@@ -636,6 +653,24 @@ export class LaunchdPlatform implements OsUnitPlatform {
     const r = exec('launchctl', ['print', `${this.domain()}/${label}`]);
     return r.code === 0;
   }
+
+  /**
+   * BL-372: `launchctl kickstart -k` restarts the job's PROCESS in place
+   * (SIGTERM the current instance, respawn per `RunAtLoad`/`KeepAlive`) without
+   * unregistering or rewriting the plist — the unit file on disk is untouched.
+   * `-k` forces the kill even if the job is not currently running/idle.
+   */
+  kickstart(label: string, exec: OsExec): OsExecResult {
+    return exec('launchctl', ['kickstart', '-k', `${this.domain()}/${label}`]);
+  }
+
+  /** Parse `pid = NNNN` out of `launchctl print` — the supervisor's own bookkeeping. */
+  mainPid(label: string, exec: OsExec): number | undefined {
+    const r = exec('launchctl', ['print', `${this.domain()}/${label}`]);
+    if (r.code !== 0) return undefined;
+    const m = /^\s*pid\s*=\s*(\d+)\s*$/m.exec(r.stdout);
+    return m?.[1] ? Number(m[1]) : undefined;
+  }
 }
 
 // ─── systemd (Linux --user) — the seam proven pluggable ──────────────────────────
@@ -705,6 +740,25 @@ export class SystemdPlatform implements OsUnitPlatform {
   unload(_unitPath: string, label: string, exec: OsExec): OsExecResult {
     const unit = this.unitFileName(label);
     return exec('systemctl', ['--user', 'disable', '--now', unit]);
+  }
+
+  /**
+   * BL-372: `systemctl restart` kills+respawns the unit's process in place from
+   * the unit file ALREADY on disk (no `daemon-reload`, no rewrite) — the systemd
+   * mirror of launchd `kickstart -k`.
+   */
+  kickstart(label: string, exec: OsExec): OsExecResult {
+    const unit = this.unitFileName(label);
+    return exec('systemctl', ['--user', 'restart', unit]);
+  }
+
+  /** The unit's current MainPID per systemd's own bookkeeping. */
+  mainPid(label: string, exec: OsExec): number | undefined {
+    const unit = this.unitFileName(label);
+    const r = exec('systemctl', ['--user', 'show', unit, '-p', 'MainPID', '--value']);
+    if (r.code !== 0) return undefined;
+    const n = Number(r.stdout.trim());
+    return Number.isFinite(n) && n > 0 ? n : undefined;
   }
 
   isLoaded(label: string, exec: OsExec): boolean {
@@ -1205,6 +1259,135 @@ export async function unloadThenReap(opts: {
   });
   const undead = reap.killed.some((k: { outcome: KillOutcome }) => k.outcome === 'undead');
   return { label: opts.label, unloaded, reap, undead };
+}
+
+// ─── BL-372/§9.4a: `[inv:deploy-verified]` — kickstart + verify pid rotation ─────
+
+/** A single matched process (the shape both `findOrphansByIdentity` and test fakes share). */
+export interface RestartMatch {
+  pid: number;
+}
+
+export interface RestartAndVerifyOptions {
+  label: string;
+  /** Identity token (the entrypoint path) to match survivors/respawns against. */
+  token: string;
+  platform: OsUnitPlatform;
+  exec?: OsExec;
+  /** How long to wait for a rotated pid to appear (ms). Default 15000. */
+  waitMs?: number;
+  /** Poll interval while waiting (ms). Default 300. */
+  pollMs?: number;
+  excludePids?: number[];
+  /** Injectable: find live pids matching `token`. Defaults to `findOrphansByIdentity`. */
+  findMatches?: (token: string, opts: { excludePids?: number[] }) => RestartMatch[];
+  /** Injectable: reap survivors matching `token`. Defaults to `reapByIdentity`. */
+  reapFn?: (
+    token: string,
+    o: { excludePids?: number[]; log?: (m: string) => void },
+  ) => Promise<ReapResult>;
+  /** Injectable clock sleep — tests pass a synchronous fake to run instantly. */
+  sleepFn?: (ms: number) => Promise<void>;
+  log?: (m: string) => void;
+}
+
+export interface RestartAndVerifyResult {
+  label: string;
+  token: string;
+  kickstart: OsExecResult;
+  before: number[];
+  after: number[];
+  reap: ReapResult;
+  /** Pids that could not be confirmed dead (KillOutcome 'undead'). */
+  undead: number[];
+  /** True iff a pid NOT present in `before` appeared for `token` before the deadline. */
+  rotated: boolean;
+  /** True only when kickstart succeeded, no undead survivors, AND a pid rotated. */
+  ok: boolean;
+  /** Set when `ok` is false — why the deploy could not be verified. */
+  reason?: string;
+}
+
+/**
+ * BL-372 / `docs/spec/service-lifecycle.md` §9.4a `[inv:deploy-verified]`.
+ *
+ * A `kickstart` that exits 0 and a unit that reports `loaded: yes` are NOT
+ * evidence a deploy happened — the front-shim service-proxy (§9.5) deliberately
+ * keeps its backend alive across proxy restarts for zero-downtime, so `kickstart`
+ * alone restarts the proxy while the backend survives as a `PPID 1` orphan still
+ * executing the OLD bundle (observed twice, 2026-07-31).
+ *
+ * This function is the verified deploy: snapshot pids matching `token` → kickstart
+ * (never touches the unit file — no env regeneration, BL-375) → reap any survivor
+ * by identity (forces a zero-downtime backend to die so the already-kickstarted
+ * proxy's live connection notices the disconnect and respawns on the new bundle) →
+ * poll until a pid NOT in the pre-restart snapshot appears. `ok:false` (never a
+ * thrown exception, never a bare "succeeded") is the honest outcome when nothing
+ * rotates — the caller maps that to a non-zero exit code
+ * (`apps/sox/src/main.ts` `cmdServiceRestart`).
+ *
+ * All I/O is injectable (`exec`, `findMatches`, `reapFn`, `sleepFn`) so both the
+ * "survivor never rotates" (RED) and "pid rotates" (GREEN) arms are unit-testable
+ * without touching the real process table or launchd/systemd.
+ */
+export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<RestartAndVerifyResult> {
+  const exec = opts.exec ?? realOsExec;
+  const findMatches = opts.findMatches ?? ((tok, o) => findOrphansByIdentity(tok, o));
+  const reapFn = opts.reapFn ?? reapByIdentity;
+  const sleepFn = opts.sleepFn ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const log = opts.log ?? (() => { /* no-op */ });
+  const waitMs = opts.waitMs ?? 15000;
+  const pollMs = opts.pollMs ?? 300;
+  const excludeOpt = opts.excludePids !== undefined ? { excludePids: opts.excludePids } : {};
+
+  const before = findMatches(opts.token, excludeOpt).map((m) => m.pid);
+  log(`before: matching-pids=[${before.join(', ')}]`);
+
+  const kickstart = opts.platform.kickstart(opts.label, exec);
+  log(`kickstart: exit ${kickstart.code}`);
+  if (kickstart.code !== 0) {
+    return {
+      label: opts.label, token: opts.token, kickstart, before, after: before,
+      reap: { token: opts.token, killed: [] }, undead: [], rotated: false, ok: false,
+      reason: `kickstart FAILED (code ${kickstart.code})`,
+    };
+  }
+
+  const reap = await reapFn(opts.token, { ...excludeOpt, log: (m: string) => log(`reaper: ${m}`) });
+  const undead = reap.killed.filter((k) => k.outcome === 'undead').map((k) => k.pid);
+  if (undead.length > 0) {
+    const after = findMatches(opts.token, excludeOpt).map((m) => m.pid);
+    return {
+      label: opts.label, token: opts.token, kickstart, before, after, reap, undead,
+      rotated: false, ok: false,
+      reason: `survivor(s) could not be confirmed dead (undead): [${undead.join(', ')}]`,
+    };
+  }
+
+  // Poll until a pid NOT in the pre-restart snapshot appears for `token` — proof
+  // the running process actually rotated, not merely that the unit is "loaded".
+  const beforeSet = new Set(before);
+  const deadline = Date.now() + waitMs;
+  let after: number[] = [];
+  let rotated = false;
+  do {
+    after = findMatches(opts.token, excludeOpt).map((m) => m.pid);
+    if (after.some((p) => !beforeSet.has(p))) {
+      rotated = true;
+      break;
+    }
+    if (Date.now() >= deadline) break;
+    await sleepFn(pollMs);
+  } while (Date.now() < deadline);
+
+  return {
+    label: opts.label, token: opts.token, kickstart, before, after, reap, undead,
+    rotated, ok: rotated,
+    ...(rotated ? {} : {
+      reason: `[inv:deploy-verified] violated: no pid rotated within ${waitMs}ms `
+        + `(before=[${before.join(', ')}] after=[${after.join(', ')}])`,
+    }),
+  };
 }
 
 // ─── BL-185: Interval-schedule detection ─────────────────────────────────────

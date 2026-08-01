@@ -227,6 +227,8 @@ export {
   disableOsUnit,
   restartOsUnit,
   unloadThenReap,
+  // BL-372/§9.4a: `[inv:deploy-verified]` — kickstart + verify pid rotation.
+  restartAndVerify,
   // BL-185: interval-schedule detection for SCHEDULED status rendering.
   isScheduledOsUnitContent,
   isScheduledOsUnit,
@@ -246,6 +248,9 @@ export type {
   RestartOptions,
   RestartResult,
   UnloadThenReapResult,
+  RestartMatch,
+  RestartAndVerifyOptions,
+  RestartAndVerifyResult,
 } from './os-unit.js';
 
 // ─── Global Supervisor Registry (R1) ─────────────────────────────────────────

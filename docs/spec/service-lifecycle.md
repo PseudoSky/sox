@@ -741,30 +741,44 @@ plausibly run was green. It recurred on the second deploy that day even with the
 3. snapshot the unit plist   # regeneration silently drops env, see below
 4. npx nx build <project>
 5. npx nx run registry:sync-index        # else the smoke gate fails on CHECKSUM MISMATCH
-6. launchctl kickstart -k gui/$(id -u)/<label>
-7. kill -TERM <backend-pid>              # REQUIRED — step 6 alone does not deploy
-8. VERIFY: the running instance reports the NEW artifact hash, and pids changed
-9. VERIFY: behaviour, not just liveness
+6. sox service restart <ext> [-s <scope>]
+7. VERIFY: behaviour, not just liveness
 ```
 
-**Step 8 is the invariant.** `memory_ping` already returns the running `artifact` hash, so comparing
-it against the on-disk bundle checksum makes a silent no-op deploy self-evident in one call. Verify
-by **pid and artifact**, never by plist contents — the plist was correct in both incidents while the
-running process was not.
+**Step 6 IS the invariant, enforced by the tool, not by prose.** `sox service restart` (BL-372,
+`apps/sox/src/main.ts` `cmdServiceRestart`, backed by `OsUnitPlatform.kickstart`/`mainPid` in
+`libs/host-runtime/src/os-unit.ts`):
+
+1. snapshots every pid currently matching the extension's identity token (the entrypoint path —
+   this catches a proxy-mode backend even though the OS unit itself runs the front-shim, because the
+   backend always execs `entrypoint` directly; for a direct-mode service the token IS the managed
+   process),
+2. `kickstart`s the unit — `launchctl kickstart -k` / `systemctl restart` — which restarts the
+   managed process **without touching the unit file** (no `enable`, no env regeneration, see
+   `[inv:env-preserved-on-regenerate]` below),
+3. reaps any survivor still matching that token by identity (`reapByIdentity`/`killAndVerify`,
+   already in `libs/host-runtime/src/reaper.ts`) — this is the step that forces a zero-downtime
+   backend to die, which makes the already-kickstarted proxy's live backend connection notice the
+   disconnect and respawn a NEW backend on the current bundle,
+4. polls (`--wait-ms`, default 15000) until a pid **not** in the pre-restart snapshot appears for
+   that token,
+5. **exits non-zero if no such pid appears** — a `kickstart` exit code of 0 and a unit reporting
+   `loaded: yes` are not deploy evidence; only a rotated pid is.
+
+Verify **by pid**, never by plist contents — the plist was correct in both original BL-372 incidents
+while the running process was not. (A generic running-artifact-hash comparison against the on-disk
+bundle checksum — `memory_ping` already returns `artifact` for memory-server — remains a worthwhile
+follow-on for extensions that expose it, but is protocol-specific and out of scope for a verb that
+must work for every `service`/`mcp-server` extension, not just one.)
 
 **`[inv:env-preserved-on-regenerate]` (BL-375).** `soxe service enable` rebuilds the unit's
 `EnvironmentVariables` from the **invoking shell** (`buildOsUnitEnv`). It does not read the previous
 unit, does not diff, and does not warn. Regenerating a unit to change one unrelated key silently
 dropped two live emergency brakes while printing success; it was caught only by diffing the
 regenerated plist against a snapshot. **Until this is fixed: export every variable you intend to
-keep, and diff the plist afterwards.** A success message is evidence of nothing.
-
-**Gap:** there is no verb that performs this correctly. `sox service` has `enable|disable|status|list`
-and no `restart`, so the reap step has no home and lives in prose that must be remembered. The fix is
-a `sox service restart` that records the pids, kickstarts, reaps survivors by identity
-(`reapByIdentity`/`killAndVerify` already exist in `libs/host-runtime/src/reaper.ts`), waits for the
-new backend, and **exits non-zero if the pids did not change** — the same `[inv:list-never-lies]`
-discipline applied to deploys. Tracked as BL-372.
+keep, and diff the plist afterwards** when you actually need `enable` (adding/changing env, not a
+plain code deploy — use `service restart` for that, which never touches the unit file). A success
+message is evidence of nothing.
 
 
 ---
