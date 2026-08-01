@@ -542,6 +542,19 @@ rewritten, only unblocked.
 **tier:** sonnet, ~140k tokens / ~42 turns
 **orientation:** ~51k unavoidable before any edit — 39k mandated docs (README+STATE+PLAN) + ~8k cited source + ~4k backlog bodies. **This is fixed cost and does not shrink with the size of the change.**
 **budget:** work ~140k / ~42 turns (4x the first estimate — see ESTIMATION BASIS). Guidance ceiling ~261k including orientation; **it is guidance, not a stop.** **Do not truncate the work to hit a number** — that is precisely what produced this packet. Commit incrementally by explicit path; if the fix sketch proves wrong, say so and stop. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only.
+> **⚠️ THE REAL HAZARD, from the agent that stopped rather than rush it — this is why the migration was not a drive-by.**
+> `memory-core/src/telemetry.ts`'s crash-durability spec depends on a **per-call env re-read**. The
+> new `DurableJsonlSink` deliberately does NOT do that: env resolution moved to the composition root
+> per the research doc's dependency-shape design. **A naive swap therefore breaks BL-365's regression
+> test** — the one proving 0 of 10,000 records survived `SIGKILL` before the fix. Decide the env
+> contract *first* (either the sink re-reads, or the BL-365 test is re-expressed against the
+> composition root), and say which you chose. Do not discover this by watching BL-365 go red.
+>
+> Also note `@opentelemetry/api` is a **declared but currently unused** dependency — the substrate
+> emits its own records matching the documented wire format. Wiring the OTel SDK
+> (`BasicTracerProvider`, `SpanProcessor`, pull-only `MeterReader`) is gap 4 of 5 and is optional to
+> BL-351's acceptance; do not let it expand this packet.
+
 **Produces:** BL-351 actually satisfied end-to-end: one JSONL sink (not two), spans from two different packages joining on one trace-id, and every emitted metric visible through the status surface on a **live-spawned** server — not only under test.
 **acceptance:** a test naming BL-401 asserting two different packages emit spans that join on a single trace-id, and that `memory-core` no longer contains a second `RotatingJsonlWriter`. Then a live check against a spawned server, since "works under vitest" was never the claim BL-351 made.
 
