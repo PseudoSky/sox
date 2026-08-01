@@ -69,12 +69,12 @@ describe('memory-cli discovery (BL-95)', () => {
     fs.mkdirSync(dir, { recursive: true });
     const dbPath = path.join(dir, `${name}.db`);
     const adapter = await openDb(dbPath);
-    const db = adapter.unwrap() as any;
-    initScope(db, 'user', 'test-scope-id');
-    db.prepare(
+    await initScope(adapter, 'user', 'test-scope-id');
+    await adapter.executeRun(
       `INSERT INTO node (uid, kind, content, t_created) VALUES (?, ?, ?, ?)`,
-    ).run(uid, 'episode', content, new Date().toISOString());
-    db.close();
+      [uid, 'episode', content, new Date().toISOString()],
+    );
+    await adapter.close();
     return dbPath;
   }
 
@@ -82,7 +82,7 @@ describe('memory-cli discovery (BL-95)', () => {
     const memDir = path.join(sandboxHome, '.memory');
     await seedBareStore(memDir, 'memory', 'n1', 'hello world');
 
-    runCli(['list']);
+    await runCli(['list']);
 
     const output = logs.join('\n');
     expect(output).not.toContain('No memory stores found');
@@ -98,11 +98,11 @@ describe('memory-cli discovery (BL-95)', () => {
     const memDir = path.join(sandboxHome, '.memory');
     await seedBareStore(memDir, 'memory', 'n2', 'parity check');
 
-    runCli(['list']);
+    await runCli(['list']);
     const listOutput = logs.join('\n');
     logs.length = 0;
 
-    runCli(['status']);
+    await runCli(['status']);
     const statusOutput = logs.join('\n');
 
     expect(listOutput).toContain('memory.db');
@@ -116,7 +116,7 @@ describe('memory-cli discovery (BL-95)', () => {
     try {
       await seedBareStore(path.join(explicitBase, '.memory'), 'project', 'n3', 'explicit base-path store');
 
-      runCli(['list', '--base-path', explicitBase]);
+      await runCli(['list', '--base-path', explicitBase]);
 
       const output = logs.join('\n');
       expect(output).toContain('project.db');
@@ -126,8 +126,101 @@ describe('memory-cli discovery (BL-95)', () => {
     }
   });
 
-  it('`list` reports "No memory stores found." (parity with `status`) when nothing exists', () => {
-    runCli(['list']);
+  it('`list` reports "No memory stores found." (parity with `status`) when nothing exists', async () => {
+    await runCli(['list']);
     expect(logs.join('\n')).toContain('No memory stores found.');
+  });
+});
+
+describe('memory-cli init/status/list on the Turso adapter (BL-380)', () => {
+  // BL-380: cmdInit, cmdStatus, and cmdList reached around StoreAdapter via
+  // `(adapter as any).unwrap()` and drove the raw better-sqlite3 handle
+  // synchronously. On the default (turso) backend `.prepare().get()/.all()`
+  // return Promises, not rows/objects — `db.prepare(...).get()` throws
+  // `db.prepare is not a function` (TursoAdapter.unwrap() doesn't exist) and
+  // the CLI is unusable on the default backend. This suite pins
+  // STORE_ADAPTER=turso explicitly (belt-and-suspenders — factory.ts already
+  // defaults to turso when unset) and exercises `init`, `status`, `list`
+  // end-to-end against a real Turso-backed store to prove the adapter's
+  // async executeGet/executeAll/executeRun API is used instead.
+  let sandboxHome: string;
+  let sandboxCwd: string;
+  let savedHome: string | undefined;
+  let savedAdapter: string | undefined;
+  let cwdSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let logs: string[];
+
+  beforeEach(() => {
+    sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-memory-cli-turso-home-'));
+    sandboxCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-memory-cli-turso-cwd-'));
+
+    savedHome = process.env['HOME'];
+    process.env['HOME'] = sandboxHome;
+    savedAdapter = process.env['STORE_ADAPTER'];
+    process.env['STORE_ADAPTER'] = 'turso';
+
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(sandboxCwd);
+
+    logs = [];
+    logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((a) => String(a)).join(' '));
+    });
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    cwdSpy.mockRestore();
+    if (savedHome === undefined) {
+      delete process.env['HOME'];
+    } else {
+      process.env['HOME'] = savedHome;
+    }
+    if (savedAdapter === undefined) {
+      delete process.env['STORE_ADAPTER'];
+    } else {
+      process.env['STORE_ADAPTER'] = savedAdapter;
+    }
+    fs.rmSync(sandboxHome, { recursive: true, force: true });
+    fs.rmSync(sandboxCwd, { recursive: true, force: true });
+  });
+
+  it('`init` creates a scope on Turso without throwing through unwrap() (BL-380)', async () => {
+    await runCli(['init', '--scope', 'project', '--path', sandboxCwd]);
+
+    const output = logs.join('\n');
+    expect(output).toContain('Created:');
+    expect(output).toContain('scope_id:');
+    expect(output).toContain('embed_model:');
+    expect(fs.existsSync(path.join(sandboxCwd, '.memory', 'project.db'))).toBe(true);
+  });
+
+  it('`init` is idempotent on a second run against the same Turso store (BL-380)', async () => {
+    await runCli(['init', '--scope', 'project', '--path', sandboxCwd]);
+    logs.length = 0;
+    await runCli(['init', '--scope', 'project', '--path', sandboxCwd]);
+
+    expect(logs.join('\n')).toContain('Already exists (idempotent)');
+  });
+
+  it('`status` reads scope + node count off Turso via executeGet, not a sync unwrap (BL-380)', async () => {
+    await runCli(['init', '--scope', 'project', '--path', sandboxCwd]);
+    logs.length = 0;
+
+    await runCli(['status', '--path', sandboxCwd]);
+
+    const output = logs.join('\n');
+    expect(output).toContain('project.db');
+    expect(output).toContain('scope=project');
+    expect(output).toContain('nodes=0');
+  });
+
+  it('`list` reads nodes off Turso via executeAll, not a sync unwrap (BL-380)', async () => {
+    await runCli(['init', '--scope', 'project', '--path', sandboxCwd]);
+    logs.length = 0;
+
+    await runCli(['list', '--path', sandboxCwd]);
+
+    expect(logs.join('\n')).toContain('project.db');
   });
 });
