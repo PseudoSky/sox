@@ -138,6 +138,7 @@ function getSession(id) {
       customSP: null,         // fallback SP when agent can't be resolved
       opencodeAgent: null,    // last agent detected from opencode's SP
       opencodeSP: null,       // last SP opencode sent (for change detection)
+      apiOverride: false,     // true when activeAgent was set via /v1/session/agent
       context: [],            // accumulated messages (cache anchor)
       createdAt: new Date().toISOString(),
       turns: 0,
@@ -149,14 +150,39 @@ function getSession(id) {
 /**
  * Resolve the session's effective persona SP, detecting opencode agent changes.
  * Returns { personaSP, activeAgent, changed }.
+ *
+ * Rules:
+ *   - session.activeAgent: the persona the proxy USES.
+ *   - session.opencodeAgent: last agent detected from opencode's SP.
+ *   - Manual dropdown change: opencode sends a DIFFERENT SP than last time →
+ *     follow it (update both).
+ *   - API override (session.apiOverride=true): the explicit session choice
+ *     WINS over whatever opencode sends, until the user manually changes the
+ *     dropdown to a DIFFERENT agent than the override target.
  */
 function resolveSessionPersona(session, opencodeSP) {
   const detected = resolveAgent(opencodeSP);
-  const changed = detected?.name !== session.opencodeAgent;
-  if (changed) {
-    // opencode switched agents (or first contact) → follow it
+  const opencodeChanged = detected?.name !== session.opencodeAgent;
+
+  // Manual dropdown change: opencode sent a different agent than last time.
+  // When there is an API override, it holds until opencode's detected agent
+  // MATCHES the override target (dropdown caught up) — then the override is
+  // released and normal detection resumes. An override is never silently
+  // clobbered by a re-send of the dropdown's pre-override agent.
+  let manualChange;
+  if (session.apiOverride) {
+    manualChange = opencodeChanged && detected?.name === session.activeAgent;
+    if (manualChange) session.apiOverride = false; // caught up → release
+  } else {
+    manualChange = opencodeChanged;
+  }
+
+  if (opencodeChanged) {
     session.opencodeAgent = detected?.name || null;
     session.opencodeSP = opencodeSP || null;
+  }
+  if (manualChange) {
+    // opencode genuinely switched (or first contact) → follow it
     session.activeAgent = detected?.name || null;
     session.customSP = detected ? null : (opencodeSP || '');
   }
@@ -164,7 +190,7 @@ function resolveSessionPersona(session, opencodeSP) {
   const personaSP = session.activeAgent
     ? (AGENTS.get(session.activeAgent)?.systemPrompt || '')
     : (session.customSP || opencodeSP || '');
-  return { personaSP, activeAgent: session.activeAgent, changed };
+  return { personaSP, activeAgent: session.activeAgent, changed: manualChange };
 }
 
 function sessionLogPath(sessionId) {
@@ -466,6 +492,7 @@ const server = http.createServer(async (req, res) => {
         sessionId: id,
         activeAgent: s.activeAgent,
         opencodeAgent: s.opencodeAgent,
+        apiOverride: s.apiOverride,
         customSP: s.customSP ? s.customSP.slice(0, 80) : null,
         turns: s.turns,
         contextTokens: s.context.reduce((n, m) => n + Math.ceil((m.content || '').length / 4), 0),
@@ -495,6 +522,10 @@ const server = http.createServer(async (req, res) => {
 
       session.activeAgent = resolved.name;
       session.customSP = null;
+      session.apiOverride = true;
+      // Seed opencodeAgent so the next request doesn't look like a manual
+      // switch away from the override target.
+      if (!session.opencodeAgent) session.opencodeAgent = resolved.name;
       logCall({ event: 'session_agent_set', agent: resolved.name, turns: session.turns }, sessionId);
 
       // If input provided, trigger the next turn with the new persona
@@ -556,6 +587,7 @@ const server = http.createServer(async (req, res) => {
 
       // Session persona resolution (detect + persist + allow override)
       const session = sessionId ? getSession(sessionId) : null;
+      console.error(`[cf-proxy] chat-session lookup: id=${JSON.stringify(sessionId)} exists=${!!session} activeAgent=${session?.activeAgent ?? 'N/A'} apiOverride=${session?.apiOverride ?? 'N/A'}`);
       const { personaSP, activeAgent, changed } = session
         ? resolveSessionPersona(session, opencodeSP)
         : { personaSP: null, activeAgent: null, changed: false };
