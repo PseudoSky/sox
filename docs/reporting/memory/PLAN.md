@@ -594,6 +594,20 @@ rewritten, only unblocked.
 **Produces:** a clean-shutdown path that actually executes in production, so BL-330's checkpoint stops being dead code on the restart path.
 **acceptance:** a test naming BL-405 that sends SIGTERM to a spawned backend and asserts it exits cleanly, well within grace, with the WAL checkpointed — plus a `soxe service restart` that completes **without** the reaper escalating. The escalation line is the observable: its absence is the pass condition.
 
+### PKT-49 — BL-406: the stale-vector detector is blind to 1090 legacy rows, and `embed_model` is never backfilled
+**Goal:** **there is no embedding loss — verify that before anything else and do not "fix" it by re-embedding.** Measured on the live store: all 1090 unstamped episodes DO have vectors (unstamped-with-vector 1090, unstamped-without-vector 0), all from a closed historical window 2026-06-21 → 06-26, i.e. legacy rows predating BL-88's `embed_model` column. The defect is detection, not data: `stale_vector_count`'s `embed_model IS NOT NULL` predicate structurally excludes those 1090, so a future embed-model change silently leaves 22% of the corpus stale while the surface reports full freshness. Separately, `runBatchEnrich`'s legacy backfill stamps `enrich_ver` and has no `embed_model` equivalent, so the gap can never close on its own; and exactly 1 episode is stamped-with-no-vector while `embed_backlog` is 0, so nothing will ever embed it.
+**Closes:** BL-406
+**Files:** `libs/memory-core/src/stats.ts` (~:243-252, `stale_vector_count`), `libs/memory-core/src/enrich-batch.ts` (~:132-138, beside the existing `enrich_ver` legacy stamp), + spec.
+**requires:** none
+**sequencing:** independent of the `index.ts` packets — no file overlap with PKT-01/09/13/19/25/32/34/45/47/48.
+**tier:** sonnet, ~60k tokens / ~25 turns — the measurement is already done and cited; this is a query fix plus a backfill plus a surfaced count.
+**orientation:** ~40k unavoidable before any edit — BL-406's body carries the full measured evidence and both file:line anchors; read those rather than re-deriving. **Fixed cost.**
+**budget:** ~25 turns / ~105k tokens = 40k orientation + 25 x ~2.5k per turn. Guidance ceiling ~180k; **guidance, not a stop.** Commit incrementally by explicit path. **You may sub-dispatch, but only to `general-purpose`/`haiku`/`claude`** — specialist agent types have no `Agent` tool and cannot delegate.
+> **⛔ DO NOT DELETE AND RE-EMBED THE 1090.** They are valid vectors. Re-embedding 22% of the corpus to close a bookkeeping gap is strictly worse than stamping the rows, and it would burn the embed pipeline for hours. Stamp them with the scope-level `memory_scope.embed_model` they were actually written under.
+> Also do not silence this by widening the staleness predicate so the 1090 count as *fresh* — that trades a blind spot for a false negative. Unknown provenance must surface as unknown.
+**Produces:** a health surface that reports what it cannot verify instead of omitting it — `stale_vector_count` plus a distinct unstamped/unverifiable count and a `stamped_without_vector` count — and a backfill that closes the legacy gap without touching a single vector.
+**acceptance:** a test naming BL-406 seeding BOTH an unstamped-with-vector episode AND a stamped-without-vector episode, asserting each is visible in the stats surface rather than silently excluded, and that a backfill pass stamps the former while leaving its vector byte-identical. **All three counts must be non-zero in the red arm** — a red arm where the seeded rows don't appear proves nothing.
+
 ### PKT-41 — BL-391: federated recall's BM25 arm is dead on Turso, and the failure is swallowed whole-store
 **Goal:** a read-only Turso connection cannot run `fts_match` (measured: `readonly:false` → 1158 hits; `readonly:true` → `step failed: Error: Resource is read-only`; plain `COUNT(*)` works identically on both). `openDbReadOnly` passes `readonly: true` unconditionally and its **only** production caller is `getFederationConnection` (`recall.ts:1208`) — so single-store recall is unaffected (live recall still returns `provenance: ["vec","fts","temporal"]`) but federated recall is not.
 **Closes:** BL-391
@@ -1410,7 +1424,7 @@ Verified by diffing every packet's `Closes:` line against `grep -oE '^### BL-[0-
 | E | PKT-34 .. PKT-36 (3) | 2 (PKT-36 depends on PKT-35) | PKT-25 (PKT-34 only) |
 | F | PKT-37 .. PKT-40 (4) | 3 | PKT-16 (PKT-40 only) |
 
-**Total: 48 packets.** Tier distribution, derived from the `**tier:**` fields rather than hand-maintained: **sonnet 44**, **haiku 4** (PKT-09, 20, 22, 23), **opus 0**.
+**Total: 49 packets.** Tier distribution, derived from the `**tier:**` fields rather than hand-maintained: **sonnet 45**, **haiku 4** (PKT-09, 20, 22, 23), **opus 0**.
 
 > **No packet is opus.** Two independent reasons, both evidence rather than preference. First, the owner's standing constraint: *"No more opus agents."* Second — and this is the one that matters for estimation — **every agent dispatched in this program ran `claude-sonnet-5` regardless of what the packet said.** No `model:` override was ever passed, so the `Agent` tool used each agent type's default. The three packets that once read `opus` (PKT-01, 02, 28) were measured after the fact and had all run on sonnet; all three completed, including a CRITICAL architectural change and a research packet that produced a real measurement. The earlier tier argument in this document concerned a distinction that was never present in any dispatch. Tier is not the lever — task shape, prompt specificity, and budget realism are.
 
