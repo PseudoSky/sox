@@ -864,16 +864,43 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     // ── Store block (SA-7) ───────────────────────────────────────────────────
     // Attempt to resolve and probe the target store. Errors are non-fatal —
     // the store block is simply omitted from the response.
+    //
+    // BL-412: a liveness question must never open a connection to a GUESSED
+    // store, and must never register a guessed path into `openedPaths` (the
+    // set the periodic background enrich loop iterates — registering it there
+    // enlists the store into this process's enrichment scheduler, not just
+    // reads it). "Guessed" means the caller supplied neither `store` nor
+    // `db_path` AND the host never injected SOX_CONFIG_DB_PATH — that
+    // combination only arises when the process was spawned bare (a test
+    // harness, a stray `node index.js`), never from a properly configured
+    // install (the host always injects SOX_CONFIG_DB_PATH). In that case the
+    // resolution below would otherwise silently fall through to
+    // `resolveDbPath`'s final default (`~/.memory/memory.db`, the user's real
+    // production store) purely to answer "are you reachable?". Refuse to
+    // resolve at all in that case; report `configured: false` instead.
     let storeBlock: Record<string, unknown> | null = null;
     try {
       const storeArg = args['store'];
       const dbPathArg = args['db_path'];
       const storeResult = resolveStoreOrDbPath(storeArg, dbPathArg);
+      const hasHostConfig = (process.env['SOX_CONFIG_DB_PATH'] ?? '').trim() !== '';
 
       let resolvedPath = '';
       let storeName = '';
 
-      if (storeResult === null) {
+      if (storeResult === null && !hasHostConfig) {
+        // No explicit store/db_path AND no host-injected config — this is a
+        // guess, not a resolution. Do not open anything.
+        storeBlock = {
+          configured: false,
+          reason:
+            'no "store"/"db_path" argument was supplied and SOX_CONFIG_DB_PATH is not set — ' +
+            'refusing to guess a store path merely to answer a liveness check (BL-412). ' +
+            'Pass "store" or "db_path" explicitly, or run under a host that injects SOX_CONFIG_DB_PATH.',
+        };
+      } else if (storeResult === null) {
+        // hasHostConfig is true: the host explicitly configured a store via
+        // SOX_CONFIG_DB_PATH — this is real production config, not a guess.
         resolvedPath = expandTilde(resolveDbPath(undefined));
         storeName = 'default';
       } else if (!('code' in storeResult)) {
