@@ -87,6 +87,7 @@ export {
   reembedNodes,
   _resetEmbedSingleton,
   _shutdownEmbedWorker,
+  terminateEmbedWorkers,
 } from './embed.js';
 export type { EmbedBackend, EmbedConfig, EmbedState, EmbedHealth } from './embed.js';
 

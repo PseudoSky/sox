@@ -30,8 +30,8 @@ import { serveBackend } from '@adhd/sox-service-proxy';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { closeAllAdapters } from '@adhd/sox-memory-core';
-import { getContentAddress, handleToolCall, TOOLS } from './index.js';
+import { autoBackup, closeAllAdapters, terminateEmbedWorkers } from '@adhd/sox-memory-core';
+import { getContentAddress, handleToolCall, resolveDbPath, TOOLS } from './index.js';
 
 /**
  * Build the canonical `tools/list` result — the EXACT shape the MCP `serve()` path
@@ -150,6 +150,161 @@ export async function handleBackendRequest(
   return { jsonrpc: '2.0', id, result: {} };
 }
 
+// (BL-405) A hard ceiling on the whole coordinated shutdown, strictly inside
+// the reaper's 5000ms SIGTERM grace (`libs/host-runtime`'s reaper escalates to
+// SIGKILL at 5000ms — see BACKLOG.md BL-405). If graceful teardown hangs, this
+// forces the exit anyway: staying inside the reaper's grace is worth more than
+// a clean-but-late checkpoint the reaper will never wait for.
+export const SHUTDOWN_SAFETY_NET_MS = 4000;
+// (BL-405) The pre-restart VACUUM INTO backup is best-effort ONLY — it is not
+// required for durability (step 2 below, the WAL checkpoint, already gives
+// that per BL-330) and a full compacting copy of a large store is legitimately
+// unbounded I/O. It must never be allowed to consume the shutdown's share of
+// the reaper's grace window, so it races its own timeout and is abandoned
+// (not awaited to completion) if it's still running past this bound.
+export const SHUTDOWN_BACKUP_TIMEOUT_MS = 2500;
+
+let _shuttingDown = false;
+
+/** Test-only: reset the module-level shutdown guard between specs. */
+export function __resetShutdownStateForTest(): void {
+  _shuttingDown = false;
+}
+
+/**
+ * (BL-405) The SOLE shutdown sequence for the backend process.
+ *
+ * Previously TWO independent `process.on('SIGTERM', ...)` listeners raced to
+ * call `process.exit()`: this module's own (which called `closeAllAdapters()`
+ * WITHOUT awaiting it, then closed the UDS handle and exited) and a second,
+ * unrelated one in `index.ts` (which ran a full VACUUM INTO pre-restart
+ * backup, then exited). Node fires every registered listener for a signal —
+ * it does not pick one — so both ran concurrently and whichever finished
+ * first killed the whole process, aborting the other's in-flight async work.
+ *
+ * Verified empirically (disposable backend, 30 real writes generating a
+ * 3.2MB WAL, SIGTERM sent immediately after): the process exited in under a
+ * second, logged "shutting down", and the WAL file was BYTE-IDENTICAL
+ * afterward — the real checkpoint (`closeDbWithLease`'s
+ * `PRAGMA wal_checkpoint(TRUNCATE)`) never ran to completion despite the log
+ * line implying a clean shutdown. `index.ts` no longer registers a
+ * competing handler in backend mode (`SOX_PROXY_BACKEND=1`) — this is now the
+ * only listener, and its steps are SEQUENCED, not raced:
+ *
+ *   1. Terminate the shared fastembed/onnx child processes FIRST.
+ *      `closeAllAdapters()`/`handle.close()` used to run while those children
+ *      were still alive; when the parent then exited out from under them,
+ *      the fastembed child's own in-flight `process.send()` threw an
+ *      uncaught EPIPE — a fatal crash, reproduced on every SIGTERM tested,
+ *      not just under load (see `terminateEmbedWorkers()` in `embed.ts`).
+ *   2. AWAIT the real checkpoint+close (`closeAllAdapters` →
+ *      `closeDbWithLease` → `PRAGMA wal_checkpoint(TRUNCATE)` +
+ *      `adapter.close()` + lease release). This is what BL-330 credits for
+ *      crash recovery; it must actually complete, not race an unrelated
+ *      handle-close.
+ *   3. Fire the pre-restart backup best-effort, bounded by its own timeout —
+ *      never gates the exit (see `SHUTDOWN_BACKUP_TIMEOUT_MS` above).
+ *   4. Close the UDS listener and exit.
+ *
+ * `_shuttingDown` makes the whole sequence idempotent: SIGTERM and SIGINT can
+ * both fire (e.g. a terminal Ctrl-C during a `soxe service restart`), and a
+ * second signal while shutdown is already in flight must not re-enter it.
+ */
+export async function coordinatedShutdown(
+  sig: string,
+  getHandle: () => { close: () => Promise<void> } | null,
+  /**
+   * `null` skips the pre-restart backup step entirely rather than guessing a
+   * path. `runBackend()` only passes a path here when `SOX_CONFIG_DB_PATH`
+   * was explicitly set — the same signal a real deployed backend always has
+   * (the host runtime injects it) and a bare test spawn never does. Without
+   * this guard, `resolveDbPath(undefined)`'s documented fallback to
+   * `~/.memory/memory.db` means ANY stray SIGTERM reaching an unconfigured
+   * backend (e.g. a leaked `process.on()` listener from an earlier test in
+   * the same worker) would open a real connection to the LIVE production
+   * store purely as a side effect — reproduced while adding this suite's own
+   * regression tests (`store.integrity.repair_failed db_path:
+   * /Users/nix/.memory/memory.db` from a plain `nx test` run). BL-62
+   * established the same rule for `project_path`: never infer, only use
+   * what's explicit.
+   */
+  dbPathForBackup: string | null,
+  exit: (code: number) => never,
+): Promise<void> {
+  if (_shuttingDown) return;
+  _shuttingDown = true;
+  process.stderr.write(`[memory-server backend] ${sig} — shutting down\n`);
+
+  const safetyNet = setTimeout(() => {
+    process.stderr.write(
+      `[memory-server backend] shutdown exceeded ${SHUTDOWN_SAFETY_NET_MS}ms safety net — ` +
+      `force-exiting (BL-405: a teardown step hung; trading a clean finish for staying inside ` +
+      `the reaper's grace)\n`,
+    );
+    exit(0);
+  }, SHUTDOWN_SAFETY_NET_MS);
+  if (typeof safetyNet.unref === 'function') safetyNet.unref();
+
+  // 1. Shared child processes first (BL-405) — kill() lets them exit cleanly
+  //    instead of crashing on a send() to a channel the parent has already torn down.
+  try {
+    await terminateEmbedWorkers();
+  } catch (err) {
+    process.stderr.write(`[memory-server backend] shared embed-worker teardown failed: ${err}\n`);
+  }
+
+  // 2. The real checkpoint — AWAITED (BL-405: previously fire-and-forget).
+  //    SA-8 / BL-128: close all DB connections with lease release so the lock
+  //    file is cleaned up before process exit.
+  try {
+    await closeAllAdapters();
+  } catch (err) {
+    process.stderr.write(`[memory-server backend] closeAllAdapters failed: ${err}\n`);
+  }
+
+  // 3. Best-effort pre-restart backup, bounded — never gates exit (BL-405).
+  //    Skipped (not guessed) when no explicit SOX_CONFIG_DB_PATH was ever
+  //    configured — see the `dbPathForBackup` parameter doc above.
+  if (dbPathForBackup !== null) {
+    try {
+      await Promise.race([
+        autoBackup(dbPathForBackup).then((result) => {
+          if (!result.skipped && result.path) {
+            process.stderr.write(
+              `[memory-server backend] pre-restart backup saved: ${result.path} (${result.size} bytes)\n`,
+            );
+          }
+        }),
+        new Promise<void>((resolve) => {
+          const t = setTimeout(() => {
+            process.stderr.write(
+              `[memory-server backend] pre-restart backup exceeded ${SHUTDOWN_BACKUP_TIMEOUT_MS}ms — ` +
+              `abandoning it (the checkpoint in step 2 already gives durability; BL-405)\n`,
+            );
+            resolve();
+          }, SHUTDOWN_BACKUP_TIMEOUT_MS);
+          if (typeof t.unref === 'function') t.unref();
+        }),
+      ]);
+    } catch (err) {
+      process.stderr.write(`[memory-server backend] pre-restart backup failed: ${err}\n`);
+    }
+  }
+
+  clearTimeout(safetyNet);
+
+  // 4. Close the listener and exit.
+  const handle = getHandle();
+  if (handle) {
+    try {
+      await handle.close();
+    } catch (err) {
+      process.stderr.write(`[memory-server backend] handle.close() failed: ${err}\n`);
+    }
+  }
+  exit(0);
+}
+
 /**
  * Run memory-server as a persistent UDS backend (§9.5.4). Binds `socketPath`,
  * publishes the schema (if `schemaPath` given), and serves until SIGTERM/SIGINT.
@@ -179,20 +334,20 @@ export async function runBackend(opts: {
 
   // BL-170 (2): wire signal handlers BEFORE the bind — a backend stuck pre-bind
   // must still honour SIGTERM instead of requiring a SIGKILL escalation.
+  // BL-405: this is now the ONLY SIGTERM/SIGINT listener in backend mode — see
+  // `coordinatedShutdown`'s doc comment for why a second, independent listener
+  // (formerly in index.ts) was actively harmful.
   let handle: { socketPath: string; close: () => Promise<void> } | null = null;
-  const shutdown = (sig: string): void => {
-    process.stderr.write(`[memory-server backend] ${sig} — shutting down\n`);
-    // SA-8 / BL-128: close all DB connections with lease release so the lock
-    // file is cleaned up before process exit.
-    closeAllAdapters();
-    if (handle) {
-      void handle.close().finally(() => process.exit(0));
-    } else {
-      process.exit(0);
-    }
-  };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  // BL-405: only back up a path that was EXPLICITLY configured — never
+  // resolveDbPath(undefined)'s guessed `~/.memory/memory.db` fallback. A real
+  // deployed backend always has SOX_CONFIG_DB_PATH injected by the host
+  // runtime; a bare/test spawn never does, and must not guess its way into
+  // touching the live production store. See `coordinatedShutdown`'s
+  // `dbPathForBackup` parameter doc for the incident this guards against.
+  const configuredDbPath = (process.env['SOX_CONFIG_DB_PATH'] ?? '').trim();
+  const dbPathForBackup = configuredDbPath ? resolveDbPath(undefined) : null;
+  process.on('SIGTERM', () => { void coordinatedShutdown('SIGTERM', () => handle, dbPathForBackup, exit); });
+  process.on('SIGINT', () => { void coordinatedShutdown('SIGINT', () => handle, dbPathForBackup, exit); });
 
   try {
     handle = await serveBackend({

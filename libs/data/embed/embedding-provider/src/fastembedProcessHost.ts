@@ -290,8 +290,30 @@ function enqueue(task: () => Promise<void>): void {
   _queue = _queue.then(task, task);
 }
 
+/**
+ * (BL-405) Reply to the parent, guarded against the parent already being gone.
+ *
+ * Without this guard, `process.send()` with no error callback throws an
+ * uncaught 'error' event (EPIPE) the instant the parent's IPC channel
+ * disappears — which fatally crashes THIS child (`libc++abi: terminating due
+ * to uncaught exception of type std::__1::system_error`), reproduced on
+ * every SIGTERM sent to the parent during BL-405 diagnosis, including with
+ * no embed work in flight at the moment of the signal. Nothing previously
+ * called `getSharedFastembedProcess().terminate()` on parent shutdown, so
+ * this child simply outlived its own IPC pipe.
+ *
+ * `process.connected` short-circuits the common case (parent already fully
+ * torn down); the error-callback form of `process.send()` catches the
+ * narrower race where the channel closes mid-call. Either way the reply is
+ * moot once the parent is gone — log and drop it instead of crashing.
+ */
 function send(msg: InitOkResponse | EmbedResponse | EmbedBatchResponse | ErrorResponse): void {
-  process.send?.(msg);
+  if (!process.connected) return;
+  process.send?.(msg, (err: Error | null) => {
+    if (err) {
+      process.stderr.write(`[fastembed-host] send failed (parent likely exited): ${err.message}\n`);
+    }
+  });
 }
 
 async function handleRequest(msg: InitRequest | EmbedRequest | EmbedBatchRequest): Promise<void> {
