@@ -325,7 +325,6 @@ async function forwardStream(providerMessages, reqData, res, options = {}) {
     ...reqData,
     model: options.model || reqData.model || TARGET_MODEL,
     messages: providerMessages,
-    tools: options.tools !== undefined ? options.tools : injectSessionTool(reqData.tools),
     stream: true,
   };
 
@@ -583,114 +582,30 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      // ── Content-first path ──
+      // ── Content-first path (true streaming) ──
       // Build the effective SP: session persona (override) if available,
       // else the opencode-supplied SP.
       const effectiveSP = personaSP || opencodeSP;
       const cf = rewriteToContentFirst(messages, effectiveSP);
 
-      // Blocking call so we can intercept the virtual set_session_agent tool
-      // BEFORE anything reaches the client. Returns the final assistant text.
-      async function runTurn(turnMessages, allowVirtualTool) {
-        const upReq = {
-          ...reqData,
-          messages: turnMessages,
-          model: TARGET_MODEL,
-          stream: false,
-        };
-        // strip streaming-only params that DeepSeek rejects on non-stream calls
-        delete upReq.stream_options;
-        delete upReq.stream;
-        if (allowVirtualTool) upReq.tools = injectSessionTool(reqData.tools);
-        else upReq.tools = (reqData.tools || []).filter(t => t?.function?.name !== 'set_session_agent');
-        const response = await fetch(`${TARGET_BASE}/chat/completions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
-          body: JSON.stringify(upReq),
-        });
-        if (!response.ok) {
-          const errText = await response.text().catch(() => '');
-          console.error(`[cf-proxy] UPSTREAM ERROR ${response.status}: ${errText.slice(0, 300)}`);
-          throw new Error(`Upstream ${response.status}: ${errText.slice(0, 200)}`);
-        }
-        const data = await response.json();
-        const usage = data.usage || {};
-        const msg = data.choices?.[0]?.message || {};
-        return {
-          text: msg.content || '',
-          toolCalls: Array.isArray(msg.tool_calls) ? msg.tool_calls : [],
-          tokens: {
-            prompt: usage.prompt_tokens || 0,
-            completion: usage.completion_tokens || 0,
-            cacheHit: usage.prompt_cache_hit_tokens || 0,
-          },
-        };
-      }
-
-      let result = await runTurn(cf.messages, true);
-      let finalText = result.text;
-
-      // Virtual tool: if the model called set_session_agent, switch session
-      // and re-run the turn with a synthetic tool result so the new persona
-      // produces the final answer.
-      const virtualCall = result.toolCalls.find(tc => tc.function?.name === 'set_session_agent');
-      if (virtualCall && session) {
-        try {
-          const args = JSON.parse(virtualCall.function.arguments || '{}');
-          const target = resolveAgent(args.agent);
-          if (target) {
-            session.activeAgent = target.name;
-            session.customSP = null;
-            session.opencodeAgent = target.name; // keep in sync with manual detection
-            console.error(`[cf-proxy] VIRTUAL TOOL: session ${sessionId} switched to ${target.name} (${args.reason || 'no reason'})`);
-            logCall({ event: 'virtual_tool_switch', agent: target.name, turns: session.turns }, sessionId);
-
-            // Re-run with the new persona; append the tool call + result so
-            // the model knows the switch happened.
-            const rerunMessages = [
-              ...cf.messages,
-              {
-                role: 'assistant',
-                content: null,
-                tool_calls: [{ id: virtualCall.id, type: 'function', function: { name: 'set_session_agent', arguments: virtualCall.function.arguments || '{}' } }],
-              },
-              { role: 'tool', tool_call_id: virtualCall.id, content: `Session agent switched to ${target.name}. Continue your work under this persona.` },
-            ];
-            const rerun = await runTurn(rerunMessages, false);
-            finalText = rerun.text;
-            result.tokens = rerun.tokens;
-          }
-        } catch (e) {
-          console.error(`[cf-proxy] virtual tool handling failed: ${e.message}`);
-        }
-      }
+      // True streaming passthrough to upstream. The virtual tool is DISABLED
+      // here (CF_VIRTUAL_TOOL=1 re-enables it later once the baseline works);
+      // session agent switching happens via POST /v1/session/agent instead.
+      const result = await forwardStream(cf.messages, reqData, res, { model: TARGET_MODEL });
 
       // Store turn in session context
       if (session) {
         const lastUser = [...messages].reverse().find(m => m.role === 'user');
         if (lastUser) session.context.push({ role: 'user', content: lastUser.content });
-        if (finalText) session.context.push({ role: 'assistant', content: finalText });
+        if (result.fullText) session.context.push({ role: 'assistant', content: result.fullText });
         session.turns++;
       }
-
-      // Stream the final text to the client as SSE
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
-      const id = `chatcmpl-${Date.now().toString(36)}`;
-      // Split into token-ish chunks for a natural stream feel (fall back to whole text)
-      const chunks = finalText.match(/.{1,40}/gs) || [finalText];
-      for (const part of chunks) {
-        res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created: Math.floor(Date.now()/1000), model: TARGET_MODEL, choices: [{ index: 0, delta: { content: part }, finish_reason: null }] })}\n\n`);
-      }
-      res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created: Math.floor(Date.now()/1000), model: TARGET_MODEL, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: result.tokens.prompt, completion_tokens: result.tokens.completion, total_tokens: result.tokens.prompt + result.tokens.completion, prompt_cache_hit_tokens: result.tokens.cacheHit } })}\n\n`);
-      res.write('data: [DONE]\n\n');
-      res.end();
 
       logCall({
         event: 'turn', agent: activeAgent || '(unassigned)', turns: session?.turns ?? 0,
         passthrough: false,
         agent_changed: changed,
-        virtual_switch: !!virtualCall,
-        cf_tokens: result.tokens.prompt, cf_cached: result.tokens.cacheHit, cf_output: result.tokens.completion,
+        cf_tokens: result.inputTokens, cf_cached: result.cacheHits, cf_output: result.outputTokens,
         savings_pct: cf.savings, cached_seed: cf.cachedSeed,
         seed_tokens: cf.seedTokens, system_tokens: cf.systemTokens,
       }, sessionId);
