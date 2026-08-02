@@ -214,7 +214,11 @@ async function testExtension(ext) {
 // Discovery
 // ──────────────────────────────────────────────────────────────────────────────
 
-async function discoverExtensions() {
+// Unfiltered: every extension.json-bearing dir under extensions/{services,bundles}
+// (INCLUDING non-service/mcp-server members like a bundle's skill members) — the
+// raw universe BL-407's preflight-scoping needs to find bundle SIBLINGS of a
+// filtered target, not just the filtered target itself.
+async function scanAllExtensionDirs() {
   const exts = [];
 
   const scan = async (baseDir) => {
@@ -235,14 +239,96 @@ async function discoverExtensions() {
   for (const typeDir of ['services', 'bundles']) {
     await scan(path.join(WORKSPACE, 'extensions', typeDir));
   }
+  return exts;
+}
 
+async function discoverExtensions(allExts) {
   const seen = new Set();
-  return exts.filter(e => {
+  return allExts.filter(e => {
     if (seen.has(e.id)) return false;
     seen.add(e.id);
     if (EXTENSION_FILTER && e.id !== EXTENSION_FILTER) return false;
     return e.type === 'service' || e.type === 'mcp-server';
   });
+}
+
+// ── BL-407: scope the exports-contract preflight to what --extension actually
+//    exercises, instead of the whole workspace ─────────────────────────────────
+//
+// Without this, `node scripts/smoke-test.mjs --extension memory-server` — the
+// "Single extension fast pass" CLAUDE.md documents as supported — is NOT
+// isolated: the BL-266 preflight (see below) ran `--root WORKSPACE`
+// unconditionally, so a broken package.json anywhere in the other 40 projects
+// FATALs a run that never touches it. In a shared, non-worktree checkout with
+// concurrent agents, that is the normal condition, not an edge case — it means
+// any agent's in-flight `workspace:*` edit can wedge every other agent's
+// ability to run even a scoped smoke pass (observed live: PKT-15/BL-259 was
+// blocked by an unrelated agent's uncommitted memory-flush→store-adapter edit).
+//
+// Scope = the filtered extension's dir, PLUS (if it is a bundle member) the
+// bundle root and every sibling member — `soxe install <bundle>` installs the
+// WHOLE bundle whenever any one member is targeted, so siblings are genuinely
+// in the filtered run's blast radius, not just nx-graph neighbors — PLUS the
+// transitive closure of `workspace:*` dependencies from the nx project graph
+// (a broken package two hops away must not silently escape the gate).
+//
+// Returns `null` to mean "unfiltered / full workspace scope" — the caller must
+// treat null as "run the ORIGINAL unrestricted preflight", never as "check
+// nothing". A `--skip-preflight` escape hatch is deliberately NOT provided
+// (see docs/spec discussion in BL-407): scoping must be correct, not optional.
+function computePreflightOnlyDirs(allExts) {
+  if (!EXTENSION_FILTER) return null;
+
+  const target = allExts.find((e) => e.id === EXTENSION_FILTER);
+  if (!target) return null; // unknown --extension id — fail SAFE to full scope
+
+  const membersSeg = `${path.sep}members${path.sep}`;
+  const seedDirs = new Set([target.dir]);
+  if (target.dir.includes(membersSeg)) {
+    const bundleDir = target.dir.slice(0, target.dir.indexOf(membersSeg));
+    seedDirs.add(bundleDir);
+    for (const e of allExts) {
+      if (e.dir.startsWith(bundleDir + membersSeg)) seedDirs.add(e.dir);
+    }
+  }
+
+  // Resolve each seed dir's nx project name (from project.json — the bundle
+  // root may not have one; that's fine, it just doesn't contribute graph edges).
+  const seedNames = new Set();
+  for (const d of seedDirs) {
+    try {
+      const pj = JSON.parse(fs.readFileSync(path.join(d, 'project.json'), 'utf-8'));
+      if (pj.name) seedNames.add(pj.name);
+    } catch { /* no project.json at this dir — nx-graph expansion skips it */ }
+  }
+
+  let graph;
+  try {
+    const graphFile = path.join(TEST_ROOT, '.nx-graph-preflight.json');
+    execSync(`npx nx graph --file=${JSON.stringify(graphFile)}`, {
+      cwd: WORKSPACE, stdio: ['ignore', 'ignore', 'inherit'],
+    });
+    graph = JSON.parse(fs.readFileSync(graphFile, 'utf-8')).graph;
+  } catch (e) {
+    console.error(`[smoke] WARNING: nx graph unavailable for BL-407 preflight scoping (${e.message}); falling back to the full workspace scope`);
+    return null;
+  }
+
+  const seenNames = new Set(seedNames);
+  const stack = [...seedNames];
+  while (stack.length > 0) {
+    const n = stack.pop();
+    for (const edge of graph.dependencies[n] ?? []) {
+      if (!seenNames.has(edge.target)) { seenNames.add(edge.target); stack.push(edge.target); }
+    }
+  }
+
+  const dirs = new Set(seedDirs);
+  for (const name of seenNames) {
+    const root = graph.nodes[name]?.data?.root;
+    if (root) dirs.add(path.join(WORKSPACE, root));
+  }
+  return [...dirs].sort();
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -285,7 +371,8 @@ async function main() {
   try { await fsp.unlink(tr); } catch {}
   await fsp.symlink(path.join(WORKSPACE, 'registry', 'index.json'), tr);
 
-  const extensions = await discoverExtensions();
+  const allExtensions = await scanAllExtensionDirs();
+  const extensions = await discoverExtensions(allExtensions);
 
   // ── BL-192 preflight: refuse to run against an unbuilt workspace ────────────
   // A dist-less checkout (fresh worktree) makes install/enable legs fail with
@@ -318,12 +405,29 @@ async function main() {
   //    plus packaging-correctness checks it never had; attw adds the
   //    type/runtime-format resolution check verify-package-exports.mjs never
   //    performed at all. See docs/standards/extension-bundling.md.
+  //
+  //    BL-407: when --extension narrows the run, the preflight is narrowed too
+  //    (see computePreflightOnlyDirs) — a `--only <dir>` per in-scope package,
+  //    computed from the filtered extension + its bundle siblings + its
+  //    transitive nx workspace dependencies. Unfiltered runs are UNCHANGED:
+  //    still the full, unrestricted `--root WORKSPACE` merge-gate scope.
+  const onlyDirs = computePreflightOnlyDirs(allExtensions);
+  const onlyArgs = onlyDirs ? onlyDirs.flatMap((d) => ['--only', d]) : [];
+  if (EXTENSION_FILTER) {
+    console.error(onlyDirs
+      ? `[smoke] preflight scoped (BL-407) to --extension ${EXTENSION_FILTER}: ${onlyDirs.length} package(s) — ${onlyDirs.map((d) => path.relative(WORKSPACE, d)).join(', ')}`
+      : `[smoke] preflight NOT scoped — running full workspace scope even though --extension ${EXTENSION_FILTER} was passed (see warning above)`);
+  }
   try {
-    execSync(`node ${JSON.stringify(path.join(WORKSPACE, 'tools', 'verify-exports-publint-attw.mjs'))} --root ${JSON.stringify(WORKSPACE)}`, {
-      stdio: ['ignore', 'inherit', 'inherit'],
-    });
+    execSync(
+      `node ${JSON.stringify(path.join(WORKSPACE, 'tools', 'verify-exports-publint-attw.mjs'))} --root ${JSON.stringify(WORKSPACE)} ${onlyArgs.map((a) => JSON.stringify(a)).join(' ')}`,
+      { stdio: ['ignore', 'inherit', 'inherit'] },
+    );
   } catch {
     console.error('[smoke] FATAL: package exports contract violated — see verify-exports-publint-attw output above.');
+    console.error(EXTENSION_FILTER
+      ? `[smoke] this WAS scoped to --extension ${EXTENSION_FILTER} (BL-407) — the offending package(s) named above are in that extension's own dependency closure, not an unrelated project.`
+      : '[smoke] this was an UNFILTERED (full-workspace) run — pass --extension <id> to check whether the failure is actually in scope for the change you are testing.');
     process.exit(2);
   }
 
