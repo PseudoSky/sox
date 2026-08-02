@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 81.** (BL-397 resolved 2026-08-01 — see CHANGELOG.md; BL-408 filed 2026-08-01 from the same close-out — the source fix landed but memory-flush's bundled dist artifact is still unbuilt; BL-407 filed 2026-08-01 — the smoke-test exports preflight is workspace-wide BEFORE --extension filtering, so one agent's in-flight package.json wedges the mandatory merge gate for every other agent; BL-376 filed and resolved same-day 2026-08-01 from a follow-up on the BL-331 model-load regression — split the fastembed warmup timeout into a tight cache-hit budget and the original generous cache-miss budget, with real cache-presence detection deciding which applies — see CHANGELOG.md; BL-406 filed and resolved same-day 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector was blind to 1090 legacy rows — see CHANGELOG.md; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 81.** (BL-388 resolved 2026-08-02 from PKT-06's runtime acceptance — see CHANGELOG.md; BL-410 filed 2026-08-02 from that same acceptance run — a standalone-script race in the shared fastembed IPC channel crashes the process with an uncaught EPIPE, unrelated to BL-388's storage-boundary fix; BL-359 resolved 2026-08-01 — atomic BL-id allocation + pre-commit collision guard — see CHANGELOG.md; BL-397 resolved 2026-08-01 — see CHANGELOG.md; BL-408 filed 2026-08-01 from the same close-out — the source fix landed but memory-flush's bundled dist artifact is still unbuilt; BL-407 filed 2026-08-01 — the smoke-test exports preflight is workspace-wide BEFORE --extension filtering, so one agent's in-flight package.json wedges the mandatory merge gate for every other agent; BL-376 filed and resolved same-day 2026-08-01 from a follow-up on the BL-331 model-load regression — split the fastembed warmup timeout into a tight cache-hit budget and the original generous cache-miss budget, with real cache-presence detection deciding which applies — see CHANGELOG.md; BL-406 filed and resolved same-day 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector was blind to 1090 legacy rows — see CHANGELOG.md; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,13 +23,13 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-08-01: **81 open**.
+Regenerated 2026-08-02: **81 open**.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | — |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-326, BL-327, BL-329, BL-334, BL-338, BL-342, BL-345, BL-349, BL-351, BL-353, BL-356, BL-358, BL-364, BL-375, BL-380, BL-387, BL-390, BL-391, BL-393, BL-394, BL-399, BL-401, BL-404, BL-405, BL-407 |
-| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-359, BL-360, BL-361, BL-362, BL-378, BL-383, BL-388, BL-389, BL-396, BL-398, BL-400 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-326, BL-327, BL-329, BL-334, BL-338, BL-342, BL-345, BL-349, BL-351, BL-353, BL-356, BL-358, BL-364, BL-375, BL-380, BL-387, BL-390, BL-391, BL-393, BL-394, BL-399, BL-401, BL-404, BL-405, BL-407, BL-409 |
+| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-360, BL-361, BL-362, BL-378, BL-383, BL-389, BL-396, BL-398, BL-400, BL-410 |
 | **LOW** | BL-103, BL-202, BL-215, BL-258, BL-261, BL-283, BL-292, BL-298, BL-305, BL-309, BL-314, BL-355, BL-379, BL-392, BL-408 |
 | **UNSET** | BL-163 |
 
@@ -1330,36 +1330,6 @@ Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-351, 1: `ls -
 
 ---
 
-### BL-359 — BL ids are allocated by a read-then-write race: three agents, two collisions, one dangling cross-reference — **Open (MEDIUM, process)** (2026-07-31)
-
-**Driver.** A new backlog id is chosen by reading the current maximum `### BL-<n>` from a shared file and adding one. There is no reservation and no uniqueness check, so any two agents who read before either writes will pick the **same id**. On 2026-07-31, three agents filing within roughly an hour produced **two collisions**:
-
-- **BL-344** — filed by `mitigate-reads`, then independently by the team lead minutes later. Resolved by renumbering the second to BL-346.
-- **BL-354** — filed by `p1-tracing-research` (`0e9026b`), then independently by the team lead (`83b0483`). The lead's renumbered to BL-357; the researcher's then had to move *again* — to BL-356, which was **also** concurrently claimed by `p0-cluster-calibration` — and finally to **BL-358**. One id, four agents, three renumbers. **There is no BL-354 any longer.**
-
-**Why this is worse than untidy.** An id is a citation target the moment it is written. `BL-328`'s "Related" line cited "BL-354 (a fixed τ is not calibratable at all)" — correct when written, and silently pointing at a *different item* once the renumbering settled.[1] Cross-references, commit messages, code comments and agent handoffs all capture ids by value; renumbering cannot chase them. Every collision therefore risks a permanently wrong reference in a document whose entire purpose is to be authoritative, and this one produced exactly that. Commit messages are immutable, so `83b0483`'s body will name BL-354 forever.
-
-**Detection is trivial and was not in place:**
-```
-grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d      # must print nothing
-```
-Verified empty as of this filing. The check has been added to the status-header block next to the regenerate command, but a documented command is not a guard — nothing runs it.
-
-**Fix sketch (ranked):**
-1. **Pre-commit hook** rejecting any commit that leaves duplicate `### BL-<n>` headings, and rejecting a reference to an id that has no heading. Cheap, catches both failure modes at the only moment that matters, requires no coordination between agents.
-2. **Reservation** — an allocator (a `BL-NEXT:` line bumped atomically, or a tiny script that appends a placeholder heading in one write) so the id is claimed before the item body is written.
-3. Longer term this disappears into the backlog MCP tool, where ids are server-allocated — the markdown→tool import is already authorized and deferred. Note it does **not** disappear on its own: until the import happens, every agent-heavy session reproduces this.
-
-**Acceptance (red→green, must name BL-359):** a hook or CI check that fails on a BACKLOG.md containing two identical `### BL-<n>` headings, and passes once deduplicated. Must be demonstrated failing.
-
-**Severity:** MEDIUM — no runtime impact, but it corrupts the reference integrity of the project's own record, and it recurs on every parallel-agent session. It has already produced one wrong cross-reference and three renumbers in a single day.
-
-**Related:** BL-346 (first collision), BL-357 (second), BL-358 (the thrice-renumbered item), BL-224/BL-225 (status-header and marker integrity — same family: the backlog's own metadata not being trustworthy).
-
-Citations: [wip/turso-live-metrics, team-lead + p1-tracing-research, claude, turso-go-live, 1: BACKLOG.md BL-328 "Related" line (since corrected to BL-356), 2: commits 0e9026b / 83b0483 / 79c2c4f / be8a526, 3: BACKLOG.md status-header regenerate block]
-
----
-
 ### BL-371 — A literal NUL byte in `integrity.ts` made `grep` silently return NOTHING for the whole file — **RESOLVED (HIGH)** (2026-07-31)
 
 **Driver.** `libs/data/store/store-adapter/src/integrity.ts:445` contained a **raw NUL byte** in a string literal (`ix.tbl_name + '<0x00>' + predicate`) rather than the `'\0'` escape. `grep` applies binary-content detection, and this shell's `grep` wrapper suppresses the *"Binary file matches"* notice entirely — so a search of that file returned **no output and exit status 0**, indistinguishable from "the symbol is not there."
@@ -1945,27 +1915,6 @@ Citations: [wip/turso-live-metrics, queue-perf, claude, BL-382 investigation, 1:
 
 ---
 
-### BL-388 — `tools/baseline-capture` casts `StoreAdapter` to `SqliteAdapter` and `.unwrap()`s it, the exact BL-377/BL-380 shape, in two files the audit missed — **Open (MEDIUM)** (2026-08-01)
-
-**Driver.** Found while implementing the storage-boundary ESLint rule (`sox/no-storage-backend-leak`, `tools/eslint-local/no-storage-backend-leak.cjs`) for the standing architectural rule in `docs/reporting/memory/PLAN.md`. The rule flags every `(adapter as SqliteAdapter).unwrap()` outside `libs/data/store/store-adapter/**`, and it caught two unguarded sites BL-380's audit did not enumerate:
-
-- `tools/baseline-capture/src/capture-enrichment-baseline.ts:109` — `const rawDb = (adapter as SqliteAdapter).unwrap();` passed straight into `runBatchEnrich(rawDb, …)`.[1]
-- `tools/baseline-capture/src/capture-write-perf-baseline.ts:165` — same shape.[2]
-
-**Why this is the same defect, not a new one.** `unwrap()` returns a synchronous better-sqlite3 handle on `SqliteAdapter` and an async `@tursodatabase/database` handle on `TursoAdapter` — the default. Both call sites cast unconditionally with no capability guard, exactly the pattern BL-377 proved crashes on the default backend (`TypeError: episodes is not iterable`) and BL-380 catalogued for `vector-store`. These baseline-capture scripts have presumably never been run against a Turso store.
-
-**Fix sketch:** same as BL-377/BL-380 — convert to the async `StoreAdapter` API, or gate the raw-handle path on `adapter.capabilities.nativeVectors`/`fts5` the way `db.ts:373`/`:896` already do.
-
-**STRUCTURAL FIX LANDED 2026-08-01 (commit `eb70cc8`) — item stays OPEN for its runtime acceptance.** Both `.unwrap()` sites and both now-unused `SqliteAdapter` imports are deleted; the scripts pass the `StoreAdapter` straight through. This surfaced independently during a deploy: `registry:sync-index` failed on `baseline-capture:build` with two `TS2345`s (`Argument of type 'Database' is not assignable to parameter of type 'StoreAdapter'`) once the BL-401 telemetry change invalidated a stale nx cache that had been serving a green result. So the defect was **also** a live build break, not only a latent Turso hazard.[3]
-
-> **ID hygiene:** this was briefly re-filed as BL-403 by an agent that searched the backlog by error string rather than by file path. BL-403 is retracted and its CHANGELOG entry now records BL-388. Search by symbol name, file path, AND error string — the same bug routinely arrives under a different name.
-
-**Acceptance (red→green, must name BL-388) — STILL OUTSTANDING:** run each baseline-capture entry point with no `STORE_ADAPTER` set (default Turso) and assert it completes without a raw-handle type error. The compile-level fix is verified; **the runtime claim is not**, and "it type-checks" is not "it runs on Turso" (BL-225 — this repo has shipped that conflation as RESOLVED five times).
-
-Citations: [wip/turso-live-metrics, storage-boundary-lint, claude, storage-boundary lint task, 1: tools/baseline-capture/src/capture-enrichment-baseline.ts:109, 2: tools/baseline-capture/src/capture-write-perf-baseline.ts:165; wip/turso-live-metrics, main, claude, live deploy verification, 3: commit eb70cc8 — both unwraps removed, `npx nx build baseline-capture` green 2026-08-01]
-
----
-
 ### BL-389 — `LanceDbVectorBackend` takes a raw `better-sqlite3` `Database.Database` in its constructor, outside the store-adapter boundary — **Open (MEDIUM)** (2026-08-01)
 
 **Driver.** Found by the same `sox/no-storage-backend-leak` lint pass as BL-388. `libs/data/vectors/vector-store/src/lancedb.ts:3` imports `type Database from 'better-sqlite3'` and `:62` declares `constructor(config: LanceDbVectorBackendConfig & { db: Database.Database })` — the backend's public API is typed directly against the sqlite driver, not `StoreAdapter`.[1]
@@ -2482,3 +2431,96 @@ adapter behavior). But an unfixed bug is still live in production data paths unt
 warning), BL-390, BL-393, BL-407.
 
 Citations: [wip/turso-live-metrics, main, claude, PKT-08, 1: extensions/bundles/sox-memory-bundle/members/memory-flush/dist/index.js mtime 2026-08-01T18:44 vs src/index.ts fix committed after, `grep -c better-sqlite3 dist/index.js` = 6]
+
+### BL-409 — "stage by explicit path" does NOT protect a shared checkout: `git commit` commits the whole index, sweeping up other agents in-flight work — **Open (HIGH), process** (2026-08-02)
+
+**Found by:** committing it. Commit `b1885d5`, whose subject is `docs: file BL-407 + PKT-50`, actually contains **three agents work**: my two doc files, pkt47 entire in-progress BL-404 implementation (`memory-server/src/index.ts`, `sox-telemetry/src/runtime.ts`, and two new spec files), and pkt14 BL-376 implementation (`embedding-provider/src/{index,fastembed}.ts` + spec). 770 insertions across 10 files under a docs message.[1]
+
+**The rule that failed.** AGENTS.md says, verbatim: *"Stage only the explicit paths you touched — `git add <path>`. **Never `git add -A`, `git add .`, or `git commit -a`**: they sweep another agent in-flight work into your commit."* I followed that rule exactly — `git add BACKLOG.md docs/reporting/memory/PLAN.md`, two explicit paths, no `-A`, no `-a`.
+
+**It does not work, and cannot.** `git add <path>` controls what *I* add to the index. It says nothing about what is *already* in the index. `git commit` then commits **the entire index**, not my subset. In a shared non-worktree checkout where N agents share one `.git/index`, any agent that has staged files and not yet committed will have them silently absorbed by whichever agent commits first. The banned commands are a red herring: the danger is not `-A`, it is that staging and committing are decoupled and the index is shared state.
+
+**Nothing was lost — that is not the point.** pkt14 independently verified its work survived and is green at HEAD, and pkt47 code is intact. The damage is different and still real:
+1. **pkt47 BL-404 work was committed before pkt47 had finished verifying it.** An unverified implementation is now in history, and this repo standing rule (BL-225) is that a landed change must have a watched red→green. Something landed that had not passed its own gate.
+2. **Attribution and bisectability are destroyed.** `git log -- <file>` for the BL-404 work points at a docs commit about BL-407. A future bisect or blame lands on a message that describes none of the change.
+3. **It is silent.** No warning, no conflict, no output. pkt14 only noticed because it went looking for its own commit and found its files already gone from the index.
+
+**Fix:** the correct invocation is a **pathspec-limited commit** — `git commit <paths> -m ...` (or `git commit -- <paths>`), which commits exactly those paths regardless of what else is staged, leaving other agents index entries untouched. This should replace the `git add <path>` guidance in AGENTS.md, not sit beside it: the current wording actively creates false confidence, since an agent that obeys it believes it is protected.
+
+**Consider also:** per-agent `GIT_INDEX_FILE`, or giving each dispatched agent its own worktree. Worktrees are the structural fix and are already the repo convention for "destructive/experimental work"; this incident is evidence the threshold for requiring one is lower than currently documented. Weigh against worktree setup cost (~200-500ms + disk per agent) and the fact that agents editing genuinely disjoint files mostly do not conflict — the index is the shared resource, not the files.
+
+**Acceptance (red→green, must name BL-409):** a test that stages file A in one index, then runs the documented commit procedure for file B, and asserts A is **not** in the resulting commit. Must fail against `git add B && git commit` and pass against `git commit B`.
+
+**Related:** BL-390 (uncommitted-tree hazards), BL-150. Two other concurrent-checkout incidents today: an agent had its `write-queue.ts` edit reverted underneath it between Edit and `git add`, and a second agent BACKLOG.md header edit was overwritten by a stale copy — all three are the same shared-mutable-state root cause.
+
+Citations: [wip/turso-live-metrics, main, claude, PKT-47/PKT-14 dispatch, 1: `git show --stat b1885d5` — 10 files, 770 insertions, three agents work under one docs subject, 2026-08-02]
+
+**Driver.** Reserved by `tools/allocate-bl-id.mjs` and not yet filled in. If you are reading this in a committed BACKLOG.md, the reservation was never completed — fill in the item's real content or delete this heading before committing.
+
+---
+
+### BL-410 — standalone scripts crash `warmupEmbed()`/any shared-fastembed call: `unref()`'d IPC channel races process exit mid-model-load, then an unguarded `process.send()` throws EPIPE uncaught — **Open (MEDIUM)** (2026-08-02)
+
+**Driver.** Found running PKT-06's BL-388 runtime acceptance — `capture-write-perf-baseline.ts`'s
+`captureWritePerfBaseline()` crashed the whole Node process on its very first line of real work
+(`warmupEmbed()`), 3/3 times, before touching any store adapter. Not a BL-388 defect: it reproduces
+identically in a two-line standalone script that only calls `warmupEmbed()`, with zero storage
+involved, and reproduces with `SOX_EMBED_EXECUTION_PROVIDER=cpu` exactly as with default CoreML —
+ruling out ANE/CoreML contention as the cause.
+
+**Symptom:**
+```
+node:events:486
+      throw er; // Unhandled 'error' event
+Error: write EPIPE
+    at target._send (node:internal/child_process:877:20)
+    at target.send (node:internal/child_process:751:19)
+    at send (.../embedding-provider/dist/fastembedProcessHost.js:234:19)
+    at handleRequest (.../embedding-provider/dist/fastembedProcessHost.js:240:13)
+libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument
+```
+
+**Root cause.** `sharedFastembedProcess.ts:81,127` deliberately `unref()`s both the forked
+fastembed-host child and its IPC channel (`c.unref()`, `c.channel?.unref()`) — the BL-370 comment
+above those calls explains this is so a long-lived *service* process (memory-server) can exit
+cleanly without the embed child pinning it open forever.[1] But in a **standalone script** whose
+only pending work is `await warmupEmbed()`, that same unref means nothing in the parent process's
+event loop is ref'd while the child is mid-model-load (fastembed init can take real wall-clock
+time). Node can decide there is nothing left to wait for and begin process teardown, closing its
+end of the IPC channel — *before* the child has replied. When the child later calls
+`process.send()` in `fastembedProcessHost.ts:293-295` (`send()`, unconditionally, no `.on('error',
+…)` guard anywhere in that file)[2], the write fails with EPIPE against a pipe the parent already
+tore down, and since nothing handles the child's own `process` `'error'` event, it crashes the
+child with an uncaught exception (compounding into a native `libc++abi` mutex-teardown abort).
+
+**Proof, not guess.** Added a harness-only `setInterval(() => {}, 1000)` around the `warmupEmbed()`
+call (in the acceptance script, not in shipped code) to keep the parent's event loop trivially
+ref'd for the duration — 100% reproducible crash without it (3/3), 100% clean with it (3/3), same
+dist, same machine, same day.[3]
+
+**Why this matters beyond baseline-capture.** Any standalone CLI/script in this repo that calls
+into `getSharedFastembedProcess()`/`warmupEmbed()`/`FastembedProvider` without some other long-lived
+handle keeping the process alive (a server, an open MCP transport, a listening socket) is exposed to
+this exact race. It has stayed hidden because the only production caller today is `memory-server`,
+which always has other ref'd handles (stdio/MCP transport) masking it.
+
+**Fix sketch:** either (a) don't unconditionally `unref()` the channel — ref it for the duration of
+each in-flight `request()` and unref again once `pending` is empty, so a script with no other work
+still waits for outstanding replies; or (b) add `process.on('error', …)` in
+`fastembedProcessHost.ts` around the send path so a closed pipe degrades to a logged, swallowed
+failure instead of an uncaught process-crashing exception in the child. (a) is the more complete fix
+— (b) only stops the child from crashing, it doesn't stop the parent's promise from hanging forever
+once its channel is gone.
+
+**Severity:** MEDIUM — no live-service impact (masked there), but blocks any new standalone script
+(baseline-capture, `reembed-memory`-style CLIs, future one-off tools) from being run reliably against
+the shared embed provider, and the failure mode (uncaught process crash, not a rejected promise) is
+maximally confusing to whoever hits it next without this investigation.
+
+Citations: [wip/turso-live-metrics, main (PKT-06), claude, BL-388 runtime acceptance,
+1: libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts:81,127,
+2: libs/data/embed/embedding-provider/src/fastembedProcessHost.ts:293-295,240,234,
+3: three crash reproductions (default CoreML, forced `SOX_EMBED_EXECUTION_PROVIDER=cpu`, stable
+dist) followed by three clean runs with a harness-only keep-alive interval, 2026-08-01]
+
+---

@@ -622,6 +622,34 @@ rewritten, only unblocked.
 **Produces:** a fast path that is genuinely isolated, so concurrent agents stop blocking each other's gate runs — and a merge gate that still checks the whole workspace when it is actually gating a merge.
 **acceptance:** with a deliberately broken `package.json` in a project unrelated to the filter, `node scripts/smoke-test.mjs --extension memory-server` completes and reports its normal pass count; the SAME broken manifest still FATALs the unfiltered `node scripts/smoke-test.mjs`. **Both halves are required** — a fix that merely stops failing has removed the gate rather than scoped it. Name BL-407.
 
+### PKT-51 — BL-409: pathspec-limited commits, because "stage by explicit path" does not protect a shared index
+**Goal:** `git add <path>` controls what *I* put in the index; `git commit` then commits **the whole index**, including whatever other agents have already staged. In a shared non-worktree checkout the first agent to commit silently absorbs every other agent's staged work. Observed: commit `b1885d5`, subject `docs: file BL-407 + PKT-50`, actually contains three agents' work — 770 insertions across 10 files, including an entire *unverified* BL-404 implementation. The committing agent had followed AGENTS.md exactly: two explicit paths, no `-A`, no `-a`.
+**Closes:** BL-409
+**Files:** `AGENTS.md` (the "GIT STAGING IS EXPLICIT-PATH ONLY" constraint block — `CLAUDE.md` is a symlink to it), plus a guard script under `tools/` if you judge one warranted.
+**requires:** none
+**sequencing:** independent. Touches a doc every agent reads — land it early.
+**tier:** sonnet, ~50k tokens / ~20 turns
+**orientation:** ~30k — BL-409's body carries the full incident and the fix. **Fixed cost.**
+**budget:** ~20 turns / ~80k tokens. Guidance ceiling ~150k; **guidance, not a stop.** Commit incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`** — specialist types have no `Agent` tool.
+> **⛔ This packet edits AGENTS.md, the shared agent contract.** The owner's standing rule is that any such change must start from the **minimum prose that expresses the requirement**, then be **A/B tested with a cheapest-tier model agent** to confirm it produces the desired behaviour, iterating up to 3 times if it fails. **Do not skip the A/B test** — write the candidate wording, dispatch a haiku agent on a task that would trip the old rule, and check whether the new wording actually changes what it does. Report the A/B result.
+> The replacement must **replace**, not sit beside, the current `git add <path>` guidance. Today's wording creates false confidence: an agent that obeys it believes it is protected and is not.
+**Produces:** a staging rule that holds under concurrency, verified by A/B test rather than asserted.
+**acceptance:** a test naming BL-409 that stages file A, runs the documented procedure for file B, and asserts A is **not** in the resulting commit — failing against `git add B && git commit`, passing against `git commit B`. Plus the A/B transcript showing a cheap-tier agent behaves differently under the new wording.
+
+### PKT-52 — BL-410: standalone scripts crash in `warmupEmbed()` — unref'd IPC races process exit
+**Goal:** an `unref()`d IPC channel lets the parent exit mid-model-load, after which an unguarded `process.send`/handler throws. Found by PKT-06 while running `baseline-capture` against default Turso — it only appears *outside* the long-lived server, which is exactly why no server-side test ever caught it.
+**Closes:** BL-410
+**Files:** see BL-410's body for exact anchors — expect `libs/data/embed/embedding-provider/src/` (shared fastembed client / process host) plus the standalone entry points calling `warmupEmbed()`.
+**requires:** none
+**sequencing:** **overlaps PKT-14's territory** (`embedding-provider/src/{index,fastembed}.ts`). PKT-14 is COMPLETE and committed so the file is free — but re-read before editing rather than trusting this note.
+**tier:** sonnet, ~60k tokens / ~25 turns
+**orientation:** ~35k — read BL-410's body and the two call sites; do not re-derive the crash. **Fixed cost.**
+**budget:** ~25 turns / ~95k tokens. Guidance ceiling ~170k; **guidance, not a stop.** Commit incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **Do not "fix" this by removing the `unref()`.** That keeps the shared embed child holding the event loop open and turns every short script into a hang — trading a crash for a worse failure. Keep the channel unref'd and make exit-during-load **survivable**: guard the send/handler, and give callers a way to await load completion before exit.
+> **Do not download a real model in a test** — inject the delay, as PKT-14's spec does. Real warmups run minutes and other agents share the provider.
+**Produces:** `warmupEmbed()` safe to call from any short-lived script, not only the long-lived server.
+**acceptance:** a test naming BL-410 reproducing the crash — a standalone process calling `warmupEmbed()` and exiting mid-load — asserting a clean exit with no unhandled throw. Must fail against current code.
+
 ### PKT-41 — BL-391: federated recall's BM25 arm is dead on Turso, and the failure is swallowed whole-store
 **Goal:** a read-only Turso connection cannot run `fts_match` (measured: `readonly:false` → 1158 hits; `readonly:true` → `step failed: Error: Resource is read-only`; plain `COUNT(*)` works identically on both). `openDbReadOnly` passes `readonly: true` unconditionally and its **only** production caller is `getFederationConnection` (`recall.ts:1208`) — so single-store recall is unaffected (live recall still returns `provenance: ["vec","fts","temporal"]`) but federated recall is not.
 **Closes:** BL-391
@@ -687,7 +715,7 @@ rather than an oversight:
 
 - **BL-225** — *status markers record intent, not verified outcome.* This is a **standing discipline, not a fixable task**, and it is already the acceptance standard for every packet above ("a watched red→green naming the BL id — never *tests pass*"). It stays open permanently by design. This session demonstrated it bites in **both** directions: four items were once marked RESOLVED while broken, and twelve were found marked Open while already fixed. Writing a packet for it would be a category error; leaving it unlisted would read as an oversight.
 - **OS service integration** — BL-163 (SMAppService login-items registration; already BLOCKED on its own dependency)
-- **Embedding-provider internals** — BL-283 (shared `RequestResponseChannel<T>` base for the ONNX/fastembed worker clients)
+- **Embedding-provider internals** — BL-283 (shared `RequestResponseChannel<T>` base for the ONNX/fastembed worker clients), BL-410 (standalone-script IPC-channel-unref race in `sharedFastembedProcess.ts`/`fastembedProcessHost.ts`, found by PKT-06 but scoped to `libs/data/embed/embedding-provider/**`, not `docs/reporting/memory/**`)
 
 
 ---
@@ -1438,7 +1466,7 @@ Verified by diffing every packet's `Closes:` line against `grep -oE '^### BL-[0-
 | E | PKT-34 .. PKT-36 (3) | 2 (PKT-36 depends on PKT-35) | PKT-25 (PKT-34 only) |
 | F | PKT-37 .. PKT-40 (4) | 3 | PKT-16 (PKT-40 only) |
 
-**Total: 50 packets.** Tier distribution, derived from the `**tier:**` fields rather than hand-maintained: **sonnet 45**, **haiku 4** (PKT-09, 20, 22, 23), **opus 0**.
+**Total: 52 packets.** Tier distribution, derived from the `**tier:**` fields rather than hand-maintained: **sonnet 45**, **haiku 4** (PKT-09, 20, 22, 23), **opus 0**.
 
 > **No packet is opus.** Two independent reasons, both evidence rather than preference. First, the owner's standing constraint: *"No more opus agents."* Second — and this is the one that matters for estimation — **every agent dispatched in this program ran `claude-sonnet-5` regardless of what the packet said.** No `model:` override was ever passed, so the `Agent` tool used each agent type's default. The three packets that once read `opus` (PKT-01, 02, 28) were measured after the fact and had all run on sonnet; all three completed, including a CRITICAL architectural change and a research packet that produced a real measurement. The earlier tier argument in this document concerned a distinction that was never present in any dispatch. Tier is not the lever — task shape, prompt specificity, and budget realism are.
 
