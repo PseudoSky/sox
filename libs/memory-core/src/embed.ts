@@ -14,7 +14,7 @@
  *   R2: getActiveEmbedModel() reflects the active backend.
  */
 
-import { createEmbeddingProvider } from '@adhd/sox-embedding-provider';
+import { createEmbeddingProvider, getSharedFastembedProcess, getSharedOnnxWorker } from '@adhd/sox-embedding-provider';
 import type { EmbeddingProvider } from '@adhd/sox-embedding-provider';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { homedir } from 'node:os';
@@ -359,6 +359,37 @@ export function _resetEmbedSingleton(): void {
  */
 export async function _shutdownEmbedWorker(): Promise<void> {
   _resetEmbedSingleton();
+}
+
+/**
+ * (BL-405) Terminate the shared fastembed + onnx child processes/workers.
+ *
+ * Both `getSharedFastembedProcess()` and `getSharedOnnxWorker()` are lazy,
+ * process-wide singletons that fork a real OS child process (fastembed) or
+ * spin up a `worker_threads.Worker` (onnx) the first time embedding/rerank
+ * is used, and stay resident for the life of the parent process. Nothing
+ * previously called their `.terminate()` on shutdown, so a SIGTERM'd parent
+ * simply vanished out from under them: the fastembed child's own in-flight
+ * `process.send()` (replying to a request the parent will never read) then
+ * threw an uncaught `EPIPE` — an unhandled 'error' event with no listener —
+ * fatally crashing the CHILD (`libc++abi: terminating due to uncaught
+ * exception`). This reproduced on every SIGTERM observed during BL-405
+ * diagnosis, including with zero in-flight embed work at the moment of the
+ * signal, not just under load.
+ *
+ * `.terminate()` on each client calls `.kill()` (fastembed) / `.terminate()`
+ * (the worker), which tears the child down via a real exit signal instead of
+ * yanking the pipe it's mid-write on — the child exits cleanly (or is killed
+ * cleanly) instead of crashing. Must be called BEFORE the parent process
+ * exits, as part of the coordinated shutdown sequence
+ * (memory-server/src/backend.ts's `coordinatedShutdown`) — never left to the
+ * OS to reap as an orphan.
+ */
+export async function terminateEmbedWorkers(): Promise<void> {
+  await Promise.all([
+    getSharedFastembedProcess().terminate(),
+    getSharedOnnxWorker().terminate(),
+  ]);
 }
 
 

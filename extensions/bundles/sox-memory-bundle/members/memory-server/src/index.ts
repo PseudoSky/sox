@@ -2858,21 +2858,37 @@ if (require.main === module) {
   //
   // The handler runs async (backup via VACUUM INTO) and then calls process.exit.
   // The void wrapper is the standard Node pattern for async signal handlers.
-  const dbPathForBackup = resolveDbPath(undefined);
-  async function handleShutdown(signal: string): Promise<void> {
-    process.stderr.write(`[memory-server] received ${signal}, running pre-restart backup...\n`);
-    try {
-      const result = await autoBackup(dbPathForBackup);
-      if (!result.skipped && result.path) {
-        process.stderr.write(`[memory-server] pre-restart backup saved: ${result.path} (${result.size} bytes)\n`);
+  //
+  // BL-405: this handler is DIRECT-STDIO MODE ONLY. In BACKEND mode
+  // (SOX_PROXY_BACKEND=1, the production path), `runBackend()` below installs
+  // its own coordinated shutdown (`backend.ts`'s `coordinatedShutdown`) that
+  // already runs this same pre-restart backup as one bounded step of a single
+  // sequenced teardown. Registering BOTH used to mean two independent
+  // `process.on('SIGTERM', ...)` listeners raced to call `process.exit()` —
+  // Node fires every listener for a signal, it does not pick one — and
+  // whichever finished first killed the process and aborted the other's
+  // in-flight work. Verified empirically: the real WAL checkpoint
+  // (`closeDbWithLease`'s `PRAGMA wal_checkpoint(TRUNCATE)`, run from
+  // `coordinatedShutdown`'s `closeAllAdapters()` step) routinely never
+  // completed — the WAL file was byte-identical after a "clean" shutdown log
+  // line. See BACKLOG.md BL-405.
+  if (process.env.SOX_PROXY_BACKEND !== '1') {
+    const dbPathForBackup = resolveDbPath(undefined);
+    async function handleShutdown(signal: string): Promise<void> {
+      process.stderr.write(`[memory-server] received ${signal}, running pre-restart backup...\n`);
+      try {
+        const result = await autoBackup(dbPathForBackup);
+        if (!result.skipped && result.path) {
+          process.stderr.write(`[memory-server] pre-restart backup saved: ${result.path} (${result.size} bytes)\n`);
+        }
+      } catch (err) {
+        process.stderr.write(`[memory-server] pre-restart backup failed: ${err}\n`);
       }
-    } catch (err) {
-      process.stderr.write(`[memory-server] pre-restart backup failed: ${err}\n`);
+      process.exit(0);
     }
-    process.exit(0);
+    process.on('SIGTERM', () => { void handleShutdown('SIGTERM'); });
+    process.on('SIGINT', () => { void handleShutdown('SIGINT'); });
   }
-  process.on('SIGTERM', () => { void handleShutdown('SIGTERM'); });
-  process.on('SIGINT', () => { void handleShutdown('SIGINT'); });
 
   if (process.env.SOX_PROXY_BACKEND === '1') {
     const socketPath = process.env.SOX_PROXY_BACKEND_SOCKET;
