@@ -160,13 +160,11 @@ in both modes; the difference IS the measurement:
   **`cf-chain-dispatcher`** agent dispatches each stage as its own opencode
   agent through `proxy/rf`, forwarding each stage's output to the next.
 
-**Fairness constraint (BL-internal A/B discipline):** the dispatcher is the
-analog of the CF instruction the proxy injects (mechanism + registry), NOT a
-transcript of a winning session. It decides the chain, handoff format, and
-stopping rules from the task and each stage's live output. Do not seed it
-with the chain order, deliverable templates, brief-density targets, or
-termination rules learned from a prior CF run — that leaks the answers and
-invalidates the comparison.
+**Fairness:** the dispatcher receives only the mechanism (dispatch stages via
+`proxy/rf`, forward outputs) and the agent registry — the same information the
+CF prompt injects into a CF session. It decides the chain, handoff format, and
+stopping rules from the task and each stage's live output. Do not seed it with
+the chain order, deliverable templates, or termination rules from a prior run.
 
 **To run the A/B:** run the same task with the `cf-chain-dispatcher` agent
 (RF arm) and through the CF self-handoff chain (CF arm); compare
