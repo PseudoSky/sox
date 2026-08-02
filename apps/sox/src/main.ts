@@ -57,6 +57,8 @@ import {
   reconcileRuntime,
   CrashLoopGuard,
   resolveExtensionDir,
+  // BL-393: singleton-violation heal marker — surfaced by `service status`.
+  runDir,
   // Slice 1 (docs/spec/service-lifecycle.md): cross-scope singleton.
   resolveStoreResource,
   resolveUnitNodePath,
@@ -4922,6 +4924,12 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
         .map((m) => m.pid);
     }
     const owner = loaded ? 'os-unit' : (livePids.length > 0 ? 'none' : 'none');
+    // BL-393: a doctor-reconcile singleton-violation heal silently SIGTERMs a
+    // duplicate backend — surface the last such heal loudly instead of leaving
+    // it buried in run/logs/doctor-reconcile/*.log. Not an error by itself (the
+    // heal is correct self-healing behavior); it IS a rotation the operator did
+    // not initiate and needs to know happened.
+    const healMarker = readSingletonHealMarker(extId, scope);
     process.stdout.write(
       `${CLI} service status: ${label} (scope ${scope}, ${platform.kind})\n` +
       `  unit file:  ${fileExists ? unitPath : '(none)'}\n` +
@@ -4929,7 +4937,13 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
       `  owner:      ${owner}\n` +
       `  live pids:  ${livePids.length ? livePids.join(', ') : '(none)'}\n` +
       (ctx ? `  entrypoint: ${ctx.entrypoint}\n` : '') +
-      (ctx?.spec.artifactHash ? `  artifact:   ${ctx.spec.artifactHash}\n` : ''),
+      (ctx?.spec.artifactHash ? `  artifact:   ${ctx.spec.artifactHash}\n` : '') +
+      (healMarker
+        ? `  ⚠ silent respawn (BL-393): doctor-reconcile SIGTERM'd a duplicate backend ` +
+          `at ${healMarker.healedAt} (killed pid ${healMarker.killedPid}, survivor pid ` +
+          `${healMarker.survivorPid} → ${healMarker.outcome}) — nobody chose this restart; ` +
+          `verify the running artifact still matches what was reviewed.\n`
+        : ''),
     );
     process.exit(0);
   }
@@ -5337,6 +5351,51 @@ interface ReconcileFinding {
  * Exit: 0 = reconciled (report-only findings do not fail a scheduled tick);
  *       1 = a reap failed verification ('undead') or the pass errored.
  */
+/**
+ * BL-393 — a doctor-reconcile singleton-violation heal SIGTERMs a duplicate
+ * backend process silently: the only trace was a line in
+ * `run/logs/doctor-reconcile/doctor-reconcile-<date>.log`, a file no operator
+ * checks by default. Measured live 2026-08-02T00:14:42Z: the reconcile pass
+ * killed a duplicate memory-server backend (pid 56514, survivor 8820), and
+ * within the same minute the proxy's live backend connection ALSO rotated
+ * (final pid 65352) — a real production respawn with zero signal in
+ * `memory_ping` or `service status`. Persist the last heal event per
+ * extId+scope so `service status` can surface it loudly instead.
+ */
+interface SingletonHealMarker {
+  extId: string;
+  scope: string;
+  healedAt: string;
+  survivorPid: number;
+  killedPid: number;
+  outcome: string;
+}
+
+function singletonHealMarkerPath(extId: string, scope: string): string {
+  const pathM = require('node:path') as typeof import('node:path');
+  return pathM.join(runDir(), 'reconcile-heals', `${extId}@${scope}.json`);
+}
+
+function writeSingletonHealMarker(marker: SingletonHealMarker): void {
+  const fsM = require('node:fs') as typeof import('node:fs');
+  const pathM = require('node:path') as typeof import('node:path');
+  const p = singletonHealMarkerPath(marker.extId, marker.scope);
+  try {
+    fsM.mkdirSync(pathM.dirname(p), { recursive: true });
+    fsM.writeFileSync(p, JSON.stringify(marker, null, 2));
+  } catch { /* never fail the reconcile pass on marker bookkeeping */ }
+}
+
+/** Exported for `cmdService`'s `status` subcommand (BL-393 loud surfacing). */
+function readSingletonHealMarker(extId: string, scope: string): SingletonHealMarker | null {
+  const fsM = require('node:fs') as typeof import('node:fs');
+  try {
+    return JSON.parse(fsM.readFileSync(singletonHealMarkerPath(extId, scope), 'utf8')) as SingletonHealMarker;
+  } catch {
+    return null;
+  }
+}
+
 async function doctorReconcile(flags: Record<string, string>): Promise<void> {
   const fsMod = require('node:fs') as typeof import('node:fs');
   const pathMod = require('node:path') as typeof import('node:path');
@@ -5501,6 +5560,17 @@ async function doctorReconcile(flags: Record<string, string>): Promise<void> {
           action: outcome === 'undead' ? 'failed' : 'healed',
         });
         log(`[reconcile] [singleton-violation healed] ${inst.extId} pid ${loser} → ${outcome}`);
+        // BL-393: this SIGTERM is exactly the kind of silent respawn trigger that
+        // produced the 2026-08-02T00:15:29Z incident — persist it so `service
+        // status` surfaces the rotation instead of only the reconcile log file.
+        writeSingletonHealMarker({
+          extId: inst.extId,
+          scope: inst.scope,
+          healedAt: new Date().toISOString(),
+          survivorPid: survivor,
+          killedPid: loser,
+          outcome,
+        });
       }
     }
   }
