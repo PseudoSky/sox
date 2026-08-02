@@ -2,7 +2,12 @@
 
 ---
 
-## [Unreleased] — BL-403: `baseline-capture` unwrapped its adapter back to a raw sqlite handle, breaking the build and guaranteeing a Turso runtime failure
+## [Unreleased] — BL-388 (partial): `baseline-capture` no longer unwraps its adapter back to a raw sqlite handle
+
+> **ID note — I filed this as BL-403 and that was a duplicate.** BL-388 already covered these exact
+> two lines, filed the same day from the storage-boundary lint pass. I searched the backlog by error
+> string and not by file path, which is precisely the search the dedupe rule prescribes. BL-403 is
+> retracted; this entry is the BL-388 record. **BL-388 remains OPEN** — see the acceptance gap below.
 
 Discovered mid-deploy: `npx nx run registry:sync-index` failed on `baseline-capture:build` with two
 `TS2345`s — `Argument of type 'Database' is not assignable to parameter of type 'StoreAdapter'`.
@@ -27,8 +32,15 @@ Two independent defects in one line:
 **Fix:** pass the `StoreAdapter` straight through. Both `.unwrap()` calls and both now-unused
 `SqliteAdapter` type imports deleted. `npx nx build baseline-capture` green.
 
+**What is NOT yet done — BL-388 stays open.** Its stated acceptance is to *run each baseline-capture
+entry point with no `STORE_ADAPTER` set (default Turso) and assert it completes without a raw-handle
+type error*. That was not executed. The unwrap is provably gone (grep + a compile that previously
+failed), but "it type-checks" is a weaker claim than "it runs on Turso", and this repo has been
+burned five times by treating the weaker claim as the stronger one (BL-225). PKT-06 carries the
+remaining runtime acceptance.
+
 Files: `tools/baseline-capture/src/capture-enrichment-baseline.ts`,
-`tools/baseline-capture/src/capture-write-perf-baseline.ts`.
+`tools/baseline-capture/src/capture-write-perf-baseline.ts`. Commit `eb70cc8`.
 
 ---
 
