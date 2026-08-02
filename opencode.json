@@ -69,23 +69,23 @@
     }
   },
   "provider": {
-    "cf-proxy": {
+    "proxy": {
       "name": "CF Proxy",
       "options": {
         "baseURL": "http://localhost:3333/v1"
       },
       "models": {
-        "deepseek-rf": {
-          "id": "deepseek-rf",
-          "name": "DeepSeek (RF \u2014 passthrough)",
+        "rf": {
+          "id": "rf",
+          "name": "DeepSeek V4 Flash (RF — passthrough)",
           "cost": {
             "input": 0.00027,
             "output": 0.0011
           }
         },
-        "cf-v4-flash": {
-          "id": "cf-v4-flash",
-          "name": "DeepSeek V4 Flash (CF \u2014 rewrite)",
+        "cf": {
+          "id": "cf",
+          "name": "DeepSeek V4 Flash (CF — rewrite)",
           "cost": {
             "input": 0.00027,
             "output": 0.0011
@@ -100,5 +100,5 @@
       "url": "http://localhost:3099/sse"
     }
   },
-  "model": "deepseek-rf"
+  "model": "proxy/rf"
 }

@@ -135,6 +135,7 @@ The fork-join context sharing pattern for multi-agent systems was found to be **
 | File | What it contains | Current? |
 |------|-----------------|----------|
 | `README.md` | **Core idea.** What content-first is, why it matters, how it works, key numbers | ✅ Current |
+| `proxy/README.md` | **CF proxy harness.** Dual-model A/B testing (`proxy/rf` passthrough vs `proxy/cf` rewrite), JSONL logging schema, how to route any agent through either paradigm, caveats | ✅ Current |
 | `RESUME.md` | **Experimental record.** All 7 experiments, methodology, results, how to reproduce | ✅ Current |
 | `content-first-thesis.md` | **Competitive thesis.** Why this is not a feature, the blind spot, why incumbents can't adopt it | ✅ Current |
 | `cache-performance-model.md` | **How prefix caching works.** Provider behavior, cache blocks, alignment, TTL | ✅ Current |

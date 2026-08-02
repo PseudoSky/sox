@@ -1,0 +1,2 @@
+# Runtime session logs — not source, regenerate on use
+*.jsonl
