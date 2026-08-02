@@ -2374,6 +2374,42 @@ Citations: [wip/turso-live-metrics, main, claude, PKT-08, 1: extensions/bundles/
 
 ### BL-409 — "stage by explicit path" does NOT protect a shared checkout: `git commit` commits the whole index, sweeping up other agents in-flight work — **Open (HIGH), process** (2026-08-02)
 
+> **⚠️ THE PATHSPEC FIX IS A PARTIAL MITIGATION, NOT A FIX. Measured 2026-08-02.**
+>
+> `git commit <path>` prevents sweeping in *other files* another agent has staged. It does **not**
+> prevent sweeping in another agent's **uncommitted edits to the same file** — the working tree is
+> shared, so whoever commits second captures whatever is sitting in that file at that moment.
+>
+> Demonstrated: two agents both used the documented pathspec form, and one's `BACKLOG.md` edit still
+> landed inside the other's commit `3501627` ("record BL-405 live verification"). No content was
+> lost; the attribution and bisectability damage is identical to the original `b1885d5` incident.
+> For hot shared files — `BACKLOG.md`, `CHANGELOG.md`, `PLAN.md` — pathspec buys nothing at all,
+> and those are exactly the files every agent touches.
+>
+> **This is not a bug in the pathspec guidance; it is the ceiling of what any commit-side rule can
+> do.** The shared resource is the working tree, not only the index. No `git commit` invocation can
+> fix that, because by the time git reads the file the other agent's bytes are already in it.
+>
+> **The structural fix is per-agent worktree isolation** (`.worktrees/`, already the repo convention
+> for "destructive/experimental work"; the `Agent` tool takes `isolation: "worktree"`). Every
+> concurrency incident this session traces here: this one, the original 10-file sweep, a
+> `write-queue.ts` edit reverted between Edit and `git add`, three `BACKLOG.md` header races, a
+> `git stash` that captured six files from another agent, and the `registry:sync-index` run whose
+> transitive rebuild overwrote the **live production artifact** (BL-393). That last one is the proof
+> that this is not merely a bookkeeping annoyance: a shared tree let an unrelated agent arm a
+> production deploy nobody chose.
+>
+> Cost of worktrees is ~200-500ms + disk per agent, and each needs `node tools/install-git-hooks.mjs`
+> run once since hooks are untracked. Machine-global resources — the live launchd service and
+> `~/.memory/**` — are **not** isolated by a worktree and still need explicit guardrails.
+>
+> **Keep the pathspec rule** (it is strictly better than `git add` + bare commit) but stop treating
+> it as sufficient. The acceptance test below covers only the index half; a complete fix needs the
+> isolation half.
+>
+> Citations: [wip/turso-live-metrics, main, claude, PKT-50 report + `git show --stat 3501627`, 2026-08-02]
+
+
 **Found by:** committing it. Commit `b1885d5`, whose subject is `docs: file BL-407 + PKT-50`, actually contains **three agents work**: my two doc files, pkt47 entire in-progress BL-404 implementation (`memory-server/src/index.ts`, `sox-telemetry/src/runtime.ts`, and two new spec files), and pkt14 BL-376 implementation (`embedding-provider/src/{index,fastembed}.ts` + spec). 770 insertions across 10 files under a docs message.[1]
 
 **The rule that failed.** AGENTS.md says, verbatim: *"Stage only the explicit paths you touched — `git add <path>`. **Never `git add -A`, `git add .`, or `git commit -a`**: they sweep another agent in-flight work into your commit."* I followed that rule exactly — `git add BACKLOG.md docs/reporting/memory/PLAN.md`, two explicit paths, no `-A`, no `-a`.
