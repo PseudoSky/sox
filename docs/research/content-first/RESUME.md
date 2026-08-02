@@ -159,14 +159,19 @@ in both modes; the difference IS the measurement:
   system prompt at position 0; a model cannot switch itself, so the
   **`cf-chain-dispatcher`** agent dispatches the chain as its own opencode
   agents through `proxy/rf` — product selects a feature, architect specs it,
-  typescript implements it in an assigned worktree, review verifies it —
-  forwarding each stage's output to the next.
+  typescript implements it, review verifies it — forwarding each stage's
+  output to the next. **The dispatcher creates a fresh, uniquely-named
+  worktree before dispatching anything** (random slug, branched from main)
+  and passes that exact opaque path to every stage, so stage agents cannot
+  discover other worktrees (e.g. a prior CF run's `feat-002-ir-cache` with
+  the full implementation) and copy code from them. Architect writes the
+  spec inside the worktree, never on main.
 
 **Fairness:** the dispatcher receives only the process description (dispatch
-product → architect → typescript → review through `proxy/rf`, one worktree)
-and the agent registry — the same information the CF prompt injects into a CF
-session. It does not receive the chain's answers, deliverable formats, or
-termination rules from any prior run.
+product → architect → typescript → review through `proxy/rf`, one fresh
+worktree) and the agent registry — the same information the CF prompt injects
+into a CF session. It does not receive the chain's answers, deliverable
+formats, or termination rules from any prior run.
 
 **To run the A/B:** run the same task with the `cf-chain-dispatcher` agent
 (RF arm) and through the CF self-handoff chain (CF arm); compare
