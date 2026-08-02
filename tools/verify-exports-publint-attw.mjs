@@ -41,8 +41,15 @@
  * (Are-the-types-wrong's default, matching Node's actual dual-package
  * resolution behavior).
  *
- * Usage:  node tools/verify-exports-publint-attw.mjs [--root <repo>]
+ * Usage:  node tools/verify-exports-publint-attw.mjs [--root <repo>] [--only <dir>]...
  * Exit:   0 = every package clean; 1 = violations (listed, tool-attributed).
+ *
+ * BL-407: `--only <dir>` (repeatable) restricts the check to that exact set of
+ * package directories instead of the whole workspace — used by
+ * `scripts/smoke-test.mjs` to scope this preflight to a filtered `--extension`
+ * run's actual dependency closure. Omitting `--only` checks everything, same
+ * as before; this is additive and never widens scope beyond the full
+ * workspace default.
  */
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -61,6 +68,19 @@ function repoRoot() {
 
 const ROOT = repoRoot();
 const BIN = (name) => path.join(ROOT, 'node_modules', '.bin', name);
+
+/** BL-407: repeatable `--only <dir>` — null means "no restriction" (full scope). */
+function parseOnlyDirs() {
+  const dirs = [];
+  for (let i = 0; i < process.argv.length; i++) {
+    if (process.argv[i] === '--only' && typeof process.argv[i + 1] === 'string') {
+      dirs.push(path.resolve(process.argv[i + 1]));
+      i++;
+    }
+  }
+  return dirs.length > 0 ? dirs : null;
+}
+const ONLY_DIRS = parseOnlyDirs();
 
 /** Identical directory-discovery scope to the script this replaces (tools/verify-package-exports.mjs). */
 function workspacePackageDirs() {
@@ -132,7 +152,24 @@ let publintChecked = 0;
 let attwChecked = 0;
 let attwSkipped = 0;
 
-for (const dir of workspacePackageDirs()) {
+let dirsToCheck = workspacePackageDirs();
+if (ONLY_DIRS) {
+  const onlySet = new Set(ONLY_DIRS);
+  const missing = ONLY_DIRS.filter((d) => !dirsToCheck.includes(d));
+  dirsToCheck = dirsToCheck.filter((d) => onlySet.has(d));
+  console.error(
+    `verify-exports-publint-attw: scoped (--only) to ${dirsToCheck.length} of ${workspacePackageDirs().length} workspace package(s): ` +
+    dirsToCheck.map((d) => path.relative(ROOT, d)).join(', '),
+  );
+  if (missing.length > 0) {
+    // A caller-supplied --only dir that isn't a real workspace-package dir is a
+    // caller bug (stale nx-graph root, typo) — surface it instead of silently
+    // checking fewer packages than intended.
+    console.error(`verify-exports-publint-attw: WARNING — ${missing.length} --only dir(s) are not workspace package dirs and were ignored: ${missing.map((d) => path.relative(ROOT, d)).join(', ')}`);
+  }
+}
+
+for (const dir of dirsToCheck) {
   let pkg;
   try {
     pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));

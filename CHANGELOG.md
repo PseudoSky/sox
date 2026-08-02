@@ -2,6 +2,68 @@
 
 ---
 
+## [Unreleased] — BL-407: `smoke-test.mjs`'s `--extension` fast pass no longer wedges on unrelated packages
+
+**The bug.** `scripts/smoke-test.mjs`'s BL-266 exports-contract preflight (publint + attw) ran
+`verify-exports-publint-attw.mjs --root <WORKSPACE>` unconditionally — workspace-wide, against
+all ~41 projects — *before* `--extension <id>` filtering was ever consulted. `node
+scripts/smoke-test.mjs --extension memory-server`, the "Single extension fast pass" CLAUDE.md
+documents as supported, was not actually isolated: a broken `package.json` in any of the other 40
+projects FATALed a run that never touched them. In a shared, non-worktree checkout with several
+agents editing concurrently, that is the normal condition, not an edge case — any one agent's
+in-flight `workspace:*` edit could wedge every other agent's ability to run even a scoped smoke
+pass. Discovered live blocking PKT-15/BL-259.
+
+**The fix.**
+1. `tools/verify-exports-publint-attw.mjs` gained a repeatable `--only <dir>` flag that restricts
+   the check to exactly those package directories. Omitting it checks everything, unchanged —
+   purely additive, never widens scope beyond the existing full-workspace default.
+2. `scripts/smoke-test.mjs` computes that scope automatically when `--extension` narrows the run
+   (`computePreflightOnlyDirs`): the filtered extension's own dir, PLUS — if it is a bundle
+   member — the bundle root and every sibling member (`soxe install <bundle>` installs the WHOLE
+   bundle whenever any one member is targeted, so siblings are genuinely in the filtered run's
+   blast radius, not just nx-graph neighbors), PLUS the transitive closure of `workspace:*`
+   dependencies pulled from the **nx project graph** (`npx nx graph --file=...`, BFS over
+   `dependencies`) — never a hand-rolled `package.json` walk, which would miss nx-level
+   `implicitDependencies` and give a false sense of completeness. An unknown `--extension` id or a
+   failed nx-graph call fails SAFE to the full unrestricted scope, never to "check nothing" — and
+   no `--skip-preflight` escape hatch was added; the fix scopes the gate, it does not make it
+   optional.
+3. The FATAL message now says explicitly whether the run was scoped and to what, so a violation
+   in a genuinely out-of-scope package can never again masquerade as a targeted-run failure with
+   no explanation.
+
+**Verified live against the real repo** (not just the fixture below):
+- `--extension tokenguard`: preflight scoped to 2 packages (`extensions/services/tokenguard`,
+  `libs/tokenguard-core`); 6/6 smoke tests passed; unrelated broken packages elsewhere in the
+  workspace no longer block the run.
+- `--extension memory-server`: preflight scoped to 17 packages — the target, the bundle root, ALL
+  bundle siblings (`memory-cli`, `memory-flush`, `memory-usage`), and their transitive nx
+  dependency closure (`store-adapter`, `hybrid-search`, `vector-store`, `analysis`, `graph-store`,
+  `ingest`, `embedding-provider`, `host-runtime`, `mcp-runtime`, `memory-core`, `sox-telemetry`,
+  `service-proxy`) — confirming bundle-sibling inclusion actually fires, not just the trivial
+  single-package case.
+- Two-part acceptance, watched: with a deliberately broken `package.json` planted at
+  `tools/bl407-fixture-broken/` (main pointing at a nonexistent file), `--extension tokenguard`
+  completed with its normal pass count while the same broken manifest still FATALed the unfiltered
+  `node scripts/smoke-test.mjs`. Fixture removed after verification.
+
+**Regression test.** `tools/test-bl407-preflight-scoping.mjs` pins the core `--only` mechanic
+hermetically (a disposable scratch workspace symlinking the real `node_modules` so publint/attw
+resolve): unfiltered run still FATALs on a broken package (merge gate unchanged); a scoped run
+excluding it passes cleanly; a scoped run that includes it still FATALs (scoping never launders an
+in-scope violation). Watched RED (temporarily disabled the `--only` filtering branch —
+`dirsToCheck` fell back to the full scan, and the "scoped run passes" assertion failed exactly as
+predicted) then GREEN with the fix restored (`git diff` on `verify-exports-publint-attw.mjs`
+clean, no net change from the toggle). `node tools/test-bl407-preflight-scoping.mjs`: 3/3 passed.
+
+**Files:** `scripts/smoke-test.mjs`, `tools/verify-exports-publint-attw.mjs`, new
+`tools/test-bl407-preflight-scoping.mjs`.
+
+**Related:** BL-259 (was blocked by this), BL-266 (introduced the preflight this scopes), BL-150
+(the relock rule whose correct application by two other agents produced the wedge that surfaced
+this).
+
 ## [Unreleased] — BL-410: a standalone script no longer silently abandons an in-flight embed warmup on exit
 
 **The bug.** `SharedFastembedProcessClient.ensureProcess()` forks the shared fastembed host
