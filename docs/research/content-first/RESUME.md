@@ -157,14 +157,16 @@ in both modes; the difference IS the measurement:
   `ses_03bd61c17ffe1osvDE8wZAzV5c`, 148 turns, 3 handoffs, 90-99% savings).
 - **RF (`proxy/rf`)** — external sequencing required. The persona is the full
   system prompt at position 0; a model cannot switch itself, so the
-  **`cf-chain-dispatcher`** agent dispatches each stage as its own opencode
-  agent through `proxy/rf`, forwarding each stage's output to the next.
+  **`cf-chain-dispatcher`** agent dispatches the chain as its own opencode
+  agents through `proxy/rf` — product selects a feature, architect specs it,
+  typescript implements it in an assigned worktree, review verifies it —
+  forwarding each stage's output to the next.
 
-**Fairness:** the dispatcher receives only the mechanism (dispatch stages via
-`proxy/rf`, forward outputs) and the agent registry — the same information the
-CF prompt injects into a CF session. It decides the chain, handoff format, and
-stopping rules from the task and each stage's live output. Do not seed it with
-the chain order, deliverable templates, or termination rules from a prior run.
+**Fairness:** the dispatcher receives only the process description (dispatch
+product → architect → typescript → review through `proxy/rf`, one worktree)
+and the agent registry — the same information the CF prompt injects into a CF
+session. It does not receive the chain's answers, deliverable formats, or
+termination rules from any prior run.
 
 **To run the A/B:** run the same task with the `cf-chain-dispatcher` agent
 (RF arm) and through the CF self-handoff chain (CF arm); compare
