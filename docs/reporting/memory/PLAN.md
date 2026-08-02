@@ -650,6 +650,21 @@ rewritten, only unblocked.
 **Produces:** `warmupEmbed()` safe to call from any short-lived script, not only the long-lived server.
 **acceptance:** a test naming BL-410 reproducing the crash — a standalone process calling `warmupEmbed()` and exiting mid-load — asserting a clean exit with no unhandled throw. Must fail against current code.
 
+### PKT-53 — BL-412: the test suite silently opens the LIVE production store
+**Goal:** `memory_ping` called with no `db_path`/`store` (`memory-server/src/index.ts` ~:876) resolves to the default `~/.memory/memory.db`, opens a **real cached connection** via `getDb()`, and registers that path into `openedPaths` — the set the periodic background enrich loop iterates. A test process therefore doesn't merely read production; it enlists production into its own enrichment scheduler. Measured: **5 live-store touches from `backend.spec.ts` alone**, whose own comment reads *"no db touched"*.
+**Closes:** BL-412
+**Files:** `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (~:876, `memory_ping` default resolution), `.../src/backend.spec.ts` (the false comment and the 5 touches), possibly `libs/memory-core/src/db.ts` (`getDb`/`openedPaths`).
+**requires:** none
+**sequencing:** touches `index.ts` — **serialize with the other `index.ts` packets** (PKT-01, 09, 13, 19, 25, 32, 34, 45, 47). Check for a live owner before editing.
+**tier:** sonnet, ~70k tokens / ~28 turns
+**orientation:** ~35k — BL-412's body carries the measurement and both anchors. **Fixed cost.**
+**budget:** ~28 turns / ~105k tokens. Guidance ceiling ~190k; **guidance, not a stop.** Commit by pathspec, incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **⛔ The dangerous half is already fixed; do not redo it.** `runBackend()` no longer guesses the backup path (commit `9068d16` — it now requires `SOX_CONFIG_DB_PATH` to be set explicitly, per the BL-62 "never infer" precedent). **Your scope is the `memory_ping` path only.**
+> **Do not "fix" this by pointing the default at a temp store.** That preserves the guess and merely relocates it — the defect is that a liveness question opens a connection at all and registers it for background enrichment. Prefer: refuse to resolve when neither argument is given outside production, or separate "is the server reachable" from "open the store".
+> **Fix `backend.spec.ts`'s comment in the same pass.** A comment asserting "no db touched" over code that touches the db is what let this survive review.
+**Produces:** a test suite that cannot reach the user's production store, and a ping that answers reachability without opening anything.
+**acceptance:** a test naming BL-412 that instruments the store-open path and asserts a full `nx test memory-server` run produces **zero** connections to any path under `~/.memory`. Must fail today — 5 touches from `backend.spec.ts` is the red arm.
+
 ### PKT-41 — BL-391: federated recall's BM25 arm is dead on Turso, and the failure is swallowed whole-store
 **Goal:** a read-only Turso connection cannot run `fts_match` (measured: `readonly:false` → 1158 hits; `readonly:true` → `step failed: Error: Resource is read-only`; plain `COUNT(*)` works identically on both). `openDbReadOnly` passes `readonly: true` unconditionally and its **only** production caller is `getFederationConnection` (`recall.ts:1208`) — so single-store recall is unaffected (live recall still returns `provenance: ["vec","fts","temporal"]`) but federated recall is not.
 **Closes:** BL-391
@@ -1467,7 +1482,7 @@ Verified by diffing every packet's `Closes:` line against `grep -oE '^### BL-[0-
 | E | PKT-34 .. PKT-36 (3) | 2 (PKT-36 depends on PKT-35) | PKT-25 (PKT-34 only) |
 | F | PKT-37 .. PKT-40 (4) | 3 | PKT-16 (PKT-40 only) |
 
-**Total: 52 packets.** Tier distribution, derived from the `**tier:**` fields rather than hand-maintained: **sonnet 45**, **haiku 4** (PKT-09, 20, 22, 23), **opus 0**.
+**Total: 53 packets.** Tier distribution, derived from the `**tier:**` fields rather than hand-maintained: **sonnet 45**, **haiku 4** (PKT-09, 20, 22, 23), **opus 0**.
 
 > **No packet is opus.** Two independent reasons, both evidence rather than preference. First, the owner's standing constraint: *"No more opus agents."* Second — and this is the one that matters for estimation — **every agent dispatched in this program ran `claude-sonnet-5` regardless of what the packet said.** No `model:` override was ever passed, so the `Agent` tool used each agent type's default. The three packets that once read `opus` (PKT-01, 02, 28) were measured after the fact and had all run on sonnet; all three completed, including a CRITICAL architectural change and a research packet that produced a real measurement. The earlier tier argument in this document concerned a distinction that was never present in any dispatch. Tier is not the lever — task shape, prompt specificity, and budget realism are.
 
