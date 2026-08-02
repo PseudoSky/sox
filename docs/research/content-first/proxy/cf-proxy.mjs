@@ -587,6 +587,10 @@ const server = http.createServer(async (req, res) => {
       // else the opencode-supplied SP.
       const effectiveSP = personaSP || opencodeSP;
       const cf = rewriteToContentFirst(messages, effectiveSP);
+      // Verify the persona actually reached the forwarded messages
+      const lastMsgContent = cf.messages[cf.messages.length - 1]?.content || '';
+      const roleApplied = lastMsgContent.includes('--- Role ---');
+      console.error(`[cf-proxy] rewrite: activeAgent=${activeAgent || '?'} personaApplied=${roleApplied} agentRoleTokens=${cf.agentTokens} userMsgEnd=${JSON.stringify(lastMsgContent.slice(-60))}`);
 
       // True streaming passthrough to upstream. The virtual tool is DISABLED
       // here (CF_VIRTUAL_TOOL=1 re-enables it later once the baseline works);
