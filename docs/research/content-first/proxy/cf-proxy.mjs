@@ -210,7 +210,7 @@ function logCall(entry, sessionId) {
     console.log('');
     console.log('── CF Proxy ──────────────────────────────────────────');
     console.log(`  session=${sessionId || '?'}  agent=${entry.agent || '?'}  turns=${entry.turns ?? '?'}`);
-    console.log(`  tokens=${entry.cf_tokens ?? entry.rf_tokens ?? '?'}  cached=${entry.cf_cached ?? entry.rf_cached ?? '?'}`);
+    console.log(`  tokens=${entry.tokens ?? '?'}  cached=${entry.cached ?? '?'}  savings=${entry.savings_pct ?? '?'}%  model=${entry.model ?? '?'}`);
     console.log('──────────────────────────────────────────────────────');
   }
 }
@@ -629,10 +629,17 @@ const server = http.createServer(async (req, res) => {
 
       if (doPassthrough) {
         const result = await forwardStream(messages, reqData, res, { model: TARGET_MODEL });
+        // Attribute the turn to the actual stage agent (product/architect/
+        // typescript/review) even in RF mode — the name is in the opencode SP.
+        const rfAgent = activeAgent || resolveAgent(opencodeSP)?.name || '(passthrough)';
         logCall({
-          event: 'turn', agent: activeAgent || '(passthrough)', turns: session?.turns ?? 0,
+          event: 'turn', agent: rfAgent, turns: session?.turns ?? 0,
           passthrough: true,
-          rf_tokens: result.inputTokens, rf_cached: result.cacheHits, rf_output: result.outputTokens,
+          // Uniform metrics schema across both arms (rf and cf) so per-agent
+          // comparison is direct: same field names, same savings math.
+          tokens: result.inputTokens, cached: result.cacheHits, output: result.outputTokens,
+          savings_pct: result.inputTokens > 0 ? ((result.cacheHits / result.inputTokens) * 100).toFixed(1) : '0.0',
+          model: modelStr,
         }, sessionId);
         if (session) {
           const lastUser = [...messages].reverse().find(m => m.role === 'user');
@@ -682,12 +689,13 @@ const server = http.createServer(async (req, res) => {
         event: 'turn', agent: activeAgent || '(unassigned)', turns: session?.turns ?? 0,
         passthrough: false,
         agent_changed: changed,
-        cf_tokens: result.inputTokens, cf_cached: result.cacheHits, cf_output: result.outputTokens,
-        // Real cache savings from the provider's prompt_cache_hit_tokens,
-        // not the seed-hash heuristic (which only fires on exact seed reuse).
+        // Uniform metrics schema across both arms (cf and rf) so per-agent
+        // comparison is direct: same field names, same savings math.
+        tokens: result.inputTokens, cached: result.cacheHits, output: result.outputTokens,
         savings_pct: result.inputTokens > 0 ? ((result.cacheHits / result.inputTokens) * 100).toFixed(1) : '0.0',
         cached_seed: cf.cachedSeed,
         seed_tokens: cf.seedTokens, system_tokens: cf.systemTokens,
+        model: modelStr,
       }, sessionId);
       return;
     }
