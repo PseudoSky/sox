@@ -296,6 +296,54 @@ describe('enableOsUnit — content-addressed idempotence', () => {
   });
 });
 
+// ─── BL-259: consecutive smoke-test.mjs runs must never collide ──────────────────
+
+describe('BL-259 — two smoke-test.mjs runs never hit "Bootstrap failed: 5"', () => {
+  const platform = new LaunchdPlatform();
+
+  it('smoke-test.mjs derives a unique SOX_ECOSYSTEM_HOME per timestamped run — labels never collide', () => {
+    // scripts/smoke-test.mjs sets SOX_ECOSYSTEM_HOME to `<TEST_ROOT>/sox-data-root`,
+    // where TEST_ROOT embeds an ISO timestamp — so two consecutive runs always pass
+    // a DIFFERENT dataRootOverride to osUnitLabelFor (BL-263), which lands in two
+    // different launchd labels that can never contend for the same bootstrap slot.
+    const run1Root = '/repo/dist/smoke/run-2026-07-10T10-00-00/sox-data-root';
+    const run2Root = '/repo/dist/smoke/run-2026-07-10T10-05-00/sox-data-root';
+    const label1 = osUnitLabelFor('project', 'tokenguard', run1Root);
+    const label2 = osUnitLabelFor('project', 'tokenguard', run2Root);
+    expect(label1).not.toBe(label2);
+  });
+
+  it('even under a SHARED label, re-enabling a still-loaded unit (no disable in between) unloads before reloading — never a raw double-bootstrap', () => {
+    // Defense in depth beyond BL-263's label namespacing: this is the ACTUAL
+    // mechanism that stops `launchctl bootstrap` from returning "Bootstrap failed:
+    // 5" (EIO — label already bootstrapped). BL-259 was filed against a run where a
+    // prior smoke run's unit was left loaded and the next `service enable` — same
+    // label, different content-hash because --root (and thus workingDirectory)
+    // changed — collided. `enableOsUnit` treats a content change on an
+    // already-loaded label as "unload stale, THEN reload", never a bare bootstrap
+    // against a live label.
+    const specForRoot = (root: string) => makeSpec({ workingDirectory: root });
+
+    const fake1 = makeFakeExec();
+    const run1 = enableOsUnit(specForRoot('/repo/dist/smoke/run-1'), platform, { unitDir, exec: fake1.exec, load: true });
+    expect(run1.loaded).toBe(true);
+
+    // Run 2: run 1's unit is STILL loaded (no disable happened — the exact
+    // leftover-from-a-crashed-run scenario BL-259 describes) and the content
+    // differs (new workingDirectory ⇒ new content-hash).
+    const fake2 = makeFakeExec({ loaded: true });
+    const run2 = enableOsUnit(specForRoot('/repo/dist/smoke/run-2'), platform, { unitDir, exec: fake2.exec, load: true });
+    expect(run2.action).toBe('updated');
+    expect(run2.loaded).toBe(true);
+
+    // The critical ordering: bootout happens BEFORE the second bootstrap.
+    const bootoutIdx = fake2.calls.findIndex((c) => c.args.includes('bootout'));
+    const bootstrapIdx = fake2.calls.findIndex((c) => c.args.includes('bootstrap'));
+    expect(bootoutIdx).toBeGreaterThanOrEqual(0);
+    expect(bootstrapIdx).toBeGreaterThan(bootoutIdx);
+  });
+});
+
 // ─── disable: round-trip ─────────────────────────────────────────────────────────
 
 describe('disableOsUnit — unload + remove round-trip', () => {
